@@ -1,3 +1,3 @@
 export function Loading() {
-  return <p className="loading">Загружаем authoritative state…</p>;
+  return <p className="loading" role="status">Загружаем authoritative state…</p>;
 }
