@@ -4,6 +4,10 @@
   background-image: url("https://zhjrb3dyh4.ufs.sh/f/kTOk4z0nYjRrN171Xl7Rc1AYfTvnpJbM26dkRIXQSBerN8y7");
 }
 
+@utility bg-pattern {
+  background-image: url("https://zhjrb3dyh4.ufs.sh/f/kTOk4z0nYjRr1jufgEf7lzdVGXxuiQMnIDFKASL0Ch6HYvPk");
+}
+
 :root {
   --background: #ffffff;
   --foreground: #171717;

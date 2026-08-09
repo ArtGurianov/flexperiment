@@ -21,7 +21,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased bg-pattern bg-repeat`}
     >
       <body className="min-h-full w-full max-w-lg mx-auto flex flex-col bg-site bg-cover bg-center bg-no-repeat bg-fixed">
         {children}
