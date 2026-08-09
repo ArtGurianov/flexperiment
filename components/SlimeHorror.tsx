@@ -1,0 +1,265 @@
+"use client";
+
+import { useEffect, useRef } from "react";
+import * as THREE from "three";
+import { Font, FontLoader } from "three/addons/loaders/FontLoader.js";
+import { TextGeometry } from "three/addons/geometries/TextGeometry.js";
+
+const FONT_URL = "/fonts/SlimeHorror-Regular.typeface.json";
+
+// Large, soft, low-frequency blobs — not fine grain — so the surface reads
+// as inflated slime rather than rough stone.
+function createBumpTexture() {
+  const size = 512;
+  const canvas = document.createElement("canvas");
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext("2d")!;
+
+  ctx.fillStyle = "#808080";
+  ctx.fillRect(0, 0, size, size);
+
+  for (let i = 0; i < 45; i++) {
+    const x = Math.random() * size;
+    const y = Math.random() * size;
+    const radius = 20 + Math.random() * 70;
+    const raised = Math.random() > 0.4;
+
+    const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius);
+    gradient.addColorStop(0, raised ? "#b0b0b0" : "#505050");
+    gradient.addColorStop(1, "#808080");
+
+    ctx.fillStyle = gradient;
+    ctx.beginPath();
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.wrapS = THREE.RepeatWrapping;
+  texture.wrapT = THREE.RepeatWrapping;
+  texture.repeat.set(3, 2);
+  return texture;
+}
+
+// A couple of bright "studio card" planes, captured into a cube render
+// target and used as the material's envMap. Moving/rotating these — rather
+// than moving a light — is what makes the highlight read as a reflection of
+// something, with a shape and edge that follows the glossy surface.
+function createReflectionEnvironment() {
+  const environmentScene = new THREE.Scene();
+  environmentScene.background = new THREE.Color("#10160a");
+
+  const reflectionGroup = new THREE.Group();
+  environmentScene.add(reflectionGroup);
+
+  const strip = new THREE.Mesh(
+    new THREE.PlaneGeometry(5, 0.15),
+    new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide }),
+  );
+  strip.position.set(-1.5, 2, 2);
+  strip.rotation.x = -0.3;
+  reflectionGroup.add(strip);
+
+  const wash = new THREE.Mesh(
+    new THREE.PlaneGeometry(4, 1),
+    new THREE.MeshBasicMaterial({ color: "#dfffad", side: THREE.DoubleSide }),
+  );
+  wash.position.set(2, -1, 2);
+  wash.rotation.x = -0.2;
+  reflectionGroup.add(wash);
+
+  return { environmentScene, reflectionGroup, cards: [strip, wash] };
+}
+
+export interface SlimeHorrorProps {
+  value: string;
+  className?: string;
+}
+
+export default function SlimeHorror({ value, className }: SlimeHorrorProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const buildTextRef = useRef<((text: string) => void) | null>(null);
+  const valueRef = useRef(value);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    let active = true;
+    let animationId = 0;
+    let frameCount = 0;
+    let font: Font | null = null;
+    let mesh: THREE.Mesh | null = null;
+
+    const scene = new THREE.Scene();
+
+    const camera = new THREE.PerspectiveCamera(35, 1, 0.01, 100);
+    camera.position.set(0, 0, 7);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.1;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.domElement.style.display = "block";
+    container.appendChild(renderer.domElement);
+
+    // Gentle baseline fill so the material still reads as green away from
+    // the reflected highlight, instead of going flat black.
+    const hemiLight = new THREE.HemisphereLight(0xdfffc0, 0x0a0a0a, 0.4);
+    scene.add(hemiLight);
+
+    const { environmentScene, reflectionGroup, cards } =
+      createReflectionEnvironment();
+
+    const cubeRenderTarget = new THREE.WebGLCubeRenderTarget(256, {
+      generateMipmaps: true,
+      minFilter: THREE.LinearMipmapLinearFilter,
+    });
+    cubeRenderTarget.texture.mapping = THREE.CubeReflectionMapping;
+    const cubeCamera = new THREE.CubeCamera(0.1, 100, cubeRenderTarget);
+
+    const bumpTexture = createBumpTexture();
+
+    const material = new THREE.MeshPhysicalMaterial({
+      color: "#9cdb35",
+      metalness: 0,
+      roughness: 0.08,
+      clearcoat: 1,
+      clearcoatRoughness: 0.015,
+      ior: 1.48,
+      specularIntensity: 1,
+      specularColor: "#ffffff",
+      envMap: cubeRenderTarget.texture,
+      envMapIntensity: 1.8,
+      bumpMap: bumpTexture,
+      bumpScale: 0.12,
+    });
+
+    function buildText(text: string) {
+      if (!font) return;
+
+      if (mesh) {
+        scene.remove(mesh);
+        mesh.geometry.dispose();
+        mesh = null;
+      }
+
+      if (!text) return;
+
+      const geometry = new TextGeometry(text, {
+        font,
+        size: 1,
+        depth: 0.16,
+        curveSegments: 20,
+        bevelEnabled: true,
+        bevelThickness: 0.12,
+        bevelSize: 0.1,
+        bevelOffset: -0.02,
+        bevelSegments: 12,
+      });
+      geometry.center();
+      geometry.computeVertexNormals();
+
+      mesh = new THREE.Mesh(geometry, material);
+      scene.add(mesh);
+
+      // Frame the camera to the text's own bounding box so the shot stays
+      // well composed regardless of how long the rendered string is.
+      const box = new THREE.Box3().setFromObject(mesh);
+      const boxSize = new THREE.Vector3();
+      box.getSize(boxSize);
+      const maxDim = Math.max(boxSize.x, boxSize.y);
+      const fitDistance =
+        (maxDim / 2 / Math.tan((camera.fov * Math.PI) / 360)) * 1.5;
+      camera.position.z = Math.max(fitDistance, 3);
+    }
+    buildTextRef.current = buildText;
+
+    function resize() {
+      if (!container) return;
+      const { clientWidth, clientHeight } = container;
+      if (clientWidth === 0 || clientHeight === 0) return;
+      camera.aspect = clientWidth / clientHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(clientWidth, clientHeight);
+    }
+    resize();
+
+    const resizeObserver = new ResizeObserver(resize);
+    resizeObserver.observe(container);
+
+    const pointerTarget = { x: 0, y: 0 };
+    function handlePointerMove(event: PointerEvent) {
+      const rect = container!.getBoundingClientRect();
+      pointerTarget.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+      pointerTarget.y = ((event.clientY - rect.top) / rect.height) * 2 - 1;
+    }
+    container.addEventListener("pointermove", handlePointerMove);
+
+    const loader = new FontLoader();
+    loader.load(
+      FONT_URL,
+      (loadedFont) => {
+        if (!active) return;
+        font = loadedFont;
+        buildText(valueRef.current);
+      },
+      undefined,
+      (error) => {
+        console.error("Failed to load slime font", error);
+      },
+    );
+
+    function animate() {
+      animationId = requestAnimationFrame(animate);
+
+      const targetRotationY = pointerTarget.x * 0.7;
+      const targetRotationX = -pointerTarget.y * 0.3;
+      reflectionGroup.rotation.y +=
+        (targetRotationY - reflectionGroup.rotation.y) * 0.08;
+      reflectionGroup.rotation.x +=
+        (targetRotationX - reflectionGroup.rotation.x) * 0.08;
+
+      // The reflection probe only needs to be refreshed every couple of
+      // frames — its contents are a couple of static planes rotating slowly.
+      frameCount++;
+      if (frameCount % 2 === 0) {
+        cubeCamera.update(renderer, environmentScene);
+      }
+
+      renderer.render(scene, camera);
+    }
+    animate();
+
+    return () => {
+      active = false;
+      buildTextRef.current = null;
+      cancelAnimationFrame(animationId);
+      resizeObserver.disconnect();
+      container.removeEventListener("pointermove", handlePointerMove);
+
+      mesh?.geometry.dispose();
+      material.dispose();
+      bumpTexture.dispose();
+      cubeRenderTarget.dispose();
+      cards.forEach((card) => {
+        card.geometry.dispose();
+        (card.material as THREE.Material).dispose();
+      });
+      renderer.dispose();
+
+      if (renderer.domElement.parentElement === container) {
+        container.removeChild(renderer.domElement);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    valueRef.current = value;
+    buildTextRef.current?.(value);
+  }, [value]);
+
+  return <div ref={containerRef} className={className} />;
+}
