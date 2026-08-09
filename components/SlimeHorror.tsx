@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { Font, FontLoader } from "three/addons/loaders/FontLoader.js";
 import { TextGeometry } from "three/addons/geometries/TextGeometry.js";
@@ -88,6 +88,10 @@ export default function SlimeHorror({
   const valueRef = useRef(value);
   const applyColorRef = useRef<((color: string) => void) | null>(null);
   const colorRef = useRef(color);
+  // Width : height of the rendered text's bounds. Lets the container size
+  // its own height to the content (via aspect-ratio) when no explicit
+  // height is set on it.
+  const [textAspect, setTextAspect] = useState<number>();
 
   useEffect(() => {
     const container = containerRef.current;
@@ -168,8 +172,7 @@ export default function SlimeHorror({
         textBoundsSize.y / 2 / Math.tan(verticalFov / 2);
       const distanceForWidth =
         textBoundsSize.x / 2 / Math.tan(horizontalFov / 2);
-      const fitDistance =
-        Math.max(distanceForHeight, distanceForWidth) * 1.5;
+      const fitDistance = Math.max(distanceForHeight, distanceForWidth);
       camera.position.z = Math.max(fitDistance, 3);
     }
 
@@ -309,6 +312,7 @@ export default function SlimeHorror({
       // string is.
       const box = new THREE.Box3().setFromObject(mesh);
       textBoundsSize = box.getSize(new THREE.Vector3());
+      setTextAspect(textBoundsSize.x / textBoundsSize.y);
       frameCamera();
     }
     buildTextRef.current = buildText;
@@ -393,7 +397,12 @@ export default function SlimeHorror({
 
   return (
     <div className={className}>
-      <div ref={containerRef} className="h-full w-full" aria-hidden="true" />
+      <div
+        ref={containerRef}
+        className="h-full w-full"
+        style={{ aspectRatio: textAspect }}
+        aria-hidden="true"
+      />
       <span className="sr-only">{value}</span>
     </div>
   );
