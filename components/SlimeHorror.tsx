@@ -88,6 +88,7 @@ export default function SlimeHorror({ value, className }: SlimeHorrorProps) {
 
     let active = true;
     let animationId = 0;
+    let renderRequested = false;
     let frameCount = 0;
     let font: Font | null = null;
     let mesh: THREE.Mesh | null = null;
@@ -156,8 +157,55 @@ export default function SlimeHorror({ value, className }: SlimeHorrorProps) {
       camera.position.z = Math.max(fitDistance, 3);
     }
 
+    let hasCapturedEnvironment = false;
+    const ROTATION_SETTLE_EPSILON = 0.0005;
+    const pointerTarget = { x: 0, y: 0 };
+
+    // Render on demand rather than in a permanent RAF loop: a frame is only
+    // scheduled when something could actually look different (pointer
+    // moved, resize, font finished loading, text changed). animate()
+    // reschedules itself only while the reflection is still catching up to
+    // the pointer; once settled it goes idle until requestRender() fires
+    // again.
+    function requestRender() {
+      if (renderRequested) return;
+      renderRequested = true;
+      animationId = requestAnimationFrame(animate);
+    }
+
+    function animate() {
+      renderRequested = false;
+
+      const targetRotationY = pointerTarget.x * 0.7;
+      const targetRotationX = -pointerTarget.y * 0.3;
+      const deltaY = targetRotationY - reflectionGroup.rotation.y;
+      const deltaX = targetRotationX - reflectionGroup.rotation.x;
+      reflectionGroup.rotation.y += deltaY * 0.08;
+      reflectionGroup.rotation.x += deltaX * 0.08;
+
+      // The reflection probe only needs to be refreshed while the cards are
+      // still moving — once the lerp settles near the pointer's target,
+      // re-rendering all six cube faces every other frame is wasted work.
+      const isMoving =
+        Math.abs(deltaY) > ROTATION_SETTLE_EPSILON ||
+        Math.abs(deltaX) > ROTATION_SETTLE_EPSILON;
+
+      frameCount++;
+      if (!hasCapturedEnvironment || (isMoving && frameCount % 2 === 0)) {
+        cubeCamera.update(renderer, environmentScene);
+        hasCapturedEnvironment = true;
+      }
+
+      renderer.render(scene, camera);
+
+      if (isMoving) {
+        requestRender();
+      }
+    }
+
     function buildText(text: string) {
       if (!font) return;
+      requestRender();
 
       if (mesh) {
         scene.remove(mesh);
@@ -200,20 +248,18 @@ export default function SlimeHorror({ value, className }: SlimeHorrorProps) {
       camera.updateProjectionMatrix();
       renderer.setSize(clientWidth, clientHeight);
       frameCamera();
+      requestRender();
     }
     resize();
 
     const resizeObserver = new ResizeObserver(resize);
     resizeObserver.observe(container);
 
-    let hasCapturedEnvironment = false;
-    const ROTATION_SETTLE_EPSILON = 0.0005;
-
-    const pointerTarget = { x: 0, y: 0 };
     function handlePointerMove(event: PointerEvent) {
       const rect = container!.getBoundingClientRect();
       pointerTarget.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
       pointerTarget.y = ((event.clientY - rect.top) / rect.height) * 2 - 1;
+      requestRender();
     }
     container.addEventListener("pointermove", handlePointerMove);
 
@@ -230,33 +276,6 @@ export default function SlimeHorror({ value, className }: SlimeHorrorProps) {
         console.error("Failed to load slime font", error);
       },
     );
-
-    function animate() {
-      animationId = requestAnimationFrame(animate);
-
-      const targetRotationY = pointerTarget.x * 0.7;
-      const targetRotationX = -pointerTarget.y * 0.3;
-      const deltaY = targetRotationY - reflectionGroup.rotation.y;
-      const deltaX = targetRotationX - reflectionGroup.rotation.x;
-      reflectionGroup.rotation.y += deltaY * 0.08;
-      reflectionGroup.rotation.x += deltaX * 0.08;
-
-      // The reflection probe only needs to be refreshed while the cards are
-      // still moving — once the lerp settles near the pointer's target,
-      // re-rendering all six cube faces every other frame is wasted work.
-      const isMoving =
-        Math.abs(deltaY) > ROTATION_SETTLE_EPSILON ||
-        Math.abs(deltaX) > ROTATION_SETTLE_EPSILON;
-
-      frameCount++;
-      if (!hasCapturedEnvironment || (isMoving && frameCount % 2 === 0)) {
-        cubeCamera.update(renderer, environmentScene);
-        hasCapturedEnvironment = true;
-      }
-
-      renderer.render(scene, camera);
-    }
-    animate();
 
     return () => {
       active = false;
