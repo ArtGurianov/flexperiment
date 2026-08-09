@@ -177,6 +177,13 @@ export default function SlimeHorror({
     const ROTATION_SETTLE_EPSILON = 0.0005;
     const pointerTarget = { x: 0, y: 0 };
 
+    // With no pointer at all (touch devices) — or an idle one — the
+    // reflection wanders on its own so the glints still happen. Pointer
+    // movement takes over instantly; the wander resumes after a few seconds
+    // of stillness.
+    const AMBIENT_IDLE_MS = 3000;
+    let lastPointerMoveAt = Number.NEGATIVE_INFINITY;
+
     // Render on demand rather than in a permanent RAF loop: a frame is only
     // scheduled when something could actually look different (pointer
     // moved, resize, font finished loading, text changed). animate()
@@ -191,6 +198,18 @@ export default function SlimeHorror({
 
     function animate() {
       renderRequested = false;
+
+      const now = performance.now();
+      const ambientActive = now - lastPointerMoveAt > AMBIENT_IDLE_MS;
+      if (ambientActive) {
+        // Slow drift through the same mirrored-safe range the pointer
+        // mapping allows (y ≤ 0, so the full-highlight tilt stays
+        // unreachable). Incommensurate frequencies keep the path from
+        // visibly looping.
+        const t = now / 1000;
+        pointerTarget.x = Math.sin(t * 0.29) * 0.8;
+        pointerTarget.y = -Math.abs(Math.sin(t * 0.17)) * 0.8;
+      }
 
       const targetRotationY = pointerTarget.x * 0.7;
       const targetRotationX = -pointerTarget.y * 0.3;
@@ -214,7 +233,10 @@ export default function SlimeHorror({
 
       renderer.render(scene, camera);
 
-      if (isMoving) {
+      // In ambient mode the target itself keeps moving, so the loop must
+      // stay alive even through moments where the lerp momentarily settles
+      // (the drift's sine peaks).
+      if (isMoving || ambientActive) {
         requestRender();
       }
     }
@@ -315,6 +337,7 @@ export default function SlimeHorror({
       // like top-left, bottom-right like top-right.
       const normalizedY = ((event.clientY - rect.top) / rect.height) * 2 - 1;
       pointerTarget.y = -Math.abs(normalizedY);
+      lastPointerMoveAt = performance.now();
       requestRender();
     }
     container.addEventListener("pointermove", handlePointerMove);
