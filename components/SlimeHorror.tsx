@@ -244,12 +244,12 @@ export default function SlimeHorror({ value, className }: SlimeHorrorProps) {
       // The reflection probe only needs to be refreshed while the cards are
       // still moving — once the lerp settles near the pointer's target,
       // re-rendering all six cube faces every other frame is wasted work.
-      const isSettling =
+      const isMoving =
         Math.abs(deltaY) > ROTATION_SETTLE_EPSILON ||
         Math.abs(deltaX) > ROTATION_SETTLE_EPSILON;
 
       frameCount++;
-      if (!hasCapturedEnvironment || (isSettling && frameCount % 2 === 0)) {
+      if (!hasCapturedEnvironment || (isMoving && frameCount % 2 === 0)) {
         cubeCamera.update(renderer, environmentScene);
         hasCapturedEnvironment = true;
       }
