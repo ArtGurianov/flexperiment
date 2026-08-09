@@ -30,12 +30,12 @@ const unicodes = Object.keys(glyphIndexMap);
 
 for (const unicode of unicodes) {
   const glyph = font.glyphs.glyphs[glyphIndexMap[unicode]];
-  if (unicode === undefined) continue;
+  if (glyph === undefined) continue;
 
   const token = {
     ha: round(glyph.advanceWidth * scale),
-    x_min: round(glyph.xMin * scale),
-    x_max: round(glyph.xMax * scale),
+    x_min: round((glyph.xMin ?? 0) * scale),
+    x_max: round((glyph.xMax ?? 0) * scale),
     o: "",
   };
 

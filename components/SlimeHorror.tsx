@@ -91,6 +91,7 @@ export default function SlimeHorror({ value, className }: SlimeHorrorProps) {
     let frameCount = 0;
     let font: Font | null = null;
     let mesh: THREE.Mesh | null = null;
+    let textBoundsSize: THREE.Vector3 | null = null;
 
     const scene = new THREE.Scene();
 
@@ -137,6 +138,24 @@ export default function SlimeHorror({ value, className }: SlimeHorrorProps) {
       bumpScale: 0.12,
     });
 
+    // Fit the camera to both dimensions of the text, not just its height —
+    // wide strings need the horizontal FOV (which narrows with aspect on
+    // portrait viewports), not the vertical one. Re-run on resize too, since
+    // the fit distance depends on the current aspect ratio.
+    function frameCamera() {
+      if (!textBoundsSize) return;
+      const verticalFov = (camera.fov * Math.PI) / 180;
+      const horizontalFov =
+        2 * Math.atan(Math.tan(verticalFov / 2) * camera.aspect);
+      const distanceForHeight =
+        textBoundsSize.y / 2 / Math.tan(verticalFov / 2);
+      const distanceForWidth =
+        textBoundsSize.x / 2 / Math.tan(horizontalFov / 2);
+      const fitDistance =
+        Math.max(distanceForHeight, distanceForWidth) * 1.5;
+      camera.position.z = Math.max(fitDistance, 3);
+    }
+
     function buildText(text: string) {
       if (!font) return;
 
@@ -168,12 +187,8 @@ export default function SlimeHorror({ value, className }: SlimeHorrorProps) {
       // Frame the camera to the text's own bounding box so the shot stays
       // well composed regardless of how long the rendered string is.
       const box = new THREE.Box3().setFromObject(mesh);
-      const boxSize = new THREE.Vector3();
-      box.getSize(boxSize);
-      const maxDim = Math.max(boxSize.x, boxSize.y);
-      const fitDistance =
-        (maxDim / 2 / Math.tan((camera.fov * Math.PI) / 360)) * 1.5;
-      camera.position.z = Math.max(fitDistance, 3);
+      textBoundsSize = box.getSize(new THREE.Vector3());
+      frameCamera();
     }
     buildTextRef.current = buildText;
 
@@ -184,11 +199,15 @@ export default function SlimeHorror({ value, className }: SlimeHorrorProps) {
       camera.aspect = clientWidth / clientHeight;
       camera.updateProjectionMatrix();
       renderer.setSize(clientWidth, clientHeight);
+      frameCamera();
     }
     resize();
 
     const resizeObserver = new ResizeObserver(resize);
     resizeObserver.observe(container);
+
+    let hasCapturedEnvironment = false;
+    const ROTATION_SETTLE_EPSILON = 0.0005;
 
     const pointerTarget = { x: 0, y: 0 };
     function handlePointerMove(event: PointerEvent) {
@@ -217,16 +236,22 @@ export default function SlimeHorror({ value, className }: SlimeHorrorProps) {
 
       const targetRotationY = pointerTarget.x * 0.7;
       const targetRotationX = -pointerTarget.y * 0.3;
-      reflectionGroup.rotation.y +=
-        (targetRotationY - reflectionGroup.rotation.y) * 0.08;
-      reflectionGroup.rotation.x +=
-        (targetRotationX - reflectionGroup.rotation.x) * 0.08;
+      const deltaY = targetRotationY - reflectionGroup.rotation.y;
+      const deltaX = targetRotationX - reflectionGroup.rotation.x;
+      reflectionGroup.rotation.y += deltaY * 0.08;
+      reflectionGroup.rotation.x += deltaX * 0.08;
 
-      // The reflection probe only needs to be refreshed every couple of
-      // frames — its contents are a couple of static planes rotating slowly.
+      // The reflection probe only needs to be refreshed while the cards are
+      // still moving — once the lerp settles near the pointer's target,
+      // re-rendering all six cube faces every other frame is wasted work.
+      const isSettling =
+        Math.abs(deltaY) > ROTATION_SETTLE_EPSILON ||
+        Math.abs(deltaX) > ROTATION_SETTLE_EPSILON;
+
       frameCount++;
-      if (frameCount % 2 === 0) {
+      if (!hasCapturedEnvironment || (isSettling && frameCount % 2 === 0)) {
         cubeCamera.update(renderer, environmentScene);
+        hasCapturedEnvironment = true;
       }
 
       renderer.render(scene, camera);
@@ -261,5 +286,10 @@ export default function SlimeHorror({ value, className }: SlimeHorrorProps) {
     buildTextRef.current?.(value);
   }, [value]);
 
-  return <div ref={containerRef} className={className} />;
+  return (
+    <div className={className}>
+      <div ref={containerRef} className="h-full w-full" aria-hidden="true" />
+      <span className="sr-only">{value}</span>
+    </div>
+  );
 }
