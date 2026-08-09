@@ -48,7 +48,7 @@ function createBumpTexture() {
 // something, with a shape and edge that follows the glossy surface.
 function createReflectionEnvironment() {
   const environmentScene = new THREE.Scene();
-  environmentScene.background = new THREE.Color("#10160a");
+  environmentScene.background = new THREE.Color("#0a0a0a");
 
   const reflectionGroup = new THREE.Group();
   environmentScene.add(reflectionGroup);
@@ -63,7 +63,7 @@ function createReflectionEnvironment() {
 
   const wash = new THREE.Mesh(
     new THREE.PlaneGeometry(4, 1),
-    new THREE.MeshBasicMaterial({ color: "#dfffad", side: THREE.DoubleSide }),
+    new THREE.MeshBasicMaterial({ color: 0xffffff, side: THREE.DoubleSide }),
   );
   wash.position.set(2, -1, 2);
   wash.rotation.x = -0.2;
@@ -75,12 +75,19 @@ function createReflectionEnvironment() {
 export interface SlimeHorrorProps {
   value: string;
   className?: string;
+  color?: string;
 }
 
-export default function SlimeHorror({ value, className }: SlimeHorrorProps) {
+export default function SlimeHorror({
+  value,
+  className,
+  color = "#000000",
+}: SlimeHorrorProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const buildTextRef = useRef<((text: string) => void) | null>(null);
   const valueRef = useRef(value);
+  const applyColorRef = useRef<((color: string) => void) | null>(null);
+  const colorRef = useRef(color);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -92,6 +99,7 @@ export default function SlimeHorror({ value, className }: SlimeHorrorProps) {
     let frameCount = 0;
     let font: Font | null = null;
     let mesh: THREE.Mesh | null = null;
+    let backingMesh: THREE.Mesh | null = null;
     let textBoundsSize: THREE.Vector3 | null = null;
 
     const scene = new THREE.Scene();
@@ -107,9 +115,9 @@ export default function SlimeHorror({ value, className }: SlimeHorrorProps) {
     renderer.domElement.style.display = "block";
     container.appendChild(renderer.domElement);
 
-    // Gentle baseline fill so the material still reads as green away from
-    // the reflected highlight, instead of going flat black.
-    const hemiLight = new THREE.HemisphereLight(0xdfffc0, 0x0a0a0a, 0.4);
+    // Gentle baseline fill so the material still reads as its own color
+    // away from the reflected highlight, instead of going flat black.
+    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x0a0a0a, 0.4);
     scene.add(hemiLight);
 
     const { environmentScene, reflectionGroup, cards } =
@@ -125,7 +133,7 @@ export default function SlimeHorror({ value, className }: SlimeHorrorProps) {
     const bumpTexture = createBumpTexture();
 
     const material = new THREE.MeshPhysicalMaterial({
-      color: "#9cdb35",
+      color: colorRef.current,
       metalness: 0,
       roughness: 0.08,
       clearcoat: 1,
@@ -138,6 +146,14 @@ export default function SlimeHorror({ value, className }: SlimeHorrorProps) {
       bumpMap: bumpTexture,
       bumpScale: 0.12,
     });
+
+    // The single source of truth for the text's color: both layers share
+    // this one material, so updating it here updates them together.
+    function applyColor(nextColor: string) {
+      material.color.set(nextColor);
+      requestRender();
+    }
+    applyColorRef.current = applyColor;
 
     // Fit the camera to both dimensions of the text, not just its height —
     // wide strings need the horizontal FOV (which narrows with aspect on
@@ -212,6 +228,11 @@ export default function SlimeHorror({ value, className }: SlimeHorrorProps) {
         mesh.geometry.dispose();
         mesh = null;
       }
+      if (backingMesh) {
+        scene.remove(backingMesh);
+        backingMesh.geometry.dispose();
+        backingMesh = null;
+      }
 
       if (!text) return;
 
@@ -226,14 +247,44 @@ export default function SlimeHorror({ value, className }: SlimeHorrorProps) {
         bevelOffset: -0.02,
         bevelSegments: 12,
       });
-      geometry.center();
+
+      // A flat-fronted duplicate with no bevel, naturally recessed behind
+      // the beveled front layer (same extrusion depth, no bevel expansion
+      // outward). Its own caps come straight from triangulating the glyph
+      // outline with no offset-curve math involved, so there's no self-
+      // intersection for it to inherit. If the front layer's bevel folds at
+      // a tight concave notch and gets backface-culled there, the camera
+      // ray falls through to this solid cap instead of the page
+      // background. Real counters (the hole inside "A") stay open on both
+      // layers, since both come from the same glyph outline.
+      const backingGeometry = new TextGeometry(text, {
+        font,
+        size: 1,
+        depth: 0.16,
+        curveSegments: 20,
+        bevelEnabled: false,
+      });
+
+      // Center both geometries on the *visible* geometry's bounds so they
+      // share one coordinate frame — centering each independently would
+      // offset them slightly, since the non-beveled outline's bounding box
+      // isn't quite the same as the beveled one's.
+      geometry.computeBoundingBox();
+      const center = geometry.boundingBox!.getCenter(new THREE.Vector3());
+      geometry.translate(-center.x, -center.y, -center.z);
+      backingGeometry.translate(-center.x, -center.y, -center.z);
       geometry.computeVertexNormals();
+      backingGeometry.computeVertexNormals();
 
       mesh = new THREE.Mesh(geometry, material);
       scene.add(mesh);
 
-      // Frame the camera to the text's own bounding box so the shot stays
-      // well composed regardless of how long the rendered string is.
+      backingMesh = new THREE.Mesh(backingGeometry, material);
+      scene.add(backingMesh);
+
+      // Frame the camera to the visible text's own bounding box so the
+      // shot stays well composed regardless of how long the rendered
+      // string is.
       const box = new THREE.Box3().setFromObject(mesh);
       textBoundsSize = box.getSize(new THREE.Vector3());
       frameCamera();
@@ -280,11 +331,13 @@ export default function SlimeHorror({ value, className }: SlimeHorrorProps) {
     return () => {
       active = false;
       buildTextRef.current = null;
+      applyColorRef.current = null;
       cancelAnimationFrame(animationId);
       resizeObserver.disconnect();
       container.removeEventListener("pointermove", handlePointerMove);
 
       mesh?.geometry.dispose();
+      backingMesh?.geometry.dispose();
       material.dispose();
       bumpTexture.dispose();
       cubeRenderTarget.dispose();
@@ -304,6 +357,11 @@ export default function SlimeHorror({ value, className }: SlimeHorrorProps) {
     valueRef.current = value;
     buildTextRef.current?.(value);
   }, [value]);
+
+  useEffect(() => {
+    colorRef.current = color;
+    applyColorRef.current?.(color);
+  }, [color]);
 
   return (
     <div className={className}>

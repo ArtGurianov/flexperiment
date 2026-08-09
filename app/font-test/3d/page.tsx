@@ -6,5 +6,11 @@ export const metadata: Metadata = {
 };
 
 export default function SlimeTextPage() {
-  return <SlimeHorror value="FLEXTATIC" className="h-dvh w-full bg-black" />;
+  return (
+    <SlimeHorror
+      value="FLEXTATIC"
+      className="h-dvh w-full bg-black"
+      color="#CAFF56"
+    />
+  );
 }
