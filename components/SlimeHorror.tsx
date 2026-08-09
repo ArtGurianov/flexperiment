@@ -117,7 +117,7 @@ export default function SlimeHorror({
 
     // Gentle baseline fill so the material still reads as its own color
     // away from the reflected highlight, instead of going flat black.
-    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x0a0a0a, 0.4);
+    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x303030, 1.0);
     scene.add(hemiLight);
 
     const { environmentScene, reflectionGroup, cards } =
