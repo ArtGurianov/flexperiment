@@ -16,7 +16,7 @@ export default function HeroTour() {
         muted
         playsInline
       />
-      <div className="absolute inset-0 bg-lime-500/20" />
+      <div className="absolute inset-0 bg-yellow-900/20" />
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         className="absolute inset-0 m-auto w-full"
