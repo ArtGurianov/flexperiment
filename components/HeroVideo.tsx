@@ -21,7 +21,11 @@ export default function HeroVideo() {
       <button
         type="button"
         aria-label="Play video"
-        onClick={() => videoRef.current?.play()}
+        onClick={() => {
+          // play() resolves only once playback starts; a pause() arriving
+          // before that rejects it with a harmless AbortError.
+          videoRef.current?.play().catch(() => {});
+        }}
         className={`group absolute inset-0 flex cursor-pointer items-center justify-center bg-black transition-opacity duration-500 ${
           isPlaying ? "pointer-events-none opacity-0" : "opacity-100"
         }`}
