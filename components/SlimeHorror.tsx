@@ -309,7 +309,12 @@ export default function SlimeHorror({
     function handlePointerMove(event: PointerEvent) {
       const rect = container!.getBoundingClientRect();
       pointerTarget.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-      pointerTarget.y = ((event.clientY - rect.top) / rect.height) * 2 - 1;
+      // Mirror the bottom half of the viewport onto the top half: below the
+      // midline the tilt would rotate the bright wash card to face the text
+      // head-on and flood it with a full highlight, so bottom-left behaves
+      // like top-left, bottom-right like top-right.
+      const normalizedY = ((event.clientY - rect.top) / rect.height) * 2 - 1;
+      pointerTarget.y = -Math.abs(normalizedY);
       requestRender();
     }
     container.addEventListener("pointermove", handlePointerMove);
