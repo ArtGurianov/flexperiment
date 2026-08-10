@@ -239,7 +239,14 @@ export default function AssetPreloader({
 
           `display: contents` keeps this wrapper out of layout entirely: nav and
           main stay direct flex children of the centred column. inert is a DOM
-          property, not a rendered one, so it still applies to the subtree. */}
+          property, not a rendered one, so it still applies to the subtree.
+
+          Note this ships set in the server HTML, so a visitor without JS gets a
+          page that is inert as well as covered by an overlay that will never
+          clear — and no <noscript> stylesheet can remove an attribute. Accepted
+          knowingly: the overlay, the dialog, the accordion and the hero video
+          all require JS already, so there is no working no-JS experience for
+          this to degrade. */}
       <div className="contents" inert={!isHidden}>
         {children}
       </div>
