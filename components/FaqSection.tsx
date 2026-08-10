@@ -36,9 +36,15 @@ export default function FaqSection() {
   return (
     /* No bottom padding — the footer bar is meant to sit flush against the
        section's bottom edge, which is also the page's. */
+    /* Height is content-driven on purpose. A min-h of 100svh plus a flex-1
+       spacer used to pin the footer to the viewport bottom, but the copy is
+       sized in cqw, so a narrower column shrinks the content while the viewport
+       stays tall — on a phone that left 150-220px of dead space above the
+       footer. This is the last section of a page that always exceeds one
+       viewport, so the footer reaches the document bottom regardless. */
     <section
       id="faq"
-      className="@container relative isolate flex min-h-[100svh] w-full scroll-mt-14 flex-col overflow-hidden px-4 pt-10 font-display text-bone"
+      className="@container relative isolate flex w-full scroll-mt-14 flex-col overflow-hidden px-4 pt-10 font-display text-bone"
     >
       <div className="flex justify-center">
         {/* Deliberately not full width — the CTA's narrowness against the
@@ -74,13 +80,10 @@ export default function FaqSection() {
         развитию собственного языка движения через флексинг. До встречи!»
       </p>
 
-      {/* Absorbs leftover height so the legal row sits at the bottom on tall
-          screens without being absolutely positioned. */}
-      <div className="min-h-8 flex-1" />
-
       {/* -mx-4 cancels the section's horizontal padding so the bar spans the
-          full column while its own px-4 keeps the text off the edges. */}
-      <footer className="relative z-30 -mx-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-2 bg-[rgb(22_20_18_/_0.5)] px-4 py-3 text-[clamp(0.7rem,2.7cqw,0.9rem)] leading-tight uppercase">
+          full column while its own px-4 keeps the text off the edges. The top
+          margin is a fixed gap now that no spacer sets the distance. */}
+      <footer className="relative z-30 -mx-4 mt-[10cqw] flex flex-wrap items-center justify-between gap-x-4 gap-y-2 bg-[rgb(22_20_18_/_0.5)] px-4 py-3 text-[clamp(0.7rem,2.7cqw,0.9rem)] leading-tight uppercase">
         <span>ИП Гурьянов Арт Артурович</span>
         <a href="/offer" className="underline-offset-4 hover:underline">
           Оферта
