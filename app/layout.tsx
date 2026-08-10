@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist, Geist_Mono, Shafarik } from "next/font/google";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -12,6 +12,14 @@ const geistMono = Geist_Mono({
   subsets: ["latin"],
 });
 
+// Shafarik ships a single 400 weight, so any emphasis has to come from size or
+// colour rather than a bolder cut.
+const shafarik = Shafarik({
+  variable: "--font-shafarik",
+  subsets: ["cyrillic", "latin"],
+  weight: "400",
+});
+
 export const metadata: Metadata = {
   title: "Flextatic",
   description: "Flextatic",
@@ -21,7 +29,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} h-full antialiased bg-pattern bg-repeat`}
+      className={`${geistSans.variable} ${geistMono.variable} ${shafarik.variable} h-full antialiased bg-pattern bg-repeat`}
     >
       <body className="min-h-full w-full max-w-lg mx-auto flex flex-col bg-site bg-cover bg-center bg-no-repeat bg-fixed">
         {children}

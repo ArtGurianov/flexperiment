@@ -16,8 +16,11 @@
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-acid: #caff56;
+  --color-bone: #e9e4d3;
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-display: var(--font-shafarik);
 }
 
 @media (prefers-color-scheme: dark) {
