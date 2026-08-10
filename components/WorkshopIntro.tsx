@@ -11,7 +11,7 @@ import body from "@/public/body.webp";
 export default function WorkshopIntro() {
   return (
     <Section>
-      <h2 className="relative z-30 text-center text-[clamp(1.75rem,8.6cqw,2.75rem)] leading-[1.3] tracking-[0.015em] uppercase text-acid [text-shadow:2px_3px_0_rgb(0_0_0_/_0.9),0_0_4px_rgb(202_255_86_/_0.25)]">
+      <h2 className="relative z-30 text-end text-[clamp(1.75rem,8.6cqw,2.75rem)] leading-[1.3] tracking-[0.015em] uppercase text-acid [text-shadow:2px_3px_0_rgb(0_0_0_/_0.9),0_0_4px_rgb(202_255_86_/_0.25)]">
         Разблокируй новый уровень контроля над телом
       </h2>
 
