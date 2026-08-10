@@ -21,6 +21,30 @@
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
   --font-display: var(--font-shafarik);
+  --animate-accordion-down: accordion-down 220ms ease-out;
+  --animate-accordion-up: accordion-up 220ms ease-out;
+}
+
+/* Upstream pulls these from tw-animate-css. Defined here instead so the
+   accordion needs no extra dependency. Radix measures the panel and exposes
+   its height as --radix-accordion-content-height, which is what lets a
+   collapse animate to a real pixel height rather than to `auto`. */
+@keyframes accordion-down {
+  from {
+    height: 0;
+  }
+  to {
+    height: var(--radix-accordion-content-height);
+  }
+}
+
+@keyframes accordion-up {
+  from {
+    height: var(--radix-accordion-content-height);
+  }
+  to {
+    height: 0;
+  }
 }
 
 @media (prefers-color-scheme: dark) {

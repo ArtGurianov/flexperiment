@@ -1,3 +1,4 @@
+import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from "@/components/Accordion";
 import HeroSiberia from "@/components/HeroSiberia";
 import HeroTour from "@/components/HeroTour";
 import HeroVideo from "@/components/HeroVideo";
@@ -21,6 +22,14 @@ export default function Home() {
       <TeacherSection />
       <Separator />
       <ProgramSection />
+      <div id="acc-probe" className="p-4">
+        <Accordion type="single" collapsible>
+          <AccordionItem value="a">
+            <AccordionTrigger>Проверка</AccordionTrigger>
+            <AccordionContent>Содержимое панели для проверки анимации.</AccordionContent>
+          </AccordionItem>
+        </Accordion>
+      </div>
     </main>
   );
 }
