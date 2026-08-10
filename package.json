@@ -10,10 +10,14 @@
     "font:convert": "node scripts/ttf-to-typeface.mjs assets/fonts/SlimeHorror-Regular.ttf public/fonts/SlimeHorror-Regular.typeface.json"
   },
   "dependencies": {
+    "@radix-ui/react-dialog": "^1.1.23",
+    "clsx": "^2.1.1",
     "next": "16.3.0",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "three": "^0.185.1"
+    "tailwind-merge": "^3.6.0",
+    "three": "^0.185.1",
+    "vaul": "^1.1.2"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

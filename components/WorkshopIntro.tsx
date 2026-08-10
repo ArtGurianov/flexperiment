@@ -1,7 +1,7 @@
 import Image from "next/image";
 
-import CtaButton from "@/components/CtaButton";
 import DarkPanel from "@/components/DarkPanel";
+import PaymentCta from "@/components/PaymentCta";
 import body from "@/public/body.webp";
 
 // Type scales with `cqw` rather than `vw` because the page sits in a fixed
@@ -40,12 +40,9 @@ export default function WorkshopIntro() {
             как никто другой.
           </p>
 
-          <CtaButton
-            href="#cities"
-            className="mt-[6cqw] min-h-[3.5rem] text-[clamp(1.15rem,4.8cqw,1.6rem)]"
-          >
+          <PaymentCta className="mt-[6cqw] min-h-[3.5rem] text-[clamp(1.15rem,4.8cqw,1.6rem)]">
             Города × Даты
-          </CtaButton>
+          </PaymentCta>
         </DarkPanel>
       </div>
     </section>

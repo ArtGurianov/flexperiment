@@ -31,8 +31,17 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} ${shafarik.variable} h-full antialiased bg-pattern bg-repeat`}
     >
-      <body className="min-h-full w-full max-w-lg mx-auto flex flex-col bg-site bg-cover bg-center bg-no-repeat bg-fixed">
-        {children}
+      {/* The centered column is this inner wrapper, not <body>. When a modal
+          dialog locks scroll, react-remove-scroll rewrites body's computed
+          auto margins into padding — with the column on <body> that meant
+          2x344px of padding against a max-w-lg cap, and since Tailwind sets
+          box-sizing: border-box, the content box collapsed and the whole page
+          jumped to the left edge. A full-width body has no auto margins to
+          convert, so the rewrite becomes a no-op. */}
+      <body className="min-h-full w-full flex flex-col">
+        <div className="mx-auto flex w-full max-w-lg flex-1 flex-col bg-site bg-cover bg-center bg-no-repeat bg-fixed">
+          {children}
+        </div>
       </body>
     </html>
   );
