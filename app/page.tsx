@@ -1,6 +1,7 @@
 import HeroSiberia from "@/components/HeroSiberia";
 import HeroTour from "@/components/HeroTour";
 import HeroVideo from "@/components/HeroVideo";
+import ProgramSection from "@/components/ProgramSection";
 import TeacherSection from "@/components/TeacherSection";
 import WorkshopIntro from "@/components/WorkshopIntro";
 
@@ -15,6 +16,7 @@ export default function Home() {
       <HeroVideo />
       <WorkshopIntro />
       <TeacherSection />
+      <ProgramSection />
     </main>
   );
 }
