@@ -1,10 +1,13 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
+import { useCallback, useRef, useState } from "react";
 
 import CtaButton from "@/components/CtaButton";
+import {
+  hidePaymentFailure,
+  showPaymentFailure,
+} from "@/components/paymentNoticeStore";
 import { cn } from "@/lib/cn";
 
 // Radix Dialog and vaul are only ever needed once someone reaches for the
@@ -18,11 +21,9 @@ const DialogDrawer = dynamic(() => import("@/components/DialogDrawer"), {
 
 const loadDialog = () => import("@/components/DialogDrawer");
 
-/** How long the failure notice stays up before clearing itself. */
-const ERROR_TIMEOUT_MS = 8000;
-
 // Isolates the open state to this leaf so the sections that host the CTA stay
-// server components.
+// server components. Failure presentation is deliberately not local — see
+// paymentNoticeStore, which all three CTAs share.
 export default function PaymentCta({
   children,
   className,
@@ -36,18 +37,9 @@ export default function PaymentCta({
   // soon as it is rendered, even closed.
   const [hasOpened, setHasOpened] = useState(false);
   const [isPending, setIsPending] = useState(false);
-  const [hasFailed, setHasFailed] = useState(false);
   // A ref rather than the state above: a second tap can land before React has
   // committed the pending render, and state would still read stale there.
   const inFlight = useRef(false);
-
-  // Clears itself so a stale failure cannot sit on screen indefinitely; a fresh
-  // attempt clears it immediately too.
-  useEffect(() => {
-    if (!hasFailed) return;
-    const timer = window.setTimeout(() => setHasFailed(false), ERROR_TIMEOUT_MS);
-    return () => window.clearTimeout(timer);
-  }, [hasFailed]);
 
   // Fetches the chunk on the intent signal that precedes the click, so the
   // dialog is usually already resolved by the time it is asked for. Only
@@ -64,7 +56,7 @@ export default function PaymentCta({
     if (inFlight.current) return;
     inFlight.current = true;
     setIsPending(true);
-    setHasFailed(false);
+    hidePaymentFailure();
 
     try {
       await loadDialog();
@@ -75,7 +67,7 @@ export default function PaymentCta({
       // all. The button returns to idle, so pressing again retries — and
       // `hasOpened` stays false, so nothing half-mounted is left behind.
       console.error("Не удалось загрузить диалог оплаты", error);
-      setHasFailed(true);
+      showPaymentFailure();
       setIsPending(false);
       inFlight.current = false;
       return;
@@ -107,30 +99,6 @@ export default function PaymentCta({
       >
         {children}
       </CtaButton>
-
-      {/* A fixed notice rather than something inline next to the button: the
-          three CTAs sit in a navbar chip, a panel and a full-width block, and
-          only the navbar one has as little as 8px of spare width at 320px —
-          anything in flow would reflow one of them. role="alert" announces it
-          without waiting for focus to move, and the copy names the retry, since
-          the button itself looks unchanged once it leaves the pending state.
-
-          Portalled to <body> because position:fixed is not enough on its own:
-          the navbar carries backdrop-blur, and a backdrop-filter makes that
-          element the containing block for fixed descendants — rendered in
-          place, this pinned itself 16px from the bottom of the 53px navbar
-          instead of the viewport. */}
-      {hasFailed &&
-        createPortal(
-          <div
-            role="alert"
-            className="fixed inset-x-4 bottom-4 z-[90] mx-auto max-w-md border-2 border-acid bg-ink px-4 py-3 text-center font-display text-[0.95rem] leading-snug uppercase text-acid"
-          >
-            Не удалось загрузить форму оплаты. Проверьте соединение и нажмите
-            кнопку ещё раз.
-          </div>,
-          document.body,
-        )}
 
       {hasOpened && (
         <DialogDrawer

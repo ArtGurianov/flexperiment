@@ -4,6 +4,7 @@ import HeroSiberia from "@/components/HeroSiberia";
 import HeroTour from "@/components/HeroTour";
 import HeroVideo from "@/components/HeroVideo";
 import Navbar from "@/components/Navbar";
+import PaymentNotice from "@/components/PaymentNotice";
 import ProgramSection from "@/components/ProgramSection";
 import Separator from "@/components/Separator";
 import TeacherSection from "@/components/TeacherSection";
@@ -68,6 +69,12 @@ export default function Home() {
         <Separator />
         <FaqSection />
       </main>
+
+      {/* Mounted once for the whole page. All three booking CTAs report a
+          failed dialog load through the shared store rather than each rendering
+          its own banner, which previously stacked two identical alerts — and
+          announced them twice — when more than one failed inside the timeout. */}
+      <PaymentNotice />
     </AssetPreloader>
   );
 }
