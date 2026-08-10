@@ -20,7 +20,7 @@ export default function HeroTour() {
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
         className="absolute inset-0 m-auto w-full"
-        src="https://zhjrb3dyh4.ufs.sh/f/kTOk4z0nYjRr7LZBCw6yRgj6TkaiSVF8XoC7ceNnW5bDm41B"
+        src="https://zhjrb3dyh4.ufs.sh/f/kTOk4z0nYjRrLKHTDQ8ApcsDhzCy5dPuUbw1BxYO0i3q8oNV"
         alt=""
       />
     </div>
