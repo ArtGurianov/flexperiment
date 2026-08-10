@@ -35,7 +35,7 @@ export default function WorkshopIntro() {
           {/* Width-constrained instead of hard line breaks, so the copy rewraps
               instead of breaking at odd points when the column narrows. */}
           <p className="mx-auto mt-[5cqw] max-w-[15.5em] text-[clamp(1.05rem,4.3cqw,1.4rem)] leading-[1.47] tracking-[0.015em]">
-            Мастер-классы по FLEXING — изоляции тела, иллюзии в танце,
+            Мастер-классы по FLEXING - изоляции тела, иллюзии в танце,
             импровизация и создание индивидуального стиля. Научись двигаться,
             как никто другой.
           </p>
