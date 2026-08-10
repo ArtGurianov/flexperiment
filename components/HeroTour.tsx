@@ -1,5 +1,7 @@
 import Image, { type StaticImageData } from "next/image";
 
+import HeroBackgroundVideo from "@/components/HeroBackgroundVideo";
+
 import hero1 from "@/public/hero1.webp";
 import hero2 from "@/public/hero2.webp";
 import hero3 from "@/public/hero3.webp";
@@ -76,19 +78,7 @@ export default function HeroTour() {
       </svg>
 
       <div className="relative w-full aspect-square overflow-hidden [clip-path:url(#hero-mask)]">
-        {/* data-hero-video is the handle AssetPreloader reads buffering
-            progress from — it watches this element instead of re-fetching the
-            URL, which would download the file twice. */}
-        <video
-          data-hero-video
-          preload="auto"
-          className="h-full w-full object-cover"
-          src="https://zhjrb3dyh4.ufs.sh/f/kTOk4z0nYjRrwE5REnNvr7CulqYDdzFVZUTmpAef0anscMBL"
-          autoPlay
-          loop
-          muted
-          playsInline
-        />
+        <HeroBackgroundVideo src="https://zhjrb3dyh4.ufs.sh/f/kTOk4z0nYjRrwE5REnNvr7CulqYDdzFVZUTmpAef0anscMBL" />
       </div>
 
       {/* Covers exactly the square above, so a percentage here means the same

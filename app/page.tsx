@@ -19,10 +19,12 @@ export default function Home() {
       <AssetPreloader />
 
       {/* Ahead of the navbar in the DOM so it is the very first tab stop.
-          Visible only while focused. */}
+          Visible only while focused, and above the loader's z-[100] — at z-50
+          it could take focus while sitting completely behind the overlay, which
+          is the one moment a keyboard user most wants a way out. */}
       <a
         href="#main"
-        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:bg-acid focus:px-4 focus:py-2 focus:font-display focus:text-ink focus:uppercase"
+        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[110] focus:bg-acid focus:px-4 focus:py-2 focus:font-display focus:text-ink focus:uppercase"
       >
         Перейти к содержанию
       </a>
@@ -35,7 +37,15 @@ export default function Home() {
       {/* overflow-x-clip rather than -hidden: clip does not turn the element
           into a scroll container and leaves the vertical axis alone, so
           position:sticky keeps working inside sections. */}
-      <main id="main" className="flex flex-1 flex-col overflow-x-clip">
+      {/* tabIndex -1 makes <main> a programmatic focus target. Without it the
+          skip link only moves the fragment: browsers scroll to a non-focusable
+          element but leave keyboard focus where it was, so the next Tab
+          continued through the navbar the link was meant to skip. */}
+      <main
+        id="main"
+        tabIndex={-1}
+        className="flex flex-1 flex-col overflow-x-clip outline-none"
+      >
         {/* The hero is artwork end to end, so the page had no h1 at all and
             its first heading was an h2 halfway down. This names the page for
             assistive tech and search without altering the composition. */}

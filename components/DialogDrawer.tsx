@@ -135,10 +135,25 @@ function DrawerVariant({
 
           {/* Drag-to-dismiss, outside tap and Escape all still work, but none
               of them is discoverable and only one of the three is available to
-              a keyboard-free touch user who does not know the gesture. */}
-          <DrawerPrimitive.Close aria-label="Закрыть" className={CLOSE}>
+              a keyboard-free touch user who does not know the gesture.
+
+              A plain button rather than DrawerPrimitive.Close, which vaul
+              re-exports from Radix and routes through its Root's onOpenChange.
+              That handler opens with `if (!dismissible && !open) return`
+              (vaul/dist/index.mjs:1344), so under preventOutsideClose the
+              primitive would render and announce "Закрыть" while doing
+              nothing. Calling onClose directly keeps the explicit control
+              working in both states, matching the desktop dialog — where
+              blocking is scoped to Escape and outside-interaction and the close
+              button is unaffected. */}
+          <button
+            type="button"
+            aria-label="Закрыть"
+            className={CLOSE}
+            onClick={onClose}
+          >
             <CloseIcon />
-          </DrawerPrimitive.Close>
+          </button>
         </DrawerPrimitive.Content>
       </DrawerPrimitive.Portal>
     </DrawerPrimitive.Root>

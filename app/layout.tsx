@@ -41,7 +41,13 @@ export const metadata: Metadata = {
     description: DESCRIPTION,
   },
   twitter: {
-    card: "summary_large_image",
+    // `summary` until there is an image to show. summary_large_image promises a
+    // 1200x630 card, and with neither openGraph.images nor an
+    // app/opengraph-image file the platform has nothing to fill it with — which
+    // renders worse than the text card this asks for. Add
+    // app/opengraph-image.png (Next wires it into both og:image and
+    // twitter:image) and switch this back.
+    card: "summary",
     title: TITLE,
     description: DESCRIPTION,
   },

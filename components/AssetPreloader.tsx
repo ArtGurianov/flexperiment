@@ -30,15 +30,28 @@ const SETTLE_MS = 250;
 /** Announcement granularity for screen readers — see the live region below. */
 const ANNOUNCE_STEP = 25;
 
+/** Fade duration of the overlay, mirrored from `duration-500` below. */
+const FADE_MS = 500;
+
 /**
- * Any of these means "this is as loaded as it is going to get without help".
- * `canplay` rather than `canplaythrough` because browsers stop buffering once
- * playback is safe. `suspend` matters on iOS: in Low Power Mode the browser
- * declines to buffer a preload="auto" source until a user gesture, so `canplay`
- * may never fire and the loader would otherwise sit out the whole safety
- * timeout for every visitor in that mode.
+ * `canplay` rather than `canplaythrough`, because browsers stop buffering once
+ * playback is safe and waiting for the whole file would stall here.
  */
-const SETTLE_EVENTS = ["canplay", "suspend", "error"] as const;
+const SETTLE_EVENTS = ["canplay", "error"] as const;
+
+/**
+ * `suspend` is the escape hatch for iOS Low Power Mode, where the browser
+ * declines to buffer a preload="auto" source until a user gesture — `canplay`
+ * never fires and the loader would otherwise sit out the whole safety timeout
+ * for every visitor in that mode.
+ *
+ * It is not iOS-specific though: desktop browsers fire it on any ordinary
+ * "buffered enough for now" pause, which can land just before `canplay`. Hence
+ * the grace period rather than settling outright — where `canplay` is coming it
+ * arrives well inside this window and wins, so the strict gate is preserved
+ * everywhere the browser is actually still loading.
+ */
+const SUSPEND_GRACE_MS = 600;
 
 export default function AssetPreloader() {
   const [progress, setProgress] = useState(0);
@@ -63,6 +76,8 @@ export default function AssetPreloader() {
     // first — previously the timeout stayed armed after a normal finish and
     // fired a second, redundant finish ten seconds later.
     let timeout = 0;
+    let hideTimer = 0;
+    let removeTimer = 0;
 
     const report = () => {
       if (cancelled || finished) return;
@@ -77,8 +92,17 @@ export default function AssetPreloader() {
       // stream rather than letting it read to the end behind the fade.
       controller.abort();
       setProgress(1);
-      window.setTimeout(() => {
-        if (!cancelled) setIsHidden(true);
+      hideTimer = window.setTimeout(() => {
+        if (cancelled) return;
+        setIsHidden(true);
+        // Unmounting hangs off `transitionend` below, which is the right signal
+        // when there is a transition — but `motion-reduce:transition-none`
+        // removes it outright, and a backgrounded tab can swallow it too. Left
+        // to the event alone the overlay stayed mounted forever for exactly the
+        // reduced-motion visitors the variant is there to serve.
+        removeTimer = window.setTimeout(() => {
+          if (!cancelled) setIsRemoved(true);
+        }, FADE_MS + 200);
       }, SETTLE_MS);
     };
 
@@ -133,14 +157,23 @@ export default function AssetPreloader() {
           return;
         }
 
+        let suspendTimer = 0;
+
         const settle = () => {
           fraction[slot] = 1;
           report();
+          window.clearTimeout(suspendTimer);
           video.removeEventListener("progress", update);
+          video.removeEventListener("suspend", onSuspend);
           for (const event of SETTLE_EVENTS) {
             video.removeEventListener(event, settle);
           }
           resolve();
+        };
+
+        const onSuspend = () => {
+          window.clearTimeout(suspendTimer);
+          suspendTimer = window.setTimeout(settle, SUSPEND_GRACE_MS);
         };
 
         const update = () => {
@@ -160,6 +193,7 @@ export default function AssetPreloader() {
           return;
         }
         video.addEventListener("progress", update);
+        video.addEventListener("suspend", onSuspend);
         for (const event of SETTLE_EVENTS) {
           video.addEventListener(event, settle);
         }
@@ -174,6 +208,8 @@ export default function AssetPreloader() {
     return () => {
       cancelled = true;
       window.clearTimeout(timeout);
+      window.clearTimeout(hideTimer);
+      window.clearTimeout(removeTimer);
       controller.abort();
     };
   }, []);

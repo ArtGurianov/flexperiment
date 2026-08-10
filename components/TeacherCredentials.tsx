@@ -11,7 +11,7 @@ const CREDENTIALS: { title: string; detail?: string }[] = [
   },
   {
     title: "Коллабы с топами",
-    detail: "CJ Rey, BSV Рова, Ghost, Chinx, Lil Buck, Klassic, Tafari и другие",
+    detail: "CJ Rey, BSV Poba, Ghost, Chinx, Lil Buck, Klassic, Tafari и другие",
   },
 ];
 
