@@ -40,7 +40,10 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="en"
-      className={`${geistSans.variable} ${geistMono.variable} ${shafarik.variable} h-full antialiased bg-pattern bg-repeat`}
+      // motion-safe, not a bare scroll-smooth: animated scrolling is a common
+      // vestibular trigger, and this variant drops back to an instant jump for
+      // anyone who has asked their OS to reduce motion.
+      className={`${geistSans.variable} ${geistMono.variable} ${shafarik.variable} h-full antialiased bg-pattern bg-repeat motion-safe:scroll-smooth`}
     >
       {/* The centered column is this inner wrapper, not <body>. When a modal
           dialog locks scroll, react-remove-scroll rewrites body's computed
