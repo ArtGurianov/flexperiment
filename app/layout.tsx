@@ -16,10 +16,19 @@ const geistMono = Geist_Mono({
 
 // Shafarik ships a single 400 weight, so any emphasis has to come from size or
 // colour rather than a bolder cut.
+//
+// adjustFontFallback is off because Shafarik is missing from the metrics table
+// Next ships (`calculateSizeAdjustValues` throws on it, where Geist and Inter
+// resolve). Next only consults that table when the flag is on, so leaving it
+// enabled just retried a lookup that always failed and logged a warning each
+// compile — the size-adjusted fallback was never produced either way. The
+// explicit list below is what the browser now falls back to instead.
 const shafarik = Shafarik({
   variable: "--font-shafarik",
   subsets: ["cyrillic", "latin"],
   weight: "400",
+  adjustFontFallback: false,
+  fallback: ["Georgia", "Times New Roman", "serif"],
 });
 
 export const metadata: Metadata = {

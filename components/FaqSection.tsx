@@ -61,8 +61,19 @@ export default function FaqSection() {
       <Accordion type="single" collapsible className="flex flex-col gap-[4cqw]">
         {FAQ.map(({ question, answer }) => (
           <AccordionItem key={question} value={question}>
+            {/* The marker is drawn rather than delegated to list-style: the
+                trigger is a <button>, and a real <ol>/<li> is invalid inside
+                one — Tailwind's Preflight also strips list markers globally,
+                so a bare list renders nothing. Matches the diamond used in
+                TeacherCredentials. */}
             <AccordionTrigger className="min-h-[4.5rem] text-[clamp(1rem,4.4cqw,1.5rem)]">
-              {question}
+              <span className="flex items-center gap-[0.7em] text-left">
+                <span
+                  aria-hidden="true"
+                  className="size-[0.24em] shrink-0 rotate-45 bg-bone"
+                />
+                {question}
+              </span>
             </AccordionTrigger>
             <AccordionContent className="text-[clamp(0.9rem,3.6cqw,1.15rem)]">
               {answer}

@@ -26,10 +26,18 @@ export default function TeacherCredentials({ className = "" }: { className?: str
           key={title}
           className="grid grid-cols-[0.7em_1fr] gap-x-[0.7em] text-[4.8cqw]"
         >
+          {/* Two elements on purpose. The shadow has to match the title's
+              `text-shadow: 2px 3px`, which is a screen-space offset — but a
+              box-shadow (or a filter on the rotated node itself) resolves in
+              the element's own coordinates and would come out thrown 45° off
+              with it. Rotating the inner square and filtering the unrotated
+              wrapper keeps the offset pointing the same way as the text's. */}
           <span
             aria-hidden="true"
-            className="mt-[0.5em] size-[0.42em] rotate-45 bg-acid"
-          />
+            className="mt-[0.5em] block drop-shadow-[2px_3px_0_#090909]"
+          >
+            <span className="block size-[0.42em] shrink-0 rotate-45 bg-acid" />
+          </span>
 
           <div>
             <h3 className="leading-[1.05] whitespace-nowrap uppercase text-acid [text-shadow:2px_3px_0_#090909]">
