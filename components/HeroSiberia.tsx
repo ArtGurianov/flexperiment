@@ -16,7 +16,7 @@ export default function HeroSiberia() {
         src={year2026}
         alt="2026"
         sizes="50vw"
-        className="h-auto w-1/2 self-end"
+        className="h-auto w-1/2 self-end -translate-y-1/3"
       />
     </section>
   );

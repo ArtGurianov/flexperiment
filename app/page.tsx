@@ -17,7 +17,6 @@ export default function Home() {
       <Navbar />
       <HeroTour />
       <HeroSiberia />
-      <Separator />
       <HeroVideo />
       <WorkshopIntro />
       <Separator />
