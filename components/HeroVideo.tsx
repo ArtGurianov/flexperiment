@@ -45,7 +45,7 @@ export default function HeroVideo() {
       <video
         ref={videoRef}
         className="h-full w-full object-cover"
-        src="https://zhjrb3dyh4.ufs.sh/f/kTOk4z0nYjRr8kW0TNEsMwcZpq1Dai2oXAgYWPIV0GOkKF64"
+        src="https://zhjrb3dyh4.ufs.sh/f/kTOk4z0nYjRrUO2jIMzYQNyfELxBMA1Vdw57mla3qKtz0Ipe"
         controls
         preload="metadata"
         playsInline
