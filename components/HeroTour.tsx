@@ -10,7 +10,7 @@ export default function HeroTour() {
       </svg>
       <video
         className="h-full w-full object-cover"
-        src="https://zhjrb3dyh4.ufs.sh/f/kTOk4z0nYjRrZFSYgyeqxCBNI6EiMXv1eJGbYLc2t5hjaTfS"
+        src="https://zhjrb3dyh4.ufs.sh/f/kTOk4z0nYjRrJRKAKB2wlSADbdTKz26jswt5GeQNr9nuy0FZ"
         autoPlay
         loop
         muted
