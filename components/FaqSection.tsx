@@ -7,7 +7,7 @@ import {
   AccordionTrigger,
 } from "@/components/Accordion";
 import PaymentCta from "@/components/PaymentCta";
-import footerOrnament from "@/public/footer.webp";
+import footerOrnament from "@/public/loader.webp";
 
 const FAQ = [
   {
