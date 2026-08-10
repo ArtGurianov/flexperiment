@@ -1,10 +1,23 @@
-import SlimeHorror from "@/components/SlimeHorror";
+import Image from "next/image";
+
+import year2026 from "@/public/2026.webp";
+import siberia from "@/public/siberia.webp";
 
 export default function HeroSiberia() {
   return (
     <section className="flex flex-col w-full items-center justify-center">
-      <SlimeHorror value="СИБИРЬ" className="w-full -rotate-12" color="#CAFF56" />
-      <SlimeHorror value="2026" className="w-1/2 self-end" color="#CAFF56" />
+      <Image
+        src={siberia}
+        alt="Сибирь"
+        sizes="100vw"
+        className="h-auto w-full -rotate-12"
+      />
+      <Image
+        src={year2026}
+        alt="2026"
+        sizes="50vw"
+        className="h-auto w-1/2 self-end"
+      />
     </section>
   );
 }
