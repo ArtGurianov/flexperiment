@@ -10,18 +10,11 @@ export default function HeroTour() {
       </svg>
       <video
         className="h-full w-full object-cover"
-        src="https://zhjrb3dyh4.ufs.sh/f/kTOk4z0nYjRrvILW2v3ZLDwEPYBzbgxfIXMFWvORT60A1Qqn"
+        src="https://zhjrb3dyh4.ufs.sh/f/kTOk4z0nYjRrZFSYgyeqxCBNI6EiMXv1eJGbYLc2t5hjaTfS"
         autoPlay
         loop
         muted
         playsInline
-      />
-      <div className="absolute inset-0 bg-lime-800/40" />
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img
-        className="absolute inset-0 m-auto w-full"
-        src="https://zhjrb3dyh4.ufs.sh/f/kTOk4z0nYjRrLKHTDQ8ApcsDhzCy5dPuUbw1BxYO0i3q8oNV"
-        alt=""
       />
     </div>
   );
