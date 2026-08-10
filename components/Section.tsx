@@ -37,7 +37,7 @@ export function SectionLabel({
   return (
     <h2
       className={cn(
-        "pr-[2cqw] text-right text-[clamp(1.15rem,5cqw,1.6rem)] leading-none uppercase text-acid",
+        "pr-[2cqw] text-right text-[clamp(1.15rem,5cqw,1.6rem)] leading-none uppercase text-acid/90",
         className,
       )}
       {...props}
