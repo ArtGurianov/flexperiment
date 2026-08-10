@@ -3,7 +3,9 @@
 import Image from "next/image";
 import { useEffect, useState } from "react";
 
-import loaderMark from "@/public/loader.webp";
+import loaderAcid from "@/public/loader-acid.webp";
+import loaderBack from "@/public/loader-back.webp";
+import loaderFront from "@/public/loader-front.webp";
 
 /**
  * Backgrounds referenced from globals.css. A CSS background image is only
@@ -159,23 +161,45 @@ export default function AssetPreloader() {
         isHidden ? "pointer-events-none opacity-0" : "opacity-100"
       }`}
     >
-      {/* `priority` makes Next emit a preload link for it. Worth it here: this
-          is the one thing visible while everything else is still downloading,
-          so discovering it late would leave the loader empty exactly when it
-          matters. */}
-      <Image
-        src={loaderMark}
-        alt=""
-        aria-hidden="true"
-        priority
-        sizes="112px"
-        className="h-32 w-32 animate-spin select-none [animation-duration:2.4s]"
-      />
+      {/* overflow-clip is belt-and-braces now that the fill is clipped in
+          place; kept because it costs nothing and, unlike overflow-hidden,
+          does not turn this into a scroll container. */}
+      <div className="relative w-[min(18rem,70vw)] overflow-clip">
+        {/* Back sits in normal flow — it is what gives the stack its height, so
+            the two absolute layers have a box to fill. */}
+        <Image
+          src={loaderBack}
+          alt=""
+          aria-hidden="true"
+          priority
+          sizes="288px"
+          className="h-auto w-full select-none"
+        />
 
-      <div className="h-1 w-40 overflow-hidden bg-acid/20">
-        <div
-          className="h-full bg-acid transition-[width] duration-200 ease-out"
-          style={{ width: `${Math.round(progress * 100)}%` }}
+        {/* Revealed in place with clip-path rather than slid in from the left.
+            Sliding leaks: loader-front is transparent around its ornament, so a
+            translated acid layer shows through that margin as a tail past the
+            frame's left tip — the container's overflow cannot stop it, because
+            the tail is still inside the container, just outside the frame.
+            Clipping the layer where it already sits keeps it registered with
+            the window and makes a stray tail impossible. */}
+        <Image
+          src={loaderAcid}
+          alt=""
+          aria-hidden="true"
+          priority
+          sizes="288px"
+          className="absolute inset-0 h-full w-full select-none transition-[clip-path] duration-200 ease-out"
+          style={{ clipPath: `inset(0 ${(1 - progress) * 100}% 0 0)` }}
+        />
+
+        <Image
+          src={loaderFront}
+          alt=""
+          aria-hidden="true"
+          priority
+          sizes="288px"
+          className="pointer-events-none absolute inset-0 h-full w-full select-none"
         />
       </div>
 
