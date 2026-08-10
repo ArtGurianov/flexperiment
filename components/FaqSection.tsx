@@ -36,7 +36,10 @@ export default function FaqSection() {
   return (
     /* No bottom padding — the footer bar is meant to sit flush against the
        section's bottom edge, which is also the page's. */
-    <section className="@container relative isolate flex min-h-[100svh] w-full flex-col overflow-hidden px-4 pt-10 font-display text-bone">
+    <section
+      id="faq"
+      className="@container relative isolate flex min-h-[100svh] w-full scroll-mt-14 flex-col overflow-hidden px-4 pt-10 font-display text-bone"
+    >
       <div className="flex justify-center">
         {/* Deliberately not full width — the CTA's narrowness against the
             near-edge-to-edge accordion below is what carries the composition. */}
@@ -102,7 +105,7 @@ export default function FaqSection() {
         alt=""
         aria-hidden="true"
         sizes="(min-width: 512px) 512px, 100vw"
-        className="pointer-events-none absolute right-0 bottom-0 -z-10 w-full max-w-none translate-x-1/2 translate-y-1/2 select-none"
+        className="pointer-events-none absolute right-0 bottom-0 -z-10 w-2/3 max-w-none translate-x-1/3 translate-y-1/3 select-none rotate-45"
       />
     </section>
   );

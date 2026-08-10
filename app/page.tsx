@@ -2,6 +2,7 @@ import FaqSection from "@/components/FaqSection";
 import HeroSiberia from "@/components/HeroSiberia";
 import HeroTour from "@/components/HeroTour";
 import HeroVideo from "@/components/HeroVideo";
+import Navbar from "@/components/Navbar";
 import ProgramSection from "@/components/ProgramSection";
 import Separator from "@/components/Separator";
 import TeacherSection from "@/components/TeacherSection";
@@ -13,6 +14,7 @@ export default function Home() {
     // a scroll container and leaves the vertical axis alone, so position:sticky
     // keeps working inside sections.
     <main className="flex flex-1 flex-col overflow-x-clip font-sans">
+      <Navbar />
       <HeroTour />
       <HeroSiberia />
       <Separator />

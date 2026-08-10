@@ -7,7 +7,12 @@ import nameArt from "@/public/name.webp";
 
 export default function TeacherSection() {
   return (
-    <section className="@container relative w-full overflow-hidden px-4 py-10 font-display text-bone">
+    /* scroll-mt keeps the sticky navbar from covering the heading when the
+       hash link lands here. */
+    <section
+      id="teacher"
+      className="@container relative w-full scroll-mt-14 overflow-hidden px-4 py-10 font-display text-bone"
+    >
       <header>
         <p className="mb-[3cqw] pr-[2%] text-right text-[clamp(1.15rem,5cqw,1.6rem)] leading-none uppercase text-acid">
           Преподаватель

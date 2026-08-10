@@ -21,7 +21,10 @@ const PRACTICE = [
 // a block's title and its panel.
 export default function ProgramSection() {
   return (
-    <section className="@container relative w-full overflow-hidden px-4 py-10 font-display text-bone">
+    <section
+      id="program"
+      className="@container relative w-full scroll-mt-14 overflow-hidden px-4 py-10 font-display text-bone"
+    >
       <h2 className="text-right text-[clamp(1.15rem,5cqw,1.6rem)] leading-none uppercase text-acid">
         Программа мастер-класса
       </h2>
