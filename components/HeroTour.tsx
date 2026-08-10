@@ -54,6 +54,16 @@ const IMAGE_SIZE = 0.25;
 const widthPercent = ({ width, height }: StaticImageData, weight = 1) =>
   IMAGE_SIZE * weight * Math.sqrt(width / height) * 100;
 
+/** Widest the column ever gets — Tailwind's max-w-lg, in px. */
+const COLUMN_MAX = 512;
+
+// The percentages above are of the hero, which is the column, not the viewport.
+// A bare `Nvw` therefore overstated the rendered width by the ratio of screen
+// to column and had the optimizer serving candidates several times too large on
+// a desktop screen.
+const sizesFor = (percent: number) =>
+  `(min-width: ${COLUMN_MAX}px) ${Math.ceil((percent / 100) * COLUMN_MAX)}px, ${Math.ceil(percent)}vw`;
+
 export default function HeroTour() {
   return (
     <section className="relative z-10 w-full">
@@ -86,21 +96,24 @@ export default function HeroTour() {
           on purpose — clip-path cuts every descendant, and these are meant to
           spill past the broken edge. */}
       <div className="pointer-events-none absolute inset-0">
-        {HERO_IMAGES.map(({ src, at, weight }) => (
-          <Image
-            key={src.src}
-            src={src}
-            alt=""
-            aria-hidden="true"
-            sizes={`${Math.ceil(widthPercent(src, weight))}vw`}
-            className="absolute h-auto -translate-x-1/2 -translate-y-1/2"
-            style={{
-              left: `${at[0] * 100}%`,
-              top: `${at[1] * 100}%`,
-              width: `${widthPercent(src, weight)}%`,
-            }}
-          />
-        ))}
+        {HERO_IMAGES.map(({ src, at, weight }) => {
+          const percent = widthPercent(src, weight);
+          return (
+            <Image
+              key={src.src}
+              src={src}
+              alt=""
+              aria-hidden="true"
+              sizes={sizesFor(percent)}
+              className="absolute h-auto -translate-x-1/2 -translate-y-1/2"
+              style={{
+                left: `${at[0] * 100}%`,
+                top: `${at[1] * 100}%`,
+                width: `${percent}%`,
+              }}
+            />
+          );
+        })}
       </div>
     </section>
   );

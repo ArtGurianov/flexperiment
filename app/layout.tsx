@@ -1,18 +1,7 @@
-import type { Metadata } from "next";
-import { Geist, Geist_Mono, Shafarik } from "next/font/google";
+import type { Metadata, Viewport } from "next";
+import { Shafarik } from "next/font/google";
 
-import AssetPreloader from "@/components/AssetPreloader";
 import "./globals.css";
-
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
 
 // Shafarik ships a single 400 weight, so any emphasis has to come from size or
 // colour rather than a bolder cut.
@@ -21,7 +10,7 @@ const geistMono = Geist_Mono({
 // Next ships (`calculateSizeAdjustValues` throws on it, where Geist and Inter
 // resolve). Next only consults that table when the flag is on, so leaving it
 // enabled just retried a lookup that always failed and logged a warning each
-// compile — the size-adjusted fallback was never produced either way. The
+// compile - the size-adjusted fallback was never produced either way. The
 // explicit list below is what the browser now falls back to instead.
 const shafarik = Shafarik({
   variable: "--font-shafarik",
@@ -31,23 +20,51 @@ const shafarik = Shafarik({
   fallback: ["Georgia", "Times New Roman", "serif"],
 });
 
+const SITE_URL = "https://flextatic.ru";
+const TITLE = "FLEXTATIC - мастер-классы по флексингу в Сибири, 2026";
+const DESCRIPTION =
+  "Тур мастер-классов Арта Гурьянова по FLEXING: изоляции тела, иллюзии в танце, импровизация и поиск собственного стиля. Для новичков и танцоров с опытом, растяжка не нужна.";
+
 export const metadata: Metadata = {
-  title: "Flextatic",
-  description: "Flextatic",
+  // Without metadataBase, Next resolves relative OG/Twitter asset paths against
+  // localhost in development and warns in production.
+  metadataBase: new URL(SITE_URL),
+  title: TITLE,
+  description: DESCRIPTION,
+  alternates: { canonical: "/" },
+  openGraph: {
+    type: "website",
+    locale: "ru_RU",
+    url: SITE_URL,
+    siteName: "FLEXTATIC",
+    title: TITLE,
+    description: DESCRIPTION,
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: TITLE,
+    description: DESCRIPTION,
+  },
+};
+
+export const viewport: Viewport = {
+  // Matches the page's own dark surface, so mobile browser chrome does not
+  // flash a light bar above a black page.
+  themeColor: "#12100e",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
-      lang="en"
+      lang="ru"
       // motion-safe, not a bare scroll-smooth: animated scrolling is a common
       // vestibular trigger, and this variant drops back to an instant jump for
       // anyone who has asked their OS to reduce motion.
-      className={`${geistSans.variable} ${geistMono.variable} ${shafarik.variable} h-full antialiased bg-pattern bg-repeat motion-safe:scroll-smooth`}
+      className={`${shafarik.variable} h-full antialiased bg-pattern bg-repeat motion-safe:scroll-smooth`}
     >
       {/* The centered column is this inner wrapper, not <body>. When a modal
           dialog locks scroll, react-remove-scroll rewrites body's computed
-          auto margins into padding — with the column on <body> that meant
+          auto margins into padding - with the column on <body> that meant
           2x344px of padding against a max-w-lg cap, and since Tailwind sets
           box-sizing: border-box, the content box collapsed and the whole page
           jumped to the left edge. A full-width body has no auto margins to
@@ -55,11 +72,12 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       <body className="min-h-full w-full flex flex-col">
         {/* React hoists these into <head>, so they land in the streamed HTML
             and the preload scanner issues the requests before it has parsed the
-            CSS that references them — and before it reaches the video element
+            CSS that references them - and before it reaches the video element
             further down the body. Referenced only as CSS backgrounds
             otherwise, neither would be discovered until its rule matched.
             Together they are ~71KB, far cheaper than the delay of finding them
-            late. */}
+            late. The preconnect opens the TLS connection to the video host in
+            parallel, so the <video> below does not pay for the handshake. */}
         <link rel="preload" as="image" href="/noize.webp" fetchPriority="high" />
         <link
           rel="preload"
@@ -67,7 +85,8 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           href="/background.webp"
           fetchPriority="high"
         />
-        <AssetPreloader />
+        <link rel="preconnect" href="https://zhjrb3dyh4.ufs.sh" />
+
         <div className="mx-auto flex w-full max-w-lg flex-1 flex-col bg-site bg-cover bg-center bg-no-repeat bg-fixed">
           {children}
         </div>

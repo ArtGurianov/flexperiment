@@ -1,4 +1,4 @@
-// A repeating CSS background rather than an <img>: at h-4 the band is a
+// A repeating CSS background rather than an <img>: at this height the band is a
 // texture, not a picture, so it should tile across the column instead of being
 // squashed to fit once. `auto 100%` scales each tile to the strip's height and
 // lets its width follow, which is what makes the repeat seamless at any width.

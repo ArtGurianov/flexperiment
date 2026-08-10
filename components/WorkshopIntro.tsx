@@ -2,6 +2,7 @@ import Image from "next/image";
 
 import DarkPanel from "@/components/DarkPanel";
 import PaymentCta from "@/components/PaymentCta";
+import Section from "@/components/Section";
 import body from "@/public/body.webp";
 
 // Type scales with `cqw` rather than `vw` because the page sits in a fixed
@@ -9,7 +10,7 @@ import body from "@/public/body.webp";
 // the column stayed 512px, blowing the headline out of its container.
 export default function WorkshopIntro() {
   return (
-    <section className="@container relative w-full overflow-hidden px-4 py-10 font-display text-bone">
+    <Section>
       <h2 className="relative z-30 text-center text-[clamp(1.75rem,8.6cqw,2.75rem)] leading-[1.3] tracking-[0.015em] uppercase text-acid [text-shadow:2px_3px_0_rgb(0_0_0_/_0.9),0_0_4px_rgb(202_255_86_/_0.25)]">
         Разблокируй новый уровень контроля над телом
       </h2>
@@ -45,6 +46,6 @@ export default function WorkshopIntro() {
           </PaymentCta>
         </DarkPanel>
       </div>
-    </section>
+    </Section>
   );
 }

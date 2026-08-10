@@ -8,19 +8,25 @@
   background-image: url("/noize.webp");
 }
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  /* Brand */
   --color-acid: #caff56;
+  /* The play glyph's resting state, one step down from --color-acid so the
+     hover to full acid reads as a lift rather than a colour change. */
+  --color-acid-dim: #b1e36d;
   --color-bone: #e9e4d3;
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+
+  /* Surfaces. --color-panel is the translucent slab shared by DarkPanel, the
+     accordion, the navbar and the footer; --color-ink is the opaque dark used
+     where something has to fully occlude the page (dialog, loader) or sit as
+     text on an acid fill. --color-shadow is the hard offset behind display
+     type. Tokens rather than repeated literals so all of them retune together. */
+  --color-panel: rgb(22 20 18 / 0.5);
+  --color-ink: #12100e;
+  --color-shadow: #0f0f0f;
+
   --font-display: var(--font-shafarik);
+
   --animate-accordion-down: accordion-down 220ms ease-out;
   --animate-accordion-up: accordion-up 220ms ease-out;
 }
@@ -47,21 +53,37 @@
   }
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* A fixed dark theme, not a themeable one. Declaring color-scheme keeps form
+   controls, scrollbars and the pre-paint canvas dark regardless of the OS
+   setting — previously the backing colour behind the noise pattern flipped
+   between white and near-black with prefers-color-scheme, which showed up as
+   bright gutters beside the column on wide screens for light-mode visitors. */
+:root {
+  color-scheme: dark;
 }
 
 html {
-  background-color: var(--background);
+  background-color: var(--color-ink);
 }
 
-/* Deliberately transparent: body now spans the full viewport, so an opaque
-   colour here would paint over the noise pattern on <html>. The column's own
-   backdrop lives on the centered wrapper in layout.tsx. */
+/* Deliberately transparent: body spans the full viewport, so an opaque colour
+   here would paint over the noise pattern on <html>. The column's own backdrop
+   lives on the centered wrapper in layout.tsx. */
 body {
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  color: var(--color-bone);
+}
+
+/* Radix drives the accordion open/close with CSS animations and the loader
+   fills with a clip-path transition. Anyone who has asked their OS to reduce
+   motion gets the same states, arrived at instantly. Scoped rather than a
+   blanket `* { animation: none }` so a future intentional animation has to opt
+   out on purpose. */
+@media (prefers-reduced-motion: reduce) {
+  [data-slot="accordion-content"] {
+    animation-duration: 1ms !important;
+  }
+
+  [data-slot="accordion-trigger"] svg {
+    transition-duration: 1ms !important;
+  }
 }

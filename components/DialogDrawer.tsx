@@ -18,8 +18,13 @@ export interface DialogDrawerProps {
   preventOutsideClose?: boolean;
 }
 
-const SURFACE = "flex flex-col bg-[#12100e] text-bone";
+const SURFACE = "flex flex-col bg-ink text-bone";
 const TITLE = "text-center font-display text-[1.6rem] leading-none uppercase text-acid";
+const CLOSE =
+  "absolute top-4 right-4 rounded-full p-1 text-acid transition-colors hover:bg-acid hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid";
+/** overscroll-contain stops a flick past the end of the body from chaining to
+ *  the page behind the modal, which on iOS also drags the whole document. */
+const BODY = "min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain";
 
 function CloseIcon() {
   return (
@@ -68,14 +73,9 @@ function DialogVariant({
             {`Диалог: ${title}`}
           </DialogPrimitive.Description>
 
-          <div className="min-h-0 flex-1 overflow-x-hidden overflow-y-auto">
-            {children}
-          </div>
+          <div className={BODY}>{children}</div>
 
-          <DialogPrimitive.Close
-            aria-label="Закрыть"
-            className="absolute top-4 right-4 rounded-full p-1 text-acid transition-colors hover:bg-acid hover:text-[#12100e] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid"
-          >
+          <DialogPrimitive.Close aria-label="Закрыть" className={CLOSE}>
             <CloseIcon />
           </DialogPrimitive.Close>
         </DialogPrimitive.Content>
@@ -110,7 +110,10 @@ function DrawerVariant({
         <DrawerPrimitive.Content
           className={cn(
             SURFACE,
-            "fixed inset-x-0 bottom-0 z-50 mt-24 max-h-[90dvh] rounded-t-3xl border-t-4 border-acid px-5 pb-6",
+            // The bottom padding clears the home indicator on notched phones,
+            // where the sheet's own bottom edge is under the system gesture
+            // area; max() keeps the original 1.5rem everywhere else.
+            "fixed inset-x-0 bottom-0 z-50 mt-24 max-h-[90dvh] rounded-t-3xl border-t-4 border-acid px-5 pb-[max(1.5rem,env(safe-area-inset-bottom))]",
             className,
           )}
         >
@@ -126,12 +129,16 @@ function DrawerVariant({
 
           {/* data-vaul-no-drag keeps a scroll gesture inside the body from
               being read as a drag-to-dismiss. */}
-          <div
-            data-vaul-no-drag
-            className="mt-4 min-h-0 flex-1 overflow-x-hidden overflow-y-auto"
-          >
+          <div data-vaul-no-drag className={cn("mt-4", BODY)}>
             {children}
           </div>
+
+          {/* Drag-to-dismiss, outside tap and Escape all still work, but none
+              of them is discoverable and only one of the three is available to
+              a keyboard-free touch user who does not know the gesture. */}
+          <DrawerPrimitive.Close aria-label="Закрыть" className={CLOSE}>
+            <CloseIcon />
+          </DrawerPrimitive.Close>
         </DrawerPrimitive.Content>
       </DrawerPrimitive.Portal>
     </DrawerPrimitive.Root>

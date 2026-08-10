@@ -27,6 +27,18 @@ const IMAGE_ASSETS = [
 const SAFETY_TIMEOUT_MS = 10000;
 /** Lets the bar reach 100% before the overlay fades, rather than cutting away. */
 const SETTLE_MS = 250;
+/** Announcement granularity for screen readers — see the live region below. */
+const ANNOUNCE_STEP = 25;
+
+/**
+ * Any of these means "this is as loaded as it is going to get without help".
+ * `canplay` rather than `canplaythrough` because browsers stop buffering once
+ * playback is safe. `suspend` matters on iOS: in Low Power Mode the browser
+ * declines to buffer a preload="auto" source until a user gesture, so `canplay`
+ * may never fire and the loader would otherwise sit out the whole safety
+ * timeout for every visitor in that mode.
+ */
+const SETTLE_EVENTS = ["canplay", "suspend", "error"] as const;
 
 export default function AssetPreloader() {
   const [progress, setProgress] = useState(0);
@@ -35,20 +47,35 @@ export default function AssetPreloader() {
 
   useEffect(() => {
     let cancelled = false;
+    // Latches on the first finish() so nothing can move the bar afterwards.
+    // Without it the safety timeout could push the bar to 100% and a still-open
+    // stream would then report() a lower fraction, running it backwards during
+    // the fade.
+    let finished = false;
 
     // One slot per asset holding its own 0..1 fraction. Averaging fractions
     // rather than summing bytes is what lets a 29MB video and a 21KB image
     // share a bar without the image being invisible on it.
     const TASK_COUNT = IMAGE_ASSETS.length + 1;
     const fraction = new Array<number>(TASK_COUNT).fill(0);
+    const controller = new AbortController();
+    // Declared up front so finish() can clear it whichever path gets there
+    // first — previously the timeout stayed armed after a normal finish and
+    // fired a second, redundant finish ten seconds later.
+    let timeout = 0;
 
     const report = () => {
-      if (cancelled) return;
+      if (cancelled || finished) return;
       setProgress(fraction.reduce((a, b) => a + b, 0) / TASK_COUNT);
     };
 
     const finish = () => {
-      if (cancelled) return;
+      if (cancelled || finished) return;
+      finished = true;
+      window.clearTimeout(timeout);
+      // Nothing else is waited on past this point, so drop any still-open
+      // stream rather than letting it read to the end behind the fade.
+      controller.abort();
       setProgress(1);
       window.setTimeout(() => {
         if (!cancelled) setIsHidden(true);
@@ -57,7 +84,7 @@ export default function AssetPreloader() {
 
     const loadImage = async (url: string, slot: number) => {
       try {
-        const res = await fetch(url);
+        const res = await fetch(url, { signal: controller.signal });
         const length = Number(res.headers.get("content-length"));
 
         // No Content-Length or no stream means nothing to measure, so the
@@ -78,6 +105,12 @@ export default function AssetPreloader() {
           fraction[slot] = Math.min(1, received / length);
           report();
         }
+      } catch {
+        // Swallowed rather than rethrown, and this is the whole point of the
+        // catch: a rejection here used to propagate out of Promise.all, so the
+        // `.then(finish)` below never ran and an offline or blocked request
+        // held the page behind the loader for the full safety timeout — the
+        // exact outcome the `finally` was written to prevent.
       } finally {
         // Failures count as complete: a 404 or blocked request must never hold
         // the page hostage behind the loader.
@@ -91,7 +124,8 @@ export default function AssetPreloader() {
     // fetch() would download all 29MB a second time instead of priming it.
     const trackVideo = (slot: number) =>
       new Promise<void>((resolve) => {
-        const video = document.querySelector<HTMLVideoElement>("[data-hero-video]");
+        const video =
+          document.querySelector<HTMLVideoElement>("[data-hero-video]");
         if (!video) {
           fraction[slot] = 1;
           report();
@@ -103,15 +137,19 @@ export default function AssetPreloader() {
           fraction[slot] = 1;
           report();
           video.removeEventListener("progress", update);
-          video.removeEventListener("canplay", settle);
-          video.removeEventListener("error", settle);
+          for (const event of SETTLE_EVENTS) {
+            video.removeEventListener(event, settle);
+          }
           resolve();
         };
 
         const update = () => {
           const { buffered, duration } = video;
           if (duration > 0 && buffered.length > 0) {
-            fraction[slot] = Math.min(1, buffered.end(buffered.length - 1) / duration);
+            fraction[slot] = Math.min(
+              1,
+              buffered.end(buffered.length - 1) / duration,
+            );
             report();
           }
         };
@@ -122,34 +160,40 @@ export default function AssetPreloader() {
           return;
         }
         video.addEventListener("progress", update);
-        // `canplay` rather than `canplaythrough`: browsers stop buffering once
-        // playback is safe, so waiting for the whole file would stall here.
-        video.addEventListener("canplay", settle);
-        video.addEventListener("error", settle);
+        for (const event of SETTLE_EVENTS) {
+          video.addEventListener(event, settle);
+        }
       });
 
-    const timeout = window.setTimeout(finish, SAFETY_TIMEOUT_MS);
+    timeout = window.setTimeout(finish, SAFETY_TIMEOUT_MS);
     void Promise.all([
       ...IMAGE_ASSETS.map(loadImage),
       trackVideo(IMAGE_ASSETS.length),
-    ]).then(finish);
+    ]).then(finish, finish);
 
     return () => {
       cancelled = true;
       window.clearTimeout(timeout);
+      controller.abort();
     };
   }, []);
 
   // Unmounted only after the fade finishes, so it can never intercept a click.
   if (isRemoved) return null;
 
+  const percent = Math.round(progress * 100);
+
   return (
     <div
       role="status"
       aria-live="polite"
       aria-hidden={isHidden}
-      onTransitionEnd={() => {
-        if (isHidden) setIsRemoved(true);
+      onTransitionEnd={(event) => {
+        // transitionend bubbles, and the acid layer below runs its own
+        // clip-path transition inside this subtree. Without the target check
+        // the removal would depend on that transition finishing before the
+        // settle delay rather than on this element's own fade.
+        if (isHidden && event.target === event.currentTarget) setIsRemoved(true);
       }}
       // Same repeating noise as <html>, so the loader and the page share one
       // surface and the handover is seamless. The solid colour underneath is
@@ -157,7 +201,7 @@ export default function AssetPreloader() {
       // assets being fetched, so without a background-color the overlay would
       // be transparent for the first moments and show the page it is meant to
       // be covering.
-      className={`fixed inset-0 z-[100] flex flex-col items-center justify-center gap-4 bg-[#12100e] bg-pattern bg-repeat font-display transition-opacity duration-500 ${
+      className={`fixed inset-0 z-[100] flex flex-col items-center justify-center gap-4 bg-ink bg-pattern bg-repeat font-display transition-opacity duration-500 motion-reduce:transition-none ${
         isHidden ? "pointer-events-none opacity-0" : "opacity-100"
       }`}
     >
@@ -171,7 +215,8 @@ export default function AssetPreloader() {
           src={loaderBack}
           alt=""
           aria-hidden="true"
-          priority
+          loading="eager"
+          fetchPriority="high"
           sizes="288px"
           className="h-auto w-full select-none"
         />
@@ -187,9 +232,10 @@ export default function AssetPreloader() {
           src={loaderAcid}
           alt=""
           aria-hidden="true"
-          priority
+          loading="eager"
+          fetchPriority="high"
           sizes="288px"
-          className="absolute inset-0 h-full w-full select-none transition-[clip-path] duration-200 ease-out"
+          className="absolute inset-0 h-full w-full select-none transition-[clip-path] duration-200 ease-out motion-reduce:transition-none"
           style={{ clipPath: `inset(0 ${(1 - progress) * 100}% 0 0)` }}
         />
 
@@ -197,13 +243,19 @@ export default function AssetPreloader() {
           src={loaderFront}
           alt=""
           aria-hidden="true"
-          priority
+          loading="eager"
+          fetchPriority="high"
           sizes="288px"
           className="pointer-events-none absolute inset-0 h-full w-full select-none"
         />
       </div>
 
-      <span className="sr-only">{`Загрузка ${Math.round(progress * 100)}%`}</span>
+      {/* Quantised to 25% steps. A polite live region re-announces whenever its
+          text changes, and a byte-by-byte percentage changes on nearly every
+          frame — which reads out as an unbroken stream of "Загрузка N %". */}
+      <span className="sr-only">
+        {`Загрузка ${Math.floor(percent / ANNOUNCE_STEP) * ANNOUNCE_STEP}%`}
+      </span>
     </div>
   );
 }

@@ -6,7 +6,9 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "@/components/Accordion";
+import Diamond from "@/components/Diamond";
 import PaymentCta from "@/components/PaymentCta";
+import Section, { SectionLabel } from "@/components/Section";
 import footerOrnament from "@/public/footer.webp";
 
 const FAQ = [
@@ -21,7 +23,7 @@ const FAQ = [
       "Отлично. Тебе не нужно переучиваться или отказываться от своего стиля. Флексинг даст новые принципы работы с телом, изоляциями и иллюзиями, которые можно добавить в хип-хоп, контемп, вог и другие направления.",
   },
   {
-    question: "Я дерево... Нужна ли растяжка?",
+    question: "Я дерево… Нужна ли растяжка?",
     answer:
       "Нет. Шпагаты и специальная растяжка не нужны. Мы работаем прежде всего с контролем тела, суставами, изоляциями и координацией. Все упражнения можно выполнять в комфортной для себя амплитуде.",
   },
@@ -42,10 +44,7 @@ export default function FaqSection() {
        stays tall — on a phone that left 150-220px of dead space above the
        footer. This is the last section of a page that always exceeds one
        viewport, so the footer reaches the document bottom regardless. */
-    <section
-      id="faq"
-      className="@container relative isolate flex w-full scroll-mt-14 flex-col overflow-hidden px-4 pt-10 font-display text-bone"
-    >
+    <Section id="faq" className="isolate flex flex-col pb-0">
       <div className="flex justify-center">
         {/* Deliberately not full width — the CTA's narrowness against the
             near-edge-to-edge accordion below is what carries the composition. */}
@@ -54,23 +53,16 @@ export default function FaqSection() {
         </PaymentCta>
       </div>
 
-      <h2 className="mt-[10cqw] mb-[5cqw] pr-[2cqw] text-right text-[clamp(1.15rem,5cqw,1.6rem)] leading-none uppercase text-acid">
-        Вопросы
-      </h2>
+      <SectionLabel className="mt-[10cqw] mb-[5cqw]">Вопросы</SectionLabel>
 
       <Accordion type="single" collapsible className="flex flex-col gap-[4cqw]">
         {FAQ.map(({ question, answer }) => (
           <AccordionItem key={question} value={question}>
-            {/* The marker is drawn rather than delegated to list-style: the
-                trigger is a <button>, and a real <ol>/<li> is invalid inside
-                one — Tailwind's Preflight also strips list markers globally,
-                so a bare list renders nothing. Matches the diamond used in
-                TeacherCredentials. */}
             <AccordionTrigger className="min-h-[4.5rem] text-[clamp(1rem,4.4cqw,1.5rem)]">
               <span className="flex items-center gap-[0.7em] text-left">
-                <span
-                  aria-hidden="true"
-                  className="size-[0.24em] shrink-0 rotate-45 bg-bone"
+                <Diamond
+                  className="size-[0.24em] bg-bone"
+                  wrapperClassName="shrink-0"
                 />
                 {question}
               </span>
@@ -84,7 +76,7 @@ export default function FaqSection() {
 
       {/* Wrapping is left to CSS apart from the one conceptual break after the
           opening line, so the quote reflows instead of breaking at odd points. */}
-      <p className="mx-auto mt-[11cqw] max-w-[22em] text-center text-[clamp(1.05rem,4.4cqw,1.5rem)] leading-[1.5] text-acid [text-shadow:2px_3px_0_#111]">
+      <p className="mx-auto mt-[11cqw] max-w-[22em] text-center text-[clamp(1.05rem,4.4cqw,1.5rem)] leading-[1.5] text-acid [text-shadow:2px_3px_0_var(--color-shadow)]">
         «Тебя не учат танцевать как я.
         <br />
         Я учу тебя находить то, как можешь двигаться ты. Это мастер-класс по
@@ -94,7 +86,7 @@ export default function FaqSection() {
       {/* -mx-4 cancels the section's horizontal padding so the bar spans the
           full column while its own px-4 keeps the text off the edges. The top
           margin is a fixed gap now that no spacer sets the distance. */}
-      <footer className="relative z-30 -mx-4 mt-[10cqw] flex flex-wrap items-center justify-between gap-x-4 gap-y-2 bg-[rgb(22_20_18_/_0.5)] px-4 py-3 text-[clamp(0.7rem,2.7cqw,0.9rem)] leading-tight uppercase">
+      <footer className="relative z-30 -mx-4 mt-[10cqw] flex flex-wrap items-center justify-between gap-x-4 gap-y-2 bg-panel px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] text-[clamp(0.7rem,2.7cqw,0.9rem)] leading-tight uppercase">
         <span>ИП Гурьянов Арт Артурович</span>
         <a href="/offer" className="underline-offset-4 hover:underline">
           Оферта
@@ -118,9 +110,9 @@ export default function FaqSection() {
         src={footerOrnament}
         alt=""
         aria-hidden="true"
-        sizes="(min-width: 512px) 512px, 100vw"
+        sizes="(min-width: 512px) 341px, 67vw"
         className="pointer-events-none absolute right-0 bottom-0 -z-10 w-2/3 max-w-none translate-x-1/3 translate-y-1/3 select-none rotate-45"
       />
-    </section>
+    </Section>
   );
 }

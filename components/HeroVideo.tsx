@@ -34,7 +34,11 @@ function enterFullscreen(video: HTMLVideoElement) {
 
 export default function HeroVideo() {
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [isPlaying, setIsPlaying] = useState(false);
+  // Latches on the first play rather than tracking the live playing state. The
+  // overlay covers the whole element, native controls included, so bringing it
+  // back on pause put the controls out of reach exactly when someone wanted to
+  // scrub or change the volume.
+  const [hasStarted, setHasStarted] = useState(false);
 
   return (
     <section className="relative w-full aspect-video overflow-hidden">
@@ -45,18 +49,18 @@ export default function HeroVideo() {
         controls
         preload="metadata"
         playsInline
-        onPlay={(event) => {
-          setIsPlaying(true);
-          // Covers a play started from the native controls rather than the
-          // overlay. Browsers still hold transient activation from that click,
-          // so the request is normally honoured.
-          enterFullscreen(event.currentTarget);
-        }}
-        onPause={() => setIsPlaying(false)}
+        // Deliberately does not request fullscreen. Fullscreen belongs to the
+        // explicit "watch" gesture on the overlay below; requesting it from
+        // every play event also yanked the user back into fullscreen when they
+        // exited it and pressed play again to resume inline.
+        onPlay={() => setHasStarted(true)}
       />
       <button
         type="button"
-        aria-label="Play video"
+        aria-label="Смотреть видео"
+        // Faded out but still in the DOM, so without this it stays a tab stop
+        // and a screen-reader target sitting invisibly over the player.
+        inert={hasStarted}
         onClick={() => {
           const video = videoRef.current;
           if (!video) return;
@@ -68,12 +72,12 @@ export default function HeroVideo() {
           // before that rejects it with a harmless AbortError.
           video.play().catch(() => {});
         }}
-        className={`group absolute inset-0 flex cursor-pointer items-center justify-center bg-black transition-opacity duration-500 ${
-          isPlaying ? "pointer-events-none opacity-0" : "opacity-100"
+        className={`group absolute inset-0 flex cursor-pointer items-center justify-center bg-black transition-opacity duration-500 motion-reduce:transition-none ${
+          hasStarted ? "pointer-events-none opacity-0" : "opacity-100"
         }`}
       >
         <svg
-          className="h-32 w-32 text-[#B1E36D] transition-colors duration-200 group-hover:text-[#CAFF56]"
+          className="h-32 w-32 text-acid-dim transition-colors duration-200 group-hover:text-acid motion-reduce:transition-none"
           viewBox="0 0 24 24"
           fill="currentColor"
           aria-hidden="true"

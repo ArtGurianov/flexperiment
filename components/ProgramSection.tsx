@@ -1,4 +1,5 @@
 import ProgramBlock from "@/components/ProgramBlock";
+import Section, { SectionLabel } from "@/components/Section";
 import practiceItem from "@/public/practice-item.webp";
 import practiceTitle from "@/public/practice-title.webp";
 import theoryItem from "@/public/theory-item.webp";
@@ -21,13 +22,8 @@ const PRACTICE = [
 // a block's title and its panel.
 export default function ProgramSection() {
   return (
-    <section
-      id="program"
-      className="@container relative w-full scroll-mt-14 overflow-hidden px-4 py-10 font-display text-bone"
-    >
-      <h2 className="text-right text-[clamp(1.15rem,5cqw,1.6rem)] leading-none uppercase text-acid">
-        Программа мастер-класса
-      </h2>
+    <Section id="program">
+      <SectionLabel>Программа мастер-класса</SectionLabel>
 
       <ProgramBlock
         className="mt-[7cqw]"
@@ -48,6 +44,6 @@ export default function ProgramSection() {
         itemSizes="(min-width: 512px) 240px, 50vw"
         steps={PRACTICE}
       />
-    </section>
+    </Section>
   );
 }

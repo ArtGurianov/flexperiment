@@ -22,34 +22,36 @@ const WINDOW_SIZES_MAP: Record<Breakpoint, number> = {
   [BREAKPOINTS.xxl]: 1536,
 };
 
-function subscribe(onChange: () => void) {
-  window.addEventListener("resize", onChange);
-  return () => window.removeEventListener("resize", onChange);
-}
-
 /**
- * Copied in rather than installed, keeping upstream's API and its `width >
- * breakpoint` comparison exactly.
+ * Copied in rather than installed, keeping upstream's API.
  *
- * The implementation differs: upstream tracks width in state and writes it from
- * an effect, which this repo's `react-hooks/set-state-in-effect` rule rejects
- * outright. Reading through `useSyncExternalStore` avoids the effect entirely
- * and is tearing-safe. Snapshotting the *boolean* rather than the width also
- * removes the need for upstream's 150ms resize throttle: React bails out of
- * re-rendering when a snapshot is `Object.is`-equal, so a resize only costs a
- * render on the frame the breakpoint is actually crossed.
+ * The implementation differs twice over. Upstream tracks width in state and
+ * writes it from an effect, which this repo's `react-hooks/set-state-in-effect`
+ * rule rejects outright; reading through `useSyncExternalStore` avoids the
+ * effect entirely and is tearing-safe. And the comparison is `matchMedia`
+ * rather than upstream's `window.innerWidth > breakpoint`: `>` puts a viewport
+ * of exactly 640px on the *narrow* side while Tailwind's own `sm:` utilities —
+ * which are `min-width: 640px` — are already applying, so the two disagreed on
+ * that single width. matchMedia also fires only when the query flips, instead
+ * of on every resize event, which is what let upstream's 150ms throttle go.
  *
  * The server snapshot is `false`, so SSR and first paint take the narrow
  * branch. Safe for a dialog that mounts closed — nothing is on screen before
  * hydration corrects it.
  */
 export const useBreakpoint = (targetBreakpoint: Breakpoint) => {
-  const threshold = WINDOW_SIZES_MAP[targetBreakpoint];
+  const query = `(min-width: ${WINDOW_SIZES_MAP[targetBreakpoint]}px)`;
 
-  const getSnapshot = useCallback(
-    () => window.innerWidth > threshold,
-    [threshold],
+  const subscribe = useCallback(
+    (onChange: () => void) => {
+      const list = window.matchMedia(query);
+      list.addEventListener("change", onChange);
+      return () => list.removeEventListener("change", onChange);
+    },
+    [query],
   );
+
+  const getSnapshot = useCallback(() => window.matchMedia(query).matches, [query]);
 
   return useSyncExternalStore(subscribe, getSnapshot, () => false);
 };

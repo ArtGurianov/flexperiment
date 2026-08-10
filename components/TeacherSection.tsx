@@ -1,22 +1,16 @@
 import Image from "next/image";
 
 import DarkPanel from "@/components/DarkPanel";
+import Section, { SectionLabel } from "@/components/Section";
 import TeacherCredentials from "@/components/TeacherCredentials";
 import TeacherHead from "@/components/TeacherHead";
 import nameArt from "@/public/name.webp";
 
 export default function TeacherSection() {
   return (
-    /* scroll-mt keeps the sticky navbar from covering the heading when the
-       hash link lands here. */
-    <section
-      id="teacher"
-      className="@container relative w-full scroll-mt-14 overflow-hidden px-4 py-10 font-display text-bone"
-    >
+    <Section id="teacher">
       <header>
-        <p className="mb-[3cqw] pr-[2%] text-right text-[clamp(1.15rem,5cqw,1.6rem)] leading-none uppercase text-acid">
-          Преподаватель
-        </p>
+        <SectionLabel className="mb-[3cqw]">Преподаватель</SectionLabel>
 
         {/* The lettering only occupies 32.5%-72.5% of this file's height, so at
             w-full it would open ~52px of phantom gap above and 43px below. The
@@ -48,6 +42,6 @@ export default function TeacherSection() {
         <TeacherCredentials />
         <TeacherHead className="w-full" />
       </div>
-    </section>
+    </Section>
   );
 }
