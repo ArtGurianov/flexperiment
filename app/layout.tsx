@@ -41,15 +41,18 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           jumped to the left edge. A full-width body has no auto margins to
           convert, so the rewrite becomes a no-op. */}
       <body className="min-h-full w-full flex flex-col">
-        {/* React hoists this into <head>, so it lands in the streamed HTML and
-            the preload scanner issues the request before it has parsed the CSS
-            that references the image — and before it reaches the video element
-            further down the body. Referenced only as a CSS background
-            otherwise, it would not be discovered until the rule matched. */}
+        {/* React hoists these into <head>, so they land in the streamed HTML
+            and the preload scanner issues the requests before it has parsed the
+            CSS that references them — and before it reaches the video element
+            further down the body. Referenced only as CSS backgrounds
+            otherwise, neither would be discovered until its rule matched.
+            Together they are ~71KB, far cheaper than the delay of finding them
+            late. */}
+        <link rel="preload" as="image" href="/noize.webp" fetchPriority="high" />
         <link
           rel="preload"
           as="image"
-          href="/noize.webp"
+          href="/background.webp"
           fetchPriority="high"
         />
         <AssetPreloader />
