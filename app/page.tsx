@@ -11,13 +11,12 @@ import WorkshopIntro from "@/components/WorkshopIntro";
 
 export default function Home() {
   return (
-    <>
-      {/* Lives on the page rather than in the root layout: it gates on
-          [data-hero-video], which only this route renders, so running it
-          layout-wide meant every other route — 404s included — sat behind a
-          loader waiting for a video that was never there. */}
-      <AssetPreloader />
-
+    // Lives on the page rather than in the root layout: it gates on
+    // [data-hero-video], which only this route renders, so running it
+    // layout-wide meant every other route — 404s included — sat behind a loader
+    // waiting for a video that was never there. It wraps the page rather than
+    // sitting beside it so it can inert what it covers.
+    <AssetPreloader>
       {/* Ahead of the navbar in the DOM so it is the very first tab stop.
           Visible only while focused, and above the loader's z-[100] — at z-50
           it could take focus while sitting completely behind the overlay, which
@@ -64,6 +63,6 @@ export default function Home() {
         <Separator />
         <FaqSection />
       </main>
-    </>
+    </AssetPreloader>
   );
 }

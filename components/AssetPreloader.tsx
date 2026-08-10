@@ -1,7 +1,7 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 
 import loaderAcid from "@/public/loader-acid.webp";
 import loaderBack from "@/public/loader-back.webp";
@@ -53,7 +53,13 @@ const SETTLE_EVENTS = ["canplay", "error"] as const;
  */
 const SUSPEND_GRACE_MS = 600;
 
-export default function AssetPreloader() {
+export default function AssetPreloader({
+  children,
+}: {
+  /** The page itself. Held here so the overlay can inert it while it is
+   *  covered — see the wrapper in the return below. */
+  children: ReactNode;
+}) {
   const [progress, setProgress] = useState(0);
   const [isHidden, setIsHidden] = useState(false);
   const [isRemoved, setIsRemoved] = useState(false);
@@ -177,6 +183,12 @@ export default function AssetPreloader() {
         };
 
         const update = () => {
+          // Data is arriving again, so the pause that armed the escape hatch is
+          // over — otherwise a browser that suspended and then resumed would
+          // still settle 600ms later, mid-download. A later `suspend` re-arms
+          // it, so the Low Power case stays covered.
+          window.clearTimeout(suspendTimer);
+
           const { buffered, duration } = video;
           if (duration > 0 && buffered.length > 0) {
             fraction[slot] = Math.min(
@@ -214,84 +226,110 @@ export default function AssetPreloader() {
     };
   }, []);
 
-  // Unmounted only after the fade finishes, so it can never intercept a click.
-  if (isRemoved) return null;
-
   const percent = Math.round(progress * 100);
 
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      aria-hidden={isHidden}
-      onTransitionEnd={(event) => {
-        // transitionend bubbles, and the acid layer below runs its own
-        // clip-path transition inside this subtree. Without the target check
-        // the removal would depend on that transition finishing before the
-        // settle delay rather than on this element's own fade.
-        if (isHidden && event.target === event.currentTarget) setIsRemoved(true);
-      }}
-      // Same repeating noise as <html>, so the loader and the page share one
-      // surface and the handover is seamless. The solid colour underneath is
-      // load-bearing rather than decorative: the pattern is itself one of the
-      // assets being fetched, so without a background-color the overlay would
-      // be transparent for the first moments and show the page it is meant to
-      // be covering.
-      className={`fixed inset-0 z-[100] flex flex-col items-center justify-center gap-4 bg-ink bg-pattern bg-repeat font-display transition-opacity duration-500 motion-reduce:transition-none ${
-        isHidden ? "pointer-events-none opacity-0" : "opacity-100"
-      }`}
-    >
-      {/* overflow-clip is belt-and-braces now that the fill is clipped in
-          place; kept because it costs nothing and, unlike overflow-hidden,
-          does not turn this into a scroll container. */}
-      <div className="relative w-[min(18rem,70vw)] overflow-clip">
-        {/* Back sits in normal flow — it is what gives the stack its height, so
-            the two absolute layers have a box to fill. */}
-        <Image
-          src={loaderBack}
-          alt=""
-          aria-hidden="true"
-          loading="eager"
-          fetchPriority="high"
-          sizes="288px"
-          className="h-auto w-full select-none"
-        />
+    <>
+      {/* The page is behind an opaque overlay, so it must not be reachable by
+          keyboard either — otherwise Tab walked an invisible focus ring through
+          a navbar and four accordions nobody could see. `inert` lifts the
+          moment the fade starts, in step with the overlay's own
+          pointer-events-none, so the page never feels locked once it is
+          visible.
 
-        {/* Revealed in place with clip-path rather than slid in from the left.
-            Sliding leaks: loader-front is transparent around its ornament, so a
-            translated acid layer shows through that margin as a tail past the
-            frame's left tip — the container's overflow cannot stop it, because
-            the tail is still inside the container, just outside the frame.
-            Clipping the layer where it already sits keeps it registered with
-            the window and makes a stray tail impossible. */}
-        <Image
-          src={loaderAcid}
-          alt=""
-          aria-hidden="true"
-          loading="eager"
-          fetchPriority="high"
-          sizes="288px"
-          className="absolute inset-0 h-full w-full select-none transition-[clip-path] duration-200 ease-out motion-reduce:transition-none"
-          style={{ clipPath: `inset(0 ${(1 - progress) * 100}% 0 0)` }}
-        />
-
-        <Image
-          src={loaderFront}
-          alt=""
-          aria-hidden="true"
-          loading="eager"
-          fetchPriority="high"
-          sizes="288px"
-          className="pointer-events-none absolute inset-0 h-full w-full select-none"
-        />
+          `display: contents` keeps this wrapper out of layout entirely: nav and
+          main stay direct flex children of the centred column. inert is a DOM
+          property, not a rendered one, so it still applies to the subtree. */}
+      <div className="contents" inert={!isHidden}>
+        {children}
       </div>
 
-      {/* Quantised to 25% steps. A polite live region re-announces whenever its
-          text changes, and a byte-by-byte percentage changes on nearly every
-          frame — which reads out as an unbroken stream of "Загрузка N %". */}
-      <span className="sr-only">
-        {`Загрузка ${Math.floor(percent / ANNOUNCE_STEP) * ANNOUNCE_STEP}%`}
-      </span>
-    </div>
+      {/* Unmounted only after the fade finishes, so it can never intercept a
+          click. */}
+      {!isRemoved && (
+        <div
+          role="status"
+          aria-live="polite"
+          aria-hidden={isHidden}
+          // Coupled to FADE_MS rather than a `duration-500` class, so the
+          // fallback removal timer above and the fade it is racing cannot
+          // drift apart. `transition-none` under motion-reduce still wins:
+          // it sets transition-property, which this does not touch.
+          style={{ transitionDuration: `${FADE_MS}ms` }}
+          onTransitionEnd={(event) => {
+            // transitionend bubbles, and the acid layer below runs its own
+            // clip-path transition inside this subtree. Without the target
+            // check the removal would depend on that transition finishing
+            // before the settle delay rather than on this element's own fade.
+            if (isHidden && event.target === event.currentTarget) {
+              setIsRemoved(true);
+            }
+          }}
+          // Same repeating noise as <html>, so the loader and the page share
+          // one surface and the handover is seamless. The solid colour
+          // underneath is load-bearing rather than decorative: the pattern is
+          // itself one of the assets being fetched, so without a
+          // background-color the overlay would be transparent for the first
+          // moments and show the page it is meant to be covering.
+          className={`fixed inset-0 z-[100] flex flex-col items-center justify-center gap-4 bg-ink bg-pattern bg-repeat font-display transition-opacity motion-reduce:transition-none ${
+            isHidden ? "pointer-events-none opacity-0" : "opacity-100"
+          }`}
+        >
+          {/* overflow-clip is belt-and-braces now that the fill is clipped in
+              place; kept because it costs nothing and, unlike overflow-hidden,
+              does not turn this into a scroll container. */}
+          <div className="relative w-[min(18rem,70vw)] overflow-clip">
+            {/* Back sits in normal flow — it is what gives the stack its
+                height, so the two absolute layers have a box to fill. */}
+            <Image
+              src={loaderBack}
+              alt=""
+              aria-hidden="true"
+              loading="eager"
+              fetchPriority="high"
+              sizes="288px"
+              className="h-auto w-full select-none"
+            />
+
+            {/* Revealed in place with clip-path rather than slid in from the
+                left. Sliding leaks: loader-front is transparent around its
+                ornament, so a translated acid layer shows through that margin
+                as a tail past the frame's left tip — the container's overflow
+                cannot stop it, because the tail is still inside the container,
+                just outside the frame. Clipping the layer where it already sits
+                keeps it registered with the window and makes a stray tail
+                impossible. */}
+            <Image
+              src={loaderAcid}
+              alt=""
+              aria-hidden="true"
+              loading="eager"
+              fetchPriority="high"
+              sizes="288px"
+              className="absolute inset-0 h-full w-full select-none transition-[clip-path] duration-200 ease-out motion-reduce:transition-none"
+              style={{ clipPath: `inset(0 ${(1 - progress) * 100}% 0 0)` }}
+            />
+
+            <Image
+              src={loaderFront}
+              alt=""
+              aria-hidden="true"
+              loading="eager"
+              fetchPriority="high"
+              sizes="288px"
+              className="pointer-events-none absolute inset-0 h-full w-full select-none"
+            />
+          </div>
+
+          {/* Quantised to 25% steps. A polite live region re-announces whenever
+              its text changes, and a byte-by-byte percentage changes on nearly
+              every frame — which reads out as an unbroken stream of
+              "Загрузка N %". */}
+          <span className="sr-only">
+            {`Загрузка ${Math.floor(percent / ANNOUNCE_STEP) * ANNOUNCE_STEP}%`}
+          </span>
+        </div>
+      )}
+    </>
   );
 }
