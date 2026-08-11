@@ -29,11 +29,15 @@ export default function ProgramBlock({
 }: ProgramBlockProps) {
   return (
     <div className={`relative ${className}`}>
-      {/* Fixed height with automatic width: the two title files have different
-          aspect ratios, so matching on height is what keeps their lettering the
-          same size as each other. */}
+      {/* Fixed height with automatic width. Both files are cropped flush to
+          their lettering - which is what makes matching on height meaningful -
+          but at different aspect ratios (2.86:1 Теория, 3.69:1 Практика), so
+          height is the only axis that keeps the two the same size as each
+          other. At h-12 that renders them 137px and 177px wide; the 180px hint
+          covers the wider of the two without pushing the srcset pick up to the
+          next candidate. */}
       <h3 className="relative z-20">
-        <Image src={titleImage} alt={title} sizes="200px" className="h-12 w-auto" />
+        <Image src={titleImage} alt={title} sizes="180px" className="h-12 w-auto" />
       </h3>
 
       {/* Deliberately behind the panel: DarkPanel is 50% translucent, so the

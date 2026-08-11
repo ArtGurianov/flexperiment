@@ -12,16 +12,16 @@ export default function TeacherSection() {
       <header>
         <SectionLabel className="mb-[3cqw]">Преподаватель</SectionLabel>
 
-        {/* The lettering only occupies 32.5%-72.5% of this file's height, so at
-            w-full it would open ~52px of phantom gap above and 43px below. The
-            negative margins trim exactly that: margin percentages resolve
-            against the container's width, and the padding is 10.8% / 9.0% of
-            the width once the 3:1 aspect ratio is folded in. */}
+        {/* 1831x469, cropped flush to the lettering apart from 18px of dead
+            space along the top - the descenders run right to the last row, so
+            there is nothing to trim at the bottom. -mt-[1%] absorbs that band:
+            margin percentages resolve against the container's width, and 18px
+            is 0.98% of the file's 1831px width. */}
         <Image
           src={nameArt}
           alt="Арт Гурьянов"
           sizes="(min-width: 512px) 480px, 100vw"
-          className="-mt-[10.8%] -mb-[9%] h-auto w-full"
+          className="-mt-[1%] h-auto w-full"
         />
       </header>
 
