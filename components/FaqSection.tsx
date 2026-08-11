@@ -9,7 +9,7 @@ import {
 import Diamond from "@/components/Diamond";
 import PaymentCta from "@/components/PaymentCta";
 import Section, { SectionLabel } from "@/components/Section";
-import footerOrnament from "@/public/footer.webp";
+import footerOrnament from "@/public/hero4.webp";
 
 const FAQ = [
   {
@@ -111,7 +111,7 @@ export default function FaqSection() {
         alt=""
         aria-hidden="true"
         sizes="(min-width: 512px) 341px, 67vw"
-        className="pointer-events-none absolute right-0 bottom-0 -z-10 w-2/3 max-w-none translate-x-1/3 translate-y-1/3 select-none rotate-45"
+        className="pointer-events-none absolute right-0 bottom-0 -z-10 w-1/3 max-w-none select-none"
       />
     </Section>
   );
