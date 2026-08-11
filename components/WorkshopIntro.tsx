@@ -22,13 +22,13 @@ export default function WorkshopIntro() {
           src={body}
           alt=""
           aria-hidden="true"
-          sizes="(min-width: 512px) 269px, 56vw"
+          sizes="(min-width: 512px) 269px, 50vw"
           className="pointer-events-none z-20 col-start-1 row-start-1 -ml-[6cqw] h-auto w-[56cqw] select-none self-end justify-self-start"
         />
 
         {/* Left padding is wider than right: the figure now reaches ~46cqw, so
             the copy starts past it instead of being overlapped. */}
-        <DarkPanel className="z-10 col-start-1 row-start-1 w-[62cqw] self-end justify-self-end pt-[6cqw] pr-[5cqw] pb-[5cqw] pl-[9cqw] text-center">
+        <DarkPanel className="z-10 col-start-1 row-start-1 w-[60cqw] self-end justify-self-end pt-[6cqw] px-[5cqw] pb-[5cqw] text-center">
           <h3 className="text-[clamp(1.45rem,6.4cqw,2rem)] leading-tight tracking-[0.015em] uppercase underline decoration-2 underline-offset-8">
             Впервые в Сибири
           </h3>
