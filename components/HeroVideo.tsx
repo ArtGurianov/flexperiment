@@ -41,7 +41,12 @@ export default function HeroVideo() {
   const [hasStarted, setHasStarted] = useState(false);
 
   return (
-    <section className="relative w-full aspect-video overflow-hidden">
+    // The same acid glow the DarkPanel containers carry, mirrored onto the
+    // vertical axis: this section is full-bleed, so its left and right edges sit
+    // under the column clip and only the top and bottom ever show. Offsets,
+    // blurs and alphas are DARK_PANEL_SURFACE's, doubled to both sides — it
+    // cannot reuse the constant itself, which also carries the panel fill.
+    <section className="relative w-full aspect-video overflow-hidden shadow-[0_-10px_24px_rgb(202_255_86_/_0.3),0_10px_24px_rgb(202_255_86_/_0.3),0_-16px_48px_rgb(202_255_86_/_0.18),0_16px_48px_rgb(202_255_86_/_0.18)]">
       <video
         ref={videoRef}
         className="h-full w-full object-cover"
