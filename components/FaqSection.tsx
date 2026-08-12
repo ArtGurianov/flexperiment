@@ -42,14 +42,14 @@ export default function FaqSection() {
        stays tall — on a phone that left 150-220px of dead space above the
        footer. This is the last section of a page that always exceeds one
        viewport, so the footer reaches the document bottom regardless. */
-    /* The bottom gap above the footer is the shell's own py-10 and must stay a
+    /* pb-6 tightens the shell's py-10 above the footer bar, and must stay a
        fixed length. Container units are illegal here: cqw resolves against the
        nearest *ancestor* query container, and an element is never its own — so
        a cqw padding on this element, which is itself the @container, skips past
        the 512px column to the viewport. That is what made the gap grow without
        bound on wide screens (168px at 1400px) while every cqw inside the
        section, which does see this container, stayed put. */
-    <Section id="faq" className="isolate flex flex-col">
+    <Section id="faq" className="isolate flex flex-col pb-6">
       <div className="flex justify-center">
         {/* Deliberately not full width — the CTA's narrowness against the
             near-edge-to-edge accordion below is what carries the composition. */}
