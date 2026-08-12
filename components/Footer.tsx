@@ -32,11 +32,16 @@ export default function Footer({ className }: { className?: string }) {
   return (
     <footer
       className={cn(
-        "@container relative z-30 w-full bg-panel px-4 pt-6 pb-[max(1rem,env(safe-area-inset-bottom))] font-display text-[clamp(0.7rem,2.7cqw,0.9rem)] leading-tight text-bone uppercase",
+        "@container relative z-30 w-full bg-panel px-4 pt-6 pb-[max(1rem,env(safe-area-inset-bottom))] font-display leading-tight text-bone uppercase",
         className,
       )}
     >
-      <div className="grid grid-cols-1 gap-x-[4cqw] gap-y-6 @xs:grid-cols-3">
+      {/* The type lives on this wrapper, not on <footer>. cqw resolves against
+          the nearest ancestor container and an element is never its own, so a
+          clamp on the container element itself would have measured the
+          viewport instead of the footer. */}
+      <div className="text-[clamp(0.7rem,2.7cqw,0.9rem)]">
+        <div className="grid grid-cols-1 gap-x-[4cqw] gap-y-6 @xs:grid-cols-3">
         <nav
           aria-label="Разделы сайта"
           className="flex flex-col items-center gap-2"
@@ -95,11 +100,12 @@ export default function Footer({ className }: { className?: string }) {
             support@flextatic.ru
           </a>
         </address>
-      </div>
+        </div>
 
-      <p className="mt-6 border-t border-bone/15 pt-3 text-center text-bone/60">
-        © 2026 flextatic.ru
-      </p>
+        <p className="mt-6 border-t border-bone/15 pt-3 text-center text-bone/60">
+          © 2026 flextatic.ru
+        </p>
+      </div>
     </footer>
   );
 }
