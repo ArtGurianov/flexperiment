@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Shafarik } from "next/font/google";
+import { Geist_Mono, Shafarik } from "next/font/google";
 
 import "./globals.css";
 
@@ -18,6 +18,19 @@ const shafarik = Shafarik({
   weight: "400",
   adjustFontFallback: false,
   fallback: ["Georgia", "Times New Roman", "serif"],
+});
+
+// Carries the footer's legal links and company details, where the display face
+// is the wrong tool: those are long titles and long digit strings set small in
+// a narrow column, and Shafarik has neither the width nor the figure clarity
+// for them. `cyrillic` is the load-bearing subset — the whole site is Russian,
+// and a mono without it would fall straight back to the system stack.
+//
+// No `weight`, so this resolves to the variable font: one file covering the
+// whole axis rather than a separate request per cut.
+const geistMono = Geist_Mono({
+  variable: "--font-geist-mono",
+  subsets: ["cyrillic", "latin"],
 });
 
 const SITE_URL = "https://flextatic.ru";
@@ -66,7 +79,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       // motion-safe, not a bare scroll-smooth: animated scrolling is a common
       // vestibular trigger, and this variant drops back to an instant jump for
       // anyone who has asked their OS to reduce motion.
-      className={`${shafarik.variable} h-full antialiased bg-pattern bg-repeat motion-safe:scroll-smooth`}
+      className={`${shafarik.variable} ${geistMono.variable} h-full antialiased bg-pattern bg-repeat motion-safe:scroll-smooth`}
     >
       {/* The centered column is this inner wrapper, not <body>. When a modal
           dialog locks scroll, react-remove-scroll rewrites body's computed

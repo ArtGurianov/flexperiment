@@ -1,11 +1,6 @@
 import CtaButton from "@/components/CtaButton";
 import PaymentCta from "@/components/PaymentCta";
-
-const NAV_LINKS = [
-  { label: "Кто", href: "#teacher" },
-  { label: "Программа", href: "#program" },
-  { label: "Вопросы", href: "#faq" },
-];
+import { BOOKING_LABEL, SITE_LINKS } from "@/lib/navigation";
 
 // The floor used to be 0.62rem, which resolved to 9.9px on a 320px phone —
 // below the ~11px where uppercase Shafarik stops being comfortably legible.
@@ -28,7 +23,7 @@ export default function Navbar() {
         aria-label="Основная навигация"
         className="@container flex items-center justify-between gap-[2cqw] bg-panel px-4 py-2 backdrop-blur-sm"
       >
-        {NAV_LINKS.map(({ label, href }) => (
+        {SITE_LINKS.map(({ label, href }) => (
           <CtaButton
             key={href}
             href={href}
@@ -41,7 +36,7 @@ export default function Navbar() {
         ))}
 
         <PaymentCta className={`w-auto border-2 px-2 ${NAV_TYPE}`}>
-          Города × Даты
+          {BOOKING_LABEL}
         </PaymentCta>
       </nav>
     </div>

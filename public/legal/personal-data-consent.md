@@ -9,7 +9,7 @@
 ОГРНИП: **324420500074591**  
 Сайт: **https://flextatic.ru**  
 Телефон: **+7 926 728-04-20**  
-Email: **art@artgurianov.com**
+Email: **support@flextatic.ru**
 
 далее — **«Оператор»**,
 
@@ -79,7 +79,7 @@ Email: **art@artgurianov.com**
 
 Я вправе в любое время отозвать настоящее Согласие посредством направления обращения на:
 
-**art@artgurianov.com**
+**support@flextatic.ru**
 
 Отзыв Согласия не влияет на законность обработки, осуществлённой до его получения Оператором.
 
@@ -105,5 +105,5 @@ Email: **art@artgurianov.com**
 ИНН: **420539506224**  
 ОГРНИП: **324420500074591**  
 Телефон: **+7 926 728-04-20**  
-Email: **art@artgurianov.com**  
+Email: **support@flextatic.ru**  
 Сайт: **https://flextatic.ru**

@@ -26,6 +26,11 @@
   --color-shadow: #0f0f0f;
 
   --font-display: var(--font-shafarik);
+  /* Overrides Tailwind's default mono stack, so the system fonts it listed are
+     repeated here — next/font's own "Geist Mono Fallback" only covers the
+     metric-adjusted swap, not the font failing to load at all. */
+  --font-mono:
+    var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, monospace;
 
   --animate-accordion-down: accordion-down 220ms ease-out;
   --animate-accordion-up: accordion-up 220ms ease-out;

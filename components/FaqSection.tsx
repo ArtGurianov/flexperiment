@@ -36,15 +36,16 @@ const FAQ = [
 
 export default function FaqSection() {
   return (
-    /* No bottom padding — the footer bar is meant to sit flush against the
-       section's bottom edge, which is also the page's. */
     /* Height is content-driven on purpose. A min-h of 100svh plus a flex-1
        spacer used to pin the footer to the viewport bottom, but the copy is
        sized in cqw, so a narrower column shrinks the content while the viewport
        stays tall — on a phone that left 150-220px of dead space above the
        footer. This is the last section of a page that always exceeds one
        viewport, so the footer reaches the document bottom regardless. */
-    <Section id="faq" className="isolate flex flex-col pb-0">
+    /* pb-[12cqw] rather than the shell's py-10: the footer used to sit flush
+       against this edge and now follows the section, so the quote needs its own
+       breathing room above the bar. */
+    <Section id="faq" className="isolate flex flex-col pb-[12cqw]">
       <div className="flex justify-center">
         {/* Deliberately not full width — the CTA's narrowness against the
             near-edge-to-edge accordion below is what carries the composition. */}
@@ -82,17 +83,6 @@ export default function FaqSection() {
         Я учу тебя находить то, как можешь двигаться ты. Это мастер-класс по
         развитию собственного языка движения через флексинг. До встречи!»
       </p>
-
-      {/* -mx-4 cancels the section's horizontal padding so the bar spans the
-          full column while its own px-4 keeps the text off the edges. The top
-          margin is a fixed gap now that no spacer sets the distance. */}
-      <footer className="relative z-30 -mx-4 mt-[10cqw] flex flex-wrap items-center justify-between gap-x-4 gap-y-2 bg-panel px-4 pt-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] text-[clamp(0.7rem,2.7cqw,0.9rem)] leading-tight uppercase">
-        <span>ИП Гурьянов Арт Артурович</span>
-        <a href="/offer" className="underline-offset-4 hover:underline">
-          Оферта
-        </a>
-        <span>flextatic.ru 2026</span>
-      </footer>
 
       {/* Centred on the section's bottom-right corner, so only its upper-left
           quadrant shows — the translate pair is what moves the image's centre

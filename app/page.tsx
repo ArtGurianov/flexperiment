@@ -1,5 +1,6 @@
 import AssetPreloader from "@/components/AssetPreloader";
 import FaqSection from "@/components/FaqSection";
+import Footer from "@/components/Footer";
 import HeroSiberia from "@/components/HeroSiberia";
 import HeroTour from "@/components/HeroTour";
 import HeroVideo from "@/components/HeroVideo";
@@ -69,6 +70,13 @@ export default function Home() {
         <Separator />
         <FaqSection />
       </main>
+
+      {/* Outside <main> for the same reason the navbar is: a <footer> nested in
+          the main landmark is not exposed as the page's contentinfo. Inside
+          AssetPreloader rather than the root layout, though — the loader covers
+          the viewport but only inerts what this wraps, so a footer hoisted to
+          the layout would be tabbable behind an overlay nobody can see past. */}
+      <Footer />
 
       {/* Mounted once for the whole page. All three booking CTAs report a
           failed dialog load through the shared store rather than each rendering
