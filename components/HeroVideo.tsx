@@ -50,7 +50,7 @@ export default function HeroVideo() {
       <video
         ref={videoRef}
         className="h-full w-full object-cover"
-        src="https://zhjrb3dyh4.ufs.sh/f/kTOk4z0nYjRrPgVO38Of715eQfPRWOgMUHjbNtZiyTL8Drkh"
+        src="https://flextatic.s3.cloud.ru/flextatic.webm"
         controls
         preload="metadata"
         playsInline

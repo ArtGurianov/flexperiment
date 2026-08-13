@@ -78,7 +78,7 @@ export default function HeroTour() {
       </svg>
 
       <div className="relative w-full aspect-square overflow-hidden [clip-path:url(#hero-mask)]">
-        <HeroBackgroundVideo src="https://zhjrb3dyh4.ufs.sh/f/kTOk4z0nYjRrwE5REnNvr7CulqYDdzFVZUTmpAef0anscMBL" />
+        <HeroBackgroundVideo src="https://flextatic.s3.cloud.ru/bg.webm" />
       </div>
 
       {/* Covers exactly the square above, so a percentage here means the same
