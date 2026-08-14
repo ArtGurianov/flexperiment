@@ -104,7 +104,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           href="/background.webp"
           fetchPriority="high"
         />
-        <link rel="preconnect" href="https://zhjrb3dyh4.ufs.sh" />
+        <link rel="preconnect" href="https://flextatic.s3.cloud.ru" />
 
         <div className="mx-auto flex w-full max-w-lg flex-1 flex-col bg-site bg-cover bg-center bg-no-repeat bg-fixed">
           {children}
