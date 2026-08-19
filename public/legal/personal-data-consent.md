@@ -9,7 +9,7 @@
 ОГРНИП: **324420500074591**  
 Сайт: **https://flexperiment.ru**  
 Телефон: **+7 926 728-04-20**  
-Email: **support@flexperiment.ru**
+Email: **art@flexperiment.ru**
 
 далее — **«Оператор»**,
 
@@ -79,7 +79,7 @@ Email: **support@flexperiment.ru**
 
 Я вправе в любое время отозвать настоящее Согласие посредством направления обращения на:
 
-**support@flexperiment.ru**
+**art@flexperiment.ru**
 
 Отзыв Согласия не влияет на законность обработки, осуществлённой до его получения Оператором.
 
@@ -105,5 +105,5 @@ Email: **support@flexperiment.ru**
 ИНН: **420539506224**  
 ОГРНИП: **324420500074591**  
 Телефон: **+7 926 728-04-20**  
-Email: **support@flexperiment.ru**  
+Email: **art@flexperiment.ru**  
 Сайт: **https://flexperiment.ru**

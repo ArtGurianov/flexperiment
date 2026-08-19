@@ -95,5 +95,5 @@ Flexing и иные танцевальные упражнения предпол
 ИНН: **420539506224**  
 ОГРНИП: **324420500074591**  
 Телефон: **+7 926 728-04-20**  
-Email: **support@flexperiment.ru**  
+Email: **art@flexperiment.ru**  
 Сайт: **https://flexperiment.ru**
