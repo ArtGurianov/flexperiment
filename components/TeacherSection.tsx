@@ -38,7 +38,7 @@ export default function TeacherSection() {
       {/* Even 50/50 split, bottom-aligned so the portrait sits on the same
           baseline as the last credential. The half-width column is what sets
           the credential type size — see TeacherCredentials. */}
-      <div className="mt-[8cqw] grid grid-cols-2 items-end">
+      <div className="mt-[8cqw] grid grid-cols-2 items-center">
         <TeacherCredentials />
         <TeacherHead className="w-full" />
       </div>

@@ -2,12 +2,16 @@ import Diamond from "@/components/Diamond";
 import { cn } from "@/lib/cn";
 
 const CREDENTIALS: { title: string; detail?: string }[] = [
-  { title: "12 лет флексинга" },
-  { title: "Танцы на ТНТ" },
   {
     title: "Видео кампейны",
     detail:
       "S7 Airlines, Uniqlo, Black Star Wear, Interview Magazine, Mastermind Japan и другие",
+  },
+  { title: "ТВ-шоу", detail: "Танцы на ТНТ, Большие Танцы и другие" },
+  {
+    title: "Баттлы",
+    detail:
+      "Победитель 'Пространство танца' Москва, Победитель SHOW YOUR STYLE Москва и другие",
   },
   {
     title: "Коллабы с топами",

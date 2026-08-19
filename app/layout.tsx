@@ -34,9 +34,9 @@ const geistMono = Geist_Mono({
 });
 
 const SITE_URL = "https://flexperiment.ru";
-const TITLE = "FLEXPERIMENT - мастер-классы по флексингу в Сибири, 2026";
+const TITLE = "FLEXPERIMENT - мастер-классы по experimental и flexing в Сибири, 2026";
 const DESCRIPTION =
-  "Тур мастер-классов Арта Гурьянова по FLEXING: изоляции тела, иллюзии в танце, импровизация и поиск собственного стиля. Для новичков и танцоров с опытом, растяжка не нужна.";
+  "Тур мастер-классов от Арта Гурьянова по EXPERIMENTAL через FLEXING: изоляции тела, иллюзии в танце, импровизация и поиск собственного стиля. Для новичков и танцоров с опытом, растяжка не нужна.";
 
 export const metadata: Metadata = {
   // Without metadataBase, Next resolves relative OG/Twitter asset paths against

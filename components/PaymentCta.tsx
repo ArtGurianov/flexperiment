@@ -102,7 +102,7 @@ export default function PaymentCta({
 
       {hasOpened && (
         <DialogDrawer
-          title="Оплата"
+          title="Города х Даты"
           isOpen={isOpen}
           onClose={() => setIsOpen(false)}
         />
