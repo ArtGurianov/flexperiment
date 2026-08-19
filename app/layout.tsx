@@ -106,7 +106,24 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         />
         <link rel="preconnect" href="https://flexperiment.s3.cloud.ru" />
 
-        <div className="mx-auto flex w-full max-w-lg flex-1 flex-col bg-site bg-cover bg-center bg-no-repeat bg-fixed">
+        {/* iOS Safari doesn't keep background-attachment: fixed pinned to the
+            viewport the way desktop browsers do - it paints bg-cover against
+            the element's own box, and that box here would be flex-1 (full
+            page height), so the image stretched to cover the whole scroll
+            height instead of one screen. A real position: fixed element is
+            reliably viewport-pinned on iOS, so the background lives on its
+            own layer behind the content instead of as a background-attachment
+            on the scrolling column. */}
+        <div
+          aria-hidden
+          // left-0/right-0 (from inset-0) span the full viewport so the
+          // mx-auto + max-w-lg pair has room to center this layer the same
+          // way the content column centers itself - without it the fixed
+          // element has no containing block to center within and just fills
+          // the whole viewport width.
+          className="fixed inset-0 -z-10 mx-auto max-w-lg bg-site bg-cover bg-center bg-no-repeat"
+        />
+        <div className="mx-auto flex w-full max-w-lg flex-1 flex-col">
           {children}
         </div>
       </body>
