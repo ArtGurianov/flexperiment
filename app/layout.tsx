@@ -33,8 +33,8 @@ const geistMono = Geist_Mono({
   subsets: ["cyrillic", "latin"],
 });
 
-const SITE_URL = "https://flextatic.ru";
-const TITLE = "FLEXTATIC - мастер-классы по флексингу в Сибири, 2026";
+const SITE_URL = "https://flexperiment.ru";
+const TITLE = "FLEXPERIMENT - мастер-классы по флексингу в Сибири, 2026";
 const DESCRIPTION =
   "Тур мастер-классов Арта Гурьянова по FLEXING: изоляции тела, иллюзии в танце, импровизация и поиск собственного стиля. Для новичков и танцоров с опытом, растяжка не нужна.";
 
@@ -49,7 +49,7 @@ export const metadata: Metadata = {
     type: "website",
     locale: "ru_RU",
     url: SITE_URL,
-    siteName: "FLEXTATIC",
+    siteName: "FLEXPERIMENT",
     title: TITLE,
     description: DESCRIPTION,
   },
@@ -104,7 +104,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           href="/background.webp"
           fetchPriority="high"
         />
-        <link rel="preconnect" href="https://flextatic.s3.cloud.ru" />
+        <link rel="preconnect" href="https://flexperiment.s3.cloud.ru" />
 
         <div className="mx-auto flex w-full max-w-lg flex-1 flex-col bg-site bg-cover bg-center bg-no-repeat bg-fixed">
           {children}

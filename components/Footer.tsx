@@ -94,16 +94,16 @@ export default function Footer({ className }: { className?: string }) {
           {/* normal-case only here: an uppercased address reads as a different
               string, and people do retype what a footer shows. */}
           <a
-            href="mailto:support@flextatic.ru"
+            href="mailto:support@flexperiment.ru"
             className={cn(LINK, "normal-case")}
           >
-            support@flextatic.ru
+            support@flexperiment.ru
           </a>
         </address>
         </div>
 
         <p className="mt-6 border-t border-bone/15 pt-3 text-center text-bone/60">
-          © 2026 flextatic.ru
+          © 2026 flexperiment.ru
         </p>
       </div>
     </footer>

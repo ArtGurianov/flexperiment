@@ -28,15 +28,15 @@ export async function generateMetadata(
   if (!document) return {};
 
   return {
-    title: `${document.label} — FLEXTATIC`,
+    title: `${document.label} — FLEXPERIMENT`,
     description: document.description,
     alternates: { canonical: `/legal/${document.slug}` },
     openGraph: {
       type: "article",
       locale: "ru_RU",
       url: `/legal/${document.slug}`,
-      siteName: "FLEXTATIC",
-      title: `${document.label} — FLEXTATIC`,
+      siteName: "FLEXPERIMENT",
+      title: `${document.label} — FLEXPERIMENT`,
       description: document.description,
     },
   };

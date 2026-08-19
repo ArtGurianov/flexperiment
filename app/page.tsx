@@ -56,7 +56,7 @@ export default function Home() {
             its first heading was an h2 halfway down. This names the page for
             assistive tech and search without altering the composition. */}
         <h1 className="sr-only">
-          FLEXTATIC - тур мастер-классов по флексингу по Сибири, 2026
+          FLEXPERIMENT - тур мастер-классов по флексингу по Сибири, 2026
         </h1>
 
         <HeroTour />
