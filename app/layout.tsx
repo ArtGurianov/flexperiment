@@ -79,6 +79,12 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       // motion-safe, not a bare scroll-smooth: animated scrolling is a common
       // vestibular trigger, and this variant drops back to an instant jump for
       // anyone who has asked their OS to reduce motion.
+      //
+      // overscroll-y-none disables the iOS rubber-band bounce at the top/
+      // bottom edges. During that bounce iOS shifts the whole page - fixed
+      // elements included - relative to the viewport, which briefly exposed
+      // the fixed bg-site layer past its intended edge. No bounce, no gap to
+      // expose it through.
       className={`${shafarik.variable} ${geistMono.variable} h-full antialiased bg-pattern bg-repeat motion-safe:scroll-smooth`}
     >
       {/* The centered column is this inner wrapper, not <body>. When a modal
@@ -110,19 +116,29 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             viewport the way desktop browsers do - it paints bg-cover against
             the element's own box, and that box here would be flex-1 (full
             page height), so the image stretched to cover the whole scroll
-            height instead of one screen. A real position: fixed element is
-            reliably viewport-pinned on iOS, so the background lives on its
-            own layer behind the content instead of as a background-attachment
-            on the scrolling column. */}
-        <div
-          aria-hidden
-          // left-0/right-0 (from inset-0) span the full viewport so the
-          // mx-auto + max-w-lg pair has room to center this layer the same
-          // way the content column centers itself - without it the fixed
-          // element has no containing block to center within and just fills
-          // the whole viewport width.
-          className="fixed inset-0 -z-10 mx-auto max-w-lg bg-site bg-cover bg-center bg-no-repeat"
-        />
+            height instead of one screen. position: fixed alone would dodge
+            that, but iOS's rubber-band bounce can visually detach a fixed
+            compositor layer from the document for a moment, exposing pixels
+            past its edge at the top/bottom - and overscroll-behavior isn't an
+            option since some browsers use that gesture for pull-to-refresh.
+            position: sticky gets the same "stays put while the page scrolls"
+            look, but as real in-flow, clipped document content rather than a
+            viewport-anchored layer - there's no separate compositor box for
+            the bounce to reveal.
+
+            The anchor itself is h-0: a margin-bottom trick to cancel a real
+            height would have needed the negative margin to actually offset
+            the item's contribution to the flex column above it, which isn't
+            reliable across browsers - h-0 sidesteps that by never taking up
+            layout space in the first place. The visible layer is its
+            absolutely-positioned child, sized explicitly via h-dvh rather
+            than inset-y-0 (pinning both top and bottom to a 0-height parent
+            would just collapse it back to 0 too). */}
+        <div aria-hidden className="sticky top-0 -z-10 h-0 overflow-visible">
+          <div className="absolute inset-x-0 top-0 mx-auto h-dvh max-w-lg overflow-hidden">
+            <div className="h-full bg-site bg-cover bg-center bg-no-repeat" />
+          </div>
+        </div>
         <div className="mx-auto flex w-full max-w-lg flex-1 flex-col">
           {children}
         </div>
