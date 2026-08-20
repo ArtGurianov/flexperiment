@@ -7,9 +7,33 @@ services:
       COMMERCE_DATABASE_PATH: /var/lib/flexperiment/commerce.sqlite
       PORT: "3001"
       HOST: "0.0.0.0"
-    env_file: .env
+      COMMERCE_PUBLIC_ORIGIN: ${COMMERCE_PUBLIC_ORIGIN}
+      COMMERCE_ADMIN_ORIGIN: ${COMMERCE_ADMIN_ORIGIN}
+      COMMERCE_EMAIL_HMAC_KEY: ${COMMERCE_EMAIL_HMAC_KEY}
+      COMMERCE_TICKET_KEY_BASE64: ${COMMERCE_TICKET_KEY_BASE64}
+      COMMERCE_SESSION_SECRET: ${COMMERCE_SESSION_SECRET}
+      COMMERCE_ADMIN_PASSWORD_SCRYPT: ${COMMERCE_ADMIN_PASSWORD_SCRYPT}
+      TOCHKA_API_BASE_URL: ${TOCHKA_API_BASE_URL}
+      TOCHKA_JWT: ${TOCHKA_JWT}
+      TOCHKA_CLIENT_ID: ${TOCHKA_CLIENT_ID}
+      TOCHKA_CUSTOMER_CODE: ${TOCHKA_CUSTOMER_CODE}
+      TOCHKA_MERCHANT_ID: ${TOCHKA_MERCHANT_ID}
+      TOCHKA_TAX_SYSTEM_CODE: ${TOCHKA_TAX_SYSTEM_CODE}
+      TOCHKA_VAT_TYPE: ${TOCHKA_VAT_TYPE}
+      UNISENDER_GO_API_KEY: ${UNISENDER_GO_API_KEY}
+      UNISENDER_GO_FROM_EMAIL: ${UNISENDER_GO_FROM_EMAIL}
+      UNISENDER_GO_FROM_NAME: ${UNISENDER_GO_FROM_NAME}
+      UNISENDER_GO_REPLY_TO_EMAIL: ${UNISENDER_GO_REPLY_TO_EMAIL}
     volumes:
       - commerce-data:/var/lib/flexperiment
+    expose:
+      - "3001"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/readyz').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
     restart: unless-stopped
   commerce-worker:
     build:
@@ -18,9 +42,25 @@ services:
     command: ["pnpm", "commerce:worker"]
     environment:
       COMMERCE_DATABASE_PATH: /var/lib/flexperiment/commerce.sqlite
-    env_file: .env
+      COMMERCE_PUBLIC_ORIGIN: ${COMMERCE_PUBLIC_ORIGIN}
+      COMMERCE_EMAIL_HMAC_KEY: ${COMMERCE_EMAIL_HMAC_KEY}
+      COMMERCE_TICKET_KEY_BASE64: ${COMMERCE_TICKET_KEY_BASE64}
+      TOCHKA_API_BASE_URL: ${TOCHKA_API_BASE_URL}
+      TOCHKA_JWT: ${TOCHKA_JWT}
+      TOCHKA_CLIENT_ID: ${TOCHKA_CLIENT_ID}
+      TOCHKA_CUSTOMER_CODE: ${TOCHKA_CUSTOMER_CODE}
+      TOCHKA_MERCHANT_ID: ${TOCHKA_MERCHANT_ID}
+      TOCHKA_TAX_SYSTEM_CODE: ${TOCHKA_TAX_SYSTEM_CODE}
+      TOCHKA_VAT_TYPE: ${TOCHKA_VAT_TYPE}
+      UNISENDER_GO_API_KEY: ${UNISENDER_GO_API_KEY}
+      UNISENDER_GO_FROM_EMAIL: ${UNISENDER_GO_FROM_EMAIL}
+      UNISENDER_GO_FROM_NAME: ${UNISENDER_GO_FROM_NAME}
+      UNISENDER_GO_REPLY_TO_EMAIL: ${UNISENDER_GO_REPLY_TO_EMAIL}
     volumes:
       - commerce-data:/var/lib/flexperiment
+    depends_on:
+      commerce:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

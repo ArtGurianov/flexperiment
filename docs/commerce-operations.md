@@ -51,6 +51,14 @@ They are runtime-only values: never place live values in source, fixtures,
 logs, test output, or operations tickets. `COMMERCE_PROVIDER=mock` is local
 development only and must not be set in production.
 
+For Coolify, create a Docker Compose resource from this Git repository. Set
+the production values in Coolify Environment Variables; do not create or mount
+a repository `.env` file. `commerce` is the only migration owner: it applies
+migrations before `/readyz` can become healthy. `commerce-worker` waits for
+that health check and must not run migrations itself. Both services mount the
+same persistent `commerce-data` volume, and the worker receives no Admin
+password or session secret.
+
 Tochka uses JWT bearer authorization and only the receipt-payment command at
 `/acquiring/v1.0/payments_with_receipt`. The command always uses the frozen
 USN/VAT-exempt, full-payment/service profile, card/SBP modes, a 20-minute TTL,

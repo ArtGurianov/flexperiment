@@ -1,10 +1,9 @@
-import { migrate, openDatabase } from "./db";
+import { openDatabase } from "./db";
 import { CommerceDomain } from "./domain";
 import { emailProviderFromEnvironment } from "./email-provider";
 import { providerFromEnvironment } from "./provider";
 
 const sqlite = openDatabase();
-migrate(sqlite);
 const domain = new CommerceDomain(sqlite, providerFromEnvironment(), emailProviderFromEnvironment());
 let nextDriftSweepAt = 0;
 
