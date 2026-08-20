@@ -1,0 +1,11 @@
+ALTER TABLE orders ADD COLUMN public_offer_version TEXT;
+ALTER TABLE orders ADD COLUMN public_offer_sha256 TEXT;
+ALTER TABLE orders ADD COLUMN public_offer_accepted_at TEXT;
+ALTER TABLE orders ADD COLUMN privacy_policy_version TEXT;
+ALTER TABLE orders ADD COLUMN privacy_policy_sha256 TEXT;
+ALTER TABLE orders ADD COLUMN privacy_policy_presented_at TEXT;
+ALTER TABLE orders ADD COLUMN pd_consent_version TEXT;
+ALTER TABLE orders ADD COLUMN pd_consent_sha256 TEXT;
+ALTER TABLE orders ADD COLUMN pd_consent_accepted_at TEXT;
+ALTER TABLE orders ADD COLUMN checkout_disclosure_version TEXT;
+ALTER TABLE orders ADD COLUMN checkout_disclosure_sha256 TEXT;

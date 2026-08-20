@@ -1,0 +1,18 @@
+"use client";
+
+import { useEffect, useState } from "react";
+
+export default function TicketViewer() {
+  const [result, setResult] = useState<"loading" | "ready" | "error">("loading");
+  const [ticket, setTicket] = useState<{ title: string; starts_at: string; venue_name?: string; venue_address?: string; status: string } | null>(null);
+  useEffect(() => {
+    const capability = window.location.hash.slice(1);
+    history.replaceState(null, "", "/ticket");
+    if (!capability) { queueMicrotask(() => setResult("error")); return; }
+    fetch("/v1/public/ticket", { headers: { Authorization: `Bearer ${capability}` }, cache: "no-store" })
+      .then(async (response) => response.ok ? response.json() : Promise.reject())
+      .then((data) => { setTicket(data); setResult("ready"); })
+      .catch(() => setResult("error"));
+  }, []);
+  return <main className="mx-auto flex min-h-dvh max-w-lg items-center px-6 text-center"><div className="w-full border-2 border-acid bg-ink p-8 font-mono text-bone"><h1 className="font-display text-3xl uppercase text-acid">Билет</h1>{result === "loading" && <p className="mt-4">Открываем билет…</p>}{result === "error" && <p className="mt-4">Ссылка на билет недействительна или больше недоступна.</p>}{ticket && <div className="mt-4 space-y-2"><p>{ticket.title}</p><p>{new Date(ticket.starts_at).toLocaleString("ru-RU")}</p><p>{ticket.venue_name} {ticket.venue_address}</p><p>{ticket.status === "VOID" ? "Билет аннулирован" : "Билет действителен"}</p></div>}</div></main>;
+}

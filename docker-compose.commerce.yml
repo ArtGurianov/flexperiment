@@ -1,0 +1,27 @@
+services:
+  commerce:
+    build:
+      context: .
+      dockerfile: Dockerfile.commerce
+    environment:
+      COMMERCE_DATABASE_PATH: /var/lib/flexperiment/commerce.sqlite
+      PORT: "3001"
+      HOST: "0.0.0.0"
+    env_file: .env
+    volumes:
+      - commerce-data:/var/lib/flexperiment
+    restart: unless-stopped
+  commerce-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.commerce
+    command: ["pnpm", "commerce:worker"]
+    environment:
+      COMMERCE_DATABASE_PATH: /var/lib/flexperiment/commerce.sqlite
+    env_file: .env
+    volumes:
+      - commerce-data:/var/lib/flexperiment
+    restart: unless-stopped
+
+volumes:
+  commerce-data:

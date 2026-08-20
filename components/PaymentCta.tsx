@@ -18,6 +18,7 @@ import { cn } from "@/lib/cn";
 const DialogDrawer = dynamic(() => import("@/components/DialogDrawer"), {
   ssr: false,
 });
+const CheckoutFlow = dynamic(() => import("@/components/CheckoutFlow"), { ssr: false });
 
 const loadDialog = () => import("@/components/DialogDrawer");
 
@@ -102,10 +103,12 @@ export default function PaymentCta({
 
       {hasOpened && (
         <DialogDrawer
-          title="Города х Даты"
+          title="Запись"
           isOpen={isOpen}
           onClose={() => setIsOpen(false)}
-        />
+        >
+          <CheckoutFlow />
+        </DialogDrawer>
       )}
     </>
   );

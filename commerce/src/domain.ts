@@ -1,0 +1,629 @@
+import type Database from "better-sqlite3";
+import { canonical, decryptTicketCapability, emailHash, encryptTicketCapability, id, now, publicId, sha256 } from "./crypto";
+import { type EmailProvider, UnconfiguredEmailProvider } from "./email-provider";
+import type { PaymentProvider } from "./provider";
+import type { CheckoutRequest } from "./types";
+
+type Row = Record<string, unknown>;
+const one = <T extends Row>(db: Database.Database, sql: string, ...params: unknown[]) => db.prepare(sql).get(...params) as T | undefined;
+const many = <T extends Row>(db: Database.Database, sql: string, ...params: unknown[]) => db.prepare(sql).all(...params) as T[];
+const legalDocumentIds = ["PUBLIC_OFFER", "PRIVACY_POLICY", "PD_CONSENT", "CHECKOUT_DISCLOSURE"] as const;
+type LegalDocumentId = (typeof legalDocumentIds)[number];
+type LegalDocumentEvidence = { document_id: LegalDocumentId; version: string; sha256: string; current_url: string; archive_url: string; checkout_relevant: boolean };
+type LegalManifest = { documents: Record<LegalDocumentId, LegalDocumentEvidence> };
+
+const legalManifest = (raw: unknown): LegalManifest => {
+  if (!raw || typeof raw !== "object" || !("documents" in raw) || !raw.documents || typeof raw.documents !== "object") throw new DomainError("LEGAL_RELEASE_INVALID", 503);
+  const documents = raw.documents as Record<string, unknown>;
+  const evidence = {} as Record<LegalDocumentId, LegalDocumentEvidence>;
+  for (const id of legalDocumentIds) {
+    const document = documents[id];
+    if (!document || typeof document !== "object") throw new DomainError("LEGAL_RELEASE_INVALID", 503);
+    const fields = document as Record<string, unknown>;
+    if (fields.document_id !== id || typeof fields.version !== "string" || typeof fields.sha256 !== "string" || !/^[a-f0-9]{64}$/i.test(fields.sha256) || typeof fields.current_url !== "string" || typeof fields.archive_url !== "string" || fields.checkout_relevant !== true) throw new DomainError("LEGAL_RELEASE_INVALID", 503);
+    evidence[id] = { document_id: id, version: fields.version, sha256: fields.sha256.toLowerCase(), current_url: fields.current_url, archive_url: fields.archive_url, checkout_relevant: true };
+  }
+  return { documents: evidence };
+};
+
+export class DomainError extends Error {
+  constructor(readonly code: string, readonly status = 400, message = code) { super(message); }
+}
+
+export function withImmediateTransaction<T>(db: Database.Database, operation: () => T): T {
+  db.exec("BEGIN IMMEDIATE");
+  try { const result = operation(); db.exec("COMMIT"); return result; }
+  catch (error) { db.exec("ROLLBACK"); throw error; }
+}
+
+const isPromoEligible = (promo: Row | undefined) => Boolean(promo && promo.status === "ACTIVE" && (promo.agent_id === null || promo.agent_enabled === 1));
+const discountFor = (price: number, type: unknown, value: unknown) => {
+  const amount = Number(value ?? 0);
+  if (type === "PERCENT") return Math.min(price, Math.floor((price * amount + 5_000) / 10_000));
+  if (type === "FIXED") return Math.min(price, amount);
+  return 0;
+};
+
+export class CommerceDomain {
+  constructor(readonly db: Database.Database, readonly provider: PaymentProvider, readonly emailProvider: EmailProvider = new UnconfiguredEmailProvider()) {}
+
+  tour() {
+    return many(this.db, `SELECT c.slug AS city, c.title AS city_title, o.*,
+      (o.capacity - (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = o.id AND b.status IN ('RESERVED', 'CONFIRMED'))) AS availability
+      FROM cities c LEFT JOIN occurrences o ON o.city_id = c.id AND o.visibility = 'PUBLISHED'
+      ORDER BY c.title, o.starts_at`);
+  }
+
+  occurrence(occurrenceId: string) {
+    const found = one(this.db, `SELECT o.*, c.slug AS city_slug,
+      (o.capacity - (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = o.id AND b.status IN ('RESERVED', 'CONFIRMED'))) AS availability
+      FROM occurrences o JOIN cities c ON c.id = o.city_id WHERE o.id = ? AND o.visibility = 'PUBLISHED'`, occurrenceId);
+    if (!found) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
+    return found;
+  }
+
+  legalConfig() {
+    const release = one(this.db, "SELECT id, version, effective_at, manifest_json FROM legal_releases WHERE active = 1");
+    if (!release) throw new DomainError("LEGAL_RELEASE_NOT_ACTIVE", 503);
+    return { ...release, manifest: legalManifest(JSON.parse(String(release.manifest_json))) };
+  }
+
+  checkoutContext(input: { occurrenceId: string; promoCode?: string; referralSlug?: string }) {
+    return withImmediateTransaction(this.db, () => {
+      const occurrence = one(this.db, "SELECT * FROM occurrences WHERE id = ?", input.occurrenceId);
+      if (!occurrence || occurrence.visibility !== "PUBLISHED") throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
+      if (occurrence.sales_status !== "OPEN" || occurrence.fulfillment_status !== "SCHEDULED") throw new DomainError("SALES_NOT_OPEN", 409);
+      const availability = Number(occurrence.capacity) - Number(one(this.db, "SELECT COUNT(*) AS occupied FROM bookings WHERE occurrence_id = ? AND status IN ('RESERVED', 'CONFIRMED')", occurrence.id)?.occupied ?? 0);
+      if (availability <= 0) throw new DomainError("SOLD_OUT", 409);
+      const release = one(this.db, "SELECT * FROM legal_releases WHERE active = 1");
+      if (!release) throw new DomainError("LEGAL_RELEASE_NOT_ACTIVE", 503);
+      const manifest = legalManifest(JSON.parse(String(release.manifest_json)));
+
+      let promo: Row | undefined;
+      if (input.promoCode) {
+        promo = one(this.db, `SELECT p.*, a.enabled AS agent_enabled FROM promo_codes p
+          LEFT JOIN agents a ON a.id = p.agent_id WHERE p.normalized_code = ?`, input.promoCode.trim().toUpperCase());
+        if (!isPromoEligible(promo)) throw new DomainError("PROMO_NOT_ELIGIBLE", 409);
+      }
+      let attributedAgentId: string | null = promo?.agent_id as string | null ?? null;
+      if (!attributedAgentId && input.referralSlug) {
+        const agent = one(this.db, "SELECT id FROM agents WHERE slug = ? AND enabled = 1", input.referralSlug);
+        attributedAgentId = (agent?.id as string | undefined) ?? null;
+      }
+      const price = Number(occurrence.price_kopecks);
+      const discount = discountFor(price, promo?.discount_type, promo?.discount_value);
+      const quoteId = id();
+      const disclosure = occurrence.venue_status === "CONFIRMED"
+        ? `${occurrence.venue_name}: ${occurrence.venue_address}`
+        : String(occurrence.venue_disclosure_text);
+      const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
+      this.db.prepare(`INSERT INTO quotes(id, occurrence_id, material_revision, legal_release_id, promo_id, attributed_agent_id, price_kopecks, discount_kopecks, final_amount_kopecks, venue_disclosure, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(quoteId, occurrence.id, occurrence.material_revision, release.id, promo?.id ?? null, attributedAgentId, price, discount, price - discount, disclosure, expiresAt);
+      return { quote_id: quoteId, occurrence_id: occurrence.id, material_revision: occurrence.material_revision, availability, price_kopecks: price, discount_kopecks: discount, final_amount_kopecks: price - discount, currency: "RUB", venue_disclosure: disclosure, legal_release: { id: release.id, version: release.version, manifest }, expires_at: expiresAt };
+    });
+  }
+
+  checkout(input: CheckoutRequest, idempotencyKey: string) {
+    if (idempotencyKey.length < 16 || idempotencyKey.length > 200) throw new DomainError("IDEMPOTENCY_KEY_INVALID", 400);
+    const keyHash = sha256(idempotencyKey);
+    const requestHash = sha256(canonical(input));
+    const result = withImmediateTransaction(this.db, () => {
+      const replay = one(this.db, `SELECT ci.canonical_request_hash, o.public_status_id, p.state, p.status, p.payment_url
+        FROM checkout_idempotency ci JOIN orders o ON o.id = ci.order_id JOIN payments p ON p.order_id = o.id WHERE ci.idempotency_key_hash = ?`, keyHash);
+      if (replay) {
+        if (replay.canonical_request_hash !== requestHash) throw new DomainError("IDEMPOTENCY_CONFLICT", 409);
+        return { replay: true, status_id: replay.public_status_id, state: replay.state, status: replay.status, payment_url: replay.payment_url };
+      }
+      const quote = one(this.db, "SELECT * FROM quotes WHERE id = ?", input.quote_id);
+      if (!quote || new Date(String(quote.expires_at)).getTime() < Date.now()) throw new DomainError("QUOTE_EXPIRED", 409);
+      const occurrence = one(this.db, "SELECT o.*, c.title AS city_title FROM occurrences o JOIN cities c ON c.id = o.city_id WHERE o.id = ?", quote.occurrence_id);
+      if (!occurrence || occurrence.material_revision !== quote.material_revision) throw new DomainError("QUOTE_STALE", 409);
+      if (occurrence.sales_status !== "OPEN" || occurrence.fulfillment_status !== "SCHEDULED") throw new DomainError("SALES_NOT_OPEN", 409);
+      const release = one(this.db, "SELECT * FROM legal_releases WHERE active = 1");
+      if (!release || release.id !== quote.legal_release_id) throw new DomainError("LEGAL_VERSION_CHANGED", 409);
+      const manifest = legalManifest(JSON.parse(String(release.manifest_json)));
+      if (quote.promo_id) {
+        const promo = one(this.db, `SELECT p.*, a.enabled AS agent_enabled FROM promo_codes p LEFT JOIN agents a ON a.id = p.agent_id WHERE p.id = ?`, quote.promo_id);
+        if (!isPromoEligible(promo)) throw new DomainError("PROMO_NO_LONGER_ELIGIBLE", 409);
+      }
+      const occupied = Number(one(this.db, "SELECT COUNT(*) AS occupied FROM bookings WHERE occurrence_id = ? AND status IN ('RESERVED', 'CONFIRMED')", occurrence.id)?.occupied ?? 0);
+      if (occupied >= Number(occurrence.capacity)) throw new DomainError("SOLD_OUT", 409);
+      const orderId = id(); const bookingId = id(); const paymentId = id(); const statusId = publicId();
+      const agent = quote.attributed_agent_id ? one(this.db, "SELECT default_reward_type, default_reward_value FROM agents WHERE id = ?", quote.attributed_agent_id) : undefined;
+      const timestamp = now();
+      const workshopDate = new Intl.DateTimeFormat("ru-RU", { timeZone: String(occurrence.timezone), day: "numeric", month: "long", year: "numeric" }).format(new Date(String(occurrence.starts_at)));
+      const fiscalPurpose = "Оплата участия в мастер-классе ФЛЭКСПЕРИМЕНТ";
+      const fiscalItemName = `Участие в мастер-классе ФЛЭКСПЕРИМЕНТ — ${String(occurrence.city_title)}, ${workshopDate}`;
+      this.db.prepare(`INSERT INTO orders(id, public_status_id, occurrence_id, customer_name, customer_email, customer_email_hash, amount_kopecks, occurrence_material_revision, venue_disclosure_snapshot, checkout_legal_release_id, legal_snapshot_json, eligibility_confirmed_at, attributed_agent_id, reward_type_snapshot, reward_value_snapshot, promo_code_snapshot, discount_type_snapshot, discount_value_snapshot, fiscal_purpose_snapshot, fiscal_item_name_snapshot, public_offer_version, public_offer_sha256, public_offer_accepted_at, privacy_policy_version, privacy_policy_sha256, privacy_policy_presented_at, pd_consent_version, pd_consent_sha256, pd_consent_accepted_at, checkout_disclosure_version, checkout_disclosure_sha256)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(orderId, statusId, occurrence.id, input.customer_name.trim(), input.customer_email.trim().toLowerCase(), emailHash(input.customer_email), quote.final_amount_kopecks, quote.material_revision, quote.venue_disclosure, quote.legal_release_id, JSON.stringify(manifest), timestamp, quote.attributed_agent_id, agent?.default_reward_type ?? null, agent?.default_reward_value ?? null, quote.promo_id, null, quote.discount_kopecks, fiscalPurpose, fiscalItemName, manifest.documents.PUBLIC_OFFER.version, manifest.documents.PUBLIC_OFFER.sha256, timestamp, manifest.documents.PRIVACY_POLICY.version, manifest.documents.PRIVACY_POLICY.sha256, timestamp, manifest.documents.PD_CONSENT.version, manifest.documents.PD_CONSENT.sha256, timestamp, manifest.documents.CHECKOUT_DISCLOSURE.version, manifest.documents.CHECKOUT_DISCLOSURE.sha256);
+      this.db.prepare("INSERT INTO bookings(id, order_id, occurrence_id, status) VALUES (?, ?, ?, 'RESERVED')").run(bookingId, orderId, occurrence.id);
+      this.db.prepare(`INSERT INTO payments(id, order_id, state, status, provider_idempotency_key, creation_started_at) VALUES (?, ?, 'CREATING', 'PENDING', ?, ?)`)
+        .run(paymentId, orderId, publicId(), timestamp);
+      this.db.prepare("INSERT INTO checkout_idempotency(idempotency_key_hash, canonical_request_hash, order_id) VALUES (?, ?, ?)").run(keyHash, requestHash, orderId);
+      return { replay: false, order_id: orderId, payment_id: paymentId, status_id: statusId, amount_kopecks: Number(quote.final_amount_kopecks) };
+    });
+    if ("replay" in result && result.replay) return this.checkoutResult(result);
+    // The transaction deliberately ends before the provider request. If the process
+    // dies after commit, the durable CREATING command is recovered as CREATE_UNKNOWN.
+    return { status_id: result.status_id, status: "PROCESSING" as const, payment_url: null };
+  }
+
+  /** Performs external payment creation only after checkout state has committed. */
+  async checkoutAsync(input: CheckoutRequest, idempotencyKey: string, successBaseUrl: string) {
+    const first = this.checkout(input, idempotencyKey);
+    const payment = one(this.db, `SELECT p.*, p.id AS payment_id, o.id AS order_id, o.amount_kopecks, o.customer_email, o.fiscal_purpose_snapshot, o.fiscal_item_name_snapshot
+      FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?`, first.status_id);
+    if (!payment || payment.state !== "CREATING") return first;
+    try {
+      this.db.prepare("UPDATE payments SET provider_request_started_at = ?, updated_at = ? WHERE id = ? AND state = 'CREATING'").run(now(), now(), payment.payment_id);
+      if (!payment.fiscal_item_name_snapshot || !payment.fiscal_purpose_snapshot) throw new Error("Order has no immutable fiscal snapshot.");
+      const created = await this.provider.createPayment({ paymentId: String(payment.payment_id), paymentLinkId: String(payment.payment_id), amountKopecks: Number(payment.amount_kopecks), idempotencyKey: String(payment.provider_idempotency_key), successUrl: `${successBaseUrl}/payment/success?order=${first.status_id}`, customerEmail: String(payment.customer_email), purpose: String(payment.fiscal_purpose_snapshot), receiptItemName: String(payment.fiscal_item_name_snapshot) });
+      this.db.prepare("UPDATE payments SET state = 'CREATED', provider_payment_id = ?, payment_url = ?, updated_at = ? WHERE id = ? AND state = 'CREATING'").run(created.providerPaymentId, created.paymentUrl, now(), payment.payment_id);
+    } catch {
+      this.db.prepare("UPDATE payments SET state = 'CREATE_UNKNOWN', updated_at = ? WHERE id = ? AND state = 'CREATING'").run(now(), payment.payment_id);
+    }
+    return this.checkoutStatus(String(first.status_id));
+  }
+
+  private checkoutResult(value: Row) {
+    return { status_id: value.status_id, status: value.status === "PAID" ? "PAID" : value.state === "CREATE_FAILED" || value.status === "EXPIRED" || value.status === "CANCELLED" ? "FAILED" : "PROCESSING", payment_url: value.payment_url ?? null };
+  }
+
+  checkoutStatus(statusId: string) {
+    const payment = one(this.db, `SELECT p.state, p.status, p.payment_url FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?`, statusId);
+    if (!payment) throw new DomainError("CHECKOUT_NOT_FOUND", 404);
+    return this.checkoutResult({ status_id: statusId, ...payment });
+  }
+
+  markPaymentPaid(paymentId: string, capturedAmount: number, providerPaymentId?: string) {
+    return withImmediateTransaction(this.db, () => this.markPaymentPaidInTransaction(paymentId, capturedAmount, providerPaymentId));
+  }
+
+  private markPaymentPaidInTransaction(paymentId: string, capturedAmount: number, providerPaymentId?: string) {
+      const payment = one(this.db, "SELECT p.*, o.occurrence_id, o.id AS order_id FROM payments p JOIN orders o ON o.id = p.order_id WHERE p.id = ?", paymentId);
+      if (!payment) throw new DomainError("PAYMENT_NOT_FOUND", 404);
+      if (payment.status === "PAID") return payment;
+      this.db.prepare("UPDATE payments SET status = 'PAID', state = 'CREATED', captured_amount_kopecks = ?, provider_payment_id = COALESCE(?, provider_payment_id), updated_at = ? WHERE id = ?").run(capturedAmount, providerPaymentId ?? null, now(), paymentId);
+      const booking = one(this.db, "SELECT * FROM bookings WHERE order_id = ?", payment.order_id);
+      const occurrence = one(this.db, "SELECT fulfillment_status FROM occurrences WHERE id = ?", payment.occurrence_id);
+      if (booking?.status === "RESERVED" && occurrence?.fulfillment_status === "SCHEDULED") {
+        this.db.prepare("UPDATE bookings SET status = 'CONFIRMED' WHERE id = ? AND status = 'RESERVED'").run(booking.id);
+        const capability = publicId();
+        const encrypted = encryptTicketCapability(capability);
+        const order = one(this.db, "SELECT customer_email, customer_email_hash FROM orders WHERE id = ?", payment.order_id)!;
+        const ticketId = id();
+        this.db.prepare(`INSERT INTO tickets(id, booking_id, status, capability_hash, capability_ciphertext, capability_nonce, key_version)
+          VALUES (?, ?, 'VALID', ?, ?, ?, 1)`).run(ticketId, booking.id, sha256(capability), encrypted.ciphertext, encrypted.nonce);
+        // The outbox references an immutable ticket row. A future Unisender worker
+        // derives the actual URL from its encrypted capability at send time; the raw
+        // capability is never copied to application logs or browser storage.
+        this.enqueueEmail("TICKET", String(order.customer_email), String(order.customer_email_hash), "ticket", ticketId, { ticket_id: ticketId, order_id: payment.order_id });
+      } else {
+        const source = occurrence?.fulfillment_status === "SCHEDULED" ? "LATE_PAYMENT_AFTER_CUSTOMER_CANCELLATION" : "LATE_PAYMENT_AFTER_TERMINAL_OCCURRENCE";
+        this.upsertRefundObligation(String(payment.id), source, capturedAmount);
+      }
+      return one(this.db, "SELECT * FROM payments WHERE id = ?", paymentId)!;
+  }
+
+  applyTochkaPaymentWebhook(input: { rawHash: string; operationId: string; paymentLinkId: string; amountKopecks: number; customerCode: string; merchantId: string; paymentType: string; status: string; webhookType: string; currency?: string }, expected: { customerCode: string; merchantId: string }) {
+    return withImmediateTransaction(this.db, () => {
+      const semanticKey = `${input.operationId}:${input.status}`;
+      const known = one(this.db, "SELECT id FROM provider_webhook_events WHERE provider = 'TOCHKA' AND semantic_key = ?", semanticKey);
+      if (known) return { duplicate: true, applied: false };
+      const payment = one(this.db, `SELECT p.*, o.amount_kopecks FROM payments p JOIN orders o ON o.id = p.order_id WHERE p.id = ?`, input.paymentLinkId);
+      const observed = JSON.stringify({ operation_id: input.operationId, payment_link_id: input.paymentLinkId, amount_kopecks: input.amountKopecks, payment_type: input.paymentType, status: input.status, webhook_type: input.webhookType, currency: input.currency ?? "RUB" });
+      const valid = input.webhookType === "acquiringInternetPayment" && input.status === "APPROVED" && ["card", "sbp"].includes(input.paymentType) && (!input.currency || input.currency === "RUB") && input.customerCode === expected.customerCode && input.merchantId === expected.merchantId && payment && Number(payment.amount_kopecks) === input.amountKopecks;
+      if (!valid) {
+        this.db.prepare("INSERT INTO provider_webhook_events(id, provider, semantic_key, payload_hash, status, entity_id, observed_json) VALUES (?, 'TOCHKA', ?, ?, 'QUARANTINED', ?, ?)").run(id(), semanticKey, input.rawHash, payment?.id ?? null, observed);
+        if (payment) this.recordProviderDrift("PAYMENT", String(payment.id), { webhook: { operation_id: input.operationId, amount_kopecks: input.amountKopecks, payment_type: input.paymentType, status: input.status } });
+        return { duplicate: false, applied: false };
+      }
+      this.db.prepare("INSERT INTO provider_webhook_events(id, provider, semantic_key, payload_hash, status, entity_id, observed_json) VALUES (?, 'TOCHKA', ?, ?, 'APPLIED', ?, ?)").run(id(), semanticKey, input.rawHash, payment.id, observed);
+      this.markPaymentPaidInTransaction(String(payment.id), input.amountKopecks, input.operationId);
+      return { duplicate: false, applied: true };
+    });
+  }
+
+  upsertRefundObligation(paymentId: string, source: string, target: number) {
+    const existing = one(this.db, "SELECT * FROM refund_obligations WHERE payment_id = ?", paymentId);
+    if (existing) this.db.prepare("UPDATE refund_obligations SET target_refunded_amount_kopecks = MAX(target_refunded_amount_kopecks, ?) WHERE id = ?").run(target, existing.id);
+    else this.db.prepare("INSERT INTO refund_obligations(id, payment_id, initial_source, target_refunded_amount_kopecks, status) VALUES (?, ?, ?, ?, 'OPEN')").run(id(), paymentId, source, target);
+    const obligation = one(this.db, "SELECT * FROM refund_obligations WHERE payment_id = ?", paymentId)!;
+    this.db.prepare("INSERT INTO refund_obligation_events(id, obligation_id, source) VALUES (?, ?, ?)").run(id(), obligation.id, source);
+    return obligation;
+  }
+
+  cancelCustomerBooking(bookingId: string, input: { reason: string; confirmation_text: string; withheld_expense_amount_kopecks?: number; expense_justification?: string; evidence_reference?: string }, idempotencyKey: string) {
+    const keyHash = sha256(idempotencyKey); const requestHash = sha256(canonical(input));
+    return withImmediateTransaction(this.db, () => {
+      const replay = one(this.db, "SELECT canonical_request_hash, booking_id FROM booking_cancellation_idempotency WHERE idempotency_key_hash = ?", keyHash);
+      if (replay) { if (replay.canonical_request_hash !== requestHash) throw new DomainError("IDEMPOTENCY_CONFLICT", 409); return one(this.db, "SELECT * FROM bookings WHERE id = ?", replay.booking_id)!; }
+      const booking = one(this.db, `SELECT b.*, p.id AS payment_id, p.status AS payment_status, p.captured_amount_kopecks, o.fulfillment_status, ord.customer_email, ord.customer_email_hash
+        FROM bookings b JOIN payments p ON p.order_id = b.order_id JOIN occurrences o ON o.id = b.occurrence_id JOIN orders ord ON ord.id = b.order_id WHERE b.id = ?`, bookingId);
+      if (!booking || !["RESERVED", "CONFIRMED"].includes(String(booking.status))) throw new DomainError("BOOKING_NOT_CANCELLABLE", 409);
+      if (booking.fulfillment_status !== "SCHEDULED") throw new DomainError("TERMINAL_OCCURRENCE", 409);
+      if (input.confirmation_text !== `CANCEL ${bookingId}`) throw new DomainError("CONFIRMATION_REQUIRED", 422);
+      const withheld = input.withheld_expense_amount_kopecks ?? 0;
+      if (booking.payment_status !== "PAID" && withheld !== 0) throw new DomainError("WITHHOLDING_BEFORE_CAPTURE_FORBIDDEN", 422);
+      if (withheld > Number(booking.captured_amount_kopecks)) throw new DomainError("WITHHOLDING_EXCEEDS_CAPTURED", 422);
+      this.db.prepare("UPDATE bookings SET status = 'CANCELLED', cancelled_at = ?, cancellation_reason = ? WHERE id = ?").run(now(), input.reason, bookingId);
+      this.db.prepare("UPDATE tickets SET status = 'VOID', voided_at = ? WHERE booking_id = ? AND status = 'VALID'").run(now(), bookingId);
+      this.enqueueEmail("BOOKING_CANCELLED", String(booking.customer_email), String(booking.customer_email_hash), "booking-cancelled", bookingId, { booking_id: bookingId, reason: input.reason });
+      this.db.prepare("INSERT INTO booking_cancellation_idempotency(idempotency_key_hash, canonical_request_hash, booking_id) VALUES (?, ?, ?)").run(keyHash, requestHash, bookingId);
+      if (booking.payment_status === "PAID") this.upsertRefundObligation(String(booking.payment_id), "CUSTOMER_CANCELLATION_PARTIAL", Number(booking.captured_amount_kopecks) - withheld);
+      return one(this.db, "SELECT * FROM bookings WHERE id = ?", bookingId)!;
+    });
+  }
+
+  createCompensationRefund(orderId: string, input: { amount_kopecks: number; reason: string; note?: string }, idempotencyKey: string) {
+    const keyHash = sha256(idempotencyKey); const requestHash = sha256(canonical(input));
+    return withImmediateTransaction(this.db, () => {
+      const existing = one(this.db, "SELECT * FROM refunds WHERE idempotency_key_hash = ?", keyHash);
+      if (existing) { if (existing.canonical_request_hash !== requestHash) throw new DomainError("IDEMPOTENCY_CONFLICT", 409); return existing; }
+      const payment = one(this.db, "SELECT * FROM payments WHERE order_id = ?", orderId);
+      if (!payment || !["PAID", "PARTIALLY_REFUNDED"].includes(String(payment.status))) throw new DomainError("PAYMENT_NOT_REFUNDABLE", 409);
+      const used = one(this.db, `SELECT COALESCE(SUM(amount_kopecks), 0) AS succeeded FROM refunds WHERE payment_id = ? AND status = 'SUCCEEDED'`, payment.id)!;
+      const active = one(this.db, `SELECT COALESCE(SUM(amount_kopecks), 0) AS inflight FROM refunds WHERE payment_id = ? AND status IN ('REQUESTED', 'SUBMITTING', 'SUBMIT_UNKNOWN', 'RECONCILING')`, payment.id)!;
+      if (input.amount_kopecks > Number(payment.captured_amount_kopecks) - Number(used.succeeded) - Number(active.inflight)) throw new DomainError("REFUND_AMOUNT_EXCEEDS_AVAILABLE", 409);
+      const refundId = id();
+      this.db.prepare(`INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, note, source, status, idempotency_key_hash, canonical_request_hash)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'ADMIN_COMPENSATION', 'REQUESTED', ?, ?)`)
+        .run(refundId, publicId(), orderId, payment.id, input.amount_kopecks, input.reason, input.note ?? null, keyHash, requestHash);
+      return one(this.db, "SELECT * FROM refunds WHERE id = ?", refundId)!;
+    });
+  }
+
+  createObligationRefunds() {
+    return withImmediateTransaction(this.db, () => many(this.db, `SELECT ro.*, p.order_id, p.captured_amount_kopecks FROM refund_obligations ro JOIN payments p ON p.id = ro.payment_id
+      WHERE ro.status IN ('OPEN', 'FULFILLING')`).flatMap((obligation) => {
+      const succeeded = Number(one(this.db, "SELECT COALESCE(SUM(amount_kopecks), 0) AS amount FROM refunds WHERE payment_id = ? AND status = 'SUCCEEDED'", obligation.payment_id)?.amount ?? 0);
+      const active = one(this.db, "SELECT id FROM refunds WHERE payment_id = ? AND status IN ('REQUESTED', 'SUBMITTING', 'SUBMIT_UNKNOWN', 'RECONCILING')", obligation.payment_id);
+      const outstanding = Number(obligation.target_refunded_amount_kopecks) - succeeded;
+      if (outstanding <= 0) { this.db.prepare("UPDATE refund_obligations SET status = 'FULFILLED', fulfilled_at = ? WHERE id = ?").run(now(), obligation.id); return []; }
+      if (active) return [];
+      const refundId = id();
+      this.db.prepare(`INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash)
+        VALUES (?, ?, ?, ?, ?, 'Refund obligation', 'REFUND_OBLIGATION', 'REQUESTED', ?, ?)`)
+        .run(refundId, publicId(), obligation.order_id, obligation.payment_id, outstanding, sha256(`obligation:${obligation.id}:${outstanding}`), sha256(`obligation:${obligation.id}:${outstanding}`));
+      this.db.prepare("UPDATE refund_obligations SET status = 'FULFILLING' WHERE id = ?").run(obligation.id);
+      return [one(this.db, "SELECT * FROM refunds WHERE id = ?", refundId)!];
+    }));
+  }
+
+  completeOccurrence(occurrenceId: string) {
+    return withImmediateTransaction(this.db, () => {
+      const occurrence = one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId);
+      if (!occurrence) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
+      if (occurrence.fulfillment_status !== "SCHEDULED") throw new DomainError("OCCURRENCE_TERMINAL", 409);
+      if (new Date(String(occurrence.ends_at)).getTime() > Date.now()) throw new DomainError("OCCURRENCE_NOT_ENDED", 409);
+      this.db.prepare("UPDATE occurrences SET fulfillment_status = 'COMPLETED', sales_status = 'CLOSED', completed_at = ?, updated_at = ? WHERE id = ?").run(now(), now(), occurrenceId);
+      const reserved = many(this.db, "SELECT id FROM bookings WHERE occurrence_id = ? AND status = 'RESERVED'", occurrenceId);
+      for (const booking of reserved) this.db.prepare("UPDATE bookings SET status = 'CANCELLED', cancelled_at = ?, cancellation_reason = 'OCCURRENCE_COMPLETED_UNPAID' WHERE id = ?").run(now(), booking.id);
+      return one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId)!;
+    });
+  }
+
+  cancelOccurrence(occurrenceId: string, input: { reason: string; confirmation_text: string }, idempotencyKey: string) {
+    return this.withAdminCommand("occurrence-cancel", idempotencyKey, input, () => {
+      const occurrence = one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId);
+      if (!occurrence) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
+      if (input.confirmation_text !== `CANCEL ${occurrenceId}`) throw new DomainError("CONFIRMATION_REQUIRED", 422);
+      if (occurrence.fulfillment_status !== "SCHEDULED") throw new DomainError("OCCURRENCE_TERMINAL", 409);
+      this.db.prepare("UPDATE occurrences SET fulfillment_status = 'CANCELLED', sales_status = 'CLOSED', cancelled_at = ?, cancellation_reason = ?, updated_at = ? WHERE id = ?").run(now(), input.reason, now(), occurrenceId);
+      const bookings = many(this.db, `SELECT b.id, p.id AS payment_id, p.status AS payment_status, p.captured_amount_kopecks, ord.customer_email, ord.customer_email_hash
+        FROM bookings b JOIN payments p ON p.order_id = b.order_id JOIN orders ord ON ord.id = b.order_id WHERE b.occurrence_id = ? AND b.status IN ('RESERVED', 'CONFIRMED')`, occurrenceId);
+      for (const booking of bookings) {
+        this.db.prepare("UPDATE bookings SET status = 'CANCELLED', cancelled_at = ?, cancellation_reason = ? WHERE id = ?").run(now(), "OCCURRENCE_CANCELLED", booking.id);
+        this.db.prepare("UPDATE tickets SET status = 'VOID', voided_at = ? WHERE booking_id = ? AND status = 'VALID'").run(now(), booking.id);
+        if (booking.payment_status === "PAID" || booking.payment_status === "PARTIALLY_REFUNDED") this.upsertRefundObligation(String(booking.payment_id), "OCCURRENCE_CANCELLED", Number(booking.captured_amount_kopecks));
+        this.enqueueEmail("OCCURRENCE_CANCELLED", String(booking.customer_email), String(booking.customer_email_hash), "occurrence-cancelled", String(booking.id), { occurrence_id: occurrenceId, booking_id: booking.id, reason: input.reason });
+      }
+      return one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId)!;
+    });
+  }
+
+  patchOccurrence(occurrenceId: string, input: Record<string, unknown>) {
+    return withImmediateTransaction(this.db, () => {
+      const before = one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId);
+      if (!before) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
+      if (before.fulfillment_status !== "SCHEDULED") throw new DomainError("OCCURRENCE_TERMINAL", 409);
+      const occupancy = Number(one(this.db, "SELECT COUNT(*) AS count FROM bookings WHERE occurrence_id = ? AND status IN ('RESERVED', 'CONFIRMED')", occurrenceId)?.count ?? 0);
+      if (input.capacity !== undefined && Number(input.capacity) < occupancy) throw new DomainError("CAPACITY_BELOW_OCCUPANCY", 409);
+      const fields = ["starts_at", "ends_at", "timezone", "venue_status", "venue_name", "venue_address", "venue_public", "venue_disclosure_text", "venue_announce_by", "price_kopecks", "capacity", "sales_status", "visibility"] as const;
+      const material = ["starts_at", "ends_at", "timezone", "venue_status", "venue_name", "venue_address", "venue_disclosure_text", "venue_announce_by"];
+      const changed = fields.filter((field) => input[field] !== undefined && input[field] !== before[field]);
+      if (!changed.length) return before;
+      const next = { ...before, ...Object.fromEntries(changed.map((field) => [field, input[field]])) };
+      if (next.venue_status === "CONFIRMED" && (!next.venue_name || !next.venue_address)) throw new DomainError("VENUE_CONFIRMATION_INCOMPLETE", 422);
+      if (next.venue_status === "TO_BE_ANNOUNCED" && (!next.venue_disclosure_text || !next.venue_announce_by)) throw new DomainError("VENUE_TBD_INCOMPLETE", 422);
+      const materialChanged = changed.some((field) => material.includes(field));
+      const assignments = [...changed.map((field) => `${field} = ?`), "material_revision = material_revision + ?", "updated_at = ?"];
+      this.db.prepare(`UPDATE occurrences SET ${assignments.join(", ")} WHERE id = ?`).run(...changed.map((field) => typeof input[field] === "boolean" ? Number(input[field]) : input[field]), materialChanged ? 1 : 0, now(), occurrenceId);
+      const after = one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId)!;
+      if (materialChanged) this.db.prepare("INSERT INTO occurrence_revisions(id, occurrence_id, revision, reason, before_json, after_json) VALUES (?, ?, ?, ?, ?, ?)").run(id(), occurrenceId, after.material_revision, input.reason, JSON.stringify(before), JSON.stringify(after));
+      return after;
+    });
+  }
+
+  createAgent(input: Record<string, unknown>) {
+    const agentId = id();
+    this.db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, enabled, default_reward_type, default_reward_value)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(agentId, input.slug, input.display_name, input.legal_name, String(input.email).toLowerCase(), input.contractor_type, input.inn, input.contract_reference, input.enabled === false ? 0 : 1, input.default_reward_type, input.default_reward_value);
+    return one(this.db, "SELECT * FROM agents WHERE id = ?", agentId)!;
+  }
+
+  patchAgent(agentId: string, input: Record<string, unknown>) {
+    const existing = one(this.db, "SELECT * FROM agents WHERE id = ?", agentId);
+    if (!existing) throw new DomainError("AGENT_NOT_FOUND", 404);
+    const allowed = ["display_name", "legal_name", "email", "contractor_type", "inn", "contract_reference", "enabled", "default_reward_type", "default_reward_value", "npd_status_checked_at"];
+    const fields = allowed.filter((field) => input[field] !== undefined);
+    if (!fields.length) return existing;
+    this.db.prepare(`UPDATE agents SET ${fields.map((field) => `${field} = ?`).join(", ")}, updated_at = ? WHERE id = ?`).run(...fields.map((field) => field === "enabled" ? Number(input[field]) : field === "email" ? String(input[field]).toLowerCase() : input[field]), now(), agentId);
+    return one(this.db, "SELECT * FROM agents WHERE id = ?", agentId)!;
+  }
+
+  createPromo(input: Record<string, unknown>) {
+    if (input.agent_id && !one(this.db, "SELECT id FROM agents WHERE id = ?", input.agent_id)) throw new DomainError("AGENT_NOT_FOUND", 404);
+    const promoId = id(); const normalized = String(input.code).trim().toUpperCase();
+    this.db.prepare("INSERT INTO promo_codes(id, agent_id, code, normalized_code, status, discount_type, discount_value) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .run(promoId, input.agent_id ?? null, input.code, normalized, input.status ?? "ACTIVE", input.discount_type, input.discount_value);
+    return one(this.db, "SELECT * FROM promo_codes WHERE id = ?", promoId)!;
+  }
+
+  patchPromo(promoId: string, input: Record<string, unknown>) {
+    const existing = one(this.db, "SELECT * FROM promo_codes WHERE id = ?", promoId);
+    if (!existing) throw new DomainError("PROMO_NOT_FOUND", 404);
+    if (input.agent_id && !one(this.db, "SELECT id FROM agents WHERE id = ?", input.agent_id)) throw new DomainError("AGENT_NOT_FOUND", 404);
+    const allowed = ["agent_id", "status", "discount_type", "discount_value"];
+    const fields = allowed.filter((field) => input[field] !== undefined);
+    if (!fields.length) return existing;
+    this.db.prepare(`UPDATE promo_codes SET ${fields.map((field) => `${field} = ?`).join(", ")}, updated_at = ? WHERE id = ?`).run(...fields.map((field) => input[field]), now(), promoId);
+    return one(this.db, "SELECT * FROM promo_codes WHERE id = ?", promoId)!;
+  }
+
+  rewardBalance(agentId: string, occurrenceId: string) {
+    const agent = one(this.db, "SELECT * FROM agents WHERE id = ?", agentId);
+    if (!agent) throw new DomainError("AGENT_NOT_FOUND", 404);
+    const occurrence = one(this.db, "SELECT fulfillment_status FROM occurrences WHERE id = ?", occurrenceId);
+    if (!occurrence) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
+    const orders = many(this.db, `SELECT o.*, p.captured_amount_kopecks - COALESCE((SELECT SUM(r.amount_kopecks) FROM refunds r WHERE r.payment_id = p.id AND r.status = 'SUCCEEDED'), 0) AS net_captured
+      FROM orders o JOIN payments p ON p.order_id = o.id JOIN bookings b ON b.order_id = o.id
+      WHERE o.attributed_agent_id = ? AND o.occurrence_id = ? AND b.status = 'CONFIRMED' AND p.status IN ('PAID', 'PARTIALLY_REFUNDED', 'REFUNDED')`, agentId, occurrenceId);
+    const earned = orders.reduce((total, order) => {
+      const net = Math.max(0, Number(order.net_captured));
+      if (order.reward_type_snapshot === "PERCENT") return total + Math.floor((net * Number(order.reward_value_snapshot) + 5_000) / 10_000);
+      return total + Math.min(net, Number(order.reward_value_snapshot ?? 0));
+    }, 0);
+    const mature = occurrence.fulfillment_status === "COMPLETED" ? earned : 0;
+    const settlement = one(this.db, `SELECT
+      COALESCE(SUM(CASE WHEN status = 'PREPARED' THEN amount_kopecks ELSE 0 END), 0) AS prepared,
+      COALESCE(SUM(CASE WHEN status = 'PENDING_DOCUMENT' THEN amount_kopecks ELSE 0 END), 0) AS pending,
+      COALESCE(SUM(CASE WHEN status = 'SETTLED' THEN amount_kopecks ELSE 0 END), 0) AS settled
+      FROM reward_settlements WHERE agent_id = ? AND occurrence_id = ?`, agentId, occurrenceId)!;
+    const recovered = Number(one(this.db, `SELECT COALESCE(SUM(sr.amount_recovered_kopecks), 0) AS amount FROM settlement_recoveries sr JOIN reward_settlements rs ON rs.id = sr.settlement_id WHERE rs.agent_id = ? AND rs.occurrence_id = ?`, agentId, occurrenceId)?.amount ?? 0);
+    const blocked = agent.npd_status_checked_at ? 0 : Math.max(0, mature - Number(settlement.prepared) - Number(settlement.pending) - Number(settlement.settled) + recovered);
+    return { earned_total: earned, accrued_total: mature, payable_gross_total: mature, blocked_payable_total: blocked, prepared_total: Number(settlement.prepared), pending_document_total: Number(settlement.pending), settled_total: Number(settlement.settled), externally_recovered_total: recovered, late_adjustment_exposure: 0, available_to_settle: Math.max(0, mature - blocked - Number(settlement.prepared) - Number(settlement.pending) - Number(settlement.settled) + recovered) };
+  }
+
+  prepareSettlement(input: { agent_id: string; occurrence_id: string; amount_kopecks: number; method: string }, idempotencyKey: string, adminId: string) {
+    const keyHash = sha256(idempotencyKey); const payloadHash = sha256(canonical(input));
+    return withImmediateTransaction(this.db, () => {
+      const replay = one(this.db, `SELECT rsi.canonical_request_hash, rs.* FROM reward_settlement_idempotency rsi
+        JOIN reward_settlements rs ON rs.id = rsi.settlement_id WHERE rsi.idempotency_key_hash = ?`, keyHash);
+      if (replay) {
+        if (replay.canonical_request_hash !== payloadHash) throw new DomainError("IDEMPOTENCY_CONFLICT", 409);
+        return replay;
+      }
+      const agent = one(this.db, "SELECT * FROM agents WHERE id = ?", input.agent_id);
+      if (!agent) throw new DomainError("AGENT_NOT_FOUND", 404);
+      const occurrence = one(this.db, "SELECT fulfillment_status FROM occurrences WHERE id = ?", input.occurrence_id);
+      if (!occurrence || occurrence.fulfillment_status !== "COMPLETED") throw new DomainError("OCCURRENCE_NOT_COMPLETED", 409);
+      const balance = this.rewardBalance(input.agent_id, input.occurrence_id);
+      if (balance.blocked_payable_total > 0) throw new DomainError("CONTRACTOR_STATUS_REVIEW", 409);
+      if (input.amount_kopecks > balance.available_to_settle) throw new DomainError("SETTLEMENT_EXCEEDS_AVAILABLE", 409);
+      const settlementId = id();
+      this.db.prepare(`INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id)
+        VALUES (?, ?, ?, ?, ?, 'PREPARED', ?, ?, ?)`).run(settlementId, input.agent_id, input.occurrence_id, input.amount_kopecks, input.method, agent.contractor_type, now(), adminId);
+      this.db.prepare("INSERT INTO reward_settlement_idempotency(idempotency_key_hash, canonical_request_hash, settlement_id) VALUES (?, ?, ?)").run(keyHash, payloadHash, settlementId);
+      return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
+    });
+  }
+
+  markSettlementPaymentMade(settlementId: string, confirmationText: string) {
+    if (confirmationText !== "I confirm the money was transferred") throw new DomainError("CONFIRMATION_REQUIRED", 422);
+    const changed = this.db.prepare("UPDATE reward_settlements SET status = 'PENDING_DOCUMENT', payment_made_at = ? WHERE id = ? AND status = 'PREPARED'").run(now(), settlementId);
+    if (!changed.changes) throw new DomainError("SETTLEMENT_TRANSITION_FORBIDDEN", 409);
+    return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
+  }
+
+  completeSettlementDocuments(settlementId: string, input: { document_reference: string; npd_status_effective_on?: string }) {
+    const changed = this.db.prepare("UPDATE reward_settlements SET status = 'SETTLED', document_confirmed = 1, document_reference = ?, document_confirmed_at = ?, settled_at = ?, npd_status_effective_on = ? WHERE id = ? AND status = 'PENDING_DOCUMENT'").run(input.document_reference, now(), now(), input.npd_status_effective_on ?? null, settlementId);
+    if (!changed.changes) throw new DomainError("SETTLEMENT_TRANSITION_FORBIDDEN", 409);
+    return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
+  }
+
+  cancelSettlementBeforePayment(settlementId: string, input: { confirmation_text: string; reason: string }) {
+    if (input.confirmation_text !== `NOT PAID ${settlementId}`) throw new DomainError("CONFIRMATION_REQUIRED", 422);
+    const changed = this.db.prepare("UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT', cancelled_before_payment_at = ?, note = ? WHERE id = ? AND status = 'PREPARED'").run(now(), input.reason, settlementId);
+    if (!changed.changes) throw new DomainError("SETTLEMENT_TRANSITION_FORBIDDEN", 409);
+    return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
+  }
+
+  addSettlementRecovery(settlementId: string, input: { amount_recovered_kopecks: number; recovered_at: string; method: string; evidence_reference: string; note?: string }) {
+    const settlement = one(this.db, "SELECT id FROM reward_settlements WHERE id = ?", settlementId);
+    if (!settlement) throw new DomainError("SETTLEMENT_NOT_FOUND", 404);
+    this.db.prepare("INSERT INTO settlement_recoveries(id, settlement_id, amount_recovered_kopecks, recovered_at, method, evidence_reference, note) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id(), settlementId, input.amount_recovered_kopecks, input.recovered_at, input.method, input.evidence_reference, input.note ?? null);
+    return one(this.db, "SELECT * FROM settlement_recoveries WHERE settlement_id = ? ORDER BY rowid DESC LIMIT 1", settlementId)!;
+  }
+
+  async submitRequestedRefunds() {
+    const requests = many(this.db, `SELECT r.*, p.provider_payment_id FROM refunds r JOIN payments p ON p.id = r.payment_id WHERE r.status = 'REQUESTED'`);
+    for (const refund of requests) {
+      const claimed = withImmediateTransaction(this.db, () => this.db.prepare("UPDATE refunds SET status = 'SUBMITTING', submission_started_at = ?, attempts = attempts + 1 WHERE id = ? AND status = 'REQUESTED'").run(now(), refund.id).changes);
+      if (!claimed) continue;
+      try {
+        if (!refund.provider_payment_id) throw new Error("Provider payment reference is absent.");
+        const submitted = await this.provider.refund({ refundId: String(refund.id), providerPaymentId: String(refund.provider_payment_id), amountKopecks: Number(refund.amount_kopecks), idempotencyKey: String(refund.idempotency_key_hash) });
+        this.db.prepare("UPDATE refunds SET status = 'RECONCILING', provider_reference = ?, last_reconcile_at = ? WHERE id = ? AND status = 'SUBMITTING'").run(submitted.providerReference, now(), refund.id);
+      } catch (error) {
+        this.db.prepare("UPDATE refunds SET status = 'SUBMIT_UNKNOWN', last_error = ? WHERE id = ? AND status = 'SUBMITTING'").run(error instanceof Error ? error.message : "Refund submission failed", refund.id);
+      }
+    }
+  }
+
+  async reconcilePayment(paymentId: string) {
+    const payment = one(this.db, "SELECT * FROM payments WHERE id = ?", paymentId);
+    if (!payment) throw new DomainError("PAYMENT_NOT_FOUND", 404);
+    if (!payment.provider_payment_id) throw new DomainError("PROVIDER_REFERENCE_REQUIRED", 422);
+    const observed = await this.provider.reconcilePayment({ providerPaymentId: String(payment.provider_payment_id) });
+    this.db.prepare("UPDATE payments SET last_reconcile_at = ?, updated_at = ? WHERE id = ?").run(now(), now(), paymentId);
+    if (observed.status === "PAID" && observed.capturedAmountKopecks !== undefined) return this.markPaymentPaid(paymentId, observed.capturedAmountKopecks, String(payment.provider_payment_id));
+    if (observed.status === "FAILED") { this.db.prepare("UPDATE payments SET status = 'CANCELLED', updated_at = ? WHERE id = ?").run(now(), paymentId); return one(this.db, "SELECT * FROM payments WHERE id = ?", paymentId)!; }
+    this.db.prepare("UPDATE payments SET status = 'REVIEW_REQUIRED', updated_at = ? WHERE id = ?").run(now(), paymentId);
+    return one(this.db, "SELECT * FROM payments WHERE id = ?", paymentId)!;
+  }
+
+  async reconcileRefund(refundId: string) {
+    const refund = one(this.db, "SELECT r.*, p.provider_payment_id FROM refunds r JOIN payments p ON p.id = r.payment_id WHERE r.id = ?", refundId);
+    if (!refund) throw new DomainError("REFUND_NOT_FOUND", 404);
+    if (!refund.provider_payment_id) throw new DomainError("PROVIDER_REFERENCE_REQUIRED", 422);
+    const observed = await this.provider.reconcileRefund({ providerPaymentId: String(refund.provider_payment_id), providerReference: refund.provider_reference ? String(refund.provider_reference) : null, amountKopecks: Number(refund.amount_kopecks), idempotencyKey: String(refund.idempotency_key_hash) });
+    this.db.prepare("UPDATE refunds SET last_reconcile_at = ?, provider_observed_total_refunded = ? WHERE id = ?").run(now(), observed.refundedAmountKopecks ?? null, refundId);
+    if (observed.status === "SUCCEEDED" && observed.refundedAmountKopecks === Number(refund.amount_kopecks)) {
+      return withImmediateTransaction(this.db, () => {
+        this.db.prepare("UPDATE refunds SET status = 'SUCCEEDED', succeeded_at = ? WHERE id = ?").run(now(), refundId);
+        const totals = one(this.db, "SELECT COALESCE(SUM(amount_kopecks), 0) AS amount FROM refunds WHERE payment_id = ? AND status = 'SUCCEEDED'", refund.payment_id)!;
+        const payment = one(this.db, "SELECT captured_amount_kopecks FROM payments WHERE id = ?", refund.payment_id)!;
+        this.db.prepare("UPDATE payments SET status = ?, updated_at = ? WHERE id = ?").run(Number(totals.amount) >= Number(payment.captured_amount_kopecks) ? "REFUNDED" : "PARTIALLY_REFUNDED", now(), refund.payment_id);
+        const order = one(this.db, "SELECT customer_email, customer_email_hash FROM orders WHERE id = ?", refund.order_id)!;
+        this.enqueueEmail("REFUND_SUCCEEDED", String(order.customer_email), String(order.customer_email_hash), "refund-succeeded", refundId, { refund_id: refundId, amount_kopecks: refund.amount_kopecks });
+        return one(this.db, "SELECT * FROM refunds WHERE id = ?", refundId)!;
+      });
+    }
+    if (observed.status === "FAILED") { this.db.prepare("UPDATE refunds SET status = 'FAILED', failed_at = ? WHERE id = ?").run(now(), refundId); return one(this.db, "SELECT * FROM refunds WHERE id = ?", refundId)!; }
+    this.db.prepare("UPDATE refunds SET status = 'REVIEW_REQUIRED' WHERE id = ?").run(refundId);
+    return one(this.db, "SELECT * FROM refunds WHERE id = ?", refundId)!;
+  }
+
+  async reconcilePendingRefunds() {
+    const refunds = many(this.db, "SELECT id FROM refunds WHERE status IN ('RECONCILING', 'SUBMIT_UNKNOWN') ORDER BY created_at LIMIT 50");
+    for (const refund of refunds) {
+      try { await this.reconcileRefund(String(refund.id)); } catch { /* retain the durable refund command for admin reconciliation */ }
+    }
+  }
+
+  async processEmailOutbox() {
+    const rows = many(this.db, "SELECT * FROM email_outbox WHERE status IN ('PENDING', 'SEND_UNKNOWN') ORDER BY created_at LIMIT 50");
+    for (const outbox of rows) {
+      const isUnknown = outbox.status === "SEND_UNKNOWN";
+      // A known provider job is always reconciled before another send. It is
+      // never considered proof that the original request was not dispatched.
+      if (isUnknown && outbox.job_id) {
+        try { this.applyEmailObservation(outbox.id as string, await this.emailProvider.lookup({ jobId: String(outbox.job_id), idempotencyKey: String(outbox.provider_idempotence_key) })); } catch { /* retain SEND_UNKNOWN */ }
+        continue;
+      }
+      if (isUnknown) {
+        try {
+          const observed = await this.emailProvider.lookup({ idempotencyKey: String(outbox.provider_idempotence_key) });
+          if (observed.status !== "UNKNOWN") { this.applyEmailObservation(outbox.id as string, observed); continue; }
+        } catch { /* same idempotency key will be used if a retry becomes possible */ }
+      }
+      const claimed = withImmediateTransaction(this.db, () => this.db.prepare(`UPDATE email_outbox SET status = 'SENDING', lease_owner = ?, lease_expires_at = datetime('now', '+120 seconds'), send_started_at = COALESCE(send_started_at, ?), provider_request_started_at = ?, attempts = attempts + 1
+        WHERE id = ? AND status IN ('PENDING', 'SEND_UNKNOWN')`).run(`worker-${process.pid}`, now(), now(), outbox.id).changes);
+      if (!claimed) continue;
+      try {
+        const payload = this.emailPayload(outbox);
+        const sent = await this.emailProvider.send({ recipientEmail: String(outbox.recipient_email), template: String(outbox.template), payload, idempotencyKey: String(outbox.provider_idempotence_key), outboxId: String(outbox.id) });
+        this.db.prepare("UPDATE email_outbox SET status = 'ACCEPTED', job_id = ?, lease_owner = NULL, lease_expires_at = NULL WHERE id = ? AND status = 'SENDING'").run(sent.jobId, outbox.id);
+      } catch (error) {
+        // A response can be lost after dispatch. Retain SEND_UNKNOWN, not PENDING,
+        // and keep the original provider idempotence key for all future recovery.
+        this.db.prepare("UPDATE email_outbox SET status = 'SEND_UNKNOWN', lease_owner = NULL, lease_expires_at = NULL, last_error = ? WHERE id = ? AND status = 'SENDING'").run(error instanceof Error ? error.message : "Email dispatch failed", outbox.id);
+      }
+    }
+  }
+
+  /** Daily reconciliation records disagreement as review work; it never rewrites local history. */
+  async collectProviderDrift() {
+    const payments = many(this.db, "SELECT id, provider_payment_id, status, captured_amount_kopecks FROM payments WHERE provider_payment_id IS NOT NULL AND status IN ('PENDING', 'PAID', 'PARTIALLY_REFUNDED', 'REFUNDED')");
+    for (const payment of payments) {
+      try {
+        const observed = await this.provider.reconcilePayment({ providerPaymentId: String(payment.provider_payment_id) });
+        const mismatch = (payment.status === "PAID" && observed.status !== "PAID") || (payment.status === "PENDING" && observed.status === "PAID");
+        if (mismatch) this.recordProviderDrift("PAYMENT", String(payment.id), { local_status: payment.status, local_amount_kopecks: payment.captured_amount_kopecks, observed });
+      } catch { /* live providers are deliberately excluded from readiness */ }
+    }
+    const refunds = many(this.db, "SELECT r.id, r.provider_reference, r.status, r.amount_kopecks, r.idempotency_key_hash, p.provider_payment_id FROM refunds r JOIN payments p ON p.id = r.payment_id WHERE r.provider_reference IS NOT NULL AND r.status IN ('RECONCILING', 'SUCCEEDED', 'FAILED', 'REVIEW_REQUIRED')");
+    for (const refund of refunds) {
+      try {
+        if (!refund.provider_payment_id) continue;
+        const observed = await this.provider.reconcileRefund({ providerPaymentId: String(refund.provider_payment_id), providerReference: String(refund.provider_reference), amountKopecks: Number(refund.amount_kopecks), idempotencyKey: String(refund.idempotency_key_hash) });
+        const mismatch = (refund.status === "SUCCEEDED" && observed.status !== "SUCCEEDED") || (refund.status === "FAILED" && observed.status === "SUCCEEDED");
+        if (mismatch) this.recordProviderDrift("REFUND", String(refund.id), { local_status: refund.status, local_amount_kopecks: refund.amount_kopecks, observed });
+      } catch { /* provider unavailable */ }
+    }
+  }
+
+  private emailPayload(outbox: Row) {
+    const payload = JSON.parse(String(outbox.payload_snapshot)) as Record<string, unknown>;
+    if (outbox.type === "TICKET" && outbox.payload_ref) {
+      const ticket = one(this.db, "SELECT capability_ciphertext, capability_nonce FROM tickets WHERE id = ?", outbox.payload_ref);
+      if (!ticket) throw new Error("Ticket email references no ticket.");
+      payload.ticket_url = `${process.env.COMMERCE_PUBLIC_ORIGIN ?? "https://flexperiment.ru"}/ticket#${decryptTicketCapability(String(ticket.capability_ciphertext), String(ticket.capability_nonce))}`;
+    }
+    return payload;
+  }
+
+  private enqueueEmail(type: string, recipientEmail: string, recipientEmailHash: string, template: string, payloadRef: string, payload: Record<string, unknown>) {
+    this.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_ref, payload_snapshot, provider_idempotence_key)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(id(), type, recipientEmail, recipientEmailHash, template, payloadRef, JSON.stringify(payload), publicId());
+  }
+
+  private recordProviderDrift(entityType: "PAYMENT" | "REFUND", entityId: string, observed: Record<string, unknown>) {
+    const existing = one(this.db, "SELECT id FROM provider_drift_reviews WHERE entity_type = ? AND entity_id = ? AND status = 'OPEN'", entityType, entityId);
+    if (!existing) this.db.prepare("INSERT INTO provider_drift_reviews(id, entity_type, entity_id, observed_json) VALUES (?, ?, ?, ?)").run(id(), entityType, entityId, JSON.stringify(observed));
+  }
+
+  private applyEmailObservation(outboxId: string, observed: { status: string; jobId?: string }) {
+    const terminal = ["ACCEPTED", "SENT", "DELIVERED", "BOUNCED", "FAILED"];
+    if (!terminal.includes(observed.status)) return;
+    const timestamps = observed.status === "SENT" ? ", sent_at = ?" : observed.status === "DELIVERED" ? ", delivered_at = ?" : observed.status === "BOUNCED" ? ", bounced_at = ?" : "";
+    this.db.prepare(`UPDATE email_outbox SET status = ?, job_id = COALESCE(job_id, ?), lease_owner = NULL, lease_expires_at = NULL${timestamps} WHERE id = ?`).run(observed.status, observed.jobId ?? null, ...(timestamps ? [now()] : []), outboxId);
+  }
+
+  applyUnisenderDelivery(input: { outboxId: string; status: "ACCEPTED" | "SENT" | "DELIVERED" | "BOUNCED" | "FAILED"; jobId?: string; semanticKey: string }) {
+    return withImmediateTransaction(this.db, () => {
+      const outbox = one(this.db, "SELECT id FROM email_outbox WHERE id = ?", input.outboxId);
+      if (!outbox) throw new DomainError("UNISENDER_OUTBOX_NOT_FOUND", 404);
+      const inserted = this.db.prepare("INSERT OR IGNORE INTO email_provider_events(id, outbox_id, semantic_key, status, job_id) VALUES (?, ?, ?, ?, ?)").run(id(), input.outboxId, input.semanticKey, input.status, input.jobId ?? null);
+      if (!inserted.changes) return { duplicate: true };
+      this.applyEmailObservation(input.outboxId, { status: input.status, jobId: input.jobId });
+      return { duplicate: false };
+    });
+  }
+
+  private withAdminCommand<T extends Row>(command: string, idempotencyKey: string, payload: unknown, operation: () => T) {
+    const keyHash = sha256(idempotencyKey); const payloadHash = sha256(canonical(payload));
+    return withImmediateTransaction(this.db, () => {
+      const existing = one(this.db, "SELECT canonical_request_hash, entity_id FROM admin_command_idempotency WHERE command = ? AND idempotency_key_hash = ?", command, keyHash);
+      if (existing) {
+        if (existing.canonical_request_hash !== payloadHash) throw new DomainError("IDEMPOTENCY_CONFLICT", 409);
+        const table = command === "occurrence-cancel" ? "occurrences" : "reward_settlements";
+        return one(this.db, `SELECT * FROM ${table} WHERE id = ?`, existing.entity_id)! as T;
+      }
+      const created = operation();
+      this.db.prepare("INSERT INTO admin_command_idempotency(command, idempotency_key_hash, canonical_request_hash, entity_id) VALUES (?, ?, ?, ?)").run(command, keyHash, payloadHash, created.id);
+      return created;
+    });
+  }
+
+  recoverStaleCommands() {
+    const timestamp = now();
+    this.db.prepare("UPDATE payments SET state = 'CREATE_UNKNOWN', updated_at = ? WHERE state = 'CREATING' AND creation_started_at < datetime('now', '-120 seconds')").run(timestamp);
+    this.db.prepare("UPDATE refunds SET status = 'SUBMIT_UNKNOWN' WHERE status = 'SUBMITTING' AND submission_started_at < datetime('now', '-120 seconds')").run();
+    this.db.prepare("UPDATE email_outbox SET status = 'SEND_UNKNOWN' WHERE status = 'SENDING' AND lease_expires_at < ?").run(timestamp);
+  }
+}
