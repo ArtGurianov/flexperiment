@@ -10,7 +10,12 @@ ENV NODE_ENV=production
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY package.json pnpm-lock.yaml ./
 COPY commerce ./commerce
-RUN mkdir -p /var/lib/flexperiment && chown -R node:node /var/lib/flexperiment
+# The runtime stage is a fresh Node image: activate the package manager used
+# by CMD here rather than relying on the dependencies stage's Corepack shim.
+RUN corepack enable \
+  && pnpm --version \
+  && mkdir -p /var/lib/flexperiment \
+  && chown -R node:node /var/lib/flexperiment
 USER node
 EXPOSE 3001
 CMD ["pnpm", "commerce:start"]
