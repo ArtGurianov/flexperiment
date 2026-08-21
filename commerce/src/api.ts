@@ -13,6 +13,7 @@ import { agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSc
 
 type AppBindings = { Variables: { adminId?: string } };
 const noStore = (headers: Headers) => headers.set("Cache-Control", "no-store");
+const publicBrowserOrigin = () => process.env.COMMERCE_PUBLIC_ORIGIN ?? "https://flexperiment.ru";
 const canonicalWebhookPayload = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(canonicalWebhookPayload).join(",")}]`;
   if (value && typeof value === "object") return `{${Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right)).map(([key, entry]) => `${JSON.stringify(key)}:${canonicalWebhookPayload(entry)}`).join(",")}}`;
@@ -45,6 +46,20 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     }
     console.error("commerce request failed", error instanceof Error ? error.message : "unknown error");
     return c.json({ error: { code: "INTERNAL_ERROR" } }, 500);
+  });
+
+  app.use("/v1/public/*", async (c, next) => {
+    const origin = c.req.header("Origin");
+    if (origin) {
+      if (origin !== publicBrowserOrigin()) throw new DomainError("CORS_ORIGIN_FORBIDDEN", 403);
+      c.header("Access-Control-Allow-Origin", origin);
+      c.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+      c.header("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key");
+      c.header("Access-Control-Max-Age", "600");
+      c.header("Vary", "Origin");
+      if (c.req.method === "OPTIONS") return c.body(null, 204);
+    }
+    await next();
   });
 
   app.get("/healthz", (c) => c.json({ ok: true }));

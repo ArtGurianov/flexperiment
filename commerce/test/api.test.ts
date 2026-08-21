@@ -21,12 +21,24 @@ function appFixture() {
 }
 
 describe("commerce HTTP boundary", () => {
-  it("serves public commerce same-origin without CORS headers", async () => {
+  it("allows the configured public browser origin and required checkout headers", async () => {
     const { db, app } = appFixture();
-    const response = await app.request("http://flexperiment.ru/v1/public/tour", { headers: { Origin: "https://flexperiment.ru", "x-commerce-trusted-client-ip": "127.0.0.1" } });
+    const response = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers: { Origin: "https://flexperiment.ru", "x-commerce-trusted-client-ip": "127.0.0.1" } });
     expect(response.status).toBe(200);
-    expect(response.headers.get("access-control-allow-origin")).toBeNull();
+    expect(response.headers.get("access-control-allow-origin")).toBe("https://flexperiment.ru");
+    expect(response.headers.get("access-control-allow-headers")).toContain("Idempotency-Key");
     expect(response.headers.get("cache-control")).toBe("no-store");
+    db.close();
+  });
+
+  it("answers public checkout preflight and rejects an untrusted browser origin", async () => {
+    const { db, app } = appFixture();
+    const preflight = await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "OPTIONS", headers: { Origin: "https://flexperiment.ru", "Access-Control-Request-Method": "POST", "Access-Control-Request-Headers": "content-type,idempotency-key" } });
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get("access-control-allow-origin")).toBe("https://flexperiment.ru");
+    const rejected = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers: { Origin: "https://untrusted.example" } });
+    expect(rejected.status).toBe(403);
+    expect(rejected.headers.get("access-control-allow-origin")).toBeNull();
     db.close();
   });
 

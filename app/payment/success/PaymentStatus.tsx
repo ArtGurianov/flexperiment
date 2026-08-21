@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { commerceApiUrl } from "@/lib/commerce-api";
 
 export default function PaymentStatus() {
   const params = useSearchParams();
@@ -16,7 +17,7 @@ export default function PaymentStatus() {
     const poll = async () => {
       if (Date.now() - started >= 10 * 60_000) { if (!stopped) setTimedOut(true); return; }
       try {
-        const response = await fetch(`/v1/public/checkout-status/${encodeURIComponent(statusId)}`, { cache: "no-store" });
+        const response = await fetch(commerceApiUrl(`/v1/public/checkout-status/${encodeURIComponent(statusId)}`), { cache: "no-store" });
         const data = await response.json();
         if (!response.ok) throw new Error("STATUS_FAILED");
         if (stopped) return;

@@ -2,9 +2,11 @@
 
 The public Next.js app remains a static export. The separately deployed single
 Hono runtime owns all `/v1/*` requests, SQLite WAL data, and recovery work.
-The reverse proxy must send public paths other than `/v1/*` to the export and
-must forward only a proxy-authenticated client address in
-`X-Commerce-Trusted-Client-IP`. It must not emit CORS headers.
+The static frontend calls the Commerce runtime at `https://api.flexperiment.ru`
+using `NEXT_PUBLIC_COMMERCE_API_URL`, which must be set when the static frontend
+is built. The API accepts browser CORS only from `https://flexperiment.ru` for
+public Commerce routes. It must receive a proxy-authenticated client address in
+`X-Commerce-Trusted-Client-IP` and must not use wildcard CORS.
 
 `admin.flexperiment.ru` is a second same-origin pair. Its `fx_admin_session`
 cookie is host-only, `HttpOnly`, `Secure`, and `SameSite=Strict`; do not change

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { commerceApiUrl } from "@/lib/commerce-api";
 
 export default function TicketViewer() {
   const [result, setResult] = useState<"loading" | "ready" | "error">("loading");
@@ -9,7 +10,7 @@ export default function TicketViewer() {
     const capability = window.location.hash.slice(1);
     history.replaceState(null, "", "/ticket");
     if (!capability) { queueMicrotask(() => setResult("error")); return; }
-    fetch("/v1/public/ticket", { headers: { Authorization: `Bearer ${capability}` }, cache: "no-store" })
+    fetch(commerceApiUrl("/v1/public/ticket"), { headers: { Authorization: `Bearer ${capability}` }, cache: "no-store" })
       .then(async (response) => response.ok ? response.json() : Promise.reject())
       .then((data) => { setTicket(data); setResult("ready"); })
       .catch(() => setResult("error"));

@@ -2,6 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { commerceApiUrl } from "@/lib/commerce-api";
 
 type Occurrence = {
   id: string;
@@ -50,7 +51,7 @@ export default function CheckoutFlow() {
 
   useEffect(() => {
     let current = true;
-    fetch("/v1/public/tour", { cache: "no-store" })
+    fetch(commerceApiUrl("/v1/public/tour"), { cache: "no-store" })
       .then(async (response) => response.ok ? response.json() : Promise.reject(new Error("TOUR_UNAVAILABLE")))
       .then((data: { cities: Occurrence[] }) => {
         if (!current) return;
@@ -66,7 +67,7 @@ export default function CheckoutFlow() {
     if (!id) return;
     setLoading(true); setMessage(null);
     try {
-      const response = await fetch("/v1/public/checkout-context", {
+      const response = await fetch(commerceApiUrl("/v1/public/checkout-context"), {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ occurrence_id: id, promo_code: promo || undefined }),
       });
@@ -98,7 +99,7 @@ export default function CheckoutFlow() {
     const stored = storage.set(key, JSON.stringify(attempt));
     if (!stored) setMessage("Не закрывайте страницу до завершения оплаты: браузер не дал сохранить попытку.");
     try {
-      const response = await fetch("/v1/public/checkouts", {
+      const response = await fetch(commerceApiUrl("/v1/public/checkouts"), {
         method: "POST",
         headers: { "Content-Type": "application/json", "Idempotency-Key": attempt.idempotencyKey },
         body: JSON.stringify({ quote_id: quote.quote_id, customer_name: name, customer_email: email, eligibility_confirmed: eligibility, offer_accepted: offer, pd_consent_accepted: consent }),
