@@ -14,6 +14,11 @@ replace legal review or authorize a publication on its own.
 4. Verify `GET /v1/public/legal-config` and a fresh checkout context still
    report the old active release. Checkout links must therefore still resolve
    to that release's immutable archive URLs.
+5. Immediately before any CheckoutFlow deployment, run the read-only active
+   release preflight against the production database:
+   `pnpm commerce:legal-release:preflight`. It must verify every archive URL
+   and SHA-256 from the active manifest; it does not publish or activate a
+   legal release.
 
 ## Publish
 

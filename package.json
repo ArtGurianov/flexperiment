@@ -14,6 +14,7 @@
     "commerce:provider:probe": "tsx commerce/src/provider-probe.ts",
     "commerce:sandbox:create-probe": "tsx commerce/src/sandbox-create-probe.ts",
     "commerce:legal-release:publish": "tsx commerce/src/publish-legal-release.ts",
+    "commerce:legal-release:preflight": "tsx commerce/src/verify-active-legal-archives.ts",
     "admin:build": "pnpm --filter @flexperiment/admin build",
     "admin:dev": "pnpm --filter @flexperiment/admin dev",
     "test": "vitest run",

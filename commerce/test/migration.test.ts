@@ -43,6 +43,9 @@ describe("0012 refund hardening migration", () => {
     expect(db.prepare("SELECT public_order_number FROM orders WHERE id = ?").get(order.id)).toEqual({ public_order_number: order.public_order_number });
     expect(db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outboxId)).toEqual({ status: "PENDING" });
     expect(db.prepare("SELECT outbox_id FROM email_provider_events WHERE outbox_id = ?").get(outboxId)).toEqual({ outbox_id: outboxId });
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    expect((db.prepare("PRAGMA foreign_key_list(email_provider_events)").all() as { table: string; from: string; to: string }[]).map(({ table, from, to }) => ({ table, from, to }))).toEqual([{ table: "email_outbox", from: "outbox_id", to: "id" }]);
+    expect(db.prepare("SELECT type, name, tbl_name FROM sqlite_master WHERE tbl_name IN ('email_outbox', 'email_provider_events') AND type IN ('index', 'trigger') AND name NOT LIKE 'sqlite_autoindex_%' ORDER BY type, name").all()).toEqual([]);
     expect(() => db.prepare("UPDATE orders SET public_order_number = NULL WHERE id = ?").run(order.id)).toThrow("PUBLIC_ORDER_NUMBER_IMMUTABLE");
     expect(() => db.prepare("UPDATE orders SET public_order_number = 'FX-CHANGED' WHERE id = ?").run(order.id)).toThrow("PUBLIC_ORDER_NUMBER_IMMUTABLE");
     db.close();

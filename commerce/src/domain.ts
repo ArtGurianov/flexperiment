@@ -282,9 +282,27 @@ export class CommerceDomain {
       const currentOrder = order && this.customerRefundOrder(String(order.id));
       if (!currentOrder || this.customerRefundEligibility(currentOrder) !== "ELIGIBLE") return { accepted: true };
 
-      // A later request supersedes an unused earlier email. The raw capability
-      // is encrypted in its token row, never kept in outbox JSON or API logs.
-      this.db.prepare("UPDATE customer_refund_confirmation_tokens SET invalidated_at = ? WHERE order_id = ? AND consumed_at IS NULL AND invalidated_at IS NULL").run(now(), order.id);
+      // A later request can supersede only a definitely unsent capability.
+      // Once the worker has claimed a message, its provider request may already
+      // be in flight; retain that token rather than producing two usable links.
+      this.db.prepare(`UPDATE customer_refund_confirmation_tokens
+        SET invalidated_at = ?
+        WHERE order_id = ? AND consumed_at IS NULL AND invalidated_at IS NULL
+          AND EXISTS (
+            SELECT 1 FROM email_outbox e
+            WHERE e.type = 'CUSTOMER_REFUND_CONFIRMATION'
+              AND e.payload_ref = customer_refund_confirmation_tokens.id
+              AND e.status = 'PENDING'
+          )`).run(now(), order.id);
+      const reusable = one(this.db, `SELECT t.id
+        FROM customer_refund_confirmation_tokens t
+        WHERE t.order_id = ? AND t.consumed_at IS NULL AND t.invalidated_at IS NULL AND t.expires_at > ?
+          AND NOT EXISTS (
+            SELECT 1 FROM email_outbox e
+            WHERE e.type = 'CUSTOMER_REFUND_CONFIRMATION' AND e.payload_ref = t.id AND e.status = 'PENDING'
+          )
+        ORDER BY t.created_at DESC LIMIT 1`, order.id, new Date(this.clock()).toISOString());
+      if (reusable) return { accepted: true };
       const capability = publicId();
       const encrypted = encryptTicketCapability(capability);
       const tokenId = id();
@@ -505,20 +523,24 @@ export class CommerceDomain {
       this.db.prepare("UPDATE occurrences SET fulfillment_status = 'CANCELLED', sales_status = 'CLOSED', cancelled_at = ?, cancellation_reason = ?, updated_at = ? WHERE id = ?").run(now(), input.reason, now(), occurrenceId);
       // Entitlement cancellation is deliberately limited to active bookings.
       // It must not decide which captured payments receive a refund.
-      const bookings = many(this.db, `SELECT b.id, ord.customer_email, ord.customer_email_hash, ord.public_order_number
-        FROM bookings b JOIN payments p ON p.order_id = b.order_id JOIN orders ord ON ord.id = b.order_id WHERE b.occurrence_id = ? AND b.status IN ('RESERVED', 'CONFIRMED')`, occurrenceId);
+      const bookings = many(this.db, "SELECT id FROM bookings WHERE occurrence_id = ? AND status IN ('RESERVED', 'CONFIRMED')", occurrenceId);
       for (const booking of bookings) {
         this.db.prepare("UPDATE bookings SET status = 'CANCELLED', cancelled_at = ?, cancellation_reason = ? WHERE id = ?").run(now(), "OCCURRENCE_CANCELLED", booking.id);
         this.db.prepare("UPDATE tickets SET status = 'VOID', voided_at = ? WHERE booking_id = ? AND status = 'VALID'").run(now(), booking.id);
-        this.enqueueEmail("OCCURRENCE_CANCELLED", String(booking.customer_email), String(booking.customer_email_hash), "occurrence-cancelled", String(booking.id), { occurrence_id: occurrenceId, booking_id: booking.id, reason: input.reason, public_order_number: booking.public_order_number });
       }
-      // Economic unwind is independent of booking status. A prior technical or
-      // customer cancellation must never strand money when the organizer later
-      // cancels the whole occurrence.
-      const capturedPayments = many(this.db, `SELECT p.id, p.captured_amount_kopecks
+      // Financial unwind and organizer notice are independent of booking
+      // status. A prior technical or customer cancellation must not strand
+      // money or suppress the affected paid order's cancellation notice.
+      const capturedPayments = many(this.db, `SELECT p.id, p.captured_amount_kopecks, ord.id AS order_id,
+          ord.customer_email, ord.customer_email_hash, ord.public_order_number
         FROM payments p JOIN orders ord ON ord.id = p.order_id
         WHERE ord.occurrence_id = ? AND p.captured_amount_kopecks > 0`, occurrenceId);
-      for (const payment of capturedPayments) this.ensureFullCapturedRefund(String(payment.id), "OCCURRENCE_CANCELLED", Number(payment.captured_amount_kopecks));
+      for (const payment of capturedPayments) {
+        this.ensureFullCapturedRefund(String(payment.id), "OCCURRENCE_CANCELLED", Number(payment.captured_amount_kopecks));
+        this.enqueueEmail("OCCURRENCE_CANCELLED", String(payment.customer_email), String(payment.customer_email_hash), "occurrence-cancelled", String(payment.order_id), {
+          occurrence_id: occurrenceId, order_id: payment.order_id, reason: input.reason, public_order_number: payment.public_order_number,
+        });
+      }
       this.recordAdminCommandAudit(adminId, "OCCURRENCE_CANCELLED", "occurrence", occurrenceId, input.reason, idempotencyKey, payload);
       return one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId)!;
     });
@@ -530,7 +552,6 @@ export class CommerceDomain {
     if (occurrence.fulfillment_status !== "CANCELLED") throw new DomainError("OCCURRENCE_NOT_CANCELLED", 409);
     return one(this.db, `WITH payment_totals AS (
       SELECT p.id, p.captured_amount_kopecks AS captured,
-        COALESCE(ro.target_refunded_amount_kopecks, 0) AS refund_target,
         COALESCE((SELECT SUM(r.amount_kopecks) FROM refunds r WHERE r.payment_id = p.id AND r.status = 'SUCCEEDED'), 0) AS refund_succeeded,
         COALESCE((SELECT COUNT(*) FROM refunds r WHERE r.payment_id = p.id AND r.status = 'REVIEW_REQUIRED'), 0) AS refund_review_count,
         CASE WHEN ro.status = 'REVIEW_REQUIRED' THEN 1 ELSE 0 END AS obligation_review
@@ -540,10 +561,10 @@ export class CommerceDomain {
     ) SELECT
       COUNT(*) AS paid_orders,
       COALESCE(SUM(captured), 0) AS captured_kopecks,
-      COALESCE(SUM(refund_target), 0) AS refund_target_kopecks,
+      COALESCE(SUM(captured), 0) AS refund_target_kopecks,
       COALESCE(SUM(refund_succeeded), 0) AS refund_succeeded_kopecks,
-      COALESCE(SUM(CASE WHEN refund_target > refund_succeeded THEN refund_target - refund_succeeded ELSE 0 END), 0) AS refund_outstanding_kopecks,
-      COALESCE(SUM(CASE WHEN refund_review_count > 0 OR obligation_review = 1 THEN CASE WHEN refund_target > refund_succeeded THEN refund_target - refund_succeeded ELSE 0 END ELSE 0 END), 0) AS refund_needs_attention_kopecks,
+      COALESCE(SUM(CASE WHEN captured > refund_succeeded THEN captured - refund_succeeded ELSE 0 END), 0) AS refund_outstanding_kopecks,
+      COALESCE(SUM(CASE WHEN refund_review_count > 0 OR obligation_review = 1 THEN CASE WHEN captured > refund_succeeded THEN captured - refund_succeeded ELSE 0 END ELSE 0 END), 0) AS refund_needs_attention_kopecks,
       COALESCE(SUM(CASE WHEN refund_review_count > 0 OR obligation_review = 1 THEN 1 ELSE 0 END), 0) AS refund_needs_attention_count
       FROM payment_totals`, occurrenceId)!;
   }
@@ -807,7 +828,7 @@ export class CommerceDomain {
   async processEmailOutbox() {
     const rows = many(this.db, "SELECT * FROM email_outbox WHERE status IN ('PENDING', 'SEND_UNKNOWN') ORDER BY created_at LIMIT 50");
     for (const outbox of rows) {
-      if (outbox.type === "CUSTOMER_REFUND_CONFIRMATION" && !this.isCurrentRefundConfirmationOutbox(outbox)) {
+      if (outbox.status === "PENDING" && outbox.type === "CUSTOMER_REFUND_CONFIRMATION" && !this.isCurrentRefundConfirmationOutbox(outbox)) {
         // A later request superseded this capability, or it is no longer usable.
         // SKIPPED is terminal and deliberately not an email-provider failure.
         this.db.prepare("UPDATE email_outbox SET status = 'SKIPPED', lease_owner = NULL, lease_expires_at = NULL, last_error = NULL WHERE id = ? AND status IN ('PENDING', 'SEND_UNKNOWN')").run(outbox.id);
@@ -829,7 +850,7 @@ export class CommerceDomain {
       const claimed = withImmediateTransaction(this.db, () => {
         // Recheck inside the claim transaction so an invalidated queued token
         // cannot race into a fresh provider send.
-        if (outbox.type === "CUSTOMER_REFUND_CONFIRMATION" && !this.isCurrentRefundConfirmationOutbox(outbox)) {
+        if (outbox.status === "PENDING" && outbox.type === "CUSTOMER_REFUND_CONFIRMATION" && !this.isCurrentRefundConfirmationOutbox(outbox)) {
           this.db.prepare("UPDATE email_outbox SET status = 'SKIPPED', lease_owner = NULL, lease_expires_at = NULL, last_error = NULL WHERE id = ? AND status IN ('PENDING', 'SEND_UNKNOWN')").run(outbox.id);
           return 0;
         }

@@ -1,7 +1,8 @@
+import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import type { LegalManifest } from "../src/legal-manifest";
-import { LegalReleasePublishError, loadCanonicalLegalRelease, publishLegalRelease } from "../src/legal-release";
+import { LegalReleasePublishError, loadCanonicalLegalRelease, publishLegalRelease, verifyLegalArchiveHashes } from "../src/legal-release";
 
 const manifest = (offerHash = "a".repeat(64)): LegalManifest => ({ documents: {
   PUBLIC_OFFER: { document_id: "PUBLIC_OFFER", version: "2026-08-20", sha256: offerHash, current_url: "https://flexperiment.ru/legal/public-offer.md", archive_url: "https://archive.flexperiment.ru/legal/2026-08-21.1/public-offer.md", checkout_relevant: true },
@@ -42,5 +43,15 @@ describe("production legal-release publisher", () => {
   it("verifies a prepared archive release without changing the active current-document copies", () => {
     expect(loadCanonicalLegalRelease("commerce/legal/production-manifest.json").version).toBe("2026-08-21.1");
     expect(loadCanonicalLegalRelease("commerce/legal/production-manifest.2026-08-21.2.draft.json").version).toBe("2026-08-21.2");
+  });
+
+  it("verifies every active archive URL against its manifest hash", async () => {
+    const bytes = new TextEncoder().encode("immutable archive");
+    const hash = createHash("sha256").update(bytes).digest("hex");
+    const active = manifest(hash);
+    for (const document of Object.values(active.documents)) document.sha256 = hash;
+    await expect(verifyLegalArchiveHashes(active, async () => new Response(bytes, { status: 200 }))).resolves.toBeUndefined();
+    await expect(verifyLegalArchiveHashes(active, async () => new Response("changed", { status: 200 }))).rejects.toThrow("Archive hash does not match");
+    await expect(verifyLegalArchiveHashes(active, async () => new Response(null, { status: 404 }))).rejects.toThrow("returned HTTP 404");
   });
 });

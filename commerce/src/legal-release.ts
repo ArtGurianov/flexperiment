@@ -41,6 +41,25 @@ export const verifyLegalSourceHashes = (manifest: LegalManifest, root = process.
   }
 };
 
+/**
+ * Checks the immutable archive bytes that an active checkout release actually
+ * exposes. It is intentionally separate from publication and writes nothing.
+ */
+export const verifyLegalArchiveHashes = async (manifest: LegalManifest, request: typeof fetch = fetch) => {
+  for (const id of legalDocumentIds) {
+    const document = manifest.documents[id];
+    let response: Response;
+    try {
+      response = await request(document.archive_url, { redirect: "error" });
+    } catch (error) {
+      throw new LegalReleasePublishError(`Unable to fetch archive for ${id}: ${error instanceof Error ? error.message : "unknown error"}`);
+    }
+    if (!response.ok) throw new LegalReleasePublishError(`Archive for ${id} returned HTTP ${response.status}.`);
+    const actual = sha256(Buffer.from(await response.arrayBuffer()));
+    if (actual !== document.sha256) throw new LegalReleasePublishError(`Archive hash does not match the active manifest for ${id}.`);
+  }
+};
+
 export const loadCanonicalLegalRelease = (filename = process.env.COMMERCE_LEGAL_MANIFEST_PATH ?? "commerce/legal/production-manifest.json") => {
   let raw: unknown;
   try { raw = JSON.parse(readFileSync(resolve(process.cwd(), filename), "utf8")); }

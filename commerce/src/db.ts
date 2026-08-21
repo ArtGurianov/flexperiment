@@ -14,6 +14,13 @@ export function openDatabase(filename = process.env.COMMERCE_DATABASE_PATH ?? de
   return sqlite;
 }
 
+export function openReadOnlyDatabase(filename = process.env.COMMERCE_DATABASE_PATH ?? defaultPath) {
+  const sqlite = new Database(filename, { readonly: true, fileMustExist: true });
+  sqlite.pragma("foreign_keys = ON");
+  sqlite.pragma("busy_timeout = 5000");
+  return sqlite;
+}
+
 export function migrate(sqlite: Database.Database) {
   const migrationsDir = join(process.cwd(), "commerce", "migrations");
   if (!existsSync(migrationsDir)) throw new Error("Commerce migrations directory is missing.");
