@@ -10,12 +10,21 @@ export type OccurrenceAction = {
 export function occurrenceActionsFor(occurrence: { visibility?: unknown; sales_status?: unknown }): OccurrenceAction[] {
   const visibility = typeof occurrence.visibility === "string" ? occurrence.visibility : "";
   const salesStatus = typeof occurrence.sales_status === "string" ? occurrence.sales_status : "";
-  const actions: OccurrenceAction[] = [visibility === "PUBLISHED"
-    ? { label: "Скрыть", patch: { visibility: "HIDDEN" } }
-    : { label: "Опубликовать", patch: { visibility: "PUBLISHED" } }];
+  const state = `${visibility}:${salesStatus}`;
 
-  if (salesStatus === "OPEN") actions.push({ label: "Пауза", patch: { sales_status: "PAUSED" } }, { label: "Закрыть", patch: { sales_status: "CLOSED" } });
-  else if (salesStatus === "PAUSED") actions.push({ label: "Открыть продажи", patch: { sales_status: "OPEN" } }, { label: "Закрыть", patch: { sales_status: "CLOSED" } });
-  else if (salesStatus === "CLOSED") actions.push({ label: "Открыть продажи", patch: { sales_status: "OPEN" } });
-  return actions;
+  if (state === "HIDDEN:CLOSED") return [{ label: "Опубликовать", patch: { visibility: "PUBLISHED" } }];
+  if (state === "PUBLISHED:CLOSED") return [
+    { label: "Открыть продажи", patch: { sales_status: "OPEN" } },
+    { label: "Скрыть", patch: { visibility: "HIDDEN" } },
+  ];
+  if (state === "PUBLISHED:OPEN") return [
+    { label: "Пауза", patch: { sales_status: "PAUSED" } },
+    { label: "Закрыть", patch: { sales_status: "CLOSED" } },
+  ];
+  if (state === "PUBLISHED:PAUSED") return [
+    { label: "Открыть продажи", patch: { sales_status: "OPEN" } },
+    { label: "Закрыть", patch: { sales_status: "CLOSED" } },
+  ];
+
+  return [];
 }

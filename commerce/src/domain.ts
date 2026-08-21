@@ -31,6 +31,23 @@ const discountFor = (price: number, type: unknown, value: unknown) => {
   return 0;
 };
 
+const occurrenceState = (occurrence: Row) => `${occurrence.visibility}:${occurrence.sales_status}`;
+const allowedOccurrenceStateTransitions = new Set([
+  "HIDDEN:CLOSED->PUBLISHED:CLOSED",
+  "PUBLISHED:CLOSED->PUBLISHED:OPEN",
+  "PUBLISHED:CLOSED->HIDDEN:CLOSED",
+  "PUBLISHED:OPEN->PUBLISHED:PAUSED",
+  "PUBLISHED:OPEN->PUBLISHED:CLOSED",
+  "PUBLISHED:PAUSED->PUBLISHED:OPEN",
+  "PUBLISHED:PAUSED->PUBLISHED:CLOSED",
+]);
+
+const isAllowedOccurrenceStateTransition = (before: Row, after: Row) => {
+  const previous = occurrenceState(before);
+  const next = occurrenceState(after);
+  return previous === next || allowedOccurrenceStateTransitions.has(`${previous}->${next}`);
+};
+
 export class CommerceDomain {
   constructor(readonly db: Database.Database, readonly provider: PaymentProvider, readonly emailProvider: EmailProvider = new UnconfiguredEmailProvider()) {}
 
@@ -415,6 +432,7 @@ export class CommerceDomain {
       const changed = fields.filter((field) => input[field] !== undefined && input[field] !== before[field]);
       if (!changed.length) return before;
       const next = { ...before, ...Object.fromEntries(changed.map((field) => [field, input[field]])) };
+      if (!isAllowedOccurrenceStateTransition(before, next)) throw new DomainError("OCCURRENCE_STATE_TRANSITION_FORBIDDEN", 409);
       if (Date.parse(String(next.ends_at)) <= Date.parse(String(next.starts_at))) throw new DomainError("OCCURRENCE_CREATE_INVALID", 422);
       if (next.venue_status === "CONFIRMED" && (!next.venue_name || !next.venue_address)) throw new DomainError("VENUE_CONFIRMATION_INCOMPLETE", 422);
       if (next.venue_status === "TO_BE_ANNOUNCED" && (!next.venue_disclosure_text || !next.venue_announce_by)) throw new DomainError("VENUE_TBD_INCOMPLETE", 422);

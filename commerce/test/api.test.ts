@@ -49,7 +49,7 @@ describe("commerce HTTP boundary", () => {
     db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, ?)").run(emptyCityId, "empty-city", "Empty city");
     db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, ?)").run(closedCityId, "closed-city", "Closed city");
     db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, sales_status, venue_status, venue_name, venue_address)
-      VALUES (?, ?, 'Hidden', '2026-10-02T10:00:00.000Z', '2026-10-02T13:00:00.000Z', 'Asia/Tomsk', 100, 1, 'HIDDEN', 'OPEN', 'CONFIRMED', 'Studio', 'Lenina 2')`).run(randomUUID(), hiddenCityId);
+      VALUES (?, ?, 'Hidden', '2026-10-02T10:00:00.000Z', '2026-10-02T13:00:00.000Z', 'Asia/Tomsk', 100, 1, 'HIDDEN', 'CLOSED', 'CONFIRMED', 'Studio', 'Lenina 2')`).run(randomUUID(), hiddenCityId);
     db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, sales_status, venue_status, venue_name, venue_address)
       VALUES (?, ?, 'Published but closed', '2026-10-03T10:00:00.000Z', '2026-10-03T13:00:00.000Z', 'Asia/Tomsk', 100, 1, 'PUBLISHED', 'CLOSED', 'CONFIRMED', 'Studio', 'Lenina 3')`).run(randomUUID(), closedCityId);
 
@@ -59,7 +59,7 @@ describe("commerce HTTP boundary", () => {
     expect(visible.cities.find((entry) => entry.city === "closed-city")).toMatchObject({ sales_status: "CLOSED" });
     expect(visible.cities.some((entry) => entry.city === "hidden-city" || entry.city === "empty-city")).toBe(false);
 
-    db.prepare("UPDATE occurrences SET visibility = 'HIDDEN' WHERE visibility = 'PUBLISHED'").run();
+    db.prepare("UPDATE occurrences SET sales_status = 'CLOSED', visibility = 'HIDDEN' WHERE visibility = 'PUBLISHED'").run();
     const emptyTour = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers: { Origin: "https://flexperiment.ru", "x-commerce-trusted-client-ip": "127.0.0.23" } });
     expect(await emptyTour.json()).toEqual({ cities: [] });
     db.close();
@@ -143,11 +143,14 @@ describe("commerce HTTP boundary", () => {
     const unsafeSalesCreate = await app.request("http://admin.flexperiment.ru/v1/admin/occurrences", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000008" }, body: JSON.stringify({ ...occurrencePayload, sales_status: "OPEN" }) });
     expect(unsafeSalesCreate.status).toBe(422);
 
-    const published = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000011" }, body: JSON.stringify({ price_kopecks: 100, capacity: 1, sales_status: "OPEN", visibility: "PUBLISHED", reason: "Tochka Phase 0 certification" }) });
+    const published = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000011" }, body: JSON.stringify({ price_kopecks: 100, capacity: 1, visibility: "PUBLISHED", reason: "Tochka Phase 0 certification" }) });
     expect(published.status).toBe(200);
-    const publishedReplay = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000011" }, body: JSON.stringify({ price_kopecks: 100, capacity: 1, sales_status: "OPEN", visibility: "PUBLISHED", reason: "Tochka Phase 0 certification" }) });
-    expect(await publishedReplay.json()).toMatchObject({ id: created.id, visibility: "PUBLISHED", sales_status: "OPEN" });
-    const patchConflict = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000011" }, body: JSON.stringify({ price_kopecks: 100, capacity: 1, sales_status: "CLOSED", visibility: "PUBLISHED", reason: "Changed patch" }) });
+    expect(await published.json()).toMatchObject({ id: created.id, visibility: "PUBLISHED", sales_status: "CLOSED" });
+    const opened = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000012" }, body: JSON.stringify({ sales_status: "OPEN", reason: "Tochka Phase 0 certification" }) });
+    expect(opened.status).toBe(200);
+    const openedReplay = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000012" }, body: JSON.stringify({ sales_status: "OPEN", reason: "Tochka Phase 0 certification" }) });
+    expect(await openedReplay.json()).toMatchObject({ id: created.id, visibility: "PUBLISHED", sales_status: "OPEN" });
+    const patchConflict = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000012" }, body: JSON.stringify({ sales_status: "CLOSED", reason: "Changed patch" }) });
     expect(patchConflict.status).toBe(409);
     const after = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers: { Origin: "https://flexperiment.ru", "x-commerce-trusted-client-ip": "127.0.0.1" } });
     expect((await after.json() as { cities: { id?: string }[] }).cities.some((entry) => entry.id === created.id)).toBe(true);
@@ -156,6 +159,59 @@ describe("commerce HTTP boundary", () => {
     });
     const evidence = JSON.parse(String((db.prepare("SELECT details_json FROM admin_audit_log WHERE entity_id = ?").get(created.id) as { details_json: string }).details_json));
     expect(evidence).toMatchObject({ reason: occurrencePayload.reason, idempotency_key_hash: expect.stringMatching(/^[a-f0-9]{64}$/), canonical_request_hash: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    db.close();
+  });
+
+  it("enforces the occurrence visibility and sales state machine at both API and SQLite boundaries", async () => {
+    const { db, app } = appFixture();
+    const cityId = (db.prepare("SELECT id FROM cities WHERE slug = 'tomsk'").get() as { id: string }).id;
+    const occurrenceId = randomUUID();
+    db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, sales_status, venue_status, venue_name, venue_address)
+      VALUES (?, ?, 'State machine', '2026-10-04T10:00:00.000Z', '2026-10-04T13:00:00.000Z', 'Asia/Tomsk', 100, 1, 'HIDDEN', 'CLOSED', 'CONFIRMED', 'Studio', 'Lenina 4')`).run(occurrenceId, cityId);
+    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", {
+      method: "POST",
+      headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.55" },
+      body: JSON.stringify({ password: "correct horse" }),
+    });
+    const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
+    const patch = (key: string, payload: Record<string, unknown>) => app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${occurrenceId}`, {
+      method: "PATCH", headers: { ...headers, "Idempotency-Key": key }, body: JSON.stringify({ ...payload, reason: "Occurrence lifecycle test" }),
+    });
+    const state = () => db.prepare("SELECT visibility, sales_status FROM occurrences WHERE id = ?").get(occurrenceId);
+
+    const publishAndOpen = await patch("d81172c2-25a5-4f15-80e5-000000000001", { visibility: "PUBLISHED", sales_status: "OPEN" });
+    expect(publishAndOpen.status).toBe(409);
+    expect(await publishAndOpen.json()).toEqual({ error: { code: "OCCURRENCE_STATE_TRANSITION_FORBIDDEN" } });
+    expect(state()).toMatchObject({ visibility: "HIDDEN", sales_status: "CLOSED" });
+
+    expect((await patch("d81172c2-25a5-4f15-80e5-000000000002", { visibility: "PUBLISHED" })).status).toBe(200);
+    expect(state()).toMatchObject({ visibility: "PUBLISHED", sales_status: "CLOSED" });
+    expect((await patch("d81172c2-25a5-4f15-80e5-000000000003", { sales_status: "OPEN" })).status).toBe(200);
+    expect(state()).toMatchObject({ visibility: "PUBLISHED", sales_status: "OPEN" });
+
+    const closeAndHide = await patch("d81172c2-25a5-4f15-80e5-000000000004", { visibility: "HIDDEN", sales_status: "CLOSED" });
+    expect(closeAndHide.status).toBe(409);
+    expect(await closeAndHide.json()).toEqual({ error: { code: "OCCURRENCE_STATE_TRANSITION_FORBIDDEN" } });
+    expect(state()).toMatchObject({ visibility: "PUBLISHED", sales_status: "OPEN" });
+
+    expect((await patch("d81172c2-25a5-4f15-80e5-000000000005", { sales_status: "PAUSED" })).status).toBe(200);
+    expect(state()).toMatchObject({ visibility: "PUBLISHED", sales_status: "PAUSED" });
+    const hidePaused = await patch("d81172c2-25a5-4f15-80e5-000000000006", { visibility: "HIDDEN" });
+    expect(hidePaused.status).toBe(409);
+    expect(await hidePaused.json()).toEqual({ error: { code: "OCCURRENCE_STATE_TRANSITION_FORBIDDEN" } });
+
+    expect((await patch("d81172c2-25a5-4f15-80e5-000000000007", { sales_status: "OPEN" })).status).toBe(200);
+    expect(state()).toMatchObject({ visibility: "PUBLISHED", sales_status: "OPEN" });
+    expect((await patch("d81172c2-25a5-4f15-80e5-000000000008", { sales_status: "CLOSED" })).status).toBe(200);
+    expect(state()).toMatchObject({ visibility: "PUBLISHED", sales_status: "CLOSED" });
+    expect((await patch("d81172c2-25a5-4f15-80e5-000000000009", { visibility: "HIDDEN" })).status).toBe(200);
+    expect(state()).toMatchObject({ visibility: "HIDDEN", sales_status: "CLOSED" });
+
+    const openHidden = await patch("d81172c2-25a5-4f15-80e5-000000000010", { sales_status: "OPEN" });
+    expect(openHidden.status).toBe(409);
+    expect(await openHidden.json()).toEqual({ error: { code: "OCCURRENCE_STATE_TRANSITION_FORBIDDEN" } });
+    expect(() => db.prepare("UPDATE occurrences SET sales_status = 'OPEN' WHERE id = ?").run(occurrenceId)).toThrow(/OCCURRENCE_HIDDEN_SALES_MUST_BE_CLOSED/);
+    expect(() => db.prepare("UPDATE occurrences SET sales_status = 'PAUSED' WHERE id = ?").run(occurrenceId)).toThrow(/OCCURRENCE_HIDDEN_SALES_MUST_BE_CLOSED/);
     db.close();
   });
 
@@ -259,8 +315,8 @@ describe("commerce HTTP boundary", () => {
       body: JSON.stringify({ city_id: cityId, title: "Late venue disclosure", starts_at: "2026-10-01T10:00:00.000Z", ends_at: "2026-10-01T13:00:00.000Z", timezone: "Asia/Tomsk", price_kopecks: 100, capacity: 1, venue_status: "TO_BE_ANNOUNCED", venue_disclosure_text: "Venue will be announced later.", venue_announce_by: "2026-10-01T10:00:00.000Z", reason: "Admin validation test" }),
     });
     expect(response.status).toBe(422);
-    expect(() => db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, venue_status, venue_disclosure_text, venue_announce_by)
-      VALUES (?, ?, 'Raw SQL late deadline', '2026-10-01T10:00:00.000Z', '2026-10-01T13:00:00.000Z', 'Asia/Tomsk', 100, 1, 'TO_BE_ANNOUNCED', 'Disclosure', '2026-10-01T10:00:00.000Z')`).run(randomUUID(), cityId)).toThrow(/VENUE_ANNOUNCEMENT_TOO_LATE/);
+    expect(() => db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, sales_status, venue_status, venue_disclosure_text, venue_announce_by)
+      VALUES (?, ?, 'Raw SQL late deadline', '2026-10-01T10:00:00.000Z', '2026-10-01T13:00:00.000Z', 'Asia/Tomsk', 100, 1, 'HIDDEN', 'CLOSED', 'TO_BE_ANNOUNCED', 'Disclosure', '2026-10-01T10:00:00.000Z')`).run(randomUUID(), cityId)).toThrow(/VENUE_ANNOUNCEMENT_TOO_LATE/);
     db.close();
   });
 
