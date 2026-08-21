@@ -6,6 +6,7 @@ import { providerFromEnvironment } from "./provider";
 const sqlite = openDatabase();
 const domain = new CommerceDomain(sqlite, providerFromEnvironment(), emailProviderFromEnvironment());
 let nextDriftSweepAt = 0;
+let sweeping = false;
 
 const sweep = async () => {
   domain.recoverStaleCommands();
@@ -18,6 +19,15 @@ const sweep = async () => {
     await domain.collectProviderDrift();
   }
 };
-void sweep();
-setInterval(() => void sweep(), 30_000).unref();
+
+const runSweep = async () => {
+  if (sweeping) return;
+  sweeping = true;
+  try { await sweep(); }
+  catch (error) { console.error("Commerce worker sweep failed", error instanceof Error ? error.message : "unknown error"); }
+  finally { sweeping = false; }
+};
+
+void runSweep();
+setInterval(() => void runSweep(), 30_000);
 console.log("Commerce recovery worker running.");
