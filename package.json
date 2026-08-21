@@ -11,6 +11,7 @@
     "commerce:start": "tsx commerce/src/server.ts",
     "commerce:worker": "tsx commerce/src/worker.ts",
     "commerce:migrate": "tsx commerce/src/migrate.ts",
+    "commerce:legal-release:publish": "tsx commerce/src/publish-legal-release.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },

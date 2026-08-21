@@ -44,6 +44,13 @@ legal release. It creates no public occurrence. Production data is introduced
 only through the audited Admin flow after legal releases are published and
 verified.
 
+Never use `commerce/src/seed.ts` in production. The production-only legal
+bootstrap is `pnpm commerce:legal-release:publish`. It requires an approved,
+checked-in `commerce/legal/production-manifest.json` (see the adjacent example)
+with real immutable archive URLs. It verifies the four shipped legal document
+hashes, publishes exactly one active release, and writes a durable publication
+event. A reused version with a different manifest fails closed.
+
 ## Provider runtime and Phase 0 gate
 
 The runtime reads the provider configuration names listed in `.env.example`.

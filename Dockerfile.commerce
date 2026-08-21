@@ -10,6 +10,7 @@ ENV NODE_ENV=production
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY package.json pnpm-lock.yaml ./
 COPY commerce ./commerce
+COPY public/legal ./public/legal
 # The runtime stage is a fresh Node image: activate the package manager used
 # by CMD here rather than relying on the dependencies stage's Corepack shim.
 RUN corepack enable \

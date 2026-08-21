@@ -1,0 +1,37 @@
+{
+  "version": "REPLACE_WITH_APPROVED_RELEASE_VERSION",
+  "documents": {
+    "PUBLIC_OFFER": {
+      "document_id": "PUBLIC_OFFER",
+      "version": "2026-08-20",
+      "sha256": "cac0c68b6f136f45be9df24727a74be5bdd35dac55b170804779cb46ff059035",
+      "current_url": "https://flexperiment.ru/legal/public-offer.md",
+      "archive_url": "https://REPLACE_WITH_IMMUTABLE_ARCHIVE_HOST/legal/REPLACE_WITH_APPROVED_RELEASE_VERSION/public-offer.md",
+      "checkout_relevant": true
+    },
+    "PRIVACY_POLICY": {
+      "document_id": "PRIVACY_POLICY",
+      "version": "2026-08-12",
+      "sha256": "498d3f3e95d522012dbcbcd4f74e85469b0663a580bf1dd8eddc878378a800bc",
+      "current_url": "https://flexperiment.ru/legal/privacy-policy.md",
+      "archive_url": "https://REPLACE_WITH_IMMUTABLE_ARCHIVE_HOST/legal/REPLACE_WITH_APPROVED_RELEASE_VERSION/privacy-policy.md",
+      "checkout_relevant": true
+    },
+    "PD_CONSENT": {
+      "document_id": "PD_CONSENT",
+      "version": "2026-08-12",
+      "sha256": "8ef14cdd772813635f6bf1f43d758b9f2383283df3d905fd2d43965e671f1b11",
+      "current_url": "https://flexperiment.ru/legal/personal-data-consent.md",
+      "archive_url": "https://REPLACE_WITH_IMMUTABLE_ARCHIVE_HOST/legal/REPLACE_WITH_APPROVED_RELEASE_VERSION/personal-data-consent.md",
+      "checkout_relevant": true
+    },
+    "CHECKOUT_DISCLOSURE": {
+      "document_id": "CHECKOUT_DISCLOSURE",
+      "version": "2026-08-12",
+      "sha256": "eedd3f51ee4f206de5afea103a77cc1e0290c6c259dbc89d9447217c8bb1ed88",
+      "current_url": "https://flexperiment.ru/legal/disclaimer.md",
+      "archive_url": "https://REPLACE_WITH_IMMUTABLE_ARCHIVE_HOST/legal/REPLACE_WITH_APPROVED_RELEASE_VERSION/disclaimer.md",
+      "checkout_relevant": true
+    }
+  }
+}

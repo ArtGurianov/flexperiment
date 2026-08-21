@@ -1,29 +1,16 @@
 import type Database from "better-sqlite3";
 import { canonical, decryptTicketCapability, emailHash, encryptTicketCapability, id, now, publicId, sha256 } from "./crypto";
 import { type EmailProvider, UnconfiguredEmailProvider } from "./email-provider";
+import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import type { PaymentProvider } from "./provider";
 import type { CheckoutRequest } from "./types";
 
 type Row = Record<string, unknown>;
 const one = <T extends Row>(db: Database.Database, sql: string, ...params: unknown[]) => db.prepare(sql).get(...params) as T | undefined;
 const many = <T extends Row>(db: Database.Database, sql: string, ...params: unknown[]) => db.prepare(sql).all(...params) as T[];
-const legalDocumentIds = ["PUBLIC_OFFER", "PRIVACY_POLICY", "PD_CONSENT", "CHECKOUT_DISCLOSURE"] as const;
-type LegalDocumentId = (typeof legalDocumentIds)[number];
-type LegalDocumentEvidence = { document_id: LegalDocumentId; version: string; sha256: string; current_url: string; archive_url: string; checkout_relevant: boolean };
-type LegalManifest = { documents: Record<LegalDocumentId, LegalDocumentEvidence> };
-
 const legalManifest = (raw: unknown): LegalManifest => {
-  if (!raw || typeof raw !== "object" || !("documents" in raw) || !raw.documents || typeof raw.documents !== "object") throw new DomainError("LEGAL_RELEASE_INVALID", 503);
-  const documents = raw.documents as Record<string, unknown>;
-  const evidence = {} as Record<LegalDocumentId, LegalDocumentEvidence>;
-  for (const id of legalDocumentIds) {
-    const document = documents[id];
-    if (!document || typeof document !== "object") throw new DomainError("LEGAL_RELEASE_INVALID", 503);
-    const fields = document as Record<string, unknown>;
-    if (fields.document_id !== id || typeof fields.version !== "string" || typeof fields.sha256 !== "string" || !/^[a-f0-9]{64}$/i.test(fields.sha256) || typeof fields.current_url !== "string" || typeof fields.archive_url !== "string" || fields.checkout_relevant !== true) throw new DomainError("LEGAL_RELEASE_INVALID", 503);
-    evidence[id] = { document_id: id, version: fields.version, sha256: fields.sha256.toLowerCase(), current_url: fields.current_url, archive_url: fields.archive_url, checkout_relevant: true };
-  }
-  return { documents: evidence };
+  try { return parseLegalManifest(raw); }
+  catch { throw new DomainError("LEGAL_RELEASE_INVALID", 503); }
 };
 
 export class DomainError extends Error {
