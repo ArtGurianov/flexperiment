@@ -75,6 +75,41 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
+  it("requires a session-bound reauthentication capability to cancel an occurrence", async () => {
+    const { db, app } = appFixture();
+    const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
+    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", {
+      method: "POST",
+      headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.44" },
+      body: JSON.stringify({ password: "correct horse" }),
+    });
+    const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
+    const missing = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${occurrenceId}/cancel`, { method: "POST", headers: { ...headers, "Idempotency-Key": "ca82fbea-0e17-4c32-bfce-000000000001" }, body: JSON.stringify({ reason: "Organizer illness", reauth_capability: "x".repeat(32) }) });
+    expect(missing.status).toBe(403);
+    const invalid = await app.request("http://admin.flexperiment.ru/v1/admin/reauth", { method: "POST", headers, body: JSON.stringify({ password: "wrong password", purpose: "CANCEL_OCCURRENCE", resource_id: occurrenceId }) });
+    expect(invalid.status).toBe(401);
+    const reauth = await app.request("http://admin.flexperiment.ru/v1/admin/reauth", { method: "POST", headers, body: JSON.stringify({ password: "correct horse", purpose: "CANCEL_OCCURRENCE", resource_id: occurrenceId }) });
+    expect(reauth.status).toBe(200);
+    const capability = (await reauth.json() as { capability: string }).capability;
+    const cancelled = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${occurrenceId}/cancel`, { method: "POST", headers: { ...headers, "Idempotency-Key": "ca82fbea-0e17-4c32-bfce-000000000001" }, body: JSON.stringify({ reason: "Organizer illness", reauth_capability: capability }) });
+    expect(cancelled.status).toBe(200);
+    expect(await cancelled.json()).toMatchObject({ fulfillment_status: "CANCELLED", sales_status: "CLOSED" });
+    expect(db.prepare("SELECT details_json FROM admin_audit_log WHERE action = 'OCCURRENCE_CANCELLED'").get()).toMatchObject({ details_json: expect.not.stringContaining(capability) });
+    db.close();
+  });
+
+  it("acknowledges public refund requests without disclosing whether an order exists", async () => {
+    const { db, app } = appFixture();
+    const response = await app.request("http://api.flexperiment.ru/v1/public/refunds/request", {
+      method: "POST",
+      headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.45" },
+      body: JSON.stringify({ order_number: "FX-UNKNOWN-ORDER" }),
+    });
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({ accepted: true });
+    db.close();
+  });
+
   it("uses the RC.8.3 provider-reference paths and leaves the old attach path absent", async () => {
     const { db, app } = appFixture();
     const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.1" }, body: JSON.stringify({ password: "correct horse" }) });

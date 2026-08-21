@@ -2,14 +2,14 @@ import { Hono } from "hono";
 import { ZodError } from "zod";
 import type { Sqlite } from "./db";
 import { assertAdminOrigin, issueAdminSession, parseSession, verifyAdminPassword } from "./auth";
-import { emailHash, sha256 } from "./crypto";
+import { emailHash, publicId, sha256 } from "./crypto";
 import { CommerceDomain, DomainError } from "./domain";
 import { type EmailProvider, UnconfiguredEmailProvider, UnisenderGoProvider } from "./email-provider";
 import { TochkaProvider, type PaymentProvider } from "./provider";
 import { clientIp, rateLimit } from "./rate-limit";
 import { TochkaWebhookVerifier, webhookAmountKopecks } from "./tochka-webhook";
 import { verifyUnisenderWebhook } from "./unisender-webhook";
-import { agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, compensationRefundSchema, customerCancellationSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrencePatchSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
+import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrencePatchSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
 
 type AppBindings = { Variables: { adminId?: string; adminSessionId?: string } };
 const noStore = (headers: Headers) => headers.set("Cache-Control", "no-store");
@@ -79,6 +79,24 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   });
   publicApi.get("/occurrences/:id", (c) => { rateLimit(`occurrence:${clientIp(c.req.raw.headers)}`, 120, 60_000); return c.json(domain.occurrence(c.req.param("id"))); });
   publicApi.get("/legal-config", (c) => c.json(domain.legalConfig()));
+  publicApi.post("/refunds/request", async (c) => {
+    const ip = clientIp(c.req.raw.headers);
+    rateLimit(`customer-refund-request-ip:${ip}`, 5, 10 * 60_000);
+    const input = customerRefundRequestSchema.parse(await jsonBody(c.req.raw));
+    rateLimit(`customer-refund-request-order:${sha256(input.order_number)}`, 3, 30 * 60_000);
+    // The response is deliberately identical for unknown, ineligible, and
+    // eligible references so this endpoint cannot enumerate customer orders.
+    return c.json(domain.requestCustomerRefund(input.order_number), 202);
+  });
+  publicApi.post("/refunds/confirm", async (c) => {
+    const authorization = c.req.header("Authorization");
+    const capability = authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined;
+    if (!capability) throw new DomainError("REFUND_CONFIRMATION_REQUIRED", 401);
+    const ip = clientIp(c.req.raw.headers);
+    rateLimit(`customer-refund-confirm-ip:${ip}`, 20, 60_000);
+    rateLimit(`customer-refund-confirm-capability:${sha256(capability)}`, 5, 60_000);
+    return c.json(domain.confirmCustomerRefund(capability));
+  });
   publicApi.post("/referrals/eligibility", async (c) => {
     const ip = clientIp(c.req.raw.headers); rateLimit(`referral:${ip}`, 60, 60_000);
     const input = await jsonBody(c.req.raw) as { slug?: string };
@@ -196,6 +214,14 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     c.header("Set-Cookie", adminSessionCookie("", 0));
     return c.json({ ok: true });
   });
+  admin.post("/reauth", async (c) => {
+    const payload = adminReauthSchema.parse(await jsonBody(c.req.raw));
+    if (!verifyAdminPassword(payload.password)) throw new DomainError("INVALID_CREDENTIALS", 401);
+    const capability = publicId();
+    const result = domain.createAdminReauth({ adminId: c.var.adminId!, sessionId: c.var.adminSessionId!, purpose: payload.purpose, resourceId: payload.resource_id, capability });
+    audit(c.var.adminId!, "ADMIN_REAUTH_CREATED", "occurrence", payload.resource_id, { purpose: payload.purpose });
+    return c.json({ capability, expires_at: result.expires_at });
+  });
   admin.get("/dashboard", (c) => c.json({
     today: sqlite.prepare(`SELECT
       (SELECT COUNT(*) FROM orders WHERE date(created_at) = date('now')) AS orders,
@@ -242,7 +268,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     const from = c.req.query("from"); if (from) { filters.push("o.created_at >= ?"); params.push(from); }
     const to = c.req.query("to"); if (to) { filters.push("o.created_at < ?"); params.push(to); }
     const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
-    return c.json({ orders: sqlite.prepare(`SELECT o.id, o.public_status_id, o.occurrence_id, o.customer_name, o.customer_email, o.amount_kopecks, o.created_at,
+    return c.json({ orders: sqlite.prepare(`SELECT o.id, o.public_status_id, o.public_order_number, o.occurrence_id, o.customer_name, o.customer_email, o.amount_kopecks, o.created_at,
       oc.title AS occurrence_title, c.id AS city_id, c.title AS city_title, p.state AS payment_state, p.status AS payment_status,
       b.status AS booking_status, (SELECT COUNT(*) FROM refunds r WHERE r.order_id = o.id) AS refund_count
       FROM orders o JOIN occurrences oc ON oc.id = o.occurrence_id JOIN cities c ON c.id = oc.city_id
@@ -272,8 +298,8 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   });
   admin.post("/occurrences/:id/cancel", async (c) => {
     const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
-    const payload = occurrenceCancelSchema.parse(await jsonBody(c.req.raw)); const occurrence = domain.cancelOccurrence(c.req.param("id"), payload, key);
-    audit(c.var.adminId!, "OCCURRENCE_CANCELLED", "occurrence", c.req.param("id"), { reason: payload.reason }); return c.json(occurrence);
+    const payload = occurrenceCancelSchema.parse(await jsonBody(c.req.raw)); const occurrence = domain.cancelOccurrence(c.req.param("id"), { reason: payload.reason, reauthCapability: payload.reauth_capability }, key, c.var.adminId!, c.var.adminSessionId!);
+    return c.json(occurrence);
   });
   admin.patch("/occurrences/:id", async (c) => {
     const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);

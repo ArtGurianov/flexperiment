@@ -9,6 +9,9 @@ const ticketKey = Buffer.from(
 export const now = () => new Date().toISOString();
 export const id = () => randomUUID();
 export const publicId = () => randomBytes(32).toString("base64url");
+// An immutable customer-facing reference: 80 random bits, non-sequential and
+// safe to include in transactional emails. It is not an authentication token.
+export const publicOrderNumber = () => `FX-${randomBytes(10).toString("hex").toUpperCase()}`;
 export const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 export const emailHash = (value: string) => createHmac("sha256", emailKey).update(value.trim().toLowerCase()).digest("hex");
 export const canonical = (value: unknown) => JSON.stringify(value, Object.keys(value as object).sort());

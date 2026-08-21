@@ -92,8 +92,19 @@ export const occurrenceCreateSchema = z.object({
 
 export const occurrenceCancelSchema = z.object({
   reason: z.string().trim().min(3).max(1_000),
-  confirmation_text: z.string().trim(),
-});
+  reauth_capability: z.string().min(32).max(256),
+}).strict();
+export const adminReauthSchema = z.object({
+  password: z.string().min(1).max(1_000),
+  purpose: z.literal("CANCEL_OCCURRENCE"),
+  resource_id: z.string().uuid(),
+}).strict();
+export const customerRefundRequestSchema = z.object({
+  order_number: z.string().trim().min(4).max(64).transform((value) => value.toUpperCase().replace(/[^A-Z0-9]/g, "")),
+}).strict();
+export const customerRefundConfirmSchema = z.object({
+  capability: z.string().min(32).max(256),
+}).strict();
 export const reservationAbandonSchema = z.object({ reason: z.string().trim().min(3).max(1_000) }).strict();
 export const occurrenceCompleteSchema = z.object({ confirmation_text: z.string().trim() });
 

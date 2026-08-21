@@ -4,6 +4,7 @@ import { migrate, openDatabase } from "../src/db";
 import { CommerceDomain } from "../src/domain";
 import type { EmailProvider } from "../src/email-provider";
 import { MockProvider, type PaymentProvider } from "../src/provider";
+import { decryptTicketCapability } from "../src/crypto";
 
 const legalManifest = { documents: Object.fromEntries(["PUBLIC_OFFER", "PRIVACY_POLICY", "PD_CONSENT", "CHECKOUT_DISCLOSURE"].map((document) => [document, { document_id: document, version: "test-1", sha256: "0".repeat(64), current_url: `https://example.test/legal/${document}`, archive_url: `https://example.test/archive/${document}`, checkout_relevant: true }])) };
 
@@ -114,12 +115,42 @@ describe("commerce domain", () => {
     const data = setup.db.prepare("SELECT b.id AS booking_id, p.id AS payment_id FROM bookings b JOIN orders o ON o.id = b.order_id JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { booking_id: string; payment_id: string };
     setup.domain.markPaymentPaid(data.payment_id, 100000, "provider-payment");
     const key = "8f3a27bc-77c6-47b1-b6d0-000000000007";
-    const first = setup.domain.cancelOccurrence(setup.occurrenceId, { reason: "Organizer illness", confirmation_text: `CANCEL ${setup.occurrenceId}` }, key);
-    const replay = setup.domain.cancelOccurrence(setup.occurrenceId, { reason: "Organizer illness", confirmation_text: `CANCEL ${setup.occurrenceId}` }, key);
+    const sessionId = randomUUID(); const capability = "x".repeat(32);
+    setup.db.prepare("INSERT INTO admin_sessions(id, admin_id, expires_at) VALUES (?, 'admin', datetime('now', '+1 hour'))").run(sessionId);
+    setup.domain.createAdminReauth({ adminId: "admin", sessionId, purpose: "CANCEL_OCCURRENCE", resourceId: setup.occurrenceId, capability });
+    const first = setup.domain.cancelOccurrence(setup.occurrenceId, { reason: "Organizer illness", reauthCapability: capability }, key, "admin", sessionId);
+    const replay = setup.domain.cancelOccurrence(setup.occurrenceId, { reason: "Organizer illness", reauthCapability: capability }, key, "admin", sessionId);
     expect(first.id).toBe(replay.id);
     expect(setup.db.prepare("SELECT status FROM bookings WHERE id = ?").get(data.booking_id)).toMatchObject({ status: "CANCELLED" });
     expect(setup.db.prepare("SELECT status FROM tickets WHERE booking_id = ?").get(data.booking_id)).toMatchObject({ status: "VOID" });
     expect(setup.db.prepare("SELECT initial_source, target_refunded_amount_kopecks FROM refund_obligations WHERE payment_id = ?").get(data.payment_id)).toMatchObject({ initial_source: "OCCURRENCE_CANCELLED", target_refunded_amount_kopecks: 100000 });
+  });
+
+  it("uses a one-time email confirmation for a pre-cutoff self-service full refund", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Арт", customer_email: "art@example.test", eligibility_confirmed: true, offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000014", "https://flexperiment.ru");
+    const order = setup.db.prepare("SELECT o.id, o.public_order_number, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; public_order_number: string; payment_id: string };
+    setup.domain.markPaymentPaid(order.payment_id, 100000, "provider-payment");
+    expect(setup.domain.requestCustomerRefund(order.public_order_number.replace(/-/g, ""))).toEqual({ accepted: true });
+    const token = setup.db.prepare("SELECT token_ciphertext, token_nonce FROM customer_refund_confirmation_tokens WHERE order_id = ?").get(order.id) as { token_ciphertext: string; token_nonce: string };
+    const capability = decryptTicketCapability(token.token_ciphertext, token.token_nonce);
+    expect(setup.domain.confirmCustomerRefund(capability)).toEqual({ confirmed: true });
+    expect(setup.domain.confirmCustomerRefund(capability)).toEqual({ confirmed: true });
+    expect(setup.db.prepare("SELECT status, cancellation_reason FROM bookings WHERE order_id = ?").get(order.id)).toMatchObject({ status: "CANCELLED", cancellation_reason: "CUSTOMER_SELF_SERVICE_REFUND" });
+    expect(setup.db.prepare("SELECT initial_source, target_refunded_amount_kopecks FROM refund_obligations WHERE payment_id = ?").get(order.payment_id)).toMatchObject({ initial_source: "CUSTOMER_SELF_SERVICE_REFUND", target_refunded_amount_kopecks: 100000 });
+    expect(setup.db.prepare("SELECT public_order_number FROM orders WHERE id = ?").get(order.id)).toMatchObject({ public_order_number: expect.stringMatching(/^FX-[A-F0-9]{20}$/) });
+  });
+
+  it("fails closed for a customer refund request at or after the one-hour cutoff", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Арт", customer_email: "art@example.test", eligibility_confirmed: true, offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000015", "https://flexperiment.ru");
+    const order = setup.db.prepare("SELECT o.id, o.public_order_number, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; public_order_number: string; payment_id: string };
+    setup.domain.markPaymentPaid(order.payment_id, 100000, "provider-payment");
+    setup.db.prepare("UPDATE occurrences SET starts_at = ? WHERE id = ?").run(new Date(Date.now() + 30 * 60_000).toISOString(), setup.occurrenceId);
+    expect(setup.domain.requestCustomerRefund(order.public_order_number)).toEqual({ accepted: true });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM customer_refund_confirmation_tokens WHERE order_id = ?").get(order.id)).toMatchObject({ count: 0 });
   });
 
   it("replays the current settlement state for an idempotent prepare", async () => {
@@ -133,6 +164,7 @@ describe("commerce domain", () => {
     setup.domain.markPaymentPaid(order.payment_id, 100000, "provider-payment");
     setup.db.prepare("UPDATE orders SET attributed_agent_id = ?, reward_type_snapshot = 'PERCENT', reward_value_snapshot = 1000 WHERE id = ?").run(agentId, order.id);
     setup.db.prepare("UPDATE occurrences SET ends_at = '2020-01-01T00:00:00.000Z' WHERE id = ?").run(setup.occurrenceId);
+    setup.db.prepare("UPDATE occurrences SET sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
     setup.domain.completeOccurrence(setup.occurrenceId);
     const input = { agent_id: agentId, occurrence_id: setup.occurrenceId, amount_kopecks: 10000, method: "TRANSFER" };
     const key = "8f3a27bc-77c6-47b1-b6d0-000000000009";

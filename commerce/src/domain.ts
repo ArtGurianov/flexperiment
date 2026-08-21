@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { canonical, decryptTicketCapability, emailHash, encryptTicketCapability, id, now, publicId, sha256 } from "./crypto";
+import { canonical, decryptTicketCapability, emailHash, encryptTicketCapability, id, now, publicId, publicOrderNumber, sha256 } from "./crypto";
 import { type EmailProvider, UnconfiguredEmailProvider } from "./email-provider";
 import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import type { PaymentProvider } from "./provider";
@@ -137,14 +137,18 @@ export class CommerceDomain {
       const occupied = Number(one(this.db, "SELECT COUNT(*) AS occupied FROM bookings WHERE occurrence_id = ? AND status IN ('RESERVED', 'CONFIRMED')", occurrence.id)?.occupied ?? 0);
       if (occupied >= Number(occurrence.capacity)) throw new DomainError("SOLD_OUT", 409);
       const orderId = id(); const bookingId = id(); const paymentId = id(); const statusId = publicId();
+      let orderNumber = publicOrderNumber();
+      // The unique index is the authority; the lookup keeps the astronomically
+      // unlikely random collision from surfacing as a customer-visible 500.
+      while (one(this.db, "SELECT id FROM orders WHERE public_order_number = ?", orderNumber)) orderNumber = publicOrderNumber();
       const agent = quote.attributed_agent_id ? one(this.db, "SELECT default_reward_type, default_reward_value FROM agents WHERE id = ?", quote.attributed_agent_id) : undefined;
       const timestamp = now();
       const workshopDate = new Intl.DateTimeFormat("ru-RU", { timeZone: String(occurrence.timezone), day: "numeric", month: "long", year: "numeric" }).format(new Date(String(occurrence.starts_at)));
       const fiscalPurpose = "Оплата участия в мастер-классе ФЛЭКСПЕРИМЕНТ";
       const fiscalItemName = `Участие в мастер-классе ФЛЭКСПЕРИМЕНТ — ${String(occurrence.city_title)}, ${workshopDate}`;
-      this.db.prepare(`INSERT INTO orders(id, public_status_id, occurrence_id, customer_name, customer_email, customer_email_hash, amount_kopecks, occurrence_material_revision, venue_disclosure_snapshot, checkout_legal_release_id, legal_snapshot_json, eligibility_confirmed_at, attributed_agent_id, reward_type_snapshot, reward_value_snapshot, promo_code_snapshot, discount_type_snapshot, discount_value_snapshot, fiscal_purpose_snapshot, fiscal_item_name_snapshot, public_offer_version, public_offer_sha256, public_offer_accepted_at, privacy_policy_version, privacy_policy_sha256, privacy_policy_presented_at, pd_consent_version, pd_consent_sha256, pd_consent_accepted_at, checkout_disclosure_version, checkout_disclosure_sha256)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(orderId, statusId, occurrence.id, input.customer_name.trim(), input.customer_email.trim().toLowerCase(), emailHash(input.customer_email), quote.final_amount_kopecks, quote.material_revision, quote.venue_disclosure, quote.legal_release_id, JSON.stringify(manifest), timestamp, quote.attributed_agent_id, agent?.default_reward_type ?? null, agent?.default_reward_value ?? null, quote.promo_id, null, quote.discount_kopecks, fiscalPurpose, fiscalItemName, manifest.documents.PUBLIC_OFFER.version, manifest.documents.PUBLIC_OFFER.sha256, timestamp, manifest.documents.PRIVACY_POLICY.version, manifest.documents.PRIVACY_POLICY.sha256, timestamp, manifest.documents.PD_CONSENT.version, manifest.documents.PD_CONSENT.sha256, timestamp, manifest.documents.CHECKOUT_DISCLOSURE.version, manifest.documents.CHECKOUT_DISCLOSURE.sha256);
+      this.db.prepare(`INSERT INTO orders(id, public_status_id, public_order_number, occurrence_id, customer_name, customer_email, customer_email_hash, amount_kopecks, occurrence_material_revision, venue_disclosure_snapshot, checkout_legal_release_id, legal_snapshot_json, eligibility_confirmed_at, attributed_agent_id, reward_type_snapshot, reward_value_snapshot, promo_code_snapshot, discount_type_snapshot, discount_value_snapshot, fiscal_purpose_snapshot, fiscal_item_name_snapshot, public_offer_version, public_offer_sha256, public_offer_accepted_at, privacy_policy_version, privacy_policy_sha256, privacy_policy_presented_at, pd_consent_version, pd_consent_sha256, pd_consent_accepted_at, checkout_disclosure_version, checkout_disclosure_sha256)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(orderId, statusId, orderNumber, occurrence.id, input.customer_name.trim(), input.customer_email.trim().toLowerCase(), emailHash(input.customer_email), quote.final_amount_kopecks, quote.material_revision, quote.venue_disclosure, quote.legal_release_id, JSON.stringify(manifest), timestamp, quote.attributed_agent_id, agent?.default_reward_type ?? null, agent?.default_reward_value ?? null, quote.promo_id, null, quote.discount_kopecks, fiscalPurpose, fiscalItemName, manifest.documents.PUBLIC_OFFER.version, manifest.documents.PUBLIC_OFFER.sha256, timestamp, manifest.documents.PRIVACY_POLICY.version, manifest.documents.PRIVACY_POLICY.sha256, timestamp, manifest.documents.PD_CONSENT.version, manifest.documents.PD_CONSENT.sha256, timestamp, manifest.documents.CHECKOUT_DISCLOSURE.version, manifest.documents.CHECKOUT_DISCLOSURE.sha256);
       this.db.prepare("INSERT INTO bookings(id, order_id, occurrence_id, status) VALUES (?, ?, ?, 'RESERVED')").run(bookingId, orderId, occurrence.id);
       this.db.prepare(`INSERT INTO payments(id, order_id, state, status, provider_idempotency_key, creation_started_at) VALUES (?, ?, 'CREATING', 'PENDING', ?, ?)`)
         .run(paymentId, orderId, publicId(), timestamp);
@@ -199,14 +203,14 @@ export class CommerceDomain {
         this.db.prepare("UPDATE bookings SET status = 'CONFIRMED' WHERE id = ? AND status = 'RESERVED'").run(booking.id);
         const capability = publicId();
         const encrypted = encryptTicketCapability(capability);
-        const order = one(this.db, "SELECT customer_email, customer_email_hash FROM orders WHERE id = ?", payment.order_id)!;
+        const order = one(this.db, "SELECT customer_email, customer_email_hash, public_order_number FROM orders WHERE id = ?", payment.order_id)!;
         const ticketId = id();
         this.db.prepare(`INSERT INTO tickets(id, booking_id, status, capability_hash, capability_ciphertext, capability_nonce, key_version)
           VALUES (?, ?, 'VALID', ?, ?, ?, 1)`).run(ticketId, booking.id, sha256(capability), encrypted.ciphertext, encrypted.nonce);
         // The outbox references an immutable ticket row. A future Unisender worker
         // derives the actual URL from its encrypted capability at send time; the raw
         // capability is never copied to application logs or browser storage.
-        this.enqueueEmail("TICKET", String(order.customer_email), String(order.customer_email_hash), "ticket", ticketId, { ticket_id: ticketId, order_id: payment.order_id });
+        this.enqueueEmail("TICKET", String(order.customer_email), String(order.customer_email_hash), "ticket", ticketId, { ticket_id: ticketId, order_id: payment.order_id, public_order_number: order.public_order_number });
       } else {
         const abandonment = one(this.db, "SELECT id FROM reservation_abandonments WHERE payment_id = ?", payment.id);
         const source = abandonment ? "LATE_PAYMENT_AFTER_RESERVATION_ABANDONMENT" : occurrence?.fulfillment_status === "SCHEDULED" ? "LATE_PAYMENT_AFTER_CUSTOMER_CANCELLATION" : "LATE_PAYMENT_AFTER_TERMINAL_OCCURRENCE";
@@ -247,8 +251,63 @@ export class CommerceDomain {
     return obligation;
   }
 
+  requestCustomerRefund(normalizedOrderNumber: string) {
+    return withImmediateTransaction(this.db, () => {
+      const order = one(this.db, `SELECT o.id, o.public_order_number, o.customer_email, o.customer_email_hash, p.id AS payment_id, p.status AS payment_status,
+        p.captured_amount_kopecks, b.id AS booking_id, b.status AS booking_status, oc.fulfillment_status, oc.starts_at
+        FROM orders o JOIN payments p ON p.order_id = o.id JOIN bookings b ON b.order_id = o.id
+        JOIN occurrences oc ON oc.id = o.occurrence_id
+        WHERE replace(upper(o.public_order_number), '-', '') = ?`, normalizedOrderNumber);
+      if (!order || !this.isCustomerRefundEligible(order)) return { accepted: true };
+
+      // A later request supersedes an unused earlier email. The raw capability
+      // is encrypted in its token row, never kept in outbox JSON or API logs.
+      this.db.prepare("UPDATE customer_refund_confirmation_tokens SET invalidated_at = ? WHERE order_id = ? AND consumed_at IS NULL AND invalidated_at IS NULL").run(now(), order.id);
+      const capability = publicId();
+      const encrypted = encryptTicketCapability(capability);
+      const tokenId = id();
+      const expiresAt = new Date(Date.now() + 30 * 60_000).toISOString();
+      this.db.prepare(`INSERT INTO customer_refund_confirmation_tokens(id, token_hash, token_ciphertext, token_nonce, order_id, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(tokenId, sha256(capability), encrypted.ciphertext, encrypted.nonce, order.id, expiresAt);
+      this.enqueueEmail("CUSTOMER_REFUND_CONFIRMATION", String(order.customer_email), String(order.customer_email_hash), "customer-refund-confirmation", tokenId, { order_id: order.id, public_order_number: order.public_order_number, expires_at: expiresAt });
+      return { accepted: true };
+    });
+  }
+
+  confirmCustomerRefund(capability: string) {
+    return withImmediateTransaction(this.db, () => {
+      const token = one(this.db, `SELECT * FROM customer_refund_confirmation_tokens WHERE token_hash = ?`, sha256(capability));
+      if (!token || token.invalidated_at || new Date(String(token.expires_at)).getTime() <= Date.now()) throw new DomainError("REFUND_CONFIRMATION_INVALID", 404);
+      // A successful prior confirmation is deliberately replay-safe for a
+      // browser retry after a lost response; it cannot create a second refund.
+      if (token.consumed_at) return { confirmed: true };
+      const order = one(this.db, `SELECT o.id, o.public_order_number, o.customer_email, o.customer_email_hash, p.id AS payment_id, p.status AS payment_status,
+        p.captured_amount_kopecks, b.id AS booking_id, b.status AS booking_status, oc.fulfillment_status, oc.starts_at
+        FROM orders o JOIN payments p ON p.order_id = o.id JOIN bookings b ON b.order_id = o.id
+        JOIN occurrences oc ON oc.id = o.occurrence_id WHERE o.id = ?`, token.order_id);
+      if (!order || !this.isCustomerRefundEligible(order)) throw new DomainError("REFUND_NOT_ELIGIBLE", 409);
+      this.db.prepare("UPDATE customer_refund_confirmation_tokens SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL").run(now(), token.id);
+      this.db.prepare("UPDATE customer_refund_confirmation_tokens SET invalidated_at = ? WHERE order_id = ? AND id <> ? AND consumed_at IS NULL AND invalidated_at IS NULL").run(now(), order.id, token.id);
+      this.db.prepare("UPDATE bookings SET status = 'CANCELLED', cancelled_at = ?, cancellation_reason = 'CUSTOMER_SELF_SERVICE_REFUND' WHERE id = ? AND status = 'CONFIRMED'").run(now(), order.booking_id);
+      this.db.prepare("UPDATE tickets SET status = 'VOID', voided_at = ? WHERE booking_id = ? AND status = 'VALID'").run(now(), order.booking_id);
+      this.upsertRefundObligation(String(order.payment_id), "CUSTOMER_SELF_SERVICE_REFUND", Number(order.captured_amount_kopecks));
+      this.enqueueEmail("CUSTOMER_REFUND_CONFIRMED", String(order.customer_email), String(order.customer_email_hash), "customer-refund-confirmed", String(order.id), { order_id: order.id, public_order_number: order.public_order_number });
+      return { confirmed: true };
+    });
+  }
+
+  private isCustomerRefundEligible(order: Row) {
+    const deadline = new Date(String(order.starts_at)).getTime() - 60 * 60_000;
+    return order.booking_status === "CONFIRMED"
+      && ["PAID", "PARTIALLY_REFUNDED"].includes(String(order.payment_status))
+      && Number(order.captured_amount_kopecks) > 0
+      && order.fulfillment_status === "SCHEDULED"
+      && Date.now() < deadline;
+  }
+
   orderEvidence(orderId: string) {
-    const order = one(this.db, "SELECT id, public_status_id, occurrence_id, amount_kopecks, created_at FROM orders WHERE id = ?", orderId);
+    const order = one(this.db, "SELECT id, public_status_id, public_order_number, occurrence_id, amount_kopecks, created_at FROM orders WHERE id = ?", orderId);
     if (!order) throw new DomainError("ORDER_NOT_FOUND", 404);
     const payment = one(this.db, "SELECT id, state, status, provider_payment_id, captured_amount_kopecks, created_at, updated_at, last_reconcile_at FROM payments WHERE order_id = ?", orderId);
     const booking = one(this.db, "SELECT id, status, created_at, cancelled_at, cancellation_reason FROM bookings WHERE order_id = ?", orderId);
@@ -298,7 +357,7 @@ export class CommerceDomain {
     return withImmediateTransaction(this.db, () => {
       const replay = one(this.db, "SELECT canonical_request_hash, booking_id FROM booking_cancellation_idempotency WHERE idempotency_key_hash = ?", keyHash);
       if (replay) { if (replay.canonical_request_hash !== requestHash) throw new DomainError("IDEMPOTENCY_CONFLICT", 409); return one(this.db, "SELECT * FROM bookings WHERE id = ?", replay.booking_id)!; }
-      const booking = one(this.db, `SELECT b.*, p.id AS payment_id, p.status AS payment_status, p.captured_amount_kopecks, o.fulfillment_status, ord.customer_email, ord.customer_email_hash
+      const booking = one(this.db, `SELECT b.*, p.id AS payment_id, p.status AS payment_status, p.captured_amount_kopecks, o.fulfillment_status, ord.customer_email, ord.customer_email_hash, ord.public_order_number
         FROM bookings b JOIN payments p ON p.order_id = b.order_id JOIN occurrences o ON o.id = b.occurrence_id JOIN orders ord ON ord.id = b.order_id WHERE b.id = ?`, bookingId);
       if (!booking || !["RESERVED", "CONFIRMED"].includes(String(booking.status))) throw new DomainError("BOOKING_NOT_CANCELLABLE", 409);
       if (booking.fulfillment_status !== "SCHEDULED") throw new DomainError("TERMINAL_OCCURRENCE", 409);
@@ -308,7 +367,7 @@ export class CommerceDomain {
       if (withheld > Number(booking.captured_amount_kopecks)) throw new DomainError("WITHHOLDING_EXCEEDS_CAPTURED", 422);
       this.db.prepare("UPDATE bookings SET status = 'CANCELLED', cancelled_at = ?, cancellation_reason = ? WHERE id = ?").run(now(), input.reason, bookingId);
       this.db.prepare("UPDATE tickets SET status = 'VOID', voided_at = ? WHERE booking_id = ? AND status = 'VALID'").run(now(), bookingId);
-      this.enqueueEmail("BOOKING_CANCELLED", String(booking.customer_email), String(booking.customer_email_hash), "booking-cancelled", bookingId, { booking_id: bookingId, reason: input.reason });
+      this.enqueueEmail("BOOKING_CANCELLED", String(booking.customer_email), String(booking.customer_email_hash), "booking-cancelled", bookingId, { booking_id: bookingId, reason: input.reason, public_order_number: booking.public_order_number });
       this.db.prepare("INSERT INTO booking_cancellation_idempotency(idempotency_key_hash, canonical_request_hash, booking_id) VALUES (?, ?, ?)").run(keyHash, requestHash, bookingId);
       if (booking.payment_status === "PAID") this.upsertRefundObligation(String(booking.payment_id), "CUSTOMER_CANCELLATION_PARTIAL", Number(booking.captured_amount_kopecks) - withheld);
       return one(this.db, "SELECT * FROM bookings WHERE id = ?", bookingId)!;
@@ -355,6 +414,7 @@ export class CommerceDomain {
       const occurrence = one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId);
       if (!occurrence) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
       if (occurrence.fulfillment_status !== "SCHEDULED") throw new DomainError("OCCURRENCE_TERMINAL", 409);
+      if (occurrence.sales_status !== "CLOSED") throw new DomainError("OCCURRENCE_SALES_MUST_BE_CLOSED", 409);
       if (new Date(String(occurrence.ends_at)).getTime() > Date.now()) throw new DomainError("OCCURRENCE_NOT_ENDED", 409);
       this.db.prepare("UPDATE occurrences SET fulfillment_status = 'COMPLETED', sales_status = 'CLOSED', completed_at = ?, updated_at = ? WHERE id = ?").run(now(), now(), occurrenceId);
       const reserved = many(this.db, "SELECT id FROM bookings WHERE occurrence_id = ? AND status = 'RESERVED'", occurrenceId);
@@ -363,21 +423,35 @@ export class CommerceDomain {
     });
   }
 
-  cancelOccurrence(occurrenceId: string, input: { reason: string; confirmation_text: string }, idempotencyKey: string) {
-    return this.withAdminCommand("occurrence-cancel", idempotencyKey, input, "occurrences", () => {
+  createAdminReauth(input: { adminId: string; sessionId: string; purpose: "CANCEL_OCCURRENCE"; resourceId: string; capability: string }) {
+    return withImmediateTransaction(this.db, () => {
+      const capabilityId = id(); const expiresAt = new Date(Date.now() + 5 * 60_000).toISOString();
+      this.db.prepare("INSERT INTO admin_reauth_capabilities(id, capability_hash, admin_session_id, admin_id, purpose, resource_id, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .run(capabilityId, sha256(input.capability), input.sessionId, input.adminId, input.purpose, input.resourceId, expiresAt);
+      return { expires_at: expiresAt };
+    });
+  }
+
+  cancelOccurrence(occurrenceId: string, input: { reason: string; reauthCapability: string }, idempotencyKey: string, adminId: string, sessionId: string) {
+    const payload = { occurrence_id: occurrenceId, reason: input.reason };
+    return this.withAdminCommand("occurrence-cancel", idempotencyKey, payload, "occurrences", () => {
       const occurrence = one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId);
       if (!occurrence) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
-      if (input.confirmation_text !== `CANCEL ${occurrenceId}`) throw new DomainError("CONFIRMATION_REQUIRED", 422);
       if (occurrence.fulfillment_status !== "SCHEDULED") throw new DomainError("OCCURRENCE_TERMINAL", 409);
+      const capability = one(this.db, `SELECT * FROM admin_reauth_capabilities WHERE capability_hash = ? AND admin_session_id = ? AND admin_id = ?
+        AND purpose = 'CANCEL_OCCURRENCE' AND resource_id = ? AND consumed_at IS NULL AND expires_at > ?`, sha256(input.reauthCapability), sessionId, adminId, occurrenceId, now());
+      if (!capability) throw new DomainError("ADMIN_REAUTH_REQUIRED", 403);
+      this.db.prepare("UPDATE admin_reauth_capabilities SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL").run(now(), capability.id);
       this.db.prepare("UPDATE occurrences SET fulfillment_status = 'CANCELLED', sales_status = 'CLOSED', cancelled_at = ?, cancellation_reason = ?, updated_at = ? WHERE id = ?").run(now(), input.reason, now(), occurrenceId);
-      const bookings = many(this.db, `SELECT b.id, p.id AS payment_id, p.status AS payment_status, p.captured_amount_kopecks, ord.customer_email, ord.customer_email_hash
+      const bookings = many(this.db, `SELECT b.id, p.id AS payment_id, p.status AS payment_status, p.captured_amount_kopecks, ord.customer_email, ord.customer_email_hash, ord.public_order_number
         FROM bookings b JOIN payments p ON p.order_id = b.order_id JOIN orders ord ON ord.id = b.order_id WHERE b.occurrence_id = ? AND b.status IN ('RESERVED', 'CONFIRMED')`, occurrenceId);
       for (const booking of bookings) {
         this.db.prepare("UPDATE bookings SET status = 'CANCELLED', cancelled_at = ?, cancellation_reason = ? WHERE id = ?").run(now(), "OCCURRENCE_CANCELLED", booking.id);
         this.db.prepare("UPDATE tickets SET status = 'VOID', voided_at = ? WHERE booking_id = ? AND status = 'VALID'").run(now(), booking.id);
         if (booking.payment_status === "PAID" || booking.payment_status === "PARTIALLY_REFUNDED") this.upsertRefundObligation(String(booking.payment_id), "OCCURRENCE_CANCELLED", Number(booking.captured_amount_kopecks));
-        this.enqueueEmail("OCCURRENCE_CANCELLED", String(booking.customer_email), String(booking.customer_email_hash), "occurrence-cancelled", String(booking.id), { occurrence_id: occurrenceId, booking_id: booking.id, reason: input.reason });
+        this.enqueueEmail("OCCURRENCE_CANCELLED", String(booking.customer_email), String(booking.customer_email_hash), "occurrence-cancelled", String(booking.id), { occurrence_id: occurrenceId, booking_id: booking.id, reason: input.reason, public_order_number: booking.public_order_number });
       }
+      this.recordAdminCommandAudit(adminId, "OCCURRENCE_CANCELLED", "occurrence", occurrenceId, input.reason, idempotencyKey, payload);
       return one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId)!;
     });
   }
@@ -614,8 +688,8 @@ export class CommerceDomain {
         const payment = one(this.db, "SELECT captured_amount_kopecks FROM payments WHERE id = ?", refund.payment_id)!;
         this.db.prepare("UPDATE payments SET status = ?, updated_at = ? WHERE id = ?").run(Number(totals.amount) >= Number(payment.captured_amount_kopecks) ? "REFUNDED" : "PARTIALLY_REFUNDED", now(), refund.payment_id);
         this.db.prepare("UPDATE reservation_abandonments SET status = 'LATE_PAYMENT_REFUNDED', resolved_at = ? WHERE payment_id = ? AND status = 'LATE_PAYMENT_REVIEW_REQUIRED'").run(now(), refund.payment_id);
-        const order = one(this.db, "SELECT customer_email, customer_email_hash FROM orders WHERE id = ?", refund.order_id)!;
-        this.enqueueEmail("REFUND_SUCCEEDED", String(order.customer_email), String(order.customer_email_hash), "refund-succeeded", refundId, { refund_id: refundId, amount_kopecks: refund.amount_kopecks });
+        const order = one(this.db, "SELECT customer_email, customer_email_hash, public_order_number FROM orders WHERE id = ?", refund.order_id)!;
+        this.enqueueEmail("REFUND_SUCCEEDED", String(order.customer_email), String(order.customer_email_hash), "refund-succeeded", refundId, { refund_id: refundId, amount_kopecks: refund.amount_kopecks, public_order_number: order.public_order_number });
         return one(this.db, "SELECT * FROM refunds WHERE id = ?", refundId)!;
       });
     }
@@ -696,6 +770,11 @@ export class CommerceDomain {
       const ticket = one(this.db, "SELECT capability_ciphertext, capability_nonce FROM tickets WHERE id = ?", outbox.payload_ref);
       if (!ticket) throw new Error("Ticket email references no ticket.");
       payload.ticket_url = `${process.env.COMMERCE_PUBLIC_ORIGIN ?? "https://flexperiment.ru"}/ticket#${decryptTicketCapability(String(ticket.capability_ciphertext), String(ticket.capability_nonce))}`;
+    }
+    if (outbox.type === "CUSTOMER_REFUND_CONFIRMATION" && outbox.payload_ref) {
+      const token = one(this.db, "SELECT token_ciphertext, token_nonce FROM customer_refund_confirmation_tokens WHERE id = ?", outbox.payload_ref);
+      if (!token) throw new Error("Customer refund email references no confirmation token.");
+      payload.confirmation_url = `${process.env.COMMERCE_PUBLIC_ORIGIN ?? "https://flexperiment.ru"}/refund/confirm#${decryptTicketCapability(String(token.token_ciphertext), String(token.token_nonce))}`;
     }
     return payload;
   }

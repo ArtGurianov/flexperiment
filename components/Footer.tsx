@@ -1,4 +1,5 @@
 import PaymentCta from "@/components/PaymentCta";
+import Link from "next/link";
 import { cn } from "@/lib/cn";
 import { LEGAL_DOCUMENTS } from "@/lib/legal";
 import { BOOKING_LABEL, SITE_LINKS } from "@/lib/navigation";
@@ -57,6 +58,7 @@ export default function Footer({ className }: { className?: string }) {
               {label}
             </a>
           ))}
+          <Link href="/refund" className={LINK}>Отмена и возврат</Link>
         </nav>
 
         {/* Opened in a new tab on purpose: these are most often reached from a
