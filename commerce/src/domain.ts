@@ -831,8 +831,7 @@ export class CommerceDomain {
       if (outbox.status === "PENDING" && outbox.type === "CUSTOMER_REFUND_CONFIRMATION" && !this.isCurrentRefundConfirmationOutbox(outbox)) {
         // A later request superseded this capability, or it is no longer usable.
         // SKIPPED is terminal and deliberately not an email-provider failure.
-        this.db.prepare("UPDATE email_outbox SET status = 'SKIPPED', lease_owner = NULL, lease_expires_at = NULL, last_error = NULL WHERE id = ? AND status IN ('PENDING', 'SEND_UNKNOWN')").run(outbox.id);
-        continue;
+        if (this.skipObsoleteRefundConfirmationOutbox(String(outbox.id))) continue;
       }
       const isUnknown = outbox.status === "SEND_UNKNOWN";
       // A known provider job is always reconciled before another send. It is
@@ -851,7 +850,7 @@ export class CommerceDomain {
         // Recheck inside the claim transaction so an invalidated queued token
         // cannot race into a fresh provider send.
         if (outbox.status === "PENDING" && outbox.type === "CUSTOMER_REFUND_CONFIRMATION" && !this.isCurrentRefundConfirmationOutbox(outbox)) {
-          this.db.prepare("UPDATE email_outbox SET status = 'SKIPPED', lease_owner = NULL, lease_expires_at = NULL, last_error = NULL WHERE id = ? AND status IN ('PENDING', 'SEND_UNKNOWN')").run(outbox.id);
+          this.skipObsoleteRefundConfirmationOutbox(String(outbox.id));
           return 0;
         }
         return this.db.prepare(`UPDATE email_outbox SET status = 'SENDING', lease_owner = ?, lease_expires_at = datetime('now', '+120 seconds'), send_started_at = COALESCE(send_started_at, ?), provider_request_started_at = ?, attempts = attempts + 1
@@ -911,6 +910,12 @@ export class CommerceDomain {
     const token = one(this.db, `SELECT id FROM customer_refund_confirmation_tokens
       WHERE id = ? AND invalidated_at IS NULL AND consumed_at IS NULL AND expires_at > ?`, outbox.payload_ref, new Date(this.clock()).toISOString());
     return Boolean(token);
+  }
+
+  private skipObsoleteRefundConfirmationOutbox(outboxId: string) {
+    // This is a strict compare-and-set. A worker with a stale PENDING snapshot
+    // must never relabel a newer SEND_UNKNOWN provider outcome as SKIPPED.
+    return this.db.prepare("UPDATE email_outbox SET status = 'SKIPPED', lease_owner = NULL, lease_expires_at = NULL, last_error = NULL WHERE id = ? AND status = 'PENDING'").run(outboxId).changes;
   }
 
   private enqueueEmail(type: string, recipientEmail: string, recipientEmailHash: string, template: string, payloadRef: string, payload: Record<string, unknown>) {
