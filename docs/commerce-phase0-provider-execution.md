@@ -20,13 +20,15 @@ ticket capabilities.
 
 ## 2. Runtime configuration names
 
-`TOCHKA_API_BASE_URL`, `TOCHKA_JWT`, `TOCHKA_CLIENT_ID`,
+`TOCHKA_API_BASE_URL`, `TOCHKA_JWT`, `TOCHKA_CLIENT_ID` (production only),
 `TOCHKA_CUSTOMER_CODE`, `TOCHKA_MERCHANT_ID`, `TOCHKA_TAX_SYSTEM_CODE`,
 `TOCHKA_VAT_TYPE`, `UNISENDER_GO_API_KEY`, `UNISENDER_GO_FROM_EMAIL`,
 `UNISENDER_GO_FROM_NAME`, and `UNISENDER_GO_REPLY_TO_EMAIL`.
 
 The frozen fiscal values are `usn_income` and `none`. All values are read only
-at runtime; `.env.example` uses placeholders only.
+at runtime; `.env.example` uses placeholders only. Tochka sandbox uses its
+documented fixed JWT, customer code, and merchant ID; it has no sandbox
+`client_id`, so `TOCHKA_CLIENT_ID` is optional only for the sandbox URL.
 
 ## 3. Redacted Tochka command fixture
 

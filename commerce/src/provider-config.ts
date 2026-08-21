@@ -7,7 +7,8 @@ const required = (environment: NodeJS.ProcessEnv, name: string) => {
 export type TochkaConfig = {
   baseUrl: string;
   jwt: string;
-  clientId: string;
+  /** Required for production JWT/webhook configuration; absent in Tochka sandbox. */
+  clientId?: string;
   customerCode: string;
   merchantId: string;
   taxSystemCode: "usn_income";
@@ -20,7 +21,9 @@ export const tochkaConfigFromEnvironment = (environment = process.env): TochkaCo
   const taxSystemCode = required(environment, "TOCHKA_TAX_SYSTEM_CODE");
   const vatType = required(environment, "TOCHKA_VAT_TYPE");
   if (taxSystemCode !== "usn_income" || vatType !== "none") throw new Error("The frozen Tochka fiscal profile requires usn_income and none.");
-  return { baseUrl, jwt: required(environment, "TOCHKA_JWT"), clientId: required(environment, "TOCHKA_CLIENT_ID"), customerCode: required(environment, "TOCHKA_CUSTOMER_CODE"), merchantId: required(environment, "TOCHKA_MERCHANT_ID"), taxSystemCode, vatType };
+  const clientId = environment.TOCHKA_CLIENT_ID?.trim() || undefined;
+  if (baseUrl === "https://enter.tochka.com/uapi" && !clientId) throw new Error("Missing required runtime configuration: TOCHKA_CLIENT_ID");
+  return { baseUrl, jwt: required(environment, "TOCHKA_JWT"), clientId, customerCode: required(environment, "TOCHKA_CUSTOMER_CODE"), merchantId: required(environment, "TOCHKA_MERCHANT_ID"), taxSystemCode, vatType };
 };
 
 export type UnisenderGoConfig = { apiKey: string; fromEmail: string; fromName: string; replyToEmail: string };

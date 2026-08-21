@@ -1,6 +1,7 @@
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { UnisenderGoProvider } from "../src/email-provider";
+import { tochkaConfigFromEnvironment } from "../src/provider-config";
 import { TochkaProvider, rublesFromKopecks } from "../src/provider";
 import { TochkaWebhookVerifier, webhookAmountKopecks } from "../src/tochka-webhook";
 import { verifyUnisenderWebhook } from "../src/unisender-webhook";
@@ -8,6 +9,12 @@ import { verifyUnisenderWebhook } from "../src/unisender-webhook";
 const tochkaConfig = { baseUrl: "https://enter.tochka.com/uapi", jwt: "test-jwt-not-a-secret", clientId: "test-client-id", customerCode: "123456789", merchantId: "123456789012345", taxSystemCode: "usn_income" as const, vatType: "none" as const };
 
 describe("provider contracts", () => {
+  it("does not require a fictitious client ID for Tochka sandbox, but requires one in production", () => {
+    const common = { TOCHKA_JWT: "sandbox.jwt.token", TOCHKA_CUSTOMER_CODE: "1234567ab", TOCHKA_MERCHANT_ID: "200000000001097", TOCHKA_TAX_SYSTEM_CODE: "usn_income", TOCHKA_VAT_TYPE: "none" };
+    expect(tochkaConfigFromEnvironment({ ...process.env, ...common, TOCHKA_API_BASE_URL: "https://enter.tochka.com/sandbox/v2", TOCHKA_CLIENT_ID: undefined })).toMatchObject({ clientId: undefined });
+    expect(() => tochkaConfigFromEnvironment({ ...process.env, ...common, TOCHKA_API_BASE_URL: "https://enter.tochka.com/uapi", TOCHKA_CLIENT_ID: undefined })).toThrow("TOCHKA_CLIENT_ID");
+  });
+
   it("serializes a frozen full-payment Tochka receipt request without optional card or supplier features", async () => {
     let request: Request | undefined;
     const provider = new TochkaProvider(tochkaConfig, async (input, init) => {
