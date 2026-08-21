@@ -18,9 +18,11 @@ CITY_SLUG="kemerovo"
 CITY_NAME="Кемерово"
 AMOUNT_KOPECKS=100
 
-# Supply only the CITY_ID printed by an earlier interrupted run:
-#   CITY_ID_OVERRIDE='<city-id>' ./certification.sh
+# Resume values may ONLY come from IDs printed by a previous successful partial
+# run of this certification procedure.
+#   CITY_ID_OVERRIDE='<city-id>' OCCURRENCE_ID_OVERRIDE='<occurrence-id>' ./certification.sh
 CITY_ID_OVERRIDE="${CITY_ID_OVERRIDE:-}"
+OCCURRENCE_ID_OVERRIDE="${OCCURRENCE_ID_OVERRIDE:-}"
 
 RUN_TMP="$(mktemp -d)"
 chmod 700 "$RUN_TMP"
@@ -70,14 +72,16 @@ echo "FLEXPERIMENT / Tochka Phase 0 / Kemerovo / 1 RUB"
 echo
 read -rsp "Admin password: " ADMIN_PASSWORD
 echo
-echo "Enter real production occurrence data (RFC 3339 with timezone offset)."
-read -rp "STARTS_AT: " STARTS_AT
-read -rp "ENDS_AT: " ENDS_AT
-read -rp "Venue disclosure text: " VENUE_DISCLOSURE_TEXT
-read -rp "VENUE_ANNOUNCE_BY: " VENUE_ANNOUNCE_BY
 read -rp "Real test email: " CUSTOMER_EMAIL
 
-python3 - "$STARTS_AT" "$ENDS_AT" "$VENUE_ANNOUNCE_BY" <<'PY'
+if [[ -z "$OCCURRENCE_ID_OVERRIDE" ]]; then
+  echo "Enter real production occurrence data (RFC 3339 with timezone offset)."
+  read -rp "STARTS_AT: " STARTS_AT
+  read -rp "ENDS_AT: " ENDS_AT
+  read -rp "Venue disclosure text: " VENUE_DISCLOSURE_TEXT
+  read -rp "VENUE_ANNOUNCE_BY: " VENUE_ANNOUNCE_BY
+
+  python3 - "$STARTS_AT" "$ENDS_AT" "$VENUE_ANNOUNCE_BY" <<'PY'
 from datetime import datetime
 import sys
 
@@ -100,7 +104,8 @@ if ends <= starts:
 if announce >= starts:
     raise SystemExit("ERROR: VENUE_ANNOUNCE_BY must be earlier than STARTS_AT")
 PY
-echo "Schedule and venue-disclosure timestamps: OK"
+  echo "Schedule and venue-disclosure timestamps: OK"
+fi
 
 curl -fsS "$API/healthz" | jq -e '.ok == true' >/dev/null
 curl -fsS "$API/readyz" | jq -e '.ok == true' >/dev/null
@@ -118,6 +123,29 @@ grep -q $'\t' "$COOKIE_JAR" || { echo "ERROR: login returned no session cookie" 
 unset ADMIN_PASSWORD
 echo "Admin session: OK"
 
+RESUMED_OCCURRENCE=0
+if [[ -n "$OCCURRENCE_ID_OVERRIDE" ]]; then
+  echo "Resuming existing published certification occurrence"
+  if [[ -z "$CITY_ID_OVERRIDE" ]]; then
+    echo "ERROR: OCCURRENCE_ID_OVERRIDE requires CITY_ID_OVERRIDE from the same previous run" >&2
+    exit 1
+  fi
+  CITY_ID="$CITY_ID_OVERRIDE"
+  OCCURRENCE_ID="$OCCURRENCE_ID_OVERRIDE"
+  request "$HTTP_BODY" -H "Origin: $PUBLIC_ORIGIN" "$API/v1/public/occurrences/$OCCURRENCE_ID"
+  require_exact_code 200 "Read resumed occurrence detail" "$HTTP_BODY"
+  jq -e --arg id "$OCCURRENCE_ID" --argjson amount "$AMOUNT_KOPECKS" '
+    .id == $id and .city_slug == "kemerovo" and .sales_status == "OPEN" and .price_kopecks == $amount and .capacity == 1
+  ' "$HTTP_BODY" >/dev/null
+  request "$HTTP_BODY" -H "Origin: $PUBLIC_ORIGIN" "$API/v1/public/tour"
+  require_2xx "Read public tour for resumed occurrence" "$HTTP_BODY"
+  jq -e --arg id "$OCCURRENCE_ID" '[.. | objects | .id?] | index($id) != null' "$HTTP_BODY" >/dev/null
+  echo "Resume checkpoint accepted: exact published Kemerovo occurrence is public."
+  echo "Skipping city create/replay, occurrence create/replay, and publish."
+  RESUMED_OCCURRENCE=1
+fi
+
+if [[ "$RESUMED_OCCURRENCE" -eq 0 ]]; then
 if [[ -n "$CITY_ID_OVERRIDE" ]]; then
   CITY_ID="$CITY_ID_OVERRIDE"
   echo "Resuming with supplied CITY_ID=$CITY_ID"
@@ -219,6 +247,7 @@ jq -e --arg id "$OCCURRENCE_ID" '
   .id == $id and .city_slug == "kemerovo"
 ' "$HTTP_BODY" >/dev/null
 echo "Published Kemerovo occurrence is public: OK"
+fi
 
 CONTEXT_BODY="$(jq -nc --arg occurrence_id "$OCCURRENCE_ID" '{occurrence_id:$occurrence_id}')"
 request "$HTTP_BODY" \
