@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { ZodError } from "zod";
 import type { Sqlite } from "./db";
-import { assertAdminOrigin, makeSession, parseSession, verifyAdminPassword } from "./auth";
+import { assertAdminOrigin, issueAdminSession, parseSession, verifyAdminPassword } from "./auth";
 import { emailHash, sha256 } from "./crypto";
 import { CommerceDomain, DomainError } from "./domain";
 import { type EmailProvider, UnconfiguredEmailProvider, UnisenderGoProvider } from "./email-provider";
@@ -11,8 +11,9 @@ import { TochkaWebhookVerifier, webhookAmountKopecks } from "./tochka-webhook";
 import { verifyUnisenderWebhook } from "./unisender-webhook";
 import { agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, compensationRefundSchema, customerCancellationSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrencePatchSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
 
-type AppBindings = { Variables: { adminId?: string } };
+type AppBindings = { Variables: { adminId?: string; adminSessionId?: string } };
 const noStore = (headers: Headers) => headers.set("Cache-Control", "no-store");
+const adminSessionCookie = (value: string, maxAge: number) => `fx_admin_session=${value}; Path=/; Max-Age=${maxAge}; HttpOnly; Secure; SameSite=Strict`;
 const publicBrowserOrigin = () => process.env.COMMERCE_PUBLIC_ORIGIN ?? "https://flexperiment.ru";
 const canonicalWebhookPayload = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(canonicalWebhookPayload).join(",")}]`;
@@ -179,15 +180,20 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   admin.use("*", async (c, next) => {
     if (!assertAdminOrigin(c.req.header("Origin"))) throw new DomainError("ORIGIN_FORBIDDEN", 403);
     const session = parseSession(c.req.header("Cookie"));
-    if (!session) throw new DomainError("ADMIN_AUTH_REQUIRED", 401);
+    const activeSession = session && sqlite.prepare(`SELECT 1 FROM admin_sessions
+      WHERE id = ? AND admin_id = ? AND revoked_at IS NULL AND expires_at > ?`).get(session.sid, session.sub, new Date().toISOString());
+    if (!session || !activeSession) throw new DomainError("ADMIN_AUTH_REQUIRED", 401);
     noStore(c.res.headers);
-    rateLimit(`admin:${session.sub}`, 120, 60_000); c.set("adminId", session.sub); await next();
+    rateLimit(`admin:${session.sub}`, 120, 60_000); c.set("adminId", session.sub); c.set("adminSessionId", session.sid); await next();
     noStore(c.res.headers);
   });
   const audit = (adminId: string, action: string, type: string, entityId: string, details: unknown) => sqlite.prepare("INSERT INTO admin_audit_log(id, admin_id, action, entity_type, entity_id, details_json) VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?)").run(adminId, action, type, entityId, JSON.stringify(details, (key, value) => /email|inn|authorization|cookie|capability/i.test(key) ? "[REDACTED]" : value));
   admin.get("/session", (c) => c.json({ authenticated: true }));
   admin.post("/logout", (c) => {
-    c.header("Set-Cookie", "fx_admin_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict");
+    // The middleware proved this session was active. Persist revocation before
+    // returning so a copied pre-logout cookie cannot be replayed.
+    sqlite.prepare("UPDATE admin_sessions SET revoked_at = COALESCE(revoked_at, ?) WHERE id = ?").run(new Date().toISOString(), c.var.adminSessionId);
+    c.header("Set-Cookie", adminSessionCookie("", 0));
     return c.json({ ok: true });
   });
   admin.get("/dashboard", (c) => c.json({
@@ -309,7 +315,16 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     if (!assertAdminOrigin(c.req.header("Origin"))) throw new DomainError("ORIGIN_FORBIDDEN", 403);
     const ip = clientIp(c.req.raw.headers); rateLimit(`login-15m:${ip}`, 5, 15 * 60_000); rateLimit(`login-day:${ip}`, 20, 24 * 60 * 60_000);
     const body = await jsonBody(c.req.raw) as { password?: string }; if (!body.password || !verifyAdminPassword(body.password)) throw new DomainError("INVALID_CREDENTIALS", 401);
-    c.header("Set-Cookie", `fx_admin_session=${makeSession()}; Path=/; Max-Age=43200; HttpOnly; Secure; SameSite=Strict`); return c.json({ ok: true });
+    const cookieValue = issueAdminSession();
+    const session = parseSession(`fx_admin_session=${cookieValue}`)!;
+    const now = new Date().toISOString();
+    sqlite.transaction(() => {
+      // Expired rows have no authorization value. Retain recently revoked rows
+      // briefly for forensic continuity, then remove them opportunistically.
+      sqlite.prepare("DELETE FROM admin_sessions WHERE expires_at <= ? OR (revoked_at IS NOT NULL AND revoked_at < ?)").run(now, new Date(Date.now() - 7 * 24 * 60 * 60_000).toISOString());
+      sqlite.prepare("INSERT INTO admin_sessions(id, admin_id, expires_at) VALUES (?, ?, ?)").run(session.sid, session.sub, new Date(session.exp).toISOString());
+    })();
+    c.header("Set-Cookie", adminSessionCookie(cookieValue, 43_200)); return c.json({ ok: true });
   });
   app.route("/v1/admin", admin);
   return app;

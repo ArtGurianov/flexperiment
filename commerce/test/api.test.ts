@@ -159,19 +159,70 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
-  it("restores the Admin session, exposes catalog reads, and expires the cookie on logout", async () => {
+  it("uses durable server-side Admin sessions and revokes the exact cookie on logout", async () => {
     const { db, app } = appFixture();
     const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.1" }, body: JSON.stringify({ password: "correct horse" }) });
     const cookie = login.headers.get("set-cookie")!;
+    expect(login.status).toBe(200);
+    expect(cookie).toMatch(/^fx_admin_session=[^;]+; Path=\/; Max-Age=43200; HttpOnly; Secure; SameSite=Strict$/);
+    expect(cookie).not.toContain("Domain=");
     const headers = { Origin: "https://admin.flexperiment.ru", Cookie: cookie };
     const session = await app.request("http://admin.flexperiment.ru/v1/admin/session", { headers });
     expect(await session.json()).toEqual({ authenticated: true });
+    expect(db.prepare("SELECT id, revoked_at FROM admin_sessions").all()).toHaveLength(1);
     const cities = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { headers });
     expect((await cities.json() as { cities: { occurrence_count: number }[] }).cities[0]).toMatchObject({ occurrence_count: 1 });
     const occurrences = await app.request("http://admin.flexperiment.ru/v1/admin/occurrences", { headers });
     expect((await occurrences.json() as { occurrences: { availability: number }[] }).occurrences[0]).toMatchObject({ availability: 5 });
     const logout = await app.request("http://admin.flexperiment.ru/v1/admin/logout", { method: "POST", headers });
-    expect(logout.headers.get("set-cookie")).toContain("Max-Age=0");
+    expect(logout.status).toBe(200);
+    expect(await logout.json()).toEqual({ ok: true });
+    expect(logout.headers.get("set-cookie")).toBe("fx_admin_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict");
+    expect(logout.headers.get("set-cookie")).not.toContain("Domain=");
+    expect(db.prepare("SELECT revoked_at FROM admin_sessions").get()).toMatchObject({ revoked_at: expect.any(String) });
+    const restartedApp = createApp(db, new MockProvider());
+    const replay = await restartedApp.request("http://admin.flexperiment.ru/v1/admin/session", { headers });
+    expect(replay.status).toBe(401);
+    expect(await replay.json()).toEqual({ error: { code: "ADMIN_AUTH_REQUIRED" } });
+    // A repeated logout remains safe: the revoked session is not revived. It
+    // follows the existing authenticated-endpoint contract and returns 401.
+    expect((await restartedApp.request("http://admin.flexperiment.ru/v1/admin/logout", { method: "POST", headers })).status).toBe(401);
+    db.close();
+  });
+
+  it("keeps independent Admin sessions active and rejects missing, revoked, expired, and tampered sessions", async () => {
+    const { db, app } = appFixture();
+    const login = async (ip: string) => app.request("http://admin.flexperiment.ru/v1/admin/login", {
+      method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": ip }, body: JSON.stringify({ password: "correct horse" }),
+    });
+    const [first, second] = await Promise.all([login("127.0.0.11"), login("127.0.0.12")]);
+    const firstHeaders = { Origin: "https://admin.flexperiment.ru", Cookie: first.headers.get("set-cookie")! };
+    const secondHeaders = { Origin: "https://admin.flexperiment.ru", Cookie: second.headers.get("set-cookie")! };
+    await app.request("http://admin.flexperiment.ru/v1/admin/logout", { method: "POST", headers: firstHeaders });
+    expect((await app.request("http://admin.flexperiment.ru/v1/admin/session", { headers: firstHeaders })).status).toBe(401);
+    expect((await app.request("http://admin.flexperiment.ru/v1/admin/session", { headers: secondHeaders })).status).toBe(200);
+
+    const secondCookieMatch = secondHeaders.Cookie.match(/fx_admin_session=([^;]+)/);
+    if (!secondCookieMatch) throw new Error("Expected Admin session cookie");
+    const secondCookieValue = secondCookieMatch[1];
+    const secondSessionId = JSON.parse(Buffer.from(secondCookieValue.split(".")[0], "base64url").toString("utf8")).sid as string;
+    db.prepare("UPDATE admin_sessions SET expires_at = ? WHERE id = ?").run(new Date(Date.now() - 1_000).toISOString(), secondSessionId);
+    expect((await app.request("http://admin.flexperiment.ru/v1/admin/session", { headers: secondHeaders })).status).toBe(401);
+    expect((await app.request("http://admin.flexperiment.ru/v1/admin/session", { headers: { Origin: "https://admin.flexperiment.ru", Cookie: "fx_admin_session=not-a-session" } })).status).toBe(401);
+
+    const third = await login("127.0.0.13");
+    const validCookie = third.headers.get("set-cookie")!;
+    const thirdCookieMatch = validCookie.match(/fx_admin_session=([^;]+)/);
+    if (!thirdCookieMatch) throw new Error("Expected Admin session cookie");
+    const tamperedValue = `${thirdCookieMatch[1].startsWith("A") ? "B" : "A"}${thirdCookieMatch[1].slice(1)}`;
+    const tamperedCookie = validCookie.replace(/fx_admin_session=[^;]+/, `fx_admin_session=${tamperedValue}`);
+    expect((await app.request("http://admin.flexperiment.ru/v1/admin/session", { headers: { Origin: "https://admin.flexperiment.ru", Cookie: tamperedCookie } })).status).toBe(401);
+    const { issueAdminSession } = await import("../src/auth");
+    const unknownCookie = issueAdminSession();
+    expect((await app.request("http://admin.flexperiment.ru/v1/admin/session", { headers: { Origin: "https://admin.flexperiment.ru", Cookie: `fx_admin_session=${unknownCookie}` } })).status).toBe(401);
+    expect((await app.request("http://admin.flexperiment.ru/v1/admin/cities", { headers: { Origin: "https://admin.flexperiment.ru", Cookie: `fx_admin_session=${unknownCookie}` } })).status).toBe(401);
+    const sessionCount = db.prepare("SELECT COUNT(*) AS count FROM admin_sessions").get() as { count: number };
+    expect(sessionCount.count).toBe(2);
     db.close();
   });
 

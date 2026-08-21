@@ -1,10 +1,12 @@
-import { createHmac, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHmac, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 
 const sessionSecret = process.env.COMMERCE_SESSION_SECRET ?? "development-only-session-secret-change-before-production";
 const passwordHash = process.env.COMMERCE_ADMIN_PASSWORD_SCRYPT;
 const adminOrigin = process.env.COMMERCE_ADMIN_ORIGIN ?? "https://admin.flexperiment.ru";
 
-type Session = { sub: string; exp: number };
+export const ADMIN_SESSION_TTL_MS = 12 * 60 * 60_000;
+
+export type Session = { sub: string; sid: string; exp: number };
 
 const b64 = (value: string) => Buffer.from(value).toString("base64url");
 const unb64 = (value: string) => Buffer.from(value, "base64url").toString("utf8");
@@ -38,19 +40,30 @@ export function verifyAdminPassword(password: string) {
   } catch { return false; }
 }
 
-export function makeSession(adminId = "singleton-admin") {
-  const payload = b64(JSON.stringify({ sub: adminId, exp: Date.now() + 12 * 60 * 60_000 } satisfies Session));
+const sessionPayloadIsValid = (value: unknown): value is Session => {
+  if (!value || typeof value !== "object") return false;
+  const session = value as Partial<Session>;
+  return typeof session.sub === "string" && session.sub.length > 0
+    && typeof session.sid === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(session.sid)
+    && typeof session.exp === "number" && Number.isSafeInteger(session.exp);
+};
+
+export function issueAdminSession(adminId = "singleton-admin", now = Date.now()) {
+  const session = { sub: adminId, sid: randomUUID(), exp: now + ADMIN_SESSION_TTL_MS } satisfies Session;
+  const payload = b64(JSON.stringify(session));
   return `${payload}.${sign(payload)}`;
 }
 
 export function parseSession(cookie: string | undefined): Session | undefined {
   const token = cookie?.split(";").map((part) => part.trim()).find((part) => part.startsWith("fx_admin_session="))?.slice("fx_admin_session=".length);
   if (!token) return undefined;
-  const [payload, signature] = token.split(".");
+  const parts = token.split(".");
+  if (parts.length !== 2) return undefined;
+  const [payload, signature] = parts;
   if (!payload || !signature || signature.length !== sign(payload).length || !timingSafeEqual(Buffer.from(signature), Buffer.from(sign(payload)))) return undefined;
   try {
-    const session = JSON.parse(unb64(payload)) as Session;
-    return session.exp > Date.now() ? session : undefined;
+    const session = JSON.parse(unb64(payload)) as unknown;
+    return sessionPayloadIsValid(session) && session.exp > Date.now() ? session : undefined;
   } catch { return undefined; }
 }
 
