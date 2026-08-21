@@ -41,6 +41,14 @@ export const verifyLegalSourceHashes = (manifest: LegalManifest, root = process.
   }
 };
 
+/** Verifies the non-versioned convenience copies without changing publish authority. */
+export const verifyCurrentLegalSourceHashes = (manifest: LegalManifest, root = process.cwd()) => {
+  for (const id of legalDocumentIds) {
+    const actual = sha256(readFileSync(resolve(root, currentSourcePaths[id])));
+    if (actual !== manifest.documents[id].sha256) throw new LegalReleasePublishError(`Current legal source hash does not match ${currentSourcePaths[id]}.`);
+  }
+};
+
 /**
  * Checks the immutable archive bytes that an active checkout release actually
  * exposes. It is intentionally separate from publication and writes nothing.

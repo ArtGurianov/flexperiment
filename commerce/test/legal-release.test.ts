@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
-import type { LegalManifest } from "../src/legal-manifest";
-import { LegalReleasePublishError, loadCanonicalLegalRelease, publishLegalRelease, verifyLegalArchiveHashes } from "../src/legal-release";
+import { canonicalLegalManifest, type LegalManifest } from "../src/legal-manifest";
+import { LegalReleasePublishError, loadCanonicalLegalRelease, publishLegalRelease, verifyCurrentLegalSourceHashes, verifyLegalArchiveHashes } from "../src/legal-release";
 
 const manifest = (offerHash = "a".repeat(64)): LegalManifest => ({ documents: {
   PUBLIC_OFFER: { document_id: "PUBLIC_OFFER", version: "2026-08-20", sha256: offerHash, current_url: "https://flexperiment.ru/legal/public-offer.md", archive_url: "https://archive.flexperiment.ru/legal/2026-08-21.1/public-offer.md", checkout_relevant: true },
@@ -41,8 +41,14 @@ describe("production legal-release publisher", () => {
   });
 
   it("verifies a prepared archive release without changing the active current-document copies", () => {
-    expect(loadCanonicalLegalRelease("commerce/legal/production-manifest.json").version).toBe("2026-08-21.1");
+    expect(loadCanonicalLegalRelease("commerce/legal/production-manifest.json").version).toBe("2026-08-21.2");
     expect(loadCanonicalLegalRelease("commerce/legal/production-manifest.2026-08-21.2.draft.json").version).toBe("2026-08-21.2");
+  });
+
+  it("keeps every current legal convenience file byte-identical to the canonical manifest", () => {
+    const release = loadCanonicalLegalRelease("commerce/legal/production-manifest.json");
+    expect(() => verifyCurrentLegalSourceHashes(release.manifest)).not.toThrow();
+    expect(createHash("sha256").update(canonicalLegalManifest(release.manifest)).digest("hex")).toBe("733252eca0c6a298e6bf662bbe54bc8d73c0c7cb03df9e173b3ce7da1aa43589");
   });
 
   it("verifies every active archive URL against its manifest hash", async () => {
