@@ -63,6 +63,75 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
+  it("creates an audited hidden occurrence and exposes it only after the existing publish command", async () => {
+    const { db, app } = appFixture();
+    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", {
+      method: "POST",
+      headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.1" },
+      body: JSON.stringify({ password: "correct horse" }),
+    });
+    const adminHeaders = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
+    const cityPayload = { name: "Омск", slug: "omsk", reason: "Tochka Phase 0 certification" };
+    const cityKey = "b6a8e45a-9334-4626-8041-000000000001";
+    const firstCity = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": cityKey }, body: JSON.stringify(cityPayload) });
+    expect(firstCity.status).toBe(201);
+    const city = await firstCity.json() as { id: string; slug: string; title: string };
+    expect(city).toMatchObject({ slug: "omsk", title: "Омск" });
+    const cityReplay = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": cityKey }, body: JSON.stringify(cityPayload) });
+    expect(await cityReplay.json()).toMatchObject({ id: city.id });
+    const changedReplay = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": cityKey }, body: JSON.stringify({ ...cityPayload, name: "Другой Омск" }) });
+    expect(changedReplay.status).toBe(409);
+    const duplicateSlug = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000006" }, body: JSON.stringify(cityPayload) });
+    expect(duplicateSlug.status).toBe(409);
+
+    const occurrencePayload = {
+      city_id: city.id,
+      title: "FLEXPERIMENT — Tochka certification",
+      starts_at: "2026-08-22T12:00:00+07:00",
+      ends_at: "2026-08-22T15:00:00+07:00",
+      timezone: "Asia/Omsk",
+      price_kopecks: 100,
+      capacity: 1,
+      venue_status: "TO_BE_ANNOUNCED",
+      venue_disclosure_text: "Venue will be announced to registered participants.",
+      venue_announce_by: "2026-08-21T12:00:00+07:00",
+      reason: "Tochka Phase 0 certification",
+    };
+    const occurrenceKey = "b6a8e45a-9334-4626-8041-000000000002";
+    const occurrence = await app.request("http://admin.flexperiment.ru/v1/admin/occurrences", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": occurrenceKey }, body: JSON.stringify(occurrencePayload) });
+    expect(occurrence.status).toBe(201);
+    const created = await occurrence.json() as { id: string; sales_status: string; visibility: string };
+    expect(created).toMatchObject({ sales_status: "CLOSED", visibility: "HIDDEN" });
+    const occurrenceReplay = await app.request("http://admin.flexperiment.ru/v1/admin/occurrences", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": occurrenceKey }, body: JSON.stringify(occurrencePayload) });
+    expect(await occurrenceReplay.json()).toMatchObject({ id: created.id });
+    const occurrenceConflict = await app.request("http://admin.flexperiment.ru/v1/admin/occurrences", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": occurrenceKey }, body: JSON.stringify({ ...occurrencePayload, title: "Changed title" }) });
+    expect(occurrenceConflict.status).toBe(409);
+    const before = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers: { Origin: "https://flexperiment.ru", "x-commerce-trusted-client-ip": "127.0.0.1" } });
+    expect((await before.json() as { cities: { id?: string }[] }).cities.some((entry) => entry.id === created.id)).toBe(false);
+
+    const unknownCity = await app.request("http://admin.flexperiment.ru/v1/admin/occurrences", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000003" }, body: JSON.stringify({ ...occurrencePayload, city_id: randomUUID() }) });
+    expect(unknownCity.status).toBe(404);
+    const invalidCapacity = await app.request("http://admin.flexperiment.ru/v1/admin/occurrences", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000004" }, body: JSON.stringify({ ...occurrencePayload, capacity: 0 }) });
+    expect(invalidCapacity.status).toBe(422);
+    const invalidPrice = await app.request("http://admin.flexperiment.ru/v1/admin/occurrences", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000007" }, body: JSON.stringify({ ...occurrencePayload, price_kopecks: 0 }) });
+    expect(invalidPrice.status).toBe(422);
+    const unsafeCreate = await app.request("http://admin.flexperiment.ru/v1/admin/occurrences", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000005" }, body: JSON.stringify({ ...occurrencePayload, visibility: "PUBLISHED" }) });
+    expect(unsafeCreate.status).toBe(422);
+    const unsafeSalesCreate = await app.request("http://admin.flexperiment.ru/v1/admin/occurrences", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000008" }, body: JSON.stringify({ ...occurrencePayload, sales_status: "OPEN" }) });
+    expect(unsafeSalesCreate.status).toBe(422);
+
+    const published = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: adminHeaders, body: JSON.stringify({ price_kopecks: 100, capacity: 1, sales_status: "OPEN", visibility: "PUBLISHED", reason: "Tochka Phase 0 certification" }) });
+    expect(published.status).toBe(200);
+    const after = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers: { Origin: "https://flexperiment.ru", "x-commerce-trusted-client-ip": "127.0.0.1" } });
+    expect((await after.json() as { cities: { id?: string }[] }).cities.some((entry) => entry.id === created.id)).toBe(true);
+    expect(db.prepare("SELECT admin_id, action, entity_type, entity_id, details_json FROM admin_audit_log WHERE entity_id = ?").get(created.id)).toMatchObject({
+      admin_id: expect.any(String), action: "OCCURRENCE_CREATED", entity_type: "occurrence", entity_id: created.id,
+    });
+    const evidence = JSON.parse(String((db.prepare("SELECT details_json FROM admin_audit_log WHERE entity_id = ?").get(created.id) as { details_json: string }).details_json));
+    expect(evidence).toMatchObject({ reason: occurrencePayload.reason, idempotency_key_hash: expect.stringMatching(/^[a-f0-9]{64}$/), canonical_request_hash: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    db.close();
+  });
+
   it("authenticates and applies a documented batched Unisender status callback", async () => {
     const { db } = appFixture();
     const outboxId = randomUUID();

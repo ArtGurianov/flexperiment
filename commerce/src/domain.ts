@@ -293,7 +293,7 @@ export class CommerceDomain {
   }
 
   cancelOccurrence(occurrenceId: string, input: { reason: string; confirmation_text: string }, idempotencyKey: string) {
-    return this.withAdminCommand("occurrence-cancel", idempotencyKey, input, () => {
+    return this.withAdminCommand("occurrence-cancel", idempotencyKey, input, "occurrences", () => {
       const occurrence = one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId);
       if (!occurrence) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
       if (input.confirmation_text !== `CANCEL ${occurrenceId}`) throw new DomainError("CONFIRMATION_REQUIRED", 422);
@@ -308,6 +308,45 @@ export class CommerceDomain {
         this.enqueueEmail("OCCURRENCE_CANCELLED", String(booking.customer_email), String(booking.customer_email_hash), "occurrence-cancelled", String(booking.id), { occurrence_id: occurrenceId, booking_id: booking.id, reason: input.reason });
       }
       return one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId)!;
+    });
+  }
+
+  createCity(input: { name: string; slug: string; reason: string }, idempotencyKey: string, adminId: string) {
+    return this.withAdminCommand("city-create", idempotencyKey, input, "cities", () => {
+      if (one(this.db, "SELECT id FROM cities WHERE slug = ?", input.slug)) throw new DomainError("CITY_SLUG_CONFLICT", 409);
+      const cityId = id();
+      this.db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, ?)").run(cityId, input.slug, input.name);
+      const city = one(this.db, "SELECT * FROM cities WHERE id = ?", cityId)!;
+      this.recordAdminCommandAudit(adminId, "CITY_CREATED", "city", cityId, input.reason, idempotencyKey, input);
+      return city;
+    });
+  }
+
+  createOccurrence(input: {
+    city_id: string; title: string; starts_at: string; ends_at: string; timezone: string;
+    price_kopecks: number; capacity: number; venue_status: "CONFIRMED" | "TO_BE_ANNOUNCED";
+    venue_name?: string | null; venue_address?: string | null; venue_disclosure_text?: string | null;
+    venue_announce_by?: string | null; reason: string;
+  }, idempotencyKey: string, adminId: string) {
+    return this.withAdminCommand("occurrence-create", idempotencyKey, input, "occurrences", () => {
+      if (!one(this.db, "SELECT id FROM cities WHERE id = ?", input.city_id)) throw new DomainError("CITY_NOT_FOUND", 404);
+      if (!Number.isInteger(input.price_kopecks) || input.price_kopecks <= 0 || !Number.isInteger(input.capacity) || input.capacity <= 0 || Date.parse(input.ends_at) <= Date.parse(input.starts_at)) {
+        throw new DomainError("OCCURRENCE_CREATE_INVALID", 422);
+      }
+      if (input.venue_status === "CONFIRMED" && (!input.venue_name || !input.venue_address)) throw new DomainError("VENUE_CONFIRMATION_INCOMPLETE", 422);
+      if (input.venue_status === "TO_BE_ANNOUNCED" && (!input.venue_disclosure_text || !input.venue_announce_by)) throw new DomainError("VENUE_TBD_INCOMPLETE", 422);
+      const occurrenceId = id();
+      this.db.prepare(`INSERT INTO occurrences(
+        id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity,
+        sales_status, visibility, venue_status, venue_name, venue_address, venue_public,
+        venue_disclosure_text, venue_announce_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CLOSED', 'HIDDEN', ?, ?, ?, 0, ?, ?)`)
+        .run(occurrenceId, input.city_id, input.title, input.starts_at, input.ends_at, input.timezone,
+          input.price_kopecks, input.capacity, input.venue_status, input.venue_name ?? null,
+          input.venue_address ?? null, input.venue_disclosure_text ?? null, input.venue_announce_by ?? null);
+      const occurrence = one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId)!;
+      this.recordAdminCommandAudit(adminId, "OCCURRENCE_CREATED", "occurrence", occurrenceId, input.reason, idempotencyKey, input);
+      return occurrence;
     });
   }
 
@@ -592,13 +631,21 @@ export class CommerceDomain {
     });
   }
 
-  private withAdminCommand<T extends Row>(command: string, idempotencyKey: string, payload: unknown, operation: () => T) {
+  private recordAdminCommandAudit(adminId: string, action: string, entityType: string, entityId: string, reason: string, idempotencyKey: string, payload: unknown) {
+    this.db.prepare("INSERT INTO admin_audit_log(id, admin_id, action, entity_type, entity_id, details_json) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(id(), adminId, action, entityType, entityId, JSON.stringify({
+        reason,
+        idempotency_key_hash: sha256(idempotencyKey),
+        canonical_request_hash: sha256(canonical(payload)),
+      }));
+  }
+
+  private withAdminCommand<T extends Row>(command: string, idempotencyKey: string, payload: unknown, table: "cities" | "occurrences" | "reward_settlements", operation: () => T) {
     const keyHash = sha256(idempotencyKey); const payloadHash = sha256(canonical(payload));
     return withImmediateTransaction(this.db, () => {
       const existing = one(this.db, "SELECT canonical_request_hash, entity_id FROM admin_command_idempotency WHERE command = ? AND idempotency_key_hash = ?", command, keyHash);
       if (existing) {
         if (existing.canonical_request_hash !== payloadHash) throw new DomainError("IDEMPOTENCY_CONFLICT", 409);
-        const table = command === "occurrence-cancel" ? "occurrences" : "reward_settlements";
         return one(this.db, `SELECT * FROM ${table} WHERE id = ?`, existing.entity_id)! as T;
       }
       const created = operation();

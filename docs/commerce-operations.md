@@ -32,6 +32,33 @@ POST /v1/webhooks/unisender
 The two webhook paths are provider callbacks, not browser-facing endpoints.
 They remain in this catalogue so the deployed API surface is complete.
 
+## Audited catalogue bootstrap
+
+Once a production legal release is active, the only supported way to create
+catalogue data is the authenticated Admin API:
+
+```text
+POST  /v1/admin/cities
+POST  /v1/admin/occurrences
+PATCH /v1/admin/occurrences/:id
+```
+
+Both `POST` commands require an Admin session, `Origin:
+https://admin.flexperiment.ru`, JSON, and a fresh `Idempotency-Key`. A city
+payload is `{ "name", "slug", "reason" }`; `name` is stored as the internal
+city title. An occurrence payload also requires its `city_id`, title, start and
+end instants (RFC 3339 UTC or numeric-offset form), IANA timezone, positive
+price and capacity, one complete venue-disclosure shape, and `reason`.
+
+Creation is deliberately non-public: the server rejects supplied
+`visibility`/`sales_status` fields and persists every occurrence as `HIDDEN`
+and `CLOSED`. Verify it in `GET /v1/public/tour`, then publish deliberately
+with the existing PATCH command, supplying `sales_status: "OPEN"`,
+`visibility: "PUBLISHED"`, and a reason. The transaction records the command
+actor, entity, reason, idempotency-key hash, and request hash in the durable
+admin audit log. Retrying a POST with the same key and exact payload returns
+the same entity; changing the payload for that key fails closed.
+
 ## Local development
 
 Copy `.env.example` privately, set `COMMERCE_PROVIDER=mock`, then run:

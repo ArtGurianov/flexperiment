@@ -54,6 +54,38 @@ export const occurrencePatchSchema = z.object({
   reason: z.string().trim().min(3).max(1_000),
 });
 
+export const cityCreateSchema = z.object({
+  name: z.string().trim().min(2).max(200),
+  slug: z.string().trim().regex(/^[a-z0-9-]{2,100}$/),
+  reason: z.string().trim().min(3).max(1_000),
+}).strict();
+
+export const occurrenceCreateSchema = z.object({
+  city_id: z.string().uuid(),
+  title: z.string().trim().min(2).max(300),
+  starts_at: z.string().datetime({ offset: true }),
+  ends_at: z.string().datetime({ offset: true }),
+  timezone: z.string().trim().min(1).max(100),
+  price_kopecks: z.number().int().positive(),
+  capacity: z.number().int().positive(),
+  venue_status: z.enum(["CONFIRMED", "TO_BE_ANNOUNCED"]),
+  venue_name: z.string().trim().min(1).max(300).nullable().optional(),
+  venue_address: z.string().trim().min(1).max(1_000).nullable().optional(),
+  venue_disclosure_text: z.string().trim().min(1).max(2_000).nullable().optional(),
+  venue_announce_by: z.string().datetime({ offset: true }).nullable().optional(),
+  reason: z.string().trim().min(3).max(1_000),
+}).strict().superRefine((input, ctx) => {
+  if (Date.parse(input.ends_at) <= Date.parse(input.starts_at)) {
+    ctx.addIssue({ code: "custom", path: ["ends_at"], message: "ends_at must be after starts_at." });
+  }
+  if (input.venue_status === "CONFIRMED" && (!input.venue_name || !input.venue_address)) {
+    ctx.addIssue({ code: "custom", message: "Confirmed venues require name and address." });
+  }
+  if (input.venue_status === "TO_BE_ANNOUNCED" && (!input.venue_disclosure_text || !input.venue_announce_by)) {
+    ctx.addIssue({ code: "custom", message: "Unannounced venues require disclosure text and announcement deadline." });
+  }
+});
+
 export const occurrenceCancelSchema = z.object({
   reason: z.string().trim().min(3).max(1_000),
   confirmation_text: z.string().trim(),
