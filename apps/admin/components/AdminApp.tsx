@@ -1,8 +1,10 @@
 "use client";
 
-import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { createLatestRequestGate } from "./latest-request";
+import { occurrenceActionsFor } from "./occurrence-actions";
 
 type Page = "dashboard" | "login" | "cities" | "occurrences" | "orders" | "refunds" | "audit";
 type Row = Record<string, unknown>;
@@ -54,16 +56,25 @@ function useResource<T>(path: string, active = true) {
   const [value, setValue] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(active);
+  const requestGate = useRef(createLatestRequestGate());
   const reload = useCallback(async () => {
-    if (!active) return;
+    if (!active) { requestGate.current.invalidate(); setLoading(false); return; }
+    const version = requestGate.current.begin();
     setLoading(true); setError(null);
-    try { setValue(await api<T>(path)); }
+    try {
+      const next = await api<T>(path);
+      if (requestGate.current.isLatest(version)) setValue(next);
+    }
     catch (failure) {
       const issue = failure as AdminApiError;
-      setError(issue.code);
-    } finally { setLoading(false); }
+      if (requestGate.current.isLatest(version)) setError(issue.code);
+    } finally { if (requestGate.current.isLatest(version)) setLoading(false); }
   }, [active, path]);
-  useEffect(() => { void Promise.resolve().then(reload); }, [reload]);
+  useEffect(() => {
+    const gate = requestGate.current;
+    void Promise.resolve().then(reload);
+    return () => { gate.invalidate(); };
+  }, [reload]);
   return { value, error, loading, reload };
 }
 
@@ -156,12 +167,13 @@ function Occurrences() {
   return <><PageTitle eyebrow="CATALOG / OCCURRENCES" title={<>События<br /><i>без опасных shortcut.</i></>} text="Новая occurrence всегда создаётся HIDDEN + CLOSED. Публикация и продажи — отдельные audited действия." />
     <section className="panel"><h2>Создать событие</h2><form className="form form-grid" onSubmit={submit}><label>Город<select value={form.city_id || string(cities.value?.cities[0]?.id)} onChange={(event) => set("city_id", event.target.value)} required>{cities.value?.cities.map((city) => <option key={string(city.id)} value={string(city.id)}>{string(city.title)}</option>)}</select></label><label>Название<input value={form.title} onChange={(event) => set("title", event.target.value)} required /></label><label>Начало<input type="datetime-local" value={form.starts_at} onChange={(event) => set("starts_at", event.target.value)} required /></label><label>Конец<input type="datetime-local" value={form.ends_at} onChange={(event) => set("ends_at", event.target.value)} required /></label><label>Timezone<input value={form.timezone} onChange={(event) => set("timezone", event.target.value)} required /></label><label>Цена, копейки<input type="number" min="1" step="1" value={form.price_kopecks} onChange={(event) => set("price_kopecks", event.target.value)} required /></label><label>Вместимость<input type="number" min="1" step="1" value={form.capacity} onChange={(event) => set("capacity", event.target.value)} required /></label><label>Площадка<select value={form.venue_status} onChange={(event) => set("venue_status", event.target.value)}><option value="CONFIRMED">Подтверждена</option><option value="TO_BE_ANNOUNCED">Будет объявлена</option></select></label>{form.venue_status === "CONFIRMED" ? <><label>Название площадки<input value={form.venue_name} onChange={(event) => set("venue_name", event.target.value)} required /></label><label>Адрес<textarea value={form.venue_address} onChange={(event) => set("venue_address", event.target.value)} required /></label></> : <><label>Disclosure<textarea value={form.venue_disclosure_text} onChange={(event) => set("venue_disclosure_text", event.target.value)} required /></label><label>Объявить до<input type="datetime-local" value={form.venue_announce_by} onChange={(event) => set("venue_announce_by", event.target.value)} required /></label></>}<label className="wide">Причина / audit context<textarea value={form.reason} onChange={(event) => set("reason", event.target.value)} required minLength={3} /></label><div className="wide"><Notice error={error} /><button className="primary" disabled={busy}>{busy ? "Создаём…" : "Создать скрытое событие"}</button></div></form></section>
     <section className="panel"><h2>Все состояния каталога</h2>{occurrences.loading ? <Loading /> : occurrences.value ? <div className="occurrence-list">{occurrences.value.occurrences.map((occurrence) => <OccurrenceRow key={string(occurrence.id)} occurrence={occurrence} onAction={setAction} onEdit={setEditing} />)}</div> : <Notice error={occurrences.error} />}</section>
-    {action && <OccurrenceAction action={action} close={() => setAction(null)} done={async () => { setAction(null); await occurrences.reload(); }} />}
-    {editing && <OccurrenceEditor occurrence={editing} close={() => setEditing(null)} done={async () => { setEditing(null); await occurrences.reload(); }} />}</>;
+    {action && <OccurrenceAction action={action} close={() => setAction(null)} done={async () => { await occurrences.reload(); setAction(null); }} />}
+    {editing && <OccurrenceEditor occurrence={editing} close={() => setEditing(null)} done={async () => { await occurrences.reload(); setEditing(null); }} />}</>;
 }
 
 function OccurrenceRow({ occurrence, onAction, onEdit }: { occurrence: Row; onAction: (next: { occurrence: Row; patch: Row }) => void; onEdit: (occurrence: Row) => void }) {
-  return <article className="occurrence-row"><div><p className="eyebrow">{string(occurrence.city_title)} / {string(occurrence.city_slug)}</p><h3>{string(occurrence.title)}</h3><p>{formatDate(occurrence.starts_at)} · {formatMoney(occurrence.price_kopecks)} · {number(occurrence.availability)} / {number(occurrence.capacity)} мест</p><code>{string(occurrence.id)}</code></div><div className="state-stack"><Badge>{string(occurrence.visibility)}</Badge><Badge>{string(occurrence.sales_status)}</Badge><Badge>{string(occurrence.fulfillment_status)}</Badge></div><div className="action-stack"><button onClick={() => onEdit(occurrence)}>Редактировать</button><button onClick={() => onAction({ occurrence, patch: { visibility: "PUBLISHED" } })}>Опубликовать</button><button onClick={() => onAction({ occurrence, patch: { sales_status: "OPEN" } })}>Открыть продажи</button><button onClick={() => onAction({ occurrence, patch: { sales_status: "PAUSED" } })}>Пауза</button><button onClick={() => onAction({ occurrence, patch: { sales_status: "CLOSED" } })}>Закрыть</button></div></article>;
+  const actions = occurrenceActionsFor(occurrence);
+  return <article className="occurrence-row"><div><p className="eyebrow">{string(occurrence.city_title)} / {string(occurrence.city_slug)}</p><h3>{string(occurrence.title)}</h3><p>{formatDate(occurrence.starts_at)} · {formatMoney(occurrence.price_kopecks)} · {number(occurrence.availability)} / {number(occurrence.capacity)} мест</p><code>{string(occurrence.id)}</code></div><div className="state-stack"><Badge>{string(occurrence.visibility)}</Badge><Badge>{string(occurrence.sales_status)}</Badge><Badge>{string(occurrence.fulfillment_status)}</Badge></div><div className="action-stack"><button onClick={() => onEdit(occurrence)}>Редактировать</button>{actions.map((action) => <button key={action.label} onClick={() => onAction({ occurrence, patch: action.patch })}>{action.label}</button>)}</div></article>;
 }
 
 function OccurrenceEditor({ occurrence, close, done }: { occurrence: Row; close: () => void; done: () => Promise<void> }) {
