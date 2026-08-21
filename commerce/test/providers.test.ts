@@ -49,6 +49,12 @@ describe("provider contracts", () => {
     await expect(provider.probe()).resolves.toEqual({ environment: "sandbox" });
   });
 
+  it("preserves safe Tochka validation details for an isolated probe", async () => {
+    const provider = new TochkaProvider(tochkaConfig, async () => Response.json({ code: "400", id: "error-1", message: "Validation failed", Errors: [{ errorCode: "Validation Error", message: "paymentMode is required" }] }, { status: 400 }));
+    await expect(provider.createPayment({ paymentId: "payment-1", paymentLinkId: "payment-1", amountKopecks: 100, idempotencyKey: "stable-key", successUrl: "https://flexperiment.ru/payment/success", customerEmail: "buyer@example.test", purpose: "Probe", receiptItemName: "Probe" }))
+      .rejects.toThrow("Tochka HTTP 400: code=400; id=error-1; Validation failed; errors=Validation Error: paymentMode is required");
+  });
+
   it("keeps financial values in kopecks until exact edge serialization", () => {
     expect(rublesFromKopecks(1)).toBe("0.01");
     expect(rublesFromKopecks(12345)).toBe("123.45");

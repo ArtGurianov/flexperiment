@@ -42,6 +42,11 @@ refund. It never prints the returned payment link. Do not run a sandbox
 checkout through a production-persistent Commerce database: sandbox responses
 are fixtures and are not financial evidence.
 
+On a failed sandbox create probe, the output includes the HTTP status and the
+documented safe validation fields (`code`, `id`, `errorCode`, `message`, and
+`Errors[]` summaries). It never prints a successful payment link, JWT, request
+headers, or full provider body.
+
 ## 3. Redacted Tochka command fixture
 
 ```json

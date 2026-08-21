@@ -17,9 +17,30 @@ export const rublesFromKopecks = (kopecks: number) => {
   return `${Math.floor(kopecks / 100)}.${String(kopecks % 100).padStart(2, "0")}`;
 };
 
+const providerErrorSummary = (payload: Record<string, unknown>) => {
+  const text = (value: unknown) => typeof value === "string" && value.length > 0 ? value : undefined;
+  const parts = [
+    text(payload.code) ? `code=${text(payload.code)}` : undefined,
+    text(payload.id) ? `id=${text(payload.id)}` : undefined,
+    text(payload.errorCode) ? `errorCode=${text(payload.errorCode)}` : undefined,
+    text(payload.message),
+  ].filter((value): value is string => Boolean(value));
+  const validationErrors = Array.isArray(payload.Errors)
+    ? payload.Errors.map((entry) => {
+      if (!entry || typeof entry !== "object") return undefined;
+      const error = entry as Record<string, unknown>;
+      const code = text(error.errorCode);
+      const message = text(error.message);
+      return code && message ? `${code}: ${message}` : code ?? message;
+    }).filter((value): value is string => Boolean(value))
+    : [];
+  if (validationErrors.length > 0) parts.push(`errors=${validationErrors.join(" | ")}`);
+  return parts.join("; ") || "provider error";
+};
+
 const parseJson = async (response: Response) => {
   const payload = await response.json().catch(() => undefined) as Record<string, unknown> | undefined;
-  if (!response.ok) throw new Error(`Tochka HTTP ${response.status}${payload ? `: ${String((payload as { message?: unknown }).message ?? "provider error")}` : ""}`);
+  if (!response.ok) throw new Error(`Tochka HTTP ${response.status}${payload ? `: ${providerErrorSummary(payload)}` : ""}`);
   if (!payload) throw new Error("Tochka returned no JSON payload.");
   return payload;
 };

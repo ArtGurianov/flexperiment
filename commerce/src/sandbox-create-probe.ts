@@ -23,7 +23,7 @@ const run = async () => {
     amountKopecks: 100,
     idempotencyKey: paymentLinkId,
     successUrl: "https://flexperiment.ru/payment/success",
-    customerEmail: "sandbox-probe@example.invalid",
+    customerEmail: "sandbox-probe@example.com",
     purpose: "Sandbox payment-link configuration probe",
     receiptItemName: "Sandbox payment-link configuration probe",
   });
