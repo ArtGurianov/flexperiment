@@ -84,4 +84,4 @@ const encoded = [
 ].join(':');
 
 console.log('\nCopy this to Coolify:\n');
-console.log(`ADMIN_PASSWORD_HASH=${encoded}`);
+console.log(`COMMERCE_ADMIN_PASSWORD_SCRYPT=${encoded}`);
