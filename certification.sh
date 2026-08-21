@@ -23,6 +23,7 @@ AMOUNT_KOPECKS=100
 #   CITY_ID_OVERRIDE='<city-id>' OCCURRENCE_ID_OVERRIDE='<occurrence-id>' ./certification.sh
 CITY_ID_OVERRIDE="${CITY_ID_OVERRIDE:-}"
 OCCURRENCE_ID_OVERRIDE="${OCCURRENCE_ID_OVERRIDE:-}"
+CHECKOUT_STATE_FILE="${CHECKOUT_STATE_FILE:-$PWD/.phase0-checkout-state.env}"
 
 RUN_TMP="$(mktemp -d)"
 chmod 700 "$RUN_TMP"
@@ -66,6 +67,46 @@ require_exact_code() {
     jq . "$output" 2>/dev/null || cat "$output" >&2
     exit 1
   fi
+}
+
+JSON_VALUE=""
+
+require_json_string() {
+  local output="$1"
+  local field="$2"
+  local context="$3"
+  local next_step="$4"
+
+  if ! JSON_VALUE="$(jq -r --arg field "$field" '
+    if (.[$field] | type) == "string" and (.[$field] | length) > 0 then .[$field] else empty end
+  ' "$output")"; then
+    echo "ERROR: $context returned invalid JSON." >&2
+    cat "$output" >&2
+    echo "$next_step" >&2
+    exit 1
+  fi
+
+  if [[ -z "$JSON_VALUE" ]]; then
+    echo "ERROR: $context response has no non-empty $field." >&2
+    jq . "$output" 2>/dev/null || cat "$output" >&2
+    echo "$next_step" >&2
+    exit 1
+  fi
+}
+
+save_checkout_recovery_state() {
+  local state_tmp
+  state_tmp="$(mktemp "${CHECKOUT_STATE_FILE}.tmp.XXXXXX")"
+  chmod 600 "$state_tmp"
+  {
+    printf 'CITY_ID=%q\n' "$CITY_ID"
+    printf 'OCCURRENCE_ID=%q\n' "$OCCURRENCE_ID"
+    printf 'STATUS_ID=%q\n' "$STATUS_ID"
+    printf 'CHECKOUT_KEY=%q\n' "$CHECKOUT_KEY"
+  } > "$state_tmp"
+  mv "$state_tmp" "$CHECKOUT_STATE_FILE"
+  chmod 600 "$CHECKOUT_STATE_FILE"
+  echo "Checkout recovery metadata saved: $CHECKOUT_STATE_FILE"
 }
 
 echo "FLEXPERIMENT / Tochka Phase 0 / Kemerovo / 1 RUB"
@@ -249,6 +290,7 @@ jq -e --arg id "$OCCURRENCE_ID" '
 echo "Published Kemerovo occurrence is public: OK"
 fi
 
+echo "Creating checkout context..."
 CONTEXT_BODY="$(jq -nc --arg occurrence_id "$OCCURRENCE_ID" '{occurrence_id:$occurrence_id}')"
 request "$HTTP_BODY" \
   -H "Origin: $PUBLIC_ORIGIN" \
@@ -256,7 +298,9 @@ request "$HTTP_BODY" \
   -X POST "$API/v1/public/checkout-context" \
   --data "$CONTEXT_BODY"
 require_2xx "Create checkout context" "$HTTP_BODY"
-QUOTE_ID="$(jq -er '.quote_id | select(type == "string" and length > 0)' "$HTTP_BODY")"
+echo "Checkout context received."
+require_json_string "$HTTP_BODY" "quote_id" "Checkout context" "DO NOT create a checkout until the response contract is investigated."
+QUOTE_ID="$JSON_VALUE"
 
 CHECKOUT_KEY="$(new_key)"
 CHECKOUT_BODY="$(jq -nc \
@@ -264,6 +308,8 @@ CHECKOUT_BODY="$(jq -nc \
   --arg name "$CUSTOMER_NAME" \
   --arg email "$CUSTOMER_EMAIL" \
   '{quote_id:$quote_id,customer_name:$name,customer_email:$email,eligibility_confirmed:true,offer_accepted:true,pd_consent_accepted:true}')"
+echo "About to perform financial mutation POST /v1/public/checkouts"
+echo "Creating checkout..."
 request "$CHECKOUT_FILE" \
   -H "Origin: $PUBLIC_ORIGIN" \
   -H "Content-Type: application/json" \
@@ -271,8 +317,13 @@ request "$CHECKOUT_FILE" \
   -X POST "$API/v1/public/checkouts" \
   --data "$CHECKOUT_BODY"
 require_2xx "Create certification checkout" "$CHECKOUT_FILE"
-STATUS_ID="$(jq -er '.status_id | select(type == "string" and length > 0)' "$CHECKOUT_FILE")"
-PAYMENT_URL="$(jq -er '.payment_url | select(type == "string" and length > 0)' "$CHECKOUT_FILE")"
+echo "Checkout HTTP mutation succeeded. Validating response..."
+require_json_string "$CHECKOUT_FILE" "status_id" "Checkout" "DO NOT create another checkout; inspect this checkout by its existing order evidence."
+STATUS_ID="$JSON_VALUE"
+save_checkout_recovery_state
+echo "STATUS_ID=$STATUS_ID"
+require_json_string "$CHECKOUT_FILE" "payment_url" "Checkout" "DO NOT create another checkout; inspect this checkout by its existing order evidence."
+PAYMENT_URL="$JSON_VALUE"
 echo "Checkout created; payment URL received but not printed."
 
 command -v open >/dev/null || { echo "ERROR: run this script on macOS with the open command" >&2; exit 1; }
@@ -328,7 +379,9 @@ request "$REFUND_FILE" \
   -X POST "$ADMIN/v1/admin/orders/$ORDER_ID/refunds" \
   --data "$REFUND_BODY"
 require_2xx "Create certification refund" "$REFUND_FILE"
-REFUND_ID="$(jq -er '.id | select(type == "string" and length > 0)' "$REFUND_FILE")"
+echo "Refund HTTP mutation succeeded. Validating response..."
+require_json_string "$REFUND_FILE" "id" "Refund" "DO NOT submit another refund; inspect the existing refund through Admin evidence."
+REFUND_ID="$JSON_VALUE"
 
 REFUND_RESULT=""
 for _ in $(seq 1 120); do
