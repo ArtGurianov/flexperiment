@@ -188,8 +188,13 @@ export class CommerceDomain {
         // capability is never copied to application logs or browser storage.
         this.enqueueEmail("TICKET", String(order.customer_email), String(order.customer_email_hash), "ticket", ticketId, { ticket_id: ticketId, order_id: payment.order_id });
       } else {
-        const source = occurrence?.fulfillment_status === "SCHEDULED" ? "LATE_PAYMENT_AFTER_CUSTOMER_CANCELLATION" : "LATE_PAYMENT_AFTER_TERMINAL_OCCURRENCE";
-        this.upsertRefundObligation(String(payment.id), source, capturedAmount);
+        const abandonment = one(this.db, "SELECT id FROM reservation_abandonments WHERE payment_id = ?", payment.id);
+        const source = abandonment ? "LATE_PAYMENT_AFTER_RESERVATION_ABANDONMENT" : occurrence?.fulfillment_status === "SCHEDULED" ? "LATE_PAYMENT_AFTER_CUSTOMER_CANCELLATION" : "LATE_PAYMENT_AFTER_TERMINAL_OCCURRENCE";
+        const obligation = this.upsertRefundObligation(String(payment.id), source, capturedAmount);
+        if (abandonment) {
+          this.db.prepare("UPDATE refund_obligations SET status = 'REVIEW_REQUIRED' WHERE id = ?").run(obligation.id);
+          this.db.prepare("UPDATE reservation_abandonments SET status = 'LATE_PAYMENT_REVIEW_REQUIRED' WHERE id = ?").run(abandonment.id);
+        }
       }
       return one(this.db, "SELECT * FROM payments WHERE id = ?", paymentId)!;
   }
@@ -220,6 +225,38 @@ export class CommerceDomain {
     const obligation = one(this.db, "SELECT * FROM refund_obligations WHERE payment_id = ?", paymentId)!;
     this.db.prepare("INSERT INTO refund_obligation_events(id, obligation_id, source) VALUES (?, ?, ?)").run(id(), obligation.id, source);
     return obligation;
+  }
+
+  orderEvidence(orderId: string) {
+    const order = one(this.db, "SELECT id, public_status_id, occurrence_id, amount_kopecks, created_at FROM orders WHERE id = ?", orderId);
+    if (!order) throw new DomainError("ORDER_NOT_FOUND", 404);
+    const payment = one(this.db, "SELECT id, state, status, provider_payment_id, captured_amount_kopecks, created_at, updated_at, last_reconcile_at FROM payments WHERE order_id = ?", orderId);
+    const booking = one(this.db, "SELECT id, status, created_at, cancelled_at, cancellation_reason FROM bookings WHERE order_id = ?", orderId);
+    const ticket = booking ? one(this.db, "SELECT id, status, created_at, voided_at FROM tickets WHERE booking_id = ?", booking.id) ?? null : null;
+    const emailOutbox = many(this.db, "SELECT id, type, status, attempts, created_at, sent_at, delivered_at, bounced_at FROM email_outbox WHERE payload_ref IN (?, ?) ORDER BY created_at", orderId, ticket?.id ?? "");
+    const abandonment = one(this.db, "SELECT id, status, reason, created_at, resolved_at FROM reservation_abandonments WHERE order_id = ?", orderId) ?? null;
+    // A stored payment URL has no locally authoritative expiry proof, so it is
+    // deliberately omitted rather than returned as if it were still usable.
+    return { order, payment: payment ?? null, booking: booking ?? null, ticket, email_outbox: emailOutbox, reservation_abandonment: abandonment };
+  }
+
+  abandonReservation(orderId: string, input: { reason: string }, idempotencyKey: string, adminId: string) {
+    const payload = { order_id: orderId, ...input };
+    return this.withAdminCommand("order-abandon-reservation", idempotencyKey, payload, "bookings", () => {
+      const row = one(this.db, `SELECT b.*, p.id AS payment_id, p.status AS payment_status, p.captured_amount_kopecks
+        FROM bookings b JOIN payments p ON p.order_id = b.order_id WHERE b.order_id = ?`, orderId);
+      if (!row) throw new DomainError("ORDER_NOT_FOUND", 404);
+      if (row.status !== "RESERVED") throw new DomainError("RESERVATION_NOT_ABANDONABLE", 409);
+      if (row.payment_status === "PAID" || Number(row.captured_amount_kopecks) > 0) throw new DomainError("PAYMENT_ALREADY_SUCCEEDED", 409);
+      const abandonmentId = id();
+      this.db.prepare("UPDATE bookings SET status = 'CANCELLED', cancelled_at = ?, cancellation_reason = ? WHERE id = ? AND status = 'RESERVED'")
+        .run(now(), "TECHNICAL_RESERVATION_ABANDONED", row.id);
+      this.db.prepare("INSERT INTO reservation_abandonments(id, order_id, booking_id, payment_id, admin_id, reason, status) VALUES (?, ?, ?, ?, ?, ?, 'ABANDONED')")
+        .run(abandonmentId, orderId, row.id, row.payment_id, adminId, input.reason);
+      const booking = one(this.db, "SELECT * FROM bookings WHERE id = ?", row.id)!;
+      this.recordAdminCommandAudit(adminId, "RESERVATION_ABANDONED", "booking", String(row.id), input.reason, idempotencyKey, payload);
+      return booking;
+    });
   }
 
   cancelCustomerBooking(bookingId: string, input: { reason: string; confirmation_text: string; withheld_expense_amount_kopecks?: number; expense_justification?: string; evidence_reference?: string }, idempotencyKey: string) {
@@ -507,8 +544,16 @@ export class CommerceDomain {
     const observed = await this.provider.reconcilePayment({ providerPaymentId: String(payment.provider_payment_id) });
     this.db.prepare("UPDATE payments SET last_reconcile_at = ?, updated_at = ? WHERE id = ?").run(now(), now(), paymentId);
     if (observed.status === "PAID" && observed.capturedAmountKopecks !== undefined) return this.markPaymentPaid(paymentId, observed.capturedAmountKopecks, String(payment.provider_payment_id));
-    if (observed.status === "FAILED") { this.db.prepare("UPDATE payments SET status = 'CANCELLED', updated_at = ? WHERE id = ?").run(now(), paymentId); return one(this.db, "SELECT * FROM payments WHERE id = ?", paymentId)!; }
-    this.db.prepare("UPDATE payments SET status = 'REVIEW_REQUIRED', updated_at = ? WHERE id = ?").run(now(), paymentId);
+    if (observed.status === "FAILED") {
+      return withImmediateTransaction(this.db, () => {
+        this.db.prepare("UPDATE payments SET status = 'CANCELLED', updated_at = ? WHERE id = ?").run(now(), paymentId);
+        this.db.prepare("UPDATE bookings SET status = 'CANCELLED', cancelled_at = ?, cancellation_reason = 'PAYMENT_PROVIDER_FAILED' WHERE order_id = ? AND status = 'RESERVED'").run(now(), payment.order_id);
+        return one(this.db, "SELECT * FROM payments WHERE id = ?", paymentId)!;
+      });
+    }
+    // Pending or unknown provider evidence is not a failure proof; retain the
+    // reservation and let a later reconciliation establish a terminal outcome.
+    this.db.prepare("UPDATE payments SET updated_at = ? WHERE id = ?").run(now(), paymentId);
     return one(this.db, "SELECT * FROM payments WHERE id = ?", paymentId)!;
   }
 
@@ -524,6 +569,7 @@ export class CommerceDomain {
         const totals = one(this.db, "SELECT COALESCE(SUM(amount_kopecks), 0) AS amount FROM refunds WHERE payment_id = ? AND status = 'SUCCEEDED'", refund.payment_id)!;
         const payment = one(this.db, "SELECT captured_amount_kopecks FROM payments WHERE id = ?", refund.payment_id)!;
         this.db.prepare("UPDATE payments SET status = ?, updated_at = ? WHERE id = ?").run(Number(totals.amount) >= Number(payment.captured_amount_kopecks) ? "REFUNDED" : "PARTIALLY_REFUNDED", now(), refund.payment_id);
+        this.db.prepare("UPDATE reservation_abandonments SET status = 'LATE_PAYMENT_REFUNDED', resolved_at = ? WHERE payment_id = ? AND status = 'LATE_PAYMENT_REVIEW_REQUIRED'").run(now(), refund.payment_id);
         const order = one(this.db, "SELECT customer_email, customer_email_hash FROM orders WHERE id = ?", refund.order_id)!;
         this.enqueueEmail("REFUND_SUCCEEDED", String(order.customer_email), String(order.customer_email_hash), "refund-succeeded", refundId, { refund_id: refundId, amount_kopecks: refund.amount_kopecks });
         return one(this.db, "SELECT * FROM refunds WHERE id = ?", refundId)!;
@@ -538,6 +584,13 @@ export class CommerceDomain {
     const refunds = many(this.db, "SELECT id FROM refunds WHERE status IN ('RECONCILING', 'SUBMIT_UNKNOWN') ORDER BY created_at LIMIT 50");
     for (const refund of refunds) {
       try { await this.reconcileRefund(String(refund.id)); } catch { /* retain the durable refund command for admin reconciliation */ }
+    }
+  }
+
+  async reconcilePendingPayments() {
+    const payments = many(this.db, "SELECT id FROM payments WHERE provider_payment_id IS NOT NULL AND status = 'PENDING' AND state = 'CREATED' ORDER BY created_at LIMIT 50");
+    for (const payment of payments) {
+      try { await this.reconcilePayment(String(payment.id)); } catch { /* retain reservation until authoritative evidence arrives */ }
     }
   }
 
@@ -640,7 +693,7 @@ export class CommerceDomain {
       }));
   }
 
-  private withAdminCommand<T extends Row>(command: string, idempotencyKey: string, payload: unknown, table: "cities" | "occurrences" | "reward_settlements", operation: () => T) {
+  private withAdminCommand<T extends Row>(command: string, idempotencyKey: string, payload: unknown, table: "cities" | "occurrences" | "reward_settlements" | "bookings", operation: () => T) {
     const keyHash = sha256(idempotencyKey); const payloadHash = sha256(canonical(payload));
     return withImmediateTransaction(this.db, () => {
       const existing = one(this.db, "SELECT canonical_request_hash, entity_id FROM admin_command_idempotency WHERE command = ? AND idempotency_key_hash = ?", command, keyHash);

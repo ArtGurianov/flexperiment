@@ -10,6 +10,7 @@ let sweeping = false;
 
 const sweep = async () => {
   domain.recoverStaleCommands();
+  await domain.reconcilePendingPayments();
   domain.createObligationRefunds();
   await domain.submitRequestedRefunds();
   await domain.reconcilePendingRefunds();

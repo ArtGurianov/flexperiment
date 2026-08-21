@@ -9,7 +9,7 @@ import { TochkaProvider, type PaymentProvider } from "./provider";
 import { clientIp, rateLimit } from "./rate-limit";
 import { TochkaWebhookVerifier, webhookAmountKopecks } from "./tochka-webhook";
 import { verifyUnisenderWebhook } from "./unisender-webhook";
-import { agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, compensationRefundSchema, customerCancellationSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrencePatchSchema, promoPatchSchema, promoSchema, providerReferenceSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
+import { agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, compensationRefundSchema, customerCancellationSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrencePatchSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
 
 type AppBindings = { Variables: { adminId?: string } };
 const noStore = (headers: Headers) => headers.set("Cache-Control", "no-store");
@@ -185,6 +185,12 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   const audit = (adminId: string, action: string, type: string, entityId: string, details: unknown) => sqlite.prepare("INSERT INTO admin_audit_log(id, admin_id, action, entity_type, entity_id, details_json) VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?)").run(adminId, action, type, entityId, JSON.stringify(details, (key, value) => /email|inn|authorization|cookie|capability/i.test(key) ? "[REDACTED]" : value));
   admin.get("/orders", (c) => c.json({ orders: sqlite.prepare("SELECT id, public_status_id, occurrence_id, amount_kopecks, created_at FROM orders ORDER BY created_at DESC LIMIT 100").all() }));
   admin.get("/orders/:id", (c) => { const order = sqlite.prepare("SELECT * FROM orders WHERE id = ?").get(c.req.param("id")); if (!order) throw new DomainError("ORDER_NOT_FOUND", 404); return c.json(order); });
+  admin.get("/orders/:id/evidence", (c) => { c.header("Cache-Control", "no-store"); return c.json(domain.orderEvidence(c.req.param("id"))); });
+  admin.post("/orders/:id/abandon-reservation", async (c) => {
+    const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
+    const payload = reservationAbandonSchema.parse(await jsonBody(c.req.raw));
+    return c.json(domain.abandonReservation(c.req.param("id"), payload, key, c.var.adminId!));
+  });
   admin.post("/cities", async (c) => {
     const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
     const payload = cityCreateSchema.parse(await jsonBody(c.req.raw));

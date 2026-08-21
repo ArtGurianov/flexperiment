@@ -132,6 +132,29 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
+  it("exposes order evidence read-only and abandons only a reserved booking", async () => {
+    const { db, app } = appFixture();
+    const occurrenceId = (db.prepare("SELECT id FROM occurrences").get() as { id: string }).id;
+    const context = await app.request("http://api.flexperiment.ru/v1/public/checkout-context", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.1" }, body: JSON.stringify({ occurrence_id: occurrenceId }) });
+    const quoteId = (await context.json() as { quote_id: string }).quote_id;
+    await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000009", "x-commerce-trusted-client-ip": "127.0.0.1" }, body: JSON.stringify({ quote_id: quoteId, customer_name: "Арт", customer_email: "art@example.test", eligibility_confirmed: true, offer_accepted: true, pd_consent_accepted: true }) });
+    const orderId = (db.prepare("SELECT id FROM orders").get() as { id: string }).id;
+    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.1" }, body: JSON.stringify({ password: "correct horse" }) });
+    const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
+    const beforeCount = db.prepare("SELECT COUNT(*) AS count FROM reservation_abandonments").get();
+    const evidence = await app.request(`http://admin.flexperiment.ru/v1/admin/orders/${orderId}/evidence`, { headers });
+    expect(evidence.status).toBe(200);
+    expect(evidence.headers.get("cache-control")).toBe("no-store");
+    const evidenceBody = await evidence.json() as { order: { id: string }; payment: Record<string, unknown>; booking: { status: string }; ticket: unknown; email_outbox: unknown[] };
+    expect(evidenceBody).toMatchObject({ order: { id: orderId }, booking: { status: "RESERVED" }, ticket: null, email_outbox: [] });
+    expect(evidenceBody.payment).not.toHaveProperty("payment_url");
+    expect(db.prepare("SELECT COUNT(*) AS count FROM reservation_abandonments").get()).toEqual(beforeCount);
+    const abandoned = await app.request(`http://admin.flexperiment.ru/v1/admin/orders/${orderId}/abandon-reservation`, { method: "POST", headers: { ...headers, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000010" }, body: JSON.stringify({ reason: "Certification interrupted before payment" }) });
+    expect(abandoned.status).toBe(200);
+    expect(await abandoned.json()).toMatchObject({ status: "CANCELLED" });
+    db.close();
+  });
+
   it("authenticates and applies a documented batched Unisender status callback", async () => {
     const { db } = appFixture();
     const outboxId = randomUUID();

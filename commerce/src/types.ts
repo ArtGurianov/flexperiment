@@ -90,6 +90,7 @@ export const occurrenceCancelSchema = z.object({
   reason: z.string().trim().min(3).max(1_000),
   confirmation_text: z.string().trim(),
 });
+export const reservationAbandonSchema = z.object({ reason: z.string().trim().min(3).max(1_000) }).strict();
 export const occurrenceCompleteSchema = z.object({ confirmation_text: z.string().trim() });
 
 export const agentSchema = z.object({
