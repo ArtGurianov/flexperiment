@@ -30,6 +30,18 @@ at runtime; `.env.example` uses placeholders only. Tochka sandbox uses its
 documented fixed JWT, customer code, and merchant ID; it has no sandbox
 `client_id`, so `TOCHKA_CLIENT_ID` is optional only for the sandbox URL.
 
+Before any checkout, run `pnpm commerce:provider:probe`. It makes only the
+documented read-only `GET /acquiring/v1.0/retailers` request and returns an
+environment label without logging provider payloads or creating SQLite data.
+
+To test the sandbox create-request/response boundary, run
+`pnpm commerce:sandbox:create-probe` in the Commerce runtime. It accepts only
+the exact documented sandbox URL, JWT, customer code, and merchant ID; it
+creates no Commerce quote, order, booking, payment, ticket, outbox record, or
+refund. It never prints the returned payment link. Do not run a sandbox
+checkout through a production-persistent Commerce database: sandbox responses
+are fixtures and are not financial evidence.
+
 ## 3. Redacted Tochka command fixture
 
 ```json

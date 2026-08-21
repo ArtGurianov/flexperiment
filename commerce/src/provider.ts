@@ -2,8 +2,10 @@ import { tochkaConfigFromEnvironment, type TochkaConfig } from "./provider-confi
 
 type Fetch = typeof fetch;
 type PaymentCreateInput = { paymentId: string; paymentLinkId: string; amountKopecks: number; idempotencyKey: string; successUrl: string; customerEmail: string; purpose: string; receiptItemName: string };
+export type ProviderProbe = { environment: "production" | "sandbox" | "mock" };
 
 export interface PaymentProvider {
+  probe(): Promise<ProviderProbe>;
   createPayment(input: PaymentCreateInput): Promise<{ providerPaymentId: string; paymentUrl: string }>;
   refund(input: { refundId: string; providerPaymentId: string; amountKopecks: number; idempotencyKey: string }): Promise<{ providerReference: string }>;
   reconcilePayment(input: { providerPaymentId: string }): Promise<{ status: "PAID" | "PENDING" | "FAILED" | "UNKNOWN"; capturedAmountKopecks?: number }>;
@@ -38,6 +40,12 @@ export class TochkaProvider implements PaymentProvider {
     try {
       return await this.request(`${this.config.baseUrl}${path}`, { ...init, signal: controller.signal, headers: { Authorization: `Bearer ${this.config.jwt}`, "Content-Type": "application/json", ...(init.headers ?? {}) } });
     } finally { clearTimeout(timer); }
+  }
+
+  /** Read-only authorization and transport check. It never creates a payment link. */
+  async probe(): Promise<ProviderProbe> {
+    await parseJson(await this.call("/acquiring/v1.0/retailers", { method: "GET" }));
+    return { environment: this.config.baseUrl.endsWith("/sandbox/v2") ? "sandbox" : "production" };
   }
 
   async createPayment(input: PaymentCreateInput) {
@@ -89,6 +97,7 @@ export class TochkaProvider implements PaymentProvider {
 
 export class UnconfiguredProvider implements PaymentProvider {
   private unavailable(): never { throw new Error("The Tochka adapter is not configured in this runtime."); }
+  probe(): Promise<never> { return Promise.reject(this.unavailable()); }
   createPayment(): Promise<never> { return Promise.reject(this.unavailable()); }
   refund(): Promise<never> { return Promise.reject(this.unavailable()); }
   reconcilePayment(): Promise<never> { return Promise.reject(this.unavailable()); }
@@ -97,6 +106,7 @@ export class UnconfiguredProvider implements PaymentProvider {
 
 /** Local-only deterministic adapter; never selected unless COMMERCE_PROVIDER=mock. */
 export class MockProvider implements PaymentProvider {
+  async probe(): Promise<ProviderProbe> { return { environment: "mock" }; }
   async createPayment(input: PaymentCreateInput) { return { providerPaymentId: `mock-payment-${input.paymentId}`, paymentUrl: input.successUrl }; }
   async refund(input: { refundId: string }) { return { providerReference: `mock-refund-${input.refundId}` }; }
   async reconcilePayment() { return { status: "PENDING" as const }; }

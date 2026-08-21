@@ -32,6 +32,23 @@ describe("provider contracts", () => {
     expect(body.Data).not.toHaveProperty("consumerId");
   });
 
+  it("performs a read-only retailer probe without creating a payment", async () => {
+    let request: Request | undefined;
+    const provider = new TochkaProvider(tochkaConfig, async (input, init) => {
+      request = new Request(input, init);
+      return Response.json({ Data: { Retailers: [] }, Links: {}, Meta: {} });
+    });
+    await expect(provider.probe()).resolves.toEqual({ environment: "production" });
+    expect(request?.url).toBe("https://enter.tochka.com/uapi/acquiring/v1.0/retailers");
+    expect(request?.method).toBe("GET");
+    expect(request?.headers.get("authorization")).toBe("Bearer test-jwt-not-a-secret");
+  });
+
+  it("recognizes sandbox provider configuration separately from production", async () => {
+    const provider = new TochkaProvider({ ...tochkaConfig, baseUrl: "https://enter.tochka.com/sandbox/v2", clientId: undefined }, async () => Response.json({ Data: { Retailers: [] } }));
+    await expect(provider.probe()).resolves.toEqual({ environment: "sandbox" });
+  });
+
   it("keeps financial values in kopecks until exact edge serialization", () => {
     expect(rublesFromKopecks(1)).toBe("0.01");
     expect(rublesFromKopecks(12345)).toBe("123.45");
