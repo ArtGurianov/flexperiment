@@ -30,8 +30,11 @@ const run = async () => {
   console.log("Tochka sandbox create probe: OK (structured payment link received)");
 };
 
-void run().catch(() => {
-  // Never print the payment link or a provider response from this diagnostic.
-  console.error("Tochka sandbox create probe: FAILED");
+void run().catch((error: unknown) => {
+  // The probe input is fixed and the provider adapter does not put credentials
+  // or payment links into its error messages. Preserve the failure category so
+  // sandbox contract and transport issues are actionable.
+  if (error instanceof Error) console.error(`Tochka sandbox create probe: FAILED [${error.name}]: ${error.message}`);
+  else console.error("Tochka sandbox create probe: FAILED: unknown error");
   process.exitCode = 1;
 });
