@@ -3,6 +3,7 @@
 import { FormEvent, ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { badgeTone } from "./badge-tone";
 import { createLatestRequestGate } from "./latest-request";
 import { occurrenceActionsFor } from "./occurrence-actions";
 
@@ -80,8 +81,7 @@ function useResource<T>(path: string, active = true) {
 
 function Badge({ children }: { children: ReactNode }) {
   const text = String(children ?? "—");
-  const tone = /PAID|SUCCEEDED|PUBLISHED|OPEN|CONFIRMED|DELIVERED|AUTHENTICATED/.test(text) ? "good" : /UNKNOWN|REVIEW|FAILED|CANCELLED|ABANDONED|PAUSED/.test(text) ? "warn" : "neutral";
-  return <span className={`badge badge-${tone}`}>{text}</span>;
+  return <span className={`badge badge-${badgeTone(text)}`}>{text}</span>;
 }
 
 function Notice({ error, children }: { error?: string | null; children?: ReactNode }) {
