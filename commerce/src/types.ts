@@ -38,6 +38,7 @@ export const compensationRefundSchema = z.object({
 }).strict();
 
 export const occurrencePatchSchema = z.object({
+  title: z.string().trim().min(2).max(300).optional(),
   starts_at: z.string().datetime().optional(),
   ends_at: z.string().datetime().optional(),
   timezone: z.string().trim().min(1).max(100).optional(),
@@ -83,6 +84,9 @@ export const occurrenceCreateSchema = z.object({
   }
   if (input.venue_status === "TO_BE_ANNOUNCED" && (!input.venue_disclosure_text || !input.venue_announce_by)) {
     ctx.addIssue({ code: "custom", message: "Unannounced venues require disclosure text and announcement deadline." });
+  }
+  if (input.venue_status === "TO_BE_ANNOUNCED" && input.venue_announce_by && Date.parse(input.venue_announce_by) >= Date.parse(input.starts_at)) {
+    ctx.addIssue({ code: "custom", path: ["venue_announce_by"], message: "venue_announce_by must be earlier than starts_at." });
   }
 });
 

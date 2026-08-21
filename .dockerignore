@@ -1,0 +1,17 @@
+.git
+.DS_Store
+node_modules
+.next
+out
+apps/**/node_modules
+apps/**/.next
+apps/**/out
+commerce-data
+coverage
+.env
+.env.*
+!.env.example
+.phase0-*.env
+*.tsbuildinfo
+npm-debug.log*
+pnpm-debug.log*

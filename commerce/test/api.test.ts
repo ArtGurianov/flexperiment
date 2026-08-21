@@ -120,8 +120,12 @@ describe("commerce HTTP boundary", () => {
     const unsafeSalesCreate = await app.request("http://admin.flexperiment.ru/v1/admin/occurrences", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000008" }, body: JSON.stringify({ ...occurrencePayload, sales_status: "OPEN" }) });
     expect(unsafeSalesCreate.status).toBe(422);
 
-    const published = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: adminHeaders, body: JSON.stringify({ price_kopecks: 100, capacity: 1, sales_status: "OPEN", visibility: "PUBLISHED", reason: "Tochka Phase 0 certification" }) });
+    const published = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000011" }, body: JSON.stringify({ price_kopecks: 100, capacity: 1, sales_status: "OPEN", visibility: "PUBLISHED", reason: "Tochka Phase 0 certification" }) });
     expect(published.status).toBe(200);
+    const publishedReplay = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000011" }, body: JSON.stringify({ price_kopecks: 100, capacity: 1, sales_status: "OPEN", visibility: "PUBLISHED", reason: "Tochka Phase 0 certification" }) });
+    expect(await publishedReplay.json()).toMatchObject({ id: created.id, visibility: "PUBLISHED", sales_status: "OPEN" });
+    const patchConflict = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000011" }, body: JSON.stringify({ price_kopecks: 100, capacity: 1, sales_status: "CLOSED", visibility: "PUBLISHED", reason: "Changed patch" }) });
+    expect(patchConflict.status).toBe(409);
     const after = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers: { Origin: "https://flexperiment.ru", "x-commerce-trusted-client-ip": "127.0.0.1" } });
     expect((await after.json() as { cities: { id?: string }[] }).cities.some((entry) => entry.id === created.id)).toBe(true);
     expect(db.prepare("SELECT admin_id, action, entity_type, entity_id, details_json FROM admin_audit_log WHERE entity_id = ?").get(created.id)).toMatchObject({
@@ -152,6 +156,37 @@ describe("commerce HTTP boundary", () => {
     const abandoned = await app.request(`http://admin.flexperiment.ru/v1/admin/orders/${orderId}/abandon-reservation`, { method: "POST", headers: { ...headers, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000010" }, body: JSON.stringify({ reason: "Certification interrupted before payment" }) });
     expect(abandoned.status).toBe(200);
     expect(await abandoned.json()).toMatchObject({ status: "CANCELLED" });
+    db.close();
+  });
+
+  it("restores the Admin session, exposes catalog reads, and expires the cookie on logout", async () => {
+    const { db, app } = appFixture();
+    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.1" }, body: JSON.stringify({ password: "correct horse" }) });
+    const cookie = login.headers.get("set-cookie")!;
+    const headers = { Origin: "https://admin.flexperiment.ru", Cookie: cookie };
+    const session = await app.request("http://admin.flexperiment.ru/v1/admin/session", { headers });
+    expect(await session.json()).toEqual({ authenticated: true });
+    const cities = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { headers });
+    expect((await cities.json() as { cities: { occurrence_count: number }[] }).cities[0]).toMatchObject({ occurrence_count: 1 });
+    const occurrences = await app.request("http://admin.flexperiment.ru/v1/admin/occurrences", { headers });
+    expect((await occurrences.json() as { occurrences: { availability: number }[] }).occurrences[0]).toMatchObject({ availability: 5 });
+    const logout = await app.request("http://admin.flexperiment.ru/v1/admin/logout", { method: "POST", headers });
+    expect(logout.headers.get("set-cookie")).toContain("Max-Age=0");
+    db.close();
+  });
+
+  it("rejects a venue announcement deadline that is not before the occurrence", async () => {
+    const { db, app } = appFixture();
+    const cityId = (db.prepare("SELECT id FROM cities").get() as { id: string }).id;
+    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.42" }, body: JSON.stringify({ password: "correct horse" }) });
+    const response = await app.request("http://admin.flexperiment.ru/v1/admin/occurrences", {
+      method: "POST",
+      headers: { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json", "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000012" },
+      body: JSON.stringify({ city_id: cityId, title: "Late venue disclosure", starts_at: "2026-10-01T10:00:00.000Z", ends_at: "2026-10-01T13:00:00.000Z", timezone: "Asia/Tomsk", price_kopecks: 100, capacity: 1, venue_status: "TO_BE_ANNOUNCED", venue_disclosure_text: "Venue will be announced later.", venue_announce_by: "2026-10-01T10:00:00.000Z", reason: "Admin validation test" }),
+    });
+    expect(response.status).toBe(422);
+    expect(() => db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, venue_status, venue_disclosure_text, venue_announce_by)
+      VALUES (?, ?, 'Raw SQL late deadline', '2026-10-01T10:00:00.000Z', '2026-10-01T13:00:00.000Z', 'Asia/Tomsk', 100, 1, 'TO_BE_ANNOUNCED', 'Disclosure', '2026-10-01T10:00:00.000Z')`).run(randomUUID(), cityId)).toThrow(/VENUE_ANNOUNCEMENT_TOO_LATE/);
     db.close();
   });
 

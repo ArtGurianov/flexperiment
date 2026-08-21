@@ -235,9 +235,23 @@ export class CommerceDomain {
     const ticket = booking ? one(this.db, "SELECT id, status, created_at, voided_at FROM tickets WHERE booking_id = ?", booking.id) ?? null : null;
     const emailOutbox = many(this.db, "SELECT id, type, status, attempts, created_at, sent_at, delivered_at, bounced_at FROM email_outbox WHERE payload_ref IN (?, ?) ORDER BY created_at", orderId, ticket?.id ?? "");
     const abandonment = one(this.db, "SELECT id, status, reason, created_at, resolved_at FROM reservation_abandonments WHERE order_id = ?", orderId) ?? null;
+    const refunds = many(this.db, "SELECT id, public_id, amount_kopecks, reason, source, status, created_at, succeeded_at, failed_at FROM refunds WHERE order_id = ? ORDER BY created_at", orderId);
+    const refunded = refunds.filter((refund) => refund.status === "SUCCEEDED").reduce((total, refund) => total + Number(refund.amount_kopecks), 0);
+    const inflightRefund = refunds.some((refund) => ["REQUESTED", "SUBMITTING", "SUBMIT_UNKNOWN", "RECONCILING"].includes(String(refund.status)));
+    const canAbandonReservation = Boolean(booking && payment && booking.status === "RESERVED" && payment.status !== "PAID" && Number(payment.captured_amount_kopecks) === 0 && !abandonment);
+    const canCreateCompensationRefund = Boolean(payment && ["PAID", "PARTIALLY_REFUNDED"].includes(String(payment.status)) && Number(payment.captured_amount_kopecks) > refunded && !inflightRefund);
     // A stored payment URL has no locally authoritative expiry proof, so it is
     // deliberately omitted rather than returned as if it were still usable.
-    return { order, payment: payment ?? null, booking: booking ?? null, ticket, email_outbox: emailOutbox, reservation_abandonment: abandonment };
+    return {
+      order,
+      payment: payment ?? null,
+      booking: booking ?? null,
+      ticket,
+      email_outbox: emailOutbox,
+      refunds,
+      reservation_abandonment: abandonment,
+      actions: { can_abandon_reservation: canAbandonReservation, can_create_compensation_refund: canCreateCompensationRefund },
+    };
   }
 
   abandonReservation(orderId: string, input: { reason: string }, idempotencyKey: string, adminId: string) {
@@ -372,6 +386,7 @@ export class CommerceDomain {
       }
       if (input.venue_status === "CONFIRMED" && (!input.venue_name || !input.venue_address)) throw new DomainError("VENUE_CONFIRMATION_INCOMPLETE", 422);
       if (input.venue_status === "TO_BE_ANNOUNCED" && (!input.venue_disclosure_text || !input.venue_announce_by)) throw new DomainError("VENUE_TBD_INCOMPLETE", 422);
+      if (input.venue_status === "TO_BE_ANNOUNCED" && Date.parse(input.venue_announce_by!) >= Date.parse(input.starts_at)) throw new DomainError("VENUE_ANNOUNCEMENT_TOO_LATE", 422);
       const occurrenceId = id();
       this.db.prepare(`INSERT INTO occurrences(
         id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity,
@@ -387,25 +402,29 @@ export class CommerceDomain {
     });
   }
 
-  patchOccurrence(occurrenceId: string, input: Record<string, unknown>) {
-    return withImmediateTransaction(this.db, () => {
+  patchOccurrence(occurrenceId: string, input: Record<string, unknown>, idempotencyKey: string, adminId: string) {
+    const payload = { occurrence_id: occurrenceId, ...input };
+    return this.withAdminCommand("occurrence-patch", idempotencyKey, payload, "occurrences", () => {
       const before = one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId);
       if (!before) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
       if (before.fulfillment_status !== "SCHEDULED") throw new DomainError("OCCURRENCE_TERMINAL", 409);
       const occupancy = Number(one(this.db, "SELECT COUNT(*) AS count FROM bookings WHERE occurrence_id = ? AND status IN ('RESERVED', 'CONFIRMED')", occurrenceId)?.count ?? 0);
       if (input.capacity !== undefined && Number(input.capacity) < occupancy) throw new DomainError("CAPACITY_BELOW_OCCUPANCY", 409);
-      const fields = ["starts_at", "ends_at", "timezone", "venue_status", "venue_name", "venue_address", "venue_public", "venue_disclosure_text", "venue_announce_by", "price_kopecks", "capacity", "sales_status", "visibility"] as const;
-      const material = ["starts_at", "ends_at", "timezone", "venue_status", "venue_name", "venue_address", "venue_disclosure_text", "venue_announce_by"];
+      const fields = ["title", "starts_at", "ends_at", "timezone", "venue_status", "venue_name", "venue_address", "venue_public", "venue_disclosure_text", "venue_announce_by", "price_kopecks", "capacity", "sales_status", "visibility"] as const;
+      const material = ["title", "starts_at", "ends_at", "timezone", "venue_status", "venue_name", "venue_address", "venue_disclosure_text", "venue_announce_by"];
       const changed = fields.filter((field) => input[field] !== undefined && input[field] !== before[field]);
       if (!changed.length) return before;
       const next = { ...before, ...Object.fromEntries(changed.map((field) => [field, input[field]])) };
+      if (Date.parse(String(next.ends_at)) <= Date.parse(String(next.starts_at))) throw new DomainError("OCCURRENCE_CREATE_INVALID", 422);
       if (next.venue_status === "CONFIRMED" && (!next.venue_name || !next.venue_address)) throw new DomainError("VENUE_CONFIRMATION_INCOMPLETE", 422);
       if (next.venue_status === "TO_BE_ANNOUNCED" && (!next.venue_disclosure_text || !next.venue_announce_by)) throw new DomainError("VENUE_TBD_INCOMPLETE", 422);
+      if (next.venue_status === "TO_BE_ANNOUNCED" && Date.parse(String(next.venue_announce_by)) >= Date.parse(String(next.starts_at))) throw new DomainError("VENUE_ANNOUNCEMENT_TOO_LATE", 422);
       const materialChanged = changed.some((field) => material.includes(field));
       const assignments = [...changed.map((field) => `${field} = ?`), "material_revision = material_revision + ?", "updated_at = ?"];
       this.db.prepare(`UPDATE occurrences SET ${assignments.join(", ")} WHERE id = ?`).run(...changed.map((field) => typeof input[field] === "boolean" ? Number(input[field]) : input[field]), materialChanged ? 1 : 0, now(), occurrenceId);
       const after = one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId)!;
       if (materialChanged) this.db.prepare("INSERT INTO occurrence_revisions(id, occurrence_id, revision, reason, before_json, after_json) VALUES (?, ?, ?, ?, ?, ?)").run(id(), occurrenceId, after.material_revision, input.reason, JSON.stringify(before), JSON.stringify(after));
+      this.recordAdminCommandAudit(adminId, "OCCURRENCE_EDITED", "occurrence", occurrenceId, String(input.reason), idempotencyKey, payload);
       return after;
     });
   }

@@ -180,10 +180,68 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     if (!assertAdminOrigin(c.req.header("Origin"))) throw new DomainError("ORIGIN_FORBIDDEN", 403);
     const session = parseSession(c.req.header("Cookie"));
     if (!session) throw new DomainError("ADMIN_AUTH_REQUIRED", 401);
+    noStore(c.res.headers);
     rateLimit(`admin:${session.sub}`, 120, 60_000); c.set("adminId", session.sub); await next();
+    noStore(c.res.headers);
   });
   const audit = (adminId: string, action: string, type: string, entityId: string, details: unknown) => sqlite.prepare("INSERT INTO admin_audit_log(id, admin_id, action, entity_type, entity_id, details_json) VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?)").run(adminId, action, type, entityId, JSON.stringify(details, (key, value) => /email|inn|authorization|cookie|capability/i.test(key) ? "[REDACTED]" : value));
-  admin.get("/orders", (c) => c.json({ orders: sqlite.prepare("SELECT id, public_status_id, occurrence_id, amount_kopecks, created_at FROM orders ORDER BY created_at DESC LIMIT 100").all() }));
+  admin.get("/session", (c) => c.json({ authenticated: true }));
+  admin.post("/logout", (c) => {
+    c.header("Set-Cookie", "fx_admin_session=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict");
+    return c.json({ ok: true });
+  });
+  admin.get("/dashboard", (c) => c.json({
+    today: sqlite.prepare(`SELECT
+      (SELECT COUNT(*) FROM orders WHERE date(created_at) = date('now')) AS orders,
+      (SELECT COALESCE(SUM(o.amount_kopecks), 0) FROM orders o JOIN payments p ON p.order_id = o.id
+        WHERE date(o.created_at) = date('now') AND p.status IN ('PAID', 'PARTIALLY_REFUNDED', 'REFUNDED')) AS revenue_kopecks,
+      (SELECT COALESCE(SUM(amount_kopecks), 0) FROM refunds WHERE date(created_at) = date('now') AND status = 'SUCCEEDED') AS refunded_kopecks`).get(),
+    health: {
+      create_unknown: sqlite.prepare("SELECT COUNT(*) AS count FROM payments WHERE state = 'CREATE_UNKNOWN'").get(),
+      review_required: sqlite.prepare(`SELECT
+        (SELECT COUNT(*) FROM payments WHERE status = 'REVIEW_REQUIRED') +
+        (SELECT COUNT(*) FROM refunds WHERE status = 'REVIEW_REQUIRED') AS count`).get(),
+      pending_refunds: sqlite.prepare("SELECT COUNT(*) AS count FROM refunds WHERE status IN ('REQUESTED', 'SUBMITTING', 'SUBMIT_UNKNOWN', 'RECONCILING')").get(),
+      email_failures: sqlite.prepare("SELECT COUNT(*) AS count FROM email_outbox WHERE status IN ('FAILED', 'SEND_UNKNOWN')").get(),
+    },
+    upcoming: sqlite.prepare(`SELECT o.id, o.title, o.starts_at, o.capacity, o.sales_status, o.visibility, c.title AS city_title,
+      o.capacity - (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = o.id AND b.status IN ('RESERVED', 'CONFIRMED')) AS availability
+      FROM occurrences o JOIN cities c ON c.id = o.city_id WHERE o.fulfillment_status = 'SCHEDULED' AND o.ends_at >= datetime('now') ORDER BY o.starts_at LIMIT 8`).all(),
+  }));
+  admin.get("/cities", (c) => c.json({ cities: sqlite.prepare(`SELECT c.id, c.slug, c.title, c.created_at, COUNT(o.id) AS occurrence_count
+    FROM cities c LEFT JOIN occurrences o ON o.city_id = c.id GROUP BY c.id ORDER BY c.title`).all() }));
+  admin.get("/cities/:id", (c) => {
+    const city = sqlite.prepare("SELECT id, slug, title, created_at FROM cities WHERE id = ?").get(c.req.param("id"));
+    if (!city) throw new DomainError("CITY_NOT_FOUND", 404);
+    const occurrences = sqlite.prepare("SELECT id, title, starts_at, sales_status, visibility FROM occurrences WHERE city_id = ? ORDER BY starts_at DESC").all(c.req.param("id"));
+    return c.json({ city, occurrences });
+  });
+  admin.get("/occurrences", (c) => {
+    const cityId = c.req.query("city_id");
+    return c.json({ occurrences: sqlite.prepare(`SELECT o.*, c.slug AS city_slug, c.title AS city_title,
+      o.capacity - (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = o.id AND b.status IN ('RESERVED', 'CONFIRMED')) AS availability
+      FROM occurrences o JOIN cities c ON c.id = o.city_id ${cityId ? "WHERE o.city_id = ?" : ""} ORDER BY o.starts_at DESC`).all(...(cityId ? [cityId] : [])) });
+  });
+  admin.get("/occurrences/:id", (c) => {
+    const occurrence = sqlite.prepare(`SELECT o.*, c.slug AS city_slug, c.title AS city_title,
+      o.capacity - (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = o.id AND b.status IN ('RESERVED', 'CONFIRMED')) AS availability
+      FROM occurrences o JOIN cities c ON c.id = o.city_id WHERE o.id = ?`).get(c.req.param("id"));
+    if (!occurrence) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
+    return c.json(occurrence);
+  });
+  admin.get("/orders", (c) => {
+    const filters: string[] = []; const params: string[] = [];
+    const add = (query: string, column: string) => { const value = c.req.query(query); if (value) { filters.push(`${column} = ?`); params.push(value); } };
+    add("city_id", "oc.city_id"); add("occurrence_id", "o.occurrence_id"); add("payment_status", "p.status"); add("payment_state", "p.state"); add("booking_status", "b.status");
+    const from = c.req.query("from"); if (from) { filters.push("o.created_at >= ?"); params.push(from); }
+    const to = c.req.query("to"); if (to) { filters.push("o.created_at < ?"); params.push(to); }
+    const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+    return c.json({ orders: sqlite.prepare(`SELECT o.id, o.public_status_id, o.occurrence_id, o.customer_name, o.customer_email, o.amount_kopecks, o.created_at,
+      oc.title AS occurrence_title, c.id AS city_id, c.title AS city_title, p.state AS payment_state, p.status AS payment_status,
+      b.status AS booking_status, (SELECT COUNT(*) FROM refunds r WHERE r.order_id = o.id) AS refund_count
+      FROM orders o JOIN occurrences oc ON oc.id = o.occurrence_id JOIN cities c ON c.id = oc.city_id
+      LEFT JOIN payments p ON p.order_id = o.id LEFT JOIN bookings b ON b.order_id = o.id ${where} ORDER BY o.created_at DESC LIMIT 100`).all(...params) });
+  });
   admin.get("/orders/:id", (c) => { const order = sqlite.prepare("SELECT * FROM orders WHERE id = ?").get(c.req.param("id")); if (!order) throw new DomainError("ORDER_NOT_FOUND", 404); return c.json(order); });
   admin.get("/orders/:id/evidence", (c) => { c.header("Cache-Control", "no-store"); return c.json(domain.orderEvidence(c.req.param("id"))); });
   admin.post("/orders/:id/abandon-reservation", async (c) => {
@@ -212,11 +270,15 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     audit(c.var.adminId!, "OCCURRENCE_CANCELLED", "occurrence", c.req.param("id"), { reason: payload.reason }); return c.json(occurrence);
   });
   admin.patch("/occurrences/:id", async (c) => {
-    const payload = occurrencePatchSchema.parse(await jsonBody(c.req.raw)); const occurrence = domain.patchOccurrence(c.req.param("id"), payload);
-    audit(c.var.adminId!, "OCCURRENCE_EDITED", "occurrence", c.req.param("id"), { reason: payload.reason }); return c.json(occurrence);
+    const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
+    const payload = occurrencePatchSchema.parse(await jsonBody(c.req.raw)); const occurrence = domain.patchOccurrence(c.req.param("id"), payload, key, c.var.adminId!);
+    return c.json(occurrence);
   });
-  admin.get("/refunds", (c) => c.json({ refunds: sqlite.prepare("SELECT * FROM refunds ORDER BY created_at DESC LIMIT 100").all() }));
+  admin.get("/refunds", (c) => c.json({ refunds: sqlite.prepare(`SELECT r.*, o.public_status_id, o.customer_name, o.customer_email,
+    oc.title AS occurrence_title, c.title AS city_title FROM refunds r JOIN orders o ON o.id = r.order_id
+    JOIN occurrences oc ON oc.id = o.occurrence_id JOIN cities c ON c.id = oc.city_id ORDER BY r.created_at DESC LIMIT 100`).all() }));
   admin.get("/refunds/:id", (c) => { const refund = sqlite.prepare("SELECT * FROM refunds WHERE id = ?").get(c.req.param("id")); if (!refund) throw new DomainError("REFUND_NOT_FOUND", 404); return c.json(refund); });
+  admin.get("/audit", (c) => c.json({ events: sqlite.prepare("SELECT id, action, entity_type, entity_id, details_json, created_at FROM admin_audit_log ORDER BY created_at DESC LIMIT 200").all() }));
   admin.post("/bookings/:id/cancel-customer-initiated", async (c) => {
     const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
     const payload = customerCancellationSchema.parse(await jsonBody(c.req.raw)); const booking = domain.cancelCustomerBooking(c.req.param("id"), payload, key);

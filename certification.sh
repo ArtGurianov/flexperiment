@@ -268,10 +268,12 @@ require_exact_code 404 "Read hidden occurrence detail" "$HTTP_BODY"
 echo "Hidden occurrence is not public: OK"
 
 PUBLISH_BODY="$(jq -nc --argjson price "$AMOUNT_KOPECKS" '{price_kopecks:$price,capacity:1,sales_status:"OPEN",visibility:"PUBLISHED",reason:"Tochka Phase 0 certification"}')"
+PUBLISH_KEY="$(new_key)"
 request "$HTTP_BODY" \
   -b "$COOKIE_JAR" \
   -H "Origin: $ADMIN_ORIGIN" \
   -H "Content-Type: application/json" \
+  -H "Idempotency-Key: $PUBLISH_KEY" \
   -X PATCH "$ADMIN/v1/admin/occurrences/$OCCURRENCE_ID" \
   --data "$PUBLISH_BODY"
 require_2xx "Publish certification occurrence" "$HTTP_BODY"
