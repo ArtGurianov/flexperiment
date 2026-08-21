@@ -37,7 +37,7 @@ export class CommerceDomain {
   tour() {
     return many(this.db, `SELECT c.slug AS city, c.title AS city_title, o.*,
       (o.capacity - (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = o.id AND b.status IN ('RESERVED', 'CONFIRMED'))) AS availability
-      FROM cities c LEFT JOIN occurrences o ON o.city_id = c.id AND o.visibility = 'PUBLISHED'
+      FROM cities c JOIN occurrences o ON o.city_id = c.id AND o.visibility = 'PUBLISHED'
       ORDER BY c.title, o.starts_at`);
   }
 

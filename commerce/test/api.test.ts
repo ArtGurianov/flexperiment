@@ -42,6 +42,29 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
+  it("returns only cities that have a published occurrence, irrespective of sales status", async () => {
+    const { db, app } = appFixture();
+    const hiddenCityId = randomUUID(); const emptyCityId = randomUUID(); const closedCityId = randomUUID();
+    db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, ?)").run(hiddenCityId, "hidden-city", "Hidden city");
+    db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, ?)").run(emptyCityId, "empty-city", "Empty city");
+    db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, ?)").run(closedCityId, "closed-city", "Closed city");
+    db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, sales_status, venue_status, venue_name, venue_address)
+      VALUES (?, ?, 'Hidden', '2026-10-02T10:00:00.000Z', '2026-10-02T13:00:00.000Z', 'Asia/Tomsk', 100, 1, 'HIDDEN', 'OPEN', 'CONFIRMED', 'Studio', 'Lenina 2')`).run(randomUUID(), hiddenCityId);
+    db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, sales_status, venue_status, venue_name, venue_address)
+      VALUES (?, ?, 'Published but closed', '2026-10-03T10:00:00.000Z', '2026-10-03T13:00:00.000Z', 'Asia/Tomsk', 100, 1, 'PUBLISHED', 'CLOSED', 'CONFIRMED', 'Studio', 'Lenina 3')`).run(randomUUID(), closedCityId);
+
+    const tour = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers: { Origin: "https://flexperiment.ru", "x-commerce-trusted-client-ip": "127.0.0.22" } });
+    const visible = await tour.json() as { cities: { city: string; sales_status: string }[] };
+    expect(visible.cities.map((entry) => entry.city)).toEqual(["closed-city", "tomsk"]);
+    expect(visible.cities.find((entry) => entry.city === "closed-city")).toMatchObject({ sales_status: "CLOSED" });
+    expect(visible.cities.some((entry) => entry.city === "hidden-city" || entry.city === "empty-city")).toBe(false);
+
+    db.prepare("UPDATE occurrences SET visibility = 'HIDDEN' WHERE visibility = 'PUBLISHED'").run();
+    const emptyTour = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers: { Origin: "https://flexperiment.ru", "x-commerce-trusted-client-ip": "127.0.0.23" } });
+    expect(await emptyTour.json()).toEqual({ cities: [] });
+    db.close();
+  });
+
   it("has no generic financial status editor", async () => {
     const { db, app } = appFixture();
     const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.1" }, body: JSON.stringify({ password: "correct horse" }) });
