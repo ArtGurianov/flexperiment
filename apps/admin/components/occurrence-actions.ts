@@ -25,6 +25,9 @@ export function occurrenceActionsFor(occurrence: { visibility?: unknown; sales_s
     { label: "Открыть продажи", patch: { sales_status: "OPEN" } },
     { label: "Закрыть", patch: { sales_status: "CLOSED" } },
   ];
+  if (state === "HIDDEN:OPEN" || state === "HIDDEN:PAUSED") {
+    return [{ label: "Закрыть продажи", patch: { sales_status: "CLOSED" } }];
+  }
 
   return [];
 }

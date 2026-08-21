@@ -33,6 +33,9 @@ const discountFor = (price: number, type: unknown, value: unknown) => {
 
 const occurrenceState = (occurrence: Row) => `${occurrence.visibility}:${occurrence.sales_status}`;
 const allowedOccurrenceStateTransitions = new Set([
+  // One-way recovery for legacy rows written before the SQLite invariant.
+  "HIDDEN:OPEN->HIDDEN:CLOSED",
+  "HIDDEN:PAUSED->HIDDEN:CLOSED",
   "HIDDEN:CLOSED->PUBLISHED:CLOSED",
   "PUBLISHED:CLOSED->PUBLISHED:OPEN",
   "PUBLISHED:CLOSED->HIDDEN:CLOSED",
@@ -432,6 +435,10 @@ export class CommerceDomain {
       const changed = fields.filter((field) => input[field] !== undefined && input[field] !== before[field]);
       if (!changed.length) return before;
       const next = { ...before, ...Object.fromEntries(changed.map((field) => [field, input[field]])) };
+      const isLegacyHiddenSalesState = before.visibility === "HIDDEN" && (before.sales_status === "OPEN" || before.sales_status === "PAUSED");
+      if (isLegacyHiddenSalesState && !(changed.length === 1 && changed[0] === "sales_status" && next.sales_status === "CLOSED")) {
+        throw new DomainError("OCCURRENCE_STATE_TRANSITION_FORBIDDEN", 409);
+      }
       if (!isAllowedOccurrenceStateTransition(before, next)) throw new DomainError("OCCURRENCE_STATE_TRANSITION_FORBIDDEN", 409);
       if (Date.parse(String(next.ends_at)) <= Date.parse(String(next.starts_at))) throw new DomainError("OCCURRENCE_CREATE_INVALID", 422);
       if (next.venue_status === "CONFIRMED" && (!next.venue_name || !next.venue_address)) throw new DomainError("VENUE_CONFIRMATION_INCOMPLETE", 422);

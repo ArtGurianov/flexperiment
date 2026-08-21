@@ -9,8 +9,8 @@ describe("occurrence action derivation", () => {
     expect(occurrenceActionsFor({ visibility: "PUBLISHED", sales_status: "PAUSED" }).map((action) => action.label)).toEqual(["Открыть продажи", "Закрыть"]);
   });
 
-  it("offers no action for an invalid persisted state", () => {
-    expect(occurrenceActionsFor({ visibility: "HIDDEN", sales_status: "OPEN" })).toEqual([]);
-    expect(occurrenceActionsFor({ visibility: "HIDDEN", sales_status: "PAUSED" })).toEqual([]);
+  it("offers only the one-way close-sales recovery for legacy hidden sellable states", () => {
+    expect(occurrenceActionsFor({ visibility: "HIDDEN", sales_status: "OPEN" }).map((action) => action.label)).toEqual(["Закрыть продажи"]);
+    expect(occurrenceActionsFor({ visibility: "HIDDEN", sales_status: "PAUSED" }).map((action) => action.label)).toEqual(["Закрыть продажи"]);
   });
 });

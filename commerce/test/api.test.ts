@@ -215,6 +215,45 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
+  it("allows only close-sales recovery from legacy hidden sellable occurrences", async () => {
+    const { db, app } = appFixture();
+    const cityId = (db.prepare("SELECT id FROM cities WHERE slug = 'tomsk'").get() as { id: string }).id;
+    const openId = randomUUID(); const pausedId = randomUUID();
+    // Simulate pre-0010 rows. The production trigger remains active for all
+    // normal writes; only these in-memory fixtures bypass its INSERT check.
+    db.exec("DROP TRIGGER occurrences_visibility_sales_before_insert");
+    const insertLegacy = db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, sales_status, venue_status, venue_name, venue_address)
+      VALUES (?, ?, ?, '2026-10-05T10:00:00.000Z', '2026-10-05T13:00:00.000Z', 'Asia/Tomsk', 100, 1, 'HIDDEN', ?, 'CONFIRMED', 'Studio', 'Lenina 5')`);
+    insertLegacy.run(openId, cityId, "Legacy hidden open", "OPEN");
+    insertLegacy.run(pausedId, cityId, "Legacy hidden paused", "PAUSED");
+    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", {
+      method: "POST",
+      headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.56" },
+      body: JSON.stringify({ password: "correct horse" }),
+    });
+    const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
+    const patch = (occurrenceId: string, key: string, payload: Record<string, unknown>) => app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${occurrenceId}`, {
+      method: "PATCH", headers: { ...headers, "Idempotency-Key": key }, body: JSON.stringify({ ...payload, reason: "Legacy state recovery" }),
+    });
+
+    const openPublish = await patch(openId, "e81172c2-25a5-4f15-80e5-000000000001", { visibility: "PUBLISHED" });
+    expect(openPublish.status).toBe(409);
+    expect(await openPublish.json()).toEqual({ error: { code: "OCCURRENCE_STATE_TRANSITION_FORBIDDEN" } });
+    const openWithEdit = await patch(openId, "e81172c2-25a5-4f15-80e5-000000000002", { sales_status: "CLOSED", title: "Not allowed during recovery" });
+    expect(openWithEdit.status).toBe(409);
+    expect((await patch(openId, "e81172c2-25a5-4f15-80e5-000000000003", { sales_status: "CLOSED" })).status).toBe(200);
+
+    const pausedOpen = await patch(pausedId, "e81172c2-25a5-4f15-80e5-000000000004", { sales_status: "OPEN" });
+    expect(pausedOpen.status).toBe(409);
+    expect(await pausedOpen.json()).toEqual({ error: { code: "OCCURRENCE_STATE_TRANSITION_FORBIDDEN" } });
+    expect((await patch(pausedId, "e81172c2-25a5-4f15-80e5-000000000005", { sales_status: "CLOSED" })).status).toBe(200);
+
+    expect(db.prepare("SELECT visibility, sales_status FROM occurrences WHERE id = ?").get(openId)).toMatchObject({ visibility: "HIDDEN", sales_status: "CLOSED" });
+    expect(db.prepare("SELECT visibility, sales_status FROM occurrences WHERE id = ?").get(pausedId)).toMatchObject({ visibility: "HIDDEN", sales_status: "CLOSED" });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM admin_audit_log WHERE entity_type = 'occurrence' AND entity_id IN (?, ?)").get(openId, pausedId)).toMatchObject({ count: 2 });
+    db.close();
+  });
+
   it("exposes order evidence read-only and abandons only a reserved booking", async () => {
     const { db, app } = appFixture();
     const occurrenceId = (db.prepare("SELECT id FROM occurrences").get() as { id: string }).id;
