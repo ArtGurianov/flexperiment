@@ -19,6 +19,12 @@ type Quote = {
   discount_kopecks: number;
   venue_disclosure: string;
   expires_at: string;
+  legal_release: {
+    version: string;
+    manifest: {
+      documents: Record<"PUBLIC_OFFER" | "PRIVACY_POLICY" | "PD_CONSENT" | "CHECKOUT_DISCLOSURE", { version: string; archive_url: string }>;
+    };
+  };
 };
 type Attempt = { version: 1; idempotencyKey: string; statusId: string | null };
 
@@ -48,6 +54,12 @@ export default function CheckoutFlow() {
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const selected = useMemo(() => occurrences.find((item) => item.id === occurrenceId), [occurrences, occurrenceId]);
+  const legalLabels = {
+    PUBLIC_OFFER: "публичной оферты",
+    PRIVACY_POLICY: "политики конфиденциальности",
+    PD_CONSENT: "согласия на обработку персональных данных",
+    CHECKOUT_DISCLOSURE: "информации об участии",
+  } as const;
 
   useEffect(() => {
     let current = true;
@@ -139,8 +151,9 @@ export default function CheckoutFlow() {
       <label className="grid gap-1.5">Email <input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>
       <div className="grid gap-2 text-xs leading-snug">
         <label><input required type="checkbox" checked={eligibility} onChange={(event) => setEligibility(event.target.checked)} /> Мне исполнилось 18 лет, я покупаю билет для себя.</label>
-        <label><input required type="checkbox" checked={offer} onChange={(event) => setOffer(event.target.checked)} /> Я принимаю условия публичной оферты.</label>
+        <label><input required type="checkbox" checked={offer} onChange={(event) => setOffer(event.target.checked)} /> Я принимаю условия {quote ? <a className="text-acid underline underline-offset-4" href={quote.legal_release.manifest.documents.PUBLIC_OFFER.archive_url} target="_blank" rel="noreferrer">{legalLabels.PUBLIC_OFFER}</a> : "публичной оферты"}.</label>
         <label><input required type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /> Я даю согласие на обработку персональных данных.</label>
+        {quote && <p className="text-bone/70">Версия legal release {quote.legal_release.version}: {(Object.keys(legalLabels) as (keyof typeof legalLabels)[]).map((id, index) => <span key={id}>{index > 0 ? " · " : ""}<a className="text-acid underline underline-offset-4" href={quote.legal_release.manifest.documents[id].archive_url} target="_blank" rel="noreferrer">{legalLabels[id]}</a></span>)}</p>}
       </div>
       {message && <p role="status" className="border border-acid px-3 py-2 text-acid">{message}</p>}
       <button disabled={!quote || submitting} className="w-full border-2 border-acid bg-acid px-4 py-3 font-display text-lg uppercase text-ink disabled:cursor-wait disabled:opacity-60">{submitting ? "Создаём оплату…" : "Перейти к оплате"}</button>

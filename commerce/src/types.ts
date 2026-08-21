@@ -102,8 +102,8 @@ export const adminReauthSchema = z.object({
 export const customerRefundRequestSchema = z.object({
   order_number: z.string().trim().min(4).max(64).transform((value) => value.toUpperCase().replace(/[^A-Z0-9]/g, "")),
 }).strict();
-export const customerRefundConfirmSchema = z.object({
-  capability: z.string().min(32).max(256),
+export const customerRefundTokenSchema = z.object({
+  token: z.string().min(32).max(256),
 }).strict();
 export const reservationAbandonSchema = z.object({ reason: z.string().trim().min(3).max(1_000) }).strict();
 export const occurrenceCompleteSchema = z.object({ confirmation_text: z.string().trim() });

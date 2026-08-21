@@ -9,7 +9,7 @@ import { TochkaProvider, type PaymentProvider } from "./provider";
 import { clientIp, rateLimit } from "./rate-limit";
 import { TochkaWebhookVerifier, webhookAmountKopecks } from "./tochka-webhook";
 import { verifyUnisenderWebhook } from "./unisender-webhook";
-import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrencePatchSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
+import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrencePatchSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
 
 type AppBindings = { Variables: { adminId?: string; adminSessionId?: string } };
 const noStore = (headers: Headers) => headers.set("Cache-Control", "no-store");
@@ -88,14 +88,19 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     // eligible references so this endpoint cannot enumerate customer orders.
     return c.json(domain.requestCustomerRefund(input.order_number), 202);
   });
+  publicApi.post("/refunds/confirmation-context", async (c) => {
+    const input = customerRefundTokenSchema.parse(await jsonBody(c.req.raw));
+    const ip = clientIp(c.req.raw.headers);
+    rateLimit(`customer-refund-context-ip:${ip}`, 30, 60_000);
+    rateLimit(`customer-refund-context-token:${sha256(input.token)}`, 20, 60_000);
+    return c.json(domain.customerRefundConfirmationContext(input.token));
+  });
   publicApi.post("/refunds/confirm", async (c) => {
-    const authorization = c.req.header("Authorization");
-    const capability = authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined;
-    if (!capability) throw new DomainError("REFUND_CONFIRMATION_REQUIRED", 401);
+    const input = customerRefundTokenSchema.parse(await jsonBody(c.req.raw));
     const ip = clientIp(c.req.raw.headers);
     rateLimit(`customer-refund-confirm-ip:${ip}`, 20, 60_000);
-    rateLimit(`customer-refund-confirm-capability:${sha256(capability)}`, 5, 60_000);
-    return c.json(domain.confirmCustomerRefund(capability));
+    rateLimit(`customer-refund-confirm-token:${sha256(input.token)}`, 5, 60_000);
+    return c.json(domain.confirmCustomerRefund(input.token));
   });
   publicApi.post("/referrals/eligibility", async (c) => {
     const ip = clientIp(c.req.raw.headers); rateLimit(`referral:${ip}`, 60, 60_000);
@@ -216,6 +221,12 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   });
   admin.post("/reauth", async (c) => {
     const payload = adminReauthSchema.parse(await jsonBody(c.req.raw));
+    const ip = clientIp(c.req.raw.headers);
+    // Password verification needs much tighter limits than ordinary authenticated
+    // admin traffic. Both dimensions are charged before verification so a wrong
+    // password cannot be sprayed through one session or one source address.
+    rateLimit(`admin-reauth-session:${c.var.adminSessionId!}`, 5, 10 * 60_000);
+    rateLimit(`admin-reauth-ip:${ip}`, 10, 10 * 60_000);
     if (!verifyAdminPassword(payload.password)) throw new DomainError("INVALID_CREDENTIALS", 401);
     const capability = publicId();
     const result = domain.createAdminReauth({ adminId: c.var.adminId!, sessionId: c.var.adminSessionId!, purpose: payload.purpose, resourceId: payload.resource_id, capability });
@@ -261,6 +272,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     if (!occurrence) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
     return c.json(occurrence);
   });
+  admin.get("/occurrences/:id/cancellation-financial-overview", (c) => c.json(domain.cancellationFinancialOverview(c.req.param("id"))));
   admin.get("/orders", (c) => {
     const filters: string[] = []; const params: string[] = [];
     const add = (query: string, column: string) => { const value = c.req.query(query); if (value) { filters.push(`${column} = ?`); params.push(value); } };

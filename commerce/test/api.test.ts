@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import { MockProvider } from "../src/provider";
 import { UnisenderGoProvider } from "../src/email-provider";
+import { CommerceDomain } from "../src/domain";
+import { decryptTicketCapability } from "../src/crypto";
 
 process.env.COMMERCE_SESSION_SECRET = "test-session-secret";
 process.env.COMMERCE_ADMIN_PASSWORD_SCRYPT = `salt:${scryptSync("correct horse", "salt", 64).toString("base64url")}`;
@@ -98,6 +100,24 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
+  it("rate limits repeated reauthentication password failures per session without blocking another session", async () => {
+    const { db, app } = appFixture();
+    const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
+    const loginHeaders = { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.47" };
+    const firstLogin = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: loginHeaders, body: JSON.stringify({ password: "correct horse" }) });
+    const firstHeaders = { Origin: "https://admin.flexperiment.ru", Cookie: firstLogin.headers.get("set-cookie")!, "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.47" };
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const response = await app.request("http://admin.flexperiment.ru/v1/admin/reauth", { method: "POST", headers: firstHeaders, body: JSON.stringify({ password: "wrong", purpose: "CANCEL_OCCURRENCE", resource_id: occurrenceId }) });
+      expect(response.status).toBe(401);
+    }
+    const throttled = await app.request("http://admin.flexperiment.ru/v1/admin/reauth", { method: "POST", headers: firstHeaders, body: JSON.stringify({ password: "correct horse", purpose: "CANCEL_OCCURRENCE", resource_id: occurrenceId }) });
+    expect(throttled.status).toBe(429);
+    const secondLogin = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: loginHeaders, body: JSON.stringify({ password: "correct horse" }) });
+    const second = await app.request("http://admin.flexperiment.ru/v1/admin/reauth", { method: "POST", headers: { ...firstHeaders, Cookie: secondLogin.headers.get("set-cookie")! }, body: JSON.stringify({ password: "correct horse", purpose: "CANCEL_OCCURRENCE", resource_id: occurrenceId }) });
+    expect(second.status).toBe(200);
+    db.close();
+  });
+
   it("acknowledges public refund requests without disclosing whether an order exists", async () => {
     const { db, app } = appFixture();
     const response = await app.request("http://api.flexperiment.ru/v1/public/refunds/request", {
@@ -107,6 +127,26 @@ describe("commerce HTTP boundary", () => {
     });
     expect(response.status).toBe(202);
     expect(await response.json()).toEqual({ accepted: true });
+    db.close();
+  });
+
+  it("reads refund confirmation context without consuming or cancelling anything", async () => {
+    const { db, app } = appFixture();
+    const domain = new CommerceDomain(db, new MockProvider());
+    const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
+    const quote = domain.checkoutContext({ occurrenceId });
+    const checkout = await domain.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Арт", customer_email: "art@example.test", eligibility_confirmed: true, offer_accepted: true, pd_consent_accepted: true }, "995e27bc-77c6-47b1-b6d0-000000000001", "https://flexperiment.ru");
+    const order = db.prepare("SELECT o.id, o.public_order_number, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(checkout.status_id) as { id: string; public_order_number: string; payment_id: string };
+    domain.markPaymentPaid(order.payment_id, 100000, "provider-payment");
+    domain.requestCustomerRefund(order.public_order_number.replace(/-/g, ""));
+    const token = db.prepare("SELECT token_ciphertext, token_nonce FROM customer_refund_confirmation_tokens WHERE order_id = ?").get(order.id) as { token_ciphertext: string; token_nonce: string };
+    const capability = decryptTicketCapability(token.token_ciphertext, token.token_nonce);
+    const context = await app.request("http://api.flexperiment.ru/v1/public/refunds/confirmation-context", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.46" }, body: JSON.stringify({ token: capability }) });
+    expect(context.status).toBe(200);
+    expect(await context.json()).toMatchObject({ order_number: order.public_order_number, eligibility: "ELIGIBLE", amount_remaining_kopecks: 100000 });
+    expect(db.prepare("SELECT status FROM bookings WHERE order_id = ?").get(order.id)).toMatchObject({ status: "CONFIRMED" });
+    expect(db.prepare("SELECT consumed_at FROM customer_refund_confirmation_tokens WHERE order_id = ?").get(order.id)).toMatchObject({ consumed_at: null });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM refund_obligations WHERE payment_id = ?").get(order.payment_id)).toMatchObject({ count: 0 });
     db.close();
   });
 

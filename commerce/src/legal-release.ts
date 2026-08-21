@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import type Database from "better-sqlite3";
 import { canonicalLegalManifest, legalDocumentIds, parseLegalManifest, type LegalDocumentId, type LegalManifest } from "./legal-manifest";
 
-const sourcePaths: Record<LegalDocumentId, string> = {
+const currentSourcePaths: Record<LegalDocumentId, string> = {
   PUBLIC_OFFER: "public/legal/public-offer.md",
   PRIVACY_POLICY: "public/legal/privacy-policy.md",
   PD_CONSENT: "public/legal/personal-data-consent.md",
@@ -24,10 +24,20 @@ export const parseCanonicalLegalRelease = (raw: unknown): CanonicalLegalRelease 
   catch (error) { throw new LegalReleasePublishError(error instanceof Error ? error.message : "Canonical legal manifest is invalid."); }
 };
 
+const archiveSourcePath = (document: LegalManifest["documents"][LegalDocumentId]) => {
+  const url = new URL(document.archive_url);
+  if (url.origin !== "https://flexperiment.ru" || !url.pathname.startsWith("/legal/archive/")) return undefined;
+  return `public${url.pathname}`;
+};
+
 export const verifyLegalSourceHashes = (manifest: LegalManifest, root = process.cwd()) => {
   for (const id of legalDocumentIds) {
-    const actual = sha256(readFileSync(resolve(root, sourcePaths[id])));
-    if (actual !== manifest.documents[id].sha256) throw new LegalReleasePublishError(`Canonical manifest hash does not match ${sourcePaths[id]}.`);
+    // A versioned local archive is the publish authority whenever present. This
+    // permits its immutable bytes to be deployed and verified before activation
+    // without pre-emptively changing a non-versioned convenience page.
+    const sourcePath = archiveSourcePath(manifest.documents[id]) ?? currentSourcePaths[id];
+    const actual = sha256(readFileSync(resolve(root, sourcePath)));
+    if (actual !== manifest.documents[id].sha256) throw new LegalReleasePublishError(`Canonical manifest hash does not match ${sourcePath}.`);
   }
 };
 

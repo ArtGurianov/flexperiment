@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import type { LegalManifest } from "../src/legal-manifest";
-import { LegalReleasePublishError, publishLegalRelease } from "../src/legal-release";
+import { LegalReleasePublishError, loadCanonicalLegalRelease, publishLegalRelease } from "../src/legal-release";
 
 const manifest = (offerHash = "a".repeat(64)): LegalManifest => ({ documents: {
   PUBLIC_OFFER: { document_id: "PUBLIC_OFFER", version: "2026-08-20", sha256: offerHash, current_url: "https://flexperiment.ru/legal/public-offer.md", archive_url: "https://archive.flexperiment.ru/legal/2026-08-21.1/public-offer.md", checkout_relevant: true },
@@ -37,5 +37,10 @@ describe("production legal-release publisher", () => {
     publishLegalRelease(db, { version: "2026-08-21.1", manifest: manifest() });
     expect(() => publishLegalRelease(db, { version: "2026-08-21.1", manifest: manifest("e".repeat(64)) })).toThrow(LegalReleasePublishError);
     expect(db.prepare("SELECT COUNT(*) AS count FROM legal_releases WHERE active = 1").get()).toMatchObject({ count: 1 });
+  });
+
+  it("verifies a prepared archive release without changing the active current-document copies", () => {
+    expect(loadCanonicalLegalRelease("commerce/legal/production-manifest.json").version).toBe("2026-08-21.1");
+    expect(loadCanonicalLegalRelease("commerce/legal/production-manifest.2026-08-21.2.draft.json").version).toBe("2026-08-21.2");
   });
 });
