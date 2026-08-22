@@ -1,0 +1,712 @@
+From c267e8694a31125cd520748c6f42457fc7d9ab23 Mon Sep 17 00:00:00 2001
+From: Art <artgurianov@yandex.ru>
+Date: Sat, 22 Aug 2026 16:57:15 +0700
+Subject: [PATCH] step 12
+
+---
+ apps/admin/app/settlements/page.tsx           |   5 +
+ apps/admin/components/AdminApp.tsx            |  41 +++-
+ .../0014_prepared_settlement_hardening.sql    |  25 +++
+ commerce/src/api.ts                           |  11 +-
+ commerce/src/domain.ts                        | 117 ++++++++--
+ commerce/src/worker-sweep.ts                  |  23 ++
+ commerce/src/worker.ts                        |   8 +-
+ commerce/test/api.test.ts                     |  25 +++
+ commerce/test/domain.test.ts                  | 201 +++++++++++++++++-
+ commerce/test/migration.test.ts               |  35 +++
+ 10 files changed, 453 insertions(+), 38 deletions(-)
+ create mode 100644 apps/admin/app/settlements/page.tsx
+ create mode 100644 commerce/migrations/0014_prepared_settlement_hardening.sql
+ create mode 100644 commerce/src/worker-sweep.ts
+
+diff --git a/apps/admin/app/settlements/page.tsx b/apps/admin/app/settlements/page.tsx
+new file mode 100644
+index 00000000..feab72c9
+--- /dev/null
++++ b/apps/admin/app/settlements/page.tsx
+@@ -0,0 +1,5 @@
++import { AdminApp } from "../../components/AdminApp";
++
++export default function SettlementsPage() {
++  return <AdminApp page="settlements" />;
++}
+diff --git a/apps/admin/components/AdminApp.tsx b/apps/admin/components/AdminApp.tsx
+index f1da046a..1f280cfc 100644
+--- a/apps/admin/components/AdminApp.tsx
++++ b/apps/admin/components/AdminApp.tsx
+@@ -7,7 +7,7 @@ import { badgeTone } from "./badge-tone";
+ import { createLatestRequestGate } from "./latest-request";
+ import { occurrenceActionsFor } from "./occurrence-actions";
+ 
+-type Page = "dashboard" | "login" | "cities" | "occurrences" | "orders" | "refunds" | "audit";
++type Page = "dashboard" | "login" | "cities" | "occurrences" | "orders" | "refunds" | "settlements" | "audit";
+ type Row = Record<string, unknown>;
+ 
+ class AdminApiError extends Error {
+@@ -20,7 +20,8 @@ const nav: { href: string; page: Page; label: string; index: string }[] = [
+   { href: "/occurrences/", page: "occurrences", label: "События", index: "03" },
+   { href: "/orders/", page: "orders", label: "Заказы", index: "04" },
+   { href: "/refunds/", page: "refunds", label: "Возвраты", index: "05" },
+-  { href: "/audit/", page: "audit", label: "Аудит", index: "06" },
++  { href: "/settlements/", page: "settlements", label: "Расчёты", index: "06" },
++  { href: "/audit/", page: "audit", label: "Аудит", index: "07" },
+ ];
+ 
+ const idempotencyKey = () => crypto.randomUUID();
+@@ -122,6 +123,7 @@ function Dashboard() {
+   const health: [string, unknown][] = [
+     ["CREATE_UNKNOWN", data.value.health.create_unknown?.count], ["REVIEW_REQUIRED", data.value.health.review_required?.count],
+     ["Pending refunds", data.value.health.pending_refunds?.count], ["Email failures", data.value.health.email_failures?.count],
++    ["Stale PREPARED", data.value.health.stale_prepared_settlements?.count],
+   ];
+   return <><section className="hero"><p className="eyebrow">OPERATIONAL OVERVIEW / TODAY</p><h1>Данные без<br /><i>магии статусов.</i></h1><p>Commerce и SQLite остаются источником истины. Этот экран ничего не мутирует.</p></section>
+     <section className="metrics"><Metric label="Заказы" value={number(today.orders)} /><Metric label="Получено" value={formatMoney(today.revenue_kopecks)} /><Metric label="Возвращено" value={formatMoney(today.refunded_kopecks)} /></section>
+@@ -270,6 +272,39 @@ function Refunds() {
+     <section className="panel">{data.loading ? <Loading /> : data.value ? <table><thead><tr><th>Создан</th><th>Заказ</th><th>Событие</th><th>Сумма</th><th>Источник</th><th>Статус</th></tr></thead><tbody>{data.value.refunds.map((refund) => <tr key={string(refund.id)}><td>{formatDate(refund.created_at)}</td><td><strong>{string(refund.public_status_id).slice(0, 11)}…</strong><small>{string(refund.order_id)}</small></td><td>{string(refund.city_title)}<small>{string(refund.occurrence_title)}</small></td><td>{formatMoney(refund.amount_kopecks)}</td><td><Badge>{string(refund.source)}</Badge></td><td><Badge>{string(refund.status)}</Badge></td></tr>)}</tbody></table> : <Notice error={data.error} />}</section></>;
+ }
+ 
++function Settlements() {
++  const settlements = useResource<{ settlements: Row[] }>("/reward-settlements");
++  const [selected, setSelected] = useState<string | null>(() => typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("id"));
++  return <><PageTitle eyebrow="PROMOTERS / MANUAL SETTLEMENTS" title={<>Расчёты<br /><i>без ложной оплаты.</i></>} text="PREPARED уже резервирует начисление. Stale state — это durable operator review, а не автоматическое освобождение денег." />
++    <section className="panel">{settlements.loading ? <Loading /> : settlements.value ? <table><thead><tr><th>Подготовлен</th><th>Агент</th><th>Событие</th><th>Сумма</th><th>Состояние</th><th>Evidence</th></tr></thead><tbody>{settlements.value.settlements.map((settlement) => <tr className="click-row" onClick={() => { setSelected(string(settlement.id)); history.replaceState(null, "", `/settlements/?id=${encodeURIComponent(string(settlement.id))}`); }} key={string(settlement.id)}><td>{formatDate(settlement.prepared_at)}</td><td><strong>{string(settlement.agent_display_name)}</strong><small>{string(settlement.agent_slug)}</small></td><td>{string(settlement.city_title)}<small>{string(settlement.occurrence_title)}</small></td><td>{formatMoney(settlement.amount_kopecks)}</td><td><Badge>{string(settlement.status)}</Badge>{number(settlement.stale_prepared) === 1 && <Badge>STALE_PREPARED</Badge>}</td><td>{string(settlement.document_reference) || "—"}<small>recovered: {formatMoney(settlement.recovered_total)}</small></td></tr>)}</tbody></table> : <Notice error={settlements.error} />}</section>
++    {selected && <SettlementDetail id={selected} close={() => { setSelected(null); history.replaceState(null, "", "/settlements/"); }} changed={settlements.reload} />}</>;
++}
++
++function SettlementDetail({ id, close, changed }: { id: string; close: () => void; changed: () => Promise<void> }) {
++  const detail = useResource<{ settlement: Row; balance: Row; recoveries: Row[] }>(`/reward-settlements/${id}`);
++  const [action, setAction] = useState<"PAYMENT_MADE" | "DOCUMENTS_COMPLETE" | "CANCEL_BEFORE_PAYMENT" | "RECOVERY" | null>(null);
++  if (detail.loading) return <section className="panel detail"><Loading /></section>;
++  if (!detail.value) return <section className="panel detail"><Notice error={detail.error} /></section>;
++  const settlement = detail.value.settlement; const state = string(settlement.status);
++  const done = async () => { await detail.reload(); await changed(); setAction(null); };
++  return <section className="panel detail"><div className="detail-head"><h2>Settlement evidence</h2><button onClick={close}>Закрыть ×</button></div><code>{id}</code><div className="evidence-grid"><EvidenceCard title="SETTLEMENT" data={settlement} /><EvidenceCard title="BALANCE" data={detail.value.balance} /><EvidenceCard title="RECOVERIES" data={detail.value.recoveries} /></div><div className="detail-actions">{state === "PREPARED" && <><button className="primary" onClick={() => setAction("PAYMENT_MADE")}>Подтвердить перевод</button><button className="danger" onClick={() => setAction("CANCEL_BEFORE_PAYMENT")}>Отменить до оплаты</button></>}{state === "PENDING_DOCUMENT" && <button className="primary" onClick={() => setAction("DOCUMENTS_COMPLETE")}>Подтвердить документы</button>}{(state === "PENDING_DOCUMENT" || state === "SETTLED") && <button onClick={() => setAction("RECOVERY")}>Зафиксировать recovery</button>}</div>{action && <SettlementAction action={action} settlement={settlement} close={() => setAction(null)} done={done} />}</section>;
++}
++
++function SettlementAction({ action, settlement, close, done }: { action: "PAYMENT_MADE" | "DOCUMENTS_COMPLETE" | "CANCEL_BEFORE_PAYMENT" | "RECOVERY"; settlement: Row; close: () => void; done: () => Promise<void> }) {
++  const [key] = useState(idempotencyKey); const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null);
++  const [documentReference, setDocumentReference] = useState(""); const [npdDate, setNpdDate] = useState(""); const [reason, setReason] = useState(""); const [recoveryAmount, setRecoveryAmount] = useState(""); const [evidenceReference, setEvidenceReference] = useState("");
++  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(null); try {
++    const base = `/reward-settlements/${string(settlement.id)}`; const headers = { "Content-Type": "application/json", "Idempotency-Key": key };
++    if (action === "PAYMENT_MADE") await api(`${base}/payment-made`, { method: "POST", headers, body: JSON.stringify({ confirmation_text: "I confirm the money was transferred" }) });
++    if (action === "DOCUMENTS_COMPLETE") await api(`${base}/documents-complete`, { method: "POST", headers, body: JSON.stringify({ document_reference: documentReference, npd_status_effective_on: npdDate || undefined }) });
++    if (action === "CANCEL_BEFORE_PAYMENT") await api(`${base}/cancel-before-payment`, { method: "POST", headers, body: JSON.stringify({ confirmation_text: `NOT PAID ${string(settlement.id)}`, reason }) });
++    if (action === "RECOVERY") await api(`${base}/recoveries`, { method: "POST", headers, body: JSON.stringify({ amount_recovered_kopecks: Number(recoveryAmount), recovered_at: new Date().toISOString(), method: string(settlement.method), evidence_reference: evidenceReference }) });
++    await done();
++  } catch (failure) { setError((failure as AdminApiError).code); } finally { setBusy(false); } };
++  const title = action === "PAYMENT_MADE" ? "Подтвердить перевод" : action === "DOCUMENTS_COMPLETE" ? "Подтвердить документы" : action === "CANCEL_BEFORE_PAYMENT" ? "Отменить до оплаты" : "Зафиксировать recovery";
++  return <ActionModal title={title} close={close}><form className="form" onSubmit={submit}>{action === "PAYMENT_MADE" && <p>Подтверждает только состоявшийся ручной перевод. После команды settlement перейдёт в PENDING_DOCUMENT.</p>}{action === "DOCUMENTS_COMPLETE" && <><label>Ссылка на документ<input value={documentReference} onChange={(event) => setDocumentReference(event.target.value)} required minLength={2} /></label><label>Дата статуса НПД<input type="date" value={npdDate} onChange={(event) => setNpdDate(event.target.value)} /></label></>}{action === "CANCEL_BEFORE_PAYMENT" && <><p>Допустимо только при сильном подтверждении, что деньги не переводились. Это высвобождает reservation.</p><label>Причина<textarea value={reason} onChange={(event) => setReason(event.target.value)} required minLength={3} /></label></>}{action === "RECOVERY" && <><label>Сумма, копейки<input type="number" min="1" value={recoveryAmount} onChange={(event) => setRecoveryAmount(event.target.value)} required /></label><label>Evidence reference<input value={evidenceReference} onChange={(event) => setEvidenceReference(event.target.value)} required minLength={3} /></label></>}<Notice error={error} /><button className={action === "CANCEL_BEFORE_PAYMENT" ? "danger" : "primary"} disabled={busy}>{busy ? "Сохраняем…" : "Подтвердить"}</button></form></ActionModal>;
++}
++
+ function Audit() {
+   const data = useResource<{ events: Row[] }>("/audit");
+   return <><PageTitle eyebrow="AUTHORITY / AUDIT" title={<>Команды<br /><i>с контекстом.</i></>} text="Показываются durable записи Admin mutations. Секреты и capability здесь не выводятся." />
+@@ -287,6 +322,6 @@ export function AdminApp({ page }: { page: Page }) {
+   if (page === "login") return <Login />;
+   if (authenticated === null) return <main className="boot"><Loading /></main>;
+   if (!authenticated) return <main className="boot"><Loading /></main>;
+-  const view = page === "dashboard" ? <Dashboard /> : page === "cities" ? <Cities /> : page === "occurrences" ? <Occurrences /> : page === "orders" ? <Orders /> : page === "refunds" ? <Refunds /> : <Audit />;
++  const view = page === "dashboard" ? <Dashboard /> : page === "cities" ? <Cities /> : page === "occurrences" ? <Occurrences /> : page === "orders" ? <Orders /> : page === "refunds" ? <Refunds /> : page === "settlements" ? <Settlements /> : <Audit />;
+   return <Shell page={page} onLogout={logout}>{view}</Shell>;
+ }
+diff --git a/commerce/migrations/0014_prepared_settlement_hardening.sql b/commerce/migrations/0014_prepared_settlement_hardening.sql
+new file mode 100644
+index 00000000..ea26bd16
+--- /dev/null
++++ b/commerce/migrations/0014_prepared_settlement_hardening.sql
+@@ -0,0 +1,25 @@
++-- PREPARED is a durable allocation. Staleness creates operator-visible
++-- evidence only; it never releases or rewrites the allocated reward amount.
++CREATE TABLE IF NOT EXISTS settlement_prepared_reviews (
++  settlement_id TEXT PRIMARY KEY REFERENCES reward_settlements(id),
++  status TEXT NOT NULL DEFAULT 'OPEN' CHECK (status IN ('OPEN', 'RESOLVED')),
++  first_detected_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
++  resolved_at TEXT,
++  resolution_note TEXT
++);
++
++CREATE INDEX IF NOT EXISTS reward_settlements_prepared_stale_idx
++  ON reward_settlements(prepared_at)
++  WHERE status = 'PREPARED';
++
++-- Lifecycle mutations are separately idempotent from PREPARED creation. The
++-- record preserves the authoritative result across a lost HTTP response.
++CREATE TABLE IF NOT EXISTS reward_settlement_command_idempotency (
++  command TEXT NOT NULL,
++  idempotency_key_hash TEXT NOT NULL,
++  canonical_request_hash TEXT NOT NULL,
++  settlement_id TEXT NOT NULL REFERENCES reward_settlements(id),
++  recovery_id TEXT REFERENCES settlement_recoveries(id),
++  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
++  PRIMARY KEY (command, idempotency_key_hash)
++);
+diff --git a/commerce/src/api.ts b/commerce/src/api.ts
+index 4161b026..4a4770e8 100644
+--- a/commerce/src/api.ts
++++ b/commerce/src/api.ts
+@@ -246,6 +246,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
+         (SELECT COUNT(*) FROM refunds WHERE status = 'REVIEW_REQUIRED') AS count`).get(),
+       pending_refunds: sqlite.prepare("SELECT COUNT(*) AS count FROM refunds WHERE status IN ('REQUESTED', 'SUBMITTING', 'SUBMIT_UNKNOWN', 'RECONCILING')").get(),
+       email_failures: sqlite.prepare("SELECT COUNT(*) AS count FROM email_outbox WHERE status IN ('FAILED', 'SEND_UNKNOWN')").get(),
++      stale_prepared_settlements: sqlite.prepare("SELECT COUNT(*) AS count FROM settlement_prepared_reviews WHERE status = 'OPEN'").get(),
+     },
+     upcoming: sqlite.prepare(`SELECT o.id, o.title, o.starts_at, o.capacity, o.sales_status, o.visibility, c.title AS city_title,
+       o.capacity - (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = o.id AND b.status IN ('RESERVED', 'CONFIRMED')) AS availability
+@@ -343,10 +344,12 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
+   admin.post("/promo-codes", async (c) => { const payload = promoSchema.parse(await jsonBody(c.req.raw)); const promo = domain.createPromo(payload); audit(c.var.adminId!, "PROMO_CREATED", "promo", String(promo.id), {}); return c.json(promo, 201); });
+   admin.patch("/promo-codes/:id", async (c) => { const payload = promoPatchSchema.parse(await jsonBody(c.req.raw)); const promo = domain.patchPromo(c.req.param("id"), payload); audit(c.var.adminId!, "PROMO_EDITED", "promo", c.req.param("id"), payload); return c.json(promo); });
+   admin.post("/reward-settlements", async (c) => { const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400); const payload = settlementPrepareSchema.parse(await jsonBody(c.req.raw)); const settlement = domain.prepareSettlement(payload, key, c.var.adminId!); audit(c.var.adminId!, "SETTLEMENT_PREPARED", "reward_settlement", String(settlement.id), payload); return c.json(settlement, 201); });
+-  admin.post("/reward-settlements/:id/payment-made", async (c) => { const payload = settlementPaymentMadeSchema.parse(await jsonBody(c.req.raw)); const settlement = domain.markSettlementPaymentMade(c.req.param("id"), payload.confirmation_text); audit(c.var.adminId!, "SETTLEMENT_PAYMENT_MADE", "reward_settlement", c.req.param("id"), {}); return c.json(settlement); });
+-  admin.post("/reward-settlements/:id/documents-complete", async (c) => { const payload = settlementDocumentSchema.parse(await jsonBody(c.req.raw)); const settlement = domain.completeSettlementDocuments(c.req.param("id"), payload); audit(c.var.adminId!, "SETTLEMENT_DOCUMENTS_COMPLETE", "reward_settlement", c.req.param("id"), {}); return c.json(settlement); });
+-  admin.post("/reward-settlements/:id/cancel-before-payment", async (c) => { const payload = settlementCancelSchema.parse(await jsonBody(c.req.raw)); const settlement = domain.cancelSettlementBeforePayment(c.req.param("id"), payload); audit(c.var.adminId!, "SETTLEMENT_CANCELLED_BEFORE_PAYMENT", "reward_settlement", c.req.param("id"), { reason: payload.reason }); return c.json(settlement); });
+-  admin.post("/reward-settlements/:id/recoveries", async (c) => { const payload = settlementRecoverySchema.parse(await jsonBody(c.req.raw)); const recovery = domain.addSettlementRecovery(c.req.param("id"), payload); audit(c.var.adminId!, "SETTLEMENT_RECOVERY_RECORDED", "reward_settlement", c.req.param("id"), { amount_kopecks: payload.amount_recovered_kopecks }); return c.json(recovery, 201); });
++  admin.get("/reward-settlements", (c) => c.json({ settlements: domain.settlementList() }));
++  admin.get("/reward-settlements/:id", (c) => c.json(domain.settlementDetail(c.req.param("id"))));
++  admin.post("/reward-settlements/:id/payment-made", async (c) => { const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400); const payload = settlementPaymentMadeSchema.parse(await jsonBody(c.req.raw)); const settlement = domain.markSettlementPaymentMade(c.req.param("id"), payload.confirmation_text, key); audit(c.var.adminId!, "SETTLEMENT_PAYMENT_MADE", "reward_settlement", c.req.param("id"), {}); return c.json(settlement); });
++  admin.post("/reward-settlements/:id/documents-complete", async (c) => { const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400); const payload = settlementDocumentSchema.parse(await jsonBody(c.req.raw)); const settlement = domain.completeSettlementDocuments(c.req.param("id"), payload, key); audit(c.var.adminId!, "SETTLEMENT_DOCUMENTS_COMPLETE", "reward_settlement", c.req.param("id"), {}); return c.json(settlement); });
++  admin.post("/reward-settlements/:id/cancel-before-payment", async (c) => { const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400); const payload = settlementCancelSchema.parse(await jsonBody(c.req.raw)); const settlement = domain.cancelSettlementBeforePayment(c.req.param("id"), payload, key); audit(c.var.adminId!, "SETTLEMENT_CANCELLED_BEFORE_PAYMENT", "reward_settlement", c.req.param("id"), { reason: payload.reason }); return c.json(settlement); });
++  admin.post("/reward-settlements/:id/recoveries", async (c) => { const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400); const payload = settlementRecoverySchema.parse(await jsonBody(c.req.raw)); const recovery = domain.addSettlementRecovery(c.req.param("id"), payload, key); audit(c.var.adminId!, "SETTLEMENT_RECOVERY_RECORDED", "reward_settlement", c.req.param("id"), { amount_kopecks: payload.amount_recovered_kopecks }); return c.json(recovery, 201); });
+   admin.get("/provider-drift-reviews", (c) => c.json({ reviews: sqlite.prepare("SELECT * FROM provider_drift_reviews WHERE status = 'OPEN' ORDER BY created_at DESC").all() }));
+   admin.post("/provider-drift-reviews/:id/resolve", async (c) => { const body = await jsonBody(c.req.raw) as { note?: string }; if (!body.note?.trim()) throw new DomainError("RESOLUTION_NOTE_REQUIRED", 422); const result = sqlite.prepare("UPDATE provider_drift_reviews SET status = 'RESOLVED', resolution_note = ?, resolved_at = datetime('now') WHERE id = ? AND status = 'OPEN'").run(body.note.trim(), c.req.param("id")); if (!result.changes) throw new DomainError("DRIFT_REVIEW_NOT_OPEN", 409); audit(c.var.adminId!, "PROVIDER_DRIFT_RESOLVED", "provider_drift_review", c.req.param("id"), { note: body.note.trim() }); return c.json({ resolved: true }); });
+   app.post("/v1/admin/login", async (c) => {
+diff --git a/commerce/src/domain.ts b/commerce/src/domain.ts
+index c6988379..e7fa43d6 100644
+--- a/commerce/src/domain.ts
++++ b/commerce/src/domain.ts
+@@ -54,6 +54,11 @@ const isAllowedOccurrenceStateTransition = (before: Row, after: Row) => {
+   return previous === next || allowedOccurrenceStateTransitions.has(`${previous}->${next}`);
+ };
+ 
++// A stale PREPARED allocation is an operational-review condition, never a
++// timeout-based cancellation. Keep this explicit and shared by the worker and
++// Admin read model.
++export const STALE_PREPARED_SETTLEMENT_MS = 30 * 60 * 1_000;
++
+ export class CommerceDomain {
+   constructor(
+     readonly db: Database.Database,
+@@ -752,7 +757,7 @@ export class CommerceDomain {
+ 
+   prepareSettlement(input: { agent_id: string; occurrence_id: string; amount_kopecks: number; method: string }, idempotencyKey: string, adminId: string) {
+     const keyHash = sha256(idempotencyKey); const payloadHash = sha256(canonical(input));
+-    return withImmediateTransaction(this.db, () => {
++    return this.settlementTransaction(() => {
+       const replay = one(this.db, `SELECT rsi.canonical_request_hash, rs.* FROM reward_settlement_idempotency rsi
+         JOIN reward_settlements rs ON rs.id = rsi.settlement_id WHERE rsi.idempotency_key_hash = ?`, keyHash);
+       if (replay) {
+@@ -774,31 +779,109 @@ export class CommerceDomain {
+     });
+   }
+ 
+-  markSettlementPaymentMade(settlementId: string, confirmationText: string) {
++  markSettlementPaymentMade(settlementId: string, confirmationText: string, idempotencyKey: string) {
+     if (confirmationText !== "I confirm the money was transferred") throw new DomainError("CONFIRMATION_REQUIRED", 422);
+-    const changed = this.db.prepare("UPDATE reward_settlements SET status = 'PENDING_DOCUMENT', payment_made_at = ? WHERE id = ? AND status = 'PREPARED'").run(now(), settlementId);
+-    if (!changed.changes) throw new DomainError("SETTLEMENT_TRANSITION_FORBIDDEN", 409);
+-    return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
++    return this.settlementTransition("PAYMENT_MADE", settlementId, { confirmation_text: confirmationText }, idempotencyKey, () => {
++      const changed = this.db.prepare("UPDATE reward_settlements SET status = 'PENDING_DOCUMENT', payment_made_at = ? WHERE id = ? AND status = 'PREPARED'").run(now(), settlementId);
++      if (!changed.changes) throw new DomainError("SETTLEMENT_TRANSITION_FORBIDDEN", 409);
++      return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
++    });
+   }
+ 
+-  completeSettlementDocuments(settlementId: string, input: { document_reference: string; npd_status_effective_on?: string }) {
+-    const changed = this.db.prepare("UPDATE reward_settlements SET status = 'SETTLED', document_confirmed = 1, document_reference = ?, document_confirmed_at = ?, settled_at = ?, npd_status_effective_on = ? WHERE id = ? AND status = 'PENDING_DOCUMENT'").run(input.document_reference, now(), now(), input.npd_status_effective_on ?? null, settlementId);
+-    if (!changed.changes) throw new DomainError("SETTLEMENT_TRANSITION_FORBIDDEN", 409);
+-    return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
++  completeSettlementDocuments(settlementId: string, input: { document_reference: string; npd_status_effective_on?: string }, idempotencyKey: string) {
++    return this.settlementTransition("DOCUMENTS_COMPLETE", settlementId, input, idempotencyKey, () => {
++      const changed = this.db.prepare("UPDATE reward_settlements SET status = 'SETTLED', document_confirmed = 1, document_reference = ?, document_confirmed_at = ?, settled_at = ?, npd_status_effective_on = ? WHERE id = ? AND status = 'PENDING_DOCUMENT'").run(input.document_reference, now(), now(), input.npd_status_effective_on ?? null, settlementId);
++      if (!changed.changes) throw new DomainError("SETTLEMENT_TRANSITION_FORBIDDEN", 409);
++      return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
++    });
+   }
+ 
+-  cancelSettlementBeforePayment(settlementId: string, input: { confirmation_text: string; reason: string }) {
++  cancelSettlementBeforePayment(settlementId: string, input: { confirmation_text: string; reason: string }, idempotencyKey: string) {
+     if (input.confirmation_text !== `NOT PAID ${settlementId}`) throw new DomainError("CONFIRMATION_REQUIRED", 422);
+-    const changed = this.db.prepare("UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT', cancelled_before_payment_at = ?, note = ? WHERE id = ? AND status = 'PREPARED'").run(now(), input.reason, settlementId);
+-    if (!changed.changes) throw new DomainError("SETTLEMENT_TRANSITION_FORBIDDEN", 409);
+-    return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
++    return this.settlementTransition("CANCEL_BEFORE_PAYMENT", settlementId, input, idempotencyKey, () => {
++      const changed = this.db.prepare("UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT', cancelled_before_payment_at = ?, note = ? WHERE id = ? AND status = 'PREPARED'").run(now(), input.reason, settlementId);
++      if (!changed.changes) throw new DomainError("SETTLEMENT_TRANSITION_FORBIDDEN", 409);
++      return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
++    });
++  }
++
++  addSettlementRecovery(settlementId: string, input: { amount_recovered_kopecks: number; recovered_at: string; method: string; evidence_reference: string; note?: string }, idempotencyKey: string) {
++    const create = () => {
++      const settlement = one(this.db, "SELECT id, status, amount_kopecks FROM reward_settlements WHERE id = ?", settlementId);
++      if (!settlement) throw new DomainError("SETTLEMENT_NOT_FOUND", 404);
++      if (settlement.status !== "PENDING_DOCUMENT" && settlement.status !== "SETTLED") throw new DomainError("SETTLEMENT_RECOVERY_NOT_PAID", 409);
++      const alreadyRecovered = Number(one(this.db, "SELECT COALESCE(SUM(amount_recovered_kopecks), 0) AS amount FROM settlement_recoveries WHERE settlement_id = ?", settlementId)?.amount ?? 0);
++      const remainingRecoverable = Number(settlement.amount_kopecks) - alreadyRecovered;
++      if (input.amount_recovered_kopecks > remainingRecoverable) throw new DomainError("SETTLEMENT_RECOVERY_EXCEEDS_REMAINING", 409);
++      const recoveryId = id();
++      this.db.prepare("INSERT INTO settlement_recoveries(id, settlement_id, amount_recovered_kopecks, recovered_at, method, evidence_reference, note) VALUES (?, ?, ?, ?, ?, ?, ?)").run(recoveryId, settlementId, input.amount_recovered_kopecks, input.recovered_at, input.method, input.evidence_reference, input.note ?? null);
++      return one(this.db, "SELECT * FROM settlement_recoveries WHERE id = ?", recoveryId)!;
++    };
++    const keyHash = sha256(idempotencyKey); const payloadHash = sha256(canonical({ settlement_id: settlementId, ...input }));
++    return this.settlementTransaction(() => {
++      const replay = one(this.db, "SELECT canonical_request_hash, recovery_id FROM reward_settlement_command_idempotency WHERE command = 'RECOVERY' AND idempotency_key_hash = ?", keyHash);
++      if (replay) {
++        if (replay.canonical_request_hash !== payloadHash) throw new DomainError("IDEMPOTENCY_CONFLICT", 409);
++        return one(this.db, "SELECT * FROM settlement_recoveries WHERE id = ?", replay.recovery_id)!;
++      }
++      if (!Number.isInteger(input.amount_recovered_kopecks) || input.amount_recovered_kopecks <= 0) throw new DomainError("SETTLEMENT_RECOVERY_AMOUNT_INVALID", 422);
++      const recovery = create();
++      this.db.prepare("INSERT INTO reward_settlement_command_idempotency(command, idempotency_key_hash, canonical_request_hash, settlement_id, recovery_id) VALUES ('RECOVERY', ?, ?, ?, ?)").run(keyHash, payloadHash, settlementId, recovery.id);
++      return recovery;
++    });
+   }
+ 
+-  addSettlementRecovery(settlementId: string, input: { amount_recovered_kopecks: number; recovered_at: string; method: string; evidence_reference: string; note?: string }) {
+-    const settlement = one(this.db, "SELECT id FROM reward_settlements WHERE id = ?", settlementId);
++  detectStalePreparedSettlements() {
++    const threshold = new Date(this.clock() - STALE_PREPARED_SETTLEMENT_MS).toISOString();
++    return this.settlementTransaction(() => {
++      const stale = many(this.db, "SELECT id FROM reward_settlements WHERE status = 'PREPARED' AND prepared_at <= ?", threshold);
++      for (const settlement of stale) this.db.prepare("INSERT OR IGNORE INTO settlement_prepared_reviews(settlement_id) VALUES (?)").run(settlement.id);
++      return stale.length;
++    });
++  }
++
++  settlementList() {
++    const threshold = new Date(this.clock() - STALE_PREPARED_SETTLEMENT_MS).toISOString();
++    return many(this.db, `SELECT rs.*, a.slug AS agent_slug, a.display_name AS agent_display_name,
++      c.title AS city_title, o.title AS occurrence_title,
++      CASE WHEN rs.status = 'PREPARED' AND rs.prepared_at <= ? THEN 1 ELSE 0 END AS stale_prepared,
++      spr.status AS prepared_review_status,
++      COALESCE((SELECT SUM(amount_recovered_kopecks) FROM settlement_recoveries sr WHERE sr.settlement_id = rs.id), 0) AS recovered_total,
++      MAX(0, rs.amount_kopecks - COALESCE((SELECT SUM(amount_recovered_kopecks) FROM settlement_recoveries sr WHERE sr.settlement_id = rs.id), 0)) AS unrecovered_amount_kopecks
++      FROM reward_settlements rs JOIN agents a ON a.id = rs.agent_id JOIN occurrences o ON o.id = rs.occurrence_id JOIN cities c ON c.id = o.city_id
++      LEFT JOIN settlement_prepared_reviews spr ON spr.settlement_id = rs.id ORDER BY rs.prepared_at DESC`, threshold);
++  }
++
++  settlementDetail(settlementId: string) {
++    const settlement = this.settlementList().find((item) => item.id === settlementId);
+     if (!settlement) throw new DomainError("SETTLEMENT_NOT_FOUND", 404);
+-    this.db.prepare("INSERT INTO settlement_recoveries(id, settlement_id, amount_recovered_kopecks, recovered_at, method, evidence_reference, note) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id(), settlementId, input.amount_recovered_kopecks, input.recovered_at, input.method, input.evidence_reference, input.note ?? null);
+-    return one(this.db, "SELECT * FROM settlement_recoveries WHERE settlement_id = ? ORDER BY rowid DESC LIMIT 1", settlementId)!;
++    const balance = this.rewardBalance(String(settlement.agent_id), String(settlement.occurrence_id));
++    return { settlement, balance, recoveries: many(this.db, "SELECT * FROM settlement_recoveries WHERE settlement_id = ? ORDER BY recovered_at DESC, id DESC", settlementId) };
++  }
++
++  private settlementTransition(command: "PAYMENT_MADE" | "DOCUMENTS_COMPLETE" | "CANCEL_BEFORE_PAYMENT", settlementId: string, input: unknown, idempotencyKey: string, transition: () => Row) {
++    const keyHash = sha256(idempotencyKey); const payloadHash = sha256(canonical({ settlement_id: settlementId, ...(input as Record<string, unknown>) }));
++    return this.settlementTransaction(() => {
++      const replay = one(this.db, "SELECT canonical_request_hash, settlement_id FROM reward_settlement_command_idempotency WHERE command = ? AND idempotency_key_hash = ?", command, keyHash);
++      if (replay) {
++        if (replay.canonical_request_hash !== payloadHash) throw new DomainError("IDEMPOTENCY_CONFLICT", 409);
++        return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", replay.settlement_id)!;
++      }
++      const settlement = transition();
++      this.db.prepare("INSERT INTO reward_settlement_command_idempotency(command, idempotency_key_hash, canonical_request_hash, settlement_id) VALUES (?, ?, ?, ?)").run(command, keyHash, payloadHash, settlementId);
++      // A successful transition out of PREPARED resolves its stale-PREPARED
++      // review; it does not erase the review or change any allocation.
++      this.db.prepare("UPDATE settlement_prepared_reviews SET status = 'RESOLVED', resolved_at = COALESCE(resolved_at, ?) WHERE settlement_id = ? AND status = 'OPEN'").run(now(), settlementId);
++      return settlement;
++    });
++  }
++
++  private settlementTransaction<T>(operation: () => T): T {
++    try { return withImmediateTransaction(this.db, operation); }
++    catch (error) {
++      if (error instanceof Error && /SQLITE_BUSY|database is locked/i.test(error.message)) throw new DomainError("SETTLEMENT_BUSY", 409);
++      throw error;
++    }
+   }
+ 
+   async submitRequestedRefunds() {
+diff --git a/commerce/src/worker-sweep.ts b/commerce/src/worker-sweep.ts
+new file mode 100644
+index 00000000..51b25b45
+--- /dev/null
++++ b/commerce/src/worker-sweep.ts
+@@ -0,0 +1,23 @@
++import { CommerceDomain, DomainError } from "./domain";
++
++type SweepDomain = Pick<CommerceDomain,
++  "recoverStaleCommands" | "detectStalePreparedSettlements" | "reconcilePendingPayments" |
++  "createObligationRefunds" | "submitRequestedRefunds" | "reconcilePendingRefunds" | "processEmailOutbox">;
++
++/**
++ * Runs the financial recovery sequence. A stale PREPARED review is useful
++ * operational evidence, but a competing SQLite writer must not defer payment,
++ * refund, or email recovery in the same sweep.
++ */
++export async function runWorkerSweep(domain: SweepDomain) {
++  domain.recoverStaleCommands();
++  try { domain.detectStalePreparedSettlements(); }
++  catch (error) {
++    if (!(error instanceof DomainError) || error.code !== "SETTLEMENT_BUSY") throw error;
++  }
++  await domain.reconcilePendingPayments();
++  domain.createObligationRefunds();
++  await domain.submitRequestedRefunds();
++  await domain.reconcilePendingRefunds();
++  await domain.processEmailOutbox();
++}
+diff --git a/commerce/src/worker.ts b/commerce/src/worker.ts
+index b3bd2b26..780b9507 100644
+--- a/commerce/src/worker.ts
++++ b/commerce/src/worker.ts
+@@ -2,6 +2,7 @@ import { openDatabase } from "./db";
+ import { CommerceDomain } from "./domain";
+ import { emailProviderFromEnvironment } from "./email-provider";
+ import { providerFromEnvironment } from "./provider";
++import { runWorkerSweep } from "./worker-sweep";
+ 
+ const sqlite = openDatabase();
+ const domain = new CommerceDomain(sqlite, providerFromEnvironment(), emailProviderFromEnvironment());
+@@ -9,12 +10,7 @@ let nextDriftSweepAt = 0;
+ let sweeping = false;
+ 
+ const sweep = async () => {
+-  domain.recoverStaleCommands();
+-  await domain.reconcilePendingPayments();
+-  domain.createObligationRefunds();
+-  await domain.submitRequestedRefunds();
+-  await domain.reconcilePendingRefunds();
+-  await domain.processEmailOutbox();
++  await runWorkerSweep(domain);
+   if (Date.now() >= nextDriftSweepAt) {
+     nextDriftSweepAt = Date.now() + 24 * 60 * 60_000;
+     await domain.collectProviderDrift();
+diff --git a/commerce/test/api.test.ts b/commerce/test/api.test.ts
+index 79e19fb6..3a66d95b 100644
+--- a/commerce/test/api.test.ts
++++ b/commerce/test/api.test.ts
+@@ -77,6 +77,31 @@ describe("commerce HTTP boundary", () => {
+     db.close();
+   });
+ 
++  it("exposes settlement evidence as a pure Admin read and requires idempotency for lifecycle commands", async () => {
++    const { db, app } = appFixture();
++    const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
++    const agentId = randomUUID(); const settlementId = randomUUID();
++    db.prepare("INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, npd_status_checked_at, default_reward_type, default_reward_value) VALUES (?, 'settlement-api-agent', 'Settlement Agent', 'Settlement Agent Legal', 'settlement-agent@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', datetime('now'), 'FIXED', 100)").run(agentId);
++    db.prepare("INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id) VALUES (?, ?, ?, 100, 'TRANSFER', 'PREPARED', 'SELF_EMPLOYED', ?, 'admin')").run(settlementId, agentId, occurrenceId, new Date().toISOString());
++    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.57" }, body: JSON.stringify({ password: "correct horse" }) });
++    const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
++    const reviewCount = db.prepare("SELECT COUNT(*) AS count FROM settlement_prepared_reviews").get();
++    const list = await app.request("http://admin.flexperiment.ru/v1/admin/reward-settlements", { headers });
++    expect(list.status).toBe(200);
++    expect((await list.json() as { settlements: { id: string; stale_prepared: number }[] }).settlements).toEqual(expect.arrayContaining([expect.objectContaining({ id: settlementId, stale_prepared: 0 })]));
++    const detail = await app.request(`http://admin.flexperiment.ru/v1/admin/reward-settlements/${settlementId}`, { headers });
++    expect(detail.status).toBe(200);
++    expect(await detail.json()).toMatchObject({ settlement: { id: settlementId, status: "PREPARED" }, recoveries: [] });
++    expect(db.prepare("SELECT COUNT(*) AS count FROM settlement_prepared_reviews").get()).toEqual(reviewCount);
++    const missingKey = await app.request(`http://admin.flexperiment.ru/v1/admin/reward-settlements/${settlementId}/payment-made`, { method: "POST", headers, body: JSON.stringify({ confirmation_text: "I confirm the money was transferred" }) });
++    expect(missingKey.status).toBe(400);
++    const first = await app.request(`http://admin.flexperiment.ru/v1/admin/reward-settlements/${settlementId}/payment-made`, { method: "POST", headers: { ...headers, "Idempotency-Key": "settlement-api-payment-key" }, body: JSON.stringify({ confirmation_text: "I confirm the money was transferred" }) });
++    expect(await first.json()).toMatchObject({ id: settlementId, status: "PENDING_DOCUMENT" });
++    const replay = await app.request(`http://admin.flexperiment.ru/v1/admin/reward-settlements/${settlementId}/payment-made`, { method: "POST", headers: { ...headers, "Idempotency-Key": "settlement-api-payment-key" }, body: JSON.stringify({ confirmation_text: "I confirm the money was transferred" }) });
++    expect(await replay.json()).toMatchObject({ id: settlementId, status: "PENDING_DOCUMENT" });
++    db.close();
++  });
++
+   it("requires a session-bound reauthentication capability to cancel an occurrence", async () => {
+     const { db, app } = appFixture();
+     const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
+diff --git a/commerce/test/domain.test.ts b/commerce/test/domain.test.ts
+index e7c72cec..851f179c 100644
+--- a/commerce/test/domain.test.ts
++++ b/commerce/test/domain.test.ts
+@@ -1,15 +1,19 @@
+ import { randomUUID } from "node:crypto";
++import { mkdtempSync, rmSync } from "node:fs";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
+ import { afterEach, describe, expect, it } from "vitest";
+ import { migrate, openDatabase } from "../src/db";
+-import { CommerceDomain } from "../src/domain";
++import { CommerceDomain, DomainError, STALE_PREPARED_SETTLEMENT_MS } from "../src/domain";
++import { runWorkerSweep } from "../src/worker-sweep";
+ import type { EmailProvider } from "../src/email-provider";
+ import { MockProvider, type PaymentProvider } from "../src/provider";
+ import { decryptTicketCapability } from "../src/crypto";
+ 
+ const legalManifest = { documents: Object.fromEntries(["PUBLIC_OFFER", "PRIVACY_POLICY", "PD_CONSENT", "CHECKOUT_DISCLOSURE"].map((document) => [document, { document_id: document, version: "test-1", sha256: "0".repeat(64), current_url: `https://example.test/legal/${document}`, archive_url: `https://example.test/archive/${document}`, checkout_relevant: true }])) };
+ 
+-function fixture() {
+-  const db = openDatabase(":memory:"); migrate(db);
++function fixture(filename = ":memory:") {
++  const db = openDatabase(filename); migrate(db);
+   const cityId = randomUUID(); const occurrenceId = randomUUID(); const releaseId = randomUUID();
+   db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, 'novosibirsk', 'Новосибирск')").run(cityId);
+   db.prepare("INSERT INTO legal_releases(id, version, effective_at, manifest_json, active) VALUES (?, '2026-08-20.1', datetime('now'), ?, 1)").run(releaseId, JSON.stringify(legalManifest));
+@@ -26,6 +30,18 @@ function promoter(setup: ReturnType<typeof fixture>, slug: string, rewardType: "
+   return setup.domain.createAgent({ slug, display_name: slug, legal_name: `${slug} legal`, email: `${slug}@example.test`, contractor_type: "SELF_EMPLOYED", inn: "123456789012", contract_reference: `C-${slug}`, default_reward_type: rewardType, default_reward_value: rewardValue });
+ }
+ 
++async function maturedReward(setup: ReturnType<typeof fixture>, slug: string, amount = 10_000) {
++  const agent = promoter(setup, slug, "FIXED", amount);
++  const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: slug });
++  const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), `settlement-${slug}-checkout`, "https://flexperiment.ru");
++  const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(result.status_id) as { id: string };
++  setup.domain.markPaymentPaid(payment.id, 100_000, "settlement-provider");
++  setup.domain.patchAgent(String(agent.id), { npd_status_checked_at: new Date().toISOString() });
++  setup.db.prepare("UPDATE occurrences SET ends_at = '2020-01-01T00:00:00.000Z', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
++  setup.domain.completeOccurrence(setup.occurrenceId);
++  return agent;
++}
++
+ async function reconcileSuccessfulRefund(setup: ReturnType<typeof fixture>, orderId: string, paymentId: string, amount: number) {
+   const refundId = randomUUID();
+   setup.db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, provider_reference) VALUES (?, ?, ?, ?, ?, 'test', 'ADMIN_COMPENSATION', 'RECONCILING', ?, ?, 'test-reference')")
+@@ -336,7 +352,7 @@ describe("commerce domain", () => {
+     const input = { agent_id: agentId, occurrence_id: setup.occurrenceId, amount_kopecks: 10000, method: "TRANSFER" };
+     const key = "8f3a27bc-77c6-47b1-b6d0-000000000009";
+     const first = setup.domain.prepareSettlement(input, key, "admin");
+-    setup.domain.markSettlementPaymentMade(String(first.id), "I confirm the money was transferred");
++    setup.domain.markSettlementPaymentMade(String(first.id), "I confirm the money was transferred", "phase11-current-state-payment");
+     const replay = setup.domain.prepareSettlement(input, key, "admin");
+     expect(replay.id).toBe(first.id);
+     expect(replay.status).toBe("PENDING_DOCUMENT");
+@@ -515,18 +531,18 @@ describe("commerce domain", () => {
+       if (item.prepared) setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: item.prepared, method: "TRANSFER" }, `phase11-table-prepared-${index}`, "admin");
+       if (item.pending) {
+         const pending = setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: item.pending, method: "TRANSFER" }, `phase11-table-pending-${index}`, "admin");
+-        setup.domain.markSettlementPaymentMade(String(pending.id), "I confirm the money was transferred");
++        setup.domain.markSettlementPaymentMade(String(pending.id), "I confirm the money was transferred", `phase11-table-pending-payment-${index}`);
+         paidSettlementId = String(pending.id);
+       }
+       if (item.settled) {
+         const settled = setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: item.settled, method: "TRANSFER" }, `phase11-table-settled-${index}`, "admin");
+-        setup.domain.markSettlementPaymentMade(String(settled.id), "I confirm the money was transferred");
+-        setup.domain.completeSettlementDocuments(String(settled.id), { document_reference: `settlement-document-${index}` });
++        setup.domain.markSettlementPaymentMade(String(settled.id), "I confirm the money was transferred", `phase11-table-settled-payment-${index}`);
++        setup.domain.completeSettlementDocuments(String(settled.id), { document_reference: `settlement-document-${index}` }, `phase11-table-settled-document-${index}`);
+         paidSettlementId ??= String(settled.id);
+       }
+       if (item.recovered) {
+         expect(paidSettlementId).toBeDefined();
+-        setup.domain.addSettlementRecovery(paidSettlementId!, { amount_recovered_kopecks: item.recovered, recovered_at: new Date().toISOString(), method: "TRANSFER", evidence_reference: `recovery-${index}` });
++        setup.domain.addSettlementRecovery(paidSettlementId!, { amount_recovered_kopecks: item.recovered, recovered_at: new Date().toISOString(), method: "TRANSFER", evidence_reference: `recovery-${index}` }, `phase11-table-recovery-${index}`);
+       }
+       if (item.adjustment) setup.db.prepare("INSERT INTO reward_adjustments(id, order_id, agent_id, amount_kopecks, reason, semantic_key) VALUES (?, ?, ?, ?, 'TEST', ?)").run(randomUUID(), order.id, agent.id, item.adjustment, `table-${index}`);
+       const balance = setup.domain.rewardBalance(String(agent.id), setup.occurrenceId);
+@@ -536,4 +552,173 @@ describe("commerce domain", () => {
+       expect(balance.available_to_settle).toBeLessThanOrEqual(Math.max(0, balance.payable_gross_total - balance.prepared_total - balance.pending_document_total - balance.settled_total + balance.externally_recovered_total));
+     }
+   });
++
++  it("keeps PREPARED allocation atomic when the transaction aborts before commit", async () => {
++    const setup = fixture(); databases.push(setup.db);
++    const agent = await maturedReward(setup, "prepared-rollback");
++    setup.db.exec("CREATE TRIGGER abort_prepared AFTER INSERT ON reward_settlements BEGIN SELECT RAISE(ABORT, 'test PREPARED abort'); END");
++    const input = { agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" } as const;
++    expect(() => setup.domain.prepareSettlement(input, "settlement-rollback-key", "admin")).toThrow("test PREPARED abort");
++    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM reward_settlements").get()).toEqual({ count: 0 });
++    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM reward_settlement_idempotency").get()).toEqual({ count: 0 });
++    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ available_to_settle: 10_000 });
++  });
++
++  it("replays one PREPARED settlement across PREPARED, PENDING_DOCUMENT, and SETTLED without another allocation", async () => {
++    const setup = fixture(); databases.push(setup.db);
++    const agent = await maturedReward(setup, "all-state-replay");
++    const input = { agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" } as const;
++    const prepareKey = "settlement-all-state-prepare";
++    const prepared = setup.domain.prepareSettlement(input, prepareKey, "admin");
++    expect(setup.domain.prepareSettlement(input, prepareKey, "admin")).toMatchObject({ id: prepared.id, status: "PREPARED", amount_kopecks: 10_000 });
++    const pending = setup.domain.markSettlementPaymentMade(String(prepared.id), "I confirm the money was transferred", "settlement-all-state-payment");
++    expect(setup.domain.prepareSettlement(input, prepareKey, "admin")).toMatchObject({ id: prepared.id, status: "PENDING_DOCUMENT" });
++    expect(setup.domain.markSettlementPaymentMade(String(prepared.id), "I confirm the money was transferred", "settlement-all-state-payment")).toEqual(pending);
++    const settled = setup.domain.completeSettlementDocuments(String(prepared.id), { document_reference: "payment-document-1" }, "settlement-all-state-document");
++    expect(setup.domain.prepareSettlement(input, prepareKey, "admin")).toMatchObject({ id: prepared.id, status: "SETTLED", amount_kopecks: 10_000 });
++    expect(setup.domain.completeSettlementDocuments(String(prepared.id), { document_reference: "payment-document-1" }, "settlement-all-state-document")).toEqual(settled);
++    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM reward_settlements").get()).toEqual({ count: 1 });
++    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ available_to_settle: 0, settled_total: 10_000 });
++  });
++
++  it("rejects conflicting settlement command replays and illegal backward transitions", async () => {
++    const setup = fixture(); databases.push(setup.db);
++    const agent = await maturedReward(setup, "settlement-command-conflict");
++    const settlement = setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" }, "settlement-command-conflict-prepare", "admin");
++    setup.domain.markSettlementPaymentMade(String(settlement.id), "I confirm the money was transferred", "settlement-command-conflict-payment");
++    expect(() => setup.domain.markSettlementPaymentMade(String(settlement.id), "I confirm the money was transferred", "different-payment-key")).toThrow("SETTLEMENT_TRANSITION_FORBIDDEN");
++    setup.domain.completeSettlementDocuments(String(settlement.id), { document_reference: "document" }, "settlement-command-conflict-document");
++    expect(() => setup.domain.completeSettlementDocuments(String(settlement.id), { document_reference: "different" }, "settlement-command-conflict-document")).toThrow("IDEMPOTENCY_CONFLICT");
++    expect(() => setup.domain.cancelSettlementBeforePayment(String(settlement.id), { confirmation_text: `NOT PAID ${settlement.id}`, reason: "never paid" }, "settlement-command-conflict-cancel")).toThrow("SETTLEMENT_TRANSITION_FORBIDDEN");
++  });
++
++  it("prevents both full and partial contention from allocating more than the mature reward", async () => {
++    const full = fixture(); databases.push(full.db);
++    const fullAgent = await maturedReward(full, "settlement-full-contention");
++    const fullInput = { agent_id: String(fullAgent.id), occurrence_id: full.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" } as const;
++    const firstFull = full.domain.prepareSettlement(fullInput, "settlement-full-contention-a", "admin");
++    expect(() => full.domain.prepareSettlement(fullInput, "settlement-full-contention-b", "admin")).toThrow("SETTLEMENT_EXCEEDS_AVAILABLE");
++    expect(firstFull.status).toBe("PREPARED");
++
++    const partial = fixture(); databases.push(partial.db);
++    const partialAgent = await maturedReward(partial, "settlement-partial-contention");
++    const partialInput = { agent_id: String(partialAgent.id), occurrence_id: partial.occurrenceId, amount_kopecks: 7_000, method: "TRANSFER" } as const;
++    partial.domain.prepareSettlement(partialInput, "settlement-partial-contention-a", "admin");
++    expect(() => partial.domain.prepareSettlement(partialInput, "settlement-partial-contention-b", "admin")).toThrow("SETTLEMENT_EXCEEDS_AVAILABLE");
++    expect(partial.domain.rewardBalance(String(partialAgent.id), partial.occurrenceId)).toMatchObject({ prepared_total: 7_000, available_to_settle: 3_000 });
++  });
++
++  it("returns SETTLEMENT_BUSY for a real competing SQLite writer, then retries without over-allocation", async () => {
++    const directory = mkdtempSync(join(tmpdir(), "flexperiment-settlement-lock-")); const filename = join(directory, "commerce.sqlite");
++    const setup = fixture(filename); const competingDb = openDatabase(filename); competingDb.pragma("busy_timeout = 1");
++    try {
++      const agent = await maturedReward(setup, "file-backed-contention");
++      const input = { agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" } as const;
++      const competing = new CommerceDomain(competingDb, new MockProvider());
++      setup.db.exec("BEGIN IMMEDIATE");
++      try {
++        let busy: unknown;
++        try { competing.prepareSettlement(input, "file-backed-contention-a", "admin-b"); } catch (error) { busy = error; }
++        expect(busy).toMatchObject({ code: "SETTLEMENT_BUSY", status: 409 });
++      } finally { setup.db.exec("ROLLBACK"); }
++      expect(setup.db.prepare("SELECT COUNT(*) AS count FROM reward_settlements").get()).toEqual({ count: 0 });
++      expect(setup.db.prepare("SELECT COUNT(*) AS count FROM reward_settlement_idempotency").get()).toEqual({ count: 0 });
++      expect(competing.prepareSettlement(input, "file-backed-contention-a", "admin-b")).toMatchObject({ status: "PREPARED", amount_kopecks: 10_000 });
++      expect(() => setup.domain.prepareSettlement(input, "file-backed-contention-b", "admin-a")).toThrow("SETTLEMENT_EXCEEDS_AVAILABLE");
++      expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ prepared_total: 10_000, available_to_settle: 0 });
++    } finally { competingDb.close(); setup.db.close(); rmSync(directory, { recursive: true, force: true }); }
++  });
++
++  it("records one stale PREPARED review without releasing its allocation", async () => {
++    const setup = fixture(); databases.push(setup.db);
++    const agent = await maturedReward(setup, "stale-prepared");
++    const settlement = setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" }, "stale-prepared-key", "admin");
++    setup.db.prepare("UPDATE reward_settlements SET prepared_at = ? WHERE id = ?").run(new Date(Date.now() - STALE_PREPARED_SETTLEMENT_MS - 1).toISOString(), settlement.id);
++    expect(setup.domain.detectStalePreparedSettlements()).toBe(1);
++    expect(setup.domain.detectStalePreparedSettlements()).toBe(1);
++    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM settlement_prepared_reviews WHERE settlement_id = ?").get(settlement.id)).toEqual({ count: 1 });
++    expect(setup.domain.settlementDetail(String(settlement.id)).settlement).toMatchObject({ stale_prepared: 1, prepared_review_status: "OPEN", status: "PREPARED" });
++    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ prepared_total: 10_000, available_to_settle: 0 });
++  });
++
++  it("uses the frozen 30-minute stale PREPARED boundary with the domain clock", async () => {
++    const setup = fixture(); databases.push(setup.db);
++    const agent = await maturedReward(setup, "stale-prepared-boundary");
++    const settlement = setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" }, "stale-prepared-boundary-prepare", "admin");
++    const fixedNow = Date.parse("2030-01-01T12:00:00.000Z");
++    const observer = new CommerceDomain(setup.db, new MockProvider(), undefined, () => fixedNow);
++    setup.db.prepare("UPDATE reward_settlements SET prepared_at = ? WHERE id = ?").run(new Date(fixedNow - STALE_PREPARED_SETTLEMENT_MS + 1).toISOString(), settlement.id);
++    expect(observer.detectStalePreparedSettlements()).toBe(0);
++    expect(observer.settlementDetail(String(settlement.id)).settlement).toMatchObject({ stale_prepared: 0, prepared_review_status: null });
++    setup.db.prepare("UPDATE reward_settlements SET prepared_at = ? WHERE id = ?").run(new Date(fixedNow - STALE_PREPARED_SETTLEMENT_MS).toISOString(), settlement.id);
++    expect(observer.detectStalePreparedSettlements()).toBe(1);
++    expect(observer.settlementDetail(String(settlement.id)).settlement).toMatchObject({ stale_prepared: 1, prepared_review_status: "OPEN" });
++    setup.db.prepare("UPDATE reward_settlements SET prepared_at = ? WHERE id = ?").run(new Date(fixedNow - STALE_PREPARED_SETTLEMENT_MS - 1).toISOString(), settlement.id);
++    expect(observer.detectStalePreparedSettlements()).toBe(1);
++  });
++
++  it("persists one stale PREPARED review across restart and resolves it once on an explicit transition", async () => {
++    const directory = mkdtempSync(join(tmpdir(), "flexperiment-stale-prepared-")); const filename = join(directory, "commerce.sqlite");
++    const setup = fixture(filename);
++    try {
++      const agent = await maturedReward(setup, "stale-prepared-restart");
++      const settlement = setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" }, "stale-prepared-restart-prepare", "admin");
++      setup.db.prepare("UPDATE reward_settlements SET prepared_at = ? WHERE id = ?").run(new Date(Date.now() - STALE_PREPARED_SETTLEMENT_MS - 1).toISOString(), settlement.id);
++      expect(setup.domain.detectStalePreparedSettlements()).toBe(1);
++      setup.db.close();
++      const reopenedDb = openDatabase(filename); migrate(reopenedDb);
++      try {
++        const reopened = new CommerceDomain(reopenedDb, new MockProvider());
++        expect(reopened.detectStalePreparedSettlements()).toBe(1);
++        expect(reopenedDb.prepare("SELECT COUNT(*) AS count FROM settlement_prepared_reviews WHERE settlement_id = ?").get(settlement.id)).toEqual({ count: 1 });
++        expect(reopened.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ prepared_total: 10_000, available_to_settle: 0 });
++        reopened.markSettlementPaymentMade(String(settlement.id), "I confirm the money was transferred", "stale-prepared-restart-payment");
++        const review = reopenedDb.prepare("SELECT status, resolved_at FROM settlement_prepared_reviews WHERE settlement_id = ?").get(settlement.id) as { status: string; resolved_at: string };
++        expect(review).toMatchObject({ status: "RESOLVED", resolved_at: expect.any(String) });
++        reopened.markSettlementPaymentMade(String(settlement.id), "I confirm the money was transferred", "stale-prepared-restart-payment");
++        expect(reopenedDb.prepare("SELECT status, resolved_at FROM settlement_prepared_reviews WHERE settlement_id = ?").get(settlement.id)).toEqual(review);
++      } finally { reopenedDb.close(); }
++    } finally { try { setup.db.close(); } catch { /* closed for restart */ } rmSync(directory, { recursive: true, force: true }); }
++  });
++
++  it("records recovery once only for an actually paid settlement and corrects exposure", async () => {
++    const setup = fixture(); databases.push(setup.db);
++    const agent = await maturedReward(setup, "paid-recovery");
++    const settlement = setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" }, "paid-recovery-prepare", "admin");
++    expect(() => setup.domain.addSettlementRecovery(String(settlement.id), { amount_recovered_kopecks: 1_000, recovered_at: new Date().toISOString(), method: "TRANSFER", evidence_reference: "too-early" }, "paid-recovery-too-early")).toThrow("SETTLEMENT_RECOVERY_NOT_PAID");
++    setup.domain.markSettlementPaymentMade(String(settlement.id), "I confirm the money was transferred", "paid-recovery-payment");
++    setup.db.prepare("INSERT INTO reward_adjustments(id, order_id, agent_id, amount_kopecks, reason, semantic_key) SELECT ?, order_id, ?, -7000, 'TEST', 'paid-recovery-reduction' FROM referral_rewards WHERE agent_id = ?").run(randomUUID(), agent.id, agent.id);
++    for (const amount of [0, -1, 1.5]) expect(() => setup.domain.addSettlementRecovery(String(settlement.id), { amount_recovered_kopecks: amount, recovered_at: new Date().toISOString(), method: "TRANSFER", evidence_reference: `invalid-${amount}` }, `paid-recovery-invalid-${amount}`)).toThrow("SETTLEMENT_RECOVERY_AMOUNT_INVALID");
++    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM reward_settlement_command_idempotency WHERE command = 'RECOVERY'").get()).toEqual({ count: 0 });
++    expect(() => setup.domain.addSettlementRecovery(String(settlement.id), { amount_recovered_kopecks: 10_001, recovered_at: new Date().toISOString(), method: "TRANSFER", evidence_reference: "too-much" }, "paid-recovery-too-much")).toThrow("SETTLEMENT_RECOVERY_EXCEEDS_REMAINING");
++    const recoveryInput = { amount_recovered_kopecks: 6_000, recovered_at: new Date().toISOString(), method: "TRANSFER", evidence_reference: "bank-return" } as const;
++    const first = setup.domain.addSettlementRecovery(String(settlement.id), recoveryInput, "paid-recovery-key");
++    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ externally_recovered_total: 6_000, late_adjustment_exposure: 1_000, available_to_settle: 0 });
++    const second = setup.domain.addSettlementRecovery(String(settlement.id), { amount_recovered_kopecks: 4_000, recovered_at: new Date().toISOString(), method: "TRANSFER", evidence_reference: "bank-return-rest" }, "paid-recovery-second-key");
++    expect(second.amount_recovered_kopecks).toBe(4_000);
++    expect(() => setup.domain.addSettlementRecovery(String(settlement.id), { amount_recovered_kopecks: 1, recovered_at: new Date().toISOString(), method: "TRANSFER", evidence_reference: "one-too-many" }, "paid-recovery-excess-key")).toThrow("SETTLEMENT_RECOVERY_EXCEEDS_REMAINING");
++    const replay = setup.domain.addSettlementRecovery(String(settlement.id), recoveryInput, "paid-recovery-key");
++    expect(replay).toEqual(first);
++    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM settlement_recoveries WHERE settlement_id = ?").get(settlement.id)).toEqual({ count: 2 });
++    expect(setup.db.prepare("SELECT SUM(amount_recovered_kopecks) AS amount FROM settlement_recoveries WHERE settlement_id = ?").get(settlement.id)).toEqual({ amount: 10_000 });
++    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ externally_recovered_total: 10_000, late_adjustment_exposure: 0, available_to_settle: 3_000 });
++  });
++
++  it("defers only stale-review busy contention and continues the financial worker sequence", async () => {
++    const calls: string[] = [];
++    const busyDomain = {
++      recoverStaleCommands: () => { calls.push("recover-stale"); },
++      detectStalePreparedSettlements: () => { calls.push("detect"); throw new DomainError("SETTLEMENT_BUSY", 409); },
++      reconcilePendingPayments: async () => { calls.push("payments"); },
++      createObligationRefunds: () => { calls.push("obligations"); },
++      submitRequestedRefunds: async () => { calls.push("submit-refunds"); },
++      reconcilePendingRefunds: async () => { calls.push("reconcile-refunds"); },
++      processEmailOutbox: async () => { calls.push("email"); },
++    };
++    await runWorkerSweep(busyDomain as never);
++    expect(calls).toEqual(["recover-stale", "detect", "payments", "obligations", "submit-refunds", "reconcile-refunds", "email"]);
++
++    const unexpectedDomain = { ...busyDomain, detectStalePreparedSettlements: () => { throw new Error("unexpected stale detector failure"); } };
++    await expect(runWorkerSweep(unexpectedDomain as never)).rejects.toThrow("unexpected stale detector failure");
++  });
+ });
+diff --git a/commerce/test/migration.test.ts b/commerce/test/migration.test.ts
+index a4157eb3..970e3207 100644
+--- a/commerce/test/migration.test.ts
++++ b/commerce/test/migration.test.ts
+@@ -76,4 +76,39 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
+     expect(() => db.prepare("UPDATE orders SET public_order_number = NULL WHERE id = ?").run(orderId)).toThrow("PUBLIC_ORDER_NUMBER_IMMUTABLE");
+     db.close();
+   });
++
++  it("upgrades populated 0013 settlement evidence through 0014 without rewriting allocations", () => {
++    const db = openDatabase(":memory:");
++    applyThrough(db, "0013_promoter_attribution_rewards.sql");
++    const cityId = randomUUID(); const occurrenceId = randomUUID(); const releaseId = randomUUID(); const agentId = randomUUID(); const preparedId = randomUUID(); const pendingId = randomUUID(); const settledId = randomUUID(); const recoveryId = randomUUID();
++    db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, 'migration-settlement-city', 'Migration city')").run(cityId);
++    db.prepare("INSERT INTO legal_releases(id, version, effective_at, manifest_json, active) VALUES (?, 'migration-settlement', datetime('now'), ?, 1)").run(releaseId, JSON.stringify({ documents: {} }));
++    db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, venue_status, venue_name, venue_address)
++      VALUES (?, ?, 'Migration settlement fixture', '2030-01-01T10:00:00.000Z', '2030-01-01T12:00:00.000Z', 'Asia/Novosibirsk', 100, 1, 'PUBLISHED', 'CONFIRMED', 'Studio', 'Lenina 1')`).run(occurrenceId, cityId);
++    db.prepare("INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value) VALUES (?, 'migration-settlement-agent', 'Agent', 'Agent Legal', 'agent@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', 'FIXED', 100)").run(agentId);
++    const insertSettlement = db.prepare("INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, payment_made_at, settled_at, document_confirmed, document_reference, document_confirmed_at, created_by_admin_id) VALUES (?, ?, ?, ?, 'TRANSFER', ?, 'SELF_EMPLOYED', '2026-01-01T00:00:00.000Z', ?, ?, ?, ?, ?, 'admin')");
++    insertSettlement.run(preparedId, agentId, occurrenceId, 100, "PREPARED", null, null, 0, null, null);
++    insertSettlement.run(pendingId, agentId, occurrenceId, 200, "PENDING_DOCUMENT", "2026-01-02T00:00:00.000Z", null, 0, null, null);
++    insertSettlement.run(settledId, agentId, occurrenceId, 300, "SETTLED", "2026-01-02T00:00:00.000Z", "2026-01-03T00:00:00.000Z", 1, "receipt-001", "2026-01-03T00:00:00.000Z");
++    db.prepare("INSERT INTO settlement_recoveries(id, settlement_id, amount_recovered_kopecks, recovered_at, method, evidence_reference) VALUES (?, ?, 25, '2026-01-04T00:00:00.000Z', 'TRANSFER', 'bank-return')").run(recoveryId, settledId);
++    const before = db.prepare("SELECT id, amount_kopecks, status, prepared_at, document_reference FROM reward_settlements ORDER BY id").all();
++
++    db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, "0014_prepared_settlement_hardening.sql"), "utf8")))();
++
++    expect(db.prepare("SELECT id, amount_kopecks, status, prepared_at, document_reference FROM reward_settlements ORDER BY id").all()).toEqual(before);
++    expect(db.prepare("SELECT amount_recovered_kopecks, evidence_reference FROM settlement_recoveries WHERE id = ?").get(recoveryId)).toEqual({ amount_recovered_kopecks: 25, evidence_reference: "bank-return" });
++    expect((db.prepare("PRAGMA table_info(reward_settlement_command_idempotency)").all() as { name: string }[]).map(({ name }) => name)).toEqual(expect.arrayContaining(["command", "idempotency_key_hash", "settlement_id", "recovery_id"]));
++    expect(() => db.prepare("INSERT INTO settlement_prepared_reviews(settlement_id) VALUES (?)").run(randomUUID())).toThrow(/FOREIGN KEY constraint failed/);
++    db.prepare("INSERT INTO settlement_prepared_reviews(settlement_id) VALUES (?)").run(preparedId);
++    expect(() => db.prepare("INSERT INTO settlement_prepared_reviews(settlement_id) VALUES (?)").run(preparedId)).toThrow(/UNIQUE constraint failed/);
++    db.prepare("INSERT INTO reward_settlement_command_idempotency(command, idempotency_key_hash, canonical_request_hash, settlement_id, recovery_id) VALUES ('RECOVERY', 'migration-command-key', 'migration-request-hash', ?, ?)").run(settledId, recoveryId);
++    expect(() => db.prepare("INSERT INTO reward_settlement_command_idempotency(command, idempotency_key_hash, canonical_request_hash, settlement_id) VALUES ('RECOVERY', 'migration-command-key', 'different-hash', ?)").run(settledId)).toThrow(/UNIQUE constraint failed/);
++    expect((db.prepare("PRAGMA foreign_key_list(reward_settlement_command_idempotency)").all() as { table: string; from: string; to: string }[]).map(({ table, from, to }) => ({ table, from, to }))).toEqual(expect.arrayContaining([
++      { table: "reward_settlements", from: "settlement_id", to: "id" },
++      { table: "settlement_recoveries", from: "recovery_id", to: "id" },
++    ]));
++    expect(db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND name = 'reward_settlements_prepared_stale_idx'").get()).toEqual({ name: "reward_settlements_prepared_stale_idx", sql: expect.stringContaining("WHERE status = 'PREPARED'") });
++    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
++    db.close();
++  });
+ });
+-- 
+2.55.0
+
