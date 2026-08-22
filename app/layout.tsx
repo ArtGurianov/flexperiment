@@ -1,5 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import { Geist_Mono, Shafarik } from "next/font/google";
+import ReferralCapture from "@/components/ReferralCapture";
 
 import "./globals.css";
 
@@ -95,6 +96,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           jumped to the left edge. A full-width body has no auto margins to
           convert, so the rewrite becomes a no-op. */}
       <body className="min-h-full w-full flex flex-col">
+        <ReferralCapture />
         {/* React hoists these into <head>, so they land in the streamed HTML
             and the preload scanner issues the requests before it has parsed the
             CSS that references them - and before it reaches the video element

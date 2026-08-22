@@ -113,7 +113,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     rateLimit(`checkout-context:${clientIp(c.req.raw.headers)}`, 30, 60_000);
     const input = checkoutContextSchema.parse(await jsonBody(c.req.raw));
     rateLimit(`checkout-context-occurrence:${input.occurrence_id}`, 120, 10 * 60_000);
-    return c.json(domain.checkoutContext({ occurrenceId: input.occurrence_id, promoCode: input.promo_code, referralSlug: input.referral_slug, referralTouchSlug: input.referral_touch_slug, referralMarkedAt: input.referral_marked_at }));
+    return c.json(domain.checkoutContext({ occurrenceId: input.occurrence_id, promoCode: input.promo_code, referralSlug: input.referral_slug }));
   });
   publicApi.post("/checkouts", async (c) => {
     const ip = clientIp(c.req.raw.headers); rateLimit(`checkout:${ip}`, 20, 60_000);

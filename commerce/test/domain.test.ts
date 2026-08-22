@@ -26,13 +26,21 @@ function promoter(setup: ReturnType<typeof fixture>, slug: string, rewardType: "
   return setup.domain.createAgent({ slug, display_name: slug, legal_name: `${slug} legal`, email: `${slug}@example.test`, contractor_type: "SELF_EMPLOYED", inn: "123456789012", contract_reference: `C-${slug}`, default_reward_type: rewardType, default_reward_value: rewardValue });
 }
 
+async function reconcileSuccessfulRefund(setup: ReturnType<typeof fixture>, orderId: string, paymentId: string, amount: number) {
+  const refundId = randomUUID();
+  setup.db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, provider_reference) VALUES (?, ?, ?, ?, ?, 'test', 'ADMIN_COMPENSATION', 'RECONCILING', ?, ?, 'test-reference')")
+    .run(refundId, randomUUID(), orderId, paymentId, amount, randomUUID(), randomUUID());
+  (setup.domain.provider as PaymentProvider).reconcileRefund = async () => ({ status: "SUCCEEDED", refundedAmountKopecks: amount });
+  await setup.domain.reconcileRefund(refundId);
+}
+
 describe("commerce domain", () => {
   const databases: ReturnType<typeof fixture>["db"][] = [];
   afterEach(() => { while (databases.length) databases.pop()?.close(); });
 
   it("permanently binds a checkout idempotency key and reserves one seat", async () => {
     const setup = fixture(); databases.push(setup.db);
-    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "promoter" });
     const payload = { quote_id: quote.quote_id, customer_name: "Арт Гурьянов", customer_email: "art@example.test", eligibility_confirmed: true as const, offer_accepted: true as const, pd_consent_accepted: true as const };
     const first = await setup.domain.checkoutAsync(payload, "8f3a27bc-77c6-47b1-b6d0-000000000001", "https://flexperiment.ru");
     const replay = await setup.domain.checkoutAsync(payload, "8f3a27bc-77c6-47b1-b6d0-000000000001", "https://flexperiment.ru");
@@ -70,7 +78,7 @@ describe("commerce domain", () => {
 
   it("abandons a reservation idempotently and routes a late payment into refund review", async () => {
     const setup = fixture(); databases.push(setup.db);
-    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "promoter" });
     await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Арт", customer_email: "art@example.test", eligibility_confirmed: true, offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000012", "https://flexperiment.ru");
     const ids = setup.db.prepare("SELECT o.id AS order_id, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id").get() as { order_id: string; payment_id: string };
     const key = "8f3a27bc-77c6-47b1-b6d0-000000000013";
@@ -318,11 +326,10 @@ describe("commerce domain", () => {
     const agentId = randomUUID();
     setup.db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, enabled, default_reward_type, default_reward_value, npd_status_checked_at)
       VALUES (?, 'promoter', 'Promoter', 'Promoter Legal', 'promoter@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', 1, 'PERCENT', 1000, datetime('now'))`).run(agentId);
-    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "promoter" });
     const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Арт", customer_email: "art@example.test", eligibility_confirmed: true, offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000008", "https://flexperiment.ru");
     const order = setup.db.prepare("SELECT o.id, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; payment_id: string };
     setup.domain.markPaymentPaid(order.payment_id, 100000, "provider-payment");
-    setup.db.prepare("UPDATE orders SET attributed_agent_id = ?, reward_type_snapshot = 'PERCENT', reward_value_snapshot = 1000 WHERE id = ?").run(agentId, order.id);
     setup.db.prepare("UPDATE occurrences SET ends_at = '2020-01-01T00:00:00.000Z' WHERE id = ?").run(setup.occurrenceId);
     setup.db.prepare("UPDATE occurrences SET sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
     setup.domain.completeOccurrence(setup.occurrenceId);
@@ -351,23 +358,19 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT status, job_id FROM email_outbox").get()).toMatchObject({ status: "ACCEPTED", job_id: "mail-1" });
   });
 
-  it("attributes a valid fx_ref touch and uses the latest eligible touch without erasing a prior marker", async () => {
+  it("attributes a valid established fx_ref marker at checkout", async () => {
     const setup = fixture(); databases.push(setup.db);
-    const first = promoter(setup, "first-promoter");
     const second = promoter(setup, "second-promoter");
-    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: String(first.slug), referralMarkedAt: new Date().toISOString(), referralTouchSlug: String(second.slug) });
-    expect(quote.referral_marker).toBe("v1:second-promoter");
-    const invalidTouch = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: String(second.slug), referralMarkedAt: new Date().toISOString(), referralTouchSlug: "not-a-promoter" });
-    expect(invalidTouch.referral_marker).toBeNull();
-    expect(setup.db.prepare("SELECT attributed_agent_id FROM quotes WHERE id = ?").get(invalidTouch.quote_id)).toMatchObject({ attributed_agent_id: second.id });
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: String(second.slug) });
     const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), "phase11-fxref-valid-000001", "https://flexperiment.ru");
     expect(setup.db.prepare("SELECT attributed_agent_id FROM orders WHERE public_status_id = ?").get(result.status_id)).toMatchObject({ attributed_agent_id: second.id });
   });
 
-  it("does not attribute an expired 30-day fx_ref marker", () => {
+  it("does not attribute a disabled established fx_ref marker", () => {
     const setup = fixture(); databases.push(setup.db);
-    promoter(setup, "expired-promoter");
-    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "expired-promoter", referralMarkedAt: new Date(Date.now() - 31 * 24 * 60 * 60_000).toISOString() });
+    const agent = promoter(setup, "disabled-established-promoter");
+    setup.domain.patchAgent(String(agent.id), { enabled: false });
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "disabled-established-promoter" });
     expect(setup.db.prepare("SELECT attributed_agent_id FROM quotes WHERE id = ?").get(quote.quote_id)).toMatchObject({ attributed_agent_id: null });
   });
 
@@ -377,8 +380,8 @@ describe("commerce domain", () => {
     const promoAgent = promoter(setup, "promo-promoter");
     setup.domain.createPromo({ agent_id: promoAgent.id, code: "PROMO", status: "ACTIVE", discount_type: "PERCENT", discount_value: 500 });
     setup.domain.createPromo({ code: "DISCOUNT", status: "ACTIVE", discount_type: "FIXED", discount_value: 1000 });
-    const override = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, promoCode: "PROMO", referralTouchSlug: "referral-promoter" });
-    const pureDiscount = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, promoCode: "DISCOUNT", referralTouchSlug: "referral-promoter" });
+    const override = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, promoCode: "PROMO", referralSlug: "referral-promoter" });
+    const pureDiscount = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, promoCode: "DISCOUNT", referralSlug: "referral-promoter" });
     const first = await setup.domain.checkoutAsync(checkoutPayload(override.quote_id), "phase11-promo-override-00001", "https://flexperiment.ru");
     const second = await setup.domain.checkoutAsync({ ...checkoutPayload(pureDiscount.quote_id), customer_email: "second@example.test" }, "phase11-pure-discount-00001", "https://flexperiment.ru");
     expect(setup.db.prepare("SELECT attributed_agent_id FROM orders WHERE public_status_id = ?").get(first.status_id)).toMatchObject({ attributed_agent_id: promoAgent.id });
@@ -389,7 +392,7 @@ describe("commerce domain", () => {
     const setup = fixture(); databases.push(setup.db);
     const agent = promoter(setup, "disabled-promoter");
     const promo = setup.domain.createPromo({ agent_id: agent.id, code: "AGENT", status: "ACTIVE", discount_type: "NONE", discount_value: 0 });
-    const referralQuote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralTouchSlug: "disabled-promoter" });
+    const referralQuote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "disabled-promoter" });
     const promoQuote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, promoCode: "AGENT" });
     setup.domain.patchAgent(String(agent.id), { enabled: false });
     const direct = await setup.domain.checkoutAsync(checkoutPayload(referralQuote.quote_id), "phase11-disabled-referral-001", "https://flexperiment.ru");
@@ -419,13 +422,12 @@ describe("commerce domain", () => {
   it("records append-only reward adjustments for partial/full refunds and cancelled bookings", async () => {
     const setup = fixture(); databases.push(setup.db);
     const agent = promoter(setup, "reward-promoter", "PERCENT", 3333);
-    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralTouchSlug: "reward-promoter" });
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "reward-promoter" });
     const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), "phase11-reward-adjustments-01", "https://flexperiment.ru");
     const order = setup.db.prepare("SELECT o.id, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; payment_id: string };
     setup.domain.markPaymentPaid(order.payment_id, 100000, "provider");
     expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId).earned_total).toBe(33330);
-    setup.db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 50000, 'test', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, ?, datetime('now'))")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID(), randomUUID());
+    await reconcileSuccessfulRefund(setup, order.id, order.payment_id, 50000);
     expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId).earned_total).toBe(16665);
     const booking = setup.db.prepare("SELECT id FROM bookings WHERE order_id = ?").get(order.id) as { id: string };
     setup.domain.cancelCustomerBooking(booking.id, { reason: "test cancellation", confirmation_text: `CANCEL ${booking.id}` }, "phase11-cancelled-reward-001");
@@ -437,21 +439,30 @@ describe("commerce domain", () => {
   it("caps FIXED reward by captured value and records a full-refund adjustment", async () => {
     const setup = fixture(); databases.push(setup.db);
     const agent = promoter(setup, "fixed-promoter", "FIXED", 200000);
-    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralTouchSlug: "fixed-promoter" });
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "fixed-promoter" });
     const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), "phase11-fixed-reward-cap-0001", "https://flexperiment.ru");
     const order = setup.db.prepare("SELECT o.id, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; payment_id: string };
     setup.domain.markPaymentPaid(order.payment_id, 100000, "provider");
     expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId).earned_total).toBe(100000);
-    setup.db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 100000, 'test', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, ?, datetime('now'))")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID(), randomUUID());
+    await reconcileSuccessfulRefund(setup, order.id, order.payment_id, 100000);
     expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId).earned_total).toBe(0);
     expect(setup.db.prepare("SELECT amount_kopecks, reason FROM reward_adjustments WHERE order_id = ?").get(order.id)).toMatchObject({ amount_kopecks: -100000, reason: "NET_CAPTURED_CHANGED" });
+  });
+
+  it("rounds a half-kopeck PERCENT reward upward", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const agent = promoter(setup, "half-up-promoter", "PERCENT", 5000);
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "half-up-promoter" });
+    const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), "phase11-half-up-boundary-001", "https://flexperiment.ru");
+    const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(result.status_id) as { id: string };
+    setup.domain.markPaymentPaid(payment.id, 1, "provider");
+    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId).earned_total).toBe(1);
   });
 
   it("derives a balance without allocating the same matured reward twice", async () => {
     const setup = fixture(); databases.push(setup.db);
     const agent = promoter(setup, "allocation-promoter", "FIXED", 10000);
-    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralTouchSlug: "allocation-promoter" });
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "allocation-promoter" });
     const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), "phase11-allocation-balance-001", "https://flexperiment.ru");
     const order = setup.db.prepare("SELECT o.id, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; payment_id: string };
     setup.domain.markPaymentPaid(order.payment_id, 100000, "provider");
@@ -465,8 +476,40 @@ describe("commerce domain", () => {
     expect(after).toMatchObject({ prepared_total: 6000, available_to_settle: 4000 });
     expect(() => setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 4001, method: "TRANSFER" }, "phase11-allocation-settlement-2", "admin")).toThrow("SETTLEMENT_EXCEEDS_AVAILABLE");
     expect(prepared.status).toBe("PREPARED");
-    setup.db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 100000, 'test', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, ?, datetime('now'))")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID(), randomUUID());
+    await reconcileSuccessfulRefund(setup, order.id, order.payment_id, 100000);
     expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ payable_gross_total: 0, prepared_total: 6000, late_adjustment_exposure: 6000, available_to_settle: 0 });
+  });
+
+  it("derives allocation, recovery, and late-adjustment balances across settlement states", async () => {
+    const cases = [
+      { prepared: 0, pending: 0, settled: 0, recovered: 0, adjustment: 0, available: 10000, exposure: 0 },
+      { prepared: 3000, pending: 2000, settled: 1000, recovered: 0, adjustment: 0, available: 4000, exposure: 0 },
+      { prepared: 3000, pending: 2000, settled: 1000, recovered: 2000, adjustment: -7000, available: 0, exposure: 1000 },
+      { prepared: 3000, pending: 2000, settled: 1000, recovered: 2000, adjustment: 0, available: 6000, exposure: 0 },
+    ];
+    for (const [index, item] of cases.entries()) {
+      const setup = fixture(); databases.push(setup.db);
+      const agent = promoter(setup, `balance-table-${index}`, "FIXED", 10000);
+      const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: String(agent.slug) });
+      const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), `phase11-balance-table-${index}-00001`, "https://flexperiment.ru");
+      const order = setup.db.prepare("SELECT o.id, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; payment_id: string };
+      setup.domain.markPaymentPaid(order.payment_id, 100000, "provider");
+      setup.domain.patchAgent(String(agent.id), { npd_status_checked_at: new Date().toISOString() });
+      setup.db.prepare("UPDATE occurrences SET ends_at = '2020-01-01T00:00:00.000Z', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
+      setup.domain.completeOccurrence(setup.occurrenceId);
+      for (const [status, amount] of [["PREPARED", item.prepared], ["PENDING_DOCUMENT", item.pending], ["SETTLED", item.settled]] as const) {
+        if (amount) setup.db.prepare("INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id) VALUES (?, ?, ?, ?, 'TRANSFER', ?, 'SELF_EMPLOYED', datetime('now'), 'admin')").run(randomUUID(), agent.id, setup.occurrenceId, amount, status);
+      }
+      if (item.recovered) {
+        const settlement = setup.db.prepare("SELECT id FROM reward_settlements WHERE agent_id = ? LIMIT 1").get(agent.id) as { id: string };
+        setup.db.prepare("INSERT INTO settlement_recoveries(id, settlement_id, amount_recovered_kopecks, recovered_at, method, evidence_reference) VALUES (?, ?, ?, datetime('now'), 'TRANSFER', 'test')").run(randomUUID(), settlement.id, item.recovered);
+      }
+      if (item.adjustment) setup.db.prepare("INSERT INTO reward_adjustments(id, order_id, agent_id, amount_kopecks, reason, semantic_key) VALUES (?, ?, ?, ?, 'TEST', ?)").run(randomUUID(), order.id, agent.id, item.adjustment, `table-${index}`);
+      const balance = setup.domain.rewardBalance(String(agent.id), setup.occurrenceId);
+      expect(balance.available_to_settle).toBe(item.available);
+      expect(balance.late_adjustment_exposure).toBe(item.exposure);
+      expect(balance.available_to_settle).toBeGreaterThanOrEqual(0);
+      expect(balance.available_to_settle).toBeLessThanOrEqual(Math.max(0, balance.payable_gross_total - balance.prepared_total - balance.pending_document_total - balance.settled_total + balance.externally_recovered_total));
+    }
   });
 });

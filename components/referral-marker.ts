@@ -14,14 +14,20 @@ export function storedReferralSlug(cookie: string) {
   try { return referralSlugFromMarker(marker && decodeURIComponent(marker)); } catch { return null; }
 }
 
-export function storedReferralMarkedAt(cookie: string) {
-  const value = cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith("fx_ref_marked_at="))?.slice("fx_ref_marked_at=".length);
-  return value && !Number.isNaN(Date.parse(value)) ? value : null;
-}
-
 export function storeReferralMarker(marker: string) {
   // This is a functional first-party marker only. It carries no customer data
   // and is intentionally unrelated to analytics consent.
   document.cookie = `fx_ref=${encodeURIComponent(marker)}; Path=/; Max-Age=${REFERRAL_MARKER_MAX_AGE_SECONDS}; SameSite=Lax; Secure`;
-  document.cookie = `fx_ref_marked_at=${new Date().toISOString()}; Path=/; Max-Age=${REFERRAL_MARKER_MAX_AGE_SECONDS}; SameSite=Lax; Secure`;
+}
+
+/** Capture is called on every public landing, before a visitor opens checkout. */
+export async function captureReferralLanding(
+  search: string,
+  checkEligibility: (slug: string) => Promise<boolean>,
+  writeMarker: (marker: string) => void,
+) {
+  const slug = referralTouchFromLocation(search);
+  if (!slug || !(await checkEligibility(slug))) return false;
+  writeMarker(`v1:${slug}`);
+  return true;
 }

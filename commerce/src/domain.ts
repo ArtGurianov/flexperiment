@@ -83,7 +83,7 @@ export class CommerceDomain {
     return { ...release, manifest: legalManifest(JSON.parse(String(release.manifest_json))) };
   }
 
-  checkoutContext(input: { occurrenceId: string; promoCode?: string; referralSlug?: string; referralTouchSlug?: string; referralMarkedAt?: string }) {
+  checkoutContext(input: { occurrenceId: string; promoCode?: string; referralSlug?: string }) {
     return withImmediateTransaction(this.db, () => {
       const occurrence = one(this.db, "SELECT * FROM occurrences WHERE id = ?", input.occurrenceId);
       if (!occurrence || occurrence.visibility !== "PUBLISHED") throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
@@ -100,12 +100,9 @@ export class CommerceDomain {
           LEFT JOIN agents a ON a.id = p.agent_id WHERE p.normalized_code = ?`, input.promoCode.trim().toUpperCase());
         if (!isPromoEligible(promo)) throw new DomainError("PROMO_NOT_ELIGIBLE", 409);
       }
-      // A new touch replaces the marker only when it is eligible. An invalid or
-      // disabled touch deliberately falls back to the still-valid stored marker.
-      const markerIsFresh = input.referralMarkedAt && Date.parse(input.referralMarkedAt) > Date.now() - 30 * 24 * 60 * 60_000;
-      const touchAgent = activeAgentBySlug(this.db, input.referralTouchSlug);
-      const referralAgent = touchAgent
-        ?? (markerIsFresh ? activeAgentBySlug(this.db, input.referralSlug) : undefined);
+      // The first-party landing capture owns the 30-day lifetime. Checkout only
+      // revalidates the established marker's currently eligible promoter.
+      const referralAgent = activeAgentBySlug(this.db, input.referralSlug);
       const promoAgentId = promo?.agent_id as string | null ?? null;
       const attributedAgentId: string | null = promoAgentId ?? (referralAgent?.id as string | undefined) ?? null;
       const referralSlug = referralAgent?.slug as string | undefined;
@@ -119,10 +116,7 @@ export class CommerceDomain {
       this.db.prepare(`INSERT INTO quotes(id, occurrence_id, material_revision, legal_release_id, promo_id, attributed_agent_id, price_kopecks, discount_kopecks, final_amount_kopecks, venue_disclosure, expires_at, referral_slug, promo_code_snapshot, discount_type_snapshot, discount_value_snapshot)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(quoteId, occurrence.id, occurrence.material_revision, release.id, promo?.id ?? null, attributedAgentId, price, discount, price - discount, disclosure, expiresAt, referralSlug ?? null, promo?.code ?? null, promo?.discount_type ?? null, promo?.discount_value ?? null);
-      // Only a new eligible touch renews the 30-day first-party cookie. A
-      // fallback to the old marker must not turn an invalid landing URL into a
-      // fresh touch.
-      return { quote_id: quoteId, occurrence_id: occurrence.id, material_revision: occurrence.material_revision, availability, price_kopecks: price, discount_kopecks: discount, final_amount_kopecks: price - discount, currency: "RUB", venue_disclosure: disclosure, referral_marker: touchAgent ? `v1:${referralSlug}` : null, legal_release: { id: release.id, version: release.version, manifest }, expires_at: expiresAt };
+      return { quote_id: quoteId, occurrence_id: occurrence.id, material_revision: occurrence.material_revision, availability, price_kopecks: price, discount_kopecks: discount, final_amount_kopecks: price - discount, currency: "RUB", venue_disclosure: disclosure, legal_release: { id: release.id, version: release.version, manifest }, expires_at: expiresAt };
     });
   }
 
@@ -737,12 +731,6 @@ export class CommerceDomain {
     if (!agent) throw new DomainError("AGENT_NOT_FOUND", 404);
     const occurrence = one(this.db, "SELECT fulfillment_status FROM occurrences WHERE id = ?", occurrenceId);
     if (!occurrence) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
-    // Lazily materialize ledger evidence for pre-0013 orders as well as any
-    // previously committed provider facts. This is additive and makes a read
-    // of a balance a safe migration bridge, never a rewrite of order snapshots.
-    for (const order of many(this.db, "SELECT id FROM orders WHERE attributed_agent_id = ? AND occurrence_id = ?", agentId, occurrenceId)) {
-      this.syncRewardEvidence(String(order.id));
-    }
     const earned = Number(one(this.db, `SELECT COALESCE(SUM(amount_kopecks), 0) AS amount
       FROM referral_rewards WHERE agent_id = ? AND occurrence_id = ?`, agentId, occurrenceId)?.amount ?? 0)
       + Number(one(this.db, `SELECT COALESCE(SUM(ra.amount_kopecks), 0) AS amount

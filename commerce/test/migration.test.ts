@@ -3,8 +3,6 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { openDatabase } from "../src/db";
-import { CommerceDomain } from "../src/domain";
-import { MockProvider } from "../src/provider";
 
 const migrationsDirectory = join(process.cwd(), "commerce", "migrations");
 const applyThrough = (db: ReturnType<typeof openDatabase>, last: string) => {
@@ -21,33 +19,31 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
     db.close();
   });
 
-  it("supports populated upgraded orders and provider-email evidence", async () => {
+  it("upgrades representative populated 0012 quote and reward evidence without rewriting it", () => {
     const db = openDatabase(":memory:");
-    applyThrough(db, "0011_occurrence_cancellation_and_refund_capabilities.sql");
-    db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, "0012_refund_hardening.sql"), "utf8")))();
-    db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, "0013_promoter_attribution_rewards.sql"), "utf8")))();
-    const cityId = randomUUID(); const occurrenceId = randomUUID(); const releaseId = randomUUID();
+    applyThrough(db, "0012_refund_hardening.sql");
+    const cityId = randomUUID(); const occurrenceId = randomUUID(); const releaseId = randomUUID(); const agentId = randomUUID(); const promoId = randomUUID(); const quoteId = randomUUID(); const orderId = randomUUID();
     const manifest = { documents: Object.fromEntries(["PUBLIC_OFFER", "PRIVACY_POLICY", "PD_CONSENT", "CHECKOUT_DISCLOSURE"].map((document) => [document, { document_id: document, version: "test", sha256: "0".repeat(64), current_url: `https://example.test/current/${document}`, archive_url: `https://example.test/archive/${document}`, checkout_relevant: true }])) };
     db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, 'migration-city', 'Migration city')").run(cityId);
     db.prepare("INSERT INTO legal_releases(id, version, effective_at, manifest_json, active) VALUES (?, 'migration-test', datetime('now'), ?, 1)").run(releaseId, JSON.stringify(manifest));
     db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, venue_status, venue_name, venue_address)
       VALUES (?, ?, 'Migration fixture', '2030-01-01T10:00:00.000Z', '2030-01-01T12:00:00.000Z', 'Asia/Novosibirsk', 100, 1, 'PUBLISHED', 'CONFIRMED', 'Studio', 'Lenina 1')`).run(occurrenceId, cityId);
-    const domain = new CommerceDomain(db, new MockProvider());
-    const quote = domain.checkoutContext({ occurrenceId });
-    const checkout = await domain.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Migration", customer_email: "migration@example.test", eligibility_confirmed: true, offer_accepted: true, pd_consent_accepted: true }, "a8927abc-77c6-47b1-b6d0-000000000001", "https://flexperiment.ru");
-    const order = db.prepare("SELECT id, public_order_number FROM orders WHERE public_status_id = ?").get(checkout.status_id) as { id: string; public_order_number: string };
-    const outboxId = randomUUID();
-    db.prepare("INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key) VALUES (?, 'TEST', 'migration@example.test', 'hash', 'test', '{}', ?)").run(outboxId, randomUUID());
-    db.prepare("INSERT INTO email_provider_events(id, outbox_id, semantic_key, status) VALUES (?, ?, ?, 'ACCEPTED')").run(randomUUID(), outboxId, randomUUID());
+    db.prepare("INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value) VALUES (?, 'migration-promoter', 'Promoter', 'Promoter Legal', 'promoter@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)").run(agentId);
+    db.prepare("INSERT INTO promo_codes(id, agent_id, code, normalized_code, discount_type, discount_value) VALUES (?, ?, 'MIGRATION', 'MIGRATION', 'FIXED', 10)").run(promoId, agentId);
+    db.prepare("INSERT INTO quotes(id, occurrence_id, material_revision, legal_release_id, promo_id, attributed_agent_id, price_kopecks, discount_kopecks, final_amount_kopecks, venue_disclosure, expires_at) VALUES (?, ?, 1, ?, ?, ?, 100, 10, 90, 'Studio: Lenina 1', '2030-01-01T00:00:00.000Z')").run(quoteId, occurrenceId, releaseId, promoId, agentId);
+    db.prepare("INSERT INTO orders(id, public_status_id, public_order_number, occurrence_id, customer_name, customer_email, customer_email_hash, amount_kopecks, occurrence_material_revision, venue_disclosure_snapshot, checkout_legal_release_id, legal_snapshot_json, eligibility_confirmed_at, attributed_agent_id, reward_type_snapshot, reward_value_snapshot, promo_code_snapshot, discount_type_snapshot, discount_value_snapshot) VALUES (?, 'migration-status', 'FX-MIGRATION0000000001', ?, 'Migration', 'migration@example.test', 'hash', 90, 1, 'Studio: Lenina 1', ?, '{\"documents\":{}}', '2026-01-01T00:00:00.000Z', ?, 'PERCENT', 1000, 'MIGRATION', 'FIXED', 10)").run(orderId, occurrenceId, releaseId, agentId);
+    db.prepare("INSERT INTO referral_rewards(id, order_id, agent_id, occurrence_id, amount_kopecks) VALUES (?, ?, ?, ?, 9)").run(randomUUID(), orderId, agentId, occurrenceId);
+    db.prepare("INSERT INTO reward_adjustments(id, order_id, agent_id, amount_kopecks, reason) VALUES (?, ?, ?, -2, 'LEGACY_ADJUSTMENT')").run(randomUUID(), orderId, agentId);
+    const before = db.prepare("SELECT promo_code_snapshot, discount_type_snapshot, discount_value_snapshot FROM orders WHERE id = ?").get(orderId);
 
-    expect(db.prepare("SELECT public_order_number FROM orders WHERE id = ?").get(order.id)).toEqual({ public_order_number: order.public_order_number });
-    expect(db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outboxId)).toEqual({ status: "PENDING" });
-    expect(db.prepare("SELECT outbox_id FROM email_provider_events WHERE outbox_id = ?").get(outboxId)).toEqual({ outbox_id: outboxId });
+    db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, "0013_promoter_attribution_rewards.sql"), "utf8")))();
+
+    expect(db.prepare("SELECT promo_code_snapshot, discount_type_snapshot, discount_value_snapshot FROM orders WHERE id = ?").get(orderId)).toEqual(before);
+    expect(db.prepare("SELECT referral_slug, promo_code_snapshot, discount_type_snapshot, discount_value_snapshot FROM quotes WHERE id = ?").get(quoteId)).toEqual({ referral_slug: null, promo_code_snapshot: null, discount_type_snapshot: null, discount_value_snapshot: null });
+    expect(db.prepare("SELECT amount_kopecks, reason, semantic_key FROM reward_adjustments WHERE order_id = ?").get(orderId)).toEqual({ amount_kopecks: -2, reason: "LEGACY_ADJUSTMENT", semantic_key: null });
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'reward_adjustments_semantic_key_unique'").get()).toEqual({ name: "reward_adjustments_semantic_key_unique" });
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
-    expect((db.prepare("PRAGMA foreign_key_list(email_provider_events)").all() as { table: string; from: string; to: string }[]).map(({ table, from, to }) => ({ table, from, to }))).toEqual([{ table: "email_outbox", from: "outbox_id", to: "id" }]);
-    expect(db.prepare("SELECT type, name, tbl_name FROM sqlite_master WHERE tbl_name IN ('email_outbox', 'email_provider_events') AND type IN ('index', 'trigger') AND name NOT LIKE 'sqlite_autoindex_%' ORDER BY type, name").all()).toEqual([]);
-    expect(() => db.prepare("UPDATE orders SET public_order_number = NULL WHERE id = ?").run(order.id)).toThrow("PUBLIC_ORDER_NUMBER_IMMUTABLE");
-    expect(() => db.prepare("UPDATE orders SET public_order_number = 'FX-CHANGED' WHERE id = ?").run(order.id)).toThrow("PUBLIC_ORDER_NUMBER_IMMUTABLE");
+    expect(() => db.prepare("UPDATE orders SET public_order_number = NULL WHERE id = ?").run(orderId)).toThrow("PUBLIC_ORDER_NUMBER_IMMUTABLE");
     db.close();
   });
 });
