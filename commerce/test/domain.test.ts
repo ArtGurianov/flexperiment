@@ -480,6 +480,20 @@ describe("commerce domain", () => {
     expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ payable_gross_total: 0, prepared_total: 6000, late_adjustment_exposure: 6000, available_to_settle: 0 });
   });
 
+  it("blocks settlement availability until the contractor check is recorded, then unblocks the same matured evidence", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const agent = promoter(setup, "contractor-review-promoter", "FIXED", 10000);
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "contractor-review-promoter" });
+    const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), "phase11-contractor-review-001", "https://flexperiment.ru");
+    const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(result.status_id) as { id: string };
+    setup.domain.markPaymentPaid(payment.id, 100000, "provider");
+    setup.db.prepare("UPDATE occurrences SET ends_at = '2020-01-01T00:00:00.000Z', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
+    setup.domain.completeOccurrence(setup.occurrenceId);
+    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ payable_gross_total: 10000, blocked_payable_total: 10000, available_to_settle: 0 });
+    setup.domain.patchAgent(String(agent.id), { npd_status_checked_at: new Date().toISOString() });
+    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ payable_gross_total: 10000, blocked_payable_total: 0, available_to_settle: 10000 });
+  });
+
   it("derives allocation, recovery, and late-adjustment balances across settlement states", async () => {
     const cases = [
       { prepared: 0, pending: 0, settled: 0, recovered: 0, adjustment: 0, available: 10000, exposure: 0 },
@@ -497,12 +511,22 @@ describe("commerce domain", () => {
       setup.domain.patchAgent(String(agent.id), { npd_status_checked_at: new Date().toISOString() });
       setup.db.prepare("UPDATE occurrences SET ends_at = '2020-01-01T00:00:00.000Z', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
       setup.domain.completeOccurrence(setup.occurrenceId);
-      for (const [status, amount] of [["PREPARED", item.prepared], ["PENDING_DOCUMENT", item.pending], ["SETTLED", item.settled]] as const) {
-        if (amount) setup.db.prepare("INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id) VALUES (?, ?, ?, ?, 'TRANSFER', ?, 'SELF_EMPLOYED', datetime('now'), 'admin')").run(randomUUID(), agent.id, setup.occurrenceId, amount, status);
+      let paidSettlementId: string | undefined;
+      if (item.prepared) setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: item.prepared, method: "TRANSFER" }, `phase11-table-prepared-${index}`, "admin");
+      if (item.pending) {
+        const pending = setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: item.pending, method: "TRANSFER" }, `phase11-table-pending-${index}`, "admin");
+        setup.domain.markSettlementPaymentMade(String(pending.id), "I confirm the money was transferred");
+        paidSettlementId = String(pending.id);
+      }
+      if (item.settled) {
+        const settled = setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: item.settled, method: "TRANSFER" }, `phase11-table-settled-${index}`, "admin");
+        setup.domain.markSettlementPaymentMade(String(settled.id), "I confirm the money was transferred");
+        setup.domain.completeSettlementDocuments(String(settled.id), { document_reference: `settlement-document-${index}` });
+        paidSettlementId ??= String(settled.id);
       }
       if (item.recovered) {
-        const settlement = setup.db.prepare("SELECT id FROM reward_settlements WHERE agent_id = ? LIMIT 1").get(agent.id) as { id: string };
-        setup.db.prepare("INSERT INTO settlement_recoveries(id, settlement_id, amount_recovered_kopecks, recovered_at, method, evidence_reference) VALUES (?, ?, ?, datetime('now'), 'TRANSFER', 'test')").run(randomUUID(), settlement.id, item.recovered);
+        expect(paidSettlementId).toBeDefined();
+        setup.domain.addSettlementRecovery(paidSettlementId!, { amount_recovered_kopecks: item.recovered, recovered_at: new Date().toISOString(), method: "TRANSFER", evidence_reference: `recovery-${index}` });
       }
       if (item.adjustment) setup.db.prepare("INSERT INTO reward_adjustments(id, order_id, agent_id, amount_kopecks, reason, semantic_key) VALUES (?, ?, ?, ?, 'TEST', ?)").run(randomUUID(), order.id, agent.id, item.adjustment, `table-${index}`);
       const balance = setup.domain.rewardBalance(String(agent.id), setup.occurrenceId);

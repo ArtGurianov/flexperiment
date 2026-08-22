@@ -3,6 +3,7 @@
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { commerceApiUrl } from "@/lib/commerce-api";
+import { referralCaptureCoordinator } from "@/components/referral-capture-state";
 import { storedReferralSlug } from "@/components/referral-marker";
 
 type Occurrence = {
@@ -80,6 +81,7 @@ export default function CheckoutFlow() {
     if (!id) return;
     setLoading(true); setMessage(null);
     try {
+      await referralCaptureCoordinator.waitForCurrentCapture();
       const response = await fetch(commerceApiUrl("/v1/public/checkout-context"), {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ occurrence_id: id, promo_code: promo || undefined, referral_slug: storedReferralSlug(document.cookie) ?? undefined }),

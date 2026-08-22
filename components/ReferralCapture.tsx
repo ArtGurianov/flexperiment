@@ -1,13 +1,19 @@
 "use client";
 
-import { useEffect } from "react";
+import { useLayoutEffect } from "react";
+import { useSearchParams } from "next/navigation";
 import { commerceApiUrl } from "@/lib/commerce-api";
-import { captureReferralLanding, storeReferralMarker } from "@/components/referral-marker";
+import { referralCaptureCoordinator } from "@/components/referral-capture-state";
+import { storeReferralMarker } from "@/components/referral-marker";
 
 export default function ReferralCapture() {
-  useEffect(() => {
-    void captureReferralLanding(
-      window.location.search,
+  const searchParams = useSearchParams();
+  const search = searchParams.toString();
+  // Start capture before the browser can accept an interaction that opens
+  // checkout. The coordinator then makes checkout wait for this request.
+  useLayoutEffect(() => {
+    void referralCaptureCoordinator.capture(
+      search ? `?${search}` : "",
       async (slug) => {
         const response = await fetch(commerceApiUrl("/v1/public/referrals/eligibility"), {
           method: "POST",
@@ -19,6 +25,6 @@ export default function ReferralCapture() {
       },
       storeReferralMarker,
     );
-  }, []);
+  }, [search]);
   return null;
 }

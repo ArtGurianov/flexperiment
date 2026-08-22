@@ -19,15 +19,3 @@ export function storeReferralMarker(marker: string) {
   // and is intentionally unrelated to analytics consent.
   document.cookie = `fx_ref=${encodeURIComponent(marker)}; Path=/; Max-Age=${REFERRAL_MARKER_MAX_AGE_SECONDS}; SameSite=Lax; Secure`;
 }
-
-/** Capture is called on every public landing, before a visitor opens checkout. */
-export async function captureReferralLanding(
-  search: string,
-  checkEligibility: (slug: string) => Promise<boolean>,
-  writeMarker: (marker: string) => void,
-) {
-  const slug = referralTouchFromLocation(search);
-  if (!slug || !(await checkEligibility(slug))) return false;
-  writeMarker(`v1:${slug}`);
-  return true;
-}
