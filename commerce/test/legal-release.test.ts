@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import { canonicalLegalManifest, type LegalManifest } from "../src/legal-manifest";
@@ -43,6 +44,34 @@ describe("production legal-release publisher", () => {
   it("verifies a prepared archive release without changing the active current-document copies", () => {
     expect(loadCanonicalLegalRelease("commerce/legal/production-manifest.json").version).toBe("2026-08-21.2");
     expect(loadCanonicalLegalRelease("commerce/legal/production-manifest.2026-08-21.2.draft.json").version).toBe("2026-08-21.2");
+  });
+
+  it("prepares the four-document analytics legal candidate without changing active .2 bytes", () => {
+    const candidate = loadCanonicalLegalRelease("commerce/legal/production-manifest.2026-08-22.1.draft.json");
+    expect(candidate.version).toBe("2026-08-22.1");
+    expect(Object.keys(candidate.manifest.documents)).toEqual([
+      "PUBLIC_OFFER",
+      "PRIVACY_POLICY",
+      "PD_CONSENT",
+      "CHECKOUT_DISCLOSURE",
+    ]);
+    expect(candidate.manifest.documents.PRIVACY_POLICY.version).toBe("2026-08-22");
+    expect(readFileSync("public/legal/archive/privacy/2026-08-22.1/privacy-policy.md")).not.toEqual(
+      readFileSync("public/legal/archive/privacy/2026-08-21.2/privacy-policy.md"),
+    );
+    for (const [candidatePath, activePath] of [
+      ["public/legal/archive/offer/2026-08-22.1/public-offer.md", "public/legal/archive/offer/2026-08-21.2/public-offer.md"],
+      ["public/legal/archive/privacy/2026-08-22.1/personal-data-consent.md", "public/legal/personal-data-consent.md"],
+      ["public/legal/archive/checkout-disclosure/2026-08-22.1/disclaimer.md", "public/legal/archive/checkout-disclosure/2026-08-21.2/disclaimer.md"],
+    ]) {
+      expect(readFileSync(candidatePath)).toEqual(readFileSync(activePath));
+    }
+    const active = loadCanonicalLegalRelease("commerce/legal/production-manifest.json");
+    expect(active.version).toBe("2026-08-21.2");
+    expect(active.manifest.documents.PRIVACY_POLICY.sha256).toBe("7d6935b2e7ed4b8381d07ddb86748fdadafb30519de82404fbd7c0df48dde541");
+    expect(readFileSync("public/legal/archive/privacy/2026-08-21.2/privacy-policy.md")).toEqual(
+      readFileSync("public/legal/privacy-policy.md"),
+    );
   });
 
   it("keeps every current legal convenience file byte-identical to the canonical manifest", () => {
