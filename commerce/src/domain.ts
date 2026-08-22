@@ -54,6 +54,11 @@ const isAllowedOccurrenceStateTransition = (before: Row, after: Row) => {
   return previous === next || allowedOccurrenceStateTransitions.has(`${previous}->${next}`);
 };
 
+// A stale PREPARED allocation is an operational-review condition, never a
+// timeout-based cancellation. Keep this explicit and shared by the worker and
+// Admin read model.
+export const STALE_PREPARED_SETTLEMENT_MS = 30 * 60 * 1_000;
+
 export class CommerceDomain {
   constructor(
     readonly db: Database.Database,
@@ -752,7 +757,7 @@ export class CommerceDomain {
 
   prepareSettlement(input: { agent_id: string; occurrence_id: string; amount_kopecks: number; method: string }, idempotencyKey: string, adminId: string) {
     const keyHash = sha256(idempotencyKey); const payloadHash = sha256(canonical(input));
-    return withImmediateTransaction(this.db, () => {
+    return this.settlementTransaction(() => {
       const replay = one(this.db, `SELECT rsi.canonical_request_hash, rs.* FROM reward_settlement_idempotency rsi
         JOIN reward_settlements rs ON rs.id = rsi.settlement_id WHERE rsi.idempotency_key_hash = ?`, keyHash);
       if (replay) {
@@ -774,31 +779,109 @@ export class CommerceDomain {
     });
   }
 
-  markSettlementPaymentMade(settlementId: string, confirmationText: string) {
+  markSettlementPaymentMade(settlementId: string, confirmationText: string, idempotencyKey: string) {
     if (confirmationText !== "I confirm the money was transferred") throw new DomainError("CONFIRMATION_REQUIRED", 422);
-    const changed = this.db.prepare("UPDATE reward_settlements SET status = 'PENDING_DOCUMENT', payment_made_at = ? WHERE id = ? AND status = 'PREPARED'").run(now(), settlementId);
-    if (!changed.changes) throw new DomainError("SETTLEMENT_TRANSITION_FORBIDDEN", 409);
-    return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
+    return this.settlementTransition("PAYMENT_MADE", settlementId, { confirmation_text: confirmationText }, idempotencyKey, () => {
+      const changed = this.db.prepare("UPDATE reward_settlements SET status = 'PENDING_DOCUMENT', payment_made_at = ? WHERE id = ? AND status = 'PREPARED'").run(now(), settlementId);
+      if (!changed.changes) throw new DomainError("SETTLEMENT_TRANSITION_FORBIDDEN", 409);
+      return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
+    });
   }
 
-  completeSettlementDocuments(settlementId: string, input: { document_reference: string; npd_status_effective_on?: string }) {
-    const changed = this.db.prepare("UPDATE reward_settlements SET status = 'SETTLED', document_confirmed = 1, document_reference = ?, document_confirmed_at = ?, settled_at = ?, npd_status_effective_on = ? WHERE id = ? AND status = 'PENDING_DOCUMENT'").run(input.document_reference, now(), now(), input.npd_status_effective_on ?? null, settlementId);
-    if (!changed.changes) throw new DomainError("SETTLEMENT_TRANSITION_FORBIDDEN", 409);
-    return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
+  completeSettlementDocuments(settlementId: string, input: { document_reference: string; npd_status_effective_on?: string }, idempotencyKey: string) {
+    return this.settlementTransition("DOCUMENTS_COMPLETE", settlementId, input, idempotencyKey, () => {
+      const changed = this.db.prepare("UPDATE reward_settlements SET status = 'SETTLED', document_confirmed = 1, document_reference = ?, document_confirmed_at = ?, settled_at = ?, npd_status_effective_on = ? WHERE id = ? AND status = 'PENDING_DOCUMENT'").run(input.document_reference, now(), now(), input.npd_status_effective_on ?? null, settlementId);
+      if (!changed.changes) throw new DomainError("SETTLEMENT_TRANSITION_FORBIDDEN", 409);
+      return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
+    });
   }
 
-  cancelSettlementBeforePayment(settlementId: string, input: { confirmation_text: string; reason: string }) {
+  cancelSettlementBeforePayment(settlementId: string, input: { confirmation_text: string; reason: string }, idempotencyKey: string) {
     if (input.confirmation_text !== `NOT PAID ${settlementId}`) throw new DomainError("CONFIRMATION_REQUIRED", 422);
-    const changed = this.db.prepare("UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT', cancelled_before_payment_at = ?, note = ? WHERE id = ? AND status = 'PREPARED'").run(now(), input.reason, settlementId);
-    if (!changed.changes) throw new DomainError("SETTLEMENT_TRANSITION_FORBIDDEN", 409);
-    return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
+    return this.settlementTransition("CANCEL_BEFORE_PAYMENT", settlementId, input, idempotencyKey, () => {
+      const changed = this.db.prepare("UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT', cancelled_before_payment_at = ?, note = ? WHERE id = ? AND status = 'PREPARED'").run(now(), input.reason, settlementId);
+      if (!changed.changes) throw new DomainError("SETTLEMENT_TRANSITION_FORBIDDEN", 409);
+      return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
+    });
   }
 
-  addSettlementRecovery(settlementId: string, input: { amount_recovered_kopecks: number; recovered_at: string; method: string; evidence_reference: string; note?: string }) {
-    const settlement = one(this.db, "SELECT id FROM reward_settlements WHERE id = ?", settlementId);
+  addSettlementRecovery(settlementId: string, input: { amount_recovered_kopecks: number; recovered_at: string; method: string; evidence_reference: string; note?: string }, idempotencyKey: string) {
+    const create = () => {
+      const settlement = one(this.db, "SELECT id, status, amount_kopecks FROM reward_settlements WHERE id = ?", settlementId);
+      if (!settlement) throw new DomainError("SETTLEMENT_NOT_FOUND", 404);
+      if (settlement.status !== "PENDING_DOCUMENT" && settlement.status !== "SETTLED") throw new DomainError("SETTLEMENT_RECOVERY_NOT_PAID", 409);
+      const alreadyRecovered = Number(one(this.db, "SELECT COALESCE(SUM(amount_recovered_kopecks), 0) AS amount FROM settlement_recoveries WHERE settlement_id = ?", settlementId)?.amount ?? 0);
+      const remainingRecoverable = Number(settlement.amount_kopecks) - alreadyRecovered;
+      if (input.amount_recovered_kopecks > remainingRecoverable) throw new DomainError("SETTLEMENT_RECOVERY_EXCEEDS_REMAINING", 409);
+      const recoveryId = id();
+      this.db.prepare("INSERT INTO settlement_recoveries(id, settlement_id, amount_recovered_kopecks, recovered_at, method, evidence_reference, note) VALUES (?, ?, ?, ?, ?, ?, ?)").run(recoveryId, settlementId, input.amount_recovered_kopecks, input.recovered_at, input.method, input.evidence_reference, input.note ?? null);
+      return one(this.db, "SELECT * FROM settlement_recoveries WHERE id = ?", recoveryId)!;
+    };
+    const keyHash = sha256(idempotencyKey); const payloadHash = sha256(canonical({ settlement_id: settlementId, ...input }));
+    return this.settlementTransaction(() => {
+      const replay = one(this.db, "SELECT canonical_request_hash, recovery_id FROM reward_settlement_command_idempotency WHERE command = 'RECOVERY' AND idempotency_key_hash = ?", keyHash);
+      if (replay) {
+        if (replay.canonical_request_hash !== payloadHash) throw new DomainError("IDEMPOTENCY_CONFLICT", 409);
+        return one(this.db, "SELECT * FROM settlement_recoveries WHERE id = ?", replay.recovery_id)!;
+      }
+      if (!Number.isInteger(input.amount_recovered_kopecks) || input.amount_recovered_kopecks <= 0) throw new DomainError("SETTLEMENT_RECOVERY_AMOUNT_INVALID", 422);
+      const recovery = create();
+      this.db.prepare("INSERT INTO reward_settlement_command_idempotency(command, idempotency_key_hash, canonical_request_hash, settlement_id, recovery_id) VALUES ('RECOVERY', ?, ?, ?, ?)").run(keyHash, payloadHash, settlementId, recovery.id);
+      return recovery;
+    });
+  }
+
+  detectStalePreparedSettlements() {
+    const threshold = new Date(this.clock() - STALE_PREPARED_SETTLEMENT_MS).toISOString();
+    return this.settlementTransaction(() => {
+      const stale = many(this.db, "SELECT id FROM reward_settlements WHERE status = 'PREPARED' AND prepared_at <= ?", threshold);
+      for (const settlement of stale) this.db.prepare("INSERT OR IGNORE INTO settlement_prepared_reviews(settlement_id) VALUES (?)").run(settlement.id);
+      return stale.length;
+    });
+  }
+
+  settlementList() {
+    const threshold = new Date(this.clock() - STALE_PREPARED_SETTLEMENT_MS).toISOString();
+    return many(this.db, `SELECT rs.*, a.slug AS agent_slug, a.display_name AS agent_display_name,
+      c.title AS city_title, o.title AS occurrence_title,
+      CASE WHEN rs.status = 'PREPARED' AND rs.prepared_at <= ? THEN 1 ELSE 0 END AS stale_prepared,
+      spr.status AS prepared_review_status,
+      COALESCE((SELECT SUM(amount_recovered_kopecks) FROM settlement_recoveries sr WHERE sr.settlement_id = rs.id), 0) AS recovered_total,
+      MAX(0, rs.amount_kopecks - COALESCE((SELECT SUM(amount_recovered_kopecks) FROM settlement_recoveries sr WHERE sr.settlement_id = rs.id), 0)) AS unrecovered_amount_kopecks
+      FROM reward_settlements rs JOIN agents a ON a.id = rs.agent_id JOIN occurrences o ON o.id = rs.occurrence_id JOIN cities c ON c.id = o.city_id
+      LEFT JOIN settlement_prepared_reviews spr ON spr.settlement_id = rs.id ORDER BY rs.prepared_at DESC`, threshold);
+  }
+
+  settlementDetail(settlementId: string) {
+    const settlement = this.settlementList().find((item) => item.id === settlementId);
     if (!settlement) throw new DomainError("SETTLEMENT_NOT_FOUND", 404);
-    this.db.prepare("INSERT INTO settlement_recoveries(id, settlement_id, amount_recovered_kopecks, recovered_at, method, evidence_reference, note) VALUES (?, ?, ?, ?, ?, ?, ?)").run(id(), settlementId, input.amount_recovered_kopecks, input.recovered_at, input.method, input.evidence_reference, input.note ?? null);
-    return one(this.db, "SELECT * FROM settlement_recoveries WHERE settlement_id = ? ORDER BY rowid DESC LIMIT 1", settlementId)!;
+    const balance = this.rewardBalance(String(settlement.agent_id), String(settlement.occurrence_id));
+    return { settlement, balance, recoveries: many(this.db, "SELECT * FROM settlement_recoveries WHERE settlement_id = ? ORDER BY recovered_at DESC, id DESC", settlementId) };
+  }
+
+  private settlementTransition(command: "PAYMENT_MADE" | "DOCUMENTS_COMPLETE" | "CANCEL_BEFORE_PAYMENT", settlementId: string, input: unknown, idempotencyKey: string, transition: () => Row) {
+    const keyHash = sha256(idempotencyKey); const payloadHash = sha256(canonical({ settlement_id: settlementId, ...(input as Record<string, unknown>) }));
+    return this.settlementTransaction(() => {
+      const replay = one(this.db, "SELECT canonical_request_hash, settlement_id FROM reward_settlement_command_idempotency WHERE command = ? AND idempotency_key_hash = ?", command, keyHash);
+      if (replay) {
+        if (replay.canonical_request_hash !== payloadHash) throw new DomainError("IDEMPOTENCY_CONFLICT", 409);
+        return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", replay.settlement_id)!;
+      }
+      const settlement = transition();
+      this.db.prepare("INSERT INTO reward_settlement_command_idempotency(command, idempotency_key_hash, canonical_request_hash, settlement_id) VALUES (?, ?, ?, ?)").run(command, keyHash, payloadHash, settlementId);
+      // A successful transition out of PREPARED resolves its stale-PREPARED
+      // review; it does not erase the review or change any allocation.
+      this.db.prepare("UPDATE settlement_prepared_reviews SET status = 'RESOLVED', resolved_at = COALESCE(resolved_at, ?) WHERE settlement_id = ? AND status = 'OPEN'").run(now(), settlementId);
+      return settlement;
+    });
+  }
+
+  private settlementTransaction<T>(operation: () => T): T {
+    try { return withImmediateTransaction(this.db, operation); }
+    catch (error) {
+      if (error instanceof Error && /SQLITE_BUSY|database is locked/i.test(error.message)) throw new DomainError("SETTLEMENT_BUSY", 409);
+      throw error;
+    }
   }
 
   async submitRequestedRefunds() {

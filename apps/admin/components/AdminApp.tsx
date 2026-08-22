@@ -7,7 +7,7 @@ import { badgeTone } from "./badge-tone";
 import { createLatestRequestGate } from "./latest-request";
 import { occurrenceActionsFor } from "./occurrence-actions";
 
-type Page = "dashboard" | "login" | "cities" | "occurrences" | "orders" | "refunds" | "audit";
+type Page = "dashboard" | "login" | "cities" | "occurrences" | "orders" | "refunds" | "settlements" | "audit";
 type Row = Record<string, unknown>;
 
 class AdminApiError extends Error {
@@ -20,7 +20,8 @@ const nav: { href: string; page: Page; label: string; index: string }[] = [
   { href: "/occurrences/", page: "occurrences", label: "События", index: "03" },
   { href: "/orders/", page: "orders", label: "Заказы", index: "04" },
   { href: "/refunds/", page: "refunds", label: "Возвраты", index: "05" },
-  { href: "/audit/", page: "audit", label: "Аудит", index: "06" },
+  { href: "/settlements/", page: "settlements", label: "Расчёты", index: "06" },
+  { href: "/audit/", page: "audit", label: "Аудит", index: "07" },
 ];
 
 const idempotencyKey = () => crypto.randomUUID();
@@ -122,6 +123,7 @@ function Dashboard() {
   const health: [string, unknown][] = [
     ["CREATE_UNKNOWN", data.value.health.create_unknown?.count], ["REVIEW_REQUIRED", data.value.health.review_required?.count],
     ["Pending refunds", data.value.health.pending_refunds?.count], ["Email failures", data.value.health.email_failures?.count],
+    ["Stale PREPARED", data.value.health.stale_prepared_settlements?.count],
   ];
   return <><section className="hero"><p className="eyebrow">OPERATIONAL OVERVIEW / TODAY</p><h1>Данные без<br /><i>магии статусов.</i></h1><p>Commerce и SQLite остаются источником истины. Этот экран ничего не мутирует.</p></section>
     <section className="metrics"><Metric label="Заказы" value={number(today.orders)} /><Metric label="Получено" value={formatMoney(today.revenue_kopecks)} /><Metric label="Возвращено" value={formatMoney(today.refunded_kopecks)} /></section>
@@ -270,6 +272,39 @@ function Refunds() {
     <section className="panel">{data.loading ? <Loading /> : data.value ? <table><thead><tr><th>Создан</th><th>Заказ</th><th>Событие</th><th>Сумма</th><th>Источник</th><th>Статус</th></tr></thead><tbody>{data.value.refunds.map((refund) => <tr key={string(refund.id)}><td>{formatDate(refund.created_at)}</td><td><strong>{string(refund.public_status_id).slice(0, 11)}…</strong><small>{string(refund.order_id)}</small></td><td>{string(refund.city_title)}<small>{string(refund.occurrence_title)}</small></td><td>{formatMoney(refund.amount_kopecks)}</td><td><Badge>{string(refund.source)}</Badge></td><td><Badge>{string(refund.status)}</Badge></td></tr>)}</tbody></table> : <Notice error={data.error} />}</section></>;
 }
 
+function Settlements() {
+  const settlements = useResource<{ settlements: Row[] }>("/reward-settlements");
+  const [selected, setSelected] = useState<string | null>(() => typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("id"));
+  return <><PageTitle eyebrow="PROMOTERS / MANUAL SETTLEMENTS" title={<>Расчёты<br /><i>без ложной оплаты.</i></>} text="PREPARED уже резервирует начисление. Stale state — это durable operator review, а не автоматическое освобождение денег." />
+    <section className="panel">{settlements.loading ? <Loading /> : settlements.value ? <table><thead><tr><th>Подготовлен</th><th>Агент</th><th>Событие</th><th>Сумма</th><th>Состояние</th><th>Evidence</th></tr></thead><tbody>{settlements.value.settlements.map((settlement) => <tr className="click-row" onClick={() => { setSelected(string(settlement.id)); history.replaceState(null, "", `/settlements/?id=${encodeURIComponent(string(settlement.id))}`); }} key={string(settlement.id)}><td>{formatDate(settlement.prepared_at)}</td><td><strong>{string(settlement.agent_display_name)}</strong><small>{string(settlement.agent_slug)}</small></td><td>{string(settlement.city_title)}<small>{string(settlement.occurrence_title)}</small></td><td>{formatMoney(settlement.amount_kopecks)}</td><td><Badge>{string(settlement.status)}</Badge>{number(settlement.stale_prepared) === 1 && <Badge>STALE_PREPARED</Badge>}</td><td>{string(settlement.document_reference) || "—"}<small>recovered: {formatMoney(settlement.recovered_total)}</small></td></tr>)}</tbody></table> : <Notice error={settlements.error} />}</section>
+    {selected && <SettlementDetail id={selected} close={() => { setSelected(null); history.replaceState(null, "", "/settlements/"); }} changed={settlements.reload} />}</>;
+}
+
+function SettlementDetail({ id, close, changed }: { id: string; close: () => void; changed: () => Promise<void> }) {
+  const detail = useResource<{ settlement: Row; balance: Row; recoveries: Row[] }>(`/reward-settlements/${id}`);
+  const [action, setAction] = useState<"PAYMENT_MADE" | "DOCUMENTS_COMPLETE" | "CANCEL_BEFORE_PAYMENT" | "RECOVERY" | null>(null);
+  if (detail.loading) return <section className="panel detail"><Loading /></section>;
+  if (!detail.value) return <section className="panel detail"><Notice error={detail.error} /></section>;
+  const settlement = detail.value.settlement; const state = string(settlement.status);
+  const done = async () => { await detail.reload(); await changed(); setAction(null); };
+  return <section className="panel detail"><div className="detail-head"><h2>Settlement evidence</h2><button onClick={close}>Закрыть ×</button></div><code>{id}</code><div className="evidence-grid"><EvidenceCard title="SETTLEMENT" data={settlement} /><EvidenceCard title="BALANCE" data={detail.value.balance} /><EvidenceCard title="RECOVERIES" data={detail.value.recoveries} /></div><div className="detail-actions">{state === "PREPARED" && <><button className="primary" onClick={() => setAction("PAYMENT_MADE")}>Подтвердить перевод</button><button className="danger" onClick={() => setAction("CANCEL_BEFORE_PAYMENT")}>Отменить до оплаты</button></>}{state === "PENDING_DOCUMENT" && <button className="primary" onClick={() => setAction("DOCUMENTS_COMPLETE")}>Подтвердить документы</button>}{(state === "PENDING_DOCUMENT" || state === "SETTLED") && <button onClick={() => setAction("RECOVERY")}>Зафиксировать recovery</button>}</div>{action && <SettlementAction action={action} settlement={settlement} close={() => setAction(null)} done={done} />}</section>;
+}
+
+function SettlementAction({ action, settlement, close, done }: { action: "PAYMENT_MADE" | "DOCUMENTS_COMPLETE" | "CANCEL_BEFORE_PAYMENT" | "RECOVERY"; settlement: Row; close: () => void; done: () => Promise<void> }) {
+  const [key] = useState(idempotencyKey); const [busy, setBusy] = useState(false); const [error, setError] = useState<string | null>(null);
+  const [documentReference, setDocumentReference] = useState(""); const [npdDate, setNpdDate] = useState(""); const [reason, setReason] = useState(""); const [recoveryAmount, setRecoveryAmount] = useState(""); const [evidenceReference, setEvidenceReference] = useState("");
+  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(null); try {
+    const base = `/reward-settlements/${string(settlement.id)}`; const headers = { "Content-Type": "application/json", "Idempotency-Key": key };
+    if (action === "PAYMENT_MADE") await api(`${base}/payment-made`, { method: "POST", headers, body: JSON.stringify({ confirmation_text: "I confirm the money was transferred" }) });
+    if (action === "DOCUMENTS_COMPLETE") await api(`${base}/documents-complete`, { method: "POST", headers, body: JSON.stringify({ document_reference: documentReference, npd_status_effective_on: npdDate || undefined }) });
+    if (action === "CANCEL_BEFORE_PAYMENT") await api(`${base}/cancel-before-payment`, { method: "POST", headers, body: JSON.stringify({ confirmation_text: `NOT PAID ${string(settlement.id)}`, reason }) });
+    if (action === "RECOVERY") await api(`${base}/recoveries`, { method: "POST", headers, body: JSON.stringify({ amount_recovered_kopecks: Number(recoveryAmount), recovered_at: new Date().toISOString(), method: string(settlement.method), evidence_reference: evidenceReference }) });
+    await done();
+  } catch (failure) { setError((failure as AdminApiError).code); } finally { setBusy(false); } };
+  const title = action === "PAYMENT_MADE" ? "Подтвердить перевод" : action === "DOCUMENTS_COMPLETE" ? "Подтвердить документы" : action === "CANCEL_BEFORE_PAYMENT" ? "Отменить до оплаты" : "Зафиксировать recovery";
+  return <ActionModal title={title} close={close}><form className="form" onSubmit={submit}>{action === "PAYMENT_MADE" && <p>Подтверждает только состоявшийся ручной перевод. После команды settlement перейдёт в PENDING_DOCUMENT.</p>}{action === "DOCUMENTS_COMPLETE" && <><label>Ссылка на документ<input value={documentReference} onChange={(event) => setDocumentReference(event.target.value)} required minLength={2} /></label><label>Дата статуса НПД<input type="date" value={npdDate} onChange={(event) => setNpdDate(event.target.value)} /></label></>}{action === "CANCEL_BEFORE_PAYMENT" && <><p>Допустимо только при сильном подтверждении, что деньги не переводились. Это высвобождает reservation.</p><label>Причина<textarea value={reason} onChange={(event) => setReason(event.target.value)} required minLength={3} /></label></>}{action === "RECOVERY" && <><label>Сумма, копейки<input type="number" min="1" value={recoveryAmount} onChange={(event) => setRecoveryAmount(event.target.value)} required /></label><label>Evidence reference<input value={evidenceReference} onChange={(event) => setEvidenceReference(event.target.value)} required minLength={3} /></label></>}<Notice error={error} /><button className={action === "CANCEL_BEFORE_PAYMENT" ? "danger" : "primary"} disabled={busy}>{busy ? "Сохраняем…" : "Подтвердить"}</button></form></ActionModal>;
+}
+
 function Audit() {
   const data = useResource<{ events: Row[] }>("/audit");
   return <><PageTitle eyebrow="AUTHORITY / AUDIT" title={<>Команды<br /><i>с контекстом.</i></>} text="Показываются durable записи Admin mutations. Секреты и capability здесь не выводятся." />
@@ -287,6 +322,6 @@ export function AdminApp({ page }: { page: Page }) {
   if (page === "login") return <Login />;
   if (authenticated === null) return <main className="boot"><Loading /></main>;
   if (!authenticated) return <main className="boot"><Loading /></main>;
-  const view = page === "dashboard" ? <Dashboard /> : page === "cities" ? <Cities /> : page === "occurrences" ? <Occurrences /> : page === "orders" ? <Orders /> : page === "refunds" ? <Refunds /> : <Audit />;
+  const view = page === "dashboard" ? <Dashboard /> : page === "cities" ? <Cities /> : page === "occurrences" ? <Occurrences /> : page === "orders" ? <Orders /> : page === "refunds" ? <Refunds /> : page === "settlements" ? <Settlements /> : <Audit />;
   return <Shell page={page} onLogout={logout}>{view}</Shell>;
 }

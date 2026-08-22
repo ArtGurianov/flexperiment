@@ -2,6 +2,7 @@ import { openDatabase } from "./db";
 import { CommerceDomain } from "./domain";
 import { emailProviderFromEnvironment } from "./email-provider";
 import { providerFromEnvironment } from "./provider";
+import { runWorkerSweep } from "./worker-sweep";
 
 const sqlite = openDatabase();
 const domain = new CommerceDomain(sqlite, providerFromEnvironment(), emailProviderFromEnvironment());
@@ -9,12 +10,7 @@ let nextDriftSweepAt = 0;
 let sweeping = false;
 
 const sweep = async () => {
-  domain.recoverStaleCommands();
-  await domain.reconcilePendingPayments();
-  domain.createObligationRefunds();
-  await domain.submitRequestedRefunds();
-  await domain.reconcilePendingRefunds();
-  await domain.processEmailOutbox();
+  await runWorkerSweep(domain);
   if (Date.now() >= nextDriftSweepAt) {
     nextDriftSweepAt = Date.now() + 24 * 60 * 60_000;
     await domain.collectProviderDrift();

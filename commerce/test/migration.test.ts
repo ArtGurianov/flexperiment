@@ -76,4 +76,39 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
     expect(() => db.prepare("UPDATE orders SET public_order_number = NULL WHERE id = ?").run(orderId)).toThrow("PUBLIC_ORDER_NUMBER_IMMUTABLE");
     db.close();
   });
+
+  it("upgrades populated 0013 settlement evidence through 0014 without rewriting allocations", () => {
+    const db = openDatabase(":memory:");
+    applyThrough(db, "0013_promoter_attribution_rewards.sql");
+    const cityId = randomUUID(); const occurrenceId = randomUUID(); const releaseId = randomUUID(); const agentId = randomUUID(); const preparedId = randomUUID(); const pendingId = randomUUID(); const settledId = randomUUID(); const recoveryId = randomUUID();
+    db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, 'migration-settlement-city', 'Migration city')").run(cityId);
+    db.prepare("INSERT INTO legal_releases(id, version, effective_at, manifest_json, active) VALUES (?, 'migration-settlement', datetime('now'), ?, 1)").run(releaseId, JSON.stringify({ documents: {} }));
+    db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, venue_status, venue_name, venue_address)
+      VALUES (?, ?, 'Migration settlement fixture', '2030-01-01T10:00:00.000Z', '2030-01-01T12:00:00.000Z', 'Asia/Novosibirsk', 100, 1, 'PUBLISHED', 'CONFIRMED', 'Studio', 'Lenina 1')`).run(occurrenceId, cityId);
+    db.prepare("INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value) VALUES (?, 'migration-settlement-agent', 'Agent', 'Agent Legal', 'agent@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', 'FIXED', 100)").run(agentId);
+    const insertSettlement = db.prepare("INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, payment_made_at, settled_at, document_confirmed, document_reference, document_confirmed_at, created_by_admin_id) VALUES (?, ?, ?, ?, 'TRANSFER', ?, 'SELF_EMPLOYED', '2026-01-01T00:00:00.000Z', ?, ?, ?, ?, ?, 'admin')");
+    insertSettlement.run(preparedId, agentId, occurrenceId, 100, "PREPARED", null, null, 0, null, null);
+    insertSettlement.run(pendingId, agentId, occurrenceId, 200, "PENDING_DOCUMENT", "2026-01-02T00:00:00.000Z", null, 0, null, null);
+    insertSettlement.run(settledId, agentId, occurrenceId, 300, "SETTLED", "2026-01-02T00:00:00.000Z", "2026-01-03T00:00:00.000Z", 1, "receipt-001", "2026-01-03T00:00:00.000Z");
+    db.prepare("INSERT INTO settlement_recoveries(id, settlement_id, amount_recovered_kopecks, recovered_at, method, evidence_reference) VALUES (?, ?, 25, '2026-01-04T00:00:00.000Z', 'TRANSFER', 'bank-return')").run(recoveryId, settledId);
+    const before = db.prepare("SELECT id, amount_kopecks, status, prepared_at, document_reference FROM reward_settlements ORDER BY id").all();
+
+    db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, "0014_prepared_settlement_hardening.sql"), "utf8")))();
+
+    expect(db.prepare("SELECT id, amount_kopecks, status, prepared_at, document_reference FROM reward_settlements ORDER BY id").all()).toEqual(before);
+    expect(db.prepare("SELECT amount_recovered_kopecks, evidence_reference FROM settlement_recoveries WHERE id = ?").get(recoveryId)).toEqual({ amount_recovered_kopecks: 25, evidence_reference: "bank-return" });
+    expect((db.prepare("PRAGMA table_info(reward_settlement_command_idempotency)").all() as { name: string }[]).map(({ name }) => name)).toEqual(expect.arrayContaining(["command", "idempotency_key_hash", "settlement_id", "recovery_id"]));
+    expect(() => db.prepare("INSERT INTO settlement_prepared_reviews(settlement_id) VALUES (?)").run(randomUUID())).toThrow(/FOREIGN KEY constraint failed/);
+    db.prepare("INSERT INTO settlement_prepared_reviews(settlement_id) VALUES (?)").run(preparedId);
+    expect(() => db.prepare("INSERT INTO settlement_prepared_reviews(settlement_id) VALUES (?)").run(preparedId)).toThrow(/UNIQUE constraint failed/);
+    db.prepare("INSERT INTO reward_settlement_command_idempotency(command, idempotency_key_hash, canonical_request_hash, settlement_id, recovery_id) VALUES ('RECOVERY', 'migration-command-key', 'migration-request-hash', ?, ?)").run(settledId, recoveryId);
+    expect(() => db.prepare("INSERT INTO reward_settlement_command_idempotency(command, idempotency_key_hash, canonical_request_hash, settlement_id) VALUES ('RECOVERY', 'migration-command-key', 'different-hash', ?)").run(settledId)).toThrow(/UNIQUE constraint failed/);
+    expect((db.prepare("PRAGMA foreign_key_list(reward_settlement_command_idempotency)").all() as { table: string; from: string; to: string }[]).map(({ table, from, to }) => ({ table, from, to }))).toEqual(expect.arrayContaining([
+      { table: "reward_settlements", from: "settlement_id", to: "id" },
+      { table: "settlement_recoveries", from: "recovery_id", to: "id" },
+    ]));
+    expect(db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND name = 'reward_settlements_prepared_stale_idx'").get()).toEqual({ name: "reward_settlements_prepared_stale_idx", sql: expect.stringContaining("WHERE status = 'PREPARED'") });
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    db.close();
+  });
 });

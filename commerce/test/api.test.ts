@@ -77,6 +77,31 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
+  it("exposes settlement evidence as a pure Admin read and requires idempotency for lifecycle commands", async () => {
+    const { db, app } = appFixture();
+    const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
+    const agentId = randomUUID(); const settlementId = randomUUID();
+    db.prepare("INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, npd_status_checked_at, default_reward_type, default_reward_value) VALUES (?, 'settlement-api-agent', 'Settlement Agent', 'Settlement Agent Legal', 'settlement-agent@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', datetime('now'), 'FIXED', 100)").run(agentId);
+    db.prepare("INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id) VALUES (?, ?, ?, 100, 'TRANSFER', 'PREPARED', 'SELF_EMPLOYED', ?, 'admin')").run(settlementId, agentId, occurrenceId, new Date().toISOString());
+    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.57" }, body: JSON.stringify({ password: "correct horse" }) });
+    const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
+    const reviewCount = db.prepare("SELECT COUNT(*) AS count FROM settlement_prepared_reviews").get();
+    const list = await app.request("http://admin.flexperiment.ru/v1/admin/reward-settlements", { headers });
+    expect(list.status).toBe(200);
+    expect((await list.json() as { settlements: { id: string; stale_prepared: number }[] }).settlements).toEqual(expect.arrayContaining([expect.objectContaining({ id: settlementId, stale_prepared: 0 })]));
+    const detail = await app.request(`http://admin.flexperiment.ru/v1/admin/reward-settlements/${settlementId}`, { headers });
+    expect(detail.status).toBe(200);
+    expect(await detail.json()).toMatchObject({ settlement: { id: settlementId, status: "PREPARED" }, recoveries: [] });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM settlement_prepared_reviews").get()).toEqual(reviewCount);
+    const missingKey = await app.request(`http://admin.flexperiment.ru/v1/admin/reward-settlements/${settlementId}/payment-made`, { method: "POST", headers, body: JSON.stringify({ confirmation_text: "I confirm the money was transferred" }) });
+    expect(missingKey.status).toBe(400);
+    const first = await app.request(`http://admin.flexperiment.ru/v1/admin/reward-settlements/${settlementId}/payment-made`, { method: "POST", headers: { ...headers, "Idempotency-Key": "settlement-api-payment-key" }, body: JSON.stringify({ confirmation_text: "I confirm the money was transferred" }) });
+    expect(await first.json()).toMatchObject({ id: settlementId, status: "PENDING_DOCUMENT" });
+    const replay = await app.request(`http://admin.flexperiment.ru/v1/admin/reward-settlements/${settlementId}/payment-made`, { method: "POST", headers: { ...headers, "Idempotency-Key": "settlement-api-payment-key" }, body: JSON.stringify({ confirmation_text: "I confirm the money was transferred" }) });
+    expect(await replay.json()).toMatchObject({ id: settlementId, status: "PENDING_DOCUMENT" });
+    db.close();
+  });
+
   it("requires a session-bound reauthentication capability to cancel an occurrence", async () => {
     const { db, app } = appFixture();
     const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;

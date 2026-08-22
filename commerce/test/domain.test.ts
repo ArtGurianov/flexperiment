@@ -1,15 +1,19 @@
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
-import { CommerceDomain } from "../src/domain";
+import { CommerceDomain, DomainError, STALE_PREPARED_SETTLEMENT_MS } from "../src/domain";
+import { runWorkerSweep } from "../src/worker-sweep";
 import type { EmailProvider } from "../src/email-provider";
 import { MockProvider, type PaymentProvider } from "../src/provider";
 import { decryptTicketCapability } from "../src/crypto";
 
 const legalManifest = { documents: Object.fromEntries(["PUBLIC_OFFER", "PRIVACY_POLICY", "PD_CONSENT", "CHECKOUT_DISCLOSURE"].map((document) => [document, { document_id: document, version: "test-1", sha256: "0".repeat(64), current_url: `https://example.test/legal/${document}`, archive_url: `https://example.test/archive/${document}`, checkout_relevant: true }])) };
 
-function fixture() {
-  const db = openDatabase(":memory:"); migrate(db);
+function fixture(filename = ":memory:") {
+  const db = openDatabase(filename); migrate(db);
   const cityId = randomUUID(); const occurrenceId = randomUUID(); const releaseId = randomUUID();
   db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, 'novosibirsk', 'Новосибирск')").run(cityId);
   db.prepare("INSERT INTO legal_releases(id, version, effective_at, manifest_json, active) VALUES (?, '2026-08-20.1', datetime('now'), ?, 1)").run(releaseId, JSON.stringify(legalManifest));
@@ -24,6 +28,18 @@ function checkoutPayload(quoteId: string) {
 
 function promoter(setup: ReturnType<typeof fixture>, slug: string, rewardType: "PERCENT" | "FIXED" = "PERCENT", rewardValue = 1_000) {
   return setup.domain.createAgent({ slug, display_name: slug, legal_name: `${slug} legal`, email: `${slug}@example.test`, contractor_type: "SELF_EMPLOYED", inn: "123456789012", contract_reference: `C-${slug}`, default_reward_type: rewardType, default_reward_value: rewardValue });
+}
+
+async function maturedReward(setup: ReturnType<typeof fixture>, slug: string, amount = 10_000) {
+  const agent = promoter(setup, slug, "FIXED", amount);
+  const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: slug });
+  const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), `settlement-${slug}-checkout`, "https://flexperiment.ru");
+  const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(result.status_id) as { id: string };
+  setup.domain.markPaymentPaid(payment.id, 100_000, "settlement-provider");
+  setup.domain.patchAgent(String(agent.id), { npd_status_checked_at: new Date().toISOString() });
+  setup.db.prepare("UPDATE occurrences SET ends_at = '2020-01-01T00:00:00.000Z', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
+  setup.domain.completeOccurrence(setup.occurrenceId);
+  return agent;
 }
 
 async function reconcileSuccessfulRefund(setup: ReturnType<typeof fixture>, orderId: string, paymentId: string, amount: number) {
@@ -336,7 +352,7 @@ describe("commerce domain", () => {
     const input = { agent_id: agentId, occurrence_id: setup.occurrenceId, amount_kopecks: 10000, method: "TRANSFER" };
     const key = "8f3a27bc-77c6-47b1-b6d0-000000000009";
     const first = setup.domain.prepareSettlement(input, key, "admin");
-    setup.domain.markSettlementPaymentMade(String(first.id), "I confirm the money was transferred");
+    setup.domain.markSettlementPaymentMade(String(first.id), "I confirm the money was transferred", "phase11-current-state-payment");
     const replay = setup.domain.prepareSettlement(input, key, "admin");
     expect(replay.id).toBe(first.id);
     expect(replay.status).toBe("PENDING_DOCUMENT");
@@ -515,18 +531,18 @@ describe("commerce domain", () => {
       if (item.prepared) setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: item.prepared, method: "TRANSFER" }, `phase11-table-prepared-${index}`, "admin");
       if (item.pending) {
         const pending = setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: item.pending, method: "TRANSFER" }, `phase11-table-pending-${index}`, "admin");
-        setup.domain.markSettlementPaymentMade(String(pending.id), "I confirm the money was transferred");
+        setup.domain.markSettlementPaymentMade(String(pending.id), "I confirm the money was transferred", `phase11-table-pending-payment-${index}`);
         paidSettlementId = String(pending.id);
       }
       if (item.settled) {
         const settled = setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: item.settled, method: "TRANSFER" }, `phase11-table-settled-${index}`, "admin");
-        setup.domain.markSettlementPaymentMade(String(settled.id), "I confirm the money was transferred");
-        setup.domain.completeSettlementDocuments(String(settled.id), { document_reference: `settlement-document-${index}` });
+        setup.domain.markSettlementPaymentMade(String(settled.id), "I confirm the money was transferred", `phase11-table-settled-payment-${index}`);
+        setup.domain.completeSettlementDocuments(String(settled.id), { document_reference: `settlement-document-${index}` }, `phase11-table-settled-document-${index}`);
         paidSettlementId ??= String(settled.id);
       }
       if (item.recovered) {
         expect(paidSettlementId).toBeDefined();
-        setup.domain.addSettlementRecovery(paidSettlementId!, { amount_recovered_kopecks: item.recovered, recovered_at: new Date().toISOString(), method: "TRANSFER", evidence_reference: `recovery-${index}` });
+        setup.domain.addSettlementRecovery(paidSettlementId!, { amount_recovered_kopecks: item.recovered, recovered_at: new Date().toISOString(), method: "TRANSFER", evidence_reference: `recovery-${index}` }, `phase11-table-recovery-${index}`);
       }
       if (item.adjustment) setup.db.prepare("INSERT INTO reward_adjustments(id, order_id, agent_id, amount_kopecks, reason, semantic_key) VALUES (?, ?, ?, ?, 'TEST', ?)").run(randomUUID(), order.id, agent.id, item.adjustment, `table-${index}`);
       const balance = setup.domain.rewardBalance(String(agent.id), setup.occurrenceId);
@@ -535,5 +551,174 @@ describe("commerce domain", () => {
       expect(balance.available_to_settle).toBeGreaterThanOrEqual(0);
       expect(balance.available_to_settle).toBeLessThanOrEqual(Math.max(0, balance.payable_gross_total - balance.prepared_total - balance.pending_document_total - balance.settled_total + balance.externally_recovered_total));
     }
+  });
+
+  it("keeps PREPARED allocation atomic when the transaction aborts before commit", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const agent = await maturedReward(setup, "prepared-rollback");
+    setup.db.exec("CREATE TRIGGER abort_prepared AFTER INSERT ON reward_settlements BEGIN SELECT RAISE(ABORT, 'test PREPARED abort'); END");
+    const input = { agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" } as const;
+    expect(() => setup.domain.prepareSettlement(input, "settlement-rollback-key", "admin")).toThrow("test PREPARED abort");
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM reward_settlements").get()).toEqual({ count: 0 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM reward_settlement_idempotency").get()).toEqual({ count: 0 });
+    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ available_to_settle: 10_000 });
+  });
+
+  it("replays one PREPARED settlement across PREPARED, PENDING_DOCUMENT, and SETTLED without another allocation", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const agent = await maturedReward(setup, "all-state-replay");
+    const input = { agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" } as const;
+    const prepareKey = "settlement-all-state-prepare";
+    const prepared = setup.domain.prepareSettlement(input, prepareKey, "admin");
+    expect(setup.domain.prepareSettlement(input, prepareKey, "admin")).toMatchObject({ id: prepared.id, status: "PREPARED", amount_kopecks: 10_000 });
+    const pending = setup.domain.markSettlementPaymentMade(String(prepared.id), "I confirm the money was transferred", "settlement-all-state-payment");
+    expect(setup.domain.prepareSettlement(input, prepareKey, "admin")).toMatchObject({ id: prepared.id, status: "PENDING_DOCUMENT" });
+    expect(setup.domain.markSettlementPaymentMade(String(prepared.id), "I confirm the money was transferred", "settlement-all-state-payment")).toEqual(pending);
+    const settled = setup.domain.completeSettlementDocuments(String(prepared.id), { document_reference: "payment-document-1" }, "settlement-all-state-document");
+    expect(setup.domain.prepareSettlement(input, prepareKey, "admin")).toMatchObject({ id: prepared.id, status: "SETTLED", amount_kopecks: 10_000 });
+    expect(setup.domain.completeSettlementDocuments(String(prepared.id), { document_reference: "payment-document-1" }, "settlement-all-state-document")).toEqual(settled);
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM reward_settlements").get()).toEqual({ count: 1 });
+    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ available_to_settle: 0, settled_total: 10_000 });
+  });
+
+  it("rejects conflicting settlement command replays and illegal backward transitions", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const agent = await maturedReward(setup, "settlement-command-conflict");
+    const settlement = setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" }, "settlement-command-conflict-prepare", "admin");
+    setup.domain.markSettlementPaymentMade(String(settlement.id), "I confirm the money was transferred", "settlement-command-conflict-payment");
+    expect(() => setup.domain.markSettlementPaymentMade(String(settlement.id), "I confirm the money was transferred", "different-payment-key")).toThrow("SETTLEMENT_TRANSITION_FORBIDDEN");
+    setup.domain.completeSettlementDocuments(String(settlement.id), { document_reference: "document" }, "settlement-command-conflict-document");
+    expect(() => setup.domain.completeSettlementDocuments(String(settlement.id), { document_reference: "different" }, "settlement-command-conflict-document")).toThrow("IDEMPOTENCY_CONFLICT");
+    expect(() => setup.domain.cancelSettlementBeforePayment(String(settlement.id), { confirmation_text: `NOT PAID ${settlement.id}`, reason: "never paid" }, "settlement-command-conflict-cancel")).toThrow("SETTLEMENT_TRANSITION_FORBIDDEN");
+  });
+
+  it("prevents both full and partial contention from allocating more than the mature reward", async () => {
+    const full = fixture(); databases.push(full.db);
+    const fullAgent = await maturedReward(full, "settlement-full-contention");
+    const fullInput = { agent_id: String(fullAgent.id), occurrence_id: full.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" } as const;
+    const firstFull = full.domain.prepareSettlement(fullInput, "settlement-full-contention-a", "admin");
+    expect(() => full.domain.prepareSettlement(fullInput, "settlement-full-contention-b", "admin")).toThrow("SETTLEMENT_EXCEEDS_AVAILABLE");
+    expect(firstFull.status).toBe("PREPARED");
+
+    const partial = fixture(); databases.push(partial.db);
+    const partialAgent = await maturedReward(partial, "settlement-partial-contention");
+    const partialInput = { agent_id: String(partialAgent.id), occurrence_id: partial.occurrenceId, amount_kopecks: 7_000, method: "TRANSFER" } as const;
+    partial.domain.prepareSettlement(partialInput, "settlement-partial-contention-a", "admin");
+    expect(() => partial.domain.prepareSettlement(partialInput, "settlement-partial-contention-b", "admin")).toThrow("SETTLEMENT_EXCEEDS_AVAILABLE");
+    expect(partial.domain.rewardBalance(String(partialAgent.id), partial.occurrenceId)).toMatchObject({ prepared_total: 7_000, available_to_settle: 3_000 });
+  });
+
+  it("returns SETTLEMENT_BUSY for a real competing SQLite writer, then retries without over-allocation", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "flexperiment-settlement-lock-")); const filename = join(directory, "commerce.sqlite");
+    const setup = fixture(filename); const competingDb = openDatabase(filename); competingDb.pragma("busy_timeout = 1");
+    try {
+      const agent = await maturedReward(setup, "file-backed-contention");
+      const input = { agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" } as const;
+      const competing = new CommerceDomain(competingDb, new MockProvider());
+      setup.db.exec("BEGIN IMMEDIATE");
+      try {
+        let busy: unknown;
+        try { competing.prepareSettlement(input, "file-backed-contention-a", "admin-b"); } catch (error) { busy = error; }
+        expect(busy).toMatchObject({ code: "SETTLEMENT_BUSY", status: 409 });
+      } finally { setup.db.exec("ROLLBACK"); }
+      expect(setup.db.prepare("SELECT COUNT(*) AS count FROM reward_settlements").get()).toEqual({ count: 0 });
+      expect(setup.db.prepare("SELECT COUNT(*) AS count FROM reward_settlement_idempotency").get()).toEqual({ count: 0 });
+      expect(competing.prepareSettlement(input, "file-backed-contention-a", "admin-b")).toMatchObject({ status: "PREPARED", amount_kopecks: 10_000 });
+      expect(() => setup.domain.prepareSettlement(input, "file-backed-contention-b", "admin-a")).toThrow("SETTLEMENT_EXCEEDS_AVAILABLE");
+      expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ prepared_total: 10_000, available_to_settle: 0 });
+    } finally { competingDb.close(); setup.db.close(); rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it("records one stale PREPARED review without releasing its allocation", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const agent = await maturedReward(setup, "stale-prepared");
+    const settlement = setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" }, "stale-prepared-key", "admin");
+    setup.db.prepare("UPDATE reward_settlements SET prepared_at = ? WHERE id = ?").run(new Date(Date.now() - STALE_PREPARED_SETTLEMENT_MS - 1).toISOString(), settlement.id);
+    expect(setup.domain.detectStalePreparedSettlements()).toBe(1);
+    expect(setup.domain.detectStalePreparedSettlements()).toBe(1);
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM settlement_prepared_reviews WHERE settlement_id = ?").get(settlement.id)).toEqual({ count: 1 });
+    expect(setup.domain.settlementDetail(String(settlement.id)).settlement).toMatchObject({ stale_prepared: 1, prepared_review_status: "OPEN", status: "PREPARED" });
+    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ prepared_total: 10_000, available_to_settle: 0 });
+  });
+
+  it("uses the frozen 30-minute stale PREPARED boundary with the domain clock", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const agent = await maturedReward(setup, "stale-prepared-boundary");
+    const settlement = setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" }, "stale-prepared-boundary-prepare", "admin");
+    const fixedNow = Date.parse("2030-01-01T12:00:00.000Z");
+    const observer = new CommerceDomain(setup.db, new MockProvider(), undefined, () => fixedNow);
+    setup.db.prepare("UPDATE reward_settlements SET prepared_at = ? WHERE id = ?").run(new Date(fixedNow - STALE_PREPARED_SETTLEMENT_MS + 1).toISOString(), settlement.id);
+    expect(observer.detectStalePreparedSettlements()).toBe(0);
+    expect(observer.settlementDetail(String(settlement.id)).settlement).toMatchObject({ stale_prepared: 0, prepared_review_status: null });
+    setup.db.prepare("UPDATE reward_settlements SET prepared_at = ? WHERE id = ?").run(new Date(fixedNow - STALE_PREPARED_SETTLEMENT_MS).toISOString(), settlement.id);
+    expect(observer.detectStalePreparedSettlements()).toBe(1);
+    expect(observer.settlementDetail(String(settlement.id)).settlement).toMatchObject({ stale_prepared: 1, prepared_review_status: "OPEN" });
+    setup.db.prepare("UPDATE reward_settlements SET prepared_at = ? WHERE id = ?").run(new Date(fixedNow - STALE_PREPARED_SETTLEMENT_MS - 1).toISOString(), settlement.id);
+    expect(observer.detectStalePreparedSettlements()).toBe(1);
+  });
+
+  it("persists one stale PREPARED review across restart and resolves it once on an explicit transition", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "flexperiment-stale-prepared-")); const filename = join(directory, "commerce.sqlite");
+    const setup = fixture(filename);
+    try {
+      const agent = await maturedReward(setup, "stale-prepared-restart");
+      const settlement = setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" }, "stale-prepared-restart-prepare", "admin");
+      setup.db.prepare("UPDATE reward_settlements SET prepared_at = ? WHERE id = ?").run(new Date(Date.now() - STALE_PREPARED_SETTLEMENT_MS - 1).toISOString(), settlement.id);
+      expect(setup.domain.detectStalePreparedSettlements()).toBe(1);
+      setup.db.close();
+      const reopenedDb = openDatabase(filename); migrate(reopenedDb);
+      try {
+        const reopened = new CommerceDomain(reopenedDb, new MockProvider());
+        expect(reopened.detectStalePreparedSettlements()).toBe(1);
+        expect(reopenedDb.prepare("SELECT COUNT(*) AS count FROM settlement_prepared_reviews WHERE settlement_id = ?").get(settlement.id)).toEqual({ count: 1 });
+        expect(reopened.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ prepared_total: 10_000, available_to_settle: 0 });
+        reopened.markSettlementPaymentMade(String(settlement.id), "I confirm the money was transferred", "stale-prepared-restart-payment");
+        const review = reopenedDb.prepare("SELECT status, resolved_at FROM settlement_prepared_reviews WHERE settlement_id = ?").get(settlement.id) as { status: string; resolved_at: string };
+        expect(review).toMatchObject({ status: "RESOLVED", resolved_at: expect.any(String) });
+        reopened.markSettlementPaymentMade(String(settlement.id), "I confirm the money was transferred", "stale-prepared-restart-payment");
+        expect(reopenedDb.prepare("SELECT status, resolved_at FROM settlement_prepared_reviews WHERE settlement_id = ?").get(settlement.id)).toEqual(review);
+      } finally { reopenedDb.close(); }
+    } finally { try { setup.db.close(); } catch { /* closed for restart */ } rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it("records recovery once only for an actually paid settlement and corrects exposure", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const agent = await maturedReward(setup, "paid-recovery");
+    const settlement = setup.domain.prepareSettlement({ agent_id: String(agent.id), occurrence_id: setup.occurrenceId, amount_kopecks: 10_000, method: "TRANSFER" }, "paid-recovery-prepare", "admin");
+    expect(() => setup.domain.addSettlementRecovery(String(settlement.id), { amount_recovered_kopecks: 1_000, recovered_at: new Date().toISOString(), method: "TRANSFER", evidence_reference: "too-early" }, "paid-recovery-too-early")).toThrow("SETTLEMENT_RECOVERY_NOT_PAID");
+    setup.domain.markSettlementPaymentMade(String(settlement.id), "I confirm the money was transferred", "paid-recovery-payment");
+    setup.db.prepare("INSERT INTO reward_adjustments(id, order_id, agent_id, amount_kopecks, reason, semantic_key) SELECT ?, order_id, ?, -7000, 'TEST', 'paid-recovery-reduction' FROM referral_rewards WHERE agent_id = ?").run(randomUUID(), agent.id, agent.id);
+    for (const amount of [0, -1, 1.5]) expect(() => setup.domain.addSettlementRecovery(String(settlement.id), { amount_recovered_kopecks: amount, recovered_at: new Date().toISOString(), method: "TRANSFER", evidence_reference: `invalid-${amount}` }, `paid-recovery-invalid-${amount}`)).toThrow("SETTLEMENT_RECOVERY_AMOUNT_INVALID");
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM reward_settlement_command_idempotency WHERE command = 'RECOVERY'").get()).toEqual({ count: 0 });
+    expect(() => setup.domain.addSettlementRecovery(String(settlement.id), { amount_recovered_kopecks: 10_001, recovered_at: new Date().toISOString(), method: "TRANSFER", evidence_reference: "too-much" }, "paid-recovery-too-much")).toThrow("SETTLEMENT_RECOVERY_EXCEEDS_REMAINING");
+    const recoveryInput = { amount_recovered_kopecks: 6_000, recovered_at: new Date().toISOString(), method: "TRANSFER", evidence_reference: "bank-return" } as const;
+    const first = setup.domain.addSettlementRecovery(String(settlement.id), recoveryInput, "paid-recovery-key");
+    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ externally_recovered_total: 6_000, late_adjustment_exposure: 1_000, available_to_settle: 0 });
+    const second = setup.domain.addSettlementRecovery(String(settlement.id), { amount_recovered_kopecks: 4_000, recovered_at: new Date().toISOString(), method: "TRANSFER", evidence_reference: "bank-return-rest" }, "paid-recovery-second-key");
+    expect(second.amount_recovered_kopecks).toBe(4_000);
+    expect(() => setup.domain.addSettlementRecovery(String(settlement.id), { amount_recovered_kopecks: 1, recovered_at: new Date().toISOString(), method: "TRANSFER", evidence_reference: "one-too-many" }, "paid-recovery-excess-key")).toThrow("SETTLEMENT_RECOVERY_EXCEEDS_REMAINING");
+    const replay = setup.domain.addSettlementRecovery(String(settlement.id), recoveryInput, "paid-recovery-key");
+    expect(replay).toEqual(first);
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM settlement_recoveries WHERE settlement_id = ?").get(settlement.id)).toEqual({ count: 2 });
+    expect(setup.db.prepare("SELECT SUM(amount_recovered_kopecks) AS amount FROM settlement_recoveries WHERE settlement_id = ?").get(settlement.id)).toEqual({ amount: 10_000 });
+    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ externally_recovered_total: 10_000, late_adjustment_exposure: 0, available_to_settle: 3_000 });
+  });
+
+  it("defers only stale-review busy contention and continues the financial worker sequence", async () => {
+    const calls: string[] = [];
+    const busyDomain = {
+      recoverStaleCommands: () => { calls.push("recover-stale"); },
+      detectStalePreparedSettlements: () => { calls.push("detect"); throw new DomainError("SETTLEMENT_BUSY", 409); },
+      reconcilePendingPayments: async () => { calls.push("payments"); },
+      createObligationRefunds: () => { calls.push("obligations"); },
+      submitRequestedRefunds: async () => { calls.push("submit-refunds"); },
+      reconcilePendingRefunds: async () => { calls.push("reconcile-refunds"); },
+      processEmailOutbox: async () => { calls.push("email"); },
+    };
+    await runWorkerSweep(busyDomain as never);
+    expect(calls).toEqual(["recover-stale", "detect", "payments", "obligations", "submit-refunds", "reconcile-refunds", "email"]);
+
+    const unexpectedDomain = { ...busyDomain, detectStalePreparedSettlements: () => { throw new Error("unexpected stale detector failure"); } };
+    await expect(runWorkerSweep(unexpectedDomain as never)).rejects.toThrow("unexpected stale detector failure");
   });
 });
