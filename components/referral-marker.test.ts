@@ -66,6 +66,21 @@ describe("functional referral marker", () => {
     expect(calls).toBe(1);
   });
 
+  it("does not revalidate or rewrite the marker after the current touch has settled", async () => {
+    const coordinator = createReferralCaptureCoordinator();
+    let eligibilityCalls = 0;
+    let markerWrites = 0;
+    const write = () => { markerWrites += 1; };
+    const global = coordinator.ensure("?fx_ref=v1%3Aa-promoter", async () => { eligibilityCalls += 1; return true; }, write, "/city?fx_ref=v1%3Aa-promoter");
+    await expect(global).resolves.toBe(true);
+    const checkout = coordinator.ensure("?fx_ref=v1%3Aa-promoter", async () => { eligibilityCalls += 1; return true; }, write, "/city?fx_ref=v1%3Aa-promoter");
+
+    expect(checkout).toBe(global);
+    await expect(checkout).resolves.toBe(true);
+    expect(eligibilityCalls).toBe(1);
+    expect(markerWrites).toBe(1);
+  });
+
   it("keeps the final marker from the last eligible A navigation when A1, B, and A2 overlap", async () => {
     const coordinator = createReferralCaptureCoordinator();
     let cookie = "";

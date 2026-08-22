@@ -9,7 +9,7 @@ export function createReferralCaptureCoordinator() {
   let activeCount = 0;
   let currentObservation: string | undefined;
   let observationGeneration = 0;
-  const activeByTouch = new Map<string, { task: Promise<boolean> }>();
+  let currentTouch: { key: string; task: Promise<boolean> } | undefined;
   let pending: Promise<void> = Promise.resolve();
   let resolvePending: (() => void) | undefined;
   const beginCapture = () => {
@@ -26,6 +26,9 @@ export function createReferralCaptureCoordinator() {
     if (observation !== currentObservation) {
       currentObservation = observation;
       observationGeneration += 1;
+      // This is page-runtime navigation state only. Old work may still be
+      // pending for the checkout barrier, but cannot represent this location.
+      currentTouch = undefined;
     }
     const slug = referralTouchFromLocation(search);
     // Navigation without a referral must not cancel a still-resolving eligible
@@ -33,11 +36,11 @@ export function createReferralCaptureCoordinator() {
     if (!slug) return Promise.resolve(false);
     const marker = `v1:${slug}`;
     const touchKey = `${observationGeneration}:${marker}`;
-    const active = activeByTouch.get(touchKey);
-    if (active) return active.task;
+    // Retain the current observation's decision after it settles. A checkout
+    // refresh on the unchanged URL must not revalidate or refresh the cookie.
+    if (currentTouch?.key === touchKey) return currentTouch.task;
     const touchSequence = ++sequence;
     beginCapture();
-    const entry = {} as { task: Promise<boolean> };
     const task = Promise.resolve()
       .then(() => checkEligibility(slug))
       .then((result) => {
@@ -50,13 +53,8 @@ export function createReferralCaptureCoordinator() {
         return result;
       })
       .catch(() => false)
-      .finally(() => {
-        // An old task cannot clear a newer touch's active record.
-        if (activeByTouch.get(touchKey) === entry) activeByTouch.delete(touchKey);
-        finishCapture();
-      });
-    entry.task = task;
-    activeByTouch.set(touchKey, entry);
+      .finally(finishCapture);
+    currentTouch = { key: touchKey, task };
     return task;
   };
 
