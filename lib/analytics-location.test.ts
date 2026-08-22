@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { safeAnalyticsLocation } from "./analytics-location";
+import { isAnalyticsEligibleRoute, safeAnalyticsLocation } from "./analytics-location";
 
 describe("safe analytics location", () => {
   it("retains only an explicit, stable marketing query allowlist", () => {
@@ -12,6 +12,13 @@ describe("safe analytics location", () => {
     expect(safeAnalyticsLocation("/refund", "?order=FX-1")).toBeNull();
     expect(safeAnalyticsLocation("/refund/confirm", "")).toBeNull();
     expect(safeAnalyticsLocation("/payment/success", "?order=public-status")).toBeNull();
+  });
+
+  it("marks sensitive route families ineligible before any bootstrap", () => {
+    expect(isAnalyticsEligibleRoute("/ticket")).toBe(false);
+    expect(isAnalyticsEligibleRoute("/refund/confirm")).toBe(false);
+    expect(isAnalyticsEligibleRoute("/payment/success")).toBe(false);
+    expect(isAnalyticsEligibleRoute("/kemerovo")).toBe(true);
   });
 
   it("uses the sanitized address as a hash-free navigation identity", () => {

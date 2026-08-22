@@ -7,7 +7,7 @@ const MARKETING_QUERY_PARAMETERS = new Set([
   "yclid",
 ]);
 
-const sensitiveRoute = (pathname: string) =>
+export const isAnalyticsEligibleRoute = (pathname: string) => !(
   pathname === "/ticket" ||
   pathname.startsWith("/ticket/") ||
   pathname === "/refund" ||
@@ -15,7 +15,8 @@ const sensitiveRoute = (pathname: string) =>
   pathname === "/payment/success" ||
   pathname.startsWith("/payment/success/") ||
   pathname === "/admin" ||
-  pathname.startsWith("/admin/");
+  pathname.startsWith("/admin/")
+);
 
 /**
  * The only page address passed to Metrika. Query values are opt-in marketing
@@ -25,7 +26,7 @@ export function safeAnalyticsLocation(
   pathname: string,
   search: string,
 ): string | null {
-  if (!pathname.startsWith("/") || sensitiveRoute(pathname)) return null;
+  if (!pathname.startsWith("/") || !isAnalyticsEligibleRoute(pathname)) return null;
 
   const hashFreeSearch = search.split("#", 1)[0];
   const entries = [...new URLSearchParams(hashFreeSearch).entries()]
