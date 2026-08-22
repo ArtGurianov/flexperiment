@@ -13,7 +13,7 @@
     "PRIVACY_POLICY": {
       "document_id": "PRIVACY_POLICY",
       "version": "2026-08-22",
-      "sha256": "28d57c250a2b18c8012acb72b9cf8c924db2935afcfd9a993d80aa135d9bbb78",
+      "sha256": "5fb2d1d06ecdff33ccaff0d9592b949ab54ba935bbf7d3ca77c24ffba3836908",
       "current_url": "https://flexperiment.ru/legal/privacy-policy.md",
       "archive_url": "https://flexperiment.ru/legal/archive/privacy/2026-08-22.1/privacy-policy.md",
       "checkout_relevant": true
@@ -23,7 +23,7 @@
       "version": "2026-08-12",
       "sha256": "8ef14cdd772813635f6bf1f43d758b9f2383283df3d905fd2d43965e671f1b11",
       "current_url": "https://flexperiment.ru/legal/personal-data-consent.md",
-      "archive_url": "https://flexperiment.s3.cloud.ru/legal/2026-08-21.1/personal-data-consent.md",
+      "archive_url": "https://flexperiment.ru/legal/archive/privacy/2026-08-22.1/personal-data-consent.md",
       "checkout_relevant": true
     },
     "CHECKOUT_DISCLOSURE": {

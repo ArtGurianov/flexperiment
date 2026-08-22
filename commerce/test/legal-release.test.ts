@@ -56,6 +56,11 @@ describe("production legal-release publisher", () => {
       "CHECKOUT_DISCLOSURE",
     ]);
     expect(candidate.manifest.documents.PRIVACY_POLICY.version).toBe("2026-08-22");
+    expect(candidate.manifest.documents.PD_CONSENT).toMatchObject({
+      version: "2026-08-12",
+      sha256: "8ef14cdd772813635f6bf1f43d758b9f2383283df3d905fd2d43965e671f1b11",
+      archive_url: "https://flexperiment.ru/legal/archive/privacy/2026-08-22.1/personal-data-consent.md",
+    });
     expect(readFileSync("public/legal/archive/privacy/2026-08-22.1/privacy-policy.md")).not.toEqual(
       readFileSync("public/legal/archive/privacy/2026-08-21.2/privacy-policy.md"),
     );
