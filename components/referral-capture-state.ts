@@ -7,6 +7,7 @@ export function createReferralCaptureCoordinator() {
   let sequence = 0;
   let latestEligibleSequence = 0;
   let activeCount = 0;
+  const activeByMarker = new Map<string, Promise<boolean>>();
   let pending: Promise<void> = Promise.resolve();
   let resolvePending: (() => void) | undefined;
   const beginCapture = () => {
@@ -16,27 +17,34 @@ export function createReferralCaptureCoordinator() {
     if (--activeCount === 0) resolvePending?.();
   };
 
-  const capture = async (search: string, checkEligibility: EligibilityCheck, writeMarker: MarkerWriter) => {
+  const ensure = (search: string, checkEligibility: EligibilityCheck, writeMarker: MarkerWriter) => {
     const slug = referralTouchFromLocation(search);
     // Navigation without a referral must not cancel a still-resolving eligible
     // landing touch; its marker remains a functional 30-day attribution.
-    if (!slug) return false;
+    if (!slug) return Promise.resolve(false);
+    const marker = `v1:${slug}`;
+    const active = activeByMarker.get(marker);
+    if (active) return active;
     const touchSequence = ++sequence;
-    let eligible = false;
     beginCapture();
-    await checkEligibility(slug)
+    const task = Promise.resolve()
+      .then(() => checkEligibility(slug))
       .then((result) => {
-        eligible = result;
         // An invalid candidate never changes the marker. Among eligible
         // candidates, the last navigation touch wins even if responses race.
         if (result && touchSequence > latestEligibleSequence) {
           latestEligibleSequence = touchSequence;
-          writeMarker(`v1:${slug}`);
+          writeMarker(marker);
         }
+        return result;
       })
-      .catch(() => undefined)
-      .finally(finishCapture);
-    return eligible;
+      .catch(() => false)
+      .finally(() => {
+        activeByMarker.delete(marker);
+        finishCapture();
+      });
+    activeByMarker.set(marker, task);
+    return task;
   };
 
   const waitForCurrentCapture = async () => {
@@ -46,7 +54,7 @@ export function createReferralCaptureCoordinator() {
     do { observed = pending; await observed; } while (observed !== pending);
   };
 
-  return { capture, waitForCurrentCapture };
+  return { ensure, waitForCurrentCapture };
 }
 
 export const referralCaptureCoordinator = createReferralCaptureCoordinator();
