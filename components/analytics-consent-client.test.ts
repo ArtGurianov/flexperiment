@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { applyAnalyticsConsentChoice } from "./analytics-consent-client";
-import { createMetrikaManager, type MetrikaEnvironment } from "./metrika";
+import {
+  clearMetrikaFirstPartyStorage,
+  createMetrikaManager,
+  enforceMetrikaDenied,
+  syncMetrikaForRoute,
+  type MetrikaEnvironment,
+} from "./metrika";
 
 describe("analytics consent transition", () => {
   it("persists denial and revokes a loading manager before any later React effect", () => {
@@ -36,5 +42,73 @@ describe("analytics consent transition", () => {
       notify: () => events.push("notify"),
     });
     expect(events).toEqual(["persist", "notify"]);
+  });
+
+  it.each(["/ticket", "/refund/confirm"])("cleans a1 storage on %s without creating a manager", (pathname) => {
+    const cookies = new Set(["_ym_uid", "fx_ref", "fx_consent", "theme"]);
+    const localStorage = new Set(["_ym123_lastHit", "_ym_retryReqs", "checkout", "theme"]);
+    const sessionStorage = new Set(["_ym_debugger_state", "checkout"]);
+    let storedConsent = "v1:a1";
+    let factories = 0;
+    const manager = syncMetrikaForRoute({
+      consent: "ALLOWED",
+      counterId: 123,
+      manager: null,
+      createManager: () => {
+        factories += 1;
+        throw new Error("sensitive route must not create a manager");
+      },
+      pathname,
+      search: "",
+    });
+
+    applyAnalyticsConsentChoice("DENIED", {
+      persist: () => { storedConsent = "v1:a0"; },
+      revoke: () => enforceMetrikaDenied({
+        counterId: 123,
+        manager,
+        environment: {
+          setDisabled: () => undefined,
+          cleanup: (counterId) => clearMetrikaFirstPartyStorage(counterId, {
+            removeCookie: (key) => cookies.delete(key),
+            removeLocalStorage: (key) => localStorage.delete(key),
+            removeSessionStorage: (key) => sessionStorage.delete(key),
+          }),
+        },
+      }),
+      notify: () => undefined,
+    });
+
+    expect(storedConsent).toBe("v1:a0");
+    expect(factories).toBe(0);
+    expect(cookies).toEqual(new Set(["fx_ref", "fx_consent", "theme"]));
+    expect(localStorage).toEqual(new Set(["checkout", "theme"]));
+    expect(sessionStorage).toEqual(new Set(["checkout"]));
+  });
+
+  it.each(["/", "/kemerovo", "/ticket", "/refund/confirm"])("performs a0 cold-load cleanup on %s without manager, tag, init, or hit", (pathname) => {
+    const events: string[] = [];
+    let factories = 0;
+    const manager = syncMetrikaForRoute({
+      consent: "DENIED",
+      counterId: 123,
+      manager: null,
+      createManager: () => {
+        factories += 1;
+        throw new Error("a0 must not create a manager");
+      },
+      pathname,
+      search: "",
+    });
+    enforceMetrikaDenied({
+      counterId: 123,
+      manager,
+      environment: {
+        setDisabled: () => events.push("disabled"),
+        cleanup: () => events.push("cleanup"),
+      },
+    });
+    expect(factories).toBe(0);
+    expect(events).toEqual(["disabled", "cleanup"]);
   });
 });

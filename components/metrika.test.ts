@@ -5,6 +5,7 @@ import {
   canBootstrapMetrika,
   clearMetrikaFirstPartyStorage,
   createMetrikaManager,
+  enforceMetrikaDenied,
   installMetrikaQueue,
   metrikaCounterId,
   syncMetrikaForRoute,
@@ -15,7 +16,7 @@ type FakeMetrika = {
   environment: MetrikaEnvironment;
   commands: unknown[][];
   disabled: boolean[];
-  cleanupCalls: number[];
+  cleanupCalls: Array<number | null>;
   injections: number;
   load: () => void;
 };
@@ -23,7 +24,7 @@ type FakeMetrika = {
 function fakeMetrika(): FakeMetrika {
   const commands: unknown[][] = [];
   const disabled: boolean[] = [];
-  const cleanupCalls: number[] = [];
+  const cleanupCalls: Array<number | null> = [];
   let onload: () => void = () => {};
   let injections = 0;
   return {
@@ -158,12 +159,40 @@ describe("Metrika consent manager", () => {
       "_ym123_lastHit", "_ym123_lsid", "_ym123_reqNum", "_ym_retryReqs", "_ym_uid", "_ym_hide_phones", "zz",
       "checkout", "theme",
     ]);
+    const sessionStorage = new Set(["_ym_debugger_state", "_ym_turbo_uid", "checkout", "ticket"]);
     clearMetrikaFirstPartyStorage(123, {
       removeCookie: (key) => cookies.delete(key),
       removeLocalStorage: (key) => localStorage.delete(key),
+      removeSessionStorage: (key) => sessionStorage.delete(key),
     });
     expect(cookies).toEqual(new Set(["fx_ref", "fx_consent", "theme"]));
     expect(localStorage).toEqual(new Set(["checkout", "theme"]));
+    expect(sessionStorage).toEqual(new Set(["checkout", "ticket"]));
+  });
+
+  it("cleans generic documented state without a configured counter but retains unknown counter-specific state", () => {
+    const localStorage = new Set(["_ym123_lastHit", "_ym_retryReqs", "_ym_uid", "zz", "checkout"]);
+    const sessionStorage = new Set(["_ym_debugger_state", "_ym_turbo_uid", "checkout"]);
+    clearMetrikaFirstPartyStorage(null, {
+      removeCookie: () => undefined,
+      removeLocalStorage: (key) => localStorage.delete(key),
+      removeSessionStorage: (key) => sessionStorage.delete(key),
+    });
+    expect(localStorage).toEqual(new Set(["_ym123_lastHit", "checkout"]));
+    expect(sessionStorage).toEqual(new Set(["checkout"]));
+  });
+
+  it("enforces denial and cleanup even when no manager exists", () => {
+    const calls: Array<string | number> = [];
+    enforceMetrikaDenied({
+      counterId: 123,
+      manager: null,
+      environment: {
+        setDisabled: (id, value) => calls.push(id, String(value)),
+        cleanup: (id) => calls.push(`cleanup:${id}`),
+      },
+    });
+    expect(calls).toEqual([123, "true", "cleanup:123"]);
   });
 
   it("uses only the latest safe navigation when loading completes", () => {

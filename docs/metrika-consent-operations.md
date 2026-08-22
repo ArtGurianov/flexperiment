@@ -9,7 +9,7 @@ public `flexperiment.ru` resource: `deploy/Caddyfile` is explicitly a routing
 reference, while `Dockerfile.admin` serves only Admin. In Coolify, provide
 `NEXT_PUBLIC_YANDEX_METRIKA_ID` to the **public-site build** before `pnpm build`;
 a runtime-only container variable cannot change an already exported bundle.
-The production static-server CSP must include exactly:
+The minimum Phase 13 CSP baseline for this privacy-minimal tag is:
 
 ```text
 script-src 'self' 'unsafe-inline' https://mc.yandex.ru https://yastatic.net
@@ -17,6 +17,11 @@ connect-src 'self' https://api.flexperiment.ru https://mc.yandex.ru
 img-src 'self' data: https://flexperiment.s3.cloud.ru https://mc.yandex.ru
 frame-ancestors 'none'
 ```
+
+Yandex notes that CSP examples may not list every endpoint required by Metrika.
+Do not preemptively add broad Yandex origins or Webvisor frame/blob allowances;
+the controlled browser network smoke is authoritative for any additional,
+documented endpoint required by the configured counter.
 
 Before production cutover, verify in the Yandex Metrika UI:
 

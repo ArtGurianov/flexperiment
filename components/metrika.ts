@@ -51,25 +51,44 @@ const metrikaLocalStorageKeys = (counterId: number) => [
   "zz",
 ];
 
+const METRIKA_GENERIC_LOCAL_STORAGE_KEYS = [
+  "_ym_retryReqs",
+  "_ym_uid",
+  "_ym_hide_phones",
+  "zz",
+] as const;
+
+const METRIKA_SESSION_STORAGE_KEYS = [
+  "_ym_debugger_state",
+  "_ym_turbo_uid",
+] as const;
+
 export type MetrikaEnvironment = {
   injectTag: (handlers: { onload: () => void; onerror: () => void }) => void;
   setDisabled: (counterId: number, disabled: boolean) => void;
   command: (...command: MetrikaCommand) => void;
-  cleanup: (counterId: number) => void;
+  cleanup: (counterId: number | null) => void;
 };
 
 export type MetrikaStorage = {
   removeCookie: (name: string) => void;
   removeLocalStorage: (key: string) => void;
+  removeSessionStorage: (key: string) => void;
 };
 
 /** Removes only documented, first-party Metrika state; never app cookies. */
 export function clearMetrikaFirstPartyStorage(
-  counterId: number,
+  counterId: number | null,
   storage: MetrikaStorage,
 ) {
   for (const name of METRIKA_COOKIE_NAMES) storage.removeCookie(name);
-  for (const key of metrikaLocalStorageKeys(counterId)) storage.removeLocalStorage(key);
+  for (const key of METRIKA_GENERIC_LOCAL_STORAGE_KEYS) storage.removeLocalStorage(key);
+  if (counterId !== null) {
+    for (const key of metrikaLocalStorageKeys(counterId).slice(0, 3)) {
+      storage.removeLocalStorage(key);
+    }
+  }
+  for (const key of METRIKA_SESSION_STORAGE_KEYS) storage.removeSessionStorage(key);
 }
 
 export function installMetrikaQueue(
@@ -95,6 +114,14 @@ function removeBrowserCookie(name: string) {
   document.cookie = `${expires}; Domain=.flexperiment.ru`;
 }
 
+function browserMetrikaStorage(): MetrikaStorage {
+  return {
+    removeCookie: removeBrowserCookie,
+    removeLocalStorage: (key) => window.localStorage.removeItem(key),
+    removeSessionStorage: (key) => window.sessionStorage.removeItem(key),
+  };
+}
+
 export function browserMetrikaEnvironment(): MetrikaEnvironment {
   const browserWindow = window as unknown as BrowserMetrikaWindow;
 
@@ -112,10 +139,7 @@ export function browserMetrikaEnvironment(): MetrikaEnvironment {
       browserWindow[`disableYaCounter${counterId}`] = disabled;
     },
     command: (...command) => browserWindow.ym?.(...command),
-    cleanup: (counterId) => clearMetrikaFirstPartyStorage(counterId, {
-      removeCookie: removeBrowserCookie,
-      removeLocalStorage: (key) => window.localStorage.removeItem(key),
-    }),
+    cleanup: (counterId) => clearMetrikaFirstPartyStorage(counterId, browserMetrikaStorage()),
   };
 }
 
@@ -202,6 +226,39 @@ export function createMetrikaManager(
 }
 
 type MetrikaManager = ReturnType<typeof createMetrikaManager>;
+
+export type MetrikaDenialEnvironment = Pick<
+  MetrikaEnvironment,
+  "setDisabled" | "cleanup"
+>;
+
+/**
+ * Enforces a0 without constructing Metrika. This is intentionally separate
+ * from the manager because sensitive routes never create one.
+ */
+export function enforceMetrikaDenied(input: {
+  counterId: number | null;
+  manager: MetrikaManager | null;
+  environment: MetrikaDenialEnvironment;
+}) {
+  const { counterId, manager, environment } = input;
+  if (manager) {
+    manager.revoke();
+    return;
+  }
+  if (counterId !== null) environment.setDisabled(counterId, true);
+  environment.cleanup(counterId);
+}
+
+export function browserMetrikaDenialEnvironment(): MetrikaDenialEnvironment {
+  const browserWindow = window as unknown as BrowserMetrikaWindow;
+  return {
+    setDisabled: (counterId, disabled) => {
+      browserWindow[`disableYaCounter${counterId}`] = disabled;
+    },
+    cleanup: (counterId) => clearMetrikaFirstPartyStorage(counterId, browserMetrikaStorage()),
+  };
+}
 
 /** Route gate used before creating a manager or inserting a third-party tag. */
 export function syncMetrikaForRoute(input: {

@@ -4,7 +4,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import type { AnalyticsConsent as AnalyticsConsentState, StoredAnalyticsConsent } from "@/lib/analytics-consent";
 import { ANALYTICS_CONSENT_CHANGE_EVENT, applyAnalyticsConsentChoice, notifyAnalyticsConsentChange, persistAnalyticsConsent, readAnalyticsConsent } from "@/components/analytics-consent-client";
-import { browserMetrikaEnvironment, createMetrikaManager, metrikaCounterId, syncMetrikaForRoute } from "@/components/metrika";
+import { browserMetrikaDenialEnvironment, browserMetrikaEnvironment, createMetrikaManager, enforceMetrikaDenied, metrikaCounterId, syncMetrikaForRoute } from "@/components/metrika";
 
 const PRIVACY_URL = "/legal/privacy-policy";
 
@@ -13,6 +13,7 @@ export default function AnalyticsConsent() {
   const searchParams = useSearchParams();
   const search = searchParams.toString();
   const manager = useRef<ReturnType<typeof createMetrikaManager> | null>(null);
+  const denialEnforced = useRef(false);
   const [consent, setConsent] = useState<AnalyticsConsentState>("UNDECIDED");
   const [settingsOpen, setSettingsOpen] = useState(false);
 
@@ -25,6 +26,18 @@ export default function AnalyticsConsent() {
 
   useLayoutEffect(() => {
     const counterId = metrikaCounterId();
+    if (consent === "DENIED") {
+      if (!denialEnforced.current) {
+        enforceMetrikaDenied({
+          counterId,
+          manager: manager.current,
+          environment: browserMetrikaDenialEnvironment(),
+        });
+        denialEnforced.current = true;
+      }
+      return;
+    }
+    denialEnforced.current = false;
     manager.current = syncMetrikaForRoute({
       consent,
       counterId,
@@ -40,7 +53,14 @@ export default function AnalyticsConsent() {
     // load anything. The marker is a first-party functional preference.
     applyAnalyticsConsentChoice(next, {
       persist: persistAnalyticsConsent,
-      revoke: () => manager.current?.revoke(),
+      revoke: () => {
+        enforceMetrikaDenied({
+          counterId: metrikaCounterId(),
+          manager: manager.current,
+          environment: browserMetrikaDenialEnvironment(),
+        });
+        denialEnforced.current = true;
+      },
       notify: notifyAnalyticsConsentChange,
     });
     setConsent(next);
