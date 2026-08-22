@@ -19,10 +19,14 @@ async function checkReferralEligibility(slug: string) {
  * The coordinator deduplicates an identical active touch.
  */
 export function ensureCurrentReferralCapture() {
+  const search = window.location.search;
+  // Hash fragments are intentionally excluded: referral touch identity is the
+  // App Router location, not an in-page anchor change.
+  const observation = `${window.location.pathname}${search}`;
   return referralCaptureCoordinator.ensure(
-    window.location.search,
+    search,
     checkReferralEligibility,
     storeReferralMarker,
-    `${window.location.pathname}${window.location.search}`,
+    observation,
   );
 }
