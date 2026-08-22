@@ -1,8 +1,9 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { commerceApiUrl } from "@/lib/commerce-api";
+import { referralTouchFromLocation, storeReferralMarker, storedReferralMarkedAt, storedReferralSlug } from "@/components/referral-marker";
 
 type Occurrence = {
   id: string;
@@ -44,6 +45,7 @@ export default function CheckoutFlow() {
   const [occurrences, setOccurrences] = useState<Occurrence[]>([]);
   const [occurrenceId, setOccurrenceId] = useState("");
   const [promoCode, setPromoCode] = useState("");
+  const referralTouch = useRef<string | null>(typeof window === "undefined" ? null : referralTouchFromLocation(window.location.search));
   const [quote, setQuote] = useState<Quote | null>(null);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
@@ -81,11 +83,12 @@ export default function CheckoutFlow() {
     try {
       const response = await fetch(commerceApiUrl("/v1/public/checkout-context"), {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ occurrence_id: id, promo_code: promo || undefined }),
+        body: JSON.stringify({ occurrence_id: id, promo_code: promo || undefined, referral_slug: storedReferralSlug(document.cookie) ?? undefined, referral_marked_at: storedReferralMarkedAt(document.cookie) ?? undefined, referral_touch_slug: referralTouch.current ?? undefined }),
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error?.code ?? "QUOTE_UNAVAILABLE");
-      setQuote(data); setEligibility(false); setOffer(false); setConsent(false);
+      if (data.referral_marker) storeReferralMarker(data.referral_marker);
+      referralTouch.current = null; setQuote(data); setEligibility(false); setOffer(false); setConsent(false);
     } catch {
       setQuote(null); setMessage("Не удалось получить актуальные условия. Проверьте соединение и повторите попытку.");
     } finally { setLoading(false); }

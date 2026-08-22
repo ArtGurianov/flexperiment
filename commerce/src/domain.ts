@@ -24,6 +24,9 @@ export function withImmediateTransaction<T>(db: Database.Database, operation: ()
 }
 
 const isPromoEligible = (promo: Row | undefined) => Boolean(promo && promo.status === "ACTIVE" && (promo.agent_id === null || promo.agent_enabled === 1));
+const activeAgentBySlug = (db: Database.Database, slug: string | undefined) => slug
+  ? one(db, "SELECT id, slug, default_reward_type, default_reward_value FROM agents WHERE slug = ? AND enabled = 1", slug)
+  : undefined;
 const discountFor = (price: number, type: unknown, value: unknown) => {
   const amount = Number(value ?? 0);
   if (type === "PERCENT") return Math.min(price, Math.floor((price * amount + 5_000) / 10_000));
@@ -80,7 +83,7 @@ export class CommerceDomain {
     return { ...release, manifest: legalManifest(JSON.parse(String(release.manifest_json))) };
   }
 
-  checkoutContext(input: { occurrenceId: string; promoCode?: string; referralSlug?: string }) {
+  checkoutContext(input: { occurrenceId: string; promoCode?: string; referralSlug?: string; referralTouchSlug?: string; referralMarkedAt?: string }) {
     return withImmediateTransaction(this.db, () => {
       const occurrence = one(this.db, "SELECT * FROM occurrences WHERE id = ?", input.occurrenceId);
       if (!occurrence || occurrence.visibility !== "PUBLISHED") throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
@@ -97,11 +100,15 @@ export class CommerceDomain {
           LEFT JOIN agents a ON a.id = p.agent_id WHERE p.normalized_code = ?`, input.promoCode.trim().toUpperCase());
         if (!isPromoEligible(promo)) throw new DomainError("PROMO_NOT_ELIGIBLE", 409);
       }
-      let attributedAgentId: string | null = promo?.agent_id as string | null ?? null;
-      if (!attributedAgentId && input.referralSlug) {
-        const agent = one(this.db, "SELECT id FROM agents WHERE slug = ? AND enabled = 1", input.referralSlug);
-        attributedAgentId = (agent?.id as string | undefined) ?? null;
-      }
+      // A new touch replaces the marker only when it is eligible. An invalid or
+      // disabled touch deliberately falls back to the still-valid stored marker.
+      const markerIsFresh = input.referralMarkedAt && Date.parse(input.referralMarkedAt) > Date.now() - 30 * 24 * 60 * 60_000;
+      const touchAgent = activeAgentBySlug(this.db, input.referralTouchSlug);
+      const referralAgent = touchAgent
+        ?? (markerIsFresh ? activeAgentBySlug(this.db, input.referralSlug) : undefined);
+      const promoAgentId = promo?.agent_id as string | null ?? null;
+      const attributedAgentId: string | null = promoAgentId ?? (referralAgent?.id as string | undefined) ?? null;
+      const referralSlug = referralAgent?.slug as string | undefined;
       const price = Number(occurrence.price_kopecks);
       const discount = discountFor(price, promo?.discount_type, promo?.discount_value);
       const quoteId = id();
@@ -109,10 +116,13 @@ export class CommerceDomain {
         ? `${occurrence.venue_name}: ${occurrence.venue_address}`
         : String(occurrence.venue_disclosure_text);
       const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
-      this.db.prepare(`INSERT INTO quotes(id, occurrence_id, material_revision, legal_release_id, promo_id, attributed_agent_id, price_kopecks, discount_kopecks, final_amount_kopecks, venue_disclosure, expires_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(quoteId, occurrence.id, occurrence.material_revision, release.id, promo?.id ?? null, attributedAgentId, price, discount, price - discount, disclosure, expiresAt);
-      return { quote_id: quoteId, occurrence_id: occurrence.id, material_revision: occurrence.material_revision, availability, price_kopecks: price, discount_kopecks: discount, final_amount_kopecks: price - discount, currency: "RUB", venue_disclosure: disclosure, legal_release: { id: release.id, version: release.version, manifest }, expires_at: expiresAt };
+      this.db.prepare(`INSERT INTO quotes(id, occurrence_id, material_revision, legal_release_id, promo_id, attributed_agent_id, price_kopecks, discount_kopecks, final_amount_kopecks, venue_disclosure, expires_at, referral_slug, promo_code_snapshot, discount_type_snapshot, discount_value_snapshot)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(quoteId, occurrence.id, occurrence.material_revision, release.id, promo?.id ?? null, attributedAgentId, price, discount, price - discount, disclosure, expiresAt, referralSlug ?? null, promo?.code ?? null, promo?.discount_type ?? null, promo?.discount_value ?? null);
+      // Only a new eligible touch renews the 30-day first-party cookie. A
+      // fallback to the old marker must not turn an invalid landing URL into a
+      // fresh touch.
+      return { quote_id: quoteId, occurrence_id: occurrence.id, material_revision: occurrence.material_revision, availability, price_kopecks: price, discount_kopecks: discount, final_amount_kopecks: price - discount, currency: "RUB", venue_disclosure: disclosure, referral_marker: touchAgent ? `v1:${referralSlug}` : null, legal_release: { id: release.id, version: release.version, manifest }, expires_at: expiresAt };
     });
   }
 
@@ -135,10 +145,17 @@ export class CommerceDomain {
       const release = one(this.db, "SELECT * FROM legal_releases WHERE active = 1");
       if (!release || release.id !== quote.legal_release_id) throw new DomainError("LEGAL_VERSION_CHANGED", 409);
       const manifest = legalManifest(JSON.parse(String(release.manifest_json)));
+      let promo: Row | undefined;
       if (quote.promo_id) {
-        const promo = one(this.db, `SELECT p.*, a.enabled AS agent_enabled FROM promo_codes p LEFT JOIN agents a ON a.id = p.agent_id WHERE p.id = ?`, quote.promo_id);
+        promo = one(this.db, `SELECT p.*, a.enabled AS agent_enabled FROM promo_codes p LEFT JOIN agents a ON a.id = p.agent_id WHERE p.id = ?`, quote.promo_id);
         if (!isPromoEligible(promo)) throw new DomainError("PROMO_NO_LONGER_ELIGIBLE", 409);
       }
+      // Attribution is decided now, inside the checkout transaction. Quotes are
+      // intentionally not eligibility authority: a promoter can be disabled
+      // after context creation without entering a new order.
+      const promoAgentId = promo?.agent_id as string | null ?? null;
+      const referralAgent = activeAgentBySlug(this.db, quote.referral_slug as string | undefined);
+      const attributedAgentId = promoAgentId ?? (referralAgent?.id as string | undefined) ?? null;
       const occupied = Number(one(this.db, "SELECT COUNT(*) AS occupied FROM bookings WHERE occurrence_id = ? AND status IN ('RESERVED', 'CONFIRMED')", occurrence.id)?.occupied ?? 0);
       if (occupied >= Number(occurrence.capacity)) throw new DomainError("SOLD_OUT", 409);
       const orderId = id(); const bookingId = id(); const paymentId = id(); const statusId = publicId();
@@ -146,14 +163,14 @@ export class CommerceDomain {
       // The unique index is the authority; the lookup keeps the astronomically
       // unlikely random collision from surfacing as a customer-visible 500.
       while (one(this.db, "SELECT id FROM orders WHERE public_order_number = ?", orderNumber)) orderNumber = publicOrderNumber();
-      const agent = quote.attributed_agent_id ? one(this.db, "SELECT default_reward_type, default_reward_value FROM agents WHERE id = ?", quote.attributed_agent_id) : undefined;
+      const agent = attributedAgentId ? one(this.db, "SELECT default_reward_type, default_reward_value FROM agents WHERE id = ? AND enabled = 1", attributedAgentId) : undefined;
       const timestamp = now();
       const workshopDate = new Intl.DateTimeFormat("ru-RU", { timeZone: String(occurrence.timezone), day: "numeric", month: "long", year: "numeric" }).format(new Date(String(occurrence.starts_at)));
       const fiscalPurpose = "Оплата участия в мастер-классе ФЛЭКСПЕРИМЕНТ";
       const fiscalItemName = `Участие в мастер-классе ФЛЭКСПЕРИМЕНТ — ${String(occurrence.city_title)}, ${workshopDate}`;
       this.db.prepare(`INSERT INTO orders(id, public_status_id, public_order_number, occurrence_id, customer_name, customer_email, customer_email_hash, amount_kopecks, occurrence_material_revision, venue_disclosure_snapshot, checkout_legal_release_id, legal_snapshot_json, eligibility_confirmed_at, attributed_agent_id, reward_type_snapshot, reward_value_snapshot, promo_code_snapshot, discount_type_snapshot, discount_value_snapshot, fiscal_purpose_snapshot, fiscal_item_name_snapshot, public_offer_version, public_offer_sha256, public_offer_accepted_at, privacy_policy_version, privacy_policy_sha256, privacy_policy_presented_at, pd_consent_version, pd_consent_sha256, pd_consent_accepted_at, checkout_disclosure_version, checkout_disclosure_sha256)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(orderId, statusId, orderNumber, occurrence.id, input.customer_name.trim(), input.customer_email.trim().toLowerCase(), emailHash(input.customer_email), quote.final_amount_kopecks, quote.material_revision, quote.venue_disclosure, quote.legal_release_id, JSON.stringify(manifest), timestamp, quote.attributed_agent_id, agent?.default_reward_type ?? null, agent?.default_reward_value ?? null, quote.promo_id, null, quote.discount_kopecks, fiscalPurpose, fiscalItemName, manifest.documents.PUBLIC_OFFER.version, manifest.documents.PUBLIC_OFFER.sha256, timestamp, manifest.documents.PRIVACY_POLICY.version, manifest.documents.PRIVACY_POLICY.sha256, timestamp, manifest.documents.PD_CONSENT.version, manifest.documents.PD_CONSENT.sha256, timestamp, manifest.documents.CHECKOUT_DISCLOSURE.version, manifest.documents.CHECKOUT_DISCLOSURE.sha256);
+        .run(orderId, statusId, orderNumber, occurrence.id, input.customer_name.trim(), input.customer_email.trim().toLowerCase(), emailHash(input.customer_email), quote.final_amount_kopecks, quote.material_revision, quote.venue_disclosure, quote.legal_release_id, JSON.stringify(manifest), timestamp, attributedAgentId, agent?.default_reward_type ?? null, agent?.default_reward_value ?? null, quote.promo_code_snapshot ?? null, quote.discount_type_snapshot ?? null, quote.discount_value_snapshot ?? null, fiscalPurpose, fiscalItemName, manifest.documents.PUBLIC_OFFER.version, manifest.documents.PUBLIC_OFFER.sha256, timestamp, manifest.documents.PRIVACY_POLICY.version, manifest.documents.PRIVACY_POLICY.sha256, timestamp, manifest.documents.PD_CONSENT.version, manifest.documents.PD_CONSENT.sha256, timestamp, manifest.documents.CHECKOUT_DISCLOSURE.version, manifest.documents.CHECKOUT_DISCLOSURE.sha256);
       this.db.prepare("INSERT INTO bookings(id, order_id, occurrence_id, status) VALUES (?, ?, ?, 'RESERVED')").run(bookingId, orderId, occurrence.id);
       this.db.prepare(`INSERT INTO payments(id, order_id, state, status, provider_idempotency_key, creation_started_at) VALUES (?, ?, 'CREATING', 'PENDING', ?, ?)`)
         .run(paymentId, orderId, publicId(), timestamp);
@@ -216,6 +233,7 @@ export class CommerceDomain {
         // derives the actual URL from its encrypted capability at send time; the raw
         // capability is never copied to application logs or browser storage.
         this.enqueueEmail("TICKET", String(order.customer_email), String(order.customer_email_hash), "ticket", ticketId, { ticket_id: ticketId, order_id: payment.order_id, public_order_number: order.public_order_number });
+        this.syncRewardEvidence(String(payment.order_id));
       } else {
         const abandonment = one(this.db, "SELECT id FROM reservation_abandonments WHERE payment_id = ?", payment.id);
         const source = abandonment ? "LATE_PAYMENT_AFTER_RESERVATION_ABANDONMENT" : occurrence?.fulfillment_status === "SCHEDULED" ? "LATE_PAYMENT_AFTER_CUSTOMER_CANCELLATION" : "LATE_PAYMENT_AFTER_TERMINAL_OCCURRENCE";
@@ -344,6 +362,7 @@ export class CommerceDomain {
       this.db.prepare("UPDATE customer_refund_confirmation_tokens SET invalidated_at = ? WHERE order_id = ? AND id <> ? AND consumed_at IS NULL AND invalidated_at IS NULL").run(now(), order.id, token.id);
       this.db.prepare("UPDATE bookings SET status = 'CANCELLED', cancelled_at = ?, cancellation_reason = 'CUSTOMER_SELF_SERVICE_REFUND' WHERE id = ? AND status = 'CONFIRMED'").run(now(), order.booking_id);
       this.db.prepare("UPDATE tickets SET status = 'VOID', voided_at = ? WHERE booking_id = ? AND status = 'VALID'").run(now(), order.booking_id);
+      this.syncRewardEvidence(String(order.id));
       this.ensureFullCapturedRefund(String(order.payment_id), "CUSTOMER_SELF_SERVICE_REFUND", Number(order.captured_amount_kopecks));
       this.enqueueEmail("CUSTOMER_REFUND_CONFIRMED", String(order.customer_email), String(order.customer_email_hash), "customer-refund-confirmed", String(order.id), { order_id: order.id, public_order_number: order.public_order_number });
       return { confirmed: true };
@@ -445,6 +464,7 @@ export class CommerceDomain {
       if (withheld > Number(booking.captured_amount_kopecks)) throw new DomainError("WITHHOLDING_EXCEEDS_CAPTURED", 422);
       this.db.prepare("UPDATE bookings SET status = 'CANCELLED', cancelled_at = ?, cancellation_reason = ? WHERE id = ?").run(now(), input.reason, bookingId);
       this.db.prepare("UPDATE tickets SET status = 'VOID', voided_at = ? WHERE booking_id = ? AND status = 'VALID'").run(now(), bookingId);
+      this.syncRewardEvidence(String(booking.order_id));
       this.enqueueEmail("BOOKING_CANCELLED", String(booking.customer_email), String(booking.customer_email_hash), "booking-cancelled", bookingId, { booking_id: bookingId, reason: input.reason, public_order_number: booking.public_order_number });
       this.db.prepare("INSERT INTO booking_cancellation_idempotency(idempotency_key_hash, canonical_request_hash, booking_id) VALUES (?, ?, ?)").run(keyHash, requestHash, bookingId);
       if (booking.payment_status === "PAID") this.upsertRefundObligation(String(booking.payment_id), "CUSTOMER_CANCELLATION_PARTIAL", Number(booking.captured_amount_kopecks) - withheld);
@@ -523,10 +543,11 @@ export class CommerceDomain {
       this.db.prepare("UPDATE occurrences SET fulfillment_status = 'CANCELLED', sales_status = 'CLOSED', cancelled_at = ?, cancellation_reason = ?, updated_at = ? WHERE id = ?").run(now(), input.reason, now(), occurrenceId);
       // Entitlement cancellation is deliberately limited to active bookings.
       // It must not decide which captured payments receive a refund.
-      const bookings = many(this.db, "SELECT id FROM bookings WHERE occurrence_id = ? AND status IN ('RESERVED', 'CONFIRMED')", occurrenceId);
+      const bookings = many(this.db, "SELECT id, order_id FROM bookings WHERE occurrence_id = ? AND status IN ('RESERVED', 'CONFIRMED')", occurrenceId);
       for (const booking of bookings) {
         this.db.prepare("UPDATE bookings SET status = 'CANCELLED', cancelled_at = ?, cancellation_reason = ? WHERE id = ?").run(now(), "OCCURRENCE_CANCELLED", booking.id);
         this.db.prepare("UPDATE tickets SET status = 'VOID', voided_at = ? WHERE booking_id = ? AND status = 'VALID'").run(now(), booking.id);
+        this.syncRewardEvidence(String(booking.order_id));
       }
       // Financial unwind and organizer notice are independent of booking
       // status. A prior technical or customer cancellation must not strand
@@ -678,19 +699,55 @@ export class CommerceDomain {
     return one(this.db, "SELECT * FROM promo_codes WHERE id = ?", promoId)!;
   }
 
+  private rewardForOrder(order: Row, netCaptured: number) {
+    if (netCaptured <= 0 || !order.attributed_agent_id || !order.reward_type_snapshot) return 0;
+    if (order.reward_type_snapshot === "PERCENT") return Math.floor((netCaptured * Number(order.reward_value_snapshot ?? 0) + 5_000) / 10_000);
+    return Math.min(netCaptured, Number(order.reward_value_snapshot ?? 0));
+  }
+
+  /**
+   * Persist accounting evidence whenever an authoritative financial or booking
+   * event changes an order's reward. The base row is immutable; every later
+   * change is an append-only delta keyed by the observed state.
+   */
+  private syncRewardEvidence(orderId: string) {
+    const order = one(this.db, `SELECT o.*, p.captured_amount_kopecks,
+      COALESCE((SELECT SUM(r.amount_kopecks) FROM refunds r WHERE r.payment_id = p.id AND r.status = 'SUCCEEDED'), 0) AS refunded_amount_kopecks,
+      b.id AS booking_id, b.status AS booking_status
+      FROM orders o JOIN payments p ON p.order_id = o.id JOIN bookings b ON b.order_id = o.id
+      WHERE o.id = ?`, orderId);
+    if (!order?.attributed_agent_id || !order.reward_type_snapshot || Number(order.captured_amount_kopecks) <= 0) return;
+    const base = this.rewardForOrder(order, Number(order.captured_amount_kopecks));
+    this.db.prepare(`INSERT OR IGNORE INTO referral_rewards(id, order_id, agent_id, occurrence_id, amount_kopecks)
+      VALUES (?, ?, ?, ?, ?)`)
+      .run(id(), order.id, order.attributed_agent_id, order.occurrence_id, base);
+    const net = Math.max(0, Number(order.captured_amount_kopecks) - Number(order.refunded_amount_kopecks));
+    const expected = order.booking_status === "CONFIRMED" ? this.rewardForOrder(order, net) : 0;
+    const accounted = Number(one(this.db, `SELECT rr.amount_kopecks + COALESCE((SELECT SUM(ra.amount_kopecks) FROM reward_adjustments ra WHERE ra.order_id = rr.order_id), 0) AS amount
+      FROM referral_rewards rr WHERE rr.order_id = ?`, order.id)?.amount ?? 0);
+    if (expected === accounted) return;
+    const semanticKey = `reward:${order.id}:captured:${order.captured_amount_kopecks}:refunded:${order.refunded_amount_kopecks}:booking:${order.booking_status}`;
+    this.db.prepare(`INSERT OR IGNORE INTO reward_adjustments(id, order_id, agent_id, amount_kopecks, reason, semantic_key)
+      VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(id(), order.id, order.attributed_agent_id, expected - accounted, order.booking_status === "CONFIRMED" ? "NET_CAPTURED_CHANGED" : "BOOKING_CANCELLED", semanticKey);
+  }
+
   rewardBalance(agentId: string, occurrenceId: string) {
     const agent = one(this.db, "SELECT * FROM agents WHERE id = ?", agentId);
     if (!agent) throw new DomainError("AGENT_NOT_FOUND", 404);
     const occurrence = one(this.db, "SELECT fulfillment_status FROM occurrences WHERE id = ?", occurrenceId);
     if (!occurrence) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
-    const orders = many(this.db, `SELECT o.*, p.captured_amount_kopecks - COALESCE((SELECT SUM(r.amount_kopecks) FROM refunds r WHERE r.payment_id = p.id AND r.status = 'SUCCEEDED'), 0) AS net_captured
-      FROM orders o JOIN payments p ON p.order_id = o.id JOIN bookings b ON b.order_id = o.id
-      WHERE o.attributed_agent_id = ? AND o.occurrence_id = ? AND b.status = 'CONFIRMED' AND p.status IN ('PAID', 'PARTIALLY_REFUNDED', 'REFUNDED')`, agentId, occurrenceId);
-    const earned = orders.reduce((total, order) => {
-      const net = Math.max(0, Number(order.net_captured));
-      if (order.reward_type_snapshot === "PERCENT") return total + Math.floor((net * Number(order.reward_value_snapshot) + 5_000) / 10_000);
-      return total + Math.min(net, Number(order.reward_value_snapshot ?? 0));
-    }, 0);
+    // Lazily materialize ledger evidence for pre-0013 orders as well as any
+    // previously committed provider facts. This is additive and makes a read
+    // of a balance a safe migration bridge, never a rewrite of order snapshots.
+    for (const order of many(this.db, "SELECT id FROM orders WHERE attributed_agent_id = ? AND occurrence_id = ?", agentId, occurrenceId)) {
+      this.syncRewardEvidence(String(order.id));
+    }
+    const earned = Number(one(this.db, `SELECT COALESCE(SUM(amount_kopecks), 0) AS amount
+      FROM referral_rewards WHERE agent_id = ? AND occurrence_id = ?`, agentId, occurrenceId)?.amount ?? 0)
+      + Number(one(this.db, `SELECT COALESCE(SUM(ra.amount_kopecks), 0) AS amount
+        FROM reward_adjustments ra JOIN orders o ON o.id = ra.order_id
+        WHERE ra.agent_id = ? AND o.occurrence_id = ?`, agentId, occurrenceId)?.amount ?? 0);
     const mature = occurrence.fulfillment_status === "COMPLETED" ? earned : 0;
     const settlement = one(this.db, `SELECT
       COALESCE(SUM(CASE WHEN status = 'PREPARED' THEN amount_kopecks ELSE 0 END), 0) AS prepared,
@@ -698,8 +755,11 @@ export class CommerceDomain {
       COALESCE(SUM(CASE WHEN status = 'SETTLED' THEN amount_kopecks ELSE 0 END), 0) AS settled
       FROM reward_settlements WHERE agent_id = ? AND occurrence_id = ?`, agentId, occurrenceId)!;
     const recovered = Number(one(this.db, `SELECT COALESCE(SUM(sr.amount_recovered_kopecks), 0) AS amount FROM settlement_recoveries sr JOIN reward_settlements rs ON rs.id = sr.settlement_id WHERE rs.agent_id = ? AND rs.occurrence_id = ?`, agentId, occurrenceId)?.amount ?? 0);
-    const blocked = agent.npd_status_checked_at ? 0 : Math.max(0, mature - Number(settlement.prepared) - Number(settlement.pending) - Number(settlement.settled) + recovered);
-    return { earned_total: earned, accrued_total: mature, payable_gross_total: mature, blocked_payable_total: blocked, prepared_total: Number(settlement.prepared), pending_document_total: Number(settlement.pending), settled_total: Number(settlement.settled), externally_recovered_total: recovered, late_adjustment_exposure: 0, available_to_settle: Math.max(0, mature - blocked - Number(settlement.prepared) - Number(settlement.pending) - Number(settlement.settled) + recovered) };
+    const allocated = Number(settlement.prepared) + Number(settlement.pending) + Number(settlement.settled);
+    const unallocatedMatured = Math.max(0, mature - allocated + recovered);
+    const blocked = agent.npd_status_checked_at ? 0 : unallocatedMatured;
+    const lateAdjustmentExposure = Math.max(0, allocated - mature - recovered);
+    return { earned_total: earned, accrued_total: mature, payable_gross_total: mature, blocked_payable_total: blocked, prepared_total: Number(settlement.prepared), pending_document_total: Number(settlement.pending), settled_total: Number(settlement.settled), externally_recovered_total: recovered, late_adjustment_exposure: lateAdjustmentExposure, available_to_settle: Math.max(0, mature - blocked - allocated + recovered) };
   }
 
   prepareSettlement(input: { agent_id: string; occurrence_id: string; amount_kopecks: number; method: string }, idempotencyKey: string, adminId: string) {
@@ -800,6 +860,7 @@ export class CommerceDomain {
         const totals = one(this.db, "SELECT COALESCE(SUM(amount_kopecks), 0) AS amount FROM refunds WHERE payment_id = ? AND status = 'SUCCEEDED'", refund.payment_id)!;
         const payment = one(this.db, "SELECT captured_amount_kopecks FROM payments WHERE id = ?", refund.payment_id)!;
         this.db.prepare("UPDATE payments SET status = ?, updated_at = ? WHERE id = ?").run(Number(totals.amount) >= Number(payment.captured_amount_kopecks) ? "REFUNDED" : "PARTIALLY_REFUNDED", now(), refund.payment_id);
+        this.syncRewardEvidence(String(refund.order_id));
         this.db.prepare("UPDATE reservation_abandonments SET status = 'LATE_PAYMENT_REFUNDED', resolved_at = ? WHERE payment_id = ? AND status = 'LATE_PAYMENT_REVIEW_REQUIRED'").run(now(), refund.payment_id);
         const order = one(this.db, "SELECT customer_email, customer_email_hash, public_order_number FROM orders WHERE id = ?", refund.order_id)!;
         this.enqueueEmail("REFUND_SUCCEEDED", String(order.customer_email), String(order.customer_email_hash), "refund-succeeded", refundId, { refund_id: refundId, amount_kopecks: refund.amount_kopecks, public_order_number: order.public_order_number });

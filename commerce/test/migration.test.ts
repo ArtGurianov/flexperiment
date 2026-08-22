@@ -13,7 +13,7 @@ const applyThrough = (db: ReturnType<typeof openDatabase>, last: string) => {
   }
 };
 
-describe("0012 refund hardening migration", () => {
+describe("0012 refund hardening and 0013 promoter migrations", () => {
   it("upgrades an empty database and enforces public order numbers", () => {
     const db = openDatabase(":memory:");
     applyThrough(db, "0012_refund_hardening.sql");
@@ -21,9 +21,11 @@ describe("0012 refund hardening migration", () => {
     db.close();
   });
 
-  it("preserves populated 0011 orders and provider-email evidence", async () => {
+  it("supports populated upgraded orders and provider-email evidence", async () => {
     const db = openDatabase(":memory:");
     applyThrough(db, "0011_occurrence_cancellation_and_refund_capabilities.sql");
+    db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, "0012_refund_hardening.sql"), "utf8")))();
+    db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, "0013_promoter_attribution_rewards.sql"), "utf8")))();
     const cityId = randomUUID(); const occurrenceId = randomUUID(); const releaseId = randomUUID();
     const manifest = { documents: Object.fromEntries(["PUBLIC_OFFER", "PRIVACY_POLICY", "PD_CONSENT", "CHECKOUT_DISCLOSURE"].map((document) => [document, { document_id: document, version: "test", sha256: "0".repeat(64), current_url: `https://example.test/current/${document}`, archive_url: `https://example.test/archive/${document}`, checkout_relevant: true }])) };
     db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, 'migration-city', 'Migration city')").run(cityId);
@@ -37,8 +39,6 @@ describe("0012 refund hardening migration", () => {
     const outboxId = randomUUID();
     db.prepare("INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key) VALUES (?, 'TEST', 'migration@example.test', 'hash', 'test', '{}', ?)").run(outboxId, randomUUID());
     db.prepare("INSERT INTO email_provider_events(id, outbox_id, semantic_key, status) VALUES (?, ?, ?, 'ACCEPTED')").run(randomUUID(), outboxId, randomUUID());
-
-    db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, "0012_refund_hardening.sql"), "utf8")))();
 
     expect(db.prepare("SELECT public_order_number FROM orders WHERE id = ?").get(order.id)).toEqual({ public_order_number: order.public_order_number });
     expect(db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outboxId)).toEqual({ status: "PENDING" });

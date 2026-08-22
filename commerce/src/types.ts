@@ -16,6 +16,11 @@ export const checkoutContextSchema = z.object({
   occurrence_id: z.string().uuid(),
   promo_code: z.string().trim().max(64).optional(),
   referral_slug: z.string().trim().max(100).optional(),
+  // A landing-page referral candidate is kept separate from the existing
+  // first-party marker. This lets an invalid new touch leave a still-valid
+  // marker intact.
+  referral_touch_slug: z.string().trim().max(100).optional(),
+  referral_marked_at: z.string().datetime().optional(),
 });
 
 export const customerCancellationSchema = z.object({
