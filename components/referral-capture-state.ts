@@ -7,7 +7,9 @@ export function createReferralCaptureCoordinator() {
   let sequence = 0;
   let latestEligibleSequence = 0;
   let activeCount = 0;
-  const activeByMarker = new Map<string, Promise<boolean>>();
+  let currentObservation: string | undefined;
+  let observationGeneration = 0;
+  const activeByTouch = new Map<string, { task: Promise<boolean> }>();
   let pending: Promise<void> = Promise.resolve();
   let resolvePending: (() => void) | undefined;
   const beginCapture = () => {
@@ -17,16 +19,25 @@ export function createReferralCaptureCoordinator() {
     if (--activeCount === 0) resolvePending?.();
   };
 
-  const ensure = (search: string, checkEligibility: EligibilityCheck, writeMarker: MarkerWriter) => {
+  const ensure = (search: string, checkEligibility: EligibilityCheck, writeMarker: MarkerWriter, observation = search) => {
+    // A distinct location/search is a new navigation touch even when it
+    // returns to the same promoter. A no-ref navigation also advances this
+    // generation, while deliberately leaving the established cookie intact.
+    if (observation !== currentObservation) {
+      currentObservation = observation;
+      observationGeneration += 1;
+    }
     const slug = referralTouchFromLocation(search);
     // Navigation without a referral must not cancel a still-resolving eligible
     // landing touch; its marker remains a functional 30-day attribution.
     if (!slug) return Promise.resolve(false);
     const marker = `v1:${slug}`;
-    const active = activeByMarker.get(marker);
-    if (active) return active;
+    const touchKey = `${observationGeneration}:${marker}`;
+    const active = activeByTouch.get(touchKey);
+    if (active) return active.task;
     const touchSequence = ++sequence;
     beginCapture();
+    const entry = {} as { task: Promise<boolean> };
     const task = Promise.resolve()
       .then(() => checkEligibility(slug))
       .then((result) => {
@@ -40,10 +51,12 @@ export function createReferralCaptureCoordinator() {
       })
       .catch(() => false)
       .finally(() => {
-        activeByMarker.delete(marker);
+        // An old task cannot clear a newer touch's active record.
+        if (activeByTouch.get(touchKey) === entry) activeByTouch.delete(touchKey);
         finishCapture();
       });
-    activeByMarker.set(marker, task);
+    entry.task = task;
+    activeByTouch.set(touchKey, entry);
     return task;
   };
 

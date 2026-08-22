@@ -19,5 +19,10 @@ async function checkReferralEligibility(slug: string) {
  * The coordinator deduplicates an identical active touch.
  */
 export function ensureCurrentReferralCapture() {
-  return referralCaptureCoordinator.ensure(window.location.search, checkReferralEligibility, storeReferralMarker);
+  return referralCaptureCoordinator.ensure(
+    window.location.search,
+    checkReferralEligibility,
+    storeReferralMarker,
+    `${window.location.pathname}${window.location.search}`,
+  );
 }

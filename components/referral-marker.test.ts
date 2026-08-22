@@ -51,7 +51,7 @@ describe("functional referral marker", () => {
     expect(checkoutObserved).toBe("fresh-promoter");
   });
 
-  it("deduplicates the same active touch requested by global capture and checkout", async () => {
+  it("deduplicates global capture and checkout for the same navigation observation", async () => {
     const coordinator = createReferralCaptureCoordinator();
     let calls = 0;
     let resolveEligibility!: (eligible: boolean) => void;
@@ -64,6 +64,51 @@ describe("functional referral marker", () => {
     resolveEligibility(true);
     await expect(first).resolves.toBe(true);
     expect(calls).toBe(1);
+  });
+
+  it("keeps the final marker from the last eligible A navigation when A1, B, and A2 overlap", async () => {
+    const coordinator = createReferralCaptureCoordinator();
+    let cookie = "";
+    let resolveA1!: (eligible: boolean) => void;
+    let resolveB!: (eligible: boolean) => void;
+    let resolveA2!: (eligible: boolean) => void;
+    const a1 = new Promise<boolean>((resolve) => { resolveA1 = resolve; });
+    const b = new Promise<boolean>((resolve) => { resolveB = resolve; });
+    const a2 = new Promise<boolean>((resolve) => { resolveA2 = resolve; });
+    const write = (marker: string) => { cookie = `fx_ref=${encodeURIComponent(marker)}`; };
+
+    const firstA = coordinator.ensure("?fx_ref=v1%3Aa-promoter", async () => a1, write);
+    const touchB = coordinator.ensure("?fx_ref=v1%3Ab-promoter", async () => b, write);
+    const secondA = coordinator.ensure("?fx_ref=v1%3Aa-promoter", async () => a2, write);
+
+    resolveB(true);
+    await touchB;
+    expect(storedReferralSlug(cookie)).toBe("b-promoter");
+    resolveA1(true);
+    await firstA;
+    expect(storedReferralSlug(cookie)).toBe("b-promoter");
+    resolveA2(true);
+    await secondA;
+    expect(storedReferralSlug(cookie)).toBe("a-promoter");
+  });
+
+  it("treats A after an intervening no-ref navigation as a new touch", async () => {
+    const coordinator = createReferralCaptureCoordinator();
+    let calls = 0;
+    let resolveA1!: (eligible: boolean) => void;
+    let resolveA2!: (eligible: boolean) => void;
+    const a1 = new Promise<boolean>((resolve) => { resolveA1 = resolve; });
+    const a2 = new Promise<boolean>((resolve) => { resolveA2 = resolve; });
+    const firstA = coordinator.ensure("?fx_ref=v1%3Aa-promoter", async () => { calls += 1; return a1; }, () => undefined, "/first?fx_ref=v1%3Aa-promoter");
+    await coordinator.ensure("", async () => { throw new Error("no-ref must not call eligibility"); }, () => undefined, "/between");
+    const secondA = coordinator.ensure("?fx_ref=v1%3Aa-promoter", async () => { calls += 1; return a2; }, () => undefined, "/return?fx_ref=v1%3Aa-promoter");
+
+    expect(secondA).not.toBe(firstA);
+    await Promise.resolve();
+    expect(calls).toBe(2);
+    resolveA1(true);
+    resolveA2(true);
+    await Promise.all([firstA, secondA]);
   });
 
   it("starts the current touch from checkout when global capture has not mounted", async () => {
