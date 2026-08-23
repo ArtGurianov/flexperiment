@@ -127,3 +127,25 @@ receipt and signed callback, issue and reconcile a refund, and exercise an
 actual Unisender send plus each configured callback status. Back up the SQLite
 volume consistently and keep ticket encryption keys in a separately restorable
 encrypted store.
+
+## Controlled full-refund fulfilment repair
+
+A successful refund whose cumulative amount reaches the captured payment amount
+automatically cancels a confirmed booking with `FULL_REFUND` and voids its
+valid ticket in the same transaction. No manual repair is needed for new
+refunds.
+
+For a legacy order where durable evidence already proves `payment.status =
+REFUNDED`, successful refunds cover the captured amount, but the booking is
+still `CONFIRMED`, use this local-only command with the exact opaque order ID:
+
+```sh
+COMMERCE_FULL_REFUND_REPAIR_ORDER_ID='<order-id>' \
+COMMERCE_FULL_REFUND_REPAIR_CONFIRM='<order-id>' \
+pnpm commerce:full-refund:repair
+```
+
+It makes no provider request and sends no email. It returns `repaired: true`
+only after all of those predicates are independently true, then atomically
+cancels the booking and voids a valid ticket. A replay, an unknown order, a
+partial refund, or a non-`REFUNDED` payment returns `repaired: false`.

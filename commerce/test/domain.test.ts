@@ -49,6 +49,7 @@ async function reconcileSuccessfulRefund(setup: ReturnType<typeof fixture>, orde
     .run(refundId, randomUUID(), orderId, paymentId, amount, randomUUID(), randomUUID());
   (setup.domain.provider as PaymentProvider).reconcileRefund = async () => ({ status: "SUCCEEDED", refundedAmountKopecks: amount });
   await setup.domain.reconcileRefund(refundId);
+  return refundId;
 }
 
 describe("commerce domain", () => {
@@ -139,6 +140,81 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT status FROM bookings WHERE order_id = ?").get(order.id)).toMatchObject({ status: "CONFIRMED" });
     expect(setup.db.prepare("SELECT status FROM tickets").get()).toMatchObject({ status: "VALID" });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM refunds").get()).toMatchObject({ count: 1 });
+  });
+
+  it("releases the fulfilled seat and voids its ticket after one full refund", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), "full-refund-fulfilment-001", "https://flexperiment.ru");
+    const order = setup.db.prepare("SELECT o.id, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; payment_id: string };
+    setup.domain.markPaymentPaid(order.payment_id, 100000, "provider-payment");
+    expect(setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId }).availability).toBe(4);
+
+    const refundId = await reconcileSuccessfulRefund(setup, order.id, order.payment_id, 100000);
+
+    expect(setup.db.prepare("SELECT status FROM payments WHERE id = ?").get(order.payment_id)).toMatchObject({ status: "REFUNDED" });
+    expect(setup.db.prepare("SELECT status, cancellation_reason, cancelled_at FROM bookings WHERE order_id = ?").get(order.id)).toMatchObject({ status: "CANCELLED", cancellation_reason: "FULL_REFUND", cancelled_at: expect.any(String) });
+    expect(setup.db.prepare("SELECT status, voided_at FROM tickets WHERE booking_id = (SELECT id FROM bookings WHERE order_id = ?)").get(order.id)).toMatchObject({ status: "VOID", voided_at: expect.any(String) });
+    expect(setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId }).availability).toBe(5);
+
+    (setup.domain.provider as PaymentProvider).reconcileRefund = async () => { throw new Error("already-finalized refund must not reconcile again"); };
+    await setup.domain.reconcileRefund(refundId);
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM email_outbox WHERE type = 'REFUND_SUCCEEDED' AND payload_ref = ?").get(refundId)).toMatchObject({ count: 1 });
+    expect(setup.db.prepare("SELECT status, cancellation_reason FROM bookings WHERE order_id = ?").get(order.id)).toMatchObject({ status: "CANCELLED", cancellation_reason: "FULL_REFUND" });
+  });
+
+  it("releases fulfilment only when cumulative successful refunds reach the captured total", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), "cumulative-full-refund-001", "https://flexperiment.ru");
+    const order = setup.db.prepare("SELECT o.id, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; payment_id: string };
+    setup.domain.markPaymentPaid(order.payment_id, 100000, "provider-payment");
+
+    await reconcileSuccessfulRefund(setup, order.id, order.payment_id, 40000);
+    expect(setup.db.prepare("SELECT status FROM payments WHERE id = ?").get(order.payment_id)).toMatchObject({ status: "PARTIALLY_REFUNDED" });
+    expect(setup.db.prepare("SELECT status FROM bookings WHERE order_id = ?").get(order.id)).toMatchObject({ status: "CONFIRMED" });
+    expect(setup.db.prepare("SELECT status FROM tickets WHERE booking_id = (SELECT id FROM bookings WHERE order_id = ?)").get(order.id)).toMatchObject({ status: "VALID" });
+    expect(setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId }).availability).toBe(4);
+
+    await reconcileSuccessfulRefund(setup, order.id, order.payment_id, 60000);
+    expect(setup.db.prepare("SELECT status FROM payments WHERE id = ?").get(order.payment_id)).toMatchObject({ status: "REFUNDED" });
+    expect(setup.db.prepare("SELECT status, cancellation_reason FROM bookings WHERE order_id = ?").get(order.id)).toMatchObject({ status: "CANCELLED", cancellation_reason: "FULL_REFUND" });
+    expect(setup.db.prepare("SELECT status FROM tickets WHERE booking_id = (SELECT id FROM bookings WHERE order_id = ?)").get(order.id)).toMatchObject({ status: "VOID" });
+    expect(setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId }).availability).toBe(5);
+  });
+
+  it("repairs only a proven legacy full-refund fulfilment inconsistency", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), "full-refund-repair-001", "https://flexperiment.ru");
+    const order = setup.db.prepare("SELECT o.id, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; payment_id: string };
+    setup.domain.markPaymentPaid(order.payment_id, 100000, "provider-payment");
+    setup.db.prepare(`INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, provider_reference, succeeded_at)
+      VALUES (?, ?, ?, ?, 100000, 'legacy full refund', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, ?, 'legacy-reference', datetime('now'))`)
+      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID(), randomUUID());
+    setup.db.prepare("UPDATE payments SET status = 'REFUNDED' WHERE id = ?").run(order.payment_id);
+
+    expect(setup.domain.repairFullRefundFulfillment(order.id)).toBe(true);
+    expect(setup.domain.repairFullRefundFulfillment(order.id)).toBe(false);
+    expect(setup.db.prepare("SELECT status, cancellation_reason FROM bookings WHERE order_id = ?").get(order.id)).toMatchObject({ status: "CANCELLED", cancellation_reason: "FULL_REFUND" });
+    expect(setup.db.prepare("SELECT status FROM tickets WHERE booking_id = (SELECT id FROM bookings WHERE order_id = ?)").get(order.id)).toMatchObject({ status: "VOID" });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM email_outbox WHERE type = 'REFUND_SUCCEEDED'").get()).toMatchObject({ count: 0 });
+  });
+
+  it("refuses the legacy repair unless payment and cumulative refund evidence prove a full refund", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), "full-refund-repair-refusal-001", "https://flexperiment.ru");
+    const order = setup.db.prepare("SELECT o.id, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; payment_id: string };
+    setup.domain.markPaymentPaid(order.payment_id, 100000, "provider-payment");
+    setup.db.prepare(`INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, provider_reference, succeeded_at)
+      VALUES (?, ?, ?, ?, 99999, 'partial legacy refund', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, ?, 'legacy-reference', datetime('now'))`)
+      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID(), randomUUID());
+    setup.db.prepare("UPDATE payments SET status = 'REFUNDED' WHERE id = ?").run(order.payment_id);
+
+    expect(setup.domain.repairFullRefundFulfillment(order.id)).toBe(false);
+    expect(setup.db.prepare("SELECT status FROM bookings WHERE order_id = ?").get(order.id)).toMatchObject({ status: "CONFIRMED" });
+    expect(setup.db.prepare("SELECT status FROM tickets WHERE booking_id = (SELECT id FROM bookings WHERE order_id = ?)").get(order.id)).toMatchObject({ status: "VALID" });
   });
 
   it("cancels an occurrence once and upserts a full refund obligation without a ticket", async () => {

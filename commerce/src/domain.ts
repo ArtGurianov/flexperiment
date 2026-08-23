@@ -1039,16 +1039,28 @@ export class CommerceDomain {
   async reconcileRefund(refundId: string) {
     const refund = one(this.db, "SELECT r.*, p.provider_payment_id FROM refunds r JOIN payments p ON p.id = r.payment_id WHERE r.id = ?", refundId);
     if (!refund) throw new DomainError("REFUND_NOT_FOUND", 404);
+    // A previous authoritative reconciliation already completed this command.
+    // Do not ask the provider again or enqueue a second REFUND_SUCCEEDED mail.
+    if (refund.status === "SUCCEEDED") return one(this.db, "SELECT * FROM refunds WHERE id = ?", refundId)!;
     if (!refund.provider_payment_id) throw new DomainError("PROVIDER_REFERENCE_REQUIRED", 422);
     const observed = await this.provider.reconcileRefund({ providerPaymentId: String(refund.provider_payment_id), providerReference: refund.provider_reference ? String(refund.provider_reference) : null, amountKopecks: Number(refund.amount_kopecks), idempotencyKey: String(refund.idempotency_key_hash) });
     this.db.prepare("UPDATE refunds SET last_reconcile_at = ?, provider_observed_total_refunded = ? WHERE id = ?").run(now(), observed.refundedAmountKopecks ?? null, refundId);
     if (observed.status === "SUCCEEDED" && observed.refundedAmountKopecks === Number(refund.amount_kopecks)) {
       return withImmediateTransaction(this.db, () => {
-        this.db.prepare("UPDATE refunds SET status = 'SUCCEEDED', succeeded_at = ? WHERE id = ?").run(now(), refundId);
+        const finalized = this.db.prepare("UPDATE refunds SET status = 'SUCCEEDED', succeeded_at = ? WHERE id = ? AND status <> 'SUCCEEDED'").run(now(), refundId);
+        // Another worker/manual reconciliation won the transition while the
+        // provider request was in flight. Its transaction owns every local
+        // side effect, including full-refund fulfilment and the email outbox.
+        if (!finalized.changes) return one(this.db, "SELECT * FROM refunds WHERE id = ?", refundId)!;
         const totals = one(this.db, "SELECT COALESCE(SUM(amount_kopecks), 0) AS amount FROM refunds WHERE payment_id = ? AND status = 'SUCCEEDED'", refund.payment_id)!;
         const payment = one(this.db, "SELECT captured_amount_kopecks FROM payments WHERE id = ?", refund.payment_id)!;
-        this.db.prepare("UPDATE payments SET status = ?, updated_at = ? WHERE id = ?").run(Number(totals.amount) >= Number(payment.captured_amount_kopecks) ? "REFUNDED" : "PARTIALLY_REFUNDED", now(), refund.payment_id);
+        const fullyRefunded = Number(totals.amount) >= Number(payment.captured_amount_kopecks);
+        this.db.prepare("UPDATE payments SET status = ?, updated_at = ? WHERE id = ?").run(fullyRefunded ? "REFUNDED" : "PARTIALLY_REFUNDED", now(), refund.payment_id);
+        // Preserve the accounting fact that changed first: the captured net
+        // amount. Full-refund fulfilment below is still atomic, but must not
+        // relabel this established adjustment as a generic booking cancel.
         this.syncRewardEvidence(String(refund.order_id));
+        if (fullyRefunded) this.cancelConfirmedBookingForFullRefund(String(refund.order_id));
         this.db.prepare("UPDATE reservation_abandonments SET status = 'LATE_PAYMENT_REFUNDED', resolved_at = ? WHERE payment_id = ? AND status = 'LATE_PAYMENT_REVIEW_REQUIRED'").run(now(), refund.payment_id);
         const order = one(this.db, "SELECT customer_email, customer_email_hash, public_order_number FROM orders WHERE id = ?", refund.order_id)!;
         this.enqueueEmail("REFUND_SUCCEEDED", String(order.customer_email), String(order.customer_email_hash), "refund-succeeded", refundId, { refund_id: refundId, amount_kopecks: refund.amount_kopecks, public_order_number: order.public_order_number });
@@ -1058,6 +1070,41 @@ export class CommerceDomain {
     if (observed.status === "FAILED") { this.db.prepare("UPDATE refunds SET status = 'FAILED', failed_at = ? WHERE id = ?").run(now(), refundId); return one(this.db, "SELECT * FROM refunds WHERE id = ?", refundId)!; }
     this.db.prepare("UPDATE refunds SET status = 'REVIEW_REQUIRED' WHERE id = ?").run(refundId);
     return one(this.db, "SELECT * FROM refunds WHERE id = ?", refundId)!;
+  }
+
+  /**
+   * A fully refunded paid order cannot retain a capacity claim or a valid
+   * admission capability. This helper deliberately has no customer-email or
+   * provider side effects: the enclosing refund transition owns the one
+   * REFUND_SUCCEEDED notification.
+   */
+  private cancelConfirmedBookingForFullRefund(orderId: string) {
+    const booking = one(this.db, "SELECT id FROM bookings WHERE order_id = ? AND status = 'CONFIRMED'", orderId);
+    if (!booking) return false;
+    const cancelled = this.db.prepare(`UPDATE bookings
+      SET status = 'CANCELLED', cancelled_at = ?, cancellation_reason = 'FULL_REFUND'
+      WHERE id = ? AND status = 'CONFIRMED'`).run(now(), booking.id);
+    if (!cancelled.changes) return false;
+    this.db.prepare("UPDATE tickets SET status = 'VOID', voided_at = ? WHERE booking_id = ? AND status = 'VALID'").run(now(), booking.id);
+    return true;
+  }
+
+  /**
+   * Controlled local repair for a legacy state where provider-authoritative
+   * full refund evidence exists but fulfilment was not released. It never
+   * calls a payment provider or enqueues email.
+   */
+  repairFullRefundFulfillment(orderId: string) {
+    return withImmediateTransaction(this.db, () => {
+      const order = one(this.db, `SELECT p.id AS payment_id, p.status AS payment_status,
+        p.captured_amount_kopecks, b.status AS booking_status
+        FROM orders o JOIN payments p ON p.order_id = o.id
+        JOIN bookings b ON b.order_id = o.id WHERE o.id = ?`, orderId);
+      if (!order || order.payment_status !== "REFUNDED" || Number(order.captured_amount_kopecks) <= 0 || order.booking_status !== "CONFIRMED") return false;
+      const refunds = one(this.db, "SELECT COALESCE(SUM(amount_kopecks), 0) AS amount FROM refunds WHERE payment_id = ? AND status = 'SUCCEEDED'", order.payment_id)!;
+      if (Number(refunds.amount) < Number(order.captured_amount_kopecks)) return false;
+      return this.cancelConfirmedBookingForFullRefund(orderId);
+    });
   }
 
   async reconcilePendingRefunds() {
