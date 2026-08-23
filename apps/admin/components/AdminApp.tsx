@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { badgeTone } from "./badge-tone";
 import { createLatestRequestGate } from "./latest-request";
 import { occurrenceActionsFor } from "./occurrence-actions";
+import { CITY_CATALOGUE, type CityCatalogueEntry } from "../../../lib/city-catalog";
 
 type Page = "dashboard" | "login" | "cities" | "occurrences" | "orders" | "refunds" | "settlements" | "audit";
 type Row = Record<string, unknown>;
@@ -137,18 +138,31 @@ function Empty({ label }: { label: string }) { return <p className="empty">{labe
 
 function Cities() {
   const data = useResource<{ cities: Row[] }>("/cities");
-  const [name, setName] = useState(""); const [slug, setSlug] = useState(""); const [reason, setReason] = useState("");
-  const [key, setKey] = useState<string | null>(null); const [error, setError] = useState<string | null>(null); const [busy, setBusy] = useState(false);
+  const [citySlug, setCitySlug] = useState(""); const [reason, setReason] = useState("");
+  const [key, setKey] = useState<string | null>(null); const [error, setError] = useState<string | null>(null); const [busy, setBusy] = useState(false); const [editing, setEditing] = useState<Row | null>(null);
+  const cityOptions = useMemo(() => [...CITY_CATALOGUE].sort((left, right) => left.title.localeCompare(right.title, "ru")), []);
   const submit = async (event: FormEvent) => {
     event.preventDefault(); const actionKey = key ?? idempotencyKey(); setKey(actionKey); setBusy(true); setError(null);
     try {
-      await api("/cities", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": actionKey }, body: JSON.stringify({ name, slug, reason }) });
-      setName(""); setSlug(""); setReason(""); setKey(null); await data.reload();
+      await api("/cities", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": actionKey }, body: JSON.stringify({ city_slug: citySlug, reason }) });
+      setCitySlug(""); setReason(""); setKey(null); await data.reload();
     } catch (failure) { setError((failure as AdminApiError).code); } finally { setBusy(false); }
   };
   return <><PageTitle eyebrow="CATALOG / GEOGRAPHY" title={<>Города<br /><i>тура.</i></>} text="Создание — audited command с сохранённым idempotency key. Город сам по себе не появляется в public catalog." />
-    <section className="two-col catalog-grid"><Panel title="Существующие города">{data.loading ? <Loading /> : data.value ? <table><thead><tr><th>Город</th><th>Slug</th><th>События</th></tr></thead><tbody>{data.value.cities.map((city) => <tr key={string(city.id)}><td><strong>{string(city.title)}</strong><small>{string(city.id)}</small></td><td><code>{string(city.slug)}</code></td><td>{number(city.occurrence_count)}</td></tr>)}</tbody></table> : <Notice error={data.error} />}</Panel>
-      <Panel title="Добавить город"><form className="form" onSubmit={submit}><label>Название<input value={name} onChange={(event) => setName(event.target.value)} required minLength={2} /></label><label>Slug<input value={slug} onChange={(event) => setSlug(event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))} required pattern="[a-z0-9-]{2,100}" /></label><label>Причина / audit context<textarea value={reason} onChange={(event) => setReason(event.target.value)} required minLength={3} /></label><Notice error={error} /><button className="primary" disabled={busy}>{busy ? "Создаём…" : "Создать город"}</button></form></Panel></section></>;
+    <section className="two-col catalog-grid"><Panel title="Существующие города">{data.loading ? <Loading /> : data.value ? <table><thead><tr><th>Город</th><th>Slug</th><th>События</th><th></th></tr></thead><tbody>{data.value.cities.map((city) => <tr key={string(city.id)}><td><strong>{string(city.title)}</strong><small>{string(city.id)}</small></td><td><code>{string(city.slug)}</code></td><td>{number(city.occurrence_count)}</td><td><button onClick={() => setEditing(city)}>Редактировать</button></td></tr>)}</tbody></table> : <Notice error={data.error} />}</Panel>
+      <Panel title="Добавить город"><form className="form" onSubmit={submit}><label>Город<select value={citySlug} onChange={(event) => setCitySlug(event.target.value)} required><option value="" disabled>Выберите город</option>{cityOptions.map((city) => <option key={city.slug} value={city.slug}>{city.title}</option>)}</select></label><label>Причина / audit context<textarea value={reason} onChange={(event) => setReason(event.target.value)} required minLength={3} /></label><Notice error={error} /><button className="primary" disabled={busy}>{busy ? "Создаём…" : "Создать город"}</button></form></Panel></section>
+    {editing && <CityEditor city={editing} cityOptions={cityOptions} close={() => setEditing(null)} done={async () => { await data.reload(); setEditing(null); }} />}
+  </>;
+}
+
+function CityEditor({ city, cityOptions, close, done }: { city: Row; cityOptions: readonly CityCatalogueEntry[]; close: () => void; done: () => Promise<void> }) {
+  const [citySlug, setCitySlug] = useState(string(city.slug)); const [reason, setReason] = useState(""); const [key] = useState(idempotencyKey); const [error, setError] = useState<string | null>(null); const [busy, setBusy] = useState(false);
+  const submit = async (event: FormEvent) => {
+    event.preventDefault(); setBusy(true); setError(null);
+    try { await api(`/cities/${string(city.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json", "Idempotency-Key": key }, body: JSON.stringify({ city_slug: citySlug, reason }) }); await done(); }
+    catch (failure) { setError((failure as AdminApiError).code); } finally { setBusy(false); }
+  };
+  return <div className="modal-backdrop"><form className="modal editor" onSubmit={submit}><p className="eyebrow">CATALOG / CANONICAL CITY</p><h2>Редактировать город</h2><p>Города с уже созданными событиями нельзя переименовать или переназначить: это защищает исторические заказы и публичные URL.</p><div className="form"><label>Город<select value={citySlug} onChange={(event) => setCitySlug(event.target.value)} required>{cityOptions.map((entry) => <option key={entry.slug} value={entry.slug}>{entry.title}</option>)}</select></label><label>Причина / audit context<textarea value={reason} onChange={(event) => setReason(event.target.value)} required minLength={3} /></label></div><Notice error={error} /><div className="modal-actions"><button type="button" onClick={close}>Отмена</button><button className="primary" disabled={busy}>{busy ? "Сохраняем…" : "Сохранить изменения"}</button></div></form></div>;
 }
 
 function Occurrences() {

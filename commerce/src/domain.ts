@@ -4,6 +4,7 @@ import { type EmailProvider, UnconfiguredEmailProvider } from "./email-provider"
 import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import type { PaymentProvider } from "./provider";
 import type { CheckoutRequest } from "./types";
+import { findCityBySlug } from "../../lib/city-catalog";
 
 type Row = Record<string, unknown>;
 const one = <T extends Row>(db: Database.Database, sql: string, ...params: unknown[]) => db.prepare(sql).get(...params) as T | undefined;
@@ -90,6 +91,8 @@ export class CommerceDomain {
 
   registerCityInterest(input: { email: string; city: string }) {
     return withImmediateTransaction(this.db, () => {
+      const city = findCityBySlug(input.city);
+      if (!city) throw new DomainError("CITY_SLUG_UNKNOWN", 400);
       const release = one(this.db, "SELECT manifest_json FROM legal_releases WHERE active = 1");
       if (!release) throw new DomainError("LEGAL_RELEASE_NOT_ACTIVE", 503);
       const manifest = legalManifest(JSON.parse(String(release.manifest_json)));
@@ -100,7 +103,7 @@ export class CommerceDomain {
         pd_consent_version, pd_consent_sha256, consent_accepted_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(email_hash, city_slug) DO NOTHING`).run(
-        id(), input.email, emailHash(input.email), input.city,
+        id(), input.email, emailHash(input.email), city.slug,
         manifest.documents.PRIVACY_POLICY.version, manifest.documents.PRIVACY_POLICY.sha256,
         manifest.documents.PD_CONSENT.version, manifest.documents.PD_CONSENT.sha256,
         timestamp,
@@ -612,13 +615,36 @@ export class CommerceDomain {
       FROM payment_totals`, occurrenceId)!;
   }
 
-  createCity(input: { name: string; slug: string; reason: string }, idempotencyKey: string, adminId: string) {
+  createCity(input: { city_slug: string; reason: string }, idempotencyKey: string, adminId: string) {
     return this.withAdminCommand("city-create", idempotencyKey, input, "cities", () => {
-      if (one(this.db, "SELECT id FROM cities WHERE slug = ?", input.slug)) throw new DomainError("CITY_SLUG_CONFLICT", 409);
+      const canonicalCity = findCityBySlug(input.city_slug);
+      if (!canonicalCity) throw new DomainError("CITY_SLUG_UNKNOWN", 400);
+      if (one(this.db, "SELECT id FROM cities WHERE slug = ?", canonicalCity.slug)) throw new DomainError("CITY_SLUG_CONFLICT", 409);
       const cityId = id();
-      this.db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, ?)").run(cityId, input.slug, input.name);
+      this.db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, ?)").run(cityId, canonicalCity.slug, canonicalCity.title);
       const city = one(this.db, "SELECT * FROM cities WHERE id = ?", cityId)!;
       this.recordAdminCommandAudit(adminId, "CITY_CREATED", "city", cityId, input.reason, idempotencyKey, input);
+      return city;
+    });
+  }
+
+  patchCity(cityId: string, input: { city_slug: string; reason: string }, idempotencyKey: string, adminId: string) {
+    const payload = { city_id: cityId, ...input };
+    return this.withAdminCommand("city-patch", idempotencyKey, payload, "cities", () => {
+      const before = one(this.db, "SELECT * FROM cities WHERE id = ?", cityId);
+      if (!before) throw new DomainError("CITY_NOT_FOUND", 404);
+      const canonicalCity = findCityBySlug(input.city_slug);
+      if (!canonicalCity) throw new DomainError("CITY_SLUG_UNKNOWN", 400);
+      const slugChanges = before.slug !== canonicalCity.slug;
+      const titleChanges = before.title !== canonicalCity.title;
+      if (!slugChanges && !titleChanges) return before;
+      if (slugChanges && Number(one(this.db, "SELECT COUNT(*) AS count FROM occurrences WHERE city_id = ?", cityId)?.count ?? 0) > 0) {
+        throw new DomainError("CITY_HAS_OCCURRENCES", 409);
+      }
+      if (one(this.db, "SELECT id FROM cities WHERE slug = ? AND id <> ?", canonicalCity.slug, cityId)) throw new DomainError("CITY_SLUG_CONFLICT", 409);
+      this.db.prepare("UPDATE cities SET slug = ?, title = ? WHERE id = ?").run(canonicalCity.slug, canonicalCity.title, cityId);
+      const city = one(this.db, "SELECT * FROM cities WHERE id = ?", cityId)!;
+      this.recordAdminCommandAudit(adminId, "CITY_EDITED", "city", cityId, input.reason, idempotencyKey, payload);
       return city;
     });
   }

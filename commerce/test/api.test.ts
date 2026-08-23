@@ -204,7 +204,7 @@ describe("commerce HTTP boundary", () => {
     expect(db.prepare("SELECT email_normalized, city_slug, privacy_policy_version, pd_consent_version FROM city_interest_requests").all()).toEqual([
       { email_normalized: "art@example.test", city_slug: "kemerovo", privacy_policy_version: "test-1", pd_consent_version: "test-1" },
     ]);
-    expect((await request("art@example.test", "unsupported-city")).status).toBe(422);
+    expect((await request("art@example.test", "unsupported-city")).status).toBe(400);
     db.close();
   });
 
@@ -247,18 +247,33 @@ describe("commerce HTTP boundary", () => {
       body: JSON.stringify({ password: "correct horse" }),
     });
     const adminHeaders = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
-    const cityPayload = { name: "Омск", slug: "omsk", reason: "Tochka Phase 0 certification" };
+    const cityPayload = { city_slug: "omsk", reason: "Tochka Phase 0 certification" };
     const cityKey = "b6a8e45a-9334-4626-8041-000000000001";
+    const mismatchedCity = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000009" }, body: JSON.stringify({ ...cityPayload, title: "Томск" }) });
+    expect(mismatchedCity.status).toBe(422);
+    const unsupportedCity = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000000" }, body: JSON.stringify({ city_slug: "unsupported-city", reason: "Catalog validation test" }) });
+    expect(unsupportedCity.status).toBe(400);
+    expect(await unsupportedCity.json()).toEqual({ error: { code: "CITY_SLUG_UNKNOWN" } });
     const firstCity = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": cityKey }, body: JSON.stringify(cityPayload) });
     expect(firstCity.status).toBe(201);
     const city = await firstCity.json() as { id: string; slug: string; title: string };
     expect(city).toMatchObject({ slug: "omsk", title: "Омск" });
     const cityReplay = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": cityKey }, body: JSON.stringify(cityPayload) });
     expect(await cityReplay.json()).toMatchObject({ id: city.id });
-    const changedReplay = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": cityKey }, body: JSON.stringify({ ...cityPayload, name: "Другой Омск" }) });
+    const changedReplay = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": cityKey }, body: JSON.stringify({ ...cityPayload, reason: "Different canonical request" }) });
     expect(changedReplay.status).toBe(409);
     const duplicateSlug = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000006" }, body: JSON.stringify(cityPayload) });
     expect(duplicateSlug.status).toBe(409);
+    const cityPatch = await app.request(`http://admin.flexperiment.ru/v1/admin/cities/${city.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000007" }, body: JSON.stringify({ city_slug: "moscow", reason: "Corrected canonical city" }) });
+    expect(cityPatch.status).toBe(200);
+    expect(await cityPatch.json()).toMatchObject({ id: city.id, slug: "moscow", title: "Москва" });
+    db.prepare("UPDATE cities SET title = ? WHERE id = ?").run("Incorrect title", city.id);
+    const canonicalTitleRepair = await app.request(`http://admin.flexperiment.ru/v1/admin/cities/${city.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000010" }, body: JSON.stringify({ city_slug: "moscow", reason: "Canonical title repair" }) });
+    expect(await canonicalTitleRepair.json()).toMatchObject({ id: city.id, slug: "moscow", title: "Москва" });
+    const cityWithOccurrenceId = (db.prepare("SELECT id FROM cities WHERE slug = 'tomsk'").get() as { id: string }).id;
+    const blockedPatch = await app.request(`http://admin.flexperiment.ru/v1/admin/cities/${cityWithOccurrenceId}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000008" }, body: JSON.stringify({ city_slug: "kazan", reason: "Unsafe historical mutation" }) });
+    expect(blockedPatch.status).toBe(409);
+    expect(await blockedPatch.json()).toEqual({ error: { code: "CITY_HAS_OCCURRENCES" } });
 
     const occurrencePayload = {
       city_id: city.id,

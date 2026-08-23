@@ -7,6 +7,7 @@ import { ensureCurrentReferralCapture } from "@/components/referral-capture-clie
 import { referralCaptureCoordinator } from "@/components/referral-capture-state";
 import { storedReferralSlug } from "@/components/referral-marker";
 import CityInterestForm from "@/components/CityInterestForm";
+import { findCityBySlug, type CitySlug } from "@/lib/city-catalog";
 
 type Occurrence = {
   id: string;
@@ -58,7 +59,7 @@ export default function CheckoutFlow() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const [scheduledCitySlugs, setScheduledCitySlugs] = useState<string[]>([]);
+  const [scheduledCitySlugs, setScheduledCitySlugs] = useState<CitySlug[]>([]);
   const [catalogLoaded, setCatalogLoaded] = useState(false);
   const selected = useMemo(() => occurrences.find((item) => item.id === occurrenceId), [occurrences, occurrenceId]);
   const legalLabels = {
@@ -76,7 +77,12 @@ export default function CheckoutFlow() {
         if (!current) return;
         const available = data.cities.filter((item) => item.id && item.availability > 0);
         setOccurrences(available); setOccurrenceId(available[0]?.id ?? "");
-        setScheduledCitySlugs([...new Set(data.cities.filter((item) => item.fulfillment_status === "SCHEDULED").map((item) => item.city))]);
+        const scheduledCities = data.cities
+          .filter((item) => item.fulfillment_status === "SCHEDULED")
+          .map((item) => findCityBySlug(item.city))
+          .filter((city): city is NonNullable<typeof city> => Boolean(city))
+          .map((city) => city.slug);
+        setScheduledCitySlugs([...new Set(scheduledCities)]);
         setCatalogLoaded(true);
       })
       .catch(() => current && setMessage("Сейчас запись недоступна. Пожалуйста, попробуйте позже."))

@@ -3,13 +3,13 @@
 import { FormEvent, useMemo, useState } from "react";
 import Link from "next/link";
 import SmartCaptcha from "@/components/SmartCaptcha";
-import { CITY_CATALOGUE } from "@/lib/city-catalog";
+import { type CitySlug, requestableCities } from "@/lib/city-catalog";
 import { commerceApiUrl } from "@/lib/commerce-api";
 
-type Props = { scheduledCitySlugs: string[] };
+type Props = { scheduledCitySlugs: CitySlug[] };
 
 export default function CityInterestForm({ scheduledCitySlugs }: Props) {
-  const cities = useMemo(() => CITY_CATALOGUE.filter((city) => !scheduledCitySlugs.includes(city.slug)), [scheduledCitySlugs]);
+  const cities = useMemo(() => requestableCities(scheduledCitySlugs), [scheduledCitySlugs]);
   const [email, setEmail] = useState("");
   const [city, setCity] = useState("");
   const [consent, setConsent] = useState(false);

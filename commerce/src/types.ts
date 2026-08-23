@@ -1,8 +1,7 @@
 import { z } from "zod";
-import { CITY_SLUGS } from "../../lib/city-catalog";
 
 export { CITY_SLUGS } from "../../lib/city-catalog";
-export type CitySlug = (typeof CITY_SLUGS)[number];
+export type { CityCatalogueEntry, CitySlug, CityTitle } from "../../lib/city-catalog";
 
 export const checkoutRequestSchema = z.object({
   quote_id: z.string().uuid(),
@@ -57,10 +56,10 @@ export const occurrencePatchSchema = z.object({
 });
 
 export const cityCreateSchema = z.object({
-  name: z.string().trim().min(2).max(200),
-  slug: z.string().trim().regex(/^[a-z0-9-]{2,100}$/),
+  city_slug: z.string().trim().regex(/^[a-z0-9-]{2,100}$/),
   reason: z.string().trim().min(3).max(1_000),
 }).strict();
+export const cityPatchSchema = cityCreateSchema;
 
 export const occurrenceCreateSchema = z.object({
   city_id: z.string().uuid(),
@@ -106,7 +105,7 @@ export const customerRefundRequestSchema = z.object({
 }).strict();
 export const cityInterestSchema = z.object({
   email: z.string().trim().email().max(320).transform((value) => value.toLowerCase()),
-  city: z.enum(CITY_SLUGS),
+  city: z.string().trim().regex(/^[a-z0-9-]{2,100}$/),
   pd_consent_accepted: z.literal(true),
   captcha_token: z.string().trim().min(1).max(4_096),
 }).strict();

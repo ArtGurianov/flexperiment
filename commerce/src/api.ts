@@ -10,7 +10,7 @@ import { clientIp, rateLimit } from "./rate-limit";
 import { TochkaWebhookVerifier, webhookAmountKopecks } from "./tochka-webhook";
 import { verifyUnisenderWebhook } from "./unisender-webhook";
 import { type SmartCaptchaVerifier, UnconfiguredSmartCaptchaVerifier } from "./smartcaptcha";
-import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrencePatchSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
+import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrencePatchSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
 
 type AppBindings = { Variables: { adminId?: string; adminSessionId?: string } };
 const noStore = (headers: Headers) => headers.set("Cache-Control", "no-store");
@@ -314,6 +314,11 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
     const payload = cityCreateSchema.parse(await jsonBody(c.req.raw));
     return c.json(domain.createCity(payload, key, c.var.adminId!), 201);
+  });
+  admin.patch("/cities/:id", async (c) => {
+    const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
+    const payload = cityPatchSchema.parse(await jsonBody(c.req.raw));
+    return c.json(domain.patchCity(c.req.param("id"), payload, key, c.var.adminId!));
   });
   admin.post("/occurrences", async (c) => {
     const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
