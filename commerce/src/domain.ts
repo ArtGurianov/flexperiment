@@ -400,11 +400,36 @@ export class CommerceDomain {
   applyTochkaPaymentWebhook(input: { rawHash: string; operationId: string; paymentLinkId: string; amountKopecks: number; customerCode: string; merchantId: string; paymentType: string; status: string; webhookType: string; currency?: string }, expected: { customerCode: string; merchantId: string }) {
     return withImmediateTransaction(this.db, () => {
       const semanticKey = `${input.operationId}:${input.status}`;
-      const known = one(this.db, "SELECT id FROM provider_webhook_events WHERE provider = 'TOCHKA' AND semantic_key = ?", semanticKey);
-      if (known) return { duplicate: true, applied: false };
+      const known = one(this.db, "SELECT id, payload_hash, status, entity_id FROM provider_webhook_events WHERE provider = 'TOCHKA' AND semantic_key = ?", semanticKey);
       const payment = one(this.db, `SELECT p.*, o.amount_kopecks FROM payments p JOIN orders o ON o.id = p.order_id WHERE p.id = ?`, input.paymentLinkId);
       const observed = JSON.stringify({ operation_id: input.operationId, payment_link_id: input.paymentLinkId, amount_kopecks: input.amountKopecks, payment_type: input.paymentType, status: input.status, webhook_type: input.webhookType, currency: input.currency ?? "RUB" });
       const valid = input.webhookType === "acquiringInternetPayment" && input.status === "APPROVED" && ["card", "sbp"].includes(input.paymentType) && (!input.currency || input.currency === "RUB") && input.customerCode === expected.customerCode && input.merchantId === expected.merchantId && payment && Number(payment.amount_kopecks) === input.amountKopecks;
+      if (known) {
+        if (known.payload_hash === input.rawHash) return { duplicate: true, applied: false };
+        const knownVariant = one(this.db, `SELECT id FROM provider_webhook_event_conflicts
+          WHERE provider = 'TOCHKA' AND semantic_key = ? AND payload_hash = ?`, semanticKey, input.rawHash);
+        if (knownVariant) return { duplicate: true, applied: false };
+        const correctionAlreadyApplied = Boolean(one(this.db, `SELECT id FROM provider_webhook_event_conflicts
+          WHERE original_event_id = ? AND status = 'CORRECTED_APPLIED'`, known.id));
+        const corrected = known.status === "QUARANTINED" && valid && !correctionAlreadyApplied;
+        this.db.prepare(`INSERT INTO provider_webhook_event_conflicts(
+          id, provider, semantic_key, original_event_id, payload_hash, status, entity_id, observed_json
+        ) VALUES (?, 'TOCHKA', ?, ?, ?, ?, ?, ?)`)
+          .run(id(), semanticKey, known.id, input.rawHash, corrected ? "CORRECTED_APPLIED" : "CONFLICT_QUARANTINED", payment?.id ?? known.entity_id ?? null, observed);
+        const affectedPaymentId = payment?.id ?? known.entity_id;
+        if (affectedPaymentId) this.recordProviderDrift("PAYMENT", String(affectedPaymentId), {
+          webhook_semantic_key_collision: {
+            semantic_key: semanticKey,
+            original_event_id: known.id,
+            original_status: known.status,
+            incoming_payload_hash: input.rawHash,
+            corrected,
+          },
+        });
+        if (!corrected) return { duplicate: false, applied: false, conflict: true };
+        this.markPaymentPaidInTransaction(String(payment!.id), input.amountKopecks, input.operationId);
+        return { duplicate: false, applied: true, corrected: true };
+      }
       if (!valid) {
         this.db.prepare("INSERT INTO provider_webhook_events(id, provider, semantic_key, payload_hash, status, entity_id, observed_json) VALUES (?, 'TOCHKA', ?, ?, 'QUARANTINED', ?, ?)").run(id(), semanticKey, input.rawHash, payment?.id ?? null, observed);
         if (payment) this.recordProviderDrift("PAYMENT", String(payment.id), { webhook: { operation_id: input.operationId, amount_kopecks: input.amountKopecks, payment_type: input.paymentType, status: input.status } });

@@ -330,4 +330,32 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     db.close();
   });
+
+  it("adds Tochka webhook collision evidence without rewriting the first semantic event", () => {
+    const db = openDatabase(":memory:");
+    applyThrough(db, "0023_email_operational_attention.sql");
+    db.prepare(`INSERT INTO provider_webhook_events(
+      id, provider, semantic_key, payload_hash, status, entity_id, observed_json
+    ) VALUES ('tochka-original', 'TOCHKA', 'operation-1:APPROVED', 'first-hash',
+      'QUARANTINED', NULL, '{"amount_kopecks":999}')`).run();
+    const before = db.prepare(`SELECT id, provider, semantic_key, payload_hash, status,
+      entity_id, observed_json FROM provider_webhook_events WHERE id = 'tochka-original'`).get();
+
+    db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, "0024_tochka_webhook_collision_evidence.sql"), "utf8")))();
+
+    expect(db.prepare(`SELECT id, provider, semantic_key, payload_hash, status,
+      entity_id, observed_json FROM provider_webhook_events WHERE id = 'tochka-original'`).get()).toEqual(before);
+    db.prepare(`INSERT INTO provider_webhook_event_conflicts(
+      id, provider, semantic_key, original_event_id, payload_hash, status, entity_id, observed_json
+    ) VALUES ('tochka-correction', 'TOCHKA', 'operation-1:APPROVED', 'tochka-original',
+      'corrected-hash', 'CORRECTED_APPLIED', NULL, '{"amount_kopecks":1000}')`).run();
+    expect(() => db.prepare(`INSERT INTO provider_webhook_event_conflicts(
+      id, provider, semantic_key, original_event_id, payload_hash, status, entity_id, observed_json
+    ) VALUES ('tochka-duplicate-variant', 'TOCHKA', 'operation-1:APPROVED', 'tochka-original',
+      'corrected-hash', 'CONFLICT_QUARANTINED', NULL, '{}')`).run()).toThrow(/UNIQUE constraint failed/);
+    expect((db.prepare("PRAGMA index_list(provider_webhook_event_conflicts)").all() as { name: string }[])
+      .map(({ name }) => name)).toContain("provider_webhook_event_conflicts_original_idx");
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    db.close();
+  });
 });

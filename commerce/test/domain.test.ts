@@ -65,6 +65,34 @@ async function createUnknownPayment(setup: ReturnType<typeof fixture>, provider:
   return { domain, paymentId: payment.id, orderId: payment.order_id };
 }
 
+async function tochkaWebhookCheckout(setup: ReturnType<typeof fixture>) {
+  const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+  const checkout = await setup.domain.checkoutAsync(
+    checkoutPayload(quote.quote_id),
+    `tochka-webhook-${randomUUID()}`,
+    "https://flexperiment.ru",
+  );
+  const payment = setup.db.prepare(`SELECT p.id FROM payments p
+    JOIN orders o ON o.id = p.order_id
+    WHERE o.public_status_id = ?`).get(checkout.status_id) as { id: string };
+  return {
+    expected: { customerCode: "tochka-customer", merchantId: "tochka-merchant" },
+    paymentId: payment.id,
+    input: {
+      rawHash: "tochka-webhook-payload-1",
+      operationId: "tochka-webhook-operation",
+      paymentLinkId: payment.id,
+      amountKopecks: 100_000,
+      customerCode: "tochka-customer",
+      merchantId: "tochka-merchant",
+      paymentType: "card",
+      status: "APPROVED",
+      webhookType: "acquiringInternetPayment",
+      currency: "RUB",
+    },
+  };
+}
+
 describe("commerce domain", () => {
   const databases: ReturnType<typeof fixture>["db"][] = [];
   afterEach(() => { while (databases.length) databases.pop()?.close(); });
@@ -1476,6 +1504,101 @@ describe("commerce domain", () => {
     const audit = setup.db.prepare("SELECT entity_id, details_json FROM admin_audit_log WHERE action = 'CITY_INTEREST_WITHDRAWN' ORDER BY created_at LIMIT 1").get() as { entity_id: string; details_json: string };
     expect(audit.entity_id).toBe("all-matching-requests");
     expect(audit.details_json).not.toContain("withdraw@example.test");
+  });
+
+  it("applies one exact Tochka webhook replay under concurrent delivery without duplicate fulfilment", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const webhook = await tochkaWebhookCheckout(setup);
+    const [first, replay] = await Promise.all([
+      Promise.resolve().then(() => setup.domain.applyTochkaPaymentWebhook(webhook.input, webhook.expected)),
+      Promise.resolve().then(() => setup.domain.applyTochkaPaymentWebhook(webhook.input, webhook.expected)),
+    ]);
+
+    expect([first, replay].filter((result) => result.applied)).toHaveLength(1);
+    expect([first, replay].filter((result) => result.duplicate)).toHaveLength(1);
+    expect(setup.domain.applyTochkaPaymentWebhook(webhook.input, webhook.expected)).toEqual({ duplicate: true, applied: false });
+    expect(setup.db.prepare("SELECT status, captured_amount_kopecks FROM payments WHERE id = ?").get(webhook.paymentId))
+      .toEqual({ status: "PAID", captured_amount_kopecks: 100_000 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM provider_webhook_events").get()).toEqual({ count: 1 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM provider_webhook_event_conflicts").get()).toEqual({ count: 0 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM tickets WHERE status = 'VALID'").get()).toEqual({ count: 1 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM email_outbox WHERE type = 'TICKET'").get()).toEqual({ count: 1 });
+  });
+
+  it("deduplicates an exact QUARANTINED Tochka webhook without changing fulfilment", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const webhook = await tochkaWebhookCheckout(setup);
+    const invalid = { ...webhook.input, rawHash: "tochka-quarantined-payload", amountKopecks: 99_999 };
+
+    expect(setup.domain.applyTochkaPaymentWebhook(invalid, webhook.expected)).toEqual({ duplicate: false, applied: false });
+    expect(setup.domain.applyTochkaPaymentWebhook(invalid, webhook.expected)).toEqual({ duplicate: true, applied: false });
+    expect(setup.db.prepare("SELECT status, payload_hash FROM provider_webhook_events").get())
+      .toEqual({ status: "QUARANTINED", payload_hash: "tochka-quarantined-payload" });
+    expect(setup.db.prepare("SELECT status, captured_amount_kopecks FROM payments WHERE id = ?").get(webhook.paymentId))
+      .toEqual({ status: "PENDING", captured_amount_kopecks: 0 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM tickets").get()).toEqual({ count: 0 });
+  });
+
+  it("quarantines a conflicting Tochka amount after APPLIED without duplicating capture, ticket, or email", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const webhook = await tochkaWebhookCheckout(setup);
+    expect(setup.domain.applyTochkaPaymentWebhook(webhook.input, webhook.expected)).toEqual({ duplicate: false, applied: true });
+    const conflicting = { ...webhook.input, rawHash: "tochka-conflicting-amount", amountKopecks: 99_999 };
+
+    expect(setup.domain.applyTochkaPaymentWebhook(conflicting, webhook.expected))
+      .toEqual({ duplicate: false, applied: false, conflict: true });
+    expect(setup.domain.applyTochkaPaymentWebhook(conflicting, webhook.expected))
+      .toEqual({ duplicate: true, applied: false });
+    expect(setup.db.prepare("SELECT payload_hash, status FROM provider_webhook_events").get())
+      .toEqual({ payload_hash: webhook.input.rawHash, status: "APPLIED" });
+    expect(setup.db.prepare("SELECT payload_hash, status FROM provider_webhook_event_conflicts").get())
+      .toEqual({ payload_hash: "tochka-conflicting-amount", status: "CONFLICT_QUARANTINED" });
+    expect(setup.db.prepare("SELECT status, captured_amount_kopecks FROM payments WHERE id = ?").get(webhook.paymentId))
+      .toEqual({ status: "PAID", captured_amount_kopecks: 100_000 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM tickets WHERE status = 'VALID'").get()).toEqual({ count: 1 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM email_outbox WHERE type = 'TICKET'").get()).toEqual({ count: 1 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM provider_drift_reviews WHERE entity_type = 'PAYMENT' AND entity_id = ?").get(webhook.paymentId))
+      .toEqual({ count: 1 });
+  });
+
+  it.each([
+    ["payment link", (input: Awaited<ReturnType<typeof tochkaWebhookCheckout>>["input"]) => ({ ...input, rawHash: "tochka-conflicting-link", paymentLinkId: randomUUID() })],
+    ["customer", (input: Awaited<ReturnType<typeof tochkaWebhookCheckout>>["input"]) => ({ ...input, rawHash: "tochka-conflicting-customer", customerCode: "other-customer" })],
+    ["merchant", (input: Awaited<ReturnType<typeof tochkaWebhookCheckout>>["input"]) => ({ ...input, rawHash: "tochka-conflicting-merchant", merchantId: "other-merchant" })],
+  ])("quarantines conflicting Tochka %s evidence after APPLIED", async (_field, mutate) => {
+    const setup = fixture(); databases.push(setup.db);
+    const webhook = await tochkaWebhookCheckout(setup);
+    expect(setup.domain.applyTochkaPaymentWebhook(webhook.input, webhook.expected)).toEqual({ duplicate: false, applied: true });
+
+    expect(setup.domain.applyTochkaPaymentWebhook(mutate(webhook.input), webhook.expected))
+      .toEqual({ duplicate: false, applied: false, conflict: true });
+    expect(setup.db.prepare("SELECT status, captured_amount_kopecks FROM payments WHERE id = ?").get(webhook.paymentId))
+      .toEqual({ status: "PAID", captured_amount_kopecks: 100_000 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM provider_webhook_event_conflicts WHERE status = 'CONFLICT_QUARANTINED'").get())
+      .toEqual({ count: 1 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM tickets WHERE status = 'VALID'").get()).toEqual({ count: 1 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM email_outbox WHERE type = 'TICKET'").get()).toEqual({ count: 1 });
+  });
+
+  it("applies exactly one later valid correction after a QUARANTINED Tochka event", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const webhook = await tochkaWebhookCheckout(setup);
+    const quarantined = { ...webhook.input, rawHash: "tochka-first-quarantined", amountKopecks: 99_999 };
+    expect(setup.domain.applyTochkaPaymentWebhook(quarantined, webhook.expected)).toEqual({ duplicate: false, applied: false });
+
+    const correction = { ...webhook.input, rawHash: "tochka-corrected-valid" };
+    expect(setup.domain.applyTochkaPaymentWebhook(correction, webhook.expected))
+      .toEqual({ duplicate: false, applied: true, corrected: true });
+    expect(setup.domain.applyTochkaPaymentWebhook(correction, webhook.expected))
+      .toEqual({ duplicate: true, applied: false });
+    expect(setup.db.prepare("SELECT payload_hash, status FROM provider_webhook_events").get())
+      .toEqual({ payload_hash: "tochka-first-quarantined", status: "QUARANTINED" });
+    expect(setup.db.prepare("SELECT payload_hash, status FROM provider_webhook_event_conflicts").get())
+      .toEqual({ payload_hash: "tochka-corrected-valid", status: "CORRECTED_APPLIED" });
+    expect(setup.db.prepare("SELECT status, captured_amount_kopecks FROM payments WHERE id = ?").get(webhook.paymentId))
+      .toEqual({ status: "PAID", captured_amount_kopecks: 100_000 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM tickets WHERE status = 'VALID'").get()).toEqual({ count: 1 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM email_outbox WHERE type = 'TICKET'").get()).toEqual({ count: 1 });
   });
 
   it("defers only stale-review busy contention and continues the financial worker sequence", async () => {

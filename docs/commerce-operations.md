@@ -111,6 +111,12 @@ reconciled; it must never cause another create-link call.
 against Tochka's rotating public JWK, and checks the operation, payment-link,
 customer, merchant, amount, payment type, and successful status before it can
 confirm a booking. Mismatches are quarantined for provider-drift review.
+The `operationId:status` semantic key remains unique for exact replay only:
+the stored payload hash must also match. A different authenticated payload with
+the same key is preserved in the collision-evidence ledger and never re-runs
+fulfilment. The sole exception is one later valid correction after the original
+event was `QUARANTINED`; both evidence rows are retained and that correction may
+confirm the payment exactly once.
 
 `CREATE_UNKNOWN` is an ambiguous create boundary, never permission to repeat
 `POST /payments_with_receipt`. The worker performs bounded, read-only payment
