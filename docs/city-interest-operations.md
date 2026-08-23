@@ -82,22 +82,22 @@ The production webhook must target:
 POST https://api.flexperiment.ru/v1/webhooks/unisender
 ```
 
-Commerce exposes `GET /v1/webhooks/unisender` as a stateless `204` URL
-liveness response for validators that probe with GET. It has no delivery
-semantics, creates no evidence, and does not weaken the callback boundary. A
-real delivery callback is still a JSON `POST` carrying the documented raw-body
-MD5 `auth`; an unsigned or empty `POST` deliberately returns
+Unisender's authenticated `webhook/set` URL check makes a parameterless GET
+and requires `200 OK`. Commerce exposes `GET /v1/webhooks/unisender` as the
+stateless `200 {"ok":true}` verification response with `Cache-Control:
+no-store`. It has no delivery semantics, creates no evidence, and does not
+weaken the callback boundary. A real delivery callback is still a JSON `POST`
+carrying the documented raw-body MD5 `auth`; an unsigned or empty `POST`
+deliberately returns
 `401 UNISENDER_WEBHOOK_AUTH_INVALID`.
 
 The Unisender Go configuration API exposes the POST-only
 `/ru/transactional/api/v1/webhook/set.json` endpoint and requires its API key.
 Use that authenticated path for a controlled subscription configuration rather
-than weakening the callback receiver. The unauthenticated endpoint probe does
-not reveal a dashboard URL-validator request body; record the exact request
-method/body from the provider UI or support case before changing this behavior.
-If it is GET, the liveness response above is sufficient. Do not change Commerce
-to return `200` for an arbitrary unsigned POST: such a request is
-indistinguishable from a forged delivery callback.
+than weakening the callback receiver. The confirmed GET check is satisfied by
+the verification response above. Do not change Commerce to return `200` for an
+arbitrary unsigned POST: such a request is indistinguishable from a forged
+delivery callback.
 
 It must be active, use JSON POST (not gzip unless Commerce is extended), and
 subscribe at minimum to `delivered`, `soft_bounced`, `hard_bounced`, and `spam`.

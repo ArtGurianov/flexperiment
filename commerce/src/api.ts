@@ -177,11 +177,11 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     return c.json({ accepted: true, duplicate: applied.duplicate }, 200);
   });
 
-  // A URL validator may make a harmless GET before a webhook is configured.
+  // Unisender webhook/set verifies the URL with a parameterless GET.
   // Delivery callbacks are POST-only and always retain raw-body MD5 auth.
   app.get("/v1/webhooks/unisender", (c) => {
     c.header("Cache-Control", "no-store");
-    return c.body(null, 204);
+    return c.json({ ok: true }, 200);
   });
 
   app.post("/v1/webhooks/unisender", async (c) => {
