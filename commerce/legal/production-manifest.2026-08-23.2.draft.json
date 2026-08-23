@@ -5,7 +5,7 @@
     "PUBLIC_OFFER": {
       "document_id": "PUBLIC_OFFER",
       "version": "2026-08-23",
-      "sha256": "0ace38e236dcfcb5a54ede8e1b14675fc3caeb2700ef9bab74be02e8a89937a5",
+      "sha256": "cf4797bc09fe5f59e751a614b56aa31998631b0b219864c364a2e5474272265b",
       "current_url": "https://flexperiment.ru/legal/public-offer.md",
       "archive_url": "https://flexperiment.ru/legal/archive/offer/2026-08-23.2/public-offer.md",
       "checkout_relevant": true
@@ -21,7 +21,7 @@
     "PD_CONSENT": {
       "document_id": "PD_CONSENT",
       "version": "2026-08-23",
-      "sha256": "d617e76b51df50e07f85d64627a9e4a3a19b1f17f4e04235cbc6e2400a3eba7d",
+      "sha256": "313390b685e82e73d190f5300295df1d5b83905787b3d92531d5b3c8d126d30f",
       "current_url": "https://flexperiment.ru/legal/personal-data-consent.md",
       "archive_url": "https://flexperiment.ru/legal/archive/privacy/2026-08-23.2/personal-data-consent.md",
       "checkout_relevant": true

@@ -126,16 +126,18 @@ describe("production legal-release publisher", () => {
     const disclosure = readFileSync("public/legal/archive/checkout-disclosure/2026-08-23.2/disclaimer.md", "utf8");
     expect(offer).toContain("лицу, в пользу которого заключён договор");
     expect(offer).toContain("пункта 2 статьи 430 ГК РФ");
+    expect(offer).toContain("Заказчик как его законный представитель");
     expect(offer).not.toContain("приобретает участие исключительно для себя");
     expect(privacy).toContain("пунктом 5 части 1 статьи 6 Федерального закона № 152-ФЗ");
     expect(consent).toContain("не является согласием, данным мною от имени Участника");
+    expect(consent).toContain("Если обработка осуществляется лицом по поручению Оператора");
     for (const document of [offer, disclosure]) {
       expect(document).toContain("младше 14 лет");
       expect(document).toContain("сопровождении совершеннолетнего взрослого");
       expect(document).not.toMatch(/0\+|14\+|16\+|18\+ участия/);
     }
     expect(createHash("sha256").update(canonicalLegalManifest(candidate.manifest)).digest("hex")).toBe(
-      "86fe49a557103b10303a17aafdfea6c2a6458f369e56cb345348c48cd5900098",
+      "bb96c89259c99d085b7277796f93525b96c43bea3e8d7e66c5b4c0f98a03bc9a",
     );
     expect(loadCanonicalLegalRelease("commerce/legal/production-manifest.json").version).toBe("2026-08-21.2");
   });
