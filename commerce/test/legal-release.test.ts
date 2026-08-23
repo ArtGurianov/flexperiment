@@ -79,6 +79,41 @@ describe("production legal-release publisher", () => {
     );
   });
 
+  it("prepares the city-interest legal candidate without changing the active release", () => {
+    const candidate = loadCanonicalLegalRelease("commerce/legal/production-manifest.2026-08-23.1.draft.json");
+    expect(candidate.version).toBe("2026-08-23.1");
+    expect(candidate.manifest.documents.PRIVACY_POLICY).toMatchObject({
+      version: "2026-08-23",
+      archive_url: "https://flexperiment.ru/legal/archive/privacy/2026-08-23.1/privacy-policy.md",
+    });
+    expect(candidate.manifest.documents.PD_CONSENT).toMatchObject({
+      version: "2026-08-23",
+      archive_url: "https://flexperiment.ru/legal/archive/privacy/2026-08-23.1/personal-data-consent.md",
+    });
+    expect(readFileSync("public/legal/archive/privacy/2026-08-23.1/privacy-policy.md", "utf8")).toContain(
+      "уведомления о появлении мастер-класса Flexperiment в выбранном им городе",
+    );
+    expect(readFileSync("public/legal/archive/privacy/2026-08-23.1/personal-data-consent.md", "utf8")).toContain(
+      "если я направил соответствующий запрос через форму на Сайте",
+    );
+    expect(createHash("sha256").update(canonicalLegalManifest(candidate.manifest)).digest("hex")).toBe(
+      "a8ebe2aab85fe2fdee710c6ccbbb07a6eb84ac0e020a1f2bbd479047444b40af",
+    );
+    expect(loadCanonicalLegalRelease("commerce/legal/production-manifest.json").version).toBe("2026-08-21.2");
+  });
+
+  it("keeps current Flexperiment legal documents free of legacy operator contacts", () => {
+    const currentDocuments = [
+      "public/legal/privacy-policy.md",
+      "public/legal/personal-data-consent.md",
+      "public/legal/public-offer.md",
+      "public/legal/disclaimer.md",
+    ].map((filename) => readFileSync(filename, "utf8"));
+    for (const document of currentDocuments) {
+      expect(document).not.toMatch(/flextatic\.ru|art@artgurianov\.com/i);
+    }
+  });
+
   it("keeps every current legal convenience file byte-identical to the canonical manifest", () => {
     const release = loadCanonicalLegalRelease("commerce/legal/production-manifest.json");
     expect(() => verifyCurrentLegalSourceHashes(release.manifest)).not.toThrow();
