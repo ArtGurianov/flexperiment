@@ -208,6 +208,29 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
+  it("allows an authenticated operator to withdraw all city-interest rows without persisting the email", async () => {
+    const { db, app } = appFixture();
+    for (const city of ["kemerovo", "omsk"]) {
+      const response = await app.request("http://api.flexperiment.ru/v1/public/city-interest", {
+        method: "POST",
+        headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": `127.0.0.${city.length}` },
+        body: JSON.stringify({ email: "withdraw@example.test", city, pd_consent_accepted: true, captcha_token: "proof" }),
+      });
+      expect(response.status).toBe(202);
+    }
+    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.99" }, body: JSON.stringify({ password: "correct horse" }) });
+    const withdrawn = await app.request("http://admin.flexperiment.ru/v1/admin/city-interest/withdraw", {
+      method: "POST",
+      headers: { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" },
+      body: JSON.stringify({ email: "withdraw@example.test", reason: "Consent withdrawal received" }),
+    });
+    expect(withdrawn.status).toBe(200);
+    expect(await withdrawn.json()).toEqual({ withdrawn: true, deleted_count: 2 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE email_normalized = 'withdraw@example.test'").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT details_json FROM admin_audit_log WHERE action = 'CITY_INTEREST_WITHDRAWN'").get()).toEqual({ details_json: expect.not.stringContaining("withdraw@example.test") });
+    db.close();
+  });
+
   it("reads refund confirmation context without consuming or cancelling anything", async () => {
     const { db, app } = appFixture();
     const domain = new CommerceDomain(db, new MockProvider());

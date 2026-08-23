@@ -10,7 +10,10 @@ let nextDriftSweepAt = 0;
 let sweeping = false;
 
 const sweep = async () => {
-  await runWorkerSweep(domain);
+  const cityInterest = await runWorkerSweep(domain);
+  if (cityInterest.expired_deleted || cityInterest.notified_deleted) {
+    console.log(`Commerce city-interest lifecycle expired_deleted=${cityInterest.expired_deleted} notified_deleted=${cityInterest.notified_deleted}`);
+  }
   if (Date.now() >= nextDriftSweepAt) {
     nextDriftSweepAt = Date.now() + 24 * 60 * 60_000;
     await domain.collectProviderDrift();

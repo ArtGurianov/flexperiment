@@ -126,4 +126,21 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     db.close();
   });
+
+  it("adds deterministic expiry to populated city-interest evidence without rewriting it", () => {
+    const db = openDatabase(":memory:");
+    applyThrough(db, "0015_city_interest_requests.sql");
+    db.prepare(`INSERT INTO city_interest_requests(id, email_normalized, email_hash, city_slug, privacy_policy_version, privacy_policy_sha256, pd_consent_version, pd_consent_sha256, consent_accepted_at, created_at)
+      VALUES ('interest-expiry', 'person@example.test', 'hash', 'tomsk', 'legal-1', 'a', 'consent-1', 'b', '2024-02-29T12:34:56.000Z', '2024-02-29T12:34:56.000Z')`).run();
+    const before = db.prepare("SELECT id, email_normalized, email_hash, city_slug, privacy_policy_version, pd_consent_version, consent_accepted_at, created_at FROM city_interest_requests WHERE id = 'interest-expiry'").get();
+
+    db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, "0016_city_interest_lifecycle.sql"), "utf8")))();
+
+    expect(db.prepare("SELECT id, email_normalized, email_hash, city_slug, privacy_policy_version, pd_consent_version, consent_accepted_at, created_at FROM city_interest_requests WHERE id = 'interest-expiry'").get()).toEqual(before);
+    expect(db.prepare("SELECT expires_at FROM city_interest_requests WHERE id = 'interest-expiry'").get()).toEqual({ expires_at: "2025-03-01T12:34:56.000Z" });
+    expect((db.prepare("PRAGMA table_info(city_interest_requests)").all() as { name: string }[]).map(({ name }) => name)).toContain("expires_at");
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'city_interest_requests_expiry_idx'").get()).toEqual({ name: "city_interest_requests_expiry_idx" });
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    db.close();
+  });
 });

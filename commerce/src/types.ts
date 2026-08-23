@@ -108,6 +108,10 @@ export const cityInterestSchema = z.object({
   pd_consent_accepted: z.literal(true),
   captcha_token: z.string().trim().min(1).max(4_096),
 }).strict();
+export const cityInterestWithdrawalSchema = z.object({
+  email: z.string().trim().email().max(320).transform((value) => value.toLowerCase()),
+  reason: z.string().trim().min(3).max(1_000),
+}).strict();
 export const customerRefundTokenSchema = z.object({
   token: z.string().min(32).max(256),
 }).strict();

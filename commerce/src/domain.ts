@@ -59,6 +59,13 @@ const isAllowedOccurrenceStateTransition = (before: Row, after: Row) => {
 // timeout-based cancellation. Keep this explicit and shared by the worker and
 // Admin read model.
 export const STALE_PREPARED_SETTLEMENT_MS = 30 * 60 * 1_000;
+export const CITY_INTEREST_SWEEP_BATCH_SIZE = 50;
+
+const cityInterestExpiry = (timestamp: string) => {
+  const date = new Date(timestamp);
+  date.setUTCFullYear(date.getUTCFullYear() + 1);
+  return date.toISOString();
+};
 
 export class CommerceDomain {
   constructor(
@@ -96,21 +103,54 @@ export class CommerceDomain {
       const release = one(this.db, "SELECT manifest_json FROM legal_releases WHERE active = 1");
       if (!release) throw new DomainError("LEGAL_RELEASE_NOT_ACTIVE", 503);
       const manifest = legalManifest(JSON.parse(String(release.manifest_json)));
-      const timestamp = now();
+      const timestamp = new Date(this.clock()).toISOString();
+      const expiresAt = cityInterestExpiry(timestamp);
       this.db.prepare(`INSERT INTO city_interest_requests(
         id, email_normalized, email_hash, city_slug,
         privacy_policy_version, privacy_policy_sha256,
-        pd_consent_version, pd_consent_sha256, consent_accepted_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(email_hash, city_slug) DO NOTHING`).run(
+        pd_consent_version, pd_consent_sha256, consent_accepted_at, created_at,
+        expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(email_hash, city_slug) DO UPDATE SET
+        email_normalized = excluded.email_normalized,
+        privacy_policy_version = excluded.privacy_policy_version,
+        privacy_policy_sha256 = excluded.privacy_policy_sha256,
+        pd_consent_version = excluded.pd_consent_version,
+        pd_consent_sha256 = excluded.pd_consent_sha256,
+        consent_accepted_at = excluded.consent_accepted_at,
+        created_at = excluded.created_at,
+        expires_at = excluded.expires_at`).run(
         id(), input.email, emailHash(input.email), city.slug,
         manifest.documents.PRIVACY_POLICY.version, manifest.documents.PRIVACY_POLICY.sha256,
         manifest.documents.PD_CONSENT.version, manifest.documents.PD_CONSENT.sha256,
-        timestamp,
+        timestamp, timestamp, expiresAt,
       );
-      // A duplicate intentionally has the same opaque success result. It does
-      // not generate a new request or disclose whether this email was stored.
+      // A second explicit, consented submission renews this one request. No
+      // page view, worker sweep, or delivery retry can refresh its lifetime.
+      this.consumeEligibleCityInterests(city.slug, CITY_INTEREST_SWEEP_BATCH_SIZE);
       return { accepted: true };
+    });
+  }
+
+  /** Deletes purpose-limited PII only after durable outbox enqueue succeeds. */
+  processCityInterestLifecycle() {
+    return withImmediateTransaction(this.db, () => {
+      const timestamp = new Date(this.clock()).toISOString();
+      const expired = many(this.db, `SELECT id FROM city_interest_requests
+        WHERE expires_at <= ? ORDER BY expires_at LIMIT ?`, timestamp, CITY_INTEREST_SWEEP_BATCH_SIZE);
+      for (const row of expired) this.db.prepare("DELETE FROM city_interest_requests WHERE id = ?").run(row.id);
+      const notifiedDeleted = this.consumeEligibleCityInterests(undefined, CITY_INTEREST_SWEEP_BATCH_SIZE, timestamp);
+      return { expired_deleted: expired.length, notified_deleted: notifiedDeleted };
+    });
+  }
+
+  withdrawCityInterest(email: string, reason: string, adminId: string) {
+    return withImmediateTransaction(this.db, () => {
+      const deleted = this.db.prepare("DELETE FROM city_interest_requests WHERE email_hash = ?").run(emailHash(email));
+      // Retain only aggregate operator evidence: never an email or its hash.
+      this.db.prepare("INSERT INTO admin_audit_log(id, admin_id, action, entity_type, entity_id, details_json) VALUES (?, ?, 'CITY_INTEREST_WITHDRAWN', 'city_interest', 'all-matching-requests', ?)")
+        .run(id(), adminId, JSON.stringify({ reason, deleted_count: deleted.changes }));
+      return { withdrawn: true, deleted_count: deleted.changes };
     });
   }
 
@@ -704,6 +744,10 @@ export class CommerceDomain {
       const assignments = [...changed.map((field) => `${field} = ?`), "material_revision = material_revision + ?", "updated_at = ?"];
       this.db.prepare(`UPDATE occurrences SET ${assignments.join(", ")} WHERE id = ?`).run(...changed.map((field) => typeof input[field] === "boolean" ? Number(input[field]) : input[field]), materialChanged ? 1 : 0, now(), occurrenceId);
       const after = one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId)!;
+      // Publication, not city creation, can complete the narrowly scoped
+      // purpose. The helper rechecks scheduled/future eligibility.
+      const city = one(this.db, "SELECT slug FROM cities WHERE id = ?", after.city_id);
+      if (city) this.consumeEligibleCityInterests(String(city.slug), CITY_INTEREST_SWEEP_BATCH_SIZE);
       if (materialChanged) this.db.prepare("INSERT INTO occurrence_revisions(id, occurrence_id, revision, reason, before_json, after_json) VALUES (?, ?, ?, ?, ?, ?)").run(id(), occurrenceId, after.material_revision, input.reason, JSON.stringify(before), JSON.stringify(after));
       this.recordAdminCommandAudit(adminId, "OCCURRENCE_EDITED", "occurrence", occurrenceId, String(input.reason), idempotencyKey, payload);
       return after;
@@ -1041,7 +1085,8 @@ export class CommerceDomain {
       try {
         const payload = this.emailPayload(outbox);
         const sent = await this.emailProvider.send({ recipientEmail: String(outbox.recipient_email), template: String(outbox.template), payload, idempotencyKey: String(outbox.provider_idempotence_key), outboxId: String(outbox.id) });
-        this.db.prepare("UPDATE email_outbox SET status = 'ACCEPTED', job_id = ?, lease_owner = NULL, lease_expires_at = NULL WHERE id = ? AND status = 'SENDING'").run(sent.jobId, outbox.id);
+        const accepted = this.db.prepare("UPDATE email_outbox SET status = 'ACCEPTED', job_id = ?, lease_owner = NULL, lease_expires_at = NULL WHERE id = ? AND status = 'SENDING'").run(sent.jobId, outbox.id);
+        if (accepted.changes) this.redactTerminalCityInterestOutbox(String(outbox.id));
       } catch (error) {
         // A response can be lost after dispatch. Retain SEND_UNKNOWN, not PENDING,
         // and keep the original provider idempotence key for all future recovery.
@@ -1104,6 +1149,35 @@ export class CommerceDomain {
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(id(), type, recipientEmail, recipientEmailHash, template, payloadRef, JSON.stringify(payload), publicId());
   }
 
+  private consumeEligibleCityInterests(citySlug?: string, limit = CITY_INTEREST_SWEEP_BATCH_SIZE, timestamp = new Date(this.clock()).toISOString()) {
+    const interests = many(this.db, `SELECT ci.id, ci.email_normalized, ci.email_hash, ci.city_slug,
+        c.title AS city_title, o.id AS occurrence_id, o.title AS occurrence_title, o.starts_at
+      FROM city_interest_requests ci
+      JOIN cities c ON c.slug = ci.city_slug
+      JOIN occurrences o ON o.id = (
+        SELECT candidate.id FROM occurrences candidate
+        WHERE candidate.city_id = c.id
+          AND candidate.visibility = 'PUBLISHED'
+          AND candidate.fulfillment_status = 'SCHEDULED'
+          AND candidate.starts_at >= ?
+        ORDER BY candidate.starts_at, candidate.id
+        LIMIT 1
+      )
+      WHERE ci.expires_at > ? ${citySlug ? "AND ci.city_slug = ?" : ""}
+      ORDER BY ci.created_at, ci.id
+      LIMIT ?`, timestamp, timestamp, ...(citySlug ? [citySlug] : []), limit);
+    for (const interest of interests) {
+      this.enqueueEmail("CITY_INTEREST_AVAILABLE", String(interest.email_normalized), String(interest.email_hash), "city-interest-available", `city-interest:${interest.id}`, {
+        city_title: interest.city_title,
+        occurrence_id: interest.occurrence_id,
+        occurrence_title: interest.occurrence_title,
+        starts_at: interest.starts_at,
+      });
+      this.db.prepare("DELETE FROM city_interest_requests WHERE id = ?").run(interest.id);
+    }
+    return interests.length;
+  }
+
   private recordProviderDrift(entityType: "PAYMENT" | "REFUND", entityId: string, observed: Record<string, unknown>) {
     const existing = one(this.db, "SELECT id FROM provider_drift_reviews WHERE entity_type = ? AND entity_id = ? AND status = 'OPEN'", entityType, entityId);
     if (!existing) this.db.prepare("INSERT INTO provider_drift_reviews(id, entity_type, entity_id, observed_json) VALUES (?, ?, ?, ?)").run(id(), entityType, entityId, JSON.stringify(observed));
@@ -1114,6 +1188,15 @@ export class CommerceDomain {
     if (!terminal.includes(observed.status)) return;
     const timestamps = observed.status === "SENT" ? ", sent_at = ?" : observed.status === "DELIVERED" ? ", delivered_at = ?" : observed.status === "BOUNCED" ? ", bounced_at = ?" : "";
     this.db.prepare(`UPDATE email_outbox SET status = ?, job_id = COALESCE(job_id, ?), lease_owner = NULL, lease_expires_at = NULL${timestamps} WHERE id = ?`).run(observed.status, observed.jobId ?? null, ...(timestamps ? [now()] : []), outboxId);
+    // This purpose has no further processing after a provider-known terminal
+    // outcome. Keep durable delivery evidence but remove both raw recipient and
+    // email hash; PENDING/SEND_UNKNOWN remain intact for safe recovery.
+    this.redactTerminalCityInterestOutbox(outboxId);
+  }
+
+  private redactTerminalCityInterestOutbox(outboxId: string) {
+    this.db.prepare(`UPDATE email_outbox SET recipient_email = '', recipient_email_hash = '', payload_snapshot = '{}'
+      WHERE id = ? AND type = 'CITY_INTEREST_AVAILABLE' AND status IN ('ACCEPTED', 'SENT', 'DELIVERED', 'BOUNCED', 'FAILED')`).run(outboxId);
   }
 
   applyUnisenderDelivery(input: { outboxId: string; status: "ACCEPTED" | "SENT" | "DELIVERED" | "BOUNCED" | "FAILED"; jobId?: string; semanticKey: string }) {

@@ -14,5 +14,15 @@ export function renderEmailTemplate(template: string, payload: Record<string, un
   }
   if (template === "customer-refund-confirmed") return { subject: "Отмена участия подтверждена", plaintext: `Отмена участия подтверждена. Возврат передан в обработку.${orderReference(payload)}`, html: `<p>Отмена участия подтверждена.</p><p>Возврат передан в обработку.</p>${payload.public_order_number ? `<p>Номер заказа: ${escapeHtml(payload.public_order_number)}</p>` : ""}` };
   if (template === "refund-succeeded") return { subject: "Возврат выполнен", plaintext: `Возврат выполнен. Срок зачисления зависит от вашего банка.${orderReference(payload)}`, html: `<p>Возврат выполнен. Срок зачисления зависит от вашего банка.</p>${payload.public_order_number ? `<p>Номер заказа: ${escapeHtml(payload.public_order_number)}</p>` : ""}` };
+  if (template === "city-interest-available") {
+    const city = escapeHtml(payload.city_title);
+    const title = escapeHtml(payload.occurrence_title);
+    const startsAt = escapeHtml(payload.starts_at);
+    return {
+      subject: `FLEXPERIMENT появился в ${String(payload.city_title ?? "вашем городе")}`,
+      plaintext: `Вы просили сообщить, когда FLEXPERIMENT появится в ${String(payload.city_title ?? "выбранном городе")}. Запланирован мастер-класс «${String(payload.occurrence_title ?? "FLEXPERIMENT")}» (${String(payload.starts_at ?? "дата уточняется")}).`,
+      html: `<p>Вы просили сообщить, когда FLEXPERIMENT появится в ${city}.</p><p>Запланирован мастер-класс «${title}».</p><p>Дата и время: ${startsAt}</p>`,
+    };
+  }
   throw new Error(`Unknown code-owned email template: ${template}`);
 }
