@@ -155,6 +155,28 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrence_change_refund_entitlements WHERE status = 'OPEN'").get()).toEqual({ count: 1 });
   });
 
+  it("opens operational attention and preserves a corrupt pending occurrence notice instead of silently coalescing it", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const checkout = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), randomUUID(), "https://flexperiment.ru");
+    const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(checkout.status_id) as { id: string };
+    setup.domain.markPaymentPaid(payment.id, 100_000, "paid");
+    setup.domain.patchOccurrence(setup.occurrenceId, { title: "First notice", reason: "First change", expected_revision: 1 }, randomUUID(), "admin");
+    const corrupt = setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'OCCURRENCE_UPDATED'").get() as { id: string };
+    setup.db.prepare("UPDATE email_outbox SET payload_snapshot = '{not json' WHERE id = ?").run(corrupt.id);
+
+    setup.domain.patchOccurrence(setup.occurrenceId, { starts_at: "2026-10-01T12:00:00.000Z", ends_at: "2026-10-01T15:00:00.000Z", reason: "Material change", expected_revision: 2 }, randomUUID(), "admin");
+    expect(setup.db.prepare("SELECT status, superseded_at FROM email_outbox WHERE id = ?").get(corrupt.id)).toEqual({ status: "PENDING", superseded_at: null });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrence_update_notifications").get()).toEqual({ count: 1 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrence_change_refund_entitlements WHERE status = 'OPEN'").get()).toEqual({ count: 1 });
+    expect(setup.db.prepare("SELECT kind, entity_type, entity_id FROM operational_incidents WHERE incident_key = ?").get(`occurrence-notification-payload-corrupt:${corrupt.id}`)).toEqual({
+      kind: "OCCURRENCE_NOTIFICATION_PAYLOAD_CORRUPT", entity_type: "occurrence", entity_id: setup.occurrenceId,
+    });
+
+    setup.domain.patchOccurrence(setup.occurrenceId, { title: "Later title", reason: "Follow-up", expected_revision: 3 }, randomUUID(), "admin");
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM operational_incidents WHERE incident_key = ?").get(`occurrence-notification-payload-corrupt:${corrupt.id}`)).toEqual({ count: 1 });
+  });
+
   it("supersedes only definitely-unsent notices and continues to record provider delivery evidence", async () => {
     const statuses = ["SENDING", "ACCEPTED", "SEND_UNKNOWN"] as const;
     for (const status of statuses) {

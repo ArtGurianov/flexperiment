@@ -39,6 +39,26 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     db.close();
   });
+
+  it("upgrades populated 0026 operational incidents without losing evidence and permits corrupt-payload attention", () => {
+    const db = openDatabase(":memory:");
+    applyThrough(db, "0026_post_purchase_occurrence_lifecycle.sql");
+    db.prepare(`INSERT INTO operational_incidents(
+      id, incident_key, kind, entity_type, entity_id, details_json, status, resolution_note, created_at, resolved_at
+    ) VALUES ('incident-0026', 'refund-attention-0026', 'REFUND_REQUIRES_REVIEW', 'refund', 'refund-0026', '{"immutable":true}', 'RESOLVED', 'reviewed', '2030-01-01T00:00:00.000Z', '2030-01-02T00:00:00.000Z')`).run();
+    const before = db.prepare("SELECT * FROM operational_incidents WHERE id = 'incident-0026'").get();
+
+    db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, "0027_occurrence_notification_payload_attention.sql"), "utf8")))();
+
+    expect(db.prepare("SELECT * FROM operational_incidents WHERE id = 'incident-0026'").get()).toEqual(before);
+    db.prepare(`INSERT INTO operational_incidents(id, incident_key, kind, entity_type, entity_id, details_json)
+      VALUES ('incident-0027', 'corrupt-payload-0027', 'OCCURRENCE_NOTIFICATION_PAYLOAD_CORRUPT', 'occurrence', 'occurrence-0027', '{}')`).run();
+    expect(() => db.prepare(`INSERT INTO operational_incidents(id, incident_key, kind, entity_type, entity_id, details_json)
+      VALUES ('incident-invalid', 'invalid-0027', 'UNKNOWN_INCIDENT', 'occurrence', 'occurrence-0027', '{}')`).run()).toThrow(/CHECK constraint failed/);
+    expect((db.prepare("PRAGMA index_list(operational_incidents)").all() as { name: string }[]).map(({ name }) => name)).toContain("operational_incidents_open_idx");
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    db.close();
+  });
   it("upgrades an empty database and enforces public order numbers", () => {
     const db = openDatabase(":memory:");
     applyThrough(db, "0012_refund_hardening.sql");

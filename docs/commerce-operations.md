@@ -83,6 +83,13 @@ evidence remains admissible. Consecutive definitely-unsent revisions are coalesc
 into one replacement notice whose baseline is the earliest unsent revision;
 the replacement always contains the complete current event facts.
 
+If a pending immutable occurrence-update payload is malformed or lacks a
+complete customer snapshot, Commerce does not supersede or coalesce that
+notice and does not enqueue a replacement for that booking. It opens a
+deduplicated `OCCURRENCE_NOTIFICATION_PAYLOAD_CORRUPT` incident instead. The
+occurrence revision and any refund entitlement remain durable; an operator
+must review the immutable evidence before customer communication resumes.
+
 Changes to date/time/timezone, an already-confirmed venue, confirmed-to-TBA,
 or a later venue-announcement deadline also create a durable special full
 refund entitlement for the affected pre-existing booking. Before the event

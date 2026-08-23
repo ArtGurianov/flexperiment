@@ -76,6 +76,10 @@ export type OccurrenceRevisionClassification = {
   after: OccurrenceCustomerSnapshot;
 };
 
+type PendingOccurrenceUpdateBaseline =
+  | { before: OccurrenceCustomerSnapshot; revisionIds: string[]; corruptNotifications?: never }
+  | { before?: never; revisionIds?: never; corruptNotifications: Array<{ outboxId: string; revisionId: string }> };
+
 const occurrenceCustomerSnapshot = (value: Row): OccurrenceCustomerSnapshot => ({
   title: String(value.title),
   starts_at: String(value.starts_at),
@@ -87,6 +91,20 @@ const occurrenceCustomerSnapshot = (value: Row): OccurrenceCustomerSnapshot => (
   venue_disclosure_text: value.venue_disclosure_text == null ? null : String(value.venue_disclosure_text),
   venue_announce_by: value.venue_announce_by == null ? null : String(value.venue_announce_by),
 });
+
+const isOccurrenceCustomerSnapshot = (value: unknown): value is OccurrenceCustomerSnapshot => {
+  if (!value || typeof value !== "object") return false;
+  const snapshot = value as Record<string, unknown>;
+  return typeof snapshot.title === "string"
+    && typeof snapshot.starts_at === "string"
+    && typeof snapshot.ends_at === "string"
+    && typeof snapshot.timezone === "string"
+    && (snapshot.venue_status === "CONFIRMED" || snapshot.venue_status === "TO_BE_ANNOUNCED")
+    && [null, "string"].includes(snapshot.venue_name === null ? null : typeof snapshot.venue_name)
+    && [null, "string"].includes(snapshot.venue_address === null ? null : typeof snapshot.venue_address)
+    && [null, "string"].includes(snapshot.venue_disclosure_text === null ? null : typeof snapshot.venue_disclosure_text)
+    && [null, "string"].includes(snapshot.venue_announce_by === null ? null : typeof snapshot.venue_announce_by);
+};
 
 /**
  * Classifies persisted, normalized occurrence facts. It deliberately does not
@@ -276,7 +294,7 @@ export class CommerceDomain {
   }
 
   private openOperationalIncident(
-    kind: "REFUND_REQUIRES_REVIEW" | "ORGANIZER_CHANGE_REFUND_MANUAL_REVIEW" | "VENUE_ANNOUNCEMENT_OVERDUE",
+    kind: "REFUND_REQUIRES_REVIEW" | "ORGANIZER_CHANGE_REFUND_MANUAL_REVIEW" | "VENUE_ANNOUNCEMENT_OVERDUE" | "OCCURRENCE_NOTIFICATION_PAYLOAD_CORRUPT",
     entityType: "refund" | "order" | "occurrence",
     entityId: string,
     incidentKey: string,
@@ -1107,13 +1125,37 @@ export class CommerceDomain {
       // Carry its earliest customer baseline forward so a quick follow-up
       // edit cannot hide a material change from the replacement notice.
       const pendingBaseline = this.pendingOccurrenceUpdateBaseline(String(booking.booking_id));
-      this.supersedePendingOccurrenceUpdatesForBooking(String(booking.booking_id), "NEWER_OCCURRENCE_REVISION");
       if (classification.refundMaterial) {
         this.db.prepare(`INSERT OR IGNORE INTO occurrence_change_refund_entitlements(
           id, occurrence_revision_id, order_id, booking_id, payment_id
         ) VALUES (?, ?, ?, ?, ?)`)
           .run(id(), revisionId, booking.order_id, booking.booking_id, booking.payment_id);
       }
+      if (pendingBaseline?.corruptNotifications) {
+        // We cannot prove the baseline of an immutable pending customer
+        // notice. Preserve it and stop this booking's notification sequence
+        // rather than silently dropping the earlier change or guessing a
+        // cumulative diff. Financial entitlement creation above remains
+        // authoritative and atomic with the occurrence revision.
+        for (const corrupt of pendingBaseline.corruptNotifications) {
+          this.openOperationalIncident(
+            "OCCURRENCE_NOTIFICATION_PAYLOAD_CORRUPT",
+            "occurrence",
+            String(after.id),
+            `occurrence-notification-payload-corrupt:${corrupt.outboxId}`,
+            {
+              occurrence_id: after.id,
+              booking_id: booking.booking_id,
+              order_id: booking.order_id,
+              blocked_revision_id: revisionId,
+              corrupt_outbox_id: corrupt.outboxId,
+              corrupt_occurrence_revision_id: corrupt.revisionId,
+            },
+          );
+        }
+        continue;
+      }
+      this.supersedePendingOccurrenceUpdatesForBooking(String(booking.booking_id), "NEWER_OCCURRENCE_REVISION");
       const notificationClassification = pendingBaseline
         ? classifyOccurrenceRevision(pendingBaseline.before, after)
         : classification;
@@ -1880,8 +1922,8 @@ export class CommerceDomain {
     }
   }
 
-  private pendingOccurrenceUpdateBaseline(bookingId: string): { before: Row; revisionIds: string[] } | null {
-    const notifications = many(this.db, `SELECT notification.occurrence_revision_id, outbox.payload_snapshot
+  private pendingOccurrenceUpdateBaseline(bookingId: string): PendingOccurrenceUpdateBaseline | null {
+    const notifications = many(this.db, `SELECT notification.occurrence_revision_id, notification.outbox_id, outbox.payload_snapshot
       FROM occurrence_update_notifications notification
       JOIN email_outbox outbox ON outbox.id = notification.outbox_id
       WHERE notification.booking_id = ?
@@ -1889,15 +1931,19 @@ export class CommerceDomain {
         AND outbox.status = 'PENDING'
       ORDER BY notification.created_at ASC, notification.id ASC`, bookingId);
     if (!notifications.length) return null;
-    try {
-      const payload = JSON.parse(String(notifications[0]!.payload_snapshot)) as { before?: Row };
-      if (!payload.before || typeof payload.before !== "object") return null;
-      return { before: payload.before, revisionIds: notifications.map((notification) => String(notification.occurrence_revision_id)) };
-    } catch {
-      // A corrupt historical payload must never prevent the authoritative
-      // occurrence mutation. The new message remains self-contained.
-      return null;
+    const corruptNotifications: Array<{ outboxId: string; revisionId: string }> = [];
+    let earliest: OccurrenceCustomerSnapshot | null = null;
+    for (const notification of notifications) {
+      try {
+        const payload = JSON.parse(String(notification.payload_snapshot)) as { before?: unknown };
+        if (!isOccurrenceCustomerSnapshot(payload.before)) throw new Error("invalid occurrence baseline");
+        if (!earliest) earliest = payload.before;
+      } catch {
+        corruptNotifications.push({ outboxId: String(notification.outbox_id), revisionId: String(notification.occurrence_revision_id) });
+      }
     }
+    if (corruptNotifications.length) return { corruptNotifications };
+    return { before: earliest!, revisionIds: notifications.map((notification) => String(notification.occurrence_revision_id)) };
   }
 
   private hasOpenOccurrenceChangeRefundEntitlement(bookingId: string) {
