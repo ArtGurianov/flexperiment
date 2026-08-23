@@ -156,6 +156,24 @@ bounce merely to hide them: they require customer-facing follow-up. Terminal
 recipient failures are not automatically retried; changing a recipient and
 requesting a new delivery is a separate explicit workflow.
 
+### Exceptional acknowledgement correction
+
+If an operator acknowledged the wrong exact outbox row, use this local-only
+command to restore its operational attention. It is not a normal workflow and
+is deliberately unavailable through the Admin API:
+
+```sh
+COMMERCE_EMAIL_UNACK_OUTBOX_ID='<outbox-id>' \
+COMMERCE_EMAIL_UNACK_CONFIRM='<outbox-id>' \
+pnpm commerce:email:unack
+```
+
+It returns `changed: true` only for an existing acknowledged
+`FAILED`/`BOUNCED`/`SEND_UNKNOWN` row. It clears only the two operational
+acknowledgement fields, makes no provider call, sends no email, and does not
+alter delivery evidence, retry state, PII, or suppression. A replay, unknown
+row, already-unacknowledged row, or non-attention state returns `changed: false`.
+
 Before traffic is enabled, run the production 1-RUB Tochka payment, verify the
 receipt and signed callback, issue and reconcile a refund, and exercise an
 actual Unisender send plus each configured callback status. Back up the SQLite

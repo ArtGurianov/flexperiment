@@ -68,7 +68,8 @@ export const CREATE_UNKNOWN_LOOKUP_WINDOW_MS = 8 * 24 * 60 * 60 * 1_000;
 export const CREATE_UNKNOWN_LOOKUP_INITIAL_BACKOFF_MS = 60 * 1_000;
 export const CREATE_UNKNOWN_LOOKUP_MAX_BACKOFF_MS = 60 * 60 * 1_000;
 export const EMAIL_ATTENTION_STATUSES = ["FAILED", "BOUNCED", "SEND_UNKNOWN"] as const;
-const emailAttentionStatusSql = "e.status IN ('FAILED', 'BOUNCED', 'SEND_UNKNOWN')";
+const emailAttentionStatusUnqualifiedSql = "status IN ('FAILED', 'BOUNCED', 'SEND_UNKNOWN')";
+const emailAttentionStatusSql = `e.${emailAttentionStatusUnqualifiedSql}`;
 const emailAttentionPredicateSql = `${emailAttentionStatusSql} AND e.ops_acknowledged_at IS NULL`;
 const emailAttentionSql = (where: string) => `SELECT
     e.id, e.type, e.status, e.attempts, e.created_at, e.sent_at, e.delivered_at, e.bounced_at,
@@ -149,6 +150,15 @@ export class CommerceDomain {
       const incident = one(this.db, `${emailAttentionSql("e.id = ?")} LIMIT 1`, outboxId);
       return { incident: incident!, acknowledged_now: outbox.ops_acknowledged_at === null };
     });
+  }
+
+  /** Exceptional local operator correction; never changes delivery evidence. */
+  clearEmailOperationalAcknowledgement(outboxId: string) {
+    return withImmediateTransaction(this.db, () => this.db.prepare(`UPDATE email_outbox
+      SET ops_acknowledged_at = NULL, ops_acknowledged_reason = NULL
+      WHERE id = ?
+        AND ops_acknowledged_at IS NOT NULL
+        AND ${emailAttentionStatusUnqualifiedSql}`).run(outboxId).changes > 0);
   }
 
   registerCityInterest(input: { email: string; city: string }) {

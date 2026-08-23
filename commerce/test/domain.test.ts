@@ -652,6 +652,41 @@ describe("commerce domain", () => {
       .toEqual({ status: "FAILED", ops_acknowledged_reason: "LEGACY_PROVIDER_CONFIGURATION" });
   });
 
+  it("clears only an acknowledged operational email flag for exact attention states", () => {
+    const setup = fixture(); databases.push(setup.db);
+    const domain = new CommerceDomain(setup.db, new MockProvider());
+    const insert = setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template,
+      payload_snapshot, status, provider_idempotence_key, job_id, attempts, sent_at, delivered_at, bounced_at,
+      suppressed_at, provider_error_code, provider_error_message, ops_acknowledged_at, ops_acknowledged_reason)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{"snapshot":true}', ?, ?,
+      'provider-job', 7, '2026-08-23T00:00:00.000Z', '2026-08-23T00:01:00.000Z',
+      '2026-08-23T00:02:00.000Z', NULL, 'provider-code', 'Provider message',
+      '2026-08-23T00:03:00.000Z', 'Mistaken acknowledgement')`);
+    for (const status of ["FAILED", "BOUNCED", "SEND_UNKNOWN"]) insert.run(`unack-${status}`, status, `unack-key-${status}`);
+    const before = setup.db.prepare(`SELECT status, job_id, attempts, sent_at, delivered_at, bounced_at,
+      suppressed_at, recipient_email, recipient_email_hash, payload_snapshot, provider_error_code,
+      provider_error_message FROM email_outbox WHERE id = 'unack-FAILED'`).get();
+
+    expect(domain.clearEmailOperationalAcknowledgement("unack-FAILED")).toBe(true);
+    expect(domain.clearEmailOperationalAcknowledgement("unack-FAILED")).toBe(false);
+    expect(domain.clearEmailOperationalAcknowledgement("unack-BOUNCED")).toBe(true);
+    expect(domain.clearEmailOperationalAcknowledgement("unack-SEND_UNKNOWN")).toBe(true);
+    expect(setup.db.prepare(`SELECT status, job_id, attempts, sent_at, delivered_at, bounced_at,
+      suppressed_at, recipient_email, recipient_email_hash, payload_snapshot, provider_error_code,
+      provider_error_message, ops_acknowledged_at, ops_acknowledged_reason
+      FROM email_outbox WHERE id = 'unack-FAILED'`).get())
+      .toEqual({ ...(before as object), ops_acknowledged_at: null, ops_acknowledged_reason: null });
+    expect(domain.clearEmailOperationalAcknowledgement("missing-outbox")).toBe(false);
+
+    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template,
+      payload_snapshot, status, provider_idempotence_key, ops_acknowledged_at, ops_acknowledged_reason)
+      VALUES ('unack-delivered', 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}',
+      'DELIVERED', 'unack-delivered-key', '2026-08-23T00:03:00.000Z', 'Delivery cannot be unacknowledged.')`).run();
+    expect(domain.clearEmailOperationalAcknowledgement("unack-delivered")).toBe(false);
+    expect(setup.db.prepare("SELECT status, ops_acknowledged_at, ops_acknowledged_reason FROM email_outbox WHERE id = 'unack-delivered'").get())
+      .toEqual({ status: "DELIVERED", ops_acknowledged_at: "2026-08-23T00:03:00.000Z", ops_acknowledged_reason: "Delivery cannot be unacknowledged." });
+  });
+
   it("backs off ambiguous email sends and stops after the retry ceiling", async () => {
     const setup = fixture(); databases.push(setup.db);
     const timestamp = Date.parse("2026-08-23T12:00:00.000Z");

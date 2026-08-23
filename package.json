@@ -19,6 +19,7 @@
     "commerce:city-interest:repair-superseded": "tsx commerce/src/repair-superseded-city-interest.ts",
     "commerce:full-refund:repair": "tsx commerce/src/repair-full-refund-fulfillment.ts",
     "commerce:create-unknown:repair": "tsx commerce/src/repair-create-unknown-payment.ts",
+    "commerce:email:unack": "tsx commerce/src/clear-email-operational-acknowledgement.ts",
     "commerce:test:image": "bash commerce/test/docker-image-smoke.sh",
     "admin:build": "pnpm --filter @flexperiment/admin build",
     "admin:test:nginx": "bash deploy/test-admin-nginx-config.sh",
