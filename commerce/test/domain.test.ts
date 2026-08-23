@@ -156,7 +156,7 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrence_change_refund_entitlements WHERE status = 'OPEN'").get()).toEqual({ count: 1 });
   });
 
-  it("opens operational attention and preserves a corrupt pending occurrence notice instead of silently coalescing it", async () => {
+  it("recovers a corrupt pending occurrence notice from its linked immutable revision baseline", async () => {
     const setup = fixture(); databases.push(setup.db);
     const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
     const checkout = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), randomUUID(), "https://flexperiment.ru");
@@ -167,15 +167,46 @@ describe("commerce domain", () => {
     setup.db.prepare("UPDATE email_outbox SET payload_snapshot = '{not json' WHERE id = ?").run(corrupt.id);
 
     setup.domain.patchOccurrence(setup.occurrenceId, { starts_at: "2026-10-01T12:00:00.000Z", ends_at: "2026-10-01T15:00:00.000Z", reason: "Material change", expected_revision: 2 }, randomUUID(), "admin");
+    expect(setup.db.prepare("SELECT status, superseded_at FROM email_outbox WHERE id = ?").get(corrupt.id)).toEqual({ status: "SKIPPED", superseded_at: expect.any(String) });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrence_update_notifications").get()).toEqual({ count: 2 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrence_change_refund_entitlements WHERE status = 'OPEN'").get()).toEqual({ count: 1 });
+    const replacement = setup.db.prepare(`SELECT payload_snapshot FROM email_outbox
+      WHERE type = 'OCCURRENCE_UPDATED' AND status = 'PENDING'`).get() as { payload_snapshot: string };
+    expect(JSON.parse(replacement.payload_snapshot)).toMatchObject({
+      before: { title: "FLEXPERIMENT", starts_at: "2026-10-01T10:00:00.000Z" },
+      after: { title: "First notice", starts_at: "2026-10-01T12:00:00.000Z" },
+    });
+    expect(setup.db.prepare("SELECT kind, entity_type, entity_id, status, details_json FROM operational_incidents WHERE incident_key = ?").get(`occurrence-notification-payload-corrupt:${corrupt.id}`)).toEqual({
+      kind: "OCCURRENCE_NOTIFICATION_PAYLOAD_CORRUPT", entity_type: "occurrence", entity_id: setup.occurrenceId,
+      status: "OPEN", details_json: expect.stringContaining('"recovered_from_occurrence_revision":true'),
+    });
+  });
+
+  it("fails closed and reopens attention when both pending outbox and revision baselines are corrupt", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const checkout = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), randomUUID(), "https://flexperiment.ru");
+    const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(checkout.status_id) as { id: string };
+    setup.domain.markPaymentPaid(payment.id, 100_000, "paid");
+    setup.domain.patchOccurrence(setup.occurrenceId, { title: "First notice", reason: "First change", expected_revision: 1 }, randomUUID(), "admin");
+    const corrupt = setup.db.prepare(`SELECT outbox.id, notification.occurrence_revision_id
+      FROM email_outbox outbox JOIN occurrence_update_notifications notification ON notification.outbox_id = outbox.id
+      WHERE outbox.type = 'OCCURRENCE_UPDATED'`).get() as { id: string; occurrence_revision_id: string };
+    setup.db.prepare("UPDATE email_outbox SET payload_snapshot = '{not json' WHERE id = ?").run(corrupt.id);
+    setup.db.prepare("UPDATE occurrence_revisions SET before_json = '{not json' WHERE id = ?").run(corrupt.occurrence_revision_id);
+
+    setup.domain.patchOccurrence(setup.occurrenceId, { starts_at: "2026-10-01T12:00:00.000Z", ends_at: "2026-10-01T15:00:00.000Z", reason: "Material change", expected_revision: 2 }, randomUUID(), "admin");
     expect(setup.db.prepare("SELECT status, superseded_at FROM email_outbox WHERE id = ?").get(corrupt.id)).toEqual({ status: "PENDING", superseded_at: null });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrence_update_notifications").get()).toEqual({ count: 1 });
-    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrence_change_refund_entitlements WHERE status = 'OPEN'").get()).toEqual({ count: 1 });
-    expect(setup.db.prepare("SELECT kind, entity_type, entity_id FROM operational_incidents WHERE incident_key = ?").get(`occurrence-notification-payload-corrupt:${corrupt.id}`)).toEqual({
-      kind: "OCCURRENCE_NOTIFICATION_PAYLOAD_CORRUPT", entity_type: "occurrence", entity_id: setup.occurrenceId,
-    });
+    const incident = setup.db.prepare("SELECT id, status FROM operational_incidents WHERE incident_key = ?").get(`occurrence-notification-payload-corrupt:${corrupt.id}`) as { id: string; status: string };
+    expect(incident.status).toBe("OPEN");
 
+    setup.domain.resolveOperationalIncident(incident.id, "Reviewed without remediation");
     setup.domain.patchOccurrence(setup.occurrenceId, { title: "Later title", reason: "Follow-up", expected_revision: 3 }, randomUUID(), "admin");
-    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM operational_incidents WHERE incident_key = ?").get(`occurrence-notification-payload-corrupt:${corrupt.id}`)).toEqual({ count: 1 });
+    expect(setup.db.prepare("SELECT status, resolution_note, resolved_at FROM operational_incidents WHERE id = ?").get(incident.id)).toEqual({
+      status: "OPEN", resolution_note: null, resolved_at: null,
+    });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrence_update_notifications").get()).toEqual({ count: 1 });
   });
 
   it("supersedes only definitely-unsent notices and continues to record provider delivery evidence", async () => {

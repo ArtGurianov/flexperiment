@@ -77,9 +77,10 @@ export type OccurrenceRevisionClassification = {
   after: OccurrenceCustomerSnapshot;
 };
 
+type CorruptOccurrenceNotification = { outboxId: string; revisionId: string };
 type PendingOccurrenceUpdateBaseline =
-  | { before: OccurrenceCustomerSnapshot; revisionIds: string[]; corruptNotifications?: never }
-  | { before?: never; revisionIds?: never; corruptNotifications: Array<{ outboxId: string; revisionId: string }> };
+  | { before: OccurrenceCustomerSnapshot; revisionIds: string[]; recoveredCorruptNotifications: CorruptOccurrenceNotification[]; corruptNotifications?: never }
+  | { before?: never; revisionIds?: never; recoveredCorruptNotifications?: never; corruptNotifications: CorruptOccurrenceNotification[] };
 
 const occurrenceCustomerSnapshot = (value: Row): OccurrenceCustomerSnapshot => ({
   title: String(value.title),
@@ -304,6 +305,40 @@ export class CommerceDomain {
     this.db.prepare(`INSERT OR IGNORE INTO operational_incidents(
       id, incident_key, kind, entity_type, entity_id, details_json
     ) VALUES (?, ?, ?, ?, ?, ?)`).run(id(), incidentKey, kind, entityType, entityId, JSON.stringify(details));
+  }
+
+  /**
+   * A corrupt pending outbox copy needs continued operator attention until it
+   * is either superseded using its linked immutable revision or remediated.
+   * Reopening is deliberately scoped to this corruption signal: resolving an
+   * incident without repairing an unrecoverable row must not hide it forever.
+   */
+  private openOccurrenceNotificationPayloadCorruptionIncident(input: {
+    occurrenceId: string;
+    bookingId: string;
+    orderId: string;
+    blockedRevisionId: string;
+    corrupt: CorruptOccurrenceNotification;
+    recoveredFromRevision: boolean;
+  }) {
+    const incidentKey = `occurrence-notification-payload-corrupt:${input.corrupt.outboxId}`;
+    const details = JSON.stringify({
+      occurrence_id: input.occurrenceId,
+      booking_id: input.bookingId,
+      order_id: input.orderId,
+      blocked_revision_id: input.blockedRevisionId,
+      corrupt_outbox_id: input.corrupt.outboxId,
+      corrupt_occurrence_revision_id: input.corrupt.revisionId,
+      recovered_from_occurrence_revision: input.recoveredFromRevision,
+    });
+    this.db.prepare(`INSERT INTO operational_incidents(
+      id, incident_key, kind, entity_type, entity_id, details_json
+    ) VALUES (?, ?, 'OCCURRENCE_NOTIFICATION_PAYLOAD_CORRUPT', 'occurrence', ?, ?)
+    ON CONFLICT(incident_key) DO UPDATE SET
+      status = 'OPEN', details_json = excluded.details_json,
+      resolution_note = NULL, resolved_at = NULL
+    WHERE operational_incidents.kind = 'OCCURRENCE_NOTIFICATION_PAYLOAD_CORRUPT'`)
+      .run(id(), incidentKey, input.occurrenceId, details);
   }
 
   private resolveOperationalIncidents(entityType: "refund" | "order" | "occurrence", entityId: string, note: string) {
@@ -1167,22 +1202,20 @@ export class CommerceDomain {
         // cumulative diff. Financial entitlement creation above remains
         // authoritative and atomic with the occurrence revision.
         for (const corrupt of pendingBaseline.corruptNotifications) {
-          this.openOperationalIncident(
-            "OCCURRENCE_NOTIFICATION_PAYLOAD_CORRUPT",
-            "occurrence",
-            String(after.id),
-            `occurrence-notification-payload-corrupt:${corrupt.outboxId}`,
-            {
-              occurrence_id: after.id,
-              booking_id: booking.booking_id,
-              order_id: booking.order_id,
-              blocked_revision_id: revisionId,
-              corrupt_outbox_id: corrupt.outboxId,
-              corrupt_occurrence_revision_id: corrupt.revisionId,
-            },
-          );
+          this.openOccurrenceNotificationPayloadCorruptionIncident({
+            occurrenceId: String(after.id), bookingId: String(booking.booking_id),
+            orderId: String(booking.order_id), blockedRevisionId: revisionId,
+            corrupt, recoveredFromRevision: false,
+          });
         }
         continue;
+      }
+      for (const corrupt of pendingBaseline?.recoveredCorruptNotifications ?? []) {
+        this.openOccurrenceNotificationPayloadCorruptionIncident({
+          occurrenceId: String(after.id), bookingId: String(booking.booking_id),
+          orderId: String(booking.order_id), blockedRevisionId: revisionId,
+          corrupt, recoveredFromRevision: true,
+        });
       }
       this.supersedePendingOccurrenceUpdatesForBooking(String(booking.booking_id), "NEWER_OCCURRENCE_REVISION");
       const notificationClassification = pendingBaseline
@@ -1952,15 +1985,18 @@ export class CommerceDomain {
   }
 
   private pendingOccurrenceUpdateBaseline(bookingId: string): PendingOccurrenceUpdateBaseline | null {
-    const notifications = many(this.db, `SELECT notification.occurrence_revision_id, notification.outbox_id, outbox.payload_snapshot
+    const notifications = many(this.db, `SELECT notification.occurrence_revision_id, notification.outbox_id,
+        outbox.payload_snapshot, revision.before_json AS revision_before_json
       FROM occurrence_update_notifications notification
       JOIN email_outbox outbox ON outbox.id = notification.outbox_id
+      JOIN occurrence_revisions revision ON revision.id = notification.occurrence_revision_id
       WHERE notification.booking_id = ?
         AND notification.superseded_at IS NULL
         AND outbox.status = 'PENDING'
       ORDER BY notification.created_at ASC, notification.id ASC`, bookingId);
     if (!notifications.length) return null;
-    const corruptNotifications: Array<{ outboxId: string; revisionId: string }> = [];
+    const corruptNotifications: CorruptOccurrenceNotification[] = [];
+    const recoveredCorruptNotifications: CorruptOccurrenceNotification[] = [];
     let earliest: OccurrenceCustomerSnapshot | null = null;
     for (const notification of notifications) {
       try {
@@ -1968,11 +2004,22 @@ export class CommerceDomain {
         if (!isOccurrenceCustomerSnapshot(payload.before)) throw new Error("invalid occurrence baseline");
         if (!earliest) earliest = payload.before;
       } catch {
-        corruptNotifications.push({ outboxId: String(notification.outbox_id), revisionId: String(notification.occurrence_revision_id) });
+        const corrupt = { outboxId: String(notification.outbox_id), revisionId: String(notification.occurrence_revision_id) };
+        try {
+          const revisionBefore = JSON.parse(String(notification.revision_before_json));
+          if (!isOccurrenceCustomerSnapshot(revisionBefore)) throw new Error("invalid occurrence revision baseline");
+          if (!earliest) earliest = revisionBefore;
+          recoveredCorruptNotifications.push(corrupt);
+        } catch {
+          corruptNotifications.push(corrupt);
+        }
       }
     }
     if (corruptNotifications.length) return { corruptNotifications };
-    return { before: earliest!, revisionIds: notifications.map((notification) => String(notification.occurrence_revision_id)) };
+    return {
+      before: earliest!, revisionIds: notifications.map((notification) => String(notification.occurrence_revision_id)),
+      recoveredCorruptNotifications,
+    };
   }
 
   private hasOpenOccurrenceChangeRefundEntitlement(bookingId: string) {
