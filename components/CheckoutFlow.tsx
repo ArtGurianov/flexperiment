@@ -8,6 +8,7 @@ import { referralCaptureCoordinator } from "@/components/referral-capture-state"
 import { storedReferralSlug } from "@/components/referral-marker";
 import CityInterestForm from "@/components/CityInterestForm";
 import { findCityBySlug, type CitySlug } from "@/lib/city-catalog";
+import { canRequestCheckout, isPublicOccurrenceSelectable, salesAnnouncement, type PublicSalesStatus } from "@/lib/occurrence-sales";
 
 type Occurrence = {
   id: string;
@@ -17,6 +18,7 @@ type Occurrence = {
   starts_at: string;
   price_kopecks: number;
   availability: number;
+  sales_status: PublicSalesStatus;
   fulfillment_status: "SCHEDULED" | "COMPLETED" | "CANCELLED";
 };
 type Quote = {
@@ -62,6 +64,7 @@ export default function CheckoutFlow() {
   const [scheduledCitySlugs, setScheduledCitySlugs] = useState<CitySlug[]>([]);
   const [catalogLoaded, setCatalogLoaded] = useState(false);
   const selected = useMemo(() => occurrences.find((item) => item.id === occurrenceId), [occurrences, occurrenceId]);
+  const canCheckout = canRequestCheckout(selected);
   const legalLabels = {
     PUBLIC_OFFER: "публичной оферты",
     PRIVACY_POLICY: "политики конфиденциальности",
@@ -75,8 +78,9 @@ export default function CheckoutFlow() {
       .then(async (response) => response.ok ? response.json() : Promise.reject(new Error("TOUR_UNAVAILABLE")))
       .then((data: { cities: Occurrence[] }) => {
         if (!current) return;
-        const available = data.cities.filter((item) => item.id && item.availability > 0);
-        setOccurrences(available); setOccurrenceId(available[0]?.id ?? "");
+        const available = data.cities.filter(isPublicOccurrenceSelectable);
+        const initial = available.find(canRequestCheckout) ?? available[0];
+        setOccurrences(available); setOccurrenceId(initial?.id ?? "");
         const scheduledCities = data.cities
           .filter((item) => item.fulfillment_status === "SCHEDULED")
           .map((item) => findCityBySlug(item.city))
@@ -103,18 +107,21 @@ export default function CheckoutFlow() {
       const data = await response.json();
       if (!response.ok) throw new Error(data.error?.code ?? "QUOTE_UNAVAILABLE");
       setQuote(data); setEligibility(false); setOffer(false); setConsent(false);
-    } catch {
-      setQuote(null); setMessage("Не удалось получить актуальные условия. Проверьте соединение и повторите попытку.");
+    } catch (error) {
+      setQuote(null);
+      setMessage(error instanceof Error && error.message === "SALES_NOT_OPEN"
+        ? "Продажи пока закрыты."
+        : "Не удалось получить актуальные условия. Проверьте соединение и повторите попытку.");
     } finally { setLoading(false); }
   }, []);
 
   const refreshQuote = async (event?: FormEvent) => { event?.preventDefault(); await fetchQuote(occurrenceId, promoCode); };
 
   useEffect(() => {
-    if (!occurrenceId) return;
+    if (!occurrenceId || !canCheckout) return;
     const timer = window.setTimeout(() => { void fetchQuote(occurrenceId, ""); }, 0);
     return () => window.clearTimeout(timer);
-  }, [fetchQuote, occurrenceId]);
+  }, [canCheckout, fetchQuote, occurrenceId]);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -159,9 +166,10 @@ export default function CheckoutFlow() {
     <form className="space-y-4 font-mono text-sm" onSubmit={submit}>
       <label className="grid gap-1.5">Город и дата
         <select value={occurrenceId} onChange={(event) => setOccurrenceId(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid">
-          {occurrences.map((item) => <option value={item.id} key={item.id}>{item.city_title} — {new Date(item.starts_at).toLocaleDateString("ru-RU")} · {item.title}</option>)}
+          {occurrences.map((item) => <option value={item.id} key={item.id}>{item.city_title} — {new Date(item.starts_at).toLocaleDateString("ru-RU")} · {item.title}{item.sales_status === "CLOSED" ? " · продажи закрыты" : item.sales_status === "PAUSED" ? " · продажи приостановлены" : ""}</option>)}
         </select>
       </label>
+      {!canCheckout ? <p role="status" className="border border-bone/50 px-3 py-2 text-bone/70">{salesAnnouncement(selected?.sales_status)}</p> : <>
       <label className="grid gap-1.5">Промокод <input value={promoCode} onChange={(event) => setPromoCode(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>
       <button type="button" onClick={() => void refreshQuote()} className="text-left text-acid underline underline-offset-4">Обновить стоимость</button>
       {quote && <div className="border border-acid/60 p-3 text-bone"><p>{selected?.city_title}: {rub(quote.final_amount_kopecks)}{quote.discount_kopecks > 0 ? " со скидкой" : ""}</p><p className="mt-1 text-bone/70">{quote.venue_disclosure}</p></div>}
@@ -175,6 +183,7 @@ export default function CheckoutFlow() {
       </div>
       {message && <p role="status" className="border border-acid px-3 py-2 text-acid">{message}</p>}
       <button disabled={!quote || submitting} className="w-full border-2 border-acid bg-acid px-4 py-3 font-display text-lg uppercase text-ink disabled:cursor-wait disabled:opacity-60">{submitting ? "Создаём оплату…" : "Перейти к оплате"}</button>
+      </>}
     </form>
     <CityInterestForm scheduledCitySlugs={scheduledCitySlugs} />
     </>
