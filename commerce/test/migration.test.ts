@@ -111,4 +111,19 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     db.close();
   });
+
+  it("adds unique city-interest storage on top of the 0014 schema", () => {
+    const db = openDatabase(":memory:");
+    applyThrough(db, "0014_prepared_settlement_hardening.sql");
+    db.exec(readFileSync(join(migrationsDirectory, "0015_city_interest_requests.sql"), "utf8"));
+    expect((db.prepare("PRAGMA table_info(city_interest_requests)").all() as { name: string }[]).map(({ name }) => name)).toEqual(expect.arrayContaining([
+      "email_normalized", "email_hash", "city_slug", "privacy_policy_version", "pd_consent_version", "consent_accepted_at",
+    ]));
+    db.prepare(`INSERT INTO city_interest_requests(id, email_normalized, email_hash, city_slug, privacy_policy_version, privacy_policy_sha256, pd_consent_version, pd_consent_sha256, consent_accepted_at)
+      VALUES ('interest-1', 'person@example.test', 'hash', 'tomsk', 'legal-1', 'a', 'consent-1', 'b', '2026-08-23T00:00:00.000Z')`).run();
+    expect(() => db.prepare(`INSERT INTO city_interest_requests(id, email_normalized, email_hash, city_slug, privacy_policy_version, privacy_policy_sha256, pd_consent_version, pd_consent_sha256, consent_accepted_at)
+      VALUES ('interest-2', 'person@example.test', 'hash', 'tomsk', 'legal-1', 'a', 'consent-1', 'b', '2026-08-23T00:00:00.000Z')`).run()).toThrow(/UNIQUE constraint failed/);
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    db.close();
+  });
 });

@@ -88,6 +88,29 @@ export class CommerceDomain {
     return { ...release, manifest: legalManifest(JSON.parse(String(release.manifest_json))) };
   }
 
+  registerCityInterest(input: { email: string; city: string }) {
+    return withImmediateTransaction(this.db, () => {
+      const release = one(this.db, "SELECT manifest_json FROM legal_releases WHERE active = 1");
+      if (!release) throw new DomainError("LEGAL_RELEASE_NOT_ACTIVE", 503);
+      const manifest = legalManifest(JSON.parse(String(release.manifest_json)));
+      const timestamp = now();
+      this.db.prepare(`INSERT INTO city_interest_requests(
+        id, email_normalized, email_hash, city_slug,
+        privacy_policy_version, privacy_policy_sha256,
+        pd_consent_version, pd_consent_sha256, consent_accepted_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(email_hash, city_slug) DO NOTHING`).run(
+        id(), input.email, emailHash(input.email), input.city,
+        manifest.documents.PRIVACY_POLICY.version, manifest.documents.PRIVACY_POLICY.sha256,
+        manifest.documents.PD_CONSENT.version, manifest.documents.PD_CONSENT.sha256,
+        timestamp,
+      );
+      // A duplicate intentionally has the same opaque success result. It does
+      // not generate a new request or disclose whether this email was stored.
+      return { accepted: true };
+    });
+  }
+
   checkoutContext(input: { occurrenceId: string; promoCode?: string; referralSlug?: string }) {
     return withImmediateTransaction(this.db, () => {
       const occurrence = one(this.db, "SELECT * FROM occurrences WHERE id = ?", input.occurrenceId);

@@ -1,6 +1,7 @@
 import { z } from "zod";
+import { CITY_SLUGS } from "../../lib/city-catalog";
 
-export const CITY_SLUGS = ["kemerovo", "novosibirsk", "novokuznetsk", "tomsk", "irkutsk", "krasnoyarsk"] as const;
+export { CITY_SLUGS } from "../../lib/city-catalog";
 export type CitySlug = (typeof CITY_SLUGS)[number];
 
 export const checkoutRequestSchema = z.object({
@@ -101,6 +102,13 @@ export const adminReauthSchema = z.object({
 }).strict();
 export const customerRefundRequestSchema = z.object({
   order_number: z.string().trim().min(4).max(64).transform((value) => value.toUpperCase().replace(/[^A-Z0-9]/g, "")),
+  captcha_token: z.string().trim().min(1).max(4_096),
+}).strict();
+export const cityInterestSchema = z.object({
+  email: z.string().trim().email().max(320).transform((value) => value.toLowerCase()),
+  city: z.enum(CITY_SLUGS),
+  pd_consent_accepted: z.literal(true),
+  captcha_token: z.string().trim().min(1).max(4_096),
 }).strict();
 export const customerRefundTokenSchema = z.object({
   token: z.string().min(32).max(256),

@@ -6,6 +6,7 @@ import { commerceApiUrl } from "@/lib/commerce-api";
 import { ensureCurrentReferralCapture } from "@/components/referral-capture-client";
 import { referralCaptureCoordinator } from "@/components/referral-capture-state";
 import { storedReferralSlug } from "@/components/referral-marker";
+import CityInterestForm from "@/components/CityInterestForm";
 
 type Occurrence = {
   id: string;
@@ -15,6 +16,7 @@ type Occurrence = {
   starts_at: string;
   price_kopecks: number;
   availability: number;
+  fulfillment_status: "SCHEDULED" | "COMPLETED" | "CANCELLED";
 };
 type Quote = {
   quote_id: string;
@@ -56,6 +58,8 @@ export default function CheckoutFlow() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [scheduledCitySlugs, setScheduledCitySlugs] = useState<string[]>([]);
+  const [catalogLoaded, setCatalogLoaded] = useState(false);
   const selected = useMemo(() => occurrences.find((item) => item.id === occurrenceId), [occurrences, occurrenceId]);
   const legalLabels = {
     PUBLIC_OFFER: "публичной оферты",
@@ -72,6 +76,8 @@ export default function CheckoutFlow() {
         if (!current) return;
         const available = data.cities.filter((item) => item.id && item.availability > 0);
         setOccurrences(available); setOccurrenceId(available[0]?.id ?? "");
+        setScheduledCitySlugs([...new Set(data.cities.filter((item) => item.fulfillment_status === "SCHEDULED").map((item) => item.city))]);
+        setCatalogLoaded(true);
       })
       .catch(() => current && setMessage("Сейчас запись недоступна. Пожалуйста, попробуйте позже."))
       .finally(() => current && setLoading(false));
@@ -140,9 +146,10 @@ export default function CheckoutFlow() {
   };
 
   if (loading && !occurrences.length) return <p className="py-8 text-center font-mono text-sm text-bone/70">Загрузка дат…</p>;
-  if (!occurrences.length) return <p className="py-8 text-center font-mono text-sm text-bone/70">Запись на ближайшие даты пока не открыта.</p>;
+  if (!occurrences.length) return <div><p className="py-8 text-center font-mono text-sm text-bone/70">{catalogLoaded ? "Запись на ближайшие даты пока не открыта." : "Сейчас запись недоступна. Пожалуйста, попробуйте позже."}</p>{catalogLoaded && <CityInterestForm scheduledCitySlugs={scheduledCitySlugs} />}</div>;
 
   return (
+    <>
     <form className="space-y-4 font-mono text-sm" onSubmit={submit}>
       <label className="grid gap-1.5">Город и дата
         <select value={occurrenceId} onChange={(event) => setOccurrenceId(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid">
@@ -163,5 +170,7 @@ export default function CheckoutFlow() {
       {message && <p role="status" className="border border-acid px-3 py-2 text-acid">{message}</p>}
       <button disabled={!quote || submitting} className="w-full border-2 border-acid bg-acid px-4 py-3 font-display text-lg uppercase text-ink disabled:cursor-wait disabled:opacity-60">{submitting ? "Создаём оплату…" : "Перейти к оплате"}</button>
     </form>
+    <CityInterestForm scheduledCitySlugs={scheduledCitySlugs} />
+    </>
   );
 }

@@ -9,7 +9,8 @@ import { TochkaProvider, type PaymentProvider } from "./provider";
 import { clientIp, rateLimit } from "./rate-limit";
 import { TochkaWebhookVerifier, webhookAmountKopecks } from "./tochka-webhook";
 import { verifyUnisenderWebhook } from "./unisender-webhook";
-import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrencePatchSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
+import { type SmartCaptchaVerifier, UnconfiguredSmartCaptchaVerifier } from "./smartcaptcha";
+import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrencePatchSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
 
 type AppBindings = { Variables: { adminId?: string; adminSessionId?: string } };
 const noStore = (headers: Headers) => headers.set("Cache-Control", "no-store");
@@ -25,7 +26,7 @@ const jsonBody = async (request: Request) => {
   try { return await request.json(); } catch { throw new DomainError("INVALID_JSON", 400); }
 };
 
-export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvider: EmailProvider = new UnconfiguredEmailProvider()) {
+export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvider: EmailProvider = new UnconfiguredEmailProvider(), smartCaptcha: SmartCaptchaVerifier = new UnconfiguredSmartCaptchaVerifier()) {
   const app = new Hono<AppBindings>();
   const domain = new CommerceDomain(sqlite, provider, emailProvider);
   const tochkaVerifier = provider instanceof TochkaProvider ? new TochkaWebhookVerifier() : undefined;
@@ -79,11 +80,26 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   });
   publicApi.get("/occurrences/:id", (c) => { rateLimit(`occurrence:${clientIp(c.req.raw.headers)}`, 120, 60_000); return c.json(domain.occurrence(c.req.param("id"))); });
   publicApi.get("/legal-config", (c) => c.json(domain.legalConfig()));
+  const verifyCaptcha = async (token: string, headers: Headers) => {
+    const result = await smartCaptcha.verify(token, clientIp(headers));
+    if (result === "PASS") return;
+    if (result === "INVALID") throw new DomainError("CAPTCHA_INVALID", 422);
+    throw new DomainError("CAPTCHA_UNAVAILABLE", 503);
+  };
+  publicApi.post("/city-interest", async (c) => {
+    const ip = clientIp(c.req.raw.headers);
+    rateLimit(`city-interest-ip:${ip}`, 5, 10 * 60_000);
+    const input = cityInterestSchema.parse(await jsonBody(c.req.raw));
+    rateLimit(`city-interest-email:${emailHash(input.email)}:${input.city}`, 3, 30 * 60_000);
+    await verifyCaptcha(input.captcha_token, c.req.raw.headers);
+    return c.json(domain.registerCityInterest(input), 202);
+  });
   publicApi.post("/refunds/request", async (c) => {
     const ip = clientIp(c.req.raw.headers);
     rateLimit(`customer-refund-request-ip:${ip}`, 5, 10 * 60_000);
     const input = customerRefundRequestSchema.parse(await jsonBody(c.req.raw));
     rateLimit(`customer-refund-request-order:${sha256(input.order_number)}`, 3, 30 * 60_000);
+    await verifyCaptcha(input.captcha_token, c.req.raw.headers);
     // The response is deliberately identical for unknown, ineligible, and
     // eligible references so this endpoint cannot enumerate customer orders.
     return c.json(domain.requestCustomerRefund(input.order_number), 202);

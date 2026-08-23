@@ -5,6 +5,7 @@ import { MockProvider } from "../src/provider";
 import { UnisenderGoProvider } from "../src/email-provider";
 import { CommerceDomain } from "../src/domain";
 import { decryptTicketCapability } from "../src/crypto";
+import type { SmartCaptchaVerifier } from "../src/smartcaptcha";
 
 process.env.COMMERCE_SESSION_SECRET = "test-session-secret";
 process.env.COMMERCE_ADMIN_PASSWORD_SCRYPT = `salt:${scryptSync("correct horse", "salt", 64).toString("base64url")}`;
@@ -12,14 +13,16 @@ process.env.COMMERCE_ADMIN_PASSWORD_SCRYPT = `salt:${scryptSync("correct horse",
 const { createApp } = await import("../src/api");
 const legalManifest = { documents: Object.fromEntries(["PUBLIC_OFFER", "PRIVACY_POLICY", "PD_CONSENT", "CHECKOUT_DISCLOSURE"].map((document) => [document, { document_id: document, version: "test-1", sha256: "0".repeat(64), current_url: `https://example.test/legal/${document}`, archive_url: `https://example.test/archive/${document}`, checkout_relevant: true }])) };
 
-function appFixture() {
+const passingCaptcha: SmartCaptchaVerifier = { verify: async () => "PASS" };
+
+function appFixture(smartCaptcha: SmartCaptchaVerifier = passingCaptcha) {
   const db = openDatabase(":memory:"); migrate(db);
   const cityId = randomUUID(); const occurrenceId = randomUUID(); const releaseId = randomUUID();
   db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, 'tomsk', 'Томск')").run(cityId);
   db.prepare("INSERT INTO legal_releases(id, version, effective_at, manifest_json, active) VALUES (?, 'test', datetime('now'), ?, 1)").run(releaseId, JSON.stringify(legalManifest));
   db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, venue_status, venue_name, venue_address)
     VALUES (?, ?, 'FLEXPERIMENT', '2026-10-01T10:00:00.000Z', '2026-10-01T13:00:00.000Z', 'Asia/Tomsk', 100000, 5, 'PUBLISHED', 'CONFIRMED', 'Studio', 'Lenina 1')`).run(occurrenceId, cityId);
-  return { db, app: createApp(db, new MockProvider()) };
+  return { db, app: createApp(db, new MockProvider(), undefined, smartCaptcha) };
 }
 
 describe("commerce HTTP boundary", () => {
@@ -148,10 +151,60 @@ describe("commerce HTTP boundary", () => {
     const response = await app.request("http://api.flexperiment.ru/v1/public/refunds/request", {
       method: "POST",
       headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.45" },
-      body: JSON.stringify({ order_number: "FX-UNKNOWN-ORDER" }),
+      body: JSON.stringify({ order_number: "FX-UNKNOWN-ORDER", captcha_token: "valid-captcha-token" }),
     });
     expect(response.status).toBe(202);
     expect(await response.json()).toEqual({ accepted: true });
+    db.close();
+  });
+
+  it("verifies SmartCaptcha before refund lookup and preserves the opaque response after a valid proof", async () => {
+    let verified = 0;
+    const { db, app } = appFixture({ verify: async (token, ip) => {
+      verified += 1;
+      expect(token).toBe("proof");
+      expect(ip).toBe("127.0.0.88");
+      return "PASS";
+    } });
+    const response = await app.request("http://api.flexperiment.ru/v1/public/refunds/request", {
+      method: "POST",
+      headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.88" },
+      body: JSON.stringify({ order_number: "FX-NOT-AN-ORDER", captcha_token: "proof" }),
+    });
+    expect(response.status).toBe(202);
+    expect(await response.json()).toEqual({ accepted: true });
+    expect(verified).toBe(1);
+    db.close();
+  });
+
+  it("fails closed before refund lookup when SmartCaptcha rejects or is unavailable", async () => {
+    for (const [result, status, code] of [["INVALID", 422, "CAPTCHA_INVALID"], ["UNAVAILABLE", 503, "CAPTCHA_UNAVAILABLE"]] as const) {
+      const { db, app } = appFixture({ verify: async () => result });
+      const response = await app.request("http://api.flexperiment.ru/v1/public/refunds/request", {
+        method: "POST",
+        headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": `127.0.0.${status}` },
+        body: JSON.stringify({ order_number: "FX-NOT-AN-ORDER", captcha_token: "proof" }),
+      });
+      expect(response.status).toBe(status);
+      expect(await response.json()).toEqual({ error: { code } });
+      expect(db.prepare("SELECT COUNT(*) AS count FROM customer_refund_confirmation_tokens").get()).toEqual({ count: 0 });
+      db.close();
+    }
+  });
+
+  it("stores one consent-evidenced city interest request and accepts a duplicate without enumeration", async () => {
+    const { db, app } = appFixture();
+    const request = (email: string, city = "kemerovo") => app.request("http://api.flexperiment.ru/v1/public/city-interest", {
+      method: "POST",
+      headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.89" },
+      body: JSON.stringify({ email, city, pd_consent_accepted: true, captcha_token: "proof" }),
+    });
+    expect((await request("  ART@EXAMPLE.TEST ")).status).toBe(202);
+    expect((await request("art@example.test")).status).toBe(202);
+    expect(db.prepare("SELECT email_normalized, city_slug, privacy_policy_version, pd_consent_version FROM city_interest_requests").all()).toEqual([
+      { email_normalized: "art@example.test", city_slug: "kemerovo", privacy_policy_version: "test-1", pd_consent_version: "test-1" },
+    ]);
+    expect((await request("art@example.test", "unsupported-city")).status).toBe(422);
     db.close();
   });
 
