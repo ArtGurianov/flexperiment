@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
-import { CommerceDomain, DomainError, EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS, STALE_PREPARED_SETTLEMENT_MS } from "../src/domain";
+import { CommerceDomain, CREATE_UNKNOWN_LOOKUP_INITIAL_BACKOFF_MS, CREATE_UNKNOWN_LOOKUP_MAX_ATTEMPTS, DomainError, EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS, STALE_PREPARED_SETTLEMENT_MS } from "../src/domain";
 import { runWorkerSweep } from "../src/worker-sweep";
 import { UnisenderGoProvider, type EmailProvider } from "../src/email-provider";
 import { MockProvider, type PaymentProvider } from "../src/provider";
@@ -52,6 +52,19 @@ async function reconcileSuccessfulRefund(setup: ReturnType<typeof fixture>, orde
   return refundId;
 }
 
+async function createUnknownPayment(setup: ReturnType<typeof fixture>, provider: PaymentProvider, timestamp: number) {
+  const domain = new CommerceDomain(setup.db, provider, undefined, () => timestamp);
+  const quote = domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+  const checkout = await domain.checkoutAsync(checkoutPayload(quote.quote_id), `create-unknown-${randomUUID()}`, "https://flexperiment.ru");
+  const payment = setup.db.prepare("SELECT p.id, p.order_id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(checkout.status_id) as { id: string; order_id: string };
+  setup.db.prepare(`UPDATE payments
+    SET state = 'CREATE_UNKNOWN', status = 'PENDING', provider_payment_id = NULL,
+        payment_url = NULL, creation_started_at = ?, create_unknown_lookup_attempts = 0,
+        create_unknown_next_lookup_at = NULL
+    WHERE id = ?`).run(new Date(timestamp).toISOString(), payment.id);
+  return { domain, paymentId: payment.id, orderId: payment.order_id };
+}
+
 describe("commerce domain", () => {
   const databases: ReturnType<typeof fixture>["db"][] = [];
   afterEach(() => { while (databases.length) databases.pop()?.close(); });
@@ -92,6 +105,76 @@ describe("commerce domain", () => {
     await domain.reconcilePendingPayments();
     expect(setup.db.prepare("SELECT state, status FROM payments").get()).toMatchObject({ state: "CREATE_UNKNOWN", status: "PENDING" });
     expect(setup.db.prepare("SELECT status FROM bookings").get()).toMatchObject({ status: "RESERVED" });
+  });
+
+  it("recovers one matching CREATE_UNKNOWN operation, then uses normal payment reconciliation", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const timestamp = Date.parse("2026-08-23T12:00:00.000Z");
+    const provider: PaymentProvider = new MockProvider();
+    const unknown = await createUnknownPayment(setup, provider, timestamp);
+    provider.findPaymentOperationsByLinkId = async ({ paymentLinkId }) => [{
+      paymentLinkId, operationId: "tochka-operation-1", paymentLink: "https://pay.example.test/tochka-operation-1",
+      amountKopecks: 100000, customerMatches: true, merchantMatches: true,
+    }];
+    provider.reconcilePayment = async () => ({ status: "PAID", capturedAmountKopecks: 100000 });
+
+    await unknown.domain.reconcileCreateUnknownPayments();
+    expect(setup.db.prepare("SELECT state, status, provider_payment_id, payment_url FROM payments WHERE id = ?").get(unknown.paymentId))
+      .toEqual({ state: "CREATED", status: "PENDING", provider_payment_id: "tochka-operation-1", payment_url: "https://pay.example.test/tochka-operation-1" });
+    await unknown.domain.reconcilePendingPayments();
+    expect(setup.db.prepare("SELECT status, captured_amount_kopecks FROM payments WHERE id = ?").get(unknown.paymentId)).toEqual({ status: "PAID", captured_amount_kopecks: 100000 });
+    expect(setup.db.prepare("SELECT status FROM bookings WHERE order_id = ?").get(unknown.orderId)).toEqual({ status: "CONFIRMED" });
+  });
+
+  it("retains zero-match or unavailable CREATE_UNKNOWN payments with persisted backoff", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const timestamp = Date.parse("2026-08-23T12:00:00.000Z");
+    const provider: PaymentProvider = new MockProvider();
+    const unknown = await createUnknownPayment(setup, provider, timestamp);
+    provider.findPaymentOperationsByLinkId = async () => [];
+    await unknown.domain.reconcileCreateUnknownPayments();
+    expect(setup.db.prepare("SELECT state, status, create_unknown_lookup_attempts, create_unknown_next_lookup_at FROM payments WHERE id = ?").get(unknown.paymentId))
+      .toEqual({ state: "CREATE_UNKNOWN", status: "PENDING", create_unknown_lookup_attempts: 1, create_unknown_next_lookup_at: new Date(timestamp + CREATE_UNKNOWN_LOOKUP_INITIAL_BACKOFF_MS).toISOString() });
+
+    setup.db.prepare("UPDATE payments SET create_unknown_next_lookup_at = NULL WHERE id = ?").run(unknown.paymentId);
+    provider.findPaymentOperationsByLinkId = async () => { throw new Error("provider list unavailable"); };
+    await unknown.domain.reconcileCreateUnknownPayments();
+    expect(setup.db.prepare("SELECT state, status, create_unknown_lookup_attempts FROM payments WHERE id = ?").get(unknown.paymentId))
+      .toEqual({ state: "CREATE_UNKNOWN", status: "PENDING", create_unknown_lookup_attempts: 2 });
+
+    let calls = 0;
+    setup.db.prepare("UPDATE payments SET create_unknown_lookup_attempts = ?, create_unknown_next_lookup_at = NULL WHERE id = ?").run(CREATE_UNKNOWN_LOOKUP_MAX_ATTEMPTS, unknown.paymentId);
+    provider.findPaymentOperationsByLinkId = async () => { calls += 1; return []; };
+    await unknown.domain.reconcileCreateUnknownPayments();
+    expect(calls).toBe(0);
+  });
+
+  it.each([
+    ["multiple operations", [{ paymentLinkId: "ignored", operationId: "one", paymentLink: "https://pay/one" }, { paymentLinkId: "ignored", operationId: "two", paymentLink: "https://pay/two" }]],
+    ["amount mismatch", [{ paymentLinkId: "ignored", operationId: "one", paymentLink: "https://pay/one", amountKopecks: 99999 }]],
+    ["customer mismatch", [{ paymentLinkId: "ignored", operationId: "one", paymentLink: "https://pay/one", customerMatches: false }]],
+    ["merchant mismatch", [{ paymentLinkId: "ignored", operationId: "one", paymentLink: "https://pay/one", merchantMatches: false }]],
+  ])("fails closed into review for CREATE_UNKNOWN %s", async (_label, operations) => {
+    const setup = fixture(); databases.push(setup.db);
+    const provider: PaymentProvider = new MockProvider();
+    const unknown = await createUnknownPayment(setup, provider, Date.parse("2026-08-23T12:00:00.000Z"));
+    provider.findPaymentOperationsByLinkId = async () => operations.map((operation) => ({ ...operation, paymentLinkId: operation.paymentLinkId === "ignored" ? unknown.paymentId : operation.paymentLinkId }));
+    await unknown.domain.reconcileCreateUnknownPayments();
+    expect(setup.db.prepare("SELECT state, status, provider_payment_id FROM payments WHERE id = ?").get(unknown.paymentId))
+      .toEqual({ state: "CREATE_UNKNOWN", status: "REVIEW_REQUIRED", provider_payment_id: null });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM provider_drift_reviews WHERE entity_type = 'PAYMENT' AND entity_id = ?").get(unknown.paymentId)).toEqual({ count: 1 });
+  });
+
+  it("repairs only a proven legacy CREATE_UNKNOWN absence and releases its reservation once", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const provider: PaymentProvider = new MockProvider();
+    const unknown = await createUnknownPayment(setup, provider, Date.parse("2026-08-23T12:00:00.000Z"));
+    expect(unknown.domain.repairCreateUnknownPayment(unknown.orderId, unknown.paymentId)).toBe(true);
+    expect(unknown.domain.repairCreateUnknownPayment(unknown.orderId, unknown.paymentId)).toBe(false);
+    expect(setup.db.prepare("SELECT state, status FROM payments WHERE id = ?").get(unknown.paymentId)).toEqual({ state: "CREATE_FAILED", status: "CANCELLED" });
+    expect(setup.db.prepare("SELECT status, cancellation_reason FROM bookings WHERE order_id = ?").get(unknown.orderId))
+      .toEqual({ status: "CANCELLED", cancellation_reason: "CREATE_UNKNOWN_PROVIDER_ABSENCE_CONFIRMED" });
+    expect(unknown.domain.checkoutContext({ occurrenceId: setup.occurrenceId }).availability).toBe(5);
   });
 
   it("abandons a reservation idempotently and routes a late payment into refund review", async () => {
@@ -1268,6 +1351,7 @@ describe("commerce domain", () => {
     const busyDomain = {
       recoverStaleCommands: () => { calls.push("recover-stale"); },
       detectStalePreparedSettlements: () => { calls.push("detect"); throw new DomainError("SETTLEMENT_BUSY", 409); },
+      reconcileCreateUnknownPayments: async () => { calls.push("create-unknown"); },
       reconcilePendingPayments: async () => { calls.push("payments"); },
       createObligationRefunds: () => { calls.push("obligations"); },
       submitRequestedRefunds: async () => { calls.push("submit-refunds"); },
@@ -1276,7 +1360,7 @@ describe("commerce domain", () => {
       processCityInterestLifecycle: () => { calls.push("city-interest"); return { expired_deleted: 0, intents_created: 0 }; },
     };
     await runWorkerSweep(busyDomain as never);
-    expect(calls).toEqual(["recover-stale", "detect", "payments", "obligations", "submit-refunds", "reconcile-refunds", "email", "city-interest"]);
+    expect(calls).toEqual(["recover-stale", "detect", "create-unknown", "payments", "obligations", "submit-refunds", "reconcile-refunds", "email", "city-interest"]);
 
     const unexpectedDomain = { ...busyDomain, detectStalePreparedSettlements: () => { throw new Error("unexpected stale detector failure"); } };
     await expect(runWorkerSweep(unexpectedDomain as never)).rejects.toThrow("unexpected stale detector failure");

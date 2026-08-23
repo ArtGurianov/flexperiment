@@ -283,4 +283,27 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     db.close();
   });
+
+  it("adds restart-safe CREATE_UNKNOWN lookup fields without rewriting the payment", () => {
+    const db = openDatabase(":memory:");
+    applyThrough(db, "0021_city_interest_request_epochs.sql");
+    const paymentId = randomUUID(); const orderId = randomUUID();
+    const cityId = randomUUID(); const occurrenceId = randomUUID(); const releaseId = randomUUID();
+    db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, 'create-unknown-upgrade', 'Migration city')").run(cityId);
+    db.prepare("INSERT INTO legal_releases(id, version, effective_at, manifest_json, active) VALUES (?, 'migration-create-unknown', datetime('now'), ?, 1)").run(releaseId, JSON.stringify({ documents: {} }));
+    db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, venue_status, venue_name, venue_address)
+      VALUES (?, ?, 'Migration fixture', '2030-01-01T10:00:00.000Z', '2030-01-01T12:00:00.000Z', 'Asia/Novosibirsk', 100, 1, 'PUBLISHED', 'CONFIRMED', 'Studio', 'Lenina 1')`).run(occurrenceId, cityId);
+    db.prepare(`INSERT INTO orders(id, public_status_id, public_order_number, occurrence_id, customer_name, customer_email, customer_email_hash, amount_kopecks, occurrence_material_revision, venue_disclosure_snapshot, checkout_legal_release_id, legal_snapshot_json, eligibility_confirmed_at)
+      VALUES (?, 'create-unknown-upgrade', 'FX-CREATEUNKNOWNUPGRADE', ?, 'Migration', 'migration@example.test', 'hash', 100, 1, 'Studio', ?, '{"documents":{}}', '2026-01-01T00:00:00.000Z')`).run(orderId, occurrenceId, releaseId);
+    db.prepare("INSERT INTO payments(id, order_id, state, status, provider_idempotency_key, creation_started_at) VALUES (?, ?, 'CREATE_UNKNOWN', 'PENDING', ?, '2026-08-23T00:00:00.000Z')").run(paymentId, orderId, randomUUID());
+    const before = db.prepare("SELECT id, order_id, state, status, creation_started_at FROM payments WHERE id = ?").get(paymentId);
+
+    db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, "0022_create_unknown_recovery.sql"), "utf8")))();
+
+    expect(db.prepare("SELECT id, order_id, state, status, creation_started_at, create_unknown_lookup_attempts, create_unknown_next_lookup_at FROM payments WHERE id = ?").get(paymentId))
+      .toEqual({ ...(before as object), create_unknown_lookup_attempts: 0, create_unknown_next_lookup_at: null });
+    expect((db.prepare("PRAGMA index_list(payments)").all() as { name: string }[]).map(({ name }) => name)).toContain("payments_create_unknown_lookup_due_idx");
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    db.close();
+  });
 });

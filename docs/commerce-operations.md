@@ -112,6 +112,13 @@ against Tochka's rotating public JWK, and checks the operation, payment-link,
 customer, merchant, amount, payment type, and successful status before it can
 confirm a booking. Mismatches are quarantined for provider-drift review.
 
+`CREATE_UNKNOWN` is an ambiguous create boundary, never permission to repeat
+`POST /payments_with_receipt`. The worker performs bounded, read-only payment
+list lookups by the unique local `paymentLinkId` within the creation window. A
+single matching operation reconnects normal payment reconciliation; no match
+remains unknown, while duplicate or inconsistent provider evidence becomes
+`REVIEW_REQUIRED` with a provider-drift record.
+
 Unisender Go sends code-rendered HTML/plaintext with the stable outbox
 idempotence key and persistent `outbox_id` metadata. Its known one-minute
 duplicate window is not exact-once delivery. A response lost before `job_id`
@@ -149,3 +156,22 @@ It makes no provider request and sends no email. It returns `repaired: true`
 only after all of those predicates are independently true, then atomically
 cancels the booking and voids a valid ticket. A replay, an unknown order, a
 partial refund, or a non-`REFUNDED` payment returns `repaired: false`.
+
+## Controlled CREATE_UNKNOWN absence repair
+
+Use this only after an operator has independently established provider absence
+for the exact local order and payment. It performs no provider call:
+
+```sh
+COMMERCE_CREATE_UNKNOWN_REPAIR_ORDER_ID='<order-id>' \
+COMMERCE_CREATE_UNKNOWN_REPAIR_PAYMENT_ID='<payment-id>' \
+COMMERCE_CREATE_UNKNOWN_REPAIR_CONFIRM_ORDER_ID='<order-id>' \
+COMMERCE_CREATE_UNKNOWN_REPAIR_CONFIRM_PAYMENT_ID='<payment-id>' \
+pnpm commerce:create-unknown:repair
+```
+
+The command requires a pending `CREATE_UNKNOWN` payment with no provider ID,
+capture, successful refund, or ticket, plus its still-`RESERVED` booking. It
+atomically changes the payment to `CREATE_FAILED/CANCELLED` and releases that
+booking with `CREATE_UNKNOWN_PROVIDER_ABSENCE_CONFIRMED`. Any failed predicate
+or replay returns `repaired: false`.

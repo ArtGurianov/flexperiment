@@ -63,6 +63,10 @@ export const CITY_INTEREST_SWEEP_BATCH_SIZE = 50;
 export const EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS = 8;
 export const EMAIL_SEND_UNKNOWN_INITIAL_BACKOFF_MS = 60 * 1_000;
 export const EMAIL_SEND_UNKNOWN_MAX_BACKOFF_MS = 60 * 60 * 1_000;
+export const CREATE_UNKNOWN_LOOKUP_MAX_ATTEMPTS = 8;
+export const CREATE_UNKNOWN_LOOKUP_WINDOW_MS = 8 * 24 * 60 * 60 * 1_000;
+export const CREATE_UNKNOWN_LOOKUP_INITIAL_BACKOFF_MS = 60 * 1_000;
+export const CREATE_UNKNOWN_LOOKUP_MAX_BACKOFF_MS = 60 * 60 * 1_000;
 
 const cityInterestExpiry = (timestamp: string) => {
   const date = new Date(timestamp);
@@ -1119,6 +1123,125 @@ export class CommerceDomain {
     for (const payment of payments) {
       try { await this.reconcilePayment(String(payment.id)); } catch { /* retain reservation until authoritative evidence arrives */ }
     }
+  }
+
+  /**
+   * A lost create response is never retried with a second POST. Instead, look
+   * up the unique local paymentLinkId in a bounded provider list window. Zero
+   * results remain ambiguous; only a single internally consistent operation
+   * can reconnect the local payment to normal reconciliation.
+   */
+  async reconcileCreateUnknownPayments() {
+    const timestamp = this.clock();
+    const payments = many(this.db, `SELECT p.*, o.amount_kopecks
+      FROM payments p JOIN orders o ON o.id = p.order_id
+      WHERE p.state = 'CREATE_UNKNOWN' AND p.status = 'PENDING'
+        AND p.provider_payment_id IS NULL
+      ORDER BY p.creation_started_at LIMIT 50`);
+    for (const payment of payments) {
+      const createdAt = Date.parse(String(payment.creation_started_at));
+      const nextLookupAt = payment.create_unknown_next_lookup_at ? Date.parse(String(payment.create_unknown_next_lookup_at)) : Number.NEGATIVE_INFINITY;
+      if (!Number.isFinite(createdAt)
+        || Number(payment.create_unknown_lookup_attempts) >= CREATE_UNKNOWN_LOOKUP_MAX_ATTEMPTS
+        || timestamp < createdAt
+        || timestamp - createdAt > CREATE_UNKNOWN_LOOKUP_WINDOW_MS
+        || timestamp < nextLookupAt) continue;
+      const fromDate = new Date(createdAt - 5 * 60 * 1_000).toISOString();
+      const toDate = new Date(Math.min(timestamp, createdAt + CREATE_UNKNOWN_LOOKUP_WINDOW_MS)).toISOString();
+      let operations;
+      try {
+        operations = await this.provider.findPaymentOperationsByLinkId({ paymentLinkId: String(payment.id), fromDate, toDate });
+      } catch {
+        this.deferCreateUnknownLookup(String(payment.id), Number(payment.create_unknown_lookup_attempts));
+        continue;
+      }
+      if (operations.length === 0) {
+        this.deferCreateUnknownLookup(String(payment.id), Number(payment.create_unknown_lookup_attempts));
+        continue;
+      }
+      const operation = operations.length === 1 ? operations[0] : undefined;
+      const existingOperationOwner = operation?.operationId
+        ? one(this.db, "SELECT id FROM payments WHERE provider_payment_id = ? AND id <> ?", operation.operationId, payment.id)
+        : undefined;
+      const invalid = !operation
+        || operation.paymentLinkId !== payment.id
+        || !operation.operationId
+        || !operation.paymentLink
+        || Boolean(existingOperationOwner)
+        || (operation.amountKopecks !== undefined && operation.amountKopecks !== Number(payment.amount_kopecks))
+        || operation.customerMatches === false
+        || operation.merchantMatches === false;
+      if (invalid) {
+        this.reviewCreateUnknownPayment(String(payment.id), {
+          reason: operations.length === 1 ? "CREATE_UNKNOWN_PROVIDER_OPERATION_MISMATCH" : "CREATE_UNKNOWN_PROVIDER_OPERATION_CONFLICT",
+          operation_count: operations.length,
+        });
+        continue;
+      }
+      withImmediateTransaction(this.db, () => {
+        const recovered = this.db.prepare(`UPDATE payments
+          SET state = 'CREATED', provider_payment_id = ?, payment_url = ?,
+              create_unknown_next_lookup_at = NULL, updated_at = ?
+          WHERE id = ? AND state = 'CREATE_UNKNOWN' AND status = 'PENDING'
+            AND provider_payment_id IS NULL`).run(operation.operationId, operation.paymentLink, now(), payment.id);
+        if (!recovered.changes) return;
+      });
+    }
+  }
+
+  private createUnknownLookupRetryAt(attempts: number) {
+    const exponent = Math.max(0, Math.min(attempts - 1, 16));
+    const delay = Math.min(CREATE_UNKNOWN_LOOKUP_INITIAL_BACKOFF_MS * (2 ** exponent), CREATE_UNKNOWN_LOOKUP_MAX_BACKOFF_MS);
+    return new Date(this.clock() + delay).toISOString();
+  }
+
+  private deferCreateUnknownLookup(paymentId: string, attempts: number) {
+    const nextAttempts = attempts + 1;
+    this.db.prepare(`UPDATE payments
+      SET create_unknown_lookup_attempts = ?,
+          create_unknown_next_lookup_at = ?, updated_at = ?
+      WHERE id = ? AND state = 'CREATE_UNKNOWN' AND status = 'PENDING'
+        AND provider_payment_id IS NULL`).run(
+      nextAttempts,
+      nextAttempts >= CREATE_UNKNOWN_LOOKUP_MAX_ATTEMPTS ? null : this.createUnknownLookupRetryAt(nextAttempts),
+      now(),
+      paymentId,
+    );
+  }
+
+  private reviewCreateUnknownPayment(paymentId: string, observed: Record<string, unknown>) {
+    withImmediateTransaction(this.db, () => {
+      const reviewed = this.db.prepare(`UPDATE payments
+        SET status = 'REVIEW_REQUIRED', create_unknown_next_lookup_at = NULL, updated_at = ?
+        WHERE id = ? AND state = 'CREATE_UNKNOWN' AND status = 'PENDING'
+          AND provider_payment_id IS NULL`).run(now(), paymentId);
+      if (reviewed.changes) this.recordProviderDrift("PAYMENT", paymentId, { create_unknown_recovery: observed });
+    });
+  }
+
+  /** Local-only repair after an operator independently proves provider absence. */
+  repairCreateUnknownPayment(orderId: string, paymentId: string) {
+    return withImmediateTransaction(this.db, () => {
+      const payment = one(this.db, `SELECT p.id, b.id AS booking_id
+        FROM payments p JOIN bookings b ON b.order_id = p.order_id
+        WHERE p.id = ? AND p.order_id = ?
+          AND p.state = 'CREATE_UNKNOWN' AND p.status = 'PENDING'
+          AND p.provider_payment_id IS NULL AND p.captured_amount_kopecks = 0
+          AND b.status = 'RESERVED'
+          AND NOT EXISTS (SELECT 1 FROM tickets t WHERE t.booking_id = b.id)
+          AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.payment_id = p.id AND r.status = 'SUCCEEDED')`, paymentId, orderId);
+      if (!payment) return false;
+      const terminalized = this.db.prepare(`UPDATE payments
+        SET state = 'CREATE_FAILED', status = 'CANCELLED', updated_at = ?
+        WHERE id = ? AND state = 'CREATE_UNKNOWN' AND status = 'PENDING'
+          AND provider_payment_id IS NULL AND captured_amount_kopecks = 0`).run(now(), paymentId);
+      if (!terminalized.changes) return false;
+      this.db.prepare(`UPDATE bookings
+        SET status = 'CANCELLED', cancelled_at = ?,
+            cancellation_reason = 'CREATE_UNKNOWN_PROVIDER_ABSENCE_CONFIRMED'
+        WHERE id = ? AND status = 'RESERVED'`).run(now(), payment.booking_id);
+      return true;
+    });
   }
 
   async processEmailOutbox() {
