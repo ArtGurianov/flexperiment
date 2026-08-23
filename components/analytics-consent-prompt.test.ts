@@ -41,7 +41,7 @@ function fakeScheduler(scrollY = 0) {
 }
 
 describe("analytics consent prompt scheduler", () => {
-  it("shows once after exactly two seconds when the page has not scrolled", () => {
+  it("shows once after exactly four seconds when the page has not scrolled", () => {
     const fake = fakeScheduler();
     let shown = 0;
     scheduleAnalyticsConsentPrompt(
@@ -49,7 +49,8 @@ describe("analytics consent prompt scheduler", () => {
       fake.scheduler,
     );
 
-    expect(fake.state().timeoutDelay).toBe(ANALYTICS_CONSENT_PROMPT_DELAY_MS);
+    expect(ANALYTICS_CONSENT_PROMPT_DELAY_MS).toBe(4_000);
+    expect(fake.state().timeoutDelay).toBe(4_000);
     expect(fake.state().listenerOptions).toEqual({ passive: true });
     expect(shown).toBe(0);
     fake.fireTimeout();
