@@ -16,6 +16,7 @@
     "commerce:legal-release:publish": "tsx commerce/src/publish-legal-release.ts",
     "commerce:legal-release:preflight": "tsx commerce/src/verify-active-legal-archives.ts",
     "commerce:city-interest:repair-delivered": "tsx commerce/src/repair-delivered-city-interest.ts",
+    "commerce:city-interest:repair-superseded": "tsx commerce/src/repair-superseded-city-interest.ts",
     "commerce:test:image": "bash commerce/test/docker-image-smoke.sh",
     "admin:build": "pnpm --filter @flexperiment/admin build",
     "admin:dev": "pnpm --filter @flexperiment/admin dev",

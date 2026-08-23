@@ -226,9 +226,44 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
     db.close();
   });
 
-  it("preserves the delivered city-interest cleanup FK cascade through the current schema", () => {
+  it("upgrades populated city-interest evidence to request epochs without rewriting it", () => {
     const db = openDatabase(":memory:");
     applyThrough(db, "0020_email_outbox_recovery_hardening.sql");
+    db.prepare(`INSERT INTO city_interest_requests(id, email_normalized, email_hash, city_slug,
+      privacy_policy_version, privacy_policy_sha256, pd_consent_version, pd_consent_sha256,
+      consent_accepted_at, expires_at)
+      VALUES ('interest-epoch-upgrade', 'person@example.test', 'hash', 'tomsk', 'legal-1',
+      'a', 'consent-1', 'b', '2026-08-23T00:00:00.000Z', '2027-08-23T00:00:00.000Z')`).run();
+    db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template,
+      payload_ref, payload_snapshot, provider_idempotence_key)
+      VALUES ('outbox-epoch-upgrade', 'CITY_INTEREST_AVAILABLE', 'person@example.test', 'hash',
+      'city-interest-available', 'city-interest:interest-epoch-upgrade', '{}', 'epoch-upgrade-key')`).run();
+    db.prepare(`INSERT INTO city_interest_notification_intents(id, city_interest_request_id, outbox_id)
+      VALUES ('intent-epoch-upgrade', 'interest-epoch-upgrade', 'outbox-epoch-upgrade')`).run();
+    const before = db.prepare(`SELECT id, email_normalized, email_hash, city_slug,
+      privacy_policy_version, pd_consent_version, consent_accepted_at, expires_at
+      FROM city_interest_requests WHERE id = 'interest-epoch-upgrade'`).get();
+
+    db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, "0021_city_interest_request_epochs.sql"), "utf8")))();
+
+    expect(db.prepare(`SELECT id, email_normalized, email_hash, city_slug,
+      privacy_policy_version, pd_consent_version, consent_accepted_at, expires_at,
+      superseded_at, superseded_by_request_id
+      FROM city_interest_requests WHERE id = 'interest-epoch-upgrade'`).get())
+      .toEqual({ ...(before as object), superseded_at: null, superseded_by_request_id: null });
+    expect(db.prepare("SELECT city_interest_request_id, outbox_id, superseded_at FROM city_interest_notification_intents WHERE id = 'intent-epoch-upgrade'").get())
+      .toEqual({ city_interest_request_id: "interest-epoch-upgrade", outbox_id: "outbox-epoch-upgrade", superseded_at: null });
+    expect(db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'city_interest_requests_active_identity_unique'").get())
+      .toEqual({ sql: expect.stringContaining("WHERE superseded_at IS NULL") });
+    expect((db.prepare("PRAGMA table_info(city_interest_requests)").all() as { name: string }[]).map(({ name }) => name))
+      .toEqual(expect.arrayContaining(["superseded_at", "superseded_by_request_id"]));
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    db.close();
+  });
+
+  it("preserves the delivered city-interest cleanup FK cascade through the current schema", () => {
+    const db = openDatabase(":memory:");
+    applyThrough(db, "0021_city_interest_request_epochs.sql");
     db.prepare(`INSERT INTO city_interest_requests(id, email_normalized, email_hash, city_slug,
       privacy_policy_version, privacy_policy_sha256, pd_consent_version, pd_consent_sha256,
       consent_accepted_at, expires_at)

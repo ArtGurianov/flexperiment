@@ -8,13 +8,17 @@ completion.
 `expires_at` is exactly twelve calendar months after the explicit submission's
 `consent_accepted_at`. A repeated explicit, CAPTCHA-protected submission for the
 same email and city renews the legal evidence and starts a new twelve-month
-period. It retains an existing notification intent rather than creating a
-second email; worker sweeps, visits, and email retries never do.
+period. It retains an existing non-terminal notification intent rather than
+creating a second email; worker sweeps, visits, and email retries never do.
 
 If the current intent has a final unsuccessful outcome (`hard_bounced` or local
 `FAILED`), a new explicit CAPTCHA-protected submission starts a new consent
-epoch. Commerce retains the old outbox and intent as immutable history, marks
-that intent superseded, and may create one new outbox for the current request.
+epoch. Commerce creates a new source request, marks the prior intent and source
+request superseded, and redacts the old request's normalized email and email
+hash in the same transaction. The old row remains only as a non-PII foreign-key
+anchor for immutable outbox/provider evidence; it links durably to the new
+request epoch. Exactly one non-superseded request remains for an email/city
+identity. Commerce never reuses or resets the failed outbox.
 `hard_bounced` is authoritative when its durable provider evidence exists and
 no `DELIVERED` evidence exists; later non-delivery callbacks do not erase that
 fact. It never reuses or resets the failed outbox. `PENDING`, `SENDING`,
@@ -57,6 +61,26 @@ request, a `DELIVERED`/`delivered` provider event exists, the outbox was not
 suppressed, and no intent remains for the request. The command is idempotent;
 it makes no provider calls and returns `repaired: false` when the proof is not
 complete. Do not use it for age-, city-, or email-based cleanup.
+
+## Controlled superseded-failure repair
+
+For a historical request that was durably superseded by a failed-epoch renewal
+but whose source PII was not redacted, use the separate local-only command:
+
+```bash
+COMMERCE_CITY_INTEREST_SUPERSEDED_REPAIR_REQUEST_ID='<request-id>' \
+COMMERCE_CITY_INTEREST_SUPERSEDED_REPAIR_CONFIRM='<request-id>' \
+pnpm commerce:city-interest:repair-superseded
+```
+
+It redacts only a request with all of these independent durable predicates: a
+recorded successor request link, an active successor in the same city, a
+superseded old intent, and an old `FAILED` or authoritative `hard_bounced`
+without `DELIVERED` evidence. It never deletes a request, calls a provider, or
+infers identity from age, city, or email text. A legacy row with no durable
+successor link—including the known request `9b9c6c4a-2622-4f9e-973c-02d453a78b8a`
+unless such evidence exists after migration—must return `repaired: false` and
+remain untouched; it cannot be safely repaired by this procedure.
 
 `soft_bounced` is temporary provider non-delivery, so Unisender continues its
 own delivery attempts. `hard_bounced` and generic local `FAILED` do not complete

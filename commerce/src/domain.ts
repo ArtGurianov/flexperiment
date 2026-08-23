@@ -108,34 +108,47 @@ export class CommerceDomain {
       const manifest = legalManifest(JSON.parse(String(release.manifest_json)));
       const timestamp = new Date(this.clock()).toISOString();
       const expiresAt = cityInterestExpiry(timestamp);
-      this.db.prepare(`INSERT INTO city_interest_requests(
-        id, email_normalized, email_hash, city_slug,
-        privacy_policy_version, privacy_policy_sha256,
-        pd_consent_version, pd_consent_sha256, consent_accepted_at, created_at,
-        expires_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(email_hash, city_slug) DO UPDATE SET
-        email_normalized = excluded.email_normalized,
-        privacy_policy_version = excluded.privacy_policy_version,
-        privacy_policy_sha256 = excluded.privacy_policy_sha256,
-        pd_consent_version = excluded.pd_consent_version,
-        pd_consent_sha256 = excluded.pd_consent_sha256,
-        consent_accepted_at = excluded.consent_accepted_at,
-        created_at = excluded.created_at,
-        expires_at = excluded.expires_at`).run(
-        id(), input.email, emailHash(input.email), city.slug,
-        manifest.documents.PRIVACY_POLICY.version, manifest.documents.PRIVACY_POLICY.sha256,
-        manifest.documents.PD_CONSENT.version, manifest.documents.PD_CONSENT.sha256,
-        timestamp, timestamp, expiresAt,
-      );
-      const request = one(this.db, "SELECT id FROM city_interest_requests WHERE email_hash = ? AND city_slug = ?", emailHash(input.email), city.slug)!;
-      if (this.canRenewCityInterestNotification(String(request.id))) {
+      const normalizedEmailHash = emailHash(input.email);
+      const existing = one(this.db, `SELECT id FROM city_interest_requests
+        WHERE email_hash = ? AND city_slug = ? AND superseded_at IS NULL`, normalizedEmailHash, city.slug);
+
+      if (existing && this.canRenewCityInterestNotification(String(existing.id))) {
+        // The replacement and redaction are one transaction: a failed epoch
+        // cannot remain current after its successor becomes visible. The old
+        // row remains solely as a non-PII anchor for immutable outbox/event
+        // evidence and its superseded intent relation.
+        const replacementId = id();
         this.db.prepare(`UPDATE city_interest_notification_intents
           SET superseded_at = ?
-          WHERE city_interest_request_id = ? AND superseded_at IS NULL`).run(timestamp, request.id);
+          WHERE city_interest_request_id = ? AND superseded_at IS NULL`).run(timestamp, existing.id);
+        this.db.prepare(`UPDATE city_interest_requests
+          SET email_normalized = '', email_hash = '', superseded_at = ?,
+              superseded_by_request_id = ?
+          WHERE id = ? AND superseded_at IS NULL`).run(timestamp, replacementId, existing.id);
+        this.insertCityInterestRequest({
+          requestId: replacementId, email: input.email, emailHash: normalizedEmailHash,
+          citySlug: city.slug, manifest, timestamp, expiresAt,
+        });
+      } else if (existing) {
+        // An active, indeterminate, suppressed, or already-completed intent
+        // is never turned into a new epoch by a re-submit. Refresh only the
+        // explicit consent evidence on its still-current source request.
+        this.db.prepare(`UPDATE city_interest_requests
+          SET email_normalized = ?, privacy_policy_version = ?,
+              privacy_policy_sha256 = ?, pd_consent_version = ?,
+              pd_consent_sha256 = ?, consent_accepted_at = ?, created_at = ?,
+              expires_at = ?
+          WHERE id = ? AND superseded_at IS NULL`).run(
+          input.email, manifest.documents.PRIVACY_POLICY.version, manifest.documents.PRIVACY_POLICY.sha256,
+          manifest.documents.PD_CONSENT.version, manifest.documents.PD_CONSENT.sha256,
+          timestamp, timestamp, expiresAt, existing.id,
+        );
+      } else {
+        this.insertCityInterestRequest({
+          requestId: id(), email: input.email, emailHash: normalizedEmailHash,
+          citySlug: city.slug, manifest, timestamp, expiresAt,
+        });
       }
-      // An explicit, consented submission renews this request. Only a final
-      // failed intent may be superseded; no page view, sweep, or retry can.
       this.consumeEligibleCityInterests(city.slug, CITY_INTEREST_SWEEP_BATCH_SIZE);
       return { accepted: true };
     });
@@ -146,7 +159,8 @@ export class CommerceDomain {
     return withImmediateTransaction(this.db, () => {
       const timestamp = new Date(this.clock()).toISOString();
       const expired = many(this.db, `SELECT id FROM city_interest_requests
-        WHERE expires_at <= ? ORDER BY expires_at LIMIT ?`, timestamp, CITY_INTEREST_SWEEP_BATCH_SIZE);
+        WHERE superseded_at IS NULL AND expires_at <= ?
+        ORDER BY expires_at LIMIT ?`, timestamp, CITY_INTEREST_SWEEP_BATCH_SIZE);
       for (const row of expired) this.purgeCityInterestRequest(String(row.id));
       const intentsCreated = this.consumeEligibleCityInterests(undefined, CITY_INTEREST_SWEEP_BATCH_SIZE, timestamp);
       return { expired_deleted: expired.length, intents_created: intentsCreated };
@@ -155,7 +169,7 @@ export class CommerceDomain {
 
   withdrawCityInterest(email: string, reason: string, adminId: string) {
     return withImmediateTransaction(this.db, () => {
-      const requests = many(this.db, "SELECT id FROM city_interest_requests WHERE email_hash = ?", emailHash(email));
+      const requests = many(this.db, "SELECT id FROM city_interest_requests WHERE email_hash = ? AND superseded_at IS NULL", emailHash(email));
       for (const request of requests) this.purgeCityInterestRequest(String(request.id));
       // Retain only aggregate operator evidence: never an email or its hash.
       this.db.prepare("INSERT INTO admin_audit_log(id, admin_id, action, entity_type, entity_id, details_json) VALUES (?, ?, 'CITY_INTEREST_WITHDRAWN', 'city_interest', 'all-matching-requests', ?)")
@@ -1265,6 +1279,28 @@ export class CommerceDomain {
     return outboxId;
   }
 
+  private insertCityInterestRequest(input: {
+    requestId: string;
+    email: string;
+    emailHash: string;
+    citySlug: string;
+    manifest: LegalManifest;
+    timestamp: string;
+    expiresAt: string;
+  }) {
+    this.db.prepare(`INSERT INTO city_interest_requests(
+      id, email_normalized, email_hash, city_slug,
+      privacy_policy_version, privacy_policy_sha256,
+      pd_consent_version, pd_consent_sha256, consent_accepted_at, created_at,
+      expires_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
+      input.requestId, input.email, input.emailHash, input.citySlug,
+      input.manifest.documents.PRIVACY_POLICY.version, input.manifest.documents.PRIVACY_POLICY.sha256,
+      input.manifest.documents.PD_CONSENT.version, input.manifest.documents.PD_CONSENT.sha256,
+      input.timestamp, input.timestamp, input.expiresAt,
+    );
+  }
+
   private consumeEligibleCityInterests(citySlug?: string, limit = CITY_INTEREST_SWEEP_BATCH_SIZE, timestamp = new Date(this.clock()).toISOString()) {
     const interests = many(this.db, `SELECT ci.id, ci.email_normalized, ci.email_hash, ci.city_slug,
         c.title AS city_title, o.id AS occurrence_id, o.title AS occurrence_title, o.starts_at
@@ -1279,7 +1315,8 @@ export class CommerceDomain {
         ORDER BY candidate.starts_at, candidate.id
         LIMIT 1
       )
-      WHERE ci.expires_at > ?
+      WHERE ci.superseded_at IS NULL
+        AND ci.expires_at > ?
         AND NOT EXISTS (
           SELECT 1 FROM city_interest_notification_intents intent
           WHERE intent.city_interest_request_id = ci.id
@@ -1305,6 +1342,7 @@ export class CommerceDomain {
       JOIN city_interest_requests request ON request.id = intent.city_interest_request_id
       WHERE intent.outbox_id = ?
         AND intent.superseded_at IS NULL
+        AND request.superseded_at IS NULL
         AND request.expires_at > ?`, outboxId, new Date(this.clock()).toISOString()));
   }
 
@@ -1406,6 +1444,46 @@ export class CommerceDomain {
       if (!deleted.changes) return false;
       this.redactDeliveredCityInterestOutbox(String(candidate.outbox_id));
       return true;
+    });
+  }
+
+  /**
+   * Repairs only a pre-0021 redaction omission. The durable successor link is
+   * written by the epoch transition itself; without it there is no safe way to
+   * infer that another request was the same email/city interest.
+   */
+  repairSupersededFailedCityInterestRequest(requestId: string) {
+    return withImmediateTransaction(this.db, () => {
+      const candidate = one(this.db, `SELECT previous.id
+        FROM city_interest_requests previous
+        JOIN city_interest_requests replacement
+          ON replacement.id = previous.superseded_by_request_id
+        JOIN city_interest_notification_intents old_intent
+          ON old_intent.city_interest_request_id = previous.id
+        JOIN email_outbox old_outbox ON old_outbox.id = old_intent.outbox_id
+        WHERE previous.id = ?
+          AND previous.superseded_at IS NOT NULL
+          AND previous.superseded_by_request_id IS NOT NULL
+          AND previous.email_normalized != ''
+          AND previous.email_hash != ''
+          AND replacement.superseded_at IS NULL
+          AND replacement.city_slug = previous.city_slug
+          AND old_intent.superseded_at IS NOT NULL
+          AND (
+            old_outbox.status = 'FAILED'
+            OR (
+              EXISTS (SELECT 1 FROM email_provider_events event
+                WHERE event.outbox_id = old_outbox.id
+                  AND event.provider_status = 'hard_bounced')
+              AND NOT EXISTS (SELECT 1 FROM email_provider_events event
+                WHERE event.outbox_id = old_outbox.id
+                  AND event.provider_status = 'delivered')
+            )
+          )`, requestId);
+      if (!candidate) return false;
+      return Boolean(this.db.prepare(`UPDATE city_interest_requests
+        SET email_normalized = '', email_hash = ''
+        WHERE id = ? AND email_normalized != '' AND email_hash != ''`).run(requestId).changes);
     });
   }
 

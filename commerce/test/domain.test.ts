@@ -8,7 +8,7 @@ import { CommerceDomain, DomainError, EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS, STALE_PRE
 import { runWorkerSweep } from "../src/worker-sweep";
 import { UnisenderGoProvider, type EmailProvider } from "../src/email-provider";
 import { MockProvider, type PaymentProvider } from "../src/provider";
-import { decryptTicketCapability } from "../src/crypto";
+import { decryptTicketCapability, emailHash } from "../src/crypto";
 
 const legalManifest = { documents: Object.fromEntries(["PUBLIC_OFFER", "PRIVACY_POLICY", "PD_CONSENT", "CHECKOUT_DISCLOSURE"].map((document) => [document, { document_id: document, version: "test-1", sha256: "0".repeat(64), current_url: `https://example.test/legal/${document}`, archive_url: `https://example.test/archive/${document}`, checkout_relevant: true }])) };
 const unisenderTestConfig = { apiKey: "test-key-not-a-secret", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" };
@@ -924,6 +924,40 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT id FROM city_interest_requests WHERE id = ?").get(protectedRow.request_id)).toEqual({ id: protectedRow.request_id });
   });
 
+  it("repairs only a durably linked superseded FAILED city-interest epoch", () => {
+    const setup = fixture(); databases.push(setup.db);
+    const email = "superseded-repair@example.test";
+    setup.domain.registerCityInterest({ email, city: "novosibirsk" });
+    const old = setup.db.prepare(`SELECT request.id AS request_id, outbox.id AS outbox_id
+      FROM city_interest_requests request
+      JOIN city_interest_notification_intents intent ON intent.city_interest_request_id = request.id
+      JOIN email_outbox outbox ON outbox.id = intent.outbox_id
+      WHERE request.email_normalized = ?`).get(email) as { request_id: string; outbox_id: string };
+    setup.db.prepare("UPDATE email_outbox SET status = 'FAILED' WHERE id = ?").run(old.outbox_id);
+    setup.domain.registerCityInterest({ email, city: "novosibirsk" });
+
+    // Model the historical omission: the renewal transition is durable, but
+    // old request PII was not redacted. The repair must not alter the old
+    // outbox or its provider evidence.
+    setup.db.prepare("UPDATE city_interest_requests SET email_normalized = ?, email_hash = ? WHERE id = ?")
+      .run(email, emailHash(email), old.request_id);
+    expect(setup.domain.repairSupersededFailedCityInterestRequest(old.request_id)).toBe(true);
+    expect(setup.domain.repairSupersededFailedCityInterestRequest(old.request_id)).toBe(false);
+    expect(setup.db.prepare("SELECT email_normalized, email_hash, superseded_at, superseded_by_request_id FROM city_interest_requests WHERE id = ?").get(old.request_id)).toEqual({
+      email_normalized: "", email_hash: "", superseded_at: expect.any(String), superseded_by_request_id: expect.any(String),
+    });
+    expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(old.outbox_id)).toEqual({ status: "FAILED" });
+
+    const unlinked = randomUUID();
+    setup.db.prepare(`INSERT INTO city_interest_requests(
+      id, email_normalized, email_hash, city_slug, privacy_policy_version,
+      privacy_policy_sha256, pd_consent_version, pd_consent_sha256,
+      consent_accepted_at, expires_at, superseded_at
+    ) VALUES (?, 'unlinked@example.test', 'unlinked-hash', 'novosibirsk', 'v', 'a', 'v', 'b', ?, ?, ?)`)
+      .run(unlinked, new Date().toISOString(), new Date(Date.now() + 86_400_000).toISOString(), new Date().toISOString());
+    expect(setup.domain.repairSupersededFailedCityInterestRequest(unlinked)).toBe(false);
+  });
+
   it("retains city-interest PII for hard bounces and generic FAILED observations", async () => {
     const setup = fixture(); databases.push(setup.db);
     setup.db.prepare("UPDATE occurrences SET visibility = 'HIDDEN', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
@@ -942,7 +976,7 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE email_normalized = 'hard-bounce@example.test'").get()).toEqual({ count: 1 });
   });
 
-  it("creates a new city-interest notification epoch only after hard_bounced or local FAILED", async () => {
+  it("creates a redacted replacement request epoch only after hard_bounced or local FAILED", async () => {
     const setup = fixture(); databases.push(setup.db);
     setup.domain.registerCityInterest({ email: "renew-hard@example.test", city: "novosibirsk" });
     const hard = setup.db.prepare(`SELECT request.id AS request_id, outbox.id AS outbox_id
@@ -955,15 +989,36 @@ describe("commerce domain", () => {
     // evidence disappear merely because it is the latest provider callback.
     setup.domain.applyUnisenderDelivery({ outboxId: hard.outbox_id, status: "BOUNCED", providerStatus: "spam", semanticKey: "renew-hard-late-spam" });
     setup.domain.registerCityInterest({ email: "renew-hard@example.test", city: "novosibirsk" });
-    const hardIntents = setup.db.prepare(`SELECT intent.outbox_id, intent.superseded_at, outbox.status
+    const supersededHard = setup.db.prepare(`SELECT request.email_normalized, request.email_hash,
+        request.superseded_at, request.superseded_by_request_id,
+        intent.outbox_id, intent.superseded_at AS intent_superseded_at, outbox.status
       FROM city_interest_notification_intents intent
+      JOIN city_interest_requests request ON request.id = intent.city_interest_request_id
       JOIN email_outbox outbox ON outbox.id = intent.outbox_id
-      WHERE intent.city_interest_request_id = ? ORDER BY intent.created_at, intent.outbox_id`).all(hard.request_id) as { outbox_id: string; superseded_at: string | null; status: string }[];
-    const supersededHardIntent = hardIntents.find((intent) => intent.outbox_id === hard.outbox_id);
-    const activeHardIntent = hardIntents.find((intent) => intent.outbox_id !== hard.outbox_id);
-    expect(supersededHardIntent).toEqual({ outbox_id: hard.outbox_id, superseded_at: expect.any(String), status: "BOUNCED" });
-    expect(activeHardIntent).toEqual({ outbox_id: expect.any(String), superseded_at: null, status: "PENDING" });
-    const renewedHardOutbox = activeHardIntent!.outbox_id;
+      WHERE intent.outbox_id = ?`).get(hard.outbox_id) as {
+        email_normalized: string; email_hash: string; superseded_at: string;
+        superseded_by_request_id: string; outbox_id: string; intent_superseded_at: string; status: string;
+      };
+    expect(supersededHard).toMatchObject({
+      email_normalized: "", email_hash: "", superseded_at: expect.any(String),
+      superseded_by_request_id: expect.any(String), outbox_id: hard.outbox_id,
+      intent_superseded_at: expect.any(String), status: "BOUNCED",
+    });
+    const renewedHard = setup.db.prepare(`SELECT request.id AS request_id, outbox.id AS outbox_id
+      FROM city_interest_requests request
+      JOIN city_interest_notification_intents intent ON intent.city_interest_request_id = request.id
+      JOIN email_outbox outbox ON outbox.id = intent.outbox_id
+      WHERE request.id = ? AND request.superseded_at IS NULL AND intent.superseded_at IS NULL`).get(supersededHard.superseded_by_request_id) as { request_id: string; outbox_id: string };
+    expect(renewedHard.request_id).not.toBe(hard.request_id);
+    const renewedHardOutbox = renewedHard.outbox_id;
+    expect(setup.db.prepare(`SELECT COUNT(*) AS count FROM city_interest_requests
+      WHERE city_slug = 'novosibirsk' AND superseded_at IS NULL
+        AND email_hash = ?`).get(emailHash("renew-hard@example.test"))).toEqual({ count: 1 });
+    expect(setup.db.prepare(`SELECT COUNT(*) AS count
+      FROM city_interest_notification_intents intent
+      JOIN city_interest_requests request ON request.id = intent.city_interest_request_id
+      WHERE request.id = ? AND request.superseded_at IS NULL
+        AND intent.superseded_at IS NULL`).get(renewedHard.request_id)).toEqual({ count: 1 });
     setup.domain.applyUnisenderDelivery({ outboxId: hard.outbox_id, status: "DELIVERED", providerStatus: "delivered", semanticKey: "renew-hard-late-delivered" });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE id = ?").get(hard.request_id)).toEqual({ count: 1 });
     expect(setup.db.prepare("SELECT status, recipient_email FROM email_outbox WHERE id = ?").get(hard.outbox_id)).toEqual({ status: "DELIVERED", recipient_email: "" });
@@ -978,7 +1033,9 @@ describe("commerce domain", () => {
     setup.db.prepare("UPDATE email_outbox SET status = 'SEND_UNKNOWN' WHERE id = ?").run(failed.outbox_id);
     await new CommerceDomain(setup.db, new MockProvider(), { async send() { throw new Error("must not send"); }, async lookup() { return { status: "FAILED" }; } }).processEmailOutbox();
     setup.domain.registerCityInterest({ email: "renew-failed@example.test", city: "novosibirsk" });
-    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_notification_intents WHERE city_interest_request_id = ? AND superseded_at IS NULL").get(failed.request_id)).toEqual({ count: 1 });
+    const failedOld = setup.db.prepare("SELECT email_normalized, email_hash, superseded_at, superseded_by_request_id FROM city_interest_requests WHERE id = ?").get(failed.request_id);
+    expect(failedOld).toEqual({ email_normalized: "", email_hash: "", superseded_at: expect.any(String), superseded_by_request_id: expect.any(String) });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE email_hash = ? AND city_slug = 'novosibirsk' AND superseded_at IS NULL").get(emailHash("renew-failed@example.test"))).toEqual({ count: 1 });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_notification_intents WHERE city_interest_request_id = ? AND superseded_at IS NOT NULL").get(failed.request_id)).toEqual({ count: 1 });
   });
 
