@@ -206,10 +206,10 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
         const outboxId = typeof metadata?.outbox_id === "string" ? metadata.outbox_id : undefined;
         const providerStatus = typeof data.status === "string" ? data.status : undefined;
         const status = providerStatus === "accepted" ? "ACCEPTED" : providerStatus === "sent" ? "SENT" : providerStatus === "delivered" ? "DELIVERED" : ["soft_bounced", "hard_bounced", "spam"].includes(providerStatus ?? "") ? "BOUNCED" : undefined;
-        if (!outboxId || !status) continue;
+        if (!outboxId || !status || !providerStatus || !["accepted", "sent", "delivered", "soft_bounced", "hard_bounced", "spam"].includes(providerStatus)) continue;
         const jobId = typeof data.job_id === "string" ? data.job_id : undefined;
         const semanticKey = `unisender:${sha256(canonicalWebhookPayload(data))}`;
-        try { domain.applyUnisenderDelivery({ outboxId, status, jobId, semanticKey }); handled += 1; } catch (error) { if (!(error instanceof DomainError) || error.code !== "UNISENDER_OUTBOX_NOT_FOUND") throw error; }
+        try { domain.applyUnisenderDelivery({ outboxId, status, providerStatus: providerStatus as "accepted" | "sent" | "delivered" | "soft_bounced" | "hard_bounced" | "spam", jobId, semanticKey }); handled += 1; } catch (error) { if (!(error instanceof DomainError) || error.code !== "UNISENDER_OUTBOX_NOT_FOUND") throw error; }
       }
     }
     return c.json({ accepted: true, handled }, 200);

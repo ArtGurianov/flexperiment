@@ -143,4 +143,29 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     db.close();
   });
+
+  it("adds delivery-intent relations and exact provider outcomes without rewriting populated 0016 data", () => {
+    const db = openDatabase(":memory:");
+    applyThrough(db, "0016_city_interest_lifecycle.sql");
+    db.prepare(`INSERT INTO city_interest_requests(id, email_normalized, email_hash, city_slug, privacy_policy_version, privacy_policy_sha256, pd_consent_version, pd_consent_sha256, consent_accepted_at, expires_at)
+      VALUES ('interest-delivery', 'person@example.test', 'hash', 'tomsk', 'legal-1', 'a', 'consent-1', 'b', '2026-08-23T00:00:00.000Z', '2027-08-23T00:00:00.000Z')`).run();
+    db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key)
+      VALUES ('outbox-delivery', 'CITY_INTEREST_AVAILABLE', 'person@example.test', 'hash', 'city-interest-available', '{"city_title":"Томск"}', 'delivery-key')`).run();
+    db.prepare(`INSERT INTO email_provider_events(id, outbox_id, semantic_key, status, job_id)
+      VALUES ('event-delivery', 'outbox-delivery', 'old-delivery-event', 'SENT', 'job-1')`).run();
+    const before = db.prepare("SELECT id, recipient_email, recipient_email_hash, payload_snapshot, status FROM email_outbox WHERE id = 'outbox-delivery'").get();
+
+    db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, "0017_city_interest_delivery_lifecycle.sql"), "utf8")))();
+    db.prepare("INSERT INTO city_interest_notification_intents(city_interest_request_id, outbox_id) VALUES ('interest-delivery', 'outbox-delivery')").run();
+
+    expect(db.prepare("SELECT id, recipient_email, recipient_email_hash, payload_snapshot, status FROM email_outbox WHERE id = 'outbox-delivery'").get()).toEqual(before);
+    expect(db.prepare("SELECT provider_status FROM email_provider_events WHERE id = 'event-delivery'").get()).toEqual({ provider_status: null });
+    expect(() => db.prepare("INSERT INTO city_interest_notification_intents(city_interest_request_id, outbox_id) VALUES ('interest-delivery', 'outbox-delivery')").run()).toThrow(/UNIQUE constraint failed/);
+    expect((db.prepare("PRAGMA foreign_key_list(city_interest_notification_intents)").all() as { table: string; from: string; to: string }[]).map(({ table, from, to }) => ({ table, from, to }))).toEqual(expect.arrayContaining([
+      { table: "city_interest_requests", from: "city_interest_request_id", to: "id" },
+      { table: "email_outbox", from: "outbox_id", to: "id" },
+    ]));
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    db.close();
+  });
 });

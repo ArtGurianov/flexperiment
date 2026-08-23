@@ -562,6 +562,22 @@ describe("commerce HTTP boundary", () => {
     const response = await app.request("http://flexperiment.ru/v1/webhooks/unisender", { method: "POST", headers: { "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.1" }, body });
     expect(response.status).toBe(200);
     expect(db.prepare("SELECT status, job_id FROM email_outbox WHERE id = ?").get(outboxId)).toMatchObject({ status: "DELIVERED", job_id: "job-1" });
+    expect(db.prepare("SELECT status, provider_status, job_id FROM email_provider_events WHERE outbox_id = ?").get(outboxId)).toEqual({ status: "DELIVERED", provider_status: "delivered", job_id: "job-1" });
+    db.close();
+  });
+
+  it("preserves the exact Unisender bounce outcome instead of collapsing provider evidence", async () => {
+    const { db } = appFixture();
+    const outboxId = randomUUID();
+    db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key)
+      VALUES (?, 'BOOKING_CANCELLED', 'buyer@example.test', 'hash', 'booking-cancelled', '{}', 'soft-bounce-key')`).run(outboxId);
+    const apiKey = "test-api-key-not-a-secret";
+    const app = createApp(db, new MockProvider(), new UnisenderGoProvider({ apiKey, fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async () => Response.json({ status: "success", job_id: "job" })));
+    const unsigned = JSON.stringify({ auth: "pending", events_by_user: [{ user_id: 1, events: [{ event_name: "transactional_email_status", event_data: { job_id: "job-2", metadata: { outbox_id: outboxId }, status: "soft_bounced", event_time: "2026-08-20 00:00:00" } }] }] });
+    const body = unsigned.replace("pending", createHash("md5").update(unsigned.replace("pending", apiKey)).digest("hex"));
+    expect((await app.request("http://flexperiment.ru/v1/webhooks/unisender", { method: "POST", headers: { "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.1" }, body })).status).toBe(200);
+    expect(db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outboxId)).toEqual({ status: "BOUNCED" });
+    expect(db.prepare("SELECT status, provider_status FROM email_provider_events WHERE outbox_id = ?").get(outboxId)).toEqual({ status: "BOUNCED", provider_status: "soft_bounced" });
     db.close();
   });
 });

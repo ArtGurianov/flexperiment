@@ -720,15 +720,15 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT id, privacy_policy_version, pd_consent_version, consent_accepted_at, expires_at FROM city_interest_requests WHERE email_normalized = 'renew@example.test'").get()).toEqual({ id: before.id, privacy_policy_version: "test-2", pd_consent_version: "test-2", consent_accepted_at: "2026-06-01T12:00:00.000Z", expires_at: "2027-06-01T12:00:00.000Z" });
 
     const beforeExpiry = new CommerceDomain(setup.db, new MockProvider(), undefined, () => Date.parse("2027-05-31T12:00:00.000Z"));
-    expect(beforeExpiry.processCityInterestLifecycle()).toEqual({ expired_deleted: 0, notified_deleted: 0 });
+    expect(beforeExpiry.processCityInterestLifecycle()).toEqual({ expired_deleted: 0, intents_created: 0 });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests").get()).toEqual({ count: 1 });
     const atExpiry = new CommerceDomain(setup.db, new MockProvider(), undefined, () => Date.parse("2027-06-01T12:00:00.000Z"));
-    expect(atExpiry.processCityInterestLifecycle()).toEqual({ expired_deleted: 1, notified_deleted: 0 });
-    expect(atExpiry.processCityInterestLifecycle()).toEqual({ expired_deleted: 0, notified_deleted: 0 });
+    expect(atExpiry.processCityInterestLifecycle()).toEqual({ expired_deleted: 1, intents_created: 0 });
+    expect(atExpiry.processCityInterestLifecycle()).toEqual({ expired_deleted: 0, intents_created: 0 });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests").get()).toEqual({ count: 0 });
   });
 
-  it("transactionally queues a city-specific notification and consumes only its source PII", async () => {
+  it("keeps city-interest PII through intermediate provider states and completes only on DELIVERED", async () => {
     const setup = fixture(); databases.push(setup.db);
     const timestamp = Date.parse("2026-09-01T12:00:00.000Z");
     const email: EmailProvider = {
@@ -745,15 +745,116 @@ describe("commerce domain", () => {
     expect(() => domain.patchOccurrence(setup.occurrenceId, { visibility: "PUBLISHED", reason: "Publish schedule" }, "city-interest-publish", "admin")).toThrow("test outbox failure");
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE city_slug = 'novosibirsk'").get()).toEqual({ count: 1 });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM email_outbox WHERE type = 'CITY_INTEREST_AVAILABLE'").get()).toEqual({ count: 0 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_notification_intents").get()).toEqual({ count: 0 });
     setup.db.exec("DROP TRIGGER fail_city_interest_outbox");
 
     domain.patchOccurrence(setup.occurrenceId, { visibility: "PUBLISHED", reason: "Publish schedule" }, "city-interest-publish", "admin");
-    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE city_slug = 'novosibirsk'").get()).toEqual({ count: 0 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE city_slug = 'novosibirsk'").get()).toEqual({ count: 1 });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE city_slug = 'tomsk'").get()).toEqual({ count: 1 });
-    expect(setup.db.prepare("SELECT type, recipient_email, payload_snapshot FROM email_outbox WHERE type = 'CITY_INTEREST_AVAILABLE'").get()).toEqual({ type: "CITY_INTEREST_AVAILABLE", recipient_email: "novosibirsk@example.test", payload_snapshot: expect.stringContaining("Новосибирск") });
-    expect(domain.processCityInterestLifecycle()).toEqual({ expired_deleted: 0, notified_deleted: 0 });
+    const outbox = setup.db.prepare("SELECT id, type, recipient_email, payload_snapshot FROM email_outbox WHERE type = 'CITY_INTEREST_AVAILABLE'").get() as { id: string; type: string; recipient_email: string; payload_snapshot: string };
+    expect(outbox).toEqual({ id: expect.any(String), type: "CITY_INTEREST_AVAILABLE", recipient_email: "novosibirsk@example.test", payload_snapshot: expect.stringContaining("Новосибирск") });
+    expect(setup.db.prepare("SELECT city_interest_request_id, outbox_id FROM city_interest_notification_intents").get()).toEqual({ city_interest_request_id: expect.any(String), outbox_id: outbox.id });
+    expect(domain.processCityInterestLifecycle()).toEqual({ expired_deleted: 0, intents_created: 0 });
     await domain.processEmailOutbox();
-    expect(setup.db.prepare("SELECT status, recipient_email, recipient_email_hash, payload_snapshot FROM email_outbox WHERE type = 'CITY_INTEREST_AVAILABLE'").get()).toEqual({ status: "ACCEPTED", recipient_email: "", recipient_email_hash: "", payload_snapshot: "{}" });
+    expect(setup.db.prepare("SELECT status, recipient_email, recipient_email_hash, payload_snapshot FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "ACCEPTED", recipient_email: "novosibirsk@example.test", recipient_email_hash: expect.any(String), payload_snapshot: expect.stringContaining("Новосибирск") });
+    domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "SENT", providerStatus: "sent", semanticKey: "city-interest-sent" });
+    expect(setup.db.prepare("SELECT status, recipient_email, payload_snapshot FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "SENT", recipient_email: "novosibirsk@example.test", payload_snapshot: expect.stringContaining("Новосибирск") });
+    domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "BOUNCED", providerStatus: "soft_bounced", semanticKey: "city-interest-soft-bounced" });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE city_slug = 'novosibirsk'").get()).toEqual({ count: 1 });
+    expect(setup.db.prepare("SELECT recipient_email FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ recipient_email: "novosibirsk@example.test" });
+    expect(setup.db.prepare("SELECT provider_status FROM email_provider_events WHERE outbox_id = ? ORDER BY received_at").all(outbox.id)).toEqual(expect.arrayContaining([{ provider_status: "sent" }, { provider_status: "soft_bounced" }]));
+    domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "DELIVERED", providerStatus: "delivered", semanticKey: "city-interest-delivered" });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE city_slug = 'novosibirsk'").get()).toEqual({ count: 0 });
+    expect(setup.db.prepare("SELECT status, recipient_email, recipient_email_hash, payload_snapshot FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "DELIVERED", recipient_email: "", recipient_email_hash: "", payload_snapshot: "{}" });
+    expect(domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "DELIVERED", providerStatus: "delivered", semanticKey: "city-interest-delivered" })).toEqual({ duplicate: true });
+    domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "BOUNCED", providerStatus: "spam", semanticKey: "city-interest-spam" });
+    expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "DELIVERED" });
+  });
+
+  it("retains city-interest PII for hard bounces and generic FAILED observations", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    setup.db.prepare("UPDATE occurrences SET visibility = 'HIDDEN', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
+    setup.domain.registerCityInterest({ email: "hard-bounce@example.test", city: "novosibirsk" });
+    setup.domain.patchOccurrence(setup.occurrenceId, { visibility: "PUBLISHED", reason: "Publish schedule" }, "hard-bounce-publish", "admin");
+    const outbox = setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'CITY_INTEREST_AVAILABLE'").get() as { id: string };
+    setup.domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "BOUNCED", providerStatus: "hard_bounced", semanticKey: "city-interest-hard-bounced" });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE email_normalized = 'hard-bounce@example.test'").get()).toEqual({ count: 1 });
+    expect(setup.db.prepare("SELECT recipient_email FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ recipient_email: "hard-bounce@example.test" });
+
+    setup.db.prepare("UPDATE email_outbox SET status = 'SEND_UNKNOWN' WHERE id = ?").run(outbox.id);
+    const failingLookup: EmailProvider = { async send() { throw new Error("must not send"); }, async lookup() { return { status: "FAILED" }; } };
+    const domain = new CommerceDomain(setup.db, new MockProvider(), failingLookup);
+    await domain.processEmailOutbox();
+    expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "FAILED" });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE email_normalized = 'hard-bounce@example.test'").get()).toEqual({ count: 1 });
+  });
+
+  it("suppresses city-interest PENDING and SEND_UNKNOWN outboxes on withdrawal or expiry", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    setup.db.prepare("UPDATE occurrences SET visibility = 'HIDDEN', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
+    setup.domain.registerCityInterest({ email: "withdraw-pending@example.test", city: "novosibirsk" });
+    setup.domain.patchOccurrence(setup.occurrenceId, { visibility: "PUBLISHED", reason: "Publish schedule" }, "withdraw-pending-publish", "admin");
+    const pending = setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'CITY_INTEREST_AVAILABLE'").get() as { id: string };
+    setup.domain.withdrawCityInterest("withdraw-pending@example.test", "Consent withdrawal received", "admin");
+    expect(setup.db.prepare("SELECT status, recipient_email, recipient_email_hash, payload_snapshot FROM email_outbox WHERE id = ?").get(pending.id)).toEqual({ status: "SKIPPED", recipient_email: "", recipient_email_hash: "", payload_snapshot: "{}" });
+    expect(setup.domain.applyUnisenderDelivery({ outboxId: pending.id, status: "DELIVERED", providerStatus: "delivered", semanticKey: "withdrawn-late-delivered" })).toEqual({ duplicate: false });
+    expect(setup.db.prepare("SELECT status, recipient_email, payload_snapshot FROM email_outbox WHERE id = ?").get(pending.id)).toEqual({ status: "DELIVERED", recipient_email: "", payload_snapshot: "{}" });
+
+    const sends: string[] = [];
+    const email: EmailProvider = { async send(input) { sends.push(input.recipientEmail); return { jobId: "must-not-send" }; }, async lookup() { return { status: "UNKNOWN" }; } };
+    await new CommerceDomain(setup.db, new MockProvider(), email).processEmailOutbox();
+    expect(sends).toEqual([]);
+
+    setup.domain.registerCityInterest({ email: "expired-unknown@example.test", city: "novosibirsk" });
+    const unknown = setup.db.prepare(`SELECT outbox.id FROM email_outbox outbox
+      JOIN city_interest_notification_intents intent ON intent.outbox_id = outbox.id
+      JOIN city_interest_requests request ON request.id = intent.city_interest_request_id
+      WHERE request.email_normalized = 'expired-unknown@example.test'`).get() as { id: string };
+    setup.db.prepare("UPDATE email_outbox SET status = 'SEND_UNKNOWN' WHERE id = ?").run(unknown.id);
+    setup.db.prepare("UPDATE city_interest_requests SET expires_at = '2020-01-01T00:00:00.000Z' WHERE email_normalized = 'expired-unknown@example.test'").run();
+    expect(setup.domain.processCityInterestLifecycle()).toMatchObject({ expired_deleted: 1 });
+    expect(setup.db.prepare("SELECT status, recipient_email, payload_snapshot FROM email_outbox WHERE id = ?").get(unknown.id)).toEqual({ status: "SKIPPED", recipient_email: "", payload_snapshot: "{}" });
+    await new CommerceDomain(setup.db, new MockProvider(), email).processEmailOutbox();
+    expect(sends).toEqual([]);
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE email_normalized = 'expired-unknown@example.test'").get()).toEqual({ count: 0 });
+  });
+
+  it("redacts a city-interest SENDING row on withdrawal while preserving the in-flight provider race", () => {
+    const setup = fixture(); databases.push(setup.db);
+    setup.domain.registerCityInterest({ email: "sending@example.test", city: "novosibirsk" });
+    const outbox = setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'CITY_INTEREST_AVAILABLE'").get() as { id: string };
+    setup.db.prepare("UPDATE email_outbox SET status = 'SENDING', lease_owner = 'worker' WHERE id = ?").run(outbox.id);
+    setup.domain.withdrawCityInterest("sending@example.test", "Consent withdrawal received", "admin");
+    expect(setup.db.prepare("SELECT status, recipient_email, recipient_email_hash, payload_snapshot FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "SENDING", recipient_email: "", recipient_email_hash: "", payload_snapshot: "{}" });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE email_normalized = 'sending@example.test'").get()).toEqual({ count: 0 });
+  });
+
+  it("keeps one notification intent across scans and a re-submission of the same active request", () => {
+    const setup = fixture(); databases.push(setup.db);
+    const first = new CommerceDomain(setup.db, new MockProvider(), undefined, () => Date.parse("2026-01-01T00:00:00.000Z"));
+    first.registerCityInterest({ email: "intent@example.test", city: "novosibirsk" });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM email_outbox WHERE type = 'CITY_INTEREST_AVAILABLE'").get()).toEqual({ count: 1 });
+    first.processCityInterestLifecycle();
+    first.processCityInterestLifecycle();
+    const renewal = new CommerceDomain(setup.db, new MockProvider(), undefined, () => Date.parse("2026-02-01T00:00:00.000Z"));
+    renewal.registerCityInterest({ email: "intent@example.test", city: "novosibirsk" });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_notification_intents").get()).toEqual({ count: 1 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM email_outbox WHERE type = 'CITY_INTEREST_AVAILABLE'").get()).toEqual({ count: 1 });
+    expect(setup.db.prepare("SELECT expires_at FROM city_interest_requests WHERE email_normalized = 'intent@example.test'").get()).toEqual({ expires_at: "2027-02-01T00:00:00.000Z" });
+  });
+
+  it("rolls back provider evidence and city-interest cleanup together if delivered redaction fails", () => {
+    const setup = fixture(); databases.push(setup.db);
+    const outbox = setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'CITY_INTEREST_AVAILABLE'").get() as { id: string } | undefined;
+    if (!outbox) {
+      setup.domain.registerCityInterest({ email: "atomic@example.test", city: "novosibirsk" });
+    }
+    const activeOutbox = setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'CITY_INTEREST_AVAILABLE'").get() as { id: string };
+    setup.db.exec(`CREATE TRIGGER fail_city_interest_redaction BEFORE UPDATE OF recipient_email ON email_outbox
+      WHEN NEW.id = '${activeOutbox.id}' AND NEW.recipient_email = '' BEGIN SELECT RAISE(ABORT, 'redaction failed'); END;`);
+    expect(() => setup.domain.applyUnisenderDelivery({ outboxId: activeOutbox.id, status: "DELIVERED", providerStatus: "delivered", semanticKey: "atomic-delivered" })).toThrow("redaction failed");
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE email_normalized = 'atomic@example.test'").get()).toEqual({ count: 1 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM email_provider_events WHERE semantic_key = 'atomic-delivered'").get()).toEqual({ count: 0 });
   });
 
   it("withdraws all city-interest rows for an email without retaining a suppression identifier", () => {
@@ -780,7 +881,7 @@ describe("commerce domain", () => {
       submitRequestedRefunds: async () => { calls.push("submit-refunds"); },
       reconcilePendingRefunds: async () => { calls.push("reconcile-refunds"); },
       processEmailOutbox: async () => { calls.push("email"); },
-      processCityInterestLifecycle: () => { calls.push("city-interest"); return { expired_deleted: 0, notified_deleted: 0 }; },
+      processCityInterestLifecycle: () => { calls.push("city-interest"); return { expired_deleted: 0, intents_created: 0 }; },
     };
     await runWorkerSweep(busyDomain as never);
     expect(calls).toEqual(["recover-stale", "detect", "payments", "obligations", "submit-refunds", "reconcile-refunds", "email", "city-interest"]);

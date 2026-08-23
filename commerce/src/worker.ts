@@ -11,8 +11,8 @@ let sweeping = false;
 
 const sweep = async () => {
   const cityInterest = await runWorkerSweep(domain);
-  if (cityInterest.expired_deleted || cityInterest.notified_deleted) {
-    console.log(`Commerce city-interest lifecycle expired_deleted=${cityInterest.expired_deleted} notified_deleted=${cityInterest.notified_deleted}`);
+  if (cityInterest.expired_deleted || cityInterest.intents_created) {
+    console.log(`Commerce city-interest lifecycle expired_deleted=${cityInterest.expired_deleted} intents_created=${cityInterest.intents_created}`);
   }
   if (Date.now() >= nextDriftSweepAt) {
     nextDriftSweepAt = Date.now() + 24 * 60 * 60_000;

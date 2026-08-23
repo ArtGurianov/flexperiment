@@ -111,7 +111,11 @@ Unisender Go sends code-rendered HTML/plaintext with the stable outbox
 idempotence key and persistent `outbox_id` metadata. Its known one-minute
 duplicate window is not exact-once delivery. A response lost before `job_id`
 remains `SEND_UNKNOWN`; the confirmed contract has no lookup by idempotence key
-or metadata, so this implementation does not invent one.
+or metadata, so this implementation does not invent one. For city-interest,
+`ACCEPTED` and `SENT` remain intermediate facts; only a correlated provider
+`DELIVERED` event completes the narrowly scoped notification purpose. See
+[`city-interest-operations.md`](city-interest-operations.md) for withdrawal,
+expiry, and webhook-subscription requirements.
 
 Before traffic is enabled, run the production 1-RUB Tochka payment, verify the
 receipt and signed callback, issue and reconcile a refund, and exercise an

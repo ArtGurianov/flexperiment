@@ -132,25 +132,26 @@ export class CommerceDomain {
     });
   }
 
-  /** Deletes purpose-limited PII only after durable outbox enqueue succeeds. */
+  /** Applies expiry before scanning for newly eligible requests. */
   processCityInterestLifecycle() {
     return withImmediateTransaction(this.db, () => {
       const timestamp = new Date(this.clock()).toISOString();
       const expired = many(this.db, `SELECT id FROM city_interest_requests
         WHERE expires_at <= ? ORDER BY expires_at LIMIT ?`, timestamp, CITY_INTEREST_SWEEP_BATCH_SIZE);
-      for (const row of expired) this.db.prepare("DELETE FROM city_interest_requests WHERE id = ?").run(row.id);
-      const notifiedDeleted = this.consumeEligibleCityInterests(undefined, CITY_INTEREST_SWEEP_BATCH_SIZE, timestamp);
-      return { expired_deleted: expired.length, notified_deleted: notifiedDeleted };
+      for (const row of expired) this.purgeCityInterestRequest(String(row.id));
+      const intentsCreated = this.consumeEligibleCityInterests(undefined, CITY_INTEREST_SWEEP_BATCH_SIZE, timestamp);
+      return { expired_deleted: expired.length, intents_created: intentsCreated };
     });
   }
 
   withdrawCityInterest(email: string, reason: string, adminId: string) {
     return withImmediateTransaction(this.db, () => {
-      const deleted = this.db.prepare("DELETE FROM city_interest_requests WHERE email_hash = ?").run(emailHash(email));
+      const requests = many(this.db, "SELECT id FROM city_interest_requests WHERE email_hash = ?", emailHash(email));
+      for (const request of requests) this.purgeCityInterestRequest(String(request.id));
       // Retain only aggregate operator evidence: never an email or its hash.
       this.db.prepare("INSERT INTO admin_audit_log(id, admin_id, action, entity_type, entity_id, details_json) VALUES (?, ?, 'CITY_INTEREST_WITHDRAWN', 'city_interest', 'all-matching-requests', ?)")
-        .run(id(), adminId, JSON.stringify({ reason, deleted_count: deleted.changes }));
-      return { withdrawn: true, deleted_count: deleted.changes };
+        .run(id(), adminId, JSON.stringify({ reason, deleted_count: requests.length }));
+      return { withdrawn: true, deleted_count: requests.length };
     });
   }
 
@@ -1053,6 +1054,14 @@ export class CommerceDomain {
   async processEmailOutbox() {
     const rows = many(this.db, "SELECT * FROM email_outbox WHERE status IN ('PENDING', 'SEND_UNKNOWN') ORDER BY created_at LIMIT 50");
     for (const outbox of rows) {
+      if (outbox.type === "CITY_INTEREST_AVAILABLE") {
+        const active = withImmediateTransaction(this.db, () => {
+          if (this.isActiveCityInterestNotification(String(outbox.id))) return true;
+          this.suppressCityInterestOutbox(String(outbox.id));
+          return false;
+        });
+        if (!active) continue;
+      }
       if (outbox.status === "PENDING" && outbox.type === "CUSTOMER_REFUND_CONFIRMATION" && !this.isCurrentRefundConfirmationOutbox(outbox)) {
         // A later request superseded this capability, or it is no longer usable.
         // SKIPPED is terminal and deliberately not an email-provider failure.
@@ -1072,6 +1081,10 @@ export class CommerceDomain {
         } catch { /* same idempotency key will be used if a retry becomes possible */ }
       }
       const claimed = withImmediateTransaction(this.db, () => {
+        if (outbox.type === "CITY_INTEREST_AVAILABLE" && !this.isActiveCityInterestNotification(String(outbox.id))) {
+          this.suppressCityInterestOutbox(String(outbox.id));
+          return 0;
+        }
         // Recheck inside the claim transaction so an invalidated queued token
         // cannot race into a fresh provider send.
         if (outbox.status === "PENDING" && outbox.type === "CUSTOMER_REFUND_CONFIRMATION" && !this.isCurrentRefundConfirmationOutbox(outbox)) {
@@ -1085,8 +1098,7 @@ export class CommerceDomain {
       try {
         const payload = this.emailPayload(outbox);
         const sent = await this.emailProvider.send({ recipientEmail: String(outbox.recipient_email), template: String(outbox.template), payload, idempotencyKey: String(outbox.provider_idempotence_key), outboxId: String(outbox.id) });
-        const accepted = this.db.prepare("UPDATE email_outbox SET status = 'ACCEPTED', job_id = ?, lease_owner = NULL, lease_expires_at = NULL WHERE id = ? AND status = 'SENDING'").run(sent.jobId, outbox.id);
-        if (accepted.changes) this.redactTerminalCityInterestOutbox(String(outbox.id));
+        this.db.prepare("UPDATE email_outbox SET status = 'ACCEPTED', job_id = ?, lease_owner = NULL, lease_expires_at = NULL WHERE id = ? AND status = 'SENDING'").run(sent.jobId, outbox.id);
       } catch (error) {
         // A response can be lost after dispatch. Retain SEND_UNKNOWN, not PENDING,
         // and keep the original provider idempotence key for all future recovery.
@@ -1145,8 +1157,10 @@ export class CommerceDomain {
   }
 
   private enqueueEmail(type: string, recipientEmail: string, recipientEmailHash: string, template: string, payloadRef: string, payload: Record<string, unknown>) {
+    const outboxId = id();
     this.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_ref, payload_snapshot, provider_idempotence_key)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(id(), type, recipientEmail, recipientEmailHash, template, payloadRef, JSON.stringify(payload), publicId());
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(outboxId, type, recipientEmail, recipientEmailHash, template, payloadRef, JSON.stringify(payload), publicId());
+    return outboxId;
   }
 
   private consumeEligibleCityInterests(citySlug?: string, limit = CITY_INTEREST_SWEEP_BATCH_SIZE, timestamp = new Date(this.clock()).toISOString()) {
@@ -1163,19 +1177,49 @@ export class CommerceDomain {
         ORDER BY candidate.starts_at, candidate.id
         LIMIT 1
       )
-      WHERE ci.expires_at > ? ${citySlug ? "AND ci.city_slug = ?" : ""}
+      WHERE ci.expires_at > ?
+        AND NOT EXISTS (
+          SELECT 1 FROM city_interest_notification_intents intent
+          WHERE intent.city_interest_request_id = ci.id
+        ) ${citySlug ? "AND ci.city_slug = ?" : ""}
       ORDER BY ci.created_at, ci.id
       LIMIT ?`, timestamp, timestamp, ...(citySlug ? [citySlug] : []), limit);
     for (const interest of interests) {
-      this.enqueueEmail("CITY_INTEREST_AVAILABLE", String(interest.email_normalized), String(interest.email_hash), "city-interest-available", `city-interest:${interest.id}`, {
+      const outboxId = this.enqueueEmail("CITY_INTEREST_AVAILABLE", String(interest.email_normalized), String(interest.email_hash), "city-interest-available", `city-interest:${interest.id}`, {
         city_title: interest.city_title,
         occurrence_id: interest.occurrence_id,
         occurrence_title: interest.occurrence_title,
         starts_at: interest.starts_at,
       });
-      this.db.prepare("DELETE FROM city_interest_requests WHERE id = ?").run(interest.id);
+      this.db.prepare("INSERT INTO city_interest_notification_intents(city_interest_request_id, outbox_id) VALUES (?, ?)").run(interest.id, outboxId);
     }
     return interests.length;
+  }
+
+  private isActiveCityInterestNotification(outboxId: string) {
+    return Boolean(one(this.db, `SELECT request.id
+      FROM city_interest_notification_intents intent
+      JOIN city_interest_requests request ON request.id = intent.city_interest_request_id
+      WHERE intent.outbox_id = ? AND request.expires_at > ?`, outboxId, new Date(this.clock()).toISOString()));
+  }
+
+  /** Stops future local dispatch and removes the now-unneeded local PII. An in-flight provider call cannot be recalled. */
+  private suppressCityInterestOutbox(outboxId: string) {
+    this.db.prepare(`UPDATE email_outbox
+      SET status = CASE WHEN status IN ('PENDING', 'SEND_UNKNOWN') THEN 'SKIPPED' ELSE status END,
+          lease_owner = CASE WHEN status IN ('PENDING', 'SEND_UNKNOWN') THEN NULL ELSE lease_owner END,
+          lease_expires_at = CASE WHEN status IN ('PENDING', 'SEND_UNKNOWN') THEN NULL ELSE lease_expires_at END,
+          last_error = CASE WHEN status IN ('PENDING', 'SEND_UNKNOWN') THEN 'CITY_INTEREST_NO_LONGER_ACTIVE' ELSE last_error END,
+          recipient_email = '', recipient_email_hash = '', payload_snapshot = '{}'
+      WHERE id = ? AND type = 'CITY_INTEREST_AVAILABLE'`).run(outboxId);
+  }
+
+  private purgeCityInterestRequest(requestId: string) {
+    const outboxes = many(this.db, `SELECT intent.outbox_id
+      FROM city_interest_notification_intents intent
+      WHERE intent.city_interest_request_id = ?`, requestId);
+    for (const outbox of outboxes) this.suppressCityInterestOutbox(String(outbox.outbox_id));
+    this.db.prepare("DELETE FROM city_interest_requests WHERE id = ?").run(requestId);
   }
 
   private recordProviderDrift(entityType: "PAYMENT" | "REFUND", entityId: string, observed: Record<string, unknown>) {
@@ -1187,25 +1231,28 @@ export class CommerceDomain {
     const terminal = ["ACCEPTED", "SENT", "DELIVERED", "BOUNCED", "FAILED"];
     if (!terminal.includes(observed.status)) return;
     const timestamps = observed.status === "SENT" ? ", sent_at = ?" : observed.status === "DELIVERED" ? ", delivered_at = ?" : observed.status === "BOUNCED" ? ", bounced_at = ?" : "";
-    this.db.prepare(`UPDATE email_outbox SET status = ?, job_id = COALESCE(job_id, ?), lease_owner = NULL, lease_expires_at = NULL${timestamps} WHERE id = ?`).run(observed.status, observed.jobId ?? null, ...(timestamps ? [now()] : []), outboxId);
-    // This purpose has no further processing after a provider-known terminal
-    // outcome. Keep durable delivery evidence but remove both raw recipient and
-    // email hash; PENDING/SEND_UNKNOWN remain intact for safe recovery.
-    this.redactTerminalCityInterestOutbox(outboxId);
+    // DELIVERED is a durable positive fact. A later spam callback records its
+    // own provider evidence but must not turn delivery back into a bounce.
+    this.db.prepare(`UPDATE email_outbox SET status = ?, job_id = COALESCE(job_id, ?), lease_owner = NULL, lease_expires_at = NULL${timestamps}
+      WHERE id = ? AND NOT (status = 'DELIVERED' AND ? != 'DELIVERED')`).run(observed.status, observed.jobId ?? null, ...(timestamps ? [now()] : []), outboxId, observed.status);
   }
 
-  private redactTerminalCityInterestOutbox(outboxId: string) {
+  private completeDeliveredCityInterest(outboxId: string) {
+    const intent = one(this.db, "SELECT city_interest_request_id FROM city_interest_notification_intents WHERE outbox_id = ?", outboxId);
+    if (!intent) return;
+    this.db.prepare("DELETE FROM city_interest_requests WHERE id = ?").run(intent.city_interest_request_id);
     this.db.prepare(`UPDATE email_outbox SET recipient_email = '', recipient_email_hash = '', payload_snapshot = '{}'
-      WHERE id = ? AND type = 'CITY_INTEREST_AVAILABLE' AND status IN ('ACCEPTED', 'SENT', 'DELIVERED', 'BOUNCED', 'FAILED')`).run(outboxId);
+      WHERE id = ? AND type = 'CITY_INTEREST_AVAILABLE'`).run(outboxId);
   }
 
-  applyUnisenderDelivery(input: { outboxId: string; status: "ACCEPTED" | "SENT" | "DELIVERED" | "BOUNCED" | "FAILED"; jobId?: string; semanticKey: string }) {
+  applyUnisenderDelivery(input: { outboxId: string; status: "ACCEPTED" | "SENT" | "DELIVERED" | "BOUNCED" | "FAILED"; providerStatus: "accepted" | "sent" | "delivered" | "soft_bounced" | "hard_bounced" | "spam"; jobId?: string; semanticKey: string }) {
     return withImmediateTransaction(this.db, () => {
       const outbox = one(this.db, "SELECT id FROM email_outbox WHERE id = ?", input.outboxId);
       if (!outbox) throw new DomainError("UNISENDER_OUTBOX_NOT_FOUND", 404);
-      const inserted = this.db.prepare("INSERT OR IGNORE INTO email_provider_events(id, outbox_id, semantic_key, status, job_id) VALUES (?, ?, ?, ?, ?)").run(id(), input.outboxId, input.semanticKey, input.status, input.jobId ?? null);
+      const inserted = this.db.prepare("INSERT OR IGNORE INTO email_provider_events(id, outbox_id, semantic_key, status, provider_status, job_id) VALUES (?, ?, ?, ?, ?, ?)").run(id(), input.outboxId, input.semanticKey, input.status, input.providerStatus, input.jobId ?? null);
       if (!inserted.changes) return { duplicate: true };
       this.applyEmailObservation(input.outboxId, { status: input.status, jobId: input.jobId });
+      if (input.providerStatus === "delivered") this.completeDeliveredCityInterest(input.outboxId);
       return { duplicate: false };
     });
   }
