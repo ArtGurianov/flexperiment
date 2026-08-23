@@ -60,6 +60,29 @@ do not add a permanent diagnostic route or log request headers.
    for forwarded-header alias spoofing) and retain the effective
    forwarded-header configuration with the release evidence.
 
+### Production trusted-IP verification — 2026-08-23
+
+The controlled verification passed on the actual production Docker bridge:
+
+```text
+Internet -> Coolify Traefik 3.6.25 -> commerce:3001
+```
+
+- A normal external request reached Commerce with exactly one
+  `X-Forwarded-For` value.
+- `X-Real-Ip` matched that `X-Forwarded-For` value.
+- A forged client `X-Forwarded-For: 1.2.3.4` was stripped by Traefik, so
+  Commerce received only the real public client address.
+- Commerce had no published host port and was reached through the Docker
+  network.
+
+This verifies the current `trustedClientIp()` contract for this topology:
+accept exactly one valid IPv4/IPv6 literal from `X-Forwarded-For`, reject
+chains and malformed values, and omit SmartCaptcha's `ip` when no trusted
+address is available. Traefik must remain at least v3.6.14; production is
+currently verified on 3.6.25. Re-run this review before placing a CDN or any
+other reverse proxy ahead of Traefik.
+
 ## CSP and browser verification
 
 The repository's current Caddy and Admin nginx configs do **not** enforce a
