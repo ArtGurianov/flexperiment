@@ -290,7 +290,7 @@ describe("commerce HTTP boundary", () => {
     const domain = new CommerceDomain(db, new MockProvider());
     const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
     const quote = domain.checkoutContext({ occurrenceId });
-    const checkout = await domain.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Арт", customer_email: "art@example.test", eligibility_confirmed: true, offer_accepted: true, pd_consent_accepted: true }, "995e27bc-77c6-47b1-b6d0-000000000001", "https://flexperiment.ru");
+    const checkout = await domain.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Арт", customer_email: "art@example.test", customer_adult_confirmed: true, participant: { self: true, date_of_birth: "1990-01-01" }, offer_accepted: true, pd_consent_accepted: true }, "995e27bc-77c6-47b1-b6d0-000000000001", "https://flexperiment.ru");
     const order = db.prepare("SELECT o.id, o.public_order_number, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(checkout.status_id) as { id: string; public_order_number: string; payment_id: string };
     domain.markPaymentPaid(order.payment_id, 100000, "provider-payment");
     domain.requestCustomerRefund(order.public_order_number.replace(/-/g, ""));
@@ -504,7 +504,7 @@ describe("commerce HTTP boundary", () => {
     const occurrenceId = (db.prepare("SELECT id FROM occurrences").get() as { id: string }).id;
     const context = await app.request("http://api.flexperiment.ru/v1/public/checkout-context", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.1" }, body: JSON.stringify({ occurrence_id: occurrenceId }) });
     const quoteId = (await context.json() as { quote_id: string }).quote_id;
-    await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000009", "X-Forwarded-For": "127.0.0.1" }, body: JSON.stringify({ quote_id: quoteId, customer_name: "Арт", customer_email: "art@example.test", eligibility_confirmed: true, offer_accepted: true, pd_consent_accepted: true }) });
+    await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000009", "X-Forwarded-For": "127.0.0.1", "User-Agent": "Customer acceptance test" }, body: JSON.stringify({ quote_id: quoteId, customer_name: "Арт", customer_email: "art@example.test", customer_adult_confirmed: true, participant: { self: true, date_of_birth: "1990-01-01" }, offer_accepted: true, pd_consent_accepted: true }) });
     const orderId = (db.prepare("SELECT id FROM orders").get() as { id: string }).id;
     const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.1" }, body: JSON.stringify({ password: "correct horse" }) });
     const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
@@ -515,6 +515,8 @@ describe("commerce HTTP boundary", () => {
     const evidenceBody = await evidence.json() as { order: { id: string }; payment: Record<string, unknown>; booking: { status: string }; ticket: unknown; email_outbox: unknown[] };
     expect(evidenceBody).toMatchObject({ order: { id: orderId }, booking: { status: "RESERVED" }, ticket: null, email_outbox: [] });
     expect(evidenceBody.payment).not.toHaveProperty("payment_url");
+    expect(db.prepare("SELECT customer_adult_confirmed_at, customer_acceptance_ip, customer_acceptance_user_agent, participant_name, participant_is_customer FROM orders WHERE id = ?").get(orderId))
+      .toMatchObject({ customer_adult_confirmed_at: expect.any(String), customer_acceptance_ip: "127.0.0.1", customer_acceptance_user_agent: "Customer acceptance test", participant_name: "Арт", participant_is_customer: 1 });
     expect(db.prepare("SELECT COUNT(*) AS count FROM reservation_abandonments").get()).toEqual(beforeCount);
     const abandoned = await app.request(`http://admin.flexperiment.ru/v1/admin/orders/${orderId}/abandon-reservation`, { method: "POST", headers: { ...headers, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000010" }, body: JSON.stringify({ reason: "Certification interrupted before payment" }) });
     expect(abandoned.status).toBe(200);

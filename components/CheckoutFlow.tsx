@@ -9,6 +9,7 @@ import { storedReferralSlug } from "@/components/referral-marker";
 import CityInterestForm from "@/components/CityInterestForm";
 import { findCityBySlug, type CitySlug } from "@/lib/city-catalog";
 import { canRequestCheckout, isPublicOccurrenceSelectable, salesAnnouncement, type PublicSalesStatus } from "@/lib/occurrence-sales";
+import { getParticipantAgeOnOccurrenceDate } from "@/lib/participant-age";
 
 type Occurrence = {
   id: string;
@@ -16,6 +17,7 @@ type Occurrence = {
   city_title: string;
   title: string;
   starts_at: string;
+  timezone: string;
   price_kopecks: number;
   availability: number;
   sales_status: PublicSalesStatus;
@@ -55,7 +57,12 @@ export default function CheckoutFlow() {
   const [quote, setQuote] = useState<Quote | null>(null);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
-  const [eligibility, setEligibility] = useState(false);
+  const [customerAdult, setCustomerAdult] = useState(false);
+  const [participantSelf, setParticipantSelf] = useState(true);
+  const [participantName, setParticipantName] = useState("");
+  const [participantDateOfBirth, setParticipantDateOfBirth] = useState("");
+  const [minorRepresentative, setMinorRepresentative] = useState(false);
+  const [under14Accompaniment, setUnder14Accompaniment] = useState(false);
   const [offer, setOffer] = useState(false);
   const [consent, setConsent] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -65,6 +72,9 @@ export default function CheckoutFlow() {
   const [catalogLoaded, setCatalogLoaded] = useState(false);
   const selected = useMemo(() => occurrences.find((item) => item.id === occurrenceId), [occurrences, occurrenceId]);
   const canCheckout = canRequestCheckout(selected);
+  const participantAge = useMemo(() => selected && participantDateOfBirth
+    ? getParticipantAgeOnOccurrenceDate(participantDateOfBirth, selected.starts_at, selected.timezone)
+    : null, [participantDateOfBirth, selected]);
   const legalLabels = {
     PUBLIC_OFFER: "публичной оферты",
     PRIVACY_POLICY: "политики конфиденциальности",
@@ -106,7 +116,7 @@ export default function CheckoutFlow() {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error?.code ?? "QUOTE_UNAVAILABLE");
-      setQuote(data); setEligibility(false); setOffer(false); setConsent(false);
+      setQuote(data); setCustomerAdult(false); setMinorRepresentative(false); setUnder14Accompaniment(false); setOffer(false); setConsent(false);
     } catch (error) {
       setQuote(null);
       setMessage(error instanceof Error && error.message === "SALES_NOT_OPEN"
@@ -138,12 +148,12 @@ export default function CheckoutFlow() {
       const response = await fetch(commerceApiUrl("/v1/public/checkouts"), {
         method: "POST",
         headers: { "Content-Type": "application/json", "Idempotency-Key": attempt.idempotencyKey },
-        body: JSON.stringify({ quote_id: quote.quote_id, customer_name: name, customer_email: email, eligibility_confirmed: eligibility, offer_accepted: offer, pd_consent_accepted: consent }),
+        body: JSON.stringify({ quote_id: quote.quote_id, customer_name: name, customer_email: email, customer_adult_confirmed: customerAdult, participant: { self: participantSelf, name: participantSelf ? undefined : participantName, date_of_birth: participantDateOfBirth }, minor_legal_representative_confirmed: participantAge?.isMinor ? minorRepresentative : undefined, under_14_accompaniment_confirmed: participantAge?.requiresAdultAccompaniment ? under14Accompaniment : undefined, offer_accepted: offer, pd_consent_accepted: consent }),
       });
       const data = await response.json();
       if (!response.ok) {
         if (["QUOTE_STALE", "PROMO_NO_LONGER_ELIGIBLE", "LEGAL_VERSION_CHANGED"].includes(data.error?.code)) {
-          setQuote(null); setEligibility(false); setOffer(false); setConsent(false);
+          setQuote(null); setCustomerAdult(false); setMinorRepresentative(false); setUnder14Accompaniment(false); setOffer(false); setConsent(false);
           setMessage("Условия изменились. Мы обновили форму — подтвердите условия заново.");
           await refreshQuote();
           return;
@@ -175,8 +185,9 @@ export default function CheckoutFlow() {
       {quote && <div className="border border-acid/60 p-3 text-bone"><p>{selected?.city_title}: {rub(quote.final_amount_kopecks)}{quote.discount_kopecks > 0 ? " со скидкой" : ""}</p><p className="mt-1 text-bone/70">{quote.venue_disclosure}</p></div>}
       <label className="grid gap-1.5">Имя <input required value={name} onChange={(event) => setName(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>
       <label className="grid gap-1.5">Email <input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>
+      <fieldset className="grid gap-2 border border-bone/50 p-3"><legend className="px-1">Кто будет участвовать?</legend><label><input type="radio" checked={participantSelf} onChange={() => setParticipantSelf(true)} /> Я сам</label><label><input type="radio" checked={!participantSelf} onChange={() => setParticipantSelf(false)} /> Другой человек</label>{!participantSelf && <label className="grid gap-1.5">Имя участника <input required value={participantName} onChange={(event) => setParticipantName(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>}<label className="grid gap-1.5">Дата рождения участника <input required type="date" value={participantDateOfBirth} onChange={(event) => setParticipantDateOfBirth(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>{participantAge?.isMinor && <label><input required type="checkbox" checked={minorRepresentative} onChange={(event) => setMinorRepresentative(event.target.checked)} /> Я являюсь родителем, усыновителем или попечителем указанного несовершеннолетнего участника и разрешаю ему принять участие в выбранном мастер-классе.</label>}{participantAge?.requiresAdultAccompaniment && <label><input required type="checkbox" checked={under14Accompaniment} onChange={(event) => setUnder14Accompaniment(event.target.checked)} /> Я понимаю, что участник младше 14 лет должен находиться на площадке мастер-класса в сопровождении совершеннолетнего взрослого в течение всего мероприятия.</label>}<p className="text-bone/70">Возраст участников не ограничен. Для несовершеннолетних билет оформляет совершеннолетний законный представитель. Участники младше 14 лет посещают мастер-класс в сопровождении взрослого.</p></fieldset>
       <div className="grid gap-2 text-xs leading-snug">
-        <label><input required type="checkbox" checked={eligibility} onChange={(event) => setEligibility(event.target.checked)} /> Мне исполнилось 18 лет, я покупаю билет для себя.</label>
+        <label><input required type="checkbox" checked={customerAdult} onChange={(event) => setCustomerAdult(event.target.checked)} /> Мне исполнилось 18 лет. Я оформляю заказ от своего имени и принимаю условия публичной оферты.</label>
         <label><input required type="checkbox" checked={offer} onChange={(event) => setOffer(event.target.checked)} /> Я принимаю условия {quote ? <a className="text-acid underline underline-offset-4" href={quote.legal_release.manifest.documents.PUBLIC_OFFER.archive_url} target="_blank" rel="noreferrer">{legalLabels.PUBLIC_OFFER}</a> : "публичной оферты"}.</label>
         <label><input required type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /> Я даю согласие на обработку персональных данных.</label>
         {quote && <p className="text-bone/70">Версия legal release {quote.legal_release.version}: {(Object.keys(legalLabels) as (keyof typeof legalLabels)[]).map((id, index) => <span key={id}>{index > 0 ? " · " : ""}<a className="text-acid underline underline-offset-4" href={quote.legal_release.manifest.documents[id].archive_url} target="_blank" rel="noreferrer">{legalLabels[id]}</a></span>)}</p>}

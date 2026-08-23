@@ -141,7 +141,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
       rateLimit(`checkout-reservation:${quoteForLimit?.occurrence_id ?? input.quote_id}`, 60, 10 * 60_000);
     }
     const origin = process.env.COMMERCE_PUBLIC_ORIGIN ?? "https://flexperiment.ru";
-    return c.json(await domain.checkoutAsync(input, idempotencyKey, origin), existing ? 200 : 201);
+    return c.json(await domain.checkoutAsync(input, idempotencyKey, origin, { ip: trustedClientIp(c.req.raw.headers), userAgent: c.req.header("User-Agent") ?? undefined }), existing ? 200 : 201);
   });
   publicApi.get("/checkout-status/:statusId", (c) => {
     rateLimit(clientIpRateLimitKey("checkout-status-ip", c.req.raw.headers), 60, 60_000); rateLimit(`checkout-status-id:${c.req.param("statusId")}`, 20, 60_000);
@@ -152,7 +152,9 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     const capability = authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined;
     if (!capability) throw new DomainError("TICKET_CAPABILITY_REQUIRED", 401);
     rateLimit(clientIpRateLimitKey("ticket-ip", c.req.raw.headers), 20, 60_000); rateLimit(`ticket-capability:${sha256(capability)}`, 5, 60_000);
-    const ticket = sqlite.prepare(`SELECT t.id, t.status, o.id AS order_id, oc.title, oc.starts_at, oc.timezone, oc.venue_name, oc.venue_address
+    const ticket = sqlite.prepare(`SELECT t.id, t.status, o.id AS order_id, COALESCE(o.participant_name, o.customer_name) AS participant_name,
+      COALESCE(o.participant_requires_adult_accompaniment, 0) AS requires_adult_accompaniment,
+      oc.title, oc.starts_at, oc.timezone, oc.venue_name, oc.venue_address
       FROM tickets t JOIN bookings b ON b.id = t.booking_id JOIN orders o ON o.id = b.order_id JOIN occurrences oc ON oc.id = b.occurrence_id WHERE t.capability_hash = ?`).get(sha256(capability));
     if (!ticket) throw new DomainError("TICKET_NOT_FOUND", 404);
     c.header("Referrer-Policy", "no-referrer"); return c.json(ticket);
@@ -300,7 +302,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     const from = c.req.query("from"); if (from) { filters.push("o.created_at >= ?"); params.push(from); }
     const to = c.req.query("to"); if (to) { filters.push("o.created_at < ?"); params.push(to); }
     const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
-    return c.json({ orders: sqlite.prepare(`SELECT o.id, o.public_status_id, o.public_order_number, o.occurrence_id, o.customer_name, o.customer_email, o.amount_kopecks, o.created_at,
+    return c.json({ orders: sqlite.prepare(`SELECT o.id, o.public_status_id, o.public_order_number, o.occurrence_id, o.customer_name, o.customer_email, o.participant_name, o.participant_age_at_occurrence, o.participant_is_minor, o.participant_requires_adult_accompaniment, o.amount_kopecks, o.created_at,
       oc.title AS occurrence_title, c.id AS city_id, c.title AS city_title, p.state AS payment_state, p.status AS payment_status,
       b.status AS booking_status, (SELECT COUNT(*) FROM refunds r WHERE r.order_id = o.id) AS refund_count
       FROM orders o JOIN occurrences oc ON oc.id = o.occurrence_id JOIN cities c ON c.id = oc.city_id

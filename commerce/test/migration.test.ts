@@ -59,6 +59,26 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     db.close();
   });
+
+  it("upgrades populated 0027 orders without guessing participant data", () => {
+    const db = openDatabase(":memory:");
+    applyThrough(db, "0027_occurrence_notification_payload_attention.sql");
+    const cityId = randomUUID(); const occurrenceId = randomUUID(); const releaseId = randomUUID(); const orderId = randomUUID();
+    db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, 'participant-city', 'Participant city')").run(cityId);
+    db.prepare("INSERT INTO legal_releases(id, version, effective_at, manifest_json, active) VALUES (?, 'participant-release', datetime('now'), '{}', 1)").run(releaseId);
+    db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, venue_status, venue_name, venue_address)
+      VALUES (?, ?, 'Participant fixture', '2030-01-01T10:00:00.000Z', '2030-01-01T12:00:00.000Z', 'Asia/Novosibirsk', 100, 1, 'PUBLISHED', 'CONFIRMED', 'Studio', 'Lenina 1')`).run(occurrenceId, cityId);
+    db.prepare(`INSERT INTO orders(id, public_status_id, public_order_number, occurrence_id, customer_name, customer_email, customer_email_hash, amount_kopecks, occurrence_material_revision, venue_disclosure_snapshot, checkout_legal_release_id, legal_snapshot_json, eligibility_confirmed_at)
+      VALUES (?, 'legacy-participant-status', 'FXLEGACYPARTICIPANT001', ?, 'Legacy buyer', 'legacy@example.test', 'hash', 100, 1, 'Studio', ?, '{}', datetime('now'))`).run(orderId, occurrenceId, releaseId);
+    const before = db.prepare("SELECT customer_name, customer_email, eligibility_confirmed_at FROM orders WHERE id = ?").get(orderId) as Record<string, unknown>;
+    db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, "0028_customer_participant_ticketing.sql"), "utf8")))();
+    expect(db.prepare("SELECT customer_name, customer_email, eligibility_confirmed_at, participant_name, participant_date_of_birth, participant_age_at_occurrence FROM orders WHERE id = ?").get(orderId))
+      .toEqual({ ...before, participant_name: null, participant_date_of_birth: null, participant_age_at_occurrence: null });
+    expect((db.prepare("PRAGMA table_info(orders)").all() as { name: string }[]).map(({ name }) => name))
+      .toEqual(expect.arrayContaining(["customer_adult_confirmed_at", "participant_name", "participant_date_of_birth", "participant_requires_adult_accompaniment"]));
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    db.close();
+  });
   it("upgrades an empty database and enforces public order numbers", () => {
     const db = openDatabase(":memory:");
     applyThrough(db, "0012_refund_hardening.sql");

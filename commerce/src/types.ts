@@ -6,7 +6,14 @@ export const checkoutRequestSchema = z.object({
   quote_id: z.string().uuid(),
   customer_name: z.string().trim().min(2).max(160),
   customer_email: z.string().trim().email().max(320),
-  eligibility_confirmed: z.literal(true),
+  customer_adult_confirmed: z.boolean().optional(),
+  participant: z.object({
+    self: z.boolean(),
+    name: z.string().trim().min(2).max(160).optional(),
+    date_of_birth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  }).strict(),
+  minor_legal_representative_confirmed: z.boolean().optional(),
+  under_14_accompaniment_confirmed: z.boolean().optional(),
   offer_accepted: z.literal(true),
   pd_consent_accepted: z.literal(true),
 });

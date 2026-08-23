@@ -17,6 +17,9 @@ describe("refund email wording", () => {
     const ticket = renderEmailTemplate("ticket", {
       ticket_url: "https://example.test/ticket#capability",
       city_title: "Новосибирск",
+      customer_name: "Заказчик",
+      participant_name: "Участник",
+      participant_requires_adult_accompaniment: true,
       occurrence: { title: "FLEXPERIMENT", starts_at: "2030-01-01T10:00:00Z", timezone: "Asia/Novosibirsk", venue_status: "CONFIRMED", venue_name: "Studio", venue_address: "Lenina 1" },
     });
     const update = renderEmailTemplate("occurrence-updated", {
@@ -27,6 +30,9 @@ describe("refund email wording", () => {
     const full = renderEmailTemplate("refund-succeeded", { fulfillment_outcome: "FULL" });
     const partial = renderEmailTemplate("refund-succeeded", { fulfillment_outcome: "PARTIAL" });
     expect(ticket.plaintext).toContain("Оплата подтверждена");
+    expect(ticket.plaintext).toContain("Заказчик: Заказчик");
+    expect(ticket.plaintext).toContain("Участник: Участник");
+    expect(ticket.plaintext).toContain("младше 14 лет");
     expect(update.plaintext).toContain("полный возврат");
     expect(full.plaintext).toContain("аннулированы");
     expect(partial.plaintext).toContain("остаются действительными");
