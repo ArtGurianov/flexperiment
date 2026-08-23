@@ -7,6 +7,7 @@ import {
   createMetrikaManager,
   enforceMetrikaDenied,
   installMetrikaQueue,
+  METRIKA_COUNTER_ID,
   metrikaCounterId,
   syncMetrikaForRoute,
   type MetrikaEnvironment,
@@ -44,7 +45,8 @@ function fakeMetrika(): FakeMetrika {
 
 describe("Metrika consent manager", () => {
   it("does nothing before opt-in, validates public counter configuration, and keeps static HTML tag-free", () => {
-    expect(metrikaCounterId()).toBeNull();
+    expect(metrikaCounterId()).toBe(METRIKA_COUNTER_ID);
+    expect(METRIKA_COUNTER_ID).toBe(111866892);
     expect(metrikaCounterId("0")).toBeNull();
     expect(metrikaCounterId("100500")).toBe(100500);
     expect(canBootstrapMetrika("UNDECIDED", 123)).toBe(false);
@@ -148,6 +150,23 @@ describe("Metrika consent manager", () => {
     expect(fake.commands).toEqual([]);
     expect(fake.cleanupCalls).toEqual([123]);
     expect(fake.disabled).toEqual([false, true]);
+  });
+
+  it("makes approved goals a no-op before initialization and after revoke", () => {
+    const fake = fakeMetrika();
+    const manager = createMetrikaManager(123, fake.environment);
+    manager.reachGoal("city_view");
+    manager.enable();
+    manager.reachGoal("checkout_start");
+    expect(fake.commands).toEqual([]);
+
+    fake.load();
+    manager.reachGoal("city_view");
+    expect(fake.commands.at(-1)).toEqual([123, "reachGoal", "city_view"]);
+
+    manager.revoke();
+    manager.reachGoal("payment_redirect");
+    expect(fake.commands.at(-1)).toEqual([123, "destruct"]);
   });
 
   it("cleans only known Metrika first-party keys and leaves functional state intact", () => {

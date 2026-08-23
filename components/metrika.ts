@@ -5,8 +5,10 @@ import {
 import type { AnalyticsConsent } from "@/lib/analytics-consent";
 
 export const METRIKA_TAG_URL = "https://mc.yandex.ru/metrika/tag.js";
+/** Public counter identifier; it is not a credential or a user identifier. */
+export const METRIKA_COUNTER_ID = 111866892;
 
-export function metrikaCounterId(value = process.env.NEXT_PUBLIC_YANDEX_METRIKA_ID) {
+export function metrikaCounterId(value = String(METRIKA_COUNTER_ID)) {
   if (!value || !/^[1-9]\d*$/.test(value)) return null;
   const counterId = Number(value);
   return Number.isSafeInteger(counterId) ? counterId : null;
@@ -19,7 +21,16 @@ export function canBootstrapMetrika(
   return consent === "ALLOWED" && counterId !== null;
 }
 
-type MetrikaCommand = [number, "init" | "hit" | "destruct", ...unknown[]];
+export type MetrikaGoalName =
+  | "city_view"
+  | "checkout_start"
+  | "promo_applied"
+  | "promo_rejected"
+  | "payment_redirect"
+  | "purchase_success"
+  | "payment_failed";
+
+type MetrikaCommand = [number, "init" | "hit" | "reachGoal" | "destruct", ...unknown[]];
 export type MetrikaQueue = ((...command: MetrikaCommand) => void) & {
   a?: MetrikaCommand[];
   l?: number;
@@ -221,6 +232,15 @@ export function createMetrikaManager(
     observe(pathname: string, search: string) {
       latestLocation = safeAnalyticsLocation(pathname, search);
       sendLatestHit();
+    },
+    /**
+     * The current privacy contract intentionally permits no arbitrary event
+     * parameters: future callers can emit only a reviewed goal name after the
+     * counter is initialized and consent remains in force.
+     */
+    reachGoal(name: MetrikaGoalName) {
+      if (!wanted || !initialized) return;
+      environment.command(counterId, "reachGoal", name);
     },
   };
 }

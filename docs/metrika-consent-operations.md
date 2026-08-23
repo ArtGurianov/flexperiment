@@ -1,14 +1,15 @@
 # Metrika consent cutover checklist
 
-The public frontend loads Yandex Metrika only after the visitor stores
-`fx_consent=v1:a1`. The counter ID is the public build-time variable
-`NEXT_PUBLIC_YANDEX_METRIKA_ID`; an absent or invalid value fails closed.
+The public frontend loads Yandex Metrika counter `111866892` only after the
+visitor stores `fx_consent=v1:a1`. Its public counter ID is source-bound in
+the consent-gated client manager; it is not a credential and cannot cause a
+network request before the consent gate opens.
 
 This repository has no Dockerfile or static-server configuration for the
 public `flexperiment.ru` resource: `deploy/Caddyfile` is explicitly a routing
-reference, while `Dockerfile.admin` serves only Admin. In Coolify, provide
-`NEXT_PUBLIC_YANDEX_METRIKA_ID` to the **public-site build** before `pnpm build`;
-a runtime-only container variable cannot change an already exported bundle.
+reference, while `Dockerfile.admin` serves only Admin. A runtime-only container
+variable cannot change an already exported bundle; the counter ID is already
+compiled into the public-site source.
 The minimum Phase 13 CSP baseline for this privacy-minimal tag is:
 
 ```text
