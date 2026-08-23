@@ -11,6 +11,16 @@ same email and city renews the legal evidence and starts a new twelve-month
 period. It retains an existing notification intent rather than creating a
 second email; worker sweeps, visits, and email retries never do.
 
+If the current intent has a final unsuccessful outcome (`hard_bounced` or local
+`FAILED`), a new explicit CAPTCHA-protected submission starts a new consent
+epoch. Commerce retains the old outbox and intent as immutable history, marks
+that intent superseded, and may create one new outbox for the current request.
+It never reuses or resets the failed outbox. `PENDING`, `SENDING`,
+`SEND_UNKNOWN`, `ACCEPTED`, `SENT`, `soft_bounced`, `spam`, and suppressed
+intents cannot be renewed in place. A normal `DELIVERED` intent has already
+deleted its source request and redacted its PII; any later explicit submission
+is therefore a separate fresh request, not a renewal of the delivered intent.
+
 The Commerce worker performs a bounded batch of expiry deletions and eligible
 notification-intent creation each regular sweep. Its aggregate log line contains
 only deletion counts, never email addresses, hashes, CAPTCHA tokens, or IPs.

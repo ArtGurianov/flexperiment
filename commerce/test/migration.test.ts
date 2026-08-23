@@ -183,4 +183,22 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     db.close();
   });
+
+  it("preserves a populated notification intent while adding renewable notification epochs", () => {
+    const db = openDatabase(":memory:");
+    applyThrough(db, "0018_city_interest_suppression.sql");
+    db.prepare(`INSERT INTO city_interest_requests(id, email_normalized, email_hash, city_slug, privacy_policy_version, privacy_policy_sha256, pd_consent_version, pd_consent_sha256, consent_accepted_at, expires_at)
+      VALUES ('interest-epoch', 'person@example.test', 'hash', 'tomsk', 'legal-1', 'a', 'consent-1', 'b', '2026-08-23T00:00:00.000Z', '2027-08-23T00:00:00.000Z')`).run();
+    db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key)
+      VALUES ('outbox-epoch', 'CITY_INTEREST_AVAILABLE', 'person@example.test', 'hash', 'city-interest-available', '{"city_title":"Томск"}', 'epoch-key')`).run();
+    db.prepare("INSERT INTO city_interest_notification_intents(city_interest_request_id, outbox_id) VALUES ('interest-epoch', 'outbox-epoch')").run();
+    const before = db.prepare("SELECT city_interest_request_id, outbox_id, created_at FROM city_interest_notification_intents").get();
+
+    db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, "0019_city_interest_notification_epochs.sql"), "utf8")))();
+
+    expect(db.prepare("SELECT city_interest_request_id, outbox_id, created_at, superseded_at FROM city_interest_notification_intents").get()).toEqual({ ...(before as object), superseded_at: null });
+    expect(db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'city_interest_notification_intents_active_request_unique'").get()).toEqual({ sql: expect.stringContaining("WHERE superseded_at IS NULL") });
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    db.close();
+  });
 });

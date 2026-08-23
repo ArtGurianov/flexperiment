@@ -125,8 +125,14 @@ export class CommerceDomain {
         manifest.documents.PD_CONSENT.version, manifest.documents.PD_CONSENT.sha256,
         timestamp, timestamp, expiresAt,
       );
-      // A second explicit, consented submission renews this one request. No
-      // page view, worker sweep, or delivery retry can refresh its lifetime.
+      const request = one(this.db, "SELECT id FROM city_interest_requests WHERE email_hash = ? AND city_slug = ?", emailHash(input.email), city.slug)!;
+      if (this.canRenewCityInterestNotification(String(request.id))) {
+        this.db.prepare(`UPDATE city_interest_notification_intents
+          SET superseded_at = ?
+          WHERE city_interest_request_id = ? AND superseded_at IS NULL`).run(timestamp, request.id);
+      }
+      // An explicit, consented submission renews this request. Only a final
+      // failed intent may be superseded; no page view, sweep, or retry can.
       this.consumeEligibleCityInterests(city.slug, CITY_INTEREST_SWEEP_BATCH_SIZE);
       return { accepted: true };
     });
@@ -1189,6 +1195,7 @@ export class CommerceDomain {
         AND NOT EXISTS (
           SELECT 1 FROM city_interest_notification_intents intent
           WHERE intent.city_interest_request_id = ci.id
+            AND intent.superseded_at IS NULL
         ) ${citySlug ? "AND ci.city_slug = ?" : ""}
       ORDER BY ci.created_at, ci.id
       LIMIT ?`, timestamp, timestamp, ...(citySlug ? [citySlug] : []), limit);
@@ -1199,7 +1206,7 @@ export class CommerceDomain {
         occurrence_title: interest.occurrence_title,
         starts_at: interest.starts_at,
       });
-      this.db.prepare("INSERT INTO city_interest_notification_intents(city_interest_request_id, outbox_id) VALUES (?, ?)").run(interest.id, outboxId);
+      this.db.prepare("INSERT INTO city_interest_notification_intents(id, city_interest_request_id, outbox_id) VALUES (?, ?, ?)").run(outboxId, interest.id, outboxId);
     }
     return interests.length;
   }
@@ -1208,7 +1215,22 @@ export class CommerceDomain {
     return Boolean(one(this.db, `SELECT request.id
       FROM city_interest_notification_intents intent
       JOIN city_interest_requests request ON request.id = intent.city_interest_request_id
-      WHERE intent.outbox_id = ? AND request.expires_at > ?`, outboxId, new Date(this.clock()).toISOString()));
+      WHERE intent.outbox_id = ?
+        AND intent.superseded_at IS NULL
+        AND request.expires_at > ?`, outboxId, new Date(this.clock()).toISOString()));
+  }
+
+  /** A fresh CAPTCHA-protected submission may replace only a final failed intent. */
+  private canRenewCityInterestNotification(requestId: string) {
+    const current = one(this.db, `SELECT outbox.status,
+        (SELECT provider_status FROM email_provider_events
+          WHERE outbox_id = outbox.id
+          ORDER BY rowid DESC LIMIT 1) AS provider_status
+      FROM city_interest_notification_intents intent
+      JOIN email_outbox outbox ON outbox.id = intent.outbox_id
+      WHERE intent.city_interest_request_id = ? AND intent.superseded_at IS NULL`, requestId);
+    return current?.status === "FAILED"
+      || (current?.status === "BOUNCED" && current.provider_status === "hard_bounced");
   }
 
   /** Stops future local dispatch and removes the now-unneeded local PII. An in-flight provider call cannot be recalled. */
@@ -1218,7 +1240,7 @@ export class CommerceDomain {
           lease_owner = NULL,
           lease_expires_at = NULL,
           last_error = CASE WHEN status = 'DELIVERED' THEN last_error ELSE 'CITY_INTEREST_NO_LONGER_ACTIVE' END,
-          suppressed_at = COALESCE(suppressed_at, ?),
+          suppressed_at = CASE WHEN status = 'DELIVERED' THEN suppressed_at ELSE COALESCE(suppressed_at, ?) END,
           recipient_email = '', recipient_email_hash = '', payload_snapshot = '{}'
       WHERE id = ? AND type = 'CITY_INTEREST_AVAILABLE'`).run(now(), outboxId);
   }
@@ -1249,9 +1271,11 @@ export class CommerceDomain {
   }
 
   private completeDeliveredCityInterest(outboxId: string) {
-    const intent = one(this.db, "SELECT city_interest_request_id FROM city_interest_notification_intents WHERE outbox_id = ?", outboxId);
+    const intent = one(this.db, "SELECT city_interest_request_id, superseded_at FROM city_interest_notification_intents WHERE outbox_id = ?", outboxId);
     if (!intent) return;
-    this.db.prepare("DELETE FROM city_interest_requests WHERE id = ?").run(intent.city_interest_request_id);
+    // A delayed delivery for a superseded failed attempt is evidence for that
+    // old outbox only. It must not erase the renewed request or its new intent.
+    if (intent.superseded_at === null) this.db.prepare("DELETE FROM city_interest_requests WHERE id = ?").run(intent.city_interest_request_id);
     this.db.prepare(`UPDATE email_outbox SET recipient_email = '', recipient_email_hash = '', payload_snapshot = '{}'
       WHERE id = ? AND type = 'CITY_INTEREST_AVAILABLE'`).run(outboxId);
   }

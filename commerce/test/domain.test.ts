@@ -789,6 +789,85 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE email_normalized = 'hard-bounce@example.test'").get()).toEqual({ count: 1 });
   });
 
+  it("creates a new city-interest notification epoch only after hard_bounced or local FAILED", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    setup.domain.registerCityInterest({ email: "renew-hard@example.test", city: "novosibirsk" });
+    const hard = setup.db.prepare(`SELECT request.id AS request_id, outbox.id AS outbox_id
+      FROM city_interest_requests request
+      JOIN city_interest_notification_intents intent ON intent.city_interest_request_id = request.id
+      JOIN email_outbox outbox ON outbox.id = intent.outbox_id
+      WHERE request.email_normalized = 'renew-hard@example.test'`).get() as { request_id: string; outbox_id: string };
+    setup.domain.applyUnisenderDelivery({ outboxId: hard.outbox_id, status: "BOUNCED", providerStatus: "hard_bounced", semanticKey: "renew-hard-bounced" });
+    setup.domain.registerCityInterest({ email: "renew-hard@example.test", city: "novosibirsk" });
+    const hardIntents = setup.db.prepare(`SELECT intent.outbox_id, intent.superseded_at, outbox.status
+      FROM city_interest_notification_intents intent
+      JOIN email_outbox outbox ON outbox.id = intent.outbox_id
+      WHERE intent.city_interest_request_id = ? ORDER BY intent.created_at, intent.outbox_id`).all(hard.request_id) as { outbox_id: string; superseded_at: string | null; status: string }[];
+    const supersededHardIntent = hardIntents.find((intent) => intent.outbox_id === hard.outbox_id);
+    const activeHardIntent = hardIntents.find((intent) => intent.outbox_id !== hard.outbox_id);
+    expect(supersededHardIntent).toEqual({ outbox_id: hard.outbox_id, superseded_at: expect.any(String), status: "BOUNCED" });
+    expect(activeHardIntent).toEqual({ outbox_id: expect.any(String), superseded_at: null, status: "PENDING" });
+    const renewedHardOutbox = activeHardIntent!.outbox_id;
+    setup.domain.applyUnisenderDelivery({ outboxId: hard.outbox_id, status: "DELIVERED", providerStatus: "delivered", semanticKey: "renew-hard-late-delivered" });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE id = ?").get(hard.request_id)).toEqual({ count: 1 });
+    expect(setup.db.prepare("SELECT status, recipient_email FROM email_outbox WHERE id = ?").get(hard.outbox_id)).toEqual({ status: "DELIVERED", recipient_email: "" });
+    expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(renewedHardOutbox)).toEqual({ status: "PENDING" });
+
+    setup.domain.registerCityInterest({ email: "renew-failed@example.test", city: "novosibirsk" });
+    const failed = setup.db.prepare(`SELECT request.id AS request_id, outbox.id AS outbox_id
+      FROM city_interest_requests request
+      JOIN city_interest_notification_intents intent ON intent.city_interest_request_id = request.id
+      JOIN email_outbox outbox ON outbox.id = intent.outbox_id
+      WHERE request.email_normalized = 'renew-failed@example.test'`).get() as { request_id: string; outbox_id: string };
+    setup.db.prepare("UPDATE email_outbox SET status = 'SEND_UNKNOWN' WHERE id = ?").run(failed.outbox_id);
+    await new CommerceDomain(setup.db, new MockProvider(), { async send() { throw new Error("must not send"); }, async lookup() { return { status: "FAILED" }; } }).processEmailOutbox();
+    setup.domain.registerCityInterest({ email: "renew-failed@example.test", city: "novosibirsk" });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_notification_intents WHERE city_interest_request_id = ? AND superseded_at IS NULL").get(failed.request_id)).toEqual({ count: 1 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_notification_intents WHERE city_interest_request_id = ? AND superseded_at IS NOT NULL").get(failed.request_id)).toEqual({ count: 1 });
+  });
+
+  it("does not renew active or indeterminate city-interest notification intents", () => {
+    const setup = fixture(); databases.push(setup.db);
+    const states = ["PENDING", "SENDING", "SEND_UNKNOWN", "ACCEPTED", "SENT", "soft_bounced", "spam"] as const;
+    for (const state of states) {
+      const email = `retain-${state}@example.test`;
+      setup.domain.registerCityInterest({ email, city: "novosibirsk" });
+      const row = setup.db.prepare(`SELECT request.id AS request_id, outbox.id AS outbox_id
+        FROM city_interest_requests request
+        JOIN city_interest_notification_intents intent ON intent.city_interest_request_id = request.id
+        JOIN email_outbox outbox ON outbox.id = intent.outbox_id
+        WHERE request.email_normalized = ?`).get(email) as { request_id: string; outbox_id: string };
+      if (state === "soft_bounced" || state === "spam") {
+        setup.domain.applyUnisenderDelivery({ outboxId: row.outbox_id, status: "BOUNCED", providerStatus: state, semanticKey: `retain-${state}` });
+      } else {
+        setup.db.prepare("UPDATE email_outbox SET status = ? WHERE id = ?").run(state, row.outbox_id);
+      }
+      setup.domain.registerCityInterest({ email, city: "novosibirsk" });
+      expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_notification_intents WHERE city_interest_request_id = ?").get(row.request_id)).toEqual({ count: 1 });
+      expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_notification_intents WHERE city_interest_request_id = ? AND superseded_at IS NULL").get(row.request_id)).toEqual({ count: 1 });
+    }
+  });
+
+  it("treats a re-submit after withdrawal as a fresh request without reviving its suppressed outbox", () => {
+    const setup = fixture(); databases.push(setup.db);
+    setup.domain.registerCityInterest({ email: "renew-withdrawn@example.test", city: "novosibirsk" });
+    const oldOutbox = setup.db.prepare("SELECT id FROM email_outbox WHERE recipient_email = 'renew-withdrawn@example.test'").get() as { id: string };
+    setup.domain.withdrawCityInterest("renew-withdrawn@example.test", "Consent withdrawal received", "admin");
+    setup.domain.registerCityInterest({ email: "renew-withdrawn@example.test", city: "novosibirsk" });
+    const freshOutbox = setup.db.prepare("SELECT id FROM email_outbox WHERE recipient_email = 'renew-withdrawn@example.test'").get() as { id: string };
+    expect(freshOutbox.id).not.toBe(oldOutbox.id);
+    expect(setup.db.prepare("SELECT status, recipient_email, suppressed_at FROM email_outbox WHERE id = ?").get(oldOutbox.id)).toEqual({ status: "SKIPPED", recipient_email: "", suppressed_at: expect.any(String) });
+  });
+
+  it("does not mark an already delivered city-interest row as suppressed", () => {
+    const setup = fixture(); databases.push(setup.db);
+    setup.domain.registerCityInterest({ email: "already-delivered@example.test", city: "novosibirsk" });
+    const outbox = setup.db.prepare("SELECT id FROM email_outbox WHERE recipient_email = 'already-delivered@example.test'").get() as { id: string };
+    setup.db.prepare("UPDATE email_outbox SET status = 'DELIVERED' WHERE id = ?").run(outbox.id);
+    setup.domain.withdrawCityInterest("already-delivered@example.test", "Consent withdrawal received", "admin");
+    expect(setup.db.prepare("SELECT status, suppressed_at FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "DELIVERED", suppressed_at: null });
+  });
+
   it("suppresses city-interest PENDING and SEND_UNKNOWN outboxes on withdrawal or expiry", async () => {
     const setup = fixture(); databases.push(setup.db);
     setup.db.prepare("UPDATE occurrences SET visibility = 'HIDDEN', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
