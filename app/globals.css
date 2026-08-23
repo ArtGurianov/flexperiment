@@ -34,6 +34,7 @@
 
   --animate-accordion-down: accordion-down 220ms ease-out;
   --animate-accordion-up: accordion-up 220ms ease-out;
+  --animate-consent-enter: consent-enter 600ms ease-out;
 }
 
 /* Upstream pulls these from tw-animate-css. Defined here instead so the
@@ -55,6 +56,17 @@
   }
   to {
     height: 0;
+  }
+}
+
+@keyframes consent-enter {
+  from {
+    opacity: 0;
+    transform: translateY(2rem);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 

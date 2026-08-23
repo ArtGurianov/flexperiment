@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { usePathname, useSearchParams } from "next/navigation";
 import type { AnalyticsConsent as AnalyticsConsentState, StoredAnalyticsConsent } from "@/lib/analytics-consent";
 import { ANALYTICS_CONSENT_CHANGE_EVENT, ANALYTICS_SETTINGS_OPEN_EVENT, applyAnalyticsConsentChoice, notifyAnalyticsConsentChange, persistAnalyticsConsent, readAnalyticsConsent } from "@/components/analytics-consent-client";
+import { scheduleAnalyticsConsentPrompt } from "@/components/analytics-consent-prompt";
 import { browserMetrikaDenialEnvironment, browserMetrikaEnvironment, createMetrikaManager, enforceMetrikaDenied, metrikaCounterId, syncMetrikaForRoute } from "@/components/metrika";
 
 const PRIVACY_URL = "/legal/privacy-policy";
@@ -15,10 +17,15 @@ export default function AnalyticsConsent() {
   const manager = useRef<ReturnType<typeof createMetrikaManager> | null>(null);
   const denialEnforced = useRef(false);
   const [consent, setConsent] = useState<AnalyticsConsentState>("UNDECIDED");
+  const [consentInitialized, setConsentInitialized] = useState(false);
+  const [consentPromptPathname, setConsentPromptPathname] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
-    const synchronize = () => setConsent(readAnalyticsConsent());
+    const synchronize = () => {
+      setConsent(readAnalyticsConsent());
+      setConsentInitialized(true);
+    };
     const openSettings = () => setSettingsOpen(true);
     synchronize();
     window.addEventListener(ANALYTICS_CONSENT_CHANGE_EVENT, synchronize);
@@ -53,6 +60,15 @@ export default function AnalyticsConsent() {
     });
   }, [consent, pathname, search]);
 
+  useEffect(() => {
+    if (!consentInitialized) return;
+    return scheduleAnalyticsConsentPrompt({
+      consent,
+      pathname,
+      show: () => setConsentPromptPathname(pathname),
+    });
+  }, [consent, consentInitialized, pathname]);
+
   const choose = (next: StoredAnalyticsConsent) => {
     // Cookie persistence happens before React state can allow the manager to
     // load anything. The marker is a first-party functional preference.
@@ -69,24 +85,28 @@ export default function AnalyticsConsent() {
       notify: notifyAnalyticsConsentChange,
     });
     setConsent(next);
+    setConsentPromptPathname(null);
     setSettingsOpen(false);
   };
 
   return (
     <>
-      {consent === "UNDECIDED" && (
+      {consentInitialized && consent === "UNDECIDED" && consentPromptPathname === pathname && createPortal(
         <section
           role="dialog"
           aria-label="Настройки аналитики"
-          className="fixed inset-x-3 bottom-3 z-[120] mx-auto max-w-lg border-2 border-acid bg-ink p-4 font-mono text-sm text-bone shadow-[4px_5px_0_var(--color-shadow)]"
+          className="fixed inset-x-3 bottom-3 z-[120] mx-auto max-w-lg border-2 border-acid bg-ink p-4 font-mono text-sm text-bone shadow-[4px_5px_0_var(--color-shadow)] motion-safe:animate-consent-enter motion-reduce:animate-none lg:inset-x-8 lg:max-w-none"
         >
-          <p>Необязательная аналитика отключена. Разрешите Яндекс Метрике получать данные о посещении сайта и источниках перехода?</p>
-          <p className="mt-2 text-bone/70">Подробнее — в <a className="text-acid underline underline-offset-4" href={PRIVACY_URL}>политике конфиденциальности</a>.</p>
-          <div className="mt-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
-            <button type="button" className="border border-bone/60 px-3 py-2 font-display uppercase hover:border-acid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid" onClick={() => choose("DENIED")}>Только необходимые</button>
-            <button type="button" className="border-2 border-acid bg-acid px-3 py-2 font-display uppercase text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid" onClick={() => choose("ALLOWED")}>Разрешить аналитику</button>
+          <p className="text-center">Необязательная аналитика отключена. Разрешите Яндекс Метрике получать данные о посещении сайта и источниках перехода?</p>
+          <div className="mt-4 flex flex-row flex-wrap items-center justify-center gap-x-6 gap-y-2">
+            <p className="text-center text-bone/70">Подробнее — в <a className="text-acid underline underline-offset-4" href={PRIVACY_URL}>политике конфиденциальности</a>.</p>
+            <div className="flex flex-row flex-wrap justify-center gap-2">
+              <button type="button" className="border border-bone/60 px-3 py-2 font-display uppercase hover:border-acid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid" onClick={() => choose("DENIED")}>Только необходимые</button>
+              <button type="button" className="border-2 border-acid bg-acid px-3 py-2 font-display uppercase text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid" onClick={() => choose("ALLOWED")}>Разрешить аналитику</button>
+            </div>
           </div>
-        </section>
+        </section>,
+        document.body,
       )}
 
       {settingsOpen && (
