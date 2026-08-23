@@ -1878,8 +1878,18 @@ describe("customer and participant ticketing", () => {
     const setup = fixture(); databases.push(setup.db);
     const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
     const result = await setup.domain.checkoutAsync(checkoutFor(quote.quote_id, "1999-01-01"), randomUUID(), "https://flexperiment.ru");
-    const order = setup.db.prepare("SELECT customer_name, participant_name, participant_is_customer, participant_is_minor FROM orders WHERE public_status_id = ?").get(result.status_id);
-    expect(order).toEqual({ customer_name: "Заказчик", participant_name: "Участник", participant_is_customer: 0, participant_is_minor: 0 });
+    const order = setup.db.prepare("SELECT customer_name, participant_name, participant_is_customer, participant_is_minor, eligibility_confirmed_at FROM orders WHERE public_status_id = ?").get(result.status_id);
+    expect(order).toEqual({ customer_name: "Заказчик", participant_name: "Участник", participant_is_customer: 0, participant_is_minor: 0, eligibility_confirmed_at: "DEPRECATED_NOT_EVIDENCE" });
+  });
+
+  it("rejects a minor self-participant even when minor confirmations are supplied", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    await expect(setup.domain.checkoutAsync({
+      quote_id: quote.quote_id, customer_name: "Заказчик", customer_email: "customer@example.test", customer_adult_confirmed: true,
+      participant: { self: true, date_of_birth: "2012-10-02" }, minor_legal_representative_confirmed: true,
+      under_14_accompaniment_confirmed: true, offer_accepted: true, pd_consent_accepted: true,
+    }, randomUUID(), "https://flexperiment.ru")).rejects.toMatchObject({ code: "SELF_PARTICIPANT_MUST_BE_ADULT" });
   });
 
   it("requires legal-representative and under-14 acknowledgements from Customer, not participant age claims", async () => {
@@ -1892,6 +1902,8 @@ describe("customer and participant ticketing", () => {
     const result = await setup.domain.checkoutAsync(checkoutFor(quote.quote_id, "2012-10-02", { minor_legal_representative_confirmed: true, under_14_accompaniment_confirmed: true }), randomUUID(), "https://flexperiment.ru");
     expect(setup.db.prepare("SELECT participant_age_at_occurrence, participant_is_minor, participant_requires_adult_accompaniment, minor_legal_representative_confirmed_at, under_14_accompaniment_confirmed_at FROM orders WHERE public_status_id = ?").get(result.status_id))
       .toMatchObject({ participant_age_at_occurrence: 13, participant_is_minor: 1, participant_requires_adult_accompaniment: 1, minor_legal_representative_confirmed_at: expect.any(String), under_14_accompaniment_confirmed_at: expect.any(String) });
+    expect(setup.db.prepare("SELECT minor_legal_representative_confirmation_text FROM orders WHERE public_status_id = ?").get(result.status_id))
+      .toEqual({ minor_legal_representative_confirmation_text: "Я являюсь законным представителем указанного несовершеннолетнего участника и разрешаю ему принять участие в выбранном мастер-классе." });
   });
 
   it("rejects a future participant date of birth and a missing Customer adult confirmation", async () => {
