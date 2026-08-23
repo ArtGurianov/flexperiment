@@ -868,6 +868,62 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "DELIVERED" });
   });
 
+  it("atomically removes a current city-interest request on ACCEPTED then DELIVERED and ignores late SENT", () => {
+    const setup = fixture(); databases.push(setup.db);
+    setup.domain.registerCityInterest({ email: "delivery-sequence@example.test", city: "novosibirsk" });
+    const row = setup.db.prepare(`SELECT request.id AS request_id, outbox.id AS outbox_id
+      FROM city_interest_requests request
+      JOIN city_interest_notification_intents intent ON intent.city_interest_request_id = request.id
+      JOIN email_outbox outbox ON outbox.id = intent.outbox_id
+      WHERE request.email_normalized = 'delivery-sequence@example.test'`).get() as { request_id: string; outbox_id: string };
+
+    setup.domain.applyUnisenderDelivery({ outboxId: row.outbox_id, status: "ACCEPTED", providerStatus: "accepted", semanticKey: "delivery-sequence-accepted", jobId: "job-delivery-sequence" });
+    setup.domain.applyUnisenderDelivery({ outboxId: row.outbox_id, status: "DELIVERED", providerStatus: "delivered", semanticKey: "delivery-sequence-delivered", jobId: "job-delivery-sequence" });
+    setup.domain.applyUnisenderDelivery({ outboxId: row.outbox_id, status: "SENT", providerStatus: "sent", semanticKey: "delivery-sequence-late-sent", jobId: "job-delivery-sequence" });
+
+    expect(setup.db.prepare("SELECT id FROM city_interest_requests WHERE id = ?").get(row.request_id)).toBeUndefined();
+    expect(setup.db.prepare("SELECT id FROM city_interest_notification_intents WHERE outbox_id = ?").get(row.outbox_id)).toBeUndefined();
+    expect(setup.db.prepare("SELECT status, recipient_email, recipient_email_hash, payload_snapshot FROM email_outbox WHERE id = ?").get(row.outbox_id)).toEqual({
+      status: "DELIVERED", recipient_email: "", recipient_email_hash: "", payload_snapshot: "{}",
+    });
+  });
+
+  it("repairs only a proven delivered city-interest orphan and is idempotent", () => {
+    const setup = fixture(); databases.push(setup.db);
+    setup.domain.registerCityInterest({ email: "orphan-repair@example.test", city: "novosibirsk" });
+    const row = setup.db.prepare(`SELECT request.id AS request_id, outbox.id AS outbox_id
+      FROM city_interest_requests request
+      JOIN city_interest_notification_intents intent ON intent.city_interest_request_id = request.id
+      JOIN email_outbox outbox ON outbox.id = intent.outbox_id
+      WHERE request.email_normalized = 'orphan-repair@example.test'`).get() as { request_id: string; outbox_id: string };
+    setup.db.prepare("UPDATE email_outbox SET status = 'DELIVERED' WHERE id = ?").run(row.outbox_id);
+    setup.db.prepare(`INSERT INTO email_provider_events(id, outbox_id, semantic_key, status, provider_status)
+      VALUES (?, ?, 'orphan-repair-delivered', 'DELIVERED', 'delivered')`).run(randomUUID(), row.outbox_id);
+    // Models the historical bad ordering: delivery evidence and outbox survive,
+    // but the source request was not deleted after the relation disappeared.
+    setup.db.prepare("DELETE FROM city_interest_notification_intents WHERE outbox_id = ?").run(row.outbox_id);
+
+    expect(setup.domain.repairDeliveredCityInterestOrphan(row.request_id)).toBe(true);
+    expect(setup.domain.repairDeliveredCityInterestOrphan(row.request_id)).toBe(false);
+    expect(setup.db.prepare("SELECT id FROM city_interest_requests WHERE id = ?").get(row.request_id)).toBeUndefined();
+    expect(setup.db.prepare("SELECT id FROM city_interest_notification_intents WHERE outbox_id = ?").get(row.outbox_id)).toBeUndefined();
+    expect(setup.db.prepare("SELECT status, recipient_email, recipient_email_hash, payload_snapshot FROM email_outbox WHERE id = ?").get(row.outbox_id)).toEqual({
+      status: "DELIVERED", recipient_email: "", recipient_email_hash: "", payload_snapshot: "{}",
+    });
+
+    setup.domain.registerCityInterest({ email: "active-intent@example.test", city: "novosibirsk" });
+    const protectedRow = setup.db.prepare(`SELECT request.id AS request_id, outbox.id AS outbox_id
+      FROM city_interest_requests request
+      JOIN city_interest_notification_intents intent ON intent.city_interest_request_id = request.id
+      JOIN email_outbox outbox ON outbox.id = intent.outbox_id
+      WHERE request.email_normalized = 'active-intent@example.test'`).get() as { request_id: string; outbox_id: string };
+    setup.db.prepare("UPDATE email_outbox SET status = 'DELIVERED' WHERE id = ?").run(protectedRow.outbox_id);
+    setup.db.prepare(`INSERT INTO email_provider_events(id, outbox_id, semantic_key, status, provider_status)
+      VALUES (?, ?, 'active-intent-delivered', 'DELIVERED', 'delivered')`).run(randomUUID(), protectedRow.outbox_id);
+    expect(setup.domain.repairDeliveredCityInterestOrphan(protectedRow.request_id)).toBe(false);
+    expect(setup.db.prepare("SELECT id FROM city_interest_requests WHERE id = ?").get(protectedRow.request_id)).toEqual({ id: protectedRow.request_id });
+  });
+
   it("retains city-interest PII for hard bounces and generic FAILED observations", async () => {
     const setup = fixture(); databases.push(setup.db);
     setup.db.prepare("UPDATE occurrences SET visibility = 'HIDDEN', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);

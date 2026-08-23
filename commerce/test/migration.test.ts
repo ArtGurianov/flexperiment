@@ -225,4 +225,27 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     db.close();
   });
+
+  it("preserves the delivered city-interest cleanup FK cascade through the current schema", () => {
+    const db = openDatabase(":memory:");
+    applyThrough(db, "0020_email_outbox_recovery_hardening.sql");
+    db.prepare(`INSERT INTO city_interest_requests(id, email_normalized, email_hash, city_slug,
+      privacy_policy_version, privacy_policy_sha256, pd_consent_version, pd_consent_sha256,
+      consent_accepted_at, expires_at)
+      VALUES ('interest-delivered-cascade', 'person@example.test', 'hash', 'tomsk', 'legal-1',
+      'a', 'consent-1', 'b', '2026-08-23T00:00:00.000Z', '2027-08-23T00:00:00.000Z')`).run();
+    db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template,
+      payload_ref, payload_snapshot, provider_idempotence_key)
+      VALUES ('outbox-delivered-cascade', 'CITY_INTEREST_AVAILABLE', 'person@example.test', 'hash',
+      'city-interest-available', 'city-interest:interest-delivered-cascade', '{}', 'cascade-key')`).run();
+    db.prepare(`INSERT INTO city_interest_notification_intents(id, city_interest_request_id, outbox_id)
+      VALUES ('intent-delivered-cascade', 'interest-delivered-cascade', 'outbox-delivered-cascade')`).run();
+
+    db.prepare("DELETE FROM city_interest_requests WHERE id = 'interest-delivered-cascade'").run();
+
+    expect(db.prepare("SELECT id FROM city_interest_notification_intents WHERE id = 'intent-delivered-cascade'").get()).toBeUndefined();
+    expect(db.prepare("SELECT id FROM email_outbox WHERE id = 'outbox-delivered-cascade'").get()).toEqual({ id: "outbox-delivered-cascade" });
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    db.close();
+  });
 });

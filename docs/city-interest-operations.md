@@ -40,6 +40,24 @@ delivered, deletes the source request, and redacts the outbox recipient, hash,
 and payload snapshot. Late duplicate callbacks remain processable through
 `outbox_id` metadata and non-PII provider evidence.
 
+## Controlled delivered-orphan repair
+
+For a previously observed cleanup orphan, use the explicit local command only
+with the exact opaque request ID and a matching confirmation value:
+
+```bash
+COMMERCE_CITY_INTEREST_REPAIR_REQUEST_ID='<request-id>' \
+COMMERCE_CITY_INTEREST_REPAIR_CONFIRM='<request-id>' \
+pnpm commerce:city-interest:repair-delivered
+```
+
+It deletes a request only when all durable predicates hold: a `DELIVERED`
+`CITY_INTEREST_AVAILABLE` outbox has the exact `payload_ref` lineage to that
+request, a `DELIVERED`/`delivered` provider event exists, the outbox was not
+suppressed, and no intent remains for the request. The command is idempotent;
+it makes no provider calls and returns `repaired: false` when the proof is not
+complete. Do not use it for age-, city-, or email-based cleanup.
+
 `soft_bounced` is temporary provider non-delivery, so Unisender continues its
 own delivery attempts. `hard_bounced` and generic local `FAILED` do not complete
 the purpose; the request remains until withdrawal or expiry. `spam` is retained

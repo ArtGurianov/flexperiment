@@ -1359,14 +1359,54 @@ export class CommerceDomain {
         AND NOT (suppressed_at IS NOT NULL AND ? != 'DELIVERED')`).run(observed.status, observed.jobId ?? null, ...(timestamps ? [now()] : []), outboxId, observed.status, observed.status);
   }
 
-  private completeDeliveredCityInterest(outboxId: string) {
-    const intent = one(this.db, "SELECT city_interest_request_id, superseded_at FROM city_interest_notification_intents WHERE outbox_id = ?", outboxId);
-    if (!intent) return;
-    // A delayed delivery for a superseded failed attempt is evidence for that
-    // old outbox only. It must not erase the renewed request or its new intent.
-    if (intent.superseded_at === null) this.db.prepare("DELETE FROM city_interest_requests WHERE id = ?").run(intent.city_interest_request_id);
+  private redactDeliveredCityInterestOutbox(outboxId: string) {
     this.db.prepare(`UPDATE email_outbox SET recipient_email = '', recipient_email_hash = '', payload_snapshot = '{}'
       WHERE id = ? AND type = 'CITY_INTEREST_AVAILABLE'`).run(outboxId);
+  }
+
+  private completeDeliveredCityInterest(outboxId: string) {
+    // Resolve the active relation before deleting its source request: the FK
+    // cascade removes the intent, so resolving after deletion would orphan PII.
+    const intent = one(this.db, `SELECT city_interest_request_id
+      FROM city_interest_notification_intents
+      WHERE outbox_id = ? AND superseded_at IS NULL`, outboxId);
+    if (intent) this.db.prepare("DELETE FROM city_interest_requests WHERE id = ?").run(intent.city_interest_request_id);
+    // A late delivery of a superseded intent must not delete the renewed
+    // request, but the old delivered outbox itself is still redacted.
+    this.redactDeliveredCityInterestOutbox(outboxId);
+  }
+
+  /**
+   * Repairs one known historical orphan only when immutable outbox lineage and
+   * provider evidence independently prove that the city-interest purpose was
+   * completed. It deliberately does not infer cleanup from age or city alone.
+   */
+  repairDeliveredCityInterestOrphan(requestId: string) {
+    return withImmediateTransaction(this.db, () => {
+      const candidate = one(this.db, `SELECT request.id, outbox.id AS outbox_id
+        FROM city_interest_requests request
+        JOIN email_outbox outbox
+          ON outbox.payload_ref = 'city-interest:' || request.id
+        WHERE request.id = ?
+          AND outbox.type = 'CITY_INTEREST_AVAILABLE'
+          AND outbox.status = 'DELIVERED'
+          AND outbox.suppressed_at IS NULL
+          AND EXISTS (
+            SELECT 1 FROM email_provider_events event
+            WHERE event.outbox_id = outbox.id
+              AND event.status = 'DELIVERED'
+              AND event.provider_status = 'delivered'
+          )
+          AND NOT EXISTS (
+            SELECT 1 FROM city_interest_notification_intents intent
+            WHERE intent.city_interest_request_id = request.id
+          )`, requestId);
+      if (!candidate) return false;
+      const deleted = this.db.prepare("DELETE FROM city_interest_requests WHERE id = ?").run(requestId);
+      if (!deleted.changes) return false;
+      this.redactDeliveredCityInterestOutbox(String(candidate.outbox_id));
+      return true;
+    });
   }
 
   applyUnisenderDelivery(input: { outboxId: string; status: "ACCEPTED" | "SENT" | "DELIVERED" | "BOUNCED" | "FAILED"; providerStatus: "accepted" | "sent" | "delivered" | "soft_bounced" | "hard_bounced" | "spam"; jobId?: string; semanticKey: string }) {
@@ -1375,8 +1415,8 @@ export class CommerceDomain {
       if (!outbox) throw new DomainError("UNISENDER_OUTBOX_NOT_FOUND", 404);
       const inserted = this.db.prepare("INSERT OR IGNORE INTO email_provider_events(id, outbox_id, semantic_key, status, provider_status, job_id) VALUES (?, ?, ?, ?, ?, ?)").run(id(), input.outboxId, input.semanticKey, input.status, input.providerStatus, input.jobId ?? null);
       if (!inserted.changes) return { duplicate: true };
-      this.applyEmailObservation(input.outboxId, { status: input.status, jobId: input.jobId });
       if (input.providerStatus === "delivered") this.completeDeliveredCityInterest(input.outboxId);
+      this.applyEmailObservation(input.outboxId, { status: input.status, jobId: input.jobId });
       return { duplicate: false };
     });
   }
