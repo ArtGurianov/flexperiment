@@ -1,4 +1,5 @@
 import PaymentCta from "@/components/PaymentCta";
+import AnalyticsSettingsButton from "@/components/AnalyticsSettingsButton";
 import Link from "next/link";
 import { cn } from "@/lib/cn";
 import { LEGAL_DOCUMENTS } from "@/lib/legal";
@@ -86,22 +87,25 @@ export default function Footer({ className }: { className?: string }) {
 
         {/* not-italic because a UA stylesheet italicises <address>, and an
             oblique mono here would read as emphasis on the company details. */}
-        <address className={cn("flex flex-col items-start gap-1 not-italic", PLAIN)}>
-          <span>ИП Гурьянов Арт Артурович</span>
-          <span>ИНН 420539506224</span>
-          <span>ОГРНИП 324420500074591</span>
-          <a href="tel:+79267280420" className={LINK}>
-            +7 926 728-04-20
-          </a>
-          {/* normal-case only here: an uppercased address reads as a different
-              string, and people do retype what a footer shows. */}
-          <a
-            href="mailto:art@flexperiment.ru"
-            className={cn(LINK, "normal-case")}
-          >
-            art@flexperiment.ru
-          </a>
-        </address>
+        <div className={cn("flex flex-col items-start gap-1", PLAIN)}>
+          <address className="flex flex-col items-start gap-1 not-italic">
+            <span>ИП Гурьянов Арт Артурович</span>
+            <span>ИНН 420539506224</span>
+            <span>ОГРНИП 324420500074591</span>
+            <a href="tel:+79267280420" className={LINK}>
+              +7 926 728-04-20
+            </a>
+            {/* normal-case only here: an uppercased address reads as a different
+                string, and people do retype what a footer shows. */}
+            <a
+              href="mailto:art@flexperiment.ru"
+              className={cn(LINK, "normal-case")}
+            >
+              art@flexperiment.ru
+            </a>
+          </address>
+          <AnalyticsSettingsButton className={cn(LINK, "mt-1 text-left")} />
+        </div>
         </div>
 
         <p className="mt-6 border-t border-bone/15 pt-3 text-center text-bone/60">

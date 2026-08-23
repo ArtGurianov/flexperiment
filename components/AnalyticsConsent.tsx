@@ -3,7 +3,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { usePathname, useSearchParams } from "next/navigation";
 import type { AnalyticsConsent as AnalyticsConsentState, StoredAnalyticsConsent } from "@/lib/analytics-consent";
-import { ANALYTICS_CONSENT_CHANGE_EVENT, applyAnalyticsConsentChoice, notifyAnalyticsConsentChange, persistAnalyticsConsent, readAnalyticsConsent } from "@/components/analytics-consent-client";
+import { ANALYTICS_CONSENT_CHANGE_EVENT, ANALYTICS_SETTINGS_OPEN_EVENT, applyAnalyticsConsentChoice, notifyAnalyticsConsentChange, persistAnalyticsConsent, readAnalyticsConsent } from "@/components/analytics-consent-client";
 import { browserMetrikaDenialEnvironment, browserMetrikaEnvironment, createMetrikaManager, enforceMetrikaDenied, metrikaCounterId, syncMetrikaForRoute } from "@/components/metrika";
 
 const PRIVACY_URL = "/legal/privacy-policy";
@@ -19,9 +19,14 @@ export default function AnalyticsConsent() {
 
   useEffect(() => {
     const synchronize = () => setConsent(readAnalyticsConsent());
+    const openSettings = () => setSettingsOpen(true);
     synchronize();
     window.addEventListener(ANALYTICS_CONSENT_CHANGE_EVENT, synchronize);
-    return () => window.removeEventListener(ANALYTICS_CONSENT_CHANGE_EVENT, synchronize);
+    window.addEventListener(ANALYTICS_SETTINGS_OPEN_EVENT, openSettings);
+    return () => {
+      window.removeEventListener(ANALYTICS_CONSENT_CHANGE_EVENT, synchronize);
+      window.removeEventListener(ANALYTICS_SETTINGS_OPEN_EVENT, openSettings);
+    };
   }, []);
 
   useLayoutEffect(() => {
@@ -82,16 +87,6 @@ export default function AnalyticsConsent() {
             <button type="button" className="border-2 border-acid bg-acid px-3 py-2 font-display uppercase text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid" onClick={() => choose("ALLOWED")}>Разрешить аналитику</button>
           </div>
         </section>
-      )}
-
-      {consent !== "UNDECIDED" && (
-        <button
-          type="button"
-          className="fixed right-3 bottom-3 z-[120] border border-bone/60 bg-ink/95 px-3 py-2 font-mono text-xs uppercase text-bone hover:border-acid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid"
-          onClick={() => setSettingsOpen(true)}
-        >
-          Настройки cookies
-        </button>
       )}
 
       {settingsOpen && (

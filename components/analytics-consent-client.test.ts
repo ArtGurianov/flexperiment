@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { applyAnalyticsConsentChoice } from "./analytics-consent-client";
+import {
+  ANALYTICS_SETTINGS_OPEN_EVENT,
+  applyAnalyticsConsentChoice,
+  requestAnalyticsSettings,
+} from "./analytics-consent-client";
 import {
   clearMetrikaFirstPartyStorage,
   createMetrikaManager,
@@ -9,6 +13,17 @@ import {
 } from "./metrika";
 
 describe("analytics consent transition", () => {
+  it("dispatches the footer settings-open request without changing consent", () => {
+    let eventType = "";
+    requestAnalyticsSettings({
+      dispatchEvent: (event) => {
+        eventType = event.type;
+        return true;
+      },
+    });
+    expect(eventType).toBe(ANALYTICS_SETTINGS_OPEN_EVENT);
+  });
+
   it("persists denial and revokes a loading manager before any later React effect", () => {
     const events: string[] = [];
     const commands: unknown[][] = [];
