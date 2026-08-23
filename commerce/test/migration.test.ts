@@ -358,4 +358,65 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     db.close();
   });
+
+  it("upgrades populated 0024 Tochka conflict evidence to the fail-closed schema", () => {
+    const db = openDatabase(":memory:");
+    applyThrough(db, "0024_tochka_webhook_collision_evidence.sql");
+    db.prepare(`INSERT INTO provider_webhook_events(
+      id, provider, semantic_key, payload_hash, status, entity_id, observed_json
+    ) VALUES ('tochka-0025-original', 'TOCHKA', 'operation-2:APPROVED', 'original-hash',
+      'QUARANTINED', NULL, '{"amount_kopecks":999}')`).run();
+    db.prepare(`INSERT INTO provider_webhook_event_conflicts(
+      id, provider, semantic_key, original_event_id, payload_hash, status, entity_id, observed_json
+    ) VALUES ('tochka-0025-conflict', 'TOCHKA', 'operation-2:APPROVED',
+      'tochka-0025-original', 'conflict-hash', 'CONFLICT_QUARANTINED', NULL,
+      '{"amount_kopecks":1000}')`).run();
+    const originalBefore = db.prepare(`SELECT id, provider, semantic_key, payload_hash, status,
+      entity_id, observed_json FROM provider_webhook_events WHERE id = 'tochka-0025-original'`).get();
+
+    db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, "0025_tochka_webhook_conflicts_fail_closed.sql"), "utf8")))();
+
+    expect(db.prepare(`SELECT id, provider, semantic_key, payload_hash, status,
+      entity_id, observed_json FROM provider_webhook_events WHERE id = 'tochka-0025-original'`).get()).toEqual(originalBefore);
+    expect(db.prepare(`SELECT id, payload_hash, status FROM provider_webhook_event_conflicts
+      WHERE id = 'tochka-0025-conflict'`).get())
+      .toEqual({ id: "tochka-0025-conflict", payload_hash: "conflict-hash", status: "CONFLICT_QUARANTINED" });
+    expect(() => db.prepare(`INSERT INTO provider_webhook_event_conflicts(
+      id, provider, semantic_key, original_event_id, payload_hash, status, entity_id, observed_json
+    ) VALUES ('tochka-0025-corrected', 'TOCHKA', 'operation-2:APPROVED',
+      'tochka-0025-original', 'corrected-hash', 'CORRECTED_APPLIED', NULL, '{}')`).run())
+      .toThrow(/CHECK constraint failed/);
+    db.prepare(`INSERT INTO provider_webhook_event_conflicts(
+      id, provider, semantic_key, original_event_id, payload_hash, status, entity_id, observed_json
+    ) VALUES ('tochka-0025-second-conflict', 'TOCHKA', 'operation-2:APPROVED',
+      'tochka-0025-original', 'second-conflict-hash', 'CONFLICT_QUARANTINED', NULL, '{}')`).run();
+    expect((db.prepare("PRAGMA index_list(provider_webhook_event_conflicts)").all() as { name: string }[])
+      .map(({ name }) => name)).toContain("provider_webhook_event_conflicts_original_idx");
+    expect((db.prepare("PRAGMA foreign_key_list(provider_webhook_event_conflicts)").all() as { table: string; from: string; to: string }[])
+      .map(({ table, from, to }) => ({ table, from, to })))
+      .toEqual([{ table: "provider_webhook_events", from: "original_event_id", to: "id" }]);
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    db.close();
+  });
+
+  it("fails closed instead of coercing historical CORRECTED_APPLIED conflict evidence", () => {
+    const db = openDatabase(":memory:");
+    applyThrough(db, "0024_tochka_webhook_collision_evidence.sql");
+    db.prepare(`INSERT INTO provider_webhook_events(
+      id, provider, semantic_key, payload_hash, status, entity_id, observed_json
+    ) VALUES ('tochka-legacy-original', 'TOCHKA', 'operation-legacy:APPROVED', 'legacy-hash',
+      'QUARANTINED', NULL, '{}')`).run();
+    db.prepare(`INSERT INTO provider_webhook_event_conflicts(
+      id, provider, semantic_key, original_event_id, payload_hash, status, entity_id, observed_json
+    ) VALUES ('tochka-legacy-corrected', 'TOCHKA', 'operation-legacy:APPROVED',
+      'tochka-legacy-original', 'legacy-correction-hash', 'CORRECTED_APPLIED', NULL, '{}')`).run();
+
+    expect(() => db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, "0025_tochka_webhook_conflicts_fail_closed.sql"), "utf8")))())
+      .toThrow(/CHECK constraint failed/);
+    expect(db.prepare("SELECT status FROM provider_webhook_event_conflicts WHERE id = 'tochka-legacy-corrected'").get())
+      .toEqual({ status: "CORRECTED_APPLIED" });
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'provider_webhook_event_conflicts_rebuilt'").get())
+      .toBeUndefined();
+    db.close();
+  });
 });

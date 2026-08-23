@@ -7,7 +7,7 @@ CREATE TABLE provider_webhook_event_conflicts (
   semantic_key TEXT NOT NULL,
   original_event_id TEXT NOT NULL REFERENCES provider_webhook_events(id),
   payload_hash TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status = 'CONFLICT_QUARANTINED'),
+  status TEXT NOT NULL CHECK (status IN ('CONFLICT_QUARANTINED', 'CORRECTED_APPLIED')),
   entity_id TEXT,
   observed_json TEXT NOT NULL,
   received_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
