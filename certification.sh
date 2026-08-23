@@ -14,6 +14,9 @@ ADMIN_ORIGIN="https://admin.flexperiment.ru"
 PUBLIC_ORIGIN="https://flexperiment.ru"
 TIMEZONE="Asia/Novokuznetsk"
 CUSTOMER_NAME="Tochka Certification"
+# Phase 0 uses an adult certification participant. Override only with an
+# adult ISO date if a future controlled run requires a different fixture.
+CERTIFICATION_PARTICIPANT_DATE_OF_BIRTH="${CERTIFICATION_PARTICIPANT_DATE_OF_BIRTH:-1990-01-01}"
 CITY_SLUG="kemerovo"
 CITY_NAME="Кемерово"
 AMOUNT_KOPECKS=100
@@ -309,7 +312,8 @@ CHECKOUT_BODY="$(jq -nc \
   --arg quote_id "$QUOTE_ID" \
   --arg name "$CUSTOMER_NAME" \
   --arg email "$CUSTOMER_EMAIL" \
-  '{quote_id:$quote_id,customer_name:$name,customer_email:$email,eligibility_confirmed:true,offer_accepted:true,pd_consent_accepted:true}')"
+  --arg date_of_birth "$CERTIFICATION_PARTICIPANT_DATE_OF_BIRTH" \
+  '{quote_id:$quote_id,customer_name:$name,customer_email:$email,customer_adult_confirmed:true,participant:{self:true,date_of_birth:$date_of_birth},offer_accepted:true,pd_consent_accepted:true}')"
 echo "About to perform financial mutation POST /v1/public/checkouts"
 echo "Creating checkout..."
 request "$CHECKOUT_FILE" \
