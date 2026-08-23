@@ -582,6 +582,25 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
+  it("offers only a GET liveness response for webhook URL validation and keeps callback POST authentication mandatory", async () => {
+    const { db } = appFixture();
+    const apiKey = "test-api-key-not-a-secret";
+    const app = createApp(db, new MockProvider(), new UnisenderGoProvider({ apiKey, fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async () => Response.json({ status: "success", job_id: "job" })));
+
+    const probe = await app.request("http://api.flexperiment.ru/v1/webhooks/unisender");
+    expect(probe.status).toBe(204);
+    expect(probe.headers.get("cache-control")).toBe("no-store");
+
+    const unsignedPost = await app.request("http://api.flexperiment.ru/v1/webhooks/unisender", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    expect(unsignedPost.status).toBe(401);
+    expect(await unsignedPost.json()).toEqual({ error: { code: "UNISENDER_WEBHOOK_AUTH_INVALID" } });
+    db.close();
+  });
+
   it("preserves the exact Unisender bounce outcome instead of collapsing provider evidence", async () => {
     const { db } = appFixture();
     const outboxId = randomUUID();
