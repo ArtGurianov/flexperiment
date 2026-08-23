@@ -201,4 +201,28 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     db.close();
   });
+
+  it("adds durable email recovery scheduling without rewriting populated outbox evidence", () => {
+    const db = openDatabase(":memory:");
+    applyThrough(db, "0019_city_interest_notification_epochs.sql");
+    db.prepare(`INSERT INTO email_outbox(
+      id, type, recipient_email, recipient_email_hash, template, payload_snapshot,
+      status, provider_idempotence_key, attempts, last_error
+    ) VALUES ('outbox-recovery', 'CITY_INTEREST_AVAILABLE', 'person@example.test', 'hash',
+      'city-interest-available', '{"city_title":"Томск"}', 'SEND_UNKNOWN', 'recovery-key', 4,
+      'UNISENDER_TRANSPORT_AMBIGUOUS')`).run();
+    const before = db.prepare(`SELECT id, recipient_email, recipient_email_hash, payload_snapshot,
+      status, provider_idempotence_key, attempts, last_error FROM email_outbox WHERE id = 'outbox-recovery'`).get();
+
+    db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, "0020_email_outbox_recovery_hardening.sql"), "utf8")))();
+
+    expect(db.prepare(`SELECT id, recipient_email, recipient_email_hash, payload_snapshot,
+      status, provider_idempotence_key, attempts, last_error, provider_error_code,
+      provider_error_message, next_attempt_at FROM email_outbox WHERE id = 'outbox-recovery'`).get())
+      .toEqual({ ...(before as object), provider_error_code: null, provider_error_message: null, next_attempt_at: null });
+    expect(db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'email_outbox_send_unknown_due_idx'").get())
+      .toEqual({ sql: expect.stringContaining("WHERE status = 'SEND_UNKNOWN'") });
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    db.close();
+  });
 });

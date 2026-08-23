@@ -47,6 +47,22 @@ as exact provider evidence and must not reverse a previously committed
 `DELIVERED` outcome. The outbox aggregate `BOUNCED` status is therefore not a
 city-interest purpose-completion predicate.
 
+## Email dispatch recovery
+
+A received Unisender HTTP response that rejects a send is authoritative local
+failure evidence: Commerce records only a bounded, redacted provider code and
+message, marks the outbox `FAILED`, and never automatically replays it. It does
+not retain an API key, recipient, or request payload in error evidence. A new
+city-interest notification after that state is possible only through a new
+explicit CAPTCHA-protected submission, which creates a new consent epoch.
+
+Only an ambiguous transport outcome after the provider request begins (for
+example a timeout or network loss) becomes `SEND_UNKNOWN`. It retains the
+stable provider idempotence key, uses an exponential persisted backoff, and
+stops automatically after eight attempted sends as a terminal local `FAILED`
+state. A known provider job is never resent; it waits for durable provider
+evidence instead.
+
 ## Operator withdrawal procedure
 
 An authenticated Admin operator receives a withdrawal at `art@flexperiment.ru`

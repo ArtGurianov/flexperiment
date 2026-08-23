@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
-import { CommerceDomain, DomainError, STALE_PREPARED_SETTLEMENT_MS } from "../src/domain";
+import { CommerceDomain, DomainError, EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS, STALE_PREPARED_SETTLEMENT_MS } from "../src/domain";
 import { runWorkerSweep } from "../src/worker-sweep";
-import type { EmailProvider } from "../src/email-provider";
+import { EmailProviderRejectedError, type EmailProvider } from "../src/email-provider";
 import { MockProvider, type PaymentProvider } from "../src/provider";
 import { decryptTicketCapability } from "../src/crypto";
 
@@ -372,6 +372,58 @@ describe("commerce domain", () => {
     await domain.processEmailOutbox();
     expect(calls).toEqual(["stable-provider-key"]);
     expect(setup.db.prepare("SELECT status, job_id FROM email_outbox").get()).toMatchObject({ status: "ACCEPTED", job_id: "mail-1" });
+  });
+
+  it("marks a deterministic Unisender 403 as FAILED without automatic retries", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    let sends = 0;
+    const email: EmailProvider = {
+      async lookup() { return { status: "UNKNOWN" }; },
+      async send() {
+        sends += 1;
+        throw new EmailProviderRejectedError(403, "FORBIDDEN", "recipient buyer@example.test is not allowed");
+      },
+    };
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email);
+    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key)
+      VALUES (?, 'BOOKING_CANCELLED', 'buyer@example.test', 'hash', 'booking', '{}', 'http-403-key')`).run(randomUUID());
+
+    await domain.processEmailOutbox();
+    for (let index = 0; index < 5_001; index += 1) await domain.processEmailOutbox();
+
+    expect(sends).toBe(1);
+    expect(setup.db.prepare("SELECT status, attempts, last_error, provider_error_code, provider_error_message, next_attempt_at FROM email_outbox").get()).toEqual({
+      status: "FAILED", attempts: 1, last_error: "UNISENDER_HTTP_REJECTED", provider_error_code: "FORBIDDEN",
+      provider_error_message: "recipient [redacted-email] is not allowed", next_attempt_at: null,
+    });
+  });
+
+  it("backs off ambiguous email sends and stops after the retry ceiling", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const timestamp = Date.parse("2026-08-23T12:00:00.000Z");
+    let sends = 0;
+    const email: EmailProvider = {
+      async lookup() { return { status: "UNKNOWN" }; },
+      async send() { sends += 1; throw new Error("transport interrupted"); },
+    };
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
+    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key)
+      VALUES (?, 'BOOKING_CANCELLED', 'buyer@example.test', 'hash', 'booking', '{}', 'transport-unknown-key')`).run(randomUUID());
+
+    await domain.processEmailOutbox();
+    expect(setup.db.prepare("SELECT status, attempts, last_error, next_attempt_at FROM email_outbox").get()).toEqual({
+      status: "SEND_UNKNOWN", attempts: 1, last_error: "UNISENDER_TRANSPORT_AMBIGUOUS", next_attempt_at: "2026-08-23T12:01:00.000Z",
+    });
+    await domain.processEmailOutbox();
+    expect(sends).toBe(1);
+
+    setup.db.prepare("UPDATE email_outbox SET attempts = ?, next_attempt_at = ? WHERE status = 'SEND_UNKNOWN'")
+      .run(EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS, "2026-08-23T11:59:59.000Z");
+    await domain.processEmailOutbox();
+    expect(sends).toBe(1);
+    expect(setup.db.prepare("SELECT status, last_error, provider_error_code FROM email_outbox").get()).toEqual({
+      status: "FAILED", last_error: "UNISENDER_SEND_UNKNOWN_ATTEMPT_LIMIT_REACHED", provider_error_code: "SEND_UNKNOWN_ATTEMPT_LIMIT",
+    });
   });
 
   it("attributes a valid established fx_ref marker at checkout", async () => {

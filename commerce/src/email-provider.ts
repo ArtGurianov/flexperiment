@@ -7,6 +7,45 @@ export interface EmailProvider {
   lookup(input: { jobId?: string; idempotencyKey: string }): Promise<{ status: EmailDeliveryState; jobId?: string }>;
 }
 
+type UnisenderSendResponse = { status?: unknown; job_id?: unknown; code?: unknown; error_code?: unknown; message?: unknown; error?: unknown };
+
+const sanitizedProviderCode = (value: unknown) => {
+  if (typeof value !== "string" && typeof value !== "number") return undefined;
+  const code = String(value).replace(/[^A-Za-z0-9_.:-]/g, "").slice(0, 80);
+  return code || undefined;
+};
+
+const sanitizedProviderMessage = (value: unknown) => {
+  if (typeof value !== "string") return undefined;
+  const message = value
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
+    .replace(/https?:\/\/\S+/gi, "[redacted-url]")
+    .replace(/\b(?:api[-_ ]?key|authorization|token|payload|request(?:\s+body)?|body)\b\s*[:=]?\s*\S*/gi, "[redacted-sensitive]")
+    .replace(/\b[A-Za-z0-9_-]{32,}\b/g, "[redacted-value]")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 240);
+  return message || undefined;
+};
+
+const rejectionDetails = (payload: UnisenderSendResponse | undefined) => ({
+  code: sanitizedProviderCode(payload?.code ?? payload?.error_code),
+  message: sanitizedProviderMessage(payload?.message ?? payload?.error),
+});
+
+/** A provider response that conclusively rejected this dispatch request. */
+export class EmailProviderRejectedError extends Error {
+  readonly providerCode?: string;
+  readonly providerMessage?: string;
+
+  constructor(readonly httpStatus: number, providerCode?: string, providerMessage?: string) {
+    super(`Unisender rejected email dispatch (HTTP ${httpStatus})`);
+    this.name = "EmailProviderRejectedError";
+    this.providerCode = sanitizedProviderCode(providerCode);
+    this.providerMessage = sanitizedProviderMessage(providerMessage);
+  }
+}
+
 export class UnisenderGoProvider implements EmailProvider {
   constructor(readonly config: UnisenderGoConfig, readonly request: typeof fetch = fetch) {}
 
@@ -24,8 +63,11 @@ export class UnisenderGoProvider implements EmailProvider {
         template_engine: "none", idempotence_key: input.idempotencyKey,
       } }),
     });
-    const payload = await response.json().catch(() => undefined) as { status?: unknown; job_id?: unknown } | undefined;
-    if (!response.ok || payload?.status !== "success" || typeof payload.job_id !== "string") throw new Error(`Unisender send was not accepted (HTTP ${response.status}).`);
+    const payload = await response.json().catch(() => undefined) as UnisenderSendResponse | undefined;
+    if (!response.ok || payload?.status !== "success" || typeof payload.job_id !== "string") {
+      const details = rejectionDetails(payload);
+      throw new EmailProviderRejectedError(response.status, details.code, details.message);
+    }
     return { jobId: payload.job_id };
   }
 

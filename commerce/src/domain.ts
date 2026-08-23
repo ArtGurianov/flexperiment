@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { canonical, decryptTicketCapability, emailHash, encryptTicketCapability, id, now, publicId, publicOrderNumber, sha256 } from "./crypto";
-import { type EmailProvider, UnconfiguredEmailProvider } from "./email-provider";
+import { EmailProviderRejectedError, type EmailProvider, UnconfiguredEmailProvider } from "./email-provider";
 import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import type { PaymentProvider } from "./provider";
 import type { CheckoutRequest } from "./types";
@@ -60,6 +60,9 @@ const isAllowedOccurrenceStateTransition = (before: Row, after: Row) => {
 // Admin read model.
 export const STALE_PREPARED_SETTLEMENT_MS = 30 * 60 * 1_000;
 export const CITY_INTEREST_SWEEP_BATCH_SIZE = 50;
+export const EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS = 8;
+export const EMAIL_SEND_UNKNOWN_INITIAL_BACKOFF_MS = 60 * 1_000;
+export const EMAIL_SEND_UNKNOWN_MAX_BACKOFF_MS = 60 * 60 * 1_000;
 
 const cityInterestExpiry = (timestamp: string) => {
   const date = new Date(timestamp);
@@ -1058,7 +1061,11 @@ export class CommerceDomain {
   }
 
   async processEmailOutbox() {
-    const rows = many(this.db, "SELECT * FROM email_outbox WHERE status IN ('PENDING', 'SEND_UNKNOWN') ORDER BY created_at LIMIT 50");
+    const timestamp = new Date(this.clock()).toISOString();
+    const rows = many(this.db, `SELECT * FROM email_outbox
+      WHERE status = 'PENDING'
+        OR (status = 'SEND_UNKNOWN' AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
+      ORDER BY created_at LIMIT 50`, timestamp);
     for (const outbox of rows) {
       if (outbox.type === "CITY_INTEREST_AVAILABLE") {
         const active = withImmediateTransaction(this.db, () => {
@@ -1077,7 +1084,12 @@ export class CommerceDomain {
       // A known provider job is always reconciled before another send. It is
       // never considered proof that the original request was not dispatched.
       if (isUnknown && outbox.job_id) {
-        try { this.applyEmailObservation(outbox.id as string, await this.emailProvider.lookup({ jobId: String(outbox.job_id), idempotencyKey: String(outbox.provider_idempotence_key) })); } catch { /* retain SEND_UNKNOWN */ }
+        try { this.applyEmailObservation(outbox.id as string, await this.emailProvider.lookup({ jobId: String(outbox.job_id), idempotencyKey: String(outbox.provider_idempotence_key) })); }
+        catch { this.deferUnknownEmailObservation(String(outbox.id), Number(outbox.attempts)); }
+        continue;
+      }
+      if (isUnknown && Number(outbox.attempts) >= EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS) {
+        this.failExhaustedUnknownEmail(String(outbox.id));
         continue;
       }
       if (isUnknown) {
@@ -1097,15 +1109,20 @@ export class CommerceDomain {
           this.skipObsoleteRefundConfirmationOutbox(String(outbox.id));
           return 0;
         }
-        return this.db.prepare(`UPDATE email_outbox SET status = 'SENDING', lease_owner = ?, lease_expires_at = datetime('now', '+120 seconds'), send_started_at = COALESCE(send_started_at, ?), provider_request_started_at = ?, attempts = attempts + 1
-          WHERE id = ? AND status IN ('PENDING', 'SEND_UNKNOWN')`).run(`worker-${process.pid}`, now(), now(), outbox.id).changes;
+        return this.db.prepare(`UPDATE email_outbox SET status = 'SENDING', lease_owner = ?, lease_expires_at = datetime('now', '+120 seconds'), send_started_at = COALESCE(send_started_at, ?), provider_request_started_at = ?, next_attempt_at = NULL, attempts = attempts + 1
+          WHERE id = ? AND status IN ('PENDING', 'SEND_UNKNOWN')
+            AND (status = 'PENDING' OR next_attempt_at IS NULL OR next_attempt_at <= ?)`)
+          .run(`worker-${process.pid}`, now(), now(), outbox.id, timestamp).changes;
       });
       if (!claimed) continue;
       try {
         const payload = this.emailPayload(outbox);
         const sent = await this.emailProvider.send({ recipientEmail: String(outbox.recipient_email), template: String(outbox.template), payload, idempotencyKey: String(outbox.provider_idempotence_key), outboxId: String(outbox.id) });
         withImmediateTransaction(this.db, () => {
-          const accepted = this.db.prepare("UPDATE email_outbox SET status = 'ACCEPTED', job_id = ?, lease_owner = NULL, lease_expires_at = NULL WHERE id = ? AND status = 'SENDING' AND suppressed_at IS NULL").run(sent.jobId, outbox.id);
+          const accepted = this.db.prepare(`UPDATE email_outbox
+            SET status = 'ACCEPTED', job_id = ?, lease_owner = NULL, lease_expires_at = NULL,
+                next_attempt_at = NULL, last_error = NULL, provider_error_code = NULL, provider_error_message = NULL
+            WHERE id = ? AND status = 'SENDING' AND suppressed_at IS NULL`).run(sent.jobId, outbox.id);
           if (!accepted.changes) {
             // Consent may have been withdrawn while send() was in flight. The
             // already-started provider call cannot be recalled, but its job ID
@@ -1114,11 +1131,58 @@ export class CommerceDomain {
           }
         });
       } catch (error) {
-        // A response can be lost after dispatch. Retain SEND_UNKNOWN, not PENDING,
-        // and keep the original provider idempotence key for all future recovery.
-        this.db.prepare("UPDATE email_outbox SET status = 'SEND_UNKNOWN', lease_owner = NULL, lease_expires_at = NULL, last_error = ? WHERE id = ? AND status = 'SENDING'").run(error instanceof Error ? error.message : "Email dispatch failed", outbox.id);
+        if (error instanceof EmailProviderRejectedError) {
+          // A received HTTP response is authoritative evidence that this
+          // dispatch was rejected. Do not convert it into an ambiguous replay.
+          this.db.prepare(`UPDATE email_outbox
+            SET status = 'FAILED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
+                last_error = 'UNISENDER_HTTP_REJECTED', provider_error_code = ?, provider_error_message = ?
+            WHERE id = ? AND status = 'SENDING'`).run(error.providerCode ?? null, error.providerMessage ?? null, outbox.id);
+        } else {
+          // A timeout/network loss after a request starts cannot prove the
+          // provider did not accept it. Keep the stable idempotence key, but
+          // make recovery finite and rate-limited.
+          this.deferOrFailUnknownEmail(String(outbox.id), Number(outbox.attempts) + 1);
+        }
       }
     }
+  }
+
+  private unknownEmailRetryAt(attempts: number) {
+    const exponent = Math.max(0, Math.min(attempts - 1, 16));
+    const delay = Math.min(EMAIL_SEND_UNKNOWN_INITIAL_BACKOFF_MS * (2 ** exponent), EMAIL_SEND_UNKNOWN_MAX_BACKOFF_MS);
+    return new Date(this.clock() + delay).toISOString();
+  }
+
+  private deferUnknownEmailObservation(outboxId: string, attempts: number) {
+    this.db.prepare(`UPDATE email_outbox SET next_attempt_at = ?
+      WHERE id = ? AND status = 'SEND_UNKNOWN'`).run(this.unknownEmailRetryAt(Math.max(1, attempts)), outboxId);
+  }
+
+  private failExhaustedUnknownEmail(outboxId: string) {
+    this.db.prepare(`UPDATE email_outbox
+      SET status = 'FAILED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
+          last_error = 'UNISENDER_SEND_UNKNOWN_ATTEMPT_LIMIT_REACHED',
+          provider_error_code = 'SEND_UNKNOWN_ATTEMPT_LIMIT',
+          provider_error_message = 'Ambiguous email dispatch retry limit reached.'
+      WHERE id = ? AND status = 'SEND_UNKNOWN'`).run(outboxId);
+  }
+
+  private deferOrFailUnknownEmail(outboxId: string, attempts: number) {
+    if (attempts >= EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS) {
+      this.db.prepare(`UPDATE email_outbox
+        SET status = 'FAILED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
+            last_error = 'UNISENDER_SEND_UNKNOWN_ATTEMPT_LIMIT_REACHED',
+            provider_error_code = 'SEND_UNKNOWN_ATTEMPT_LIMIT',
+            provider_error_message = 'Ambiguous email dispatch retry limit reached.'
+        WHERE id = ? AND status = 'SENDING'`).run(outboxId);
+      return;
+    }
+    this.db.prepare(`UPDATE email_outbox
+      SET status = 'SEND_UNKNOWN', lease_owner = NULL, lease_expires_at = NULL,
+          next_attempt_at = ?, last_error = 'UNISENDER_TRANSPORT_AMBIGUOUS',
+          provider_error_code = NULL, provider_error_message = NULL
+      WHERE id = ? AND status = 'SENDING'`).run(this.unknownEmailRetryAt(attempts), outboxId);
   }
 
   /** Daily reconciliation records disagreement as review work; it never rewrites local history. */
@@ -1265,7 +1329,7 @@ export class CommerceDomain {
     const timestamps = observed.status === "SENT" ? ", sent_at = ?" : observed.status === "DELIVERED" ? ", delivered_at = ?" : observed.status === "BOUNCED" ? ", bounced_at = ?" : "";
     // DELIVERED is a durable positive fact. A later spam callback records its
     // own provider evidence but must not turn delivery back into a bounce.
-    this.db.prepare(`UPDATE email_outbox SET status = ?, job_id = COALESCE(job_id, ?), lease_owner = NULL, lease_expires_at = NULL${timestamps}
+    this.db.prepare(`UPDATE email_outbox SET status = ?, job_id = COALESCE(job_id, ?), lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL${timestamps}
       WHERE id = ?
         AND NOT (status = 'DELIVERED' AND ? != 'DELIVERED')
         AND NOT (suppressed_at IS NOT NULL AND ? != 'DELIVERED')`).run(observed.status, observed.jobId ?? null, ...(timestamps ? [now()] : []), outboxId, observed.status, observed.status);
@@ -1320,6 +1384,24 @@ export class CommerceDomain {
     const timestamp = now();
     this.db.prepare("UPDATE payments SET state = 'CREATE_UNKNOWN', updated_at = ? WHERE state = 'CREATING' AND creation_started_at < datetime('now', '-120 seconds')").run(timestamp);
     this.db.prepare("UPDATE refunds SET status = 'SUBMIT_UNKNOWN' WHERE status = 'SUBMITTING' AND submission_started_at < datetime('now', '-120 seconds')").run();
-    this.db.prepare("UPDATE email_outbox SET status = 'SEND_UNKNOWN' WHERE status = 'SENDING' AND suppressed_at IS NULL AND lease_expires_at < ?").run(timestamp);
+    const staleOutboxes = many(this.db, "SELECT id, attempts FROM email_outbox WHERE status = 'SENDING' AND suppressed_at IS NULL AND lease_expires_at < ?", timestamp);
+    for (const outbox of staleOutboxes) this.deferOrFailStaleEmail(String(outbox.id), Number(outbox.attempts));
+  }
+
+  private deferOrFailStaleEmail(outboxId: string, attempts: number) {
+    if (attempts >= EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS) {
+      this.db.prepare(`UPDATE email_outbox
+        SET status = 'FAILED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
+            last_error = 'UNISENDER_SEND_UNKNOWN_ATTEMPT_LIMIT_REACHED',
+            provider_error_code = 'SEND_UNKNOWN_ATTEMPT_LIMIT',
+            provider_error_message = 'Ambiguous email dispatch retry limit reached.'
+        WHERE id = ? AND status = 'SENDING' AND suppressed_at IS NULL`).run(outboxId);
+      return;
+    }
+    this.db.prepare(`UPDATE email_outbox
+      SET status = 'SEND_UNKNOWN', lease_owner = NULL, lease_expires_at = NULL,
+          next_attempt_at = ?, last_error = 'UNISENDER_TRANSPORT_AMBIGUOUS',
+          provider_error_code = NULL, provider_error_message = NULL
+      WHERE id = ? AND status = 'SENDING' AND suppressed_at IS NULL`).run(this.unknownEmailRetryAt(Math.max(1, attempts)), outboxId);
   }
 }

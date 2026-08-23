@@ -1,6 +1,6 @@
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { UnisenderGoProvider } from "../src/email-provider";
+import { EmailProviderRejectedError, UnisenderGoProvider } from "../src/email-provider";
 import { tochkaConfigFromEnvironment } from "../src/provider-config";
 import { TochkaProvider, rublesFromKopecks } from "../src/provider";
 import { TochkaWebhookVerifier, webhookAmountKopecks } from "../src/tochka-webhook";
@@ -73,6 +73,22 @@ describe("provider contracts", () => {
     expect(body.message.global_metadata).toEqual({ outbox_id: "outbox-1" });
     expect(body.message.idempotence_key).toBe("stable-outbox-key");
     expect(body.message).not.toHaveProperty("template_id");
+  });
+
+  it("classifies a received Unisender HTTP rejection as terminal-safe evidence", async () => {
+    const provider = new UnisenderGoProvider({ apiKey: "test-key-not-a-secret", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async () =>
+      Response.json({ code: "FORBIDDEN", message: "Sending to buyer@example.test is forbidden; Authorization: test-key-not-a-secret payload: https://flexperiment.ru/ticket#capability" }, { status: 403 }));
+
+    try {
+      await provider.send({ recipientEmail: "buyer@example.test", template: "ticket", payload: { ticket_url: "https://flexperiment.ru/ticket#capability" }, idempotencyKey: "stable-outbox-key", outboxId: "outbox-1" });
+      throw new Error("Expected Unisender rejection");
+    } catch (error) {
+      expect(error).toBeInstanceOf(EmailProviderRejectedError);
+      expect(error).toMatchObject({ httpStatus: 403, providerCode: "FORBIDDEN", providerMessage: expect.stringContaining("[redacted-email]") });
+      expect((error as EmailProviderRejectedError).providerMessage).not.toContain("buyer@example.test");
+      expect((error as EmailProviderRejectedError).providerMessage).not.toContain("test-key-not-a-secret");
+      expect((error as EmailProviderRejectedError).providerMessage).not.toContain("ticket#capability");
+    }
   });
 
   it("verifies an RS256 Tochka callback with a refreshed JWK", async () => {
