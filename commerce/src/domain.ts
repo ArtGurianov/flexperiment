@@ -1081,10 +1081,15 @@ export class CommerceDomain {
         if (this.skipObsoleteRefundConfirmationOutbox(String(outbox.id))) continue;
       }
       const isUnknown = outbox.status === "SEND_UNKNOWN";
+      if (isUnknown && this.reconcileLegacyUnisenderHttp403(String(outbox.id))) continue;
       // A known provider job is always reconciled before another send. It is
       // never considered proof that the original request was not dispatched.
       if (isUnknown && outbox.job_id) {
-        try { this.applyEmailObservation(outbox.id as string, await this.emailProvider.lookup({ jobId: String(outbox.job_id), idempotencyKey: String(outbox.provider_idempotence_key) })); }
+        try {
+          const observed = await this.emailProvider.lookup({ jobId: String(outbox.job_id), idempotencyKey: String(outbox.provider_idempotence_key) });
+          if (observed.status === "UNKNOWN") this.deferUnknownEmailObservation(String(outbox.id), Number(outbox.attempts));
+          else this.applyEmailObservation(outbox.id as string, observed);
+        }
         catch { this.deferUnknownEmailObservation(String(outbox.id), Number(outbox.attempts)); }
         continue;
       }
@@ -1166,6 +1171,25 @@ export class CommerceDomain {
           provider_error_code = 'SEND_UNKNOWN_ATTEMPT_LIMIT',
           provider_error_message = 'Ambiguous email dispatch retry limit reached.'
       WHERE id = ? AND status = 'SEND_UNKNOWN'`).run(outboxId);
+  }
+
+  /**
+   * Old deployments represented every send exception as SEND_UNKNOWN. This
+   * exact historical 403 signature is deterministic provider rejection, not
+   * transport ambiguity. Keep the predicate intentionally narrow so unrelated
+   * historical unknowns retain their original recovery semantics.
+   */
+  private reconcileLegacyUnisenderHttp403(outboxId?: string) {
+    return this.db.prepare(`UPDATE email_outbox
+      SET status = 'FAILED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
+          last_error = 'UNISENDER_HTTP_REJECTED_LEGACY',
+          provider_error_code = 'HTTP_403_LEGACY',
+          provider_error_message = 'Legacy deterministic Unisender HTTP 403 rejection.'
+      WHERE status = 'SEND_UNKNOWN'
+        AND attempts > 5250
+        AND job_id IS NULL
+        AND last_error = 'Unisender send was not accepted (HTTP 403).'
+        AND (? IS NULL OR id = ?)`).run(outboxId ?? null, outboxId ?? null).changes > 0;
   }
 
   private deferOrFailUnknownEmail(outboxId: string, attempts: number) {
@@ -1384,6 +1408,7 @@ export class CommerceDomain {
     const timestamp = now();
     this.db.prepare("UPDATE payments SET state = 'CREATE_UNKNOWN', updated_at = ? WHERE state = 'CREATING' AND creation_started_at < datetime('now', '-120 seconds')").run(timestamp);
     this.db.prepare("UPDATE refunds SET status = 'SUBMIT_UNKNOWN' WHERE status = 'SUBMITTING' AND submission_started_at < datetime('now', '-120 seconds')").run();
+    this.reconcileLegacyUnisenderHttp403();
     const staleOutboxes = many(this.db, "SELECT id, attempts FROM email_outbox WHERE status = 'SENDING' AND suppressed_at IS NULL AND lease_expires_at < ?", timestamp);
     for (const outbox of staleOutboxes) this.deferOrFailStaleEmail(String(outbox.id), Number(outbox.attempts));
   }

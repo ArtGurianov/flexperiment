@@ -60,8 +60,15 @@ Only an ambiguous transport outcome after the provider request begins (for
 example a timeout or network loss) becomes `SEND_UNKNOWN`. It retains the
 stable provider idempotence key, uses an exponential persisted backoff, and
 stops automatically after eight attempted sends as a terminal local `FAILED`
-state. A known provider job is never resent; it waits for durable provider
-evidence instead.
+state. A known provider job is never resent; its unresolved reconciliation is
+also backoff-scheduled while it waits for durable provider evidence instead.
+
+For the single historic deployment signature `SEND_UNKNOWN`, more than 5,250
+attempts, no job ID, and exact error text `Unisender send was not accepted
+(HTTP 403).`, Commerce performs an idempotent local-only reconciliation to
+`FAILED` with `HTTP_403_LEGACY` evidence. It does not send or call Unisender,
+and it intentionally does not reinterpret other historical `SEND_UNKNOWN`
+rows.
 
 ## Operator withdrawal procedure
 

@@ -6,11 +6,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import { CommerceDomain, DomainError, EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS, STALE_PREPARED_SETTLEMENT_MS } from "../src/domain";
 import { runWorkerSweep } from "../src/worker-sweep";
-import { EmailProviderRejectedError, type EmailProvider } from "../src/email-provider";
+import { UnisenderGoProvider, type EmailProvider } from "../src/email-provider";
 import { MockProvider, type PaymentProvider } from "../src/provider";
 import { decryptTicketCapability } from "../src/crypto";
 
 const legalManifest = { documents: Object.fromEntries(["PUBLIC_OFFER", "PRIVACY_POLICY", "PD_CONSENT", "CHECKOUT_DISCLOSURE"].map((document) => [document, { document_id: document, version: "test-1", sha256: "0".repeat(64), current_url: `https://example.test/legal/${document}`, archive_url: `https://example.test/archive/${document}`, checkout_relevant: true }])) };
+const unisenderTestConfig = { apiKey: "test-key-not-a-secret", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" };
 
 function fixture(filename = ":memory:") {
   const db = openDatabase(filename); migrate(db);
@@ -377,16 +378,13 @@ describe("commerce domain", () => {
   it("marks a deterministic Unisender 403 as FAILED without automatic retries", async () => {
     const setup = fixture(); databases.push(setup.db);
     let sends = 0;
-    const email: EmailProvider = {
-      async lookup() { return { status: "UNKNOWN" }; },
-      async send() {
-        sends += 1;
-        throw new EmailProviderRejectedError(403, "FORBIDDEN", "recipient buyer@example.test is not allowed");
-      },
-    };
+    const email = new UnisenderGoProvider(unisenderTestConfig, async () => {
+      sends += 1;
+      return Response.json({ code: "FORBIDDEN", message: "recipient buyer@example.test is not allowed" }, { status: 403 });
+    });
     const domain = new CommerceDomain(setup.db, new MockProvider(), email);
     setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key)
-      VALUES (?, 'BOOKING_CANCELLED', 'buyer@example.test', 'hash', 'booking', '{}', 'http-403-key')`).run(randomUUID());
+      VALUES (?, 'BOOKING_CANCELLED', 'buyer@example.test', 'hash', 'ticket', '{"ticket_url":"https://flexperiment.ru/ticket#capability"}', 'http-403-key')`).run(randomUUID());
 
     await domain.processEmailOutbox();
     for (let index = 0; index < 5_001; index += 1) await domain.processEmailOutbox();
@@ -402,13 +400,13 @@ describe("commerce domain", () => {
     const setup = fixture(); databases.push(setup.db);
     const timestamp = Date.parse("2026-08-23T12:00:00.000Z");
     let sends = 0;
-    const email: EmailProvider = {
-      async lookup() { return { status: "UNKNOWN" }; },
-      async send() { sends += 1; throw new Error("transport interrupted"); },
-    };
+    const email = new UnisenderGoProvider(unisenderTestConfig, async () => {
+      sends += 1;
+      return Response.json({ status: "success" });
+    });
     const domain = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
     setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key)
-      VALUES (?, 'BOOKING_CANCELLED', 'buyer@example.test', 'hash', 'booking', '{}', 'transport-unknown-key')`).run(randomUUID());
+      VALUES (?, 'BOOKING_CANCELLED', 'buyer@example.test', 'hash', 'ticket', '{"ticket_url":"https://flexperiment.ru/ticket#capability"}', 'transport-unknown-key')`).run(randomUUID());
 
     await domain.processEmailOutbox();
     expect(setup.db.prepare("SELECT status, attempts, last_error, next_attempt_at FROM email_outbox").get()).toEqual({
@@ -423,6 +421,53 @@ describe("commerce domain", () => {
     expect(sends).toBe(1);
     expect(setup.db.prepare("SELECT status, last_error, provider_error_code FROM email_outbox").get()).toEqual({
       status: "FAILED", last_error: "UNISENDER_SEND_UNKNOWN_ATTEMPT_LIMIT_REACHED", provider_error_code: "SEND_UNKNOWN_ATTEMPT_LIMIT",
+    });
+  });
+
+  it("backs off UNKNOWN reconciliation for a known Unisender job", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const timestamp = Date.parse("2026-08-23T12:00:00.000Z");
+    let lookups = 0;
+    const email: EmailProvider = {
+      async lookup() { lookups += 1; return { status: "UNKNOWN" }; },
+      async send() { throw new Error("known provider job must not be resent"); },
+    };
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
+    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot,
+      status, provider_idempotence_key, job_id, attempts)
+      VALUES (?, 'BOOKING_CANCELLED', 'buyer@example.test', 'hash', 'booking-cancelled', '{}',
+      'SEND_UNKNOWN', 'known-job-key', 'known-job-1', 1)`).run(randomUUID());
+
+    await domain.processEmailOutbox();
+    for (let index = 0; index < 20; index += 1) await domain.processEmailOutbox();
+
+    expect(lookups).toBe(1);
+    expect(setup.db.prepare("SELECT status, next_attempt_at FROM email_outbox").get()).toEqual({
+      status: "SEND_UNKNOWN", next_attempt_at: "2026-08-23T12:01:00.000Z",
+    });
+  });
+
+  it("reconciles only the exact legacy Unisender HTTP 403 signature without sending", () => {
+    const setup = fixture(); databases.push(setup.db);
+    const domain = new CommerceDomain(setup.db, new MockProvider());
+    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot,
+      status, provider_idempotence_key, attempts, last_error)
+      VALUES ('legacy-403', 'BOOKING_CANCELLED', 'buyer@example.test', 'hash', 'booking-cancelled', '{}',
+      'SEND_UNKNOWN', 'legacy-403-key', 5251, 'Unisender send was not accepted (HTTP 403).')`).run();
+    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot,
+      status, provider_idempotence_key, attempts, last_error)
+      VALUES ('unrelated-unknown', 'BOOKING_CANCELLED', 'buyer@example.test', 'hash', 'booking-cancelled', '{}',
+      'SEND_UNKNOWN', 'unrelated-key', 5251, 'Unisender send was not accepted (HTTP 403) after transport reset.')`).run();
+
+    domain.recoverStaleCommands();
+    domain.recoverStaleCommands();
+
+    expect(setup.db.prepare("SELECT status, last_error, provider_error_code, provider_error_message FROM email_outbox WHERE id = 'legacy-403'").get()).toEqual({
+      status: "FAILED", last_error: "UNISENDER_HTTP_REJECTED_LEGACY", provider_error_code: "HTTP_403_LEGACY",
+      provider_error_message: "Legacy deterministic Unisender HTTP 403 rejection.",
+    });
+    expect(setup.db.prepare("SELECT status, last_error FROM email_outbox WHERE id = 'unrelated-unknown'").get()).toEqual({
+      status: "SEND_UNKNOWN", last_error: "Unisender send was not accepted (HTTP 403) after transport reset.",
     });
   });
 

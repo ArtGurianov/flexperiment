@@ -1,6 +1,6 @@
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { EmailProviderRejectedError, UnisenderGoProvider } from "../src/email-provider";
+import { EmailProviderAmbiguousError, EmailProviderRejectedError, UnisenderGoProvider } from "../src/email-provider";
 import { tochkaConfigFromEnvironment } from "../src/provider-config";
 import { TochkaProvider, rublesFromKopecks } from "../src/provider";
 import { TochkaWebhookVerifier, webhookAmountKopecks } from "../src/tochka-webhook";
@@ -89,6 +89,14 @@ describe("provider contracts", () => {
       expect((error as EmailProviderRejectedError).providerMessage).not.toContain("test-key-not-a-secret");
       expect((error as EmailProviderRejectedError).providerMessage).not.toContain("ticket#capability");
     }
+  });
+
+  it("treats a 2xx response without a job ID as ambiguous rather than rejected", async () => {
+    const provider = new UnisenderGoProvider({ apiKey: "test-key-not-a-secret", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async () =>
+      Response.json({ status: "success" }));
+
+    await expect(provider.send({ recipientEmail: "buyer@example.test", template: "ticket", payload: { ticket_url: "https://flexperiment.ru/ticket#capability" }, idempotencyKey: "stable-outbox-key", outboxId: "outbox-1" }))
+      .rejects.toBeInstanceOf(EmailProviderAmbiguousError);
   });
 
   it("verifies an RS256 Tochka callback with a refreshed JWK", async () => {

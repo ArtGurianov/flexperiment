@@ -33,6 +33,13 @@ const rejectionDetails = (payload: UnisenderSendResponse | undefined) => ({
   message: sanitizedProviderMessage(payload?.message ?? payload?.error),
 });
 
+const hasExplicitRejectionEvidence = (payload: UnisenderSendResponse | undefined) => {
+  const status = typeof payload?.status === "string" ? payload.status.toLowerCase() : "";
+  return ["error", "failed", "failure", "rejected"].includes(status)
+    || typeof payload?.error_code === "string" || typeof payload?.error_code === "number"
+    || typeof payload?.error === "string";
+};
+
 /** A provider response that conclusively rejected this dispatch request. */
 export class EmailProviderRejectedError extends Error {
   readonly providerCode?: string;
@@ -43,6 +50,14 @@ export class EmailProviderRejectedError extends Error {
     this.name = "EmailProviderRejectedError";
     this.providerCode = sanitizedProviderCode(providerCode);
     this.providerMessage = sanitizedProviderMessage(providerMessage);
+  }
+}
+
+/** A 2xx response that does not prove whether dispatch was accepted. */
+export class EmailProviderAmbiguousError extends Error {
+  constructor() {
+    super("Unisender response did not contain usable dispatch evidence.");
+    this.name = "EmailProviderAmbiguousError";
   }
 }
 
@@ -64,10 +79,11 @@ export class UnisenderGoProvider implements EmailProvider {
       } }),
     });
     const payload = await response.json().catch(() => undefined) as UnisenderSendResponse | undefined;
-    if (!response.ok || payload?.status !== "success" || typeof payload.job_id !== "string") {
+    if (!response.ok || hasExplicitRejectionEvidence(payload)) {
       const details = rejectionDetails(payload);
       throw new EmailProviderRejectedError(response.status, details.code, details.message);
     }
+    if (payload?.status !== "success" || typeof payload.job_id !== "string") throw new EmailProviderAmbiguousError();
     return { jobId: payload.job_id };
   }
 
