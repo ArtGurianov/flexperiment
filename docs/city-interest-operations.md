@@ -45,16 +45,19 @@ and calls `POST /v1/admin/city-interest/withdraw` with:
 ```
 
 The command deletes all matching source requests by the normalized email's HMAC
-hash. In the same transaction it suppresses each related `PENDING` or
-`SEND_UNKNOWN` outbox from future local provider attempts and redacts local
-outbox PII. Expiry uses the same suppression and redaction path. The worker
-rechecks the durable relation and expiry inside its send claim transaction, so
-an orphaned or expired outbox cannot begin a new provider call.
+hash. In the same transaction it records a durable suppression marker on each
+related outbox, suppresses every non-delivered row as `SKIPPED`, and redacts
+local outbox PII. Expiry uses the same suppression and redaction path. The
+worker rechecks the durable relation and expiry inside its send claim
+transaction, so an orphaned or expired outbox cannot begin a new provider call.
 
 An already `SENDING`, `ACCEPTED`, or `SENT` request may have reached Unisender
 before withdrawal/expiry wins. Commerce cannot recall that external message; it
-does not retry it and redacts locally available PII. A later webhook is still
-accepted using opaque `outbox_id` correlation. The command is naturally
+does not retry it and redacts locally available PII. A late `send()` result may
+retain only its opaque provider job ID; it cannot restore the local outbox to
+`ACCEPTED`. A later webhook is still accepted using opaque `outbox_id`
+correlation and recorded as provider evidence, but only a late `DELIVERED`
+outcome may change the suppressed aggregate status. The command is naturally
 idempotent: a repeat returns success with zero deleted rows. The audit record
 stores only the operator, reason, and aggregate deleted count; it does not
 retain the email or its hash.

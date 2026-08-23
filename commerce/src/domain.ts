@@ -1098,7 +1098,15 @@ export class CommerceDomain {
       try {
         const payload = this.emailPayload(outbox);
         const sent = await this.emailProvider.send({ recipientEmail: String(outbox.recipient_email), template: String(outbox.template), payload, idempotencyKey: String(outbox.provider_idempotence_key), outboxId: String(outbox.id) });
-        this.db.prepare("UPDATE email_outbox SET status = 'ACCEPTED', job_id = ?, lease_owner = NULL, lease_expires_at = NULL WHERE id = ? AND status = 'SENDING'").run(sent.jobId, outbox.id);
+        withImmediateTransaction(this.db, () => {
+          const accepted = this.db.prepare("UPDATE email_outbox SET status = 'ACCEPTED', job_id = ?, lease_owner = NULL, lease_expires_at = NULL WHERE id = ? AND status = 'SENDING' AND suppressed_at IS NULL").run(sent.jobId, outbox.id);
+          if (!accepted.changes) {
+            // Consent may have been withdrawn while send() was in flight. The
+            // already-started provider call cannot be recalled, but its job ID
+            // is durable provider evidence; never revive the local row.
+            this.db.prepare("UPDATE email_outbox SET job_id = COALESCE(job_id, ?), lease_owner = NULL, lease_expires_at = NULL WHERE id = ? AND suppressed_at IS NOT NULL").run(sent.jobId, outbox.id);
+          }
+        });
       } catch (error) {
         // A response can be lost after dispatch. Retain SEND_UNKNOWN, not PENDING,
         // and keep the original provider idempotence key for all future recovery.
@@ -1206,12 +1214,13 @@ export class CommerceDomain {
   /** Stops future local dispatch and removes the now-unneeded local PII. An in-flight provider call cannot be recalled. */
   private suppressCityInterestOutbox(outboxId: string) {
     this.db.prepare(`UPDATE email_outbox
-      SET status = CASE WHEN status IN ('PENDING', 'SEND_UNKNOWN') THEN 'SKIPPED' ELSE status END,
-          lease_owner = CASE WHEN status IN ('PENDING', 'SEND_UNKNOWN') THEN NULL ELSE lease_owner END,
-          lease_expires_at = CASE WHEN status IN ('PENDING', 'SEND_UNKNOWN') THEN NULL ELSE lease_expires_at END,
-          last_error = CASE WHEN status IN ('PENDING', 'SEND_UNKNOWN') THEN 'CITY_INTEREST_NO_LONGER_ACTIVE' ELSE last_error END,
+      SET status = CASE WHEN status = 'DELIVERED' THEN status ELSE 'SKIPPED' END,
+          lease_owner = NULL,
+          lease_expires_at = NULL,
+          last_error = CASE WHEN status = 'DELIVERED' THEN last_error ELSE 'CITY_INTEREST_NO_LONGER_ACTIVE' END,
+          suppressed_at = COALESCE(suppressed_at, ?),
           recipient_email = '', recipient_email_hash = '', payload_snapshot = '{}'
-      WHERE id = ? AND type = 'CITY_INTEREST_AVAILABLE'`).run(outboxId);
+      WHERE id = ? AND type = 'CITY_INTEREST_AVAILABLE'`).run(now(), outboxId);
   }
 
   private purgeCityInterestRequest(requestId: string) {
@@ -1234,7 +1243,9 @@ export class CommerceDomain {
     // DELIVERED is a durable positive fact. A later spam callback records its
     // own provider evidence but must not turn delivery back into a bounce.
     this.db.prepare(`UPDATE email_outbox SET status = ?, job_id = COALESCE(job_id, ?), lease_owner = NULL, lease_expires_at = NULL${timestamps}
-      WHERE id = ? AND NOT (status = 'DELIVERED' AND ? != 'DELIVERED')`).run(observed.status, observed.jobId ?? null, ...(timestamps ? [now()] : []), outboxId, observed.status);
+      WHERE id = ?
+        AND NOT (status = 'DELIVERED' AND ? != 'DELIVERED')
+        AND NOT (suppressed_at IS NOT NULL AND ? != 'DELIVERED')`).run(observed.status, observed.jobId ?? null, ...(timestamps ? [now()] : []), outboxId, observed.status, observed.status);
   }
 
   private completeDeliveredCityInterest(outboxId: string) {
@@ -1284,6 +1295,6 @@ export class CommerceDomain {
     const timestamp = now();
     this.db.prepare("UPDATE payments SET state = 'CREATE_UNKNOWN', updated_at = ? WHERE state = 'CREATING' AND creation_started_at < datetime('now', '-120 seconds')").run(timestamp);
     this.db.prepare("UPDATE refunds SET status = 'SUBMIT_UNKNOWN' WHERE status = 'SUBMITTING' AND submission_started_at < datetime('now', '-120 seconds')").run();
-    this.db.prepare("UPDATE email_outbox SET status = 'SEND_UNKNOWN' WHERE status = 'SENDING' AND lease_expires_at < ?").run(timestamp);
+    this.db.prepare("UPDATE email_outbox SET status = 'SEND_UNKNOWN' WHERE status = 'SENDING' AND suppressed_at IS NULL AND lease_expires_at < ?").run(timestamp);
   }
 }

@@ -819,14 +819,38 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE email_normalized = 'expired-unknown@example.test'").get()).toEqual({ count: 0 });
   });
 
-  it("redacts a city-interest SENDING row on withdrawal while preserving the in-flight provider race", () => {
+  it("suppresses an in-flight city-interest send after withdrawal without reviving ACCEPTED", async () => {
     const setup = fixture(); databases.push(setup.db);
+    let sendStarted!: () => void;
+    let completeSend!: (value: { jobId: string }) => void;
+    const started = new Promise<void>((resolve) => { sendStarted = resolve; });
+    const providerResult = new Promise<{ jobId: string }>((resolve) => { completeSend = resolve; });
+    const sends: string[] = [];
+    const email: EmailProvider = {
+      async send(input) {
+        sends.push(input.recipientEmail);
+        sendStarted();
+        return providerResult;
+      },
+      async lookup() { return { status: "UNKNOWN" }; },
+    };
     setup.domain.registerCityInterest({ email: "sending@example.test", city: "novosibirsk" });
     const outbox = setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'CITY_INTEREST_AVAILABLE'").get() as { id: string };
-    setup.db.prepare("UPDATE email_outbox SET status = 'SENDING', lease_owner = 'worker' WHERE id = ?").run(outbox.id);
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email);
+    const dispatch = domain.processEmailOutbox();
+    await started;
+    expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "SENDING" });
     setup.domain.withdrawCityInterest("sending@example.test", "Consent withdrawal received", "admin");
-    expect(setup.db.prepare("SELECT status, recipient_email, recipient_email_hash, payload_snapshot FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "SENDING", recipient_email: "", recipient_email_hash: "", payload_snapshot: "{}" });
+    expect(setup.db.prepare("SELECT status, recipient_email, recipient_email_hash, payload_snapshot, suppressed_at FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "SKIPPED", recipient_email: "", recipient_email_hash: "", payload_snapshot: "{}", suppressed_at: expect.any(String) });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE email_normalized = 'sending@example.test'").get()).toEqual({ count: 0 });
+    completeSend({ jobId: "withdrawn-in-flight-job" });
+    await dispatch;
+    expect(setup.db.prepare("SELECT status, job_id, recipient_email, recipient_email_hash, payload_snapshot, suppressed_at FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "SKIPPED", job_id: "withdrawn-in-flight-job", recipient_email: "", recipient_email_hash: "", payload_snapshot: "{}", suppressed_at: expect.any(String) });
+    expect(domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "ACCEPTED", providerStatus: "accepted", jobId: "withdrawn-in-flight-job", semanticKey: "withdrawn-in-flight-accepted" })).toEqual({ duplicate: false });
+    expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "SKIPPED" });
+    expect(setup.db.prepare("SELECT provider_status FROM email_provider_events WHERE semantic_key = 'withdrawn-in-flight-accepted'").get()).toEqual({ provider_status: "accepted" });
+    await domain.processEmailOutbox();
+    expect(sends).toEqual(["sending@example.test"]);
   });
 
   it("keeps one notification intent across scans and a re-submission of the same active request", () => {

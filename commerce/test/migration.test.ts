@@ -168,4 +168,19 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     db.close();
   });
+
+  it("adds the city-interest suppression marker without rewriting delivery evidence", () => {
+    const db = openDatabase(":memory:");
+    applyThrough(db, "0017_city_interest_delivery_lifecycle.sql");
+    db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status, provider_idempotence_key)
+      VALUES ('outbox-suppression', 'CITY_INTEREST_AVAILABLE', 'person@example.test', 'hash', 'city-interest-available', '{"city_title":"Томск"}', 'SENDING', 'suppression-key')`).run();
+    const before = db.prepare("SELECT id, recipient_email, recipient_email_hash, payload_snapshot, status FROM email_outbox WHERE id = 'outbox-suppression'").get();
+
+    db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, "0018_city_interest_suppression.sql"), "utf8")))();
+
+    expect(db.prepare("SELECT id, recipient_email, recipient_email_hash, payload_snapshot, status, suppressed_at FROM email_outbox WHERE id = 'outbox-suppression'").get()).toEqual({ ...(before as object), suppressed_at: null });
+    expect((db.prepare("PRAGMA table_info(email_outbox)").all() as { name: string }[]).map(({ name }) => name)).toContain("suppressed_at");
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    db.close();
+  });
 });
