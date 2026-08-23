@@ -171,7 +171,10 @@ pnpm commerce:create-unknown:repair
 ```
 
 The command requires a pending `CREATE_UNKNOWN` payment with no provider ID,
-capture, successful refund, or ticket, plus its still-`RESERVED` booking. It
-atomically changes the payment to `CREATE_FAILED/CANCELLED` and releases that
-booking with `CREATE_UNKNOWN_PROVIDER_ABSENCE_CONFIRMED`. Any failed predicate
-or replay returns `repaired: false`.
+capture, successful refund, or ticket, plus either its still-`RESERVED` booking
+or a legacy booking already `CANCELLED` specifically as
+`TECHNICAL_RESERVATION_ABANDONED`. It atomically changes the payment to
+`CREATE_FAILED/CANCELLED`. For `RESERVED`, it releases the booking with
+`CREATE_UNKNOWN_PROVIDER_ABSENCE_CONFIRMED`; for the technical-abandonment
+case, it preserves all booking fields and timestamps unchanged. Any failed
+predicate or replay returns `repaired: false`.

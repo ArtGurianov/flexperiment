@@ -1222,12 +1222,15 @@ export class CommerceDomain {
   /** Local-only repair after an operator independently proves provider absence. */
   repairCreateUnknownPayment(orderId: string, paymentId: string) {
     return withImmediateTransaction(this.db, () => {
-      const payment = one(this.db, `SELECT p.id, b.id AS booking_id
+      const payment = one(this.db, `SELECT p.id, b.id AS booking_id, b.status AS booking_status
         FROM payments p JOIN bookings b ON b.order_id = p.order_id
         WHERE p.id = ? AND p.order_id = ?
           AND p.state = 'CREATE_UNKNOWN' AND p.status = 'PENDING'
           AND p.provider_payment_id IS NULL AND p.captured_amount_kopecks = 0
-          AND b.status = 'RESERVED'
+          AND (
+            b.status = 'RESERVED'
+            OR (b.status = 'CANCELLED' AND b.cancellation_reason = 'TECHNICAL_RESERVATION_ABANDONED')
+          )
           AND NOT EXISTS (SELECT 1 FROM tickets t WHERE t.booking_id = b.id)
           AND NOT EXISTS (SELECT 1 FROM refunds r WHERE r.payment_id = p.id AND r.status = 'SUCCEEDED')`, paymentId, orderId);
       if (!payment) return false;
@@ -1236,10 +1239,12 @@ export class CommerceDomain {
         WHERE id = ? AND state = 'CREATE_UNKNOWN' AND status = 'PENDING'
           AND provider_payment_id IS NULL AND captured_amount_kopecks = 0`).run(now(), paymentId);
       if (!terminalized.changes) return false;
-      this.db.prepare(`UPDATE bookings
-        SET status = 'CANCELLED', cancelled_at = ?,
-            cancellation_reason = 'CREATE_UNKNOWN_PROVIDER_ABSENCE_CONFIRMED'
-        WHERE id = ? AND status = 'RESERVED'`).run(now(), payment.booking_id);
+      if (payment.booking_status === "RESERVED") {
+        this.db.prepare(`UPDATE bookings
+          SET status = 'CANCELLED', cancelled_at = ?,
+              cancellation_reason = 'CREATE_UNKNOWN_PROVIDER_ABSENCE_CONFIRMED'
+          WHERE id = ? AND status = 'RESERVED'`).run(now(), payment.booking_id);
+      }
       return true;
     });
   }

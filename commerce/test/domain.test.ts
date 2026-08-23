@@ -177,6 +177,51 @@ describe("commerce domain", () => {
     expect(unknown.domain.checkoutContext({ occurrenceId: setup.occurrenceId }).availability).toBe(5);
   });
 
+  it("terminalizes a technically abandoned CREATE_UNKNOWN payment without rewriting the booking", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const provider: PaymentProvider = new MockProvider();
+    const unknown = await createUnknownPayment(setup, provider, Date.parse("2026-08-23T12:00:00.000Z"));
+    unknown.domain.abandonReservation(unknown.orderId, { reason: "Interrupted certification" }, "create-unknown-abandonment-001", "admin");
+    const before = setup.db.prepare("SELECT status, cancellation_reason, cancelled_at FROM bookings WHERE order_id = ?").get(unknown.orderId);
+
+    expect(unknown.domain.repairCreateUnknownPayment(unknown.orderId, unknown.paymentId)).toBe(true);
+    expect(unknown.domain.repairCreateUnknownPayment(unknown.orderId, unknown.paymentId)).toBe(false);
+    expect(setup.db.prepare("SELECT state, status FROM payments WHERE id = ?").get(unknown.paymentId)).toEqual({ state: "CREATE_FAILED", status: "CANCELLED" });
+    expect(setup.db.prepare("SELECT status, cancellation_reason, cancelled_at FROM bookings WHERE order_id = ?").get(unknown.orderId)).toEqual(before);
+  });
+
+  it("rejects CREATE_UNKNOWN repair for a booking cancelled for another reason", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const provider: PaymentProvider = new MockProvider();
+    const unknown = await createUnknownPayment(setup, provider, Date.parse("2026-08-23T12:00:00.000Z"));
+    setup.db.prepare("UPDATE bookings SET status = 'CANCELLED', cancelled_at = '2026-08-23T12:00:00.000Z', cancellation_reason = 'CUSTOMER_CANCELLED' WHERE order_id = ?").run(unknown.orderId);
+
+    expect(unknown.domain.repairCreateUnknownPayment(unknown.orderId, unknown.paymentId)).toBe(false);
+    expect(setup.db.prepare("SELECT state, status FROM payments WHERE id = ?").get(unknown.paymentId)).toEqual({ state: "CREATE_UNKNOWN", status: "PENDING" });
+  });
+
+  it.each(["provider_payment_id", "captured_amount_kopecks", "ticket", "successful_refund"] as const)("keeps CREATE_UNKNOWN repair fail-closed when %s exists", async (blocker) => {
+    const setup = fixture(); databases.push(setup.db);
+    const provider: PaymentProvider = new MockProvider();
+    const unknown = await createUnknownPayment(setup, provider, Date.parse("2026-08-23T12:00:00.000Z"));
+    if (blocker === "provider_payment_id") setup.db.prepare("UPDATE payments SET provider_payment_id = 'provider-payment' WHERE id = ?").run(unknown.paymentId);
+    if (blocker === "captured_amount_kopecks") setup.db.prepare("UPDATE payments SET captured_amount_kopecks = 1 WHERE id = ?").run(unknown.paymentId);
+    if (blocker === "ticket") {
+      const booking = setup.db.prepare("SELECT id FROM bookings WHERE order_id = ?").get(unknown.orderId) as { id: string };
+      setup.db.prepare("INSERT INTO tickets(id, booking_id, status, capability_hash, capability_ciphertext, capability_nonce, key_version) VALUES (?, ?, 'VALID', ?, 'ciphertext', 'nonce', 1)")
+        .run(randomUUID(), booking.id, randomUUID());
+    }
+    if (blocker === "successful_refund") {
+      setup.db.prepare(`INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash)
+        VALUES (?, ?, ?, ?, 1, 'evidence', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, ?)`)
+        .run(randomUUID(), randomUUID(), unknown.orderId, unknown.paymentId, randomUUID(), randomUUID());
+    }
+
+    expect(unknown.domain.repairCreateUnknownPayment(unknown.orderId, unknown.paymentId)).toBe(false);
+    expect(setup.db.prepare("SELECT state, status FROM payments WHERE id = ?").get(unknown.paymentId)).toEqual({ state: "CREATE_UNKNOWN", status: "PENDING" });
+    expect(setup.db.prepare("SELECT status FROM bookings WHERE order_id = ?").get(unknown.orderId)).toEqual({ status: "RESERVED" });
+  });
+
   it("abandons a reservation idempotently and routes a late payment into refund review", async () => {
     const setup = fixture(); databases.push(setup.db);
     const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "promoter" });
