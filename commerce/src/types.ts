@@ -112,6 +112,9 @@ export const cityInterestWithdrawalSchema = z.object({
   email: z.string().trim().email().max(320).transform((value) => value.toLowerCase()),
   reason: z.string().trim().min(3).max(1_000),
 }).strict();
+export const emailAttentionAcknowledgeSchema = z.object({
+  reason: z.string().trim().min(3).max(1_000),
+}).strict();
 export const customerRefundTokenSchema = z.object({
   token: z.string().min(32).max(256),
 }).strict();

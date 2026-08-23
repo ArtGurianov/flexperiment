@@ -306,4 +306,28 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     db.close();
   });
+
+  it("adds operational email acknowledgement fields without rewriting delivery evidence", () => {
+    const db = openDatabase(":memory:");
+    applyThrough(db, "0022_create_unknown_recovery.sql");
+    db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template,
+      payload_snapshot, status, provider_idempotence_key, attempts, sent_at, bounced_at,
+      provider_error_code, provider_error_message)
+      VALUES ('attention-upgrade', 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}',
+      'BOUNCED', 'attention-upgrade-key', 3, '2026-08-23T00:00:00.000Z',
+      '2026-08-23T00:02:00.000Z', 'hard_bounced', 'Mailbox unavailable')`).run();
+    const before = db.prepare(`SELECT status, attempts, sent_at, bounced_at,
+      provider_error_code, provider_error_message FROM email_outbox WHERE id = 'attention-upgrade'`).get();
+
+    db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, "0023_email_operational_attention.sql"), "utf8")))();
+
+    expect(db.prepare(`SELECT status, attempts, sent_at, bounced_at, provider_error_code,
+      provider_error_message, ops_acknowledged_at, ops_acknowledged_reason
+      FROM email_outbox WHERE id = 'attention-upgrade'`).get())
+      .toEqual({ ...(before as object), ops_acknowledged_at: null, ops_acknowledged_reason: null });
+    expect((db.prepare("PRAGMA index_list(email_outbox)").all() as { name: string }[]).map(({ name }) => name))
+      .toContain("email_outbox_operational_attention_idx");
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    db.close();
+  });
 });

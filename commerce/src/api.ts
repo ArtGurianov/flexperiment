@@ -10,7 +10,7 @@ import { clientIpRateLimitKey, rateLimit, trustedClientIp } from "./rate-limit";
 import { TochkaWebhookVerifier, webhookAmountKopecks } from "./tochka-webhook";
 import { verifyUnisenderWebhook } from "./unisender-webhook";
 import { type SmartCaptchaVerifier, UnconfiguredSmartCaptchaVerifier } from "./smartcaptcha";
-import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityInterestWithdrawalSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrencePatchSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
+import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityInterestWithdrawalSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, emailAttentionAcknowledgeSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrencePatchSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
 
 type AppBindings = { Variables: { adminId?: string; adminSessionId?: string } };
 const noStore = (headers: Headers) => headers.set("Cache-Control", "no-store");
@@ -263,7 +263,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
         (SELECT COUNT(*) FROM payments WHERE status = 'REVIEW_REQUIRED') +
         (SELECT COUNT(*) FROM refunds WHERE status = 'REVIEW_REQUIRED') AS count`).get(),
       pending_refunds: sqlite.prepare("SELECT COUNT(*) AS count FROM refunds WHERE status IN ('REQUESTED', 'SUBMITTING', 'SUBMIT_UNKNOWN', 'RECONCILING')").get(),
-      email_failures: sqlite.prepare("SELECT COUNT(*) AS count FROM email_outbox WHERE status IN ('FAILED', 'SEND_UNKNOWN')").get(),
+      email_attention: { count: domain.emailAttentionCount() },
       stale_prepared_settlements: sqlite.prepare("SELECT COUNT(*) AS count FROM settlement_prepared_reviews WHERE status = 'OPEN'").get(),
     },
     upcoming: sqlite.prepare(`SELECT o.id, o.title, o.starts_at, o.capacity, o.sales_status, o.visibility, c.title AS city_title,
@@ -307,6 +307,13 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   });
   admin.get("/orders/:id", (c) => { const order = sqlite.prepare("SELECT * FROM orders WHERE id = ?").get(c.req.param("id")); if (!order) throw new DomainError("ORDER_NOT_FOUND", 404); return c.json(order); });
   admin.get("/orders/:id/evidence", (c) => { c.header("Cache-Control", "no-store"); return c.json(domain.orderEvidence(c.req.param("id"))); });
+  admin.get("/email-attention", (c) => c.json({ incidents: domain.emailAttentionIncidents(), attention_count: domain.emailAttentionCount() }));
+  admin.post("/email-attention/:id/acknowledge", async (c) => {
+    const payload = emailAttentionAcknowledgeSchema.parse(await jsonBody(c.req.raw));
+    const result = domain.acknowledgeEmailAttention(c.req.param("id"), payload.reason);
+    if (result.acknowledged_now) audit(c.var.adminId!, "EMAIL_ATTENTION_ACKNOWLEDGED", "email_outbox", c.req.param("id"), { reason: payload.reason });
+    return c.json(result);
+  });
   admin.post("/orders/:id/abandon-reservation", async (c) => {
     const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
     const payload = reservationAbandonSchema.parse(await jsonBody(c.req.raw));

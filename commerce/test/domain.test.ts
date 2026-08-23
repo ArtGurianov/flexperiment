@@ -600,6 +600,58 @@ describe("commerce domain", () => {
     });
   });
 
+  it("keeps delivery evidence separate from operational email acknowledgement", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const domain = new CommerceDomain(setup.db, new MockProvider());
+    const insert = setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template,
+      payload_snapshot, status, provider_idempotence_key, attempts, sent_at, bounced_at,
+      provider_error_code, provider_error_message)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, ?, 3,
+      '2026-08-23T00:00:00.000Z', '2026-08-23T00:01:00.000Z', 'hard_bounced', 'Mailbox unavailable')`);
+    for (const status of ["FAILED", "BOUNCED", "SEND_UNKNOWN", "DELIVERED"]) insert.run(`attention-${status}`, status, `attention-key-${status}`);
+
+    expect(domain.emailAttentionCount()).toBe(3);
+    expect(domain.emailAttentionIncidents().map((incident) => incident.status)).toEqual(["SEND_UNKNOWN", "FAILED", "BOUNCED"]);
+    const before = setup.db.prepare(`SELECT status, attempts, sent_at, bounced_at, provider_error_code, provider_error_message
+      FROM email_outbox WHERE id = 'attention-FAILED'`).get();
+    const first = domain.acknowledgeEmailAttention("attention-FAILED", "Recipient was contacted through support.");
+    const replay = domain.acknowledgeEmailAttention("attention-FAILED", "A different reason must not overwrite the first.");
+
+    expect(first.acknowledged_now).toBe(true);
+    expect(replay.acknowledged_now).toBe(false);
+    expect(domain.emailAttentionCount()).toBe(2);
+    expect(setup.db.prepare(`SELECT status, attempts, sent_at, bounced_at, provider_error_code,
+      provider_error_message, ops_acknowledged_reason FROM email_outbox WHERE id = 'attention-FAILED'`).get())
+      .toEqual({ ...(before as object), ops_acknowledged_reason: "Recipient was contacted through support." });
+    expect(domain.emailAttentionIncidents().find((incident) => incident.id === "attention-FAILED"))
+      .toMatchObject({ ops_acknowledged_at: expect.any(String), ops_acknowledged_reason: "Recipient was contacted through support." });
+    expect(() => domain.acknowledgeEmailAttention("attention-BOUNCED", "   ")).toThrow("EMAIL_ATTENTION_ACKNOWLEDGEMENT_REASON_REQUIRED");
+    expect(domain.acknowledgeEmailAttention("attention-BOUNCED", "Hard bounce was handled outside email delivery.")).toMatchObject({ acknowledged_now: true, incident: { status: "BOUNCED" } });
+    expect(domain.emailAttentionCount()).toBe(1);
+    expect(() => domain.acknowledgeEmailAttention("attention-DELIVERED", "Delivery needs no acknowledgement.")).toThrow("EMAIL_ATTENTION_NOT_ACTIONABLE");
+    expect(() => domain.acknowledgeEmailAttention("missing-outbox", "No such outbox.")).toThrow("EMAIL_OUTBOX_NOT_FOUND");
+  });
+
+  it("does not send an acknowledged terminal email row", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    let sends = 0;
+    const email: EmailProvider = {
+      async lookup() { throw new Error("acknowledged terminal row must not be looked up"); },
+      async send() { sends += 1; return { jobId: "must-not-send" }; },
+    };
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email);
+    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template,
+      payload_snapshot, status, provider_idempotence_key, ops_acknowledged_at, ops_acknowledged_reason)
+      VALUES ('acknowledged-terminal', 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}',
+      'FAILED', 'acknowledged-terminal-key', '2026-08-23T00:00:00.000Z', 'LEGACY_PROVIDER_CONFIGURATION')`).run();
+
+    await domain.processEmailOutbox();
+
+    expect(sends).toBe(0);
+    expect(setup.db.prepare("SELECT status, ops_acknowledged_reason FROM email_outbox WHERE id = 'acknowledged-terminal'").get())
+      .toEqual({ status: "FAILED", ops_acknowledged_reason: "LEGACY_PROVIDER_CONFIGURATION" });
+  });
+
   it("backs off ambiguous email sends and stops after the retry ceiling", async () => {
     const setup = fixture(); databases.push(setup.db);
     const timestamp = Date.parse("2026-08-23T12:00:00.000Z");

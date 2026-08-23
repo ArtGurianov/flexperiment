@@ -129,6 +129,33 @@ or metadata, so this implementation does not invent one. For city-interest,
 [`city-interest-operations.md`](city-interest-operations.md) for withdrawal,
 expiry, and webhook-subscription requirements.
 
+## Email operational attention
+
+Delivery state is provider evidence and is not an operator task flag. The
+Admin `Email attention` metric and the `attention_count` returned by
+`/v1/admin/email-attention` use the same predicate:
+
+```text
+status IN (FAILED, BOUNCED, SEND_UNKNOWN)
+AND ops_acknowledged_at IS NULL
+```
+
+`DELIVERED` is never an incident. Acknowledging an incident records only the
+server timestamp and a non-empty operational reason; it does not alter status,
+timestamps, provider events, attempts, job ID, or suppression state. It does
+not resend email or call Unisender. The Admin operation is naturally
+idempotent: later requests preserve the original acknowledgement reason and
+produce no second audit effect.
+
+Use acknowledgement only after the incident has been reviewed and its action
+is complete or consciously accepted. For example, acknowledge historical
+`HTTP_403_LEGACY` rows with `LEGACY_PROVIDER_CONFIGURATION`, and an understood
+historical provider-plan rejection with `PROVIDER_PLAN_LIMIT_RESOLVED`. Do not
+acknowledge recipient failures such as a `204` invalid recipient or a hard
+bounce merely to hide them: they require customer-facing follow-up. Terminal
+recipient failures are not automatically retried; changing a recipient and
+requesting a new delivery is a separate explicit workflow.
+
 Before traffic is enabled, run the production 1-RUB Tochka payment, verify the
 receipt and signed callback, issue and reconcile a refund, and exercise an
 actual Unisender send plus each configured callback status. Back up the SQLite

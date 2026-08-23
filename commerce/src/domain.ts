@@ -67,6 +67,25 @@ export const CREATE_UNKNOWN_LOOKUP_MAX_ATTEMPTS = 8;
 export const CREATE_UNKNOWN_LOOKUP_WINDOW_MS = 8 * 24 * 60 * 60 * 1_000;
 export const CREATE_UNKNOWN_LOOKUP_INITIAL_BACKOFF_MS = 60 * 1_000;
 export const CREATE_UNKNOWN_LOOKUP_MAX_BACKOFF_MS = 60 * 60 * 1_000;
+export const EMAIL_ATTENTION_STATUSES = ["FAILED", "BOUNCED", "SEND_UNKNOWN"] as const;
+const emailAttentionStatusSql = "e.status IN ('FAILED', 'BOUNCED', 'SEND_UNKNOWN')";
+const emailAttentionPredicateSql = `${emailAttentionStatusSql} AND e.ops_acknowledged_at IS NULL`;
+const emailAttentionSql = (where: string) => `SELECT
+    e.id, e.type, e.status, e.attempts, e.created_at, e.sent_at, e.delivered_at, e.bounced_at,
+    e.provider_error_code, e.provider_error_message,
+    e.ops_acknowledged_at, e.ops_acknowledged_reason,
+    CASE WHEN ${emailAttentionPredicateSql} THEN 1 ELSE 0 END AS requires_attention,
+    COALESCE(direct_order.id, ticket_order.id, refund_order.id) AS order_id,
+    COALESCE(direct_order.public_order_number, ticket_order.public_order_number, refund_order.public_order_number) AS public_order_number
+  FROM email_outbox e
+  LEFT JOIN orders direct_order ON direct_order.id = e.payload_ref
+  LEFT JOIN tickets ticket ON ticket.id = e.payload_ref
+  LEFT JOIN bookings ticket_booking ON ticket_booking.id = ticket.booking_id
+  LEFT JOIN orders ticket_order ON ticket_order.id = ticket_booking.order_id
+  LEFT JOIN refunds refund ON refund.id = e.payload_ref
+  LEFT JOIN orders refund_order ON refund_order.id = refund.order_id
+  WHERE ${where}
+  ORDER BY e.ops_acknowledged_at IS NULL DESC, e.created_at DESC, e.id DESC`;
 
 const cityInterestExpiry = (timestamp: string) => {
   const date = new Date(timestamp);
@@ -101,6 +120,35 @@ export class CommerceDomain {
     const release = one(this.db, "SELECT id, version, effective_at, manifest_json FROM legal_releases WHERE active = 1");
     if (!release) throw new DomainError("LEGAL_RELEASE_NOT_ACTIVE", 503);
     return { ...release, manifest: legalManifest(JSON.parse(String(release.manifest_json))) };
+  }
+
+  emailAttentionCount() {
+    return Number(one(this.db, `SELECT COUNT(*) AS count FROM email_outbox e
+      WHERE ${emailAttentionPredicateSql}`)?.count ?? 0);
+  }
+
+  emailAttentionIncidents() {
+    return many(this.db, emailAttentionSql(emailAttentionStatusSql));
+  }
+
+  acknowledgeEmailAttention(outboxId: string, reason: string) {
+    return withImmediateTransaction(this.db, () => {
+      const acknowledgedReason = reason.trim();
+      if (!acknowledgedReason) throw new DomainError("EMAIL_ATTENTION_ACKNOWLEDGEMENT_REASON_REQUIRED", 422);
+      const outbox = one(this.db, `SELECT id, status, ops_acknowledged_at
+        FROM email_outbox WHERE id = ?`, outboxId);
+      if (!outbox) throw new DomainError("EMAIL_OUTBOX_NOT_FOUND", 404);
+      if (outbox.ops_acknowledged_at === null) {
+        if (!EMAIL_ATTENTION_STATUSES.includes(outbox.status as typeof EMAIL_ATTENTION_STATUSES[number])) {
+          throw new DomainError("EMAIL_ATTENTION_NOT_ACTIONABLE", 409);
+        }
+        this.db.prepare(`UPDATE email_outbox
+          SET ops_acknowledged_at = ?, ops_acknowledged_reason = ?
+          WHERE id = ? AND ops_acknowledged_at IS NULL`).run(now(), acknowledgedReason, outboxId);
+      }
+      const incident = one(this.db, `${emailAttentionSql("e.id = ?")} LIMIT 1`, outboxId);
+      return { incident: incident!, acknowledged_now: outbox.ops_acknowledged_at === null };
+    });
   }
 
   registerCityInterest(input: { email: string; city: string }) {

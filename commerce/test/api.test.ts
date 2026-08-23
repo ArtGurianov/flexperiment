@@ -80,6 +80,44 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
+  it("reports and acknowledges operational email attention without changing delivery facts", async () => {
+    const { db, app } = appFixture();
+    const insert = db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template,
+      payload_snapshot, status, provider_idempotence_key, attempts, sent_at, bounced_at,
+      provider_error_code, provider_error_message)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, ?, 2,
+      '2026-08-23T00:00:00.000Z', '2026-08-23T00:01:00.000Z', 'hard_bounced', 'Mailbox unavailable')`);
+    for (const status of ["FAILED", "BOUNCED", "SEND_UNKNOWN", "DELIVERED"]) insert.run(`api-attention-${status}`, status, `api-attention-key-${status}`);
+    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.58" }, body: JSON.stringify({ password: "correct horse" }) });
+    const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
+
+    const dashboard = await app.request("http://admin.flexperiment.ru/v1/admin/dashboard", { headers });
+    expect(await dashboard.json()).toMatchObject({ health: { email_attention: { count: 3 } } });
+    const list = await app.request("http://admin.flexperiment.ru/v1/admin/email-attention", { headers });
+    const listed = await list.json() as { attention_count: number; incidents: { id: string; requires_attention: number }[] };
+    expect(listed.attention_count).toBe(3);
+    expect(listed.incidents.filter((incident) => incident.requires_attention === 1)).toHaveLength(3);
+    expect(listed.incidents.map((incident) => incident.id)).not.toContain("api-attention-DELIVERED");
+
+    const empty = await app.request("http://admin.flexperiment.ru/v1/admin/email-attention/api-attention-FAILED/acknowledge", { method: "POST", headers, body: JSON.stringify({ reason: "" }) });
+    expect(empty.status).toBe(422);
+    const unknown = await app.request("http://admin.flexperiment.ru/v1/admin/email-attention/not-an-outbox/acknowledge", { method: "POST", headers, body: JSON.stringify({ reason: "Known incident." }) });
+    expect(unknown.status).toBe(404);
+    const first = await app.request("http://admin.flexperiment.ru/v1/admin/email-attention/api-attention-FAILED/acknowledge", { method: "POST", headers, body: JSON.stringify({ reason: "Recipient was informed by support." }) });
+    expect(await first.json()).toMatchObject({ acknowledged_now: true, incident: { status: "FAILED", ops_acknowledged_reason: "Recipient was informed by support." } });
+    const replay = await app.request("http://admin.flexperiment.ru/v1/admin/email-attention/api-attention-FAILED/acknowledge", { method: "POST", headers, body: JSON.stringify({ reason: "Must not overwrite." }) });
+    expect(await replay.json()).toMatchObject({ acknowledged_now: false, incident: { ops_acknowledged_reason: "Recipient was informed by support." } });
+    expect(db.prepare(`SELECT status, attempts, sent_at, bounced_at, provider_error_code,
+      provider_error_message, ops_acknowledged_reason FROM email_outbox WHERE id = 'api-attention-FAILED'`).get())
+      .toEqual({ status: "FAILED", attempts: 2, sent_at: "2026-08-23T00:00:00.000Z", bounced_at: "2026-08-23T00:01:00.000Z", provider_error_code: "hard_bounced", provider_error_message: "Mailbox unavailable", ops_acknowledged_reason: "Recipient was informed by support." });
+    const after = await app.request("http://admin.flexperiment.ru/v1/admin/email-attention", { headers });
+    const afterBody = await after.json() as { attention_count: number; incidents: { requires_attention: number }[] };
+    expect(afterBody.attention_count).toBe(2);
+    expect(afterBody.incidents.filter((incident) => incident.requires_attention === 1)).toHaveLength(2);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM admin_audit_log WHERE action = 'EMAIL_ATTENTION_ACKNOWLEDGED'").get()).toEqual({ count: 1 });
+    db.close();
+  });
+
   it("exposes settlement evidence as a pure Admin read and requires idempotency for lifecycle commands", async () => {
     const { db, app } = appFixture();
     const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;

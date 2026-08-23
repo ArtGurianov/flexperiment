@@ -8,7 +8,7 @@ import { createLatestRequestGate } from "./latest-request";
 import { occurrenceActionsFor } from "./occurrence-actions";
 import { CITY_CATALOGUE, type CityCatalogueEntry } from "../../../lib/city-catalog";
 
-type Page = "dashboard" | "login" | "cities" | "occurrences" | "orders" | "refunds" | "settlements" | "audit";
+type Page = "dashboard" | "login" | "cities" | "occurrences" | "orders" | "refunds" | "settlements" | "email-attention" | "audit";
 type Row = Record<string, unknown>;
 
 class AdminApiError extends Error {
@@ -22,7 +22,8 @@ const nav: { href: string; page: Page; label: string; index: string }[] = [
   { href: "/orders/", page: "orders", label: "Заказы", index: "04" },
   { href: "/refunds/", page: "refunds", label: "Возвраты", index: "05" },
   { href: "/settlements/", page: "settlements", label: "Расчёты", index: "06" },
-  { href: "/audit/", page: "audit", label: "Аудит", index: "07" },
+  { href: "/email-attention/", page: "email-attention", label: "Email attention", index: "07" },
+  { href: "/audit/", page: "audit", label: "Аудит", index: "08" },
 ];
 
 const idempotencyKey = () => crypto.randomUUID();
@@ -123,7 +124,7 @@ function Dashboard() {
   const today = data.value.today;
   const health: [string, unknown][] = [
     ["CREATE_UNKNOWN", data.value.health.create_unknown?.count], ["REVIEW_REQUIRED", data.value.health.review_required?.count],
-    ["Pending refunds", data.value.health.pending_refunds?.count], ["Email failures", data.value.health.email_failures?.count],
+    ["Pending refunds", data.value.health.pending_refunds?.count], ["Email attention", data.value.health.email_attention?.count],
     ["Stale PREPARED", data.value.health.stale_prepared_settlements?.count],
   ];
   return <><section className="hero"><p className="eyebrow">OPERATIONAL OVERVIEW / TODAY</p><h1>Данные без<br /><i>магии статусов.</i></h1><p>Commerce и SQLite остаются источником истины. Этот экран ничего не мутирует.</p></section>
@@ -294,6 +295,20 @@ function Settlements() {
     {selected && <SettlementDetail id={selected} close={() => { setSelected(null); history.replaceState(null, "", "/settlements/"); }} changed={settlements.reload} />}</>;
 }
 
+function EmailAttention() {
+  const data = useResource<{ incidents: Row[]; attention_count: number }>("/email-attention");
+  const [acknowledging, setAcknowledging] = useState<Row | null>(null);
+  return <><PageTitle eyebrow="OPERATIONS / EMAIL" title={<>Email<br /><i>attention.</i></>} text="Delivery status — это provider evidence. Acknowledgement означает только review оператором и не отправляет письмо повторно." />
+    <section className="panel">{data.loading ? <Loading /> : data.value ? <><p className="notice">Требуют внимания: <strong>{data.value.attention_count}</strong></p><table><thead><tr><th>Создан</th><th>Тип / статус</th><th>Попытки / время</th><th>Provider evidence</th><th>Заказ</th><th>Ops acknowledgement</th></tr></thead><tbody>{data.value.incidents.map((incident) => <tr key={string(incident.id)}><td>{formatDate(incident.created_at)}<small>{string(incident.id)}</small></td><td><Badge>{string(incident.type)}</Badge><Badge>{string(incident.status)}</Badge></td><td>{number(incident.attempts)}<small>sent: {formatDate(incident.sent_at)}</small><small>delivered: {formatDate(incident.delivered_at)}</small><small>bounced: {formatDate(incident.bounced_at)}</small></td><td><code>{string(incident.provider_error_code) || "—"}</code><small>{string(incident.provider_error_message) || "—"}</small></td><td>{string(incident.public_order_number) || "—"}<small>{string(incident.order_id)}</small></td><td>{incident.ops_acknowledged_at ? <><Badge>ACKNOWLEDGED</Badge><small>{formatDate(incident.ops_acknowledged_at)}</small><small>{string(incident.ops_acknowledged_reason)}</small></> : <button onClick={() => setAcknowledging(incident)}>Подтвердить review</button>}</td></tr>)}</tbody></table>{data.value.incidents.length === 0 && <Empty label="Нет email-инцидентов." />}</> : <Notice error={data.error} />}</section>
+    {acknowledging && <EmailAttentionAcknowledgement incident={acknowledging} close={() => setAcknowledging(null)} done={async () => { await data.reload(); setAcknowledging(null); }} />}</>;
+}
+
+function EmailAttentionAcknowledgement({ incident, close, done }: { incident: Row; close: () => void; done: () => Promise<void> }) {
+  const [reason, setReason] = useState(""); const [error, setError] = useState<string | null>(null); const [busy, setBusy] = useState(false);
+  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(null); try { await api(`/email-attention/${string(incident.id)}/acknowledge`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason }) }); await done(); } catch (failure) { setError((failure as AdminApiError).code); } finally { setBusy(false); } };
+  return <ActionModal title="Подтвердить review email-инцидента" close={close}><form className="form" onSubmit={submit}><p>Это не меняет delivery state, не вызывает provider и не создаёт resend.</p><label>Причина review<textarea autoFocus required minLength={3} value={reason} onChange={(event) => setReason(event.target.value)} /></label><Notice error={error} /><button className="primary" disabled={busy}>{busy ? "Сохраняем…" : "Подтвердить"}</button></form></ActionModal>;
+}
+
 function SettlementDetail({ id, close, changed }: { id: string; close: () => void; changed: () => Promise<void> }) {
   const detail = useResource<{ settlement: Row; balance: Row; recoveries: Row[] }>(`/reward-settlements/${id}`);
   const [action, setAction] = useState<"PAYMENT_MADE" | "DOCUMENTS_COMPLETE" | "CANCEL_BEFORE_PAYMENT" | "RECOVERY" | null>(null);
@@ -336,6 +351,6 @@ export function AdminApp({ page }: { page: Page }) {
   if (page === "login") return <Login />;
   if (authenticated === null) return <main className="boot"><Loading /></main>;
   if (!authenticated) return <main className="boot"><Loading /></main>;
-  const view = page === "dashboard" ? <Dashboard /> : page === "cities" ? <Cities /> : page === "occurrences" ? <Occurrences /> : page === "orders" ? <Orders /> : page === "refunds" ? <Refunds /> : page === "settlements" ? <Settlements /> : <Audit />;
+  const view = page === "dashboard" ? <Dashboard /> : page === "cities" ? <Cities /> : page === "occurrences" ? <Occurrences /> : page === "orders" ? <Orders /> : page === "refunds" ? <Refunds /> : page === "settlements" ? <Settlements /> : page === "email-attention" ? <EmailAttention /> : <Audit />;
   return <Shell page={page} onLogout={logout}>{view}</Shell>;
 }
