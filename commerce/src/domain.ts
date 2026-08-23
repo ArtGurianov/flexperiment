@@ -1223,14 +1223,15 @@ export class CommerceDomain {
   /** A fresh CAPTCHA-protected submission may replace only a final failed intent. */
   private canRenewCityInterestNotification(requestId: string) {
     const current = one(this.db, `SELECT outbox.status,
-        (SELECT provider_status FROM email_provider_events
-          WHERE outbox_id = outbox.id
-          ORDER BY rowid DESC LIMIT 1) AS provider_status
+        EXISTS(SELECT 1 FROM email_provider_events
+          WHERE outbox_id = outbox.id AND provider_status = 'hard_bounced') AS has_hard_bounced,
+        EXISTS(SELECT 1 FROM email_provider_events
+          WHERE outbox_id = outbox.id AND provider_status = 'delivered') AS has_delivered
       FROM city_interest_notification_intents intent
       JOIN email_outbox outbox ON outbox.id = intent.outbox_id
       WHERE intent.city_interest_request_id = ? AND intent.superseded_at IS NULL`, requestId);
     return current?.status === "FAILED"
-      || (current?.status === "BOUNCED" && current.provider_status === "hard_bounced");
+      || (Boolean(current?.has_hard_bounced) && !Boolean(current?.has_delivered));
   }
 
   /** Stops future local dispatch and removes the now-unneeded local PII. An in-flight provider call cannot be recalled. */

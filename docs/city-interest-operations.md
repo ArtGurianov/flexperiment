@@ -15,7 +15,9 @@ If the current intent has a final unsuccessful outcome (`hard_bounced` or local
 `FAILED`), a new explicit CAPTCHA-protected submission starts a new consent
 epoch. Commerce retains the old outbox and intent as immutable history, marks
 that intent superseded, and may create one new outbox for the current request.
-It never reuses or resets the failed outbox. `PENDING`, `SENDING`,
+`hard_bounced` is authoritative when its durable provider evidence exists and
+no `DELIVERED` evidence exists; later non-delivery callbacks do not erase that
+fact. It never reuses or resets the failed outbox. `PENDING`, `SENDING`,
 `SEND_UNKNOWN`, `ACCEPTED`, `SENT`, `soft_bounced`, `spam`, and suppressed
 intents cannot be renewed in place. A normal `DELIVERED` intent has already
 deleted its source request and redacted its PII; any later explicit submission

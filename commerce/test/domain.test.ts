@@ -798,6 +798,9 @@ describe("commerce domain", () => {
       JOIN email_outbox outbox ON outbox.id = intent.outbox_id
       WHERE request.email_normalized = 'renew-hard@example.test'`).get() as { request_id: string; outbox_id: string };
     setup.domain.applyUnisenderDelivery({ outboxId: hard.outbox_id, status: "BOUNCED", providerStatus: "hard_bounced", semanticKey: "renew-hard-bounced" });
+    // A later non-delivery event must not make established final hard-bounce
+    // evidence disappear merely because it is the latest provider callback.
+    setup.domain.applyUnisenderDelivery({ outboxId: hard.outbox_id, status: "BOUNCED", providerStatus: "spam", semanticKey: "renew-hard-late-spam" });
     setup.domain.registerCityInterest({ email: "renew-hard@example.test", city: "novosibirsk" });
     const hardIntents = setup.db.prepare(`SELECT intent.outbox_id, intent.superseded_at, outbox.status
       FROM city_interest_notification_intents intent
