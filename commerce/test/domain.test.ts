@@ -174,6 +174,34 @@ describe("commerce domain", () => {
     }
   });
 
+  it("recovers an expired superseded in-flight notice as SEND_UNKNOWN without retrying it", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const sentOutboxIds: string[] = [];
+    const email: EmailProvider = {
+      async lookup() { throw new Error("superseded notice must not be reconciled by worker"); },
+      async send(input) { sentOutboxIds.push(String(input.outboxId)); throw new Error("test provider unavailable"); },
+    };
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email);
+    const quote = domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const checkout = await domain.checkoutAsync(checkoutPayload(quote.quote_id), randomUUID(), "https://flexperiment.ru");
+    const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(checkout.status_id) as { id: string };
+    domain.markPaymentPaid(payment.id, 100_000, "paid");
+    domain.patchOccurrence(setup.occurrenceId, { title: "First notice", reason: "First change", expected_revision: 1 }, randomUUID(), "admin");
+    const outbox = setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'OCCURRENCE_UPDATED'").get() as { id: string };
+    setup.db.prepare("UPDATE email_outbox SET status = 'SENDING', lease_owner = 'crashed-worker', lease_expires_at = datetime('now', '-1 second') WHERE id = ?").run(outbox.id);
+    domain.patchOccurrence(setup.occurrenceId, { title: "Replacement notice", reason: "Second change", expected_revision: 2 }, randomUUID(), "admin");
+
+    domain.recoverStaleCommands();
+    expect(setup.db.prepare("SELECT status, superseded_at, lease_owner, lease_expires_at, next_attempt_at FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({
+      status: "SEND_UNKNOWN", superseded_at: expect.any(String), lease_owner: null, lease_expires_at: null, next_attempt_at: null,
+    });
+    await domain.processEmailOutbox();
+    expect(sentOutboxIds).not.toContain(outbox.id);
+    expect(domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "SENT", providerStatus: "sent", semanticKey: "superseded-stale-sent" })).toEqual({ duplicate: false });
+    expect(domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "DELIVERED", providerStatus: "delivered", semanticKey: "superseded-stale-delivered" })).toEqual({ duplicate: false });
+    expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "DELIVERED" });
+  });
+
   it("rolls a material revision back without orphan notification or entitlement when its effects cannot persist", async () => {
     const setup = fixture(); databases.push(setup.db);
     const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });

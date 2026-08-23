@@ -77,7 +77,9 @@ update mail without deleting its evidence. Only `PENDING` mail becomes
 `SKIPPED`: it is proven not to have left Commerce. `SENDING`, `ACCEPTED`, and
 `SEND_UNKNOWN` retain their delivery state, receive `superseded_at` to prevent
 any later local send/retry, and can still accept subsequent provider `SENT` or
-`DELIVERED` evidence. Consecutive definitely-unsent revisions are coalesced
+`DELIVERED` evidence. If a superseded in-flight `SENDING` lease expires, worker
+recovery records `SEND_UNKNOWN` without scheduling another send; later provider
+evidence remains admissible. Consecutive definitely-unsent revisions are coalesced
 into one replacement notice whose baseline is the earliest unsent revision;
 the replacement always contains the complete current event facts.
 

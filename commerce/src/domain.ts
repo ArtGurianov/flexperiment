@@ -2173,8 +2173,22 @@ export class CommerceDomain {
     this.db.prepare("UPDATE payments SET state = 'CREATE_UNKNOWN', updated_at = ? WHERE state = 'CREATING' AND creation_started_at < datetime('now', '-120 seconds')").run(timestamp);
     this.db.prepare("UPDATE refunds SET status = 'SUBMIT_UNKNOWN' WHERE status = 'SUBMITTING' AND submission_started_at < datetime('now', '-120 seconds')").run();
     this.reconcileLegacyUnisenderHttp403();
+    // A superseded in-flight send must never be retried, but a crashed worker
+    // cannot leave it claiming SENDING forever. Record the honest ambiguous
+    // outcome and retain supersession as the permanent no-retry guard.
+    const staleSupersededOutboxes = many(this.db, "SELECT id FROM email_outbox WHERE status = 'SENDING' AND suppressed_at IS NULL AND superseded_at IS NOT NULL AND lease_expires_at < ?", timestamp);
+    for (const outbox of staleSupersededOutboxes) this.markSupersededStaleEmailUnknown(String(outbox.id));
     const staleOutboxes = many(this.db, "SELECT id, attempts FROM email_outbox WHERE status = 'SENDING' AND suppressed_at IS NULL AND superseded_at IS NULL AND lease_expires_at < ?", timestamp);
     for (const outbox of staleOutboxes) this.deferOrFailStaleEmail(String(outbox.id), Number(outbox.attempts));
+  }
+
+  private markSupersededStaleEmailUnknown(outboxId: string) {
+    this.db.prepare(`UPDATE email_outbox
+      SET status = 'SEND_UNKNOWN', lease_owner = NULL, lease_expires_at = NULL,
+          next_attempt_at = NULL, last_error = 'UNISENDER_TRANSPORT_AMBIGUOUS',
+          provider_error_code = NULL, provider_error_message = NULL
+      WHERE id = ? AND status = 'SENDING' AND suppressed_at IS NULL
+        AND superseded_at IS NOT NULL`).run(outboxId);
   }
 
   private deferOrFailStaleEmail(outboxId: string, attempts: number) {
