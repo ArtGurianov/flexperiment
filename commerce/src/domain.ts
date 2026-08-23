@@ -212,7 +212,29 @@ export class CommerceDomain {
   }
 
   operationalIncidents() {
-    return many(this.db, `SELECT * FROM operational_incidents ORDER BY status = 'OPEN' DESC, created_at DESC, id DESC`);
+    // The incident itself stays immutable evidence. This read model adds the
+    // current operational context an administrator needs to investigate it.
+    return many(this.db, `SELECT incident.*,
+        refund.public_id AS refund_public_id,
+        refund.amount_kopecks AS refund_amount_kopecks,
+        refund.status AS refund_status,
+        refund.provider_reference AS refund_provider_reference,
+        refund.last_error AS refund_last_error,
+        ord.id AS order_id,
+        ord.public_order_number,
+        ord.customer_email,
+        payment.provider_payment_id,
+        payment.status AS payment_status
+      FROM operational_incidents incident
+      LEFT JOIN refunds refund
+        ON incident.entity_type = 'refund' AND refund.id = incident.entity_id
+      LEFT JOIN orders ord
+        ON ord.id = CASE WHEN incident.entity_type = 'refund' THEN refund.order_id
+                         WHEN incident.entity_type = 'order' THEN incident.entity_id
+                    END
+      LEFT JOIN payments payment
+        ON payment.id = refund.payment_id
+      ORDER BY incident.status = 'OPEN' DESC, incident.created_at DESC, incident.id DESC`);
   }
 
   operationalIncidentCount() {
@@ -692,6 +714,19 @@ export class CommerceDomain {
       const token = this.validCustomerRefundToken(capability);
       const order = this.customerRefundOrder(String(token.order_id));
       const eligibility = order && this.customerRefundEligibility(order);
+      // A capability issued before the start must not silently become a
+      // false denial after the start. The entitlement remains authoritative;
+      // only a human may decide the post-start refund outcome.
+      if (order && eligibility === "ORGANIZER_CHANGE_MANUAL_REVIEW") {
+        this.openOperationalIncident(
+          "ORGANIZER_CHANGE_REFUND_MANUAL_REVIEW",
+          "order",
+          String(order.id),
+          `organizer-change-refund-manual:${order.id}`,
+          { order_id: order.id, booking_id: order.booking_id, reason: "OCCURRENCE_CHANGE_AFTER_START" },
+        );
+        return { confirmed: false, manual_review: true, manual_contact: "art@flexperiment.ru" };
+      }
       if (!order || !["ELIGIBLE", "ORGANIZER_CHANGE_ELIGIBLE"].includes(String(eligibility))) throw new DomainError("REFUND_NOT_ELIGIBLE", 409);
       this.db.prepare("UPDATE customer_refund_confirmation_tokens SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL").run(now(), token.id);
       this.db.prepare("UPDATE customer_refund_confirmation_tokens SET invalidated_at = ? WHERE order_id = ? AND id <> ? AND consumed_at IS NULL AND invalidated_at IS NULL").run(now(), order.id, token.id);
@@ -1068,6 +1103,10 @@ export class CommerceDomain {
         AND p.status IN ('PAID', 'PARTIALLY_REFUNDED')
         AND p.captured_amount_kopecks > 0`, after.id);
     for (const booking of paidBookings) {
+      // Only PENDING is proof that a prior notice did not leave our system.
+      // Carry its earliest customer baseline forward so a quick follow-up
+      // edit cannot hide a material change from the replacement notice.
+      const pendingBaseline = this.pendingOccurrenceUpdateBaseline(String(booking.booking_id));
       this.supersedePendingOccurrenceUpdatesForBooking(String(booking.booking_id), "NEWER_OCCURRENCE_REVISION");
       if (classification.refundMaterial) {
         this.db.prepare(`INSERT OR IGNORE INTO occurrence_change_refund_entitlements(
@@ -1075,6 +1114,10 @@ export class CommerceDomain {
         ) VALUES (?, ?, ?, ?, ?)`)
           .run(id(), revisionId, booking.order_id, booking.booking_id, booking.payment_id);
       }
+      const notificationClassification = pendingBaseline
+        ? classifyOccurrenceRevision(pendingBaseline.before, after)
+        : classification;
+      const organizerChangeFullRefundAvailable = this.hasOpenOccurrenceChangeRefundEntitlement(String(booking.booking_id));
       const payload = {
         schema_version: 1,
         occurrence_revision_id: revisionId,
@@ -1084,10 +1127,13 @@ export class CommerceDomain {
         booking_id: booking.booking_id,
         order_id: booking.order_id,
         public_order_number: booking.public_order_number,
-        before: classification.before,
-        after: classification.after,
-        material_changes: classification.materialChanges,
-        organizer_change_full_refund_available: classification.refundMaterial,
+        before: notificationClassification.before,
+        after: notificationClassification.after,
+        material_changes: notificationClassification.materialChanges,
+        // This is a durable booking right, not a property of only the latest
+        // PATCH. It stays visible after a notification-only follow-up edit.
+        organizer_change_full_refund_available: organizerChangeFullRefundAvailable,
+        ...(pendingBaseline ? { coalesced_unsent_revision_ids: pendingBaseline.revisionIds } : {}),
       };
       const outboxId = this.enqueueEmail(
         "OCCURRENCE_UPDATED",
@@ -1403,9 +1449,17 @@ export class CommerceDomain {
       const failed = observed.status === "FAILED";
       this.db.prepare(`UPDATE refunds SET status = ?, failed_at = CASE WHEN ? THEN ? ELSE failed_at END WHERE id = ?`)
         .run(failed ? "FAILED" : "REVIEW_REQUIRED", failed ? 1 : 0, now(), refundId);
+      const order = one(this.db, `SELECT public_order_number, customer_email
+        FROM orders WHERE id = ?`, refund.order_id);
       this.openOperationalIncident("REFUND_REQUIRES_REVIEW", "refund", refundId, `refund-attention:${refundId}`, {
         refund_id: refundId,
         state: failed ? "FAILED" : "REVIEW_REQUIRED",
+        order_id: refund.order_id,
+        public_order_number: order?.public_order_number ?? null,
+        customer_email: order?.customer_email ?? null,
+        amount_kopecks: refund.amount_kopecks,
+        provider_reference: refund.provider_reference ?? null,
+        provider_payment_id: refund.provider_payment_id,
       });
       return one(this.db, "SELECT * FROM refunds WHERE id = ?", refundId)!;
     });
@@ -1808,15 +1862,48 @@ export class CommerceDomain {
       WHERE n.booking_id = ? AND n.superseded_at IS NULL
         AND e.status IN ('PENDING', 'SENDING', 'ACCEPTED', 'SEND_UNKNOWN')`, bookingId);
     for (const notification of pending) {
+      // PENDING has definitely not crossed the provider boundary. Every
+      // other state may already represent a real delivery attempt, so retain
+      // that status and accept later provider evidence, while the superseded
+      // marker prevents any future local send/retry.
       const updated = this.db.prepare(`UPDATE email_outbox
-        SET status = 'SKIPPED', superseded_at = ?, superseded_reason = ?,
-            lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL
+        SET status = CASE WHEN status = 'PENDING' THEN 'SKIPPED' ELSE status END,
+            superseded_at = ?, superseded_reason = ?,
+            lease_owner = CASE WHEN status = 'PENDING' THEN NULL ELSE lease_owner END,
+            lease_expires_at = CASE WHEN status = 'PENDING' THEN NULL ELSE lease_expires_at END,
+            next_attempt_at = CASE WHEN status = 'PENDING' THEN NULL ELSE next_attempt_at END
         WHERE id = ? AND status IN ('PENDING', 'SENDING', 'ACCEPTED', 'SEND_UNKNOWN')
           AND superseded_at IS NULL`).run(timestamp, reason, notification.outbox_id);
       if (updated.changes) this.db.prepare(`UPDATE occurrence_update_notifications
         SET superseded_at = ?, superseded_reason = ? WHERE id = ? AND superseded_at IS NULL`)
         .run(timestamp, reason, notification.id);
     }
+  }
+
+  private pendingOccurrenceUpdateBaseline(bookingId: string): { before: Row; revisionIds: string[] } | null {
+    const notifications = many(this.db, `SELECT notification.occurrence_revision_id, outbox.payload_snapshot
+      FROM occurrence_update_notifications notification
+      JOIN email_outbox outbox ON outbox.id = notification.outbox_id
+      WHERE notification.booking_id = ?
+        AND notification.superseded_at IS NULL
+        AND outbox.status = 'PENDING'
+      ORDER BY notification.created_at ASC, notification.id ASC`, bookingId);
+    if (!notifications.length) return null;
+    try {
+      const payload = JSON.parse(String(notifications[0]!.payload_snapshot)) as { before?: Row };
+      if (!payload.before || typeof payload.before !== "object") return null;
+      return { before: payload.before, revisionIds: notifications.map((notification) => String(notification.occurrence_revision_id)) };
+    } catch {
+      // A corrupt historical payload must never prevent the authoritative
+      // occurrence mutation. The new message remains self-contained.
+      return null;
+    }
+  }
+
+  private hasOpenOccurrenceChangeRefundEntitlement(bookingId: string) {
+    return Boolean(one(this.db, `SELECT 1 AS present
+      FROM occurrence_change_refund_entitlements
+      WHERE booking_id = ? AND status = 'OPEN' LIMIT 1`, bookingId));
   }
 
   private closeOccurrenceChangeRefundEntitlementsForBooking(bookingId: string, reason: string) {
@@ -1953,8 +2040,7 @@ export class CommerceDomain {
     this.db.prepare(`UPDATE email_outbox SET status = ?, job_id = COALESCE(job_id, ?), lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL${timestamps}
       WHERE id = ?
         AND NOT (status = 'DELIVERED' AND ? != 'DELIVERED')
-        AND NOT (suppressed_at IS NOT NULL AND ? != 'DELIVERED')
-        AND NOT (superseded_at IS NOT NULL AND ? != 'DELIVERED')`).run(observed.status, observed.jobId ?? null, ...(timestamps ? [now()] : []), outboxId, observed.status, observed.status, observed.status);
+        AND NOT (suppressed_at IS NOT NULL AND ? != 'DELIVERED')`).run(observed.status, observed.jobId ?? null, ...(timestamps ? [now()] : []), outboxId, observed.status, observed.status);
   }
 
   private redactDeliveredCityInterestOutbox(outboxId: string) {
@@ -2087,7 +2173,7 @@ export class CommerceDomain {
     this.db.prepare("UPDATE payments SET state = 'CREATE_UNKNOWN', updated_at = ? WHERE state = 'CREATING' AND creation_started_at < datetime('now', '-120 seconds')").run(timestamp);
     this.db.prepare("UPDATE refunds SET status = 'SUBMIT_UNKNOWN' WHERE status = 'SUBMITTING' AND submission_started_at < datetime('now', '-120 seconds')").run();
     this.reconcileLegacyUnisenderHttp403();
-    const staleOutboxes = many(this.db, "SELECT id, attempts FROM email_outbox WHERE status = 'SENDING' AND suppressed_at IS NULL AND lease_expires_at < ?", timestamp);
+    const staleOutboxes = many(this.db, "SELECT id, attempts FROM email_outbox WHERE status = 'SENDING' AND suppressed_at IS NULL AND superseded_at IS NULL AND lease_expires_at < ?", timestamp);
     for (const outbox of staleOutboxes) this.deferOrFailStaleEmail(String(outbox.id), Number(outbox.attempts));
   }
 

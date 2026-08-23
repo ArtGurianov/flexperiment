@@ -31,4 +31,24 @@ describe("refund email wording", () => {
     expect(full.plaintext).toContain("аннулированы");
     expect(partial.plaintext).toContain("остаются действительными");
   });
+
+  it("renders human-readable field changes and the complete current occurrence state", () => {
+    const update = renderEmailTemplate("occurrence-updated", {
+      before: {
+        title: "FLEXPERIMENT", starts_at: "2030-01-01T10:00:00Z", ends_at: "2030-01-01T13:00:00Z", timezone: "Asia/Novosibirsk",
+        venue_status: "CONFIRMED", venue_name: "Studio A", venue_address: "Lenina 1",
+      },
+      after: {
+        title: "FLEXPERIMENT — расширенная программа", starts_at: "2030-01-01T10:00:00Z", ends_at: "2030-01-01T14:30:00Z", timezone: "Asia/Novosibirsk",
+        venue_status: "TO_BE_ANNOUNCED", venue_disclosure_text: "Сообщим площадку дополнительно", venue_announce_by: "2029-12-20T10:00:00Z",
+      },
+      material_changes: [{ field: "title" }, { field: "ends_at" }, { field: "venue_status" }, { field: "venue_announce_by" }],
+    });
+    expect(update.plaintext).toContain("Время окончания");
+    expect(update.plaintext).toContain("Площадка");
+    expect(update.plaintext).toContain("Studio A, Lenina 1");
+    expect(update.plaintext).toContain("Актуальные данные мастер-класса");
+    expect(update.plaintext).not.toContain("OCCURRENCE_END_CHANGED");
+    expect(update.plaintext).not.toContain("2030-01-01T10:00:00Z");
+  });
 });

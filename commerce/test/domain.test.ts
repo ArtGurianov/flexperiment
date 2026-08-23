@@ -132,6 +132,48 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrence_revisions").get()).toEqual(beforeNoop);
   });
 
+  it("coalesces definitely-unsent occurrence changes and retains the durable organizer-change entitlement", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const checkout = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), randomUUID(), "https://flexperiment.ru");
+    const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(checkout.status_id) as { id: string };
+    setup.domain.markPaymentPaid(payment.id, 100_000, "paid");
+
+    setup.domain.patchOccurrence(setup.occurrenceId, { starts_at: "2026-10-01T12:00:00.000Z", ends_at: "2026-10-01T15:00:00.000Z", reason: "Moved later", expected_revision: 1 }, randomUUID(), "admin");
+    setup.domain.patchOccurrence(setup.occurrenceId, { title: "FLEXPERIMENT: новая редакция", reason: "Corrected title", expected_revision: 2 }, randomUUID(), "admin");
+
+    const notices = setup.db.prepare("SELECT status, payload_snapshot FROM email_outbox WHERE type = 'OCCURRENCE_UPDATED'").all() as Array<{ status: string; payload_snapshot: string }>;
+    expect(notices.filter((notice) => notice.status === "SKIPPED")).toHaveLength(1);
+    const replacementRow = notices.find((notice) => notice.status === "PENDING");
+    expect(replacementRow).toBeDefined();
+    const replacement = JSON.parse(replacementRow!.payload_snapshot) as { before: { starts_at: string }; after: { title: string }; material_changes: Array<{ field: string }>; organizer_change_full_refund_available: boolean; coalesced_unsent_revision_ids: string[] };
+    expect(replacement.before.starts_at).toBe("2026-10-01T10:00:00.000Z");
+    expect(replacement.after.title).toBe("FLEXPERIMENT: новая редакция");
+    expect(replacement.material_changes.map((change) => change.field)).toEqual(expect.arrayContaining(["starts_at", "ends_at", "title"]));
+    expect(replacement.organizer_change_full_refund_available).toBe(true);
+    expect(replacement.coalesced_unsent_revision_ids).toHaveLength(1);
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrence_change_refund_entitlements WHERE status = 'OPEN'").get()).toEqual({ count: 1 });
+  });
+
+  it("supersedes only definitely-unsent notices and continues to record provider delivery evidence", async () => {
+    const statuses = ["SENDING", "ACCEPTED", "SEND_UNKNOWN"] as const;
+    for (const status of statuses) {
+      const setup = fixture(); databases.push(setup.db);
+      const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+      const checkout = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), randomUUID(), "https://flexperiment.ru");
+      const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(checkout.status_id) as { id: string };
+      setup.domain.markPaymentPaid(payment.id, 100_000, "paid");
+      setup.domain.patchOccurrence(setup.occurrenceId, { title: `First ${status}`, reason: "First change", expected_revision: 1 }, randomUUID(), "admin");
+      const outbox = setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'OCCURRENCE_UPDATED'").get() as { id: string };
+      setup.db.prepare("UPDATE email_outbox SET status = ? WHERE id = ?").run(status, outbox.id);
+      setup.domain.patchOccurrence(setup.occurrenceId, { title: `Second ${status}`, reason: "Second change", expected_revision: 2 }, randomUUID(), "admin");
+      expect(setup.db.prepare("SELECT status, superseded_at FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status, superseded_at: expect.any(String) });
+      expect(setup.domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "SENT", providerStatus: "sent", semanticKey: `sent-${status}` })).toEqual({ duplicate: false });
+      expect(setup.domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "DELIVERED", providerStatus: "delivered", semanticKey: `delivered-${status}` })).toEqual({ duplicate: false });
+      expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "DELIVERED" });
+    }
+  });
+
   it("rolls a material revision back without orphan notification or entitlement when its effects cannot persist", async () => {
     const setup = fixture(); databases.push(setup.db);
     const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
@@ -162,6 +204,25 @@ describe("commerce domain", () => {
     setup.db.prepare("UPDATE occurrences SET starts_at = '2026-07-01T10:00:00.000Z', ends_at = '2026-07-01T13:00:00.000Z' WHERE id = ?").run(setup.occurrenceId);
     expect(domain.requestCustomerRefund(order.public_order_number.replaceAll("-", ""))).toEqual({ accepted: true });
     expect(setup.db.prepare("SELECT kind, entity_type FROM operational_incidents WHERE kind = 'ORGANIZER_CHANGE_REFUND_MANUAL_REVIEW'").get()).toEqual({ kind: "ORGANIZER_CHANGE_REFUND_MANUAL_REVIEW", entity_type: "order" });
+  });
+
+  it("routes an already-issued organizer-change confirmation to manual review after the start", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    setup.db.prepare("UPDATE occurrences SET starts_at = '2030-01-01T12:00:00.000Z', ends_at = '2030-01-01T15:00:00.000Z' WHERE id = ?").run(setup.occurrenceId);
+    const paidDomain = new CommerceDomain(setup.db, new MockProvider(), undefined, () => Date.parse("2030-01-01T11:00:00.000Z"));
+    const quote = paidDomain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const checkout = await paidDomain.checkoutAsync(checkoutPayload(quote.quote_id), randomUUID(), "https://flexperiment.ru");
+    const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(checkout.status_id) as { id: string };
+    paidDomain.markPaymentPaid(payment.id, 100_000, "paid");
+    const beforeStart = new CommerceDomain(setup.db, new MockProvider(), undefined, () => Date.parse("2030-01-01T12:05:00.000Z"));
+    beforeStart.patchOccurrence(setup.occurrenceId, { starts_at: "2030-01-01T12:15:00.000Z", ends_at: "2030-01-01T15:15:00.000Z", reason: "Organizer moved event", expected_revision: 1 }, randomUUID(), "admin");
+    const order = setup.db.prepare("SELECT id, public_order_number FROM orders").get() as { id: string; public_order_number: string };
+    beforeStart.requestCustomerRefund(order.public_order_number.replaceAll("-", ""));
+    const token = setup.db.prepare("SELECT token_ciphertext, token_nonce FROM customer_refund_confirmation_tokens WHERE order_id = ?").get(order.id) as { token_ciphertext: string; token_nonce: string };
+    const afterStart = new CommerceDomain(setup.db, new MockProvider(), undefined, () => Date.parse("2030-01-01T12:20:00.000Z"));
+    expect(afterStart.confirmCustomerRefund(decryptTicketCapability(token.token_ciphertext, token.token_nonce))).toEqual({ confirmed: false, manual_review: true, manual_contact: "art@flexperiment.ru" });
+    expect(setup.db.prepare("SELECT status FROM bookings WHERE order_id = ?").get(order.id)).toEqual({ status: "CONFIRMED" });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM operational_incidents WHERE kind = 'ORGANIZER_CHANGE_REFUND_MANUAL_REVIEW' AND entity_id = ?").get(order.id)).toEqual({ count: 1 });
   });
 
   it("rejects stale Admin occurrence revisions and resolves an overdue TBA incident only after disclosure", () => {
@@ -209,6 +270,9 @@ describe("commerce domain", () => {
     await setup.domain.reconcileRefund(refundId);
     await setup.domain.reconcileRefund(refundId);
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM operational_incidents WHERE entity_id = ? AND kind = 'REFUND_REQUIRES_REVIEW'").get(refundId)).toEqual({ count: 1 });
+    expect(JSON.parse((setup.db.prepare("SELECT details_json FROM operational_incidents WHERE entity_id = ?").get(refundId) as { details_json: string }).details_json)).toMatchObject({
+      refund_id: refundId, state: "FAILED", order_id: payment.order_id, amount_kopecks: 100_000, provider_reference: "reference", provider_payment_id: "paid",
+    });
     (setup.domain.provider as PaymentProvider).reconcileRefund = async () => ({ status: "SUCCEEDED", refundedAmountKopecks: 100_000 });
     await setup.domain.reconcileRefund(refundId);
     expect(setup.db.prepare("SELECT status FROM operational_incidents WHERE entity_id = ?").get(refundId)).toEqual({ status: "RESOLVED" });

@@ -72,20 +72,29 @@ the currently read `expected_revision`. A stale editor receives
 
 Customer-facing material changes create immutable `OCCURRENCE_UPDATED` outbox
 records only for active, paid, valid-ticket bookings. A newer revision, full
-refund, booking cancellation, or occurrence cancellation supersedes queued or
-ambiguous older update mail without deleting its evidence. `SENT` and
-`DELIVERED` messages remain historical facts.
+refund, booking cancellation, or occurrence cancellation supersedes older
+update mail without deleting its evidence. Only `PENDING` mail becomes
+`SKIPPED`: it is proven not to have left Commerce. `SENDING`, `ACCEPTED`, and
+`SEND_UNKNOWN` retain their delivery state, receive `superseded_at` to prevent
+any later local send/retry, and can still accept subsequent provider `SENT` or
+`DELIVERED` evidence. Consecutive definitely-unsent revisions are coalesced
+into one replacement notice whose baseline is the earliest unsent revision;
+the replacement always contains the complete current event facts.
 
 Changes to date/time/timezone, an already-confirmed venue, confirmed-to-TBA,
 or a later venue-announcement deadline also create a durable special full
 refund entitlement for the affected pre-existing booking. Before the event
 starts this bypasses only the automated ordinary-refund cutoff; after start it
-opens an Admin operational incident for manual review. It does not alter the
-customer's statutory rights.
+opens an Admin operational incident for manual review. A confirmation link
+issued before the start also routes to that manual-review path if opened after
+the start; it does not become a misleading automatic refusal. It does not
+alter the customer's statutory rights.
 
 The `Инциденты` Admin screen exposes deduplicated refund review and overdue-TBA
-venue incidents. Resolving an incident records an operator note; it never
-changes payment, booking, ticket, or provider evidence by itself.
+venue incidents, with current order/customer/refund/provider context alongside
+the immutable incident evidence. Resolving an incident records an operator
+note; it never changes payment, booking, ticket, or provider evidence by
+itself.
 
 ## Local development
 

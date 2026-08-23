@@ -2,6 +2,47 @@ const escapeHtml = (value: unknown) => String(value ?? "").replace(/[&<>"']/g, (
 const orderReference = (payload: Record<string, unknown>) => payload.public_order_number ? `\nНомер заказа: ${String(payload.public_order_number)}` : "";
 const formatKopecks = (value: unknown) => Number.isInteger(value) ? `${Number(value) / 100} ₽` : "";
 
+type OccurrenceSnapshot = Record<string, unknown>;
+
+const formatOccurrenceDateTime = (value: unknown, timezone: unknown) => {
+  const date = new Date(String(value ?? ""));
+  if (Number.isNaN(date.getTime())) return "уточняется";
+  try {
+    return new Intl.DateTimeFormat("ru-RU", {
+      timeZone: String(timezone || "UTC"),
+      day: "2-digit", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit",
+    }).format(date);
+  } catch {
+    return new Intl.DateTimeFormat("ru-RU", {
+      day: "2-digit", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit",
+    }).format(date);
+  }
+};
+
+const venueDescription = (occurrence: OccurrenceSnapshot) => occurrence.venue_status === "CONFIRMED"
+  ? [occurrence.venue_name, occurrence.venue_address].filter(Boolean).map(String).join(", ") || "Площадка уточняется"
+  : `${String(occurrence.venue_disclosure_text ?? "Площадка будет объявлена позже")}${occurrence.venue_announce_by ? `. Объявим не позднее ${formatOccurrenceDateTime(occurrence.venue_announce_by, occurrence.timezone)}` : ""}`;
+
+const occurrenceFacts = (occurrence: OccurrenceSnapshot) => [
+  `Событие: ${String(occurrence.title ?? "FLEXPERIMENT")}`,
+  `Дата и время: ${formatOccurrenceDateTime(occurrence.starts_at, occurrence.timezone)} — ${formatOccurrenceDateTime(occurrence.ends_at, occurrence.timezone)} (${String(occurrence.timezone ?? "UTC")})`,
+  `Место: ${venueDescription(occurrence)}`,
+];
+
+const occurrenceChangeLines = (before: OccurrenceSnapshot, after: OccurrenceSnapshot, values: unknown) => {
+  const changes = Array.isArray(values) ? values as Array<Record<string, unknown>> : [];
+  const fields = new Set(changes.map((change) => String(change.field)));
+  const lines: Array<{ label: string; before: string; after: string }> = [];
+  if (fields.has("title")) lines.push({ label: "Название", before: String(before.title ?? "—"), after: String(after.title ?? "—") });
+  if (fields.has("starts_at")) lines.push({ label: "Время начала", before: formatOccurrenceDateTime(before.starts_at, before.timezone), after: formatOccurrenceDateTime(after.starts_at, after.timezone) });
+  if (fields.has("ends_at")) lines.push({ label: "Время окончания", before: formatOccurrenceDateTime(before.ends_at, before.timezone), after: formatOccurrenceDateTime(after.ends_at, after.timezone) });
+  if (fields.has("timezone")) lines.push({ label: "Часовой пояс", before: String(before.timezone ?? "—"), after: String(after.timezone ?? "—") });
+  if (["venue_status", "venue_name", "venue_address", "venue_disclosure_text", "venue_announce_by"].some((field) => fields.has(field))) {
+    lines.push({ label: "Площадка", before: venueDescription(before), after: venueDescription(after) });
+  }
+  return lines;
+};
+
 export function renderEmailTemplate(template: string, payload: Record<string, unknown>) {
   if (template === "ticket") {
     const ticketUrl = String(payload.ticket_url ?? "");
@@ -28,13 +69,22 @@ export function renderEmailTemplate(template: string, payload: Record<string, un
     return { subject: "Возврат выполнен", plaintext: `${message}${orderReference(payload)}`, html: `<p>${escapeHtml(message)}</p>${payload.public_order_number ? `<p>Номер заказа: ${escapeHtml(payload.public_order_number)}</p>` : ""}` };
   }
   if (template === "occurrence-updated") {
-    const before = (payload.before ?? {}) as Record<string, unknown>;
-    const after = (payload.after ?? {}) as Record<string, unknown>;
-    const changed = Array.isArray(payload.material_changes) ? payload.material_changes.map((value) => String((value as Record<string, unknown>).kind ?? (value as Record<string, unknown>).field)).join(", ") : "";
+    const before = (payload.before ?? {}) as OccurrenceSnapshot;
+    const after = (payload.after ?? {}) as OccurrenceSnapshot;
+    const changes = occurrenceChangeLines(before, after, payload.material_changes);
     const refund = payload.organizer_change_full_refund_available === true
       ? "Из-за существенного изменения до начала события для вашего заказа доступен полный возврат; оформить его можно через страницу возврата."
       : "Пожалуйста, проверьте обновлённые условия участия.";
-    return { subject: "Изменились условия мастер-класса FLEXPERIMENT", plaintext: `Изменились условия: ${changed}\nБыло: ${String(before.starts_at ?? "")} · ${String(before.timezone ?? "")}\nСтало: ${String(after.starts_at ?? "")} · ${String(after.timezone ?? "")}\n${refund}${orderReference(payload)}`, html: `<p>Для вашего мастер-класса изменились условия: ${escapeHtml(changed)}.</p><p><strong>${escapeHtml(after.title ?? "FLEXPERIMENT")}</strong><br/>Было: ${escapeHtml(before.starts_at)} · ${escapeHtml(before.timezone)}<br/>Стало: ${escapeHtml(after.starts_at)} · ${escapeHtml(after.timezone)}<br/>Текущая площадка: ${escapeHtml(after.venue_status === "CONFIRMED" ? `${String(after.venue_name ?? "")}, ${String(after.venue_address ?? "")}` : after.venue_disclosure_text ?? "Площадка будет объявлена позже")}</p><p>${escapeHtml(refund)}</p>${payload.public_order_number ? `<p>Номер заказа: ${escapeHtml(payload.public_order_number)}</p>` : ""}` };
+    const plaintextChanges = changes.map((change) => `${change.label}\nБыло: ${change.before}\nСтало: ${change.after}`).join("\n\n") || "Обновлены условия мастер-класса.";
+    const htmlChanges = changes.length
+      ? `<ul>${changes.map((change) => `<li><strong>${escapeHtml(change.label)}</strong><br/>Было: ${escapeHtml(change.before)}<br/>Стало: ${escapeHtml(change.after)}</li>`).join("")}</ul>`
+      : "<p>Обновлены условия мастер-класса.</p>";
+    const facts = occurrenceFacts(after);
+    return {
+      subject: "Изменились условия мастер-класса FLEXPERIMENT",
+      plaintext: `Изменились условия участия:\n${plaintextChanges}\n\nАктуальные данные мастер-класса:\n${facts.join("\n")}\n\n${refund}${orderReference(payload)}`,
+      html: `<p>Изменились условия участия в мастер-классе.</p>${htmlChanges}<p><strong>Актуальные данные мастер-класса</strong><br/>${facts.map(escapeHtml).join("<br/>")}</p><p>${escapeHtml(refund)}</p>${payload.public_order_number ? `<p>Номер заказа: ${escapeHtml(payload.public_order_number)}</p>` : ""}`,
+    };
   }
   if (template === "city-interest-available") {
     const city = escapeHtml(payload.city_title);
