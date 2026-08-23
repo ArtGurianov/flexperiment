@@ -1,0 +1,502 @@
+From 635b7549f5967b55dbac2d8a87a77221d7f556ca Mon Sep 17 00:00:00 2001
+From: Art <artgurianov@yandex.ru>
+Date: Sun, 23 Aug 2026 13:44:37 +0700
+Subject: [PATCH] fixes
+
+---
+ app/[city]/page.tsx                |  20 +++---
+ apps/admin/components/AdminApp.tsx |  26 +++++--
+ commerce/src/api.ts                |   7 +-
+ commerce/src/domain.ts             |  34 +++++++--
+ commerce/src/types.ts              |   9 ++-
+ commerce/test/api.test.ts          |  21 +++++-
+ components/CheckoutFlow.tsx        |  10 ++-
+ components/CityInterestForm.tsx    |   6 +-
+ lib/city-catalog.test.ts           |  23 ++++++
+ lib/city-catalog.ts                | 109 ++++++++++++++++++++++++++---
+ 10 files changed, 220 insertions(+), 45 deletions(-)
+ create mode 100644 lib/city-catalog.test.ts
+
+diff --git a/app/[city]/page.tsx b/app/[city]/page.tsx
+index 4507286b..8ac2fc87 100644
+--- a/app/[city]/page.tsx
++++ b/app/[city]/page.tsx
+@@ -1,21 +1,19 @@
+ import type { Metadata } from "next";
+ import Home from "@/app/page";
++import { findCityBySlug } from "@/lib/city-catalog";
+ 
+-const cities = {
+-  kemerovo: "Кемерово",
+-  novosibirsk: "Новосибирск",
+-  novokuznetsk: "Новокузнецк",
+-  tomsk: "Томск",
+-  irkutsk: "Иркутск",
+-  krasnoyarsk: "Красноярск",
+-} as const;
++/**
++ * Editorial static entry points are intentionally narrower than the canonical
++ * requestable-city catalogue. Their titles still come from that catalogue.
++ */
++const SEO_CITY_SLUGS = ["kemerovo", "novosibirsk", "novokuznetsk", "tomsk", "irkutsk", "krasnoyarsk"] as const;
+ 
+-export function generateStaticParams() { return Object.keys(cities).map((city) => ({ city })); }
++export function generateStaticParams() { return SEO_CITY_SLUGS.map((city) => ({ city })); }
+ 
+ export async function generateMetadata({ params }: { params: Promise<{ city: string }> }): Promise<Metadata> {
+   const { city } = await params;
+-  const title = cities[city as keyof typeof cities];
+-  return title ? { title: `FLEXPERIMENT — ${title}`, alternates: { canonical: `/${city}` } } : {};
++  const canonicalCity = findCityBySlug(city);
++  return canonicalCity ? { title: `FLEXPERIMENT — ${canonicalCity.title}`, alternates: { canonical: `/${city}` } } : {};
+ }
+ 
+ /** Static city entry points keep editorial SEO separate from live /v1 commerce data. */
+diff --git a/apps/admin/components/AdminApp.tsx b/apps/admin/components/AdminApp.tsx
+index 1f280cfc..d953ad0b 100644
+--- a/apps/admin/components/AdminApp.tsx
++++ b/apps/admin/components/AdminApp.tsx
+@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
+ import { badgeTone } from "./badge-tone";
+ import { createLatestRequestGate } from "./latest-request";
+ import { occurrenceActionsFor } from "./occurrence-actions";
++import { CITY_CATALOGUE, type CityCatalogueEntry } from "../../../lib/city-catalog";
+ 
+ type Page = "dashboard" | "login" | "cities" | "occurrences" | "orders" | "refunds" | "settlements" | "audit";
+ type Row = Record<string, unknown>;
+@@ -137,18 +138,31 @@ function Empty({ label }: { label: string }) { return <p className="empty">{labe
+ 
+ function Cities() {
+   const data = useResource<{ cities: Row[] }>("/cities");
+-  const [name, setName] = useState(""); const [slug, setSlug] = useState(""); const [reason, setReason] = useState("");
+-  const [key, setKey] = useState<string | null>(null); const [error, setError] = useState<string | null>(null); const [busy, setBusy] = useState(false);
++  const [citySlug, setCitySlug] = useState(""); const [reason, setReason] = useState("");
++  const [key, setKey] = useState<string | null>(null); const [error, setError] = useState<string | null>(null); const [busy, setBusy] = useState(false); const [editing, setEditing] = useState<Row | null>(null);
++  const cityOptions = useMemo(() => [...CITY_CATALOGUE].sort((left, right) => left.title.localeCompare(right.title, "ru")), []);
+   const submit = async (event: FormEvent) => {
+     event.preventDefault(); const actionKey = key ?? idempotencyKey(); setKey(actionKey); setBusy(true); setError(null);
+     try {
+-      await api("/cities", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": actionKey }, body: JSON.stringify({ name, slug, reason }) });
+-      setName(""); setSlug(""); setReason(""); setKey(null); await data.reload();
++      await api("/cities", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": actionKey }, body: JSON.stringify({ city_slug: citySlug, reason }) });
++      setCitySlug(""); setReason(""); setKey(null); await data.reload();
+     } catch (failure) { setError((failure as AdminApiError).code); } finally { setBusy(false); }
+   };
+   return <><PageTitle eyebrow="CATALOG / GEOGRAPHY" title={<>Города<br /><i>тура.</i></>} text="Создание — audited command с сохранённым idempotency key. Город сам по себе не появляется в public catalog." />
+-    <section className="two-col catalog-grid"><Panel title="Существующие города">{data.loading ? <Loading /> : data.value ? <table><thead><tr><th>Город</th><th>Slug</th><th>События</th></tr></thead><tbody>{data.value.cities.map((city) => <tr key={string(city.id)}><td><strong>{string(city.title)}</strong><small>{string(city.id)}</small></td><td><code>{string(city.slug)}</code></td><td>{number(city.occurrence_count)}</td></tr>)}</tbody></table> : <Notice error={data.error} />}</Panel>
+-      <Panel title="Добавить город"><form className="form" onSubmit={submit}><label>Название<input value={name} onChange={(event) => setName(event.target.value)} required minLength={2} /></label><label>Slug<input value={slug} onChange={(event) => setSlug(event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, ""))} required pattern="[a-z0-9-]{2,100}" /></label><label>Причина / audit context<textarea value={reason} onChange={(event) => setReason(event.target.value)} required minLength={3} /></label><Notice error={error} /><button className="primary" disabled={busy}>{busy ? "Создаём…" : "Создать город"}</button></form></Panel></section></>;
++    <section className="two-col catalog-grid"><Panel title="Существующие города">{data.loading ? <Loading /> : data.value ? <table><thead><tr><th>Город</th><th>Slug</th><th>События</th><th></th></tr></thead><tbody>{data.value.cities.map((city) => <tr key={string(city.id)}><td><strong>{string(city.title)}</strong><small>{string(city.id)}</small></td><td><code>{string(city.slug)}</code></td><td>{number(city.occurrence_count)}</td><td><button onClick={() => setEditing(city)}>Редактировать</button></td></tr>)}</tbody></table> : <Notice error={data.error} />}</Panel>
++      <Panel title="Добавить город"><form className="form" onSubmit={submit}><label>Город<select value={citySlug} onChange={(event) => setCitySlug(event.target.value)} required><option value="" disabled>Выберите город</option>{cityOptions.map((city) => <option key={city.slug} value={city.slug}>{city.title}</option>)}</select></label><label>Причина / audit context<textarea value={reason} onChange={(event) => setReason(event.target.value)} required minLength={3} /></label><Notice error={error} /><button className="primary" disabled={busy}>{busy ? "Создаём…" : "Создать город"}</button></form></Panel></section>
++    {editing && <CityEditor city={editing} cityOptions={cityOptions} close={() => setEditing(null)} done={async () => { await data.reload(); setEditing(null); }} />}
++  </>;
++}
++
++function CityEditor({ city, cityOptions, close, done }: { city: Row; cityOptions: readonly CityCatalogueEntry[]; close: () => void; done: () => Promise<void> }) {
++  const [citySlug, setCitySlug] = useState(string(city.slug)); const [reason, setReason] = useState(""); const [key] = useState(idempotencyKey); const [error, setError] = useState<string | null>(null); const [busy, setBusy] = useState(false);
++  const submit = async (event: FormEvent) => {
++    event.preventDefault(); setBusy(true); setError(null);
++    try { await api(`/cities/${string(city.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json", "Idempotency-Key": key }, body: JSON.stringify({ city_slug: citySlug, reason }) }); await done(); }
++    catch (failure) { setError((failure as AdminApiError).code); } finally { setBusy(false); }
++  };
++  return <div className="modal-backdrop"><form className="modal editor" onSubmit={submit}><p className="eyebrow">CATALOG / CANONICAL CITY</p><h2>Редактировать город</h2><p>Города с уже созданными событиями нельзя переименовать или переназначить: это защищает исторические заказы и публичные URL.</p><div className="form"><label>Город<select value={citySlug} onChange={(event) => setCitySlug(event.target.value)} required>{cityOptions.map((entry) => <option key={entry.slug} value={entry.slug}>{entry.title}</option>)}</select></label><label>Причина / audit context<textarea value={reason} onChange={(event) => setReason(event.target.value)} required minLength={3} /></label></div><Notice error={error} /><div className="modal-actions"><button type="button" onClick={close}>Отмена</button><button className="primary" disabled={busy}>{busy ? "Сохраняем…" : "Сохранить изменения"}</button></div></form></div>;
+ }
+ 
+ function Occurrences() {
+diff --git a/commerce/src/api.ts b/commerce/src/api.ts
+index 386a888e..019a9469 100644
+--- a/commerce/src/api.ts
++++ b/commerce/src/api.ts
+@@ -10,7 +10,7 @@ import { clientIp, rateLimit } from "./rate-limit";
+ import { TochkaWebhookVerifier, webhookAmountKopecks } from "./tochka-webhook";
+ import { verifyUnisenderWebhook } from "./unisender-webhook";
+ import { type SmartCaptchaVerifier, UnconfiguredSmartCaptchaVerifier } from "./smartcaptcha";
+-import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrencePatchSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
++import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrencePatchSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
+ 
+ type AppBindings = { Variables: { adminId?: string; adminSessionId?: string } };
+ const noStore = (headers: Headers) => headers.set("Cache-Control", "no-store");
+@@ -315,6 +315,11 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
+     const payload = cityCreateSchema.parse(await jsonBody(c.req.raw));
+     return c.json(domain.createCity(payload, key, c.var.adminId!), 201);
+   });
++  admin.patch("/cities/:id", async (c) => {
++    const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
++    const payload = cityPatchSchema.parse(await jsonBody(c.req.raw));
++    return c.json(domain.patchCity(c.req.param("id"), payload, key, c.var.adminId!));
++  });
+   admin.post("/occurrences", async (c) => {
+     const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
+     const payload = occurrenceCreateSchema.parse(await jsonBody(c.req.raw));
+diff --git a/commerce/src/domain.ts b/commerce/src/domain.ts
+index b6d970df..7601693a 100644
+--- a/commerce/src/domain.ts
++++ b/commerce/src/domain.ts
+@@ -4,6 +4,7 @@ import { type EmailProvider, UnconfiguredEmailProvider } from "./email-provider"
+ import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
+ import type { PaymentProvider } from "./provider";
+ import type { CheckoutRequest } from "./types";
++import { findCityBySlug } from "../../lib/city-catalog";
+ 
+ type Row = Record<string, unknown>;
+ const one = <T extends Row>(db: Database.Database, sql: string, ...params: unknown[]) => db.prepare(sql).get(...params) as T | undefined;
+@@ -90,6 +91,8 @@ export class CommerceDomain {
+ 
+   registerCityInterest(input: { email: string; city: string }) {
+     return withImmediateTransaction(this.db, () => {
++      const city = findCityBySlug(input.city);
++      if (!city) throw new DomainError("CITY_SLUG_UNKNOWN", 400);
+       const release = one(this.db, "SELECT manifest_json FROM legal_releases WHERE active = 1");
+       if (!release) throw new DomainError("LEGAL_RELEASE_NOT_ACTIVE", 503);
+       const manifest = legalManifest(JSON.parse(String(release.manifest_json)));
+@@ -100,7 +103,7 @@ export class CommerceDomain {
+         pd_consent_version, pd_consent_sha256, consent_accepted_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(email_hash, city_slug) DO NOTHING`).run(
+-        id(), input.email, emailHash(input.email), input.city,
++        id(), input.email, emailHash(input.email), city.slug,
+         manifest.documents.PRIVACY_POLICY.version, manifest.documents.PRIVACY_POLICY.sha256,
+         manifest.documents.PD_CONSENT.version, manifest.documents.PD_CONSENT.sha256,
+         timestamp,
+@@ -612,17 +615,40 @@ export class CommerceDomain {
+       FROM payment_totals`, occurrenceId)!;
+   }
+ 
+-  createCity(input: { name: string; slug: string; reason: string }, idempotencyKey: string, adminId: string) {
++  createCity(input: { city_slug: string; reason: string }, idempotencyKey: string, adminId: string) {
+     return this.withAdminCommand("city-create", idempotencyKey, input, "cities", () => {
+-      if (one(this.db, "SELECT id FROM cities WHERE slug = ?", input.slug)) throw new DomainError("CITY_SLUG_CONFLICT", 409);
++      const canonicalCity = findCityBySlug(input.city_slug);
++      if (!canonicalCity) throw new DomainError("CITY_SLUG_UNKNOWN", 400);
++      if (one(this.db, "SELECT id FROM cities WHERE slug = ?", canonicalCity.slug)) throw new DomainError("CITY_SLUG_CONFLICT", 409);
+       const cityId = id();
+-      this.db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, ?)").run(cityId, input.slug, input.name);
++      this.db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, ?)").run(cityId, canonicalCity.slug, canonicalCity.title);
+       const city = one(this.db, "SELECT * FROM cities WHERE id = ?", cityId)!;
+       this.recordAdminCommandAudit(adminId, "CITY_CREATED", "city", cityId, input.reason, idempotencyKey, input);
+       return city;
+     });
+   }
+ 
++  patchCity(cityId: string, input: { city_slug: string; reason: string }, idempotencyKey: string, adminId: string) {
++    const payload = { city_id: cityId, ...input };
++    return this.withAdminCommand("city-patch", idempotencyKey, payload, "cities", () => {
++      const before = one(this.db, "SELECT * FROM cities WHERE id = ?", cityId);
++      if (!before) throw new DomainError("CITY_NOT_FOUND", 404);
++      const canonicalCity = findCityBySlug(input.city_slug);
++      if (!canonicalCity) throw new DomainError("CITY_SLUG_UNKNOWN", 400);
++      const slugChanges = before.slug !== canonicalCity.slug;
++      const titleChanges = before.title !== canonicalCity.title;
++      if (!slugChanges && !titleChanges) return before;
++      if (slugChanges && Number(one(this.db, "SELECT COUNT(*) AS count FROM occurrences WHERE city_id = ?", cityId)?.count ?? 0) > 0) {
++        throw new DomainError("CITY_HAS_OCCURRENCES", 409);
++      }
++      if (one(this.db, "SELECT id FROM cities WHERE slug = ? AND id <> ?", canonicalCity.slug, cityId)) throw new DomainError("CITY_SLUG_CONFLICT", 409);
++      this.db.prepare("UPDATE cities SET slug = ?, title = ? WHERE id = ?").run(canonicalCity.slug, canonicalCity.title, cityId);
++      const city = one(this.db, "SELECT * FROM cities WHERE id = ?", cityId)!;
++      this.recordAdminCommandAudit(adminId, "CITY_EDITED", "city", cityId, input.reason, idempotencyKey, payload);
++      return city;
++    });
++  }
++
+   createOccurrence(input: {
+     city_id: string; title: string; starts_at: string; ends_at: string; timezone: string;
+     price_kopecks: number; capacity: number; venue_status: "CONFIRMED" | "TO_BE_ANNOUNCED";
+diff --git a/commerce/src/types.ts b/commerce/src/types.ts
+index f1740f53..ce4b1931 100644
+--- a/commerce/src/types.ts
++++ b/commerce/src/types.ts
+@@ -1,8 +1,7 @@
+ import { z } from "zod";
+-import { CITY_SLUGS } from "../../lib/city-catalog";
+ 
+ export { CITY_SLUGS } from "../../lib/city-catalog";
+-export type CitySlug = (typeof CITY_SLUGS)[number];
++export type { CityCatalogueEntry, CitySlug, CityTitle } from "../../lib/city-catalog";
+ 
+ export const checkoutRequestSchema = z.object({
+   quote_id: z.string().uuid(),
+@@ -57,10 +56,10 @@ export const occurrencePatchSchema = z.object({
+ });
+ 
+ export const cityCreateSchema = z.object({
+-  name: z.string().trim().min(2).max(200),
+-  slug: z.string().trim().regex(/^[a-z0-9-]{2,100}$/),
++  city_slug: z.string().trim().regex(/^[a-z0-9-]{2,100}$/),
+   reason: z.string().trim().min(3).max(1_000),
+ }).strict();
++export const cityPatchSchema = cityCreateSchema;
+ 
+ export const occurrenceCreateSchema = z.object({
+   city_id: z.string().uuid(),
+@@ -106,7 +105,7 @@ export const customerRefundRequestSchema = z.object({
+ }).strict();
+ export const cityInterestSchema = z.object({
+   email: z.string().trim().email().max(320).transform((value) => value.toLowerCase()),
+-  city: z.enum(CITY_SLUGS),
++  city: z.string().trim().regex(/^[a-z0-9-]{2,100}$/),
+   pd_consent_accepted: z.literal(true),
+   captcha_token: z.string().trim().min(1).max(4_096),
+ }).strict();
+diff --git a/commerce/test/api.test.ts b/commerce/test/api.test.ts
+index bfc5eff1..3ab869ce 100644
+--- a/commerce/test/api.test.ts
++++ b/commerce/test/api.test.ts
+@@ -204,7 +204,7 @@ describe("commerce HTTP boundary", () => {
+     expect(db.prepare("SELECT email_normalized, city_slug, privacy_policy_version, pd_consent_version FROM city_interest_requests").all()).toEqual([
+       { email_normalized: "art@example.test", city_slug: "kemerovo", privacy_policy_version: "test-1", pd_consent_version: "test-1" },
+     ]);
+-    expect((await request("art@example.test", "unsupported-city")).status).toBe(422);
++    expect((await request("art@example.test", "unsupported-city")).status).toBe(400);
+     db.close();
+   });
+ 
+@@ -247,18 +247,33 @@ describe("commerce HTTP boundary", () => {
+       body: JSON.stringify({ password: "correct horse" }),
+     });
+     const adminHeaders = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
+-    const cityPayload = { name: "Омск", slug: "omsk", reason: "Tochka Phase 0 certification" };
++    const cityPayload = { city_slug: "omsk", reason: "Tochka Phase 0 certification" };
+     const cityKey = "b6a8e45a-9334-4626-8041-000000000001";
++    const mismatchedCity = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000009" }, body: JSON.stringify({ ...cityPayload, title: "Томск" }) });
++    expect(mismatchedCity.status).toBe(422);
++    const unsupportedCity = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000000" }, body: JSON.stringify({ city_slug: "unsupported-city", reason: "Catalog validation test" }) });
++    expect(unsupportedCity.status).toBe(400);
++    expect(await unsupportedCity.json()).toEqual({ error: { code: "CITY_SLUG_UNKNOWN" } });
+     const firstCity = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": cityKey }, body: JSON.stringify(cityPayload) });
+     expect(firstCity.status).toBe(201);
+     const city = await firstCity.json() as { id: string; slug: string; title: string };
+     expect(city).toMatchObject({ slug: "omsk", title: "Омск" });
+     const cityReplay = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": cityKey }, body: JSON.stringify(cityPayload) });
+     expect(await cityReplay.json()).toMatchObject({ id: city.id });
+-    const changedReplay = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": cityKey }, body: JSON.stringify({ ...cityPayload, name: "Другой Омск" }) });
++    const changedReplay = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": cityKey }, body: JSON.stringify({ ...cityPayload, reason: "Different canonical request" }) });
+     expect(changedReplay.status).toBe(409);
+     const duplicateSlug = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000006" }, body: JSON.stringify(cityPayload) });
+     expect(duplicateSlug.status).toBe(409);
++    const cityPatch = await app.request(`http://admin.flexperiment.ru/v1/admin/cities/${city.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000007" }, body: JSON.stringify({ city_slug: "moscow", reason: "Corrected canonical city" }) });
++    expect(cityPatch.status).toBe(200);
++    expect(await cityPatch.json()).toMatchObject({ id: city.id, slug: "moscow", title: "Москва" });
++    db.prepare("UPDATE cities SET title = ? WHERE id = ?").run("Incorrect title", city.id);
++    const canonicalTitleRepair = await app.request(`http://admin.flexperiment.ru/v1/admin/cities/${city.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000010" }, body: JSON.stringify({ city_slug: "moscow", reason: "Canonical title repair" }) });
++    expect(await canonicalTitleRepair.json()).toMatchObject({ id: city.id, slug: "moscow", title: "Москва" });
++    const cityWithOccurrenceId = (db.prepare("SELECT id FROM cities WHERE slug = 'tomsk'").get() as { id: string }).id;
++    const blockedPatch = await app.request(`http://admin.flexperiment.ru/v1/admin/cities/${cityWithOccurrenceId}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000008" }, body: JSON.stringify({ city_slug: "kazan", reason: "Unsafe historical mutation" }) });
++    expect(blockedPatch.status).toBe(409);
++    expect(await blockedPatch.json()).toEqual({ error: { code: "CITY_HAS_OCCURRENCES" } });
+ 
+     const occurrencePayload = {
+       city_id: city.id,
+diff --git a/components/CheckoutFlow.tsx b/components/CheckoutFlow.tsx
+index 4ec85b5c..357f0691 100644
+--- a/components/CheckoutFlow.tsx
++++ b/components/CheckoutFlow.tsx
+@@ -7,6 +7,7 @@ import { ensureCurrentReferralCapture } from "@/components/referral-capture-clie
+ import { referralCaptureCoordinator } from "@/components/referral-capture-state";
+ import { storedReferralSlug } from "@/components/referral-marker";
+ import CityInterestForm from "@/components/CityInterestForm";
++import { findCityBySlug, type CitySlug } from "@/lib/city-catalog";
+ 
+ type Occurrence = {
+   id: string;
+@@ -58,7 +59,7 @@ export default function CheckoutFlow() {
+   const [loading, setLoading] = useState(true);
+   const [submitting, setSubmitting] = useState(false);
+   const [message, setMessage] = useState<string | null>(null);
+-  const [scheduledCitySlugs, setScheduledCitySlugs] = useState<string[]>([]);
++  const [scheduledCitySlugs, setScheduledCitySlugs] = useState<CitySlug[]>([]);
+   const [catalogLoaded, setCatalogLoaded] = useState(false);
+   const selected = useMemo(() => occurrences.find((item) => item.id === occurrenceId), [occurrences, occurrenceId]);
+   const legalLabels = {
+@@ -76,7 +77,12 @@ export default function CheckoutFlow() {
+         if (!current) return;
+         const available = data.cities.filter((item) => item.id && item.availability > 0);
+         setOccurrences(available); setOccurrenceId(available[0]?.id ?? "");
+-        setScheduledCitySlugs([...new Set(data.cities.filter((item) => item.fulfillment_status === "SCHEDULED").map((item) => item.city))]);
++        const scheduledCities = data.cities
++          .filter((item) => item.fulfillment_status === "SCHEDULED")
++          .map((item) => findCityBySlug(item.city))
++          .filter((city): city is NonNullable<typeof city> => Boolean(city))
++          .map((city) => city.slug);
++        setScheduledCitySlugs([...new Set(scheduledCities)]);
+         setCatalogLoaded(true);
+       })
+       .catch(() => current && setMessage("Сейчас запись недоступна. Пожалуйста, попробуйте позже."))
+diff --git a/components/CityInterestForm.tsx b/components/CityInterestForm.tsx
+index 133a2602..42413dfb 100644
+--- a/components/CityInterestForm.tsx
++++ b/components/CityInterestForm.tsx
+@@ -3,13 +3,13 @@
+ import { FormEvent, useMemo, useState } from "react";
+ import Link from "next/link";
+ import SmartCaptcha from "@/components/SmartCaptcha";
+-import { CITY_CATALOGUE } from "@/lib/city-catalog";
++import { type CitySlug, requestableCities } from "@/lib/city-catalog";
+ import { commerceApiUrl } from "@/lib/commerce-api";
+ 
+-type Props = { scheduledCitySlugs: string[] };
++type Props = { scheduledCitySlugs: CitySlug[] };
+ 
+ export default function CityInterestForm({ scheduledCitySlugs }: Props) {
+-  const cities = useMemo(() => CITY_CATALOGUE.filter((city) => !scheduledCitySlugs.includes(city.slug)), [scheduledCitySlugs]);
++  const cities = useMemo(() => requestableCities(scheduledCitySlugs), [scheduledCitySlugs]);
+   const [email, setEmail] = useState("");
+   const [city, setCity] = useState("");
+   const [consent, setConsent] = useState(false);
+diff --git a/lib/city-catalog.test.ts b/lib/city-catalog.test.ts
+new file mode 100644
+index 00000000..c26708c1
+--- /dev/null
++++ b/lib/city-catalog.test.ts
+@@ -0,0 +1,23 @@
++import { describe, expect, it } from "vitest";
++import { CITY_CATALOGUE, findCityBySlug, getCityBySlug, isCitySlug, requestableCities } from "./city-catalog";
++
++describe("city-interest catalogue", () => {
++  it("excludes scheduled cities without hiding supported unplanned cities", () => {
++    const cities = requestableCities(["novosibirsk", "kemerovo"]);
++    expect(cities.map(({ slug }) => slug)).not.toContain("novosibirsk");
++    expect(cities.map(({ slug }) => slug)).not.toContain("kemerovo");
++    expect(cities).toContainEqual({ slug: "moscow", title: "Москва" });
++    expect(cities).toContainEqual({ slug: "abakan", title: "Абакан" });
++  });
++
++  it("has one distinct entry per requestable city", () => {
++    const slugs = CITY_CATALOGUE.map(({ slug }) => slug);
++    const titles = CITY_CATALOGUE.map(({ title }) => title);
++    expect(new Set(slugs).size).toBe(slugs.length);
++    expect(new Set(titles).size).toBe(titles.length);
++    expect(isCitySlug("omsk")).toBe(true);
++    expect(isCitySlug("unknown-city")).toBe(false);
++    expect(findCityBySlug("omsk")).toEqual({ slug: "omsk", title: "Омск" });
++    expect(getCityBySlug("tomsk")).toEqual({ slug: "tomsk", title: "Томск" });
++  });
++});
+diff --git a/lib/city-catalog.ts b/lib/city-catalog.ts
+index 76c63de4..7183b48d 100644
+--- a/lib/city-catalog.ts
++++ b/lib/city-catalog.ts
+@@ -1,17 +1,87 @@
+ /**
+- * Cities where Flexperiment can plan a workshop. This is deliberately separate
+- * from the live catalogue: an occurrence is only shown after Commerce has
+- * published it, while this list is the bounded set a visitor may request.
+- *
+- * Keep this data-only so it can be used by both the static site and Commerce.
++ * The controlled set of cities a visitor may request. It is intentionally
++ * broader than the live tour: scheduled occurrences are filtered at runtime,
++ * not encoded into this catalogue.
+  */
+ export const CITY_CATALOGUE = [
+-  { slug: "kemerovo", title: "Кемерово" },
++  { slug: "moscow", title: "Москва" },
++  { slug: "saint-petersburg", title: "Санкт-Петербург" },
+   { slug: "novosibirsk", title: "Новосибирск" },
+-  { slug: "novokuznetsk", title: "Новокузнецк" },
+-  { slug: "tomsk", title: "Томск" },
+-  { slug: "irkutsk", title: "Иркутск" },
++  { slug: "yekaterinburg", title: "Екатеринбург" },
++  { slug: "kazan", title: "Казань" },
+   { slug: "krasnoyarsk", title: "Красноярск" },
++  { slug: "nizhny-novgorod", title: "Нижний Новгород" },
++  { slug: "chelyabinsk", title: "Челябинск" },
++  { slug: "ufa", title: "Уфа" },
++  { slug: "samara", title: "Самара" },
++  { slug: "rostov-on-don", title: "Ростов-на-Дону" },
++  { slug: "krasnodar", title: "Краснодар" },
++  { slug: "omsk", title: "Омск" },
++  { slug: "voronezh", title: "Воронеж" },
++  { slug: "perm", title: "Пермь" },
++  { slug: "volgograd", title: "Волгоград" },
++  { slug: "saratov", title: "Саратов" },
++  { slug: "tyumen", title: "Тюмень" },
++  { slug: "tolyatti", title: "Тольятти" },
++  { slug: "makhachkala", title: "Махачкала" },
++  { slug: "barnaul", title: "Барнаул" },
++  { slug: "izhevsk", title: "Ижевск" },
++  { slug: "khabarovsk", title: "Хабаровск" },
++  { slug: "ulyanovsk", title: "Ульяновск" },
++  { slug: "irkutsk", title: "Иркутск" },
++  { slug: "vladivostok", title: "Владивосток" },
++  { slug: "yaroslavl", title: "Ярославль" },
++  { slug: "kemerovo", title: "Кемерово" },
++  { slug: "tomsk", title: "Томск" },
++  { slug: "naberezhnye-chelny", title: "Набережные Челны" },
++  { slug: "sevastopol", title: "Севастополь" },
++  { slug: "stavropol", title: "Ставрополь" },
++  { slug: "orenburg", title: "Оренбург" },
++  { slug: "novokuznetsk", title: "Новокузнецк" },
++  { slug: "ryazan", title: "Рязань" },
++  { slug: "penza", title: "Пенза" },
++  { slug: "cheboksary", title: "Чебоксары" },
++  { slug: "lipetsk", title: "Липецк" },
++  { slug: "kaliningrad", title: "Калининград" },
++  { slug: "astrakhan", title: "Астрахань" },
++  { slug: "tula", title: "Тула" },
++  { slug: "kirov", title: "Киров" },
++  { slug: "sochi", title: "Сочи" },
++  { slug: "ulan-ude", title: "Улан-Удэ" },
++  { slug: "kursk", title: "Курск" },
++  { slug: "surgut", title: "Сургут" },
++  { slug: "tver", title: "Тверь" },
++  { slug: "magnitogorsk", title: "Магнитогорск" },
++  { slug: "grozny", title: "Грозный" },
++  { slug: "yakutsk", title: "Якутск" },
++  { slug: "bryansk", title: "Брянск" },
++  { slug: "ivanovo", title: "Иваново" },
++  { slug: "vladimir", title: "Владимир" },
++  { slug: "chita", title: "Чита" },
++  { slug: "belgorod", title: "Белгород" },
++  { slug: "kaluga", title: "Калуга" },
++  { slug: "volzhsky", title: "Волжский" },
++  { slug: "smolensk", title: "Смоленск" },
++  { slug: "saransk", title: "Саранск" },
++  { slug: "vologda", title: "Вологда" },
++  { slug: "cherepovets", title: "Череповец" },
++  { slug: "arkhangelsk", title: "Архангельск" },
++  { slug: "vladikavkaz", title: "Владикавказ" },
++  { slug: "orel", title: "Орёл" },
++  { slug: "yoshkar-ola", title: "Йошкар-Ола" },
++  { slug: "sterlitamak", title: "Стерлитамак" },
++  { slug: "kostroma", title: "Кострома" },
++  { slug: "murmansk", title: "Мурманск" },
++  { slug: "novorossiysk", title: "Новороссийск" },
++  { slug: "tambov", title: "Тамбов" },
++  { slug: "nizhnevartovsk", title: "Нижневартовск" },
++  { slug: "nalchik", title: "Нальчик" },
++  { slug: "taganrog", title: "Таганрог" },
++  { slug: "blagoveshchensk", title: "Благовещенск" },
++  { slug: "komsomolsk-on-amur", title: "Комсомольск-на-Амуре" },
++  { slug: "petrozavodsk", title: "Петрозаводск" },
++  { slug: "nizhnekamsk", title: "Нижнекамск" },
++  { slug: "abakan", title: "Абакан" },
+ ] as const;
+ 
+ export const CITY_SLUGS = CITY_CATALOGUE.map(({ slug }) => slug) as [
+@@ -19,4 +89,23 @@ export const CITY_SLUGS = CITY_CATALOGUE.map(({ slug }) => slug) as [
+   ...(typeof CITY_CATALOGUE)[number]["slug"][],
+ ];
+ 
+-export type CitySlug = (typeof CITY_CATALOGUE)[number]["slug"];
++export type CityCatalogueEntry = (typeof CITY_CATALOGUE)[number];
++export type CitySlug = CityCatalogueEntry["slug"];
++export type CityTitle = CityCatalogueEntry["title"];
++
++const catalogueBySlug = new Map<string, CityCatalogueEntry>(CITY_CATALOGUE.map((city) => [city.slug, city]));
++
++export const isCitySlug = (value: string): value is CitySlug => catalogueBySlug.has(value);
++
++export const findCityBySlug = (value: string): CityCatalogueEntry | undefined => catalogueBySlug.get(value);
++
++export const getCityBySlug = (slug: CitySlug): CityCatalogueEntry => {
++  const city = findCityBySlug(slug);
++  if (!city) throw new Error(`Unknown canonical city slug: ${slug}`);
++  return city;
++};
++
++export const requestableCities = (scheduledCitySlugs: Iterable<CitySlug>) => {
++  const scheduled = new Set(scheduledCitySlugs);
++  return CITY_CATALOGUE.filter((city) => !scheduled.has(city.slug));
++};
+-- 
+2.55.0
+

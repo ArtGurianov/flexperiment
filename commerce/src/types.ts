@@ -1,6 +1,5 @@
 import { z } from "zod";
 
-export { CITY_SLUGS } from "../../lib/city-catalog";
 export type { CityCatalogueEntry, CitySlug, CityTitle } from "../../lib/city-catalog";
 
 export const checkoutRequestSchema = z.object({

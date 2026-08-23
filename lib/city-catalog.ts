@@ -84,11 +84,6 @@ export const CITY_CATALOGUE = [
   { slug: "abakan", title: "Абакан" },
 ] as const;
 
-export const CITY_SLUGS = CITY_CATALOGUE.map(({ slug }) => slug) as [
-  (typeof CITY_CATALOGUE)[number]["slug"],
-  ...(typeof CITY_CATALOGUE)[number]["slug"][],
-];
-
 export type CityCatalogueEntry = (typeof CITY_CATALOGUE)[number];
 export type CitySlug = CityCatalogueEntry["slug"];
 export type CityTitle = CityCatalogueEntry["title"];
