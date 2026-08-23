@@ -1580,25 +1580,30 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM email_outbox WHERE type = 'TICKET'").get()).toEqual({ count: 1 });
   });
 
-  it("applies exactly one later valid correction after a QUARANTINED Tochka event", async () => {
+  it("quarantines every distinct collision after a QUARANTINED Tochka event", async () => {
     const setup = fixture(); databases.push(setup.db);
     const webhook = await tochkaWebhookCheckout(setup);
     const quarantined = { ...webhook.input, rawHash: "tochka-first-quarantined", amountKopecks: 99_999 };
     expect(setup.domain.applyTochkaPaymentWebhook(quarantined, webhook.expected)).toEqual({ duplicate: false, applied: false });
 
-    const correction = { ...webhook.input, rawHash: "tochka-corrected-valid" };
-    expect(setup.domain.applyTochkaPaymentWebhook(correction, webhook.expected))
-      .toEqual({ duplicate: false, applied: true, corrected: true });
-    expect(setup.domain.applyTochkaPaymentWebhook(correction, webhook.expected))
+    const validButConflicting = { ...webhook.input, rawHash: "tochka-corrected-valid" };
+    expect(setup.domain.applyTochkaPaymentWebhook(validButConflicting, webhook.expected))
+      .toEqual({ duplicate: false, applied: false, conflict: true });
+    expect(setup.domain.applyTochkaPaymentWebhook(validButConflicting, webhook.expected))
       .toEqual({ duplicate: true, applied: false });
+    expect(setup.domain.applyTochkaPaymentWebhook({ ...webhook.input, rawHash: "tochka-second-conflict", customerCode: "other-customer" }, webhook.expected))
+      .toEqual({ duplicate: false, applied: false, conflict: true });
     expect(setup.db.prepare("SELECT payload_hash, status FROM provider_webhook_events").get())
       .toEqual({ payload_hash: "tochka-first-quarantined", status: "QUARANTINED" });
-    expect(setup.db.prepare("SELECT payload_hash, status FROM provider_webhook_event_conflicts").get())
-      .toEqual({ payload_hash: "tochka-corrected-valid", status: "CORRECTED_APPLIED" });
+    expect(setup.db.prepare("SELECT payload_hash, status FROM provider_webhook_event_conflicts ORDER BY payload_hash").all())
+      .toEqual([
+        { payload_hash: "tochka-corrected-valid", status: "CONFLICT_QUARANTINED" },
+        { payload_hash: "tochka-second-conflict", status: "CONFLICT_QUARANTINED" },
+      ]);
     expect(setup.db.prepare("SELECT status, captured_amount_kopecks FROM payments WHERE id = ?").get(webhook.paymentId))
-      .toEqual({ status: "PAID", captured_amount_kopecks: 100_000 });
-    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM tickets WHERE status = 'VALID'").get()).toEqual({ count: 1 });
-    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM email_outbox WHERE type = 'TICKET'").get()).toEqual({ count: 1 });
+      .toEqual({ status: "PENDING", captured_amount_kopecks: 0 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM tickets").get()).toEqual({ count: 0 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM email_outbox WHERE type = 'TICKET'").get()).toEqual({ count: 0 });
   });
 
   it("defers only stale-review busy contention and continues the financial worker sequence", async () => {

@@ -409,13 +409,10 @@ export class CommerceDomain {
         const knownVariant = one(this.db, `SELECT id FROM provider_webhook_event_conflicts
           WHERE provider = 'TOCHKA' AND semantic_key = ? AND payload_hash = ?`, semanticKey, input.rawHash);
         if (knownVariant) return { duplicate: true, applied: false };
-        const correctionAlreadyApplied = Boolean(one(this.db, `SELECT id FROM provider_webhook_event_conflicts
-          WHERE original_event_id = ? AND status = 'CORRECTED_APPLIED'`, known.id));
-        const corrected = known.status === "QUARANTINED" && valid && !correctionAlreadyApplied;
         this.db.prepare(`INSERT INTO provider_webhook_event_conflicts(
           id, provider, semantic_key, original_event_id, payload_hash, status, entity_id, observed_json
         ) VALUES (?, 'TOCHKA', ?, ?, ?, ?, ?, ?)`)
-          .run(id(), semanticKey, known.id, input.rawHash, corrected ? "CORRECTED_APPLIED" : "CONFLICT_QUARANTINED", payment?.id ?? known.entity_id ?? null, observed);
+          .run(id(), semanticKey, known.id, input.rawHash, "CONFLICT_QUARANTINED", payment?.id ?? known.entity_id ?? null, observed);
         const affectedPaymentId = payment?.id ?? known.entity_id;
         if (affectedPaymentId) this.recordProviderDrift("PAYMENT", String(affectedPaymentId), {
           webhook_semantic_key_collision: {
@@ -423,12 +420,9 @@ export class CommerceDomain {
             original_event_id: known.id,
             original_status: known.status,
             incoming_payload_hash: input.rawHash,
-            corrected,
           },
         });
-        if (!corrected) return { duplicate: false, applied: false, conflict: true };
-        this.markPaymentPaidInTransaction(String(payment!.id), input.amountKopecks, input.operationId);
-        return { duplicate: false, applied: true, corrected: true };
+        return { duplicate: false, applied: false, conflict: true };
       }
       if (!valid) {
         this.db.prepare("INSERT INTO provider_webhook_events(id, provider, semantic_key, payload_hash, status, entity_id, observed_json) VALUES (?, 'TOCHKA', ?, ?, 'QUARANTINED', ?, ?)").run(id(), semanticKey, input.rawHash, payment?.id ?? null, observed);

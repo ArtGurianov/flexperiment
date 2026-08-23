@@ -348,7 +348,7 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
     db.prepare(`INSERT INTO provider_webhook_event_conflicts(
       id, provider, semantic_key, original_event_id, payload_hash, status, entity_id, observed_json
     ) VALUES ('tochka-correction', 'TOCHKA', 'operation-1:APPROVED', 'tochka-original',
-      'corrected-hash', 'CORRECTED_APPLIED', NULL, '{"amount_kopecks":1000}')`).run();
+      'corrected-hash', 'CONFLICT_QUARANTINED', NULL, '{"amount_kopecks":1000}')`).run();
     expect(() => db.prepare(`INSERT INTO provider_webhook_event_conflicts(
       id, provider, semantic_key, original_event_id, payload_hash, status, entity_id, observed_json
     ) VALUES ('tochka-duplicate-variant', 'TOCHKA', 'operation-1:APPROVED', 'tochka-original',

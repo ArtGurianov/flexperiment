@@ -113,10 +113,9 @@ customer, merchant, amount, payment type, and successful status before it can
 confirm a booking. Mismatches are quarantined for provider-drift review.
 The `operationId:status` semantic key remains unique for exact replay only:
 the stored payload hash must also match. A different authenticated payload with
-the same key is preserved in the collision-evidence ledger and never re-runs
-fulfilment. The sole exception is one later valid correction after the original
-event was `QUARANTINED`; both evidence rows are retained and that correction may
-confirm the payment exactly once.
+the same key is preserved in the collision-evidence ledger, quarantined for
+provider-drift review, and never re-runs fulfilment—even if the original event
+was `QUARANTINED` and the later payload independently looks valid.
 
 `CREATE_UNKNOWN` is an ambiguous create boundary, never permission to repeat
 `POST /payments_with_receipt`. The worker performs bounded, read-only payment
