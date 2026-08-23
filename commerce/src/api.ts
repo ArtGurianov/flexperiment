@@ -264,6 +264,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
         (SELECT COUNT(*) FROM refunds WHERE status = 'REVIEW_REQUIRED') AS count`).get(),
       pending_refunds: sqlite.prepare("SELECT COUNT(*) AS count FROM refunds WHERE status IN ('REQUESTED', 'SUBMITTING', 'SUBMIT_UNKNOWN', 'RECONCILING')").get(),
       email_attention: { count: domain.emailAttentionCount() },
+      operational_incidents: { count: domain.operationalIncidentCount() },
       stale_prepared_settlements: sqlite.prepare("SELECT COUNT(*) AS count FROM settlement_prepared_reviews WHERE status = 'OPEN'").get(),
     },
     upcoming: sqlite.prepare(`SELECT o.id, o.title, o.starts_at, o.capacity, o.sales_status, o.visibility, c.title AS city_title,
@@ -308,6 +309,13 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   admin.get("/orders/:id", (c) => { const order = sqlite.prepare("SELECT * FROM orders WHERE id = ?").get(c.req.param("id")); if (!order) throw new DomainError("ORDER_NOT_FOUND", 404); return c.json(order); });
   admin.get("/orders/:id/evidence", (c) => { c.header("Cache-Control", "no-store"); return c.json(domain.orderEvidence(c.req.param("id"))); });
   admin.get("/email-attention", (c) => c.json({ incidents: domain.emailAttentionIncidents(), attention_count: domain.emailAttentionCount() }));
+  admin.get("/operational-incidents", (c) => c.json({ incidents: domain.operationalIncidents(), open_count: domain.operationalIncidentCount() }));
+  admin.post("/operational-incidents/:id/resolve", async (c) => {
+    const payload = emailAttentionAcknowledgeSchema.parse(await jsonBody(c.req.raw));
+    const incident = domain.resolveOperationalIncident(c.req.param("id"), payload.reason);
+    audit(c.var.adminId!, "OPERATIONAL_INCIDENT_RESOLVED", "operational_incident", c.req.param("id"), { note: payload.reason });
+    return c.json(incident);
+  });
   admin.post("/email-attention/:id/acknowledge", async (c) => {
     const payload = emailAttentionAcknowledgeSchema.parse(await jsonBody(c.req.raw));
     const result = domain.acknowledgeEmailAttention(c.req.param("id"), payload.reason);

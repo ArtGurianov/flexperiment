@@ -8,7 +8,7 @@ import { createLatestRequestGate } from "./latest-request";
 import { occurrenceActionsFor } from "./occurrence-actions";
 import { CITY_CATALOGUE, type CityCatalogueEntry } from "../../../lib/city-catalog";
 
-type Page = "dashboard" | "login" | "cities" | "occurrences" | "orders" | "refunds" | "settlements" | "email-attention" | "audit";
+type Page = "dashboard" | "login" | "cities" | "occurrences" | "orders" | "refunds" | "settlements" | "email-attention" | "incidents" | "audit";
 type Row = Record<string, unknown>;
 
 class AdminApiError extends Error {
@@ -23,7 +23,8 @@ const nav: { href: string; page: Page; label: string; index: string }[] = [
   { href: "/refunds/", page: "refunds", label: "Возвраты", index: "05" },
   { href: "/settlements/", page: "settlements", label: "Расчёты", index: "06" },
   { href: "/email-attention/", page: "email-attention", label: "Email attention", index: "07" },
-  { href: "/audit/", page: "audit", label: "Аудит", index: "08" },
+  { href: "/incidents/", page: "incidents", label: "Инциденты", index: "08" },
+  { href: "/audit/", page: "audit", label: "Аудит", index: "09" },
 ];
 
 const idempotencyKey = () => crypto.randomUUID();
@@ -125,7 +126,7 @@ function Dashboard() {
   const health: [string, unknown][] = [
     ["CREATE_UNKNOWN", data.value.health.create_unknown?.count], ["REVIEW_REQUIRED", data.value.health.review_required?.count],
     ["Pending refunds", data.value.health.pending_refunds?.count], ["Email attention", data.value.health.email_attention?.count],
-    ["Stale PREPARED", data.value.health.stale_prepared_settlements?.count],
+    ["Stale PREPARED", data.value.health.stale_prepared_settlements?.count], ["Operational incidents", data.value.health.operational_incidents?.count],
   ];
   return <><section className="hero"><p className="eyebrow">OPERATIONAL OVERVIEW / TODAY</p><h1>Данные без<br /><i>магии статусов.</i></h1><p>Commerce и SQLite остаются источником истины. Этот экран ничего не мутирует.</p></section>
     <section className="metrics"><Metric label="Заказы" value={number(today.orders)} /><Metric label="Получено" value={formatMoney(today.revenue_kopecks)} /><Metric label="Возвращено" value={formatMoney(today.refunded_kopecks)} /></section>
@@ -217,7 +218,7 @@ function OccurrenceEditor({ occurrence, close, done }: { occurrence: Row; close:
     if (form.venue_status === "CONFIRMED") { body.venue_name = form.venue_name; body.venue_address = form.venue_address; body.venue_disclosure_text = null; body.venue_announce_by = null; }
     else { body.venue_name = null; body.venue_address = null; body.venue_disclosure_text = form.venue_disclosure_text; body.venue_announce_by = fromLocalInput(form.venue_announce_by); }
     setBusy(true); setError(null);
-    try { await api(`/occurrences/${string(occurrence.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json", "Idempotency-Key": key }, body: JSON.stringify(body) }); await done(); }
+    try { await api(`/occurrences/${string(occurrence.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json", "Idempotency-Key": key }, body: JSON.stringify({ ...body, expected_revision: number(occurrence.admin_revision) }) }); await done(); }
     catch (failure) { setError((failure as AdminApiError).code); } finally { setBusy(false); }
   };
   return <div className="modal-backdrop"><form className="modal editor" onSubmit={submit}><p className="eyebrow">CATALOG / MATERIAL EDIT</p><h2>Редактировать событие</h2><div className="form form-grid"><label>Название<input value={form.title} onChange={(event) => set("title", event.target.value)} required /></label><label>Timezone<input value={form.timezone} onChange={(event) => set("timezone", event.target.value)} required /></label><label>Начало<input type="datetime-local" value={form.starts_at} onChange={(event) => set("starts_at", event.target.value)} required /></label><label>Конец<input type="datetime-local" value={form.ends_at} onChange={(event) => set("ends_at", event.target.value)} required /></label><label>Цена, копейки<input type="number" min="0" value={form.price_kopecks} onChange={(event) => set("price_kopecks", event.target.value)} required /></label><label>Вместимость<input type="number" min="0" value={form.capacity} onChange={(event) => set("capacity", event.target.value)} required /></label><label className="wide">Площадка<select value={form.venue_status} onChange={(event) => set("venue_status", event.target.value)}><option value="CONFIRMED">Подтверждена</option><option value="TO_BE_ANNOUNCED">Будет объявлена</option></select></label>{form.venue_status === "CONFIRMED" ? <><label>Название площадки<input value={form.venue_name} onChange={(event) => set("venue_name", event.target.value)} required /></label><label>Адрес<textarea value={form.venue_address} onChange={(event) => set("venue_address", event.target.value)} required /></label></> : <><label>Disclosure<textarea value={form.venue_disclosure_text} onChange={(event) => set("venue_disclosure_text", event.target.value)} required /></label><label>Объявить до<input type="datetime-local" value={form.venue_announce_by} onChange={(event) => set("venue_announce_by", event.target.value)} required /></label></>}<label className="wide">Причина изменения<textarea value={form.reason} onChange={(event) => set("reason", event.target.value)} minLength={3} required /></label></div><Notice error={error} /><div className="modal-actions"><button type="button" onClick={close}>Отмена</button><button className="primary" disabled={busy}>{busy ? "Сохраняем…" : "Сохранить изменения"}</button></div></form></div>;
@@ -225,7 +226,7 @@ function OccurrenceEditor({ occurrence, close, done }: { occurrence: Row; close:
 
 function OccurrenceAction({ action, close, done }: { action: { occurrence: Row; patch: Row }; close: () => void; done: () => Promise<void> }) {
   const [reason, setReason] = useState(""); const [key] = useState(idempotencyKey); const [error, setError] = useState<string | null>(null); const [busy, setBusy] = useState(false);
-  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(null); try { await api(`/occurrences/${string(action.occurrence.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json", "Idempotency-Key": key }, body: JSON.stringify({ ...action.patch, reason }) }); await done(); } catch (failure) { setError((failure as AdminApiError).code); } finally { setBusy(false); } };
+  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(null); try { await api(`/occurrences/${string(action.occurrence.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json", "Idempotency-Key": key }, body: JSON.stringify({ ...action.patch, reason, expected_revision: number(action.occurrence.admin_revision) }) }); await done(); } catch (failure) { setError((failure as AdminApiError).code); } finally { setBusy(false); } };
   return <div className="modal-backdrop" role="presentation"><form className="modal" onSubmit={submit}><p className="eyebrow">EXPLICIT CATALOG ACTION</p><h2>{Object.values(action.patch).join(" ")}</h2><p>{string(action.occurrence.title)}</p><label>Причина<textarea autoFocus required minLength={3} value={reason} onChange={(event) => setReason(event.target.value)} /></label><Notice error={error} /><div className="modal-actions"><button type="button" onClick={close}>Отмена</button><button className="primary" disabled={busy}>{busy ? "Сохраняем…" : "Подтвердить"}</button></div></form></div>;
 }
 
@@ -314,6 +315,20 @@ function EmailAttentionAcknowledgement({ incident, close, done }: { incident: Ro
   return <ActionModal title="Отметить email-инцидент рассмотренным" close={close}><form className="form" onSubmit={submit}><p>Это не меняет delivery state, не вызывает provider и не создаёт resend.</p><label>Результат рассмотрения<textarea autoFocus required minLength={3} value={reason} onChange={(event) => setReason(event.target.value)} /></label><Notice error={error} /><button className="primary" disabled={busy}>{busy ? "Сохраняем…" : "Отметить рассмотренным"}</button></form></ActionModal>;
 }
 
+function OperationalIncidents() {
+  const data = useResource<{ incidents: Row[]; open_count: number }>("/operational-incidents");
+  const [resolving, setResolving] = useState<Row | null>(null);
+  return <><PageTitle eyebrow="OPERATIONS / REVIEW" title={<>Операционные<br /><i>инциденты.</i></>} text="Автоматическая фиксация создаёт review-задачу, но не делает финансовое решение за оператора." />
+    <section className="panel">{data.loading ? <Loading /> : data.value ? <><p className="notice">Открыто: <strong>{data.value.open_count}</strong></p>{data.value.incidents.length ? <table><thead><tr><th>Создан</th><th>Тип</th><th>Объект</th><th>Evidence</th><th>Статус</th></tr></thead><tbody>{data.value.incidents.map((incident) => <tr key={string(incident.id)}><td>{formatDate(incident.created_at)}</td><td><Badge>{string(incident.kind)}</Badge></td><td>{string(incident.entity_type)}<small>{string(incident.entity_id)}</small></td><td><code>{string(incident.details_json)}</code></td><td>{string(incident.status) === "OPEN" ? <button onClick={() => setResolving(incident)}>Отметить решённым</button> : <><Badge>RESOLVED</Badge><small>{string(incident.resolution_note)}</small></>}</td></tr>)}</tbody></table> : <Empty label="Открытых или исторических инцидентов пока нет." />}</> : <Notice error={data.error} />}</section>
+    {resolving && <OperationalIncidentResolution incident={resolving} close={() => setResolving(null)} done={async () => { await data.reload(); setResolving(null); }} />}</>;
+}
+
+function OperationalIncidentResolution({ incident, close, done }: { incident: Row; close: () => void; done: () => Promise<void> }) {
+  const [reason, setReason] = useState(""); const [error, setError] = useState<string | null>(null); const [busy, setBusy] = useState(false);
+  const submit = async (event: FormEvent) => { event.preventDefault(); setBusy(true); setError(null); try { await api(`/operational-incidents/${string(incident.id)}/resolve`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason }) }); await done(); } catch (failure) { setError((failure as AdminApiError).code); } finally { setBusy(false); } };
+  return <ActionModal title="Закрыть операционный инцидент" close={close}><form className="form" onSubmit={submit}><label>Результат рассмотрения<textarea autoFocus required minLength={3} value={reason} onChange={(event) => setReason(event.target.value)} /></label><Notice error={error} /><button className="primary" disabled={busy}>{busy ? "Сохраняем…" : "Отметить решённым"}</button></form></ActionModal>;
+}
+
 function SettlementDetail({ id, close, changed }: { id: string; close: () => void; changed: () => Promise<void> }) {
   const detail = useResource<{ settlement: Row; balance: Row; recoveries: Row[] }>(`/reward-settlements/${id}`);
   const [action, setAction] = useState<"PAYMENT_MADE" | "DOCUMENTS_COMPLETE" | "CANCEL_BEFORE_PAYMENT" | "RECOVERY" | null>(null);
@@ -356,6 +371,6 @@ export function AdminApp({ page }: { page: Page }) {
   if (page === "login") return <Login />;
   if (authenticated === null) return <main className="boot"><Loading /></main>;
   if (!authenticated) return <main className="boot"><Loading /></main>;
-  const view = page === "dashboard" ? <Dashboard /> : page === "cities" ? <Cities /> : page === "occurrences" ? <Occurrences /> : page === "orders" ? <Orders /> : page === "refunds" ? <Refunds /> : page === "settlements" ? <Settlements /> : page === "email-attention" ? <EmailAttention /> : <Audit />;
+  const view = page === "dashboard" ? <Dashboard /> : page === "cities" ? <Cities /> : page === "occurrences" ? <Occurrences /> : page === "orders" ? <Orders /> : page === "refunds" ? <Refunds /> : page === "settlements" ? <Settlements /> : page === "email-attention" ? <EmailAttention /> : page === "incidents" ? <OperationalIncidents /> : <Audit />;
   return <Shell page={page} onLogout={logout}>{view}</Shell>;
 }

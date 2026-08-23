@@ -388,14 +388,14 @@ describe("commerce HTTP boundary", () => {
     const unsafeSalesCreate = await app.request("http://admin.flexperiment.ru/v1/admin/occurrences", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000008" }, body: JSON.stringify({ ...occurrencePayload, sales_status: "OPEN" }) });
     expect(unsafeSalesCreate.status).toBe(422);
 
-    const published = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000011" }, body: JSON.stringify({ price_kopecks: 100, capacity: 1, visibility: "PUBLISHED", reason: "Tochka Phase 0 certification" }) });
+    const published = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000011" }, body: JSON.stringify({ price_kopecks: 100, capacity: 1, visibility: "PUBLISHED", reason: "Tochka Phase 0 certification", expected_revision: 1 }) });
     expect(published.status).toBe(200);
     expect(await published.json()).toMatchObject({ id: created.id, visibility: "PUBLISHED", sales_status: "CLOSED" });
-    const opened = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000012" }, body: JSON.stringify({ sales_status: "OPEN", reason: "Tochka Phase 0 certification" }) });
+    const opened = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000012" }, body: JSON.stringify({ sales_status: "OPEN", reason: "Tochka Phase 0 certification", expected_revision: 2 }) });
     expect(opened.status).toBe(200);
-    const openedReplay = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000012" }, body: JSON.stringify({ sales_status: "OPEN", reason: "Tochka Phase 0 certification" }) });
+    const openedReplay = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000012" }, body: JSON.stringify({ sales_status: "OPEN", reason: "Tochka Phase 0 certification", expected_revision: 2 }) });
     expect(await openedReplay.json()).toMatchObject({ id: created.id, visibility: "PUBLISHED", sales_status: "OPEN" });
-    const patchConflict = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000012" }, body: JSON.stringify({ sales_status: "CLOSED", reason: "Changed patch" }) });
+    const patchConflict = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000012" }, body: JSON.stringify({ sales_status: "CLOSED", reason: "Changed patch", expected_revision: 3 }) });
     expect(patchConflict.status).toBe(409);
     const after = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers: { Origin: "https://flexperiment.ru", "X-Forwarded-For": "127.0.0.1" } });
     expect((await after.json() as { cities: { id?: string }[] }).cities.some((entry) => entry.id === created.id)).toBe(true);
@@ -420,7 +420,7 @@ describe("commerce HTTP boundary", () => {
     });
     const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
     const patch = (key: string, payload: Record<string, unknown>) => app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${occurrenceId}`, {
-      method: "PATCH", headers: { ...headers, "Idempotency-Key": key }, body: JSON.stringify({ ...payload, reason: "Occurrence lifecycle test" }),
+      method: "PATCH", headers: { ...headers, "Idempotency-Key": key }, body: JSON.stringify({ ...payload, reason: "Occurrence lifecycle test", expected_revision: Number((db.prepare("SELECT admin_revision FROM occurrences WHERE id = ?").get(occurrenceId) as { admin_revision: number }).admin_revision) }),
     });
     const state = () => db.prepare("SELECT visibility, sales_status FROM occurrences WHERE id = ?").get(occurrenceId);
 
@@ -478,7 +478,7 @@ describe("commerce HTTP boundary", () => {
     });
     const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
     const patch = (occurrenceId: string, key: string, payload: Record<string, unknown>) => app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${occurrenceId}`, {
-      method: "PATCH", headers: { ...headers, "Idempotency-Key": key }, body: JSON.stringify({ ...payload, reason: "Legacy state recovery" }),
+      method: "PATCH", headers: { ...headers, "Idempotency-Key": key }, body: JSON.stringify({ ...payload, reason: "Legacy state recovery", expected_revision: Number((db.prepare("SELECT admin_revision FROM occurrences WHERE id = ?").get(occurrenceId) as { admin_revision: number }).admin_revision) }),
     });
 
     const openPublish = await patch(openId, "e81172c2-25a5-4f15-80e5-000000000001", { visibility: "PUBLISHED" });

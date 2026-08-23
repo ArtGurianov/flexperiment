@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
-import { CommerceDomain, CREATE_UNKNOWN_LOOKUP_INITIAL_BACKOFF_MS, CREATE_UNKNOWN_LOOKUP_MAX_ATTEMPTS, DomainError, EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS, STALE_PREPARED_SETTLEMENT_MS } from "../src/domain";
+import { CommerceDomain, CREATE_UNKNOWN_LOOKUP_INITIAL_BACKOFF_MS, CREATE_UNKNOWN_LOOKUP_MAX_ATTEMPTS, DomainError, EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS, STALE_PREPARED_SETTLEMENT_MS, classifyOccurrenceRevision } from "../src/domain";
 import { runWorkerSweep } from "../src/worker-sweep";
 import { UnisenderGoProvider, type EmailProvider } from "../src/email-provider";
 import { MockProvider, type PaymentProvider } from "../src/provider";
@@ -96,6 +96,123 @@ async function tochkaWebhookCheckout(setup: ReturnType<typeof fixture>) {
 describe("commerce domain", () => {
   const databases: ReturnType<typeof fixture>["db"][] = [];
   afterEach(() => { while (databases.length) databases.pop()?.close(); });
+
+  it("classifies normalized occurrence facts without treating every notice as a refund right", () => {
+    const base = {
+      title: "FLEXPERIMENT", starts_at: "2026-10-01T10:00:00.000Z", ends_at: "2026-10-01T13:00:00.000Z", timezone: "Asia/Novosibirsk",
+      venue_status: "TO_BE_ANNOUNCED", venue_name: null, venue_address: null, venue_disclosure_text: "Venue announced later", venue_announce_by: "2026-09-20T10:00:00.000Z",
+    };
+    expect(classifyOccurrenceRevision(base, { ...base, title: "New title" })).toMatchObject({ changed: true, notificationMaterial: true, refundMaterial: false });
+    expect(classifyOccurrenceRevision(base, { ...base, venue_status: "CONFIRMED", venue_name: "Studio", venue_address: "Lenina 1" })).toMatchObject({ notificationMaterial: true, refundMaterial: false });
+    expect(classifyOccurrenceRevision({ ...base, venue_status: "CONFIRMED", venue_name: "Studio", venue_address: "Lenina 1" }, { ...base, venue_status: "CONFIRMED", venue_name: "New Studio", venue_address: "Lenina 1" })).toMatchObject({ refundMaterial: true });
+    expect(classifyOccurrenceRevision(base, { ...base, venue_announce_by: "2026-09-22T10:00:00.000Z" })).toMatchObject({ refundMaterial: true });
+    expect(classifyOccurrenceRevision(base, { ...base, venue_announce_by: "2026-09-19T10:00:00.000Z" })).toMatchObject({ notificationMaterial: true, refundMaterial: false });
+  });
+
+  it("emits immutable occurrence notices, supersedes stale pending notices, and grants refunds only for adverse changes", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const checkout = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), randomUUID(), "https://flexperiment.ru");
+    const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(checkout.status_id) as { id: string };
+    setup.domain.markPaymentPaid(payment.id, 100_000, "paid");
+    const firstRevisionKey = randomUUID();
+    const firstRevisionPayload = { title: "FLEXPERIMENT обновлён", reason: "Updated title", expected_revision: 1 };
+    setup.domain.patchOccurrence(setup.occurrenceId, firstRevisionPayload, firstRevisionKey, "admin");
+    setup.domain.patchOccurrence(setup.occurrenceId, firstRevisionPayload, firstRevisionKey, "admin");
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrence_update_notifications").get()).toEqual({ count: 1 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrence_change_refund_entitlements").get()).toEqual({ count: 0 });
+    const first = setup.db.prepare("SELECT payload_snapshot FROM email_outbox WHERE type = 'OCCURRENCE_UPDATED'").get() as { payload_snapshot: string };
+    expect(JSON.parse(first.payload_snapshot)).toMatchObject({ before: { title: "FLEXPERIMENT" }, after: { title: "FLEXPERIMENT обновлён" } });
+
+    setup.domain.patchOccurrence(setup.occurrenceId, { starts_at: "2026-10-02T10:00:00.000Z", ends_at: "2026-10-02T13:00:00.000Z", reason: "Moved one day", expected_revision: 2 }, randomUUID(), "admin");
+    expect(setup.db.prepare("SELECT status, superseded_reason FROM email_outbox WHERE type = 'OCCURRENCE_UPDATED' ORDER BY created_at LIMIT 1").get()).toEqual({ status: "SKIPPED", superseded_reason: "NEWER_OCCURRENCE_REVISION" });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrence_change_refund_entitlements WHERE status = 'OPEN'").get()).toEqual({ count: 1 });
+    const beforeNoop = setup.db.prepare("SELECT COUNT(*) AS count FROM occurrence_revisions").get();
+    setup.domain.patchOccurrence(setup.occurrenceId, { title: "FLEXPERIMENT обновлён", venue_public: false, reason: "No normalized change", expected_revision: 3 }, randomUUID(), "admin");
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrence_revisions").get()).toEqual(beforeNoop);
+  });
+
+  it("rolls a material revision back without orphan notification or entitlement when its effects cannot persist", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const checkout = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), randomUUID(), "https://flexperiment.ru");
+    const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(checkout.status_id) as { id: string };
+    setup.domain.markPaymentPaid(payment.id, 100_000, "paid");
+    setup.db.exec(`CREATE TRIGGER fail_occurrence_update_before_insert
+      BEFORE INSERT ON occurrence_update_notifications BEGIN SELECT RAISE(ABORT, 'TEST_NOTIFICATION_INSERT_FAILURE'); END`);
+    expect(() => setup.domain.patchOccurrence(setup.occurrenceId, { starts_at: "2026-10-02T10:00:00.000Z", ends_at: "2026-10-02T13:00:00.000Z", reason: "must roll back", expected_revision: 1 }, randomUUID(), "admin")).toThrow("TEST_NOTIFICATION_INSERT_FAILURE");
+    expect(setup.db.prepare("SELECT starts_at, admin_revision, material_revision FROM occurrences WHERE id = ?").get(setup.occurrenceId)).toMatchObject({ starts_at: "2026-10-01T10:00:00.000Z", admin_revision: 1, material_revision: 1 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrence_revisions").get()).toEqual({ count: 0 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrence_update_notifications").get()).toEqual({ count: 0 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrence_change_refund_entitlements").get()).toEqual({ count: 0 });
+  });
+
+  it("uses organizer-change entitlement before start and creates manual review only after start", async () => {
+    const timestamp = Date.parse("2026-08-01T00:00:00.000Z");
+    const setup = fixture(); databases.push(setup.db);
+    const domain = new CommerceDomain(setup.db, new MockProvider(), undefined, () => timestamp);
+    const quote = domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const checkout = await domain.checkoutAsync(checkoutPayload(quote.quote_id), randomUUID(), "https://flexperiment.ru");
+    const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(checkout.status_id) as { id: string };
+    domain.markPaymentPaid(payment.id, 100_000, "paid");
+    domain.patchOccurrence(setup.occurrenceId, { starts_at: "2026-10-02T10:00:00.000Z", ends_at: "2026-10-02T13:00:00.000Z", reason: "Organizer moved event", expected_revision: 1 }, randomUUID(), "admin");
+    const order = setup.db.prepare("SELECT public_order_number FROM orders").get() as { public_order_number: string };
+    expect(domain.requestCustomerRefund(order.public_order_number.replaceAll("-", ""))).toEqual({ accepted: true });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM email_outbox WHERE type = 'CUSTOMER_REFUND_CONFIRMATION'").get()).toEqual({ count: 1 });
+    setup.db.prepare("UPDATE occurrences SET starts_at = '2026-07-01T10:00:00.000Z', ends_at = '2026-07-01T13:00:00.000Z' WHERE id = ?").run(setup.occurrenceId);
+    expect(domain.requestCustomerRefund(order.public_order_number.replaceAll("-", ""))).toEqual({ accepted: true });
+    expect(setup.db.prepare("SELECT kind, entity_type FROM operational_incidents WHERE kind = 'ORGANIZER_CHANGE_REFUND_MANUAL_REVIEW'").get()).toEqual({ kind: "ORGANIZER_CHANGE_REFUND_MANUAL_REVIEW", entity_type: "order" });
+  });
+
+  it("rejects stale Admin occurrence revisions and resolves an overdue TBA incident only after disclosure", () => {
+    const setup = fixture(); databases.push(setup.db);
+    const clock = Date.parse("2026-08-01T00:00:00.000Z");
+    const domain = new CommerceDomain(setup.db, new MockProvider(), undefined, () => clock);
+    setup.db.prepare(`UPDATE occurrences SET venue_status = 'TO_BE_ANNOUNCED', venue_name = NULL, venue_address = NULL,
+      venue_disclosure_text = 'Venue later', venue_announce_by = '2026-07-01T00:00:00.000Z' WHERE id = ?`).run(setup.occurrenceId);
+    expect(domain.detectOverdueVenueAnnouncements()).toBe(1);
+    expect(domain.detectOverdueVenueAnnouncements()).toBe(1);
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM operational_incidents WHERE kind = 'VENUE_ANNOUNCEMENT_OVERDUE'").get()).toEqual({ count: 1 });
+    expect(() => domain.patchOccurrence(setup.occurrenceId, { title: "Stale", expected_revision: 0, reason: "stale" }, randomUUID(), "admin")).toThrow("OCCURRENCE_REVISION_CONFLICT");
+    domain.patchOccurrence(setup.occurrenceId, { venue_status: "CONFIRMED", venue_name: "Studio", venue_address: "Lenina 1", expected_revision: 1, reason: "Venue confirmed" }, randomUUID(), "admin");
+    domain.detectOverdueVenueAnnouncements();
+    expect(setup.db.prepare("SELECT status FROM operational_incidents WHERE kind = 'VENUE_ANNOUNCEMENT_OVERDUE'").get()).toEqual({ status: "RESOLVED" });
+  });
+
+  it("supersedes queued updates on full refund without superseding a partial-refund participant", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const checkout = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), randomUUID(), "https://flexperiment.ru");
+    const row = setup.db.prepare("SELECT p.id AS payment_id, p.order_id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(checkout.status_id) as { payment_id: string; order_id: string };
+    setup.domain.markPaymentPaid(row.payment_id, 100_000, "paid");
+    setup.domain.patchOccurrence(setup.occurrenceId, { title: "First update", expected_revision: 1, reason: "notify" }, randomUUID(), "admin");
+    const partialId = await reconcileSuccessfulRefund(setup, row.order_id, row.payment_id, 10_000);
+    expect(setup.db.prepare("SELECT status FROM bookings WHERE order_id = ?").get(row.order_id)).toEqual({ status: "CONFIRMED" });
+    expect(setup.db.prepare("SELECT status FROM email_outbox WHERE type = 'OCCURRENCE_UPDATED'").get()).toEqual({ status: "PENDING" });
+    await reconcileSuccessfulRefund(setup, row.order_id, row.payment_id, 90_000);
+    expect(partialId).toBeTruthy();
+    expect(setup.db.prepare("SELECT status, cancellation_reason FROM bookings WHERE order_id = ?").get(row.order_id)).toEqual({ status: "CANCELLED", cancellation_reason: "FULL_REFUND" });
+    expect(setup.db.prepare("SELECT status FROM tickets").get()).toEqual({ status: "VOID" });
+    expect(setup.db.prepare("SELECT status, superseded_reason FROM email_outbox WHERE type = 'OCCURRENCE_UPDATED'").get()).toEqual({ status: "SKIPPED", superseded_reason: "FULL_REFUND" });
+  });
+
+  it("deduplicates refund operational attention and resolves it only on authoritative success", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const checkout = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), randomUUID(), "https://flexperiment.ru");
+    const payment = setup.db.prepare("SELECT p.id, p.order_id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(checkout.status_id) as { id: string; order_id: string };
+    setup.domain.markPaymentPaid(payment.id, 100_000, "paid");
+    const refundId = randomUUID();
+    setup.db.prepare(`INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, provider_reference)
+      VALUES (?, ?, ?, ?, 100000, 'test', 'ADMIN_COMPENSATION', 'RECONCILING', ?, ?, 'reference')`).run(refundId, randomUUID(), payment.order_id, payment.id, randomUUID(), randomUUID());
+    (setup.domain.provider as PaymentProvider).reconcileRefund = async () => ({ status: "FAILED" });
+    await setup.domain.reconcileRefund(refundId);
+    await setup.domain.reconcileRefund(refundId);
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM operational_incidents WHERE entity_id = ? AND kind = 'REFUND_REQUIRES_REVIEW'").get(refundId)).toEqual({ count: 1 });
+    (setup.domain.provider as PaymentProvider).reconcileRefund = async () => ({ status: "SUCCEEDED", refundedAmountKopecks: 100_000 });
+    await setup.domain.reconcileRefund(refundId);
+    expect(setup.db.prepare("SELECT status FROM operational_incidents WHERE entity_id = ?").get(refundId)).toEqual({ status: "RESOLVED" });
+  });
 
   it("permanently binds a checkout idempotency key and reserves one seat", async () => {
     const setup = fixture(); databases.push(setup.db);
@@ -1617,10 +1734,11 @@ describe("commerce domain", () => {
       submitRequestedRefunds: async () => { calls.push("submit-refunds"); },
       reconcilePendingRefunds: async () => { calls.push("reconcile-refunds"); },
       processEmailOutbox: async () => { calls.push("email"); },
+      detectOverdueVenueAnnouncements: () => { calls.push("venue-overdue"); },
       processCityInterestLifecycle: () => { calls.push("city-interest"); return { expired_deleted: 0, intents_created: 0 }; },
     };
     await runWorkerSweep(busyDomain as never);
-    expect(calls).toEqual(["recover-stale", "detect", "create-unknown", "payments", "obligations", "submit-refunds", "reconcile-refunds", "email", "city-interest"]);
+    expect(calls).toEqual(["recover-stale", "detect", "create-unknown", "payments", "obligations", "submit-refunds", "reconcile-refunds", "email", "venue-overdue", "city-interest"]);
 
     const unexpectedDomain = { ...busyDomain, detectStalePreparedSettlements: () => { throw new Error("unexpected stale detector failure"); } };
     await expect(runWorkerSweep(unexpectedDomain as never)).rejects.toThrow("unexpected stale detector failure");

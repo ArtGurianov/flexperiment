@@ -12,6 +12,33 @@ const applyThrough = (db: ReturnType<typeof openDatabase>, last: string) => {
 };
 
 describe("0012 refund hardening and 0013 promoter migrations", () => {
+  it("upgrades a populated 0025-era database with post-purchase lifecycle evidence", () => {
+    const db = openDatabase(":memory:");
+    applyThrough(db, "0025_tochka_webhook_conflicts_fail_closed.sql");
+    const cityId = randomUUID(); const occurrenceId = randomUUID(); const releaseId = randomUUID(); const orderId = randomUUID(); const paymentId = randomUUID(); const bookingId = randomUUID(); const ticketId = randomUUID(); const revisionId = randomUUID(); const outboxId = randomUUID();
+    db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, 'lifecycle-city', 'Lifecycle city')").run(cityId);
+    db.prepare("INSERT INTO legal_releases(id, version, effective_at, manifest_json, active) VALUES (?, 'lifecycle-release', datetime('now'), ?, 1)").run(releaseId, JSON.stringify({ documents: {} }));
+    db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, venue_status, venue_name, venue_address)
+      VALUES (?, ?, 'Lifecycle', '2030-01-01T10:00:00.000Z', '2030-01-01T12:00:00.000Z', 'Asia/Novosibirsk', 100, 1, 'PUBLISHED', 'CONFIRMED', 'Studio', 'Lenina 1')`).run(occurrenceId, cityId);
+    db.prepare(`INSERT INTO orders(id, public_status_id, public_order_number, occurrence_id, customer_name, customer_email, customer_email_hash, amount_kopecks, occurrence_material_revision, venue_disclosure_snapshot, checkout_legal_release_id, legal_snapshot_json, eligibility_confirmed_at)
+      VALUES (?, 'lifecycle-status', 'FX-LIFECYCLE000000001', ?, 'Buyer', 'buyer@example.test', 'hash', 100, 1, 'Studio', ?, '{}', datetime('now'))`).run(orderId, occurrenceId, releaseId);
+    db.prepare("INSERT INTO payments(id, order_id, state, status, captured_amount_kopecks, provider_idempotency_key, creation_started_at) VALUES (?, ?, 'CREATED', 'PAID', 100, 'lifecycle-provider-key', datetime('now'))").run(paymentId, orderId);
+    db.prepare("INSERT INTO bookings(id, order_id, occurrence_id, status) VALUES (?, ?, ?, 'CONFIRMED')").run(bookingId, orderId, occurrenceId);
+    db.prepare("INSERT INTO tickets(id, booking_id, status, capability_hash, capability_ciphertext, capability_nonce, key_version) VALUES (?, ?, 'VALID', 'hash', 'cipher', 'nonce', 1)").run(ticketId, bookingId);
+    db.prepare("INSERT INTO occurrence_revisions(id, occurrence_id, revision, reason, before_json, after_json) VALUES (?, ?, 2, 'before 0026', '{\"title\":\"Old\"}', '{\"title\":\"New\"}')").run(revisionId, occurrenceId);
+    db.prepare("INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_ref, payload_snapshot, provider_idempotence_key) VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', ?, '{\"immutable\":true}', ?)").run(outboxId, ticketId, randomUUID());
+    const evidenceBefore = db.prepare("SELECT before_json, after_json FROM occurrence_revisions WHERE id = ?").get(revisionId);
+
+    db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, "0026_post_purchase_occurrence_lifecycle.sql"), "utf8")))();
+
+    expect(db.prepare("SELECT before_json, after_json FROM occurrence_revisions WHERE id = ?").get(revisionId)).toEqual(evidenceBefore);
+    expect(db.prepare("SELECT admin_revision FROM occurrences WHERE id = ?").get(occurrenceId)).toEqual({ admin_revision: 1 });
+    expect((db.prepare("PRAGMA table_info(email_outbox)").all() as { name: string }[]).map(({ name }) => name)).toEqual(expect.arrayContaining(["superseded_at", "superseded_reason"]));
+    db.prepare("INSERT INTO occurrence_change_refund_entitlements(id, occurrence_revision_id, order_id, booking_id, payment_id) VALUES (?, ?, ?, ?, ?)").run(randomUUID(), revisionId, orderId, bookingId, paymentId);
+    expect(() => db.prepare("INSERT INTO occurrence_change_refund_entitlements(id, occurrence_revision_id, order_id, booking_id, payment_id) VALUES (?, ?, ?, ?, ?)").run(randomUUID(), revisionId, orderId, bookingId, paymentId)).toThrow(/UNIQUE constraint failed/);
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    db.close();
+  });
   it("upgrades an empty database and enforces public order numbers", () => {
     const db = openDatabase(":memory:");
     applyThrough(db, "0012_refund_hardening.sql");

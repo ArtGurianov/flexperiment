@@ -3,7 +3,7 @@ import { CommerceDomain, DomainError } from "./domain";
 type SweepDomain = Pick<CommerceDomain,
   "recoverStaleCommands" | "detectStalePreparedSettlements" | "reconcileCreateUnknownPayments" | "reconcilePendingPayments" |
   "createObligationRefunds" | "submitRequestedRefunds" | "reconcilePendingRefunds" | "processEmailOutbox" |
-  "processCityInterestLifecycle">;
+  "processCityInterestLifecycle" | "detectOverdueVenueAnnouncements">;
 
 /**
  * Runs the financial recovery sequence. A stale PREPARED review is useful
@@ -22,5 +22,6 @@ export async function runWorkerSweep(domain: SweepDomain) {
   await domain.submitRequestedRefunds();
   await domain.reconcilePendingRefunds();
   await domain.processEmailOutbox();
+  domain.detectOverdueVenueAnnouncements();
   return domain.processCityInterestLifecycle();
 }

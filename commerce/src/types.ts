@@ -37,6 +37,7 @@ export const compensationRefundSchema = z.object({
 }).strict();
 
 export const occurrencePatchSchema = z.object({
+  expected_revision: z.number().int().positive(),
   title: z.string().trim().min(2).max(300).optional(),
   starts_at: z.string().datetime().optional(),
   ends_at: z.string().datetime().optional(),

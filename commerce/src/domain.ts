@@ -55,6 +55,85 @@ const isAllowedOccurrenceStateTransition = (before: Row, after: Row) => {
   return previous === next || allowedOccurrenceStateTransitions.has(`${previous}->${next}`);
 };
 
+type OccurrenceCustomerSnapshot = {
+  title: string;
+  starts_at: string;
+  ends_at: string;
+  timezone: string;
+  venue_status: "CONFIRMED" | "TO_BE_ANNOUNCED";
+  venue_name: string | null;
+  venue_address: string | null;
+  venue_disclosure_text: string | null;
+  venue_announce_by: string | null;
+};
+
+export type OccurrenceRevisionClassification = {
+  changed: boolean;
+  notificationMaterial: boolean;
+  refundMaterial: boolean;
+  materialChanges: Array<{ kind: string; field: keyof OccurrenceCustomerSnapshot; before: unknown; after: unknown }>;
+  before: OccurrenceCustomerSnapshot;
+  after: OccurrenceCustomerSnapshot;
+};
+
+const occurrenceCustomerSnapshot = (value: Row): OccurrenceCustomerSnapshot => ({
+  title: String(value.title),
+  starts_at: String(value.starts_at),
+  ends_at: String(value.ends_at),
+  timezone: String(value.timezone),
+  venue_status: value.venue_status === "CONFIRMED" ? "CONFIRMED" : "TO_BE_ANNOUNCED",
+  venue_name: value.venue_name == null ? null : String(value.venue_name),
+  venue_address: value.venue_address == null ? null : String(value.venue_address),
+  venue_disclosure_text: value.venue_disclosure_text == null ? null : String(value.venue_disclosure_text),
+  venue_announce_by: value.venue_announce_by == null ? null : String(value.venue_announce_by),
+});
+
+/**
+ * Classifies persisted, normalized occurrence facts. It deliberately does not
+ * infer commercial consequences from a requested patch: callers must persist
+ * the candidate first and pass its resulting values here.
+ */
+export function classifyOccurrenceRevision(beforeValue: Row, afterValue: Row): OccurrenceRevisionClassification {
+  const before = occurrenceCustomerSnapshot(beforeValue);
+  const after = occurrenceCustomerSnapshot(afterValue);
+  const fields = Object.keys(before) as Array<keyof OccurrenceCustomerSnapshot>;
+  const kinds: Record<keyof OccurrenceCustomerSnapshot, string> = {
+    title: "OCCURRENCE_TITLE_CHANGED",
+    starts_at: "OCCURRENCE_START_CHANGED",
+    ends_at: "OCCURRENCE_END_CHANGED",
+    timezone: "OCCURRENCE_TIMEZONE_CHANGED",
+    venue_status: "VENUE_STATUS_CHANGED",
+    venue_name: "VENUE_NAME_CHANGED",
+    venue_address: "VENUE_ADDRESS_CHANGED",
+    venue_disclosure_text: "VENUE_DISCLOSURE_CHANGED",
+    venue_announce_by: "VENUE_ANNOUNCEMENT_DEADLINE_CHANGED",
+  };
+  const materialChanges = fields.filter((field) => before[field] !== after[field])
+    .map((field) => ({ kind: kinds[field], field, before: before[field], after: after[field] }));
+  const changed = materialChanges.length > 0;
+  const changedField = (field: keyof OccurrenceCustomerSnapshot) => before[field] !== after[field];
+  const confirmedVenueChanged = before.venue_status === "CONFIRMED" && (
+    after.venue_status !== "CONFIRMED"
+    || changedField("venue_name")
+    || changedField("venue_address")
+  );
+  const deadlineMovedLater = before.venue_announce_by !== null
+    && after.venue_announce_by !== null
+    && new Date(after.venue_announce_by).getTime() > new Date(before.venue_announce_by).getTime();
+  return {
+    changed,
+    notificationMaterial: changed,
+    refundMaterial: changedField("starts_at")
+      || changedField("ends_at")
+      || changedField("timezone")
+      || confirmedVenueChanged
+      || deadlineMovedLater,
+    materialChanges,
+    before,
+    after,
+  };
+}
+
 // A stale PREPARED allocation is an operational-review condition, never a
 // timeout-based cancellation. Keep this explicit and shared by the worker and
 // Admin read model.
@@ -130,6 +209,66 @@ export class CommerceDomain {
 
   emailAttentionIncidents() {
     return many(this.db, emailAttentionSql(emailAttentionStatusSql));
+  }
+
+  operationalIncidents() {
+    return many(this.db, `SELECT * FROM operational_incidents ORDER BY status = 'OPEN' DESC, created_at DESC, id DESC`);
+  }
+
+  operationalIncidentCount() {
+    return Number(one(this.db, "SELECT COUNT(*) AS count FROM operational_incidents WHERE status = 'OPEN'")?.count ?? 0);
+  }
+
+  resolveOperationalIncident(incidentId: string, note: string) {
+    return withImmediateTransaction(this.db, () => {
+      const changed = this.db.prepare(`UPDATE operational_incidents
+        SET status = 'RESOLVED', resolution_note = ?, resolved_at = ?
+        WHERE id = ? AND status = 'OPEN'`).run(note, now(), incidentId).changes;
+      if (!changed) throw new DomainError("OPERATIONAL_INCIDENT_NOT_OPEN", 409);
+      return one(this.db, "SELECT * FROM operational_incidents WHERE id = ?", incidentId)!;
+    });
+  }
+
+  /** Worker-safe, idempotent operational signal for overdue TBA venues. */
+  detectOverdueVenueAnnouncements() {
+    return withImmediateTransaction(this.db, () => {
+      const timestamp = new Date(this.clock()).toISOString();
+      // A venue confirmation, cancellation, or completion resolves the open
+      // incident; historical evidence remains available for review.
+      this.db.prepare(`UPDATE operational_incidents
+        SET status = 'RESOLVED', resolution_note = 'Venue announced or occurrence terminal', resolved_at = ?
+        WHERE kind = 'VENUE_ANNOUNCEMENT_OVERDUE' AND status = 'OPEN'
+          AND EXISTS (SELECT 1 FROM occurrences o WHERE o.id = operational_incidents.entity_id
+            AND (o.venue_status = 'CONFIRMED' OR o.fulfillment_status <> 'SCHEDULED'))`).run(timestamp);
+      const overdue = many(this.db, `SELECT id, venue_announce_by, starts_at
+        FROM occurrences
+        WHERE fulfillment_status = 'SCHEDULED' AND venue_status = 'TO_BE_ANNOUNCED'
+          AND venue_announce_by < ?`, timestamp);
+      for (const occurrence of overdue) {
+        this.openOperationalIncident("VENUE_ANNOUNCEMENT_OVERDUE", "occurrence", String(occurrence.id),
+          `venue-overdue:${occurrence.id}:${occurrence.venue_announce_by}`,
+          { occurrence_id: occurrence.id, venue_announce_by: occurrence.venue_announce_by, starts_at: occurrence.starts_at });
+      }
+      return overdue.length;
+    });
+  }
+
+  private openOperationalIncident(
+    kind: "REFUND_REQUIRES_REVIEW" | "ORGANIZER_CHANGE_REFUND_MANUAL_REVIEW" | "VENUE_ANNOUNCEMENT_OVERDUE",
+    entityType: "refund" | "order" | "occurrence",
+    entityId: string,
+    incidentKey: string,
+    details: Record<string, unknown>,
+  ) {
+    this.db.prepare(`INSERT OR IGNORE INTO operational_incidents(
+      id, incident_key, kind, entity_type, entity_id, details_json
+    ) VALUES (?, ?, ?, ?, ?, ?)`).run(id(), incidentKey, kind, entityType, entityId, JSON.stringify(details));
+  }
+
+  private resolveOperationalIncidents(entityType: "refund" | "order" | "occurrence", entityId: string, note: string) {
+    this.db.prepare(`UPDATE operational_incidents
+      SET status = 'RESOLVED', resolution_note = COALESCE(resolution_note, ?), resolved_at = COALESCE(resolved_at, ?)
+      WHERE entity_type = ? AND entity_id = ? AND status = 'OPEN'`).run(note, now(), entityType, entityId);
   }
 
   acknowledgeEmailAttention(outboxId: string, reason: string) {
@@ -376,14 +515,27 @@ export class CommerceDomain {
         this.db.prepare("UPDATE bookings SET status = 'CONFIRMED' WHERE id = ? AND status = 'RESERVED'").run(booking.id);
         const capability = publicId();
         const encrypted = encryptTicketCapability(capability);
-        const order = one(this.db, "SELECT customer_email, customer_email_hash, public_order_number FROM orders WHERE id = ?", payment.order_id)!;
+        const order = one(this.db, `SELECT o.customer_email, o.customer_email_hash, o.public_order_number,
+          oc.title, oc.starts_at, oc.ends_at, oc.timezone, oc.venue_status, oc.venue_name,
+          oc.venue_address, oc.venue_disclosure_text, oc.venue_announce_by, c.title AS city_title
+          FROM orders o JOIN occurrences oc ON oc.id = o.occurrence_id JOIN cities c ON c.id = oc.city_id
+          WHERE o.id = ?`, payment.order_id)!;
         const ticketId = id();
         this.db.prepare(`INSERT INTO tickets(id, booking_id, status, capability_hash, capability_ciphertext, capability_nonce, key_version)
           VALUES (?, ?, 'VALID', ?, ?, ?, 1)`).run(ticketId, booking.id, sha256(capability), encrypted.ciphertext, encrypted.nonce);
         // The outbox references an immutable ticket row. A future Unisender worker
         // derives the actual URL from its encrypted capability at send time; the raw
         // capability is never copied to application logs or browser storage.
-        this.enqueueEmail("TICKET", String(order.customer_email), String(order.customer_email_hash), "ticket", ticketId, { ticket_id: ticketId, order_id: payment.order_id, public_order_number: order.public_order_number });
+        this.enqueueEmail("TICKET", String(order.customer_email), String(order.customer_email_hash), "ticket", ticketId, {
+          schema_version: 1,
+          ticket_id: ticketId,
+          order_id: payment.order_id,
+          public_order_number: order.public_order_number,
+          payment_confirmed: true,
+          amount_kopecks: capturedAmount,
+          occurrence: occurrenceCustomerSnapshot(order),
+          city_title: order.city_title,
+        });
         this.syncRewardEvidence(String(payment.order_id));
       } else {
         const abandonment = one(this.db, "SELECT id FROM reservation_abandonments WHERE payment_id = ?", payment.id);
@@ -468,7 +620,19 @@ export class CommerceDomain {
         JOIN occurrences oc ON oc.id = o.occurrence_id
         WHERE replace(upper(o.public_order_number), '-', '') = ?`, normalizedOrderNumber);
       const currentOrder = order && this.customerRefundOrder(String(order.id));
-      if (!currentOrder || this.customerRefundEligibility(currentOrder) !== "ELIGIBLE") return { accepted: true };
+      if (!currentOrder) return { accepted: true };
+      const eligibility = this.customerRefundEligibility(currentOrder);
+      if (eligibility === "ORGANIZER_CHANGE_MANUAL_REVIEW") {
+        this.openOperationalIncident(
+          "ORGANIZER_CHANGE_REFUND_MANUAL_REVIEW",
+          "order",
+          String(currentOrder.id),
+          `organizer-change-refund-manual:${currentOrder.id}`,
+          { order_id: currentOrder.id, booking_id: currentOrder.booking_id, reason: "OCCURRENCE_CHANGE_AFTER_START" },
+        );
+        return { accepted: true };
+      }
+      if (eligibility !== "ELIGIBLE" && eligibility !== "ORGANIZER_CHANGE_ELIGIBLE") return { accepted: true };
 
       // A later request can supersede only a definitely unsent capability.
       // Once the worker has claimed a message, its provider request may already
@@ -518,7 +682,7 @@ export class CommerceDomain {
       },
       amount_remaining_kopecks: Math.max(0, Number(order.captured_amount_kopecks) - Number(order.successful_refunded_amount_kopecks)),
       eligibility,
-      ...(eligibility === "ELIGIBLE" ? {} : { manual_contact: "art@flexperiment.ru" }),
+      ...(["ELIGIBLE", "ORGANIZER_CHANGE_ELIGIBLE"].includes(String(eligibility)) ? {} : { manual_contact: "art@flexperiment.ru" }),
       expires_at: token.expires_at,
     };
   }
@@ -527,11 +691,14 @@ export class CommerceDomain {
     return withImmediateTransaction(this.db, () => {
       const token = this.validCustomerRefundToken(capability);
       const order = this.customerRefundOrder(String(token.order_id));
-      if (!order || this.customerRefundEligibility(order) !== "ELIGIBLE") throw new DomainError("REFUND_NOT_ELIGIBLE", 409);
+      const eligibility = order && this.customerRefundEligibility(order);
+      if (!order || !["ELIGIBLE", "ORGANIZER_CHANGE_ELIGIBLE"].includes(String(eligibility))) throw new DomainError("REFUND_NOT_ELIGIBLE", 409);
       this.db.prepare("UPDATE customer_refund_confirmation_tokens SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL").run(now(), token.id);
       this.db.prepare("UPDATE customer_refund_confirmation_tokens SET invalidated_at = ? WHERE order_id = ? AND id <> ? AND consumed_at IS NULL AND invalidated_at IS NULL").run(now(), order.id, token.id);
       this.db.prepare("UPDATE bookings SET status = 'CANCELLED', cancelled_at = ?, cancellation_reason = 'CUSTOMER_SELF_SERVICE_REFUND' WHERE id = ? AND status = 'CONFIRMED'").run(now(), order.booking_id);
       this.db.prepare("UPDATE tickets SET status = 'VOID', voided_at = ? WHERE booking_id = ? AND status = 'VALID'").run(now(), order.booking_id);
+      this.supersedePendingOccurrenceUpdatesForBooking(String(order.booking_id), "BOOKING_CANCELLED");
+      this.closeOccurrenceChangeRefundEntitlementsForBooking(String(order.booking_id), "BOOKING_CANCELLED");
       this.syncRewardEvidence(String(order.id));
       this.ensureFullCapturedRefund(String(order.payment_id), "CUSTOMER_SELF_SERVICE_REFUND", Number(order.captured_amount_kopecks));
       this.enqueueEmail("CUSTOMER_REFUND_CONFIRMED", String(order.customer_email), String(order.customer_email_hash), "customer-refund-confirmed", String(order.id), { order_id: order.id, public_order_number: order.public_order_number });
@@ -553,7 +720,9 @@ export class CommerceDomain {
       c.title AS city_title,
       COALESCE((SELECT SUM(r.amount_kopecks) FROM refunds r WHERE r.payment_id = p.id AND r.status = 'SUCCEEDED'), 0) AS successful_refunded_amount_kopecks,
       COALESCE((SELECT COUNT(*) FROM refunds r WHERE r.payment_id = p.id AND r.status IN ('REQUESTED', 'SUBMITTING', 'SUBMIT_UNKNOWN', 'RECONCILING')), 0) AS active_refund_count,
-      COALESCE((SELECT COUNT(*) FROM refund_obligations ro WHERE ro.payment_id = p.id AND ro.status IN ('OPEN', 'FULFILLING', 'REVIEW_REQUIRED')), 0) AS active_obligation_count
+      COALESCE((SELECT COUNT(*) FROM refund_obligations ro WHERE ro.payment_id = p.id AND ro.status IN ('OPEN', 'FULFILLING', 'REVIEW_REQUIRED')), 0) AS active_obligation_count,
+      EXISTS(SELECT 1 FROM occurrence_change_refund_entitlements e
+        WHERE e.booking_id = b.id AND e.status = 'OPEN') AS organizer_change_refund_entitlement
       FROM orders o JOIN payments p ON p.order_id = o.id JOIN bookings b ON b.order_id = o.id
       JOIN occurrences oc ON oc.id = o.occurrence_id JOIN cities c ON c.id = oc.city_id
       WHERE o.id = ?`, orderId);
@@ -568,7 +737,11 @@ export class CommerceDomain {
     if (refunded >= captured || order.payment_status === "REFUNDED") return "REFUND_COMPLETED";
     if (Number(order.active_refund_count) > 0 || Number(order.active_obligation_count) > 0) return "REFUND_PENDING";
     if (order.booking_status !== "CONFIRMED") return "ALREADY_CANCELLED";
-    const deadline = new Date(String(order.starts_at)).getTime() - 60 * 60_000;
+    const startsAt = new Date(String(order.starts_at)).getTime();
+    if (Number(order.organizer_change_refund_entitlement) === 1) {
+      return this.clock() < startsAt ? "ORGANIZER_CHANGE_ELIGIBLE" : "ORGANIZER_CHANGE_MANUAL_REVIEW";
+    }
+    const deadline = startsAt - 60 * 60_000;
     if (this.clock() >= deadline) return "CUTOFF_REACHED";
     return "ELIGIBLE";
   }
@@ -634,6 +807,8 @@ export class CommerceDomain {
       if (withheld > Number(booking.captured_amount_kopecks)) throw new DomainError("WITHHOLDING_EXCEEDS_CAPTURED", 422);
       this.db.prepare("UPDATE bookings SET status = 'CANCELLED', cancelled_at = ?, cancellation_reason = ? WHERE id = ?").run(now(), input.reason, bookingId);
       this.db.prepare("UPDATE tickets SET status = 'VOID', voided_at = ? WHERE booking_id = ? AND status = 'VALID'").run(now(), bookingId);
+      this.supersedePendingOccurrenceUpdatesForBooking(bookingId, "BOOKING_CANCELLED");
+      this.closeOccurrenceChangeRefundEntitlementsForBooking(bookingId, "BOOKING_CANCELLED");
       this.syncRewardEvidence(String(booking.order_id));
       this.enqueueEmail("BOOKING_CANCELLED", String(booking.customer_email), String(booking.customer_email_hash), "booking-cancelled", bookingId, { booking_id: bookingId, reason: input.reason, public_order_number: booking.public_order_number });
       this.db.prepare("INSERT INTO booking_cancellation_idempotency(idempotency_key_hash, canonical_request_hash, booking_id) VALUES (?, ?, ?)").run(keyHash, requestHash, bookingId);
@@ -687,6 +862,7 @@ export class CommerceDomain {
       this.db.prepare("UPDATE occurrences SET fulfillment_status = 'COMPLETED', sales_status = 'CLOSED', completed_at = ?, updated_at = ? WHERE id = ?").run(now(), now(), occurrenceId);
       const reserved = many(this.db, "SELECT id FROM bookings WHERE occurrence_id = ? AND status = 'RESERVED'", occurrenceId);
       for (const booking of reserved) this.db.prepare("UPDATE bookings SET status = 'CANCELLED', cancelled_at = ?, cancellation_reason = 'OCCURRENCE_COMPLETED_UNPAID' WHERE id = ?").run(now(), booking.id);
+      this.resolveOperationalIncidents("occurrence", occurrenceId, "Occurrence completed");
       return one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId)!;
     });
   }
@@ -717,8 +893,11 @@ export class CommerceDomain {
       for (const booking of bookings) {
         this.db.prepare("UPDATE bookings SET status = 'CANCELLED', cancelled_at = ?, cancellation_reason = ? WHERE id = ?").run(now(), "OCCURRENCE_CANCELLED", booking.id);
         this.db.prepare("UPDATE tickets SET status = 'VOID', voided_at = ? WHERE booking_id = ? AND status = 'VALID'").run(now(), booking.id);
+        this.supersedePendingOccurrenceUpdatesForBooking(String(booking.id), "OCCURRENCE_CANCELLED");
+        this.closeOccurrenceChangeRefundEntitlementsForBooking(String(booking.id), "OCCURRENCE_CANCELLED");
         this.syncRewardEvidence(String(booking.order_id));
       }
+      this.resolveOperationalIncidents("occurrence", occurrenceId, "Occurrence cancelled");
       // Financial unwind and organizer notice are independent of booking
       // status. A prior technical or customer cancellation must not strand
       // money or suppress the affected paid order's cancellation notice.
@@ -829,13 +1008,22 @@ export class CommerceDomain {
       const before = one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId);
       if (!before) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
       if (before.fulfillment_status !== "SCHEDULED") throw new DomainError("OCCURRENCE_TERMINAL", 409);
+      // HTTP callers always supply this value. The fallback keeps direct
+      // in-process fixtures compatible while the public Admin boundary stays
+      // compare-and-set based.
+      const expectedRevision = Number(input.expected_revision ?? before.admin_revision);
+      if (!Number.isInteger(expectedRevision) || expectedRevision !== Number(before.admin_revision)) {
+        throw new DomainError("OCCURRENCE_REVISION_CONFLICT", 409);
+      }
       const occupancy = Number(one(this.db, "SELECT COUNT(*) AS count FROM bookings WHERE occurrence_id = ? AND status IN ('RESERVED', 'CONFIRMED')", occurrenceId)?.count ?? 0);
       if (input.capacity !== undefined && Number(input.capacity) < occupancy) throw new DomainError("CAPACITY_BELOW_OCCUPANCY", 409);
       const fields = ["title", "starts_at", "ends_at", "timezone", "venue_status", "venue_name", "venue_address", "venue_public", "venue_disclosure_text", "venue_announce_by", "price_kopecks", "capacity", "sales_status", "visibility"] as const;
-      const material = ["title", "starts_at", "ends_at", "timezone", "venue_status", "venue_name", "venue_address", "venue_disclosure_text", "venue_announce_by"];
-      const changed = fields.filter((field) => input[field] !== undefined && input[field] !== before[field]);
+      const persistedPatch = Object.fromEntries(fields
+        .filter((field) => input[field] !== undefined)
+        .map((field) => [field, typeof input[field] === "boolean" ? Number(input[field]) : input[field]]));
+      const changed = fields.filter((field) => persistedPatch[field] !== undefined && persistedPatch[field] !== before[field]);
       if (!changed.length) return before;
-      const next = { ...before, ...Object.fromEntries(changed.map((field) => [field, input[field]])) };
+      const next = { ...before, ...Object.fromEntries(changed.map((field) => [field, persistedPatch[field]])) };
       const isLegacyHiddenSalesState = before.visibility === "HIDDEN" && (before.sales_status === "OPEN" || before.sales_status === "PAUSED");
       if (isLegacyHiddenSalesState && !(changed.length === 1 && changed[0] === "sales_status" && next.sales_status === "CLOSED")) {
         throw new DomainError("OCCURRENCE_STATE_TRANSITION_FORBIDDEN", 409);
@@ -845,18 +1033,75 @@ export class CommerceDomain {
       if (next.venue_status === "CONFIRMED" && (!next.venue_name || !next.venue_address)) throw new DomainError("VENUE_CONFIRMATION_INCOMPLETE", 422);
       if (next.venue_status === "TO_BE_ANNOUNCED" && (!next.venue_disclosure_text || !next.venue_announce_by)) throw new DomainError("VENUE_TBD_INCOMPLETE", 422);
       if (next.venue_status === "TO_BE_ANNOUNCED" && Date.parse(String(next.venue_announce_by)) >= Date.parse(String(next.starts_at))) throw new DomainError("VENUE_ANNOUNCEMENT_TOO_LATE", 422);
-      const materialChanged = changed.some((field) => material.includes(field));
-      const assignments = [...changed.map((field) => `${field} = ?`), "material_revision = material_revision + ?", "updated_at = ?"];
-      this.db.prepare(`UPDATE occurrences SET ${assignments.join(", ")} WHERE id = ?`).run(...changed.map((field) => typeof input[field] === "boolean" ? Number(input[field]) : input[field]), materialChanged ? 1 : 0, now(), occurrenceId);
+      const classification = classifyOccurrenceRevision(before, next);
+      const assignments = [...changed.map((field) => `${field} = ?`), "material_revision = material_revision + ?", "admin_revision = admin_revision + 1", "updated_at = ?"];
+      const updated = this.db.prepare(`UPDATE occurrences SET ${assignments.join(", ")} WHERE id = ? AND admin_revision = ?`)
+        .run(...changed.map((field) => persistedPatch[field]), classification.notificationMaterial ? 1 : 0, now(), occurrenceId, expectedRevision);
+      if (!updated.changes) throw new DomainError("OCCURRENCE_REVISION_CONFLICT", 409);
       const after = one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId)!;
       // Publication, not city creation, can complete the narrowly scoped
       // purpose. The helper rechecks scheduled/future eligibility.
       const city = one(this.db, "SELECT slug FROM cities WHERE id = ?", after.city_id);
       if (city) this.consumeEligibleCityInterests(String(city.slug), CITY_INTEREST_SWEEP_BATCH_SIZE);
-      if (materialChanged) this.db.prepare("INSERT INTO occurrence_revisions(id, occurrence_id, revision, reason, before_json, after_json) VALUES (?, ?, ?, ?, ?, ?)").run(id(), occurrenceId, after.material_revision, input.reason, JSON.stringify(before), JSON.stringify(after));
+      if (classification.notificationMaterial) {
+        const revisionId = id();
+        this.db.prepare("INSERT INTO occurrence_revisions(id, occurrence_id, revision, reason, before_json, after_json, changed_by_admin_id) VALUES (?, ?, ?, ?, ?, ?, ?)")
+          .run(revisionId, occurrenceId, after.material_revision, input.reason, JSON.stringify(classification.before), JSON.stringify(classification.after), adminId);
+        this.emitOccurrenceRevisionEffects(revisionId, before, after, classification);
+      }
       this.recordAdminCommandAudit(adminId, "OCCURRENCE_EDITED", "occurrence", occurrenceId, String(input.reason), idempotencyKey, payload);
       return after;
     });
+  }
+
+  /** Creates immutable customer notices and, only for materially adverse facts, refund rights. */
+  private emitOccurrenceRevisionEffects(revisionId: string, before: Row, after: Row, classification: OccurrenceRevisionClassification) {
+    const paidBookings = many(this.db, `SELECT b.id AS booking_id, b.order_id, p.id AS payment_id,
+        t.id AS ticket_id, o.customer_email, o.customer_email_hash, o.public_order_number
+      FROM bookings b
+      JOIN orders o ON o.id = b.order_id
+      JOIN payments p ON p.order_id = o.id
+      JOIN tickets t ON t.booking_id = b.id
+      WHERE b.occurrence_id = ?
+        AND b.status = 'CONFIRMED'
+        AND t.status = 'VALID'
+        AND p.status IN ('PAID', 'PARTIALLY_REFUNDED')
+        AND p.captured_amount_kopecks > 0`, after.id);
+    for (const booking of paidBookings) {
+      this.supersedePendingOccurrenceUpdatesForBooking(String(booking.booking_id), "NEWER_OCCURRENCE_REVISION");
+      if (classification.refundMaterial) {
+        this.db.prepare(`INSERT OR IGNORE INTO occurrence_change_refund_entitlements(
+          id, occurrence_revision_id, order_id, booking_id, payment_id
+        ) VALUES (?, ?, ?, ?, ?)`)
+          .run(id(), revisionId, booking.order_id, booking.booking_id, booking.payment_id);
+      }
+      const payload = {
+        schema_version: 1,
+        occurrence_revision_id: revisionId,
+        occurrence_id: after.id,
+        revision: after.material_revision,
+        ticket_id: booking.ticket_id,
+        booking_id: booking.booking_id,
+        order_id: booking.order_id,
+        public_order_number: booking.public_order_number,
+        before: classification.before,
+        after: classification.after,
+        material_changes: classification.materialChanges,
+        organizer_change_full_refund_available: classification.refundMaterial,
+      };
+      const outboxId = this.enqueueEmail(
+        "OCCURRENCE_UPDATED",
+        String(booking.customer_email),
+        String(booking.customer_email_hash),
+        "occurrence-updated",
+        String(booking.order_id),
+        payload,
+      );
+      this.db.prepare(`INSERT INTO occurrence_update_notifications(
+        id, occurrence_revision_id, order_id, booking_id, ticket_id, outbox_id
+      ) VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(id(), revisionId, booking.order_id, booking.booking_id, booking.ticket_id, outboxId);
+    }
   }
 
   createAgent(input: Record<string, unknown>) {
@@ -1144,13 +1389,26 @@ export class CommerceDomain {
         if (fullyRefunded) this.cancelConfirmedBookingForFullRefund(String(refund.order_id));
         this.db.prepare("UPDATE reservation_abandonments SET status = 'LATE_PAYMENT_REFUNDED', resolved_at = ? WHERE payment_id = ? AND status = 'LATE_PAYMENT_REVIEW_REQUIRED'").run(now(), refund.payment_id);
         const order = one(this.db, "SELECT customer_email, customer_email_hash, public_order_number FROM orders WHERE id = ?", refund.order_id)!;
-        this.enqueueEmail("REFUND_SUCCEEDED", String(order.customer_email), String(order.customer_email_hash), "refund-succeeded", refundId, { refund_id: refundId, amount_kopecks: refund.amount_kopecks, public_order_number: order.public_order_number });
+        this.enqueueEmail("REFUND_SUCCEEDED", String(order.customer_email), String(order.customer_email_hash), "refund-succeeded", refundId, {
+          refund_id: refundId,
+          amount_kopecks: refund.amount_kopecks,
+          public_order_number: order.public_order_number,
+          fulfillment_outcome: fullyRefunded ? "FULL" : "PARTIAL",
+        });
+        this.resolveOperationalIncidents("refund", refundId, "Provider refund succeeded");
         return one(this.db, "SELECT * FROM refunds WHERE id = ?", refundId)!;
       });
     }
-    if (observed.status === "FAILED") { this.db.prepare("UPDATE refunds SET status = 'FAILED', failed_at = ? WHERE id = ?").run(now(), refundId); return one(this.db, "SELECT * FROM refunds WHERE id = ?", refundId)!; }
-    this.db.prepare("UPDATE refunds SET status = 'REVIEW_REQUIRED' WHERE id = ?").run(refundId);
-    return one(this.db, "SELECT * FROM refunds WHERE id = ?", refundId)!;
+    return withImmediateTransaction(this.db, () => {
+      const failed = observed.status === "FAILED";
+      this.db.prepare(`UPDATE refunds SET status = ?, failed_at = CASE WHEN ? THEN ? ELSE failed_at END WHERE id = ?`)
+        .run(failed ? "FAILED" : "REVIEW_REQUIRED", failed ? 1 : 0, now(), refundId);
+      this.openOperationalIncident("REFUND_REQUIRES_REVIEW", "refund", refundId, `refund-attention:${refundId}`, {
+        refund_id: refundId,
+        state: failed ? "FAILED" : "REVIEW_REQUIRED",
+      });
+      return one(this.db, "SELECT * FROM refunds WHERE id = ?", refundId)!;
+    });
   }
 
   /**
@@ -1161,12 +1419,20 @@ export class CommerceDomain {
    */
   private cancelConfirmedBookingForFullRefund(orderId: string) {
     const booking = one(this.db, "SELECT id FROM bookings WHERE order_id = ? AND status = 'CONFIRMED'", orderId);
-    if (!booking) return false;
+    if (!booking) {
+      this.closeOccurrenceChangeRefundEntitlementsForOrder(orderId, "FULL_REFUND");
+      return false;
+    }
     const cancelled = this.db.prepare(`UPDATE bookings
       SET status = 'CANCELLED', cancelled_at = ?, cancellation_reason = 'FULL_REFUND'
       WHERE id = ? AND status = 'CONFIRMED'`).run(now(), booking.id);
-    if (!cancelled.changes) return false;
+    if (!cancelled.changes) {
+      this.closeOccurrenceChangeRefundEntitlementsForOrder(orderId, "FULL_REFUND");
+      return false;
+    }
     this.db.prepare("UPDATE tickets SET status = 'VOID', voided_at = ? WHERE booking_id = ? AND status = 'VALID'").run(now(), booking.id);
+    this.supersedePendingOccurrenceUpdatesForBooking(String(booking.id), "FULL_REFUND");
+    this.closeOccurrenceChangeRefundEntitlementsForOrder(orderId, "FULL_REFUND");
     return true;
   }
 
@@ -1329,8 +1595,10 @@ export class CommerceDomain {
   async processEmailOutbox() {
     const timestamp = new Date(this.clock()).toISOString();
     const rows = many(this.db, `SELECT * FROM email_outbox
-      WHERE status = 'PENDING'
+      WHERE superseded_at IS NULL AND (
+        status = 'PENDING'
         OR (status = 'SEND_UNKNOWN' AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
+      )
       ORDER BY created_at LIMIT 50`, timestamp);
     for (const outbox of rows) {
       if (outbox.type === "CITY_INTEREST_AVAILABLE") {
@@ -1382,6 +1650,7 @@ export class CommerceDomain {
         }
         return this.db.prepare(`UPDATE email_outbox SET status = 'SENDING', lease_owner = ?, lease_expires_at = datetime('now', '+120 seconds'), send_started_at = COALESCE(send_started_at, ?), provider_request_started_at = ?, next_attempt_at = NULL, attempts = attempts + 1
           WHERE id = ? AND status IN ('PENDING', 'SEND_UNKNOWN')
+            AND superseded_at IS NULL
             AND (status = 'PENDING' OR next_attempt_at IS NULL OR next_attempt_at <= ?)`)
           .run(`worker-${process.pid}`, now(), now(), outbox.id, timestamp).changes;
       });
@@ -1393,12 +1662,13 @@ export class CommerceDomain {
           const accepted = this.db.prepare(`UPDATE email_outbox
             SET status = 'ACCEPTED', job_id = ?, lease_owner = NULL, lease_expires_at = NULL,
                 next_attempt_at = NULL, last_error = NULL, provider_error_code = NULL, provider_error_message = NULL
-            WHERE id = ? AND status = 'SENDING' AND suppressed_at IS NULL`).run(sent.jobId, outbox.id);
+            WHERE id = ? AND status = 'SENDING' AND suppressed_at IS NULL AND superseded_at IS NULL`).run(sent.jobId, outbox.id);
           if (!accepted.changes) {
             // Consent may have been withdrawn while send() was in flight. The
             // already-started provider call cannot be recalled, but its job ID
             // is durable provider evidence; never revive the local row.
-            this.db.prepare("UPDATE email_outbox SET job_id = COALESCE(job_id, ?), lease_owner = NULL, lease_expires_at = NULL WHERE id = ? AND suppressed_at IS NOT NULL").run(sent.jobId, outbox.id);
+            this.db.prepare(`UPDATE email_outbox SET job_id = COALESCE(job_id, ?), lease_owner = NULL, lease_expires_at = NULL
+              WHERE id = ? AND (suppressed_at IS NOT NULL OR superseded_at IS NOT NULL)`).run(sent.jobId, outbox.id);
           }
         });
       } catch (error) {
@@ -1524,6 +1794,43 @@ export class CommerceDomain {
     return this.db.prepare("UPDATE email_outbox SET status = 'SKIPPED', lease_owner = NULL, lease_expires_at = NULL, last_error = NULL WHERE id = ? AND status = 'PENDING'").run(outboxId).changes;
   }
 
+  /**
+   * A newer customer-visible revision makes queued notices obsolete. Provider
+   * evidence is retained: SENT/DELIVERED rows are historical dispatch facts
+   * and a SENDING row is only prevented from being revived after its in-flight
+   * call returns.
+   */
+  private supersedePendingOccurrenceUpdatesForBooking(bookingId: string, reason: string) {
+    const timestamp = now();
+    const pending = many(this.db, `SELECT n.id, n.outbox_id
+      FROM occurrence_update_notifications n
+      JOIN email_outbox e ON e.id = n.outbox_id
+      WHERE n.booking_id = ? AND n.superseded_at IS NULL
+        AND e.status IN ('PENDING', 'SENDING', 'ACCEPTED', 'SEND_UNKNOWN')`, bookingId);
+    for (const notification of pending) {
+      const updated = this.db.prepare(`UPDATE email_outbox
+        SET status = 'SKIPPED', superseded_at = ?, superseded_reason = ?,
+            lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL
+        WHERE id = ? AND status IN ('PENDING', 'SENDING', 'ACCEPTED', 'SEND_UNKNOWN')
+          AND superseded_at IS NULL`).run(timestamp, reason, notification.outbox_id);
+      if (updated.changes) this.db.prepare(`UPDATE occurrence_update_notifications
+        SET superseded_at = ?, superseded_reason = ? WHERE id = ? AND superseded_at IS NULL`)
+        .run(timestamp, reason, notification.id);
+    }
+  }
+
+  private closeOccurrenceChangeRefundEntitlementsForBooking(bookingId: string, reason: string) {
+    this.db.prepare(`UPDATE occurrence_change_refund_entitlements
+      SET status = 'CLOSED', closed_at = ?, closed_reason = ?
+      WHERE booking_id = ? AND status = 'OPEN'`).run(now(), reason, bookingId);
+  }
+
+  private closeOccurrenceChangeRefundEntitlementsForOrder(orderId: string, reason: string) {
+    this.db.prepare(`UPDATE occurrence_change_refund_entitlements
+      SET status = 'CLOSED', closed_at = ?, closed_reason = ?
+      WHERE order_id = ? AND status = 'OPEN'`).run(now(), reason, orderId);
+  }
+
   private enqueueEmail(type: string, recipientEmail: string, recipientEmailHash: string, template: string, payloadRef: string, payload: Record<string, unknown>) {
     const outboxId = id();
     this.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_ref, payload_snapshot, provider_idempotence_key)
@@ -1646,7 +1953,8 @@ export class CommerceDomain {
     this.db.prepare(`UPDATE email_outbox SET status = ?, job_id = COALESCE(job_id, ?), lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL${timestamps}
       WHERE id = ?
         AND NOT (status = 'DELIVERED' AND ? != 'DELIVERED')
-        AND NOT (suppressed_at IS NOT NULL AND ? != 'DELIVERED')`).run(observed.status, observed.jobId ?? null, ...(timestamps ? [now()] : []), outboxId, observed.status, observed.status);
+        AND NOT (suppressed_at IS NOT NULL AND ? != 'DELIVERED')
+        AND NOT (superseded_at IS NOT NULL AND ? != 'DELIVERED')`).run(observed.status, observed.jobId ?? null, ...(timestamps ? [now()] : []), outboxId, observed.status, observed.status, observed.status);
   }
 
   private redactDeliveredCityInterestOutbox(outboxId: string) {
