@@ -5,8 +5,13 @@ Hono runtime owns all `/v1/*` requests, SQLite WAL data, and recovery work.
 The static frontend calls the Commerce runtime at `https://api.flexperiment.ru`
 using `NEXT_PUBLIC_COMMERCE_API_URL`, which must be set when the static frontend
 is built. The API accepts browser CORS only from `https://flexperiment.ru` for
-public Commerce routes. It must receive a proxy-authenticated client address in
-`X-Commerce-Trusted-Client-IP` and must not use wildcard CORS.
+public Commerce routes and must not use wildcard CORS. Its trusted client-IP
+boundary is `Internet -> Coolify Traefik -> commerce:3001`: Commerce reads a
+validated, single-value standard `X-Forwarded-For` only after the sole Traefik
+ingress has sanitized client-supplied forwarded headers. The Compose resource
+deliberately uses `expose: 3001`, not a public host-port `ports` mapping. Keep
+Commerce on the private Docker network with Traefik; if another proxy/CDN is
+added, review the forwarded-header trust model before release.
 
 `admin.flexperiment.ru` is a second same-origin pair. Its `fx_admin_session`
 cookie is host-only, `HttpOnly`, `Secure`, and `SameSite=Strict`; do not change

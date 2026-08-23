@@ -28,7 +28,7 @@ function appFixture(smartCaptcha: SmartCaptchaVerifier = passingCaptcha) {
 describe("commerce HTTP boundary", () => {
   it("allows the configured public browser origin and required checkout headers", async () => {
     const { db, app } = appFixture();
-    const response = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers: { Origin: "https://flexperiment.ru", "x-commerce-trusted-client-ip": "127.0.0.1" } });
+    const response = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers: { Origin: "https://flexperiment.ru", "X-Forwarded-For": "127.0.0.1" } });
     expect(response.status).toBe(200);
     expect(response.headers.get("access-control-allow-origin")).toBe("https://flexperiment.ru");
     expect(response.headers.get("access-control-allow-headers")).toContain("Idempotency-Key");
@@ -58,21 +58,21 @@ describe("commerce HTTP boundary", () => {
     db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, sales_status, venue_status, venue_name, venue_address)
       VALUES (?, ?, 'Published but closed', '2026-10-03T10:00:00.000Z', '2026-10-03T13:00:00.000Z', 'Asia/Tomsk', 100, 1, 'PUBLISHED', 'CLOSED', 'CONFIRMED', 'Studio', 'Lenina 3')`).run(randomUUID(), closedCityId);
 
-    const tour = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers: { Origin: "https://flexperiment.ru", "x-commerce-trusted-client-ip": "127.0.0.22" } });
+    const tour = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers: { Origin: "https://flexperiment.ru", "X-Forwarded-For": "127.0.0.22" } });
     const visible = await tour.json() as { cities: { city: string; sales_status: string }[] };
     expect(visible.cities.map((entry) => entry.city)).toEqual(["closed-city", "tomsk"]);
     expect(visible.cities.find((entry) => entry.city === "closed-city")).toMatchObject({ sales_status: "CLOSED" });
     expect(visible.cities.some((entry) => entry.city === "hidden-city" || entry.city === "empty-city")).toBe(false);
 
     db.prepare("UPDATE occurrences SET sales_status = 'CLOSED', visibility = 'HIDDEN' WHERE visibility = 'PUBLISHED'").run();
-    const emptyTour = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers: { Origin: "https://flexperiment.ru", "x-commerce-trusted-client-ip": "127.0.0.23" } });
+    const emptyTour = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers: { Origin: "https://flexperiment.ru", "X-Forwarded-For": "127.0.0.23" } });
     expect(await emptyTour.json()).toEqual({ cities: [] });
     db.close();
   });
 
   it("has no generic financial status editor", async () => {
     const { db, app } = appFixture();
-    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.1" }, body: JSON.stringify({ password: "correct horse" }) });
+    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.1" }, body: JSON.stringify({ password: "correct horse" }) });
     expect(login.status).toBe(200);
     const cookie = login.headers.get("set-cookie")!;
     const response = await app.request("http://admin.flexperiment.ru/v1/admin/payments/any/status", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", Cookie: cookie } });
@@ -86,7 +86,7 @@ describe("commerce HTTP boundary", () => {
     const agentId = randomUUID(); const settlementId = randomUUID();
     db.prepare("INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, npd_status_checked_at, default_reward_type, default_reward_value) VALUES (?, 'settlement-api-agent', 'Settlement Agent', 'Settlement Agent Legal', 'settlement-agent@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', datetime('now'), 'FIXED', 100)").run(agentId);
     db.prepare("INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id) VALUES (?, ?, ?, 100, 'TRANSFER', 'PREPARED', 'SELF_EMPLOYED', ?, 'admin')").run(settlementId, agentId, occurrenceId, new Date().toISOString());
-    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.57" }, body: JSON.stringify({ password: "correct horse" }) });
+    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.57" }, body: JSON.stringify({ password: "correct horse" }) });
     const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
     const reviewCount = db.prepare("SELECT COUNT(*) AS count FROM settlement_prepared_reviews").get();
     const list = await app.request("http://admin.flexperiment.ru/v1/admin/reward-settlements", { headers });
@@ -110,7 +110,7 @@ describe("commerce HTTP boundary", () => {
     const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
     const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", {
       method: "POST",
-      headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.44" },
+      headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.44" },
       body: JSON.stringify({ password: "correct horse" }),
     });
     const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
@@ -131,9 +131,9 @@ describe("commerce HTTP boundary", () => {
   it("rate limits repeated reauthentication password failures per session without blocking another session", async () => {
     const { db, app } = appFixture();
     const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
-    const loginHeaders = { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.47" };
+    const loginHeaders = { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.47" };
     const firstLogin = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: loginHeaders, body: JSON.stringify({ password: "correct horse" }) });
-    const firstHeaders = { Origin: "https://admin.flexperiment.ru", Cookie: firstLogin.headers.get("set-cookie")!, "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.47" };
+    const firstHeaders = { Origin: "https://admin.flexperiment.ru", Cookie: firstLogin.headers.get("set-cookie")!, "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.47" };
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const response = await app.request("http://admin.flexperiment.ru/v1/admin/reauth", { method: "POST", headers: firstHeaders, body: JSON.stringify({ password: "wrong", purpose: "CANCEL_OCCURRENCE", resource_id: occurrenceId }) });
       expect(response.status).toBe(401);
@@ -150,7 +150,7 @@ describe("commerce HTTP boundary", () => {
     const { db, app } = appFixture();
     const response = await app.request("http://api.flexperiment.ru/v1/public/refunds/request", {
       method: "POST",
-      headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.45" },
+      headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.45" },
       body: JSON.stringify({ order_number: "FX-UNKNOWN-ORDER", captcha_token: "valid-captcha-token" }),
     });
     expect(response.status).toBe(202);
@@ -168,7 +168,7 @@ describe("commerce HTTP boundary", () => {
     } });
     const response = await app.request("http://api.flexperiment.ru/v1/public/refunds/request", {
       method: "POST",
-      headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.88" },
+      headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.88" },
       body: JSON.stringify({ order_number: "FX-NOT-AN-ORDER", captcha_token: "proof" }),
     });
     expect(response.status).toBe(202);
@@ -177,12 +177,28 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
+  it("omits an untrusted forwarded chain from the SmartCaptcha request", async () => {
+    let capturedIp = "not-called" as string | undefined;
+    const { db, app } = appFixture({ verify: async (_token, ip) => {
+      capturedIp = ip;
+      return "PASS";
+    } });
+    const response = await app.request("http://api.flexperiment.ru/v1/public/refunds/request", {
+      method: "POST",
+      headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "1.2.3.4, 198.51.100.17" },
+      body: JSON.stringify({ order_number: "FX-CHAIN-UNTRUSTED", captcha_token: "proof" }),
+    });
+    expect(response.status).toBe(202);
+    expect(capturedIp).toBeUndefined();
+    db.close();
+  });
+
   it("fails closed before refund lookup when SmartCaptcha rejects or is unavailable", async () => {
-    for (const [result, status, code] of [["INVALID", 422, "CAPTCHA_INVALID"], ["UNAVAILABLE", 503, "CAPTCHA_UNAVAILABLE"]] as const) {
+    for (const [result, status, code, ip] of [["INVALID", 422, "CAPTCHA_INVALID", "127.0.0.82"], ["UNAVAILABLE", 503, "CAPTCHA_UNAVAILABLE", "127.0.0.83"]] as const) {
       const { db, app } = appFixture({ verify: async () => result });
       const response = await app.request("http://api.flexperiment.ru/v1/public/refunds/request", {
         method: "POST",
-        headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": `127.0.0.${status}` },
+        headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": ip },
         body: JSON.stringify({ order_number: "FX-NOT-AN-ORDER", captcha_token: "proof" }),
       });
       expect(response.status).toBe(status);
@@ -196,7 +212,7 @@ describe("commerce HTTP boundary", () => {
     const { db, app } = appFixture();
     const request = (email: string, city = "kemerovo") => app.request("http://api.flexperiment.ru/v1/public/city-interest", {
       method: "POST",
-      headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.89" },
+      headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.89" },
       body: JSON.stringify({ email, city, pd_consent_accepted: true, captcha_token: "proof" }),
     });
     expect((await request("  ART@EXAMPLE.TEST ")).status).toBe(202);
@@ -213,12 +229,12 @@ describe("commerce HTTP boundary", () => {
     for (const city of ["kemerovo", "omsk"]) {
       const response = await app.request("http://api.flexperiment.ru/v1/public/city-interest", {
         method: "POST",
-        headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": `127.0.0.${city.length}` },
+        headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": `127.0.0.${city.length}` },
         body: JSON.stringify({ email: "withdraw@example.test", city, pd_consent_accepted: true, captcha_token: "proof" }),
       });
       expect(response.status).toBe(202);
     }
-    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.99" }, body: JSON.stringify({ password: "correct horse" }) });
+    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.99" }, body: JSON.stringify({ password: "correct horse" }) });
     const withdrawn = await app.request("http://admin.flexperiment.ru/v1/admin/city-interest/withdraw", {
       method: "POST",
       headers: { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" },
@@ -242,7 +258,7 @@ describe("commerce HTTP boundary", () => {
     domain.requestCustomerRefund(order.public_order_number.replace(/-/g, ""));
     const token = db.prepare("SELECT token_ciphertext, token_nonce FROM customer_refund_confirmation_tokens WHERE order_id = ?").get(order.id) as { token_ciphertext: string; token_nonce: string };
     const capability = decryptTicketCapability(token.token_ciphertext, token.token_nonce);
-    const context = await app.request("http://api.flexperiment.ru/v1/public/refunds/confirmation-context", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.46" }, body: JSON.stringify({ token: capability }) });
+    const context = await app.request("http://api.flexperiment.ru/v1/public/refunds/confirmation-context", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.46" }, body: JSON.stringify({ token: capability }) });
     expect(context.status).toBe(200);
     expect(await context.json()).toMatchObject({ order_number: order.public_order_number, eligibility: "ELIGIBLE", amount_remaining_kopecks: 100000 });
     expect(db.prepare("SELECT status FROM bookings WHERE order_id = ?").get(order.id)).toMatchObject({ status: "CONFIRMED" });
@@ -253,7 +269,7 @@ describe("commerce HTTP boundary", () => {
 
   it("uses the RC.8.3 provider-reference paths and leaves the old attach path absent", async () => {
     const { db, app } = appFixture();
-    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.1" }, body: JSON.stringify({ password: "correct horse" }) });
+    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.1" }, body: JSON.stringify({ password: "correct horse" }) });
     const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")! };
     const legacy = await app.request("http://admin.flexperiment.ru/v1/admin/payments/payment-1/attach-provider-reference", { method: "POST", headers });
     const current = await app.request("http://admin.flexperiment.ru/v1/admin/payments/payment-1/provider-reference", { method: "POST", headers });
@@ -266,7 +282,7 @@ describe("commerce HTTP boundary", () => {
     const { db, app } = appFixture();
     const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", {
       method: "POST",
-      headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.1" },
+      headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.1" },
       body: JSON.stringify({ password: "correct horse" }),
     });
     const adminHeaders = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
@@ -320,7 +336,7 @@ describe("commerce HTTP boundary", () => {
     expect(await occurrenceReplay.json()).toMatchObject({ id: created.id });
     const occurrenceConflict = await app.request("http://admin.flexperiment.ru/v1/admin/occurrences", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": occurrenceKey }, body: JSON.stringify({ ...occurrencePayload, title: "Changed title" }) });
     expect(occurrenceConflict.status).toBe(409);
-    const before = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers: { Origin: "https://flexperiment.ru", "x-commerce-trusted-client-ip": "127.0.0.1" } });
+    const before = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers: { Origin: "https://flexperiment.ru", "X-Forwarded-For": "127.0.0.1" } });
     expect((await before.json() as { cities: { id?: string }[] }).cities.some((entry) => entry.id === created.id)).toBe(false);
 
     const unknownCity = await app.request("http://admin.flexperiment.ru/v1/admin/occurrences", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000003" }, body: JSON.stringify({ ...occurrencePayload, city_id: randomUUID() }) });
@@ -343,7 +359,7 @@ describe("commerce HTTP boundary", () => {
     expect(await openedReplay.json()).toMatchObject({ id: created.id, visibility: "PUBLISHED", sales_status: "OPEN" });
     const patchConflict = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000012" }, body: JSON.stringify({ sales_status: "CLOSED", reason: "Changed patch" }) });
     expect(patchConflict.status).toBe(409);
-    const after = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers: { Origin: "https://flexperiment.ru", "x-commerce-trusted-client-ip": "127.0.0.1" } });
+    const after = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers: { Origin: "https://flexperiment.ru", "X-Forwarded-For": "127.0.0.1" } });
     expect((await after.json() as { cities: { id?: string }[] }).cities.some((entry) => entry.id === created.id)).toBe(true);
     expect(db.prepare("SELECT admin_id, action, entity_type, entity_id, details_json FROM admin_audit_log WHERE entity_id = ?").get(created.id)).toMatchObject({
       admin_id: expect.any(String), action: "OCCURRENCE_CREATED", entity_type: "occurrence", entity_id: created.id,
@@ -361,7 +377,7 @@ describe("commerce HTTP boundary", () => {
       VALUES (?, ?, 'State machine', '2026-10-04T10:00:00.000Z', '2026-10-04T13:00:00.000Z', 'Asia/Tomsk', 100, 1, 'HIDDEN', 'CLOSED', 'CONFIRMED', 'Studio', 'Lenina 4')`).run(occurrenceId, cityId);
     const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", {
       method: "POST",
-      headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.55" },
+      headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.55" },
       body: JSON.stringify({ password: "correct horse" }),
     });
     const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
@@ -419,7 +435,7 @@ describe("commerce HTTP boundary", () => {
     insertLegacy.run(pausedId, cityId, "Legacy hidden paused", "PAUSED");
     const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", {
       method: "POST",
-      headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.56" },
+      headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.56" },
       body: JSON.stringify({ password: "correct horse" }),
     });
     const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
@@ -448,11 +464,11 @@ describe("commerce HTTP boundary", () => {
   it("exposes order evidence read-only and abandons only a reserved booking", async () => {
     const { db, app } = appFixture();
     const occurrenceId = (db.prepare("SELECT id FROM occurrences").get() as { id: string }).id;
-    const context = await app.request("http://api.flexperiment.ru/v1/public/checkout-context", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.1" }, body: JSON.stringify({ occurrence_id: occurrenceId }) });
+    const context = await app.request("http://api.flexperiment.ru/v1/public/checkout-context", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.1" }, body: JSON.stringify({ occurrence_id: occurrenceId }) });
     const quoteId = (await context.json() as { quote_id: string }).quote_id;
-    await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000009", "x-commerce-trusted-client-ip": "127.0.0.1" }, body: JSON.stringify({ quote_id: quoteId, customer_name: "Арт", customer_email: "art@example.test", eligibility_confirmed: true, offer_accepted: true, pd_consent_accepted: true }) });
+    await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000009", "X-Forwarded-For": "127.0.0.1" }, body: JSON.stringify({ quote_id: quoteId, customer_name: "Арт", customer_email: "art@example.test", eligibility_confirmed: true, offer_accepted: true, pd_consent_accepted: true }) });
     const orderId = (db.prepare("SELECT id FROM orders").get() as { id: string }).id;
-    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.1" }, body: JSON.stringify({ password: "correct horse" }) });
+    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.1" }, body: JSON.stringify({ password: "correct horse" }) });
     const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
     const beforeCount = db.prepare("SELECT COUNT(*) AS count FROM reservation_abandonments").get();
     const evidence = await app.request(`http://admin.flexperiment.ru/v1/admin/orders/${orderId}/evidence`, { headers });
@@ -470,7 +486,7 @@ describe("commerce HTTP boundary", () => {
 
   it("uses durable server-side Admin sessions and revokes the exact cookie on logout", async () => {
     const { db, app } = appFixture();
-    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.1" }, body: JSON.stringify({ password: "correct horse" }) });
+    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.1" }, body: JSON.stringify({ password: "correct horse" }) });
     const cookie = login.headers.get("set-cookie")!;
     expect(login.status).toBe(200);
     expect(cookie).toMatch(/^fx_admin_session=[^;]+; Path=\/; Max-Age=43200; HttpOnly; Secure; SameSite=Strict$/);
@@ -502,7 +518,7 @@ describe("commerce HTTP boundary", () => {
   it("keeps independent Admin sessions active and rejects missing, revoked, expired, and tampered sessions", async () => {
     const { db, app } = appFixture();
     const login = async (ip: string) => app.request("http://admin.flexperiment.ru/v1/admin/login", {
-      method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": ip }, body: JSON.stringify({ password: "correct horse" }),
+      method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": ip }, body: JSON.stringify({ password: "correct horse" }),
     });
     const [first, second] = await Promise.all([login("127.0.0.11"), login("127.0.0.12")]);
     const firstHeaders = { Origin: "https://admin.flexperiment.ru", Cookie: first.headers.get("set-cookie")! };
@@ -538,7 +554,7 @@ describe("commerce HTTP boundary", () => {
   it("rejects a venue announcement deadline that is not before the occurrence", async () => {
     const { db, app } = appFixture();
     const cityId = (db.prepare("SELECT id FROM cities").get() as { id: string }).id;
-    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.42" }, body: JSON.stringify({ password: "correct horse" }) });
+    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.42" }, body: JSON.stringify({ password: "correct horse" }) });
     const response = await app.request("http://admin.flexperiment.ru/v1/admin/occurrences", {
       method: "POST",
       headers: { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json", "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000012" },
@@ -559,7 +575,7 @@ describe("commerce HTTP boundary", () => {
     const app = createApp(db, new MockProvider(), new UnisenderGoProvider({ apiKey, fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async () => Response.json({ status: "success", job_id: "job" })));
     const unsigned = JSON.stringify({ auth: "pending", events_by_user: [{ user_id: 1, events: [{ event_name: "transactional_email_status", event_data: { job_id: "job-1", metadata: { outbox_id: outboxId }, status: "delivered", event_time: "2026-08-20 00:00:00" } }] }] });
     const body = unsigned.replace("pending", createHash("md5").update(unsigned.replace("pending", apiKey)).digest("hex"));
-    const response = await app.request("http://flexperiment.ru/v1/webhooks/unisender", { method: "POST", headers: { "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.1" }, body });
+    const response = await app.request("http://flexperiment.ru/v1/webhooks/unisender", { method: "POST", headers: { "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.1" }, body });
     expect(response.status).toBe(200);
     expect(db.prepare("SELECT status, job_id FROM email_outbox WHERE id = ?").get(outboxId)).toMatchObject({ status: "DELIVERED", job_id: "job-1" });
     expect(db.prepare("SELECT status, provider_status, job_id FROM email_provider_events WHERE outbox_id = ?").get(outboxId)).toEqual({ status: "DELIVERED", provider_status: "delivered", job_id: "job-1" });
@@ -575,7 +591,7 @@ describe("commerce HTTP boundary", () => {
     const app = createApp(db, new MockProvider(), new UnisenderGoProvider({ apiKey, fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async () => Response.json({ status: "success", job_id: "job" })));
     const unsigned = JSON.stringify({ auth: "pending", events_by_user: [{ user_id: 1, events: [{ event_name: "transactional_email_status", event_data: { job_id: "job-2", metadata: { outbox_id: outboxId }, status: "soft_bounced", event_time: "2026-08-20 00:00:00" } }] }] });
     const body = unsigned.replace("pending", createHash("md5").update(unsigned.replace("pending", apiKey)).digest("hex"));
-    expect((await app.request("http://flexperiment.ru/v1/webhooks/unisender", { method: "POST", headers: { "Content-Type": "application/json", "x-commerce-trusted-client-ip": "127.0.0.1" }, body })).status).toBe(200);
+    expect((await app.request("http://flexperiment.ru/v1/webhooks/unisender", { method: "POST", headers: { "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.1" }, body })).status).toBe(200);
     expect(db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outboxId)).toEqual({ status: "BOUNCED" });
     expect(db.prepare("SELECT status, provider_status FROM email_provider_events WHERE outbox_id = ?").get(outboxId)).toEqual({ status: "BOUNCED", provider_status: "soft_bounced" });
     db.close();

@@ -96,10 +96,16 @@ stopped the webhook after delivery failures.
 
 ## Trusted IP production gate
 
-Commerce accepts the CAPTCHA IP only from `x-commerce-trusted-client-ip`. Before
-production use, verify in Coolify/Traefik that Commerce has no public ingress,
-the trusted proxy strips any client-supplied instance of this header, and then
-sets it from the actual connection address before proxying to Commerce. Verify
-with a request through the public host and a forged header that the validation
-request receives the proxy-derived value, not the forged value. The repository
-reference Caddyfile does not establish this header itself.
+Commerce resolves a CAPTCHA IP only from a validated standard
+`X-Forwarded-For` value at the sole production boundary
+`Internet -> Coolify Traefik -> commerce:3001`. With the current Traefik safe
+forwarded-header defaults, Commerce accepts exactly one IPv4/IPv6 literal and
+omits SmartCaptcha's optional `ip` parameter for an absent, malformed, or
+multi-value header. It never forwards a placeholder such as `unknown`.
+
+Before production use, verify that Commerce has no direct public ingress and
+that Traefik strips client-supplied forwarded headers before proxying. Run the
+controlled normal/forged-header verification in
+[`smartcaptcha-operations.md`](./smartcaptcha-operations.md#controlled-production-verification).
+If a CDN or another reverse proxy is added ahead of Traefik, reassess the
+trusted-header model before enabling the form.

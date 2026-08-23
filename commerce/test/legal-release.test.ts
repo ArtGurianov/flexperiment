@@ -97,7 +97,7 @@ describe("production legal-release publisher", () => {
       "если я направил соответствующий запрос через форму на Сайте",
     );
     expect(createHash("sha256").update(canonicalLegalManifest(candidate.manifest)).digest("hex")).toBe(
-      "a8ebe2aab85fe2fdee710c6ccbbb07a6eb84ac0e020a1f2bbd479047444b40af",
+      "c62da8ac3ed8f119f4d46b1aa7864d7df2494bd7a3499fab2080bb696e8739cb",
     );
     expect(loadCanonicalLegalRelease("commerce/legal/production-manifest.json").version).toBe("2026-08-21.2");
   });

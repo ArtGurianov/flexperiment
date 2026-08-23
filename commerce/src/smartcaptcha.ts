@@ -3,7 +3,7 @@ const VALIDATE_URL = "https://smartcaptcha.cloud.yandex.ru/validate";
 export type SmartCaptchaResult = "PASS" | "INVALID" | "UNAVAILABLE";
 
 export interface SmartCaptchaVerifier {
-  verify(token: string, clientIp: string): Promise<SmartCaptchaResult>;
+  verify(token: string, clientIp?: string): Promise<SmartCaptchaResult>;
 }
 
 /** Fails closed until the runtime has been given the private server key. */
@@ -17,11 +17,12 @@ export class YandexSmartCaptchaVerifier implements SmartCaptchaVerifier {
     private readonly request: typeof fetch = fetch,
   ) {}
 
-  async verify(token: string, clientIp: string): Promise<SmartCaptchaResult> {
+  async verify(token: string, clientIp?: string): Promise<SmartCaptchaResult> {
     const abort = new AbortController();
     const timeout = setTimeout(() => abort.abort(), 3_000);
     try {
-      const body = new URLSearchParams({ secret: this.serverKey, token, ip: clientIp });
+      const body = new URLSearchParams({ secret: this.serverKey, token });
+      if (clientIp) body.set("ip", clientIp);
       const response = await this.request(VALIDATE_URL, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },

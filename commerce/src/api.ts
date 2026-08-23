@@ -6,7 +6,7 @@ import { emailHash, publicId, sha256 } from "./crypto";
 import { CommerceDomain, DomainError } from "./domain";
 import { type EmailProvider, UnconfiguredEmailProvider, UnisenderGoProvider } from "./email-provider";
 import { TochkaProvider, type PaymentProvider } from "./provider";
-import { clientIp, rateLimit } from "./rate-limit";
+import { clientIpRateLimitKey, rateLimit, trustedClientIp } from "./rate-limit";
 import { TochkaWebhookVerifier, webhookAmountKopecks } from "./tochka-webhook";
 import { verifyUnisenderWebhook } from "./unisender-webhook";
 import { type SmartCaptchaVerifier, UnconfiguredSmartCaptchaVerifier } from "./smartcaptcha";
@@ -72,31 +72,29 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
 
   const publicApi = new Hono();
   publicApi.use("*", async (c, next) => { noStore(c.res.headers); await next(); noStore(c.res.headers); });
-  publicApi.get("/tour", (c) => { rateLimit(`tour:${clientIp(c.req.raw.headers)}`, 120, 60_000); return c.json({ cities: domain.tour() }); });
+  publicApi.get("/tour", (c) => { rateLimit(clientIpRateLimitKey("tour", c.req.raw.headers), 120, 60_000); return c.json({ cities: domain.tour() }); });
   publicApi.get("/cities/:city/occurrences", (c) => {
-    rateLimit(`occurrences:${clientIp(c.req.raw.headers)}`, 120, 60_000);
+    rateLimit(clientIpRateLimitKey("occurrences", c.req.raw.headers), 120, 60_000);
     const entries = domain.tour().filter((item) => item.city === c.req.param("city") && item.id);
     return c.json({ occurrences: entries });
   });
-  publicApi.get("/occurrences/:id", (c) => { rateLimit(`occurrence:${clientIp(c.req.raw.headers)}`, 120, 60_000); return c.json(domain.occurrence(c.req.param("id"))); });
+  publicApi.get("/occurrences/:id", (c) => { rateLimit(clientIpRateLimitKey("occurrence", c.req.raw.headers), 120, 60_000); return c.json(domain.occurrence(c.req.param("id"))); });
   publicApi.get("/legal-config", (c) => c.json(domain.legalConfig()));
   const verifyCaptcha = async (token: string, headers: Headers) => {
-    const result = await smartCaptcha.verify(token, clientIp(headers));
+    const result = await smartCaptcha.verify(token, trustedClientIp(headers));
     if (result === "PASS") return;
     if (result === "INVALID") throw new DomainError("CAPTCHA_INVALID", 422);
     throw new DomainError("CAPTCHA_UNAVAILABLE", 503);
   };
   publicApi.post("/city-interest", async (c) => {
-    const ip = clientIp(c.req.raw.headers);
-    rateLimit(`city-interest-ip:${ip}`, 5, 10 * 60_000);
+    rateLimit(clientIpRateLimitKey("city-interest-ip", c.req.raw.headers), 5, 10 * 60_000);
     const input = cityInterestSchema.parse(await jsonBody(c.req.raw));
     rateLimit(`city-interest-email:${emailHash(input.email)}:${input.city}`, 3, 30 * 60_000);
     await verifyCaptcha(input.captcha_token, c.req.raw.headers);
     return c.json(domain.registerCityInterest(input), 202);
   });
   publicApi.post("/refunds/request", async (c) => {
-    const ip = clientIp(c.req.raw.headers);
-    rateLimit(`customer-refund-request-ip:${ip}`, 5, 10 * 60_000);
+    rateLimit(clientIpRateLimitKey("customer-refund-request-ip", c.req.raw.headers), 5, 10 * 60_000);
     const input = customerRefundRequestSchema.parse(await jsonBody(c.req.raw));
     rateLimit(`customer-refund-request-order:${sha256(input.order_number)}`, 3, 30 * 60_000);
     await verifyCaptcha(input.captcha_token, c.req.raw.headers);
@@ -106,40 +104,38 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   });
   publicApi.post("/refunds/confirmation-context", async (c) => {
     const input = customerRefundTokenSchema.parse(await jsonBody(c.req.raw));
-    const ip = clientIp(c.req.raw.headers);
-    rateLimit(`customer-refund-context-ip:${ip}`, 30, 60_000);
+    rateLimit(clientIpRateLimitKey("customer-refund-context-ip", c.req.raw.headers), 30, 60_000);
     rateLimit(`customer-refund-context-token:${sha256(input.token)}`, 20, 60_000);
     return c.json(domain.customerRefundConfirmationContext(input.token));
   });
   publicApi.post("/refunds/confirm", async (c) => {
     const input = customerRefundTokenSchema.parse(await jsonBody(c.req.raw));
-    const ip = clientIp(c.req.raw.headers);
-    rateLimit(`customer-refund-confirm-ip:${ip}`, 20, 60_000);
+    rateLimit(clientIpRateLimitKey("customer-refund-confirm-ip", c.req.raw.headers), 20, 60_000);
     rateLimit(`customer-refund-confirm-token:${sha256(input.token)}`, 5, 60_000);
     return c.json(domain.confirmCustomerRefund(input.token));
   });
   publicApi.post("/referrals/eligibility", async (c) => {
-    const ip = clientIp(c.req.raw.headers); rateLimit(`referral:${ip}`, 60, 60_000);
+    rateLimit(clientIpRateLimitKey("referral", c.req.raw.headers), 60, 60_000);
     const input = await jsonBody(c.req.raw) as { slug?: string };
     const slug = input.slug?.trim() ?? ""; rateLimit(`referral-slug:${slug}`, 20, 60_000);
     const agent = sqlite.prepare("SELECT slug, display_name FROM agents WHERE slug = ? AND enabled = 1").get(slug);
     return c.json({ eligible: Boolean(agent), agent: agent ?? null });
   });
   publicApi.post("/checkout-context", async (c) => {
-    rateLimit(`checkout-context:${clientIp(c.req.raw.headers)}`, 30, 60_000);
+    rateLimit(clientIpRateLimitKey("checkout-context", c.req.raw.headers), 30, 60_000);
     const input = checkoutContextSchema.parse(await jsonBody(c.req.raw));
     rateLimit(`checkout-context-occurrence:${input.occurrence_id}`, 120, 10 * 60_000);
     return c.json(domain.checkoutContext({ occurrenceId: input.occurrence_id, promoCode: input.promo_code, referralSlug: input.referral_slug }));
   });
   publicApi.post("/checkouts", async (c) => {
-    const ip = clientIp(c.req.raw.headers); rateLimit(`checkout:${ip}`, 20, 60_000);
+    rateLimit(clientIpRateLimitKey("checkout", c.req.raw.headers), 20, 60_000);
     const idempotencyKey = c.req.header("Idempotency-Key");
     if (!idempotencyKey) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
     const input = checkoutRequestSchema.parse(await jsonBody(c.req.raw));
     const keyHash = sha256(idempotencyKey);
     const existing = sqlite.prepare("SELECT 1 FROM checkout_idempotency WHERE idempotency_key_hash = ?").get(keyHash);
     if (!existing) {
-      rateLimit(`checkout-new:${ip}`, 3, 10 * 60_000);
+      rateLimit(clientIpRateLimitKey("checkout-new", c.req.raw.headers), 3, 10 * 60_000);
       const quoteForLimit = sqlite.prepare("SELECT occurrence_id FROM quotes WHERE id = ?").get(input.quote_id) as { occurrence_id: string } | undefined;
       rateLimit(`checkout-email:${emailHash(input.customer_email)}:${quoteForLimit?.occurrence_id ?? input.quote_id}`, 2, 30 * 60_000);
       rateLimit(`checkout-reservation:${quoteForLimit?.occurrence_id ?? input.quote_id}`, 60, 10 * 60_000);
@@ -148,14 +144,14 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     return c.json(await domain.checkoutAsync(input, idempotencyKey, origin), existing ? 200 : 201);
   });
   publicApi.get("/checkout-status/:statusId", (c) => {
-    const ip = clientIp(c.req.raw.headers); rateLimit(`checkout-status-ip:${ip}`, 60, 60_000); rateLimit(`checkout-status-id:${c.req.param("statusId")}`, 20, 60_000);
+    rateLimit(clientIpRateLimitKey("checkout-status-ip", c.req.raw.headers), 60, 60_000); rateLimit(`checkout-status-id:${c.req.param("statusId")}`, 20, 60_000);
     return c.json(domain.checkoutStatus(c.req.param("statusId")));
   });
   publicApi.get("/ticket", (c) => {
     const authorization = c.req.header("Authorization");
     const capability = authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined;
     if (!capability) throw new DomainError("TICKET_CAPABILITY_REQUIRED", 401);
-    const ip = clientIp(c.req.raw.headers); rateLimit(`ticket-ip:${ip}`, 20, 60_000); rateLimit(`ticket-capability:${sha256(capability)}`, 5, 60_000);
+    rateLimit(clientIpRateLimitKey("ticket-ip", c.req.raw.headers), 20, 60_000); rateLimit(`ticket-capability:${sha256(capability)}`, 5, 60_000);
     const ticket = sqlite.prepare(`SELECT t.id, t.status, o.id AS order_id, oc.title, oc.starts_at, oc.timezone, oc.venue_name, oc.venue_address
       FROM tickets t JOIN bookings b ON b.id = t.booking_id JOIN orders o ON o.id = b.order_id JOIN occurrences oc ON oc.id = b.occurrence_id WHERE t.capability_hash = ?`).get(sha256(capability));
     if (!ticket) throw new DomainError("TICKET_NOT_FOUND", 404);
@@ -164,7 +160,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   app.route("/v1/public", publicApi);
 
   app.post("/v1/webhooks/tochka", async (c) => {
-    rateLimit(`webhook:${clientIp(c.req.raw.headers)}`, 600, 60_000);
+    rateLimit(clientIpRateLimitKey("webhook", c.req.raw.headers), 600, 60_000);
     if (!c.req.header("content-type")?.startsWith("text/plain")) throw new DomainError("UNSUPPORTED_CONTENT_TYPE", 415);
     const body = await c.req.text();
     if (body.length > 65_536) throw new DomainError("PAYLOAD_TOO_LARGE", 413);
@@ -182,7 +178,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   });
 
   app.post("/v1/webhooks/unisender", async (c) => {
-    rateLimit(`unisender-webhook:${clientIp(c.req.raw.headers)}`, 600, 60_000);
+    rateLimit(clientIpRateLimitKey("unisender-webhook", c.req.raw.headers), 600, 60_000);
     if (!c.req.header("content-type")?.startsWith("application/json")) throw new DomainError("UNSUPPORTED_CONTENT_TYPE", 415);
     if (!unisenderConfig) throw new DomainError("UNISENDER_WEBHOOK_NOT_CONFIGURED", 503);
     const raw = await c.req.text();
@@ -237,12 +233,11 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   });
   admin.post("/reauth", async (c) => {
     const payload = adminReauthSchema.parse(await jsonBody(c.req.raw));
-    const ip = clientIp(c.req.raw.headers);
     // Password verification needs much tighter limits than ordinary authenticated
     // admin traffic. Both dimensions are charged before verification so a wrong
     // password cannot be sprayed through one session or one source address.
     rateLimit(`admin-reauth-session:${c.var.adminSessionId!}`, 5, 10 * 60_000);
-    rateLimit(`admin-reauth-ip:${ip}`, 10, 10 * 60_000);
+    rateLimit(clientIpRateLimitKey("admin-reauth-ip", c.req.raw.headers), 10, 10 * 60_000);
     if (!verifyAdminPassword(payload.password)) throw new DomainError("INVALID_CREDENTIALS", 401);
     const capability = publicId();
     const result = domain.createAdminReauth({ adminId: c.var.adminId!, sessionId: c.var.adminSessionId!, purpose: payload.purpose, resourceId: payload.resource_id, capability });
@@ -379,7 +374,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   admin.post("/provider-drift-reviews/:id/resolve", async (c) => { const body = await jsonBody(c.req.raw) as { note?: string }; if (!body.note?.trim()) throw new DomainError("RESOLUTION_NOTE_REQUIRED", 422); const result = sqlite.prepare("UPDATE provider_drift_reviews SET status = 'RESOLVED', resolution_note = ?, resolved_at = datetime('now') WHERE id = ? AND status = 'OPEN'").run(body.note.trim(), c.req.param("id")); if (!result.changes) throw new DomainError("DRIFT_REVIEW_NOT_OPEN", 409); audit(c.var.adminId!, "PROVIDER_DRIFT_RESOLVED", "provider_drift_review", c.req.param("id"), { note: body.note.trim() }); return c.json({ resolved: true }); });
   app.post("/v1/admin/login", async (c) => {
     if (!assertAdminOrigin(c.req.header("Origin"))) throw new DomainError("ORIGIN_FORBIDDEN", 403);
-    const ip = clientIp(c.req.raw.headers); rateLimit(`login-15m:${ip}`, 5, 15 * 60_000); rateLimit(`login-day:${ip}`, 20, 24 * 60 * 60_000);
+    rateLimit(clientIpRateLimitKey("login-15m", c.req.raw.headers), 5, 15 * 60_000); rateLimit(clientIpRateLimitKey("login-day", c.req.raw.headers), 20, 24 * 60 * 60_000);
     const body = await jsonBody(c.req.raw) as { password?: string }; if (!body.password || !verifyAdminPassword(body.password)) throw new DomainError("INVALID_CREDENTIALS", 401);
     const cookieValue = issueAdminSession();
     const session = parseSession(`fx_admin_session=${cookieValue}`)!;

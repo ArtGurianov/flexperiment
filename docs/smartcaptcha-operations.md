@@ -13,11 +13,52 @@ anti-abuse dependency and is independent of `fx_consent` / Yandex Metrika.
   private server key). Do not set this in the static-site resource or use a
   `NEXT_PUBLIC_` name.
 
-The API sends the token and trusted proxy client IP to
-`https://smartcaptcha.cloud.yandex.ru/validate` as form data. Tokens are never
-stored or logged. Missing configuration, timeout, malformed response, and
-non-2xx validation responses fail closed as `CAPTCHA_UNAVAILABLE`; an invalid
-or expired token is `CAPTCHA_INVALID`.
+The API sends the token and, only when it can safely resolve one, the client IP
+to `https://smartcaptcha.cloud.yandex.ru/validate` as form data. Tokens are
+never stored or logged. Missing configuration, timeout, malformed response,
+and non-2xx validation responses fail closed as `CAPTCHA_UNAVAILABLE`; an
+invalid or expired token is `CAPTCHA_INVALID`.
+
+## Trusted client IP boundary
+
+Production has exactly one trusted ingress boundary:
+
+```text
+Internet -> Coolify Traefik -> commerce:3001
+```
+
+Commerce reads the standard `X-Forwarded-For` header. With Traefik forwarded
+headers at their safe defaults (no `forwardedHeaders.insecure` and no
+`trustedIPs`), Traefik removes forwarded headers received from an untrusted
+internet peer and appends that peer address before proxying. Commerce therefore
+accepts only one trimmed IPv4 or IPv6 literal. A missing, malformed, host:port,
+or comma-separated value is not a trusted client address: SmartCaptcha still
+receives `secret` and `token`, but no `ip` parameter.
+
+This application check cannot protect a directly reachable Commerce container:
+the network boundary is part of the security invariant. `commerce:3001` must
+remain internal-only (`expose`, never a host `ports` publish), and Traefik and
+Commerce must share the private Docker network. If a CDN, Cloudflare, load
+balancer, or another reverse proxy is inserted before Traefik, review and
+explicitly reconfigure this trust model before production use. See Traefik's
+[forwarded-header documentation](https://doc.traefik.io/traefik/routing/entrypoints/).
+
+### Controlled production verification
+
+Do this during a controlled window using only `GET /v1/public/tour`, so no
+CAPTCHA token, cookie, or request body is captured. Use a temporary,
+access-controlled packet/header observation on the Commerce Docker network;
+do not add a permanent diagnostic route or log request headers.
+
+1. From a real external client, call the public API and confirm Commerce sees
+   one `X-Forwarded-For` value equal to that client's public address.
+2. Repeat from an external client with `X-Forwarded-For: 1.2.3.4`; confirm the
+   observed Commerce value is the real source address, never `1.2.3.4`.
+3. Stop the temporary observation and retain no packet/header output beyond
+   the minimal pass/fail evidence, because source addresses are personal data.
+4. Confirm the deployed Traefik is at least v3.6.14 (the fixed v3.6 release
+   for forwarded-header alias spoofing) and retain the effective
+   forwarded-header configuration with the release evidence.
 
 ## CSP and browser verification
 
