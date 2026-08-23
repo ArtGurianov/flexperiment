@@ -14,6 +14,12 @@ The browser therefore uses the same `admin.flexperiment.ru` origin for both
 the UI and API; the existing host-only `fx_admin_session` cookie continues to
 work without browser token storage or cross-origin CORS.
 
+Commerce is resolved through Docker DNS at proxy time (`127.0.0.11`, IPv4
+only), rather than once when Admin starts. Admin must therefore survive a
+Commerce container/IP replacement during a rolling redeploy without an Admin
+restart. The two services must remain on the same Docker network with the
+Commerce service addressable as `commerce:3001`.
+
 The health check endpoint for this static service is `/healthz` on port `80`.
 
 ## Required deployment sequence
