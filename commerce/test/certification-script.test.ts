@@ -69,6 +69,8 @@ describe("production certification runbook checkpoints", () => {
     expect(source).toContain("assert_occurrence_availability 1");
     expect(source).toContain("assert_final_refund_evidence");
     expect(source).toContain("assert_final_email_evidence");
+    expect(source).toContain("assert_final_order_evidence");
+    expect(source).toContain("certification_manifest_is_valid");
     expect(source).toContain("assert_certification_order_identity");
     expect(source).toContain("customer_adult_confirmed_at");
     expect(source).toContain("certification_pending_operation_phase_valid");
@@ -78,6 +80,8 @@ describe("production certification runbook checkpoints", () => {
     expect(source).toContain("stat.S_IMODE");
     expect(source).not.toContain('source "$STATE_FILE"');
     expect(source).not.toContain('SALES_CLEANUP_STARTED_AT=""');
+    expect(source).toContain("certification_clear_state_values");
+    expect(source).toContain("request_stdin");
   });
 
   it("plans a monotonic emergency cleanup while retaining only post-dispatch financial recovery", () => {
@@ -147,6 +151,33 @@ describe("production certification runbook checkpoints", () => {
 
       writeEvidence([outbox], [delivered, { outbox_id: "mail", status: "BOUNCED", provider_status: "soft_bounced", job_id: "job" }]);
       expect(helperSucceeds("certification_email_evidence_row", evidence, "TICKET", "ticket")).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("clears inherited state values before resume JSON becomes authoritative", () => {
+    const output = execFileSync("bash", ["-lc", `source ${JSON.stringify(recoveryPlanner)}; PENDING_OPERATION=CANCEL_BOOKING; BOOKING_ID=booking; SALES_CLEANUP_STARTED_AT=timestamp; certification_clear_state_values PENDING_OPERATION BOOKING_ID SALES_CLEANUP_STARTED_AT; printf '%s|%s|%s' "\${PENDING_OPERATION-unset}" "\${BOOKING_ID-unset}" "\${SALES_CLEANUP_STARTED_AT-unset}"`], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+    });
+    expect(output).toBe("unset|unset|unset");
+  });
+
+  it("requires a scalar occurrence ID in the completed manifest", () => {
+    const directory = mkdtempSync(resolve(tmpdir(), "flexperiment-certification-manifest-"));
+    const manifest = resolve(directory, "manifest.json");
+    const pass = {
+      result: "PASS",
+      occurrence: { id: "occurrence", final_sales_status: "CLOSED", final_visibility: "HIDDEN", public_cleanup_verified: true },
+      booking: { after_cancellation: "CANCELLED" }, ticket: { after_cancellation: "VOID" },
+      refund: { status: "SUCCEEDED" }, payment: { status: "REFUNDED" },
+    };
+    try {
+      writeFileSync(manifest, JSON.stringify(pass));
+      expect(helperSucceeds("certification_manifest_is_valid", manifest, "occurrence")).toBe(true);
+      writeFileSync(manifest, JSON.stringify({ ...pass, occurrence: { ...pass.occurrence, id: [{ id: "occurrence" }] } }));
+      expect(helperSucceeds("certification_manifest_is_valid", manifest, "occurrence")).toBe(false);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

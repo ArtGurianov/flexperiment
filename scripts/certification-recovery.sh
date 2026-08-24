@@ -9,6 +9,10 @@ certification_pending_operation_phase_valid() {
   esac
 }
 
+certification_clear_state_values() {
+  unset "$@"
+}
+
 certification_occurrence_identity_valid() {
   local occurrence_file="$1" city_slug="$2" title="$3"
   jq -e --arg city "$city_slug" --arg title "$title" '
@@ -65,6 +69,22 @@ certification_email_evidence_row() {
     )] | length == 0)
   ' "$evidence_file" >/dev/null || return 1
   printf '%s' "$row"
+}
+
+certification_manifest_is_valid() {
+  local manifest_file="$1" occurrence_id="$2"
+  jq -e --arg occurrence "$occurrence_id" '
+    type == "object"
+    and .result == "PASS"
+    and (.occurrence.id | type == "string" and . == $occurrence)
+    and .occurrence.final_sales_status == "CLOSED"
+    and .occurrence.final_visibility == "HIDDEN"
+    and .occurrence.public_cleanup_verified == true
+    and .booking.after_cancellation == "CANCELLED"
+    and .ticket.after_cancellation == "VOID"
+    and .refund.status == "SUCCEEDED"
+    and .payment.status == "REFUNDED"
+  ' "$manifest_file" >/dev/null
 }
 
 certification_recovery_action() {

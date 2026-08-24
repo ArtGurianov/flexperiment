@@ -46,6 +46,11 @@ COOKIE_JAR="$RUN_TMP/admin.cookies"; HTTP_BODY="$RUN_TMP/http.json"; CHECKOUT_BO
 touch "$COOKIE_JAR" "$HTTP_BODY" "$CHECKOUT_BODY"; chmod 600 "$COOKIE_JAR" "$HTTP_BODY" "$CHECKOUT_BODY"
 on_exit() {
   local code=$?
+  # Best effort only: session revocation must neither conceal nor alter the
+  # certification outcome. It runs before the ephemeral cookie jar is removed.
+  if [[ -s "${COOKIE_JAR:-/nonexistent}" ]]; then
+    curl -sS --max-time 2 -o /dev/null -b "$COOKIE_JAR" -H "Origin: $ADMIN_ORIGIN" -X POST "$ADMIN/v1/admin/logout" >/dev/null 2>&1 || true
+  fi
   rm -rf "$RUN_TMP"
   if [[ "$code" -ne 0 && -n "${OCCURRENCE_ID:-}" ]]; then
     if [[ -n "${SALES_CLEANUP_STARTED_AT:-}" || -n "${SALES_CLEANED_AT:-}" ]]; then
@@ -65,6 +70,11 @@ fail() { echo "ERROR: $*" >&2; [[ -n "${STATE_FILE:-}" ]] && echo "Resume state 
 incomplete() { echo "INCOMPLETE: $*" >&2; [[ -n "${STATE_FILE:-}" ]] && echo "Resume state retained: $STATE_FILE" >&2; exit 2; }
 new_key() { uuidgen | tr '[:upper:]' '[:lower:]'; }
 request() { local output="$1"; shift; HTTP_CODE="$(curl -sS -o "$output" -w '%{http_code}' "$@")"; }
+request_stdin() {
+  local output="$1" body="$2"
+  shift 2
+  HTTP_CODE="$(printf '%s' "$body" | curl -sS -o "$output" -w '%{http_code}' "$@" --data-binary @-)"
+}
 require_http() { [[ "$HTTP_CODE" == "$1" ]] || fail "$2 expected HTTP $1, got $HTTP_CODE"; }
 require_2xx() { [[ "$HTTP_CODE" =~ ^2 ]] || fail "$1 returned HTTP $HTTP_CODE"; }
 json() { jq -er "$1" "$2"; }
@@ -89,6 +99,9 @@ import sys
 print(f"{stat.S_IMODE(os.stat(sys.argv[1]).st_mode):03o}")
 PY
 )" == "600" ]] || fail "resume state must have mode 0600"
+  # Resume state, not inherited process environment, is the sole authority for
+  # every persisted command/identity/checkpoint fact.
+  certification_clear_state_values "${STATE_KEYS[@]}"
   local allowed phases operations key value
   allowed="$(printf '%s\n' "${STATE_KEYS[@]}" | jq -R . | jq -sc .)"
   phases="$(printf '%s\n' "${STATE_PHASES[@]}" | jq -R . | jq -sc .)"
@@ -145,8 +158,10 @@ fi
 echo "FLEXPERIMENT production E2E certification v2"
 echo "run_id=$RUN_ID"
 read -rsp "Admin password: " ADMIN_PASSWORD </dev/tty; echo
-request "$HTTP_BODY" -c "$COOKIE_JAR" -H "Origin: $ADMIN_ORIGIN" -H 'Content-Type: application/json' -X POST "$ADMIN/v1/admin/login" --data "$(jq -nc --arg password "$ADMIN_PASSWORD" '{password:$password}')"
-unset ADMIN_PASSWORD; require_http 200 "Admin login"
+LOGIN_BODY="$(printf '%s' "$ADMIN_PASSWORD" | python3 -c 'import json, sys; print(json.dumps({"password": sys.stdin.read()}))')"
+unset ADMIN_PASSWORD
+request_stdin "$HTTP_BODY" "$LOGIN_BODY" -c "$COOKIE_JAR" -H "Origin: $ADMIN_ORIGIN" -H 'Content-Type: application/json' -X POST "$ADMIN/v1/admin/login"
+unset LOGIN_BODY; require_http 200 "Admin login"
 grep -q $'\t' "$COOKIE_JAR" || fail "Admin login returned no session cookie"
 
 admin_get() { request "$HTTP_BODY" -b "$COOKIE_JAR" -H "Origin: $ADMIN_ORIGIN" "$ADMIN/v1/admin/$1"; require_2xx "Admin GET /$1"; }
@@ -229,6 +244,7 @@ assert_pending_operation_identity() {
       assert_certification_occurrence_identity
       ;;
     CANCEL_BOOKING)
+      assert_certification_occurrence_identity
       admin_get "orders/$ORDER_ID/evidence"
       cp "$HTTP_BODY" "$RUN_TMP/pending-order-evidence.json"
       assert_certification_order_identity "$RUN_TMP/pending-order-evidence.json"
@@ -376,14 +392,19 @@ fi
 replay_checkout() {
   local checkout_request checkout_request_sha
   read -rp "Real test email: " CUSTOMER_EMAIL </dev/tty; read -rp "Customer name: " CUSTOMER_NAME </dev/tty; read -rp "Customer date of birth (YYYY-MM-DD): " CUSTOMER_DOB </dev/tty
-  checkout_request="$(jq -nc --arg quote "$QUOTE_ID" --arg name "$CUSTOMER_NAME" --arg email "$CUSTOMER_EMAIL" --arg dob "$CUSTOMER_DOB" '{quote_id:$quote,customer_name:$name,customer_email:$email,customer_adult_confirmed:true,participant:{self:true,date_of_birth:$dob},offer_accepted:true,pd_consent_accepted:true}')"
+  checkout_request="$(printf '%s\n%s\n%s' "$CUSTOMER_NAME" "$CUSTOMER_EMAIL" "$CUSTOMER_DOB" | python3 -c '
+import json
+import sys
+name, email, dob = sys.stdin.read().splitlines()
+print(json.dumps({"quote_id": sys.argv[1], "customer_name": name, "customer_email": email, "customer_adult_confirmed": True, "participant": {"self": True, "date_of_birth": dob}, "offer_accepted": True, "pd_consent_accepted": True}, ensure_ascii=False, separators=(",", ":")))
+' "$QUOTE_ID")"
   checkout_request_sha="$(printf '%s' "$checkout_request" | shasum -a 256 | awk '{print $1}')"
   if [[ -n "${CHECKOUT_REQUEST_SHA256:-}" ]]; then
     [[ "$checkout_request_sha" == "$CHECKOUT_REQUEST_SHA256" ]] || fail "re-entered checkout data does not match the persisted pre-dispatch request hash; do not create another checkout"
   else
     CHECKOUT_REQUEST_SHA256="$checkout_request_sha"; save_state
   fi
-  request "$CHECKOUT_BODY" -H "Origin: $PUBLIC_ORIGIN" -H 'Content-Type: application/json' -H "Idempotency-Key: $CHECKOUT_KEY" -X POST "$API/v1/public/checkouts" --data "$checkout_request"; require_2xx "Replay existing checkout"
+  request_stdin "$CHECKOUT_BODY" "$checkout_request" -H "Origin: $PUBLIC_ORIGIN" -H 'Content-Type: application/json' -H "Idempotency-Key: $CHECKOUT_KEY" -X POST "$API/v1/public/checkouts"; require_2xx "Replay existing checkout"
   unset CUSTOMER_EMAIL CUSTOMER_NAME CUSTOMER_DOB checkout_request checkout_request_sha
 }
 if [[ "$PHASE" == QUOTE_READY ]]; then
@@ -549,6 +570,34 @@ assert_final_refund_evidence() {
     and ([.refunds[] | select(.id == $refund and .amount_kopecks == 100 and .status == "SUCCEEDED" and (.provider_reference | type == "string" and length > 0))] | length == 1)
   ' "$RUN_TMP/order-evidence.json" >/dev/null || fail "final refund evidence is not exactly one fulfilled 100-kopek customer-cancellation obligation refund with REFUNDED payment"
 }
+assert_final_order_evidence() {
+  assert_certification_order_identity
+  jq -e \
+    --arg payment "$PAYMENT_ID" \
+    --arg release "$EXPECTED_LEGAL_RELEASE_ID" \
+    --arg offer "$EXPECTED_PUBLIC_OFFER_SHA256" \
+    --arg privacy "$EXPECTED_PRIVACY_POLICY_SHA256" \
+    --arg consent "$EXPECTED_PD_CONSENT_SHA256" \
+    --arg disclosure "$EXPECTED_CHECKOUT_DISCLOSURE_SHA256" '
+      .payment.status == "REFUNDED"
+      and .payment.captured_amount_kopecks == 100
+      and .booking.status == "CANCELLED"
+      and .ticket.status == "VOID"
+      and (.order.customer_adult_confirmed_at | type == "string" and length > 0)
+      and .order.participant_is_customer == 1
+      and .order.participant_is_minor == 0
+      and (.order.participant_age_at_occurrence | type == "number" and . >= 18)
+      and .order.participant_requires_adult_accompaniment == 0
+      and .order.minor_legal_representative_confirmed_at == null
+      and .order.under_14_accompaniment_confirmed_at == null
+      and .order.checkout_legal_release_id == $release
+      and .order.public_offer_sha256 == $offer
+      and .order.privacy_policy_sha256 == $privacy
+      and .order.pd_consent_sha256 == $consent
+      and .order.checkout_disclosure_sha256 == $disclosure
+      and ([.tochka_webhook_events[]? | select(.provider == "TOCHKA" and .status == "APPLIED" and .entity_id == $payment)] | length >= 1)
+    ' "$RUN_TMP/order-evidence.json" >/dev/null || fail "final order evidence no longer proves the certification entitlement, legal, or Tochka invariants"
+}
 if [[ "$PHASE" == BOOKING_CANCELLED_EMAIL_DELIVERED ]]; then wait_refund; set_phase REFUND_SUCCEEDED; fi
 if [[ "$PHASE" == REFUND_SUCCEEDED ]]; then REFUND_EMAIL_JSON="$(wait_email REFUND_SUCCEEDED "$REFUND_ID")"; set_phase REFUND_EMAIL_DELIVERED; fi
 if [[ "$PHASE" == REFUND_EMAIL_DELIVERED ]]; then
@@ -560,19 +609,20 @@ if [[ "$PHASE" == OCCURRENCE_CLEANED ]]; then
   # Never let the durable checkpoint itself substitute for current public and
   # Admin facts: an external reopen after a crash must prevent a PASS artifact.
   assert_cleanup_evidence
+  assert_occurrence_availability 1 "final customer-cancellation availability"
   read_order_evidence
-  assert_certification_order_identity
+  assert_final_order_evidence
   assert_final_refund_evidence
   [[ -n "${HUMAN_TICKET_VERIFIED_AT:-}" ]] || fail "durable human ticket verification checkpoint is absent"
   assert_final_email_evidence
   COMPLETED_AT="${COMPLETED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"; save_state
   ARTIFACT_DIR="$PWD/artifacts/certification"; mkdir -p "$ARTIFACT_DIR"; chmod 700 "$ARTIFACT_DIR"; MANIFEST="$ARTIFACT_DIR/flexperiment-production-e2e-${RUN_ID}.json"
   MANIFEST_TMP="$MANIFEST.tmp"
-  jq -n --slurpfile system "$RUN_TMP/system-evidence.json" --slurpfile evidence "$RUN_TMP/order-evidence.json" --slurpfile occurrence "$RUN_TMP/occurrence.json" --arg run "$RUN_ID" --arg started "$STARTED_AT" --arg completed "$COMPLETED_AT" --arg occurrence "$OCCURRENCE_ID" --arg status "$STATUS_ID" --arg booking "$BOOKING_ID" --arg ticket "$TICKET_ID" --arg human_verified_at "$HUMAN_TICKET_VERIFIED_AT" --arg obligation "$REFUND_OBLIGATION_ID" --arg refund "$REFUND_ID" --argjson initial_availability "$INITIAL_AVAILABILITY" --argjson paid_availability "$PAID_AVAILABILITY" --argjson post_cancel_availability "$POST_CANCEL_AVAILABILITY" --argjson ticket_email "$TICKET_FINAL_EMAIL_JSON" --argjson booking_cancelled_email "$BOOKING_CANCELLED_FINAL_EMAIL_JSON" --argjson refund_succeeded_email "$REFUND_SUCCEEDED_FINAL_EMAIL_JSON" '
+  jq -n --slurpfile system "$RUN_TMP/system-evidence.json" --slurpfile evidence "$RUN_TMP/order-evidence.json" --slurpfile occurrence_evidence "$RUN_TMP/occurrence.json" --arg run "$RUN_ID" --arg started "$STARTED_AT" --arg completed "$COMPLETED_AT" --arg occurrence_id "$OCCURRENCE_ID" --arg status "$STATUS_ID" --arg booking "$BOOKING_ID" --arg ticket "$TICKET_ID" --arg human_verified_at "$HUMAN_TICKET_VERIFIED_AT" --arg obligation "$REFUND_OBLIGATION_ID" --arg refund "$REFUND_ID" --argjson initial_availability "$INITIAL_AVAILABILITY" --argjson paid_availability "$PAID_AVAILABILITY" --argjson post_cancel_availability "$POST_CANCEL_AVAILABILITY" --argjson ticket_email "$TICKET_FINAL_EMAIL_JSON" --argjson booking_cancelled_email "$BOOKING_CANCELLED_FINAL_EMAIL_JSON" --argjson refund_succeeded_email "$REFUND_SUCCEEDED_FINAL_EMAIL_JSON" '
     def email_evidence($outbox):
       {outbox:$outbox,provider_events:[$evidence[0].email_provider_events[] | select(.outbox_id == $outbox.id)]};
-    {result:"PASS",run_id:$run,environment:"production",started_at:$started,completed_at:$completed,build:$system[0],occurrence:{id:$occurrence,final_sales_status:$occurrence[0].sales_status,final_visibility:$occurrence[0].visibility,public_cleanup_verified:true,availability:{before_payment:$initial_availability,after_payment:$paid_availability,after_customer_cancellation:$post_cancel_availability}},order:{id:$evidence[0].order.id,status_id:$status,currency:$evidence[0].order.currency,legal_snapshot:{release_id:$evidence[0].order.checkout_legal_release_id,public_offer:{version:$evidence[0].order.public_offer_version,sha256:$evidence[0].order.public_offer_sha256},privacy_policy:{version:$evidence[0].order.privacy_policy_version,sha256:$evidence[0].order.privacy_policy_sha256},pd_consent:{version:$evidence[0].order.pd_consent_version,sha256:$evidence[0].order.pd_consent_sha256},checkout_disclosure:{version:$evidence[0].order.checkout_disclosure_version,sha256:$evidence[0].order.checkout_disclosure_sha256}},participant_assertions:{customer_adult_confirmed:($evidence[0].order.customer_adult_confirmed_at != null),participant_is_customer:($evidence[0].order.participant_is_customer == 1),participant_is_minor:($evidence[0].order.participant_is_minor == 1),adult_self_participant_verified:($evidence[0].order.customer_adult_confirmed_at != null and $evidence[0].order.participant_is_customer == 1 and $evidence[0].order.participant_is_minor == 0 and $evidence[0].order.participant_age_at_occurrence >= 18 and $evidence[0].order.participant_requires_adult_accompaniment == 0 and $evidence[0].order.minor_legal_representative_confirmed_at == null and $evidence[0].order.under_14_accompaniment_confirmed_at == null)}},payment:$evidence[0].payment,tochka_webhook_events:$evidence[0].tochka_webhook_events,booking:{id:$booking,before_cancellation:"CONFIRMED",after_cancellation:$evidence[0].booking.status},ticket:{id:$ticket,before_cancellation:"VALID",after_cancellation:$evidence[0].ticket.status,human_verified:true,human_verified_at:$human_verified_at},emails:{ticket:email_evidence($ticket_email),booking_cancelled:email_evidence($booking_cancelled_email),refund_succeeded:email_evidence($refund_succeeded_email)},refund_obligation:($evidence[0].refund_obligation|select(.id==$obligation)),refund:($evidence[0].refunds[]|select(.id==$refund))}' > "$MANIFEST_TMP"
-  jq -e 'type == "object" and .result == "PASS"' "$MANIFEST_TMP" >/dev/null || fail "final certification manifest is not one PASS object"
+    {result:"PASS",run_id:$run,environment:"production",started_at:$started,completed_at:$completed,build:$system[0],occurrence:{id:$occurrence_id,final_sales_status:$occurrence_evidence[0].sales_status,final_visibility:$occurrence_evidence[0].visibility,public_cleanup_verified:true,availability:{before_payment:$initial_availability,after_payment:$paid_availability,after_customer_cancellation:$post_cancel_availability}},order:{id:$evidence[0].order.id,status_id:$status,currency:$evidence[0].order.currency,legal_snapshot:{release_id:$evidence[0].order.checkout_legal_release_id,public_offer:{version:$evidence[0].order.public_offer_version,sha256:$evidence[0].order.public_offer_sha256},privacy_policy:{version:$evidence[0].order.privacy_policy_version,sha256:$evidence[0].order.privacy_policy_sha256},pd_consent:{version:$evidence[0].order.pd_consent_version,sha256:$evidence[0].order.pd_consent_sha256},checkout_disclosure:{version:$evidence[0].order.checkout_disclosure_version,sha256:$evidence[0].order.checkout_disclosure_sha256}},participant_assertions:{customer_adult_confirmed:($evidence[0].order.customer_adult_confirmed_at != null),participant_is_customer:($evidence[0].order.participant_is_customer == 1),participant_is_minor:($evidence[0].order.participant_is_minor == 1),adult_self_participant_verified:($evidence[0].order.customer_adult_confirmed_at != null and $evidence[0].order.participant_is_customer == 1 and $evidence[0].order.participant_is_minor == 0 and $evidence[0].order.participant_age_at_occurrence >= 18 and $evidence[0].order.participant_requires_adult_accompaniment == 0 and $evidence[0].order.minor_legal_representative_confirmed_at == null and $evidence[0].order.under_14_accompaniment_confirmed_at == null)}},payment:$evidence[0].payment,tochka_webhook_events:$evidence[0].tochka_webhook_events,booking:{id:$booking,before_cancellation:"CONFIRMED",after_cancellation:$evidence[0].booking.status},ticket:{id:$ticket,before_cancellation:"VALID",after_cancellation:$evidence[0].ticket.status,human_verified:true,human_verified_at:$human_verified_at},emails:{ticket:email_evidence($ticket_email),booking_cancelled:email_evidence($booking_cancelled_email),refund_succeeded:email_evidence($refund_succeeded_email)},refund_obligation:($evidence[0].refund_obligation|select(.id==$obligation)),refund:($evidence[0].refunds[]|select(.id==$refund))}' > "$MANIFEST_TMP"
+  certification_manifest_is_valid "$MANIFEST_TMP" "$OCCURRENCE_ID" || fail "final certification manifest is not one valid PASS object"
   chmod 600 "$MANIFEST_TMP"; mv "$MANIFEST_TMP" "$MANIFEST"
   MANIFEST_WRITTEN_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; set_phase COMPLETE
 fi

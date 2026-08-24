@@ -16,6 +16,11 @@ paths. It is not a smoke test and creates one real 1-RUB order.
 The script reads public data only from `https://api.flexperiment.ru`; the
 website origin is not an API proxy.
 
+The Admin-password and checkout PII request bodies are passed to `curl` on
+standard input, never as curl command-line arguments. The script also performs
+a best-effort short-timeout Admin logout in its exit trap; logout failure does
+not change the certification result.
+
 Before every recovery of an interrupted Admin operation, before checkout
 creation, before customer cancellation, and before `PASS`, it verifies the
 same deployed source commit, migration head, legal release ID/version, and all
@@ -108,3 +113,6 @@ ID to the current status/occurrence, and rechecks unique `DELIVERED` Unisender
 evidence for all three transactional emails. The operator's ticket-page
 verification is persisted before cancellation and recorded without PII in the
 manifest. A timeout/ambiguous provider outcome is `INCOMPLETE`, not `PASS`.
+The manifest is validated as one object with the exact occurrence ID and final
+`CLOSED`/`HIDDEN`, cancellation, refund, and payment statuses before its atomic
+write.
