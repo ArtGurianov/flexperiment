@@ -487,7 +487,7 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
     db.close();
   });
 
-  it("adds durable Unisender Event Dump reconciliation state without rewriting email evidence", () => {
+  it("adds durable fenced Unisender Event Dump batch state without rewriting email evidence", () => {
     const db = openDatabase(":memory:");
     applyThrough(db, "0028_customer_participant_ticketing.sql");
     const outboxId = randomUUID();
@@ -501,12 +501,15 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
     db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, "0029_unisender_event_dump_reconciliation.sql"), "utf8")))();
 
     expect(db.prepare("SELECT status, job_id, provider_status FROM email_provider_events WHERE outbox_id = ?").get(outboxId)).toEqual(evidence);
-    db.prepare(`INSERT INTO unisender_event_dump_reconciliations(id, outbox_id, job_id, state, next_attempt_at)
-      VALUES (?, ?, 'known-job', 'PENDING_CREATE', '2030-01-01T00:00:00.000Z')`).run(randomUUID(), outboxId);
-    expect(() => db.prepare(`INSERT INTO unisender_event_dump_reconciliations(id, outbox_id, job_id, state, next_attempt_at)
-      VALUES (?, ?, 'other-job', 'PENDING_CREATE', '2030-01-01T00:00:00.000Z')`).run(randomUUID(), outboxId)).toThrow(/UNIQUE constraint failed/);
-    expect((db.prepare("PRAGMA index_list(unisender_event_dump_reconciliations)").all() as { name: string }[]).map(({ name }) => name))
-      .toEqual(expect.arrayContaining(["unisender_event_dump_reconciliations_due_idx", "unisender_event_dump_reconciliations_lease_idx"]));
+    const runId = randomUUID();
+    db.prepare(`INSERT INTO unisender_event_dump_runs(id, state, dump_id, start_time, end_time, create_started_at, next_attempt_at)
+      VALUES (?, 'POLL_READY', 'dump-1', '2030-01-01 00:00:00', '2030-01-01 01:00:00', '2030-01-01T00:00:00.000Z', '2030-01-01T00:00:00.000Z')`).run(runId);
+    db.prepare(`INSERT INTO unisender_event_dump_targets(id, run_id, outbox_id, job_id, state)
+      VALUES (?, ?, ?, 'known-job', 'ACTIVE')`).run(randomUUID(), runId, outboxId);
+    expect(() => db.prepare(`INSERT INTO unisender_event_dump_targets(id, run_id, outbox_id, job_id, state)
+      VALUES (?, ?, ?, 'other-job', 'ACTIVE')`).run(randomUUID(), runId, outboxId)).toThrow(/UNIQUE constraint failed/);
+    expect((db.prepare("PRAGMA index_list(unisender_event_dump_targets)").all() as { name: string }[]).map(({ name }) => name))
+      .toEqual(expect.arrayContaining(["unisender_event_dump_targets_active_outbox_unique", "unisender_event_dump_targets_candidate_idx"]));
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     db.close();
   });

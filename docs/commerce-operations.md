@@ -178,24 +178,32 @@ expiry, and webhook-subscription requirements.
 ### Event Dump recovery for lost callbacks
 
 Webhooks are the fast path, not the sole delivery-evidence source. For an
-unsuperseded `ACCEPTED` or `SENT` outbox with a durable `job_id` that remains
-unresolved for at least five minutes, the worker may create a Unisender Go
-Event Dump filtered by that one exact `job_id`. The provider's documented
-filter is scalar, so Commerce never treats this as a synchronous lookup or
-creates a dump per worker tick. Its durable reconciliation row has a SQLite
-lease; only two locally pending dumps are allowed, and no more than one dump is
-created per hour. This stays below the provider's ten simultaneously existing
-dump limit even while its temporary files remain available for eight hours.
+unsuperseded `ACCEPTED` or `SENT` outbox with a durable `job_id` that has been
+unresolved for at least five minutes since the provider request started, the
+worker may add it to a small time-window Event Dump batch. The batch requests
+only the documented evidence fields and can recover multiple known jobs in one
+provider dump; it is not a synchronous lookup and never creates a dump per
+outbox or worker tick.
+
+Before the external `event-dump/create` POST, Commerce atomically reserves a
+singleton create lease, stores the batch and its opaque targets, and records a
+create-attempt fence. A lost create response therefore still counts toward the
+provider's limit and leaves the batch `CREATE_UNKNOWN` for review rather than
+creating another uncontrolled dump. At most nine create commands are permitted
+in any rolling eight-hour window, below Unisender's ten-dump limit. Polling an
+existing dump is leased and uses short bounded backoff; ready dumps without a
+terminal target are eligible for a later re-export, while exhausted or
+ambiguous create operations remain visible as durable diagnostics.
 
 The worker polls the provider's asynchronous dump later and downloads only the
 five required CSV fields: `event_time`, `job_id`, `status`,
 `delivery_status`, and `metadata`. It accepts an event only when both opaque
 correlations match exactly: `event.job_id == email_outbox.job_id` and
 `event.metadata.outbox_id == email_outbox.id`. Missing, malformed,
-contradictory, unavailable, or in-process data changes no email state and is
-retried no more frequently than the durable schedule. Creation is capped at
-eight attempts and polling at twenty; exhausted rows retain only safe
-operational diagnostics and require review rather than an unbounded loop. A correlated event goes
+contradictory, unavailable, or in-process data changes no email state. The
+adapter applies already-downloadable files even while a dump is `in_process`;
+polling is capped at twenty attempts and provider calls use a ten-second abort
+timeout. A correlated event goes
 through the same `applyUnisenderDelivery()` path as a webhook and gets a stable
 `unisender:event-dump:` semantic key, so delivery evidence is auditable and
 replays are idempotent.
