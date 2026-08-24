@@ -34,12 +34,12 @@ export function SettlementAction({ action, settlement, close, done }: { action: 
     () => {
       const base = `/reward-settlements/${string(settlement.id)}`;
       const headers = { "Content-Type": "application/json", "Idempotency-Key": key };
-      if (action === "PAYMENT_MADE") return api(`${base}/payment-made`, { method: "POST", headers, body: JSON.stringify({ confirmation_text: confirmationText }) });
+      if (action === "PAYMENT_MADE") return api(`${base}/payment-made`, { method: "POST", headers, body: JSON.stringify({ confirmation_text: confirmationText, reason }) });
       if (action === "DOCUMENTS_COMPLETE") return api(`${base}/documents-complete`, { method: "POST", headers, body: JSON.stringify({ document_reference: documentReference, npd_status_effective_on: npdDate || undefined }) });
       if (action === "CANCEL_BEFORE_PAYMENT") return api(`${base}/cancel-before-payment`, { method: "POST", headers, body: JSON.stringify({ confirmation_text: confirmationText, reason }) });
       const amountKopecks = parseRublesToKopecks(recoveryAmount);
       if (amountKopecks === null) throw new Error("Recovery amount was not validated.");
-      return api(`${base}/recoveries`, { method: "POST", headers, body: JSON.stringify({ amount_recovered_kopecks: amountKopecks, recovered_at: new Date().toISOString(), method: string(settlement.method), evidence_reference: evidenceReference }) });
+      return api(`${base}/recoveries`, { method: "POST", headers, body: JSON.stringify({ amount_recovered_kopecks: amountKopecks, recovered_at: new Date().toISOString(), method: string(settlement.method), evidence_reference: evidenceReference, reason }) });
     },
     { context: () => ({ settlementId: string(settlement.id) }) },
   );
@@ -70,6 +70,7 @@ export function SettlementAction({ action, settlement, close, done }: { action: 
         {action === "PAYMENT_MADE" && <>
           <p>Подтверждает только состоявшийся ручной перевод. После команды settlement перейдёт в PENDING_DOCUMENT.</p>
           <label>Введите фразу: <code>{expectedConfirmation}</code><input value={confirmationText} onChange={(event) => setConfirmationText(event.target.value)} required /></label>
+          <label>Причина<textarea value={reason} onChange={(event) => setReason(event.target.value)} required minLength={3} /><small>Укажите причину. Она будет сохранена в журнале действий.</small></label>
         </>}
         {action === "DOCUMENTS_COMPLETE" && (
           <>
@@ -81,7 +82,7 @@ export function SettlementAction({ action, settlement, close, done }: { action: 
           <>
             <p>Допустимо только при сильном подтверждении, что деньги не переводились. Это высвобождает reservation.</p>
             <label>Введите фразу: <code>{expectedConfirmation}</code><input value={confirmationText} onChange={(event) => setConfirmationText(event.target.value)} required /></label>
-            <label>Причина<textarea value={reason} onChange={(event) => setReason(event.target.value)} required minLength={3} /></label>
+            <label>Причина<textarea value={reason} onChange={(event) => setReason(event.target.value)} required minLength={3} /><small>Укажите причину. Она будет сохранена в журнале действий.</small></label>
           </>
         )}
         {action === "RECOVERY" && (
@@ -89,10 +90,11 @@ export function SettlementAction({ action, settlement, close, done }: { action: 
             <label>Сумма, ₽<MoneyInput value={recoveryAmount} onChange={setRecoveryAmount} maxKopecks={maxRecovery} required /></label>
             <p>Невозвращённый остаток: <strong>{formatRubles(maxRecovery)}</strong>.</p>
             <label>Evidence reference<input value={evidenceReference} onChange={(event) => setEvidenceReference(event.target.value)} required minLength={3} /></label>
+            <label>Причина<textarea value={reason} onChange={(event) => setReason(event.target.value)} required minLength={3} /><small>Укажите причину. Она будет сохранена в журнале действий.</small></label>
           </>
         )}
         <Notice error={mutation.error?.code} />
-        <button className={action === "CANCEL_BEFORE_PAYMENT" ? "danger" : "primary"} disabled={mutation.isPending || ((action === "PAYMENT_MADE" || action === "CANCEL_BEFORE_PAYMENT") && confirmationText !== expectedConfirmation) || (action === "RECOVERY" && !recoveryValid)}>{mutation.isPending ? "Сохраняем…" : "Подтвердить"}</button>
+        <button className={action === "CANCEL_BEFORE_PAYMENT" ? "danger" : "primary"} disabled={mutation.isPending || ((action === "PAYMENT_MADE" || action === "CANCEL_BEFORE_PAYMENT") && confirmationText !== expectedConfirmation) || ((action === "PAYMENT_MADE" || action === "CANCEL_BEFORE_PAYMENT" || action === "RECOVERY") && reason.trim().length < 3) || (action === "RECOVERY" && !recoveryValid)}>{mutation.isPending ? "Сохраняем…" : "Подтвердить"}</button>
       </form>
     </ActionModal>
   );

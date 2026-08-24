@@ -1045,8 +1045,8 @@ describe("commerce domain", () => {
       .toEqual({ ...(before as object), ops_acknowledged_reason: "Recipient was contacted through support." });
     expect(domain.emailAttentionIncidents().find((incident) => incident.id === "attention-FAILED"))
       .toMatchObject({ ops_acknowledged_at: expect.any(String), ops_acknowledged_reason: "Recipient was contacted through support." });
-    expect(() => domain.acknowledgeEmailAttention("attention-BOUNCED", "   ")).toThrow("EMAIL_ATTENTION_ACKNOWLEDGEMENT_REASON_REQUIRED");
-    expect(domain.acknowledgeEmailAttention("attention-BOUNCED", "Hard bounce was handled outside email delivery.")).toMatchObject({ acknowledged_now: true, incident: { status: "BOUNCED" } });
+    expect(domain.acknowledgeEmailAttention("attention-BOUNCED", "   ")).toMatchObject({ acknowledged_now: true, incident: { status: "BOUNCED", ops_acknowledged_reason: null } });
+    expect(domain.acknowledgeEmailAttention("attention-BOUNCED", "Hard bounce was handled outside email delivery.")).toMatchObject({ acknowledged_now: false, incident: { status: "BOUNCED", ops_acknowledged_reason: null } });
     expect(domain.emailAttentionCount()).toBe(1);
     expect(() => domain.acknowledgeEmailAttention("attention-DELIVERED", "Delivery needs no acknowledgement.")).toThrow("EMAIL_ATTENTION_NOT_ACTIONABLE");
     expect(() => domain.acknowledgeEmailAttention("missing-outbox", "No such outbox.")).toThrow("EMAIL_OUTBOX_NOT_FOUND");

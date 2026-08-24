@@ -30,7 +30,6 @@ describe("Cities idempotency", () => {
     await waitFor(() => expect(screen.getByRole("option", { name: "Москва" })).toBeInTheDocument());
 
     await user.selectOptions(screen.getByLabelText("Город"), "moscow");
-    await user.type(screen.getByLabelText(/Причина/), "Новый город");
     await user.click(screen.getByRole("button", { name: "Создать город" }));
     await waitFor(() => expect(screen.getByText(/NETWORK_AMBIGUOUS/)).toBeInTheDocument());
     await user.click(screen.getByRole("button", { name: "Создать город" }));

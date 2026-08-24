@@ -11,12 +11,11 @@ import { Notice } from "../ui/Notice";
 
 export function CityEditor({ city, cityOptions, close, done }: { city: Row; cityOptions: readonly CityCatalogueEntry[]; close: () => void; done: () => void }) {
   const [citySlug, setCitySlug] = useState(string(city.slug));
-  const [reason, setReason] = useState("");
   const [key] = useState(idempotencyKey);
 
   const mutation = useAdminMutation(
     "city.patch",
-    (body: { city_slug: string; reason: string }) =>
+    (body: { city_slug: string }) =>
       api(`/cities/${string(city.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json", "Idempotency-Key": key }, body: JSON.stringify(body) }),
     { context: () => ({ cityId: string(city.id) }) },
   );
@@ -24,7 +23,7 @@ export function CityEditor({ city, cityOptions, close, done }: { city: Row; city
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     try {
-      await mutation.mutateAsync({ city_slug: citySlug, reason });
+      await mutation.mutateAsync({ city_slug: citySlug });
       done();
     } catch {
       // error surfaced via mutation.error below
@@ -44,7 +43,6 @@ export function CityEditor({ city, cityOptions, close, done }: { city: Row; city
               {cityOptions.map((entry) => <option key={entry.slug} value={entry.slug}>{entry.title}</option>)}
             </select>
           </label>
-          <label>Причина / audit context<textarea value={reason} onChange={(event) => setReason(event.target.value)} required minLength={3} /></label>
         </div>
         <Notice error={mutation.error?.code} />
         <div className="modal-actions">

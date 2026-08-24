@@ -19,20 +19,19 @@ import { CityEditor } from "./CityEditor";
 export function Cities() {
   const cities = useQuery({ queryKey: cityKeys.list(), queryFn: () => api<{ cities: Row[] }>("/cities") });
   const [citySlug, setCitySlug] = useState("");
-  const [reason, setReason] = useState("");
   const [editing, setEditing] = useState<Row | null>(null);
   const createKey = usePersistentIdempotencyKey();
   const cityOptions = useMemo(() => [...CITY_CATALOGUE].sort((left, right) => left.title.localeCompare(right.title, "ru")), []);
 
-  const create = useAdminMutation("city.create", ({ body, key }: { body: { city_slug: string; reason: string }; key: string }) =>
+  const create = useAdminMutation("city.create", ({ body, key }: { body: { city_slug: string }; key: string }) =>
     api("/cities", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": key }, body: JSON.stringify(body) }));
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     try {
-      await create.mutateAsync({ body: { city_slug: citySlug, reason }, key: createKey.acquire() });
+      await create.mutateAsync({ body: { city_slug: citySlug }, key: createKey.acquire() });
       createKey.clear();
-      setCitySlug(""); setReason("");
+      setCitySlug("");
     } catch {
       // error surfaced via create.error below
     }
@@ -73,7 +72,6 @@ export function Cities() {
                 {cityOptions.map((city) => <option key={city.slug} value={city.slug}>{city.title}</option>)}
               </select>
             </label>
-            <label>Причина / audit context<textarea value={reason} onChange={(event) => setReason(event.target.value)} required minLength={3} /></label>
             <Notice error={create.error?.code} />
             <button className="primary" disabled={create.isPending}>{create.isPending ? "Создаём…" : "Создать город"}</button>
           </form>

@@ -40,7 +40,7 @@ export function RefundAction({ orderId, max, close }: { orderId: string; max: nu
       <form className="form" onSubmit={submit}>
         <label>Сумма, ₽<MoneyInput value={amount} onChange={setAmount} maxKopecks={max} required /></label>
         <p>Доступно к возврату: <strong>{formatRubles(max)}</strong>.</p>
-        <label>Причина<textarea value={reason} onChange={(event) => setReason(event.target.value)} minLength={3} required /></label>
+        <label>Причина<textarea value={reason} onChange={(event) => setReason(event.target.value)} minLength={3} required /><small>Укажите причину. Она будет сохранена в журнале действий.</small></label>
         <label>Комментарий<textarea value={note} onChange={(event) => setNote(event.target.value)} /></label>
         <Notice error={mutation.error?.code} />
         <button className="primary" disabled={mutation.isPending || !amountValid}>{mutation.isPending ? "Создаём…" : `Создать refund ${amountKopecks === null ? "" : formatRubles(amountKopecks)}`}</button>

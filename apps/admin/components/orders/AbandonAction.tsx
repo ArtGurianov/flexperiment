@@ -31,7 +31,7 @@ export function AbandonAction({ orderId, close }: { orderId: string; close: () =
     <ActionModal title="Technical reservation abandonment" close={close}>
       <p>Команда доступна только потому, что backend сейчас явно считает эту reservation abandonable. Поздняя успешная оплата не восстановит booking.</p>
       <form className="form" onSubmit={submit}>
-        <label>Причина<textarea value={reason} onChange={(event) => setReason(event.target.value)} minLength={3} required /></label>
+        <label>Причина<textarea value={reason} onChange={(event) => setReason(event.target.value)} minLength={3} required /><small>Укажите причину. Она будет сохранена в журнале действий.</small></label>
         <Notice error={mutation.error?.code} />
         <button className="danger" disabled={mutation.isPending}>{mutation.isPending ? "Выполняем…" : "Подтвердить abandonment"}</button>
       </form>

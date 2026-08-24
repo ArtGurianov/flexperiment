@@ -10,7 +10,6 @@ import { Dialog } from "../ui/Dialog";
 import { Notice } from "../ui/Notice";
 
 export function OccurrenceAction({ action, close, done }: { action: { occurrence: Row; label: string; patch: OccurrenceActionSpec["patch"] }; close: () => void; done: () => void }) {
-  const [reason, setReason] = useState("");
   const [key] = useState(idempotencyKey);
 
   const mutation = useAdminMutation(
@@ -22,7 +21,7 @@ export function OccurrenceAction({ action, close, done }: { action: { occurrence
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     try {
-      await mutation.mutateAsync({ ...action.patch, reason, expected_revision: number(action.occurrence.admin_revision) });
+      await mutation.mutateAsync({ ...action.patch, expected_revision: number(action.occurrence.admin_revision) });
       done();
     } catch {
       // error surfaced via mutation.error below
@@ -36,7 +35,6 @@ export function OccurrenceAction({ action, close, done }: { action: { occurrence
         <h2>{action.label}</h2>
         <p>{string(action.occurrence.title)}</p>
         <p>{occurrenceActionConsequence(action.patch)}</p>
-        <label>Причина<textarea autoFocus required minLength={3} value={reason} onChange={(event) => setReason(event.target.value)} /></label>
         <Notice error={mutation.error?.code} />
         <div className="modal-actions">
           <button className="primary" disabled={mutation.isPending}>{mutation.isPending ? "Сохраняем…" : "Подтвердить"}</button>

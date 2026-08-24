@@ -99,17 +99,15 @@ describe("commerce HTTP boundary", () => {
     expect(listed.incidents.filter((incident) => incident.requires_attention === 1)).toHaveLength(3);
     expect(listed.incidents.map((incident) => incident.id)).not.toContain("api-attention-DELIVERED");
 
-    const empty = await app.request("http://admin.flexperiment.ru/v1/admin/email-attention/api-attention-FAILED/acknowledge", { method: "POST", headers, body: JSON.stringify({ reason: "" }) });
-    expect(empty.status).toBe(422);
-    const unknown = await app.request("http://admin.flexperiment.ru/v1/admin/email-attention/not-an-outbox/acknowledge", { method: "POST", headers, body: JSON.stringify({ reason: "Known incident." }) });
+    const empty = await app.request("http://admin.flexperiment.ru/v1/admin/email-attention/api-attention-FAILED/acknowledge", { method: "POST", headers, body: JSON.stringify({}) });
+    expect(await empty.json()).toMatchObject({ acknowledged_now: true, incident: { status: "FAILED", ops_acknowledged_reason: null } });
+    const unknown = await app.request("http://admin.flexperiment.ru/v1/admin/email-attention/not-an-outbox/acknowledge", { method: "POST", headers, body: JSON.stringify({}) });
     expect(unknown.status).toBe(404);
-    const first = await app.request("http://admin.flexperiment.ru/v1/admin/email-attention/api-attention-FAILED/acknowledge", { method: "POST", headers, body: JSON.stringify({ reason: "Recipient was informed by support." }) });
-    expect(await first.json()).toMatchObject({ acknowledged_now: true, incident: { status: "FAILED", ops_acknowledged_reason: "Recipient was informed by support." } });
-    const replay = await app.request("http://admin.flexperiment.ru/v1/admin/email-attention/api-attention-FAILED/acknowledge", { method: "POST", headers, body: JSON.stringify({ reason: "Must not overwrite." }) });
-    expect(await replay.json()).toMatchObject({ acknowledged_now: false, incident: { ops_acknowledged_reason: "Recipient was informed by support." } });
+    const replay = await app.request("http://admin.flexperiment.ru/v1/admin/email-attention/api-attention-FAILED/acknowledge", { method: "POST", headers, body: JSON.stringify({ audit_context: "Must not overwrite." }) });
+    expect(await replay.json()).toMatchObject({ acknowledged_now: false, incident: { ops_acknowledged_reason: null } });
     expect(db.prepare(`SELECT status, attempts, sent_at, bounced_at, provider_error_code,
       provider_error_message, ops_acknowledged_reason FROM email_outbox WHERE id = 'api-attention-FAILED'`).get())
-      .toEqual({ status: "FAILED", attempts: 2, sent_at: "2026-08-23T00:00:00.000Z", bounced_at: "2026-08-23T00:01:00.000Z", provider_error_code: "hard_bounced", provider_error_message: "Mailbox unavailable", ops_acknowledged_reason: "Recipient was informed by support." });
+      .toEqual({ status: "FAILED", attempts: 2, sent_at: "2026-08-23T00:00:00.000Z", bounced_at: "2026-08-23T00:01:00.000Z", provider_error_code: "hard_bounced", provider_error_message: "Mailbox unavailable", ops_acknowledged_reason: null });
     const after = await app.request("http://admin.flexperiment.ru/v1/admin/email-attention", { headers });
     const afterBody = await after.json() as { attention_count: number; incidents: { requires_attention: number }[] };
     expect(afterBody.attention_count).toBe(2);
@@ -136,9 +134,11 @@ describe("commerce HTTP boundary", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM settlement_prepared_reviews").get()).toEqual(reviewCount);
     const missingKey = await app.request(`http://admin.flexperiment.ru/v1/admin/reward-settlements/${settlementId}/payment-made`, { method: "POST", headers, body: JSON.stringify({ confirmation_text: "I confirm the money was transferred" }) });
     expect(missingKey.status).toBe(400);
-    const first = await app.request(`http://admin.flexperiment.ru/v1/admin/reward-settlements/${settlementId}/payment-made`, { method: "POST", headers: { ...headers, "Idempotency-Key": "settlement-api-payment-key" }, body: JSON.stringify({ confirmation_text: "I confirm the money was transferred" }) });
+    const missingReason = await app.request(`http://admin.flexperiment.ru/v1/admin/reward-settlements/${settlementId}/payment-made`, { method: "POST", headers: { ...headers, "Idempotency-Key": "settlement-api-payment-no-reason" }, body: JSON.stringify({ confirmation_text: "I confirm the money was transferred" }) });
+    expect(missingReason.status).toBe(422);
+    const first = await app.request(`http://admin.flexperiment.ru/v1/admin/reward-settlements/${settlementId}/payment-made`, { method: "POST", headers: { ...headers, "Idempotency-Key": "settlement-api-payment-key" }, body: JSON.stringify({ confirmation_text: "I confirm the money was transferred", reason: "Bank transfer was confirmed." }) });
     expect(await first.json()).toMatchObject({ id: settlementId, status: "PENDING_DOCUMENT" });
-    const replay = await app.request(`http://admin.flexperiment.ru/v1/admin/reward-settlements/${settlementId}/payment-made`, { method: "POST", headers: { ...headers, "Idempotency-Key": "settlement-api-payment-key" }, body: JSON.stringify({ confirmation_text: "I confirm the money was transferred" }) });
+    const replay = await app.request(`http://admin.flexperiment.ru/v1/admin/reward-settlements/${settlementId}/payment-made`, { method: "POST", headers: { ...headers, "Idempotency-Key": "settlement-api-payment-key" }, body: JSON.stringify({ confirmation_text: "I confirm the money was transferred", reason: "Bank transfer was confirmed." }) });
     expect(await replay.json()).toMatchObject({ id: settlementId, status: "PENDING_DOCUMENT" });
     db.close();
   });
@@ -348,11 +348,11 @@ describe("commerce HTTP boundary", () => {
       body: JSON.stringify({ password: "correct horse" }),
     });
     const adminHeaders = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
-    const cityPayload = { city_slug: "omsk", reason: "Tochka Phase 0 certification" };
+    const cityPayload = { city_slug: "omsk", audit_context: "Tochka Phase 0 certification" };
     const cityKey = "b6a8e45a-9334-4626-8041-000000000001";
     const mismatchedCity = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000009" }, body: JSON.stringify({ ...cityPayload, title: "Томск" }) });
     expect(mismatchedCity.status).toBe(422);
-    const unsupportedCity = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000000" }, body: JSON.stringify({ city_slug: "unsupported-city", reason: "Catalog validation test" }) });
+    const unsupportedCity = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000000" }, body: JSON.stringify({ city_slug: "unsupported-city", audit_context: "Catalog validation test" }) });
     expect(unsupportedCity.status).toBe(400);
     expect(await unsupportedCity.json()).toEqual({ error: { code: "CITY_SLUG_UNKNOWN" } });
     const firstCity = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": cityKey }, body: JSON.stringify(cityPayload) });
@@ -361,18 +361,18 @@ describe("commerce HTTP boundary", () => {
     expect(city).toMatchObject({ slug: "omsk", title: "Омск" });
     const cityReplay = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": cityKey }, body: JSON.stringify(cityPayload) });
     expect(await cityReplay.json()).toMatchObject({ id: city.id });
-    const changedReplay = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": cityKey }, body: JSON.stringify({ ...cityPayload, reason: "Different canonical request" }) });
+    const changedReplay = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": cityKey }, body: JSON.stringify({ ...cityPayload, audit_context: "Different canonical request" }) });
     expect(changedReplay.status).toBe(409);
     const duplicateSlug = await app.request("http://admin.flexperiment.ru/v1/admin/cities", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000006" }, body: JSON.stringify(cityPayload) });
     expect(duplicateSlug.status).toBe(409);
-    const cityPatch = await app.request(`http://admin.flexperiment.ru/v1/admin/cities/${city.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000007" }, body: JSON.stringify({ city_slug: "moscow", reason: "Corrected canonical city" }) });
+    const cityPatch = await app.request(`http://admin.flexperiment.ru/v1/admin/cities/${city.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000007" }, body: JSON.stringify({ city_slug: "moscow", audit_context: "Corrected canonical city" }) });
     expect(cityPatch.status).toBe(200);
     expect(await cityPatch.json()).toMatchObject({ id: city.id, slug: "moscow", title: "Москва" });
     db.prepare("UPDATE cities SET title = ? WHERE id = ?").run("Incorrect title", city.id);
-    const canonicalTitleRepair = await app.request(`http://admin.flexperiment.ru/v1/admin/cities/${city.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000010" }, body: JSON.stringify({ city_slug: "moscow", reason: "Canonical title repair" }) });
+    const canonicalTitleRepair = await app.request(`http://admin.flexperiment.ru/v1/admin/cities/${city.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000010" }, body: JSON.stringify({ city_slug: "moscow", audit_context: "Canonical title repair" }) });
     expect(await canonicalTitleRepair.json()).toMatchObject({ id: city.id, slug: "moscow", title: "Москва" });
     const cityWithOccurrenceId = (db.prepare("SELECT id FROM cities WHERE slug = 'tomsk'").get() as { id: string }).id;
-    const blockedPatch = await app.request(`http://admin.flexperiment.ru/v1/admin/cities/${cityWithOccurrenceId}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000008" }, body: JSON.stringify({ city_slug: "kazan", reason: "Unsafe historical mutation" }) });
+    const blockedPatch = await app.request(`http://admin.flexperiment.ru/v1/admin/cities/${cityWithOccurrenceId}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000008" }, body: JSON.stringify({ city_slug: "kazan", audit_context: "Unsafe historical mutation" }) });
     expect(blockedPatch.status).toBe(409);
     expect(await blockedPatch.json()).toEqual({ error: { code: "CITY_HAS_OCCURRENCES" } });
 
@@ -387,7 +387,7 @@ describe("commerce HTTP boundary", () => {
       venue_status: "TO_BE_ANNOUNCED",
       venue_disclosure_text: "Venue will be announced to registered participants.",
       venue_announce_by: "2026-08-21T12:00:00+07:00",
-      reason: "Tochka Phase 0 certification",
+      audit_context: "Tochka Phase 0 certification",
     };
     const occurrenceKey = "b6a8e45a-9334-4626-8041-000000000002";
     const occurrence = await app.request("http://admin.flexperiment.ru/v1/admin/occurrences", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": occurrenceKey }, body: JSON.stringify(occurrencePayload) });
@@ -412,14 +412,14 @@ describe("commerce HTTP boundary", () => {
     const unsafeSalesCreate = await app.request("http://admin.flexperiment.ru/v1/admin/occurrences", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000008" }, body: JSON.stringify({ ...occurrencePayload, sales_status: "OPEN" }) });
     expect(unsafeSalesCreate.status).toBe(422);
 
-    const published = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000011" }, body: JSON.stringify({ price_kopecks: 100, capacity: 1, visibility: "PUBLISHED", reason: "Tochka Phase 0 certification", expected_revision: 1 }) });
+    const published = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000011" }, body: JSON.stringify({ price_kopecks: 100, capacity: 1, visibility: "PUBLISHED", audit_context: "Tochka Phase 0 certification", expected_revision: 1 }) });
     expect(published.status).toBe(200);
     expect(await published.json()).toMatchObject({ id: created.id, visibility: "PUBLISHED", sales_status: "CLOSED" });
-    const opened = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000012" }, body: JSON.stringify({ sales_status: "OPEN", reason: "Tochka Phase 0 certification", expected_revision: 2 }) });
+    const opened = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000012" }, body: JSON.stringify({ sales_status: "OPEN", audit_context: "Tochka Phase 0 certification", expected_revision: 2 }) });
     expect(opened.status).toBe(200);
-    const openedReplay = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000012" }, body: JSON.stringify({ sales_status: "OPEN", reason: "Tochka Phase 0 certification", expected_revision: 2 }) });
+    const openedReplay = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000012" }, body: JSON.stringify({ sales_status: "OPEN", audit_context: "Tochka Phase 0 certification", expected_revision: 2 }) });
     expect(await openedReplay.json()).toMatchObject({ id: created.id, visibility: "PUBLISHED", sales_status: "OPEN" });
-    const patchConflict = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000012" }, body: JSON.stringify({ sales_status: "CLOSED", reason: "Changed patch", expected_revision: 3 }) });
+    const patchConflict = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000012" }, body: JSON.stringify({ sales_status: "CLOSED", audit_context: "Changed patch", expected_revision: 3 }) });
     expect(patchConflict.status).toBe(409);
     const after = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers: { Origin: "https://flexperiment.ru", "X-Forwarded-For": "127.0.0.1" } });
     expect((await after.json() as { cities: { id?: string }[] }).cities.some((entry) => entry.id === created.id)).toBe(true);
@@ -427,7 +427,7 @@ describe("commerce HTTP boundary", () => {
       admin_id: expect.any(String), action: "OCCURRENCE_CREATED", entity_type: "occurrence", entity_id: created.id,
     });
     const evidence = JSON.parse(String((db.prepare("SELECT details_json FROM admin_audit_log WHERE entity_id = ?").get(created.id) as { details_json: string }).details_json));
-    expect(evidence).toMatchObject({ reason: occurrencePayload.reason, idempotency_key_hash: expect.stringMatching(/^[a-f0-9]{64}$/), canonical_request_hash: expect.stringMatching(/^[a-f0-9]{64}$/) });
+    expect(evidence).toMatchObject({ audit_context: occurrencePayload.audit_context, idempotency_key_hash: expect.stringMatching(/^[a-f0-9]{64}$/), canonical_request_hash: expect.stringMatching(/^[a-f0-9]{64}$/) });
 
     // Creation and ordinary material edits do not require an operator note.
     // The audit ledger keeps a deliberate empty value rather than fabricating
@@ -435,12 +435,12 @@ describe("commerce HTTP boundary", () => {
     const withoutContext = await app.request("http://admin.flexperiment.ru/v1/admin/occurrences", {
       method: "POST",
       headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000013" },
-      body: JSON.stringify({ ...occurrencePayload, title: "FLEXPERIMENT — no audit context", reason: undefined }),
+      body: JSON.stringify({ ...occurrencePayload, title: "FLEXPERIMENT — no audit context", audit_context: undefined }),
     });
     expect(withoutContext.status).toBe(201);
     const contextFree = await withoutContext.json() as { id: string; admin_revision: number };
     const contextFreeAudit = JSON.parse(String((db.prepare("SELECT details_json FROM admin_audit_log WHERE entity_id = ?").get(contextFree.id) as { details_json: string }).details_json));
-    expect(contextFreeAudit.reason).toBe("");
+    expect(contextFreeAudit.audit_context).toBeNull();
     const contextFreePatch = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${contextFree.id}`, {
       method: "PATCH",
       headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000014" },
@@ -463,7 +463,7 @@ describe("commerce HTTP boundary", () => {
     });
     const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
     const patch = (key: string, payload: Record<string, unknown>) => app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${occurrenceId}`, {
-      method: "PATCH", headers: { ...headers, "Idempotency-Key": key }, body: JSON.stringify({ ...payload, reason: "Occurrence lifecycle test", expected_revision: Number((db.prepare("SELECT admin_revision FROM occurrences WHERE id = ?").get(occurrenceId) as { admin_revision: number }).admin_revision) }),
+      method: "PATCH", headers: { ...headers, "Idempotency-Key": key }, body: JSON.stringify({ ...payload, audit_context: "Occurrence lifecycle test", expected_revision: Number((db.prepare("SELECT admin_revision FROM occurrences WHERE id = ?").get(occurrenceId) as { admin_revision: number }).admin_revision) }),
     });
     const state = () => db.prepare("SELECT visibility, sales_status FROM occurrences WHERE id = ?").get(occurrenceId);
 
@@ -521,7 +521,7 @@ describe("commerce HTTP boundary", () => {
     });
     const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
     const patch = (occurrenceId: string, key: string, payload: Record<string, unknown>) => app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${occurrenceId}`, {
-      method: "PATCH", headers: { ...headers, "Idempotency-Key": key }, body: JSON.stringify({ ...payload, reason: "Legacy state recovery", expected_revision: Number((db.prepare("SELECT admin_revision FROM occurrences WHERE id = ?").get(occurrenceId) as { admin_revision: number }).admin_revision) }),
+      method: "PATCH", headers: { ...headers, "Idempotency-Key": key }, body: JSON.stringify({ ...payload, audit_context: "Legacy state recovery", expected_revision: Number((db.prepare("SELECT admin_revision FROM occurrences WHERE id = ?").get(occurrenceId) as { admin_revision: number }).admin_revision) }),
     });
 
     const openPublish = await patch(openId, "e81172c2-25a5-4f15-80e5-000000000001", { visibility: "PUBLISHED" });
@@ -695,7 +695,7 @@ describe("commerce HTTP boundary", () => {
     const response = await app.request("http://admin.flexperiment.ru/v1/admin/occurrences", {
       method: "POST",
       headers: { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json", "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000012" },
-      body: JSON.stringify({ city_id: cityId, title: "Late venue disclosure", starts_at: "2026-10-01T10:00:00.000Z", ends_at: "2026-10-01T13:00:00.000Z", timezone: "Asia/Tomsk", price_kopecks: 100, capacity: 1, venue_status: "TO_BE_ANNOUNCED", venue_disclosure_text: "Venue will be announced later.", venue_announce_by: "2026-10-01T10:00:00.000Z", reason: "Admin validation test" }),
+      body: JSON.stringify({ city_id: cityId, title: "Late venue disclosure", starts_at: "2026-10-01T10:00:00.000Z", ends_at: "2026-10-01T13:00:00.000Z", timezone: "Asia/Tomsk", price_kopecks: 100, capacity: 1, venue_status: "TO_BE_ANNOUNCED", venue_disclosure_text: "Venue will be announced later.", venue_announce_by: "2026-10-01T10:00:00.000Z", audit_context: "Admin validation test" }),
     });
     expect(response.status).toBe(422);
     expect(() => db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, sales_status, venue_status, venue_disclosure_text, venue_announce_by)

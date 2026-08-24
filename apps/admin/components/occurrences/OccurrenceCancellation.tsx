@@ -40,7 +40,7 @@ export function OccurrenceCancellation({ occurrence, close, done }: { occurrence
         <h2>Отменить событие</h2>
         <p>{string(occurrence.title)}</p>
         <p>Продажи будут закрыты, активные бронирования отменены, билеты аннулированы, а полный возврат будет создан через штатный worker.</p>
-        <label>Причина<textarea autoFocus required minLength={3} value={reason} onChange={(event) => setReason(event.target.value)} /></label>
+        <label>Причина<textarea autoFocus required minLength={3} value={reason} onChange={(event) => setReason(event.target.value)} /><small>Укажите причину. Она будет сохранена в журнале действий.</small></label>
         <label>Текущий пароль администратора<input type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} /></label>
         <Notice error={mutation.error?.code} />
         <div className="modal-actions">

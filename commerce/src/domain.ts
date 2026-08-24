@@ -1143,7 +1143,7 @@ export class CommerceDomain {
       FROM payment_totals`, occurrenceId)!;
   }
 
-  createCity(input: { city_slug: string; reason: string }, idempotencyKey: string, adminId: string) {
+  createCity(input: { city_slug: string; audit_context?: string }, idempotencyKey: string, adminId: string) {
     return this.withAdminCommand("city-create", idempotencyKey, input, "cities", () => {
       const canonicalCity = findCityBySlug(input.city_slug);
       if (!canonicalCity) throw new DomainError("CITY_SLUG_UNKNOWN", 400);
@@ -1151,12 +1151,12 @@ export class CommerceDomain {
       const cityId = id();
       this.db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, ?)").run(cityId, canonicalCity.slug, canonicalCity.title);
       const city = one(this.db, "SELECT * FROM cities WHERE id = ?", cityId)!;
-      this.recordAdminCommandAudit(adminId, "CITY_CREATED", "city", cityId, input.reason, idempotencyKey, input);
+      this.recordAdminCommandAudit(adminId, "CITY_CREATED", "city", cityId, input.audit_context, idempotencyKey, input);
       return city;
     });
   }
 
-  patchCity(cityId: string, input: { city_slug: string; reason: string }, idempotencyKey: string, adminId: string) {
+  patchCity(cityId: string, input: { city_slug: string; audit_context?: string }, idempotencyKey: string, adminId: string) {
     const payload = { city_id: cityId, ...input };
     return this.withAdminCommand("city-patch", idempotencyKey, payload, "cities", () => {
       const before = one(this.db, "SELECT * FROM cities WHERE id = ?", cityId);
@@ -1172,7 +1172,7 @@ export class CommerceDomain {
       if (one(this.db, "SELECT id FROM cities WHERE slug = ? AND id <> ?", canonicalCity.slug, cityId)) throw new DomainError("CITY_SLUG_CONFLICT", 409);
       this.db.prepare("UPDATE cities SET slug = ?, title = ? WHERE id = ?").run(canonicalCity.slug, canonicalCity.title, cityId);
       const city = one(this.db, "SELECT * FROM cities WHERE id = ?", cityId)!;
-      this.recordAdminCommandAudit(adminId, "CITY_EDITED", "city", cityId, input.reason, idempotencyKey, payload);
+      this.recordAdminCommandAudit(adminId, "CITY_EDITED", "city", cityId, input.audit_context, idempotencyKey, payload);
       return city;
     });
   }
@@ -1459,9 +1459,9 @@ export class CommerceDomain {
     });
   }
 
-  markSettlementPaymentMade(settlementId: string, confirmationText: string, idempotencyKey: string) {
+  markSettlementPaymentMade(settlementId: string, confirmationText: string, idempotencyKey: string, reason = "") {
     if (confirmationText !== "I confirm the money was transferred") throw new DomainError("CONFIRMATION_REQUIRED", 422);
-    return this.settlementTransition("PAYMENT_MADE", settlementId, { confirmation_text: confirmationText }, idempotencyKey, () => {
+    return this.settlementTransition("PAYMENT_MADE", settlementId, { confirmation_text: confirmationText, reason }, idempotencyKey, () => {
       const changed = this.db.prepare("UPDATE reward_settlements SET status = 'PENDING_DOCUMENT', payment_made_at = ? WHERE id = ? AND status = 'PREPARED'").run(now(), settlementId);
       if (!changed.changes) throw new DomainError("SETTLEMENT_TRANSITION_FORBIDDEN", 409);
       return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;

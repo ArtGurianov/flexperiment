@@ -27,7 +27,6 @@ export function OccurrenceEditor({ occurrence, close, done, onRevisionConflict }
     venue_address: string(occurrence.venue_address),
     venue_disclosure_text: string(occurrence.venue_disclosure_text) || DEFAULT_VENUE_DISCLOSURE,
     venue_announcement_lead: formatDurationBetween(occurrence.venue_announce_by, occurrence.starts_at),
-    reason: "",
   });
   const [key] = useState(idempotencyKey);
   const [validationError, setValidationError] = useState<string | null>(null);
@@ -60,7 +59,6 @@ export function OccurrenceEditor({ occurrence, close, done, onRevisionConflict }
     }
     setValidationError(null);
     const body: Row = { title: form.title, starts_at: startsAt, ends_at: new Date(startsAtMs + minutesToMilliseconds(durationMinutes)).toISOString(), timezone: form.timezone, price_kopecks: priceKopecks, capacity: Number(form.capacity), venue_status: form.venue_status };
-    if (form.reason.trim()) body.reason = form.reason.trim();
     if (form.venue_status === "CONFIRMED") {
       body.venue_name = form.venue_name; body.venue_address = form.venue_address; body.venue_disclosure_text = null; body.venue_announce_by = null;
     } else {
@@ -106,10 +104,6 @@ export function OccurrenceEditor({ occurrence, close, done, onRevisionConflict }
               <label>Объявить не позднее чем<DurationInput value={form.venue_announcement_lead} onChange={(value) => set("venue_announcement_lead", value)} required /><small>до начала мастер-класса</small></label>
             </>
           )}
-          <details className="wide">
-            <summary>Дополнительные параметры</summary>
-            <label>Причина изменения / audit context<textarea value={form.reason} onChange={(event) => set("reason", event.target.value)} /></label>
-          </details>
         </div>
         <Notice error={validationError ?? mutation.error?.code} />
         <div className="modal-actions">

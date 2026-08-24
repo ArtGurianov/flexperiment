@@ -330,14 +330,14 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   });
   admin.post("/operational-incidents/:id/resolve", async (c) => {
     const payload = emailAttentionAcknowledgeSchema.parse(await jsonBody(c.req.raw));
-    const incident = domain.resolveOperationalIncident(c.req.param("id"), payload.reason);
-    audit(c.var.adminId!, "OPERATIONAL_INCIDENT_RESOLVED", "operational_incident", c.req.param("id"), { note: payload.reason });
+    const incident = domain.resolveOperationalIncident(c.req.param("id"), payload.audit_context);
+    audit(c.var.adminId!, "OPERATIONAL_INCIDENT_RESOLVED", "operational_incident", c.req.param("id"), { audit_context: payload.audit_context ?? null });
     return c.json(incident);
   });
   admin.post("/email-attention/:id/acknowledge", async (c) => {
     const payload = emailAttentionAcknowledgeSchema.parse(await jsonBody(c.req.raw));
-    const result = domain.acknowledgeEmailAttention(c.req.param("id"), payload.reason);
-    if (result.acknowledged_now) audit(c.var.adminId!, "EMAIL_ATTENTION_ACKNOWLEDGED", "email_outbox", c.req.param("id"), { reason: payload.reason });
+    const result = domain.acknowledgeEmailAttention(c.req.param("id"), payload.audit_context);
+    if (result.acknowledged_now) audit(c.var.adminId!, "EMAIL_ATTENTION_ACKNOWLEDGED", "email_outbox", c.req.param("id"), { audit_context: payload.audit_context ?? null });
     return c.json(result);
   });
   admin.post("/orders/:id/abandon-reservation", async (c) => {
@@ -367,7 +367,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   admin.post("/occurrences/:id/complete", async (c) => {
     const payload = occurrenceCompleteSchema.parse(await jsonBody(c.req.raw));
     if (payload.confirmation_text !== `COMPLETE ${c.req.param("id")}`) throw new DomainError("CONFIRMATION_REQUIRED", 422);
-    const occurrence = domain.completeOccurrence(c.req.param("id")); audit(c.var.adminId!, "OCCURRENCE_COMPLETED", "occurrence", c.req.param("id"), {}); return c.json(occurrence);
+    const occurrence = domain.completeOccurrence(c.req.param("id")); audit(c.var.adminId!, "OCCURRENCE_COMPLETED", "occurrence", c.req.param("id"), { reason: payload.reason }); return c.json(occurrence);
   });
   admin.post("/occurrences/:id/cancel", async (c) => {
     const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
@@ -415,10 +415,10 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   admin.post("/reward-settlements", async (c) => { const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400); const payload = settlementPrepareSchema.parse(await jsonBody(c.req.raw)); const settlement = domain.prepareSettlement(payload, key, c.var.adminId!); audit(c.var.adminId!, "SETTLEMENT_PREPARED", "reward_settlement", String(settlement.id), payload); return c.json(settlement, 201); });
   admin.get("/reward-settlements", (c) => c.json({ settlements: domain.settlementList({ stalePrepared: c.req.query("stale_prepared") === "1" ? true : undefined }) }));
   admin.get("/reward-settlements/:id", (c) => c.json(domain.settlementDetail(c.req.param("id"))));
-  admin.post("/reward-settlements/:id/payment-made", async (c) => { const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400); const payload = settlementPaymentMadeSchema.parse(await jsonBody(c.req.raw)); const settlement = domain.markSettlementPaymentMade(c.req.param("id"), payload.confirmation_text, key); audit(c.var.adminId!, "SETTLEMENT_PAYMENT_MADE", "reward_settlement", c.req.param("id"), {}); return c.json(settlement); });
+  admin.post("/reward-settlements/:id/payment-made", async (c) => { const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400); const payload = settlementPaymentMadeSchema.parse(await jsonBody(c.req.raw)); const settlement = domain.markSettlementPaymentMade(c.req.param("id"), payload.confirmation_text, key, payload.reason); audit(c.var.adminId!, "SETTLEMENT_PAYMENT_MADE", "reward_settlement", c.req.param("id"), { reason: payload.reason }); return c.json(settlement); });
   admin.post("/reward-settlements/:id/documents-complete", async (c) => { const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400); const payload = settlementDocumentSchema.parse(await jsonBody(c.req.raw)); const settlement = domain.completeSettlementDocuments(c.req.param("id"), payload, key); audit(c.var.adminId!, "SETTLEMENT_DOCUMENTS_COMPLETE", "reward_settlement", c.req.param("id"), {}); return c.json(settlement); });
   admin.post("/reward-settlements/:id/cancel-before-payment", async (c) => { const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400); const payload = settlementCancelSchema.parse(await jsonBody(c.req.raw)); const settlement = domain.cancelSettlementBeforePayment(c.req.param("id"), payload, key); audit(c.var.adminId!, "SETTLEMENT_CANCELLED_BEFORE_PAYMENT", "reward_settlement", c.req.param("id"), { reason: payload.reason }); return c.json(settlement); });
-  admin.post("/reward-settlements/:id/recoveries", async (c) => { const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400); const payload = settlementRecoverySchema.parse(await jsonBody(c.req.raw)); const recovery = domain.addSettlementRecovery(c.req.param("id"), payload, key); audit(c.var.adminId!, "SETTLEMENT_RECOVERY_RECORDED", "reward_settlement", c.req.param("id"), { amount_kopecks: payload.amount_recovered_kopecks }); return c.json(recovery, 201); });
+  admin.post("/reward-settlements/:id/recoveries", async (c) => { const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400); const payload = settlementRecoverySchema.parse(await jsonBody(c.req.raw)); const recovery = domain.addSettlementRecovery(c.req.param("id"), payload, key); audit(c.var.adminId!, "SETTLEMENT_RECOVERY_RECORDED", "reward_settlement", c.req.param("id"), { amount_kopecks: payload.amount_recovered_kopecks, reason: payload.reason }); return c.json(recovery, 201); });
   admin.get("/provider-drift-reviews", (c) => c.json({ reviews: sqlite.prepare("SELECT * FROM provider_drift_reviews WHERE status = 'OPEN' ORDER BY created_at DESC").all() }));
   admin.post("/provider-drift-reviews/:id/resolve", async (c) => { const body = await jsonBody(c.req.raw) as { note?: string }; if (!body.note?.trim()) throw new DomainError("RESOLUTION_NOTE_REQUIRED", 422); const result = sqlite.prepare("UPDATE provider_drift_reviews SET status = 'RESOLVED', resolution_note = ?, resolved_at = datetime('now') WHERE id = ? AND status = 'OPEN'").run(body.note.trim(), c.req.param("id")); if (!result.changes) throw new DomainError("DRIFT_REVIEW_NOT_OPEN", 409); audit(c.var.adminId!, "PROVIDER_DRIFT_RESOLVED", "provider_drift_review", c.req.param("id"), { note: body.note.trim() }); return c.json({ resolved: true }); });
   app.post("/v1/admin/login", async (c) => {

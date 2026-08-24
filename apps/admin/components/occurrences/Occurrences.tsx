@@ -28,7 +28,7 @@ import { OccurrenceCompletion } from "./OccurrenceCompletion";
 const initialForm = {
   city_id: "", title: "", starts_at: "", duration: "", timezone: "",
   price_kopecks: "", capacity: "", venue_status: "CONFIRMED", venue_name: "",
-  venue_address: "", venue_disclosure_text: "Точная площадка будет объявлена позже. Адрес придёт на email и появится в билете.", venue_announcement_lead: "", reason: "",
+  venue_address: "", venue_disclosure_text: "Точная площадка будет объявлена позже. Адрес придёт на email и появится в билете.", venue_announcement_lead: "",
 };
 
 export function Occurrences() {
@@ -81,13 +81,12 @@ export function Occurrences() {
       timezone: form.timezone, price_kopecks: priceKopecks, capacity: Number(form.capacity),
       venue_status: form.venue_status,
     };
-    if (form.reason.trim()) body.reason = form.reason.trim();
     if (form.venue_status === "CONFIRMED") { body.venue_name = form.venue_name; body.venue_address = form.venue_address; }
     else { body.venue_disclosure_text = form.venue_disclosure_text; body.venue_announce_by = new Date(startsAtMs - minutesToMilliseconds(announcementLeadMinutes!)).toISOString(); }
     try {
       await create.mutateAsync({ body, key });
       createKey.clear();
-      setForm((previous) => ({ ...previous, title: "", starts_at: "", duration: "", price_kopecks: "", capacity: "", venue_name: "", venue_address: "", venue_disclosure_text: initialForm.venue_disclosure_text, venue_announcement_lead: "", reason: "" }));
+      setForm((previous) => ({ ...previous, title: "", starts_at: "", duration: "", price_kopecks: "", capacity: "", venue_name: "", venue_address: "", venue_disclosure_text: initialForm.venue_disclosure_text, venue_announcement_lead: "" }));
     } catch {
       // error surfaced via create.error below
     }
@@ -136,7 +135,6 @@ export function Occurrences() {
           <details className="wide">
             <summary>Дополнительные параметры</summary>
             <label>Timezone<input value={form.timezone} onChange={(event) => set("timezone", event.target.value)} required /></label>
-            <label>Причина / audit context<textarea value={form.reason} onChange={(event) => set("reason", event.target.value)} /></label>
           </details>
           <div className="wide">
             <Notice error={validationError ?? create.error?.code} />

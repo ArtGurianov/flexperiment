@@ -43,7 +43,7 @@ describe("Occurrences", () => {
     expect(screen.getByText("SCHEDULED")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Отменить событие" }));
-    await user.type(screen.getByLabelText("Причина"), "Форс-мажор");
+    await user.type(screen.getByLabelText(/Причина/), "Форс-мажор");
     await user.type(screen.getByLabelText("Текущий пароль администратора"), "correct horse");
     await user.click(screen.getByRole("button", { name: "Подтвердить отмену" }));
 
