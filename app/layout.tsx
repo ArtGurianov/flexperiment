@@ -79,6 +79,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="ru"
+      data-scroll-behavior="smooth"
       // motion-safe, not a bare scroll-smooth: animated scrolling is a common
       // vestibular trigger, and this variant drops back to an instant jump for
       // anyone who has asked their OS to reduce motion.
