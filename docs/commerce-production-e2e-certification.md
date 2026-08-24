@@ -16,6 +16,12 @@ paths. It is not a smoke test and creates one real 1-RUB order.
 The script reads public data only from `https://api.flexperiment.ru`; the
 website origin is not an API proxy.
 
+Before every recovery of an interrupted Admin operation, before checkout
+creation, before customer cancellation, and before `PASS`, it verifies the
+same deployed source commit, migration head, legal release ID/version, and all
+four legal document hashes. A mismatch is `INCOMPLETE`; it never replays a
+pending operation on a changed baseline.
+
 ## Start
 
 ```bash
@@ -34,9 +40,10 @@ count of external provider HTTP transmissions.
 ## Interruptions and cleanup
 
 After the first mutation a mode-`0600` JSON state file is retained in
-`.certification-state/`. It contains IDs, phase markers, idempotency keys and,
-only while an Admin mutation is in flight, its safe schedule/venue/reason JSON
-body so the exact command can be replayed. It never contains a password,
+`.certification-state/`. It contains IDs, phase markers, idempotency keys and
+only an allowlisted pending-operation enum. Occurrence creation additionally
+stores its safe schedule/venue body until its returned ID is checkpointed; all
+other Admin request bodies are reconstructed by the script. It never contains a password,
 cookie, customer email/name/date of birth, payment URL, ticket capability, or
 provider credential. Before `POST /checkouts`, it also stores only a SHA-256
 of the canonical checkout request; a resumed operator must re-enter matching
@@ -52,7 +59,13 @@ the existing order and use its evidence/reconciliation path. If a run is
 interrupted after publication, close sales as soon as it is safe, then use the
 explicit cleanup command. Cleanup is `PUBLISHED + OPEN → PUBLISHED + CLOSED →
 HIDDEN + CLOSED`; it verifies the occurrence is `404` publicly and absent from
-the public tour. It never deletes historical certification evidence.
+the public tour. It never replays a pending create/open/cancellation operation,
+does not overwrite the financial workflow phase, and never deletes historical
+certification evidence. A normal run records `OCCURRENCE_CLEANED` separately,
+then atomically writes the manifest and marks itself `COMPLETE`; a crash in
+between resumes from that cleanup checkpoint. A later normal resume refuses a
+pending publish/open command after emergency cleanup, so cleanup cannot be
+undone by a stale replay.
 
 ## Evidence
 

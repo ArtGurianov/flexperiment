@@ -6,6 +6,14 @@ import { describe, expect, it } from "vitest";
 
 const repositoryRoot = resolve(import.meta.dirname, "../..");
 const certificationScript = resolve(repositoryRoot, "certification.sh");
+const recoveryPlanner = resolve(repositoryRoot, "scripts/certification-recovery.sh");
+
+function plan(mode: string, phase: string, pendingOperation: string, baseline: string, salesCleanedAt = "") {
+  return execFileSync("bash", ["-lc", `source '${recoveryPlanner}'; certification_recovery_action '${mode}' '${phase}' '${pendingOperation}' '${baseline}' '${salesCleanedAt}'`], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+  }).trim();
+}
 
 describe("production certification runbook checkpoints", () => {
   it("keeps the pre-dispatch checkout identity and distinct crash checkpoints", () => {
@@ -20,6 +28,7 @@ describe("production certification runbook checkpoints", () => {
     expect(source).toContain("QUOTE_READY CHECKOUT_SUBMITTING CHECKOUT_CREATED");
     expect(source).toContain("CHECKOUT_REQUEST_SHA256");
     expect(source).toContain("OCCURRENCE_CREATED OCCURRENCE_PUBLISHED OCCURRENCE_OPEN");
+    expect(source).toContain("certification_recovery_action");
     expect(occurrenceCreated).toBeGreaterThan(-1);
     expect(occurrenceCreated).toBeLessThan(occurrencePublished);
     expect(occurrencePublished).toBeLessThan(occurrenceOpen);
@@ -30,8 +39,23 @@ describe("production certification runbook checkpoints", () => {
     expect(source.slice(checkoutSubmitting, checkoutCreated)).toContain("replay_checkout");
     expect(source.slice(checkoutCreated, source.indexOf("wait_checkout_paid"))).toContain("replay_checkout");
     expect([...source.matchAll(/\/v1\/public\/checkout-context/g)]).toHaveLength(1);
-    expect(source).toContain('if [[ "$MODE" == cleanup ]]; then close_and_hide');
+    expect(source).toContain("# Emergency cleanup never replays a pending OPEN/create/cancellation command.");
+    expect(source).toContain("SALES_CLEANED_AT");
     expect(source).not.toContain('source "$STATE_FILE"');
+  });
+
+  it("plans recovery behavior without replaying stale commands or losing workflow phase", () => {
+    expect(plan("run", "NEW", "CREATE_OCCURRENCE", "VERIFIED")).toBe("REPLAY_PENDING");
+    expect(plan("run", "OCCURRENCE_CREATED", "PUBLISH_OCCURRENCE", "VERIFIED")).toBe("REPLAY_PENDING");
+    expect(plan("run", "OCCURRENCE_PUBLISHED", "OPEN_SALES", "VERIFIED")).toBe("REPLAY_PENDING");
+    expect(plan("run", "CHECKOUT_SUBMITTING", "", "VERIFIED")).toBe("CONTINUE");
+    expect(plan("run", "CHECKOUT_CREATED", "", "VERIFIED")).toBe("CONTINUE");
+    expect(plan("run", "REFUND_EMAIL_DELIVERED", "", "VERIFIED")).toBe("CLEAN_OCCURRENCE");
+    expect(plan("run", "OCCURRENCE_CLEANED", "", "VERIFIED")).toBe("WRITE_MANIFEST");
+    expect(plan("run", "COMPLETE", "", "VERIFIED")).toBe("REPORT_COMPLETE");
+    expect(plan("cleanup", "OCCURRENCE_PUBLISHED", "OPEN_SALES", "VERIFIED")).toBe("CLEANUP_ONLY");
+    expect(plan("run", "OCCURRENCE_PUBLISHED", "OPEN_SALES", "VERIFIED", "2026-08-24T00:00:00Z")).toBe("BLOCKED_AFTER_EMERGENCY_CLEANUP");
+    expect(plan("run", "OCCURRENCE_CREATED", "PUBLISH_OCCURRENCE", "MISMATCH")).toBe("BLOCKED_BASELINE");
   });
 
   it("rejects an arbitrary resume file without executing its contents", () => {
