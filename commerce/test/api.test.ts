@@ -524,6 +524,54 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
+  it("exposes only authenticated, redacted certification evidence", async () => {
+    const previousSourceCommit = process.env.SOURCE_COMMIT;
+    process.env.SOURCE_COMMIT = "547b25be75849a84c2f0f37ea9aa7fe7e485818c";
+    const { db, app } = appFixture();
+    const occurrenceId = (db.prepare("SELECT id FROM occurrences").get() as { id: string }).id;
+    const context = await app.request("http://api.flexperiment.ru/v1/public/checkout-context", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.61" }, body: JSON.stringify({ occurrence_id: occurrenceId }) });
+    const quoteId = (await context.json() as { quote_id: string }).quote_id;
+    await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": "certification-evidence-checkout", "X-Forwarded-For": "127.0.0.61" }, body: JSON.stringify({ quote_id: quoteId, customer_name: "Certification Customer", customer_email: "certification@example.test", customer_adult_confirmed: true, participant: { self: true, date_of_birth: "1990-01-01" }, offer_accepted: true, pd_consent_accepted: true }) });
+    const order = db.prepare("SELECT id FROM orders").get() as { id: string };
+    const payment = db.prepare("SELECT id FROM payments WHERE order_id = ?").get(order.id) as { id: string };
+    const booking = db.prepare("SELECT id FROM bookings WHERE order_id = ?").get(order.id) as { id: string };
+    const ticketId = randomUUID(); const ticketOutboxId = randomUUID(); const bookingOutboxId = randomUUID(); const refundId = randomUUID(); const obligationId = randomUUID();
+    db.prepare("UPDATE payments SET status = 'PAID', captured_amount_kopecks = 100, provider_payment_id = 'operation-safe' WHERE id = ?").run(payment.id);
+    db.prepare("UPDATE bookings SET status = 'CONFIRMED' WHERE id = ?").run(booking.id);
+    db.prepare("INSERT INTO tickets(id, booking_id, status, capability_hash, capability_ciphertext, capability_nonce, key_version) VALUES (?, ?, 'VALID', 'capability-hash', 'ciphertext', 'nonce', 1)").run(ticketId, booking.id);
+    db.prepare("INSERT INTO provider_webhook_events(id, provider, semantic_key, payload_hash, status, entity_id, observed_json) VALUES (?, 'TOCHKA', 'operation-safe:APPROVED', 'payload-hash', 'APPLIED', ?, ?)").run(randomUUID(), payment.id, JSON.stringify({ raw_jwt: "must-not-leak" }));
+    const insertOutbox = db.prepare("INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_ref, payload_snapshot, status, provider_idempotence_key, job_id, delivered_at) VALUES (?, ?, 'certification@example.test', 'email-hash', 'test', ?, ?, 'DELIVERED', ?, ?, datetime('now'))");
+    insertOutbox.run(ticketOutboxId, "TICKET", ticketId, JSON.stringify({ customer_email: "certification@example.test", capability: "must-not-leak" }), randomUUID(), "ticket-job");
+    insertOutbox.run(bookingOutboxId, "BOOKING_CANCELLED", booking.id, JSON.stringify({ customer_name: "Certification Customer" }), randomUUID(), "booking-job");
+    db.prepare("INSERT INTO email_provider_events(id, outbox_id, semantic_key, status, provider_status, job_id) VALUES (?, ?, ?, 'DELIVERED', 'delivered', ?)").run(randomUUID(), ticketOutboxId, "ticket-delivered", "ticket-job");
+    db.prepare("INSERT INTO refund_obligations(id, payment_id, initial_source, target_refunded_amount_kopecks, status) VALUES (?, ?, 'CUSTOMER_CANCELLATION_PARTIAL', 100, 'FULFILLED')").run(obligationId, payment.id);
+    db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, provider_reference, succeeded_at) VALUES (?, ?, ?, ?, 100, 'Certification', 'REFUND_OBLIGATION', 'SUCCEEDED', ?, ?, 'refund-safe', datetime('now'))").run(refundId, randomUUID(), order.id, payment.id, randomUUID(), randomUUID());
+
+    expect((await app.request("http://admin.flexperiment.ru/v1/admin/system/evidence", { headers: { Origin: "https://admin.flexperiment.ru" } })).status).toBe(401);
+    expect((await app.request(`http://admin.flexperiment.ru/v1/admin/orders/${order.id}/evidence`, { headers: { Origin: "https://admin.flexperiment.ru" } })).status).toBe(401);
+    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.61" }, body: JSON.stringify({ password: "correct horse" }) });
+    const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")! };
+    const system = await app.request("http://admin.flexperiment.ru/v1/admin/system/evidence", { headers });
+    expect(system.headers.get("cache-control")).toBe("no-store");
+    expect(await system.json()).toMatchObject({ source_commit: process.env.SOURCE_COMMIT, migration_head: { version: "0028_customer_participant_ticketing.sql" }, active_legal_release: { version: "test" } });
+    const evidence = await app.request(`http://admin.flexperiment.ru/v1/admin/orders/${order.id}/evidence`, { headers });
+    const body = await evidence.json() as Record<string, unknown>;
+    expect(body).toMatchObject({
+      payment: { id: payment.id, provider_payment_id: "operation-safe", captured_amount_kopecks: 100 },
+      ticket: { id: ticketId, status: "VALID" },
+      tochka_webhook_events: [{ provider: "TOCHKA", semantic_key: "operation-safe:APPROVED", status: "APPLIED", entity_id: payment.id }],
+      refund_obligation: { id: obligationId, payment_id: payment.id, target_refunded_amount_kopecks: 100 },
+      refunds: [{ id: refundId, refund_obligation_id: obligationId, provider_reference: "refund-safe" }],
+    });
+    expect(body.email_outbox).toEqual(expect.arrayContaining([expect.objectContaining({ id: ticketOutboxId, job_id: "ticket-job", status: "DELIVERED" }), expect.objectContaining({ id: bookingOutboxId, job_id: "booking-job" })]));
+    expect(body.email_provider_events).toEqual(expect.arrayContaining([expect.objectContaining({ outbox_id: ticketOutboxId, status: "DELIVERED", provider_status: "delivered" })]));
+    const serialized = JSON.stringify(body);
+    for (const forbidden of ["certification@example.test", "Certification Customer", "must-not-leak", "ciphertext", "capability-hash"]) expect(serialized).not.toContain(forbidden);
+    db.close();
+    if (previousSourceCommit === undefined) delete process.env.SOURCE_COMMIT;
+    else process.env.SOURCE_COMMIT = previousSourceCommit;
+  });
+
   it("uses durable server-side Admin sessions and revokes the exact cookie on logout", async () => {
     const { db, app } = appFixture();
     const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.1" }, body: JSON.stringify({ password: "correct horse" }) });

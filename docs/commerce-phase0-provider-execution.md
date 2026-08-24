@@ -1,5 +1,11 @@
 # Commerce Phase 0 provider execution
 
+> Historical adapter/fixture record. Do not use this document's old Phase 0
+> checkout shape as a production certification runbook. The current
+> Customer/Participant, cancellation-obligation, Unisender-webhook and
+> mandatory-cleanup procedure is
+> [Production E2E certification v2](./commerce-production-e2e-certification.md).
+
 Status: adapter and fixture gate complete; production provider probes pending in
 the deployment runtime. This report contains configuration names and redacted
 shapes only. It contains no credentials, identifiers, customer addresses, or

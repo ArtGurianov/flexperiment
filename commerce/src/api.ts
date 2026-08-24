@@ -233,6 +233,19 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   });
   const audit = (adminId: string, action: string, type: string, entityId: string, details: unknown) => sqlite.prepare("INSERT INTO admin_audit_log(id, admin_id, action, entity_type, entity_id, details_json) VALUES (lower(hex(randomblob(16))), ?, ?, ?, ?, ?)").run(adminId, action, type, entityId, JSON.stringify(details, (key, value) => /email|inn|authorization|cookie|capability/i.test(key) ? "[REDACTED]" : value));
   admin.get("/session", (c) => c.json({ authenticated: true }));
+  admin.get("/system/evidence", (c) => {
+    const migration = sqlite.prepare("SELECT version, applied_at FROM schema_migrations ORDER BY version DESC LIMIT 1").get() as { version: string; applied_at: string } | undefined;
+    // SOURCE_COMMIT is trusted deployment metadata.  In development it may be
+    // absent; consumers must treat null as unavailable rather than asserted.
+    const sourceCommit = process.env.SOURCE_COMMIT?.trim() || null;
+    return c.json({
+      source_commit: sourceCommit,
+      source_commit_evidence: sourceCommit ? "machine" : "unavailable",
+      migration_head: migration ?? null,
+      migration_evidence: migration ? "machine" : "unavailable",
+      active_legal_release: domain.legalConfig(),
+    });
+  });
   admin.post("/logout", (c) => {
     // The middleware proved this session was active. Persist revocation before
     // returning so a copied pre-logout cookie cannot be replayed.

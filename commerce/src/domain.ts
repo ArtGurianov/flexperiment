@@ -860,18 +860,44 @@ export class CommerceDomain {
   }
 
   orderEvidence(orderId: string) {
-    const order = one(this.db, `SELECT id, public_status_id, public_order_number, occurrence_id, amount_kopecks, created_at,
-      customer_name, customer_email, customer_adult_confirmed_at, participant_name, participant_age_at_occurrence,
+    // Deliberately redacted operational evidence: do not turn this endpoint
+    // into an alternate customer/ticket-detail API.
+    const order = one(this.db, `SELECT id, public_status_id, public_order_number, occurrence_id, amount_kopecks, currency, created_at,
+      checkout_legal_release_id, public_offer_version, public_offer_sha256,
+      privacy_policy_version, privacy_policy_sha256, pd_consent_version,
+      pd_consent_sha256, checkout_disclosure_version, checkout_disclosure_sha256,
+      customer_adult_confirmed_at, participant_age_at_occurrence,
       participant_is_minor, participant_requires_adult_accompaniment, participant_is_customer,
       minor_legal_representative_confirmed_at, under_14_accompaniment_confirmed_at
       FROM orders WHERE id = ?`, orderId);
     if (!order) throw new DomainError("ORDER_NOT_FOUND", 404);
     const payment = one(this.db, "SELECT id, state, status, provider_payment_id, captured_amount_kopecks, created_at, updated_at, last_reconcile_at FROM payments WHERE order_id = ?", orderId);
-    const booking = one(this.db, "SELECT id, status, created_at, cancelled_at, cancellation_reason FROM bookings WHERE order_id = ?", orderId);
+    const booking = one(this.db, "SELECT id, status, created_at, cancelled_at FROM bookings WHERE order_id = ?", orderId);
     const ticket = booking ? one(this.db, "SELECT id, status, created_at, voided_at FROM tickets WHERE booking_id = ?", booking.id) ?? null : null;
-    const emailOutbox = many(this.db, "SELECT id, type, status, attempts, created_at, sent_at, delivered_at, bounced_at FROM email_outbox WHERE payload_ref IN (?, ?) ORDER BY created_at", orderId, ticket?.id ?? "");
-    const abandonment = one(this.db, "SELECT id, status, reason, created_at, resolved_at FROM reservation_abandonments WHERE order_id = ?", orderId) ?? null;
-    const refunds = many(this.db, "SELECT id, public_id, amount_kopecks, reason, source, status, created_at, succeeded_at, failed_at FROM refunds WHERE order_id = ? ORDER BY created_at", orderId);
+    const obligation = payment ? one(this.db, `SELECT id, payment_id, initial_source,
+      target_refunded_amount_kopecks, status, created_at, fulfilled_at
+      FROM refund_obligations WHERE payment_id = ?`, payment.id) ?? null : null;
+    const emailOutbox = many(this.db, `SELECT id, type, payload_ref, status, job_id, attempts,
+      created_at, send_started_at, sent_at, delivered_at, bounced_at,
+      superseded_at
+      FROM email_outbox
+      WHERE payload_ref = ? OR payload_ref = ? OR payload_ref = ?
+        OR EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = ? AND r.id = email_outbox.payload_ref)
+      ORDER BY created_at`, orderId, ticket?.id ?? "", booking?.id ?? "", orderId);
+    const emailProviderEvents = many(this.db, `SELECT event.outbox_id, event.semantic_key,
+      event.status, event.provider_status, event.job_id, event.received_at
+      FROM email_provider_events event JOIN email_outbox outbox ON outbox.id = event.outbox_id
+      WHERE outbox.payload_ref = ? OR outbox.payload_ref = ? OR outbox.payload_ref = ?
+        OR EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = ? AND r.id = outbox.payload_ref)
+      ORDER BY event.received_at`, orderId, ticket?.id ?? "", booking?.id ?? "", orderId);
+    const tochkaWebhookEvents = payment ? many(this.db, `SELECT id, provider, semantic_key,
+      status, entity_id, received_at FROM provider_webhook_events
+      WHERE provider = 'TOCHKA' AND entity_id = ? ORDER BY received_at`, payment.id) : [];
+    const abandonment = one(this.db, "SELECT id, status, created_at, resolved_at FROM reservation_abandonments WHERE order_id = ?", orderId) ?? null;
+    const refunds: Row[] = many<Row>(this.db, `SELECT id, public_id, payment_id, amount_kopecks,
+      source, status, provider_reference, created_at, succeeded_at, failed_at
+      FROM refunds WHERE order_id = ? ORDER BY created_at`, orderId)
+      .map((refund): Row => ({ ...refund, refund_obligation_id: obligation?.id ?? null }));
     const refunded = refunds.filter((refund) => refund.status === "SUCCEEDED").reduce((total, refund) => total + Number(refund.amount_kopecks), 0);
     const inflightRefund = refunds.some((refund) => ["REQUESTED", "SUBMITTING", "SUBMIT_UNKNOWN", "RECONCILING"].includes(String(refund.status)));
     const canAbandonReservation = Boolean(booking && payment && booking.status === "RESERVED" && payment.status !== "PAID" && Number(payment.captured_amount_kopecks) === 0 && !abandonment);
@@ -884,6 +910,9 @@ export class CommerceDomain {
       booking: booking ?? null,
       ticket,
       email_outbox: emailOutbox,
+      email_provider_events: emailProviderEvents,
+      tochka_webhook_events: tochkaWebhookEvents,
+      refund_obligation: obligation,
       refunds,
       reservation_abandonment: abandonment,
       actions: { can_abandon_reservation: canAbandonReservation, can_create_compensation_refund: canCreateCompensationRefund },
