@@ -49,6 +49,13 @@ provider credential. Before `POST /checkouts`, it also stores only a SHA-256
 of the canonical checkout request; a resumed operator must re-enter matching
 customer data before that same idempotent request is replayed.
 
+The pending-operation allowlist is phase-bound: create only from `NEW`,
+publish only from `OCCURRENCE_CREATED`, open-sales only from
+`OCCURRENCE_PUBLISHED`, and customer cancellation only after ticket-email
+delivery. Before a replay, the script independently proves the canonical
+Kemerovo/1-RUB occurrence or the order-to-booking linkage. A saved operation
+is therefore not authority to target a different entity.
+
 ```bash
 ./certification.sh --resume .certification-state/production-e2e-<run-id>.json
 ./certification.sh --cleanup .certification-state/production-e2e-<run-id>.json
@@ -59,13 +66,20 @@ the existing order and use its evidence/reconciliation path. If a run is
 interrupted after publication, close sales as soon as it is safe, then use the
 explicit cleanup command. Cleanup is `PUBLISHED + OPEN → PUBLISHED + CLOSED →
 HIDDEN + CLOSED`; it verifies the occurrence is `404` publicly and absent from
-the public tour. It never replays a pending create/open/cancellation operation,
-does not overwrite the financial workflow phase, and never deletes historical
+the public tour. It never replays a pending operation in cleanup mode, does
+not overwrite the financial workflow phase, and never deletes historical
 certification evidence. A normal run records `OCCURRENCE_CLEANED` separately,
 then atomically writes the manifest and marks itself `COMPLETE`; a crash in
 between resumes from that cleanup checkpoint. A later normal resume refuses a
-pending publish/open command after emergency cleanup, so cleanup cannot be
-undone by a stale replay.
+pre-checkout phase or pending catalog-opening command after emergency cleanup,
+so cleanup cannot be undone by a stale replay. Post-dispatch payment, booking
+cancellation, and refund recovery remain resumable while the occurrence stays
+hidden; inventory is read through authenticated Admin occurrence evidence, not
+a public detail endpoint that correctly returns `404` for hidden occurrences.
+
+An interrupted `CHECKOUT_CREATED` run can reopen only the same provider link
+through the saved quote, idempotency key, and re-entered matching checkout
+request. The URL itself is never saved or printed.
 
 ## Evidence
 
@@ -77,5 +91,9 @@ capabilities, raw webhook payloads, cookies, and secrets.
 `PASS` requires signed Tochka webhook evidence; confirmed payment, booking and
 ticket; authenticated Unisender `DELIVERED` evidence for `TICKET`,
 `BOOKING_CANCELLED`, and `REFUND_SUCCEEDED`; the customer-cancellation refund
-path; and public cleanup. A timeout/ambiguous provider outcome is
+path; exactly one fulfilled customer-cancellation refund obligation and one
+linked 100-kopek successful refund with a provider reference; a final
+`REFUNDED` payment; and fresh Admin/public cleanup proof immediately before
+the atomic manifest write. It also proves the post-0028 adult self-participant
+path through redacted order evidence. A timeout/ambiguous provider outcome is
 `INCOMPLETE`, not `PASS`.

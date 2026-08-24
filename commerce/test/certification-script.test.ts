@@ -15,6 +15,18 @@ function plan(mode: string, phase: string, pendingOperation: string, baseline: s
   }).trim();
 }
 
+function pendingOperationPhaseIsValid(operation: string, phase: string) {
+  try {
+    execFileSync("bash", ["-lc", `source '${recoveryPlanner}'; certification_pending_operation_phase_valid '${operation}' '${phase}'`], {
+      cwd: repositoryRoot,
+      stdio: "pipe",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 describe("production certification runbook checkpoints", () => {
   it("keeps the pre-dispatch checkout identity and distinct crash checkpoints", () => {
     const source = readFileSync(certificationScript, "utf8");
@@ -37,14 +49,21 @@ describe("production certification runbook checkpoints", () => {
     expect(quoteReady).toBeLessThan(checkoutSubmitting);
     expect(checkoutSubmitting).toBeLessThan(checkoutCreated);
     expect(source.slice(checkoutSubmitting, checkoutCreated)).toContain("replay_checkout");
-    expect(source.slice(checkoutCreated, source.indexOf("wait_checkout_paid"))).toContain("replay_checkout");
+    expect(source).toContain("recover_existing_checkout");
+    expect(source).toContain("Opening existing real payment URL without printing it.");
     expect([...source.matchAll(/\/v1\/public\/checkout-context/g)]).toHaveLength(1);
-    expect(source).toContain("# Emergency cleanup never replays a pending OPEN/create/cancellation command.");
+    expect(source).toContain("assert_cleanup_evidence");
+    expect(source).toContain("assert_occurrence_availability 0");
+    expect(source).toContain("assert_occurrence_availability 1");
+    expect(source).toContain("assert_final_refund_evidence");
+    expect(source).toContain("customer_adult_confirmed_at");
+    expect(source).toContain("certification_pending_operation_phase_valid");
     expect(source).toContain("SALES_CLEANED_AT");
+    expect(source).toContain("stat.S_IMODE");
     expect(source).not.toContain('source "$STATE_FILE"');
   });
 
-  it("plans recovery behavior without replaying stale commands or losing workflow phase", () => {
+  it("plans a monotonic emergency cleanup while retaining only post-dispatch financial recovery", () => {
     expect(plan("run", "NEW", "CREATE_OCCURRENCE", "VERIFIED")).toBe("REPLAY_PENDING");
     expect(plan("run", "OCCURRENCE_CREATED", "PUBLISH_OCCURRENCE", "VERIFIED")).toBe("REPLAY_PENDING");
     expect(plan("run", "OCCURRENCE_PUBLISHED", "OPEN_SALES", "VERIFIED")).toBe("REPLAY_PENDING");
@@ -55,7 +74,23 @@ describe("production certification runbook checkpoints", () => {
     expect(plan("run", "COMPLETE", "", "VERIFIED")).toBe("REPORT_COMPLETE");
     expect(plan("cleanup", "OCCURRENCE_PUBLISHED", "OPEN_SALES", "VERIFIED")).toBe("CLEANUP_ONLY");
     expect(plan("run", "OCCURRENCE_PUBLISHED", "OPEN_SALES", "VERIFIED", "2026-08-24T00:00:00Z")).toBe("BLOCKED_AFTER_EMERGENCY_CLEANUP");
+    expect(plan("run", "OCCURRENCE_CREATED", "", "VERIFIED", "2026-08-24T00:00:00Z")).toBe("BLOCKED_AFTER_EMERGENCY_CLEANUP");
+    expect(plan("run", "OCCURRENCE_PUBLISHED", "", "VERIFIED", "2026-08-24T00:00:00Z")).toBe("BLOCKED_AFTER_EMERGENCY_CLEANUP");
+    expect(plan("run", "OCCURRENCE_PUBLISHED", "PUBLISH_OCCURRENCE", "VERIFIED", "2026-08-24T00:00:00Z")).toBe("BLOCKED_AFTER_EMERGENCY_CLEANUP");
+    expect(plan("run", "OCCURRENCE_CREATED", "CREATE_OCCURRENCE", "VERIFIED", "2026-08-24T00:00:00Z")).toBe("BLOCKED_AFTER_EMERGENCY_CLEANUP");
+    expect(plan("run", "CHECKOUT_CREATED", "", "VERIFIED", "2026-08-24T00:00:00Z")).toBe("CONTINUE");
+    expect(plan("run", "PAYMENT_PROVEN", "", "VERIFIED", "2026-08-24T00:00:00Z")).toBe("CONTINUE");
     expect(plan("run", "OCCURRENCE_CREATED", "PUBLISH_OCCURRENCE", "MISMATCH")).toBe("BLOCKED_BASELINE");
+  });
+
+  it("accepts only the phase-bound allowlist for a pending mutation", () => {
+    expect(pendingOperationPhaseIsValid("CREATE_OCCURRENCE", "NEW")).toBe(true);
+    expect(pendingOperationPhaseIsValid("PUBLISH_OCCURRENCE", "OCCURRENCE_CREATED")).toBe(true);
+    expect(pendingOperationPhaseIsValid("OPEN_SALES", "OCCURRENCE_PUBLISHED")).toBe(true);
+    expect(pendingOperationPhaseIsValid("CANCEL_BOOKING", "TICKET_EMAIL_DELIVERED")).toBe(true);
+    expect(pendingOperationPhaseIsValid("CANCEL_BOOKING", "NEW")).toBe(false);
+    expect(pendingOperationPhaseIsValid("OPEN_SALES", "OCCURRENCE_CREATED")).toBe(false);
+    expect(pendingOperationPhaseIsValid("PUBLISH_OCCURRENCE", "OCCURRENCE_PUBLISHED")).toBe(false);
   });
 
   it("rejects an arbitrary resume file without executing its contents", () => {
@@ -84,6 +119,38 @@ describe("production certification runbook checkpoints", () => {
       expect(failure).toBeDefined();
       expect((failure as { stderr: string }).stderr).toContain("resume state is not a valid allowlisted JSON object");
       expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a phase-incompatible persisted command before admin login or mutation", () => {
+    const directory = mkdtempSync(resolve(tmpdir(), "flexperiment-certification-state-"));
+    const state = resolve(directory, "phase-mismatch.json");
+    try {
+      writeFileSync(state, JSON.stringify({
+        RUN_ID: "test-run",
+        PHASE: "NEW",
+        EXPECTED_SOURCE_COMMIT: "test-commit",
+        PENDING_OPERATION: "CANCEL_BOOKING",
+        ORDER_ID: "order-id",
+        BOOKING_ID: "booking-id",
+        CANCEL_BOOKING_KEY: "key",
+      }));
+      chmodSync(state, 0o600);
+
+      let failure: unknown;
+      try {
+        execFileSync("bash", [certificationScript, "--resume", state], {
+          cwd: repositoryRoot,
+          encoding: "utf8",
+          stdio: "pipe",
+        });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeDefined();
+      expect((failure as { stderr: string }).stderr).toContain("pending operation is not valid for the persisted certification phase");
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
