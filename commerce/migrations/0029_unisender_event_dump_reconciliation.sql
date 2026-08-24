@@ -1,6 +1,7 @@
 -- Event Dump creation is an external, asynchronous command. A singleton
 -- durable lease and a record of every pre-dispatch reservation fence concurrent
--- workers and count even an ambiguous response toward the provider's limit.
+-- workers. The provider inventory is the authoritative capacity guard; the
+-- local history is a defense-in-depth command-rate fence for ambiguous calls.
 CREATE TABLE unisender_event_dump_control (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   create_lease_owner TEXT,

@@ -26,16 +26,20 @@ export type UnisenderEventDump =
   | { status: "failed" };
 
 export interface EmailDeliveryEvidenceProvider {
+  /** Read-only provider count used to stay safely below Event Dump capacity. */
+  listEventDumps(): Promise<{ count: number }>;
   createEventDump(input: { startTime: string; endTime: string }): Promise<{ dumpId: string }>;
   getEventDump(input: { dumpId: string }): Promise<UnisenderEventDump>;
 }
 
 export const isEmailDeliveryEvidenceProvider = (provider: EmailProvider): provider is EmailProvider & EmailDeliveryEvidenceProvider =>
-  typeof (provider as Partial<EmailDeliveryEvidenceProvider>).createEventDump === "function"
+  typeof (provider as Partial<EmailDeliveryEvidenceProvider>).listEventDumps === "function"
+  && typeof (provider as Partial<EmailDeliveryEvidenceProvider>).createEventDump === "function"
   && typeof (provider as Partial<EmailDeliveryEvidenceProvider>).getEventDump === "function";
 
 type UnisenderSendResponse = { status?: unknown; job_id?: unknown; code?: unknown; error_code?: unknown; message?: unknown; error?: unknown };
 type UnisenderDumpCreateResponse = { status?: unknown; dump_id?: unknown };
+type UnisenderDumpListResponse = { status?: unknown; event_dumps?: unknown };
 type UnisenderDumpGetResponse = {
   status?: unknown;
   event_dump?: { dump_status?: unknown; files?: Array<{ url?: unknown }> };
@@ -90,6 +94,14 @@ export class EmailProviderAmbiguousError extends Error {
   constructor() {
     super("Unisender response did not contain usable dispatch evidence.");
     this.name = "EmailProviderAmbiguousError";
+  }
+}
+
+/** A received 4xx response conclusively rejected an Event Dump create request. */
+export class EventDumpCreateRejectedError extends Error {
+  constructor(readonly httpStatus: number) {
+    super(`Unisender rejected Event Dump creation (HTTP ${httpStatus}).`);
+    this.name = "EventDumpCreateRejectedError";
   }
 }
 
@@ -169,16 +181,35 @@ export class UnisenderGoProvider implements EmailProvider, EmailDeliveryEvidence
     return this.request(input, { ...init, signal: AbortSignal.timeout(EVENT_DUMP_TIMEOUT_MS) });
   }
 
+  async listEventDumps() {
+    const response = await this.requestEventDump(`${EVENT_DUMP_URL}/list.json`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json", "X-API-KEY": this.config.apiKey },
+      body: "{}",
+    });
+    const payload = await response.json().catch(() => undefined) as UnisenderDumpListResponse | undefined;
+    if (!response.ok) {
+      if (response.status >= 400 && response.status < 500) throw new EventDumpCreateRejectedError(response.status);
+      throw new EmailProviderAmbiguousError();
+    }
+    if (payload?.status !== "success" || !Array.isArray(payload.event_dumps)) throw new EmailProviderAmbiguousError();
+    return { count: payload.event_dumps.length };
+  }
+
   async createEventDump(input: { startTime: string; endTime: string }) {
     const response = await this.requestEventDump(`${EVENT_DUMP_URL}/create.json`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json", "X-API-KEY": this.config.apiKey },
       // Batch one small time window. Request only fields needed for strict
       // opaque correlation; the export never includes recipient/address data.
-      body: JSON.stringify({ start_time: input.startTime, end_time: input.endTime, limit: 1_000, dump_fields: ["event_time", "job_id", "status", "delivery_status", "metadata"], format: "csv" }),
+      body: JSON.stringify({ start_time: input.startTime, end_time: input.endTime, limit: 100_000, dump_fields: ["event_time", "job_id", "status", "delivery_status", "metadata"], format: "csv" }),
     });
     const payload = await response.json().catch(() => undefined) as UnisenderDumpCreateResponse | undefined;
-    if (!response.ok || payload?.status !== "success" || typeof payload.dump_id !== "string" || !payload.dump_id) throw new Error("Unisender Event Dump creation did not return a usable dump id.");
+    if (!response.ok) {
+      if (response.status >= 400 && response.status < 500) throw new EventDumpCreateRejectedError(response.status);
+      throw new EmailProviderAmbiguousError();
+    }
+    if (payload?.status !== "success" || typeof payload.dump_id !== "string" || !payload.dump_id) throw new EmailProviderAmbiguousError();
     return { dumpId: payload.dump_id };
   }
 
@@ -193,9 +224,10 @@ export class UnisenderGoProvider implements EmailProvider, EmailDeliveryEvidence
     const dump = payload.event_dump;
     if (!dump || typeof dump.dump_status !== "string") throw new Error("Unisender Event Dump lookup returned malformed status.");
     if (dump.dump_status === "failed") return { status: "failed" };
-    if (!(["queued", "in_process", "ready"] as string[]).includes(dump.dump_status) || !Array.isArray(dump.files)) throw new Error("Unisender Event Dump lookup returned an unsupported status.");
+    if (!(["queued", "in_process", "ready"] as string[]).includes(dump.dump_status)
+      || (dump.files !== undefined && !Array.isArray(dump.files))) throw new Error("Unisender Event Dump lookup returned an unsupported status.");
     const events: UnisenderDumpEvent[] = [];
-    for (const file of dump.files) {
+    for (const file of dump.files ?? []) {
       if (typeof file?.url !== "string") continue;
       const url = new URL(file.url);
       if (url.protocol !== "https:" || !/(^|\.)unisender\.ru$/i.test(url.hostname)) throw new Error("Unisender Event Dump returned an untrusted file URL.");

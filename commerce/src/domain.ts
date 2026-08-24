@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { canonical, decryptTicketCapability, emailHash, encryptTicketCapability, id, now, publicId, publicOrderNumber, sha256 } from "./crypto";
-import { EmailProviderRejectedError, isEmailDeliveryEvidenceProvider, type EmailProvider, type UnisenderDumpEvent, UnconfiguredEmailProvider } from "./email-provider";
+import { EmailProviderRejectedError, EventDumpCreateRejectedError, isEmailDeliveryEvidenceProvider, type EmailProvider, type UnisenderDumpEvent, UnconfiguredEmailProvider } from "./email-provider";
 import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import type { PaymentProvider } from "./provider";
 import type { CheckoutRequest } from "./types";
@@ -25,6 +25,8 @@ export const UNISENDER_EVENT_DUMP_POLL_MS = 15 * 1_000;
 export const UNISENDER_EVENT_DUMP_REEXPORT_MS = 5 * 60 * 1_000;
 export const UNISENDER_EVENT_DUMP_MAX_POLL_BACKOFF_MS = 2 * 60 * 1_000;
 export const UNISENDER_EVENT_DUMP_MAX_CREATES_PER_EIGHT_HOURS = 9;
+/** Keep a conservative slot below Unisender's documented max of ten dumps. */
+export const UNISENDER_EVENT_DUMP_MAX_EXISTING_PROVIDER_DUMPS = 9;
 export const UNISENDER_EVENT_DUMP_MAX_POLL_ATTEMPTS = 20;
 
 export function withImmediateTransaction<T>(db: Database.Database, operation: () => T): T {
@@ -1941,8 +1943,8 @@ export class CommerceDomain {
     this.failStaleUnisenderEventDumpCreates(timestamp);
     const poll = this.claimUnisenderEventDumpRun(timestamp);
     if (poll) return this.pollUnisenderEventDumpRun(poll, timestamp);
-    const run = this.reserveUnisenderEventDumpRun(timestamp);
-    if (run) await this.createUnisenderEventDumpRun(run, timestamp);
+    const lease = this.reserveUnisenderEventDumpCreateLease(timestamp);
+    if (lease) await this.createUnisenderEventDumpRun(lease, timestamp);
   }
 
   private failStaleUnisenderEventDumpCreates(timestamp: string) {
@@ -1952,7 +1954,7 @@ export class CommerceDomain {
       WHERE state = 'CREATE_IN_FLIGHT' AND lease_expires_at < ?`).run(timestamp, timestamp);
   }
 
-  private reserveUnisenderEventDumpRun(timestamp: string) {
+  private reserveUnisenderEventDumpCreateLease(timestamp: string) {
     return withImmediateTransaction(this.db, () => {
       const lease = `event-dump-create-${id()}`;
       const locked = this.db.prepare(`UPDATE unisender_event_dump_control
@@ -1960,6 +1962,42 @@ export class CommerceDomain {
         WHERE singleton = 1 AND (create_lease_expires_at IS NULL OR create_lease_expires_at < ?)`)
         .run(lease, new Date(this.clock() + 120_000).toISOString(), timestamp);
       if (!locked.changes) return undefined;
+      const attempts = Number(one(this.db, `SELECT COUNT(*) AS count FROM unisender_event_dump_create_attempts
+        WHERE started_at >= ?`, new Date(this.clock() - 8 * 60 * 60 * 1_000).toISOString())?.count ?? 0);
+      if (attempts >= UNISENDER_EVENT_DUMP_MAX_CREATES_PER_EIGHT_HOURS) {
+        this.releaseUnisenderEventDumpCreateLease(lease);
+        return undefined;
+      }
+      // Avoid an unnecessary provider list call when no target can be due.
+      const grace = new Date(this.clock() - UNISENDER_EVENT_DUMP_GRACE_MS).toISOString();
+      const candidate = one(this.db, `SELECT outbox.id,
+        COALESCE(outbox.provider_request_started_at, outbox.send_started_at, outbox.created_at) AS dispatch_at
+        FROM email_outbox outbox
+        WHERE outbox.superseded_at IS NULL AND outbox.status IN ('ACCEPTED', 'SENT')
+          AND outbox.job_id IS NOT NULL AND trim(outbox.job_id) != ''
+          AND datetime(COALESCE(outbox.provider_request_started_at, outbox.send_started_at, outbox.created_at)) <= datetime(?)
+          AND NOT EXISTS (
+            SELECT 1 FROM unisender_event_dump_targets target
+            WHERE target.outbox_id = outbox.id AND (
+              target.state IN ('ACTIVE', 'CONSUMED', 'NO_LONGER_NEEDED')
+              OR (target.state = 'RETRY_WAIT' AND target.next_attempt_at > ?)
+            )
+          )
+        ORDER BY dispatch_at, outbox.id LIMIT 1`, grace, timestamp);
+      if (!candidate) { this.releaseUnisenderEventDumpCreateLease(lease); return undefined; }
+      return lease;
+    });
+  }
+
+  /**
+   * The provider-side count is authoritative. This runs while the durable
+   * local singleton fence is owned, then the actual external create gets a
+   * second durable transaction immediately before its POST.
+   */
+  private reserveUnisenderEventDumpRunAfterProviderList(lease: string, timestamp: string) {
+    return withImmediateTransaction(this.db, () => {
+      const control = one(this.db, "SELECT create_lease_owner FROM unisender_event_dump_control WHERE singleton = 1");
+      if (control?.create_lease_owner !== lease) return undefined;
       const attempts = Number(one(this.db, `SELECT COUNT(*) AS count FROM unisender_event_dump_create_attempts
         WHERE started_at >= ?`, new Date(this.clock() - 8 * 60 * 60 * 1_000).toISOString())?.count ?? 0);
       if (attempts >= UNISENDER_EVENT_DUMP_MAX_CREATES_PER_EIGHT_HOURS) {
@@ -2003,8 +2041,23 @@ export class CommerceDomain {
     this.db.prepare("UPDATE unisender_event_dump_control SET create_lease_owner = NULL, create_lease_expires_at = NULL WHERE singleton = 1 AND create_lease_owner = ?").run(lease);
   }
 
-  private async createUnisenderEventDumpRun(run: { id: string; start_time: string; end_time: string; lease: string }, timestamp: string) {
+  private async createUnisenderEventDumpRun(lease: string, timestamp: string) {
     if (!isEmailDeliveryEvidenceProvider(this.emailProvider)) return;
+    let providerCount: { count: number };
+    try {
+      providerCount = await this.emailProvider.listEventDumps();
+    } catch {
+      // No create was issued. Preserve targets unchanged and simply release
+      // the local fence for a later read-only retry.
+      this.releaseUnisenderEventDumpCreateLease(lease);
+      return;
+    }
+    if (providerCount.count >= UNISENDER_EVENT_DUMP_MAX_EXISTING_PROVIDER_DUMPS) {
+      this.releaseUnisenderEventDumpCreateLease(lease);
+      return;
+    }
+    const run = this.reserveUnisenderEventDumpRunAfterProviderList(lease, timestamp);
+    if (!run) return;
     try {
       const dump = await this.emailProvider.createEventDump({ startTime: run.start_time, endTime: run.end_time });
       withImmediateTransaction(this.db, () => {
@@ -2015,8 +2068,12 @@ export class CommerceDomain {
           .run(dump.dumpId, new Date(this.clock() + UNISENDER_EVENT_DUMP_POLL_MS).toISOString(), timestamp, run.id, run.lease);
         this.releaseUnisenderEventDumpCreateLease(run.lease);
       });
-    } catch {
+    } catch (error) {
       withImmediateTransaction(this.db, () => {
+        if (error instanceof EventDumpCreateRejectedError) {
+          this.deferUnisenderEventDumpCreate(run.id, run.lease, timestamp, `CREATE_REJECTED_HTTP_${error.httpStatus}`);
+          return;
+        }
         this.db.prepare(`UPDATE unisender_event_dump_runs
           SET state = 'CREATE_UNKNOWN', lease_owner = NULL, lease_expires_at = NULL,
               last_error_code = 'CREATE_RESPONSE_UNKNOWN', updated_at = ?
@@ -2024,6 +2081,20 @@ export class CommerceDomain {
         this.releaseUnisenderEventDumpCreateLease(run.lease);
       });
     }
+  }
+
+  /** Deterministic provider rejection is not ambiguous create evidence. */
+  private deferUnisenderEventDumpCreate(runId: string, lease: string, timestamp: string, code: string) {
+    const retryAt = new Date(this.clock() + UNISENDER_EVENT_DUMP_REEXPORT_MS).toISOString();
+    this.db.prepare(`UPDATE unisender_event_dump_targets
+      SET state = 'RETRY_WAIT', next_attempt_at = ?, updated_at = ?
+      WHERE run_id = ? AND state = 'ACTIVE'`).run(retryAt, timestamp, runId);
+    this.db.prepare(`UPDATE unisender_event_dump_runs
+      SET state = 'EXHAUSTED', lease_owner = NULL, lease_expires_at = NULL,
+          last_error_code = ?, updated_at = ?
+      WHERE id = ? AND state = 'CREATE_IN_FLIGHT' AND lease_owner = ?`)
+      .run(code, timestamp, runId, lease);
+    this.releaseUnisenderEventDumpCreateLease(lease);
   }
 
   private claimUnisenderEventDumpRun(timestamp: string) {

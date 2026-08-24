@@ -186,19 +186,27 @@ provider dump; it is not a synchronous lookup and never creates a dump per
 outbox or worker tick.
 
 Before the external `event-dump/create` POST, Commerce atomically reserves a
-singleton create lease, stores the batch and its opaque targets, and records a
-create-attempt fence. A lost create response therefore still counts toward the
-provider's limit and leaves the batch `CREATE_UNKNOWN` for review rather than
-creating another uncontrolled dump. At most nine create commands are permitted
-in any rolling eight-hour window, below Unisender's ten-dump limit. Polling an
-existing dump is leased and uses short bounded backoff; ready dumps without a
-terminal target are eligible for a later re-export, while exhausted or
-ambiguous create operations remain visible as durable diagnostics.
+singleton create lease. While that durable lease is held, it reads
+`event-dump/list` and defers creation when the provider reports nine or more
+existing dumps; that provider inventory, rather than a local counter, is the
+authoritative ten-dump capacity guard. Immediately before the create POST it
+stores the batch and opaque targets and records a local create-attempt fence.
+The local rolling cap of nine create commands per eight hours is only
+defense-in-depth. A lost create response therefore still leaves the batch
+`CREATE_UNKNOWN` for review rather than creating another uncontrolled dump;
+an explicit provider rejection instead exhausts that batch and returns its
+targets to a bounded later re-export. Polling an existing dump is leased and
+uses short bounded backoff; ready dumps without a terminal target are eligible
+for a later re-export, while exhausted or ambiguous create operations remain
+visible as durable diagnostics.
 
 The worker polls the provider's asynchronous dump later and downloads only the
 five required CSV fields: `event_time`, `job_id`, `status`,
-`delivery_status`, and `metadata`. It accepts an event only when both opaque
-correlations match exactly: `event.job_id == email_outbox.job_id` and
+`delivery_status`, and `metadata`, with `limit=100000`; Unisender may split
+larger exports into multiple files, all of which are processed. A valid
+`queued` or `in_process` response may omit `files` and is simply polled later.
+It accepts an event only when both opaque correlations match exactly:
+`event.job_id == email_outbox.job_id` and
 `event.metadata.outbox_id == email_outbox.id`. Missing, malformed,
 contradictory, unavailable, or in-process data changes no email state. The
 adapter applies already-downloadable files even while a dump is `in_process`;

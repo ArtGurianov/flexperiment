@@ -1,6 +1,6 @@
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { EmailProviderAmbiguousError, EmailProviderRejectedError, UnisenderGoProvider } from "../src/email-provider";
+import { EmailProviderAmbiguousError, EmailProviderRejectedError, EventDumpCreateRejectedError, UnisenderGoProvider } from "../src/email-provider";
 import { tochkaConfigFromEnvironment } from "../src/provider-config";
 import { TochkaProvider, rublesFromKopecks } from "../src/provider";
 import { TochkaWebhookVerifier, webhookAmountKopecks } from "../src/tochka-webhook";
@@ -124,6 +124,7 @@ describe("provider contracts", () => {
     const requests: Request[] = [];
     const provider = new UnisenderGoProvider({ apiKey: "test-key-not-a-secret", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async (input, init) => {
       const request = new Request(input, init); requests.push(request);
+      if (request.url.endsWith("event-dump/list.json")) return Response.json({ status: "success", event_dumps: [] });
       if (request.url.endsWith("event-dump/create.json")) return Response.json({ status: "success", dump_id: "dump-1" });
       if (request.url.endsWith("event-dump/get.json")) return Response.json({ status: "success", event_dump: { dump_status: "ready", files: [{ url: "https://go2.unisender.ru/event-dump/dump-1.csv" }] } });
       return new Response('event_time,job_id,status,delivery_status,metadata\n2026-08-24 08:35:20,job-1,delivered,ok_delivered,"{\"\"outbox_id\"\":\"\"outbox-1\"\"}"\n', { headers: { "Content-Type": "text/csv" } });
@@ -131,10 +132,57 @@ describe("provider contracts", () => {
     await expect(provider.createEventDump({ startTime: "2026-08-24 08:00:00", endTime: "2026-08-24 09:00:00" })).resolves.toEqual({ dumpId: "dump-1" });
     const create = await requests[0].json() as Record<string, unknown>;
     expect(create).toMatchObject({ start_time: "2026-08-24 08:00:00", end_time: "2026-08-24 09:00:00", dump_fields: ["event_time", "job_id", "status", "delivery_status", "metadata"] });
+    expect(create.limit).toBe(100_000);
     expect(JSON.stringify(create)).not.toContain("email");
     expect(requests[0].signal).toBeInstanceOf(AbortSignal);
     await expect(provider.getEventDump({ dumpId: "dump-1" })).resolves.toEqual({ status: "ready", events: [{ eventTime: "2026-08-24 08:35:20", jobId: "job-1", status: "delivered", deliveryStatus: "ok_delivered", metadata: { outbox_id: "outbox-1" } }] });
     expect(requests).toHaveLength(3);
+  });
+
+  it("accepts queued Event Dump state without files and distinguishes deterministic create rejection", async () => {
+    const provider = new UnisenderGoProvider({ apiKey: "test-key-not-a-secret", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async (input) => {
+      const url = String(input);
+      if (url.endsWith("event-dump/get.json")) return Response.json({ status: "success", event_dump: { dump_status: "queued" } });
+      return Response.json({ status: "error" }, { status: 400 });
+    });
+    await expect(provider.getEventDump({ dumpId: "queued-without-files" })).resolves.toEqual({ status: "queued", events: [] });
+    await expect(provider.createEventDump({ startTime: "2026-08-24 08:00:00", endTime: "2026-08-24 09:00:00" }))
+      .rejects.toBeInstanceOf(EventDumpCreateRejectedError);
+  });
+
+  it("treats omitted Event Dump files as a valid non-ready provider state", async () => {
+    for (const status of ["queued", "in_process"] as const) {
+      const provider = new UnisenderGoProvider({ apiKey: "test-key-not-a-secret", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async () =>
+        Response.json({ status: "success", event_dump: { dump_status: status } }));
+      await expect(provider.getEventDump({ dumpId: status })).resolves.toEqual({ status, events: [] });
+    }
+    const ready = new UnisenderGoProvider({ apiKey: "test-key-not-a-secret", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async () =>
+      Response.json({ status: "success", event_dump: { dump_status: "ready", files: [] } }));
+    await expect(ready.getEventDump({ dumpId: "ready-empty" })).resolves.toEqual({ status: "ready", events: [] });
+  });
+
+  it("reads downloadable in-process Event Dump files without waiting for ready", async () => {
+    let calls = 0;
+    const provider = new UnisenderGoProvider({ apiKey: "test-key-not-a-secret", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async () => {
+      calls += 1;
+      if (calls === 1) return Response.json({ status: "success", event_dump: { dump_status: "in_process", files: [{ url: "https://go1.unisender.ru/dump.csv" }] } });
+      return new Response('event_time,job_id,status,delivery_status,metadata\n2026-08-24 08:35:20,job-1,sent,ok_sent,"{""outbox_id"":""outbox-1""}"\n');
+    });
+    await expect(provider.getEventDump({ dumpId: "in-process-file" })).resolves.toEqual({ status: "in_process", events: [
+      { eventTime: "2026-08-24 08:35:20", jobId: "job-1", status: "sent", deliveryStatus: "ok_sent", metadata: { outbox_id: "outbox-1" } },
+    ] });
+  });
+
+  it("uses documented Event Dump list as a read-only provider capacity probe", async () => {
+    let request: Request | undefined;
+    const provider = new UnisenderGoProvider({ apiKey: "test-key-not-a-secret", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async (input, init) => {
+      request = new Request(input, init);
+      return Response.json({ status: "success", event_dumps: [{ dump_id: "one" }, { dump_id: "two" }] });
+    });
+    await expect(provider.listEventDumps()).resolves.toEqual({ count: 2 });
+    expect(request?.url).toBe("https://goapi.unisender.ru/ru/transactional/api/v1/event-dump/list.json");
+    expect(request?.method).toBe("POST");
+    expect(await request?.json()).toEqual({});
   });
 
   it("verifies an RS256 Tochka callback with a refreshed JWK", async () => {

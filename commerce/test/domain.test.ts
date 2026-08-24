@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import { CommerceDomain, CREATE_UNKNOWN_LOOKUP_INITIAL_BACKOFF_MS, CREATE_UNKNOWN_LOOKUP_MAX_ATTEMPTS, DomainError, EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS, STALE_PREPARED_SETTLEMENT_MS, classifyOccurrenceRevision } from "../src/domain";
 import { runWorkerSweep } from "../src/worker-sweep";
-import { UnisenderGoProvider, type EmailDeliveryEvidenceProvider, type EmailProvider } from "../src/email-provider";
+import { EventDumpCreateRejectedError, UnisenderGoProvider, type EmailDeliveryEvidenceProvider, type EmailProvider } from "../src/email-provider";
 import { MockProvider, type PaymentProvider } from "../src/provider";
 import { decryptTicketCapability, emailHash } from "../src/crypto";
 import { getParticipantAgeOnOccurrenceDate } from "../../lib/participant-age";
@@ -1633,6 +1633,7 @@ describe("commerce domain", () => {
     const email: EmailProvider & EmailDeliveryEvidenceProvider = {
       async send() { sends += 1; return { jobId: "1wyQ8z-000RJT-KwD8" }; },
       async lookup() { return { status: "UNKNOWN" }; },
+      async listEventDumps() { return { count: 0 }; },
       async createEventDump(input) { creates += 1; expect(input.startTime).toMatch(/^2026-08-24 /); return { dumpId: "dump-production-fixture" }; },
       async getEventDump() {
         polls += 1;
@@ -1671,6 +1672,7 @@ describe("commerce domain", () => {
     let timestamp = Date.parse("2026-08-24T08:45:00.000Z"); let outboxId = "";
     const email: EmailProvider & EmailDeliveryEvidenceProvider = {
       async send() { return { jobId: "target-job" }; }, async lookup() { return { status: "UNKNOWN" }; },
+      async listEventDumps() { return { count: 0 }; },
       async createEventDump() { return { dumpId: "dump-mismatch" }; },
       async getEventDump() { return { status: "ready", events: [
         { eventTime: "2026-08-24 08:35:20", jobId: "target-job", status: "delivered", deliveryStatus: "ok_delivered", metadata: { outbox_id: "other-outbox" } },
@@ -1702,6 +1704,7 @@ describe("commerce domain", () => {
     let timestamp = Date.parse("2026-08-24T08:45:00.000Z"); let creates = 0; let polls = 0;
     const email: EmailProvider & EmailDeliveryEvidenceProvider = {
       async send() { throw new Error("must not resend"); }, async lookup() { return { status: "UNKNOWN" }; },
+      async listEventDumps() { return { count: 0 }; },
       async createEventDump() { creates += 1; return { dumpId: `dump-${creates}` }; },
       async getEventDump() { polls += 1; return { status: "in_process", events: [] }; },
     };
@@ -1735,6 +1738,7 @@ describe("commerce domain", () => {
       .run(outboxId, randomUUID(), new Date(timestamp - 10 * 60_000).toISOString());
     const email: EmailProvider & EmailDeliveryEvidenceProvider = {
       async send() { throw new Error("must not resend"); }, async lookup() { return { status: "UNKNOWN" }; },
+      async listEventDumps() { return { count: 0 }; },
       async createEventDump() { creates += 1; return { dumpId: "same-dump" }; },
       async getEventDump() {
         polls += 1;
@@ -1754,25 +1758,33 @@ describe("commerce domain", () => {
   });
 
   it("fences concurrent workers before Event Dump create dispatch", async () => {
-    const setup = fixture(); databases.push(setup.db);
-    const timestamp = Date.parse("2026-08-24T10:00:00.000Z"); let creates = 0; let release: (() => void) | undefined;
-    const outboxId = randomUUID();
-    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key, status, job_id, provider_request_started_at)
+    const directory = mkdtempSync(join(tmpdir(), "flexperiment-event-dump-"));
+    const filename = join(directory, "commerce.sqlite");
+    const setup = fixture(filename);
+    const secondDb = openDatabase(filename);
+    try {
+      const timestamp = Date.parse("2026-08-24T10:00:00.000Z"); let creates = 0; let release: (() => void) | undefined;
+      const outboxId = randomUUID();
+      setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key, status, job_id, provider_request_started_at)
       VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, 'SENT', 'concurrent-job', ?)`)
       .run(outboxId, randomUUID(), new Date(timestamp - 10 * 60_000).toISOString());
-    const email: EmailProvider & EmailDeliveryEvidenceProvider = {
-      async send() { throw new Error("must not resend"); }, async lookup() { return { status: "UNKNOWN" }; },
-      async createEventDump() { creates += 1; await new Promise<void>((resolve) => { release = resolve; }); return { dumpId: "concurrent-dump" }; },
-      async getEventDump() { return { status: "queued", events: [] }; },
-    };
-    const first = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
-    const second = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
-    const firstSweep = first.reconcileUnisenderEventDumps();
-    await new Promise((resolve) => setImmediate(resolve));
-    await second.reconcileUnisenderEventDumps();
-    expect(creates).toBe(1);
-    release?.(); await firstSweep;
-    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM unisender_event_dump_create_attempts").get()).toEqual({ count: 1 });
+      const email: EmailProvider & EmailDeliveryEvidenceProvider = {
+        async send() { throw new Error("must not resend"); }, async lookup() { return { status: "UNKNOWN" }; },
+        async listEventDumps() { return { count: 0 }; },
+        async createEventDump() { creates += 1; await new Promise<void>((resolve) => { release = resolve; }); return { dumpId: "concurrent-dump" }; },
+        async getEventDump() { return { status: "queued", events: [] }; },
+      };
+      const first = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
+      const second = new CommerceDomain(secondDb, new MockProvider(), email, () => timestamp);
+      const firstSweep = first.reconcileUnisenderEventDumps();
+      await new Promise((resolve) => setImmediate(resolve));
+      await second.reconcileUnisenderEventDumps();
+      expect(creates).toBe(1);
+      release?.(); await firstSweep;
+      expect(setup.db.prepare("SELECT COUNT(*) AS count FROM unisender_event_dump_create_attempts").get()).toEqual({ count: 1 });
+    } finally {
+      secondDb.close(); setup.db.close(); rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("fails closed after an ambiguous Event Dump create response without changing email or issuing another create", async () => {
@@ -1784,6 +1796,7 @@ describe("commerce domain", () => {
       .run(outboxId, randomUUID(), new Date(timestamp - 10 * 60_000).toISOString());
     const email: EmailProvider & EmailDeliveryEvidenceProvider = {
       async send() { throw new Error("must not resend"); }, async lookup() { return { status: "UNKNOWN" }; },
+      async listEventDumps() { return { count: 0 }; },
       async createEventDump() { creates += 1; throw new Error("response lost"); }, async getEventDump() { return { status: "queued", events: [] }; },
     };
     const domain = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
@@ -1792,6 +1805,66 @@ describe("commerce domain", () => {
     expect(creates).toBe(1);
     expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outboxId)).toEqual({ status: "SENT" });
     expect(setup.db.prepare("SELECT state, last_error_code FROM unisender_event_dump_runs").get()).toEqual({ state: "CREATE_UNKNOWN", last_error_code: "CREATE_RESPONSE_UNKNOWN" });
+  });
+
+  it("uses provider Event Dump inventory as the authoritative capacity guard", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const timestamp = Date.parse("2026-08-24T10:00:00.000Z"); let creates = 0; let lists = 0;
+    const outboxId = randomUUID();
+    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key, status, job_id, provider_request_started_at)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, 'SENT', 'capacity-job', ?)`)
+      .run(outboxId, randomUUID(), new Date(timestamp - 10 * 60_000).toISOString());
+    const email: EmailProvider & EmailDeliveryEvidenceProvider = {
+      async send() { throw new Error("must not resend"); }, async lookup() { return { status: "UNKNOWN" }; },
+      async listEventDumps() { lists += 1; return { count: 9 }; },
+      async createEventDump() { creates += 1; return { dumpId: "must-not-create" }; },
+      async getEventDump() { return { status: "queued", events: [] }; },
+    };
+    await new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp).reconcileUnisenderEventDumps();
+    expect(lists).toBe(1); expect(creates).toBe(0);
+    expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outboxId)).toEqual({ status: "SENT" });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM unisender_event_dump_runs").get()).toEqual({ count: 0 });
+  });
+
+  it("defers targets after explicit Event Dump rejection without treating it as CREATE_UNKNOWN", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const timestamp = Date.parse("2026-08-24T10:00:00.000Z"); let creates = 0;
+    const outboxId = randomUUID();
+    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key, status, job_id, provider_request_started_at)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, 'SENT', 'rejected-create-job', ?)`)
+      .run(outboxId, randomUUID(), new Date(timestamp - 10 * 60_000).toISOString());
+    const email: EmailProvider & EmailDeliveryEvidenceProvider = {
+      async send() { throw new Error("must not resend"); }, async lookup() { return { status: "UNKNOWN" }; },
+      async listEventDumps() { return { count: 0 }; },
+      async createEventDump() { creates += 1; throw new EventDumpCreateRejectedError(400); },
+      async getEventDump() { return { status: "queued", events: [] }; },
+    };
+    await new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp).reconcileUnisenderEventDumps();
+    expect(creates).toBe(1);
+    expect(setup.db.prepare("SELECT state, last_error_code FROM unisender_event_dump_runs").get())
+      .toEqual({ state: "EXHAUSTED", last_error_code: "CREATE_REJECTED_HTTP_400" });
+    expect(setup.db.prepare("SELECT state FROM unisender_event_dump_targets WHERE outbox_id = ?").get(outboxId)).toEqual({ state: "RETRY_WAIT" });
+    expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outboxId)).toEqual({ status: "SENT" });
+  });
+
+  it("safely defers targets when the provider rejects create at its dump limit", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const timestamp = Date.parse("2026-08-24T10:00:00.000Z");
+    const outboxId = randomUUID();
+    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key, status, job_id, provider_request_started_at)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, 'SENT', 'provider-limit-job', ?)`)
+      .run(outboxId, randomUUID(), new Date(timestamp - 10 * 60_000).toISOString());
+    const email: EmailProvider & EmailDeliveryEvidenceProvider = {
+      async send() { throw new Error("must not resend"); }, async lookup() { return { status: "UNKNOWN" }; },
+      async listEventDumps() { return { count: 8 }; },
+      async createEventDump() { throw new EventDumpCreateRejectedError(429); },
+      async getEventDump() { return { status: "queued", events: [] }; },
+    };
+    await new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp).reconcileUnisenderEventDumps();
+    expect(setup.db.prepare("SELECT state, last_error_code FROM unisender_event_dump_runs").get())
+      .toEqual({ state: "EXHAUSTED", last_error_code: "CREATE_REJECTED_HTTP_429" });
+    expect(setup.db.prepare("SELECT state, next_attempt_at FROM unisender_event_dump_targets WHERE outbox_id = ?").get(outboxId))
+      .toEqual({ state: "RETRY_WAIT", next_attempt_at: expect.any(String) });
   });
 
   it("does not starve an eleventh candidate behind ten deferred historical targets", async () => {
@@ -1813,6 +1886,7 @@ describe("commerce domain", () => {
     }
     const email: EmailProvider & EmailDeliveryEvidenceProvider = {
       async send() { throw new Error("must not resend"); }, async lookup() { return { status: "UNKNOWN" }; },
+      async listEventDumps() { return { count: 0 }; },
       async createEventDump() { return { dumpId: "starvation-dump" }; }, async getEventDump() { return { status: "queued", events: [] }; },
     };
     await new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp).reconcileUnisenderEventDumps();
@@ -1830,6 +1904,7 @@ describe("commerce domain", () => {
     insert.run(second, randomUUID(), "batch-two", new Date(timestamp - 60 * 60_000).toISOString(), new Date(timestamp - 10 * 60_000).toISOString());
     const email: EmailProvider & EmailDeliveryEvidenceProvider = {
       async send() { throw new Error("must not resend"); }, async lookup() { return { status: "UNKNOWN" }; },
+      async listEventDumps() { return { count: 0 }; },
       async createEventDump() { creates += 1; return { dumpId: "batch-dump" }; },
       async getEventDump() { return { status: "ready", events: [
         { eventTime: "2026-08-24 10:00:01", jobId: "batch-one", status: "delivered", deliveryStatus: "ok_delivered", metadata: { outbox_id: first } },
@@ -1846,11 +1921,35 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(fresh)).toEqual({ status: "SENT" });
   });
 
+  it("applies a correlated Event Dump target even after more than one thousand unrelated events", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    let timestamp = Date.parse("2026-08-24T10:00:00.000Z");
+    const outboxId = randomUUID();
+    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key, status, job_id, provider_request_started_at)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, 'SENT', 'tail-target-job', ?)`)
+      .run(outboxId, randomUUID(), new Date(timestamp - 10 * 60_000).toISOString());
+    const unrelated = Array.from({ length: 1_001 }, (_, index) => ({
+      eventTime: `2026-08-24 09:${String(index % 60).padStart(2, "0")}:00`, jobId: `other-${index}`, status: "delivered", deliveryStatus: "ok_delivered", metadata: { outbox_id: randomUUID() },
+    }));
+    const email: EmailProvider & EmailDeliveryEvidenceProvider = {
+      async send() { throw new Error("must not resend"); }, async lookup() { return { status: "UNKNOWN" }; },
+      async listEventDumps() { return { count: 0 }; },
+      async createEventDump() { return { dumpId: "large-dump" }; },
+      async getEventDump() { return { status: "ready", events: [...unrelated, { eventTime: "2026-08-24 10:00:01", jobId: "tail-target-job", status: "delivered", deliveryStatus: "ok_delivered", metadata: { outbox_id: outboxId } }] }; },
+    };
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
+    await domain.reconcileUnisenderEventDumps();
+    timestamp += 16_000;
+    await domain.reconcileUnisenderEventDumps();
+    expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outboxId)).toEqual({ status: "DELIVERED" });
+  });
+
   it("uses Event Dump delivery through the existing city-interest cleanup transition", async () => {
     const setup = fixture(); databases.push(setup.db);
     let timestamp = Date.parse("2026-08-24T08:45:00.000Z"); let outboxId = "";
     const email: EmailProvider & EmailDeliveryEvidenceProvider = {
       async send() { return { jobId: "city-dump-job" }; }, async lookup() { return { status: "UNKNOWN" }; },
+      async listEventDumps() { return { count: 0 }; },
       async createEventDump() { return { dumpId: "city-dump" }; },
       async getEventDump() { return { status: "ready", events: [{ eventTime: "2026-08-24 08:35:20", jobId: "city-dump-job", status: "delivered", deliveryStatus: "ok_delivered", metadata: { outbox_id: outboxId } }] }; },
     };
