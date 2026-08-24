@@ -1,6 +1,6 @@
 import Image from "next/image";
 
-import year2026 from "@/public/2026.webp";
+import autumn2026 from "@/public/autumn2026.webp";
 import siberia from "@/public/siberia.webp";
 
 export default function HeroSiberia() {
@@ -16,10 +16,10 @@ export default function HeroSiberia() {
         className="h-auto w-full -rotate-12"
       />
       <Image
-        src={year2026}
-        alt="2026"
+        src={autumn2026}
+        alt="осень 2026"
         sizes="(min-width: 512px) 256px, 50vw"
-        className="h-auto w-1/2 self-end -translate-y-1/3"
+        className="h-auto w-full -translate-y-1/3 px-6"
       />
     </section>
   );
