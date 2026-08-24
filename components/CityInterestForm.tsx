@@ -17,8 +17,6 @@ export default function CityInterestForm({ scheduledCitySlugs }: Props) {
   const [captchaResetKey, setCaptchaResetKey] = useState(0);
   const [state, setState] = useState<"idle" | "submitting" | "success" | "error">("idle");
 
-  if (!cities.length) return null;
-
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (!captchaToken || state === "submitting") return;
@@ -37,10 +35,9 @@ export default function CityInterestForm({ scheduledCitySlugs }: Props) {
     }
   };
 
-  return <section className="mt-6 border border-bone/35 p-4 font-mono text-sm text-bone">
-    <h3 className="font-display text-xl uppercase text-acid">Не нашли свой город?</h3>
-    <p className="mt-2 leading-relaxed text-bone/75">Оставьте email и выберите город — сообщим, если запланируем там мастер-класс.</p>
-    {state === "success" ? <p className="mt-4 border border-acid/70 p-3" role="status">Запрос сохранён. Сообщим только о мастер-классе в выбранном городе.</p> : <form className="mt-4 grid gap-3" onSubmit={submit}>
+  return <section className="border border-bone/35 p-4 font-mono text-sm text-bone">
+    <p className="leading-relaxed text-bone/75">Оставьте email и выберите город — сообщим, если запланируем там мастер-класс.</p>
+    {!cities.length ? <p className="mt-4 border border-bone/50 p-3 text-bone/70" role="status">Сейчас мы не можем принять запрос для нового города. Пожалуйста, попробуйте позже.</p> : state === "success" ? <p className="mt-4 border border-acid/70 p-3" role="status">Запрос сохранён. Сообщим только о мастер-классе в выбранном городе.</p> : <form className="mt-4 grid gap-3" onSubmit={submit}>
       <label className="grid gap-1.5">Email
         <input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" />
       </label>
@@ -50,9 +47,9 @@ export default function CityInterestForm({ scheduledCitySlugs }: Props) {
           {cities.map((entry) => <option key={entry.slug} value={entry.slug}>{entry.title}</option>)}
         </select>
       </label>
-      <label className="flex items-start gap-2 text-xs leading-snug"><input required type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /> <span>Я даю <Link className="text-acid underline underline-offset-4" href="/legal/personal-data-consent">согласие на обработку персональных данных</Link> для уведомления о мастер-классе в выбранном городе. <Link className="text-acid underline underline-offset-4" href="/legal/privacy-policy">Подробнее</Link>.</span></label>
+      <label className="flex items-start gap-2 text-xs leading-snug"><input required type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /> <span>Подтверждаю согласие с <Link className="text-acid underline underline-offset-4" href="/legal/privacy-policy" target="_blank" rel="noopener noreferrer">политикой конфиденциальности</Link> и даю <Link className="text-acid underline underline-offset-4" href="/legal/personal-data-consent" target="_blank" rel="noopener noreferrer">согласие на обработку персональных данных</Link> для уведомления о мастер-классе в выбранном городе.</span></label>
       <SmartCaptcha onToken={setCaptchaToken} resetKey={captchaResetKey} />
-      <button disabled={!captchaToken || state === "submitting"} className="border border-acid px-3 py-2 font-display uppercase text-acid disabled:cursor-wait disabled:opacity-60">{state === "submitting" ? "Сохраняем…" : "Сообщить о мастер-классе"}</button>
+      <button disabled={!captchaToken || state === "submitting"} className="border border-acid px-3 py-2 font-display uppercase text-acid disabled:cursor-not-allowed disabled:opacity-60">{state === "submitting" ? "Сохраняем…" : "Сообщить о мастер-классе"}</button>
       {state === "error" && <p role="status" className="text-bone/75">Не удалось сохранить запрос. Пройдите проверку ещё раз и повторите попытку.</p>}
     </form>}
   </section>;

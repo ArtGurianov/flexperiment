@@ -99,7 +99,7 @@ export default function AnalyticsConsent() {
         >
           <p className="text-center">Необязательная аналитика отключена. Разрешите Яндекс Метрике получать данные о посещении сайта и источниках перехода?</p>
           <div className="mt-4 flex flex-row flex-wrap items-center justify-center gap-x-6 gap-y-2">
-            <p className="text-center text-bone/70">Подробнее — в <a className="text-acid underline underline-offset-4" href={PRIVACY_URL}>политике конфиденциальности</a>.</p>
+            <p className="text-center text-bone/70">Подробнее — в <a className="text-acid underline underline-offset-4" href={PRIVACY_URL} target="_blank" rel="noopener noreferrer">политике конфиденциальности</a>.</p>
             <div className="flex flex-row flex-wrap justify-center gap-2">
               <button type="button" className="border border-bone/60 px-3 py-2 font-display uppercase hover:border-acid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid" onClick={() => choose("DENIED")}>Только необходимые</button>
               <button type="button" className="border-2 border-acid bg-acid px-3 py-2 font-display uppercase text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid" onClick={() => choose("ALLOWED")}>Разрешить аналитику</button>

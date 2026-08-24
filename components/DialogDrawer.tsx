@@ -13,6 +13,8 @@ export interface DialogDrawerProps {
   title: string;
   isOpen: boolean;
   onClose: () => void;
+  /** Returns from a nested dialog view to its parent view. */
+  onBack?: () => void;
   /** Blocks Escape, outside-click and drag dismissal — for use mid-payment,
    *  where an accidental tap shouldn't discard an in-flight transaction. */
   preventOutsideClose?: boolean;
@@ -34,12 +36,21 @@ function CloseIcon() {
   );
 }
 
+function BackIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" className="size-6" aria-hidden="true">
+      <path d="m15 18-6-6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
 function DialogVariant({
   className,
   children,
   title,
   isOpen,
   onClose,
+  onBack,
   preventOutsideClose,
 }: DialogDrawerProps) {
   const block = preventOutsideClose
@@ -78,6 +89,9 @@ function DialogVariant({
           <DialogPrimitive.Close aria-label="Закрыть" className={CLOSE}>
             <CloseIcon />
           </DialogPrimitive.Close>
+          {onBack && <button type="button" aria-label="Назад" className={cn(CLOSE, "left-4 right-auto")} onClick={onBack}>
+            <BackIcon />
+          </button>}
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
     </DialogPrimitive.Root>
@@ -90,6 +104,7 @@ function DrawerVariant({
   title,
   isOpen,
   onClose,
+  onBack,
   preventOutsideClose,
 }: DialogDrawerProps) {
   return (
@@ -154,6 +169,9 @@ function DrawerVariant({
           >
             <CloseIcon />
           </button>
+          {onBack && <button type="button" aria-label="Назад" className={cn(CLOSE, "left-4 right-auto")} onClick={onBack}>
+            <BackIcon />
+          </button>}
         </DrawerPrimitive.Content>
       </DrawerPrimitive.Portal>
     </DrawerPrimitive.Root>

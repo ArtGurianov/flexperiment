@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { Dialog } from "./Dialog";
 
 describe("Dialog", () => {
-  it("closes with the top-left cross or a backdrop click, without an cancel action", () => {
+  it("closes with the top-right cross or a backdrop click, without a cancel action", () => {
     const close = vi.fn();
     render(<Dialog title="Проверка" close={close}><p>Содержимое</p></Dialog>);
 

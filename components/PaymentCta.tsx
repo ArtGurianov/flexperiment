@@ -38,6 +38,8 @@ export default function PaymentCta({
   // soon as it is rendered, even closed.
   const [hasOpened, setHasOpened] = useState(false);
   const [isPending, setIsPending] = useState(false);
+  const [view, setView] = useState<"booking" | "city-interest" | null>(null);
+  const [flowKey, setFlowKey] = useState(0);
   // A ref rather than the state above: a second tap can land before React has
   // committed the pending render, and state would still read stale there.
   const inFlight = useRef(false);
@@ -84,13 +86,24 @@ export default function PaymentCta({
     inFlight.current = false;
   }, []);
 
+  const close = useCallback(() => {
+    setIsOpen(false);
+    setView(null);
+    setFlowKey((key) => key + 1);
+  }, []);
+
+  const backToCities = useCallback(() => {
+    setView(null);
+    setFlowKey((key) => key + 1);
+  }, []);
+
   return (
     <>
       <CtaButton
         // A visible treatment, not just `cursor: wait` — a touch user has no
         // cursor to see. Dimming is enough to read as "working" without
         // introducing a spinner into a button whose height is set by its type.
-        className={cn(className, isPending && "cursor-wait opacity-60")}
+        className={cn(className, isPending && "cursor-not-allowed opacity-60")}
         onPointerEnter={warm}
         onFocus={warm}
         aria-busy={isPending}
@@ -103,11 +116,12 @@ export default function PaymentCta({
 
       {hasOpened && (
         <DialogDrawer
-          title="Запись"
+          title={view === "city-interest" ? "Не нашли свой город?" : view === "booking" ? "Запись" : "ГОРОДА × ДАТЫ"}
           isOpen={isOpen}
-          onClose={() => setIsOpen(false)}
+          onClose={close}
+          onBack={view ? backToCities : undefined}
         >
-          <CheckoutFlow />
+          <CheckoutFlow key={flowKey} onViewChange={setView} />
         </DialogDrawer>
       )}
     </>

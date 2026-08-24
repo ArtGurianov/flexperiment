@@ -38,6 +38,8 @@ type Quote = {
   };
 };
 type Attempt = { version: 1; idempotencyKey: string; statusId: string | null };
+type Props = { onViewChange: (view: "booking" | "city-interest") => void };
+type CitySchedule = { city: string; cityTitle: string; occurrences: Occurrence[] };
 
 const attemptKey = (quoteId: string) => `fx_checkout_attempt:v1:${quoteId}`;
 
@@ -48,7 +50,7 @@ function useSafeSessionStorage() {
   };
 }
 
-export default function CheckoutFlow() {
+export default function CheckoutFlow({ onViewChange }: Props) {
   const router = useRouter();
   const storage = useSafeSessionStorage();
   const [occurrences, setOccurrences] = useState<Occurrence[]>([]);
@@ -70,7 +72,17 @@ export default function CheckoutFlow() {
   const [message, setMessage] = useState<string | null>(null);
   const [scheduledCitySlugs, setScheduledCitySlugs] = useState<CitySlug[]>([]);
   const [catalogLoaded, setCatalogLoaded] = useState(false);
+  const [view, setView] = useState<"catalog" | "booking" | "city-interest">("catalog");
   const selected = useMemo(() => occurrences.find((item) => item.id === occurrenceId), [occurrences, occurrenceId]);
+  const citySchedules = useMemo(() => {
+    const schedules = new Map<string, CitySchedule>();
+    for (const occurrence of occurrences) {
+      const schedule = schedules.get(occurrence.city);
+      if (schedule) schedule.occurrences.push(occurrence);
+      else schedules.set(occurrence.city, { city: occurrence.city, cityTitle: occurrence.city_title, occurrences: [occurrence] });
+    }
+    return [...schedules.values()];
+  }, [occurrences]);
   const canCheckout = canRequestCheckout(selected);
   const participantAge = useMemo(() => selected && participantDateOfBirth
     ? getParticipantAgeOnOccurrenceDate(participantDateOfBirth, selected.starts_at, selected.timezone)
@@ -127,6 +139,20 @@ export default function CheckoutFlow() {
 
   const refreshQuote = async (event?: FormEvent) => { event?.preventDefault(); await fetchQuote(occurrenceId, promoCode); };
 
+  const showBooking = (schedule: CitySchedule) => {
+    setOccurrenceId(schedule.occurrences[0].id);
+    setPromoCode("");
+    setQuote(null);
+    setMessage(null);
+    setView("booking");
+    onViewChange("booking");
+  };
+
+  const showCityInterest = () => {
+    setView("city-interest");
+    onViewChange("city-interest");
+  };
+
   useEffect(() => {
     if (!occurrenceId || !canCheckout) return;
     const timer = window.setTimeout(() => { void fetchQuote(occurrenceId, ""); }, 0);
@@ -172,35 +198,49 @@ export default function CheckoutFlow() {
     } finally { setSubmitting(false); }
   };
 
-  if (loading && !occurrences.length) return <p className="py-8 text-center font-mono text-sm text-bone/70">Загрузка дат…</p>;
-  if (!occurrences.length) return <div><p className="py-8 text-center font-mono text-sm text-bone/70">{catalogLoaded ? "Запись на ближайшие даты пока не открыта." : "Сейчас запись недоступна. Пожалуйста, попробуйте позже."}</p>{catalogLoaded && <CityInterestForm scheduledCitySlugs={scheduledCitySlugs} />}</div>;
+  if (view === "city-interest") return <CityInterestForm scheduledCitySlugs={scheduledCitySlugs} />;
+
+  if (view === "catalog") return (
+    <div className="flex w-full flex-col gap-4 font-mono text-sm">
+      {loading && !catalogLoaded ? <p role="status" className="border border-bone/50 px-4 py-5 text-bone/70">Загружаем города и даты…</p> : null}
+      {catalogLoaded && !citySchedules.length ? <p role="status" className="border border-bone/50 px-4 py-5 text-bone/70">Запись на ближайшие даты пока не открыта.</p> : null}
+      {citySchedules.map((schedule) => <button key={schedule.city} type="button" onClick={() => showBooking(schedule)} className="flex w-full flex-col gap-4 border-2 border-bone/50 bg-bone px-4 py-5 text-left text-ink transition-colors hover:border-acid hover:bg-acid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid">
+        <span className="font-display text-2xl uppercase">{schedule.cityTitle}</span>
+        <span className="text-sm leading-relaxed">{schedule.occurrences.map((item) => `${new Date(item.starts_at).toLocaleDateString("ru-RU")} · ${item.title}`).join(" / ")}</span>
+      </button>)}
+      <button type="button" onClick={showCityInterest} className="flex w-full flex-col gap-4 border-2 border-bone/50 bg-bone px-4 py-5 text-left text-ink transition-colors hover:border-acid hover:bg-acid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid">
+        <span className="font-display text-2xl uppercase">Не нашли свой город?</span>
+      </button>
+    </div>
+  );
+
+  if (!selected) return null;
 
   return (
     <>
     <form className="space-y-4 font-mono text-sm" onSubmit={submit}>
-      <label className="grid gap-1.5">Город и дата
+      <div className="border border-acid/60 p-3"><p className="font-display text-2xl uppercase text-acid">{selected.city_title}</p><p className="mt-1 text-bone/70">Выберите дату и заполните форму записи.</p></div>
+      <label className="grid gap-1.5">Дата и мастер-класс
         <select value={occurrenceId} onChange={(event) => setOccurrenceId(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid">
-          {occurrences.map((item) => <option value={item.id} key={item.id}>{item.city_title} — {new Date(item.starts_at).toLocaleDateString("ru-RU")} · {item.title}{item.sales_status === "CLOSED" ? " · продажи закрыты" : item.sales_status === "PAUSED" ? " · продажи приостановлены" : ""}</option>)}
+          {citySchedules.find((schedule) => schedule.city === selected.city)?.occurrences.map((item) => <option value={item.id} key={item.id}>{new Date(item.starts_at).toLocaleDateString("ru-RU")} · {item.title}{item.sales_status === "CLOSED" ? " · продажи закрыты" : item.sales_status === "PAUSED" ? " · продажи приостановлены" : ""}</option>)}
         </select>
       </label>
       {!canCheckout ? <p role="status" className="border border-bone/50 px-3 py-2 text-bone/70">{salesAnnouncement(selected?.sales_status)}</p> : <>
-      <label className="grid gap-1.5">Промокод <input value={promoCode} onChange={(event) => setPromoCode(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>
-      <button type="button" onClick={() => void refreshQuote()} className="text-left text-acid underline underline-offset-4">Обновить стоимость</button>
+      <label className="grid gap-1.5">Промокод <span className="flex gap-2"><input value={promoCode} onChange={(event) => setPromoCode(event.target.value)} className="min-w-0 flex-1 border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /><button type="button" onClick={() => void refreshQuote()} className="shrink-0 border border-acid px-3 py-2 font-display uppercase text-acid transition-colors hover:bg-acid hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid">Применить</button></span></label>
       {quote && <div className="border border-acid/60 p-3 text-bone"><p>{selected?.city_title}: {rub(quote.final_amount_kopecks)}{quote.discount_kopecks > 0 ? " со скидкой" : ""}</p><p className="mt-1 text-bone/70">{quote.venue_disclosure}</p></div>}
       <label className="grid gap-1.5">Имя <input required value={name} onChange={(event) => setName(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>
       <label className="grid gap-1.5">Email <input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>
       <fieldset className="grid gap-2 border border-bone/50 p-3"><legend className="px-1">Кто будет участвовать?</legend><label><input type="radio" checked={participantSelf} onChange={() => setParticipantSelf(true)} /> Я сам</label><label><input type="radio" checked={!participantSelf} onChange={() => setParticipantSelf(false)} /> Другой человек</label>{!participantSelf && <label className="grid gap-1.5">Имя участника <input required value={participantName} onChange={(event) => setParticipantName(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>}<label className="grid gap-1.5">Дата рождения участника <input required type="date" value={participantDateOfBirth} onChange={(event) => setParticipantDateOfBirth(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>{participantSelf && participantAge?.isMinor && <p role="status" className="text-acid">Заказчик должен быть совершеннолетним. Для несовершеннолетнего участника выберите «Другой человек».</p>}{!participantSelf && participantAge?.isMinor && <label><input required type="checkbox" checked={minorRepresentative} onChange={(event) => setMinorRepresentative(event.target.checked)} /> Я являюсь законным представителем указанного несовершеннолетнего участника и разрешаю ему принять участие в выбранном мастер-классе.</label>}{!participantSelf && participantAge?.requiresAdultAccompaniment && <label><input required type="checkbox" checked={under14Accompaniment} onChange={(event) => setUnder14Accompaniment(event.target.checked)} /> Я понимаю, что участник младше 14 лет должен находиться на площадке мастер-класса в сопровождении совершеннолетнего взрослого в течение всего мероприятия.</label>}<p className="text-bone/70">Возраст участников не ограничен. Для несовершеннолетних билет оформляет совершеннолетний законный представитель. Участники младше 14 лет посещают мастер-класс в сопровождении взрослого.</p></fieldset>
       <div className="grid gap-2 text-xs leading-snug">
         <label><input required type="checkbox" checked={customerAdult} onChange={(event) => setCustomerAdult(event.target.checked)} /> Мне исполнилось 18 лет. Я оформляю заказ от своего имени.</label>
-        <label><input required type="checkbox" checked={offer} onChange={(event) => setOffer(event.target.checked)} /> Я принимаю условия {quote ? <a className="text-acid underline underline-offset-4" href={quote.legal_release.manifest.documents.PUBLIC_OFFER.archive_url} target="_blank" rel="noreferrer">{legalLabels.PUBLIC_OFFER}</a> : "публичной оферты"}.</label>
+        <label><input required type="checkbox" checked={offer} onChange={(event) => setOffer(event.target.checked)} /> Я принимаю условия {quote ? <a className="text-acid underline underline-offset-4" href={quote.legal_release.manifest.documents.PUBLIC_OFFER.archive_url} target="_blank" rel="noopener noreferrer">{legalLabels.PUBLIC_OFFER}</a> : "публичной оферты"}.</label>
         <label><input required type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /> Я даю согласие на обработку моих персональных данных как Заказчика.</label>
-        {quote && <p className="text-bone/70">Версия legal release {quote.legal_release.version}: {(Object.keys(legalLabels) as (keyof typeof legalLabels)[]).map((id, index) => <span key={id}>{index > 0 ? " · " : ""}<a className="text-acid underline underline-offset-4" href={quote.legal_release.manifest.documents[id].archive_url} target="_blank" rel="noreferrer">{legalLabels[id]}</a></span>)}</p>}
+        {quote && <p className="text-bone/70">Версия legal release {quote.legal_release.version}: {(Object.keys(legalLabels) as (keyof typeof legalLabels)[]).map((id, index) => <span key={id}>{index > 0 ? " · " : ""}<a className="text-acid underline underline-offset-4" href={quote.legal_release.manifest.documents[id].archive_url} target="_blank" rel="noopener noreferrer">{legalLabels[id]}</a></span>)}</p>}
       </div>
       {message && <p role="status" className="border border-acid px-3 py-2 text-acid">{message}</p>}
-      <button disabled={!quote || submitting} className="w-full border-2 border-acid bg-acid px-4 py-3 font-display text-lg uppercase text-ink disabled:cursor-wait disabled:opacity-60">{submitting ? "Создаём оплату…" : "Перейти к оплате"}</button>
+      <button disabled={!quote || submitting} className="w-full border-2 border-acid bg-acid px-4 py-3 font-display text-lg uppercase text-ink disabled:cursor-not-allowed disabled:opacity-60">{submitting ? "Создаём оплату…" : "Перейти к оплате"}</button>
       </>}
     </form>
-    <CityInterestForm scheduledCitySlugs={scheduledCitySlugs} />
     </>
   );
 }
