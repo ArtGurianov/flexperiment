@@ -1,18 +1,19 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { useForm } from "react-hook-form";
 import { api, AdminApiError } from "../lib/api";
 import { Notice } from "./ui/Notice";
 
 export function Login() {
   const router = useRouter();
-  const [password, setPassword] = useState("");
+  const { register, handleSubmit } = useForm<{ password: string }>({ defaultValues: { password: "" } });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const submit = async (event: FormEvent) => {
-    event.preventDefault(); setBusy(true); setError(null);
+  const submit = handleSubmit(async ({ password }) => {
+    setBusy(true); setError(null);
     try {
       await api<{ ok: true }>("/login", {
         method: "POST",
@@ -25,7 +26,7 @@ export function Login() {
     } finally {
       setBusy(false);
     }
-  };
+  });
 
   return (
     <main className="login-page">
@@ -36,7 +37,7 @@ export function Login() {
         <form onSubmit={submit}>
           <label>
             Пароль администратора
-            <input autoFocus autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} required />
+            <input autoFocus autoComplete="current-password" type="password" {...register("password", { required: true })} />
           </label>
           <Notice error={error} />
           <button className="primary" disabled={busy}>{busy ? "Проверяем…" : "Войти"}</button>

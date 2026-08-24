@@ -1,6 +1,7 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { useState } from "react";
+import { useForm } from "react-hook-form";
 import { api, idempotencyKey } from "../../lib/api";
 import { useAdminMutation } from "../../lib/use-admin-mutation";
 import { string } from "../../lib/values";
@@ -10,7 +11,7 @@ import { Dialog } from "../ui/Dialog";
 import { Notice } from "../ui/Notice";
 
 export function CityEditor({ city, cityOptions, close, done }: { city: Row; cityOptions: readonly CityCatalogueEntry[]; close: () => void; done: () => void }) {
-  const [citySlug, setCitySlug] = useState(string(city.slug));
+  const { register, handleSubmit } = useForm<{ citySlug: string }>({ defaultValues: { citySlug: string(city.slug) } });
   const [key] = useState(idempotencyKey);
 
   const mutation = useAdminMutation(
@@ -20,15 +21,14 @@ export function CityEditor({ city, cityOptions, close, done }: { city: Row; city
     { context: () => ({ cityId: string(city.id) }) },
   );
 
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
+  const submit = handleSubmit(async ({ citySlug }) => {
     try {
       await mutation.mutateAsync({ city_slug: citySlug });
       done();
     } catch {
       // error surfaced via mutation.error below
     }
-  };
+  });
 
   return (
     <Dialog title="Редактировать город" close={close} className="editor">
@@ -39,7 +39,7 @@ export function CityEditor({ city, cityOptions, close, done }: { city: Row; city
         <div className="form">
           <label>
             Город
-            <select value={citySlug} onChange={(event) => setCitySlug(event.target.value)} required>
+            <select {...register("citySlug", { required: true })}>
               {cityOptions.map((entry) => <option key={entry.slug} value={entry.slug}>{entry.title}</option>)}
             </select>
           </label>

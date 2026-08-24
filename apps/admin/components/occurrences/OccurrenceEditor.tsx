@@ -1,6 +1,7 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { useState } from "react";
+import { Controller, useForm } from "react-hook-form";
 import { parseRublesToKopecks } from "../../../../lib/money";
 import { api, idempotencyKey } from "../../lib/api";
 import { formatDurationBetween, minutesToMilliseconds, parseHoursAndMinutes } from "../../lib/duration";
@@ -15,7 +16,7 @@ import { MoneyInput } from "../ui/MoneyInput";
 const DEFAULT_VENUE_DISCLOSURE = "Точная площадка будет объявлена позже. Адрес придёт на email и появится в билете.";
 
 export function OccurrenceEditor({ occurrence, close, done, onRevisionConflict }: { occurrence: Row; close: () => void; done: () => void; onRevisionConflict: () => void }) {
-  const [form, setForm] = useState({
+  const { control, register, handleSubmit, watch } = useForm({ shouldUnregister: true, defaultValues: {
     title: string(occurrence.title),
     starts_at: toLocalInput(occurrence.starts_at),
     duration: formatDurationBetween(occurrence.starts_at, occurrence.ends_at),
@@ -27,10 +28,9 @@ export function OccurrenceEditor({ occurrence, close, done, onRevisionConflict }
     venue_address: string(occurrence.venue_address),
     venue_disclosure_text: string(occurrence.venue_disclosure_text) || DEFAULT_VENUE_DISCLOSURE,
     venue_announcement_lead: formatDurationBetween(occurrence.venue_announce_by, occurrence.starts_at),
-  });
+  } });
   const [key] = useState(idempotencyKey);
   const [validationError, setValidationError] = useState<string | null>(null);
-  const set = (field: keyof typeof form, value: string) => setForm((previous) => ({ ...previous, [field]: value }));
 
   const mutation = useAdminMutation(
     "occurrence.patch",
@@ -43,8 +43,7 @@ export function OccurrenceEditor({ occurrence, close, done, onRevisionConflict }
     },
   );
 
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
+  const submit = handleSubmit(async (form) => {
     const startsAt = fromLocalInput(form.starts_at);
     const startsAtMs = Date.parse(startsAt);
     const durationMinutes = parseHoursAndMinutes(form.duration);
@@ -70,9 +69,10 @@ export function OccurrenceEditor({ occurrence, close, done, onRevisionConflict }
     } catch {
       // error surfaced via mutation.error below
     }
-  };
+  });
   const occupied = Math.max(0, number(occurrence.capacity) - number(occurrence.availability));
-  const capacityBelowOccupancy = Number(form.capacity) < occupied;
+  const venueStatus = watch("venue_status");
+  const capacityBelowOccupancy = Number(watch("capacity")) < occupied;
 
   return (
     <Dialog title="Редактировать событие" close={close} className="editor">
@@ -80,28 +80,28 @@ export function OccurrenceEditor({ occurrence, close, done, onRevisionConflict }
         <p className="eyebrow">CATALOG / MATERIAL EDIT</p>
         <h2>Редактировать событие</h2>
         <div className="form form-grid">
-          <label>Название<input value={form.title} onChange={(event) => set("title", event.target.value)} required /></label>
-          <label>Timezone<input value={form.timezone} onChange={(event) => set("timezone", event.target.value)} required /></label>
-          <label>Начало<input type="datetime-local" value={form.starts_at} onChange={(event) => set("starts_at", event.target.value)} required /></label>
-          <label>Длительность мастер-класса<DurationInput value={form.duration} onChange={(value) => set("duration", value)} required /></label>
-          <label>Цена, ₽<MoneyInput value={form.price_kopecks} onChange={(value) => set("price_kopecks", value)} required /></label>
-          <label>Вместимость<input type="number" min={occupied} value={form.capacity} onChange={(event) => set("capacity", event.target.value)} required /><small>Свободно: {number(occurrence.availability)} из {number(occurrence.capacity)}; занято (reserved + confirmed): {occupied}.</small>{capacityBelowOccupancy && <small className="notice notice-error">Новая вместимость ниже уже занятых мест.</small>}</label>
+          <label>Название<input {...register("title", { required: true })} /></label>
+          <label>Timezone<input {...register("timezone", { required: true })} /></label>
+          <label>Начало<input type="datetime-local" {...register("starts_at", { required: true })} /></label>
+          <label>Длительность мастер-класса<Controller control={control} name="duration" rules={{ required: true }} render={({ field }) => <DurationInput value={field.value} onChange={field.onChange} required />} /></label>
+          <label>Цена, ₽<Controller control={control} name="price_kopecks" rules={{ required: true }} render={({ field }) => <MoneyInput value={field.value} onChange={field.onChange} required />} /></label>
+          <label>Вместимость<input type="number" min={occupied} {...register("capacity", { required: true })} /><small>Свободно: {number(occurrence.availability)} из {number(occurrence.capacity)}; занято (reserved + confirmed): {occupied}.</small>{capacityBelowOccupancy && <small className="notice notice-error">Новая вместимость ниже уже занятых мест.</small>}</label>
           <label className="wide">
             Площадка
-            <select value={form.venue_status} onChange={(event) => set("venue_status", event.target.value)}>
+            <select {...register("venue_status")}>
               <option value="CONFIRMED">Подтверждена</option>
               <option value="TO_BE_ANNOUNCED">Будет объявлена</option>
             </select>
           </label>
-          {form.venue_status === "CONFIRMED" ? (
+          {venueStatus === "CONFIRMED" ? (
             <>
-              <label>Название площадки<input value={form.venue_name} onChange={(event) => set("venue_name", event.target.value)} required /></label>
-              <label>Адрес<textarea value={form.venue_address} onChange={(event) => set("venue_address", event.target.value)} required /></label>
+              <label>Название площадки<input {...register("venue_name", { required: true })} /></label>
+              <label>Адрес<textarea {...register("venue_address", { required: true })} /></label>
             </>
           ) : (
             <>
-              <label>Что показывать вместо адреса<textarea value={form.venue_disclosure_text} onChange={(event) => set("venue_disclosure_text", event.target.value)} required /></label>
-              <label>Объявить не позднее чем<DurationInput value={form.venue_announcement_lead} onChange={(value) => set("venue_announcement_lead", value)} required /><small>до начала мастер-класса</small></label>
+              <label>Что показывать вместо адреса<textarea {...register("venue_disclosure_text", { required: true })} /></label>
+              <label>Объявить не позднее чем<Controller control={control} name="venue_announcement_lead" rules={{ required: true }} render={({ field }) => <DurationInput value={field.value} onChange={field.onChange} required />} /><small>до начала мастер-класса</small></label>
             </>
           )}
         </div>

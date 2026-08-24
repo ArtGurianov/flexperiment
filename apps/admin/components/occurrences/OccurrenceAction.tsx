@@ -1,6 +1,7 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { useState } from "react";
+import { useForm } from "react-hook-form";
 import { api, idempotencyKey } from "../../lib/api";
 import { useAdminMutation } from "../../lib/use-admin-mutation";
 import { occurrenceActionConsequence, type OccurrenceAction as OccurrenceActionSpec } from "../../lib/occurrence-actions";
@@ -11,6 +12,7 @@ import { Notice } from "../ui/Notice";
 
 export function OccurrenceAction({ action, close, done }: { action: { occurrence: Row; label: string; patch: OccurrenceActionSpec["patch"] }; close: () => void; done: () => void }) {
   const [key] = useState(idempotencyKey);
+  const { handleSubmit } = useForm();
 
   const mutation = useAdminMutation(
     "occurrence.patch",
@@ -18,15 +20,14 @@ export function OccurrenceAction({ action, close, done }: { action: { occurrence
     { context: () => ({ occurrenceId: string(action.occurrence.id) }) },
   );
 
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
+  const submit = handleSubmit(async () => {
     try {
       await mutation.mutateAsync({ ...action.patch, expected_revision: number(action.occurrence.admin_revision) });
       done();
     } catch {
       // error surfaced via mutation.error below
     }
-  };
+  });
 
   return (
     <Dialog title={action.label} close={close}>

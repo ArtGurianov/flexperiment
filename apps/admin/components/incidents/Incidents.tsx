@@ -40,7 +40,7 @@ export function OperationalIncidents() {
         <Freshness query={{ ...query, hasData: Boolean(query.data) }} />
         {query.isLoadingError ? <Notice error={(query.error as { code?: string } | null)?.code ?? "UNKNOWN"} /> : !query.data ? <Loading /> : (
           <>
-            <p className="notice">Открыто: <strong>{query.data.open_count}</strong></p>
+            <p className="notice incident-count">Открыто: <strong>{query.data.open_count}</strong></p>
             {query.data.incidents.length ? (
               <table>
                 <thead><tr><th>Создан</th><th>Тип</th><th>Заказ / покупатель</th><th>Возврат / provider</th><th>Статус</th></tr></thead>

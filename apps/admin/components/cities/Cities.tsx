@@ -1,7 +1,8 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { FormEvent, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import { useForm } from "react-hook-form";
 import { api } from "../../lib/api";
 import { useAdminMutation } from "../../lib/use-admin-mutation";
 import { usePersistentIdempotencyKey } from "../../lib/use-persistent-idempotency-key";
@@ -18,7 +19,7 @@ import { CityEditor } from "./CityEditor";
 
 export function Cities() {
   const cities = useQuery({ queryKey: cityKeys.list(), queryFn: () => api<{ cities: Row[] }>("/cities") });
-  const [citySlug, setCitySlug] = useState("");
+  const { register, handleSubmit, reset } = useForm<{ citySlug: string }>({ defaultValues: { citySlug: "" } });
   const [editing, setEditing] = useState<Row | null>(null);
   const createKey = usePersistentIdempotencyKey();
   const cityOptions = useMemo(() => [...CITY_CATALOGUE].sort((left, right) => left.title.localeCompare(right.title, "ru")), []);
@@ -26,16 +27,15 @@ export function Cities() {
   const create = useAdminMutation("city.create", ({ body, key }: { body: { city_slug: string }; key: string }) =>
     api("/cities", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": key }, body: JSON.stringify(body) }));
 
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
+  const submit = handleSubmit(async ({ citySlug }) => {
     try {
       await create.mutateAsync({ body: { city_slug: citySlug }, key: createKey.acquire() });
       createKey.clear();
-      setCitySlug("");
+      reset();
     } catch {
       // error surfaced via create.error below
     }
-  };
+  });
 
   return (
     <>
@@ -67,7 +67,7 @@ export function Cities() {
           <form className="form" onSubmit={submit}>
             <label>
               Город
-              <select value={citySlug} onChange={(event) => setCitySlug(event.target.value)} required>
+              <select {...register("citySlug", { required: true })}>
                 <option value="" disabled>Выберите город</option>
                 {cityOptions.map((city) => <option key={city.slug} value={city.slug}>{city.title}</option>)}
               </select>

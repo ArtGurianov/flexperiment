@@ -1,7 +1,8 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { FormEvent, useState } from "react";
+import { useState } from "react";
+import { Controller, useForm } from "react-hook-form";
 import { findCityBySlug } from "../../../../lib/city-catalog";
 import { parseRublesToKopecks } from "../../../../lib/money";
 import { api } from "../../lib/api";
@@ -39,7 +40,7 @@ export function Occurrences() {
     ...pollingQuery(POLL_INTERVAL.occurrences),
   });
 
-  const [form, setForm] = useState(initialForm);
+  const { control, register, handleSubmit, reset, setValue, watch } = useForm<typeof initialForm>({ defaultValues: initialForm, shouldUnregister: true });
   const [validationError, setValidationError] = useState<string | null>(null);
   const createKey = usePersistentIdempotencyKey();
   const [action, setAction] = useState<{ occurrence: Row; label: string; patch: OccurrenceActionSpec["patch"] } | null>(null);
@@ -50,18 +51,17 @@ export function Occurrences() {
   // F2, and the input the request budget (§1c) depends on being O(1).
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [editorConflict, setEditorConflict] = useState(false);
-  const set = (field: keyof typeof form, value: string) => setForm((previous) => ({ ...previous, [field]: value }));
   const chooseCity = (cityId: string) => {
     const city = cities.data?.cities.find((entry) => string(entry.id) === cityId);
     const timezone = city ? findCityBySlug(string(city.slug))?.timezone ?? "" : "";
-    setForm((previous) => ({ ...previous, city_id: cityId, timezone }));
+    setValue("city_id", cityId);
+    setValue("timezone", timezone);
   };
 
   const create = useAdminMutation("occurrence.create", ({ body, key }: { body: Row; key: string }) =>
     api("/occurrences", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": key }, body: JSON.stringify(body) }));
 
-  const submit = async (event: FormEvent) => {
-    event.preventDefault();
+  const submit = handleSubmit(async (form) => {
     const startsAt = fromLocalInput(form.starts_at);
     const startsAtMs = Date.parse(startsAt);
     const durationMinutes = parseHoursAndMinutes(form.duration);
@@ -86,11 +86,12 @@ export function Occurrences() {
     try {
       await create.mutateAsync({ body, key });
       createKey.clear();
-      setForm((previous) => ({ ...previous, title: "", starts_at: "", duration: "", price_kopecks: "", capacity: "", venue_name: "", venue_address: "", venue_disclosure_text: initialForm.venue_disclosure_text, venue_announcement_lead: "" }));
+      reset({ ...form, title: "", starts_at: "", duration: "", price_kopecks: "", capacity: "", venue_name: "", venue_address: "", venue_disclosure_text: initialForm.venue_disclosure_text, venue_announcement_lead: "" });
     } catch {
       // error surfaced via create.error below
     }
-  };
+  });
+  const venueStatus = watch("venue_status");
 
   return (
     <>
@@ -104,37 +105,37 @@ export function Occurrences() {
         <form className="form form-grid" onSubmit={submit}>
           <label>
             Город
-            <select value={form.city_id} onChange={(event) => chooseCity(event.target.value)} required>
+            <select {...register("city_id", { required: true, onChange: (event) => chooseCity(event.target.value) })}>
               <option value="" disabled>Выберите город</option>
               {cities.data?.cities.map((city) => <option key={string(city.id)} value={string(city.id)}>{string(city.title)}</option>)}
             </select>
           </label>
-          <label>Название<input value={form.title} onChange={(event) => set("title", event.target.value)} required /></label>
-          <label>Начало<input type="datetime-local" value={form.starts_at} onChange={(event) => set("starts_at", event.target.value)} required /></label>
-          <label>Длительность мастер-класса<DurationInput value={form.duration} onChange={(value) => set("duration", value)} required /></label>
-          <label>Цена, ₽<MoneyInput value={form.price_kopecks} onChange={(value) => set("price_kopecks", value)} required /></label>
-          <label>Вместимость<input type="number" min="1" step="1" value={form.capacity} onChange={(event) => set("capacity", event.target.value)} required /></label>
+          <label>Название<input {...register("title", { required: true })} /></label>
+          <label>Начало<input type="datetime-local" {...register("starts_at", { required: true })} /></label>
+          <label>Длительность мастер-класса<Controller control={control} name="duration" rules={{ required: true }} render={({ field }) => <DurationInput value={field.value} onChange={field.onChange} required />} /></label>
+          <label>Цена, ₽<Controller control={control} name="price_kopecks" rules={{ required: true }} render={({ field }) => <MoneyInput value={field.value} onChange={field.onChange} required />} /></label>
+          <label>Вместимость<input type="number" min="1" step="1" {...register("capacity", { required: true })} /></label>
           <label>
             Площадка
-            <select value={form.venue_status} onChange={(event) => set("venue_status", event.target.value)}>
+            <select {...register("venue_status")}>
               <option value="CONFIRMED">Подтверждена</option>
               <option value="TO_BE_ANNOUNCED">Будет объявлена</option>
             </select>
           </label>
-          {form.venue_status === "CONFIRMED" ? (
+          {venueStatus === "CONFIRMED" ? (
             <>
-              <label>Название площадки<input value={form.venue_name} onChange={(event) => set("venue_name", event.target.value)} required /></label>
-              <label>Адрес<textarea value={form.venue_address} onChange={(event) => set("venue_address", event.target.value)} required /></label>
+              <label>Название площадки<input {...register("venue_name", { required: true })} /></label>
+              <label>Адрес<textarea {...register("venue_address", { required: true })} /></label>
             </>
           ) : (
             <>
-              <label>Что показывать вместо адреса<textarea value={form.venue_disclosure_text} onChange={(event) => set("venue_disclosure_text", event.target.value)} required /></label>
-              <label>Объявить не позднее чем<DurationInput value={form.venue_announcement_lead} onChange={(value) => set("venue_announcement_lead", value)} required /><small>до начала мастер-класса</small></label>
+              <label>Что показывать вместо адреса<textarea {...register("venue_disclosure_text", { required: true })} /></label>
+              <label>Объявить не позднее чем<Controller control={control} name="venue_announcement_lead" rules={{ required: true }} render={({ field }) => <DurationInput value={field.value} onChange={field.onChange} required />} /><small>до начала мастер-класса</small></label>
             </>
           )}
           <details className="wide">
             <summary>Дополнительные параметры</summary>
-            <label>Timezone<input value={form.timezone} onChange={(event) => set("timezone", event.target.value)} required /></label>
+            <label>Timezone<input {...register("timezone", { required: true })} /></label>
           </details>
           <div className="wide">
             <Notice error={validationError ?? create.error?.code} />
