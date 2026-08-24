@@ -82,7 +82,7 @@ export default function CheckoutFlow({ onViewChange }: Props) {
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [scheduledCitySlugs, setScheduledCitySlugs] = useState<CitySlug[]>([]);
-  const [catalogLoaded, setCatalogLoaded] = useState(false);
+  const [catalogState, setCatalogState] = useState<"loading" | "ready" | "error">("loading");
   const [view, setView] = useState<"catalog" | "booking" | "city-interest">("catalog");
   const selected = useMemo(() => occurrences.find((item) => item.id === occurrenceId), [occurrences, occurrenceId]);
   const citySchedules = useMemo(() => {
@@ -120,9 +120,9 @@ export default function CheckoutFlow({ onViewChange }: Props) {
           .filter((city): city is NonNullable<typeof city> => Boolean(city))
           .map((city) => city.slug);
         setScheduledCitySlugs([...new Set(scheduledCities)]);
-        setCatalogLoaded(true);
+        setCatalogState("ready");
       })
-      .catch(() => current && setMessage("Сейчас запись недоступна. Пожалуйста, попробуйте позже."))
+      .catch(() => current && setCatalogState("error"))
       .finally(() => current && setLoading(false));
     return () => { current = false; };
   }, []);
@@ -230,8 +230,9 @@ export default function CheckoutFlow({ onViewChange }: Props) {
 
   if (view === "catalog") return (
     <div className="flex w-full flex-col gap-4 font-mono text-sm">
-      {loading && !catalogLoaded ? <p role="status" className="border border-bone/50 px-4 py-5 text-bone/70">Загружаем города и даты…</p> : null}
-      {catalogLoaded && !occurrences.length ? <p role="status" className="border border-bone/50 px-4 py-5 text-bone/70">Запись на ближайшие даты пока не открыта.</p> : null}
+      {catalogState === "loading" ? <p role="status" className="border border-bone/50 px-4 py-5 text-bone/70 text-center">Загрузка списка</p> : null}
+      {catalogState === "error" ? <p role="status" className="border border-bone/50 px-4 py-5 text-bone/70 text-center">Произошла ошибка. Перезагрузите страницу</p> : null}
+      {catalogState === "ready" && !occurrences.length ? <p role="status" className="border border-bone/50 px-4 py-5 text-bone/70 text-center">Запись на ближайшие даты пока не открыта.</p> : null}
       {occurrences.map((occurrence) => <button key={occurrence.id} type="button" onClick={() => showBooking(occurrence)} className="flex w-full flex-col gap-4 border-2 border-bone/50 bg-bone px-4 py-5 text-left text-ink transition-colors hover:border-acid hover:bg-acid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid">
         <span className="font-display text-2xl uppercase">{occurrence.city_title} × {occurrenceDateLabel(occurrence.starts_at)}</span>
       </button>)}
