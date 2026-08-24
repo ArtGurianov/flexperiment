@@ -31,3 +31,16 @@ export function occurrenceActionsFor(occurrence: { visibility?: unknown; sales_s
 
   return [];
 }
+
+/**
+ * B4: the confirmation modal must show what the operator asked for and what
+ * it does — never the raw target-state enum as if it were a headline.
+ */
+export function occurrenceActionConsequence(patch: OccurrenceAction["patch"]): string {
+  if (patch.visibility === "PUBLISHED") return "Событие станет видно в публичном каталоге.";
+  if (patch.visibility === "HIDDEN") return "Событие исчезнет из публичного каталога. Это не отменяет событие и не трогает существующие брони.";
+  if (patch.sales_status === "OPEN") return "Продажи откроются: гости смогут бронировать и оплачивать места.";
+  if (patch.sales_status === "PAUSED") return "Продажи будут приостановлены. Существующие брони не меняются.";
+  if (patch.sales_status === "CLOSED") return "Продажи закроются для новых бронирований. Существующие брони не меняются.";
+  return "";
+}

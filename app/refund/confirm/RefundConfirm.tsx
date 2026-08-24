@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { commerceApiUrl } from "@/lib/commerce-api";
+import { formatRubles as rub } from "@/lib/money";
 
 type ConfirmationContext = {
   order_number: string;
@@ -12,7 +13,6 @@ type ConfirmationContext = {
   expires_at: string;
 };
 
-const rub = (kopecks: number) => new Intl.NumberFormat("ru-RU", { style: "currency", currency: "RUB" }).format(kopecks / 100);
 
 export default function RefundConfirm() {
   const token = useRef<string | null>(null);

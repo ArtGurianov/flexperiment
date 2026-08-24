@@ -274,9 +274,8 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
       (SELECT COALESCE(SUM(amount_kopecks), 0) FROM refunds WHERE date(created_at) = date('now') AND status = 'SUCCEEDED') AS refunded_kopecks`).get(),
     health: {
       create_unknown: sqlite.prepare("SELECT COUNT(*) AS count FROM payments WHERE state = 'CREATE_UNKNOWN'").get(),
-      review_required: sqlite.prepare(`SELECT
-        (SELECT COUNT(*) FROM payments WHERE status = 'REVIEW_REQUIRED') +
-        (SELECT COUNT(*) FROM refunds WHERE status = 'REVIEW_REQUIRED') AS count`).get(),
+      review_required_payments: sqlite.prepare("SELECT COUNT(*) AS count FROM payments WHERE status = 'REVIEW_REQUIRED'").get(),
+      review_required_refunds: sqlite.prepare("SELECT COUNT(*) AS count FROM refunds WHERE status = 'REVIEW_REQUIRED'").get(),
       pending_refunds: sqlite.prepare("SELECT COUNT(*) AS count FROM refunds WHERE status IN ('REQUESTED', 'SUBMITTING', 'SUBMIT_UNKNOWN', 'RECONCILING')").get(),
       email_attention: { count: domain.emailAttentionCount() },
       operational_incidents: { count: domain.operationalIncidentCount() },
@@ -376,9 +375,18 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     const payload = occurrencePatchSchema.parse(await jsonBody(c.req.raw)); const occurrence = domain.patchOccurrence(c.req.param("id"), payload, key, c.var.adminId!);
     return c.json(occurrence);
   });
-  admin.get("/refunds", (c) => c.json({ refunds: sqlite.prepare(`SELECT r.*, o.public_status_id, o.customer_name, o.customer_email,
-    oc.title AS occurrence_title, c.title AS city_title FROM refunds r JOIN orders o ON o.id = r.order_id
-    JOIN occurrences oc ON oc.id = o.occurrence_id JOIN cities c ON c.id = oc.city_id ORDER BY r.created_at DESC LIMIT 100`).all() }));
+  admin.get("/refunds", (c) => {
+    const filters: string[] = []; const params: string[] = [];
+    // status is repeatable (?status=A&status=B) so a destination filter can
+    // express the same multi-state predicate a dashboard counter counted,
+    // e.g. pending_refunds' IN ('REQUESTED', 'SUBMITTING', 'SUBMIT_UNKNOWN', 'RECONCILING').
+    const statuses = c.req.queries("status"); if (statuses?.length) { filters.push(`r.status IN (${statuses.map(() => "?").join(", ")})`); params.push(...statuses); }
+    const source = c.req.query("source"); if (source) { filters.push("r.source = ?"); params.push(source); }
+    const where = filters.length ? `WHERE ${filters.join(" AND ")}` : "";
+    return c.json({ refunds: sqlite.prepare(`SELECT r.*, o.public_status_id, o.customer_name, o.customer_email,
+      oc.title AS occurrence_title, c.title AS city_title FROM refunds r JOIN orders o ON o.id = r.order_id
+      JOIN occurrences oc ON oc.id = o.occurrence_id JOIN cities c ON c.id = oc.city_id ${where} ORDER BY r.created_at DESC LIMIT 100`).all(...params) });
+  });
   admin.get("/refunds/:id", (c) => { const refund = sqlite.prepare("SELECT * FROM refunds WHERE id = ?").get(c.req.param("id")); if (!refund) throw new DomainError("REFUND_NOT_FOUND", 404); return c.json(refund); });
   admin.get("/audit", (c) => c.json({ events: sqlite.prepare("SELECT id, action, entity_type, entity_id, details_json, created_at FROM admin_audit_log ORDER BY created_at DESC LIMIT 200").all() }));
   admin.post("/bookings/:id/cancel-customer-initiated", async (c) => {

@@ -710,4 +710,103 @@ describe("commerce HTTP boundary", () => {
     expect(db.prepare("SELECT status, provider_status FROM email_provider_events WHERE outbox_id = ?").get(outboxId)).toEqual({ status: "BOUNCED", provider_status: "soft_bounced" });
     db.close();
   });
+
+  it("decomposes REVIEW_REQUIRED into per-table dashboard counters whose predicates match their filtered destinations", async () => {
+    const { db, app } = appFixture();
+    const occurrenceId = (db.prepare("SELECT id FROM occurrences").get() as { id: string }).id;
+    const checkout = async (idempotencyKey: string, email: string) => {
+      const context = await app.request("http://api.flexperiment.ru/v1/public/checkout-context", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.71" }, body: JSON.stringify({ occurrence_id: occurrenceId }) });
+      const quoteId = (await context.json() as { quote_id: string }).quote_id;
+      await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": idempotencyKey, "X-Forwarded-For": "127.0.0.71" }, body: JSON.stringify({ quote_id: quoteId, customer_name: "Buyer", customer_email: email, customer_adult_confirmed: true, participant: { self: true, date_of_birth: "1990-01-01" }, offer_accepted: true, pd_consent_accepted: true }) });
+      const order = db.prepare("SELECT id FROM orders WHERE customer_email = ?").get(email) as { id: string };
+      const payment = db.prepare("SELECT id FROM payments WHERE order_id = ?").get(order.id) as { id: string };
+      return { orderId: order.id, paymentId: payment.id };
+    };
+    const reviewPayment = await checkout("review-required-payment-checkout", "review-payment@example.test");
+    db.prepare("UPDATE payments SET status = 'REVIEW_REQUIRED' WHERE id = ?").run(reviewPayment.paymentId);
+    const reviewRefundOrder = await checkout("review-required-refund-checkout", "review-refund@example.test");
+    db.prepare("UPDATE payments SET status = 'PAID', captured_amount_kopecks = 100000 WHERE id = ?").run(reviewRefundOrder.paymentId);
+    const reviewRefundId = randomUUID();
+    db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash) VALUES (?, ?, ?, ?, 100, 'Under review', 'ADMIN_COMPENSATION', 'REVIEW_REQUIRED', ?, ?)").run(reviewRefundId, randomUUID(), reviewRefundOrder.orderId, reviewRefundOrder.paymentId, randomUUID(), randomUUID());
+
+    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.71" }, body: JSON.stringify({ password: "correct horse" }) });
+    const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")! };
+
+    const dashboard = await app.request("http://admin.flexperiment.ru/v1/admin/dashboard", { headers });
+    const dashboardBody = await dashboard.json() as { health: Record<string, { count: number }> };
+    expect(dashboardBody.health.review_required_payments.count).toBe(1);
+    expect(dashboardBody.health.review_required_refunds.count).toBe(1);
+
+    // The counter predicate (payments.status = 'REVIEW_REQUIRED') must match the
+    // destination filter predicate exactly, or the deep-link would show a
+    // different set than what was counted.
+    const filteredOrders = await app.request("http://admin.flexperiment.ru/v1/admin/orders?payment_status=REVIEW_REQUIRED", { headers });
+    const filteredOrdersBody = await filteredOrders.json() as { orders: { id: string }[] };
+    expect(filteredOrdersBody.orders.map((order) => order.id)).toEqual([reviewPayment.orderId]);
+
+    const filteredRefunds = await app.request("http://admin.flexperiment.ru/v1/admin/refunds?status=REVIEW_REQUIRED", { headers });
+    const filteredRefundsBody = await filteredRefunds.json() as { refunds: { id: string }[] };
+    expect(filteredRefundsBody.refunds.map((refund) => refund.id)).toEqual([reviewRefundId]);
+    db.close();
+  });
+
+  it("filters /refunds by status and source independently", async () => {
+    const { db, app } = appFixture();
+    const occurrenceId = (db.prepare("SELECT id FROM occurrences").get() as { id: string }).id;
+    const context = await app.request("http://api.flexperiment.ru/v1/public/checkout-context", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.72" }, body: JSON.stringify({ occurrence_id: occurrenceId }) });
+    const quoteId = (await context.json() as { quote_id: string }).quote_id;
+    await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": "refund-filter-checkout", "X-Forwarded-For": "127.0.0.72" }, body: JSON.stringify({ quote_id: quoteId, customer_name: "Buyer", customer_email: "refund-filter@example.test", customer_adult_confirmed: true, participant: { self: true, date_of_birth: "1990-01-01" }, offer_accepted: true, pd_consent_accepted: true }) });
+    const order = db.prepare("SELECT id FROM orders ORDER BY created_at DESC LIMIT 1").get() as { id: string };
+    const payment = db.prepare("SELECT id FROM payments WHERE order_id = ?").get(order.id) as { id: string };
+    db.prepare("UPDATE payments SET status = 'PARTIALLY_REFUNDED', captured_amount_kopecks = 100000 WHERE id = ?").run(payment.id);
+    const pendingCompensationId = randomUUID(); const succeededObligationId = randomUUID();
+    db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash) VALUES (?, ?, ?, ?, 100, 'Pending', 'ADMIN_COMPENSATION', 'REQUESTED', ?, ?)").run(pendingCompensationId, randomUUID(), order.id, payment.id, randomUUID(), randomUUID());
+    db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 100, 'Done', 'REFUND_OBLIGATION', 'SUCCEEDED', ?, ?, datetime('now'))").run(succeededObligationId, randomUUID(), order.id, payment.id, randomUUID(), randomUUID());
+
+    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.72" }, body: JSON.stringify({ password: "correct horse" }) });
+    const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")! };
+
+    const byStatus = await app.request("http://admin.flexperiment.ru/v1/admin/refunds?status=REQUESTED", { headers });
+    expect((await byStatus.json() as { refunds: { id: string }[] }).refunds.map((refund) => refund.id)).toEqual([pendingCompensationId]);
+    const bySource = await app.request("http://admin.flexperiment.ru/v1/admin/refunds?source=REFUND_OBLIGATION", { headers });
+    expect((await bySource.json() as { refunds: { id: string }[] }).refunds.map((refund) => refund.id)).toEqual([succeededObligationId]);
+    const byBoth = await app.request("http://admin.flexperiment.ru/v1/admin/refunds?status=SUCCEEDED&source=REFUND_OBLIGATION", { headers });
+    expect((await byBoth.json() as { refunds: { id: string }[] }).refunds.map((refund) => refund.id)).toEqual([succeededObligationId]);
+    db.close();
+  });
+
+  it("matches the pending_refunds dashboard counter's multi-state predicate via repeated status params", async () => {
+    const { db, app } = appFixture();
+    const occurrenceId = (db.prepare("SELECT id FROM occurrences").get() as { id: string }).id;
+    // one_nonterminal_refund_per_payment forbids two non-terminal refunds on
+    // the same payment, so each pending status needs its own order/payment.
+    const ids: Record<string, string> = {};
+    let ipSuffix = 195;
+    for (const status of ["REQUESTED", "SUBMITTING", "SUBMIT_UNKNOWN", "RECONCILING", "SUCCEEDED"]) {
+      const email = `pending-refunds-${status.toLowerCase()}@example.test`;
+      const ip = `127.0.0.${ipSuffix++}`; // "checkout-new" allows only 3 first-time checkouts per IP / 10min
+      const context = await app.request("http://api.flexperiment.ru/v1/public/checkout-context", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": ip }, body: JSON.stringify({ occurrence_id: occurrenceId }) });
+      const quoteId = (await context.json() as { quote_id: string }).quote_id;
+      const checkout = await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": `pending-refunds-checkout-${status}`, "X-Forwarded-For": ip }, body: JSON.stringify({ quote_id: quoteId, customer_name: "Buyer", customer_email: email, customer_adult_confirmed: true, participant: { self: true, date_of_birth: "1990-01-01" }, offer_accepted: true, pd_consent_accepted: true }) });
+      expect(checkout.status).toBe(201);
+      const order = db.prepare("SELECT id FROM orders WHERE customer_email = ?").get(email) as { id: string };
+      const payment = db.prepare("SELECT id FROM payments WHERE order_id = ?").get(order.id) as { id: string };
+      db.prepare("UPDATE payments SET status = 'PARTIALLY_REFUNDED', captured_amount_kopecks = 100000 WHERE id = ?").run(payment.id);
+      const id = randomUUID(); ids[status] = id;
+      const succeededAt = status === "SUCCEEDED" ? ", succeeded_at" : "";
+      const succeededAtValue = status === "SUCCEEDED" ? ", datetime('now')" : "";
+      db.prepare(`INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash${succeededAt}) VALUES (?, ?, ?, ?, 1, 'r', 'ADMIN_COMPENSATION', ?, ?, ?${succeededAtValue})`).run(id, randomUUID(), order.id, payment.id, status, randomUUID(), randomUUID());
+    }
+
+    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.73" }, body: JSON.stringify({ password: "correct horse" }) });
+    const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")! };
+
+    const dashboard = await app.request("http://admin.flexperiment.ru/v1/admin/dashboard", { headers });
+    expect((await dashboard.json() as { health: Record<string, { count: number }> }).health.pending_refunds.count).toBe(4);
+
+    const filtered = await app.request("http://admin.flexperiment.ru/v1/admin/refunds?status=REQUESTED&status=SUBMITTING&status=SUBMIT_UNKNOWN&status=RECONCILING", { headers });
+    const filteredIds = (await filtered.json() as { refunds: { id: string }[] }).refunds.map((refund) => refund.id).sort();
+    expect(filteredIds).toEqual([ids.REQUESTED, ids.SUBMITTING, ids.SUBMIT_UNKNOWN, ids.RECONCILING].sort());
+    db.close();
+  });
 });

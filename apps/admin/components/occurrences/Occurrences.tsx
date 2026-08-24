@@ -1,0 +1,164 @@
+"use client";
+
+import { useQuery } from "@tanstack/react-query";
+import { FormEvent, useState } from "react";
+import { findCityBySlug } from "../../../../lib/city-catalog";
+import { parseRublesToKopecks } from "../../../../lib/money";
+import { api, idempotencyKey } from "../../lib/api";
+import { useAdminMutation } from "../../lib/use-admin-mutation";
+import { cityKeys, occurrenceKeys } from "../../lib/query-keys";
+import { POLL_INTERVAL } from "../../lib/polling";
+import type { OccurrenceAction as OccurrenceActionSpec } from "../../lib/occurrence-actions";
+import { fromLocalInput, string } from "../../lib/values";
+import type { Row } from "../../lib/page";
+import { Loading } from "../ui/Loading";
+import { Notice } from "../ui/Notice";
+import { PageTitle } from "../ui/PageTitle";
+import { Freshness } from "../ui/Freshness";
+import { MoneyInput } from "../ui/MoneyInput";
+import { OccurrenceRow } from "./OccurrenceRow";
+import { OccurrenceAction } from "./OccurrenceAction";
+import { OccurrenceEditor } from "./OccurrenceEditor";
+import { OccurrenceCancellation } from "./OccurrenceCancellation";
+import { OccurrenceCompletion } from "./OccurrenceCompletion";
+
+const initialForm = {
+  city_id: "", title: "", starts_at: "", ends_at: "", timezone: "",
+  price_kopecks: "", capacity: "", venue_status: "CONFIRMED", venue_name: "",
+  venue_address: "", venue_disclosure_text: "", venue_announce_by: "", reason: "",
+};
+
+export function Occurrences() {
+  const cities = useQuery({ queryKey: cityKeys.list(), queryFn: () => api<{ cities: Row[] }>("/cities") });
+  const occurrences = useQuery({
+    queryKey: occurrenceKeys.list(),
+    queryFn: () => api<{ occurrences: Row[] }>("/occurrences"),
+    refetchInterval: POLL_INTERVAL.occurrences,
+  });
+
+  const [form, setForm] = useState(initialForm);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [key, setKey] = useState<string | null>(null);
+  const [action, setAction] = useState<{ occurrence: Row; label: string; patch: OccurrenceActionSpec["patch"] } | null>(null);
+  const [editing, setEditing] = useState<Row | null>(null);
+  const [cancelling, setCancelling] = useState<Row | null>(null);
+  const [completing, setCompleting] = useState<Row | null>(null);
+  // Accordion: at most one expanded cancellation-financials row at a time —
+  // F2, and the input the request budget (§1c) depends on being O(1).
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const set = (field: keyof typeof form, value: string) => setForm((previous) => ({ ...previous, [field]: value }));
+  const chooseCity = (cityId: string) => {
+    const city = cities.data?.cities.find((entry) => string(entry.id) === cityId);
+    const timezone = city ? findCityBySlug(string(city.slug))?.timezone ?? "" : "";
+    setForm((previous) => ({ ...previous, city_id: cityId, timezone }));
+  };
+
+  const create = useAdminMutation("occurrence.create", (body: Row) =>
+    api("/occurrences", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": key ?? idempotencyKey() }, body: JSON.stringify(body) }));
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (form.venue_status === "TO_BE_ANNOUNCED" && new Date(form.venue_announce_by).getTime() >= new Date(form.starts_at).getTime()) {
+      setValidationError("VENUE_ANNOUNCEMENT_TOO_LATE"); return;
+    }
+    const priceKopecks = parseRublesToKopecks(form.price_kopecks);
+    if (priceKopecks === null || priceKopecks <= 0) {
+      setValidationError("VALIDATION_ERROR"); return;
+    }
+    setValidationError(null);
+    const actionKey = key ?? idempotencyKey(); setKey(actionKey);
+    const body: Row = {
+      city_id: form.city_id,
+      title: form.title, starts_at: fromLocalInput(form.starts_at), ends_at: fromLocalInput(form.ends_at),
+      timezone: form.timezone, price_kopecks: priceKopecks, capacity: Number(form.capacity),
+      venue_status: form.venue_status, reason: form.reason,
+    };
+    if (form.venue_status === "CONFIRMED") { body.venue_name = form.venue_name; body.venue_address = form.venue_address; }
+    else { body.venue_disclosure_text = form.venue_disclosure_text; body.venue_announce_by = fromLocalInput(form.venue_announce_by); }
+    try {
+      await create.mutateAsync(body);
+      setKey(null);
+      setForm((previous) => ({ ...previous, title: "", starts_at: "", ends_at: "", price_kopecks: "", capacity: "", venue_name: "", venue_address: "", venue_disclosure_text: "", venue_announce_by: "", reason: "" }));
+    } catch {
+      // error surfaced via create.error below
+    }
+  };
+
+  return (
+    <>
+      <PageTitle
+        eyebrow="CATALOG / OCCURRENCES"
+        title={<>События<br /><i>без опасных shortcut.</i></>}
+        text="Новая occurrence всегда создаётся HIDDEN + CLOSED. Публикация и продажи — отдельные audited действия."
+      />
+      <section className="panel">
+        <h2>Создать событие</h2>
+        <form className="form form-grid" onSubmit={submit}>
+          <label>
+            Город
+            <select value={form.city_id} onChange={(event) => chooseCity(event.target.value)} required>
+              <option value="" disabled>Выберите город</option>
+              {cities.data?.cities.map((city) => <option key={string(city.id)} value={string(city.id)}>{string(city.title)}</option>)}
+            </select>
+          </label>
+          <label>Название<input value={form.title} onChange={(event) => set("title", event.target.value)} required /></label>
+          <label>Начало<input type="datetime-local" value={form.starts_at} onChange={(event) => set("starts_at", event.target.value)} required /></label>
+          <label>Конец<input type="datetime-local" value={form.ends_at} onChange={(event) => set("ends_at", event.target.value)} required /></label>
+          <label>Цена, ₽<MoneyInput value={form.price_kopecks} onChange={(value) => set("price_kopecks", value)} required /></label>
+          <label>Вместимость<input type="number" min="1" step="1" value={form.capacity} onChange={(event) => set("capacity", event.target.value)} required /></label>
+          <label>
+            Площадка
+            <select value={form.venue_status} onChange={(event) => set("venue_status", event.target.value)}>
+              <option value="CONFIRMED">Подтверждена</option>
+              <option value="TO_BE_ANNOUNCED">Будет объявлена</option>
+            </select>
+          </label>
+          {form.venue_status === "CONFIRMED" ? (
+            <>
+              <label>Название площадки<input value={form.venue_name} onChange={(event) => set("venue_name", event.target.value)} required /></label>
+              <label>Адрес<textarea value={form.venue_address} onChange={(event) => set("venue_address", event.target.value)} required /></label>
+            </>
+          ) : (
+            <>
+              <label>Disclosure<textarea value={form.venue_disclosure_text} onChange={(event) => set("venue_disclosure_text", event.target.value)} required /></label>
+              <label>Объявить до<input type="datetime-local" value={form.venue_announce_by} onChange={(event) => set("venue_announce_by", event.target.value)} required /></label>
+            </>
+          )}
+          <details className="wide">
+            <summary>Дополнительные параметры</summary>
+            <label>Timezone<input value={form.timezone} onChange={(event) => set("timezone", event.target.value)} required /></label>
+          </details>
+          <label className="wide">Причина / audit context<textarea value={form.reason} onChange={(event) => set("reason", event.target.value)} required minLength={3} /></label>
+          <div className="wide">
+            <Notice error={validationError ?? create.error?.code} />
+            <button className="primary" disabled={create.isPending}>{create.isPending ? "Создаём…" : "Создать скрытое событие"}</button>
+          </div>
+        </form>
+      </section>
+      <section className="panel">
+        <h2>Все состояния каталога</h2>
+        <Freshness query={{ ...occurrences, hasData: Boolean(occurrences.data) }} />
+        {occurrences.isLoadingError ? <Notice error={(occurrences.error as { code?: string } | null)?.code ?? "UNKNOWN"} /> : !occurrences.data ? <Loading /> : (
+          <div className="occurrence-list" aria-busy={occurrences.isFetching}>
+            {occurrences.data.occurrences.map((occurrence) => (
+              <OccurrenceRow
+                key={string(occurrence.id)}
+                occurrence={occurrence}
+                expanded={expandedId === string(occurrence.id)}
+                onToggleExpand={(id) => setExpandedId((previous) => (previous === id ? null : id))}
+                onAction={setAction}
+                onEdit={setEditing}
+                onCancel={setCancelling}
+                onComplete={setCompleting}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+      {action && <OccurrenceAction action={action} close={() => setAction(null)} done={() => setAction(null)} />}
+      {editing && <OccurrenceEditor occurrence={editing} close={() => setEditing(null)} done={() => setEditing(null)} />}
+      {cancelling && <OccurrenceCancellation occurrence={cancelling} close={() => setCancelling(null)} done={() => setCancelling(null)} />}
+      {completing && <OccurrenceCompletion occurrence={completing} close={() => setCompleting(null)} done={() => setCompleting(null)} />}
+    </>
+  );
+}

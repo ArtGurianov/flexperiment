@@ -1,0 +1,68 @@
+import { normalizeOrderFilters, normalizeRefundFilters, type OrderFilters, type RefundFilters } from "./filters";
+
+export const cityKeys = {
+  all: () => ["cities"] as const,
+  lists: () => ["cities", "list"] as const,
+  list: () => ["cities", "list"] as const,
+  detail: (id: string) => ["cities", "detail", id] as const,
+};
+
+export const occurrenceKeys = {
+  all: () => ["occurrences"] as const,
+  lists: () => ["occurrences", "list"] as const,
+  list: (cityId?: string) => ["occurrences", "list", cityId || null] as const,
+  detail: (id: string) => ["occurrences", "detail", id] as const,
+  cancellationFinancials: (id: string) => ["occurrences", "cancellationFinancials", id] as const,
+};
+
+export const orderKeys = {
+  all: () => ["orders"] as const,
+  lists: () => ["orders", "list"] as const,
+  list: (filters: OrderFilters) => ["orders", "list", normalizeOrderFilters(filters)] as const,
+  evidence: (id: string) => ["orders", "evidence", id] as const,
+  detail: (id: string) => ["orders", "detail", id] as const,
+};
+
+export const refundKeys = {
+  all: () => ["refunds"] as const,
+  lists: () => ["refunds", "list"] as const,
+  list: (filters: RefundFilters = {}) => ["refunds", "list", normalizeRefundFilters(filters)] as const,
+  detail: (id: string) => ["refunds", "detail", id] as const,
+};
+
+export const settlementKeys = {
+  all: () => ["settlements"] as const,
+  lists: () => ["settlements", "list"] as const,
+  list: () => ["settlements", "list"] as const,
+  detail: (id: string) => ["settlements", "detail", id] as const,
+};
+
+export const emailAttentionKeys = {
+  all: () => ["email-attention"] as const,
+  lists: () => ["email-attention", "list"] as const,
+  list: () => ["email-attention", "list"] as const,
+};
+
+export const incidentKeys = {
+  all: () => ["operational-incidents"] as const,
+  lists: () => ["operational-incidents", "list"] as const,
+  list: () => ["operational-incidents", "list"] as const,
+};
+
+export const auditKeys = {
+  all: () => ["audit"] as const,
+  lists: () => ["audit", "list"] as const,
+  list: () => ["audit", "list"] as const,
+};
+
+export const agentKeys = {
+  all: () => ["agents"] as const,
+  lists: () => ["agents", "list"] as const,
+  list: () => ["agents", "list"] as const,
+  balance: (agentId: string, occurrenceId: string) => ["agents", "balance", agentId, occurrenceId] as const,
+};
+
+export const dashboardKeys = {
+  all: () => ["dashboard"] as const,
+  summary: () => ["dashboard", "summary"] as const,
+};

@@ -10,6 +10,7 @@ import CityInterestForm from "@/components/CityInterestForm";
 import { findCityBySlug, type CitySlug } from "@/lib/city-catalog";
 import { canRequestCheckout, isPublicOccurrenceSelectable, salesAnnouncement, type PublicSalesStatus } from "@/lib/occurrence-sales";
 import { getParticipantAgeOnOccurrenceDate } from "@/lib/participant-age";
+import { formatRubles as rub } from "@/lib/money";
 
 type Occurrence = {
   id: string;
@@ -39,7 +40,6 @@ type Quote = {
 type Attempt = { version: 1; idempotencyKey: string; statusId: string | null };
 
 const attemptKey = (quoteId: string) => `fx_checkout_attempt:v1:${quoteId}`;
-const rub = (kopecks: number) => new Intl.NumberFormat("ru-RU", { style: "currency", currency: "RUB" }).format(kopecks / 100);
 
 function useSafeSessionStorage() {
   return {
