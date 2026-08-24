@@ -2,8 +2,9 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { FormEvent, useMemo, useState } from "react";
-import { api, idempotencyKey } from "../../lib/api";
+import { api } from "../../lib/api";
 import { useAdminMutation } from "../../lib/use-admin-mutation";
+import { usePersistentIdempotencyKey } from "../../lib/use-persistent-idempotency-key";
 import { cityKeys } from "../../lib/query-keys";
 import { number, string } from "../../lib/values";
 import type { Row } from "../../lib/page";
@@ -20,15 +21,17 @@ export function Cities() {
   const [citySlug, setCitySlug] = useState("");
   const [reason, setReason] = useState("");
   const [editing, setEditing] = useState<Row | null>(null);
+  const createKey = usePersistentIdempotencyKey();
   const cityOptions = useMemo(() => [...CITY_CATALOGUE].sort((left, right) => left.title.localeCompare(right.title, "ru")), []);
 
-  const create = useAdminMutation("city.create", (body: { city_slug: string; reason: string }) =>
-    api("/cities", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey() }, body: JSON.stringify(body) }));
+  const create = useAdminMutation("city.create", ({ body, key }: { body: { city_slug: string; reason: string }; key: string }) =>
+    api("/cities", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": key }, body: JSON.stringify(body) }));
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     try {
-      await create.mutateAsync({ city_slug: citySlug, reason });
+      await create.mutateAsync({ body: { city_slug: citySlug, reason }, key: createKey.acquire() });
+      createKey.clear();
       setCitySlug(""); setReason("");
     } catch {
       // error surfaced via create.error below

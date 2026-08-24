@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../../lib/api";
 import { orderKeys } from "../../lib/query-keys";
-import { POLL_INTERVAL } from "../../lib/polling";
+import { POLL_INTERVAL, pollingQuery } from "../../lib/polling";
 import { number } from "../../lib/values";
 import type { Row } from "../../lib/page";
 import { Loading } from "../ui/Loading";
@@ -18,7 +18,7 @@ export function OrderEvidence({ id, close }: { id: string; close: () => void }) 
   const evidence = useQuery({
     queryKey: orderKeys.evidence(id),
     queryFn: () => api<Row>(`/orders/${id}/evidence`),
-    refetchInterval: POLL_INTERVAL.orderEvidence,
+    ...pollingQuery(POLL_INTERVAL.orderEvidence),
   });
   const [showRefund, setShowRefund] = useState(false);
   const [showAbandon, setShowAbandon] = useState(false);

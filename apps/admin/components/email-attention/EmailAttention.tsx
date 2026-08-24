@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../../lib/api";
 import { emailAttentionKeys } from "../../lib/query-keys";
-import { POLL_INTERVAL } from "../../lib/polling";
+import { POLL_INTERVAL, pollingQuery } from "../../lib/polling";
 import { number } from "../../lib/values";
 import type { Row } from "../../lib/page";
 import { Loading } from "../ui/Loading";
@@ -18,7 +18,7 @@ export function EmailAttention() {
   const query = useQuery({
     queryKey: emailAttentionKeys.list(),
     queryFn: () => api<{ incidents: Row[]; attention_count: number }>("/email-attention"),
-    refetchInterval: POLL_INTERVAL.emailAttention,
+    ...pollingQuery(POLL_INTERVAL.emailAttention),
   });
   const [acknowledging, setAcknowledging] = useState<Row | null>(null);
 

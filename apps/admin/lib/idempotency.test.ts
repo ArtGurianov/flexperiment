@@ -1,13 +1,17 @@
 import { describe, expect, it } from "vitest";
 import { AdminApiError } from "./api";
-import { ADMIN_COMMAND_ERROR_SAFETY, safeToMintNewKey } from "./idempotency";
+import { ADMIN_COMMAND_ERROR_CODES, IDEMPOTENCY_DISPOSITION, REFRESH_DISPOSITION, safeToMintNewKey, shouldRefreshAuthoritativeState } from "./idempotency";
 
 describe("admin command idempotency", () => {
   it("requires every reviewed command error to have an explicit classification", () => {
-    expect(Object.keys(ADMIN_COMMAND_ERROR_SAFETY)).toEqual(expect.arrayContaining([
-      "IDEMPOTENCY_CONFLICT", "REFUND_AMOUNT_EXCEEDS_AVAILABLE",
-      "SETTLEMENT_RECOVERY_EXCEEDS_REMAINING", "VALIDATION_ERROR",
-    ]));
+    expect(Object.keys(IDEMPOTENCY_DISPOSITION).sort()).toEqual([...ADMIN_COMMAND_ERROR_CODES].sort());
+    expect(Object.keys(REFRESH_DISPOSITION).sort()).toEqual([...ADMIN_COMMAND_ERROR_CODES].sort());
+  });
+
+  it("refreshes rejected stale-state commands independently of key safety", () => {
+    const error = new AdminApiError(409, "OCCURRENCE_REVISION_CONFLICT");
+    expect(safeToMintNewKey(error)).toBe(true);
+    expect(shouldRefreshAuthoritativeState(error)).toBe(true);
   });
 
   it("treats unknown and provider-side results as ambiguous", () => {

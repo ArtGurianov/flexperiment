@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../../lib/api";
 import { settlementKeys } from "../../lib/query-keys";
-import { POLL_INTERVAL } from "../../lib/polling";
+import { POLL_INTERVAL, pollingQuery } from "../../lib/polling";
 import { string } from "../../lib/values";
 import type { Row } from "../../lib/page";
 import { Loading } from "../ui/Loading";
@@ -19,7 +19,7 @@ export function SettlementDetail({ id, close }: { id: string; close: () => void 
   const detail = useQuery({
     queryKey: settlementKeys.detail(id),
     queryFn: () => api<{ settlement: Row; balance: Row; recoveries: Row[] }>(`/reward-settlements/${id}`),
-    refetchInterval: POLL_INTERVAL.settlements,
+    ...pollingQuery(POLL_INTERVAL.settlements),
   });
   const [action, setAction] = useState<SettlementActionKind | null>(null);
 

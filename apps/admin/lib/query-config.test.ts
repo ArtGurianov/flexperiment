@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { AdminApiError } from "./api";
 import { shouldRetryQuery } from "./query-config";
+import { pollingQuery } from "./polling";
 
 describe("shouldRetryQuery", () => {
   it("never retries a deterministic 4xx, including 401 and 429", () => {
@@ -22,5 +23,11 @@ describe("shouldRetryQuery", () => {
   it("treats a non-AdminApiError as status 0 (one retry)", () => {
     expect(shouldRetryQuery(0, new Error("boom"))).toBe(true);
     expect(shouldRetryQuery(1, new Error("boom"))).toBe(false);
+  });
+});
+
+describe("pollingQuery", () => {
+  it("uses the next scheduled poll rather than an eager retry", () => {
+    expect(pollingQuery(10_000)).toEqual({ refetchInterval: 10_000, retry: false });
   });
 });

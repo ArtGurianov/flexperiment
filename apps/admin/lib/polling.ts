@@ -18,6 +18,13 @@ export const POLL_INTERVAL = {
   audit: false,
 } as const;
 
+/** Every scheduled poll is its own retry. Retrying it eagerly would violate
+ * the bounded request model and can turn a transient outage into a 429 storm. */
+export const pollingQuery = (interval: number) => ({
+  refetchInterval: interval,
+  retry: false,
+} as const);
+
 /** Hidden tabs don't poll (refetchIntervalInBackground stays off, the default),
  * so req/min figures below assume the tab is visible. */
 export const REQUESTS_PER_MINUTE = Object.fromEntries(

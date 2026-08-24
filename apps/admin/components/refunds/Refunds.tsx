@@ -3,7 +3,7 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import { refundKeys } from "../../lib/query-keys";
-import { POLL_INTERVAL } from "../../lib/polling";
+import { POLL_INTERVAL, pollingQuery } from "../../lib/polling";
 import { refundFiltersFromSearchParams, refundFiltersToSearch } from "../../lib/filters";
 import { formatDate, formatMoney, string } from "../../lib/values";
 import type { Row } from "../../lib/page";
@@ -20,7 +20,7 @@ export function Refunds() {
   const query = useQuery({
     queryKey: refundKeys.list(filters),
     queryFn: () => api<{ refunds: Row[] }>(`/refunds${search ? `?${search}` : ""}`),
-    refetchInterval: POLL_INTERVAL.refunds,
+    ...pollingQuery(POLL_INTERVAL.refunds),
     placeholderData: keepPreviousData,
   });
 

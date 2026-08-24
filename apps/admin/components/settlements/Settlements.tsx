@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { api } from "../../lib/api";
 import { settlementKeys } from "../../lib/query-keys";
-import { POLL_INTERVAL } from "../../lib/polling";
+import { POLL_INTERVAL, pollingQuery } from "../../lib/polling";
 import { formatDate, formatMoney, number, string } from "../../lib/values";
 import type { Row } from "../../lib/page";
 import { Badge } from "../ui/Badge";
@@ -18,9 +18,11 @@ export function Settlements() {
   const query = useQuery({
     queryKey: settlementKeys.list(),
     queryFn: () => api<{ settlements: Row[] }>("/reward-settlements"),
-    refetchInterval: POLL_INTERVAL.settlements,
+    ...pollingQuery(POLL_INTERVAL.settlements),
   });
   const [selected, setSelected] = useState<string | null>(() => (typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("id")));
+  const stalePreparedOnly = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("stale_prepared") === "1";
+  const settlements = query.data?.settlements.filter((settlement) => !stalePreparedOnly || number(settlement.stale_prepared) === 1) ?? [];
 
   return (
     <>
@@ -30,12 +32,13 @@ export function Settlements() {
         text="PREPARED уже резервирует начисление. Stale state — это durable operator review, а не автоматическое освобождение денег."
       />
       <section className="panel">
+        {stalePreparedOnly && <p className="notice">Показаны только stale PREPARED settlements из dashboard alarm.</p>}
         <Freshness query={{ ...query, hasData: Boolean(query.data) }} />
         {query.isLoadingError ? <Notice error={(query.error as { code?: string } | null)?.code ?? "UNKNOWN"} /> : !query.data ? <Loading /> : (
           <table aria-busy={query.isFetching}>
             <thead><tr><th>Подготовлен</th><th>Агент</th><th>Событие</th><th>Сумма</th><th>Состояние</th><th>Evidence</th></tr></thead>
             <tbody>
-              {query.data.settlements.map((settlement) => (
+              {settlements.map((settlement) => (
                 <tr
                   className="click-row"
                   onClick={() => { setSelected(string(settlement.id)); history.replaceState(null, "", `/settlements/?id=${encodeURIComponent(string(settlement.id))}`); }}

@@ -4,7 +4,7 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { api } from "../../lib/api";
 import { cityKeys, occurrenceKeys, orderKeys } from "../../lib/query-keys";
-import { POLL_INTERVAL } from "../../lib/polling";
+import { POLL_INTERVAL, pollingQuery } from "../../lib/polling";
 import { orderFiltersFromSearchParams, type OrderFilters } from "../../lib/filters";
 import { formatDate, formatMoney, number, string } from "../../lib/values";
 import type { Row } from "../../lib/page";
@@ -24,7 +24,7 @@ export function Orders() {
   const occurrences = useQuery({
     queryKey: occurrenceKeys.list(),
     queryFn: () => api<{ occurrences: Row[] }>("/occurrences"),
-    refetchInterval: POLL_INTERVAL.occurrences,
+    ...pollingQuery(POLL_INTERVAL.occurrences),
   });
 
   // Hydrates from the query string so a dashboard counter's deep-link (e.g.
@@ -42,7 +42,7 @@ export function Orders() {
       const qs = search.toString();
       return api<{ orders: Row[] }>(`/orders${qs ? `?${qs}` : ""}`);
     },
-    refetchInterval: POLL_INTERVAL.orders,
+    ...pollingQuery(POLL_INTERVAL.orders),
     placeholderData: keepPreviousData,
   });
 

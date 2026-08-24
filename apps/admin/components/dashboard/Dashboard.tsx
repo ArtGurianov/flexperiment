@@ -4,7 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import { api } from "../../lib/api";
 import { dashboardKeys } from "../../lib/query-keys";
-import { POLL_INTERVAL } from "../../lib/polling";
+import { POLL_INTERVAL, pollingQuery } from "../../lib/polling";
 import { formatDate, formatMoney, maybeNumber, number, renderMaybe, string } from "../../lib/values";
 import type { Row } from "../../lib/page";
 import { Badge } from "../ui/Badge";
@@ -25,15 +25,15 @@ const HEALTH_ROWS: { key: string; label: string; href: string }[] = [
   { key: "review_required_refunds", label: "REVIEW_REQUIRED (refunds)", href: "/refunds/?status=REVIEW_REQUIRED" },
   { key: "pending_refunds", label: "Pending refunds", href: "/refunds/?status=REQUESTED&status=SUBMITTING&status=SUBMIT_UNKNOWN&status=RECONCILING" },
   { key: "email_attention", label: "Email attention", href: "/email-attention/" },
-  { key: "stale_prepared_settlements", label: "Stale PREPARED", href: "/settlements/" },
-  { key: "operational_incidents", label: "Operational incidents", href: "/incidents/" },
+  { key: "stale_prepared_settlements", label: "Stale PREPARED", href: "/settlements/?stale_prepared=1" },
+  { key: "operational_incidents", label: "Operational incidents", href: "/incidents/?status=OPEN" },
 ];
 
 export function Dashboard() {
   const query = useQuery({
     queryKey: dashboardKeys.summary(),
     queryFn: () => api<DashboardResponse>("/dashboard"),
-    refetchInterval: POLL_INTERVAL.dashboard,
+    ...pollingQuery(POLL_INTERVAL.dashboard),
     // No placeholderData here: the dashboard is one query, not a filtered
     // list — keepPreviousData exists to bridge a filter transition, and
     // applying it here would risk the exact bug class P0 removes (E3).

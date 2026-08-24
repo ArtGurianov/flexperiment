@@ -4,10 +4,11 @@ import { useQuery } from "@tanstack/react-query";
 import { FormEvent, useState } from "react";
 import { findCityBySlug } from "../../../../lib/city-catalog";
 import { parseRublesToKopecks } from "../../../../lib/money";
-import { api, idempotencyKey } from "../../lib/api";
+import { api } from "../../lib/api";
 import { useAdminMutation } from "../../lib/use-admin-mutation";
+import { usePersistentIdempotencyKey } from "../../lib/use-persistent-idempotency-key";
 import { cityKeys, occurrenceKeys } from "../../lib/query-keys";
-import { POLL_INTERVAL } from "../../lib/polling";
+import { POLL_INTERVAL, pollingQuery } from "../../lib/polling";
 import type { OccurrenceAction as OccurrenceActionSpec } from "../../lib/occurrence-actions";
 import { fromLocalInput, string } from "../../lib/values";
 import type { Row } from "../../lib/page";
@@ -33,12 +34,12 @@ export function Occurrences() {
   const occurrences = useQuery({
     queryKey: occurrenceKeys.list(),
     queryFn: () => api<{ occurrences: Row[] }>("/occurrences"),
-    refetchInterval: POLL_INTERVAL.occurrences,
+    ...pollingQuery(POLL_INTERVAL.occurrences),
   });
 
   const [form, setForm] = useState(initialForm);
   const [validationError, setValidationError] = useState<string | null>(null);
-  const [key, setKey] = useState<string | null>(null);
+  const createKey = usePersistentIdempotencyKey();
   const [action, setAction] = useState<{ occurrence: Row; label: string; patch: OccurrenceActionSpec["patch"] } | null>(null);
   const [editing, setEditing] = useState<Row | null>(null);
   const [cancelling, setCancelling] = useState<Row | null>(null);
@@ -46,6 +47,7 @@ export function Occurrences() {
   // Accordion: at most one expanded cancellation-financials row at a time —
   // F2, and the input the request budget (§1c) depends on being O(1).
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [editorConflict, setEditorConflict] = useState(false);
   const set = (field: keyof typeof form, value: string) => setForm((previous) => ({ ...previous, [field]: value }));
   const chooseCity = (cityId: string) => {
     const city = cities.data?.cities.find((entry) => string(entry.id) === cityId);
@@ -53,8 +55,8 @@ export function Occurrences() {
     setForm((previous) => ({ ...previous, city_id: cityId, timezone }));
   };
 
-  const create = useAdminMutation("occurrence.create", (body: Row) =>
-    api("/occurrences", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": key ?? idempotencyKey() }, body: JSON.stringify(body) }));
+  const create = useAdminMutation("occurrence.create", ({ body, key }: { body: Row; key: string }) =>
+    api("/occurrences", { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": key }, body: JSON.stringify(body) }));
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
@@ -66,7 +68,7 @@ export function Occurrences() {
       setValidationError("VALIDATION_ERROR"); return;
     }
     setValidationError(null);
-    const actionKey = key ?? idempotencyKey(); setKey(actionKey);
+    const key = createKey.acquire();
     const body: Row = {
       city_id: form.city_id,
       title: form.title, starts_at: fromLocalInput(form.starts_at), ends_at: fromLocalInput(form.ends_at),
@@ -76,8 +78,8 @@ export function Occurrences() {
     if (form.venue_status === "CONFIRMED") { body.venue_name = form.venue_name; body.venue_address = form.venue_address; }
     else { body.venue_disclosure_text = form.venue_disclosure_text; body.venue_announce_by = fromLocalInput(form.venue_announce_by); }
     try {
-      await create.mutateAsync(body);
-      setKey(null);
+      await create.mutateAsync({ body, key });
+      createKey.clear();
       setForm((previous) => ({ ...previous, title: "", starts_at: "", ends_at: "", price_kopecks: "", capacity: "", venue_name: "", venue_address: "", venue_disclosure_text: "", venue_announce_by: "", reason: "" }));
     } catch {
       // error surfaced via create.error below
@@ -137,6 +139,7 @@ export function Occurrences() {
       </section>
       <section className="panel">
         <h2>Все состояния каталога</h2>
+        {editorConflict && <Notice>Событие изменилось у другого оператора. Данные перечитаны: откройте запись снова и сверьте изменения.</Notice>}
         <Freshness query={{ ...occurrences, hasData: Boolean(occurrences.data) }} />
         {occurrences.isLoadingError ? <Notice error={(occurrences.error as { code?: string } | null)?.code ?? "UNKNOWN"} /> : !occurrences.data ? <Loading /> : (
           <div className="occurrence-list" aria-busy={occurrences.isFetching}>
@@ -156,7 +159,7 @@ export function Occurrences() {
         )}
       </section>
       {action && <OccurrenceAction action={action} close={() => setAction(null)} done={() => setAction(null)} />}
-      {editing && <OccurrenceEditor occurrence={editing} close={() => setEditing(null)} done={() => setEditing(null)} />}
+      {editing && <OccurrenceEditor occurrence={editing} close={() => setEditing(null)} done={() => setEditing(null)} onRevisionConflict={() => { setEditing(null); setEditorConflict(true); }} />}
       {cancelling && <OccurrenceCancellation occurrence={cancelling} close={() => setCancelling(null)} done={() => setCancelling(null)} />}
       {completing && <OccurrenceCompletion occurrence={completing} close={() => setCompleting(null)} done={() => setCompleting(null)} />}
     </>

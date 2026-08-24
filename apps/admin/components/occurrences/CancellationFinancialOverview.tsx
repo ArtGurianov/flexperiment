@@ -3,7 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "../../lib/api";
 import { occurrenceKeys } from "../../lib/query-keys";
-import { POLL_INTERVAL } from "../../lib/polling";
+import { POLL_INTERVAL, pollingQuery } from "../../lib/polling";
 import { formatMoney, number } from "../../lib/values";
 import type { Row } from "../../lib/page";
 import { Notice } from "../ui/Notice";
@@ -13,7 +13,7 @@ export function CancellationFinancialOverview({ occurrenceId }: { occurrenceId: 
   const overview = useQuery({
     queryKey: occurrenceKeys.cancellationFinancials(occurrenceId),
     queryFn: () => api<Row>(`/occurrences/${occurrenceId}/cancellation-financial-overview`),
-    refetchInterval: POLL_INTERVAL.cancellationFinancials,
+    ...pollingQuery(POLL_INTERVAL.cancellationFinancials),
   });
   if (overview.isLoadingError) return <Notice error={(overview.error as { code?: string } | null)?.code ?? "UNKNOWN"} />;
   if (!overview.data) return <small>Загружаем financial overview…</small>;

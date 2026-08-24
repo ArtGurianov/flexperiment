@@ -9,7 +9,7 @@ import type { Row } from "../../lib/page";
 import { Notice } from "../ui/Notice";
 import { MoneyInput } from "../ui/MoneyInput";
 
-export function OccurrenceEditor({ occurrence, close, done }: { occurrence: Row; close: () => void; done: () => void }) {
+export function OccurrenceEditor({ occurrence, close, done, onRevisionConflict }: { occurrence: Row; close: () => void; done: () => void; onRevisionConflict: () => void }) {
   const [form, setForm] = useState({
     title: string(occurrence.title),
     starts_at: toLocalInput(occurrence.starts_at),
@@ -31,7 +31,12 @@ export function OccurrenceEditor({ occurrence, close, done }: { occurrence: Row;
   const mutation = useAdminMutation(
     "occurrence.patch",
     (body: Row) => api(`/occurrences/${string(occurrence.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json", "Idempotency-Key": key }, body: JSON.stringify(body) }),
-    { context: () => ({ occurrenceId: string(occurrence.id) }) },
+    {
+      context: () => ({ occurrenceId: string(occurrence.id) }),
+      onError: (error) => {
+        if (error.code === "OCCURRENCE_REVISION_CONFLICT") onRevisionConflict();
+      },
+    },
   );
 
   const submit = async (event: FormEvent) => {
