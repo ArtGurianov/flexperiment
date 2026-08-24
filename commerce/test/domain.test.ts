@@ -1589,6 +1589,7 @@ describe("commerce domain", () => {
       WHERE request.email_normalized = 'delivery-sequence@example.test'`).get() as { request_id: string; outbox_id: string };
 
     setup.domain.applyUnisenderDelivery({ outboxId: row.outbox_id, status: "ACCEPTED", providerStatus: "accepted", semanticKey: "delivery-sequence-accepted", jobId: "job-delivery-sequence" });
+    setup.domain.applyUnisenderDelivery({ outboxId: row.outbox_id, status: "SENT", providerStatus: "sent", semanticKey: "delivery-sequence-sent", jobId: "job-delivery-sequence" });
     setup.domain.applyUnisenderDelivery({ outboxId: row.outbox_id, status: "DELIVERED", providerStatus: "delivered", semanticKey: "delivery-sequence-delivered", jobId: "job-delivery-sequence" });
     setup.domain.applyUnisenderDelivery({ outboxId: row.outbox_id, status: "SENT", providerStatus: "sent", semanticKey: "delivery-sequence-late-sent", jobId: "job-delivery-sequence" });
 
@@ -1597,6 +1598,31 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT status, recipient_email, recipient_email_hash, payload_snapshot FROM email_outbox WHERE id = ?").get(row.outbox_id)).toEqual({
       status: "DELIVERED", recipient_email: "", recipient_email_hash: "", payload_snapshot: "{}",
     });
+  });
+
+  it("does not resend or invent a lookup for a SENT outbox with a durable job ID", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    let sends = 0;
+    let lookups = 0;
+    const email: EmailProvider = {
+      async send() { sends += 1; return { jobId: "sent-job" }; },
+      async lookup() { lookups += 1; return { status: "UNKNOWN" }; },
+    };
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email);
+    const quote = domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const checkout = await domain.checkoutAsync(checkoutPayload(quote.quote_id), "sent-no-resend-001", "https://flexperiment.ru");
+    const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(checkout.status_id) as { id: string };
+    domain.markPaymentPaid(payment.id, 100_000, "provider-payment");
+    const outbox = setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'TICKET'").get() as { id: string };
+
+    await domain.processEmailOutbox();
+    expect(setup.db.prepare("SELECT status, job_id FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "ACCEPTED", job_id: "sent-job" });
+    domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "SENT", providerStatus: "sent", jobId: "sent-job", semanticKey: "sent-no-resend" });
+    await domain.processEmailOutbox();
+
+    expect(sends).toBe(1);
+    expect(lookups).toBe(0);
+    expect(setup.db.prepare("SELECT status, job_id FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "SENT", job_id: "sent-job" });
   });
 
   it("repairs only a proven delivered city-interest orphan and is idempotent", () => {

@@ -110,6 +110,11 @@ certification_refund_poll_action() {
   esac
 }
 
+certification_checkout_request_hash_matches() {
+  local persisted_hash="${1:-}" request_hash="$2"
+  [[ -z "$persisted_hash" || "$request_hash" == "$persisted_hash" ]]
+}
+
 certification_manifest_is_valid() {
   local manifest_file="$1" occurrence_id="$2"
   jq -e --arg occurrence "$occurrence_id" '

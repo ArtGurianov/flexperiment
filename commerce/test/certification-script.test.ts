@@ -89,6 +89,13 @@ describe("production certification runbook checkpoints", () => {
     expect(source).not.toContain('SALES_CLEANUP_STARTED_AT=""');
     expect(source).toContain("certification_clear_state_values");
     expect(source).toContain("request_stdin");
+    expect(source).toContain("CERTIFICATION_HTTP_CONNECT_TIMEOUT_SECONDS");
+    expect(source).toContain("CERTIFICATION_HTTP_MAX_TIME_SECONDS");
+    expect(source).toContain("--connect-timeout \"$CERTIFICATION_HTTP_CONNECT_TIMEOUT_SECONDS\"");
+    expect(source).toContain("--max-time \"$CERTIFICATION_HTTP_MAX_TIME_SECONDS\"");
+    expect(source).toContain("prepare_checkout_request");
+    expect(source).toContain("CHECKOUT_REQUEST_BODY");
+    expect(source).not.toContain("CHECKOUT_REQUEST_BODY QUOTE_ID");
   });
 
   it("plans a monotonic emergency cleanup while retaining only post-dispatch financial recovery", () => {
@@ -201,6 +208,40 @@ describe("production certification runbook checkpoints", () => {
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
+  });
+
+  it("keeps checkout PII only in process memory and rejects a mismatched resume body", () => {
+    const source = readFileSync(certificationScript, "utf8");
+    const prepare = source.slice(source.indexOf("prepare_checkout_request()"), source.indexOf("replay_checkout()"));
+    const replay = source.slice(source.indexOf("replay_checkout()"), source.indexOf('if [[ "$PHASE" == QUOTE_READY ]]'));
+
+    expect([...source.matchAll(/Real test email:/g)]).toHaveLength(1);
+    expect(prepare).toContain('[[ -n "${CHECKOUT_REQUEST_BODY+x}" ]] && return 0');
+    expect(prepare).toContain("CHECKOUT_REQUEST_SHA256");
+    expect(prepare).toContain("unset CUSTOMER_EMAIL CUSTOMER_NAME CUSTOMER_DOB");
+    expect(replay).toContain("prepare_checkout_request");
+    expect(replay).toContain('"$CHECKOUT_REQUEST_BODY"');
+    expect(source).toContain("Never inherit a body from the operator's");
+    expect(source).toContain("unset CHECKOUT_REQUEST_BODY");
+    expect(source.match(/STATE_KEYS=\([^\n]+/)?.[0]).not.toContain("CHECKOUT_REQUEST_BODY");
+    expect(source.match(/STATE_KEYS=\([^\n]+/)?.[0]).not.toContain("CUSTOMER_EMAIL");
+    expect(source.match(/STATE_KEYS=\([^\n]+/)?.[0]).not.toContain("CUSTOMER_NAME");
+    expect(source.match(/STATE_KEYS=\([^\n]+/)?.[0]).not.toContain("CUSTOMER_DOB");
+    expect(helperSucceeds("certification_checkout_request_hash_matches", "same", "same")).toBe(true);
+    expect(helperSucceeds("certification_checkout_request_hash_matches", "", "fresh")).toBe(true);
+    expect(helperSucceeds("certification_checkout_request_hash_matches", "persisted", "different")).toBe(false);
+  });
+
+  it("bounds every certification curl request and makes a transport timeout fail safe", () => {
+    const source = readFileSync(certificationScript, "utf8");
+    const request = source.slice(source.indexOf("request()"), source.indexOf("request_stdin()"));
+    const requestStdin = source.slice(source.indexOf("request_stdin()"), source.indexOf("require_http()"));
+    expect(request).toContain("--connect-timeout");
+    expect(request).toContain("--max-time");
+    expect(request).toContain("incomplete \"certification HTTP request did not complete");
+    expect(requestStdin).toContain("--connect-timeout");
+    expect(requestStdin).toContain("--max-time");
+    expect(requestStdin).toContain("incomplete \"certification HTTP request did not complete");
   });
 
   it("clears inherited state values before resume JSON becomes authoritative", () => {

@@ -22,6 +22,8 @@ CITY_SLUG="kemerovo"
 EMAIL_TIMEOUT_SECONDS="${EMAIL_TIMEOUT_SECONDS:-900}"
 PAYMENT_TIMEOUT_SECONDS="${PAYMENT_TIMEOUT_SECONDS:-900}"
 REFUND_TIMEOUT_SECONDS="${REFUND_TIMEOUT_SECONDS:-900}"
+CERTIFICATION_HTTP_CONNECT_TIMEOUT_SECONDS="${CERTIFICATION_HTTP_CONNECT_TIMEOUT_SECONDS:-10}"
+CERTIFICATION_HTTP_MAX_TIME_SECONDS="${CERTIFICATION_HTTP_MAX_TIME_SECONDS:-30}"
 
 usage() {
   cat <<'EOF'
@@ -40,6 +42,9 @@ elif [[ $# -ne 0 ]]; then usage >&2; exit 2; fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=scripts/certification-recovery.sh
 source "$SCRIPT_DIR/scripts/certification-recovery.sh"
+# Checkout PII is process-local only. Never inherit a body from the operator's
+# environment or a prior shell; a resumed process must rebuild and hash-check it.
+unset CHECKOUT_REQUEST_BODY
 
 RUN_TMP="$(mktemp -d)"; chmod 700 "$RUN_TMP"
 COOKIE_JAR="$RUN_TMP/admin.cookies"; HTTP_BODY="$RUN_TMP/http.json"; CHECKOUT_BODY="$RUN_TMP/checkout.json"
@@ -51,6 +56,7 @@ on_exit() {
   if [[ -s "${COOKIE_JAR:-/nonexistent}" ]]; then
     curl -sS --max-time 2 -o /dev/null -b "$COOKIE_JAR" -H "Origin: $ADMIN_ORIGIN" -X POST "$ADMIN/v1/admin/logout" >/dev/null 2>&1 || true
   fi
+  unset CHECKOUT_REQUEST_BODY
   rm -rf "$RUN_TMP"
   if [[ "$code" -ne 0 && -n "${OCCURRENCE_ID:-}" ]]; then
     if [[ -n "${SALES_CLEANUP_STARTED_AT:-}" || -n "${SALES_CLEANED_AT:-}" ]]; then
@@ -69,11 +75,21 @@ trap 'exit 143' TERM
 fail() { echo "ERROR: $*" >&2; [[ -n "${STATE_FILE:-}" ]] && echo "Resume state retained: $STATE_FILE" >&2; exit 1; }
 incomplete() { echo "INCOMPLETE: $*" >&2; [[ -n "${STATE_FILE:-}" ]] && echo "Resume state retained: $STATE_FILE" >&2; exit 2; }
 new_key() { uuidgen | tr '[:upper:]' '[:lower:]'; }
-request() { local output="$1"; shift; HTTP_CODE="$(curl -sS -o "$output" -w '%{http_code}' "$@")"; }
+[[ "$CERTIFICATION_HTTP_CONNECT_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail "CERTIFICATION_HTTP_CONNECT_TIMEOUT_SECONDS must be a positive integer"
+[[ "$CERTIFICATION_HTTP_MAX_TIME_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail "CERTIFICATION_HTTP_MAX_TIME_SECONDS must be a positive integer"
+request() {
+  local output="$1"
+  shift
+  if ! HTTP_CODE="$(curl -sS --connect-timeout "$CERTIFICATION_HTTP_CONNECT_TIMEOUT_SECONDS" --max-time "$CERTIFICATION_HTTP_MAX_TIME_SECONDS" -o "$output" -w '%{http_code}' "$@")"; then
+    incomplete "certification HTTP request did not complete within configured bounds; reconcile any existing command and do not issue a new one"
+  fi
+}
 request_stdin() {
   local output="$1" body="$2"
   shift 2
-  HTTP_CODE="$(printf '%s' "$body" | curl -sS -o "$output" -w '%{http_code}' "$@" --data-binary @-)"
+  if ! HTTP_CODE="$(printf '%s' "$body" | curl -sS --connect-timeout "$CERTIFICATION_HTTP_CONNECT_TIMEOUT_SECONDS" --max-time "$CERTIFICATION_HTTP_MAX_TIME_SECONDS" -o "$output" -w '%{http_code}' "$@" --data-binary @-)"; then
+    incomplete "certification HTTP request did not complete within configured bounds; reconcile any existing command and do not issue a new one"
+  fi
 }
 require_http() { [[ "$HTTP_CODE" == "$1" ]] || fail "$2 expected HTTP $1, got $HTTP_CODE"; }
 require_2xx() { [[ "$HTTP_CODE" =~ ^2 ]] || fail "$1 returned HTTP $HTTP_CODE"; }
@@ -389,23 +405,30 @@ if [[ "$PHASE" == OCCURRENCE_OPEN ]]; then
   request "$HTTP_BODY" -H "Origin: $PUBLIC_ORIGIN" -H 'Content-Type: application/json' -X POST "$API/v1/public/checkout-context" --data "$(jq -nc --arg occurrence "$OCCURRENCE_ID" '{occurrence_id:$occurrence}')"; require_http 200 "Checkout context"; QUOTE_ID="$(json '.quote_id' "$HTTP_BODY")"; set_phase QUOTE_READY
 fi
 
-replay_checkout() {
-  local checkout_request checkout_request_sha
-  read -rp "Real test email: " CUSTOMER_EMAIL </dev/tty; read -rp "Customer name: " CUSTOMER_NAME </dev/tty; read -rp "Customer date of birth (YYYY-MM-DD): " CUSTOMER_DOB </dev/tty
-  checkout_request="$(printf '%s\n%s\n%s' "$CUSTOMER_NAME" "$CUSTOMER_EMAIL" "$CUSTOMER_DOB" | python3 -c '
+prepare_checkout_request() {
+  local checkout_request_sha
+  [[ -n "${CHECKOUT_REQUEST_BODY+x}" ]] && return 0
+  read -rp "Real test email: " CUSTOMER_EMAIL </dev/tty
+  read -rp "Customer name: " CUSTOMER_NAME </dev/tty
+  read -rp "Customer date of birth (YYYY-MM-DD): " CUSTOMER_DOB </dev/tty
+  CHECKOUT_REQUEST_BODY="$(printf '%s\n%s\n%s' "$CUSTOMER_NAME" "$CUSTOMER_EMAIL" "$CUSTOMER_DOB" | python3 -c '
 import json
 import sys
 name, email, dob = sys.stdin.read().splitlines()
 print(json.dumps({"quote_id": sys.argv[1], "customer_name": name, "customer_email": email, "customer_adult_confirmed": True, "participant": {"self": True, "date_of_birth": dob}, "offer_accepted": True, "pd_consent_accepted": True}, ensure_ascii=False, separators=(",", ":")))
 ' "$QUOTE_ID")"
-  checkout_request_sha="$(printf '%s' "$checkout_request" | shasum -a 256 | awk '{print $1}')"
-  if [[ -n "${CHECKOUT_REQUEST_SHA256:-}" ]]; then
-    [[ "$checkout_request_sha" == "$CHECKOUT_REQUEST_SHA256" ]] || fail "re-entered checkout data does not match the persisted pre-dispatch request hash; do not create another checkout"
-  else
+  checkout_request_sha="$(printf '%s' "$CHECKOUT_REQUEST_BODY" | shasum -a 256 | awk '{print $1}')"
+  if [[ -z "${CHECKOUT_REQUEST_SHA256:-}" ]]; then
     CHECKOUT_REQUEST_SHA256="$checkout_request_sha"; save_state
+  elif ! certification_checkout_request_hash_matches "$CHECKOUT_REQUEST_SHA256" "$checkout_request_sha"; then
+    unset CHECKOUT_REQUEST_BODY CUSTOMER_EMAIL CUSTOMER_NAME CUSTOMER_DOB checkout_request_sha
+    fail "re-entered checkout data does not match the persisted pre-dispatch request hash; do not create another checkout"
   fi
-  request_stdin "$CHECKOUT_BODY" "$checkout_request" -H "Origin: $PUBLIC_ORIGIN" -H 'Content-Type: application/json' -H "Idempotency-Key: $CHECKOUT_KEY" -X POST "$API/v1/public/checkouts"; require_2xx "Replay existing checkout"
-  unset CUSTOMER_EMAIL CUSTOMER_NAME CUSTOMER_DOB checkout_request checkout_request_sha
+  unset CUSTOMER_EMAIL CUSTOMER_NAME CUSTOMER_DOB checkout_request_sha
+}
+replay_checkout() {
+  prepare_checkout_request
+  request_stdin "$CHECKOUT_BODY" "$CHECKOUT_REQUEST_BODY" -H "Origin: $PUBLIC_ORIGIN" -H 'Content-Type: application/json' -H "Idempotency-Key: $CHECKOUT_KEY" -X POST "$API/v1/public/checkouts"; require_2xx "Replay existing checkout"
 }
 if [[ "$PHASE" == QUOTE_READY ]]; then
   ensure_key CHECKOUT_KEY
