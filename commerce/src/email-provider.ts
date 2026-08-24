@@ -7,7 +7,39 @@ export interface EmailProvider {
   lookup(input: { jobId?: string; idempotencyKey: string }): Promise<{ status: EmailDeliveryState; jobId?: string }>;
 }
 
+/**
+ * Event Dump is intentionally separate from `lookup()`: the provider creates
+ * an asynchronous CSV export, so it is recovery evidence rather than a cheap
+ * synchronous status lookup.
+ */
+export type UnisenderDumpEvent = {
+  eventTime: string;
+  jobId: string;
+  status: string;
+  deliveryStatus: string;
+  metadata: unknown;
+};
+
+export type UnisenderEventDump =
+  | { status: "queued" | "in_process" }
+  | { status: "ready"; events: UnisenderDumpEvent[] }
+  | { status: "failed" };
+
+export interface EmailDeliveryEvidenceProvider {
+  createEventDump(input: { jobId: string; startTime: string; endTime: string }): Promise<{ dumpId: string }>;
+  getEventDump(input: { dumpId: string }): Promise<UnisenderEventDump>;
+}
+
+export const isEmailDeliveryEvidenceProvider = (provider: EmailProvider): provider is EmailProvider & EmailDeliveryEvidenceProvider =>
+  typeof (provider as Partial<EmailDeliveryEvidenceProvider>).createEventDump === "function"
+  && typeof (provider as Partial<EmailDeliveryEvidenceProvider>).getEventDump === "function";
+
 type UnisenderSendResponse = { status?: unknown; job_id?: unknown; code?: unknown; error_code?: unknown; message?: unknown; error?: unknown };
+type UnisenderDumpCreateResponse = { status?: unknown; dump_id?: unknown };
+type UnisenderDumpGetResponse = {
+  status?: unknown;
+  event_dump?: { dump_status?: unknown; files?: Array<{ url?: unknown }> };
+};
 
 const sanitizedProviderCode = (value: unknown) => {
   if (typeof value !== "string" && typeof value !== "number") return undefined;
@@ -61,7 +93,46 @@ export class EmailProviderAmbiguousError extends Error {
   }
 }
 
-export class UnisenderGoProvider implements EmailProvider {
+const EVENT_DUMP_URL = "https://goapi.unisender.ru/ru/transactional/api/v1/event-dump";
+
+const parseCsv = (csv: string) => {
+  const rows: string[][] = [];
+  let row: string[] = []; let field = ""; let quoted = false;
+  for (let index = 0; index < csv.length; index += 1) {
+    const char = csv[index];
+    if (quoted) {
+      if (char === '"' && csv[index + 1] === '"') { field += '"'; index += 1; }
+      else if (char === '"') quoted = false;
+      else field += char;
+    } else if (char === '"') quoted = true;
+    else if (char === ",") { row.push(field); field = ""; }
+    else if (char === "\n") { row.push(field.replace(/\r$/, "")); rows.push(row); row = []; field = ""; }
+    else field += char;
+  }
+  if (quoted) return [];
+  if (field || row.length) { row.push(field.replace(/\r$/, "")); rows.push(row); }
+  return rows;
+};
+
+const dumpEventsFromCsv = (csv: string): UnisenderDumpEvent[] => {
+  const [header, ...rows] = parseCsv(csv);
+  if (!header) return [];
+  const columns = new Map(header.map((name, index) => [name, index]));
+  const required = ["event_time", "job_id", "status", "delivery_status", "metadata"];
+  if (required.some((name) => columns.get(name) === undefined)) return [];
+  return rows.flatMap((row) => {
+    const eventTime = row[columns.get("event_time")!];
+    const jobId = row[columns.get("job_id")!];
+    const status = row[columns.get("status")!];
+    const deliveryStatus = row[columns.get("delivery_status")!];
+    const rawMetadata = row[columns.get("metadata")!];
+    if (![eventTime, jobId, status, deliveryStatus, rawMetadata].every((value) => typeof value === "string")) return [];
+    try { return [{ eventTime, jobId, status, deliveryStatus, metadata: JSON.parse(rawMetadata) }]; }
+    catch { return []; }
+  });
+};
+
+export class UnisenderGoProvider implements EmailProvider, EmailDeliveryEvidenceProvider {
   constructor(readonly config: UnisenderGoConfig, readonly request: typeof fetch = fetch) {}
 
   async send(input: { recipientEmail: string; template: string; payload: Record<string, unknown>; idempotencyKey: string; outboxId?: string }) {
@@ -91,6 +162,44 @@ export class UnisenderGoProvider implements EmailProvider {
     // The confirmed Transactional API contract has no idempotence/metadata lookup.
     // Do not invent one or use it as evidence that a send did not happen.
     return { status: "UNKNOWN" };
+  }
+
+  async createEventDump(input: { jobId: string; startTime: string; endTime: string }) {
+    const response = await this.request(`${EVENT_DUMP_URL}/create.json`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json", "X-API-KEY": this.config.apiKey },
+      // The documented filter accepts one scalar job_id. Request only the
+      // evidence fields needed for strict local correlation; never export PII.
+      body: JSON.stringify({ start_time: input.startTime, end_time: input.endTime, limit: 100, filter: { job_id: input.jobId }, dump_fields: ["event_time", "job_id", "status", "delivery_status", "metadata"], format: "csv" }),
+    });
+    const payload = await response.json().catch(() => undefined) as UnisenderDumpCreateResponse | undefined;
+    if (!response.ok || payload?.status !== "success" || typeof payload.dump_id !== "string" || !payload.dump_id) throw new Error("Unisender Event Dump creation did not return a usable dump id.");
+    return { dumpId: payload.dump_id };
+  }
+
+  async getEventDump(input: { dumpId: string }): Promise<UnisenderEventDump> {
+    const response = await this.request(`${EVENT_DUMP_URL}/get.json`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json", "X-API-KEY": this.config.apiKey },
+      body: JSON.stringify({ dump_id: input.dumpId }),
+    });
+    const payload = await response.json().catch(() => undefined) as UnisenderDumpGetResponse | undefined;
+    if (!response.ok || payload?.status !== "success") throw new Error("Unisender Event Dump lookup failed.");
+    const dump = payload.event_dump;
+    if (!dump || typeof dump.dump_status !== "string") throw new Error("Unisender Event Dump lookup returned malformed status.");
+    if (dump.dump_status === "queued" || dump.dump_status === "in_process") return { status: dump.dump_status };
+    if (dump.dump_status === "failed") return { status: "failed" };
+    if (dump.dump_status !== "ready" || !Array.isArray(dump.files)) throw new Error("Unisender Event Dump lookup returned an unsupported status.");
+    const events: UnisenderDumpEvent[] = [];
+    for (const file of dump.files) {
+      if (typeof file?.url !== "string") continue;
+      const url = new URL(file.url);
+      if (url.protocol !== "https:" || !/(^|\.)unisender\.ru$/i.test(url.hostname)) throw new Error("Unisender Event Dump returned an untrusted file URL.");
+      const fileResponse = await this.request(url, { headers: { Accept: "text/csv" } });
+      if (!fileResponse.ok) throw new Error("Unisender Event Dump file download failed.");
+      events.push(...dumpEventsFromCsv(await fileResponse.text()));
+    }
+    return { status: "ready", events };
   }
 }
 

@@ -486,4 +486,28 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
       .toBeUndefined();
     db.close();
   });
+
+  it("adds durable Unisender Event Dump reconciliation state without rewriting email evidence", () => {
+    const db = openDatabase(":memory:");
+    applyThrough(db, "0028_customer_participant_ticketing.sql");
+    const outboxId = randomUUID();
+    db.prepare(`INSERT INTO email_outbox(
+      id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key, status, job_id
+    ) VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, 'SENT', 'known-job')`).run(outboxId, randomUUID());
+    db.prepare(`INSERT INTO email_provider_events(id, outbox_id, semantic_key, status, provider_status, job_id)
+      VALUES (?, ?, 'migration-event-dump-sent', 'SENT', 'sent', 'known-job')`).run(randomUUID(), outboxId);
+    const evidence = db.prepare("SELECT status, job_id, provider_status FROM email_provider_events WHERE outbox_id = ?").get(outboxId);
+
+    db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, "0029_unisender_event_dump_reconciliation.sql"), "utf8")))();
+
+    expect(db.prepare("SELECT status, job_id, provider_status FROM email_provider_events WHERE outbox_id = ?").get(outboxId)).toEqual(evidence);
+    db.prepare(`INSERT INTO unisender_event_dump_reconciliations(id, outbox_id, job_id, state, next_attempt_at)
+      VALUES (?, ?, 'known-job', 'PENDING_CREATE', '2030-01-01T00:00:00.000Z')`).run(randomUUID(), outboxId);
+    expect(() => db.prepare(`INSERT INTO unisender_event_dump_reconciliations(id, outbox_id, job_id, state, next_attempt_at)
+      VALUES (?, ?, 'other-job', 'PENDING_CREATE', '2030-01-01T00:00:00.000Z')`).run(randomUUID(), outboxId)).toThrow(/UNIQUE constraint failed/);
+    expect((db.prepare("PRAGMA index_list(unisender_event_dump_reconciliations)").all() as { name: string }[]).map(({ name }) => name))
+      .toEqual(expect.arrayContaining(["unisender_event_dump_reconciliations_due_idx", "unisender_event_dump_reconciliations_lease_idx"]));
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+    db.close();
+  });
 });

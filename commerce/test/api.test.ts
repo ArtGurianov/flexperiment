@@ -555,7 +555,7 @@ describe("commerce HTTP boundary", () => {
     const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")! };
     const system = await app.request("http://admin.flexperiment.ru/v1/admin/system/evidence", { headers });
     expect(system.headers.get("cache-control")).toBe("no-store");
-    expect(await system.json()).toMatchObject({ source_commit: process.env.SOURCE_COMMIT, migration_head: { version: "0028_customer_participant_ticketing.sql" }, active_legal_release: { version: "test" } });
+    expect(await system.json()).toMatchObject({ source_commit: process.env.SOURCE_COMMIT, migration_head: { version: "0029_unisender_event_dump_reconciliation.sql" }, active_legal_release: { version: "test" } });
       const evidence = await app.request(`http://admin.flexperiment.ru/v1/admin/orders/${order.id}/evidence`, { headers });
       const body = await evidence.json() as { order: { currency: string } } & Record<string, unknown>;
     expect(body).toMatchObject({

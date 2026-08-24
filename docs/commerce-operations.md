@@ -175,6 +175,36 @@ or metadata, so this implementation does not invent one. For city-interest,
 [`city-interest-operations.md`](city-interest-operations.md) for withdrawal,
 expiry, and webhook-subscription requirements.
 
+### Event Dump recovery for lost callbacks
+
+Webhooks are the fast path, not the sole delivery-evidence source. For an
+unsuperseded `ACCEPTED` or `SENT` outbox with a durable `job_id` that remains
+unresolved for at least five minutes, the worker may create a Unisender Go
+Event Dump filtered by that one exact `job_id`. The provider's documented
+filter is scalar, so Commerce never treats this as a synchronous lookup or
+creates a dump per worker tick. Its durable reconciliation row has a SQLite
+lease; only two locally pending dumps are allowed, and no more than one dump is
+created per hour. This stays below the provider's ten simultaneously existing
+dump limit even while its temporary files remain available for eight hours.
+
+The worker polls the provider's asynchronous dump later and downloads only the
+five required CSV fields: `event_time`, `job_id`, `status`,
+`delivery_status`, and `metadata`. It accepts an event only when both opaque
+correlations match exactly: `event.job_id == email_outbox.job_id` and
+`event.metadata.outbox_id == email_outbox.id`. Missing, malformed,
+contradictory, unavailable, or in-process data changes no email state and is
+retried no more frequently than the durable schedule. Creation is capped at
+eight attempts and polling at twenty; exhausted rows retain only safe
+operational diagnostics and require review rather than an unbounded loop. A correlated event goes
+through the same `applyUnisenderDelivery()` path as a webhook and gets a stable
+`unisender:event-dump:` semantic key, so delivery evidence is auditable and
+replays are idempotent.
+
+This recovery path never resends, never changes `SENT` to `SEND_UNKNOWN`, and
+never changes payment/refund state. It cannot satisfy certification from
+provider HTTP success alone: certification still waits for the locally durable,
+correlated `DELIVERED` provider event.
+
 ## Email operational attention
 
 Delivery state is provider evidence and is not an operator task flag. The

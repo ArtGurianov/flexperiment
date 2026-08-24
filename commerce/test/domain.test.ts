@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import { CommerceDomain, CREATE_UNKNOWN_LOOKUP_INITIAL_BACKOFF_MS, CREATE_UNKNOWN_LOOKUP_MAX_ATTEMPTS, DomainError, EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS, STALE_PREPARED_SETTLEMENT_MS, classifyOccurrenceRevision } from "../src/domain";
 import { runWorkerSweep } from "../src/worker-sweep";
-import { UnisenderGoProvider, type EmailProvider } from "../src/email-provider";
+import { UnisenderGoProvider, type EmailDeliveryEvidenceProvider, type EmailProvider } from "../src/email-provider";
 import { MockProvider, type PaymentProvider } from "../src/provider";
 import { decryptTicketCapability, emailHash } from "../src/crypto";
 import { getParticipantAgeOnOccurrenceDate } from "../../lib/participant-age";
@@ -1625,6 +1625,127 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT status, job_id FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "SENT", job_id: "sent-job" });
   });
 
+  it("converges a lost delivered callback from strictly correlated Event Dump evidence without resend", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    let timestamp = Date.parse("2026-08-24T08:45:00.000Z");
+    let sends = 0; let creates = 0; let polls = 0;
+    let outboxId = "";
+    const email: EmailProvider & EmailDeliveryEvidenceProvider = {
+      async send() { sends += 1; return { jobId: "1wyQ8z-000RJT-KwD8" }; },
+      async lookup() { return { status: "UNKNOWN" }; },
+      async createEventDump(input) { creates += 1; expect(input.jobId).toBe("1wyQ8z-000RJT-KwD8"); return { dumpId: "dump-production-fixture" }; },
+      async getEventDump() {
+        polls += 1;
+        return { status: "ready", events: [
+          { eventTime: "2026-08-24 08:35:01", jobId: "1wyQ8z-000RJT-KwD8", status: "accepted", deliveryStatus: "ok_accepted", metadata: { outbox_id: outboxId } },
+          { eventTime: "2026-08-24 08:35:19", jobId: "1wyQ8z-000RJT-KwD8", status: "sent", deliveryStatus: "ok_sent", metadata: { outbox_id: outboxId } },
+          { eventTime: "2026-08-24 08:35:20", jobId: "1wyQ8z-000RJT-KwD8", status: "delivered", deliveryStatus: "ok_delivered", metadata: { outbox_id: outboxId } },
+        ] };
+      },
+    };
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
+    const quote = domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const checkout = await domain.checkoutAsync(checkoutPayload(quote.quote_id), "event-dump-production-fixture", "https://flexperiment.ru");
+    const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(checkout.status_id) as { id: string };
+    domain.markPaymentPaid(payment.id, 100_000, "provider-payment");
+    outboxId = (setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'TICKET'").get() as { id: string }).id;
+    await domain.processEmailOutbox();
+    domain.applyUnisenderDelivery({ outboxId, status: "SENT", providerStatus: "sent", jobId: "1wyQ8z-000RJT-KwD8", semanticKey: "webhook-sent-production-fixture" });
+    setup.db.prepare("UPDATE email_outbox SET created_at = ? WHERE id = ?").run(new Date(timestamp - 10 * 60_000).toISOString(), outboxId);
+
+    await domain.reconcileUnisenderEventDumps();
+    expect(creates).toBe(1); expect(polls).toBe(0);
+    expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outboxId)).toEqual({ status: "SENT" });
+    timestamp += 61_000;
+    await domain.reconcileUnisenderEventDumps();
+    expect(polls).toBe(1); expect(sends).toBe(1);
+    expect(setup.db.prepare("SELECT status, delivered_at FROM email_outbox WHERE id = ?").get(outboxId)).toEqual({ status: "DELIVERED", delivered_at: expect.any(String) });
+    expect(setup.db.prepare("SELECT provider_status, job_id FROM email_provider_events WHERE outbox_id = ? AND provider_status = 'delivered'").get(outboxId)).toEqual({ provider_status: "delivered", job_id: "1wyQ8z-000RJT-KwD8" });
+    await domain.reconcileUnisenderEventDumps();
+    expect(creates).toBe(1); expect(polls).toBe(1);
+  });
+
+  it("rejects uncorrelated or malformed Event Dump rows without changing SENT email state", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    let timestamp = Date.parse("2026-08-24T08:45:00.000Z"); let outboxId = "";
+    const email: EmailProvider & EmailDeliveryEvidenceProvider = {
+      async send() { return { jobId: "target-job" }; }, async lookup() { return { status: "UNKNOWN" }; },
+      async createEventDump() { return { dumpId: "dump-mismatch" }; },
+      async getEventDump() { return { status: "ready", events: [
+        { eventTime: "2026-08-24 08:35:20", jobId: "target-job", status: "delivered", deliveryStatus: "ok_delivered", metadata: { outbox_id: "other-outbox" } },
+        { eventTime: "2026-08-24 08:35:21", jobId: "other-job", status: "delivered", deliveryStatus: "ok_delivered", metadata: { outbox_id: outboxId } },
+        { eventTime: "", jobId: "target-job", status: "delivered", deliveryStatus: "ok_delivered", metadata: { outbox_id: outboxId } },
+      ] }; },
+    };
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
+    const quote = domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const checkout = await domain.checkoutAsync(checkoutPayload(quote.quote_id), "event-dump-mismatch-fixture", "https://flexperiment.ru");
+    const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(checkout.status_id) as { id: string };
+    domain.markPaymentPaid(payment.id, 100_000, "provider-payment");
+    outboxId = (setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'TICKET'").get() as { id: string }).id;
+    await domain.processEmailOutbox();
+    domain.applyUnisenderDelivery({ outboxId, status: "SENT", providerStatus: "sent", jobId: "target-job", semanticKey: "webhook-sent-mismatch" });
+    setup.db.prepare("UPDATE email_outbox SET created_at = ? WHERE id = ?").run(new Date(timestamp - 10 * 60_000).toISOString(), outboxId);
+    await domain.reconcileUnisenderEventDumps();
+    timestamp += 61_000;
+    await domain.reconcileUnisenderEventDumps();
+    expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outboxId)).toEqual({ status: "SENT" });
+    expect(setup.db.prepare("SELECT state, last_error_code FROM unisender_event_dump_reconciliations WHERE outbox_id = ?").get(outboxId)).toEqual({ state: "RETRY_WAIT", last_error_code: "NO_TERMINAL_EVIDENCE" });
+  });
+
+  it("persists a dump lease across domain restart and rate-limits new dump creation", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    let timestamp = Date.parse("2026-08-24T08:45:00.000Z"); let creates = 0; let polls = 0;
+    const email: EmailProvider & EmailDeliveryEvidenceProvider = {
+      async send() { throw new Error("must not resend"); }, async lookup() { return { status: "UNKNOWN" }; },
+      async createEventDump() { creates += 1; return { dumpId: `dump-${creates}` }; },
+      async getEventDump() { polls += 1; return { status: "in_process" }; },
+    };
+    const insert = setup.db.prepare(`INSERT INTO email_outbox(
+      id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key, status, job_id, created_at
+    ) VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, 'SENT', ?, ?)`);
+    const first = randomUUID(); const second = randomUUID();
+    insert.run(first, randomUUID(), "job-one", new Date(timestamp - 10 * 60_000).toISOString());
+    insert.run(second, randomUUID(), "job-two", new Date(timestamp - 10 * 60_000).toISOString());
+    const firstWorker = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
+    await firstWorker.reconcileUnisenderEventDumps();
+    expect(creates).toBe(1);
+    // A replacement worker finds the durable dump id and polls it; it does
+    // not create another dump for either candidate while the global creation
+    // interval remains active.
+    timestamp += 61_000;
+    const restartedWorker = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
+    await restartedWorker.reconcileUnisenderEventDumps();
+    expect(polls).toBe(1); expect(creates).toBe(1);
+    await restartedWorker.reconcileUnisenderEventDumps();
+    expect(creates).toBe(1);
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM unisender_event_dump_reconciliations WHERE state = 'PENDING_DUMP'").get()).toEqual({ count: 1 });
+  });
+
+  it("uses Event Dump delivery through the existing city-interest cleanup transition", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    let timestamp = Date.parse("2026-08-24T08:45:00.000Z"); let outboxId = "";
+    const email: EmailProvider & EmailDeliveryEvidenceProvider = {
+      async send() { return { jobId: "city-dump-job" }; }, async lookup() { return { status: "UNKNOWN" }; },
+      async createEventDump() { return { dumpId: "city-dump" }; },
+      async getEventDump() { return { status: "ready", events: [{ eventTime: "2026-08-24 08:35:20", jobId: "city-dump-job", status: "delivered", deliveryStatus: "ok_delivered", metadata: { outbox_id: outboxId } }] }; },
+    };
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
+    setup.db.prepare("UPDATE occurrences SET visibility = 'HIDDEN', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
+    domain.registerCityInterest({ email: "dump-city@example.test", city: "novosibirsk" });
+    domain.patchOccurrence(setup.occurrenceId, { visibility: "PUBLISHED", reason: "Publish" }, "event-dump-city-interest", "admin");
+    const row = setup.db.prepare("SELECT id, payload_ref FROM email_outbox WHERE type = 'CITY_INTEREST_AVAILABLE'").get() as { id: string; payload_ref: string };
+    outboxId = row.id;
+    await domain.processEmailOutbox();
+    domain.applyUnisenderDelivery({ outboxId, status: "SENT", providerStatus: "sent", jobId: "city-dump-job", semanticKey: "city-dump-sent" });
+    setup.db.prepare("UPDATE email_outbox SET created_at = ? WHERE id = ?").run(new Date(timestamp - 10 * 60_000).toISOString(), outboxId);
+    await domain.reconcileUnisenderEventDumps();
+    timestamp += 61_000;
+    await domain.reconcileUnisenderEventDumps();
+    expect(setup.db.prepare("SELECT id FROM city_interest_requests WHERE id = ?").get(row.payload_ref.replace("city-interest:", ""))).toBeUndefined();
+    expect(setup.db.prepare("SELECT status, recipient_email, payload_snapshot FROM email_outbox WHERE id = ?").get(outboxId)).toEqual({ status: "DELIVERED", recipient_email: "", payload_snapshot: "{}" });
+  });
+
   it("repairs only a proven delivered city-interest orphan and is idempotent", () => {
     const setup = fixture(); databases.push(setup.db);
     setup.domain.registerCityInterest({ email: "orphan-repair@example.test", city: "novosibirsk" });
@@ -2035,11 +2156,12 @@ describe("commerce domain", () => {
       submitRequestedRefunds: async () => { calls.push("submit-refunds"); },
       reconcilePendingRefunds: async () => { calls.push("reconcile-refunds"); },
       processEmailOutbox: async () => { calls.push("email"); },
+      reconcileUnisenderEventDumps: async () => { calls.push("event-dump"); },
       detectOverdueVenueAnnouncements: () => { calls.push("venue-overdue"); },
       processCityInterestLifecycle: () => { calls.push("city-interest"); return { expired_deleted: 0, intents_created: 0 }; },
     };
     await runWorkerSweep(busyDomain as never);
-    expect(calls).toEqual(["recover-stale", "detect", "create-unknown", "payments", "obligations", "submit-refunds", "reconcile-refunds", "email", "venue-overdue", "city-interest"]);
+    expect(calls).toEqual(["recover-stale", "detect", "create-unknown", "payments", "obligations", "submit-refunds", "reconcile-refunds", "email", "event-dump", "venue-overdue", "city-interest"]);
 
     const unexpectedDomain = { ...busyDomain, detectStalePreparedSettlements: () => { throw new Error("unexpected stale detector failure"); } };
     await expect(runWorkerSweep(unexpectedDomain as never)).rejects.toThrow("unexpected stale detector failure");

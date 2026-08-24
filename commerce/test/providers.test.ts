@@ -120,6 +120,22 @@ describe("provider contracts", () => {
       .rejects.toBeInstanceOf(EmailProviderAmbiguousError);
   });
 
+  it("uses the documented minimal Event Dump fields and parses only strict provider evidence", async () => {
+    const requests: Request[] = [];
+    const provider = new UnisenderGoProvider({ apiKey: "test-key-not-a-secret", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async (input, init) => {
+      const request = new Request(input, init); requests.push(request);
+      if (request.url.endsWith("event-dump/create.json")) return Response.json({ status: "success", dump_id: "dump-1" });
+      if (request.url.endsWith("event-dump/get.json")) return Response.json({ status: "success", event_dump: { dump_status: "ready", files: [{ url: "https://go2.unisender.ru/event-dump/dump-1.csv" }] } });
+      return new Response('event_time,job_id,status,delivery_status,metadata\n2026-08-24 08:35:20,job-1,delivered,ok_delivered,"{\"\"outbox_id\"\":\"\"outbox-1\"\"}"\n', { headers: { "Content-Type": "text/csv" } });
+    });
+    await expect(provider.createEventDump({ jobId: "job-1", startTime: "2026-08-24 08:00:00", endTime: "2026-08-24 09:00:00" })).resolves.toEqual({ dumpId: "dump-1" });
+    const create = await requests[0].json() as Record<string, unknown>;
+    expect(create).toMatchObject({ filter: { job_id: "job-1" }, dump_fields: ["event_time", "job_id", "status", "delivery_status", "metadata"] });
+    expect(JSON.stringify(create)).not.toContain("email");
+    await expect(provider.getEventDump({ dumpId: "dump-1" })).resolves.toEqual({ status: "ready", events: [{ eventTime: "2026-08-24 08:35:20", jobId: "job-1", status: "delivered", deliveryStatus: "ok_delivered", metadata: { outbox_id: "outbox-1" } }] });
+    expect(requests).toHaveLength(3);
+  });
+
   it("verifies an RS256 Tochka callback with a refreshed JWK", async () => {
     const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString("base64url");

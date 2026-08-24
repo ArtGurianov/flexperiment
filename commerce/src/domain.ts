@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { canonical, decryptTicketCapability, emailHash, encryptTicketCapability, id, now, publicId, publicOrderNumber, sha256 } from "./crypto";
-import { EmailProviderRejectedError, type EmailProvider, UnconfiguredEmailProvider } from "./email-provider";
+import { EmailProviderRejectedError, isEmailDeliveryEvidenceProvider, type EmailProvider, type UnisenderDumpEvent, UnconfiguredEmailProvider } from "./email-provider";
 import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import type { PaymentProvider } from "./provider";
 import type { CheckoutRequest } from "./types";
@@ -18,6 +18,18 @@ const legalManifest = (raw: unknown): LegalManifest => {
 export class DomainError extends Error {
   constructor(readonly code: string, readonly status = 400, message = code) { super(message); }
 }
+
+/** Event Dump is deliberately slow recovery, never a replacement send path. */
+export const UNISENDER_EVENT_DUMP_GRACE_MS = 5 * 60 * 1_000;
+export const UNISENDER_EVENT_DUMP_POLL_MS = 60 * 1_000;
+export const UNISENDER_EVENT_DUMP_RETRY_MS = 6 * 60 * 60 * 1_000;
+// The provider permits ten simultaneously existing dumps (including ready
+// files retained for eight hours). One creation per hour stays below that cap
+// even if its automatic expiry is the only cleanup mechanism.
+export const UNISENDER_EVENT_DUMP_CREATE_INTERVAL_MS = 60 * 60 * 1_000;
+export const UNISENDER_EVENT_DUMP_ACTIVE_LIMIT = 2;
+export const UNISENDER_EVENT_DUMP_MAX_CREATE_ATTEMPTS = 8;
+export const UNISENDER_EVENT_DUMP_MAX_POLL_ATTEMPTS = 20;
 
 export function withImmediateTransaction<T>(db: Database.Database, operation: () => T): T {
   db.exec("BEGIN IMMEDIATE");
@@ -1924,6 +1936,182 @@ export class CommerceDomain {
         }
       }
     }
+  }
+
+  /**
+   * Reconciles the small set of old, known Unisender jobs for which a normal
+   * callback did not converge. Event Dump exports are asynchronous and
+   * temporary, so this method performs at most one remote operation per sweep
+   * and keeps both request/poll state and its lease durable in SQLite.
+   */
+  async reconcileUnisenderEventDumps() {
+    if (!isEmailDeliveryEvidenceProvider(this.emailProvider)) return;
+    const timestamp = new Date(this.clock()).toISOString();
+    this.queueUnisenderEventDumpCandidates(timestamp);
+    this.stopUnneededUnisenderEventDumpReconciliations(timestamp);
+    this.exhaustUnisenderEventDumpRetries(timestamp);
+
+    const poll = this.claimUnisenderEventDump("PENDING_DUMP", timestamp);
+    if (poll) {
+      await this.pollUnisenderEventDump(poll, timestamp);
+      return;
+    }
+    const retryPoll = this.claimUnisenderEventDump("RETRY_WAIT", timestamp);
+    if (retryPoll) {
+      await this.pollUnisenderEventDump(retryPoll, timestamp);
+      return;
+    }
+
+    const active = one(this.db, `SELECT COUNT(*) AS count FROM unisender_event_dump_reconciliations
+      WHERE state = 'PENDING_DUMP'`)?.count;
+    if (Number(active) >= UNISENDER_EVENT_DUMP_ACTIVE_LIMIT) return;
+    const mostRecent = one(this.db, `SELECT requested_at FROM unisender_event_dump_reconciliations
+      WHERE requested_at IS NOT NULL ORDER BY requested_at DESC LIMIT 1`);
+    if (typeof mostRecent?.requested_at === "string" && Date.parse(mostRecent.requested_at) > this.clock() - UNISENDER_EVENT_DUMP_CREATE_INTERVAL_MS) return;
+
+    const create = this.claimUnisenderEventDump("PENDING_CREATE", timestamp)
+      ?? this.claimUnisenderEventDump("RETRY_WAIT", timestamp, true);
+    if (create) await this.createUnisenderEventDump(create, timestamp);
+  }
+
+  private queueUnisenderEventDumpCandidates(timestamp: string) {
+    const cutoff = new Date(this.clock() - UNISENDER_EVENT_DUMP_GRACE_MS).toISOString();
+    const candidates = many(this.db, `SELECT id, job_id FROM email_outbox
+      WHERE superseded_at IS NULL
+        AND status IN ('ACCEPTED', 'SENT')
+        AND job_id IS NOT NULL AND trim(job_id) != ''
+        AND datetime(created_at) <= datetime(?)
+      ORDER BY created_at, id LIMIT 10`, cutoff);
+    for (const candidate of candidates) {
+      this.db.prepare(`INSERT OR IGNORE INTO unisender_event_dump_reconciliations
+        (id, outbox_id, job_id, state, next_attempt_at)
+        VALUES (?, ?, ?, 'PENDING_CREATE', ?)`).run(id(), candidate.id, candidate.job_id, timestamp);
+    }
+  }
+
+  private stopUnneededUnisenderEventDumpReconciliations(timestamp: string) {
+    this.db.prepare(`UPDATE unisender_event_dump_reconciliations
+      SET state = 'NO_LONGER_NEEDED', dump_id = NULL, lease_owner = NULL, lease_expires_at = NULL,
+          updated_at = ?
+      WHERE state IN ('PENDING_CREATE', 'PENDING_DUMP', 'RETRY_WAIT')
+        AND EXISTS (
+          SELECT 1 FROM email_outbox outbox WHERE outbox.id = outbox_id
+            AND (outbox.superseded_at IS NOT NULL OR outbox.status NOT IN ('ACCEPTED', 'SENT'))
+        )`).run(timestamp);
+  }
+
+  private exhaustUnisenderEventDumpRetries(timestamp: string) {
+    this.db.prepare(`UPDATE unisender_event_dump_reconciliations
+      SET state = 'EXHAUSTED', dump_id = NULL, lease_owner = NULL, lease_expires_at = NULL,
+          next_attempt_at = ?, last_error_code = CASE
+            WHEN dump_id IS NULL THEN 'CREATE_ATTEMPT_LIMIT_REACHED'
+            ELSE 'POLL_ATTEMPT_LIMIT_REACHED' END,
+          updated_at = ?
+      WHERE state IN ('PENDING_CREATE', 'PENDING_DUMP', 'RETRY_WAIT')
+        AND ((dump_id IS NULL AND create_attempts >= ?)
+          OR (dump_id IS NOT NULL AND poll_attempts >= ?))`)
+      .run(timestamp, timestamp, UNISENDER_EVENT_DUMP_MAX_CREATE_ATTEMPTS, UNISENDER_EVENT_DUMP_MAX_POLL_ATTEMPTS);
+  }
+
+  private claimUnisenderEventDump(state: "PENDING_CREATE" | "PENDING_DUMP" | "RETRY_WAIT", timestamp: string, onlyCreateRetry = false) {
+    const candidate = one(this.db, `SELECT reconciliation.*, outbox.created_at AS outbox_created_at
+      FROM unisender_event_dump_reconciliations reconciliation
+      JOIN email_outbox outbox ON outbox.id = reconciliation.outbox_id
+      WHERE reconciliation.state = ?
+        AND reconciliation.next_attempt_at <= ?
+        AND (reconciliation.lease_expires_at IS NULL OR reconciliation.lease_expires_at < ?)
+        ${state === "RETRY_WAIT" ? (onlyCreateRetry ? "AND reconciliation.dump_id IS NULL" : "AND reconciliation.dump_id IS NOT NULL") : ""}
+        AND outbox.superseded_at IS NULL AND outbox.status IN ('ACCEPTED', 'SENT')
+      ORDER BY reconciliation.next_attempt_at, reconciliation.created_at LIMIT 1`, state, timestamp, timestamp);
+    if (!candidate) return undefined;
+    const lease = `event-dump-${id()}`;
+    const claimed = this.db.prepare(`UPDATE unisender_event_dump_reconciliations
+      SET lease_owner = ?, lease_expires_at = ?, updated_at = ?
+      WHERE id = ? AND state = ?
+        AND (lease_expires_at IS NULL OR lease_expires_at < ?)`)
+      .run(lease, new Date(this.clock() + 120_000).toISOString(), timestamp, candidate.id, state, timestamp);
+    return claimed.changes ? { ...candidate, lease } : undefined;
+  }
+
+  private async createUnisenderEventDump(reconciliation: Row & { lease: string }, timestamp: string) {
+    if (!isEmailDeliveryEvidenceProvider(this.emailProvider)) return;
+    try {
+      const createdAt = Date.parse(String(reconciliation.outbox_created_at));
+      if (!Number.isFinite(createdAt)) throw new Error("OUTBOX_CREATED_AT_INVALID");
+      const dump = await this.emailProvider.createEventDump({
+        jobId: String(reconciliation.job_id),
+        startTime: this.unisenderDumpTime(new Date(createdAt - 60_000)),
+        endTime: this.unisenderDumpTime(new Date(this.clock() + 60_000)),
+      });
+      this.db.prepare(`UPDATE unisender_event_dump_reconciliations
+        SET state = 'PENDING_DUMP', dump_id = ?, requested_at = ?,
+            next_attempt_at = ?, create_attempts = create_attempts + 1,
+            last_error_code = NULL, lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+        WHERE id = ? AND lease_owner = ?`).run(dump.dumpId, timestamp, new Date(this.clock() + UNISENDER_EVENT_DUMP_POLL_MS).toISOString(), timestamp, reconciliation.id, reconciliation.lease);
+    } catch {
+      this.deferUnisenderEventDump(String(reconciliation.id), String(reconciliation.lease), "CREATE_FAILED", timestamp, false, "CREATE");
+    }
+  }
+
+  private async pollUnisenderEventDump(reconciliation: Row & { lease: string }, timestamp: string) {
+    if (!isEmailDeliveryEvidenceProvider(this.emailProvider) || typeof reconciliation.dump_id !== "string") return;
+    try {
+      const dump = await this.emailProvider.getEventDump({ dumpId: reconciliation.dump_id });
+      if (dump.status === "queued" || dump.status === "in_process") {
+        this.db.prepare(`UPDATE unisender_event_dump_reconciliations
+          SET next_attempt_at = ?, poll_attempts = poll_attempts + 1,
+              lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+          WHERE id = ? AND lease_owner = ?`).run(new Date(this.clock() + UNISENDER_EVENT_DUMP_POLL_MS).toISOString(), timestamp, reconciliation.id, reconciliation.lease);
+        return;
+      }
+      if (dump.status === "failed") {
+        this.deferUnisenderEventDump(String(reconciliation.id), String(reconciliation.lease), "DUMP_FAILED", timestamp, true, "POLL");
+        return;
+      }
+      if (dump.status !== "ready") return;
+      for (const event of dump.events) this.applyUnisenderDumpEvent(reconciliation, event);
+      const outbox = one(this.db, "SELECT status, superseded_at FROM email_outbox WHERE id = ?", reconciliation.outbox_id);
+      const state = outbox?.status === "DELIVERED" || outbox?.status === "BOUNCED" || outbox?.status === "FAILED" || outbox?.superseded_at !== null
+        ? "CONSUMED" : "RETRY_WAIT";
+      this.db.prepare(`UPDATE unisender_event_dump_reconciliations
+        SET state = ?, dump_id = NULL, next_attempt_at = ?, poll_attempts = poll_attempts + 1,
+            last_error_code = ?, lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
+        WHERE id = ? AND lease_owner = ?`).run(state, new Date(this.clock() + UNISENDER_EVENT_DUMP_RETRY_MS).toISOString(), state === "CONSUMED" ? null : "NO_TERMINAL_EVIDENCE", timestamp, reconciliation.id, reconciliation.lease);
+    } catch {
+      this.deferUnisenderEventDump(String(reconciliation.id), String(reconciliation.lease), "DUMP_LOOKUP_FAILED", timestamp, false, "POLL");
+    }
+  }
+
+  private deferUnisenderEventDump(reconciliationId: string, lease: string, code: string, timestamp: string, clearDump: boolean, phase: "CREATE" | "POLL") {
+    this.db.prepare(`UPDATE unisender_event_dump_reconciliations
+      SET state = 'RETRY_WAIT', dump_id = CASE WHEN ? THEN NULL ELSE dump_id END,
+          next_attempt_at = ?, last_error_code = ?, lease_owner = NULL,
+          lease_expires_at = NULL,
+          create_attempts = create_attempts + CASE WHEN ? = 'CREATE' THEN 1 ELSE 0 END,
+          poll_attempts = poll_attempts + CASE WHEN ? = 'POLL' THEN 1 ELSE 0 END,
+          updated_at = ?
+      WHERE id = ? AND lease_owner = ?`).run(clearDump ? 1 : 0, new Date(this.clock() + UNISENDER_EVENT_DUMP_RETRY_MS).toISOString(), code, phase, phase, timestamp, reconciliationId, lease);
+  }
+
+  private applyUnisenderDumpEvent(reconciliation: Row, event: UnisenderDumpEvent) {
+    if (event.jobId !== reconciliation.job_id || !event.metadata || typeof event.metadata !== "object" || Array.isArray(event.metadata)) return;
+    if ((event.metadata as Record<string, unknown>).outbox_id !== reconciliation.outbox_id) return;
+    const providerStatus = event.status.toLowerCase();
+    const status = providerStatus === "accepted" ? "ACCEPTED"
+      : providerStatus === "sent" ? "SENT"
+        : providerStatus === "delivered" ? "DELIVERED"
+          : ["soft_bounced", "hard_bounced", "spam"].includes(providerStatus) ? "BOUNCED" : undefined;
+    if (!status || !event.eventTime || !event.deliveryStatus) return;
+    const semanticKey = `unisender:event-dump:${sha256(canonical({ outbox_id: reconciliation.outbox_id, job_id: event.jobId, status: providerStatus, delivery_status: event.deliveryStatus, event_time: event.eventTime }))}`;
+    this.applyUnisenderDelivery({
+      outboxId: String(reconciliation.outbox_id), status,
+      providerStatus: providerStatus as "accepted" | "sent" | "delivered" | "soft_bounced" | "hard_bounced" | "spam",
+      jobId: event.jobId, semanticKey,
+    });
+  }
+
+  private unisenderDumpTime(date: Date) {
+    return date.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, "");
   }
 
   private unknownEmailRetryAt(attempts: number) {
