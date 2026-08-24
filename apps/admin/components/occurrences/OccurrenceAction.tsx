@@ -6,6 +6,7 @@ import { useAdminMutation } from "../../lib/use-admin-mutation";
 import { occurrenceActionConsequence, type OccurrenceAction as OccurrenceActionSpec } from "../../lib/occurrence-actions";
 import { number, string } from "../../lib/values";
 import type { Row } from "../../lib/page";
+import { Dialog } from "../ui/Dialog";
 import { Notice } from "../ui/Notice";
 
 export function OccurrenceAction({ action, close, done }: { action: { occurrence: Row; label: string; patch: OccurrenceActionSpec["patch"] }; close: () => void; done: () => void }) {
@@ -29,8 +30,8 @@ export function OccurrenceAction({ action, close, done }: { action: { occurrence
   };
 
   return (
-    <div className="modal-backdrop" role="presentation">
-      <form className="modal" onSubmit={submit}>
+    <Dialog title={action.label} close={close}>
+      <form className="form" onSubmit={submit}>
         <p className="eyebrow">EXPLICIT CATALOG ACTION</p>
         <h2>{action.label}</h2>
         <p>{string(action.occurrence.title)}</p>
@@ -38,10 +39,9 @@ export function OccurrenceAction({ action, close, done }: { action: { occurrence
         <label>Причина<textarea autoFocus required minLength={3} value={reason} onChange={(event) => setReason(event.target.value)} /></label>
         <Notice error={mutation.error?.code} />
         <div className="modal-actions">
-          <button type="button" onClick={close}>Отмена</button>
           <button className="primary" disabled={mutation.isPending}>{mutation.isPending ? "Сохраняем…" : "Подтвердить"}</button>
         </div>
       </form>
-    </div>
+    </Dialog>
   );
 }

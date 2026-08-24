@@ -5,6 +5,7 @@ import { FormEvent, useState } from "react";
 import { findCityBySlug } from "../../../../lib/city-catalog";
 import { parseRublesToKopecks } from "../../../../lib/money";
 import { api } from "../../lib/api";
+import { minutesToMilliseconds, parseHoursAndMinutes } from "../../lib/duration";
 import { useAdminMutation } from "../../lib/use-admin-mutation";
 import { usePersistentIdempotencyKey } from "../../lib/use-persistent-idempotency-key";
 import { cityKeys, occurrenceKeys } from "../../lib/query-keys";
@@ -17,6 +18,7 @@ import { Notice } from "../ui/Notice";
 import { PageTitle } from "../ui/PageTitle";
 import { Freshness } from "../ui/Freshness";
 import { MoneyInput } from "../ui/MoneyInput";
+import { DurationInput } from "../ui/DurationInput";
 import { OccurrenceRow } from "./OccurrenceRow";
 import { OccurrenceAction } from "./OccurrenceAction";
 import { OccurrenceEditor } from "./OccurrenceEditor";
@@ -24,9 +26,9 @@ import { OccurrenceCancellation } from "./OccurrenceCancellation";
 import { OccurrenceCompletion } from "./OccurrenceCompletion";
 
 const initialForm = {
-  city_id: "", title: "", starts_at: "", ends_at: "", timezone: "",
+  city_id: "", title: "", starts_at: "", duration: "", timezone: "",
   price_kopecks: "", capacity: "", venue_status: "CONFIRMED", venue_name: "",
-  venue_address: "", venue_disclosure_text: "", venue_announce_by: "", reason: "",
+  venue_address: "", venue_disclosure_text: "Точная площадка будет объявлена позже. Адрес придёт на email и появится в билете.", venue_announcement_lead: "", reason: "",
 };
 
 export function Occurrences() {
@@ -60,8 +62,12 @@ export function Occurrences() {
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (form.venue_status === "TO_BE_ANNOUNCED" && new Date(form.venue_announce_by).getTime() >= new Date(form.starts_at).getTime()) {
-      setValidationError("VENUE_ANNOUNCEMENT_TOO_LATE"); return;
+    const startsAt = fromLocalInput(form.starts_at);
+    const startsAtMs = Date.parse(startsAt);
+    const durationMinutes = parseHoursAndMinutes(form.duration);
+    const announcementLeadMinutes = parseHoursAndMinutes(form.venue_announcement_lead);
+    if (!Number.isFinite(startsAtMs) || durationMinutes === null || durationMinutes <= 0 || (form.venue_status === "TO_BE_ANNOUNCED" && (announcementLeadMinutes === null || announcementLeadMinutes <= 0))) {
+      setValidationError("VALIDATION_ERROR"); return;
     }
     const priceKopecks = parseRublesToKopecks(form.price_kopecks);
     if (priceKopecks === null || priceKopecks <= 0) {
@@ -71,16 +77,17 @@ export function Occurrences() {
     const key = createKey.acquire();
     const body: Row = {
       city_id: form.city_id,
-      title: form.title, starts_at: fromLocalInput(form.starts_at), ends_at: fromLocalInput(form.ends_at),
+      title: form.title, starts_at: startsAt, ends_at: new Date(startsAtMs + minutesToMilliseconds(durationMinutes)).toISOString(),
       timezone: form.timezone, price_kopecks: priceKopecks, capacity: Number(form.capacity),
-      venue_status: form.venue_status, reason: form.reason,
+      venue_status: form.venue_status,
     };
+    if (form.reason.trim()) body.reason = form.reason.trim();
     if (form.venue_status === "CONFIRMED") { body.venue_name = form.venue_name; body.venue_address = form.venue_address; }
-    else { body.venue_disclosure_text = form.venue_disclosure_text; body.venue_announce_by = fromLocalInput(form.venue_announce_by); }
+    else { body.venue_disclosure_text = form.venue_disclosure_text; body.venue_announce_by = new Date(startsAtMs - minutesToMilliseconds(announcementLeadMinutes!)).toISOString(); }
     try {
       await create.mutateAsync({ body, key });
       createKey.clear();
-      setForm((previous) => ({ ...previous, title: "", starts_at: "", ends_at: "", price_kopecks: "", capacity: "", venue_name: "", venue_address: "", venue_disclosure_text: "", venue_announce_by: "", reason: "" }));
+      setForm((previous) => ({ ...previous, title: "", starts_at: "", duration: "", price_kopecks: "", capacity: "", venue_name: "", venue_address: "", venue_disclosure_text: initialForm.venue_disclosure_text, venue_announcement_lead: "", reason: "" }));
     } catch {
       // error surfaced via create.error below
     }
@@ -105,7 +112,7 @@ export function Occurrences() {
           </label>
           <label>Название<input value={form.title} onChange={(event) => set("title", event.target.value)} required /></label>
           <label>Начало<input type="datetime-local" value={form.starts_at} onChange={(event) => set("starts_at", event.target.value)} required /></label>
-          <label>Конец<input type="datetime-local" value={form.ends_at} onChange={(event) => set("ends_at", event.target.value)} required /></label>
+          <label>Длительность мастер-класса<DurationInput value={form.duration} onChange={(value) => set("duration", value)} required /></label>
           <label>Цена, ₽<MoneyInput value={form.price_kopecks} onChange={(value) => set("price_kopecks", value)} required /></label>
           <label>Вместимость<input type="number" min="1" step="1" value={form.capacity} onChange={(event) => set("capacity", event.target.value)} required /></label>
           <label>
@@ -122,15 +129,15 @@ export function Occurrences() {
             </>
           ) : (
             <>
-              <label>Disclosure<textarea value={form.venue_disclosure_text} onChange={(event) => set("venue_disclosure_text", event.target.value)} required /></label>
-              <label>Объявить до<input type="datetime-local" value={form.venue_announce_by} onChange={(event) => set("venue_announce_by", event.target.value)} required /></label>
+              <label>Что показывать вместо адреса<textarea value={form.venue_disclosure_text} onChange={(event) => set("venue_disclosure_text", event.target.value)} required /></label>
+              <label>Объявить не позднее чем<DurationInput value={form.venue_announcement_lead} onChange={(value) => set("venue_announcement_lead", value)} required /><small>до начала мастер-класса</small></label>
             </>
           )}
           <details className="wide">
             <summary>Дополнительные параметры</summary>
             <label>Timezone<input value={form.timezone} onChange={(event) => set("timezone", event.target.value)} required /></label>
+            <label>Причина / audit context<textarea value={form.reason} onChange={(event) => set("reason", event.target.value)} /></label>
           </details>
-          <label className="wide">Причина / audit context<textarea value={form.reason} onChange={(event) => set("reason", event.target.value)} required minLength={3} /></label>
           <div className="wide">
             <Notice error={validationError ?? create.error?.code} />
             <button className="primary" disabled={create.isPending}>{create.isPending ? "Создаём…" : "Создать скрытое событие"}</button>

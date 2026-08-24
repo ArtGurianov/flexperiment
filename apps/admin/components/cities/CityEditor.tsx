@@ -6,6 +6,7 @@ import { useAdminMutation } from "../../lib/use-admin-mutation";
 import { string } from "../../lib/values";
 import type { Row } from "../../lib/page";
 import type { CityCatalogueEntry } from "../../../../lib/city-catalog";
+import { Dialog } from "../ui/Dialog";
 import { Notice } from "../ui/Notice";
 
 export function CityEditor({ city, cityOptions, close, done }: { city: Row; cityOptions: readonly CityCatalogueEntry[]; close: () => void; done: () => void }) {
@@ -31,8 +32,8 @@ export function CityEditor({ city, cityOptions, close, done }: { city: Row; city
   };
 
   return (
-    <div className="modal-backdrop">
-      <form className="modal editor" onSubmit={submit}>
+    <Dialog title="Редактировать город" close={close} className="editor">
+      <form className="form" onSubmit={submit}>
         <p className="eyebrow">CATALOG / CANONICAL CITY</p>
         <h2>Редактировать город</h2>
         <p>Города с уже созданными событиями нельзя переименовать или переназначить: это защищает исторические заказы и публичные URL.</p>
@@ -47,10 +48,9 @@ export function CityEditor({ city, cityOptions, close, done }: { city: Row; city
         </div>
         <Notice error={mutation.error?.code} />
         <div className="modal-actions">
-          <button type="button" onClick={close}>Отмена</button>
           <button className="primary" disabled={mutation.isPending}>{mutation.isPending ? "Сохраняем…" : "Сохранить изменения"}</button>
         </div>
       </form>
-    </div>
+    </Dialog>
   );
 }

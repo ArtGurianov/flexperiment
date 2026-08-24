@@ -5,6 +5,7 @@ import { api } from "../../lib/api";
 import { useAdminMutation } from "../../lib/use-admin-mutation";
 import { string } from "../../lib/values";
 import type { Row } from "../../lib/page";
+import { Dialog } from "../ui/Dialog";
 import { Notice } from "../ui/Notice";
 
 export function OccurrenceCompletion({ occurrence, close, done }: { occurrence: Row; close: () => void; done: () => void }) {
@@ -25,17 +26,16 @@ export function OccurrenceCompletion({ occurrence, close, done }: { occurrence: 
   };
 
   return (
-    <div className="modal-backdrop">
-      <form className="modal" onSubmit={submit}>
+    <Dialog title="Подтвердить проведение" close={close}>
+      <form className="form" onSubmit={submit}>
         <p className="eyebrow">FULFILLMENT / EXPLICIT COMMAND</p>
         <h2>Подтвердить проведение</h2>
         <p>Подтверждает, что мастер-класс фактически состоялся. Операция доступна только после завершения времени события при закрытых продажах.</p>
         <Notice error={mutation.error?.code} />
         <div className="modal-actions">
-          <button type="button" onClick={close}>Отмена</button>
           <button className="primary" disabled={mutation.isPending}>{mutation.isPending ? "Подтверждаем…" : "Подтвердить проведение"}</button>
         </div>
       </form>
-    </div>
+    </Dialog>
   );
 }

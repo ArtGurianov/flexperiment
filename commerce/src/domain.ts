@@ -274,11 +274,11 @@ export class CommerceDomain {
     return Number(one(this.db, "SELECT COUNT(*) AS count FROM operational_incidents WHERE status = 'OPEN'")?.count ?? 0);
   }
 
-  resolveOperationalIncident(incidentId: string, note: string) {
+  resolveOperationalIncident(incidentId: string, note?: string) {
     return withImmediateTransaction(this.db, () => {
       const changed = this.db.prepare(`UPDATE operational_incidents
         SET status = 'RESOLVED', resolution_note = ?, resolved_at = ?
-        WHERE id = ? AND status = 'OPEN'`).run(note, now(), incidentId).changes;
+      WHERE id = ? AND status = 'OPEN'`).run(note ?? null, now(), incidentId).changes;
       if (!changed) throw new DomainError("OPERATIONAL_INCIDENT_NOT_OPEN", 409);
       return one(this.db, "SELECT * FROM operational_incidents WHERE id = ?", incidentId)!;
     });
@@ -360,10 +360,9 @@ export class CommerceDomain {
       WHERE entity_type = ? AND entity_id = ? AND status = 'OPEN'`).run(note, now(), entityType, entityId);
   }
 
-  acknowledgeEmailAttention(outboxId: string, reason: string) {
+  acknowledgeEmailAttention(outboxId: string, auditContext?: string) {
     return withImmediateTransaction(this.db, () => {
-      const acknowledgedReason = reason.trim();
-      if (!acknowledgedReason) throw new DomainError("EMAIL_ATTENTION_ACKNOWLEDGEMENT_REASON_REQUIRED", 422);
+      const acknowledgedReason = auditContext?.trim() || null;
       const outbox = one(this.db, `SELECT id, status, ops_acknowledged_at
         FROM email_outbox WHERE id = ?`, outboxId);
       if (!outbox) throw new DomainError("EMAIL_OUTBOX_NOT_FOUND", 404);
@@ -1182,7 +1181,7 @@ export class CommerceDomain {
     city_id: string; title: string; starts_at: string; ends_at: string; timezone: string;
     price_kopecks: number; capacity: number; venue_status: "CONFIRMED" | "TO_BE_ANNOUNCED";
     venue_name?: string | null; venue_address?: string | null; venue_disclosure_text?: string | null;
-    venue_announce_by?: string | null; reason: string;
+    venue_announce_by?: string | null; audit_context?: string;
   }, idempotencyKey: string, adminId: string) {
     return this.withAdminCommand("occurrence-create", idempotencyKey, input, "occurrences", () => {
       if (!one(this.db, "SELECT id FROM cities WHERE id = ?", input.city_id)) throw new DomainError("CITY_NOT_FOUND", 404);
@@ -1202,7 +1201,7 @@ export class CommerceDomain {
           input.price_kopecks, input.capacity, input.venue_status, input.venue_name ?? null,
           input.venue_address ?? null, input.venue_disclosure_text ?? null, input.venue_announce_by ?? null);
       const occurrence = one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId)!;
-      this.recordAdminCommandAudit(adminId, "OCCURRENCE_CREATED", "occurrence", occurrenceId, input.reason, idempotencyKey, input);
+      this.recordAdminCommandAudit(adminId, "OCCURRENCE_CREATED", "occurrence", occurrenceId, input.audit_context, idempotencyKey, input);
       return occurrence;
     });
   }
@@ -1251,10 +1250,10 @@ export class CommerceDomain {
       if (classification.notificationMaterial) {
         const revisionId = id();
         this.db.prepare("INSERT INTO occurrence_revisions(id, occurrence_id, revision, reason, before_json, after_json, changed_by_admin_id) VALUES (?, ?, ?, ?, ?, ?, ?)")
-          .run(revisionId, occurrenceId, after.material_revision, input.reason, JSON.stringify(classification.before), JSON.stringify(classification.after), adminId);
+          .run(revisionId, occurrenceId, after.material_revision, typeof input.audit_context === "string" ? input.audit_context : "", JSON.stringify(classification.before), JSON.stringify(classification.after), adminId);
         this.emitOccurrenceRevisionEffects(revisionId, before, after, classification);
       }
-      this.recordAdminCommandAudit(adminId, "OCCURRENCE_EDITED", "occurrence", occurrenceId, String(input.reason), idempotencyKey, payload);
+      this.recordAdminCommandAudit(adminId, "OCCURRENCE_EDITED", "occurrence", occurrenceId, typeof input.audit_context === "string" ? input.audit_context : undefined, idempotencyKey, payload);
       return after;
     });
   }
@@ -2676,10 +2675,10 @@ export class CommerceDomain {
     });
   }
 
-  private recordAdminCommandAudit(adminId: string, action: string, entityType: string, entityId: string, reason: string, idempotencyKey: string, payload: unknown) {
+  private recordAdminCommandAudit(adminId: string, action: string, entityType: string, entityId: string, auditContext: string | undefined, idempotencyKey: string, payload: unknown) {
     this.db.prepare("INSERT INTO admin_audit_log(id, admin_id, action, entity_type, entity_id, details_json) VALUES (?, ?, ?, ?, ?, ?)")
       .run(id(), adminId, action, entityType, entityId, JSON.stringify({
-        reason,
+        audit_context: auditContext ?? null,
         idempotency_key_hash: sha256(idempotencyKey),
         canonical_request_hash: sha256(canonical(payload)),
       }));

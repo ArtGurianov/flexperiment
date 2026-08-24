@@ -76,11 +76,13 @@ export function Dashboard() {
           {query.data.upcoming.length ? (
             <div className="upcoming-list">
               {query.data.upcoming.map((item) => (
-                <div key={string(item.id)}>
-                  <span>{string(item.city_title)}</span>
+                <div className="upcoming-card" key={string(item.id)}>
+                  <div className="upcoming-meta">
+                    <span>{string(item.city_title)}</span>
+                    <Badge>{string(item.sales_status)}</Badge>
+                  </div>
                   <strong>{string(item.title)}</strong>
                   <small>{formatDate(item.starts_at)} · {number(item.availability)} / {number(item.capacity)} мест</small>
-                  <Badge>{string(item.sales_status)}</Badge>
                 </div>
               ))}
             </div>

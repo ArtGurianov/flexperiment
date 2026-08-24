@@ -428,6 +428,25 @@ describe("commerce HTTP boundary", () => {
     });
     const evidence = JSON.parse(String((db.prepare("SELECT details_json FROM admin_audit_log WHERE entity_id = ?").get(created.id) as { details_json: string }).details_json));
     expect(evidence).toMatchObject({ reason: occurrencePayload.reason, idempotency_key_hash: expect.stringMatching(/^[a-f0-9]{64}$/), canonical_request_hash: expect.stringMatching(/^[a-f0-9]{64}$/) });
+
+    // Creation and ordinary material edits do not require an operator note.
+    // The audit ledger keeps a deliberate empty value rather than fabricating
+    // a reason or losing the command evidence.
+    const withoutContext = await app.request("http://admin.flexperiment.ru/v1/admin/occurrences", {
+      method: "POST",
+      headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000013" },
+      body: JSON.stringify({ ...occurrencePayload, title: "FLEXPERIMENT — no audit context", reason: undefined }),
+    });
+    expect(withoutContext.status).toBe(201);
+    const contextFree = await withoutContext.json() as { id: string; admin_revision: number };
+    const contextFreeAudit = JSON.parse(String((db.prepare("SELECT details_json FROM admin_audit_log WHERE entity_id = ?").get(contextFree.id) as { details_json: string }).details_json));
+    expect(contextFreeAudit.reason).toBe("");
+    const contextFreePatch = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${contextFree.id}`, {
+      method: "PATCH",
+      headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000014" },
+      body: JSON.stringify({ title: "FLEXPERIMENT — context optional", expected_revision: contextFree.admin_revision }),
+    });
+    expect(contextFreePatch.status).toBe(200);
     db.close();
   });
 

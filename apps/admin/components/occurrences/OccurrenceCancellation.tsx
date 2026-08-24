@@ -5,6 +5,7 @@ import { api, idempotencyKey } from "../../lib/api";
 import { useAdminMutation } from "../../lib/use-admin-mutation";
 import { string } from "../../lib/values";
 import type { Row } from "../../lib/page";
+import { Dialog } from "../ui/Dialog";
 import { Notice } from "../ui/Notice";
 
 export function OccurrenceCancellation({ occurrence, close, done }: { occurrence: Row; close: () => void; done: () => void }) {
@@ -33,8 +34,8 @@ export function OccurrenceCancellation({ occurrence, close, done }: { occurrence
   };
 
   return (
-    <div className="modal-backdrop">
-      <form className="modal" onSubmit={submit}>
+    <Dialog title="Отменить событие" close={close}>
+      <form className="form" onSubmit={submit}>
         <p className="eyebrow">TERMINAL / REAUTH REQUIRED</p>
         <h2>Отменить событие</h2>
         <p>{string(occurrence.title)}</p>
@@ -43,10 +44,9 @@ export function OccurrenceCancellation({ occurrence, close, done }: { occurrence
         <label>Текущий пароль администратора<input type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} /></label>
         <Notice error={mutation.error?.code} />
         <div className="modal-actions">
-          <button type="button" onClick={close}>Отмена</button>
           <button className="danger" disabled={mutation.isPending}>{mutation.isPending ? "Отменяем…" : "Подтвердить отмену"}</button>
         </div>
       </form>
-    </div>
+    </Dialog>
   );
 }

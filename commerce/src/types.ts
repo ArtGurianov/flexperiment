@@ -59,12 +59,12 @@ export const occurrencePatchSchema = z.object({
   capacity: z.number().int().nonnegative().optional(),
   sales_status: z.enum(["OPEN", "PAUSED", "CLOSED"]).optional(),
   visibility: z.enum(["HIDDEN", "PUBLISHED"]).optional(),
-  reason: z.string().trim().min(3).max(1_000),
+  audit_context: z.string().trim().min(3).max(1_000).optional(),
 });
 
 export const cityCreateSchema = z.object({
   city_slug: z.string().trim().regex(/^[a-z0-9-]{2,100}$/),
-  reason: z.string().trim().min(3).max(1_000),
+  audit_context: z.string().trim().min(3).max(1_000).optional(),
 }).strict();
 export const cityPatchSchema = cityCreateSchema;
 
@@ -81,7 +81,7 @@ export const occurrenceCreateSchema = z.object({
   venue_address: z.string().trim().min(1).max(1_000).nullable().optional(),
   venue_disclosure_text: z.string().trim().min(1).max(2_000).nullable().optional(),
   venue_announce_by: z.string().datetime({ offset: true }).nullable().optional(),
-  reason: z.string().trim().min(3).max(1_000),
+  audit_context: z.string().trim().min(3).max(1_000).optional(),
 }).strict().superRefine((input, ctx) => {
   if (Date.parse(input.ends_at) <= Date.parse(input.starts_at)) {
     ctx.addIssue({ code: "custom", path: ["ends_at"], message: "ends_at must be after starts_at." });
@@ -121,13 +121,13 @@ export const cityInterestWithdrawalSchema = z.object({
   reason: z.string().trim().min(3).max(1_000),
 }).strict();
 export const emailAttentionAcknowledgeSchema = z.object({
-  reason: z.string().trim().min(3).max(1_000),
+  audit_context: z.string().trim().min(3).max(1_000).optional(),
 }).strict();
 export const customerRefundTokenSchema = z.object({
   token: z.string().min(32).max(256),
 }).strict();
 export const reservationAbandonSchema = z.object({ reason: z.string().trim().min(3).max(1_000) }).strict();
-export const occurrenceCompleteSchema = z.object({ confirmation_text: z.string().trim() });
+export const occurrenceCompleteSchema = z.object({ confirmation_text: z.string().trim(), reason: z.string().trim().min(3).max(1_000) });
 
 export const agentSchema = z.object({
   slug: z.string().trim().regex(/^[a-z0-9-]{2,100}$/),
@@ -167,10 +167,10 @@ export const settlementPrepareSchema = z.object({
   amount_kopecks: z.number().int().positive(),
   method: z.enum(["CASH", "TRANSFER"]),
 });
-export const settlementPaymentMadeSchema = z.object({ confirmation_text: z.literal("I confirm the money was transferred") });
+export const settlementPaymentMadeSchema = z.object({ confirmation_text: z.literal("I confirm the money was transferred"), reason: z.string().trim().min(3).max(1_000) });
 export const settlementDocumentSchema = z.object({ document_reference: z.string().trim().min(2).max(1_000), npd_status_effective_on: z.string().date().optional() });
 export const settlementCancelSchema = z.object({ confirmation_text: z.string().trim(), reason: z.string().trim().min(3).max(1_000) });
-export const settlementRecoverySchema = z.object({ amount_recovered_kopecks: z.number().int().positive(), recovered_at: z.string().datetime(), method: z.enum(["CASH", "TRANSFER"]), evidence_reference: z.string().trim().min(3).max(1_000), note: z.string().trim().max(2_000).optional() });
+export const settlementRecoverySchema = z.object({ amount_recovered_kopecks: z.number().int().positive(), recovered_at: z.string().datetime(), method: z.enum(["CASH", "TRANSFER"]), evidence_reference: z.string().trim().min(3).max(1_000), reason: z.string().trim().min(3).max(1_000), note: z.string().trim().max(2_000).optional() });
 
 export const providerReferenceSchema = z.object({ provider_reference: z.string().trim().min(2).max(500), observed_operation: z.string().trim().min(2).max(2_000), amount_kopecks: z.number().int().nonnegative(), currency: z.literal("RUB"), note: z.string().trim().min(3).max(2_000) });
 

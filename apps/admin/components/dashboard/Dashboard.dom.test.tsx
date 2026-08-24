@@ -66,6 +66,17 @@ describe("Dashboard", () => {
     }
   });
 
+  it("keeps each upcoming status with its city rather than absolutely positioning it over the card", async () => {
+    global.fetch = mockFetchOnce({ ...baseResponse, upcoming: [{ id: "occurrence-1", city_title: "Томск", title: "Мастер-класс", starts_at: "2026-10-01T10:00:00.000Z", availability: 3, capacity: 10, sales_status: "OPEN" }] });
+    const client = createTestQueryClient();
+    render(<Dashboard />, { wrapper: (props) => <QueryClientWrapper client={client}>{props.children}</QueryClientWrapper> });
+
+    await waitFor(() => expect(screen.getByText("Мастер-класс")).toBeInTheDocument());
+    const cityAndStatus = screen.getByText("Томск").closest(".upcoming-meta");
+    expect(cityAndStatus).toHaveTextContent("OPEN");
+    expect(screen.getByText("OPEN").closest(".upcoming-card")).toContainElement(cityAndStatus);
+  });
+
   it("shows the failure band and the last-success timestamp when a background refetch fails, never presenting the stale rows as current (A7)", async () => {
     const client = createTestQueryClient();
     let call = 0;
