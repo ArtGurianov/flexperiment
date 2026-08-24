@@ -1991,7 +1991,7 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(fresh)).toEqual({ status: "SENT" });
   });
 
-  it("narrows a saturated batch into a job-filtered Event Dump before accepting absence", async () => {
+  it("uses raw Event Dump rows, not parsed evidence rows, to narrow a saturated batch", async () => {
     const setup = fixture(); databases.push(setup.db);
     let timestamp = Date.parse("2026-08-24T10:00:00.000Z");
     const outboxId = randomUUID();
@@ -2009,13 +2009,14 @@ describe("commerce domain", () => {
       async getEventDump() {
         polls += 1;
         return polls === 1
-          ? { status: "ready", events: unrelated }
-          : { status: "ready", events: [{ eventTime: "2026-08-24 10:00:01", jobId: "tail-target-job", status: "delivered", deliveryStatus: "ok_delivered", metadata: { outbox_id: outboxId } }] };
+          // The provider returned its configured 100k rows, but only these two
+          // survived strict local evidence parsing. The target was after cutoff.
+          ? { status: "ready", returnedEventCount: 100_000, events: unrelated }
+          : { status: "ready", returnedEventCount: 1, events: [{ eventTime: "2026-08-24 10:00:01", jobId: "tail-target-job", status: "delivered", deliveryStatus: "ok_delivered", metadata: { outbox_id: outboxId } }] };
       },
     };
     const domain = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
     await domain.reconcileUnisenderEventDumps();
-    setup.db.prepare("UPDATE unisender_event_dump_runs SET requested_limit = 2 WHERE state = 'POLL_READY'").run();
     timestamp += 16_000;
     await domain.reconcileUnisenderEventDumps();
     expect(setup.db.prepare("SELECT state, recovery_mode FROM unisender_event_dump_targets WHERE outbox_id = ?").get(outboxId))

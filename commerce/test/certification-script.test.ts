@@ -47,6 +47,11 @@ function helperOutput(name: string, ...args: string[]) {
 }
 
 describe("production certification runbook checkpoints", () => {
+  it("defaults to the current migration head while allowing an explicit override", () => {
+    const source = readFileSync(certificationScript, "utf8");
+    expect(source).toContain('EXPECTED_MIGRATION="${EXPECTED_MIGRATION:-0030_unisender_event_dump_probe_and_saturation.sql}"');
+  });
+
   it("keeps the pre-dispatch checkout identity and distinct crash checkpoints", () => {
     const source = readFileSync(certificationScript, "utf8");
     const occurrenceCreated = source.indexOf('if [[ "$PHASE" == OCCURRENCE_CREATED ]]');

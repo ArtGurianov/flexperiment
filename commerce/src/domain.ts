@@ -2169,7 +2169,10 @@ export class CommerceDomain {
       }
       for (const event of dump.events) this.applyUnisenderDumpEvent(String(run.id), event);
       if (dump.status === "ready") {
-        const saturated = dump.events.length >= Number(run.requested_limit ?? UNISENDER_EVENT_DUMP_EVENT_LIMIT);
+        // An evidence adapter without a raw count cannot prove this export was
+        // complete, so it follows the same fail-closed targeted recovery.
+        const saturated = typeof dump.returnedEventCount !== "number"
+          || dump.returnedEventCount >= Number(run.requested_limit ?? UNISENDER_EVENT_DUMP_EVENT_LIMIT);
         this.finishUnisenderEventDumpRun(String(run.id), String(run.lease), timestamp, "READY", saturated, typeof run.job_id_filter === "string" && run.job_id_filter.length > 0);
         return;
       }

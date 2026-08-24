@@ -21,8 +21,8 @@ export type UnisenderDumpEvent = {
 };
 
 export type UnisenderEventDump =
-  | { status: "queued" | "in_process"; events: UnisenderDumpEvent[] }
-  | { status: "ready"; events: UnisenderDumpEvent[] }
+  | { status: "queued" | "in_process"; events: UnisenderDumpEvent[]; returnedEventCount?: number }
+  | { status: "ready"; events: UnisenderDumpEvent[]; returnedEventCount?: number }
   | { status: "failed" };
 
 /** The documented maximum result count for one Event Dump export request. */
@@ -111,7 +111,7 @@ export class EventDumpCreateRejectedError extends Error {
 const EVENT_DUMP_URL = "https://goapi.unisender.ru/ru/transactional/api/v1/event-dump";
 const EVENT_DUMP_TIMEOUT_MS = 10_000;
 
-const parseCsv = (csv: string) => {
+const parseCsv = (csv: string): string[][] | undefined => {
   const rows: string[][] = [];
   let row: string[] = []; let field = ""; let quoted = false;
   for (let index = 0; index < csv.length; index += 1) {
@@ -125,18 +125,19 @@ const parseCsv = (csv: string) => {
     else if (char === "\n") { row.push(field.replace(/\r$/, "")); rows.push(row); row = []; field = ""; }
     else field += char;
   }
-  if (quoted) return [];
+  if (quoted) return undefined;
   if (field || row.length) { row.push(field.replace(/\r$/, "")); rows.push(row); }
   return rows;
 };
 
-const dumpEventsFromCsv = (csv: string): UnisenderDumpEvent[] => {
-  const [header, ...rows] = parseCsv(csv);
-  if (!header) return [];
+const dumpEvidenceFromCsv = (csv: string) => {
+  const parsed = parseCsv(csv);
+  if (!parsed?.length) throw new Error("Unisender Event Dump file contains no parseable CSV header.");
+  const [header, ...rows] = parsed;
   const columns = new Map(header.map((name, index) => [name, index]));
   const required = ["event_time", "job_id", "status", "delivery_status", "metadata"];
-  if (required.some((name) => columns.get(name) === undefined)) return [];
-  return rows.flatMap((row) => {
+  if (required.some((name) => columns.get(name) === undefined)) throw new Error("Unisender Event Dump file is missing required CSV columns.");
+  return { returnedEventCount: rows.length, events: rows.flatMap((row) => {
     const eventTime = row[columns.get("event_time")!];
     const jobId = row[columns.get("job_id")!];
     const status = row[columns.get("status")!];
@@ -145,7 +146,7 @@ const dumpEventsFromCsv = (csv: string): UnisenderDumpEvent[] => {
     if (![eventTime, jobId, status, deliveryStatus, rawMetadata].every((value) => typeof value === "string")) return [];
     try { return [{ eventTime, jobId, status, deliveryStatus, metadata: JSON.parse(rawMetadata) }]; }
     catch { return []; }
-  });
+  }) };
 };
 
 export class UnisenderGoProvider implements EmailProvider, EmailDeliveryEvidenceProvider {
@@ -232,15 +233,18 @@ export class UnisenderGoProvider implements EmailProvider, EmailDeliveryEvidence
     if (!(["queued", "in_process", "ready"] as string[]).includes(dump.dump_status)
       || (dump.files !== undefined && !Array.isArray(dump.files))) throw new Error("Unisender Event Dump lookup returned an unsupported status.");
     const events: UnisenderDumpEvent[] = [];
+    let returnedEventCount = 0;
     for (const file of dump.files ?? []) {
       if (typeof file?.url !== "string") continue;
       const url = new URL(file.url);
       if (url.protocol !== "https:" || !/(^|\.)unisender\.ru$/i.test(url.hostname)) throw new Error("Unisender Event Dump returned an untrusted file URL.");
       const fileResponse = await this.requestEventDump(url, { headers: { Accept: "text/csv" } });
       if (!fileResponse.ok) throw new Error("Unisender Event Dump file download failed.");
-      events.push(...dumpEventsFromCsv(await fileResponse.text()));
+      const parsed = dumpEvidenceFromCsv(await fileResponse.text());
+      returnedEventCount += parsed.returnedEventCount;
+      events.push(...parsed.events);
     }
-    return { status: dump.dump_status as "queued" | "in_process" | "ready", events };
+    return { status: dump.dump_status as "queued" | "in_process" | "ready", events, returnedEventCount };
   }
 }
 
