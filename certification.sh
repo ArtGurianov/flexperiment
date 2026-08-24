@@ -547,28 +547,22 @@ wait_refund() {
     REFUND_ID="$(jq -er '.[0].id' <<<"$matches")"
     status="$(jq -r --arg refund "$REFUND_ID" '.refunds[] | select(.id == $refund) | .status' "$RUN_TMP/order-evidence.json")"
     if [[ "$status" == SUCCEEDED ]]; then
-      jq -e --arg refund "$REFUND_ID" '
-        .refund_obligation.status == "FULFILLED"
-        and .payment.status == "REFUNDED"
-        and ([.refunds[] | select(.id == $refund)] | length == 1)
-        and (.refunds[] | select(.id == $refund) | .amount_kopecks == 100 and (.provider_reference | type == "string" and length > 0))
-      ' "$RUN_TMP/order-evidence.json" >/dev/null || incomplete "succeeded refund lacks fulfilled obligation, REFUNDED payment, expected amount, or provider reference"
-      return 0
+      # A pre-fix deployment can expose the provider-success fact a worker
+      # sweep before it materializes the derived payment/obligation state.
+      # Continue read-only polling; never create or submit another refund.
+      if certification_refund_evidence_converged "$RUN_TMP/order-evidence.json" "$PAYMENT_ID" "$REFUND_OBLIGATION_ID" "$REFUND_ID"; then
+        return 0
+      fi
+      sleep 10
+      continue
     fi
     [[ "$status" =~ ^(FAILED|REVIEW_REQUIRED)$ ]] && fail "existing refund $REFUND_ID reached $status; do not create another refund"; sleep 10
   done
   incomplete "refund did not reach SUCCEEDED before timeout; reconcile existing refund only"
 }
 assert_final_refund_evidence() {
-  jq -e --arg payment "$PAYMENT_ID" --arg obligation "$REFUND_OBLIGATION_ID" --arg refund "$REFUND_ID" '
-    .payment.status == "REFUNDED"
-    and .refund_obligation.id == $obligation
-    and .refund_obligation.initial_source == "CUSTOMER_CANCELLATION_PARTIAL"
-    and .refund_obligation.target_refunded_amount_kopecks == 100
-    and .refund_obligation.status == "FULFILLED"
-    and ([.refunds[] | select(.payment_id == $payment and .source == "REFUND_OBLIGATION" and .refund_obligation_id == $obligation)] | length == 1)
-    and ([.refunds[] | select(.id == $refund and .amount_kopecks == 100 and .status == "SUCCEEDED" and (.provider_reference | type == "string" and length > 0))] | length == 1)
-  ' "$RUN_TMP/order-evidence.json" >/dev/null || fail "final refund evidence is not exactly one fulfilled 100-kopek customer-cancellation obligation refund with REFUNDED payment"
+  certification_refund_evidence_converged "$RUN_TMP/order-evidence.json" "$PAYMENT_ID" "$REFUND_OBLIGATION_ID" "$REFUND_ID" \
+    || fail "final refund evidence is not exactly one fulfilled 100-kopek customer-cancellation obligation refund with REFUNDED payment"
 }
 assert_final_order_evidence() {
   assert_certification_order_identity

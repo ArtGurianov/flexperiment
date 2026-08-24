@@ -1004,6 +1004,35 @@ export class CommerceDomain {
     }));
   }
 
+  /**
+   * A refund obligation is a payment-level target.  Provider-confirmed refunds
+   * may arrive through any legitimate command source, so fulfillment is based
+   * on the cumulative authoritative amount for that payment rather than the
+   * amount of the command currently being reconciled.
+   *
+   * REVIEW_REQUIRED deliberately remains an operator-owned state: a later
+   * provider observation must not silently resolve an already escalated
+   * obligation.
+   *
+   * Call only while holding the same immediate transaction that finalized a
+   * successful refund.
+   */
+  private fulfillRefundObligationIfTargetMet(paymentId: string) {
+    const obligation = one(this.db, `SELECT id, target_refunded_amount_kopecks
+      FROM refund_obligations
+      WHERE payment_id = ? AND status IN ('OPEN', 'FULFILLING')`, paymentId);
+    if (!obligation) return false;
+
+    const succeeded = Number(one(this.db, `SELECT COALESCE(SUM(amount_kopecks), 0) AS amount
+      FROM refunds WHERE payment_id = ? AND status = 'SUCCEEDED'`, paymentId)?.amount ?? 0);
+    if (succeeded < Number(obligation.target_refunded_amount_kopecks)) return false;
+
+    this.db.prepare(`UPDATE refund_obligations
+      SET status = 'FULFILLED', fulfilled_at = COALESCE(fulfilled_at, ?)
+      WHERE id = ? AND status IN ('OPEN', 'FULFILLING')`).run(now(), obligation.id);
+    return true;
+  }
+
   completeOccurrence(occurrenceId: string) {
     return withImmediateTransaction(this.db, () => {
       const occurrence = one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId);
@@ -1567,6 +1596,10 @@ export class CommerceDomain {
         const payment = one(this.db, "SELECT captured_amount_kopecks FROM payments WHERE id = ?", refund.payment_id)!;
         const fullyRefunded = Number(totals.amount) >= Number(payment.captured_amount_kopecks);
         this.db.prepare("UPDATE payments SET status = ?, updated_at = ? WHERE id = ?").run(fullyRefunded ? "REFUNDED" : "PARTIALLY_REFUNDED", now(), refund.payment_id);
+        // Keep the provider-confirmed refund and its payment-level obligation
+        // consistent in this transaction.  A later worker sweep is no longer
+        // required to make the fulfillment fact observable.
+        this.fulfillRefundObligationIfTargetMet(String(refund.payment_id));
         // Preserve the accounting fact that changed first: the captured net
         // amount. Full-refund fulfilment below is still atomic, but must not
         // relabel this established adjustment as a generic booking cancel.

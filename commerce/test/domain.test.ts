@@ -44,10 +44,16 @@ async function maturedReward(setup: ReturnType<typeof fixture>, slug: string, am
   return agent;
 }
 
-async function reconcileSuccessfulRefund(setup: ReturnType<typeof fixture>, orderId: string, paymentId: string, amount: number) {
+async function reconcileSuccessfulRefund(
+  setup: ReturnType<typeof fixture>,
+  orderId: string,
+  paymentId: string,
+  amount: number,
+  source: "ADMIN_COMPENSATION" | "REFUND_OBLIGATION" = "ADMIN_COMPENSATION",
+) {
   const refundId = randomUUID();
-  setup.db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, provider_reference) VALUES (?, ?, ?, ?, ?, 'test', 'ADMIN_COMPENSATION', 'RECONCILING', ?, ?, 'test-reference')")
-    .run(refundId, randomUUID(), orderId, paymentId, amount, randomUUID(), randomUUID());
+  setup.db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, provider_reference) VALUES (?, ?, ?, ?, ?, 'test', ?, 'RECONCILING', ?, ?, 'test-reference')")
+    .run(refundId, randomUUID(), orderId, paymentId, amount, source, randomUUID(), randomUUID());
   (setup.domain.provider as PaymentProvider).reconcileRefund = async () => ({ status: "SUCCEEDED", refundedAmountKopecks: amount });
   await setup.domain.reconcileRefund(refundId);
   return refundId;
@@ -556,9 +562,67 @@ describe("commerce domain", () => {
     setup.domain.markPaymentPaid(order.payment_id, 100000, "provider-payment");
     const refund = setup.domain.createCompensationRefund(order.id, { amount_kopecks: 10000, reason: "Venue inconvenience" }, "8f3a27bc-77c6-47b1-b6d0-000000000005");
     expect(refund.source).toBe("ADMIN_COMPENSATION");
+    setup.db.prepare("UPDATE refunds SET status = 'RECONCILING', provider_reference = 'compensation-reference' WHERE id = ?").run(refund.id);
+    (setup.domain.provider as PaymentProvider).reconcileRefund = async () => ({ status: "SUCCEEDED", refundedAmountKopecks: 10_000 });
+    await setup.domain.reconcileRefund(String(refund.id));
+
     expect(setup.db.prepare("SELECT status FROM bookings WHERE order_id = ?").get(order.id)).toMatchObject({ status: "CONFIRMED" });
     expect(setup.db.prepare("SELECT status FROM tickets").get()).toMatchObject({ status: "VALID" });
+    expect(setup.db.prepare("SELECT status FROM payments WHERE id = ?").get(order.payment_id)).toMatchObject({ status: "PARTIALLY_REFUNDED" });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM refund_obligations WHERE payment_id = ?").get(order.payment_id)).toMatchObject({ count: 0 });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM refunds").get()).toMatchObject({ count: 1 });
+  });
+
+  it("fulfills a customer-cancellation obligation atomically with its successful provider refund", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const checkout = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), "obligation-refund-atomic-001", "https://flexperiment.ru");
+    const row = setup.db.prepare(`SELECT b.id AS booking_id, o.id AS order_id, p.id AS payment_id
+      FROM bookings b JOIN orders o ON o.id = b.order_id JOIN payments p ON p.order_id = o.id
+      WHERE o.public_status_id = ?`).get(checkout.status_id) as { booking_id: string; order_id: string; payment_id: string };
+    setup.domain.markPaymentPaid(row.payment_id, 100_000, "provider-payment");
+    setup.domain.cancelCustomerBooking(row.booking_id, { reason: "Customer requested", confirmation_text: `CANCEL ${row.booking_id}` }, "obligation-refund-cancel-001");
+
+    const [refund] = setup.domain.createObligationRefunds();
+    expect(refund).toMatchObject({ source: "REFUND_OBLIGATION", amount_kopecks: 100_000, status: "REQUESTED" });
+    setup.db.prepare("UPDATE refunds SET status = 'RECONCILING', provider_reference = 'obligation-reference' WHERE id = ?").run(refund.id);
+    (setup.domain.provider as PaymentProvider).reconcileRefund = async () => ({ status: "SUCCEEDED", refundedAmountKopecks: 100_000 });
+    await setup.domain.reconcileRefund(String(refund.id));
+
+    expect(setup.db.prepare("SELECT status FROM refunds WHERE id = ?").get(refund.id)).toMatchObject({ status: "SUCCEEDED" });
+    expect(setup.db.prepare("SELECT status FROM payments WHERE id = ?").get(row.payment_id)).toMatchObject({ status: "REFUNDED" });
+    expect(setup.db.prepare("SELECT status, fulfilled_at FROM refund_obligations WHERE payment_id = ?").get(row.payment_id)).toMatchObject({ status: "FULFILLED", fulfilled_at: expect.any(String) });
+    expect(setup.domain.createObligationRefunds()).toEqual([]);
+
+    (setup.domain.provider as PaymentProvider).reconcileRefund = async () => { throw new Error("already-finalized refund must not reconcile again"); };
+    await setup.domain.reconcileRefund(String(refund.id));
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM email_outbox WHERE type = 'REFUND_SUCCEEDED' AND payload_ref = ?").get(refund.id)).toMatchObject({ count: 1 });
+    expect(setup.db.prepare("SELECT status FROM refund_obligations WHERE payment_id = ?").get(row.payment_id)).toMatchObject({ status: "FULFILLED" });
+  });
+
+  it("leaves a partial obligation fulfilling until cumulative successful refunds reach its target", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const checkout = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), "obligation-refund-cumulative-001", "https://flexperiment.ru");
+    const row = setup.db.prepare(`SELECT b.id AS booking_id, o.id AS order_id, p.id AS payment_id
+      FROM bookings b JOIN orders o ON o.id = b.order_id JOIN payments p ON p.order_id = o.id
+      WHERE o.public_status_id = ?`).get(checkout.status_id) as { booking_id: string; order_id: string; payment_id: string };
+    setup.domain.markPaymentPaid(row.payment_id, 100_000, "provider-payment");
+    setup.domain.cancelCustomerBooking(row.booking_id, { reason: "Customer requested", confirmation_text: `CANCEL ${row.booking_id}` }, "obligation-refund-cancel-002");
+    setup.db.prepare("UPDATE refund_obligations SET status = 'FULFILLING' WHERE payment_id = ?").run(row.payment_id);
+
+    await reconcileSuccessfulRefund(setup, row.order_id, row.payment_id, 40_000, "REFUND_OBLIGATION");
+    expect(setup.db.prepare("SELECT status FROM payments WHERE id = ?").get(row.payment_id)).toMatchObject({ status: "PARTIALLY_REFUNDED" });
+    expect(setup.db.prepare("SELECT status, fulfilled_at FROM refund_obligations WHERE payment_id = ?").get(row.payment_id)).toMatchObject({ status: "FULFILLING", fulfilled_at: null });
+
+    const [remainder] = setup.domain.createObligationRefunds();
+    expect(remainder).toMatchObject({ source: "REFUND_OBLIGATION", amount_kopecks: 60_000, status: "REQUESTED" });
+    setup.db.prepare("UPDATE refunds SET status = 'RECONCILING', provider_reference = 'remaining-obligation-reference' WHERE id = ?").run(remainder.id);
+    (setup.domain.provider as PaymentProvider).reconcileRefund = async () => ({ status: "SUCCEEDED", refundedAmountKopecks: 60_000 });
+    await setup.domain.reconcileRefund(String(remainder.id));
+
+    expect(setup.db.prepare("SELECT status FROM payments WHERE id = ?").get(row.payment_id)).toMatchObject({ status: "REFUNDED" });
+    expect(setup.db.prepare("SELECT status, fulfilled_at FROM refund_obligations WHERE payment_id = ?").get(row.payment_id)).toMatchObject({ status: "FULFILLED", fulfilled_at: expect.any(String) });
   });
 
   it("releases the fulfilled seat and voids its ticket after one full refund", async () => {

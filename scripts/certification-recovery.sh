@@ -71,6 +71,29 @@ certification_email_evidence_row() {
   printf '%s' "$row"
 }
 
+certification_refund_evidence_converged() {
+  local evidence_file="$1" payment_id="$2" obligation_id="$3" refund_id="$4"
+  jq -e --arg payment "$payment_id" --arg obligation "$obligation_id" --arg refund "$refund_id" '
+    .payment.id == $payment
+    and .payment.status == "REFUNDED"
+    and .refund_obligation.id == $obligation
+    and .refund_obligation.initial_source == "CUSTOMER_CANCELLATION_PARTIAL"
+    and .refund_obligation.target_refunded_amount_kopecks == 100
+    and .refund_obligation.status == "FULFILLED"
+    and ([.refunds[] | select(
+      .payment_id == $payment
+      and .source == "REFUND_OBLIGATION"
+      and .refund_obligation_id == $obligation
+    )] | length == 1)
+    and ([.refunds[] | select(
+      .id == $refund
+      and .amount_kopecks == 100
+      and .status == "SUCCEEDED"
+      and (.provider_reference | type == "string" and length > 0)
+    )] | length == 1)
+  ' "$evidence_file" >/dev/null
+}
+
 certification_manifest_is_valid() {
   local manifest_file="$1" occurrence_id="$2"
   jq -e --arg occurrence "$occurrence_id" '

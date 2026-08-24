@@ -156,6 +156,44 @@ describe("production certification runbook checkpoints", () => {
     }
   });
 
+  it("waits for refund derived-state convergence without a second refund command", () => {
+    const directory = mkdtempSync(resolve(tmpdir(), "flexperiment-certification-refund-"));
+    const evidence = resolve(directory, "refund-evidence.json");
+    const writeEvidence = (obligationStatus: "FULFILLING" | "FULFILLED") => writeFileSync(evidence, JSON.stringify({
+      payment: { id: "payment", status: "REFUNDED" },
+      refund_obligation: {
+        id: "obligation",
+        initial_source: "CUSTOMER_CANCELLATION_PARTIAL",
+        target_refunded_amount_kopecks: 100,
+        status: obligationStatus,
+      },
+      refunds: [{
+        id: "refund",
+        payment_id: "payment",
+        source: "REFUND_OBLIGATION",
+        refund_obligation_id: "obligation",
+        amount_kopecks: 100,
+        status: "SUCCEEDED",
+        provider_reference: "provider-ref",
+      }],
+    }));
+    try {
+      writeEvidence("FULFILLING");
+      expect(helperSucceeds("certification_refund_evidence_converged", evidence, "payment", "obligation", "refund")).toBe(false);
+      writeEvidence("FULFILLED");
+      expect(helperSucceeds("certification_refund_evidence_converged", evidence, "payment", "obligation", "refund")).toBe(true);
+
+      const source = readFileSync(certificationScript, "utf8");
+      const waitRefund = source.slice(source.indexOf("wait_refund()"), source.indexOf("assert_final_refund_evidence()"));
+      expect(waitRefund).toContain("certification_refund_evidence_converged");
+      expect(waitRefund).toContain("sleep 10");
+      expect(waitRefund).not.toContain("POST /v1");
+      expect(waitRefund).not.toContain("incomplete \"succeeded refund lacks");
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("clears inherited state values before resume JSON becomes authoritative", () => {
     const output = execFileSync("bash", ["-lc", `source ${JSON.stringify(recoveryPlanner)}; PENDING_OPERATION=CANCEL_BOOKING; BOOKING_ID=booking; SALES_CLEANUP_STARTED_AT=timestamp; certification_clear_state_values PENDING_OPERATION BOOKING_ID SALES_CLEANUP_STARTED_AT; printf '%s|%s|%s' "\${PENDING_OPERATION-unset}" "\${BOOKING_ID-unset}" "\${SALES_CLEANUP_STARTED_AT-unset}"`], {
       cwd: repositoryRoot,
