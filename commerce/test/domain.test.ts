@@ -625,6 +625,71 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT status, fulfilled_at FROM refund_obligations WHERE payment_id = ?").get(row.payment_id)).toMatchObject({ status: "FULFILLED", fulfilled_at: expect.any(String) });
   });
 
+  it("reopens a fulfilled partial-cancellation obligation when organizer cancellation raises its target", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const checkout = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), "obligation-target-escalation-001", "https://flexperiment.ru");
+    const row = setup.db.prepare(`SELECT b.id AS booking_id, o.id AS order_id, p.id AS payment_id
+      FROM bookings b JOIN orders o ON o.id = b.order_id JOIN payments p ON p.order_id = o.id
+      WHERE o.public_status_id = ?`).get(checkout.status_id) as { booking_id: string; order_id: string; payment_id: string };
+    setup.domain.markPaymentPaid(row.payment_id, 100_000, "provider-payment");
+    setup.domain.cancelCustomerBooking(
+      row.booking_id,
+      { reason: "Customer requested", confirmation_text: `CANCEL ${row.booking_id}`, withheld_expense_amount_kopecks: 40_000 },
+      "obligation-target-escalation-cancel",
+    );
+    const [partialRefund] = setup.domain.createObligationRefunds();
+    expect(partialRefund).toMatchObject({ source: "REFUND_OBLIGATION", amount_kopecks: 60_000 });
+    setup.db.prepare("UPDATE refunds SET status = 'RECONCILING', provider_reference = 'partial-obligation-reference' WHERE id = ?").run(partialRefund.id);
+    (setup.domain.provider as PaymentProvider).reconcileRefund = async () => ({ status: "SUCCEEDED", refundedAmountKopecks: 60_000 });
+    await setup.domain.reconcileRefund(String(partialRefund.id));
+    expect(setup.db.prepare("SELECT target_refunded_amount_kopecks, status, fulfilled_at FROM refund_obligations WHERE payment_id = ?").get(row.payment_id))
+      .toMatchObject({ target_refunded_amount_kopecks: 60_000, status: "FULFILLED", fulfilled_at: expect.any(String) });
+
+    const sessionId = randomUUID(); const capability = "r".repeat(32);
+    setup.db.prepare("INSERT INTO admin_sessions(id, admin_id, expires_at) VALUES (?, 'admin', datetime('now', '+1 hour'))").run(sessionId);
+    setup.domain.createAdminReauth({ adminId: "admin", sessionId, purpose: "CANCEL_OCCURRENCE", resourceId: setup.occurrenceId, capability });
+    setup.domain.cancelOccurrence(setup.occurrenceId, { reason: "Organizer cancellation", reauthCapability: capability }, "obligation-target-escalation-occurrence", "admin", sessionId);
+
+    expect(setup.db.prepare("SELECT target_refunded_amount_kopecks, status, fulfilled_at FROM refund_obligations WHERE payment_id = ?").get(row.payment_id))
+      .toMatchObject({ target_refunded_amount_kopecks: 100_000, status: "OPEN", fulfilled_at: null });
+    const [remainingRefund] = setup.domain.createObligationRefunds();
+    expect(remainingRefund).toMatchObject({ source: "REFUND_OBLIGATION", amount_kopecks: 40_000, status: "REQUESTED" });
+    setup.db.prepare("UPDATE refunds SET status = 'RECONCILING', provider_reference = 'remaining-obligation-reference' WHERE id = ?").run(remainingRefund.id);
+    (setup.domain.provider as PaymentProvider).reconcileRefund = async () => ({ status: "SUCCEEDED", refundedAmountKopecks: 40_000 });
+    await setup.domain.reconcileRefund(String(remainingRefund.id));
+
+    expect(setup.db.prepare("SELECT status FROM payments WHERE id = ?").get(row.payment_id)).toMatchObject({ status: "REFUNDED" });
+    expect(setup.db.prepare("SELECT status, fulfilled_at FROM refund_obligations WHERE payment_id = ?").get(row.payment_id)).toMatchObject({ status: "FULFILLED", fulfilled_at: expect.any(String) });
+    expect(setup.db.prepare("SELECT COALESCE(SUM(amount_kopecks), 0) AS amount FROM refunds WHERE payment_id = ? AND status = 'SUCCEEDED'").get(row.payment_id)).toMatchObject({ amount: 100_000 });
+    expect(setup.domain.createObligationRefunds()).toEqual([]);
+  });
+
+  it("does not reopen an operator-owned review obligation when organizer cancellation raises its target", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    const checkout = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), "obligation-review-escalation-001", "https://flexperiment.ru");
+    const row = setup.db.prepare(`SELECT b.id AS booking_id, p.id AS payment_id
+      FROM bookings b JOIN orders o ON o.id = b.order_id JOIN payments p ON p.order_id = o.id
+      WHERE o.public_status_id = ?`).get(checkout.status_id) as { booking_id: string; payment_id: string };
+    setup.domain.markPaymentPaid(row.payment_id, 100_000, "provider-payment");
+    setup.domain.cancelCustomerBooking(
+      row.booking_id,
+      { reason: "Customer requested", confirmation_text: `CANCEL ${row.booking_id}`, withheld_expense_amount_kopecks: 40_000 },
+      "obligation-review-escalation-cancel",
+    );
+    setup.db.prepare("UPDATE refund_obligations SET status = 'REVIEW_REQUIRED' WHERE payment_id = ?").run(row.payment_id);
+
+    const sessionId = randomUUID(); const capability = "s".repeat(32);
+    setup.db.prepare("INSERT INTO admin_sessions(id, admin_id, expires_at) VALUES (?, 'admin', datetime('now', '+1 hour'))").run(sessionId);
+    setup.domain.createAdminReauth({ adminId: "admin", sessionId, purpose: "CANCEL_OCCURRENCE", resourceId: setup.occurrenceId, capability });
+    setup.domain.cancelOccurrence(setup.occurrenceId, { reason: "Organizer cancellation", reauthCapability: capability }, "obligation-review-escalation-occurrence", "admin", sessionId);
+
+    expect(setup.db.prepare("SELECT target_refunded_amount_kopecks, status, fulfilled_at FROM refund_obligations WHERE payment_id = ?").get(row.payment_id))
+      .toMatchObject({ target_refunded_amount_kopecks: 100_000, status: "REVIEW_REQUIRED", fulfilled_at: null });
+    expect(setup.domain.createObligationRefunds()).toEqual([]);
+  });
+
   it("releases the fulfilled seat and voids its ticket after one full refund", async () => {
     const setup = fixture(); databases.push(setup.db);
     const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });

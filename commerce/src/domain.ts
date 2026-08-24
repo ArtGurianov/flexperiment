@@ -689,8 +689,19 @@ export class CommerceDomain {
 
   upsertRefundObligation(paymentId: string, source: string, target: number) {
     const existing = one(this.db, "SELECT * FROM refund_obligations WHERE payment_id = ?", paymentId);
-    if (existing) this.db.prepare("UPDATE refund_obligations SET target_refunded_amount_kopecks = MAX(target_refunded_amount_kopecks, ?) WHERE id = ?").run(target, existing.id);
-    else this.db.prepare("INSERT INTO refund_obligations(id, payment_id, initial_source, target_refunded_amount_kopecks, status) VALUES (?, ?, ?, ?, 'OPEN')").run(id(), paymentId, source, target);
+    if (existing && target > Number(existing.target_refunded_amount_kopecks)) {
+      // A fulfilled partial customer-cancellation obligation can later be
+      // superseded by a higher organizer/terminal-occurrence target.  Reopen
+      // only that fulfilled state so the worker can issue the remaining amount;
+      // REVIEW_REQUIRED remains explicitly operator-owned.
+      this.db.prepare(`UPDATE refund_obligations
+        SET target_refunded_amount_kopecks = ?,
+          status = CASE WHEN status = 'FULFILLED' THEN 'OPEN' ELSE status END,
+          fulfilled_at = CASE WHEN status = 'FULFILLED' THEN NULL ELSE fulfilled_at END
+        WHERE id = ?`).run(target, existing.id);
+    } else if (!existing) {
+      this.db.prepare("INSERT INTO refund_obligations(id, payment_id, initial_source, target_refunded_amount_kopecks, status) VALUES (?, ?, ?, ?, 'OPEN')").run(id(), paymentId, source, target);
+    }
     const obligation = one(this.db, "SELECT * FROM refund_obligations WHERE payment_id = ?", paymentId)!;
     this.db.prepare("INSERT INTO refund_obligation_events(id, obligation_id, source) VALUES (?, ?, ?)").run(id(), obligation.id, source);
     return obligation;

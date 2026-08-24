@@ -39,6 +39,13 @@ function helperSucceeds(name: string, ...args: string[]) {
   }
 }
 
+function helperOutput(name: string, ...args: string[]) {
+  return execFileSync("bash", ["-lc", `source ${JSON.stringify(recoveryPlanner)}; ${name} ${args.map((argument) => JSON.stringify(argument)).join(" ")}`], {
+    cwd: repositoryRoot,
+    encoding: "utf8",
+  }).trim();
+}
+
 describe("production certification runbook checkpoints", () => {
   it("keeps the pre-dispatch checkout identity and distinct crash checkpoints", () => {
     const source = readFileSync(certificationScript, "utf8");
@@ -180,15 +187,17 @@ describe("production certification runbook checkpoints", () => {
     try {
       writeEvidence("FULFILLING");
       expect(helperSucceeds("certification_refund_evidence_converged", evidence, "payment", "obligation", "refund")).toBe(false);
+      expect(helperOutput("certification_refund_poll_action", evidence, "payment", "obligation", "refund")).toBe("WAIT_FOR_DERIVED");
       writeEvidence("FULFILLED");
       expect(helperSucceeds("certification_refund_evidence_converged", evidence, "payment", "obligation", "refund")).toBe(true);
+      expect(helperOutput("certification_refund_poll_action", evidence, "payment", "obligation", "refund")).toBe("CONVERGED");
 
       const source = readFileSync(certificationScript, "utf8");
       const waitRefund = source.slice(source.indexOf("wait_refund()"), source.indexOf("assert_final_refund_evidence()"));
-      expect(waitRefund).toContain("certification_refund_evidence_converged");
+      expect(waitRefund).toContain("certification_refund_poll_action");
       expect(waitRefund).toContain("sleep 10");
       expect(waitRefund).not.toContain("POST /v1");
-      expect(waitRefund).not.toContain("incomplete \"succeeded refund lacks");
+      expect(waitRefund).toContain("derived evidence did not converge");
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

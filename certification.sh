@@ -536,7 +536,7 @@ if [[ "$PHASE" == BOOKING_CANCELLED ]]; then
 fi
 
 wait_refund() {
-  local deadline=$(( $(date +%s) + REFUND_TIMEOUT_SECONDS )) status matches match_count
+  local deadline=$(( $(date +%s) + REFUND_TIMEOUT_SECONDS )) matches match_count action succeeded_observed=0
   while (( $(date +%s) < deadline )); do
     read_order_evidence; REFUND_OBLIGATION_ID="$(jq -er '.refund_obligation.id' "$RUN_TMP/order-evidence.json")" || { sleep 10; continue; }
     jq -e '.refund_obligation.initial_source == "CUSTOMER_CANCELLATION_PARTIAL" and .refund_obligation.target_refunded_amount_kopecks == 100' "$RUN_TMP/order-evidence.json" >/dev/null || fail "refund obligation is not expected full customer-cancellation obligation"
@@ -545,19 +545,21 @@ wait_refund() {
     [[ "$match_count" -le 1 ]] || fail "duplicate local REFUND_OBLIGATION refunds exist for this certification payment"
     [[ "$match_count" == 1 ]] || { sleep 10; continue; }
     REFUND_ID="$(jq -er '.[0].id' <<<"$matches")"
-    status="$(jq -r --arg refund "$REFUND_ID" '.refunds[] | select(.id == $refund) | .status' "$RUN_TMP/order-evidence.json")"
-    if [[ "$status" == SUCCEEDED ]]; then
-      # A pre-fix deployment can expose the provider-success fact a worker
-      # sweep before it materializes the derived payment/obligation state.
-      # Continue read-only polling; never create or submit another refund.
-      if certification_refund_evidence_converged "$RUN_TMP/order-evidence.json" "$PAYMENT_ID" "$REFUND_OBLIGATION_ID" "$REFUND_ID"; then
-        return 0
-      fi
-      sleep 10
-      continue
-    fi
-    [[ "$status" =~ ^(FAILED|REVIEW_REQUIRED)$ ]] && fail "existing refund $REFUND_ID reached $status; do not create another refund"; sleep 10
+    action="$(certification_refund_poll_action "$RUN_TMP/order-evidence.json" "$PAYMENT_ID" "$REFUND_OBLIGATION_ID" "$REFUND_ID")" \
+      || fail "existing refund $REFUND_ID has no readable status"
+    case "$action" in
+      CONVERGED) return 0 ;;
+      WAIT_FOR_DERIVED)
+        # A pre-fix deployment can expose provider success before its derived
+        # payment/obligation facts. Continue read-only polling only.
+        succeeded_observed=1; sleep 10; continue
+        ;;
+      TERMINAL:*) fail "existing refund $REFUND_ID reached ${action#TERMINAL:}; do not create another refund" ;;
+      WAIT) sleep 10 ;;
+      *) fail "existing refund $REFUND_ID produced invalid polling action: $action" ;;
+    esac
   done
+  (( succeeded_observed )) && incomplete "succeeded refund derived evidence did not converge before timeout; reconcile existing refund only"
   incomplete "refund did not reach SUCCEEDED before timeout; reconcile existing refund only"
 }
 assert_final_refund_evidence() {

@@ -94,6 +94,22 @@ certification_refund_evidence_converged() {
   ' "$evidence_file" >/dev/null
 }
 
+certification_refund_poll_action() {
+  local evidence_file="$1" payment_id="$2" obligation_id="$3" refund_id="$4" status
+  status="$(jq -er --arg refund "$refund_id" '.refunds[] | select(.id == $refund) | .status' "$evidence_file")" || return 1
+  case "$status" in
+    SUCCEEDED)
+      if certification_refund_evidence_converged "$evidence_file" "$payment_id" "$obligation_id" "$refund_id"; then
+        printf '%s\n' CONVERGED
+      else
+        printf '%s\n' WAIT_FOR_DERIVED
+      fi
+      ;;
+    FAILED|REVIEW_REQUIRED) printf 'TERMINAL:%s\n' "$status" ;;
+    *) printf '%s\n' WAIT ;;
+  esac
+}
+
 certification_manifest_is_valid() {
   local manifest_file="$1" occurrence_id="$2"
   jq -e --arg occurrence "$occurrence_id" '
