@@ -1,7 +1,6 @@
 import Image from "next/image";
 
-import autumn2026 from "@/public/autumn2026.webp";
-import siberia from "@/public/siberia.webp";
+import hero from "@/public/hero.webp";
 
 export default function HeroSiberia() {
   return (
@@ -10,16 +9,10 @@ export default function HeroSiberia() {
           optimizer serving a candidate sized to the whole viewport — roughly
           3x the rendered width on a desktop screen. */}
       <Image
-        src={siberia}
-        alt="Сибирь"
+        src={hero}
+        alt="Сибирь осень 2026"
         sizes="(min-width: 512px) 512px, 100vw"
-        className="h-auto w-full -rotate-12"
-      />
-      <Image
-        src={autumn2026}
-        alt="осень 2026"
-        sizes="(min-width: 512px) 256px, 50vw"
-        className="h-auto w-full -translate-y-1/3 px-6"
+        className="h-auto w-full -rotate-10 translate-x-2"
       />
     </section>
   );
