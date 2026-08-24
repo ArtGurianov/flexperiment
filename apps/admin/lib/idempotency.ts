@@ -63,4 +63,4 @@ export function safeToMintNewKey(error: AdminApiError): boolean {
 }
 
 export const shouldRefreshAuthoritativeState = (error: AdminApiError) =>
-  error.status === 0 || error.status >= 500 || REFRESH_DISPOSITION[error.code as AdminCommandErrorCode] === "REFRESH_AUTHORITATIVE_STATE";
+  error.status === 0 || error.status >= 500 || REFRESH_DISPOSITION[error.code as AdminCommandErrorCode] !== "NO_REFRESH_NEEDED";

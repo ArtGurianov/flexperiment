@@ -48,6 +48,31 @@ export function normalizeRefundFilters(filters: RefundFilters): RefundFilters {
   return normalized;
 }
 
+export type SettlementFilters = { stale_prepared?: true };
+export type IncidentFilters = { status?: "OPEN" | "RESOLVED" };
+
+type SearchParamReader = Pick<URLSearchParams, "get">;
+
+export const normalizeSettlementFilters = (filters: SettlementFilters): SettlementFilters =>
+  filters.stale_prepared ? { stale_prepared: true } : {};
+
+export const settlementFiltersToSearch = (filters: SettlementFilters) =>
+  normalizeSettlementFilters(filters).stale_prepared ? "stale_prepared=1" : "";
+
+export const settlementFiltersFromSearchParams = (params: SearchParamReader): SettlementFilters =>
+  params.get("stale_prepared") === "1" ? { stale_prepared: true } : {};
+
+export const normalizeIncidentFilters = (filters: IncidentFilters): IncidentFilters =>
+  filters.status ? { status: filters.status } : {};
+
+export const incidentFiltersToSearch = (filters: IncidentFilters) =>
+  normalizeIncidentFilters(filters).status ? `status=${filters.status}` : "";
+
+export const incidentFiltersFromSearchParams = (params: SearchParamReader): IncidentFilters => {
+  const status = params.get("status");
+  return status === "OPEN" || status === "RESOLVED" ? { status } : {};
+};
+
 export function refundFiltersToSearch(filters: RefundFilters): string {
   const normalized = normalizeRefundFilters(filters);
   const parts: string[] = [];

@@ -1,4 +1,4 @@
-import { normalizeOrderFilters, normalizeRefundFilters, type OrderFilters, type RefundFilters } from "./filters";
+import { normalizeIncidentFilters, normalizeOrderFilters, normalizeRefundFilters, normalizeSettlementFilters, type IncidentFilters, type OrderFilters, type RefundFilters, type SettlementFilters } from "./filters";
 
 export const cityKeys = {
   all: () => ["cities"] as const,
@@ -33,7 +33,7 @@ export const refundKeys = {
 export const settlementKeys = {
   all: () => ["settlements"] as const,
   lists: () => ["settlements", "list"] as const,
-  list: () => ["settlements", "list"] as const,
+  list: (filters: SettlementFilters = {}) => ["settlements", "list", normalizeSettlementFilters(filters)] as const,
   detail: (id: string) => ["settlements", "detail", id] as const,
 };
 
@@ -46,7 +46,7 @@ export const emailAttentionKeys = {
 export const incidentKeys = {
   all: () => ["operational-incidents"] as const,
   lists: () => ["operational-incidents", "list"] as const,
-  list: () => ["operational-incidents", "list"] as const,
+  list: (filters: IncidentFilters = {}) => ["operational-incidents", "list", normalizeIncidentFilters(filters)] as const,
 };
 
 export const auditKeys = {

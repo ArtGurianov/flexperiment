@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   normalizeOrderFilters, normalizeRefundFilters,
+  incidentFiltersFromSearchParams, incidentFiltersToSearch, normalizeIncidentFilters,
   orderFiltersFromSearchParams, orderFiltersToSearch,
-  refundFiltersFromSearchParams, refundFiltersToSearch,
+  refundFiltersFromSearchParams, refundFiltersToSearch, settlementFiltersFromSearchParams,
+  settlementFiltersToSearch,
 } from "./filters";
 
 describe("order filter normalization", () => {
@@ -29,6 +31,20 @@ describe("order filter normalization", () => {
 
   it("serializes an empty filter set to an empty string", () => {
     expect(orderFiltersToSearch({ city_id: "" })).toBe("");
+  });
+});
+
+describe("dashboard destination filter normalization", () => {
+  it("makes stale-prepared settlement filtering one stable API/cache contract", () => {
+    expect(settlementFiltersFromSearchParams(new URLSearchParams("stale_prepared=1"))).toEqual({ stale_prepared: true });
+    expect(settlementFiltersToSearch({ stale_prepared: true })).toBe("stale_prepared=1");
+  });
+
+  it("admits only authoritative incident status predicates", () => {
+    expect(incidentFiltersFromSearchParams(new URLSearchParams("status=OPEN"))).toEqual({ status: "OPEN" });
+    expect(incidentFiltersFromSearchParams(new URLSearchParams("status=UNKNOWN"))).toEqual({});
+    expect(normalizeIncidentFilters({ status: "RESOLVED" })).toEqual({ status: "RESOLVED" });
+    expect(incidentFiltersToSearch({ status: "OPEN" })).toBe("status=OPEN");
   });
 });
 

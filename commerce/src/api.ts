@@ -323,7 +323,11 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   admin.get("/orders/:id", (c) => { const order = sqlite.prepare("SELECT * FROM orders WHERE id = ?").get(c.req.param("id")); if (!order) throw new DomainError("ORDER_NOT_FOUND", 404); return c.json(order); });
   admin.get("/orders/:id/evidence", (c) => { c.header("Cache-Control", "no-store"); return c.json(domain.orderEvidence(c.req.param("id"))); });
   admin.get("/email-attention", (c) => c.json({ incidents: domain.emailAttentionIncidents(), attention_count: domain.emailAttentionCount() }));
-  admin.get("/operational-incidents", (c) => c.json({ incidents: domain.operationalIncidents(), open_count: domain.operationalIncidentCount() }));
+  admin.get("/operational-incidents", (c) => {
+    const status = c.req.query("status");
+    const filter = status === "OPEN" || status === "RESOLVED" ? status : undefined;
+    return c.json({ incidents: domain.operationalIncidents(filter), open_count: domain.operationalIncidentCount() });
+  });
   admin.post("/operational-incidents/:id/resolve", async (c) => {
     const payload = emailAttentionAcknowledgeSchema.parse(await jsonBody(c.req.raw));
     const incident = domain.resolveOperationalIncident(c.req.param("id"), payload.reason);
@@ -409,7 +413,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   admin.post("/promo-codes", async (c) => { const payload = promoSchema.parse(await jsonBody(c.req.raw)); const promo = domain.createPromo(payload); audit(c.var.adminId!, "PROMO_CREATED", "promo", String(promo.id), {}); return c.json(promo, 201); });
   admin.patch("/promo-codes/:id", async (c) => { const payload = promoPatchSchema.parse(await jsonBody(c.req.raw)); const promo = domain.patchPromo(c.req.param("id"), payload); audit(c.var.adminId!, "PROMO_EDITED", "promo", c.req.param("id"), payload); return c.json(promo); });
   admin.post("/reward-settlements", async (c) => { const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400); const payload = settlementPrepareSchema.parse(await jsonBody(c.req.raw)); const settlement = domain.prepareSettlement(payload, key, c.var.adminId!); audit(c.var.adminId!, "SETTLEMENT_PREPARED", "reward_settlement", String(settlement.id), payload); return c.json(settlement, 201); });
-  admin.get("/reward-settlements", (c) => c.json({ settlements: domain.settlementList() }));
+  admin.get("/reward-settlements", (c) => c.json({ settlements: domain.settlementList({ stalePrepared: c.req.query("stale_prepared") === "1" ? true : undefined }) }));
   admin.get("/reward-settlements/:id", (c) => c.json(domain.settlementDetail(c.req.param("id"))));
   admin.post("/reward-settlements/:id/payment-made", async (c) => { const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400); const payload = settlementPaymentMadeSchema.parse(await jsonBody(c.req.raw)); const settlement = domain.markSettlementPaymentMade(c.req.param("id"), payload.confirmation_text, key); audit(c.var.adminId!, "SETTLEMENT_PAYMENT_MADE", "reward_settlement", c.req.param("id"), {}); return c.json(settlement); });
   admin.post("/reward-settlements/:id/documents-complete", async (c) => { const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400); const payload = settlementDocumentSchema.parse(await jsonBody(c.req.raw)); const settlement = domain.completeSettlementDocuments(c.req.param("id"), payload, key); audit(c.var.adminId!, "SETTLEMENT_DOCUMENTS_COMPLETE", "reward_settlement", c.req.param("id"), {}); return c.json(settlement); });

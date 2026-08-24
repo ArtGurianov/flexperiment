@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api } from "../lib/api";
 import type { Page } from "../lib/page";
@@ -42,9 +42,9 @@ export function AdminApp({ page }: { page: Page }) {
     : page === "occurrences" ? <Occurrences />
     : page === "orders" ? <Orders />
     : page === "refunds" ? <Refunds />
-    : page === "settlements" ? <Settlements />
+    : page === "settlements" ? <Suspense fallback={<Loading />}><Settlements /></Suspense>
     : page === "email-attention" ? <EmailAttention />
-    : page === "incidents" ? <OperationalIncidents />
+    : page === "incidents" ? <Suspense fallback={<Loading />}><OperationalIncidents /></Suspense>
     : <Audit />;
 
   return <Shell page={page} onLogout={logout}>{view}</Shell>;

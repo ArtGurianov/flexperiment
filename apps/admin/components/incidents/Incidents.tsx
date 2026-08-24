@@ -2,9 +2,11 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { api } from "../../lib/api";
 import { incidentKeys } from "../../lib/query-keys";
 import { POLL_INTERVAL, pollingQuery } from "../../lib/polling";
+import { incidentFiltersFromSearchParams, incidentFiltersToSearch } from "../../lib/filters";
 import { formatDate, formatMoney, string } from "../../lib/values";
 import type { Row } from "../../lib/page";
 import { Badge } from "../ui/Badge";
@@ -16,14 +18,15 @@ import { Freshness } from "../ui/Freshness";
 import { OperationalIncidentResolution } from "./OperationalIncidentResolution";
 
 export function OperationalIncidents() {
+  const searchParams = useSearchParams();
+  const filters = incidentFiltersFromSearchParams(searchParams);
+  const search = incidentFiltersToSearch(filters);
   const query = useQuery({
-    queryKey: incidentKeys.list(),
-    queryFn: () => api<{ incidents: Row[]; open_count: number }>("/operational-incidents"),
+    queryKey: incidentKeys.list(filters),
+    queryFn: () => api<{ incidents: Row[]; open_count: number }>(`/operational-incidents${search ? `?${search}` : ""}`),
     ...pollingQuery(POLL_INTERVAL.incidents),
   });
   const [resolving, setResolving] = useState<Row | null>(null);
-  const openOnly = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("status") === "OPEN";
-  const incidents = query.data?.incidents.filter((incident) => !openOnly || string(incident.status) === "OPEN") ?? [];
 
   return (
     <>
@@ -33,16 +36,16 @@ export function OperationalIncidents() {
         text="Автоматическая фиксация создаёт review-задачу, но не делает финансовое решение за оператора."
       />
       <section className="panel">
-        {openOnly && <p className="notice">Показаны только открытые incidents из dashboard alarm.</p>}
+        {filters.status === "OPEN" && <p className="notice">Показаны только открытые incidents из dashboard alarm.</p>}
         <Freshness query={{ ...query, hasData: Boolean(query.data) }} />
         {query.isLoadingError ? <Notice error={(query.error as { code?: string } | null)?.code ?? "UNKNOWN"} /> : !query.data ? <Loading /> : (
           <>
             <p className="notice">Открыто: <strong>{query.data.open_count}</strong></p>
-            {incidents.length ? (
+            {query.data.incidents.length ? (
               <table>
                 <thead><tr><th>Создан</th><th>Тип</th><th>Заказ / покупатель</th><th>Возврат / provider</th><th>Статус</th></tr></thead>
                 <tbody>
-                  {incidents.map((incident) => (
+                  {query.data.incidents.map((incident) => (
                     <tr key={string(incident.id)}>
                       <td>{formatDate(incident.created_at)}<small>{string(incident.id)}</small></td>
                       <td><Badge>{string(incident.kind)}</Badge><small>{string(incident.entity_type)}: {string(incident.entity_id)}</small></td>

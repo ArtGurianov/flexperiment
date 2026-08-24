@@ -15,7 +15,9 @@ describe("admin command idempotency", () => {
   });
 
   it("treats unknown and provider-side results as ambiguous", () => {
-    expect(safeToMintNewKey(new AdminApiError(409, "FUTURE_DOMAIN_CODE"))).toBe(false);
+    const unknown = new AdminApiError(409, "FUTURE_DOMAIN_CODE");
+    expect(safeToMintNewKey(unknown)).toBe(false);
+    expect(shouldRefreshAuthoritativeState(unknown)).toBe(true);
     expect(safeToMintNewKey(new AdminApiError(503, "PROVIDER_RECONCILIATION_UNAVAILABLE"))).toBe(false);
   });
 

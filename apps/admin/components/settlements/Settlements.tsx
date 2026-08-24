@@ -2,9 +2,11 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { api } from "../../lib/api";
 import { settlementKeys } from "../../lib/query-keys";
 import { POLL_INTERVAL, pollingQuery } from "../../lib/polling";
+import { settlementFiltersFromSearchParams, settlementFiltersToSearch } from "../../lib/filters";
 import { formatDate, formatMoney, number, string } from "../../lib/values";
 import type { Row } from "../../lib/page";
 import { Badge } from "../ui/Badge";
@@ -15,14 +17,22 @@ import { Freshness } from "../ui/Freshness";
 import { SettlementDetail } from "./SettlementDetail";
 
 export function Settlements() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const filters = settlementFiltersFromSearchParams(searchParams);
+  const search = settlementFiltersToSearch(filters);
   const query = useQuery({
-    queryKey: settlementKeys.list(),
-    queryFn: () => api<{ settlements: Row[] }>("/reward-settlements"),
+    queryKey: settlementKeys.list(filters),
+    queryFn: () => api<{ settlements: Row[] }>(`/reward-settlements${search ? `?${search}` : ""}`),
     ...pollingQuery(POLL_INTERVAL.settlements),
   });
-  const [selected, setSelected] = useState<string | null>(() => (typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("id")));
-  const stalePreparedOnly = typeof window !== "undefined" && new URLSearchParams(window.location.search).get("stale_prepared") === "1";
-  const settlements = query.data?.settlements.filter((settlement) => !stalePreparedOnly || number(settlement.stale_prepared) === 1) ?? [];
+  const [selected, setSelected] = useState<string | null>(() => searchParams.get("id"));
+  const replaceSelection = (id: string | null) => {
+    const params = new URLSearchParams(searchParams.toString());
+    if (id) params.set("id", id); else params.delete("id");
+    router.replace(`/settlements/${params.size ? `?${params.toString()}` : ""}`);
+    setSelected(id);
+  };
 
   return (
     <>
@@ -32,16 +42,16 @@ export function Settlements() {
         text="PREPARED уже резервирует начисление. Stale state — это durable operator review, а не автоматическое освобождение денег."
       />
       <section className="panel">
-        {stalePreparedOnly && <p className="notice">Показаны только stale PREPARED settlements из dashboard alarm.</p>}
+        {filters.stale_prepared && <p className="notice">Показаны только stale PREPARED settlements из dashboard alarm.</p>}
         <Freshness query={{ ...query, hasData: Boolean(query.data) }} />
         {query.isLoadingError ? <Notice error={(query.error as { code?: string } | null)?.code ?? "UNKNOWN"} /> : !query.data ? <Loading /> : (
           <table aria-busy={query.isFetching}>
             <thead><tr><th>Подготовлен</th><th>Агент</th><th>Событие</th><th>Сумма</th><th>Состояние</th><th>Evidence</th></tr></thead>
             <tbody>
-              {settlements.map((settlement) => (
+              {query.data.settlements.map((settlement) => (
                 <tr
                   className="click-row"
-                  onClick={() => { setSelected(string(settlement.id)); history.replaceState(null, "", `/settlements/?id=${encodeURIComponent(string(settlement.id))}`); }}
+                  onClick={() => replaceSelection(string(settlement.id))}
                   key={string(settlement.id)}
                 >
                   <td>{formatDate(settlement.prepared_at)}</td>
@@ -65,7 +75,7 @@ export function Settlements() {
           </table>
         )}
       </section>
-      {selected && <SettlementDetail id={selected} close={() => { setSelected(null); history.replaceState(null, "", "/settlements/"); }} />}
+      {selected && <SettlementDetail id={selected} close={() => replaceSelection(null)} />}
     </>
   );
 }

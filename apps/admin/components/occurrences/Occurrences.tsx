@@ -150,7 +150,7 @@ export function Occurrences() {
                 expanded={expandedId === string(occurrence.id)}
                 onToggleExpand={(id) => setExpandedId((previous) => (previous === id ? null : id))}
                 onAction={setAction}
-                onEdit={setEditing}
+                onEdit={(occurrence) => { setEditorConflict(false); setEditing(occurrence); }}
                 onCancel={setCancelling}
                 onComplete={setCompleting}
               />

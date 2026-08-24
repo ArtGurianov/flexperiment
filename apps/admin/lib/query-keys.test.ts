@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dashboardKeys, occurrenceKeys, orderKeys, refundKeys, settlementKeys } from "./query-keys";
+import { dashboardKeys, incidentKeys, occurrenceKeys, orderKeys, refundKeys, settlementKeys } from "./query-keys";
 
 describe("query key taxonomy", () => {
   it("gives every list() key the lists() prefix", () => {
@@ -25,6 +25,11 @@ describe("query key taxonomy", () => {
 
   it("scopes settlement detail keys to a specific id", () => {
     expect(settlementKeys.detail("a")).not.toEqual(settlementKeys.detail("b"));
+  });
+
+  it("keeps filtered settlement and incident lists in distinct cache leaves", () => {
+    expect(settlementKeys.list()).not.toEqual(settlementKeys.list({ stale_prepared: true }));
+    expect(incidentKeys.list()).not.toEqual(incidentKeys.list({ status: "OPEN" }));
   });
 
   it("gives the dashboard summary its own stable key", () => {

@@ -143,6 +143,30 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
+  it("makes stale-prepared and open-incident dashboard counters query-equivalent destination subsets", async () => {
+    const { db, app } = appFixture();
+    const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
+    const agentId = randomUUID(); const reviewedSettlementId = randomUUID(); const otherSettlementId = randomUUID();
+    db.prepare("INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, npd_status_checked_at, default_reward_type, default_reward_value) VALUES (?, 'filter-agent', 'Filter Agent', 'Filter Agent Legal', 'filter-agent@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', datetime('now'), 'FIXED', 100)").run(agentId);
+    const insertSettlement = db.prepare("INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id) VALUES (?, ?, ?, 100, 'TRANSFER', 'PREPARED', 'SELF_EMPLOYED', ?, 'admin')");
+    insertSettlement.run(reviewedSettlementId, agentId, occurrenceId, new Date(Date.now() - 25 * 60 * 60_000).toISOString());
+    insertSettlement.run(otherSettlementId, agentId, occurrenceId, new Date().toISOString());
+    db.prepare("INSERT INTO settlement_prepared_reviews(settlement_id) VALUES (?)").run(reviewedSettlementId);
+    db.prepare("INSERT INTO operational_incidents(id, incident_key, kind, entity_type, entity_id, details_json, status) VALUES (?, 'open-filter-incident', 'VENUE_ANNOUNCEMENT_OVERDUE', 'occurrence', ?, '{}', 'OPEN')").run(randomUUID(), occurrenceId);
+    db.prepare("INSERT INTO operational_incidents(id, incident_key, kind, entity_type, entity_id, details_json, status, resolution_note, resolved_at) VALUES (?, 'resolved-filter-incident', 'VENUE_ANNOUNCEMENT_OVERDUE', 'occurrence', ?, '{}', 'RESOLVED', 'fixed', datetime('now'))").run(randomUUID(), occurrenceId);
+    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.91" }, body: JSON.stringify({ password: "correct horse" }) });
+    const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
+
+    const dashboard = await app.request("http://admin.flexperiment.ru/v1/admin/dashboard", { headers });
+    expect(await dashboard.json()).toMatchObject({ health: { stale_prepared_settlements: { count: 1 }, operational_incidents: { count: 1 } } });
+    const settlements = await app.request("http://admin.flexperiment.ru/v1/admin/reward-settlements?stale_prepared=1", { headers });
+    expect((await settlements.json() as { settlements: { id: string; prepared_review_status: string }[] }).settlements)
+      .toEqual([expect.objectContaining({ id: reviewedSettlementId, prepared_review_status: "OPEN" })]);
+    const incidents = await app.request("http://admin.flexperiment.ru/v1/admin/operational-incidents?status=OPEN", { headers });
+    expect((await incidents.json() as { incidents: { status: string }[] }).incidents).toEqual([expect.objectContaining({ status: "OPEN" })]);
+    db.close();
+  });
+
   it("requires a session-bound reauthentication capability to cancel an occurrence", async () => {
     const { db, app } = appFixture();
     const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;

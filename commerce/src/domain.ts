@@ -243,7 +243,7 @@ export class CommerceDomain {
     return many(this.db, emailAttentionSql(emailAttentionStatusSql));
   }
 
-  operationalIncidents() {
+  operationalIncidents(status?: "OPEN" | "RESOLVED") {
     // The incident itself stays immutable evidence. This read model adds the
     // current operational context an administrator needs to investigate it.
     return many(this.db, `SELECT incident.*,
@@ -266,7 +266,8 @@ export class CommerceDomain {
                     END
       LEFT JOIN payments payment
         ON payment.id = refund.payment_id
-      ORDER BY incident.status = 'OPEN' DESC, incident.created_at DESC, incident.id DESC`);
+      ${status ? "WHERE incident.status = ?" : ""}
+      ORDER BY incident.status = 'OPEN' DESC, incident.created_at DESC, incident.id DESC`, ...(status ? [status] : []));
   }
 
   operationalIncidentCount() {
@@ -1520,7 +1521,7 @@ export class CommerceDomain {
     });
   }
 
-  settlementList() {
+  settlementList(filters: { stalePrepared?: true } = {}) {
     const threshold = new Date(this.clock() - STALE_PREPARED_SETTLEMENT_MS).toISOString();
     return many(this.db, `SELECT rs.*, a.slug AS agent_slug, a.display_name AS agent_display_name,
       c.title AS city_title, o.title AS occurrence_title,
@@ -1529,7 +1530,9 @@ export class CommerceDomain {
       COALESCE((SELECT SUM(amount_recovered_kopecks) FROM settlement_recoveries sr WHERE sr.settlement_id = rs.id), 0) AS recovered_total,
       MAX(0, rs.amount_kopecks - COALESCE((SELECT SUM(amount_recovered_kopecks) FROM settlement_recoveries sr WHERE sr.settlement_id = rs.id), 0)) AS unrecovered_amount_kopecks
       FROM reward_settlements rs JOIN agents a ON a.id = rs.agent_id JOIN occurrences o ON o.id = rs.occurrence_id JOIN cities c ON c.id = o.city_id
-      LEFT JOIN settlement_prepared_reviews spr ON spr.settlement_id = rs.id ORDER BY rs.prepared_at DESC`, threshold);
+      LEFT JOIN settlement_prepared_reviews spr ON spr.settlement_id = rs.id
+      ${filters.stalePrepared ? "WHERE spr.status = 'OPEN'" : ""}
+      ORDER BY rs.prepared_at DESC`, threshold);
   }
 
   settlementDetail(settlementId: string) {
