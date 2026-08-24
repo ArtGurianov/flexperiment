@@ -3,7 +3,7 @@ import type { ComponentPropsWithoutRef } from "react";
 import { cn } from "@/lib/cn";
 
 const CTA_CLASS =
-  "flex w-full items-center justify-center border-4 border-acid bg-[rgb(15_16_11_/_0.2)] px-[4%] py-3 text-center font-display leading-none text-acid uppercase transition-colors duration-200 motion-reduce:transition-none hover:bg-acid hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-acid";
+  "flex w-full items-center justify-center border-4 border-acid bg-ink/20 px-[4%] py-3 text-center font-display leading-none text-acid uppercase transition-colors duration-200 motion-reduce:transition-none hover:bg-acid hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-acid";
 
 type AnchorProps = ComponentPropsWithoutRef<"a"> & { href: string };
 type ButtonProps = ComponentPropsWithoutRef<"button"> & { href?: never };
