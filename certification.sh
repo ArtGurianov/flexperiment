@@ -278,7 +278,7 @@ replay_pending_operation() {
       clear_pending_operation; CREATE_OCCURRENCE_BODY=""; save_state
       ;;
     PUBLISH_OCCURRENCE|OPEN_SALES)
-      if [[ "$PENDING_OPERATION" == PUBLISH_OCCURRENCE ]]; then key="$PUBLISH_KEY"; body="$(occurrence_patch_body '{visibility:"PUBLISHED"}' "$PENDING_EXPECTED_REVISION")"; else key="$OPEN_SALES_KEY"; body="$(occurrence_patch_body '{sales_status:"OPEN"}' "$PENDING_EXPECTED_REVISION")"; fi
+      if [[ "$PENDING_OPERATION" == PUBLISH_OCCURRENCE ]]; then key="$PUBLISH_KEY"; body="$(occurrence_patch_body '{"visibility":"PUBLISHED"}' "$PENDING_EXPECTED_REVISION")"; else key="$OPEN_SALES_KEY"; body="$(occurrence_patch_body '{"sales_status":"OPEN"}' "$PENDING_EXPECTED_REVISION")"; fi
       echo "Replaying interrupted occurrence transition: $PENDING_OPERATION"
       admin_request PATCH "occurrences/$OCCURRENCE_ID" "$key" "$body" "Replay $PENDING_OPERATION"
       OCCURRENCE_REVISION="$(json '.admin_revision' "$HTTP_BODY")"; clear_pending_operation
@@ -315,9 +315,9 @@ close_and_hide() {
   assert_certification_occurrence_identity
   SALES_CLEANUP_STARTED_AT="${SALES_CLEANUP_STARTED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"; save_state
   refresh_occurrence
-  [[ "$(json '.sales_status' "$RUN_TMP/occurrence.json")" == CLOSED ]] || cleanup_occurrence_patch "Close sales" '{sales_status:"CLOSED"}' CLOSE_SALES_KEY
+  [[ "$(json '.sales_status' "$RUN_TMP/occurrence.json")" == CLOSED ]] || cleanup_occurrence_patch "Close sales" '{"sales_status":"CLOSED"}' CLOSE_SALES_KEY
   refresh_occurrence
-  [[ "$(json '.visibility' "$RUN_TMP/occurrence.json")" == HIDDEN ]] || cleanup_occurrence_patch "Hide occurrence" '{visibility:"HIDDEN"}' HIDE_KEY
+  [[ "$(json '.visibility' "$RUN_TMP/occurrence.json")" == HIDDEN ]] || cleanup_occurrence_patch "Hide occurrence" '{"visibility":"HIDDEN"}' HIDE_KEY
   assert_cleanup_evidence
   SALES_CLEANED_AT="${SALES_CLEANED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"; save_state
 }
@@ -373,12 +373,12 @@ PY
 fi
 if [[ "$PHASE" == OCCURRENCE_CREATED ]]; then
   refresh_occurrence
-  if [[ "$(json '.visibility' "$RUN_TMP/occurrence.json")" != PUBLISHED ]]; then start_occurrence_transition PUBLISH_OCCURRENCE '{visibility:"PUBLISHED"}' PUBLISH_KEY "Publish occurrence"; fi
+  if [[ "$(json '.visibility' "$RUN_TMP/occurrence.json")" != PUBLISHED ]]; then start_occurrence_transition PUBLISH_OCCURRENCE '{"visibility":"PUBLISHED"}' PUBLISH_KEY "Publish occurrence"; fi
   set_phase OCCURRENCE_PUBLISHED
 fi
 if [[ "$PHASE" == OCCURRENCE_PUBLISHED ]]; then
   refresh_occurrence
-  if [[ "$(json '.sales_status' "$RUN_TMP/occurrence.json")" != OPEN ]]; then start_occurrence_transition OPEN_SALES '{sales_status:"OPEN"}' OPEN_SALES_KEY "Open sales"; fi
+  if [[ "$(json '.sales_status' "$RUN_TMP/occurrence.json")" != OPEN ]]; then start_occurrence_transition OPEN_SALES '{"sales_status":"OPEN"}' OPEN_SALES_KEY "Open sales"; fi
   public_get "occurrences/$OCCURRENCE_ID"; require_http 200 "Published occurrence public detail"; jq -e '.visibility == "PUBLISHED" and .sales_status == "OPEN" and .availability == 1 and .price_kopecks == 100 and .capacity == 1' "$HTTP_BODY" >/dev/null || fail "published occurrence is not sellable with availability 1"
   INITIAL_AVAILABILITY=1; save_state
   set_phase OCCURRENCE_OPEN
