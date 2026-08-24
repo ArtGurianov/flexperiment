@@ -48,8 +48,8 @@ on_exit() {
   local code=$?
   rm -rf "$RUN_TMP"
   if [[ "$code" -ne 0 && -n "${OCCURRENCE_ID:-}" ]]; then
-    if [[ -n "${SALES_CLEANED_AT:-}" ]]; then
-      echo "CERTIFICATION FAILED AFTER EMERGENCY CLEANUP: verify occurrence remains CLOSED+HIDDEN before any resume: $OCCURRENCE_ID" >&2
+    if [[ -n "${SALES_CLEANUP_STARTED_AT:-}" || -n "${SALES_CLEANED_AT:-}" ]]; then
+      echo "CERTIFICATION FAILED AFTER CLEANUP STARTED: verify occurrence remains CLOSED+HIDDEN and finish --cleanup before any resume: $OCCURRENCE_ID" >&2
     else
       echo "CERTIFICATION OCCURRENCE MAY STILL BE OPEN FOR SALES: $OCCURRENCE_ID" >&2
       echo "Emergency sales-close/cleanup: ./certification.sh --cleanup $STATE_FILE" >&2
@@ -69,7 +69,7 @@ require_http() { [[ "$HTTP_CODE" == "$1" ]] || fail "$2 expected HTTP $1, got $H
 require_2xx() { [[ "$HTTP_CODE" =~ ^2 ]] || fail "$1 returned HTTP $HTTP_CODE"; }
 json() { jq -er "$1" "$2"; }
 
-STATE_KEYS=(RUN_ID PHASE EXPECTED_SOURCE_COMMIT EXPECTED_MIGRATION EXPECTED_LEGAL_RELEASE_ID EXPECTED_LEGAL_VERSION EXPECTED_PUBLIC_OFFER_SHA256 EXPECTED_PRIVACY_POLICY_SHA256 EXPECTED_PD_CONSENT_SHA256 EXPECTED_CHECKOUT_DISCLOSURE_SHA256 CITY_ID OCCURRENCE_ID OCCURRENCE_REVISION CREATE_OCCURRENCE_BODY QUOTE_ID CHECKOUT_REQUEST_SHA256 STATUS_ID PAYMENT_URL_OPENED_AT ORDER_ID BOOKING_ID PAYMENT_ID TICKET_ID REFUND_OBLIGATION_ID REFUND_ID INITIAL_AVAILABILITY PAID_AVAILABILITY POST_CANCEL_AVAILABILITY SALES_CLEANED_AT COMPLETED_AT MANIFEST_WRITTEN_AT CREATE_OCCURRENCE_KEY PUBLISH_KEY OPEN_SALES_KEY CHECKOUT_KEY CANCEL_BOOKING_KEY CLOSE_SALES_KEY HIDE_KEY PENDING_OPERATION PENDING_EXPECTED_REVISION STARTED_AT)
+STATE_KEYS=(RUN_ID PHASE EXPECTED_SOURCE_COMMIT EXPECTED_MIGRATION EXPECTED_LEGAL_RELEASE_ID EXPECTED_LEGAL_VERSION EXPECTED_PUBLIC_OFFER_SHA256 EXPECTED_PRIVACY_POLICY_SHA256 EXPECTED_PD_CONSENT_SHA256 EXPECTED_CHECKOUT_DISCLOSURE_SHA256 CITY_ID OCCURRENCE_ID OCCURRENCE_REVISION CREATE_OCCURRENCE_BODY QUOTE_ID CHECKOUT_REQUEST_SHA256 STATUS_ID PAYMENT_URL_OPENED_AT ORDER_ID BOOKING_ID PAYMENT_ID TICKET_ID REFUND_OBLIGATION_ID REFUND_ID INITIAL_AVAILABILITY PAID_AVAILABILITY POST_CANCEL_AVAILABILITY SALES_CLEANUP_STARTED_AT SALES_CLEANED_AT HUMAN_TICKET_VERIFIED_AT COMPLETED_AT MANIFEST_WRITTEN_AT CREATE_OCCURRENCE_KEY PUBLISH_KEY OPEN_SALES_KEY CHECKOUT_KEY CANCEL_BOOKING_KEY CLOSE_SALES_KEY HIDE_KEY PENDING_OPERATION PENDING_EXPECTED_REVISION STARTED_AT)
 STATE_PHASES=(NEW OCCURRENCE_CREATED OCCURRENCE_PUBLISHED OCCURRENCE_OPEN QUOTE_READY CHECKOUT_SUBMITTING CHECKOUT_CREATED ORDER_IDENTIFIED PAYMENT_PROVEN TICKET_EMAIL_DELIVERED BOOKING_CANCELLED BOOKING_CANCELLED_EMAIL_DELIVERED REFUND_SUCCEEDED REFUND_EMAIL_DELIVERED OCCURRENCE_CLEANED COMPLETE)
 PENDING_OPERATIONS=(CREATE_OCCURRENCE PUBLISH_OCCURRENCE OPEN_SALES CANCEL_BOOKING)
 save_state() {
@@ -119,7 +119,7 @@ validate_pending_operation_state() {
       [[ -n "${OCCURRENCE_ID:-}" && -n "${OPEN_SALES_KEY:-}" && -n "${PENDING_EXPECTED_REVISION:-}" ]] || fail "pending sales opening lacks occurrence/revision facts"
       ;;
     CANCEL_BOOKING:TICKET_EMAIL_DELIVERED)
-      [[ -n "${ORDER_ID:-}" && -n "${BOOKING_ID:-}" && -n "${CANCEL_BOOKING_KEY:-}" ]] || fail "pending customer cancellation lacks order/booking facts"
+      [[ -n "${ORDER_ID:-}" && -n "${STATUS_ID:-}" && -n "${PAYMENT_ID:-}" && -n "${BOOKING_ID:-}" && -n "${TICKET_ID:-}" && -n "${HUMAN_TICKET_VERIFIED_AT:-}" && -n "${CANCEL_BOOKING_KEY:-}" ]] || fail "pending customer cancellation lacks certified order/booking/human-verification facts"
       ;;
     *) fail "pending operation lacks required state facts" ;;
   esac
@@ -135,6 +135,11 @@ if [[ "$MODE" == run ]]; then
   PHASE=NEW; STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; save_state
 else
   load_state
+  # Backward-compatible monotonic upgrade for a state written by the prior
+  # script revision: completed cleanup is necessarily started cleanup.
+  if [[ -n "${SALES_CLEANED_AT:-}" && -z "${SALES_CLEANUP_STARTED_AT:-}" ]]; then
+    SALES_CLEANUP_STARTED_AT="$SALES_CLEANED_AT"; save_state
+  fi
 fi
 
 echo "FLEXPERIMENT production E2E certification v2"
@@ -192,14 +197,11 @@ fi
 refresh_occurrence() { admin_get "occurrences/$OCCURRENCE_ID"; cp "$HTTP_BODY" "$RUN_TMP/occurrence.json"; }
 assert_certification_occurrence_identity() {
   refresh_occurrence
-  jq -e --arg city "$CITY_SLUG" --arg title "FLEXPERIMENT — Кемерово — production E2E $RUN_ID" '
-    .city_slug == $city
-    and .title == $title
-    and .timezone == "Asia/Novokuznetsk"
-    and .price_kopecks == 100
-    and .capacity == 1
-    and .venue_status == "TO_BE_ANNOUNCED"
-  ' "$RUN_TMP/occurrence.json" >/dev/null || fail "persisted occurrence is not this run's canonical 1 RUB Kemerovo certification occurrence"
+  certification_occurrence_identity_valid "$RUN_TMP/occurrence.json" "$CITY_SLUG" "FLEXPERIMENT — Кемерово — production E2E $RUN_ID" || fail "persisted occurrence is not this run's canonical 1 RUB Kemerovo certification occurrence"
+}
+assert_certification_order_identity() {
+  local evidence_file="${1:-$RUN_TMP/order-evidence.json}"
+  certification_order_identity_valid "$evidence_file" "$ORDER_ID" "$STATUS_ID" "$OCCURRENCE_ID" "$PAYMENT_ID" "$BOOKING_ID" "$TICKET_ID" || fail "order/payment/booking/ticket evidence is not bound to this certification run"
 }
 assert_pending_operation_identity() {
   [[ -n "${PENDING_OPERATION:-}" ]] || return 0
@@ -228,9 +230,8 @@ assert_pending_operation_identity() {
       ;;
     CANCEL_BOOKING)
       admin_get "orders/$ORDER_ID/evidence"
-      jq -e --arg order "$ORDER_ID" --arg booking "$BOOKING_ID" '
-        .order.id == $order and .booking.id == $booking
-      ' "$HTTP_BODY" >/dev/null || fail "pending cancellation booking does not belong to this persisted order"
+      cp "$HTTP_BODY" "$RUN_TMP/pending-order-evidence.json"
+      assert_certification_order_identity "$RUN_TMP/pending-order-evidence.json"
       ;;
   esac
 }
@@ -292,6 +293,11 @@ cleanup_occurrence_patch() {
   OCCURRENCE_REVISION="$(json '.admin_revision' "$HTTP_BODY")"; save_state; echo "$label: OK"
 }
 close_and_hide() {
+  # Persist the irreversible cleanup intent before the first destructive
+  # mutation. A crash at any later point can never make catalog reopening a
+  # valid recovery action.
+  assert_certification_occurrence_identity
+  SALES_CLEANUP_STARTED_AT="${SALES_CLEANUP_STARTED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"; save_state
   refresh_occurrence
   [[ "$(json '.sales_status' "$RUN_TMP/occurrence.json")" == CLOSED ]] || cleanup_occurrence_patch "Close sales" '{sales_status:"CLOSED"}' CLOSE_SALES_KEY
   refresh_occurrence
@@ -314,9 +320,10 @@ fi
 
 # Only a verified current deployment may recover an interrupted allowlisted
 # Admin operation. This is deliberately after assert_system_evidence().
-case "$(certification_recovery_action "$MODE" "$PHASE" "${PENDING_OPERATION:-}" VERIFIED "${SALES_CLEANED_AT:-}")" in
+case "$(certification_recovery_action "$MODE" "$PHASE" "${PENDING_OPERATION:-}" VERIFIED "${SALES_CLEANUP_STARTED_AT:-${SALES_CLEANED_AT:-}}")" in
   REPLAY_PENDING) replay_pending_operation ;;
   CONTINUE|CLEAN_OCCURRENCE|WRITE_MANIFEST|REPORT_COMPLETE) ;;
+  CLEANUP_REQUIRED) incomplete "cleanup was started before the current phase; finish --cleanup before any normal resume can change catalog state" ;;
   *) fail "certification recovery planner rejected the current resume state" ;;
 esac
 
@@ -435,6 +442,7 @@ if [[ "$PHASE" == CHECKOUT_CREATED ]]; then recover_existing_checkout; fi
 if [[ "$PHASE" == CHECKOUT_CREATED ]]; then read -rp "Complete the real 1 RUB Tochka payment, then press Enter: " _ </dev/tty; wait_checkout_paid; find_order_from_status; fi
 if [[ "$PHASE" == ORDER_IDENTIFIED ]]; then
   read_order_evidence; PAYMENT_ID="$(json '.payment.id' "$RUN_TMP/order-evidence.json")"; BOOKING_ID="$(json '.booking.id' "$RUN_TMP/order-evidence.json")"; TICKET_ID="$(json '.ticket.id' "$RUN_TMP/order-evidence.json")"
+  assert_certification_order_identity
   jq -e \
     --arg payment "$PAYMENT_ID" \
     --arg release "$EXPECTED_LEGAL_RELEASE_ID" \
@@ -479,10 +487,23 @@ wait_email() {
   done
   incomplete "$type email delivery timed out; investigate existing outbox without resend"
 }
+assert_email_evidence() {
+  local type="$1" ref="$2"
+  certification_email_evidence_row "$RUN_TMP/order-evidence.json" "$type" "$ref" || fail "final $type email evidence is incomplete, contradictory, or not unique"
+}
+assert_final_email_evidence() {
+  TICKET_FINAL_EMAIL_JSON="$(assert_email_evidence TICKET "$TICKET_ID")"
+  BOOKING_CANCELLED_FINAL_EMAIL_JSON="$(assert_email_evidence BOOKING_CANCELLED "$BOOKING_ID")"
+  REFUND_SUCCEEDED_FINAL_EMAIL_JSON="$(assert_email_evidence REFUND_SUCCEEDED "$REFUND_ID")"
+}
 if [[ "$PHASE" == PAYMENT_PROVEN ]]; then TICKET_EMAIL_JSON="$(wait_email TICKET "$TICKET_ID")"; set_phase TICKET_EMAIL_DELIVERED; fi
 if [[ "$PHASE" == TICKET_EMAIL_DELIVERED ]]; then
-  read -rp "Verify mailbox, ticket link, participant and occurrence. Type yes to continue: " verified </dev/tty; [[ "$verified" == yes ]] || incomplete "human ticket verification was not confirmed"
+  if [[ -z "${HUMAN_TICKET_VERIFIED_AT:-}" ]]; then
+    read -rp "Verify mailbox, ticket link, participant and occurrence. Type yes to continue: " verified </dev/tty; [[ "$verified" == yes ]] || incomplete "human ticket verification was not confirmed"
+    HUMAN_TICKET_VERIFIED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; save_state
+  fi
   assert_system_evidence
+  read_order_evidence; assert_certification_order_identity
   ensure_key CANCEL_BOOKING_KEY; PENDING_OPERATION=CANCEL_BOOKING; save_state
   replay_pending_operation; set_phase BOOKING_CANCELLED
 fi
@@ -540,16 +561,18 @@ if [[ "$PHASE" == OCCURRENCE_CLEANED ]]; then
   # Admin facts: an external reopen after a crash must prevent a PASS artifact.
   assert_cleanup_evidence
   read_order_evidence
+  assert_certification_order_identity
   assert_final_refund_evidence
+  [[ -n "${HUMAN_TICKET_VERIFIED_AT:-}" ]] || fail "durable human ticket verification checkpoint is absent"
+  assert_final_email_evidence
   COMPLETED_AT="${COMPLETED_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"; save_state
   ARTIFACT_DIR="$PWD/artifacts/certification"; mkdir -p "$ARTIFACT_DIR"; chmod 700 "$ARTIFACT_DIR"; MANIFEST="$ARTIFACT_DIR/flexperiment-production-e2e-${RUN_ID}.json"
   MANIFEST_TMP="$MANIFEST.tmp"
-  jq -n --slurpfile system "$RUN_TMP/system-evidence.json" --slurpfile evidence "$RUN_TMP/order-evidence.json" --slurpfile occurrence "$RUN_TMP/occurrence.json" --arg run "$RUN_ID" --arg started "$STARTED_AT" --arg completed "$COMPLETED_AT" --arg occurrence "$OCCURRENCE_ID" --arg status "$STATUS_ID" --arg booking "$BOOKING_ID" --arg ticket "$TICKET_ID" --arg obligation "$REFUND_OBLIGATION_ID" --arg refund "$REFUND_ID" --argjson initial_availability "$INITIAL_AVAILABILITY" --argjson paid_availability "$PAID_AVAILABILITY" --argjson post_cancel_availability "$POST_CANCEL_AVAILABILITY" '
-    def outbox($type; $ref): $evidence[0].email_outbox[] | select(.type == $type and .payload_ref == $ref);
-    def email_evidence($type; $ref):
-      (outbox($type; $ref)) as $outbox |
+  jq -n --slurpfile system "$RUN_TMP/system-evidence.json" --slurpfile evidence "$RUN_TMP/order-evidence.json" --slurpfile occurrence "$RUN_TMP/occurrence.json" --arg run "$RUN_ID" --arg started "$STARTED_AT" --arg completed "$COMPLETED_AT" --arg occurrence "$OCCURRENCE_ID" --arg status "$STATUS_ID" --arg booking "$BOOKING_ID" --arg ticket "$TICKET_ID" --arg human_verified_at "$HUMAN_TICKET_VERIFIED_AT" --arg obligation "$REFUND_OBLIGATION_ID" --arg refund "$REFUND_ID" --argjson initial_availability "$INITIAL_AVAILABILITY" --argjson paid_availability "$PAID_AVAILABILITY" --argjson post_cancel_availability "$POST_CANCEL_AVAILABILITY" --argjson ticket_email "$TICKET_FINAL_EMAIL_JSON" --argjson booking_cancelled_email "$BOOKING_CANCELLED_FINAL_EMAIL_JSON" --argjson refund_succeeded_email "$REFUND_SUCCEEDED_FINAL_EMAIL_JSON" '
+    def email_evidence($outbox):
       {outbox:$outbox,provider_events:[$evidence[0].email_provider_events[] | select(.outbox_id == $outbox.id)]};
-    {result:"PASS",run_id:$run,environment:"production",started_at:$started,completed_at:$completed,build:$system[0],occurrence:{id:$occurrence,final_sales_status:$occurrence[0].sales_status,final_visibility:$occurrence[0].visibility,public_cleanup_verified:true,availability:{before_payment:$initial_availability,after_payment:$paid_availability,after_customer_cancellation:$post_cancel_availability}},order:{id:$evidence[0].order.id,status_id:$status,currency:$evidence[0].order.currency,legal_snapshot:{release_id:$evidence[0].order.checkout_legal_release_id,public_offer:{version:$evidence[0].order.public_offer_version,sha256:$evidence[0].order.public_offer_sha256},privacy_policy:{version:$evidence[0].order.privacy_policy_version,sha256:$evidence[0].order.privacy_policy_sha256},pd_consent:{version:$evidence[0].order.pd_consent_version,sha256:$evidence[0].order.pd_consent_sha256},checkout_disclosure:{version:$evidence[0].order.checkout_disclosure_version,sha256:$evidence[0].order.checkout_disclosure_sha256}},participant_assertions:{customer_adult_confirmed:($evidence[0].order.customer_adult_confirmed_at != null),participant_is_customer:($evidence[0].order.participant_is_customer == 1),participant_is_minor:($evidence[0].order.participant_is_minor == 1),adult_self_participant_verified:($evidence[0].order.customer_adult_confirmed_at != null and $evidence[0].order.participant_is_customer == 1 and $evidence[0].order.participant_is_minor == 0 and $evidence[0].order.participant_age_at_occurrence >= 18 and $evidence[0].order.participant_requires_adult_accompaniment == 0 and $evidence[0].order.minor_legal_representative_confirmed_at == null and $evidence[0].order.under_14_accompaniment_confirmed_at == null)}},payment:$evidence[0].payment,tochka_webhook_events:$evidence[0].tochka_webhook_events,booking:{id:$booking,before_cancellation:"CONFIRMED",after_cancellation:$evidence[0].booking.status},ticket:{id:$ticket,before_cancellation:"VALID",after_cancellation:$evidence[0].ticket.status,human_verified:true},emails:{ticket:email_evidence("TICKET"; $ticket),booking_cancelled:email_evidence("BOOKING_CANCELLED"; $booking),refund_succeeded:email_evidence("REFUND_SUCCEEDED"; $refund)},refund_obligation:($evidence[0].refund_obligation|select(.id==$obligation)),refund:($evidence[0].refunds[]|select(.id==$refund))}' > "$MANIFEST_TMP"
+    {result:"PASS",run_id:$run,environment:"production",started_at:$started,completed_at:$completed,build:$system[0],occurrence:{id:$occurrence,final_sales_status:$occurrence[0].sales_status,final_visibility:$occurrence[0].visibility,public_cleanup_verified:true,availability:{before_payment:$initial_availability,after_payment:$paid_availability,after_customer_cancellation:$post_cancel_availability}},order:{id:$evidence[0].order.id,status_id:$status,currency:$evidence[0].order.currency,legal_snapshot:{release_id:$evidence[0].order.checkout_legal_release_id,public_offer:{version:$evidence[0].order.public_offer_version,sha256:$evidence[0].order.public_offer_sha256},privacy_policy:{version:$evidence[0].order.privacy_policy_version,sha256:$evidence[0].order.privacy_policy_sha256},pd_consent:{version:$evidence[0].order.pd_consent_version,sha256:$evidence[0].order.pd_consent_sha256},checkout_disclosure:{version:$evidence[0].order.checkout_disclosure_version,sha256:$evidence[0].order.checkout_disclosure_sha256}},participant_assertions:{customer_adult_confirmed:($evidence[0].order.customer_adult_confirmed_at != null),participant_is_customer:($evidence[0].order.participant_is_customer == 1),participant_is_minor:($evidence[0].order.participant_is_minor == 1),adult_self_participant_verified:($evidence[0].order.customer_adult_confirmed_at != null and $evidence[0].order.participant_is_customer == 1 and $evidence[0].order.participant_is_minor == 0 and $evidence[0].order.participant_age_at_occurrence >= 18 and $evidence[0].order.participant_requires_adult_accompaniment == 0 and $evidence[0].order.minor_legal_representative_confirmed_at == null and $evidence[0].order.under_14_accompaniment_confirmed_at == null)}},payment:$evidence[0].payment,tochka_webhook_events:$evidence[0].tochka_webhook_events,booking:{id:$booking,before_cancellation:"CONFIRMED",after_cancellation:$evidence[0].booking.status},ticket:{id:$ticket,before_cancellation:"VALID",after_cancellation:$evidence[0].ticket.status,human_verified:true,human_verified_at:$human_verified_at},emails:{ticket:email_evidence($ticket_email),booking_cancelled:email_evidence($booking_cancelled_email),refund_succeeded:email_evidence($refund_succeeded_email)},refund_obligation:($evidence[0].refund_obligation|select(.id==$obligation)),refund:($evidence[0].refunds[]|select(.id==$refund))}' > "$MANIFEST_TMP"
+  jq -e 'type == "object" and .result == "PASS"' "$MANIFEST_TMP" >/dev/null || fail "final certification manifest is not one PASS object"
   chmod 600 "$MANIFEST_TMP"; mv "$MANIFEST_TMP" "$MANIFEST"
   MANIFEST_WRITTEN_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; set_phase COMPLETE
 fi

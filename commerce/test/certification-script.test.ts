@@ -27,6 +27,18 @@ function pendingOperationPhaseIsValid(operation: string, phase: string) {
   }
 }
 
+function helperSucceeds(name: string, ...args: string[]) {
+  try {
+    execFileSync("bash", ["-lc", `source ${JSON.stringify(recoveryPlanner)}; ${name} ${args.map((argument) => JSON.stringify(argument)).join(" ")}`], {
+      cwd: repositoryRoot,
+      stdio: "pipe",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 describe("production certification runbook checkpoints", () => {
   it("keeps the pre-dispatch checkout identity and distinct crash checkpoints", () => {
     const source = readFileSync(certificationScript, "utf8");
@@ -56,11 +68,16 @@ describe("production certification runbook checkpoints", () => {
     expect(source).toContain("assert_occurrence_availability 0");
     expect(source).toContain("assert_occurrence_availability 1");
     expect(source).toContain("assert_final_refund_evidence");
+    expect(source).toContain("assert_final_email_evidence");
+    expect(source).toContain("assert_certification_order_identity");
     expect(source).toContain("customer_adult_confirmed_at");
     expect(source).toContain("certification_pending_operation_phase_valid");
+    expect(source).toContain("SALES_CLEANUP_STARTED_AT");
+    expect(source).toContain("HUMAN_TICKET_VERIFIED_AT");
     expect(source).toContain("SALES_CLEANED_AT");
     expect(source).toContain("stat.S_IMODE");
     expect(source).not.toContain('source "$STATE_FILE"');
+    expect(source).not.toContain('SALES_CLEANUP_STARTED_AT=""');
   });
 
   it("plans a monotonic emergency cleanup while retaining only post-dispatch financial recovery", () => {
@@ -73,12 +90,14 @@ describe("production certification runbook checkpoints", () => {
     expect(plan("run", "OCCURRENCE_CLEANED", "", "VERIFIED")).toBe("WRITE_MANIFEST");
     expect(plan("run", "COMPLETE", "", "VERIFIED")).toBe("REPORT_COMPLETE");
     expect(plan("cleanup", "OCCURRENCE_PUBLISHED", "OPEN_SALES", "VERIFIED")).toBe("CLEANUP_ONLY");
-    expect(plan("run", "OCCURRENCE_PUBLISHED", "OPEN_SALES", "VERIFIED", "2026-08-24T00:00:00Z")).toBe("BLOCKED_AFTER_EMERGENCY_CLEANUP");
-    expect(plan("run", "OCCURRENCE_CREATED", "", "VERIFIED", "2026-08-24T00:00:00Z")).toBe("BLOCKED_AFTER_EMERGENCY_CLEANUP");
-    expect(plan("run", "OCCURRENCE_PUBLISHED", "", "VERIFIED", "2026-08-24T00:00:00Z")).toBe("BLOCKED_AFTER_EMERGENCY_CLEANUP");
-    expect(plan("run", "OCCURRENCE_PUBLISHED", "PUBLISH_OCCURRENCE", "VERIFIED", "2026-08-24T00:00:00Z")).toBe("BLOCKED_AFTER_EMERGENCY_CLEANUP");
-    expect(plan("run", "OCCURRENCE_CREATED", "CREATE_OCCURRENCE", "VERIFIED", "2026-08-24T00:00:00Z")).toBe("BLOCKED_AFTER_EMERGENCY_CLEANUP");
+    expect(plan("run", "OCCURRENCE_PUBLISHED", "OPEN_SALES", "VERIFIED", "2026-08-24T00:00:00Z")).toBe("CLEANUP_REQUIRED");
+    expect(plan("run", "OCCURRENCE_CREATED", "", "VERIFIED", "2026-08-24T00:00:00Z")).toBe("CLEANUP_REQUIRED");
+    expect(plan("run", "OCCURRENCE_PUBLISHED", "", "VERIFIED", "2026-08-24T00:00:00Z")).toBe("CLEANUP_REQUIRED");
+    expect(plan("run", "OCCURRENCE_PUBLISHED", "PUBLISH_OCCURRENCE", "VERIFIED", "2026-08-24T00:00:00Z")).toBe("CLEANUP_REQUIRED");
+    expect(plan("run", "OCCURRENCE_CREATED", "CREATE_OCCURRENCE", "VERIFIED", "2026-08-24T00:00:00Z")).toBe("CLEANUP_REQUIRED");
+    expect(plan("run", "NEW", "", "VERIFIED", "2026-08-24T00:00:00Z")).toBe("CLEANUP_REQUIRED");
     expect(plan("run", "CHECKOUT_CREATED", "", "VERIFIED", "2026-08-24T00:00:00Z")).toBe("CONTINUE");
+    expect(plan("run", "CHECKOUT_SUBMITTING", "", "VERIFIED", "2026-08-24T00:00:00Z")).toBe("CONTINUE");
     expect(plan("run", "PAYMENT_PROVEN", "", "VERIFIED", "2026-08-24T00:00:00Z")).toBe("CONTINUE");
     expect(plan("run", "OCCURRENCE_CREATED", "PUBLISH_OCCURRENCE", "MISMATCH")).toBe("BLOCKED_BASELINE");
   });
@@ -91,6 +110,46 @@ describe("production certification runbook checkpoints", () => {
     expect(pendingOperationPhaseIsValid("CANCEL_BOOKING", "NEW")).toBe(false);
     expect(pendingOperationPhaseIsValid("OPEN_SALES", "OCCURRENCE_CREATED")).toBe(false);
     expect(pendingOperationPhaseIsValid("PUBLISH_OCCURRENCE", "OCCURRENCE_PUBLISHED")).toBe(false);
+  });
+
+  it("rejects mismatched cleanup targets and order bindings before destructive commands", () => {
+    const directory = mkdtempSync(resolve(tmpdir(), "flexperiment-certification-evidence-"));
+    const occurrence = resolve(directory, "occurrence.json");
+    const evidence = resolve(directory, "evidence.json");
+    try {
+      writeFileSync(occurrence, JSON.stringify({ city_slug: "kemerovo", title: "FLEXPERIMENT — Кемерово — production E2E test-run", timezone: "Asia/Novokuznetsk", price_kopecks: 100, capacity: 1 }));
+      expect(helperSucceeds("certification_occurrence_identity_valid", occurrence, "kemerovo", "FLEXPERIMENT — Кемерово — production E2E test-run")).toBe(true);
+      expect(helperSucceeds("certification_occurrence_identity_valid", occurrence, "kemerovo", "FLEXPERIMENT — Кемерово — production E2E another-run")).toBe(false);
+
+      writeFileSync(evidence, JSON.stringify({
+        order: { id: "order", public_status_id: "status", occurrence_id: "occurrence", amount_kopecks: 100, currency: "RUB" },
+        payment: { id: "payment" }, booking: { id: "booking" }, ticket: { id: "ticket" },
+      }));
+      expect(helperSucceeds("certification_order_identity_valid", evidence, "order", "status", "occurrence", "payment", "booking", "ticket")).toBe(true);
+      expect(helperSucceeds("certification_order_identity_valid", evidence, "other-order", "status", "occurrence", "payment", "booking", "ticket")).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("requires one final delivered email with non-contradictory provider evidence", () => {
+    const directory = mkdtempSync(resolve(tmpdir(), "flexperiment-certification-email-"));
+    const evidence = resolve(directory, "email-evidence.json");
+    const writeEvidence = (outbox: unknown[], events: unknown[]) => writeFileSync(evidence, JSON.stringify({ email_outbox: outbox, email_provider_events: events }));
+    const outbox = { id: "mail", type: "TICKET", payload_ref: "ticket", status: "DELIVERED", job_id: "job" };
+    const delivered = { outbox_id: "mail", status: "DELIVERED", provider_status: "delivered", job_id: "job" };
+    try {
+      writeEvidence([outbox], [delivered]);
+      expect(helperSucceeds("certification_email_evidence_row", evidence, "TICKET", "ticket")).toBe(true);
+
+      writeEvidence([outbox, { ...outbox, id: "mail-duplicate" }], [delivered]);
+      expect(helperSucceeds("certification_email_evidence_row", evidence, "TICKET", "ticket")).toBe(false);
+
+      writeEvidence([outbox], [delivered, { outbox_id: "mail", status: "BOUNCED", provider_status: "soft_bounced", job_id: "job" }]);
+      expect(helperSucceeds("certification_email_evidence_row", evidence, "TICKET", "ticket")).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("rejects an arbitrary resume file without executing its contents", () => {

@@ -9,8 +9,66 @@ certification_pending_operation_phase_valid() {
   esac
 }
 
+certification_occurrence_identity_valid() {
+  local occurrence_file="$1" city_slug="$2" title="$3"
+  jq -e --arg city "$city_slug" --arg title "$title" '
+    .city_slug == $city
+    and .title == $title
+    and .timezone == "Asia/Novokuznetsk"
+    and .price_kopecks == 100
+    and .capacity == 1
+  ' "$occurrence_file" >/dev/null
+}
+
+certification_order_identity_valid() {
+  local evidence_file="$1" order_id="$2" status_id="$3" occurrence_id="$4" payment_id="$5" booking_id="$6" ticket_id="$7"
+  jq -e \
+    --arg order "$order_id" \
+    --arg status "$status_id" \
+    --arg occurrence "$occurrence_id" \
+    --arg payment "$payment_id" \
+    --arg booking "$booking_id" \
+    --arg ticket "$ticket_id" '
+      .order.id == $order
+      and .order.public_status_id == $status
+      and .order.occurrence_id == $occurrence
+      and .order.amount_kopecks == 100
+      and .order.currency == "RUB"
+      and .payment.id == $payment
+      and .booking.id == $booking
+      and .ticket.id == $ticket
+    ' "$evidence_file" >/dev/null
+}
+
+certification_email_evidence_row() {
+  local evidence_file="$1" type="$2" ref="$3" rows row outbox_id
+  rows="$(jq -cer --arg type "$type" --arg ref "$ref" '[.email_outbox[] | select(.type == $type and .payload_ref == $ref)]' "$evidence_file")" || return 1
+  [[ "$(jq 'length' <<<"$rows")" == 1 ]] || return 1
+  row="$(jq -cer '.[0]' <<<"$rows")" || return 1
+  outbox_id="$(jq -er '.id' <<<"$row")" || return 1
+  jq -e --arg outbox "$outbox_id" --argjson row "$row" '
+    $row.status == "DELIVERED"
+    and ($row.job_id | type == "string" and length > 0)
+    and ([.email_provider_events[]? | select(
+      .outbox_id == $outbox
+      and .status == "DELIVERED"
+      and .provider_status == "delivered"
+    )] | length >= 1)
+    and ([.email_provider_events[]? | select(
+      .outbox_id == $outbox
+      and .job_id != null
+      and .job_id != $row.job_id
+    )] | length == 0)
+    and ([.email_provider_events[]? | select(
+      .outbox_id == $outbox
+      and (.status == "BOUNCED" or .status == "FAILED")
+    )] | length == 0)
+  ' "$evidence_file" >/dev/null || return 1
+  printf '%s' "$row"
+}
+
 certification_recovery_action() {
-  local mode="$1" phase="$2" pending_operation="$3" baseline="$4" sales_cleaned_at="${5:-}"
+  local mode="$1" phase="$2" pending_operation="$3" baseline="$4" cleanup_started_at="${5:-}"
 
   if [[ "$mode" == cleanup ]]; then
     printf '%s\n' CLEANUP_ONLY
@@ -23,16 +81,16 @@ certification_recovery_action() {
   # Cleanup is monotonic.  An emergency close/hide can happen while a payment
   # is in flight, so post-dispatch financial recovery remains allowed; no
   # pre-dispatch phase may create public/sellable catalog state again.
-  if [[ -n "$sales_cleaned_at" ]]; then
+  if [[ -n "$cleanup_started_at" ]]; then
     case "$pending_operation" in
       PUBLISH_OCCURRENCE|OPEN_SALES|CREATE_OCCURRENCE)
-        printf '%s\n' BLOCKED_AFTER_EMERGENCY_CLEANUP
+        printf '%s\n' CLEANUP_REQUIRED
         return
         ;;
     esac
     case "$phase" in
       NEW|OCCURRENCE_CREATED|OCCURRENCE_PUBLISHED|OCCURRENCE_OPEN|QUOTE_READY)
-        printf '%s\n' BLOCKED_AFTER_EMERGENCY_CLEANUP
+        printf '%s\n' CLEANUP_REQUIRED
         return
         ;;
     esac

@@ -56,6 +56,14 @@ delivery. Before a replay, the script independently proves the canonical
 Kemerovo/1-RUB occurrence or the order-to-booking linkage. A saved operation
 is therefore not authority to target a different entity.
 
+Before the first close/hide mutation, the script persists
+`SALES_CLEANUP_STARTED_AT`. This is monotonic even if the process crashes while
+cleanup is partially complete: it permanently prohibits create/publish/open
+for that run. `SALES_CLEANED_AT` is recorded only after fresh Admin/public
+proof of `CLOSED + HIDDEN`. Cleanup first proves the target's exact stable
+certification identity, so an edited state file cannot close an arbitrary
+production occurrence.
+
 ```bash
 ./certification.sh --resume .certification-state/production-e2e-<run-id>.json
 ./certification.sh --cleanup .certification-state/production-e2e-<run-id>.json
@@ -95,5 +103,8 @@ path; exactly one fulfilled customer-cancellation refund obligation and one
 linked 100-kopek successful refund with a provider reference; a final
 `REFUNDED` payment; and fresh Admin/public cleanup proof immediately before
 the atomic manifest write. It also proves the post-0028 adult self-participant
-path through redacted order evidence. A timeout/ambiguous provider outcome is
-`INCOMPLETE`, not `PASS`.
+path through redacted order evidence, binds every order/payment/booking/ticket
+ID to the current status/occurrence, and rechecks unique `DELIVERED` Unisender
+evidence for all three transactional emails. The operator's ticket-page
+verification is persisted before cancellation and recorded without PII in the
+manifest. A timeout/ambiguous provider outcome is `INCOMPLETE`, not `PASS`.
