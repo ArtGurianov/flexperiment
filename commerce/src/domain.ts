@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { canonical, decryptTicketCapability, emailHash, encryptTicketCapability, id, now, publicId, publicOrderNumber, sha256 } from "./crypto";
-import { EmailProviderRejectedError, EventDumpCreateRejectedError, isEmailDeliveryEvidenceProvider, type EmailProvider, type UnisenderDumpEvent, UnconfiguredEmailProvider } from "./email-provider";
+import { EmailProviderRejectedError, EventDumpCreateRejectedError, isEmailDeliveryEvidenceProvider, type EmailProvider, type UnisenderDumpEvent, UNISENDER_EVENT_DUMP_EVENT_LIMIT, UnconfiguredEmailProvider } from "./email-provider";
 import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import type { PaymentProvider } from "./provider";
 import type { CheckoutRequest } from "./types";
@@ -28,6 +28,8 @@ export const UNISENDER_EVENT_DUMP_MAX_CREATES_PER_EIGHT_HOURS = 9;
 /** Keep a conservative slot below Unisender's documented max of ten dumps. */
 export const UNISENDER_EVENT_DUMP_MAX_EXISTING_PROVIDER_DUMPS = 9;
 export const UNISENDER_EVENT_DUMP_MAX_POLL_ATTEMPTS = 20;
+export const UNISENDER_EVENT_DUMP_CREATE_PROBE_INITIAL_BACKOFF_MS = 5 * 60 * 1_000;
+export const UNISENDER_EVENT_DUMP_CREATE_PROBE_MAX_BACKOFF_MS = 60 * 60 * 1_000;
 
 export function withImmediateTransaction<T>(db: Database.Database, operation: () => T): T {
   db.exec("BEGIN IMMEDIATE");
@@ -1959,13 +1961,20 @@ export class CommerceDomain {
       const lease = `event-dump-create-${id()}`;
       const locked = this.db.prepare(`UPDATE unisender_event_dump_control
         SET create_lease_owner = ?, create_lease_expires_at = ?
-        WHERE singleton = 1 AND (create_lease_expires_at IS NULL OR create_lease_expires_at < ?)`)
-        .run(lease, new Date(this.clock() + 120_000).toISOString(), timestamp);
+        WHERE singleton = 1 AND (create_lease_expires_at IS NULL OR create_lease_expires_at < ?)
+          AND (next_create_probe_at IS NULL OR next_create_probe_at <= ?)`)
+        .run(lease, new Date(this.clock() + 120_000).toISOString(), timestamp, timestamp);
       if (!locked.changes) return undefined;
       const attempts = Number(one(this.db, `SELECT COUNT(*) AS count FROM unisender_event_dump_create_attempts
         WHERE started_at >= ?`, new Date(this.clock() - 8 * 60 * 60 * 1_000).toISOString())?.count ?? 0);
       if (attempts >= UNISENDER_EVENT_DUMP_MAX_CREATES_PER_EIGHT_HOURS) {
-        this.releaseUnisenderEventDumpCreateLease(lease);
+        const earliest = one(this.db, "SELECT MIN(started_at) AS started_at FROM unisender_event_dump_create_attempts WHERE started_at >= ?", new Date(this.clock() - 8 * 60 * 60 * 1_000).toISOString());
+        const nextProbe = new Date(Date.parse(String(earliest?.started_at)) + 8 * 60 * 60 * 1_000).toISOString();
+        this.db.prepare(`UPDATE unisender_event_dump_control
+          SET create_lease_owner = NULL, create_lease_expires_at = NULL,
+              next_create_probe_at = ?, create_probe_failures = 0,
+              last_create_probe_error = 'LOCAL_CREATE_CAP'
+          WHERE singleton = 1 AND create_lease_owner = ?`).run(nextProbe, lease);
         return undefined;
       }
       // Avoid an unnecessary provider list call when no target can be due.
@@ -1998,14 +2007,32 @@ export class CommerceDomain {
     return withImmediateTransaction(this.db, () => {
       const control = one(this.db, "SELECT create_lease_owner FROM unisender_event_dump_control WHERE singleton = 1");
       if (control?.create_lease_owner !== lease) return undefined;
+      this.db.prepare(`UPDATE unisender_event_dump_control
+        SET next_create_probe_at = NULL, create_probe_failures = 0, last_create_probe_error = NULL
+        WHERE singleton = 1 AND create_lease_owner = ?`).run(lease);
       const attempts = Number(one(this.db, `SELECT COUNT(*) AS count FROM unisender_event_dump_create_attempts
         WHERE started_at >= ?`, new Date(this.clock() - 8 * 60 * 60 * 1_000).toISOString())?.count ?? 0);
       if (attempts >= UNISENDER_EVENT_DUMP_MAX_CREATES_PER_EIGHT_HOURS) {
-        this.releaseUnisenderEventDumpCreateLease(lease);
+        const earliest = one(this.db, "SELECT MIN(started_at) AS started_at FROM unisender_event_dump_create_attempts WHERE started_at >= ?", new Date(this.clock() - 8 * 60 * 60 * 1_000).toISOString());
+        const nextProbe = new Date(Date.parse(String(earliest?.started_at)) + 8 * 60 * 60 * 1_000).toISOString();
+        this.db.prepare(`UPDATE unisender_event_dump_control
+          SET create_lease_owner = NULL, create_lease_expires_at = NULL,
+              next_create_probe_at = ?, create_probe_failures = 0,
+              last_create_probe_error = 'LOCAL_CREATE_CAP'
+          WHERE singleton = 1 AND create_lease_owner = ?`).run(nextProbe, lease);
         return undefined;
       }
       const grace = new Date(this.clock() - UNISENDER_EVENT_DUMP_GRACE_MS).toISOString();
-      const candidates = many(this.db, `SELECT outbox.id, outbox.job_id,
+      const targeted = one(this.db, `SELECT target.id AS retry_target_id, outbox.id, target.job_id,
+          COALESCE(outbox.provider_request_started_at, outbox.send_started_at, outbox.created_at) AS dispatch_at,
+          'TARGETED_JOB' AS recovery_mode
+        FROM unisender_event_dump_targets target
+        JOIN email_outbox outbox ON outbox.id = target.outbox_id
+        WHERE target.state = 'RETRY_WAIT' AND target.recovery_mode = 'TARGETED_JOB'
+          AND target.next_attempt_at <= ? AND outbox.superseded_at IS NULL
+          AND outbox.status IN ('ACCEPTED', 'SENT') AND outbox.job_id = target.job_id
+        ORDER BY target.next_attempt_at, target.created_at LIMIT 1`, timestamp);
+      const candidates = targeted ? [targeted] : many(this.db, `SELECT outbox.id, outbox.job_id,
           COALESCE(outbox.provider_request_started_at, outbox.send_started_at, outbox.created_at) AS dispatch_at
         FROM email_outbox outbox
         WHERE outbox.superseded_at IS NULL AND outbox.status IN ('ACCEPTED', 'SENT')
@@ -2023,22 +2050,43 @@ export class CommerceDomain {
       const runId = id();
       const earliest = Math.min(...candidates.map((candidate) => Date.parse(String(candidate.dispatch_at))).filter(Number.isFinite));
       if (!Number.isFinite(earliest)) { this.releaseUnisenderEventDumpCreateLease(lease); return undefined; }
+      const jobIdFilter = targeted ? String(targeted.job_id) : null;
       this.db.prepare(`INSERT INTO unisender_event_dump_runs
-        (id, state, start_time, end_time, create_started_at, next_attempt_at, lease_owner, lease_expires_at)
-        VALUES (?, 'CREATE_IN_FLIGHT', ?, ?, ?, ?, ?, ?)`)
-        .run(runId, this.unisenderDumpTime(new Date(earliest - 60_000)), this.unisenderDumpTime(new Date(this.clock() + 60_000)), timestamp, timestamp, lease, new Date(this.clock() + 120_000).toISOString());
-      const target = this.db.prepare(`INSERT INTO unisender_event_dump_targets(id, run_id, outbox_id, job_id, state)
-        VALUES (?, ?, ?, ?, 'ACTIVE')`);
-      for (const candidate of candidates) target.run(id(), runId, candidate.id, candidate.job_id);
+        (id, state, start_time, end_time, create_started_at, next_attempt_at, requested_limit, job_id_filter, lease_owner, lease_expires_at)
+        VALUES (?, 'CREATE_IN_FLIGHT', ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(runId, this.unisenderDumpTime(new Date(earliest - 60_000)), this.unisenderDumpTime(new Date(this.clock() + 60_000)), timestamp, timestamp, UNISENDER_EVENT_DUMP_EVENT_LIMIT, jobIdFilter, lease, new Date(this.clock() + 120_000).toISOString());
+      if (targeted) this.db.prepare(`UPDATE unisender_event_dump_targets
+        SET state = 'NO_LONGER_NEEDED', updated_at = ? WHERE id = ? AND state = 'RETRY_WAIT'`).run(timestamp, targeted.retry_target_id);
+      const target = this.db.prepare(`INSERT INTO unisender_event_dump_targets(id, run_id, outbox_id, job_id, state, recovery_mode)
+        VALUES (?, ?, ?, ?, 'ACTIVE', ?)`);
+      for (const candidate of candidates) target.run(id(), runId, candidate.id, candidate.job_id, targeted ? "TARGETED_JOB" : "BATCH");
       // Persist before the external POST: a lost response is still one counted
       // provider command and must never trigger an uncontrolled create loop.
       this.db.prepare("INSERT INTO unisender_event_dump_create_attempts(id, started_at) VALUES (?, ?)").run(id(), timestamp);
-      return { id: runId, start_time: this.unisenderDumpTime(new Date(earliest - 60_000)), end_time: this.unisenderDumpTime(new Date(this.clock() + 60_000)), lease };
+      return { id: runId, start_time: this.unisenderDumpTime(new Date(earliest - 60_000)), end_time: this.unisenderDumpTime(new Date(this.clock() + 60_000)), job_id_filter: jobIdFilter, lease };
     });
   }
 
   private releaseUnisenderEventDumpCreateLease(lease: string) {
     this.db.prepare("UPDATE unisender_event_dump_control SET create_lease_owner = NULL, create_lease_expires_at = NULL WHERE singleton = 1 AND create_lease_owner = ?").run(lease);
+  }
+
+  private deferUnisenderEventDumpCreateProbe(lease: string, timestamp: string, code: "LIST_UNAVAILABLE" | "PROVIDER_DUMP_CAPACITY") {
+    withImmediateTransaction(this.db, () => {
+      const control = one(this.db, `SELECT create_probe_failures FROM unisender_event_dump_control
+        WHERE singleton = 1 AND create_lease_owner = ?`, lease);
+      if (!control) return;
+      const failures = Number(control.create_probe_failures) + 1;
+      const delay = Math.min(
+        UNISENDER_EVENT_DUMP_CREATE_PROBE_INITIAL_BACKOFF_MS * (2 ** Math.max(0, failures - 1)),
+        UNISENDER_EVENT_DUMP_CREATE_PROBE_MAX_BACKOFF_MS,
+      );
+      this.db.prepare(`UPDATE unisender_event_dump_control
+        SET create_lease_owner = NULL, create_lease_expires_at = NULL,
+            next_create_probe_at = ?, create_probe_failures = ?, last_create_probe_error = ?
+        WHERE singleton = 1 AND create_lease_owner = ?`)
+        .run(new Date(this.clock() + delay).toISOString(), failures, code, lease);
+    });
   }
 
   private async createUnisenderEventDumpRun(lease: string, timestamp: string) {
@@ -2047,19 +2095,18 @@ export class CommerceDomain {
     try {
       providerCount = await this.emailProvider.listEventDumps();
     } catch {
-      // No create was issued. Preserve targets unchanged and simply release
-      // the local fence for a later read-only retry.
-      this.releaseUnisenderEventDumpCreateLease(lease);
+      // No create was issued. Preserve targets and pace later read-only probes.
+      this.deferUnisenderEventDumpCreateProbe(lease, timestamp, "LIST_UNAVAILABLE");
       return;
     }
     if (providerCount.count >= UNISENDER_EVENT_DUMP_MAX_EXISTING_PROVIDER_DUMPS) {
-      this.releaseUnisenderEventDumpCreateLease(lease);
+      this.deferUnisenderEventDumpCreateProbe(lease, timestamp, "PROVIDER_DUMP_CAPACITY");
       return;
     }
     const run = this.reserveUnisenderEventDumpRunAfterProviderList(lease, timestamp);
     if (!run) return;
     try {
-      const dump = await this.emailProvider.createEventDump({ startTime: run.start_time, endTime: run.end_time });
+      const dump = await this.emailProvider.createEventDump({ startTime: run.start_time, endTime: run.end_time, jobId: run.job_id_filter ?? undefined });
       withImmediateTransaction(this.db, () => {
         this.db.prepare(`UPDATE unisender_event_dump_runs
           SET state = 'POLL_READY', dump_id = ?, next_attempt_at = ?, lease_owner = NULL,
@@ -2122,7 +2169,8 @@ export class CommerceDomain {
       }
       for (const event of dump.events) this.applyUnisenderDumpEvent(String(run.id), event);
       if (dump.status === "ready") {
-        this.finishUnisenderEventDumpRun(String(run.id), String(run.lease), timestamp, "READY");
+        const saturated = dump.events.length >= Number(run.requested_limit ?? UNISENDER_EVENT_DUMP_EVENT_LIMIT);
+        this.finishUnisenderEventDumpRun(String(run.id), String(run.lease), timestamp, "READY", saturated, typeof run.job_id_filter === "string" && run.job_id_filter.length > 0);
         return;
       }
       this.deferUnisenderEventDumpPoll(String(run.id), String(run.lease), timestamp, "IN_PROCESS");
@@ -2147,7 +2195,14 @@ export class CommerceDomain {
       .run(new Date(this.clock() + delay).toISOString(), attempts, code, timestamp, runId, lease);
   }
 
-  private finishUnisenderEventDumpRun(runId: string, lease: string, timestamp: string, outcome: "READY" | "FAILED" | "POLL_EXHAUSTED") {
+  private finishUnisenderEventDumpRun(
+    runId: string,
+    lease: string,
+    timestamp: string,
+    outcome: "READY" | "FAILED" | "POLL_EXHAUSTED",
+    saturated = false,
+    wasTargeted = false,
+  ) {
     const retryAt = new Date(this.clock() + UNISENDER_EVENT_DUMP_REEXPORT_MS).toISOString();
     this.db.prepare(`UPDATE unisender_event_dump_targets
       SET state = CASE WHEN EXISTS (
@@ -2160,8 +2215,15 @@ export class CommerceDomain {
         ) THEN 'NO_LONGER_NEEDED'
         ELSE 'RETRY_WAIT' END,
         next_attempt_at = CASE WHEN state = 'ACTIVE' THEN ? ELSE next_attempt_at END,
+        recovery_mode = CASE
+          WHEN ? = 1 AND ? = 0
+            AND NOT EXISTS (SELECT 1 FROM email_outbox outbox WHERE outbox.id = unisender_event_dump_targets.outbox_id
+              AND (outbox.status IN ('DELIVERED', 'BOUNCED', 'FAILED') OR outbox.superseded_at IS NOT NULL))
+          THEN 'TARGETED_JOB'
+          ELSE recovery_mode
+        END,
         updated_at = ?
-      WHERE run_id = ? AND state = 'ACTIVE'`).run(retryAt, timestamp, runId);
+      WHERE run_id = ? AND state = 'ACTIVE'`).run(retryAt, saturated ? 1 : 0, wasTargeted ? 1 : 0, timestamp, runId);
     this.db.prepare(`UPDATE unisender_event_dump_runs
       SET state = ?, dump_id = NULL, next_attempt_at = ?, last_error_code = ?,
           lease_owner = NULL, lease_expires_at = NULL, updated_at = ?

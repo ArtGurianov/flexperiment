@@ -487,7 +487,7 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
     db.close();
   });
 
-  it("adds durable fenced Unisender Event Dump batch state without rewriting email evidence", () => {
+  it("adds durable Event Dump probe and saturation state without rewriting email evidence", () => {
     const db = openDatabase(":memory:");
     applyThrough(db, "0028_customer_participant_ticketing.sql");
     const outboxId = randomUUID();
@@ -510,6 +510,15 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
       VALUES (?, ?, ?, 'other-job', 'ACTIVE')`).run(randomUUID(), runId, outboxId)).toThrow(/UNIQUE constraint failed/);
     expect((db.prepare("PRAGMA index_list(unisender_event_dump_targets)").all() as { name: string }[]).map(({ name }) => name))
       .toEqual(expect.arrayContaining(["unisender_event_dump_targets_active_outbox_unique", "unisender_event_dump_targets_candidate_idx"]));
+    db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, "0030_unisender_event_dump_probe_and_saturation.sql"), "utf8")))();
+    expect(db.prepare("SELECT status, job_id, provider_status FROM email_provider_events WHERE outbox_id = ?").get(outboxId)).toEqual(evidence);
+    expect(db.prepare(`SELECT next_create_probe_at, create_probe_failures, last_create_probe_error
+      FROM unisender_event_dump_control WHERE singleton = 1`).get())
+      .toEqual({ next_create_probe_at: null, create_probe_failures: 0, last_create_probe_error: null });
+    db.prepare("UPDATE unisender_event_dump_runs SET requested_limit = 2, job_id_filter = 'known-job' WHERE id = ?").run(runId);
+    db.prepare("UPDATE unisender_event_dump_targets SET recovery_mode = 'TARGETED_JOB' WHERE outbox_id = ?").run(outboxId);
+    expect(db.prepare("SELECT requested_limit, job_id_filter FROM unisender_event_dump_runs WHERE id = ?").get(runId))
+      .toEqual({ requested_limit: 2, job_id_filter: "known-job" });
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     db.close();
   });

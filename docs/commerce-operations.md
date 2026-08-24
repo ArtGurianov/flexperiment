@@ -192,18 +192,24 @@ existing dumps; that provider inventory, rather than a local counter, is the
 authoritative ten-dump capacity guard. Immediately before the create POST it
 stores the batch and opaque targets and records a local create-attempt fence.
 The local rolling cap of nine create commands per eight hours is only
-defense-in-depth. A lost create response therefore still leaves the batch
-`CREATE_UNKNOWN` for review rather than creating another uncontrolled dump;
-an explicit provider rejection instead exhausts that batch and returns its
-targets to a bounded later re-export. Polling an existing dump is leased and
-uses short bounded backoff; ready dumps without a terminal target are eligible
-for a later re-export, while exhausted or ambiguous create operations remain
-visible as durable diagnostics.
+defense-in-depth and is checked before a provider inventory request. Capacity
+and unavailable/malformed inventory responses write a durable, bounded
+exponential `next_create_probe_at`; worker sweeps before it make no provider
+call. A lost create response therefore still leaves the batch `CREATE_UNKNOWN`
+for review rather than creating another uncontrolled dump; an explicit provider
+rejection instead exhausts that batch and returns its targets to a bounded later
+re-export. Polling an existing dump is leased and uses short bounded backoff;
+ready dumps without a terminal target are eligible for a later re-export, while
+exhausted or ambiguous create operations remain visible as durable diagnostics.
 
 The worker polls the provider's asynchronous dump later and downloads only the
 five required CSV fields: `event_time`, `job_id`, `status`,
 `delivery_status`, and `metadata`, with `limit=100000`; Unisender may split
-larger exports into multiple files, all of which are processed. A valid
+larger requested exports into multiple files, all of which are processed. A
+ready export whose returned event count reaches its requested limit is
+saturated and cannot prove that an unmatched job is absent: unresolved targets
+are retried through a documented `filter.job_id` export, never through the
+same broad saturated window. A valid
 `queued` or `in_process` response may omit `files` and is simply polled later.
 It accepts an event only when both opaque correlations match exactly:
 `event.job_id == email_outbox.job_id` and

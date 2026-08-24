@@ -185,6 +185,17 @@ describe("provider contracts", () => {
     expect(await request?.json()).toEqual({});
   });
 
+  it("uses the documented job_id filter for saturated Event Dump target recovery", async () => {
+    let request: Request | undefined;
+    const provider = new UnisenderGoProvider({ apiKey: "test-key-not-a-secret", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async (input, init) => {
+      request = new Request(input, init);
+      return Response.json({ status: "success", dump_id: "targeted-dump" });
+    });
+    await expect(provider.createEventDump({ startTime: "2026-08-24 08:00:00", endTime: "2026-08-24 09:00:00", jobId: "known-job" }))
+      .resolves.toEqual({ dumpId: "targeted-dump" });
+    expect(await request?.json()).toMatchObject({ filter: { job_id: "known-job" }, limit: 100_000 });
+  });
+
   it("verifies an RS256 Tochka callback with a refreshed JWK", async () => {
     const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString("base64url");

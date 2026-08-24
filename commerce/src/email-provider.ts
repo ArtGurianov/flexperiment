@@ -25,10 +25,13 @@ export type UnisenderEventDump =
   | { status: "ready"; events: UnisenderDumpEvent[] }
   | { status: "failed" };
 
+/** The documented maximum result count for one Event Dump export request. */
+export const UNISENDER_EVENT_DUMP_EVENT_LIMIT = 100_000;
+
 export interface EmailDeliveryEvidenceProvider {
   /** Read-only provider count used to stay safely below Event Dump capacity. */
   listEventDumps(): Promise<{ count: number }>;
-  createEventDump(input: { startTime: string; endTime: string }): Promise<{ dumpId: string }>;
+  createEventDump(input: { startTime: string; endTime: string; jobId?: string }): Promise<{ dumpId: string }>;
   getEventDump(input: { dumpId: string }): Promise<UnisenderEventDump>;
 }
 
@@ -196,13 +199,15 @@ export class UnisenderGoProvider implements EmailProvider, EmailDeliveryEvidence
     return { count: payload.event_dumps.length };
   }
 
-  async createEventDump(input: { startTime: string; endTime: string }) {
+  async createEventDump(input: { startTime: string; endTime: string; jobId?: string }) {
     const response = await this.requestEventDump(`${EVENT_DUMP_URL}/create.json`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "application/json", "X-API-KEY": this.config.apiKey },
       // Batch one small time window. Request only fields needed for strict
       // opaque correlation; the export never includes recipient/address data.
-      body: JSON.stringify({ start_time: input.startTime, end_time: input.endTime, limit: 100_000, dump_fields: ["event_time", "job_id", "status", "delivery_status", "metadata"], format: "csv" }),
+      body: JSON.stringify({ start_time: input.startTime, end_time: input.endTime, limit: UNISENDER_EVENT_DUMP_EVENT_LIMIT,
+        ...(input.jobId ? { filter: { job_id: input.jobId } } : {}),
+        dump_fields: ["event_time", "job_id", "status", "delivery_status", "metadata"], format: "csv" }),
     });
     const payload = await response.json().catch(() => undefined) as UnisenderDumpCreateResponse | undefined;
     if (!response.ok) {

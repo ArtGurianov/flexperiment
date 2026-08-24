@@ -1826,6 +1826,76 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM unisender_event_dump_runs").get()).toEqual({ count: 0 });
   });
 
+  it("durably backs off Event Dump inventory probes while provider capacity remains unavailable", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    let timestamp = Date.parse("2026-08-24T10:00:00.000Z"); let lists = 0; let creates = 0; let capacity = 9;
+    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key, status, job_id, provider_request_started_at)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, 'SENT', 'capacity-backoff-job', ?)`)
+      .run(randomUUID(), randomUUID(), new Date(timestamp - 10 * 60_000).toISOString());
+    const email: EmailProvider & EmailDeliveryEvidenceProvider = {
+      async send() { throw new Error("must not resend"); }, async lookup() { return { status: "UNKNOWN" }; },
+      async listEventDumps() { lists += 1; return { count: capacity }; },
+      async createEventDump() { creates += 1; return { dumpId: "after-capacity" }; },
+      async getEventDump() { return { status: "queued", events: [] }; },
+    };
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
+    await domain.reconcileUnisenderEventDumps();
+    await domain.reconcileUnisenderEventDumps();
+    expect(lists).toBe(1); expect(creates).toBe(0);
+    expect(setup.db.prepare("SELECT create_probe_failures, last_create_probe_error FROM unisender_event_dump_control").get())
+      .toEqual({ create_probe_failures: 1, last_create_probe_error: "PROVIDER_DUMP_CAPACITY" });
+    timestamp += 5 * 60_000;
+    capacity = 0;
+    await domain.reconcileUnisenderEventDumps();
+    expect(lists).toBe(2); expect(creates).toBe(1);
+  });
+
+  it("uses bounded durable backoff when Event Dump inventory is unavailable", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    let timestamp = Date.parse("2026-08-24T10:00:00.000Z"); let lists = 0;
+    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key, status, job_id, provider_request_started_at)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, 'SENT', 'inventory-unavailable-job', ?)`)
+      .run(randomUUID(), randomUUID(), new Date(timestamp - 10 * 60_000).toISOString());
+    const email: EmailProvider & EmailDeliveryEvidenceProvider = {
+      async send() { throw new Error("must not resend"); }, async lookup() { return { status: "UNKNOWN" }; },
+      async listEventDumps() { lists += 1; throw new Error("timeout"); },
+      async createEventDump() { throw new Error("must not create"); },
+      async getEventDump() { return { status: "queued", events: [] }; },
+    };
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
+    await domain.reconcileUnisenderEventDumps();
+    await domain.reconcileUnisenderEventDumps();
+    expect(lists).toBe(1);
+    timestamp += 5 * 60_000;
+    await domain.reconcileUnisenderEventDumps();
+    expect(lists).toBe(2);
+    expect(setup.db.prepare("SELECT create_probe_failures, last_create_probe_error FROM unisender_event_dump_control").get())
+      .toEqual({ create_probe_failures: 2, last_create_probe_error: "LIST_UNAVAILABLE" });
+  });
+
+  it("honors the local create fence before making another provider inventory request", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    let timestamp = Date.parse("2026-08-24T10:00:00.000Z"); let lists = 0; let creates = 0;
+    setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key, status, job_id, provider_request_started_at)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, 'SENT', 'local-cap-job', ?)`)
+      .run(randomUUID(), randomUUID(), new Date(timestamp - 10 * 60_000).toISOString());
+    const insertAttempt = setup.db.prepare("INSERT INTO unisender_event_dump_create_attempts(id, started_at) VALUES (?, ?)");
+    for (let index = 0; index < 9; index += 1) insertAttempt.run(randomUUID(), new Date(timestamp - 60_000).toISOString());
+    const email: EmailProvider & EmailDeliveryEvidenceProvider = {
+      async send() { throw new Error("must not resend"); }, async lookup() { return { status: "UNKNOWN" }; },
+      async listEventDumps() { lists += 1; return { count: 0 }; },
+      async createEventDump() { creates += 1; return { dumpId: "after-local-cap" }; },
+      async getEventDump() { return { status: "queued", events: [] }; },
+    };
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
+    await domain.reconcileUnisenderEventDumps();
+    await domain.reconcileUnisenderEventDumps();
+    expect(lists).toBe(0);
+    timestamp += 8 * 60 * 60_000 + 1;
+    await domain.reconcileUnisenderEventDumps();
+    expect(lists).toBe(1); expect(creates).toBe(1);
+  });
+
   it("defers targets after explicit Event Dump rejection without treating it as CREATE_UNKNOWN", async () => {
     const setup = fixture(); databases.push(setup.db);
     const timestamp = Date.parse("2026-08-24T10:00:00.000Z"); let creates = 0;
@@ -1921,26 +1991,40 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(fresh)).toEqual({ status: "SENT" });
   });
 
-  it("applies a correlated Event Dump target even after more than one thousand unrelated events", async () => {
+  it("narrows a saturated batch into a job-filtered Event Dump before accepting absence", async () => {
     const setup = fixture(); databases.push(setup.db);
     let timestamp = Date.parse("2026-08-24T10:00:00.000Z");
     const outboxId = randomUUID();
     setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key, status, job_id, provider_request_started_at)
       VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, 'SENT', 'tail-target-job', ?)`)
       .run(outboxId, randomUUID(), new Date(timestamp - 10 * 60_000).toISOString());
-    const unrelated = Array.from({ length: 1_001 }, (_, index) => ({
+    const unrelated = Array.from({ length: 2 }, (_, index) => ({
       eventTime: `2026-08-24 09:${String(index % 60).padStart(2, "0")}:00`, jobId: `other-${index}`, status: "delivered", deliveryStatus: "ok_delivered", metadata: { outbox_id: randomUUID() },
     }));
+    const createInputs: Array<{ jobId?: string }> = []; let polls = 0;
     const email: EmailProvider & EmailDeliveryEvidenceProvider = {
       async send() { throw new Error("must not resend"); }, async lookup() { return { status: "UNKNOWN" }; },
       async listEventDumps() { return { count: 0 }; },
-      async createEventDump() { return { dumpId: "large-dump" }; },
-      async getEventDump() { return { status: "ready", events: [...unrelated, { eventTime: "2026-08-24 10:00:01", jobId: "tail-target-job", status: "delivered", deliveryStatus: "ok_delivered", metadata: { outbox_id: outboxId } }] }; },
+      async createEventDump(input) { createInputs.push({ jobId: input.jobId }); return { dumpId: `dump-${createInputs.length}` }; },
+      async getEventDump() {
+        polls += 1;
+        return polls === 1
+          ? { status: "ready", events: unrelated }
+          : { status: "ready", events: [{ eventTime: "2026-08-24 10:00:01", jobId: "tail-target-job", status: "delivered", deliveryStatus: "ok_delivered", metadata: { outbox_id: outboxId } }] };
+      },
     };
     const domain = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
     await domain.reconcileUnisenderEventDumps();
+    setup.db.prepare("UPDATE unisender_event_dump_runs SET requested_limit = 2 WHERE state = 'POLL_READY'").run();
     timestamp += 16_000;
     await domain.reconcileUnisenderEventDumps();
+    expect(setup.db.prepare("SELECT state, recovery_mode FROM unisender_event_dump_targets WHERE outbox_id = ?").get(outboxId))
+      .toEqual({ state: "RETRY_WAIT", recovery_mode: "TARGETED_JOB" });
+    timestamp += 5 * 60_000;
+    await domain.reconcileUnisenderEventDumps();
+    timestamp += 16_000;
+    await domain.reconcileUnisenderEventDumps();
+    expect(createInputs).toEqual([{ jobId: undefined }, { jobId: "tail-target-job" }]);
     expect(setup.db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outboxId)).toEqual({ status: "DELIVERED" });
   });
 
