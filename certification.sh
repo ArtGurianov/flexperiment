@@ -10,7 +10,7 @@ ADMIN="${ADMIN:-https://admin.flexperiment.ru}"
 API="${API:-https://api.flexperiment.ru}"
 ADMIN_ORIGIN="${ADMIN_ORIGIN:-https://admin.flexperiment.ru}"
 PUBLIC_ORIGIN="${PUBLIC_ORIGIN:-https://flexperiment.ru}"
-EXPECTED_SOURCE_COMMIT="${EXPECTED_SOURCE_COMMIT:-547b25be75849a84c2f0f37ea9aa7fe7e485818c}"
+EXPECTED_SOURCE_COMMIT="${EXPECTED_SOURCE_COMMIT:-}"
 EXPECTED_MIGRATION="${EXPECTED_MIGRATION:-0028_customer_participant_ticketing.sql}"
 EXPECTED_LEGAL_VERSION="${EXPECTED_LEGAL_VERSION:-2026-08-23.2}"
 CITY_SLUG="kemerovo"
@@ -22,8 +22,8 @@ usage() {
   cat <<'EOF'
 Usage:
   ./certification.sh
-  ./certification.sh --resume .certification-state/production-e2e-<run-id>.env
-  ./certification.sh --cleanup .certification-state/production-e2e-<run-id>.env
+  ./certification.sh --resume .certification-state/production-e2e-<run-id>.json
+  ./certification.sh --cleanup .certification-state/production-e2e-<run-id>.json
 EOF
 }
 
@@ -44,7 +44,9 @@ on_exit() {
     echo "Emergency sales-close/cleanup: ./certification.sh --cleanup $STATE_FILE" >&2
   fi
 }
-trap on_exit EXIT INT TERM
+trap on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 fail() { echo "ERROR: $*" >&2; [[ -n "${STATE_FILE:-}" ]] && echo "Resume state retained: $STATE_FILE" >&2; exit 1; }
 incomplete() { echo "INCOMPLETE: $*" >&2; [[ -n "${STATE_FILE:-}" ]] && echo "Resume state retained: $STATE_FILE" >&2; exit 2; }
@@ -54,26 +56,39 @@ require_http() { [[ "$HTTP_CODE" == "$1" ]] || fail "$2 expected HTTP $1, got $H
 require_2xx() { [[ "$HTTP_CODE" =~ ^2 ]] || fail "$1 returned HTTP $HTTP_CODE"; }
 json() { jq -er "$1" "$2"; }
 
-STATE_KEYS=(RUN_ID PHASE CITY_ID OCCURRENCE_ID OCCURRENCE_REVISION STATUS_ID ORDER_ID BOOKING_ID PAYMENT_ID TICKET_ID REFUND_OBLIGATION_ID REFUND_ID CREATE_OCCURRENCE_KEY PUBLISH_KEY OPEN_SALES_KEY CHECKOUT_KEY CANCEL_BOOKING_KEY CLOSE_SALES_KEY HIDE_KEY PENDING_ADMIN_METHOD PENDING_ADMIN_PATH PENDING_ADMIN_KEY PENDING_ADMIN_BODY STARTED_AT)
+STATE_KEYS=(RUN_ID PHASE EXPECTED_SOURCE_COMMIT CITY_ID OCCURRENCE_ID OCCURRENCE_REVISION QUOTE_ID CHECKOUT_REQUEST_SHA256 STATUS_ID PAYMENT_URL_OPENED_AT ORDER_ID BOOKING_ID PAYMENT_ID TICKET_ID REFUND_OBLIGATION_ID REFUND_ID INITIAL_AVAILABILITY PAID_AVAILABILITY POST_CANCEL_AVAILABILITY CREATE_OCCURRENCE_KEY PUBLISH_KEY OPEN_SALES_KEY CHECKOUT_KEY CANCEL_BOOKING_KEY CLOSE_SALES_KEY HIDE_KEY PENDING_ADMIN_METHOD PENDING_ADMIN_PATH PENDING_ADMIN_KEY PENDING_ADMIN_BODY STARTED_AT)
+STATE_PHASES=(NEW OCCURRENCE_CREATED OCCURRENCE_PUBLISHED OCCURRENCE_OPEN QUOTE_READY CHECKOUT_SUBMITTING CHECKOUT_CREATED ORDER_IDENTIFIED PAYMENT_PROVEN TICKET_EMAIL_DELIVERED BOOKING_CANCELLED BOOKING_CANCELLED_EMAIL_DELIVERED REFUND_SUCCEEDED REFUND_EMAIL_DELIVERED CLEANED)
 save_state() {
   local tmp="$STATE_FILE.tmp" key
-  umask 077; : > "$tmp"
-  for key in "${STATE_KEYS[@]}"; do [[ -n "${!key:-}" ]] && printf '%s=%q\n' "$key" "${!key}" >> "$tmp"; done
+  local args=()
+  for key in "${STATE_KEYS[@]}"; do args+=(--arg "$key" "${!key:-}"); done
+  umask 077
+  jq -n "${args[@]}" '$ARGS.named | with_entries(select(.value != ""))' > "$tmp"
   mv "$tmp" "$STATE_FILE"; chmod 600 "$STATE_FILE"
 }
 load_state() {
   [[ -f "$STATE_FILE" ]] || fail "resume state does not exist: $STATE_FILE"
   [[ "$(stat -f '%Lp' "$STATE_FILE")" == "600" ]] || fail "resume state must have mode 0600"
-  # Generated only by save_state; it contains only IDs and idempotency keys.
-  # shellcheck disable=SC1090
-  source "$STATE_FILE"
+  local allowed phases key value
+  allowed="$(printf '%s\n' "${STATE_KEYS[@]}" | jq -R . | jq -sc .)"
+  phases="$(printf '%s\n' "${STATE_PHASES[@]}" | jq -R . | jq -sc .)"
+  jq -e --argjson allowed "$allowed" --argjson phases "$phases" '
+    type == "object"
+    and ([keys[] | select(. as $key | $allowed | index($key) | not)] | length == 0)
+    and all(.[]; type == "string")
+    and (.RUN_ID | type == "string" and length > 0)
+    and (.EXPECTED_SOURCE_COMMIT | type == "string" and length > 0)
+    and (.PHASE as $phase | $phases | index($phase) != null)
+  ' "$STATE_FILE" >/dev/null || fail "resume state is not a valid allowlisted JSON object"
+  while IFS=$'\t' read -r key value; do printf -v "$key" '%s' "$value"; done < <(jq -r 'to_entries[] | [.key, .value] | @tsv' "$STATE_FILE")
 }
 set_phase() { PHASE="$1"; save_state; }
 ensure_key() { local name="$1"; [[ -n "${!name:-}" ]] || printf -v "$name" '%s' "$(new_key)"; save_state; }
 
 if [[ "$MODE" == run ]]; then
+  [[ -n "$EXPECTED_SOURCE_COMMIT" ]] || fail "EXPECTED_SOURCE_COMMIT=<exact deployed SOURCE_COMMIT> is required for a fresh run"
   RUN_ID="production-e2e-$(date -u +%Y%m%dT%H%M%SZ)-$(uuidgen | tr '[:upper:]' '[:lower:]')"
-  STATE_FILE="$PWD/.certification-state/$RUN_ID.env"
+  STATE_FILE="$PWD/.certification-state/$RUN_ID.json"
   mkdir -p "${STATE_FILE%/*}"; chmod 700 "${STATE_FILE%/*}"
   PHASE=NEW; STARTED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; save_state
 else
@@ -112,7 +127,7 @@ else
   request "$HTTP_BODY" "$API/healthz"; require_http 200 "Commerce health"; jq -e '.ok == true' "$HTTP_BODY" >/dev/null || fail "Commerce health is not OK"
   request "$HTTP_BODY" "$API/readyz"; require_http 200 "Commerce readiness"; jq -e '.ok == true' "$HTTP_BODY" >/dev/null || fail "Commerce readiness is not OK"
   admin_get system/evidence
-  jq -e --arg commit "$EXPECTED_SOURCE_COMMIT" --arg migration "$EXPECTED_MIGRATION" --arg legal "$EXPECTED_LEGAL_VERSION" '.source_commit == $commit and .migration_head.version == $migration and .active_legal_release.version == $legal' "$HTTP_BODY" >/dev/null || fail "system evidence does not match expected source commit, migration head, or legal release"
+  jq -e --arg commit "$EXPECTED_SOURCE_COMMIT" --arg migration "$EXPECTED_MIGRATION" --arg legal "$EXPECTED_LEGAL_VERSION" '.source_commit_evidence == "machine" and .migration_evidence == "machine" and .source_commit == $commit and .migration_head.version == $migration and .active_legal_release.version == $legal' "$HTTP_BODY" >/dev/null || fail "system evidence does not match expected source commit, migration head, or legal release"
   jq -e '.active_legal_release.manifest.documents.PUBLIC_OFFER.sha256 == "cf4797bc09fe5f59e751a614b56aa31998631b0b219864c364a2e5474272265b" and .active_legal_release.manifest.documents.PRIVACY_POLICY.sha256 == "97ac1add022f8ca4f870647c7abc525cf9b32a6edcc12fcd2484339769497864" and .active_legal_release.manifest.documents.PD_CONSENT.sha256 == "313390b685e82e73d190f5300295df1d5b83905787b3d92531d5b3c8d126d30f" and .active_legal_release.manifest.documents.CHECKOUT_DISCLOSURE.sha256 == "81c46b287ee9f5d79d07923d11e53ccbe01c11c38ef5dbc5057af3b4833bd48d"' "$HTTP_BODY" >/dev/null || fail "active legal document hashes do not match frozen release"
 fi
 
@@ -162,19 +177,55 @@ PY
   public_get "occurrences/$OCCURRENCE_ID"; require_http 404 "Hidden occurrence public detail"
 fi
 if [[ "$PHASE" == OCCURRENCE_CREATED ]]; then
-  patch_occurrence "Publish occurrence" '{visibility:"PUBLISHED"}' PUBLISH_KEY; patch_occurrence "Open sales" '{sales_status:"OPEN"}' OPEN_SALES_KEY; set_phase OCCURRENCE_OPEN
+  refresh_occurrence
+  if [[ "$(json '.visibility' "$RUN_TMP/occurrence.json")" != PUBLISHED ]]; then patch_occurrence "Publish occurrence" '{visibility:"PUBLISHED"}' PUBLISH_KEY; fi
+  set_phase OCCURRENCE_PUBLISHED
+fi
+if [[ "$PHASE" == OCCURRENCE_PUBLISHED ]]; then
+  refresh_occurrence
+  if [[ "$(json '.sales_status' "$RUN_TMP/occurrence.json")" != OPEN ]]; then patch_occurrence "Open sales" '{sales_status:"OPEN"}' OPEN_SALES_KEY; fi
   public_get "occurrences/$OCCURRENCE_ID"; require_http 200 "Published occurrence public detail"; jq -e '.visibility == "PUBLISHED" and .sales_status == "OPEN" and .availability == 1 and .price_kopecks == 100 and .capacity == 1' "$HTTP_BODY" >/dev/null || fail "published occurrence is not sellable with availability 1"
+  INITIAL_AVAILABILITY=1; save_state
+  set_phase OCCURRENCE_OPEN
 fi
 
 if [[ "$PHASE" == OCCURRENCE_OPEN ]]; then
+  request "$HTTP_BODY" -H "Origin: $PUBLIC_ORIGIN" -H 'Content-Type: application/json' -X POST "$API/v1/public/checkout-context" --data "$(jq -nc --arg occurrence "$OCCURRENCE_ID" '{occurrence_id:$occurrence}')"; require_http 200 "Checkout context"; QUOTE_ID="$(json '.quote_id' "$HTTP_BODY")"; set_phase QUOTE_READY
+fi
+
+replay_checkout() {
+  local checkout_request checkout_request_sha
   read -rp "Real test email: " CUSTOMER_EMAIL </dev/tty; read -rp "Customer name: " CUSTOMER_NAME </dev/tty; read -rp "Customer date of birth (YYYY-MM-DD): " CUSTOMER_DOB </dev/tty
-  request "$HTTP_BODY" -H "Origin: $PUBLIC_ORIGIN" -H 'Content-Type: application/json' -X POST "$API/v1/public/checkout-context" --data "$(jq -nc --arg occurrence "$OCCURRENCE_ID" '{occurrence_id:$occurrence}')"; require_http 200 "Checkout context"; QUOTE_ID="$(json '.quote_id' "$HTTP_BODY")"
-  ensure_key CHECKOUT_KEY
   checkout_request="$(jq -nc --arg quote "$QUOTE_ID" --arg name "$CUSTOMER_NAME" --arg email "$CUSTOMER_EMAIL" --arg dob "$CUSTOMER_DOB" '{quote_id:$quote,customer_name:$name,customer_email:$email,customer_adult_confirmed:true,participant:{self:true,date_of_birth:$dob},offer_accepted:true,pd_consent_accepted:true}')"
-  request "$CHECKOUT_BODY" -H "Origin: $PUBLIC_ORIGIN" -H 'Content-Type: application/json' -H "Idempotency-Key: $CHECKOUT_KEY" -X POST "$API/v1/public/checkouts" --data "$checkout_request"; require_2xx "Create checkout"
+  checkout_request_sha="$(printf '%s' "$checkout_request" | shasum -a 256 | awk '{print $1}')"
+  if [[ -n "${CHECKOUT_REQUEST_SHA256:-}" ]]; then
+    [[ "$checkout_request_sha" == "$CHECKOUT_REQUEST_SHA256" ]] || fail "re-entered checkout data does not match the persisted pre-dispatch request hash; do not create another checkout"
+  else
+    CHECKOUT_REQUEST_SHA256="$checkout_request_sha"; save_state
+  fi
+  request "$CHECKOUT_BODY" -H "Origin: $PUBLIC_ORIGIN" -H 'Content-Type: application/json' -H "Idempotency-Key: $CHECKOUT_KEY" -X POST "$API/v1/public/checkouts" --data "$checkout_request"; require_2xx "Replay existing checkout"
+  unset CUSTOMER_EMAIL CUSTOMER_NAME CUSTOMER_DOB checkout_request checkout_request_sha
+}
+if [[ "$PHASE" == QUOTE_READY ]]; then
+  ensure_key CHECKOUT_KEY
+  # The only stored pre-dispatch facts are quote ID and idempotency key. The
+  # operator re-enters PII on resume; permanent idempotency rejects any body
+  # that is not byte/canonically identical to the original checkout request.
+  set_phase CHECKOUT_SUBMITTING
+fi
+if [[ "$PHASE" == CHECKOUT_SUBMITTING ]]; then
+  replay_checkout
   STATUS_ID="$(json '.status_id' "$CHECKOUT_BODY")"; set_phase CHECKOUT_CREATED
-  PAYMENT_URL="$(jq -r '.payment_url // empty' "$CHECKOUT_BODY")"; [[ -n "$PAYMENT_URL" ]] || incomplete "checkout exists but payment URL is unavailable; do not create another checkout"
-  echo "Checkout created. Opening real payment URL without printing it."; open "$PAYMENT_URL"; unset PAYMENT_URL CUSTOMER_EMAIL CUSTOMER_NAME CUSTOMER_DOB checkout_request
+fi
+if [[ "$PHASE" == CHECKOUT_CREATED && -z "${PAYMENT_URL_OPENED_AT:-}" ]]; then
+  # A POST replay is safe here: same stored quote/key and canonical request.
+  # It recovers a link after a crash before `open` without a second payment.
+  replay_checkout
+  replayed_status="$(json '.status_id' "$CHECKOUT_BODY")"
+  [[ "$replayed_status" == "$STATUS_ID" ]] || fail "checkout replay returned a different status ID"
+  PAYMENT_URL="$(jq -r '.payment_url // empty' "$CHECKOUT_BODY")"; [[ -n "$PAYMENT_URL" ]] || incomplete "existing checkout has no payment URL; do not create another checkout"
+  echo "Opening existing real payment URL without printing it."; open "$PAYMENT_URL"; unset PAYMENT_URL
+  PAYMENT_URL_OPENED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; save_state
 fi
 
 wait_checkout_paid() {
@@ -186,11 +237,20 @@ wait_checkout_paid() {
   incomplete "payment did not reach PAID before timeout; reconcile existing payment only"
 }
 read_order_evidence() { admin_get "orders/$ORDER_ID/evidence"; cp "$HTTP_BODY" "$RUN_TMP/order-evidence.json"; }
-find_order_from_status() { admin_get orders; ORDER_ID="$(jq -er --arg status "$STATUS_ID" '.orders[] | select(.public_status_id == $status) | .id' "$HTTP_BODY")" || incomplete "cannot resolve existing order from status ID; do not create another checkout"; set_phase ORDER_IDENTIFIED; }
+find_order_from_status() {
+  local matches
+  admin_get orders
+  matches="$(jq -cer --arg status "$STATUS_ID" '[.orders[] | select(.public_status_id == $status) | .id]' "$HTTP_BODY")"
+  [[ "$(jq 'length' <<<"$matches")" == 1 ]] || incomplete "expected exactly one order for checkout status ID; do not create another checkout"
+  ORDER_ID="$(jq -er '.[0]' <<<"$matches")"
+  set_phase ORDER_IDENTIFIED
+}
 if [[ "$PHASE" == CHECKOUT_CREATED ]]; then read -rp "Complete the real 1 RUB Tochka payment, then press Enter: " _ </dev/tty; wait_checkout_paid; find_order_from_status; fi
 if [[ "$PHASE" == ORDER_IDENTIFIED ]]; then
   read_order_evidence; PAYMENT_ID="$(json '.payment.id' "$RUN_TMP/order-evidence.json")"; BOOKING_ID="$(json '.booking.id' "$RUN_TMP/order-evidence.json")"; TICKET_ID="$(json '.ticket.id' "$RUN_TMP/order-evidence.json")"
   jq -e --arg payment "$PAYMENT_ID" '.payment.status == "PAID" and .payment.captured_amount_kopecks == 100 and .booking.status == "CONFIRMED" and .ticket.status == "VALID" and ([.tochka_webhook_events[]? | select(.provider == "TOCHKA" and .status == "APPLIED" and .entity_id == $payment)] | length) >= 1' "$RUN_TMP/order-evidence.json" >/dev/null || incomplete "PAID/ticket/signed Tochka webhook evidence is incomplete"
+  public_get "occurrences/$OCCURRENCE_ID"; require_http 200 "Public occurrence after payment"; jq -e '.availability == 0' "$HTTP_BODY" >/dev/null || fail "confirmed booking did not reserve exactly one seat"
+  PAID_AVAILABILITY=0; save_state
   set_phase PAYMENT_PROVEN
 fi
 
@@ -217,6 +277,7 @@ fi
 if [[ "$PHASE" == BOOKING_CANCELLED ]]; then
   read_order_evidence; jq -e '.booking.status == "CANCELLED" and .ticket.status == "VOID"' "$RUN_TMP/order-evidence.json" >/dev/null || fail "customer cancellation did not cancel booking and void ticket"
   public_get "occurrences/$OCCURRENCE_ID"; require_http 200 "Public occurrence after cancellation"; jq -e '.availability == 1' "$HTTP_BODY" >/dev/null || fail "customer cancellation did not release exactly one seat"
+  POST_CANCEL_AVAILABILITY=1; save_state
   BOOKING_CANCELLED_EMAIL_JSON="$(wait_email BOOKING_CANCELLED "$BOOKING_ID")"; set_phase BOOKING_CANCELLED_EMAIL_DELIVERED
 fi
 
@@ -225,7 +286,7 @@ wait_refund() {
   while (( $(date +%s) < deadline )); do
     read_order_evidence; REFUND_OBLIGATION_ID="$(jq -er '.refund_obligation.id' "$RUN_TMP/order-evidence.json")" || { sleep 10; continue; }
     jq -e '.refund_obligation.initial_source == "CUSTOMER_CANCELLATION_PARTIAL" and .refund_obligation.target_refunded_amount_kopecks == 100' "$RUN_TMP/order-evidence.json" >/dev/null || fail "refund obligation is not expected full customer-cancellation obligation"
-    REFUND_ID="$(jq -er --arg payment "$PAYMENT_ID" '[.refunds[] | select(.payment_id == $payment)] | if length == 1 then .[0].id else empty end' "$RUN_TMP/order-evidence.json")" || { sleep 10; continue; }
+    REFUND_ID="$(jq -er --arg payment "$PAYMENT_ID" --arg obligation "$REFUND_OBLIGATION_ID" '[.refunds[] | select(.payment_id == $payment and .source == "REFUND_OBLIGATION" and .refund_obligation_id == $obligation)] | if length == 1 then .[0].id else empty end' "$RUN_TMP/order-evidence.json")" || { sleep 10; continue; }
     status="$(jq -r --arg refund "$REFUND_ID" '.refunds[] | select(.id == $refund) | .status' "$RUN_TMP/order-evidence.json")"
     if [[ "$status" == SUCCEEDED ]]; then
       jq -e --arg refund "$REFUND_ID" '.refunds[] | select(.id == $refund) | .amount_kopecks == 100 and (.provider_reference | type == "string" and length > 0)' "$RUN_TMP/order-evidence.json" >/dev/null || incomplete "succeeded refund lacks the expected amount or provider reference"
@@ -241,6 +302,11 @@ if [[ "$PHASE" == REFUND_EMAIL_DELIVERED ]]; then
   close_and_hide; read_order_evidence; COMPLETED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   ARTIFACT_DIR="$PWD/artifacts/certification"; mkdir -p "$ARTIFACT_DIR"; chmod 700 "$ARTIFACT_DIR"; MANIFEST="$ARTIFACT_DIR/flexperiment-production-e2e-${RUN_ID}.json"
   admin_get system/evidence; cp "$HTTP_BODY" "$RUN_TMP/system-evidence.json"
-  jq -n --slurpfile system "$RUN_TMP/system-evidence.json" --slurpfile evidence "$RUN_TMP/order-evidence.json" --arg run "$RUN_ID" --arg started "$STARTED_AT" --arg completed "$COMPLETED_AT" --arg occurrence "$OCCURRENCE_ID" --arg status "$STATUS_ID" --arg booking "$BOOKING_ID" --arg ticket "$TICKET_ID" --arg obligation "$REFUND_OBLIGATION_ID" --arg refund "$REFUND_ID" '{result:"PASS",run_id:$run,environment:"production",started_at:$started,completed_at:$completed,build:$system[0],occurrence:{id:$occurrence,final_sales_status:"CLOSED",final_visibility:"HIDDEN",public_cleanup_verified:true},order:{id:$evidence[0].order.id,status_id:$status},payment:$evidence[0].payment,tochka_webhook_events:$evidence[0].tochka_webhook_events,booking:{id:$booking,before_cancellation:"CONFIRMED",after_cancellation:$evidence[0].booking.status},ticket:{id:$ticket,before_cancellation:"VALID",after_cancellation:$evidence[0].ticket.status,human_verified:true},emails:{ticket:($evidence[0].email_outbox[]|select(.type=="TICKET" and .payload_ref==$ticket)),booking_cancelled:($evidence[0].email_outbox[]|select(.type=="BOOKING_CANCELLED" and .payload_ref==$booking)),refund_succeeded:($evidence[0].email_outbox[]|select(.type=="REFUND_SUCCEEDED" and .payload_ref==$refund))},refund_obligation:($evidence[0].refund_obligation|select(.id==$obligation)),refund:($evidence[0].refunds[]|select(.id==$refund))}' > "$MANIFEST"
+  jq -n --slurpfile system "$RUN_TMP/system-evidence.json" --slurpfile evidence "$RUN_TMP/order-evidence.json" --arg run "$RUN_ID" --arg started "$STARTED_AT" --arg completed "$COMPLETED_AT" --arg occurrence "$OCCURRENCE_ID" --arg status "$STATUS_ID" --arg booking "$BOOKING_ID" --arg ticket "$TICKET_ID" --arg obligation "$REFUND_OBLIGATION_ID" --arg refund "$REFUND_ID" --argjson initial_availability "$INITIAL_AVAILABILITY" --argjson paid_availability "$PAID_AVAILABILITY" --argjson post_cancel_availability "$POST_CANCEL_AVAILABILITY" '
+    def outbox($type; $ref): $evidence[0].email_outbox[] | select(.type == $type and .payload_ref == $ref);
+    def email_evidence($type; $ref):
+      (outbox($type; $ref)) as $outbox |
+      {outbox:$outbox,provider_events:[$evidence[0].email_provider_events[] | select(.outbox_id == $outbox.id)]};
+    {result:"PASS",run_id:$run,environment:"production",started_at:$started,completed_at:$completed,build:$system[0],occurrence:{id:$occurrence,final_sales_status:"CLOSED",final_visibility:"HIDDEN",public_cleanup_verified:true,availability:{before_payment:$initial_availability,after_payment:$paid_availability,after_customer_cancellation:$post_cancel_availability}},order:{id:$evidence[0].order.id,status_id:$status,currency:$evidence[0].order.currency},payment:$evidence[0].payment,tochka_webhook_events:$evidence[0].tochka_webhook_events,booking:{id:$booking,before_cancellation:"CONFIRMED",after_cancellation:$evidence[0].booking.status},ticket:{id:$ticket,before_cancellation:"VALID",after_cancellation:$evidence[0].ticket.status,human_verified:true},emails:{ticket:email_evidence("TICKET"; $ticket),booking_cancelled:email_evidence("BOOKING_CANCELLED"; $booking),refund_succeeded:email_evidence("REFUND_SUCCEEDED"; $refund)},refund_obligation:($evidence[0].refund_obligation|select(.id==$obligation)),refund:($evidence[0].refunds[]|select(.id==$refund))}' > "$MANIFEST"
   chmod 600 "$MANIFEST"; echo "PASS"; echo "Evidence manifest: $MANIFEST"; echo "Resume state retained for audit: $STATE_FILE"
 fi

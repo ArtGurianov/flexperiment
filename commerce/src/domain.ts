@@ -897,7 +897,13 @@ export class CommerceDomain {
     const refunds: Row[] = many<Row>(this.db, `SELECT id, public_id, payment_id, amount_kopecks,
       source, status, provider_reference, created_at, succeeded_at, failed_at
       FROM refunds WHERE order_id = ? ORDER BY created_at`, orderId)
-      .map((refund): Row => ({ ...refund, refund_obligation_id: obligation?.id ?? null }));
+      .map((refund): Row => ({
+        ...refund,
+        // A payment can have both an obligation-driven refund and an
+        // independent administrator compensation refund.  Only the former is
+        // evidence of satisfying this payment's refund obligation.
+        refund_obligation_id: refund.source === "REFUND_OBLIGATION" ? obligation?.id ?? null : null,
+      }));
     const refunded = refunds.filter((refund) => refund.status === "SUCCEEDED").reduce((total, refund) => total + Number(refund.amount_kopecks), 0);
     const inflightRefund = refunds.some((refund) => ["REQUESTED", "SUBMITTING", "SUBMIT_UNKNOWN", "RECONCILING"].includes(String(refund.status)));
     const canAbandonReservation = Boolean(booking && payment && booking.status === "RESERVED" && payment.status !== "PAID" && Number(payment.captured_amount_kopecks) === 0 && !abandonment);

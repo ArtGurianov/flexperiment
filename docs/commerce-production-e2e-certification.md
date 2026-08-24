@@ -19,7 +19,7 @@ website origin is not an API proxy.
 ## Start
 
 ```bash
-./certification.sh
+EXPECTED_SOURCE_COMMIT=<exact-deployed-SOURCE_COMMIT> ./certification.sh
 ```
 
 It prompts for the Admin password, schedule/venue facts, then Customer name,
@@ -33,14 +33,18 @@ count of external provider HTTP transmissions.
 
 ## Interruptions and cleanup
 
-After the first mutation a mode-`0600` state file is retained in
-`.certification-state/`; it intentionally contains only IDs, phase markers and
-idempotency keys. It never contains a password, cookie, email, payment URL,
-ticket capability, or provider credential.
+After the first mutation a mode-`0600` JSON state file is retained in
+`.certification-state/`. It contains IDs, phase markers, idempotency keys and,
+only while an Admin mutation is in flight, its safe schedule/venue/reason JSON
+body so the exact command can be replayed. It never contains a password,
+cookie, customer email/name/date of birth, payment URL, ticket capability, or
+provider credential. Before `POST /checkouts`, it also stores only a SHA-256
+of the canonical checkout request; a resumed operator must re-enter matching
+customer data before that same idempotent request is replayed.
 
 ```bash
-./certification.sh --resume .certification-state/production-e2e-<run-id>.env
-./certification.sh --cleanup .certification-state/production-e2e-<run-id>.env
+./certification.sh --resume .certification-state/production-e2e-<run-id>.json
+./certification.sh --cleanup .certification-state/production-e2e-<run-id>.json
 ```
 
 Do not create a second checkout or refund after an ambiguous outcome. Resume
