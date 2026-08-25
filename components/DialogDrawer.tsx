@@ -20,7 +20,7 @@ export interface DialogDrawerProps {
   preventOutsideClose?: boolean;
 }
 
-const SURFACE = "flex flex-col bg-ink text-bone";
+const SURFACE = "flex flex-col bg-ink/90 text-bone";
 const TITLE = "text-center font-display text-[1.6rem] leading-none uppercase text-acid";
 const CLOSE =
   "absolute top-4 right-4 rounded-full p-1 text-acid transition-colors hover:bg-acid hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid";
@@ -67,7 +67,7 @@ function DialogVariant({
       <DialogPrimitive.Portal>
         <DialogPrimitive.Overlay
           data-slot="dialog-overlay"
-          className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm"
+          className="fixed inset-0 z-50 bg-black/30 backdrop-blur-sm"
         />
         <DialogPrimitive.Content
           data-slot="dialog-content"
@@ -75,7 +75,7 @@ function DialogVariant({
           onInteractOutside={block}
           className={cn(
             SURFACE,
-            "fixed top-1/2 left-1/2 z-50 max-h-[calc(100%-2rem)] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 overflow-hidden rounded-2xl border-4 border-acid p-6",
+            "fixed top-1/2 left-1/2 z-50 max-h-[calc(100%-2rem)] w-[calc(100%-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 gap-4 overflow-hidden border-t-2 border-l-4 rounded-br-2xl border-acid p-6",
             className,
           )}
         >
