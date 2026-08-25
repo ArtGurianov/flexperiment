@@ -4,7 +4,7 @@ import { migrate, openDatabase } from "../src/db";
 import { MockProvider } from "../src/provider";
 import { UnisenderGoProvider } from "../src/email-provider";
 import { CommerceDomain } from "../src/domain";
-import { canonical, decryptTicketCapability, sha256 } from "../src/crypto";
+import { decryptTicketCapability, sha256 } from "../src/crypto";
 import type { SmartCaptchaVerifier } from "../src/smartcaptcha";
 
 process.env.COMMERCE_SESSION_SECRET = "test-session-secret";
@@ -62,7 +62,7 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
-  it("replays an exact persisted DOB-era request without accepting a conflicting body", async () => {
+  it("rejects a superseded DOB-era idempotency contract without creating another order", async () => {
     const { db, app } = appFixture();
     const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
     const context = await app.request("http://api.flexperiment.ru/v1/public/checkout-context", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.26" }, body: JSON.stringify({ occurrence_id: occurrenceId }) });
@@ -71,15 +71,11 @@ describe("commerce HTTP boundary", () => {
     const current = { quote_id: quoteId, customer_name: "Заказчик", customer_email: "buyer@example.test", customer_adult_confirmed: true, participant: { self: true }, offer_accepted: true, pd_consent_accepted: true };
     const created = await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": key, "X-Forwarded-For": "127.0.0.26" }, body: JSON.stringify(current) });
     const original = await created.json() as { status_id: string; payment_url: string | null };
-    const legacy = { quote_id: quoteId, customer_name: "Заказчик", customer_email: "buyer@example.test", customer_adult_confirmed: true, participant: { self: true, date_of_birth: "1990-01-01" }, offer_accepted: true, pd_consent_accepted: true };
-    db.prepare("UPDATE checkout_idempotency SET canonical_request_hash = ? WHERE idempotency_key_hash = ?").run(sha256(canonical(legacy)), sha256(key));
-    db.prepare("UPDATE orders SET participant_date_of_birth = ? WHERE public_status_id = ?").run("1990-01-01", original.status_id);
-    const replay = await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": key, "X-Forwarded-For": "127.0.0.26" }, body: JSON.stringify(legacy) });
-    expect(replay.status).toBe(200);
-    expect(await replay.json()).toMatchObject(original);
-    const conflict = await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": key, "X-Forwarded-For": "127.0.0.26" }, body: JSON.stringify({ ...legacy, customer_name: "Другой заказчик" }) });
-    expect(conflict.status).toBe(409);
-    expect(await conflict.json()).toEqual({ error: { code: "IDEMPOTENCY_CONFLICT" } });
+    db.prepare("UPDATE checkout_idempotency SET canonical_request_hash = ? WHERE idempotency_key_hash = ?").run("v1:historical-dob-request", sha256(key));
+    const replay = await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": key, "X-Forwarded-For": "127.0.0.26" }, body: JSON.stringify(current) });
+    expect(replay.status).toBe(409);
+    expect(await replay.json()).toEqual({ error: { code: "IDEMPOTENCY_CONTRACT_SUPERSEDED" } });
+    expect(original.status_id).toEqual(expect.any(String));
     expect(db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual({ count: 1 });
     db.close();
   });

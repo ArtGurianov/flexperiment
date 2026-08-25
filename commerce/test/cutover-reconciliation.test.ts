@@ -15,6 +15,7 @@ const status = (overrides: Partial<ReleaseControlStatus> = {}): ReleaseControlSt
 const runtime = (overrides: Partial<ReleaseRuntimeEvidence> = {}): ReleaseRuntimeEvidence => ({
   source_commit: request.expected.source_commit, worker_source_commit: request.expected.source_commit, worker_observed_at: new Date().toISOString(), worker_last_successful_sweep_at: new Date().toISOString(), migration_applied: true,
   required_migrations: { "0031_participant_age_band.sql": true, "0032_release_sales_gate.sql": true, "0033_runtime_release_evidence.sql": true, "0034_worker_sweep_evidence.sql": true }, legal_version: "2026-08-23.2", legal_manifest_sha256: null,
+  migration_versions: ["0031_participant_age_band.sql", "0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql", "0034_worker_sweep_evidence.sql"],
   legal_hashes: null, legal_publish_time: null, current_legal_copies_match: false, source_legal_manifest_sha256: null, source_legal_publish_time: null, ...overrides,
 });
 const completion = (overrides: Partial<ReleaseCompletion> = {}): ReleaseCompletion => ({ complete: false, expected: null, reopened_at: null, ...overrides });
@@ -46,6 +47,7 @@ describe("controlled cutover durable reconciliation", () => {
   it("does not publish legal from a stale worker or an incomplete schema", () => {
     const paused = { owner_release_id: request.release_id, sales_paused: true };
     expect(reconcile(paused, { worker_observed_at: new Date(Date.now() - 90_001).toISOString() }).action).toBe("DEPLOY_CANDIDATE");
+    expect(reconcile(paused, { worker_last_successful_sweep_at: null }).action).toBe("DEPLOY_CANDIDATE");
     expect(reconcile(paused, { required_migrations: { "0031_participant_age_band.sql": false, "0032_release_sales_gate.sql": true, "0033_runtime_release_evidence.sql": true, "0034_worker_sweep_evidence.sql": true } }).action).toBe("DEPLOY_CANDIDATE");
     expect(reconcile(paused, { required_migrations: { "0031_participant_age_band.sql": true, "0032_release_sales_gate.sql": true, "0033_runtime_release_evidence.sql": false, "0034_worker_sweep_evidence.sql": true } }).action).toBe("DEPLOY_CANDIDATE");
     expect(reconcile(paused).action).toBe("PUBLISH_LEGAL");

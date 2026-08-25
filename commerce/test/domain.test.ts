@@ -119,6 +119,7 @@ describe("commerce domain", () => {
       source_commit: release.expected.source_commit,
       migration_applied: true,
       required_migrations: { "0031_participant_age_band.sql": true, "0032_release_sales_gate.sql": true, "0033_runtime_release_evidence.sql": true, "0034_worker_sweep_evidence.sql": true },
+      migration_versions: ["0031_participant_age_band.sql", "0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql", "0034_worker_sweep_evidence.sql"],
       legal_version: release.expected.legal_version,
       legal_manifest_sha256: release.expected.legal_manifest_sha256,
       legal_hashes: release.expected.legal_hashes,
@@ -141,6 +142,10 @@ describe("commerce domain", () => {
     evidence.required_migrations["0031_participant_age_band.sql"] = false;
     expect(evaluateReopenGate(release, evidence)).toBe("REQUIRED_MIGRATION_NOT_APPLIED");
     evidence.required_migrations["0031_participant_age_band.sql"] = true;
+    const laterMigrationRelease = { ...release, expected: { ...release.expected, migration: "0099_future_release_gate.sql" } };
+    expect(evaluateReopenGate(laterMigrationRelease, evidence)).toBe("EXPECTED_MIGRATION_NOT_APPLIED");
+    evidence.migration_versions.push("0099_future_release_gate.sql");
+    expect(evaluateReopenGate(laterMigrationRelease, evidence)).toBeUndefined();
     evidence.worker_source_commit = "b".repeat(40);
     expect(evaluateReopenGate(release, evidence)).toBe("WORKER_SOURCE_COMMIT_MISMATCH");
     evidence.worker_source_commit = null;
@@ -154,6 +159,7 @@ describe("commerce domain", () => {
     const evidence: ReleaseRuntimeEvidence = {
       source_commit: release.expected.source_commit, migration_applied: true,
       required_migrations: { "0031_participant_age_band.sql": true, "0032_release_sales_gate.sql": true, "0033_runtime_release_evidence.sql": true, "0034_worker_sweep_evidence.sql": true },
+      migration_versions: ["0031_participant_age_band.sql", "0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql", "0034_worker_sweep_evidence.sql"],
       legal_version: release.expected.legal_version, legal_manifest_sha256: release.expected.legal_manifest_sha256,
       legal_hashes: release.expected.legal_hashes, legal_publish_time: new Date().toISOString(), current_legal_copies_match: true,
       worker_source_commit: release.expected.source_commit, worker_observed_at: new Date().toISOString(), worker_last_successful_sweep_at: new Date().toISOString(),

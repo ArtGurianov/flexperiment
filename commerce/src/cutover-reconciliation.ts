@@ -1,4 +1,4 @@
-import { requiredCutoverMigrations, workerEvidenceIsFresh, type ReleaseCompletion, type ReleaseControlRequest, type ReleaseControlStatus, type ReleaseRuntimeEvidence } from "./release-control";
+import { requiredCutoverMigrations, workerEvidenceIsFresh, workerSweepEvidenceIsFresh, type ReleaseCompletion, type ReleaseControlRequest, type ReleaseControlStatus, type ReleaseRuntimeEvidence } from "./release-control";
 
 export type CutoverAction = "RELEASE_ALREADY_COMPLETE" | "ACQUIRE_OWNER" | "PAUSE_SALES" | "DEPLOY_CANDIDATE" | "PUBLISH_LEGAL" | "CREATE_PROMOTION" | "DEPLOY_PROMOTION" | "VERIFY_AND_REOPEN" | "BLOCKED";
 
@@ -7,6 +7,7 @@ export type CutoverReconciliation = { action: CutoverAction; reason?: string };
 const candidateRuntimeReady = (runtime: ReleaseRuntimeEvidence, request: ReleaseControlRequest) =>
   runtime.source_commit === request.expected.source_commit
   && workerEvidenceIsFresh(runtime.worker_source_commit, runtime.worker_observed_at, request.expected.source_commit)
+  && workerSweepEvidenceIsFresh(runtime.worker_source_commit, runtime.worker_last_successful_sweep_at, request.expected.source_commit)
   && runtime.migration_applied
   && requiredCutoverMigrations.every((version) => runtime.required_migrations[version] === true);
 

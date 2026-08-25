@@ -12,7 +12,11 @@ Before use, disable direct Coolify Git auto-deploy for every production resource
 
 The pre-age-band runtime has no global release gate. Its only sales switch is `occurrences.sales_status`; changing it is an occurrence business mutation and can create revisions, notices and refund rights. It must never be used as a deployment pause.
 
-Prepare a separate, backward-compatible Phase 0 release by backporting infrastructure migrations `0032_release_sales_gate.sql` and `0033_runtime_release_evidence.sql`, `commerce/src/release-control.ts`, its internal API and `COMMERCE_RELEASE_CONTROL_TOKEN` configuration, Commerce/worker runtime evidence, and the checkout/context gate checks while preserving the prior DOB request schema and UI. Phase 0 keeps sales open and contains neither migration `0031`, age-band UI, nor the `2026-08-25.1` legal release. This guarantees that a worker cannot start before the runtime-evidence table exists. Verify authenticated `GET /v1/internal/release-control/status` reports an unpaused gate before the current source is eligible for cutover.
+Prepare a separate, backward-compatible Phase 0 release by backporting infrastructure migrations `0032_release_sales_gate.sql` and `0033_runtime_release_evidence.sql`, `commerce/src/release-control.ts`, its internal API and `COMMERCE_RELEASE_CONTROL_TOKEN` configuration, Commerce/worker runtime evidence, and the checkout/context gate checks while preserving the prior DOB request schema and UI. Phase 0 keeps sales open and contains neither migration `0031`, age-band UI, nor the `2026-08-25.1` legal release. It must expose the complete release-control protocol shape, including `GET /completion/:releaseId` and all runtime evidence keys; unavailable facts are explicit `false` or `null`. This guarantees that a worker cannot start before the runtime-evidence table exists. Verify authenticated `GET /v1/internal/release-control/status` reports an unpaused gate before the current source is eligible for cutover.
+
+## One-shot checkout contract assumption
+
+`2026-08-25.1` is the first customer-facing checkout release. No pre-age-band customer order requires legacy DOB browser idempotency replay. Historical test and certification rows remain immutable audit data, but are not part of the customer replay contract; after reopen, checkout accepts only the age-band V2 contract. Before dispatching the workflow, an operator must record the timestamp and the result of `SELECT COUNT(*) FROM orders` in the release record, together with the classification that every returned row is non-customer certification/test data. This is a manual preflight fact, not a new workflow evidence field.
 
 ## Durable sales gate and ownership
 
@@ -25,10 +29,12 @@ The gate affects no webhook, reconciliation, ticket, cancellation, refund, outbo
 ## Controlled workflow state machine
 
 1. GitHub concurrency serializes production runs; a durable owner acquires and pauses new orders.
-2. The sole Coolify webhook deploys the candidate. Bounded polling requires exact Commerce and worker SHA, a fresh worker heartbeat, both `0031` and `0033`, ready internal status and old active legal `2026-08-23.2`.
+2. The sole Coolify webhook deploys the candidate. Bounded polling requires exact Commerce and worker SHA, a fresh worker heartbeat and successful sweep, migrations `0031`, `0032`, `0033` and `0034`, ready internal status and old active legal `2026-08-23.2`.
 3. The owner publishes the shipped `2026-08-25.1` draft once. SQLite writes `legal_releases.effective_at`; the returned value is authoritative. Replays reconcile the existing release rather than creating another.
-4. The workflow generates and commits the promotion artifact: current legal copies, active manifest and certification defaults. It copies the SQLite timestamp exactly, updates the durable expected SHA under the same paused owner, triggers the same webhook and waits for that promotion SHA.
+4. The workflow generates and commits the promotion artifact: current legal copies, active manifest and certification defaults. It writes the commit to its immutable `releases/gha-<run_id>` branch, copies the SQLite timestamp exactly, updates the durable expected SHA under the same paused owner, triggers the same webhook and waits for that promotion SHA.
 5. It verifies all four hashes, current legal copies, active release, required migration and non-mutating DOB rejection. Only then does the owner issue CAS reopen.
+
+After a successful reopen, merge `releases/gha-<run_id>` into `main` before allowing any ordinary deployment from `main`. Confirm the resulting `main` contains the promoted manifest, all four current convenience copies and the updated certification defaults. Until that merge is complete, disable ordinary deploys: a stale `main` deploy would regress the public current legal copies even though immutable archived order evidence remains valid.
 
 Any timeout, deployment mismatch, legal mismatch, missing timestamp, contract failure, owner mismatch or failed promotion exits non-zero and leaves new sales paused. There is no cleanup reopen. The workflow never performs the separate real ₽1 payment/refund/email certification.
 

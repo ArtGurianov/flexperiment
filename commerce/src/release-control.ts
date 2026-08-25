@@ -32,6 +32,7 @@ export type ReleaseRuntimeEvidence = {
   source_commit: string | null;
   migration_applied: boolean;
   required_migrations: Record<string, boolean>;
+  migration_versions: string[];
   legal_version: string | null;
   legal_manifest_sha256: string | null;
   legal_hashes: ReleaseExpectations["legal_hashes"] | null;
@@ -113,7 +114,7 @@ export const evaluateReopenGate = (request: ReleaseControlRequest, evidence: Rel
   if (!workerSweepEvidenceIsFresh(evidence.worker_source_commit, evidence.worker_last_successful_sweep_at, request.expected.source_commit)) return "WORKER_SWEEP_STALE";
   if (!evidence.migration_applied) return "MIGRATION_NOT_APPLIED";
   if (requiredCutoverMigrations.some((version) => evidence.required_migrations[version] !== true)) return "REQUIRED_MIGRATION_NOT_APPLIED";
-  if (evidence.required_migrations[request.expected.migration] !== true) return "EXPECTED_MIGRATION_NOT_APPLIED";
+  if (!evidence.migration_versions.includes(request.expected.migration)) return "EXPECTED_MIGRATION_NOT_APPLIED";
   if (evidence.legal_version !== request.expected.legal_version) return "LEGAL_VERSION_MISMATCH";
   if (evidence.legal_manifest_sha256 !== request.expected.legal_manifest_sha256) return "LEGAL_MANIFEST_MISMATCH";
   if (!evidence.legal_publish_time || evidence.legal_publish_time === "PENDING_AUTHORITATIVE_PUBLISH_TIMESTAMP" || Number.isNaN(parseUtcTimestamp(evidence.legal_publish_time))) return "LEGAL_PUBLISH_TIME_INVALID";
@@ -235,6 +236,7 @@ export const releaseRuntimeEvidence = (db: Database.Database, input: { sourceCom
     ? (db.prepare(workerSql).get() as { source_commit: string; observed_at: string; last_successful_sweep_at: string | null } | undefined)
     : undefined;
   const requiredMigrations = Object.fromEntries(requiredCutoverMigrations.map((version) => [version, Boolean(db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(version))]));
+  const migrationVersions = (db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as Array<{ version: string }>).map(({ version }) => version);
   const sourceLegal = (() => {
     try {
       const raw = readFileSync(resolve(process.cwd(), "commerce/legal/production-manifest.json"));
@@ -242,7 +244,7 @@ export const releaseRuntimeEvidence = (db: Database.Database, input: { sourceCom
       return { sha256: createHash("sha256").update(raw).digest("hex"), publishTime: parsed.publish_time ?? null };
     } catch { return { sha256: null, publishTime: null }; }
   })();
-  const base = { source_commit: input.sourceCommit?.trim() || null, migration_applied: requiredCutoverMigrations.every((version) => requiredMigrations[version]), required_migrations: requiredMigrations, worker_source_commit: worker?.source_commit ?? null, worker_observed_at: worker?.observed_at ?? null, worker_last_successful_sweep_at: worker?.last_successful_sweep_at ?? null, source_legal_manifest_sha256: sourceLegal.sha256, source_legal_publish_time: sourceLegal.publishTime };
+  const base = { source_commit: input.sourceCommit?.trim() || null, migration_applied: requiredCutoverMigrations.every((version) => requiredMigrations[version]), required_migrations: requiredMigrations, migration_versions: migrationVersions, worker_source_commit: worker?.source_commit ?? null, worker_observed_at: worker?.observed_at ?? null, worker_last_successful_sweep_at: worker?.last_successful_sweep_at ?? null, source_legal_manifest_sha256: sourceLegal.sha256, source_legal_publish_time: sourceLegal.publishTime };
   if (!active) return { ...base, legal_version: null, legal_manifest_sha256: null, legal_hashes: null, legal_publish_time: null, current_legal_copies_match: false };
   try {
     const manifest = parseLegalManifest(JSON.parse(active.manifest_json));

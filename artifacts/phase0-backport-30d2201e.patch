@@ -231,7 +231,7 @@ new file mode 100644
 index 0000000..c7e1233
 --- /dev/null
 +++ b/commerce/src/release-control.ts
-@@ -0,0 +1,227 @@
+@@ -0,0 +1,229 @@
 +import { createHash, randomUUID } from "node:crypto";
 +import type Database from "better-sqlite3";
 +import { canonicalLegalManifest, parseLegalManifest, type LegalManifest } from "./legal-manifest";
@@ -263,6 +263,7 @@ index 0000000..c7e1233
 +  source_commit: string | null;
 +  migration_applied: boolean;
 +  required_migrations: Record<string, boolean>;
++  migration_versions: string[];
 +  legal_version: string | null;
 +  legal_manifest_sha256: string | null;
 +  legal_hashes: ReleaseExpectations["legal_hashes"] | null;
@@ -442,7 +443,8 @@ index 0000000..c7e1233
 +  const workerTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runtime_release_evidence'").get();
 +  const worker = workerTable ? db.prepare("SELECT source_commit, observed_at FROM runtime_release_evidence WHERE unit = 'WORKER'").get() as { source_commit: string; observed_at: string } | undefined : undefined;
 +  const required_migrations = Object.fromEntries(requiredCutoverMigrations.map((version) => [version, Boolean(db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(version))]));
-+  const base = { source_commit: input.sourceCommit?.trim() || null, migration_applied: requiredCutoverMigrations.every((version) => required_migrations[version]), required_migrations, worker_source_commit: worker?.source_commit ?? null, worker_observed_at: worker?.observed_at ?? null, source_legal_manifest_sha256: null, source_legal_publish_time: null };
++  const migration_versions = (db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as Array<{ version: string }>).map(({ version }) => version);
++  const base = { source_commit: input.sourceCommit?.trim() || null, migration_applied: requiredCutoverMigrations.every((version) => required_migrations[version]), required_migrations, migration_versions, worker_source_commit: worker?.source_commit ?? null, worker_observed_at: worker?.observed_at ?? null, source_legal_manifest_sha256: null, source_legal_publish_time: null };
 +  if (!active) return { ...base, legal_version: null, legal_manifest_sha256: null, legal_hashes: null, legal_publish_time: null, current_legal_copies_match: false };
 +  try {
 +    const manifest = parseLegalManifest(JSON.parse(active.manifest_json));
