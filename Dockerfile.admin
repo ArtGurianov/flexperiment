@@ -6,6 +6,8 @@ COPY apps/admin/package.json ./apps/admin/package.json
 RUN pnpm install --frozen-lockfile
 
 FROM dependencies AS build
+ARG SOURCE_COMMIT
+ENV SOURCE_COMMIT=${SOURCE_COMMIT}
 COPY apps/admin ./apps/admin
 # Admin shares the canonical city catalogue with Commerce at the repository
 # root; include it before resolving the static export's imports.

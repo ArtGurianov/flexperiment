@@ -4,9 +4,9 @@ This is the only supported automation for the booking-time age-band and legal re
 
 ## Deployment architecture found
 
-The repository contains `Dockerfile.commerce` and `docker-compose.commerce.yml` only. It contains no GitHub workflow, Coolify resource definition, Coolify API configuration, webhook URL, or static-frontend deployment definition. Therefore it cannot prove the current production trigger chain. The workflow uses exactly one configured `COOLIFY_DEPLOY_WEBHOOK_URL`; a successful webhook response is deliberately not deployment proof. It polls the authenticated Commerce runtime for the expected `SOURCE_COMMIT`, migration and legal evidence.
+Verified production topology is three independent manual-deploy Coolify resources: `https://flexperiment.ru` is the static frontend, `https://admin.flexperiment.ru` is the static admin, and `https://api.flexperiment.ru` is the shared Commerce/Worker Compose resource with one persistent SQLite volume. The browser intentionally calls the API cross-origin; Commerce CORS is restricted to the frontend origin.
 
-Before use, disable direct Coolify Git auto-deploy for every production resource that can serve Commerce or the static frontend. Configure the one webhook secret to deploy the complete release set from the checked-out commit, not a branch head. The Compose runtime now receives `SOURCE_COMMIT`; Coolify must supply that exact value for every candidate and promotion deployment.
+Every release deploy invokes all three authenticated Coolify deploy webhooks with a Deploy-scoped `COOLIFY_TOKEN`. Webhook acceptance is only enqueue acknowledgement. Commerce/Worker runtime evidence, frontend `/release.json`, admin `/release.json`, health endpoints and the API legal-config remain authoritative deployment proof.
 
 ## Bootstrap is mandatory
 
@@ -29,12 +29,12 @@ The gate affects no webhook, reconciliation, ticket, cancellation, refund, outbo
 ## Controlled workflow state machine
 
 1. GitHub concurrency serializes production runs; a durable owner acquires and pauses new orders.
-2. The sole Coolify webhook deploys the candidate. Bounded polling requires exact Commerce and worker SHA, a fresh worker heartbeat and successful sweep, migrations `0031`, `0032`, `0033` and `0034`, ready internal status and old active legal `2026-08-23.2`.
+2. The three Coolify webhooks deploy the candidate from the configured `main` ref. Bounded polling requires exact Commerce and worker SHA, a fresh worker heartbeat and successful sweep, migrations `0031`, `0032`, `0033` and `0034`, frontend/admin descriptors with the candidate SHA and age-band contracts, ready internal status and old active legal `2026-08-23.2`.
 3. The owner publishes the shipped `2026-08-25.1` draft once. SQLite writes `legal_releases.effective_at`; the returned value is authoritative. Replays reconcile the existing release rather than creating another.
-4. The workflow generates and commits the promotion artifact: current legal copies, active manifest and certification defaults. It writes the commit to its immutable `releases/gha-<run_id>` branch, copies the SQLite timestamp exactly, updates the durable expected SHA under the same paused owner, triggers the same webhook and waits for that promotion SHA.
+4. The workflow generates the promotion artifact and performs a normal guarded fast-forward push directly to `main`. It refuses any unrelated `main` advancement, or reuses only an exact existing promotion with the same timestamp, hashes and allowed source diff. It updates the durable expected SHA under the same paused owner, triggers all three webhooks and waits for the promotion SHA.
 5. It verifies all four hashes, current legal copies, active release, required migration and non-mutating DOB rejection. Only then does the owner issue CAS reopen.
 
-After a successful reopen, merge `releases/gha-<run_id>` into `main` before allowing any ordinary deployment from `main`. Confirm the resulting `main` contains the promoted manifest, all four current convenience copies and the updated certification defaults. Until that merge is complete, disable ordinary deploys: a stale `main` deploy would regress the public current legal copies even though immutable archived order evidence remains valid.
+`main` is the only production deployment ref. A new workflow dispatch refuses to acquire or pause unless the supplied 40-character `target_sha` exactly equals `origin/main`. There is no release branch and no post-cutover synchronization step.
 
 Any timeout, deployment mismatch, legal mismatch, missing timestamp, contract failure, owner mismatch or failed promotion exits non-zero and leaves new sales paused. There is no cleanup reopen. The workflow never performs the separate real ₽1 payment/refund/email certification.
 
@@ -42,9 +42,9 @@ Any timeout, deployment mismatch, legal mismatch, missing timestamp, contract fa
 
 1. Create and verify the compatible Phase 0 deployment while sales are open.
 2. Disable direct Coolify Git auto-deploy for all relevant production resources.
-3. Create a GitHub production environment with approval protection and add `COMMERCE_INTERNAL_URL`, `COMMERCE_RELEASE_CONTROL_TOKEN` and `COOLIFY_DEPLOY_WEBHOOK_URL` as secrets. Never store values in source.
-4. Make the webhook deploy Commerce, worker and static frontend from the exact commit; inject that commit as Commerce and worker `SOURCE_COMMIT`. The static build must run `SOURCE_COMMIT=<sha> pnpm release:static-descriptor`; configure `PUBLIC_RELEASE_URL` to that served frontend origin.
-5. Give the workflow only the repository write permission required for its generated legal-promotion commit. Its push must not invoke another deployment path or a recursive workflow.
+3. Create a GitHub production environment with approval protection and add `COMMERCE_RELEASE_CONTROL_TOKEN`, `COOLIFY_TOKEN`, `COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL`, `COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL` and `COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL` as secrets. `COOLIFY_TOKEN` has Deploy permission only. Never store values in source.
+4. Add non-secret variables `PUBLIC_FRONTEND_URL=https://flexperiment.ru` and `PUBLIC_API_URL=https://api.flexperiment.ru`. The frontend and admin builds must receive exact `SOURCE_COMMIT` and generate their immutable descriptors; Commerce and Worker already receive the same exact value.
+5. Keep every resource on manual deploy only. Give the workflow only the repository write permission required for its guarded promotion fast-forward to `main`; the push must not trigger another deploy path or recursive workflow.
 
 ## Recovery
 
