@@ -108,7 +108,7 @@ describe("commerce HTTP boundary", () => {
       const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
       const context = await app.request("http://api.flexperiment.ru/v1/public/checkout-context", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.25" }, body: JSON.stringify({ occurrence_id: occurrenceId }) });
       const quoteId = (await context.json() as { quote_id: string }).quote_id;
-      const release = { release_id: randomUUID(), mode: "CONTROLLED_CUTOVER", expected: { source_commit: "a".repeat(40), migration: "0031_participant_age_band.sql", legal_version: "2026-08-25.1", legal_manifest_sha256: "b".repeat(64), legal_hashes: { PUBLIC_OFFER: "c".repeat(64), PRIVACY_POLICY: "d".repeat(64), PD_CONSENT: "e".repeat(64), CHECKOUT_DISCLOSURE: "f".repeat(64) } } };
+      const release = { release_id: randomUUID(), mode: "CONTROLLED_CUTOVER", expected: { source_commit: "a".repeat(40), migration: "0033_runtime_release_evidence.sql", legal_version: "2026-08-25.1", legal_manifest_sha256: "b".repeat(64), legal_hashes: { PUBLIC_OFFER: "c".repeat(64), PRIVACY_POLICY: "d".repeat(64), PD_CONSENT: "e".repeat(64), CHECKOUT_DISCLOSURE: "f".repeat(64) } } };
       const headers = { Authorization: "Bearer release-control-test-token", "Content-Type": "application/json" };
       expect((await app.request("http://api.flexperiment.ru/v1/internal/release-control/acquire", { method: "POST", headers, body: JSON.stringify(release) })).status).toBe(200);
       expect((await app.request("http://api.flexperiment.ru/v1/internal/release-control/pause", { method: "POST", headers, body: JSON.stringify(release) })).status).toBe(200);

@@ -113,11 +113,10 @@ describe("commerce domain", () => {
   const databases: ReturnType<typeof fixture>["db"][] = [];
   afterEach(() => { while (databases.length) databases.pop()?.close(); });
 
-  it("fails closed for stale worker evidence and only resumes the exact legal candidate", () => {
+  it("enforces target-specific migration and worker-success evidence before reopening", () => {
     const release = controlledRelease();
     const evidence: ReleaseRuntimeEvidence = {
       source_commit: release.expected.source_commit,
-      migration_applied: true,
       required_migrations: { "0031_participant_age_band.sql": true, "0032_release_sales_gate.sql": true, "0033_runtime_release_evidence.sql": true, "0034_worker_sweep_evidence.sql": true },
       migration_versions: ["0031_participant_age_band.sql", "0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql", "0034_worker_sweep_evidence.sql"],
       legal_version: release.expected.legal_version,
@@ -126,6 +125,7 @@ describe("commerce domain", () => {
       legal_publish_time: new Date().toISOString(),
       current_legal_copies_match: true,
       worker_source_commit: release.expected.source_commit,
+      worker_started_at: new Date(Date.now() - 1_000).toISOString(),
       worker_observed_at: new Date(Date.now() - 90_001).toISOString(),
       worker_last_successful_sweep_at: new Date().toISOString(),
       source_legal_manifest_sha256: "0".repeat(64),
@@ -137,19 +137,49 @@ describe("commerce domain", () => {
     evidence.worker_observed_at = new Date().toISOString().replace("T", " ").replace(/\.\d{3}Z$/, "");
     expect(evaluateReopenGate(release, evidence)).toBeUndefined();
     evidence.worker_last_successful_sweep_at = null;
-    expect(evaluateReopenGate(release, evidence)).toBe("WORKER_SWEEP_NOT_READY");
+    expect(evaluateReopenGate(release, evidence)).toBe("WORKER_SUCCESSFUL_SWEEP_UNAVAILABLE");
     evidence.worker_last_successful_sweep_at = new Date().toISOString();
-    evidence.required_migrations["0031_participant_age_band.sql"] = false;
-    expect(evaluateReopenGate(release, evidence)).toBe("REQUIRED_MIGRATION_NOT_APPLIED");
-    evidence.required_migrations["0031_participant_age_band.sql"] = true;
+    evidence.source_commit = "b".repeat(40);
+    expect(evaluateReopenGate(release, evidence)).toBe("SOURCE_COMMIT_MISMATCH");
+    evidence.source_commit = release.expected.source_commit;
+    for (const migration of ["0031_participant_age_band.sql", "0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql", "0034_worker_sweep_evidence.sql"]) {
+      evidence.required_migrations[migration] = false;
+      expect(evaluateReopenGate(release, evidence)).toBe("REQUIRED_MIGRATION_NOT_APPLIED");
+      evidence.required_migrations[migration] = true;
+    }
+    evidence.worker_last_successful_sweep_at = "not-a-timestamp";
+    expect(evaluateReopenGate(release, evidence)).toBe("WORKER_SUCCESSFUL_SWEEP_INVALID");
+    evidence.worker_last_successful_sweep_at = new Date(Date.now() - 2_000).toISOString();
+    expect(evaluateReopenGate(release, evidence)).toBe("WORKER_SUCCESSFUL_SWEEP_INVALID");
+    evidence.worker_last_successful_sweep_at = new Date().toISOString();
     const laterMigrationRelease = { ...release, expected: { ...release.expected, migration: "0099_future_release_gate.sql" } };
-    expect(evaluateReopenGate(laterMigrationRelease, evidence)).toBe("EXPECTED_MIGRATION_NOT_APPLIED");
-    evidence.migration_versions.push("0099_future_release_gate.sql");
-    expect(evaluateReopenGate(laterMigrationRelease, evidence)).toBeUndefined();
+    expect(evaluateReopenGate(laterMigrationRelease, evidence)).toBe("UNKNOWN_EXPECTED_MIGRATION");
     evidence.worker_source_commit = "b".repeat(40);
     expect(evaluateReopenGate(release, evidence)).toBe("WORKER_SOURCE_COMMIT_MISMATCH");
     evidence.worker_source_commit = null;
     expect(evaluateReopenGate(release, evidence)).toBe("WORKER_NOT_READY");
+  });
+
+  it("keeps Phase 0 reopen available without 0031, 0034, or a worker sweep", () => {
+    const baseRelease = controlledRelease();
+    const phase0Release = { ...baseRelease, expected: { ...baseRelease.expected, migration: "0033_runtime_release_evidence.sql" } };
+    const evidence: ReleaseRuntimeEvidence = {
+      source_commit: phase0Release.expected.source_commit,
+      required_migrations: { "0031_participant_age_band.sql": false, "0032_release_sales_gate.sql": true, "0033_runtime_release_evidence.sql": true, "0034_worker_sweep_evidence.sql": false },
+      migration_versions: ["0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql"],
+      legal_version: phase0Release.expected.legal_version,
+      legal_manifest_sha256: phase0Release.expected.legal_manifest_sha256,
+      legal_hashes: phase0Release.expected.legal_hashes,
+      legal_publish_time: new Date().toISOString(),
+      current_legal_copies_match: true,
+      worker_source_commit: null,
+      worker_started_at: null,
+      worker_observed_at: null,
+      worker_last_successful_sweep_at: null,
+      source_legal_manifest_sha256: "0".repeat(64),
+      source_legal_publish_time: new Date().toISOString(),
+    };
+    expect(evaluateReopenGate(phase0Release, evidence)).toBeUndefined();
   });
 
   it("binds terminal completion to the exact durable release that reopened sales", () => {
@@ -157,12 +187,12 @@ describe("commerce domain", () => {
     const release = controlledRelease();
     const gate = new ReleaseSalesGate(setup.db);
     const evidence: ReleaseRuntimeEvidence = {
-      source_commit: release.expected.source_commit, migration_applied: true,
+      source_commit: release.expected.source_commit,
       required_migrations: { "0031_participant_age_band.sql": true, "0032_release_sales_gate.sql": true, "0033_runtime_release_evidence.sql": true, "0034_worker_sweep_evidence.sql": true },
       migration_versions: ["0031_participant_age_band.sql", "0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql", "0034_worker_sweep_evidence.sql"],
       legal_version: release.expected.legal_version, legal_manifest_sha256: release.expected.legal_manifest_sha256,
       legal_hashes: release.expected.legal_hashes, legal_publish_time: new Date().toISOString(), current_legal_copies_match: true,
-      worker_source_commit: release.expected.source_commit, worker_observed_at: new Date().toISOString(), worker_last_successful_sweep_at: new Date().toISOString(),
+      worker_source_commit: release.expected.source_commit, worker_started_at: new Date(Date.now() - 1_000).toISOString(), worker_observed_at: new Date().toISOString(), worker_last_successful_sweep_at: new Date().toISOString(),
       source_legal_manifest_sha256: "0".repeat(64), source_legal_publish_time: new Date().toISOString(),
     };
     gate.acquire(release); gate.pause(release); gate.reopen(release, evidence);

@@ -13,7 +13,7 @@ const request: ReleaseControlRequest = {
 };
 const status = (overrides: Partial<ReleaseControlStatus> = {}): ReleaseControlStatus => ({ sales_paused: false, owner_release_id: null, owner_mode: null, expected: null, acquired_at: null, paused_at: null, reopened_at: null, ...overrides });
 const runtime = (overrides: Partial<ReleaseRuntimeEvidence> = {}): ReleaseRuntimeEvidence => ({
-  source_commit: request.expected.source_commit, worker_source_commit: request.expected.source_commit, worker_observed_at: new Date().toISOString(), worker_last_successful_sweep_at: new Date().toISOString(), migration_applied: true,
+  source_commit: request.expected.source_commit, worker_source_commit: request.expected.source_commit, worker_started_at: new Date().toISOString(), worker_observed_at: new Date().toISOString(), worker_last_successful_sweep_at: new Date().toISOString(),
   required_migrations: { "0031_participant_age_band.sql": true, "0032_release_sales_gate.sql": true, "0033_runtime_release_evidence.sql": true, "0034_worker_sweep_evidence.sql": true }, legal_version: "2026-08-23.2", legal_manifest_sha256: null,
   migration_versions: ["0031_participant_age_band.sql", "0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql", "0034_worker_sweep_evidence.sql"],
   legal_hashes: null, legal_publish_time: null, current_legal_copies_match: false, source_legal_manifest_sha256: null, source_legal_publish_time: null, ...overrides,
@@ -51,6 +51,19 @@ describe("controlled cutover durable reconciliation", () => {
     expect(reconcile(paused, { required_migrations: { "0031_participant_age_band.sql": false, "0032_release_sales_gate.sql": true, "0033_runtime_release_evidence.sql": true, "0034_worker_sweep_evidence.sql": true } }).action).toBe("DEPLOY_CANDIDATE");
     expect(reconcile(paused, { required_migrations: { "0031_participant_age_band.sql": true, "0032_release_sales_gate.sql": true, "0033_runtime_release_evidence.sql": false, "0034_worker_sweep_evidence.sql": true } }).action).toBe("DEPLOY_CANDIDATE");
     expect(reconcile(paused).action).toBe("PUBLISH_LEGAL");
+  });
+
+  it("keeps Phase 0 target 0033 independent of worker sweep evidence", () => {
+    const phase0Request = { ...request, expected: { ...request.expected, migration: "0033_runtime_release_evidence.sql" } };
+    const phase0Runtime = runtime({
+      required_migrations: { "0031_participant_age_band.sql": false, "0032_release_sales_gate.sql": true, "0033_runtime_release_evidence.sql": true, "0034_worker_sweep_evidence.sql": false },
+      migration_versions: ["0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql"],
+      worker_source_commit: null,
+      worker_started_at: null,
+      worker_observed_at: null,
+      worker_last_successful_sweep_at: null,
+    });
+    expect(reconcileCutover({ request: phase0Request, candidateSourceCommit: phase0Request.expected.source_commit, status: status({ owner_release_id: phase0Request.release_id, sales_paused: true }), runtime: phase0Runtime, completion: completion(), previousLegalVersion: "2026-08-23.2" }).action).toBe("PUBLISH_LEGAL");
   });
 
   it("retries the promoted source after expectations update or deployment dispatch", () => {

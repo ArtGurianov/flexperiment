@@ -30,7 +30,6 @@ export type ReleaseCompletion = {
 };
 export type ReleaseRuntimeEvidence = {
   source_commit: string | null;
-  migration_applied: boolean;
   required_migrations: Record<string, boolean>;
   migration_versions: string[];
   legal_version: string | null;
@@ -39,13 +38,19 @@ export type ReleaseRuntimeEvidence = {
   legal_publish_time: string | null;
   current_legal_copies_match: boolean;
   worker_source_commit: string | null;
+  worker_started_at: string | null;
   worker_observed_at: string | null;
   worker_last_successful_sweep_at: string | null;
   source_legal_manifest_sha256: string | null;
   source_legal_publish_time: string | null;
 };
 
-export const requiredCutoverMigrations = ["0031_participant_age_band.sql", "0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql", "0034_worker_sweep_evidence.sql"] as const;
+export const diagnosticCutoverMigrations = ["0031_participant_age_band.sql", "0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql", "0034_worker_sweep_evidence.sql"] as const;
+const requiredMigrationsByExpectedMigration: Record<string, readonly string[]> = {
+  "0033_runtime_release_evidence.sql": ["0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql"],
+  "0034_worker_sweep_evidence.sql": diagnosticCutoverMigrations,
+};
+export const requiredMigrationsFor = (expectedMigration: string): readonly string[] | undefined => requiredMigrationsByExpectedMigration[expectedMigration];
 export const WORKER_EVIDENCE_MAX_AGE_MS = 90_000;
 
 export const workerEvidenceIsFresh = (workerSourceCommit: string | null, workerObservedAt: string | null, expectedSourceCommit: string, currentTime = Date.now()): boolean => {
@@ -54,8 +59,12 @@ export const workerEvidenceIsFresh = (workerSourceCommit: string | null, workerO
   return !Number.isNaN(observedAt) && observedAt >= currentTime - WORKER_EVIDENCE_MAX_AGE_MS && observedAt <= currentTime + 5_000;
 };
 
-export const workerSweepEvidenceIsFresh = (workerSourceCommit: string | null, workerSweepAt: string | null, expectedSourceCommit: string, currentTime = Date.now()): boolean =>
-  workerEvidenceIsFresh(workerSourceCommit, workerSweepAt, expectedSourceCommit, currentTime);
+export const workerSweepEvidenceIsFresh = (workerSourceCommit: string | null, workerStartedAt: string | null, workerSweepAt: string | null, expectedSourceCommit: string, currentTime = Date.now()): boolean => {
+  if (!workerStartedAt || !workerEvidenceIsFresh(workerSourceCommit, workerSweepAt, expectedSourceCommit, currentTime)) return false;
+  const startedAt = parseUtcTimestamp(workerStartedAt);
+  const sweepAt = workerSweepAt ? parseUtcTimestamp(workerSweepAt) : Number.NaN;
+  return !Number.isNaN(startedAt) && !Number.isNaN(sweepAt) && sweepAt >= startedAt;
+};
 
 export class ReleaseControlError extends Error {
   constructor(readonly code: string, readonly status: 409 | 503 = 409) { super(code); }
@@ -107,14 +116,17 @@ const sameExpectations = (gate: GateRow, request: ReleaseControlRequest) =>
 
 export const evaluateReopenGate = (request: ReleaseControlRequest, evidence: ReleaseRuntimeEvidence): string | undefined => {
   if (evidence.source_commit !== request.expected.source_commit) return "SOURCE_COMMIT_MISMATCH";
-  if (!evidence.worker_source_commit || !evidence.worker_observed_at) return "WORKER_NOT_READY";
-  if (evidence.worker_source_commit !== request.expected.source_commit) return "WORKER_SOURCE_COMMIT_MISMATCH";
-  if (!workerEvidenceIsFresh(evidence.worker_source_commit, evidence.worker_observed_at, request.expected.source_commit)) return "WORKER_EVIDENCE_STALE";
-  if (!evidence.worker_last_successful_sweep_at) return "WORKER_SWEEP_NOT_READY";
-  if (!workerSweepEvidenceIsFresh(evidence.worker_source_commit, evidence.worker_last_successful_sweep_at, request.expected.source_commit)) return "WORKER_SWEEP_STALE";
-  if (!evidence.migration_applied) return "MIGRATION_NOT_APPLIED";
-  if (requiredCutoverMigrations.some((version) => evidence.required_migrations[version] !== true)) return "REQUIRED_MIGRATION_NOT_APPLIED";
+  const requiredMigrations = requiredMigrationsFor(request.expected.migration);
+  if (!requiredMigrations) return "UNKNOWN_EXPECTED_MIGRATION";
+  if (requiredMigrations.some((version) => evidence.required_migrations[version] !== true)) return "REQUIRED_MIGRATION_NOT_APPLIED";
   if (!evidence.migration_versions.includes(request.expected.migration)) return "EXPECTED_MIGRATION_NOT_APPLIED";
+  if (requiredMigrations.includes("0034_worker_sweep_evidence.sql")) {
+    if (!evidence.worker_source_commit || !evidence.worker_started_at || !evidence.worker_observed_at) return "WORKER_NOT_READY";
+    if (evidence.worker_source_commit !== request.expected.source_commit) return "WORKER_SOURCE_COMMIT_MISMATCH";
+    if (!workerEvidenceIsFresh(evidence.worker_source_commit, evidence.worker_observed_at, request.expected.source_commit)) return "WORKER_EVIDENCE_STALE";
+    if (!evidence.worker_last_successful_sweep_at) return "WORKER_SUCCESSFUL_SWEEP_UNAVAILABLE";
+    if (!workerSweepEvidenceIsFresh(evidence.worker_source_commit, evidence.worker_started_at, evidence.worker_last_successful_sweep_at, request.expected.source_commit)) return "WORKER_SUCCESSFUL_SWEEP_INVALID";
+  }
   if (evidence.legal_version !== request.expected.legal_version) return "LEGAL_VERSION_MISMATCH";
   if (evidence.legal_manifest_sha256 !== request.expected.legal_manifest_sha256) return "LEGAL_MANIFEST_MISMATCH";
   if (!evidence.legal_publish_time || evidence.legal_publish_time === "PENDING_AUTHORITATIVE_PUBLISH_TIMESTAMP" || Number.isNaN(parseUtcTimestamp(evidence.legal_publish_time))) return "LEGAL_PUBLISH_TIME_INVALID";
@@ -155,6 +167,7 @@ export class ReleaseSalesGate {
     const transaction = this.db.transaction(() => {
       const gate = row(this.db);
       if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
+      if (!requiredMigrationsFor(request.expected.migration)) throw new ReleaseControlError("UNKNOWN_EXPECTED_MIGRATION");
       if (sameExpectations(gate, request)) return status(gate);
       if (gate.owner_release_id) throw new ReleaseControlError("RELEASE_CONTROL_OWNED");
       const changed = this.db.prepare(`UPDATE release_sales_gate SET owner_release_id = ?, owner_mode = ?,
@@ -190,6 +203,7 @@ export class ReleaseSalesGate {
     const transaction = this.db.transaction(() => {
       const gate = row(this.db);
       if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
+      if (!requiredMigrationsFor(request.expected.migration)) throw new ReleaseControlError("UNKNOWN_EXPECTED_MIGRATION");
       if (gate.owner_release_id !== request.release_id || gate.sales_paused !== 1) throw new ReleaseControlError("RELEASE_CONTROL_OWNER_MISMATCH");
       const changed = this.db.prepare(`UPDATE release_sales_gate SET owner_mode = ?, expected_source_commit = ?, expected_migration = ?,
         expected_legal_version = ?, expected_legal_manifest_sha256 = ?, updated_at = datetime('now')
@@ -231,11 +245,11 @@ export const releaseRuntimeEvidence = (db: Database.Database, input: { sourceCom
   const active = db.prepare("SELECT version, effective_at, manifest_json FROM legal_releases WHERE active = 1").get() as { version: string; effective_at: string; manifest_json: string } | undefined;
   const workerTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runtime_release_evidence'").get();
   const supportsSweepEvidence = workerTable && db.prepare("PRAGMA table_info(runtime_release_evidence)").all().some((column) => (column as { name: string }).name === "last_successful_sweep_at");
-  const workerSql = `SELECT source_commit, observed_at, ${supportsSweepEvidence ? "last_successful_sweep_at" : "NULL AS last_successful_sweep_at"} FROM runtime_release_evidence WHERE unit = 'WORKER'`;
+  const workerSql = `SELECT source_commit, started_at, observed_at, ${supportsSweepEvidence ? "last_successful_sweep_at" : "NULL AS last_successful_sweep_at"} FROM runtime_release_evidence WHERE unit = 'WORKER'`;
   const worker = workerTable
-    ? (db.prepare(workerSql).get() as { source_commit: string; observed_at: string; last_successful_sweep_at: string | null } | undefined)
+    ? (db.prepare(workerSql).get() as { source_commit: string; started_at: string; observed_at: string; last_successful_sweep_at: string | null } | undefined)
     : undefined;
-  const requiredMigrations = Object.fromEntries(requiredCutoverMigrations.map((version) => [version, Boolean(db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(version))]));
+  const requiredMigrations = Object.fromEntries(diagnosticCutoverMigrations.map((version) => [version, Boolean(db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(version))]));
   const migrationVersions = (db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as Array<{ version: string }>).map(({ version }) => version);
   const sourceLegal = (() => {
     try {
@@ -244,7 +258,7 @@ export const releaseRuntimeEvidence = (db: Database.Database, input: { sourceCom
       return { sha256: createHash("sha256").update(raw).digest("hex"), publishTime: parsed.publish_time ?? null };
     } catch { return { sha256: null, publishTime: null }; }
   })();
-  const base = { source_commit: input.sourceCommit?.trim() || null, migration_applied: requiredCutoverMigrations.every((version) => requiredMigrations[version]), required_migrations: requiredMigrations, migration_versions: migrationVersions, worker_source_commit: worker?.source_commit ?? null, worker_observed_at: worker?.observed_at ?? null, worker_last_successful_sweep_at: worker?.last_successful_sweep_at ?? null, source_legal_manifest_sha256: sourceLegal.sha256, source_legal_publish_time: sourceLegal.publishTime };
+  const base = { source_commit: input.sourceCommit?.trim() || null, required_migrations: requiredMigrations, migration_versions: migrationVersions, worker_source_commit: worker?.source_commit ?? null, worker_started_at: worker?.started_at ?? null, worker_observed_at: worker?.observed_at ?? null, worker_last_successful_sweep_at: worker?.last_successful_sweep_at ?? null, source_legal_manifest_sha256: sourceLegal.sha256, source_legal_publish_time: sourceLegal.publishTime };
   if (!active) return { ...base, legal_version: null, legal_manifest_sha256: null, legal_hashes: null, legal_publish_time: null, current_legal_copies_match: false };
   try {
     const manifest = parseLegalManifest(JSON.parse(active.manifest_json));

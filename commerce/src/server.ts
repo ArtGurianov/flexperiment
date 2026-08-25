@@ -4,14 +4,14 @@ import { migrate, openDatabase } from "./db";
 import { providerFromEnvironment } from "./provider";
 import { emailProviderFromEnvironment } from "./email-provider";
 import { smartCaptchaVerifierFromEnvironment } from "./smartcaptcha";
-import { writeRuntimeReleaseEvidence } from "./runtime-release-evidence";
+import { recordRuntimeStartupEvidence } from "./runtime-release-evidence";
 
 const sqlite = openDatabase();
 migrate(sqlite);
 const provider = providerFromEnvironment();
 const emailProvider = emailProviderFromEnvironment();
 const smartCaptchaVerifier = smartCaptchaVerifierFromEnvironment();
-writeRuntimeReleaseEvidence(sqlite, "COMMERCE", process.env.SOURCE_COMMIT?.trim() || "UNAVAILABLE", true);
+recordRuntimeStartupEvidence(sqlite, "COMMERCE", process.env.SOURCE_COMMIT?.trim() || "UNAVAILABLE");
 const app = createApp(sqlite, provider, emailProvider, smartCaptchaVerifier);
 const port = Number(process.env.PORT ?? 3001);
 

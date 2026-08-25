@@ -1,6 +1,6 @@
 import { CommerceDomain, DomainError } from "./domain";
 
-type SweepDomain = Pick<CommerceDomain,
+export type WorkerSweepDomain = Pick<CommerceDomain,
   "recoverStaleCommands" | "detectStalePreparedSettlements" | "reconcileCreateUnknownPayments" | "reconcilePendingPayments" |
   "createObligationRefunds" | "submitRequestedRefunds" | "reconcilePendingRefunds" | "processEmailOutbox" |
   "reconcileUnisenderEventDumps" | "processCityInterestLifecycle" | "detectOverdueVenueAnnouncements">;
@@ -10,7 +10,7 @@ type SweepDomain = Pick<CommerceDomain,
  * operational evidence, but a competing SQLite writer must not defer payment,
  * refund, or email recovery in the same sweep.
  */
-export async function runWorkerSweep(domain: SweepDomain) {
+export async function runWorkerSweep(domain: WorkerSweepDomain) {
   domain.recoverStaleCommands();
   try { domain.detectStalePreparedSettlements(); }
   catch (error) {

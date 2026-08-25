@@ -132,7 +132,7 @@ jobs:
             api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json || true
             curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_FRONTEND_URL/release.json" > frontend.json || true
             curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$ADMIN_RELEASE_URL" > admin.json || true
-            if pnpm commerce:release-cutover:assert-candidate-ready status.json "$TARGET_SHA" && jq -e --arg sha "$TARGET_SHA" '.source_commit == $sha and .checkout_contract_version == "age-band-v1"' frontend.json >/dev/null && jq -e --arg sha "$TARGET_SHA" '.source_commit == $sha and .admin_contract_version == "age-band-v1"' admin.json >/dev/null; then break; fi
+            if pnpm commerce:release-cutover:assert-candidate-ready status.json "$TARGET_SHA" "0034_worker_sweep_evidence.sql" && jq -e --arg sha "$TARGET_SHA" '.source_commit == $sha and .checkout_contract_version == "age-band-v1"' frontend.json >/dev/null && jq -e --arg sha "$TARGET_SHA" '.source_commit == $sha and .admin_contract_version == "age-band-v1"' admin.json >/dev/null; then break; fi
             [[ "$attempt" == "$POLL_ATTEMPTS" ]] && exit 1; sleep "$POLL_SECONDS"
           done
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json

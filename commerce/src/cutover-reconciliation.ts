@@ -1,15 +1,16 @@
-import { requiredCutoverMigrations, workerEvidenceIsFresh, workerSweepEvidenceIsFresh, type ReleaseCompletion, type ReleaseControlRequest, type ReleaseControlStatus, type ReleaseRuntimeEvidence } from "./release-control";
+import { requiredMigrationsFor, workerEvidenceIsFresh, workerSweepEvidenceIsFresh, type ReleaseCompletion, type ReleaseControlRequest, type ReleaseControlStatus, type ReleaseRuntimeEvidence } from "./release-control";
 
 export type CutoverAction = "RELEASE_ALREADY_COMPLETE" | "ACQUIRE_OWNER" | "PAUSE_SALES" | "DEPLOY_CANDIDATE" | "PUBLISH_LEGAL" | "CREATE_PROMOTION" | "DEPLOY_PROMOTION" | "VERIFY_AND_REOPEN" | "BLOCKED";
 
 export type CutoverReconciliation = { action: CutoverAction; reason?: string };
 
-const candidateRuntimeReady = (runtime: ReleaseRuntimeEvidence, request: ReleaseControlRequest) =>
-  runtime.source_commit === request.expected.source_commit
-  && workerEvidenceIsFresh(runtime.worker_source_commit, runtime.worker_observed_at, request.expected.source_commit)
-  && workerSweepEvidenceIsFresh(runtime.worker_source_commit, runtime.worker_last_successful_sweep_at, request.expected.source_commit)
-  && runtime.migration_applied
-  && requiredCutoverMigrations.every((version) => runtime.required_migrations[version] === true);
+const candidateRuntimeReady = (runtime: ReleaseRuntimeEvidence, request: ReleaseControlRequest) => {
+  const requiredMigrations = requiredMigrationsFor(request.expected.migration);
+  if (!requiredMigrations || runtime.source_commit !== request.expected.source_commit || requiredMigrations.some((version) => runtime.required_migrations[version] !== true)) return false;
+  if (!requiredMigrations.includes("0034_worker_sweep_evidence.sql")) return true;
+  return workerEvidenceIsFresh(runtime.worker_source_commit, runtime.worker_observed_at, request.expected.source_commit)
+    && workerSweepEvidenceIsFresh(runtime.worker_source_commit, runtime.worker_started_at, runtime.worker_last_successful_sweep_at, request.expected.source_commit);
+};
 
 /**
  * Durable-state reconciliation used by the workflow before it mutates anything.
