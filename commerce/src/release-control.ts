@@ -27,7 +27,6 @@ export type ReleaseCompletion = {
 };
 export type ReleaseRuntimeEvidence = {
   source_commit: string | null;
-  migration_applied: boolean;
   required_migrations: Record<string, boolean>;
   migration_versions: string[];
   legal_version: string | null;
@@ -42,7 +41,21 @@ export type ReleaseRuntimeEvidence = {
   source_legal_publish_time: string | null;
 };
 
-export const requiredCutoverMigrations = ["0031_participant_age_band.sql", "0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql"] as const;
+const diagnosticMigrationVersions = ["0031_participant_age_band.sql", "0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql"] as const;
+
+export const requiredMigrationsByExpectedMigration: Record<string, readonly string[]> = {
+  "0033_runtime_release_evidence.sql": ["0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql"],
+  "0034_worker_sweep_evidence.sql": ["0031_participant_age_band.sql", "0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql", "0034_worker_sweep_evidence.sql"],
+};
+
+const requiredMigrationsFor = (migration: string) => requiredMigrationsByExpectedMigration[migration];
+const migrationReadinessFailure = (migration: string, appliedVersions: readonly string[]) => {
+  const required = requiredMigrationsFor(migration);
+  if (!required) return "UNKNOWN_EXPECTED_MIGRATION";
+  const applied = new Set(appliedVersions);
+  const missing = required.find((version) => !applied.has(version));
+  return missing ? `REQUIRED_MIGRATION_NOT_APPLIED_${missing}` : undefined;
+};
 
 export class ReleaseControlError extends Error {
   constructor(readonly code: string, readonly status: 409 | 503 = 409) { super(code); }
@@ -93,7 +106,8 @@ const sameExpectations = (gate: GateRow, request: ReleaseControlRequest) =>
 
 export const evaluateReopenGate = (request: ReleaseControlRequest, evidence: ReleaseRuntimeEvidence): string | undefined => {
   if (evidence.source_commit !== request.expected.source_commit) return "SOURCE_COMMIT_MISMATCH";
-  if (!evidence.migration_applied) return "MIGRATION_NOT_APPLIED";
+  const migrationFailure = migrationReadinessFailure(request.expected.migration, evidence.migration_versions);
+  if (migrationFailure) return migrationFailure;
   if (evidence.legal_version !== request.expected.legal_version) return "LEGAL_VERSION_MISMATCH";
   if (evidence.legal_manifest_sha256 !== request.expected.legal_manifest_sha256) return "LEGAL_MANIFEST_MISMATCH";
   if (!evidence.legal_publish_time || evidence.legal_publish_time === "PENDING_AUTHORITATIVE_PUBLISH_TIMESTAMP" || Number.isNaN(Date.parse(evidence.legal_publish_time))) return "LEGAL_PUBLISH_TIME_INVALID";
@@ -133,6 +147,7 @@ export class ReleaseSalesGate {
     const transaction = this.db.transaction(() => {
       const gate = row(this.db);
       if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
+      if (!requiredMigrationsFor(request.expected.migration)) throw new ReleaseControlError("UNKNOWN_EXPECTED_MIGRATION");
       if (sameExpectations(gate, request)) return status(gate);
       if (gate.owner_release_id) throw new ReleaseControlError("RELEASE_CONTROL_OWNED");
       const changed = this.db.prepare(`UPDATE release_sales_gate SET owner_release_id = ?, owner_mode = ?,
@@ -168,6 +183,7 @@ export class ReleaseSalesGate {
     const transaction = this.db.transaction(() => {
       const gate = row(this.db);
       if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
+      if (!requiredMigrationsFor(request.expected.migration)) throw new ReleaseControlError("UNKNOWN_EXPECTED_MIGRATION");
       if (gate.owner_release_id !== request.release_id || gate.sales_paused !== 1) throw new ReleaseControlError("RELEASE_CONTROL_OWNER_MISMATCH");
       const changed = this.db.prepare(`UPDATE release_sales_gate SET owner_mode = ?, expected_source_commit = ?, expected_migration = ?,
         expected_legal_version = ?, expected_legal_manifest_sha256 = ?, updated_at = datetime('now')
@@ -209,9 +225,9 @@ export const releaseRuntimeEvidence = (db: Database.Database, input: { sourceCom
   const active = db.prepare("SELECT version, effective_at, manifest_json FROM legal_releases WHERE active = 1").get() as { version: string; effective_at: string; manifest_json: string } | undefined;
   const workerTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runtime_release_evidence'").get();
   const worker = workerTable ? db.prepare("SELECT source_commit, observed_at FROM runtime_release_evidence WHERE unit = 'WORKER'").get() as { source_commit: string; observed_at: string } | undefined : undefined;
-  const required_migrations = Object.fromEntries(requiredCutoverMigrations.map((version) => [version, Boolean(db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(version))]));
+  const required_migrations = Object.fromEntries(diagnosticMigrationVersions.map((version) => [version, Boolean(db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(version))]));
   const migration_versions = (db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as Array<{ version: string }>).map(({ version }) => version);
-  const base = { source_commit: input.sourceCommit?.trim() || null, migration_applied: requiredCutoverMigrations.every((version) => required_migrations[version]), required_migrations, migration_versions, worker_source_commit: worker?.source_commit ?? null, worker_observed_at: worker?.observed_at ?? null, worker_last_successful_sweep_at: null, source_legal_manifest_sha256: null, source_legal_publish_time: null };
+  const base = { source_commit: input.sourceCommit?.trim() || null, required_migrations, migration_versions, worker_source_commit: worker?.source_commit ?? null, worker_observed_at: worker?.observed_at ?? null, worker_last_successful_sweep_at: null, source_legal_manifest_sha256: null, source_legal_publish_time: null };
   if (!active) return { ...base, legal_version: null, legal_manifest_sha256: null, legal_hashes: null, legal_publish_time: null, current_legal_copies_match: false };
   try {
     const manifest = parseLegalManifest(JSON.parse(active.manifest_json));
