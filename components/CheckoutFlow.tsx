@@ -38,8 +38,10 @@ type Quote = {
   };
 };
 type Attempt = { version: 1; idempotencyKey: string; statusId: string | null };
-type Props = { onViewChange: (view: "booking" | "city-interest") => void };
-type CitySchedule = { city: string; cityTitle: string; occurrences: Occurrence[] };
+type Props = {
+  onViewChange: (view: "booking" | "city-interest") => void;
+  onBookingTitle: (title: string) => void;
+};
 
 const attemptKey = (quoteId: string) => `fx_checkout_attempt:v1:${quoteId}`;
 const occurrenceDateLabel = (startsAt: string) => {
@@ -60,7 +62,7 @@ function useSafeSessionStorage() {
   };
 }
 
-export default function CheckoutFlow({ onViewChange }: Props) {
+export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
   const router = useRouter();
   const storage = useSafeSessionStorage();
   const [occurrences, setOccurrences] = useState<Occurrence[]>([]);
@@ -85,15 +87,6 @@ export default function CheckoutFlow({ onViewChange }: Props) {
   const [catalogState, setCatalogState] = useState<"loading" | "ready" | "error">("loading");
   const [view, setView] = useState<"catalog" | "booking" | "city-interest">("catalog");
   const selected = useMemo(() => occurrences.find((item) => item.id === occurrenceId), [occurrences, occurrenceId]);
-  const citySchedules = useMemo(() => {
-    const schedules = new Map<string, CitySchedule>();
-    for (const occurrence of occurrences) {
-      const schedule = schedules.get(occurrence.city);
-      if (schedule) schedule.occurrences.push(occurrence);
-      else schedules.set(occurrence.city, { city: occurrence.city, cityTitle: occurrence.city_title, occurrences: [occurrence] });
-    }
-    return [...schedules.values()];
-  }, [occurrences]);
   const canCheckout = canRequestCheckout(selected);
   const participantAge = useMemo(() => selected && participantDateOfBirth
     ? getParticipantAgeOnOccurrenceDate(participantDateOfBirth, selected.starts_at, selected.timezone)
@@ -172,6 +165,7 @@ export default function CheckoutFlow({ onViewChange }: Props) {
     setAppliedPromoCode(null);
     setQuote(null);
     setMessage(null);
+    onBookingTitle(`${occurrence.city_title} × ${occurrenceDateLabel(occurrence.starts_at)}`);
     setView("booking");
     onViewChange("booking");
   };
@@ -247,12 +241,7 @@ export default function CheckoutFlow({ onViewChange }: Props) {
   return (
     <>
     <form className="space-y-4 font-mono text-sm" onSubmit={submit}>
-      <div className="border border-acid/60 p-3"><p className="font-display text-2xl uppercase text-acid">{selected.city_title}</p><p className="mt-1 text-bone/70">Выберите дату и заполните форму записи.</p></div>
-      <label className="grid gap-1.5">Дата и мастер-класс
-        <select value={occurrenceId} onChange={(event) => { setOccurrenceId(event.target.value); setPromoCode(""); setAppliedPromoCode(null); }} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid">
-          {citySchedules.find((schedule) => schedule.city === selected.city)?.occurrences.map((item) => <option value={item.id} key={item.id}>{new Date(item.starts_at).toLocaleDateString("ru-RU")} · {item.title}{item.sales_status === "CLOSED" ? " · продажи закрыты" : item.sales_status === "PAUSED" ? " · продажи приостановлены" : ""}</option>)}
-        </select>
-      </label>
+      <div className="border border-acid/60 p-3"><p className="font-display text-xl uppercase text-acid">{selected.title}</p><p className="mt-1 text-bone/70">{occurrenceDateLabel(selected.starts_at)}</p></div>
       {!canCheckout ? <p role="status" className="border border-bone/50 px-3 py-2 text-bone/70">{salesAnnouncement(selected?.sales_status)}</p> : <>
       <label className="grid gap-1.5">Имя <input required value={name} onChange={(event) => setName(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>
       <label className="grid gap-1.5">Email <input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>

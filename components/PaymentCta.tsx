@@ -39,6 +39,7 @@ export default function PaymentCta({
   const [hasOpened, setHasOpened] = useState(false);
   const [isPending, setIsPending] = useState(false);
   const [view, setView] = useState<"booking" | "city-interest" | null>(null);
+  const [bookingTitle, setBookingTitle] = useState<string | null>(null);
   const [flowKey, setFlowKey] = useState(0);
   // A ref rather than the state above: a second tap can land before React has
   // committed the pending render, and state would still read stale there.
@@ -89,11 +90,13 @@ export default function PaymentCta({
   const close = useCallback(() => {
     setIsOpen(false);
     setView(null);
+    setBookingTitle(null);
     setFlowKey((key) => key + 1);
   }, []);
 
   const backToCities = useCallback(() => {
     setView(null);
+    setBookingTitle(null);
     setFlowKey((key) => key + 1);
   }, []);
 
@@ -116,12 +119,12 @@ export default function PaymentCta({
 
       {hasOpened && (
         <DialogDrawer
-          title={view === "city-interest" ? "Не нашли свой город?" : view === "booking" ? "Запись" : "ГОРОДА × ДАТЫ"}
+          title={view === "city-interest" ? "Не нашли свой город?" : view === "booking" ? bookingTitle ?? "ГОРОДА × ДАТЫ" : "ГОРОДА × ДАТЫ"}
           isOpen={isOpen}
           onClose={close}
           onBack={view ? backToCities : undefined}
         >
-          <CheckoutFlow key={flowKey} onViewChange={setView} />
+          <CheckoutFlow key={flowKey} onViewChange={setView} onBookingTitle={setBookingTitle} />
         </DialogDrawer>
       )}
     </>
