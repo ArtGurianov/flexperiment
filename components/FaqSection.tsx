@@ -7,7 +7,6 @@ import {
   AccordionTrigger,
 } from "@/components/Accordion";
 import Diamond from "@/components/Diamond";
-import PaymentCta from "@/components/PaymentCta";
 import Section, { SectionLabel } from "@/components/Section";
 import footerOrnament from "@/public/hero4.webp";
 
@@ -50,15 +49,7 @@ export default function FaqSection() {
        bound on wide screens (168px at 1400px) while every cqw inside the
        section, which does see this container, stayed put. */
     <Section id="faq" className="isolate flex flex-col pb-6">
-      <div className="flex justify-center">
-        {/* Deliberately not full width — the CTA's narrowness against the
-            near-edge-to-edge accordion below is what carries the composition. */}
-        <PaymentCta className="w-fit max-w-full px-[6cqw] text-[clamp(1.25rem,6cqw,2.25rem)]">
-          Забронировать место
-        </PaymentCta>
-      </div>
-
-      <SectionLabel className="mt-[10cqw] mb-[5cqw]">Вопросы</SectionLabel>
+      <SectionLabel className="mb-[5cqw]">Вопросы</SectionLabel>
 
       <Accordion type="single" collapsible className="flex flex-col gap-[4cqw]">
         {FAQ.map(({ question, answer }) => (

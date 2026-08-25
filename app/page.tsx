@@ -6,6 +6,7 @@ import HeroTour from "@/components/HeroTour";
 import HeroVideo from "@/components/HeroVideo";
 import Navbar from "@/components/Navbar";
 import PaymentNotice from "@/components/PaymentNotice";
+import { Price } from "@/components/Price";
 import ProgramSection from "@/components/ProgramSection";
 import Separator from "@/components/Separator";
 import TeacherSection from "@/components/TeacherSection";
@@ -67,6 +68,8 @@ export default function Home() {
         <TeacherSection />
         <Separator />
         <ProgramSection />
+        <Separator />
+        <Price />
         <Separator />
         <FaqSection />
       </main>

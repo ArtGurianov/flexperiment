@@ -6,7 +6,7 @@ export default function Separator() {
   return (
     <div
       aria-hidden="true"
-      className="my-6 h-16 w-full bg-[url('/separator.webp')] bg-size-[auto_100%] bg-repeat-x"
+      className="h-16 w-full bg-[url('/separator.webp')] bg-size-[auto_100%] bg-repeat-x"
     />
   );
 }
