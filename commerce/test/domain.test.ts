@@ -116,6 +116,17 @@ describe("commerce domain", () => {
     expect(classifyOccurrenceRevision(base, { ...base, venue_announce_by: "2026-09-19T10:00:00.000Z" })).toMatchObject({ notificationMaterial: true, refundMaterial: false });
   });
 
+  it("includes the venue-announcement deadline in a checkout quote", () => {
+    const setup = fixture(); databases.push(setup.db);
+    setup.db.prepare(`UPDATE occurrences
+      SET venue_status = 'TO_BE_ANNOUNCED', venue_name = NULL, venue_address = NULL,
+        venue_disclosure_text = 'Площадка уточняется.', venue_announce_by = '2026-09-20T10:00:00.000Z'
+      WHERE id = ?`).run(setup.occurrenceId);
+
+    expect(setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId }).venue_disclosure)
+      .toMatch(/Площадка уточняется\. Сообщим адрес участникам на email не позднее 20 сентября 2026 г\. в 17:00\./);
+  });
+
   it("emits immutable occurrence notices, supersedes stale pending notices, and grants refunds only for adverse changes", async () => {
     const setup = fixture(); databases.push(setup.db);
     const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });

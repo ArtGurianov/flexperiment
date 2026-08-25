@@ -48,6 +48,18 @@ const occurrenceDateLabel = (startsAt: string) => {
   const date = new Date(startsAt);
   return Number.isNaN(date.getTime()) ? "Скоро" : date.toLocaleDateString("ru-RU");
 };
+const occurrenceDateTimeLabel = (startsAt: string, timeZone: string) => {
+  const date = new Date(startsAt);
+  if (Number.isNaN(date.getTime())) return "Время уточняется";
+  const options: Intl.DateTimeFormatOptions = {
+    day: "2-digit", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit",
+  };
+  try {
+    return new Intl.DateTimeFormat("ru-RU", { ...options, timeZone }).format(date);
+  } catch {
+    return new Intl.DateTimeFormat("ru-RU", options).format(date);
+  }
+};
 const legalPagePaths = {
   PUBLIC_OFFER: "/legal/public-offer",
   PRIVACY_POLICY: "/legal/privacy-policy",
@@ -241,7 +253,16 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
   return (
     <>
     <form className="space-y-4 font-mono text-sm" onSubmit={submit}>
-      <div className="border border-acid/60 p-3"><p className="font-display text-xl uppercase text-acid">{selected.title}</p><p className="mt-1 text-bone/70">{occurrenceDateLabel(selected.starts_at)}</p></div>
+      <div className="grid gap-3 border border-acid/60 p-3">
+        <div>
+          <p className="text-xs uppercase text-bone/70">Дата и время</p>
+          <p className="mt-1 font-display text-xl uppercase text-acid">{occurrenceDateTimeLabel(selected.starts_at, selected.timezone)}</p>
+        </div>
+        <div>
+          <p className="text-xs uppercase text-bone/70">Место проведения</p>
+          <p className="mt-1 leading-relaxed text-bone/90">{quote?.venue_disclosure ?? (canCheckout ? "Загружаем информацию о площадке…" : "Информация о площадке появится при открытии записи.")}</p>
+        </div>
+      </div>
       {!canCheckout ? <p role="status" className="border border-bone/50 px-3 py-2 text-bone/70">{salesAnnouncement(selected?.sales_status)}</p> : <>
       <label className="grid gap-1.5">Имя <input required value={name} onChange={(event) => setName(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>
       <label className="grid gap-1.5">Email <input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>
@@ -254,7 +275,7 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
       </div>
       {message && <p role="status" className="border border-acid px-3 py-2 text-acid">{message}</p>}
       <label className="grid gap-1.5">Промокод <span className="flex gap-2"><input disabled={Boolean(appliedPromoCode)} value={appliedPromoCode ? `Промокод [${appliedPromoCode}] применен` : promoCode} onChange={(event) => setPromoCode(event.target.value)} className="min-w-0 flex-1 border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid disabled:cursor-not-allowed disabled:opacity-70" /><button type="button" disabled={loading} onClick={() => void (appliedPromoCode ? resetPromo() : applyPromo())} className="shrink-0 border border-acid px-3 py-2 font-display uppercase text-acid transition-colors hover:bg-acid hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid disabled:cursor-wait disabled:opacity-60">{appliedPromoCode ? "Сброс" : "Применить"}</button></span></label>
-      {quote && <div className="border border-acid/60 p-3 text-bone"><p>{selected?.city_title}: {rub(quote.final_amount_kopecks)}{quote.discount_kopecks > 0 ? " со скидкой" : ""}</p><p className="mt-1 text-bone/70">{quote.venue_disclosure}</p></div>}
+      {quote && <div className="border border-acid/60 p-3 text-bone"><p>{selected?.city_title}: {rub(quote.final_amount_kopecks)}{quote.discount_kopecks > 0 ? " со скидкой" : ""}</p></div>}
       <button disabled={!quote || submitting} className="w-full border-2 border-acid bg-acid px-4 py-3 font-display text-lg uppercase text-ink disabled:cursor-not-allowed disabled:opacity-60">{submitting ? "Создаём оплату…" : "Перейти к оплате"}</button>
       </>}
     </form>

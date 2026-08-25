@@ -47,6 +47,18 @@ const discountFor = (price: number, type: unknown, value: unknown) => {
   if (type === "FIXED") return Math.min(price, amount);
   return 0;
 };
+const formatOccurrenceDateTime = (value: unknown, timeZone: unknown) => {
+  const date = new Date(String(value ?? ""));
+  if (Number.isNaN(date.getTime())) return "уточняется";
+  const options: Intl.DateTimeFormatOptions = {
+    day: "2-digit", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit",
+  };
+  try {
+    return new Intl.DateTimeFormat("ru-RU", { ...options, timeZone: String(timeZone || "UTC") }).format(date);
+  } catch {
+    return new Intl.DateTimeFormat("ru-RU", options).format(date);
+  }
+};
 
 const occurrenceState = (occurrence: Row) => `${occurrence.visibility}:${occurrence.sales_status}`;
 const allowedOccurrenceStateTransitions = new Set([
@@ -495,7 +507,7 @@ export class CommerceDomain {
       const quoteId = id();
       const disclosure = occurrence.venue_status === "CONFIRMED"
         ? `${occurrence.venue_name}: ${occurrence.venue_address}`
-        : String(occurrence.venue_disclosure_text);
+        : `${String(occurrence.venue_disclosure_text)} Сообщим адрес участникам на email не позднее ${formatOccurrenceDateTime(occurrence.venue_announce_by, occurrence.timezone)}.`;
       const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
       this.db.prepare(`INSERT INTO quotes(id, occurrence_id, material_revision, legal_release_id, promo_id, attributed_agent_id, price_kopecks, discount_kopecks, final_amount_kopecks, venue_disclosure, expires_at, referral_slug, promo_code_snapshot, discount_type_snapshot, discount_value_snapshot)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
