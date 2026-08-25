@@ -18,6 +18,14 @@ describe("controlled cutover production topology", () => {
     expect(workflow).not.toContain("PROMOTION_REF");
   });
 
+  it("keeps the candidate-derived release identity through reruns, promotion, and completion", () => {
+    expect(workflow).toContain("RELEASE_ID: age-band-${{ inputs.target_sha }}");
+    expect(workflow).not.toContain("RELEASE_ID: gha-${{ github.run_id }}");
+    expect(workflow).toContain('api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID"');
+    expect(workflow).toContain('[[ "$owner" == "$RELEASE_ID" ]]');
+    expect(workflow).toContain('RELEASE_ID="$RELEASE_ID" COMMERCE_RELEASE_MANIFEST_PATH=commerce/legal/production-manifest.json pnpm commerce:release-cutover:payload "$PROMOTION_SHA"');
+  });
+
   it("keeps main as the guarded deploy ref and requires all public source proofs", () => {
     expect(workflow).toContain("New release target must equal origin/main");
     expect(workflow).toContain("git push origin HEAD:refs/heads/main");
