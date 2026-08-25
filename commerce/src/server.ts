@@ -4,9 +4,11 @@ import { migrate, openDatabase } from "./db";
 import { providerFromEnvironment } from "./provider";
 import { emailProviderFromEnvironment } from "./email-provider";
 import { smartCaptchaVerifierFromEnvironment } from "./smartcaptcha";
+import { writeRuntimeReleaseEvidence } from "./runtime-release-evidence";
 
 const sqlite = openDatabase();
 migrate(sqlite);
+writeRuntimeReleaseEvidence(sqlite, "COMMERCE", process.env.SOURCE_COMMIT?.trim() || "UNAVAILABLE", true);
 const app = createApp(sqlite, providerFromEnvironment(), emailProviderFromEnvironment(), smartCaptchaVerifierFromEnvironment());
 const port = Number(process.env.PORT ?? 3001);
 

@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { readdirSync, readFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { openDatabase } from "../src/db";
+import { migrate, openDatabase } from "../src/db";
 
 const migrationsDirectory = join(process.cwd(), "commerce", "migrations");
 const applyThrough = (db: ReturnType<typeof openDatabase>, last: string) => {
@@ -12,6 +13,55 @@ const applyThrough = (db: ReturnType<typeof openDatabase>, last: string) => {
 };
 
 describe("0012 refund hardening and 0013 promoter migrations", () => {
+  it("applies a future lower-numbered migration after the Phase 0 release-control migrations", () => {
+    const db = openDatabase(":memory:");
+    applyThrough(db, "0030_unisender_event_dump_probe_and_saturation.sql");
+
+    const cityId = randomUUID(); const occurrenceId = randomUUID(); const releaseId = randomUUID(); const orderId = randomUUID();
+    db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, 'phase0-gap-city', 'Phase 0 gap city')").run(cityId);
+    db.prepare("INSERT INTO legal_releases(id, version, effective_at, manifest_json, active) VALUES (?, 'phase0-gap-legal', datetime('now'), '{}', 1)").run(releaseId);
+    db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, venue_status, venue_name, venue_address)
+      VALUES (?, ?, 'Phase 0 gap', '2030-01-01T10:00:00.000Z', '2030-01-01T12:00:00.000Z', 'Asia/Novosibirsk', 100, 1, 'PUBLISHED', 'CONFIRMED', 'Studio', 'Lenina 1')`).run(occurrenceId, cityId);
+    db.prepare(`INSERT INTO orders(id, public_status_id, public_order_number, occurrence_id, customer_name, customer_email, customer_email_hash, amount_kopecks, occurrence_material_revision, venue_disclosure_snapshot, checkout_legal_release_id, legal_snapshot_json, eligibility_confirmed_at, participant_date_of_birth)
+      VALUES (?, 'phase0-gap-status', 'FXPHASE0GAP00000001', ?, 'Historical DOB', 'historical@example.test', 'hash', 100, 1, 'Studio', ?, '{}', datetime('now'), '2010-01-02')`).run(orderId, occurrenceId, releaseId);
+
+    db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)");
+    for (const version of readdirSync(migrationsDirectory).filter((name) => name.endsWith(".sql") && name <= "0030_unisender_event_dump_probe_and_saturation.sql")) {
+      db.prepare("INSERT INTO schema_migrations(version) VALUES (?)").run(version);
+    }
+
+    migrate(db);
+    const phase0Versions = (db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as Array<{ version: string }>).map(({ version }) => version);
+    expect(phase0Versions).toEqual(expect.arrayContaining(["0030_unisender_event_dump_probe_and_saturation.sql", "0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql"]));
+    expect(phase0Versions).not.toContain("0031_participant_age_band.sql");
+    expect(db.prepare("SELECT sales_paused FROM release_sales_gate WHERE singleton = 1").get()).toEqual({ sales_paused: 0 });
+    db.prepare("INSERT INTO runtime_release_evidence(unit, source_commit) VALUES ('COMMERCE', 'phase0-evidence')").run();
+    const salesGateBefore = db.prepare("SELECT sales_paused, owner_release_id FROM release_sales_gate WHERE singleton = 1").get();
+    const evidenceBefore = db.prepare("SELECT unit, source_commit FROM runtime_release_evidence WHERE unit = 'COMMERCE'").get();
+    expect(db.prepare("SELECT participant_date_of_birth FROM orders WHERE id = ?").get(orderId)).toEqual({ participant_date_of_birth: "2010-01-02" });
+
+    const temporaryInventory = mkdtempSync(join(tmpdir(), "flexperiment-phase0-future-migrations-"));
+    try {
+      const futureMigrations = join(temporaryInventory, "migrations");
+      cpSync(migrationsDirectory, futureMigrations, { recursive: true });
+      writeFileSync(join(futureMigrations, "0031_participant_age_band.sql"), "CREATE TABLE phase0_future_migration_probe (id INTEGER PRIMARY KEY);\nINSERT INTO phase0_future_migration_probe(id) VALUES (1);\n");
+
+      migrate(db, futureMigrations);
+    } finally {
+      rmSync(temporaryInventory, { recursive: true, force: true });
+    }
+
+    const fullVersions = (db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as Array<{ version: string }>).map(({ version }) => version);
+    expect(fullVersions).toEqual(expect.arrayContaining(["0030_unisender_event_dump_probe_and_saturation.sql", "0031_participant_age_band.sql", "0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql"]));
+    expect(fullVersions.filter((version) => version === "0032_release_sales_gate.sql")).toHaveLength(1);
+    expect(fullVersions.filter((version) => version === "0033_runtime_release_evidence.sql")).toHaveLength(1);
+    expect(db.prepare("SELECT id FROM phase0_future_migration_probe").get()).toEqual({ id: 1 });
+    expect(db.prepare("SELECT sales_paused, owner_release_id FROM release_sales_gate WHERE singleton = 1").get()).toEqual(salesGateBefore);
+    expect(db.prepare("SELECT unit, source_commit FROM runtime_release_evidence WHERE unit = 'COMMERCE'").get()).toEqual(evidenceBefore);
+    expect(db.prepare("SELECT participant_date_of_birth FROM orders WHERE id = ?").get(orderId)).toEqual({ participant_date_of_birth: "2010-01-02" });
+    db.close();
+  });
+
   it("upgrades a populated 0025-era database with post-purchase lifecycle evidence", () => {
     const db = openDatabase(":memory:");
     applyThrough(db, "0025_tochka_webhook_conflicts_fail_closed.sql");

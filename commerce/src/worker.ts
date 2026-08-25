@@ -3,9 +3,13 @@ import { CommerceDomain } from "./domain";
 import { emailProviderFromEnvironment } from "./email-provider";
 import { providerFromEnvironment } from "./provider";
 import { runWorkerSweep } from "./worker-sweep";
+import { writeRuntimeReleaseEvidence } from "./runtime-release-evidence";
 
 const sqlite = openDatabase();
 const domain = new CommerceDomain(sqlite, providerFromEnvironment(), emailProviderFromEnvironment());
+const sourceCommit = process.env.SOURCE_COMMIT?.trim() || "UNAVAILABLE";
+const recordReadyHeartbeat = (starting = false) => writeRuntimeReleaseEvidence(sqlite, "WORKER", sourceCommit, starting);
+recordReadyHeartbeat(true);
 let nextDriftSweepAt = 0;
 let sweeping = false;
 
@@ -18,6 +22,7 @@ const sweep = async () => {
     nextDriftSweepAt = Date.now() + 24 * 60 * 60_000;
     await domain.collectProviderDrift();
   }
+  recordReadyHeartbeat();
 };
 
 const runSweep = async () => {

@@ -2,7 +2,9 @@ import type Database from "better-sqlite3";
 import { canonical, decryptTicketCapability, emailHash, encryptTicketCapability, id, now, publicId, publicOrderNumber, sha256 } from "./crypto";
 import { EmailProviderRejectedError, EventDumpCreateRejectedError, isEmailDeliveryEvidenceProvider, type EmailProvider, type UnisenderDumpEvent, UNISENDER_EVENT_DUMP_EVENT_LIMIT, UnconfiguredEmailProvider } from "./email-provider";
 import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
+import { verifyCurrentLegalSourceHashes } from "./legal-release";
 import type { PaymentProvider } from "./provider";
+import { ReleaseControlError, ReleaseSalesGate, type ReleaseControlRequest, releaseRuntimeEvidence } from "./release-control";
 import type { CheckoutRequest } from "./types";
 import { findCityBySlug } from "../../lib/city-catalog";
 import { getParticipantAgeOnOccurrenceDate, parseBirthDate } from "../../lib/participant-age";
@@ -224,6 +226,48 @@ export class CommerceDomain {
     readonly emailProvider: EmailProvider = new UnconfiguredEmailProvider(),
     private readonly clock: () => number = Date.now,
   ) {}
+
+  private releaseSalesGate() { return new ReleaseSalesGate(this.db); }
+
+  releaseControlStatus() { return this.releaseSalesGate().status(); }
+  releaseControlCompletion(releaseId: string) { return this.releaseSalesGate().completion(releaseId); }
+
+  acquireReleaseControl(input: ReleaseControlRequest) { return this.releaseSalesGate().acquire(input); }
+
+  pauseNewOrders(input: ReleaseControlRequest) { return this.releaseSalesGate().pause(input); }
+
+  updateReleaseControlExpectations(input: ReleaseControlRequest) {
+    try { return this.releaseSalesGate().updateExpectations(input); }
+    catch (error) {
+      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
+      throw error;
+    }
+  }
+
+  assertNewOrdersOpen() {
+    try { this.releaseSalesGate().assertNewOrdersOpen(); }
+    catch (error) {
+      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
+      throw error;
+    }
+  }
+
+  releaseRuntimeEvidence() {
+    return releaseRuntimeEvidence(this.db, {
+      sourceCommit: process.env.SOURCE_COMMIT,
+      currentLegalCopiesMatch: (manifest) => {
+        try { verifyCurrentLegalSourceHashes(manifest); return true; } catch { return false; }
+      },
+    });
+  }
+
+  reopenNewOrders(input: ReleaseControlRequest) {
+    try { return this.releaseSalesGate().reopen(input, this.releaseRuntimeEvidence()); }
+    catch (error) {
+      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
+      throw error;
+    }
+  }
 
   tour() {
     return many(this.db, `SELECT c.slug AS city, c.title AS city_title, o.*,
@@ -481,6 +525,7 @@ export class CommerceDomain {
 
   checkoutContext(input: { occurrenceId: string; promoCode?: string; referralSlug?: string }) {
     return withImmediateTransaction(this.db, () => {
+      this.assertNewOrdersOpen();
       const occurrence = one(this.db, "SELECT * FROM occurrences WHERE id = ?", input.occurrenceId);
       if (!occurrence || occurrence.visibility !== "PUBLISHED") throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
       if (occurrence.sales_status !== "OPEN" || occurrence.fulfillment_status !== "SCHEDULED") throw new DomainError("SALES_NOT_OPEN", 409);
@@ -527,6 +572,7 @@ export class CommerceDomain {
         if (replay.canonical_request_hash !== requestHash) throw new DomainError("IDEMPOTENCY_CONFLICT", 409);
         return { replay: true, status_id: replay.public_status_id, state: replay.state, status: replay.status, payment_url: replay.payment_url };
       }
+      this.assertNewOrdersOpen();
       const quote = one(this.db, "SELECT * FROM quotes WHERE id = ?", input.quote_id);
       if (!quote || new Date(String(quote.expires_at)).getTime() < Date.now()) throw new DomainError("QUOTE_EXPIRED", 409);
       const occurrence = one(this.db, "SELECT o.*, c.title AS city_title FROM occurrences o JOIN cities c ON c.id = o.city_id WHERE o.id = ?", quote.occurrence_id);

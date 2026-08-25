@@ -24,6 +24,25 @@ export const checkoutContextSchema = z.object({
   referral_slug: z.string().trim().max(100).optional(),
 });
 
+const releaseHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
+const releaseExpectedSchema = z.object({
+  source_commit: z.string().regex(/^[a-f0-9]{7,64}$/),
+  migration: z.string().regex(/^\d{4}_[a-z0-9_]+\.sql$/),
+  legal_version: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
+  legal_manifest_sha256: releaseHashSchema,
+  legal_hashes: z.object({
+    PUBLIC_OFFER: releaseHashSchema,
+    PRIVACY_POLICY: releaseHashSchema,
+    PD_CONSENT: releaseHashSchema,
+    CHECKOUT_DISCLOSURE: releaseHashSchema,
+  }).strict(),
+}).strict();
+export const releaseControlSchema = z.object({
+  release_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/),
+  mode: z.literal("CONTROLLED_CUTOVER"),
+  expected: releaseExpectedSchema,
+}).strict();
+
 export const customerCancellationSchema = z.object({
   reason: z.string().trim().min(3).max(1_000),
   confirmation_text: z.string().trim(),

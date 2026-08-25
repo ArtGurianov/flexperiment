@@ -68,3 +68,11 @@ export function parseSession(cookie: string | undefined): Session | undefined {
 }
 
 export const assertAdminOrigin = (origin: string | undefined) => !origin || origin === adminOrigin;
+
+/** Dedicated machine credential for release-control only; never a browser/Admin session. */
+export const verifyReleaseControlToken = (authorization: string | undefined) => {
+  const expected = process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
+  const presented = authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined;
+  if (!expected || !presented || expected.length !== presented.length) return false;
+  return timingSafeEqual(Buffer.from(expected), Buffer.from(presented));
+};

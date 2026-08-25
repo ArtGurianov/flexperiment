@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { ZodError } from "zod";
 import type { Sqlite } from "./db";
-import { assertAdminOrigin, issueAdminSession, parseSession, verifyAdminPassword } from "./auth";
+import { assertAdminOrigin, issueAdminSession, parseSession, verifyAdminPassword, verifyReleaseControlToken } from "./auth";
 import { emailHash, publicId, sha256 } from "./crypto";
 import { CommerceDomain, DomainError } from "./domain";
 import { type EmailProvider, UnconfiguredEmailProvider, UnisenderGoProvider } from "./email-provider";
@@ -10,7 +10,7 @@ import { clientIpRateLimitKey, rateLimit, trustedClientIp } from "./rate-limit";
 import { TochkaWebhookVerifier, webhookAmountKopecks } from "./tochka-webhook";
 import { verifyUnisenderWebhook } from "./unisender-webhook";
 import { type SmartCaptchaVerifier, UnconfiguredSmartCaptchaVerifier } from "./smartcaptcha";
-import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityInterestWithdrawalSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, emailAttentionAcknowledgeSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrencePatchSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
+import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityInterestWithdrawalSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, emailAttentionAcknowledgeSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrencePatchSchema, promoPatchSchema, promoSchema, providerReferenceSchema, releaseControlSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
 
 type AppBindings = { Variables: { adminId?: string; adminSessionId?: string } };
 const noStore = (headers: Headers) => headers.set("Cache-Control", "no-store");
@@ -131,9 +131,12 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     rateLimit(clientIpRateLimitKey("checkout", c.req.raw.headers), 20, 60_000);
     const idempotencyKey = c.req.header("Idempotency-Key");
     if (!idempotencyKey) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
-    const input = checkoutRequestSchema.parse(await jsonBody(c.req.raw));
     const keyHash = sha256(idempotencyKey);
     const existing = sqlite.prepare("SELECT 1 FROM checkout_idempotency WHERE idempotency_key_hash = ?").get(keyHash);
+    // A stale DOB-era browser must see the durable pause before schema parsing;
+    // an existing exact idempotency replay remains a read of its old order.
+    if (!existing) domain.assertNewOrdersOpen();
+    const input = checkoutRequestSchema.parse(await jsonBody(c.req.raw));
     if (!existing) {
       rateLimit(clientIpRateLimitKey("checkout-new", c.req.raw.headers), 3, 10 * 60_000);
       const quoteForLimit = sqlite.prepare("SELECT occurrence_id FROM quotes WHERE id = ?").get(input.quote_id) as { occurrence_id: string } | undefined;
@@ -243,7 +246,9 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
       source_commit_evidence: sourceCommit ? "machine" : "unavailable",
       migration_head: migration ?? null,
       migration_evidence: migration ? "machine" : "unavailable",
+      migration_versions: sqlite.prepare("SELECT version FROM schema_migrations ORDER BY version").all(),
       active_legal_release: domain.legalConfig(),
+      release_control: domain.releaseControlStatus(),
     });
   });
   admin.post("/logout", (c) => {
@@ -437,5 +442,24 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     c.header("Set-Cookie", adminSessionCookie(cookieValue, 43_200)); return c.json({ ok: true });
   });
   app.route("/v1/admin", admin);
+
+  const releaseControl = new Hono();
+  releaseControl.use("*", async (c, next) => {
+    if (!verifyReleaseControlToken(c.req.header("Authorization"))) throw new DomainError("RELEASE_CONTROL_AUTH_REQUIRED", 401);
+    noStore(c.res.headers);
+    await next();
+    noStore(c.res.headers);
+  });
+  releaseControl.get("/status", (c) => c.json({ ...domain.releaseControlStatus(), runtime: domain.releaseRuntimeEvidence() }));
+  releaseControl.get("/completion/:releaseId", (c) => c.json(domain.releaseControlCompletion(c.req.param("releaseId"))));
+  releaseControl.post("/acquire", async (c) => c.json(domain.acquireReleaseControl(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
+  releaseControl.post("/pause", async (c) => c.json(domain.pauseNewOrders(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
+  releaseControl.post("/expectations", async (c) => c.json(domain.updateReleaseControlExpectations(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
+  releaseControl.post("/verify", async (c) => {
+    const input = releaseControlSchema.parse(await jsonBody(c.req.raw));
+    return c.json({ release_id: input.release_id, status: domain.releaseControlStatus(), runtime: domain.releaseRuntimeEvidence() });
+  });
+  releaseControl.post("/reopen", async (c) => c.json(domain.reopenNewOrders(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
+  app.route("/v1/internal/release-control", releaseControl);
   return app;
 }
