@@ -1,37 +1,37 @@
 {
-  "version": "2026-08-23.2",
-  "publish_time": "2026-08-23T16:32:55Z",
+  "version": "2026-08-25.1",
+  "publish_time": "2026-08-25T16:23:29Z",
   "documents": {
     "PUBLIC_OFFER": {
       "document_id": "PUBLIC_OFFER",
-      "version": "2026-08-23",
-      "sha256": "cf4797bc09fe5f59e751a614b56aa31998631b0b219864c364a2e5474272265b",
+      "version": "2026-08-25",
+      "sha256": "bd20b056a269ed1286c6ea35a728fbfd58e90a2f845b72ac112fe3544ec9ecaf",
       "current_url": "https://flexperiment.ru/legal/public-offer.md",
-      "archive_url": "https://flexperiment.ru/legal/archive/offer/2026-08-23.2/public-offer.md",
+      "archive_url": "https://flexperiment.ru/legal/archive/offer/2026-08-25.1/public-offer.md",
       "checkout_relevant": true
     },
     "PRIVACY_POLICY": {
       "document_id": "PRIVACY_POLICY",
-      "version": "2026-08-23",
-      "sha256": "97ac1add022f8ca4f870647c7abc525cf9b32a6edcc12fcd2484339769497864",
+      "version": "2026-08-25",
+      "sha256": "32c3a6c2664e5941118b36eab13a728851a8df93c7f93bbf5bec76db91794494",
       "current_url": "https://flexperiment.ru/legal/privacy-policy.md",
-      "archive_url": "https://flexperiment.ru/legal/archive/privacy/2026-08-23.2/privacy-policy.md",
+      "archive_url": "https://flexperiment.ru/legal/archive/privacy/2026-08-25.1/privacy-policy.md",
       "checkout_relevant": true
     },
     "PD_CONSENT": {
       "document_id": "PD_CONSENT",
-      "version": "2026-08-23",
-      "sha256": "313390b685e82e73d190f5300295df1d5b83905787b3d92531d5b3c8d126d30f",
+      "version": "2026-08-25",
+      "sha256": "6084934c08c8ba0cda220c49d347afb81bada6307ae0763c0eb19b3d658a2035",
       "current_url": "https://flexperiment.ru/legal/personal-data-consent.md",
-      "archive_url": "https://flexperiment.ru/legal/archive/privacy/2026-08-23.2/personal-data-consent.md",
+      "archive_url": "https://flexperiment.ru/legal/archive/personal-data-consent/2026-08-25.1/personal-data-consent.md",
       "checkout_relevant": true
     },
     "CHECKOUT_DISCLOSURE": {
       "document_id": "CHECKOUT_DISCLOSURE",
-      "version": "2026-08-23",
-      "sha256": "81c46b287ee9f5d79d07923d11e53ccbe01c11c38ef5dbc5057af3b4833bd48d",
+      "version": "2026-08-25",
+      "sha256": "97f84fb7d8af72964e4c24f93223a99daf53002f7542cb9209608d1e5335902f",
       "current_url": "https://flexperiment.ru/legal/disclaimer.md",
-      "archive_url": "https://flexperiment.ru/legal/archive/checkout-disclosure/2026-08-23.2/disclaimer.md",
+      "archive_url": "https://flexperiment.ru/legal/archive/checkout-disclosure/2026-08-25.1/disclaimer.md",
       "checkout_relevant": true
     }
   }
