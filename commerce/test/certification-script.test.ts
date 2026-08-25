@@ -49,7 +49,7 @@ function helperOutput(name: string, ...args: string[]) {
 describe("production certification runbook checkpoints", () => {
   it("defaults to the current migration head while allowing an explicit override", () => {
     const source = readFileSync(certificationScript, "utf8");
-    expect(source).toContain('EXPECTED_MIGRATION="${EXPECTED_MIGRATION:-0030_unisender_event_dump_probe_and_saturation.sql}"');
+    expect(source).toContain('EXPECTED_MIGRATION="${EXPECTED_MIGRATION:-0033_runtime_release_evidence.sql}"');
   });
 
   it("keeps the pre-dispatch checkout identity and distinct crash checkpoints", () => {
@@ -223,7 +223,8 @@ describe("production certification runbook checkpoints", () => {
     expect([...source.matchAll(/Real test email:/g)]).toHaveLength(1);
     expect(prepare).toContain('[[ -n "${CHECKOUT_REQUEST_BODY+x}" ]] && return 0');
     expect(prepare).toContain("CHECKOUT_REQUEST_SHA256");
-    expect(prepare).toContain("unset CUSTOMER_EMAIL CUSTOMER_NAME CUSTOMER_DOB");
+    expect(prepare).toContain("unset CUSTOMER_EMAIL CUSTOMER_NAME");
+    expect(prepare).not.toContain("CUSTOMER_DOB");
     expect(replay).toContain("prepare_checkout_request");
     expect(replay).toContain('"$CHECKOUT_REQUEST_BODY"');
     expect(source).toContain("Never inherit a body from the operator's");

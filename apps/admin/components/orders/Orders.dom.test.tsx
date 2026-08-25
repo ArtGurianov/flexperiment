@@ -7,7 +7,7 @@ import { Orders } from "./Orders";
 const order = {
   id: "order-1", public_status_id: "status-1", public_order_number: "FX-1",
   occurrence_id: "occ-1", customer_name: "Иван", customer_email: "ivan@example.test",
-  participant_name: null, participant_age_at_occurrence: null, participant_is_minor: 0,
+  participant_name: null, participant_age_band: "ADULT", participant_age_at_occurrence: null, participant_is_customer: 1, participant_is_minor: 0,
   participant_requires_adult_accompaniment: 0, amount_kopecks: 100000, created_at: "2026-08-20T10:00:00.000Z",
   occurrence_title: "Мастер-класс", city_id: "city-1", city_title: "Томск",
   payment_state: "CREATED", payment_status: "PAID", booking_status: "CONFIRMED", refund_count: 0,
@@ -58,6 +58,7 @@ describe("Orders", () => {
     render(<Orders />, { wrapper: (props) => <QueryClientWrapper client={client}>{props.children}</QueryClientWrapper> });
 
     await waitFor(() => expect(screen.getByText("FX-1")).toBeInTheDocument());
+    expect(screen.getByText("Возраст при оформлении: 18 лет или старше")).toBeInTheDocument();
     expect(within(screen.getByRole("table")).getByText("PAID")).toBeInTheDocument();
 
     fireEvent.click(screen.getByText("FX-1"));

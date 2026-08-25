@@ -20,6 +20,7 @@ describe("production legal-release publisher", () => {
     const db = openDatabase(":memory:"); databases.push(db); migrate(db);
     const result = publishLegalRelease(db, { version: "2026-08-21.1", manifest: manifest() });
     expect(result.published).toBe(true);
+    expect(result.effectiveAt).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
     expect(db.prepare("SELECT version, active FROM legal_releases").get()).toMatchObject({ version: "2026-08-21.1", active: 1 });
     expect(db.prepare("SELECT action, release_version, manifest_sha256 FROM legal_release_publish_events").get()).toMatchObject({ action: "PUBLISHED", release_version: "2026-08-21.1", manifest_sha256: result.manifestSha256 });
   });
@@ -29,7 +30,7 @@ describe("production legal-release publisher", () => {
     const release = { version: "2026-08-21.1", manifest: manifest() };
     const first = publishLegalRelease(db, release);
     const replay = publishLegalRelease(db, release);
-    expect(replay).toMatchObject({ id: first.id, published: false, manifestSha256: first.manifestSha256 });
+    expect(replay).toMatchObject({ id: first.id, published: false, manifestSha256: first.manifestSha256, effectiveAt: first.effectiveAt });
     expect(db.prepare("SELECT COUNT(*) AS count FROM legal_releases").get()).toMatchObject({ count: 1 });
     expect(db.prepare("SELECT action FROM legal_release_publish_events ORDER BY rowid DESC LIMIT 1").get()).toMatchObject({ action: "REPLAY_VERIFIED" });
   });
@@ -66,12 +67,11 @@ describe("production legal-release publisher", () => {
     expect(readFileSync("public/legal/archive/privacy/2026-08-22.1/privacy-policy.md")).not.toEqual(
       readFileSync("public/legal/archive/privacy/2026-08-21.2/privacy-policy.md"),
     );
-    const active = loadCanonicalLegalRelease("commerce/legal/production-manifest.json");
+    const active = loadCanonicalLegalRelease("commerce/legal/production-manifest.2026-08-23.2.draft.json");
     expect(active.version).toBe("2026-08-23.2");
     expect(active.manifest.documents.PRIVACY_POLICY.sha256).toBe("97ac1add022f8ca4f870647c7abc525cf9b32a6edcc12fcd2484339769497864");
-    expect(readFileSync("public/legal/archive/privacy/2026-08-23.2/privacy-policy.md")).toEqual(
-      readFileSync("public/legal/privacy-policy.md"),
-    );
+    expect(createHash("sha256").update(readFileSync("public/legal/archive/privacy/2026-08-23.2/privacy-policy.md")).digest("hex"))
+      .toBe("97ac1add022f8ca4f870647c7abc525cf9b32a6edcc12fcd2484339769497864");
   });
 
   it("prepares the city-interest legal candidate without changing the active release", () => {
@@ -97,28 +97,28 @@ describe("production legal-release publisher", () => {
     expect(loadCanonicalLegalRelease("commerce/legal/production-manifest.json").version).toBe("2026-08-23.2");
   });
 
-  it("activates the Customer and Participant release and synchronizes current legal copies", () => {
-    const candidate = loadCanonicalLegalRelease("commerce/legal/production-manifest.2026-08-23.2.draft.json");
-    expect(candidate.version).toBe("2026-08-23.2");
+  it("keeps the booking-time age-band release as a fully verified, unpublished candidate", () => {
+    const candidate = loadCanonicalLegalRelease("commerce/legal/production-manifest.2026-08-25.1.draft.json");
+    expect(candidate.version).toBe("2026-08-25.1");
     expect(candidate.manifest.documents).toMatchObject({
       PUBLIC_OFFER: {
-        version: "2026-08-23",
-        archive_url: "https://flexperiment.ru/legal/archive/offer/2026-08-23.2/public-offer.md",
+        version: "2026-08-25",
+        archive_url: "https://flexperiment.ru/legal/archive/offer/2026-08-25.1/public-offer.md",
       },
       PRIVACY_POLICY: {
-        archive_url: "https://flexperiment.ru/legal/archive/privacy/2026-08-23.2/privacy-policy.md",
+        archive_url: "https://flexperiment.ru/legal/archive/privacy/2026-08-25.1/privacy-policy.md",
       },
       PD_CONSENT: {
-        archive_url: "https://flexperiment.ru/legal/archive/privacy/2026-08-23.2/personal-data-consent.md",
+        archive_url: "https://flexperiment.ru/legal/archive/personal-data-consent/2026-08-25.1/personal-data-consent.md",
       },
       CHECKOUT_DISCLOSURE: {
-        archive_url: "https://flexperiment.ru/legal/archive/checkout-disclosure/2026-08-23.2/disclaimer.md",
+        archive_url: "https://flexperiment.ru/legal/archive/checkout-disclosure/2026-08-25.1/disclaimer.md",
       },
     });
-    const offer = readFileSync("public/legal/archive/offer/2026-08-23.2/public-offer.md", "utf8");
-    const privacy = readFileSync("public/legal/archive/privacy/2026-08-23.2/privacy-policy.md", "utf8");
-    const consent = readFileSync("public/legal/archive/privacy/2026-08-23.2/personal-data-consent.md", "utf8");
-    const disclosure = readFileSync("public/legal/archive/checkout-disclosure/2026-08-23.2/disclaimer.md", "utf8");
+    const offer = readFileSync("public/legal/archive/offer/2026-08-25.1/public-offer.md", "utf8");
+    const privacy = readFileSync("public/legal/archive/privacy/2026-08-25.1/privacy-policy.md", "utf8");
+    const consent = readFileSync("public/legal/archive/personal-data-consent/2026-08-25.1/personal-data-consent.md", "utf8");
+    const disclosure = readFileSync("public/legal/archive/checkout-disclosure/2026-08-25.1/disclaimer.md", "utf8");
     expect(offer).toContain("лицу, в пользу которого заключён договор");
     expect(offer).toContain("пункта 2 статьи 430 ГК РФ");
     expect(offer).toContain("Заказчик как его законный представитель");
@@ -126,20 +126,22 @@ describe("production legal-release publisher", () => {
     expect(privacy).toContain("пунктом 5 части 1 статьи 6 Федерального закона № 152-ФЗ");
     expect(consent).toContain("не является согласием, данным мною от имени Участника");
     expect(consent).toContain("Если обработка осуществляется лицом по поручению Оператора");
+    expect(privacy).toContain("категорию возраста");
+    expect(privacy).toContain("не запрашивается и не сохраняется в заказе; запрос с таким полем отклоняется");
+    expect(consent).toContain("Категория возраста фиксируется на момент оформления заказа");
     for (const document of [offer, disclosure]) {
-      expect(document).toContain("младше 14 лет");
+      expect(document).toContain("не исполнилось 14 лет");
       expect(document).toContain("сопровождении совершеннолетнего взрослого");
       expect(document).not.toMatch(/0\+|14\+|16\+|18\+ участия/);
     }
     expect(createHash("sha256").update(canonicalLegalManifest(candidate.manifest)).digest("hex")).toBe(
-      "bb96c89259c99d085b7277796f93525b96c43bea3e8d7e66c5b4c0f98a03bc9a",
+      "b839689ec7fed1e0b899c4d6298d32297f0142b6e572985cf9eb47a4830ebb47",
     );
+    expect(JSON.parse(readFileSync("commerce/legal/production-manifest.2026-08-25.1.draft.json", "utf8"))).toMatchObject({
+      publish_time: "PENDING_AUTHORITATIVE_PUBLISH_TIMESTAMP",
+    });
     const active = loadCanonicalLegalRelease("commerce/legal/production-manifest.json");
     expect(active.version).toBe("2026-08-23.2");
-    expect(active.manifest).toEqual(candidate.manifest);
-    expect(JSON.parse(readFileSync("commerce/legal/production-manifest.json", "utf8"))).toMatchObject({
-      publish_time: "2026-08-23T16:32:55Z",
-    });
     expect(() => verifyCurrentLegalSourceHashes(active.manifest)).not.toThrow();
   });
 
@@ -159,7 +161,7 @@ describe("production legal-release publisher", () => {
     const release = loadCanonicalLegalRelease("commerce/legal/production-manifest.json");
     expect(() => verifyCurrentLegalSourceHashes(release.manifest)).not.toThrow();
     expect(release.version).toBe("2026-08-23.2");
-    expect(createHash("sha256").update(canonicalLegalManifest(release.manifest)).digest("hex")).toBe("bb96c89259c99d085b7277796f93525b96c43bea3e8d7e66c5b4c0f98a03bc9a");
+    expect(release.manifest.documents.PUBLIC_OFFER.sha256).toBe("cf4797bc09fe5f59e751a614b56aa31998631b0b219864c364a2e5474272265b");
   });
 
   it("verifies every active archive URL against its manifest hash", async () => {

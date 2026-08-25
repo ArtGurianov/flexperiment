@@ -2,6 +2,10 @@ import { z } from "zod";
 
 export type { CityCatalogueEntry, CitySlug, CityTitle } from "../../lib/city-catalog";
 
+export const participantAgeBands = ["ADULT", "MINOR_14_17", "MINOR_UNDER_14"] as const;
+export type ParticipantAgeBand = (typeof participantAgeBands)[number];
+export const participantAgeBandSchema = z.enum(participantAgeBands);
+
 export const checkoutRequestSchema = z.object({
   quote_id: z.string().uuid(),
   customer_name: z.string().trim().min(2).max(160),
@@ -10,10 +14,9 @@ export const checkoutRequestSchema = z.object({
   participant: z.object({
     self: z.boolean(),
     name: z.string().trim().min(2).max(160).optional(),
-    date_of_birth: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    age_band: participantAgeBandSchema.optional(),
   }).strict(),
   minor_legal_representative_confirmed: z.boolean().optional(),
-  under_14_accompaniment_confirmed: z.boolean().optional(),
   offer_accepted: z.literal(true),
   pd_consent_accepted: z.literal(true),
 });
@@ -23,6 +26,25 @@ export const checkoutContextSchema = z.object({
   promo_code: z.string().trim().max(64).optional(),
   referral_slug: z.string().trim().max(100).optional(),
 });
+
+const releaseHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
+const releaseExpectedSchema = z.object({
+  source_commit: z.string().regex(/^[a-f0-9]{7,64}$/),
+  migration: z.string().regex(/^\d{4}_[a-z0-9_]+\.sql$/),
+  legal_version: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
+  legal_manifest_sha256: releaseHashSchema,
+  legal_hashes: z.object({
+    PUBLIC_OFFER: releaseHashSchema,
+    PRIVACY_POLICY: releaseHashSchema,
+    PD_CONSENT: releaseHashSchema,
+    CHECKOUT_DISCLOSURE: releaseHashSchema,
+  }).strict(),
+}).strict();
+export const releaseControlSchema = z.object({
+  release_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/),
+  mode: z.literal("CONTROLLED_CUTOVER"),
+  expected: releaseExpectedSchema,
+}).strict();
 
 export const customerCancellationSchema = z.object({
   reason: z.string().trim().min(3).max(1_000),

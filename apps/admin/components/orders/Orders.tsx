@@ -18,6 +18,11 @@ import { OrderEvidence } from "./OrderEvidence";
 const PAYMENT_STATUS_VALUES = ["PENDING", "PAID", "PARTIALLY_REFUNDED", "REFUNDED", "REVIEW_REQUIRED"];
 const PAYMENT_STATE_VALUES = ["CREATING", "CREATED", "CREATE_UNKNOWN", "CREATE_FAILED"];
 const BOOKING_STATUS_VALUES = ["RESERVED", "CONFIRMED", "CANCELLED"];
+const ageBandLabel = (value: unknown) => ({
+  ADULT: "18 лет или старше",
+  MINOR_14_17: "14–17 лет",
+  MINOR_UNDER_14: "младше 14 лет",
+}[string(value)]);
 
 export function Orders() {
   const cities = useQuery({ queryKey: cityKeys.list(), queryFn: () => api<{ cities: Row[] }>("/cities") });
@@ -121,7 +126,13 @@ export function Orders() {
                     <td>{string(order.customer_name)}<small>{string(order.customer_email)}</small></td>
                     <td>
                       {string(order.participant_name) || string(order.customer_name)}
-                      <small>{order.participant_age_at_occurrence === null || order.participant_age_at_occurrence === undefined ? "Возраст legacy: неизвестен" : `${number(order.participant_age_at_occurrence)} лет`}</small>
+                      <small>{ageBandLabel(order.participant_age_band)
+                        ? `Возраст при оформлении: ${ageBandLabel(order.participant_age_band)}`
+                        : order.participant_age_at_occurrence === null || order.participant_age_at_occurrence === undefined
+                          ? "Возраст legacy: неизвестен"
+                          : `Возраст на дату события (legacy): ${number(order.participant_age_at_occurrence)} лет`}</small>
+                      <small>{order.participant_is_customer === 1 ? "Заказчик и участник" : "Другой участник"}</small>
+                      {Boolean(order.minor_legal_representative_confirmed_at) && <Badge>ПРЕДСТАВИТЕЛЬ ПОДТВЕРЖДЁН</Badge>}
                       {order.participant_requires_adult_accompaniment === 1 && <Badge>ТРЕБУЕТСЯ СОПРОВОЖДЕНИЕ</Badge>}
                     </td>
                     <td>{formatMoney(order.amount_kopecks)}</td>

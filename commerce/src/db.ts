@@ -21,8 +21,7 @@ export function openReadOnlyDatabase(filename = process.env.COMMERCE_DATABASE_PA
   return sqlite;
 }
 
-export function migrate(sqlite: Database.Database) {
-  const migrationsDir = join(process.cwd(), "commerce", "migrations");
+export function migrate(sqlite: Database.Database, migrationsDir = join(process.cwd(), "commerce", "migrations")) {
   if (!existsSync(migrationsDir)) throw new Error("Commerce migrations directory is missing.");
   sqlite.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)");
   const applied = new Set(sqlite.prepare("SELECT version FROM schema_migrations").all().map((row) => (row as { version: string }).version));

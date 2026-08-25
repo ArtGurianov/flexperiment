@@ -82,7 +82,7 @@ export const publishLegalRelease = (db: Database.Database, release: CanonicalLeg
   const manifestSha256 = sha256(manifestJson);
   db.exec("BEGIN IMMEDIATE");
   try {
-    const existing = db.prepare("SELECT id, manifest_json, active FROM legal_releases WHERE version = ?").get(release.version) as { id: string; manifest_json: string; active: number } | undefined;
+    const existing = db.prepare("SELECT id, effective_at, manifest_json, active FROM legal_releases WHERE version = ?").get(release.version) as { id: string; effective_at: string; manifest_json: string; active: number } | undefined;
     if (existing) {
       let existingManifest: LegalManifest;
       try { existingManifest = parseLegalManifest(JSON.parse(existing.manifest_json)); }
@@ -91,14 +91,15 @@ export const publishLegalRelease = (db: Database.Database, release: CanonicalLeg
       if (existing.active !== 1) throw new LegalReleasePublishError(`Legal release version ${release.version} exists but is inactive; publish a new release version instead.`);
       db.prepare("INSERT INTO legal_release_publish_events(id, legal_release_id, release_version, manifest_sha256, action) VALUES (?, ?, ?, ?, 'REPLAY_VERIFIED')").run(randomUUID(), existing.id, release.version, manifestSha256);
       db.exec("COMMIT");
-      return { id: existing.id, version: release.version, manifestSha256, published: false };
+      return { id: existing.id, version: release.version, manifestSha256, effectiveAt: existing.effective_at, published: false };
     }
     db.prepare("UPDATE legal_releases SET active = 0 WHERE active = 1").run();
     const releaseId = randomUUID();
     db.prepare("INSERT INTO legal_releases(id, version, effective_at, manifest_json, active) VALUES (?, ?, datetime('now'), ?, 1)").run(releaseId, release.version, manifestJson);
+    const effectiveAt = (db.prepare("SELECT effective_at FROM legal_releases WHERE id = ?").get(releaseId) as { effective_at: string }).effective_at;
     db.prepare("INSERT INTO legal_release_publish_events(id, legal_release_id, release_version, manifest_sha256, action) VALUES (?, ?, ?, ?, 'PUBLISHED')").run(randomUUID(), releaseId, release.version, manifestSha256);
     db.exec("COMMIT");
-    return { id: releaseId, version: release.version, manifestSha256, published: true };
+    return { id: releaseId, version: release.version, manifestSha256, effectiveAt, published: true };
   } catch (error) {
     db.exec("ROLLBACK");
     throw error;

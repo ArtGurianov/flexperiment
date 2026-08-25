@@ -33,8 +33,8 @@ pending operation on a changed baseline.
 EXPECTED_SOURCE_COMMIT=<exact-deployed-SOURCE_COMMIT> ./certification.sh
 ```
 
-It prompts for the Admin password, schedule/venue facts, then Customer name,
-email, and date of birth. It opens the provider payment link locally without
+It prompts for the Admin password, schedule/venue facts, then Customer name
+and email. It opens the provider payment link locally without
 printing or persisting it. The operator completes the payment and confirms
 actual ticket-mailbox/ticket-page verification.
 
@@ -49,7 +49,7 @@ After the first mutation a mode-`0600` JSON state file is retained in
 only an allowlisted pending-operation enum. Occurrence creation additionally
 stores its safe schedule/venue body until its returned ID is checkpointed; all
 other Admin request bodies are reconstructed by the script. It never contains a password,
-cookie, customer email/name/date of birth, payment URL, ticket capability, or
+cookie, customer email/name, payment URL, ticket capability, or
 provider credential. Before `POST /checkouts`, it also stores only a SHA-256
 of the canonical checkout request; a resumed operator must re-enter matching
 customer data before that same idempotent request is replayed.
@@ -107,7 +107,7 @@ ticket; authenticated Unisender `DELIVERED` evidence for `TICKET`,
 path; exactly one fulfilled customer-cancellation refund obligation and one
 linked 100-kopek successful refund with a provider reference; a final
 `REFUNDED` payment; and fresh Admin/public cleanup proof immediately before
-the atomic manifest write. It also proves the post-0028 adult self-participant
+the atomic manifest write. It also proves the adult self-participant
 path through redacted order evidence, binds every order/payment/booking/ticket
 ID to the current status/occurrence, and rechecks unique `DELIVERED` Unisender
 evidence for all three transactional emails. The operator's ticket-page

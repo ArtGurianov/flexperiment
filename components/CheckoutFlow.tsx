@@ -9,7 +9,6 @@ import { storedReferralSlug } from "@/components/referral-marker";
 import CityInterestForm from "@/components/CityInterestForm";
 import { findCityBySlug, type CitySlug } from "@/lib/city-catalog";
 import { canRequestCheckout, isPublicOccurrenceSelectable, salesAnnouncement, type PublicSalesStatus } from "@/lib/occurrence-sales";
-import { getParticipantAgeOnOccurrenceDate } from "@/lib/participant-age";
 import { formatRubles as rub } from "@/lib/money";
 
 type Occurrence = {
@@ -38,6 +37,7 @@ type Quote = {
   };
 };
 type Attempt = { version: 1; idempotencyKey: string; statusId: string | null };
+type ParticipantAgeBand = "ADULT" | "MINOR_14_17" | "MINOR_UNDER_14";
 type Props = {
   onViewChange: (view: "booking" | "city-interest") => void;
   onBookingTitle: (title: string) => void;
@@ -87,9 +87,8 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
   const [customerAdult, setCustomerAdult] = useState(false);
   const [participantSelf, setParticipantSelf] = useState(true);
   const [participantName, setParticipantName] = useState("");
-  const [participantDateOfBirth, setParticipantDateOfBirth] = useState("");
+  const [participantAgeBand, setParticipantAgeBand] = useState<ParticipantAgeBand | "">("");
   const [minorRepresentative, setMinorRepresentative] = useState(false);
-  const [under14Accompaniment, setUnder14Accompaniment] = useState(false);
   const [offer, setOffer] = useState(false);
   const [consent, setConsent] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -100,9 +99,8 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
   const [view, setView] = useState<"catalog" | "booking" | "city-interest">("catalog");
   const selected = useMemo(() => occurrences.find((item) => item.id === occurrenceId), [occurrences, occurrenceId]);
   const canCheckout = canRequestCheckout(selected);
-  const participantAge = useMemo(() => selected && participantDateOfBirth
-    ? getParticipantAgeOnOccurrenceDate(participantDateOfBirth, selected.starts_at, selected.timezone)
-    : null, [participantDateOfBirth, selected]);
+  const participantIsMinor = !participantSelf && participantAgeBand !== "" && participantAgeBand !== "ADULT";
+  const participantRequiresAdultAccompaniment = participantAgeBand === "MINOR_UNDER_14";
   const legalLabels = {
     PUBLIC_OFFER: "публичной оферты",
     PRIVACY_POLICY: "политики конфиденциальности",
@@ -144,7 +142,7 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
       });
       const data = await response.json();
       if (!response.ok) throw new Error(data.error?.code ?? "QUOTE_UNAVAILABLE");
-      setQuote(data); setCustomerAdult(false); setMinorRepresentative(false); setUnder14Accompaniment(false); setOffer(false); setConsent(false);
+      setQuote(data); setCustomerAdult(false); setMinorRepresentative(false); setOffer(false); setConsent(false);
       return true;
     } catch (error) {
       setQuote(null);
@@ -196,10 +194,6 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     if (!quote || submitting) return;
-    if (participantSelf && participantAge?.isMinor) {
-      setMessage("Заказчик должен быть совершеннолетним. Для несовершеннолетнего участника выберите «Другой человек».");
-      return;
-    }
     setSubmitting(true); setMessage(null);
     const key = attemptKey(quote.quote_id);
     let attempt: Attempt;
@@ -212,12 +206,12 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
       const response = await fetch(commerceApiUrl("/v1/public/checkouts"), {
         method: "POST",
         headers: { "Content-Type": "application/json", "Idempotency-Key": attempt.idempotencyKey },
-        body: JSON.stringify({ quote_id: quote.quote_id, customer_name: name, customer_email: email, customer_adult_confirmed: customerAdult, participant: { self: participantSelf, name: participantSelf ? undefined : participantName, date_of_birth: participantDateOfBirth }, minor_legal_representative_confirmed: participantAge?.isMinor ? minorRepresentative : undefined, under_14_accompaniment_confirmed: participantAge?.requiresAdultAccompaniment ? under14Accompaniment : undefined, offer_accepted: offer, pd_consent_accepted: consent }),
+        body: JSON.stringify({ quote_id: quote.quote_id, customer_name: name, customer_email: email, customer_adult_confirmed: customerAdult, participant: participantSelf ? { self: true } : { self: false, name: participantName, age_band: participantAgeBand }, minor_legal_representative_confirmed: participantIsMinor ? minorRepresentative : undefined, offer_accepted: offer, pd_consent_accepted: consent }),
       });
       const data = await response.json();
       if (!response.ok) {
         if (["QUOTE_STALE", "PROMO_NO_LONGER_ELIGIBLE", "LEGAL_VERSION_CHANGED"].includes(data.error?.code)) {
-          setQuote(null); setCustomerAdult(false); setMinorRepresentative(false); setUnder14Accompaniment(false); setOffer(false); setConsent(false);
+          setQuote(null); setCustomerAdult(false); setMinorRepresentative(false); setOffer(false); setConsent(false);
           setMessage("Условия изменились. Мы обновили форму — подтвердите условия заново.");
           await fetchQuote(occurrenceId, appliedPromoCode ?? "");
           return;
@@ -264,9 +258,23 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
         </div>
       </div>
       {!canCheckout ? <p role="status" className="border border-bone/50 px-3 py-2 text-bone/70">{salesAnnouncement(selected?.sales_status)}</p> : <>
-      <label className="grid gap-1.5">Имя <input required value={name} onChange={(event) => setName(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>
       <label className="grid gap-1.5">Email <input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>
-      <fieldset className="grid gap-2 border border-bone/50 p-3"><legend className="px-1">Кто будет участвовать?</legend><label><input type="radio" checked={participantSelf} onChange={() => setParticipantSelf(true)} /> Я сам</label><label><input type="radio" checked={!participantSelf} onChange={() => setParticipantSelf(false)} /> Другой человек</label>{!participantSelf && <label className="grid gap-1.5">Имя участника <input required value={participantName} onChange={(event) => setParticipantName(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>}<label className="grid gap-1.5">Дата рождения участника <input required type="date" value={participantDateOfBirth} onChange={(event) => setParticipantDateOfBirth(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>{participantSelf && participantAge?.isMinor && <p role="status" className="text-acid">Заказчик должен быть совершеннолетним. Для несовершеннолетнего участника выберите «Другой человек».</p>}{!participantSelf && participantAge?.isMinor && <label><input required type="checkbox" checked={minorRepresentative} onChange={(event) => setMinorRepresentative(event.target.checked)} /> Я являюсь законным представителем указанного несовершеннолетнего участника и разрешаю ему принять участие в выбранном мастер-классе.</label>}{!participantSelf && participantAge?.requiresAdultAccompaniment && <label><input required type="checkbox" checked={under14Accompaniment} onChange={(event) => setUnder14Accompaniment(event.target.checked)} /> Я понимаю, что участник младше 14 лет должен находиться на площадке мастер-класса в сопровождении совершеннолетнего взрослого в течение всего мероприятия.</label>}<p className="text-bone/70">Возраст участников не ограничен. Для несовершеннолетних билет оформляет совершеннолетний законный представитель. Участники младше 14 лет посещают мастер-класс в сопровождении взрослого.</p></fieldset>
+      <fieldset className="grid gap-2 border border-bone/50 p-3">
+        <legend className="px-1">Кто будет участвовать?</legend>
+        <label><input type="radio" checked={participantSelf} onChange={() => setParticipantSelf(true)} /> Я сам</label>
+        <label><input type="radio" checked={!participantSelf} onChange={() => setParticipantSelf(false)} /> Другой человек</label>
+        <label className="grid gap-1.5">{participantSelf ? "Ваше имя" : "Ваше имя (Заказчика)"}<input required value={name} onChange={(event) => setName(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>
+        {!participantSelf ? <>
+          <label className="grid gap-1.5">Имя участника <input required value={participantName} onChange={(event) => setParticipantName(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>
+          <fieldset className="grid gap-1.5"><legend>Возраст участника на момент оформления заказа</legend>
+            <label><input required type="radio" name="participant-age-band" checked={participantAgeBand === "ADULT"} onChange={() => setParticipantAgeBand("ADULT")} /> 18 лет или старше</label>
+            <label><input required type="radio" name="participant-age-band" checked={participantAgeBand === "MINOR_14_17"} onChange={() => setParticipantAgeBand("MINOR_14_17")} /> 14–17 лет</label>
+            <label><input required type="radio" name="participant-age-band" checked={participantAgeBand === "MINOR_UNDER_14"} onChange={() => setParticipantAgeBand("MINOR_UNDER_14")} /> младше 14 лет</label>
+          </fieldset>
+          {participantIsMinor ? <label><input required type="checkbox" checked={minorRepresentative} onChange={(event) => setMinorRepresentative(event.target.checked)} /> Я являюсь совершеннолетним законным представителем указанного несовершеннолетнего участника.</label> : null}
+          {participantRequiresAdultAccompaniment ? <p role="status" className="text-bone/70">Участник, которому на момент оформления заказа не исполнилось 14 лет, посещает мастер-класс в сопровождении взрослого.</p> : null}
+        </> : null}
+      </fieldset>
       <div className="grid gap-2 text-xs leading-snug">
         <label><input required type="checkbox" checked={customerAdult} onChange={(event) => setCustomerAdult(event.target.checked)} /> Мне исполнилось 18 лет. Я оформляю заказ от своего имени.</label>
         <label><input required type="checkbox" checked={offer} onChange={(event) => setOffer(event.target.checked)} /> Я принимаю условия {quote ? <a className="text-acid underline underline-offset-4" href={legalPagePaths.PUBLIC_OFFER} target="_blank" rel="noopener noreferrer">{legalLabels.PUBLIC_OFFER}</a> : "публичной оферты"}.</label>
