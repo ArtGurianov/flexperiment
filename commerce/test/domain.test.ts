@@ -9,7 +9,7 @@ import { runWorkerSweep } from "../src/worker-sweep";
 import { EventDumpCreateRejectedError, UnisenderGoProvider, type EmailDeliveryEvidenceProvider, type EmailProvider } from "../src/email-provider";
 import { MockProvider, type PaymentProvider } from "../src/provider";
 import { decryptTicketCapability, emailHash } from "../src/crypto";
-import { classifyLegalPublicationState, evaluateReopenGate, ReleaseSalesGate, type ReleaseRuntimeEvidence } from "../src/release-control";
+import { evaluateReopenGate, ReleaseSalesGate, type ReleaseRuntimeEvidence } from "../src/release-control";
 
 const legalManifest = { documents: Object.fromEntries(["PUBLIC_OFFER", "PRIVACY_POLICY", "PD_CONSENT", "CHECKOUT_DISCLOSURE"].map((document) => [document, { document_id: document, version: "test-1", sha256: "0".repeat(64), current_url: `https://example.test/legal/${document}`, archive_url: `https://example.test/archive/${document}`, checkout_relevant: true }])) };
 const unisenderTestConfig = { apiKey: "test-key-not-a-secret", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" };
@@ -32,7 +32,7 @@ const controlledRelease = (releaseId = randomUUID()) => ({
   release_id: releaseId,
   mode: "CONTROLLED_CUTOVER" as const,
   expected: {
-    source_commit: "a".repeat(40), migration: "0033_runtime_release_evidence.sql", legal_version: "2026-08-25.1", legal_manifest_sha256: "b".repeat(64),
+    source_commit: "a".repeat(40), migration: "0034_worker_sweep_evidence.sql", legal_version: "2026-08-25.1", legal_manifest_sha256: "b".repeat(64),
     legal_hashes: { PUBLIC_OFFER: "c".repeat(64), PRIVACY_POLICY: "d".repeat(64), PD_CONSENT: "e".repeat(64), CHECKOUT_DISCLOSURE: "f".repeat(64) },
   },
 });
@@ -118,7 +118,7 @@ describe("commerce domain", () => {
     const evidence: ReleaseRuntimeEvidence = {
       source_commit: release.expected.source_commit,
       migration_applied: true,
-      required_migrations: { "0031_participant_age_band.sql": true, "0033_runtime_release_evidence.sql": true },
+      required_migrations: { "0031_participant_age_band.sql": true, "0032_release_sales_gate.sql": true, "0033_runtime_release_evidence.sql": true, "0034_worker_sweep_evidence.sql": true },
       legal_version: release.expected.legal_version,
       legal_manifest_sha256: release.expected.legal_manifest_sha256,
       legal_hashes: release.expected.legal_hashes,
@@ -126,6 +126,7 @@ describe("commerce domain", () => {
       current_legal_copies_match: true,
       worker_source_commit: release.expected.source_commit,
       worker_observed_at: new Date(Date.now() - 90_001).toISOString(),
+      worker_last_successful_sweep_at: new Date().toISOString(),
       source_legal_manifest_sha256: "0".repeat(64),
       source_legal_publish_time: new Date().toISOString(),
     };
@@ -134,6 +135,9 @@ describe("commerce domain", () => {
     // Node process runs in a non-UTC container timezone.
     evidence.worker_observed_at = new Date().toISOString().replace("T", " ").replace(/\.\d{3}Z$/, "");
     expect(evaluateReopenGate(release, evidence)).toBeUndefined();
+    evidence.worker_last_successful_sweep_at = null;
+    expect(evaluateReopenGate(release, evidence)).toBe("WORKER_SWEEP_NOT_READY");
+    evidence.worker_last_successful_sweep_at = new Date().toISOString();
     evidence.required_migrations["0031_participant_age_band.sql"] = false;
     expect(evaluateReopenGate(release, evidence)).toBe("REQUIRED_MIGRATION_NOT_APPLIED");
     evidence.required_migrations["0031_participant_age_band.sql"] = true;
@@ -141,10 +145,6 @@ describe("commerce domain", () => {
     expect(evaluateReopenGate(release, evidence)).toBe("WORKER_SOURCE_COMMIT_MISMATCH");
     evidence.worker_source_commit = null;
     expect(evaluateReopenGate(release, evidence)).toBe("WORKER_NOT_READY");
-    expect(classifyLegalPublicationState({ legal_version: "2026-08-23.2", legal_manifest_sha256: null, legal_publish_time: null }, release.expected, "2026-08-23.2")).toBe("NOT_PUBLISHED");
-    expect(classifyLegalPublicationState({ legal_version: release.expected.legal_version, legal_manifest_sha256: release.expected.legal_manifest_sha256, legal_publish_time: new Date().toISOString() }, release.expected, "2026-08-23.2")).toBe("PUBLISHED_THIS_CANDIDATE");
-    expect(() => classifyLegalPublicationState({ legal_version: "2026-08-26.1", legal_manifest_sha256: release.expected.legal_manifest_sha256, legal_publish_time: new Date().toISOString() }, release.expected, "2026-08-23.2")).toThrow("LEGAL_RELEASE_RESUME_MISMATCH");
-    expect(() => classifyLegalPublicationState({ legal_version: release.expected.legal_version, legal_manifest_sha256: "d".repeat(64), legal_publish_time: new Date().toISOString() }, release.expected, "2026-08-23.2")).toThrow("LEGAL_RELEASE_RESUME_MISMATCH");
   });
 
   it("binds terminal completion to the exact durable release that reopened sales", () => {
@@ -153,10 +153,10 @@ describe("commerce domain", () => {
     const gate = new ReleaseSalesGate(setup.db);
     const evidence: ReleaseRuntimeEvidence = {
       source_commit: release.expected.source_commit, migration_applied: true,
-      required_migrations: { "0031_participant_age_band.sql": true, "0033_runtime_release_evidence.sql": true },
+      required_migrations: { "0031_participant_age_band.sql": true, "0032_release_sales_gate.sql": true, "0033_runtime_release_evidence.sql": true, "0034_worker_sweep_evidence.sql": true },
       legal_version: release.expected.legal_version, legal_manifest_sha256: release.expected.legal_manifest_sha256,
       legal_hashes: release.expected.legal_hashes, legal_publish_time: new Date().toISOString(), current_legal_copies_match: true,
-      worker_source_commit: release.expected.source_commit, worker_observed_at: new Date().toISOString(),
+      worker_source_commit: release.expected.source_commit, worker_observed_at: new Date().toISOString(), worker_last_successful_sweep_at: new Date().toISOString(),
       source_legal_manifest_sha256: "0".repeat(64), source_legal_publish_time: new Date().toISOString(),
     };
     gate.acquire(release); gate.pause(release); gate.reopen(release, evidence);

@@ -39,11 +39,12 @@ export type ReleaseRuntimeEvidence = {
   current_legal_copies_match: boolean;
   worker_source_commit: string | null;
   worker_observed_at: string | null;
+  worker_last_successful_sweep_at: string | null;
   source_legal_manifest_sha256: string | null;
   source_legal_publish_time: string | null;
 };
 
-export const requiredCutoverMigrations = ["0031_participant_age_band.sql", "0033_runtime_release_evidence.sql"] as const;
+export const requiredCutoverMigrations = ["0031_participant_age_band.sql", "0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql", "0034_worker_sweep_evidence.sql"] as const;
 export const WORKER_EVIDENCE_MAX_AGE_MS = 90_000;
 
 export const workerEvidenceIsFresh = (workerSourceCommit: string | null, workerObservedAt: string | null, expectedSourceCommit: string, currentTime = Date.now()): boolean => {
@@ -52,17 +53,8 @@ export const workerEvidenceIsFresh = (workerSourceCommit: string | null, workerO
   return !Number.isNaN(observedAt) && observedAt >= currentTime - WORKER_EVIDENCE_MAX_AGE_MS && observedAt <= currentTime + 5_000;
 };
 
-export type LegalPublicationState = "NOT_PUBLISHED" | "PUBLISHED_THIS_CANDIDATE";
-
-export const classifyLegalPublicationState = (observed: Pick<ReleaseRuntimeEvidence, "legal_version" | "legal_manifest_sha256" | "legal_publish_time">, candidate: Pick<ReleaseExpectations, "legal_version" | "legal_manifest_sha256">, previousVersion: string): LegalPublicationState => {
-  if (observed.legal_version === previousVersion) return "NOT_PUBLISHED";
-  if (observed.legal_version === candidate.legal_version
-    && observed.legal_manifest_sha256 === candidate.legal_manifest_sha256
-    && observed.legal_publish_time
-    && observed.legal_publish_time !== "PENDING_AUTHORITATIVE_PUBLISH_TIMESTAMP"
-    && !Number.isNaN(parseUtcTimestamp(observed.legal_publish_time))) return "PUBLISHED_THIS_CANDIDATE";
-  throw new ReleaseControlError("LEGAL_RELEASE_RESUME_MISMATCH");
-};
+export const workerSweepEvidenceIsFresh = (workerSourceCommit: string | null, workerSweepAt: string | null, expectedSourceCommit: string, currentTime = Date.now()): boolean =>
+  workerEvidenceIsFresh(workerSourceCommit, workerSweepAt, expectedSourceCommit, currentTime);
 
 export class ReleaseControlError extends Error {
   constructor(readonly code: string, readonly status: 409 | 503 = 409) { super(code); }
@@ -117,8 +109,11 @@ export const evaluateReopenGate = (request: ReleaseControlRequest, evidence: Rel
   if (!evidence.worker_source_commit || !evidence.worker_observed_at) return "WORKER_NOT_READY";
   if (evidence.worker_source_commit !== request.expected.source_commit) return "WORKER_SOURCE_COMMIT_MISMATCH";
   if (!workerEvidenceIsFresh(evidence.worker_source_commit, evidence.worker_observed_at, request.expected.source_commit)) return "WORKER_EVIDENCE_STALE";
+  if (!evidence.worker_last_successful_sweep_at) return "WORKER_SWEEP_NOT_READY";
+  if (!workerSweepEvidenceIsFresh(evidence.worker_source_commit, evidence.worker_last_successful_sweep_at, request.expected.source_commit)) return "WORKER_SWEEP_STALE";
   if (!evidence.migration_applied) return "MIGRATION_NOT_APPLIED";
   if (requiredCutoverMigrations.some((version) => evidence.required_migrations[version] !== true)) return "REQUIRED_MIGRATION_NOT_APPLIED";
+  if (evidence.required_migrations[request.expected.migration] !== true) return "EXPECTED_MIGRATION_NOT_APPLIED";
   if (evidence.legal_version !== request.expected.legal_version) return "LEGAL_VERSION_MISMATCH";
   if (evidence.legal_manifest_sha256 !== request.expected.legal_manifest_sha256) return "LEGAL_MANIFEST_MISMATCH";
   if (!evidence.legal_publish_time || evidence.legal_publish_time === "PENDING_AUTHORITATIVE_PUBLISH_TIMESTAMP" || Number.isNaN(parseUtcTimestamp(evidence.legal_publish_time))) return "LEGAL_PUBLISH_TIME_INVALID";
@@ -234,7 +229,11 @@ export class ReleaseSalesGate {
 export const releaseRuntimeEvidence = (db: Database.Database, input: { sourceCommit: string | undefined; currentLegalCopiesMatch: (manifest: LegalManifest) => boolean }): ReleaseRuntimeEvidence => {
   const active = db.prepare("SELECT version, effective_at, manifest_json FROM legal_releases WHERE active = 1").get() as { version: string; effective_at: string; manifest_json: string } | undefined;
   const workerTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runtime_release_evidence'").get();
-  const worker = workerTable ? db.prepare("SELECT source_commit, observed_at FROM runtime_release_evidence WHERE unit = 'WORKER'").get() as { source_commit: string; observed_at: string } | undefined : undefined;
+  const supportsSweepEvidence = workerTable && db.prepare("PRAGMA table_info(runtime_release_evidence)").all().some((column) => (column as { name: string }).name === "last_successful_sweep_at");
+  const workerSql = `SELECT source_commit, observed_at, ${supportsSweepEvidence ? "last_successful_sweep_at" : "NULL AS last_successful_sweep_at"} FROM runtime_release_evidence WHERE unit = 'WORKER'`;
+  const worker = workerTable
+    ? (db.prepare(workerSql).get() as { source_commit: string; observed_at: string; last_successful_sweep_at: string | null } | undefined)
+    : undefined;
   const requiredMigrations = Object.fromEntries(requiredCutoverMigrations.map((version) => [version, Boolean(db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(version))]));
   const sourceLegal = (() => {
     try {
@@ -243,25 +242,20 @@ export const releaseRuntimeEvidence = (db: Database.Database, input: { sourceCom
       return { sha256: createHash("sha256").update(raw).digest("hex"), publishTime: parsed.publish_time ?? null };
     } catch { return { sha256: null, publishTime: null }; }
   })();
-  if (!active) return { source_commit: input.sourceCommit?.trim() || null, migration_applied: false, required_migrations: requiredMigrations, legal_version: null, legal_manifest_sha256: null, legal_hashes: null, legal_publish_time: null, current_legal_copies_match: false, worker_source_commit: worker?.source_commit ?? null, worker_observed_at: worker?.observed_at ?? null, source_legal_manifest_sha256: sourceLegal.sha256, source_legal_publish_time: sourceLegal.publishTime };
+  const base = { source_commit: input.sourceCommit?.trim() || null, migration_applied: requiredCutoverMigrations.every((version) => requiredMigrations[version]), required_migrations: requiredMigrations, worker_source_commit: worker?.source_commit ?? null, worker_observed_at: worker?.observed_at ?? null, worker_last_successful_sweep_at: worker?.last_successful_sweep_at ?? null, source_legal_manifest_sha256: sourceLegal.sha256, source_legal_publish_time: sourceLegal.publishTime };
+  if (!active) return { ...base, legal_version: null, legal_manifest_sha256: null, legal_hashes: null, legal_publish_time: null, current_legal_copies_match: false };
   try {
     const manifest = parseLegalManifest(JSON.parse(active.manifest_json));
     const legalHashes = Object.fromEntries(documentIds.map((id) => [id, manifest.documents[id].sha256])) as ReleaseExpectations["legal_hashes"];
     return {
-      source_commit: input.sourceCommit?.trim() || null,
-      migration_applied: false,
-      required_migrations: requiredMigrations,
+      ...base,
       legal_version: active.version,
       legal_manifest_sha256: createHash("sha256").update(canonicalLegalManifest(manifest)).digest("hex"),
       legal_hashes: legalHashes,
       legal_publish_time: active.effective_at,
       current_legal_copies_match: input.currentLegalCopiesMatch(manifest),
-      worker_source_commit: worker?.source_commit ?? null,
-      worker_observed_at: worker?.observed_at ?? null,
-      source_legal_manifest_sha256: sourceLegal.sha256,
-      source_legal_publish_time: sourceLegal.publishTime,
     };
   } catch {
-    return { source_commit: input.sourceCommit?.trim() || null, migration_applied: false, required_migrations: requiredMigrations, legal_version: active.version, legal_manifest_sha256: null, legal_hashes: null, legal_publish_time: active.effective_at, current_legal_copies_match: false, worker_source_commit: worker?.source_commit ?? null, worker_observed_at: worker?.observed_at ?? null, source_legal_manifest_sha256: sourceLegal.sha256, source_legal_publish_time: sourceLegal.publishTime };
+    return { ...base, legal_version: active.version, legal_manifest_sha256: null, legal_hashes: null, legal_publish_time: active.effective_at, current_legal_copies_match: false };
   }
 };

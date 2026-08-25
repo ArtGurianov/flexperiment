@@ -139,12 +139,10 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     if (!existing) domain.assertNewOrdersOpen();
     if (existing) return c.json(domain.replayCheckout(raw, idempotencyKey), 200);
     const input = checkoutRequestSchema.parse(raw);
-    if (!existing) {
-      rateLimit(clientIpRateLimitKey("checkout-new", c.req.raw.headers), 3, 10 * 60_000);
-      const quoteForLimit = sqlite.prepare("SELECT occurrence_id FROM quotes WHERE id = ?").get(input.quote_id) as { occurrence_id: string } | undefined;
-      rateLimit(`checkout-email:${emailHash(input.customer_email)}:${quoteForLimit?.occurrence_id ?? input.quote_id}`, 2, 30 * 60_000);
-      rateLimit(`checkout-reservation:${quoteForLimit?.occurrence_id ?? input.quote_id}`, 60, 10 * 60_000);
-    }
+    rateLimit(clientIpRateLimitKey("checkout-new", c.req.raw.headers), 3, 10 * 60_000);
+    const quoteForLimit = sqlite.prepare("SELECT occurrence_id FROM quotes WHERE id = ?").get(input.quote_id) as { occurrence_id: string } | undefined;
+    rateLimit(`checkout-email:${emailHash(input.customer_email)}:${quoteForLimit?.occurrence_id ?? input.quote_id}`, 2, 30 * 60_000);
+    rateLimit(`checkout-reservation:${quoteForLimit?.occurrence_id ?? input.quote_id}`, 60, 10 * 60_000);
     const origin = process.env.COMMERCE_PUBLIC_ORIGIN ?? "https://flexperiment.ru";
     return c.json(await domain.checkoutAsync(input, idempotencyKey, origin, { ip: trustedClientIp(c.req.raw.headers), userAgent: c.req.header("User-Agent") ?? undefined }), existing ? 200 : 201);
   });
@@ -452,7 +450,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     await next();
     noStore(c.res.headers);
   });
-  releaseControl.get("/status", (c) => c.json({ ...domain.releaseControlStatus(), runtime: domain.releaseRuntimeEvidence("0033_runtime_release_evidence.sql") }));
+  releaseControl.get("/status", (c) => c.json({ ...domain.releaseControlStatus(), runtime: domain.releaseRuntimeEvidence() }));
   releaseControl.get("/completion/:releaseId", (c) => c.json(domain.releaseControlCompletion(c.req.param("releaseId"))));
   releaseControl.post("/acquire", async (c) => c.json(domain.acquireReleaseControl(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
   releaseControl.post("/pause", async (c) => c.json(domain.pauseNewOrders(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
@@ -460,7 +458,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   releaseControl.post("/legal-publish", async (c) => c.json(domain.publishCandidateLegalRelease(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
   releaseControl.post("/verify", async (c) => {
     const input = releaseControlSchema.parse(await jsonBody(c.req.raw));
-    return c.json({ release_id: input.release_id, status: domain.releaseControlStatus(), runtime: domain.releaseRuntimeEvidence(input.expected.migration) });
+    return c.json({ release_id: input.release_id, status: domain.releaseControlStatus(), runtime: domain.releaseRuntimeEvidence() });
   });
   releaseControl.get("/contract", (c) => c.json({
     participant_age_bands: ["ADULT", "MINOR_14_17", "MINOR_UNDER_14"],

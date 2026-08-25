@@ -30,6 +30,7 @@ jobs:
       RELEASE_ID: gha-${{ github.run_id }}
       TARGET_SHA: ${{ inputs.target_sha }}
       CANDIDATE_SOURCE_COMMIT: ${{ inputs.target_sha }}
+      PROMOTION_REF: refs/heads/releases/gha-${{ github.run_id }}
       POLL_ATTEMPTS: "30"
       POLL_SECONDS: "10"
     steps:
@@ -72,7 +73,7 @@ jobs:
           TARGET_SHA="$(git rev-parse HEAD)"
           echo "TARGET_SHA=$TARGET_SHA" >> "$GITHUB_ENV"
           pnpm commerce:release-cutover:payload "$TARGET_SHA" > release.json
-          jq -e '.mode == "CONTROLLED_CUTOVER" and .expected.migration == "0033_runtime_release_evidence.sql" and .expected.legal_version == "2026-08-25.1"' release.json >/dev/null
+          jq -e '.mode == "CONTROLLED_CUTOVER" and .expected.migration == "0034_worker_sweep_evidence.sql" and .expected.legal_version == "2026-08-25.1"' release.json >/dev/null
           candidate_manifest_sha="$(jq -er '.expected.legal_manifest_sha256' release.json)"
           current_legal_version="$(jq -r '.runtime.legal_version // empty' durable-before.json)"
           if [[ "$current_legal_version" == "2026-08-23.2" ]]; then
@@ -98,9 +99,9 @@ jobs:
             echo "RELEASE_ALREADY_COMPLETE"
             exit 0
           fi
-          if jq -e '.complete == true and (.expected.source_commit | test("^[a-f0-9]{40}$")) and .expected.migration == "0033_runtime_release_evidence.sql" and .expected.legal_version == "2026-08-25.1"' completion.json >/dev/null; then
+          if jq -e '.complete == true and (.expected.source_commit | test("^[a-f0-9]{40}$")) and .expected.migration == "0034_worker_sweep_evidence.sql" and .expected.legal_version == "2026-08-25.1"' completion.json >/dev/null; then
             final_source_commit="$(jq -er '.expected.source_commit' completion.json)"
-            jq -e --arg source "$final_source_commit" --arg manifest "$(jq -er '.expected.legal_manifest_sha256' completion.json)" '.sales_paused == false and .owner_release_id == null and .expected.source_commit == $source and .expected.migration == "0033_runtime_release_evidence.sql" and .runtime.source_commit == $source and .runtime.worker_source_commit == $source and .runtime.migration_applied == true and (.runtime.required_migrations["0031_participant_age_band.sql"] == true) and (.runtime.required_migrations["0033_runtime_release_evidence.sql"] == true) and .runtime.legal_version == "2026-08-25.1" and .runtime.legal_manifest_sha256 == $manifest and (.runtime.worker_observed_at | type == "string" and length > 0)' durable-before.json >/dev/null
+            jq -e --arg source "$final_source_commit" --arg manifest "$(jq -er '.expected.legal_manifest_sha256' completion.json)" '.sales_paused == false and .owner_release_id == null and .expected.source_commit == $source and .expected.migration == "0034_worker_sweep_evidence.sql" and .runtime.source_commit == $source and .runtime.worker_source_commit == $source and .runtime.migration_applied == true and (.runtime.required_migrations["0031_participant_age_band.sql"] == true) and (.runtime.required_migrations["0032_release_sales_gate.sql"] == true) and (.runtime.required_migrations["0033_runtime_release_evidence.sql"] == true) and (.runtime.required_migrations["0034_worker_sweep_evidence.sql"] == true) and .runtime.legal_version == "2026-08-25.1" and .runtime.legal_manifest_sha256 == $manifest and (.runtime.worker_observed_at | type == "string" and length > 0) and (.runtime.worker_last_successful_sweep_at | type == "string" and length > 0)' durable-before.json >/dev/null
             curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_RELEASE_URL/release.json" > completed-frontend-release.json
             curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_RELEASE_URL/v1/public/legal-config" > completed-public-legal.json
             durable_effective_epoch="$(date -u -d "$(jq -er '.runtime.legal_publish_time' durable-before.json)" +%s)"
@@ -196,11 +197,14 @@ jobs:
             echo "PROMOTION_SHA=$TARGET_SHA" >> "$GITHUB_ENV"
             exit 0
           fi
-          git fetch origin main
+          PROMOTION_BRANCH="${PROMOTION_REF#refs/heads/}"
           normalized_publish_time="$(date -u -d "$PUBLISHED_AT" +%Y-%m-%dT%H:%M:%SZ)"
-          if git show origin/main:commerce/legal/production-manifest.json > existing-promotion-manifest.json 2>/dev/null \
+          if git ls-remote --exit-code --heads origin "$PROMOTION_REF" >/dev/null 2>&1; then
+            git fetch origin "$PROMOTION_REF:refs/remotes/origin/$PROMOTION_BRANCH"
+          fi
+          if git show "origin/$PROMOTION_BRANCH:commerce/legal/production-manifest.json" > existing-promotion-manifest.json 2>/dev/null \
             && jq -e --arg published "$normalized_publish_time" '.version == "2026-08-25.1" and .publish_time == $published' existing-promotion-manifest.json >/dev/null; then
-            PROMOTION_SHA="$(git log -1 --format=%H origin/main -- commerce/legal/production-manifest.json)"
+            PROMOTION_SHA="$(git rev-parse "origin/$PROMOTION_BRANCH")"
             git checkout --detach "$PROMOTION_SHA"
             RELEASE_ID="$RELEASE_ID" COMMERCE_RELEASE_MANIFEST_PATH=commerce/legal/production-manifest.json pnpm commerce:release-cutover:payload "$PROMOTION_SHA" > promotion-release.json
             curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' -X POST --data-binary @promotion-release.json "$COMMERCE_INTERNAL_URL/v1/internal/release-control/expectations" > expectations.json
@@ -215,7 +219,7 @@ jobs:
           git config user.email "flexperiment-release-bot@users.noreply.github.com"
           git commit -m "chore(legal): promote 2026-08-25.1"
           PROMOTION_SHA="$(git rev-parse HEAD)"
-          git push origin "HEAD:refs/heads/main"
+          git push origin "HEAD:$PROMOTION_REF"
           RELEASE_ID="$RELEASE_ID" pnpm commerce:release-cutover:payload "$PROMOTION_SHA" > promotion-release.json
           curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' -X POST --data-binary @promotion-release.json "$COMMERCE_INTERNAL_URL/v1/internal/release-control/expectations" > expectations.json
           jq -e '.sales_paused == true' expectations.json >/dev/null
@@ -230,7 +234,7 @@ jobs:
           expected_source_manifest_sha="$(sha256sum commerce/legal/production-manifest.json | awk '{print $1}')"
           for attempt in $(seq 1 "$POLL_ATTEMPTS"); do
             api "$COMMERCE_INTERNAL_URL/v1/internal/release-control/status" > final-runtime.json || true
-            if jq -e --arg sha "$PROMOTION_SHA" --arg manifest "$expected_source_manifest_sha" '.sales_paused == true and .runtime.source_commit == $sha and .runtime.worker_source_commit == $sha and .runtime.migration_applied == true and .runtime.legal_version == "2026-08-25.1" and .runtime.current_legal_copies_match == true and (.runtime.legal_publish_time | length > 0) and .runtime.source_legal_manifest_sha256 == $manifest and .runtime.source_legal_publish_time == (.runtime.legal_publish_time | gsub(" "; "T") + "Z")' final-runtime.json >/dev/null 2>&1; then break; fi
+            if jq -e --arg sha "$PROMOTION_SHA" --arg manifest "$expected_source_manifest_sha" '.sales_paused == true and .runtime.source_commit == $sha and .runtime.worker_source_commit == $sha and .runtime.migration_applied == true and (.runtime.required_migrations["0034_worker_sweep_evidence.sql"] == true) and (.runtime.worker_last_successful_sweep_at | type == "string" and length > 0) and .runtime.legal_version == "2026-08-25.1" and .runtime.current_legal_copies_match == true and (.runtime.legal_publish_time | length > 0) and .runtime.source_legal_manifest_sha256 == $manifest and .runtime.source_legal_publish_time == (.runtime.legal_publish_time | gsub(" "; "T") + "Z")' final-runtime.json >/dev/null 2>&1; then break; fi
             [[ "$attempt" == "$POLL_ATTEMPTS" ]] && { echo "FAILED_GATE=promotion-runtime-or-legal" >&2; exit 1; }
             sleep "$POLL_SECONDS"
           done

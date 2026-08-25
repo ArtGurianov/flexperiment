@@ -42,6 +42,15 @@ describe("production legal-release publisher", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM legal_releases WHERE active = 1").get()).toMatchObject({ count: 1 });
   });
 
+  it("rejects an unexpected candidate manifest before changing the active release", () => {
+    const db = openDatabase(":memory:"); databases.push(db); migrate(db);
+    const first = publishLegalRelease(db, { version: "2026-08-21.1", manifest: manifest() });
+    expect(() => publishLegalRelease(db, { version: "2026-08-25.1", manifest: manifest("e".repeat(64)) }, { expectedManifestSha256: "f".repeat(64) }))
+      .toThrow(/Candidate legal manifest/);
+    expect(db.prepare("SELECT version, active FROM legal_releases WHERE active = 1").get()).toEqual({ version: first.version, active: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM legal_releases").get()).toEqual({ count: 1 });
+  });
+
   it("verifies the active archive release and a prepared historical candidate", () => {
     expect(loadCanonicalLegalRelease("commerce/legal/production-manifest.json").version).toBe("2026-08-23.2");
     expect(JSON.parse(readFileSync("commerce/legal/production-manifest.2026-08-21.2.draft.json", "utf8"))).toMatchObject({

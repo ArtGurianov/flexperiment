@@ -73,6 +73,7 @@ describe("commerce HTTP boundary", () => {
     const original = await created.json() as { status_id: string; payment_url: string | null };
     const legacy = { quote_id: quoteId, customer_name: "Заказчик", customer_email: "buyer@example.test", customer_adult_confirmed: true, participant: { self: true, date_of_birth: "1990-01-01" }, offer_accepted: true, pd_consent_accepted: true };
     db.prepare("UPDATE checkout_idempotency SET canonical_request_hash = ? WHERE idempotency_key_hash = ?").run(sha256(canonical(legacy)), sha256(key));
+    db.prepare("UPDATE orders SET participant_date_of_birth = ? WHERE public_status_id = ?").run("1990-01-01", original.status_id);
     const replay = await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": key, "X-Forwarded-For": "127.0.0.26" }, body: JSON.stringify(legacy) });
     expect(replay.status).toBe(200);
     expect(await replay.json()).toMatchObject(original);
@@ -80,6 +81,26 @@ describe("commerce HTTP boundary", () => {
     expect(conflict.status).toBe(409);
     expect(await conflict.json()).toEqual({ error: { code: "IDEMPOTENCY_CONFLICT" } });
     expect(db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual({ count: 1 });
+    db.close();
+  });
+
+  it("replays normalized current checkout bodies and binds nested participant fields", async () => {
+    const { db, app } = appFixture();
+    const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
+    const context = await app.request("http://api.flexperiment.ru/v1/public/checkout-context", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.27" }, body: JSON.stringify({ occurrence_id: occurrenceId }) });
+    const quoteId = (await context.json() as { quote_id: string }).quote_id;
+    const key = "normalized-current-idempotency";
+    const body = { quote_id: quoteId, customer_name: " Заказчик ", customer_email: " BUYER@example.test ", customer_adult_confirmed: true, participant: { self: false, name: " Участник ", age_band: "MINOR_14_17" }, minor_legal_representative_confirmed: true, offer_accepted: true, pd_consent_accepted: true };
+    const headers = { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": key, "X-Forwarded-For": "127.0.0.27" };
+    const created = await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers, body: JSON.stringify(body) });
+    expect(created.status).toBe(201);
+    const original = await created.json();
+    const replay = await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers, body: JSON.stringify({ ...body, customer_name: "Заказчик", customer_email: "BUYER@example.test", participant: { ...body.participant, name: "Участник" } }) });
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject(original);
+    const conflict = await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers, body: JSON.stringify({ ...body, participant: { ...body.participant, name: "Другой участник" } }) });
+    expect(conflict.status).toBe(409);
+    expect(await conflict.json()).toEqual({ error: { code: "IDEMPOTENCY_CONFLICT" } });
     db.close();
   });
 
@@ -662,7 +683,7 @@ describe("commerce HTTP boundary", () => {
     const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")! };
     const system = await app.request("http://admin.flexperiment.ru/v1/admin/system/evidence", { headers });
     expect(system.headers.get("cache-control")).toBe("no-store");
-    expect(await system.json()).toMatchObject({ source_commit: process.env.SOURCE_COMMIT, migration_head: { version: "0033_runtime_release_evidence.sql" }, migration_versions: expect.arrayContaining([{ version: "0031_participant_age_band.sql" }]), active_legal_release: { version: "test" } });
+    expect(await system.json()).toMatchObject({ source_commit: process.env.SOURCE_COMMIT, migration_head: { version: "0034_worker_sweep_evidence.sql" }, migration_versions: expect.arrayContaining([{ version: "0031_participant_age_band.sql" }]), active_legal_release: { version: "test" } });
       const evidence = await app.request(`http://admin.flexperiment.ru/v1/admin/orders/${order.id}/evidence`, { headers });
       const body = await evidence.json() as { order: { currency: string } } & Record<string, unknown>;
     expect(body).toMatchObject({

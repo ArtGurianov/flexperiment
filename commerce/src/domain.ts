@@ -1,11 +1,11 @@
 import type Database from "better-sqlite3";
-import { canonical, decryptTicketCapability, emailHash, encryptTicketCapability, id, now, publicId, publicOrderNumber, sha256 } from "./crypto";
+import { canonical, canonicalV2, decryptTicketCapability, emailHash, encryptTicketCapability, id, now, publicId, publicOrderNumber, sha256 } from "./crypto";
 import { EmailProviderRejectedError, EventDumpCreateRejectedError, isEmailDeliveryEvidenceProvider, type EmailProvider, type UnisenderDumpEvent, UNISENDER_EVENT_DUMP_EVENT_LIMIT, UnconfiguredEmailProvider } from "./email-provider";
 import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
-import { loadCanonicalLegalRelease, publishLegalRelease, verifyCurrentLegalSourceHashes } from "./legal-release";
+import { LegalReleasePublishError, loadCanonicalLegalRelease, publishLegalRelease, verifyCurrentLegalSourceHashes } from "./legal-release";
 import type { PaymentProvider } from "./provider";
-import { ReleaseControlError, ReleaseSalesGate, type ReleaseControlRequest, releaseRuntimeEvidence, requiredCutoverMigrations } from "./release-control";
-import type { CheckoutRequest, ParticipantAgeBand } from "./types";
+import { ReleaseControlError, ReleaseSalesGate, type ReleaseControlRequest, releaseRuntimeEvidence } from "./release-control";
+import { checkoutRequestSchema, type CheckoutRequest, type ParticipantAgeBand } from "./types";
 import { findCityBySlug } from "../../lib/city-catalog";
 
 type Row = Record<string, unknown>;
@@ -50,6 +50,30 @@ const discountFor = (price: number, type: unknown, value: unknown) => {
 };
 const isMinorAgeBand = (ageBand: ParticipantAgeBand) => ageBand !== "ADULT";
 const requiresAccompanimentForAgeBand = (ageBand: ParticipantAgeBand) => ageBand === "MINOR_UNDER_14";
+const checkoutRequestHashV2 = (input: CheckoutRequest) => `v2:${sha256(canonicalV2(input))}`;
+
+// Legacy rows predate the versioned nested JSON hash. The old canonical() did
+// not retain object contents below the top level, so verify the fields that
+// identify the person and eligibility against the already-created order too.
+const legacyCheckoutReplayMatchesOrder = (input: unknown, order: Row) => {
+  if (!input || typeof input !== "object") return false;
+  const request = input as Record<string, unknown>;
+  if (typeof request.customer_name !== "string" || request.customer_name.trim() !== order.customer_name) return false;
+  if (typeof request.customer_email !== "string" || request.customer_email.trim().toLowerCase() !== String(order.customer_email).trim().toLowerCase()) return false;
+  const participant = request.participant;
+  if (!participant || typeof participant !== "object") return false;
+  const details = participant as Record<string, unknown>;
+  if (typeof details.self !== "boolean" || Number(order.participant_is_customer) !== Number(details.self)) return false;
+  if ("date_of_birth" in details && details.date_of_birth !== order.participant_date_of_birth) return false;
+  if (details.self) {
+    if (details.name !== undefined) return false;
+    return details.age_band === undefined || details.age_band === order.participant_age_band;
+  }
+  return typeof details.name === "string"
+    && details.name.trim() === order.participant_name
+    && typeof details.age_band === "string"
+    && details.age_band === order.participant_age_band;
+};
 const formatOccurrenceDateTime = (value: unknown, timeZone: unknown) => {
   const date = new Date(String(value ?? ""));
   if (Number.isNaN(date.getTime())) return "уточняется";
@@ -251,11 +275,17 @@ export class CommerceDomain {
 
   replayCheckout(input: unknown, idempotencyKey: string) {
     if (idempotencyKey.length < 16 || idempotencyKey.length > 200) throw new DomainError("IDEMPOTENCY_KEY_INVALID", 400);
-    const replay = one(this.db, `SELECT ci.canonical_request_hash, o.public_status_id AS status_id, p.state, p.status, p.payment_url
+    const replay = one(this.db, `SELECT ci.canonical_request_hash, o.public_status_id AS status_id, o.customer_name, o.customer_email, o.participant_name, o.participant_age_band, o.participant_date_of_birth, o.participant_is_customer, p.state, p.status, p.payment_url
       FROM checkout_idempotency ci JOIN orders o ON o.id = ci.order_id JOIN payments p ON p.order_id = o.id
       WHERE ci.idempotency_key_hash = ?`, sha256(idempotencyKey));
     if (!replay) throw new DomainError("IDEMPOTENCY_REPLAY_NOT_FOUND", 404);
-    if (replay.canonical_request_hash !== sha256(canonical(input))) throw new DomainError("IDEMPOTENCY_CONFLICT", 409);
+    const parsed = checkoutRequestSchema.safeParse(input);
+    const matches = String(replay.canonical_request_hash).startsWith("v2:")
+      ? parsed.success && replay.canonical_request_hash === checkoutRequestHashV2(parsed.data)
+      : (replay.canonical_request_hash === sha256(canonical(input))
+        || (parsed.success && replay.canonical_request_hash === sha256(canonical(parsed.data))))
+        && legacyCheckoutReplayMatchesOrder(input, replay);
+    if (!matches) throw new DomainError("IDEMPOTENCY_CONFLICT", 409);
     return this.checkoutResult(replay);
   }
 
@@ -273,11 +303,11 @@ export class CommerceDomain {
       const filename = `commerce/legal/production-manifest.${input.expected.legal_version}.draft.json`;
       const candidate = loadCanonicalLegalRelease(filename);
       if (candidate.version !== input.expected.legal_version) throw new DomainError("LEGAL_CANDIDATE_VERSION_MISMATCH", 409);
-      const result = publishLegalRelease(this.db, candidate);
-      if (result.manifestSha256 !== input.expected.legal_manifest_sha256) throw new DomainError("LEGAL_CANDIDATE_MANIFEST_MISMATCH", 409);
+      const result = publishLegalRelease(this.db, candidate, { expectedManifestSha256: input.expected.legal_manifest_sha256 });
       return { ...result, release_id: input.release_id };
     } catch (error) {
       if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
+      if (error instanceof LegalReleasePublishError) throw new DomainError(error.code, 409);
       throw error;
     }
   }
@@ -290,23 +320,17 @@ export class CommerceDomain {
     }
   }
 
-  releaseRuntimeEvidence(expectedMigration: string) {
-    const evidence = releaseRuntimeEvidence(this.db, {
+  releaseRuntimeEvidence() {
+    return releaseRuntimeEvidence(this.db, {
       sourceCommit: process.env.SOURCE_COMMIT,
       currentLegalCopiesMatch: (manifest) => {
         try { verifyCurrentLegalSourceHashes(manifest); return true; } catch { return false; }
       },
     });
-    const requiredMigrations = [...new Set([...requiredCutoverMigrations, expectedMigration])];
-    return {
-      ...evidence,
-      migration_applied: requiredMigrations.every((version) => Boolean(this.db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(version))),
-      required_migrations: Object.fromEntries(requiredMigrations.map((version) => [version, Boolean(this.db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(version))])),
-    };
   }
 
   reopenNewOrders(input: ReleaseControlRequest) {
-    try { return this.releaseSalesGate().reopen(input, this.releaseRuntimeEvidence(input.expected.migration)); }
+    try { return this.releaseSalesGate().reopen(input, this.releaseRuntimeEvidence()); }
     catch (error) {
       if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
       throw error;
@@ -608,12 +632,15 @@ export class CommerceDomain {
   checkout(input: CheckoutRequest, idempotencyKey: string, acceptance: { ip?: string; userAgent?: string } = {}) {
     if (idempotencyKey.length < 16 || idempotencyKey.length > 200) throw new DomainError("IDEMPOTENCY_KEY_INVALID", 400);
     const keyHash = sha256(idempotencyKey);
-    const requestHash = sha256(canonical(input));
+    const requestHash = checkoutRequestHashV2(input);
     const result = withImmediateTransaction(this.db, () => {
-      const replay = one(this.db, `SELECT ci.canonical_request_hash, o.public_status_id AS status_id, p.state, p.status, p.payment_url
+      const replay = one(this.db, `SELECT ci.canonical_request_hash, o.public_status_id AS status_id, o.customer_name, o.customer_email, o.participant_name, o.participant_age_band, o.participant_date_of_birth, o.participant_is_customer, p.state, p.status, p.payment_url
         FROM checkout_idempotency ci JOIN orders o ON o.id = ci.order_id JOIN payments p ON p.order_id = o.id WHERE ci.idempotency_key_hash = ?`, keyHash);
       if (replay) {
-        if (replay.canonical_request_hash !== requestHash) throw new DomainError("IDEMPOTENCY_CONFLICT", 409);
+        const matches = String(replay.canonical_request_hash).startsWith("v2:")
+          ? replay.canonical_request_hash === requestHash
+          : replay.canonical_request_hash === sha256(canonical(input)) && legacyCheckoutReplayMatchesOrder(input, replay);
+        if (!matches) throw new DomainError("IDEMPOTENCY_CONFLICT", 409);
         return { replay: true, status_id: replay.status_id, state: replay.state, status: replay.status, payment_url: replay.payment_url };
       }
       this.assertNewOrdersOpen();

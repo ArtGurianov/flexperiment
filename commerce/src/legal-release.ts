@@ -11,7 +11,9 @@ const currentSourcePaths: Record<LegalDocumentId, string> = {
   CHECKOUT_DISCLOSURE: "public/legal/disclaimer.md",
 };
 
-export class LegalReleasePublishError extends Error {}
+export class LegalReleasePublishError extends Error {
+  constructor(message: string, readonly code = "LEGAL_RELEASE_PUBLISH_FAILED") { super(message); }
+}
 export type CanonicalLegalRelease = { version: string; manifest: LegalManifest };
 
 const sha256 = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
@@ -77,9 +79,12 @@ export const loadCanonicalLegalRelease = (filename = process.env.COMMERCE_LEGAL_
   return release;
 };
 
-export const publishLegalRelease = (db: Database.Database, release: CanonicalLegalRelease) => {
+export const publishLegalRelease = (db: Database.Database, release: CanonicalLegalRelease, options: { expectedManifestSha256?: string } = {}) => {
   const manifestJson = canonicalLegalManifest(release.manifest);
   const manifestSha256 = sha256(manifestJson);
+  if (options.expectedManifestSha256 && manifestSha256 !== options.expectedManifestSha256) {
+    throw new LegalReleasePublishError("Candidate legal manifest does not match release expectations.", "LEGAL_CANDIDATE_MANIFEST_MISMATCH");
+  }
   db.exec("BEGIN IMMEDIATE");
   try {
     const existing = db.prepare("SELECT id, effective_at, manifest_json, active FROM legal_releases WHERE version = ?").get(release.version) as { id: string; effective_at: string; manifest_json: string; active: number } | undefined;

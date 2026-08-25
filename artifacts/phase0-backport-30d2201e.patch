@@ -1,0 +1,550 @@
+diff --git a/.env.example b/.env.example
+index c88e0e6..5a2228b 100644
+--- a/.env.example
++++ b/.env.example
+@@ -16,6 +16,9 @@ NEXT_PUBLIC_YANDEX_SMARTCAPTCHA_SITE_KEY=ysc1_CHANGE_ME
+ COMMERCE_EMAIL_HMAC_KEY=CHANGE_ME
+ COMMERCE_TICKET_KEY_BASE64=CHANGE_ME_32_BYTE_BASE64
+ COMMERCE_SESSION_SECRET=CHANGE_ME
++# Dedicated CI-only bearer credential for /v1/internal/release-control/*.
++# It is not an Admin password and must exist only in the deployment secret store.
++COMMERCE_RELEASE_CONTROL_TOKEN=CHANGE_ME
+ 
+ # `scrypt:v1:16384:8:1:base64url-salt:base64url-scrypt-hash` from
+ # `node generate-admin-password.mjs`; no development fallback is available.
+diff --git a/commerce/migrations/0032_release_sales_gate.sql b/commerce/migrations/0032_release_sales_gate.sql
+new file mode 100644
+index 0000000..69457ac
+--- /dev/null
++++ b/commerce/migrations/0032_release_sales_gate.sql
+@@ -0,0 +1,30 @@
++-- A deployment-only, global new-order gate.  This is intentionally separate
++-- from occurrences.sales_status: pausing a release must not revise an
++-- occurrence or create any customer/refund/email business side effect.
++CREATE TABLE release_sales_gate (
++  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
++  sales_paused INTEGER NOT NULL DEFAULT 0 CHECK (sales_paused IN (0, 1)),
++  owner_release_id TEXT,
++  owner_mode TEXT CHECK (owner_mode IN ('CONTROLLED_CUTOVER', 'ROLLING')),
++  expected_source_commit TEXT,
++  expected_migration TEXT,
++  expected_legal_version TEXT,
++  expected_legal_manifest_sha256 TEXT,
++  acquired_at TEXT,
++  paused_at TEXT,
++  reopened_at TEXT,
++  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
++);
++
++INSERT INTO release_sales_gate(singleton) VALUES (1);
++
++CREATE TABLE release_sales_gate_events (
++  id TEXT PRIMARY KEY,
++  release_id TEXT NOT NULL,
++  action TEXT NOT NULL CHECK (action IN ('ACQUIRED', 'PAUSED', 'REOPENED')),
++  details_json TEXT NOT NULL,
++  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
++);
++
++CREATE INDEX release_sales_gate_events_release_created_idx
++  ON release_sales_gate_events(release_id, created_at);
+diff --git a/commerce/migrations/0033_runtime_release_evidence.sql b/commerce/migrations/0033_runtime_release_evidence.sql
+new file mode 100644
+index 0000000..fe4b873
+--- /dev/null
++++ b/commerce/migrations/0033_runtime_release_evidence.sql
+@@ -0,0 +1,6 @@
++CREATE TABLE runtime_release_evidence (
++  unit TEXT PRIMARY KEY CHECK (unit IN ('COMMERCE', 'WORKER')),
++  source_commit TEXT NOT NULL,
++  started_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
++  observed_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
++);
+diff --git a/commerce/src/api.ts b/commerce/src/api.ts
+index 13dda7f..8eeedb3 100644
+--- a/commerce/src/api.ts
++++ b/commerce/src/api.ts
+@@ -1,7 +1,7 @@
+ import { Hono } from "hono";
+ import { ZodError } from "zod";
+ import type { Sqlite } from "./db";
+-import { assertAdminOrigin, issueAdminSession, parseSession, verifyAdminPassword } from "./auth";
++import { assertAdminOrigin, issueAdminSession, parseSession, verifyAdminPassword, verifyReleaseControlToken } from "./auth";
+ import { emailHash, publicId, sha256 } from "./crypto";
+ import { CommerceDomain, DomainError } from "./domain";
+ import { type EmailProvider, UnconfiguredEmailProvider, UnisenderGoProvider } from "./email-provider";
+@@ -10,7 +10,7 @@ import { clientIpRateLimitKey, rateLimit, trustedClientIp } from "./rate-limit";
+ import { TochkaWebhookVerifier, webhookAmountKopecks } from "./tochka-webhook";
+ import { verifyUnisenderWebhook } from "./unisender-webhook";
+ import { type SmartCaptchaVerifier, UnconfiguredSmartCaptchaVerifier } from "./smartcaptcha";
+-import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityInterestWithdrawalSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, emailAttentionAcknowledgeSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrencePatchSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
++import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityInterestWithdrawalSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, emailAttentionAcknowledgeSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrencePatchSchema, promoPatchSchema, promoSchema, providerReferenceSchema, releaseControlSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
+ 
+ type AppBindings = { Variables: { adminId?: string; adminSessionId?: string } };
+ const noStore = (headers: Headers) => headers.set("Cache-Control", "no-store");
+@@ -131,9 +131,12 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
+     rateLimit(clientIpRateLimitKey("checkout", c.req.raw.headers), 20, 60_000);
+     const idempotencyKey = c.req.header("Idempotency-Key");
+     if (!idempotencyKey) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
+-    const input = checkoutRequestSchema.parse(await jsonBody(c.req.raw));
+     const keyHash = sha256(idempotencyKey);
+     const existing = sqlite.prepare("SELECT 1 FROM checkout_idempotency WHERE idempotency_key_hash = ?").get(keyHash);
++    // A stale DOB-era browser must see the durable pause before schema parsing;
++    // an existing exact idempotency replay remains a read of its old order.
++    if (!existing) domain.assertNewOrdersOpen();
++    const input = checkoutRequestSchema.parse(await jsonBody(c.req.raw));
+     if (!existing) {
+       rateLimit(clientIpRateLimitKey("checkout-new", c.req.raw.headers), 3, 10 * 60_000);
+       const quoteForLimit = sqlite.prepare("SELECT occurrence_id FROM quotes WHERE id = ?").get(input.quote_id) as { occurrence_id: string } | undefined;
+@@ -243,7 +246,9 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
+       source_commit_evidence: sourceCommit ? "machine" : "unavailable",
+       migration_head: migration ?? null,
+       migration_evidence: migration ? "machine" : "unavailable",
++      migration_versions: sqlite.prepare("SELECT version FROM schema_migrations ORDER BY version").all(),
+       active_legal_release: domain.legalConfig(),
++      release_control: domain.releaseControlStatus(),
+     });
+   });
+   admin.post("/logout", (c) => {
+@@ -437,5 +442,24 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
+     c.header("Set-Cookie", adminSessionCookie(cookieValue, 43_200)); return c.json({ ok: true });
+   });
+   app.route("/v1/admin", admin);
++
++  const releaseControl = new Hono();
++  releaseControl.use("*", async (c, next) => {
++    if (!verifyReleaseControlToken(c.req.header("Authorization"))) throw new DomainError("RELEASE_CONTROL_AUTH_REQUIRED", 401);
++    noStore(c.res.headers);
++    await next();
++    noStore(c.res.headers);
++  });
++  releaseControl.get("/status", (c) => c.json({ ...domain.releaseControlStatus(), runtime: domain.releaseRuntimeEvidence() }));
++  releaseControl.get("/completion/:releaseId", (c) => c.json(domain.releaseControlCompletion(c.req.param("releaseId"))));
++  releaseControl.post("/acquire", async (c) => c.json(domain.acquireReleaseControl(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
++  releaseControl.post("/pause", async (c) => c.json(domain.pauseNewOrders(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
++  releaseControl.post("/expectations", async (c) => c.json(domain.updateReleaseControlExpectations(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
++  releaseControl.post("/verify", async (c) => {
++    const input = releaseControlSchema.parse(await jsonBody(c.req.raw));
++    return c.json({ release_id: input.release_id, status: domain.releaseControlStatus(), runtime: domain.releaseRuntimeEvidence() });
++  });
++  releaseControl.post("/reopen", async (c) => c.json(domain.reopenNewOrders(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
++  app.route("/v1/internal/release-control", releaseControl);
+   return app;
+ }
+diff --git a/commerce/src/auth.ts b/commerce/src/auth.ts
+index 5910888..9ca8d8f 100644
+--- a/commerce/src/auth.ts
++++ b/commerce/src/auth.ts
+@@ -68,3 +68,11 @@ export function parseSession(cookie: string | undefined): Session | undefined {
+ }
+ 
+ export const assertAdminOrigin = (origin: string | undefined) => !origin || origin === adminOrigin;
++
++/** Dedicated machine credential for release-control only; never a browser/Admin session. */
++export const verifyReleaseControlToken = (authorization: string | undefined) => {
++  const expected = process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
++  const presented = authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined;
++  if (!expected || !presented || expected.length !== presented.length) return false;
++  return timingSafeEqual(Buffer.from(expected), Buffer.from(presented));
++};
+diff --git a/commerce/src/domain.ts b/commerce/src/domain.ts
+index b72dfbf..c56a146 100644
+--- a/commerce/src/domain.ts
++++ b/commerce/src/domain.ts
+@@ -2,7 +2,9 @@ import type Database from "better-sqlite3";
+ import { canonical, decryptTicketCapability, emailHash, encryptTicketCapability, id, now, publicId, publicOrderNumber, sha256 } from "./crypto";
+ import { EmailProviderRejectedError, EventDumpCreateRejectedError, isEmailDeliveryEvidenceProvider, type EmailProvider, type UnisenderDumpEvent, UNISENDER_EVENT_DUMP_EVENT_LIMIT, UnconfiguredEmailProvider } from "./email-provider";
+ import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
++import { verifyCurrentLegalSourceHashes } from "./legal-release";
+ import type { PaymentProvider } from "./provider";
++import { ReleaseControlError, ReleaseSalesGate, type ReleaseControlRequest, releaseRuntimeEvidence } from "./release-control";
+ import type { CheckoutRequest } from "./types";
+ import { findCityBySlug } from "../../lib/city-catalog";
+ import { getParticipantAgeOnOccurrenceDate, parseBirthDate } from "../../lib/participant-age";
+@@ -225,6 +227,48 @@ export class CommerceDomain {
+     private readonly clock: () => number = Date.now,
+   ) {}
+ 
++  private releaseSalesGate() { return new ReleaseSalesGate(this.db); }
++
++  releaseControlStatus() { return this.releaseSalesGate().status(); }
++  releaseControlCompletion(releaseId: string) { return this.releaseSalesGate().completion(releaseId); }
++
++  acquireReleaseControl(input: ReleaseControlRequest) { return this.releaseSalesGate().acquire(input); }
++
++  pauseNewOrders(input: ReleaseControlRequest) { return this.releaseSalesGate().pause(input); }
++
++  updateReleaseControlExpectations(input: ReleaseControlRequest) {
++    try { return this.releaseSalesGate().updateExpectations(input); }
++    catch (error) {
++      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
++      throw error;
++    }
++  }
++
++  assertNewOrdersOpen() {
++    try { this.releaseSalesGate().assertNewOrdersOpen(); }
++    catch (error) {
++      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
++      throw error;
++    }
++  }
++
++  releaseRuntimeEvidence() {
++    return releaseRuntimeEvidence(this.db, {
++      sourceCommit: process.env.SOURCE_COMMIT,
++      currentLegalCopiesMatch: (manifest) => {
++        try { verifyCurrentLegalSourceHashes(manifest); return true; } catch { return false; }
++      },
++    });
++  }
++
++  reopenNewOrders(input: ReleaseControlRequest) {
++    try { return this.releaseSalesGate().reopen(input, this.releaseRuntimeEvidence()); }
++    catch (error) {
++      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
++      throw error;
++    }
++  }
++
+   tour() {
+     return many(this.db, `SELECT c.slug AS city, c.title AS city_title, o.*,
+       (o.capacity - (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = o.id AND b.status IN ('RESERVED', 'CONFIRMED'))) AS availability
+@@ -481,6 +525,7 @@ export class CommerceDomain {
+ 
+   checkoutContext(input: { occurrenceId: string; promoCode?: string; referralSlug?: string }) {
+     return withImmediateTransaction(this.db, () => {
++      this.assertNewOrdersOpen();
+       const occurrence = one(this.db, "SELECT * FROM occurrences WHERE id = ?", input.occurrenceId);
+       if (!occurrence || occurrence.visibility !== "PUBLISHED") throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
+       if (occurrence.sales_status !== "OPEN" || occurrence.fulfillment_status !== "SCHEDULED") throw new DomainError("SALES_NOT_OPEN", 409);
+@@ -527,6 +572,7 @@ export class CommerceDomain {
+         if (replay.canonical_request_hash !== requestHash) throw new DomainError("IDEMPOTENCY_CONFLICT", 409);
+         return { replay: true, status_id: replay.public_status_id, state: replay.state, status: replay.status, payment_url: replay.payment_url };
+       }
++      this.assertNewOrdersOpen();
+       const quote = one(this.db, "SELECT * FROM quotes WHERE id = ?", input.quote_id);
+       if (!quote || new Date(String(quote.expires_at)).getTime() < Date.now()) throw new DomainError("QUOTE_EXPIRED", 409);
+       const occurrence = one(this.db, "SELECT o.*, c.title AS city_title FROM occurrences o JOIN cities c ON c.id = o.city_id WHERE o.id = ?", quote.occurrence_id);
+diff --git a/commerce/src/release-control.ts b/commerce/src/release-control.ts
+new file mode 100644
+index 0000000..c7e1233
+--- /dev/null
++++ b/commerce/src/release-control.ts
+@@ -0,0 +1,227 @@
++import { createHash, randomUUID } from "node:crypto";
++import type Database from "better-sqlite3";
++import { canonicalLegalManifest, parseLegalManifest, type LegalManifest } from "./legal-manifest";
++
++export type ReleaseMode = "CONTROLLED_CUTOVER" | "ROLLING";
++export type ReleaseExpectations = {
++  source_commit: string;
++  migration: string;
++  legal_version: string;
++  legal_manifest_sha256: string;
++  legal_hashes: Record<"PUBLIC_OFFER" | "PRIVACY_POLICY" | "PD_CONSENT" | "CHECKOUT_DISCLOSURE", string>;
++};
++export type ReleaseControlRequest = { release_id: string; mode: ReleaseMode; expected: ReleaseExpectations };
++export type ReleaseControlStatus = {
++  sales_paused: boolean;
++  owner_release_id: string | null;
++  owner_mode: ReleaseMode | null;
++  expected: Omit<ReleaseExpectations, "legal_hashes"> | null;
++  acquired_at: string | null;
++  paused_at: string | null;
++  reopened_at: string | null;
++};
++export type ReleaseCompletion = {
++  complete: boolean;
++  expected: ReleaseExpectations | null;
++  reopened_at: string | null;
++};
++export type ReleaseRuntimeEvidence = {
++  source_commit: string | null;
++  migration_applied: boolean;
++  required_migrations: Record<string, boolean>;
++  legal_version: string | null;
++  legal_manifest_sha256: string | null;
++  legal_hashes: ReleaseExpectations["legal_hashes"] | null;
++  legal_publish_time: string | null;
++  current_legal_copies_match: boolean;
++  worker_source_commit: string | null;
++  worker_observed_at: string | null;
++  source_legal_manifest_sha256: string | null;
++  source_legal_publish_time: string | null;
++};
++
++export const requiredCutoverMigrations = ["0031_participant_age_band.sql", "0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql"] as const;
++
++export class ReleaseControlError extends Error {
++  constructor(readonly code: string, readonly status: 409 | 503 = 409) { super(code); }
++}
++
++type GateRow = {
++  sales_paused: number;
++  owner_release_id: string | null;
++  owner_mode: ReleaseMode | null;
++  expected_source_commit: string | null;
++  expected_migration: string | null;
++  expected_legal_version: string | null;
++  expected_legal_manifest_sha256: string | null;
++  acquired_at: string | null;
++  paused_at: string | null;
++  reopened_at: string | null;
++};
++type ReopenedEvent = { details_json: string; created_at: string };
++
++const documentIds = ["PUBLIC_OFFER", "PRIVACY_POLICY", "PD_CONSENT", "CHECKOUT_DISCLOSURE"] as const;
++const event = (db: Database.Database, releaseId: string, action: "ACQUIRED" | "PAUSED" | "REOPENED", details: unknown) =>
++  db.prepare("INSERT INTO release_sales_gate_events(id, release_id, action, details_json) VALUES (?, ?, ?, ?)")
++    .run(randomUUID(), releaseId, action, JSON.stringify(details));
++
++const row = (db: Database.Database) => db.prepare(`SELECT sales_paused, owner_release_id, owner_mode,
++  expected_source_commit, expected_migration, expected_legal_version, expected_legal_manifest_sha256,
++  acquired_at, paused_at, reopened_at FROM release_sales_gate WHERE singleton = 1`).get() as GateRow | undefined;
++
++const status = (gate: GateRow): ReleaseControlStatus => ({
++  sales_paused: gate.sales_paused === 1,
++  owner_release_id: gate.owner_release_id,
++  owner_mode: gate.owner_mode,
++  expected: gate.expected_source_commit && gate.expected_migration && gate.expected_legal_version && gate.expected_legal_manifest_sha256
++    ? { source_commit: gate.expected_source_commit, migration: gate.expected_migration, legal_version: gate.expected_legal_version, legal_manifest_sha256: gate.expected_legal_manifest_sha256 }
++    : null,
++  acquired_at: gate.acquired_at,
++  paused_at: gate.paused_at,
++  reopened_at: gate.reopened_at,
++});
++
++const sameExpectations = (gate: GateRow, request: ReleaseControlRequest) =>
++  gate.owner_release_id === request.release_id
++  && gate.owner_mode === request.mode
++  && gate.expected_source_commit === request.expected.source_commit
++  && gate.expected_migration === request.expected.migration
++  && gate.expected_legal_version === request.expected.legal_version
++  && gate.expected_legal_manifest_sha256 === request.expected.legal_manifest_sha256;
++
++export const evaluateReopenGate = (request: ReleaseControlRequest, evidence: ReleaseRuntimeEvidence): string | undefined => {
++  if (evidence.source_commit !== request.expected.source_commit) return "SOURCE_COMMIT_MISMATCH";
++  if (!evidence.migration_applied) return "MIGRATION_NOT_APPLIED";
++  if (evidence.legal_version !== request.expected.legal_version) return "LEGAL_VERSION_MISMATCH";
++  if (evidence.legal_manifest_sha256 !== request.expected.legal_manifest_sha256) return "LEGAL_MANIFEST_MISMATCH";
++  if (!evidence.legal_publish_time || evidence.legal_publish_time === "PENDING_AUTHORITATIVE_PUBLISH_TIMESTAMP" || Number.isNaN(Date.parse(evidence.legal_publish_time))) return "LEGAL_PUBLISH_TIME_INVALID";
++  if (!evidence.current_legal_copies_match) return "CURRENT_LEGAL_COPIES_MISMATCH";
++  if (!evidence.legal_hashes) return "LEGAL_HASHES_UNAVAILABLE";
++  for (const id of documentIds) if (evidence.legal_hashes[id] !== request.expected.legal_hashes[id]) return `LEGAL_HASH_MISMATCH_${id}`;
++  return undefined;
++};
++
++export class ReleaseSalesGate {
++  constructor(private readonly db: Database.Database) {}
++
++  status() {
++    const gate = row(this.db);
++    if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
++    return status(gate);
++  }
++
++  completion(releaseId: string): ReleaseCompletion {
++    const gate = row(this.db);
++    if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
++    const eventRow = this.db.prepare("SELECT details_json, created_at FROM release_sales_gate_events WHERE release_id = ? AND action = 'REOPENED' ORDER BY created_at DESC LIMIT 1").get(releaseId) as ReopenedEvent | undefined;
++    if (!eventRow) return { complete: false, expected: null, reopened_at: null };
++    try {
++      const expected = (JSON.parse(eventRow.details_json) as { expected?: ReleaseExpectations }).expected;
++      return expected ? { complete: true, expected, reopened_at: eventRow.created_at } : { complete: false, expected: null, reopened_at: null };
++    } catch { return { complete: false, expected: null, reopened_at: null }; }
++  }
++
++  assertNewOrdersOpen() {
++    const gate = row(this.db);
++    if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
++    if (gate.sales_paused === 1) throw new ReleaseControlError("SALES_TEMPORARILY_PAUSED", 503);
++  }
++
++  acquire(request: ReleaseControlRequest) {
++    const transaction = this.db.transaction(() => {
++      const gate = row(this.db);
++      if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
++      if (sameExpectations(gate, request)) return status(gate);
++      if (gate.owner_release_id) throw new ReleaseControlError("RELEASE_CONTROL_OWNED");
++      const changed = this.db.prepare(`UPDATE release_sales_gate SET owner_release_id = ?, owner_mode = ?,
++        expected_source_commit = ?, expected_migration = ?, expected_legal_version = ?, expected_legal_manifest_sha256 = ?,
++        acquired_at = datetime('now'), updated_at = datetime('now')
++        WHERE singleton = 1 AND owner_release_id IS NULL AND sales_paused = 0`).run(
++        request.release_id, request.mode, request.expected.source_commit, request.expected.migration,
++        request.expected.legal_version, request.expected.legal_manifest_sha256,
++      );
++      if (!changed.changes) throw new ReleaseControlError("RELEASE_CONTROL_OWNED");
++      event(this.db, request.release_id, "ACQUIRED", { mode: request.mode, expected: request.expected });
++      return this.status();
++    });
++    return transaction();
++  }
++
++  pause(request: ReleaseControlRequest) {
++    const transaction = this.db.transaction(() => {
++      const gate = row(this.db);
++      if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
++      if (!sameExpectations(gate, request)) throw new ReleaseControlError("RELEASE_CONTROL_OWNER_MISMATCH");
++      if (gate.sales_paused === 1) return status(gate);
++      const changed = this.db.prepare(`UPDATE release_sales_gate SET sales_paused = 1, paused_at = datetime('now'), updated_at = datetime('now')
++        WHERE singleton = 1 AND sales_paused = 0 AND owner_release_id = ?`).run(request.release_id);
++      if (!changed.changes) throw new ReleaseControlError("RELEASE_CONTROL_OWNER_MISMATCH");
++      event(this.db, request.release_id, "PAUSED", { expected: request.expected });
++      return this.status();
++    });
++    return transaction();
++  }
++
++  updateExpectations(request: ReleaseControlRequest) {
++    const transaction = this.db.transaction(() => {
++      const gate = row(this.db);
++      if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
++      if (gate.owner_release_id !== request.release_id || gate.sales_paused !== 1) throw new ReleaseControlError("RELEASE_CONTROL_OWNER_MISMATCH");
++      const changed = this.db.prepare(`UPDATE release_sales_gate SET owner_mode = ?, expected_source_commit = ?, expected_migration = ?,
++        expected_legal_version = ?, expected_legal_manifest_sha256 = ?, updated_at = datetime('now')
++        WHERE singleton = 1 AND sales_paused = 1 AND owner_release_id = ?`).run(
++        request.mode, request.expected.source_commit, request.expected.migration,
++        request.expected.legal_version, request.expected.legal_manifest_sha256, request.release_id,
++      );
++      if (!changed.changes) throw new ReleaseControlError("RELEASE_CONTROL_OWNER_MISMATCH");
++      return this.status();
++    });
++    return transaction();
++  }
++
++  assertPausedOwner(request: ReleaseControlRequest) {
++    const gate = row(this.db);
++    if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
++    if (!sameExpectations(gate, request) || gate.sales_paused !== 1) throw new ReleaseControlError("RELEASE_CONTROL_OWNER_MISMATCH");
++  }
++
++  reopen(request: ReleaseControlRequest, evidence: ReleaseRuntimeEvidence) {
++    const reason = evaluateReopenGate(request, evidence);
++    if (reason) throw new ReleaseControlError(reason);
++    const transaction = this.db.transaction(() => {
++      const gate = row(this.db);
++      if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
++      if (!sameExpectations(gate, request) || gate.sales_paused !== 1) throw new ReleaseControlError("RELEASE_CONTROL_OWNER_MISMATCH");
++      const changed = this.db.prepare(`UPDATE release_sales_gate SET sales_paused = 0, owner_release_id = NULL, owner_mode = NULL,
++        reopened_at = datetime('now'), updated_at = datetime('now')
++        WHERE singleton = 1 AND sales_paused = 1 AND owner_release_id = ?`).run(request.release_id);
++      if (!changed.changes) throw new ReleaseControlError("RELEASE_CONTROL_OWNER_MISMATCH");
++      event(this.db, request.release_id, "REOPENED", { expected: request.expected, evidence });
++      return this.status();
++    });
++    return transaction();
++  }
++}
++
++export const releaseRuntimeEvidence = (db: Database.Database, input: { sourceCommit: string | undefined; currentLegalCopiesMatch: (manifest: LegalManifest) => boolean }): ReleaseRuntimeEvidence => {
++  const active = db.prepare("SELECT version, effective_at, manifest_json FROM legal_releases WHERE active = 1").get() as { version: string; effective_at: string; manifest_json: string } | undefined;
++  const workerTable = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runtime_release_evidence'").get();
++  const worker = workerTable ? db.prepare("SELECT source_commit, observed_at FROM runtime_release_evidence WHERE unit = 'WORKER'").get() as { source_commit: string; observed_at: string } | undefined : undefined;
++  const required_migrations = Object.fromEntries(requiredCutoverMigrations.map((version) => [version, Boolean(db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(version))]));
++  const base = { source_commit: input.sourceCommit?.trim() || null, migration_applied: requiredCutoverMigrations.every((version) => required_migrations[version]), required_migrations, worker_source_commit: worker?.source_commit ?? null, worker_observed_at: worker?.observed_at ?? null, source_legal_manifest_sha256: null, source_legal_publish_time: null };
++  if (!active) return { ...base, legal_version: null, legal_manifest_sha256: null, legal_hashes: null, legal_publish_time: null, current_legal_copies_match: false };
++  try {
++    const manifest = parseLegalManifest(JSON.parse(active.manifest_json));
++    const legalHashes = Object.fromEntries(documentIds.map((id) => [id, manifest.documents[id].sha256])) as ReleaseExpectations["legal_hashes"];
++    return {
++      ...base,
++      legal_version: active.version,
++      legal_manifest_sha256: createHash("sha256").update(canonicalLegalManifest(manifest)).digest("hex"),
++      legal_hashes: legalHashes,
++      legal_publish_time: active.effective_at,
++      current_legal_copies_match: input.currentLegalCopiesMatch(manifest),
++    };
++  } catch {
++    return { ...base, legal_version: active.version, legal_manifest_sha256: null, legal_hashes: null, legal_publish_time: active.effective_at, current_legal_copies_match: false };
++  }
++};
+diff --git a/commerce/src/runtime-release-evidence.ts b/commerce/src/runtime-release-evidence.ts
+new file mode 100644
+index 0000000..f059fa7
+--- /dev/null
++++ b/commerce/src/runtime-release-evidence.ts
+@@ -0,0 +1,11 @@
++import type Database from "better-sqlite3";
++
++export const writeRuntimeReleaseEvidence = (db: Database.Database, unit: "COMMERCE" | "WORKER", sourceCommit: string, restart = false): boolean => {
++  if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'runtime_release_evidence'").get()) return false;
++  db.prepare(`INSERT INTO runtime_release_evidence(unit, source_commit, started_at, observed_at)
++    VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
++    ON CONFLICT(unit) DO UPDATE SET source_commit = excluded.source_commit,
++      started_at = CASE WHEN ? THEN excluded.started_at ELSE runtime_release_evidence.started_at END,
++      observed_at = excluded.observed_at`).run(unit, sourceCommit, restart ? 1 : 0);
++  return true;
++};
+diff --git a/commerce/src/server.ts b/commerce/src/server.ts
+index d99744d..5a2f258 100644
+--- a/commerce/src/server.ts
++++ b/commerce/src/server.ts
+@@ -4,9 +4,11 @@ import { migrate, openDatabase } from "./db";
+ import { providerFromEnvironment } from "./provider";
+ import { emailProviderFromEnvironment } from "./email-provider";
+ import { smartCaptchaVerifierFromEnvironment } from "./smartcaptcha";
++import { writeRuntimeReleaseEvidence } from "./runtime-release-evidence";
+ 
+ const sqlite = openDatabase();
+ migrate(sqlite);
++writeRuntimeReleaseEvidence(sqlite, "COMMERCE", process.env.SOURCE_COMMIT?.trim() || "UNAVAILABLE", true);
+ const app = createApp(sqlite, providerFromEnvironment(), emailProviderFromEnvironment(), smartCaptchaVerifierFromEnvironment());
+ const port = Number(process.env.PORT ?? 3001);
+ 
+diff --git a/commerce/src/types.ts b/commerce/src/types.ts
+index 8f92a8c..bf3c85e 100644
+--- a/commerce/src/types.ts
++++ b/commerce/src/types.ts
+@@ -24,6 +24,25 @@ export const checkoutContextSchema = z.object({
+   referral_slug: z.string().trim().max(100).optional(),
+ });
+ 
++const releaseHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
++const releaseExpectedSchema = z.object({
++  source_commit: z.string().regex(/^[a-f0-9]{7,64}$/),
++  migration: z.string().regex(/^\d{4}_[a-z0-9_]+\.sql$/),
++  legal_version: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
++  legal_manifest_sha256: releaseHashSchema,
++  legal_hashes: z.object({
++    PUBLIC_OFFER: releaseHashSchema,
++    PRIVACY_POLICY: releaseHashSchema,
++    PD_CONSENT: releaseHashSchema,
++    CHECKOUT_DISCLOSURE: releaseHashSchema,
++  }).strict(),
++}).strict();
++export const releaseControlSchema = z.object({
++  release_id: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/),
++  mode: z.literal("CONTROLLED_CUTOVER"),
++  expected: releaseExpectedSchema,
++}).strict();
++
+ export const customerCancellationSchema = z.object({
+   reason: z.string().trim().min(3).max(1_000),
+   confirmation_text: z.string().trim(),
+diff --git a/commerce/src/worker.ts b/commerce/src/worker.ts
+index dd5f5d6..573dd48 100644
+--- a/commerce/src/worker.ts
++++ b/commerce/src/worker.ts
+@@ -3,9 +3,13 @@ import { CommerceDomain } from "./domain";
+ import { emailProviderFromEnvironment } from "./email-provider";
+ import { providerFromEnvironment } from "./provider";
+ import { runWorkerSweep } from "./worker-sweep";
++import { writeRuntimeReleaseEvidence } from "./runtime-release-evidence";
+ 
+ const sqlite = openDatabase();
+ const domain = new CommerceDomain(sqlite, providerFromEnvironment(), emailProviderFromEnvironment());
++const sourceCommit = process.env.SOURCE_COMMIT?.trim() || "UNAVAILABLE";
++const recordReadyHeartbeat = (starting = false) => writeRuntimeReleaseEvidence(sqlite, "WORKER", sourceCommit, starting);
++recordReadyHeartbeat(true);
+ let nextDriftSweepAt = 0;
+ let sweeping = false;
+ 
+@@ -18,6 +22,7 @@ const sweep = async () => {
+     nextDriftSweepAt = Date.now() + 24 * 60 * 60_000;
+     await domain.collectProviderDrift();
+   }
++  recordReadyHeartbeat();
+ };
+ 
+ const runSweep = async () => {

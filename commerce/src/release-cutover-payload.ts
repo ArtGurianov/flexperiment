@@ -11,7 +11,7 @@ console.log(JSON.stringify({
   mode: "CONTROLLED_CUTOVER",
   expected: {
     source_commit: sourceCommit,
-    migration: "0033_runtime_release_evidence.sql",
+    migration: "0034_worker_sweep_evidence.sql",
     legal_version: candidate.version,
     legal_manifest_sha256: createHash("sha256").update(canonicalLegalManifest(candidate.manifest)).digest("hex"),
     legal_hashes: {

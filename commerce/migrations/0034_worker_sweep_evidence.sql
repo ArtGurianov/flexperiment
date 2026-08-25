@@ -1,0 +1,1 @@
+ALTER TABLE runtime_release_evidence ADD COLUMN last_successful_sweep_at TEXT;
