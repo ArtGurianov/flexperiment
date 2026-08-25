@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 const workflow = readFileSync(".github/workflows/controlled-age-band-cutover.yml", "utf8");
 const deployHelper = readFileSync("scripts/controlled-coolify-deploy.sh", "utf8");
 const adminDescriptor = readFileSync("apps/admin/scripts/write-release-descriptor.mjs", "utf8");
+const frontendDockerfile = readFileSync("Dockerfile.frontend", "utf8");
 
 describe("controlled cutover production topology", () => {
   it("uses the three authenticated manual deployment targets and split public origins", () => {
@@ -36,5 +37,11 @@ describe("controlled cutover production topology", () => {
   it("generates immutable admin deployment evidence", () => {
     expect(adminDescriptor).toContain("admin_contract_version: \"age-band-v1\"");
     expect(adminDescriptor).toContain("SOURCE_COMMIT must be the exact 40-character");
+  });
+
+  it("uses a fail-closed static frontend build artifact", () => {
+    expect(frontendDockerfile).toContain("ARG SOURCE_COMMIT");
+    expect(frontendDockerfile).toContain("ENV SOURCE_COMMIT=${SOURCE_COMMIT}");
+    expect(frontendDockerfile).toContain("COPY --from=build /app/out /usr/share/nginx/html");
   });
 });

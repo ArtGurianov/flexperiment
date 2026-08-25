@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "pnpm release:static-descriptor && next build",
+    "build": "pnpm release:static-descriptor && next build --webpack",
     "start": "next start",
     "lint": "eslint",
     "commerce:dev": "tsx watch commerce/src/server.ts",
