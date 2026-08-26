@@ -12,6 +12,7 @@ describe("generic controlled production deploy workflow", () => {
     expect(workflow).toContain("group: flexperiment-production-controlled-cutover");
     expect(workflow).toContain("cancel-in-progress: false");
     expect(workflow).toContain("environment: production");
+    expect(workflow).toContain("contents: write");
     expect(workflow).toContain("RELEASE_ID: deploy-${{ github.sha }}");
     expect(workflow).toContain("TARGET_SHA: ${{ github.sha }}");
   });
@@ -49,6 +50,7 @@ describe("generic controlled production deploy workflow", () => {
     expect(workflow).not.toContain("CREATE_PROMOTION");
     expect(workflow).not.toContain("legal-publish");
     expect(workflow).not.toContain("git push");
+    expect(workflow).toContain('scripts/set-production-deploy-ref.sh "$TARGET_SHA"');
     expect(deployHelper).toContain("only an enqueue acknowledgement");
   });
 
@@ -69,5 +71,20 @@ describe("generic controlled production deploy workflow", () => {
     expect(finalProofSource).toContain('"$PUBLIC_API_URL/v1/public/legal-config"');
     expect(finalProofSource).toContain('"$PUBLIC_API_URL/healthz"');
     expect(finalProofSource).toContain('"$PUBLIC_API_URL/readyz"');
+  });
+
+  it("allows only the durable owner to recover after main advances", () => {
+    const status = workflow.indexOf('release-control/status" > durable-before.json');
+    const owner = workflow.indexOf("owner=\"$(jq -r '.owner_release_id // empty' durable-before.json)\"");
+    const freshMain = workflow.indexOf("GENERIC_DEPLOY_TARGET_IS_NOT_MAIN_HEAD");
+    const ref = workflow.indexOf("Set guarded production deployment ref");
+    const deploy = workflow.indexOf("Deploy exact production candidate");
+    expect(status).toBeGreaterThan(-1);
+    expect(owner).toBeGreaterThan(status);
+    expect(freshMain).toBeGreaterThan(owner);
+    expect(ref).toBeGreaterThan(workflow.indexOf("Reconcile paused deployment"));
+    expect(ref).toBeLessThan(deploy);
+    expect(workflow).toContain('[[ -z "$owner" || "$owner" == "$RELEASE_ID" ]]');
+    expect(workflow).toContain('if ! jq -e \'.complete\' completion.json >/dev/null && [[ -z "$owner" ]]; then');
   });
 });

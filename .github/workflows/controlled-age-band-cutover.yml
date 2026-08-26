@@ -119,6 +119,10 @@ jobs:
           pnpm commerce:release-cutover:reconcile status.json completion.json release.json "$CANDIDATE_SOURCE_COMMIT" > reconciliation.json
           action="$(jq -er .action reconciliation.json)"; [[ "$action" != BLOCKED ]] || exit 1; echo "CUTOVER_ACTION=$action" >> "$GITHUB_ENV"
 
+      - name: Set guarded production deployment ref for candidate
+        if: env.TERMINAL_COMPLETE != '1' && (env.CUTOVER_ACTION == 'DEPLOY_CANDIDATE' || env.CUTOVER_ACTION == 'PUBLISH_LEGAL')
+        run: scripts/set-production-deploy-ref.sh "$TARGET_SHA"
+
       - name: Deploy candidate to all production resources
         if: env.TERMINAL_COMPLETE != '1' && (env.CUTOVER_ACTION == 'DEPLOY_CANDIDATE' || env.CUTOVER_ACTION == 'PUBLISH_LEGAL')
         run: scripts/controlled-coolify-deploy.sh "$TARGET_SHA"
@@ -168,6 +172,10 @@ jobs:
           api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
           api -X POST --data-binary @promotion-release.json "$PUBLIC_API_URL/v1/internal/release-control/expectations" > /dev/null
           echo "PROMOTION_SHA=$PROMOTION_SHA" >> "$GITHUB_ENV"
+
+      - name: Set guarded production deployment ref for promotion
+        if: env.TERMINAL_COMPLETE != '1'
+        run: scripts/set-production-deploy-ref.sh "$PROMOTION_SHA"
 
       - name: Deploy promotion to all production resources
         if: env.TERMINAL_COMPLETE != '1'

@@ -6,7 +6,7 @@ on:
       - main
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: flexperiment-production-controlled-cutover
@@ -49,10 +49,17 @@ jobs:
           set -euo pipefail
           [[ "$TARGET_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "GENERIC_DEPLOY_INVALID_SOURCE_COMMIT" >&2; exit 1; }
           [[ "$RELEASE_ID" == "deploy-$TARGET_SHA" ]] || { echo "GENERIC_DEPLOY_INVALID_RELEASE_ID" >&2; exit 1; }
-          git fetch origin main
-          [[ "$(git rev-parse origin/main)" == "$TARGET_SHA" ]] || { echo "GENERIC_DEPLOY_TARGET_IS_NOT_MAIN_HEAD" >&2; exit 1; }
           api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > durable-before.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
+          owner="$(jq -r '.owner_release_id // empty' durable-before.json)"
+          if ! jq -e '.complete' completion.json >/dev/null; then
+            [[ -z "$owner" || "$owner" == "$RELEASE_ID" ]] || { echo "GENERIC_DEPLOY_BLOCKED_BY_RELEASE_OWNER=$owner" >&2; exit 1; }
+          fi
+          git fetch origin main
+          if ! jq -e '.complete' completion.json >/dev/null && [[ -z "$owner" ]]; then
+            [[ "$(git rev-parse origin/main)" == "$TARGET_SHA" ]] || { echo "GENERIC_DEPLOY_TARGET_IS_NOT_MAIN_HEAD" >&2; exit 1; }
+          fi
           production_source="$(jq -er '.runtime.source_commit' durable-before.json)"
           [[ "$production_source" =~ ^[a-f0-9]{40}$ ]] || { echo "GENERIC_DEPLOY_PRODUCTION_SOURCE_UNAVAILABLE" >&2; exit 1; }
           git cat-file -e "$production_source^{commit}" || { echo "GENERIC_DEPLOY_PRODUCTION_SOURCE_NOT_IN_REPOSITORY" >&2; exit 1; }
@@ -107,17 +114,10 @@ jobs:
               CHECKOUT_DISCLOSURE: $candidate.manifest.documents.CHECKOUT_DISCLOSURE.sha256
             } == $expected.legal_hashes
           ' commerce/legal/production-manifest.json >/dev/null || { echo "GENERIC_DEPLOY_REQUIRES_CONTROLLED_LEGAL_CUTOVER" >&2; exit 1; }
-          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
           if ! jq -e '.complete' completion.json >/dev/null; then
-            owner="$(jq -r '.owner_release_id // empty' durable-before.json)"
-            [[ -z "$owner" || "$owner" == "$RELEASE_ID" ]] || { echo "GENERIC_DEPLOY_BLOCKED_BY_RELEASE_OWNER=$owner" >&2; exit 1; }
-            jq -e --slurpfile request release.json '
-              if .owner_release_id == $request[0].release_id then
-                .expected == ($request[0].expected | del(.legal_hashes))
-              else
-                true
-              end
-            ' durable-before.json >/dev/null || { echo "GENERIC_DEPLOY_OWNER_EXPECTATIONS_MISMATCH" >&2; exit 1; }
+            if [[ "$owner" == "$RELEASE_ID" ]]; then
+              jq -e --slurpfile request release.json '.expected == ($request[0].expected | del(.legal_hashes))' durable-before.json >/dev/null || { echo "GENERIC_DEPLOY_OWNER_EXPECTATIONS_MISMATCH" >&2; exit 1; }
+            fi
           fi
           pnpm commerce:production-deploy:reconcile durable-before.json completion.json release.json > reconciliation.json
           action="$(jq -er '.action' reconciliation.json)"
@@ -178,6 +178,10 @@ jobs:
           action="$(jq -er '.action' reconciliation.json)"
           [[ "$action" == "DEPLOY" || "$action" == "VERIFY_AND_REOPEN" ]] || { jq -c . reconciliation.json >&2; exit 1; }
           echo "DEPLOY_ACTION=$action" >> "$GITHUB_ENV"
+
+      - name: Set guarded production deployment ref
+        if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'
+        run: scripts/set-production-deploy-ref.sh "$TARGET_SHA"
 
       - name: Deploy exact production candidate
         if: env.DEPLOY_ACTION == 'DEPLOY'

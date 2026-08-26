@@ -26,13 +26,21 @@ describe("controlled cutover production topology", () => {
     expect(workflow).toContain('RELEASE_ID="$RELEASE_ID" COMMERCE_RELEASE_MANIFEST_PATH=commerce/legal/production-manifest.json pnpm commerce:release-cutover:payload "$PROMOTION_SHA"');
   });
 
-  it("keeps main as the guarded deploy ref and requires all public source proofs", () => {
+  it("keeps main as the source ref while deploying candidate and promotion through the guarded ref", () => {
     expect(workflow).toContain("New release target must equal origin/main");
     expect(workflow).toContain("git push origin HEAD:refs/heads/main");
     expect(workflow).not.toContain("--force");
     expect(workflow).toContain("admin_contract_version == \"age-band-v1\"");
     expect(workflow).toContain("scripts/controlled-coolify-deploy.sh \"$TARGET_SHA\"");
     expect(workflow).toContain("scripts/controlled-coolify-deploy.sh \"$PROMOTION_SHA\"");
+    const candidateRef = workflow.indexOf('scripts/set-production-deploy-ref.sh "$TARGET_SHA"');
+    const candidateDeploy = workflow.indexOf('scripts/controlled-coolify-deploy.sh "$TARGET_SHA"');
+    const promotionRef = workflow.indexOf('scripts/set-production-deploy-ref.sh "$PROMOTION_SHA"');
+    const promotionDeploy = workflow.indexOf('scripts/controlled-coolify-deploy.sh "$PROMOTION_SHA"');
+    expect(candidateRef).toBeGreaterThan(workflow.indexOf("Acquire owner and pause sales"));
+    expect(candidateRef).toBeLessThan(candidateDeploy);
+    expect(promotionRef).toBeGreaterThan(workflow.indexOf("Create or recover guarded promotion on main"));
+    expect(promotionRef).toBeLessThan(promotionDeploy);
   });
 
   it("requires deploy-token authorization and never treats a webhook as runtime proof", () => {

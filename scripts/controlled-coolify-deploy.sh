@@ -8,8 +8,8 @@ expected_source_commit="${1:?Pass the expected 40-character source commit.}"
 : "${COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL:?COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL is required.}"
 : "${COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL:?COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL is required.}"
 
-configured_main="$(git ls-remote origin refs/heads/main | awk 'NR == 1 { print $1 }')"
-[[ "$configured_main" == "$expected_source_commit" ]] || {
+configured_deploy_ref="$(git ls-remote origin refs/heads/production-deploy | awk 'NR == 1 { print $1 }')"
+[[ "$configured_deploy_ref" == "$expected_source_commit" ]] || {
   echo "Configured production ref does not match the expected source commit." >&2
   exit 1
 }
