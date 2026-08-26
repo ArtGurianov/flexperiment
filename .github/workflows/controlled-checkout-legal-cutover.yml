@@ -7,6 +7,10 @@ on:
         description: Exact immutable anonymous-checkout candidate source commit
         required: true
         type: string
+      repair_sha:
+        description: Optional exact same-owner pre-publication operational repair commit
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -31,6 +35,8 @@ jobs:
       ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
       EXPECTED_CANDIDATE_SHA: 25bb2f96f2f58018aea1747a1c57c62a2c54c145
       TARGET_SHA: ${{ inputs.target_sha }}
+      REPAIR_SHA: ${{ inputs.repair_sha }}
+      REPAIR_SOURCE_REF: ${{ github.ref_name }}
       RELEASE_ID: checkout-legal-${{ inputs.target_sha }}
       PREVIOUS_LEGAL_VERSION: 2026-08-25.1
       CANDIDATE_LEGAL_VERSION: 2026-08-26.1
@@ -72,7 +78,8 @@ jobs:
               exit 1
             fi
           }
-          git fetch --no-tags origin main
+          [[ "$REPAIR_SOURCE_REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$ ]] || { echo "CHECKOUT_LEGAL_CUTOVER_REPAIR_SOURCE_REF_INVALID" >&2; exit 1; }
+          git fetch --no-tags origin main "$REPAIR_SOURCE_REF"
           git cat-file -e "$TARGET_SHA^{commit}" || { echo "CHECKOUT_LEGAL_CUTOVER_CANDIDATE_UNAVAILABLE" >&2; exit 1; }
           git merge-base --is-ancestor "$TARGET_SHA" origin/main || { echo "CHECKOUT_LEGAL_CUTOVER_CANDIDATE_NOT_REACHABLE_FROM_MAIN" >&2; exit 1; }
           candidate_root="$(mktemp -d "$RUNNER_TEMP/checkout-legal-candidate.XXXXXX")"
@@ -94,13 +101,71 @@ jobs:
           if jq -e '.complete' completion.json >/dev/null; then
             echo 'TERMINAL_COMPLETE=1' >> "$GITHUB_ENV"
           else
+            current_legal="$(jq -er '.runtime.legal_version | select(type == "string")' durable-before.json)"
+            if [[ -n "${REPAIR_SHA:-}" && "$current_legal" != "$PREVIOUS_LEGAL_VERSION" ]]; then
+              echo "CHECKOUT_LEGAL_CUTOVER_REPAIR_REQUIRES_PREPUBLICATION_STATE" >&2; exit 1
+            fi
+            durable_source="$(jq -r '.expected.source_commit // empty' durable-before.json)"
+            repair_arg="${REPAIR_SHA:-}"
+            # A repair source retains the predecessor canonical manifest. Once
+            # legal is published, that distinguishes it from the promotion
+            # artifact without trusting the mutable workflow ref.
+            if [[ "$current_legal" == "$CANDIDATE_LEGAL_VERSION" ]] && [[ "$durable_source" =~ ^[a-f0-9]{40}$ ]] && [[ "$durable_source" != "$TARGET_SHA" ]]; then
+              if git cat-file -e "$durable_source^{commit}" 2>/dev/null && git show "$durable_source:commerce/legal/production-manifest.json" | jq -e --arg previous "$PREVIOUS_LEGAL_VERSION" '.version == $previous' >/dev/null; then
+                repair_arg="$durable_source"
+              fi
+            fi
             active_request_path=release.json
-            pnpm exec tsx commerce/src/decide-checkout-legal-cutover-recovery.ts durable-before.json "$RELEASE_ID" "$TARGET_SHA" "$CANDIDATE_LEGAL_VERSION" > recovery.json
+            active_candidate_sha="$TARGET_SHA"
+            active_candidate_source_ref=main
+            pnpm exec tsx commerce/src/decide-checkout-legal-cutover-recovery.ts durable-before.json "$RELEASE_ID" "$TARGET_SHA" "$CANDIDATE_LEGAL_VERSION" "$PREVIOUS_LEGAL_VERSION" "$current_legal" "$repair_arg" > recovery.json
             validate_json recovery.json RECOVERY
             recovery_mode="$(jq -er '.mode' recovery.json)"
             [[ "$recovery_mode" != BLOCKED ]] || { jq -c . recovery.json >&2; exit 1; }
             if [[ "$recovery_mode" == CANDIDATE ]] && [[ -z "$(jq -r '.owner_release_id // empty' durable-before.json)" ]]; then
               jq -e --arg previous "$PREVIOUS_LEGAL_VERSION" '.sales_paused == false and .owner_release_id == null and .owner_mode == null and .runtime.legal_version == $previous and .runtime.current_legal_copies_match == true' durable-before.json >/dev/null || { echo "CHECKOUT_LEGAL_CUTOVER_FRESH_PRODUCTION_BASELINE_INVALID" >&2; exit 1; }
+            fi
+            prepare_repair_request() {
+              local repair_sha="$1" repair_root
+              [[ "$repair_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "CHECKOUT_LEGAL_CUTOVER_REPAIR_SHA_INVALID" >&2; exit 1; }
+              [[ "$repair_sha" != "$TARGET_SHA" ]] || { echo "CHECKOUT_LEGAL_CUTOVER_REPAIR_MUST_ADVANCE_CANDIDATE" >&2; exit 1; }
+              git cat-file -e "$repair_sha^{commit}" || { echo "CHECKOUT_LEGAL_CUTOVER_REPAIR_UNAVAILABLE" >&2; exit 1; }
+              git merge-base --is-ancestor "$TARGET_SHA" "$repair_sha" || { echo "CHECKOUT_LEGAL_CUTOVER_REPAIR_NOT_DESCENDANT" >&2; exit 1; }
+              git merge-base --is-ancestor "$repair_sha" "origin/$REPAIR_SOURCE_REF" || { echo "CHECKOUT_LEGAL_CUTOVER_REPAIR_NOT_REACHABLE_FROM_RECOVERY_REF" >&2; exit 1; }
+              git diff --name-only -z "$TARGET_SHA" "$repair_sha" > repair-boundary-paths.bin
+              pnpm exec tsx commerce/src/assert-checkout-legal-cutover-repair-boundary.ts repair-boundary-paths.bin
+              repair_root="$(mktemp -d "$RUNNER_TEMP/checkout-legal-repair.XXXXXX")"
+              git worktree add --detach "$repair_root" "$repair_sha" >/dev/null
+              checkout_contract="$(jq -er '.checkout_contract_version | select(type == "string")' "$repair_root/release-surface-contract.json")"
+              admin_contract="$(jq -er '.admin_contract_version | select(type == "string")' "$repair_root/release-surface-contract.json")"
+              [[ "$checkout_contract" == "$checkout_contract_version" && "$admin_contract" == "$admin_contract_version" ]] || { echo "CHECKOUT_LEGAL_CUTOVER_REPAIR_CONTRACT_MISMATCH" >&2; exit 1; }
+              (
+                cd "$repair_root"
+                RELEASE_ID="$RELEASE_ID" COMMERCE_RELEASE_MANIFEST_PATH="$CANDIDATE_MANIFEST_PATH" "$GITHUB_WORKSPACE/node_modules/.bin/tsx" "$GITHUB_WORKSPACE/commerce/src/release-cutover-payload.ts" "$repair_sha"
+              ) > repair-release.json
+              validate_json repair-release.json REPAIR_REQUEST
+              jq -e --slurpfile candidate release.json --arg sha "$repair_sha" '.mode == "CONTROLLED_CUTOVER" and .expected.source_commit == $sha and .expected.migration == $candidate[0].expected.migration and .expected.legal_version == $candidate[0].expected.legal_version and .expected.legal_manifest_sha256 == $candidate[0].expected.legal_manifest_sha256 and .expected.legal_hashes == $candidate[0].expected.legal_hashes' repair-release.json >/dev/null || { echo "CHECKOUT_LEGAL_CUTOVER_REPAIR_REQUEST_MISMATCH" >&2; exit 1; }
+              git worktree remove --force "$repair_root" >/dev/null
+            }
+            if [[ "$recovery_mode" == ADOPTING_PREPUBLICATION_REPAIR || "$recovery_mode" == RESUMING_PREPUBLICATION_REPAIR || "$recovery_mode" == REPAIRED_CANDIDATE ]]; then
+              if [[ "$current_legal" == "$PREVIOUS_LEGAL_VERSION" ]]; then
+                jq -e --arg release "$RELEASE_ID" --arg previous "$PREVIOUS_LEGAL_VERSION" '.sales_paused == true and .owner_release_id == $release and .runtime.legal_version == $previous and .runtime.current_legal_copies_match == true' durable-before.json >/dev/null || { echo "CHECKOUT_LEGAL_CUTOVER_PREPUBLICATION_REPAIR_STATE_INVALID" >&2; exit 1; }
+              fi
+              repair_sha="$(jq -er '.repairSourceCommit' recovery.json)"
+              prepare_repair_request "$repair_sha"
+              active_request_path=repair-release.json
+              active_candidate_sha="$repair_sha"
+              active_candidate_source_ref="$REPAIR_SOURCE_REF"
+              echo 'PREPUBLICATION_REPAIR=1' >> "$GITHUB_ENV"
+              if [[ "$recovery_mode" == ADOPTING_PREPUBLICATION_REPAIR ]]; then
+                echo 'ADOPTING_PREPUBLICATION_REPAIR=1' >> "$GITHUB_ENV"
+              else
+                echo 'ADOPTING_PREPUBLICATION_REPAIR=0' >> "$GITHUB_ENV"
+              fi
+            else
+              [[ -z "${REPAIR_SHA:-}" ]] || { echo "CHECKOUT_LEGAL_CUTOVER_REPAIR_REQUIRES_SAME_PAUSED_OWNER" >&2; exit 1; }
+              echo 'PREPUBLICATION_REPAIR=0' >> "$GITHUB_ENV"
+              echo 'ADOPTING_PREPUBLICATION_REPAIR=0' >> "$GITHUB_ENV"
             fi
             if [[ "$recovery_mode" == RESUMING_PROMOTION ]]; then
               durable_promotion_sha="$(jq -er '.promotionSourceCommit' recovery.json)"
@@ -127,8 +192,11 @@ jobs:
               active_request_path=promotion-release.json
             else
               echo 'RESUMING_PROMOTION=0' >> "$GITHUB_ENV"
-              echo 'ACTIVE_REQUEST_PATH=release.json' >> "$GITHUB_ENV"
             fi
+            echo "RECOVERY_MODE=$recovery_mode" >> "$GITHUB_ENV"
+            echo "ACTIVE_CANDIDATE_SHA=$active_candidate_sha" >> "$GITHUB_ENV"
+            echo "ACTIVE_CANDIDATE_SOURCE_REF=$active_candidate_source_ref" >> "$GITHUB_ENV"
+            echo "ACTIVE_REQUEST_PATH=$active_request_path" >> "$GITHUB_ENV"
             echo 'TERMINAL_COMPLETE=0' >> "$GITHUB_ENV"
           fi
           current_legal="$(jq -r '.runtime.legal_version // empty' durable-before.json)"
@@ -139,7 +207,7 @@ jobs:
           else
             echo "CHECKOUT_LEGAL_CUTOVER_UNEXPECTED_LEGAL_PUBLICATION_STATE" >&2; exit 1
           fi
-          pnpm exec tsx commerce/src/reconcile-cutover.ts durable-before.json completion.json "${active_request_path:-release.json}" "$TARGET_SHA" "$PREVIOUS_LEGAL_VERSION" > reconciliation.json
+          pnpm exec tsx commerce/src/reconcile-cutover.ts durable-before.json completion.json "${active_request_path:-release.json}" "${active_candidate_sha:-$TARGET_SHA}" "$PREVIOUS_LEGAL_VERSION" > reconciliation.json
           validate_json reconciliation.json RECONCILIATION
           action="$(jq -er '.action' reconciliation.json)"; [[ "$action" != BLOCKED ]] || { jq -c . reconciliation.json >&2; exit 1; }
           echo "CUTOVER_ACTION=$action" >> "$GITHUB_ENV"
@@ -163,7 +231,7 @@ jobs:
           jq -e --slurpfile request completion.json '(.version == $request[0].expected.legal_version) and ({PUBLIC_OFFER: .manifest.documents.PUBLIC_OFFER.sha256, PRIVACY_POLICY: .manifest.documents.PRIVACY_POLICY.sha256, PD_CONSENT: .manifest.documents.PD_CONSENT.sha256, CHECKOUT_DISCLOSURE: .manifest.documents.CHECKOUT_DISCLOSURE.sha256} == $request[0].expected.legal_hashes)' legal.json >/dev/null
 
       - name: Acquire owner and pause registrations
-        if: env.TERMINAL_COMPLETE != '1' && env.RESUMING_PROMOTION != '1'
+        if: env.TERMINAL_COMPLETE != '1' && env.RESUMING_PROMOTION != '1' && env.PREPUBLICATION_REPAIR != '1'
         run: |
           set -euo pipefail
           api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
@@ -179,6 +247,14 @@ jobs:
           [[ "$pause_status" == "503" ]] || { cat paused-checkout.json >&2; exit 1; }
           jq -e '.error.code == "SALES_TEMPORARILY_PAUSED"' paused-checkout.json >/dev/null
 
+      - name: Adopt same-owner pre-publication repair expectations
+        if: env.TERMINAL_COMPLETE != '1' && env.ADOPTING_PREPUBLICATION_REPAIR == '1'
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          api -X POST --data-binary @repair-release.json "$PUBLIC_API_URL/v1/internal/release-control/expectations" > repair-expectations.json
+          jq -e --arg release "$RELEASE_ID" --arg sha "$ACTIVE_CANDIDATE_SHA" '.sales_paused == true and .owner_release_id == $release and .expected.source_commit == $sha' repair-expectations.json >/dev/null
+
       - name: Reconcile paused checkout/legal cutover
         if: env.TERMINAL_COMPLETE != '1'
         run: |
@@ -186,20 +262,26 @@ jobs:
           api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
-          pnpm exec tsx commerce/src/reconcile-cutover.ts status.json completion.json "$ACTIVE_REQUEST_PATH" "$TARGET_SHA" "$PREVIOUS_LEGAL_VERSION" > reconciliation.json
+          pnpm exec tsx commerce/src/reconcile-cutover.ts status.json completion.json "$ACTIVE_REQUEST_PATH" "$ACTIVE_CANDIDATE_SHA" "$PREVIOUS_LEGAL_VERSION" > reconciliation.json
           jq -e 'type == "object"' reconciliation.json >/dev/null || { echo "CHECKOUT_LEGAL_CUTOVER_RECONCILIATION_INVALID_JSON" >&2; exit 1; }
           action="$(jq -er '.action' reconciliation.json)"; [[ "$action" != BLOCKED ]] || { jq -c . reconciliation.json >&2; exit 1; }
           echo "CUTOVER_ACTION=$action" >> "$GITHUB_ENV"
 
       - name: Set guarded production deployment ref for candidate
         if: env.TERMINAL_COMPLETE != '1' && env.RESUMING_PROMOTION != '1' && env.CUTOVER_ACTION == 'DEPLOY_CANDIDATE'
-        run: scripts/set-production-deploy-ref.sh "$TARGET_SHA"
+        run: |
+          set -euo pipefail
+          if [[ "$ACTIVE_CANDIDATE_SHA" == "$TARGET_SHA" ]]; then
+            scripts/set-production-deploy-ref.sh "$ACTIVE_CANDIDATE_SHA"
+          else
+            CONTROLLED_DEPLOY_SOURCE_REF="$ACTIVE_CANDIDATE_SOURCE_REF" scripts/set-production-deploy-ref.sh "$ACTIVE_CANDIDATE_SHA"
+          fi
 
       - name: Deploy candidate to Commerce Worker Frontend and Admin
         if: env.TERMINAL_COMPLETE != '1' && env.RESUMING_PROMOTION != '1' && env.CUTOVER_ACTION == 'DEPLOY_CANDIDATE'
         run: |
           set -euo pipefail
-          scripts/controlled-coolify-deploy.sh "$TARGET_SHA"
+          scripts/controlled-coolify-deploy.sh "$ACTIVE_CANDIDATE_SHA"
           echo 'COOLIFY_CANDIDATE_DEPLOY_DISPATCHED=1' >> "$GITHUB_ENV"
 
       - name: Prove candidate before legal publication
@@ -211,11 +293,11 @@ jobs:
             echo "Allowing Coolify candidate deployments to start for ${INITIAL_READINESS_DELAY_SECONDS}s..."
             sleep "$INITIAL_READINESS_DELAY_SECONDS"
           fi
-          scripts/controlled-production-readiness.sh release.json candidate-pre-publication
+          TARGET_SHA="$ACTIVE_CANDIDATE_SHA" scripts/controlled-production-readiness.sh "$ACTIVE_REQUEST_PATH" candidate-pre-publication
           api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
-          pnpm exec tsx commerce/src/reconcile-cutover.ts status.json completion.json release.json "$TARGET_SHA" "$PREVIOUS_LEGAL_VERSION" > reconciliation.json
+          pnpm exec tsx commerce/src/reconcile-cutover.ts status.json completion.json "$ACTIVE_REQUEST_PATH" "$ACTIVE_CANDIDATE_SHA" "$PREVIOUS_LEGAL_VERSION" > reconciliation.json
           jq -e 'type == "object" and .action == "PUBLISH_LEGAL"' reconciliation.json >/dev/null || { jq -c . reconciliation.json >&2; exit 1; }
           echo 'CUTOVER_ACTION=PUBLISH_LEGAL' >> "$GITHUB_ENV"
 
@@ -224,7 +306,7 @@ jobs:
         run: |
           set -euo pipefail
           api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
-          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/legal-publish" > publication.json
+          api -X POST --data-binary @"$ACTIVE_REQUEST_PATH" "$PUBLIC_API_URL/v1/internal/release-control/legal-publish" > publication.json
           published_at="$(jq -er '.effectiveAt' publication.json)"
           echo "PUBLISHED_AT=$published_at" >> "$GITHUB_ENV"
 
@@ -236,7 +318,7 @@ jobs:
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
           if [[ -z "${PUBLISHED_AT:-}" ]]; then echo "PUBLISHED_AT=$(jq -er '.runtime.legal_publish_time' status.json)" >> "$GITHUB_ENV"; fi
-          pnpm exec tsx commerce/src/reconcile-cutover.ts status.json completion.json release.json "$TARGET_SHA" "$PREVIOUS_LEGAL_VERSION" > reconciliation.json
+          pnpm exec tsx commerce/src/reconcile-cutover.ts status.json completion.json "$ACTIVE_REQUEST_PATH" "$ACTIVE_CANDIDATE_SHA" "$PREVIOUS_LEGAL_VERSION" > reconciliation.json
           jq -e 'type == "object" and (.action == "CREATE_PROMOTION" or .action == "DEPLOY_PROMOTION" or .action == "VERIFY_AND_REOPEN")' reconciliation.json >/dev/null || { jq -c . reconciliation.json >&2; exit 1; }
           echo "CUTOVER_ACTION=$(jq -er '.action' reconciliation.json)" >> "$GITHUB_ENV"
 
@@ -246,17 +328,15 @@ jobs:
           set -euo pipefail
           git fetch --no-tags origin main
           main_sha="$(git rev-parse origin/main)"
-          allowed_main_ahead() {
-            ! git diff --name-only "$TARGET_SHA..$1" | grep -Ev '^(certification\.sh|commerce/legal/production-manifest\.json|public/legal/.+|\.github/workflows/controlled-checkout-legal-cutover\.yml|\.github/workflows/controlled-production-deploy\.yml|commerce/src/(assert-candidate-runtime-ready|candidate-runtime-readiness|checkout-legal-cutover-recovery|decide-checkout-legal-cutover-recovery|generic-production-deploy-boundary|reconcile-cutover)\.ts|commerce/test/(candidate-runtime-readiness|checkout-legal-cutover-recovery|controlled-checkout-legal-cutover-workflow|controlled-production-deploy-workflow|controlled-production-readiness-script|generic-production-deploy-boundary)\.test\.ts|scripts/controlled-production-readiness\.sh)$' | grep -q .
-          }
-          git merge-base --is-ancestor "$TARGET_SHA" "$main_sha" || { echo "CHECKOUT_LEGAL_CUTOVER_MAIN_DOES_NOT_CONTAIN_CANDIDATE" >&2; exit 1; }
-          allowed_main_ahead "$main_sha" || { echo "CHECKOUT_LEGAL_CUTOVER_MAIN_AHEAD_OF_CANDIDATE" >&2; exit 1; }
+          # Promotion must be a normal fast-forward from main and retain the
+          # exact active candidate (the repair SHA when one was adopted).
+          git merge-base --is-ancestor "$main_sha" "$ACTIVE_CANDIDATE_SHA" || { echo "CHECKOUT_LEGAL_CUTOVER_MAIN_DIVERGED_FROM_ACTIVE_CANDIDATE" >&2; exit 1; }
           promotion_root="$(mktemp -d "$RUNNER_TEMP/checkout-legal-promotion.XXXXXX")"
           trap 'git worktree remove --force "$promotion_root" >/dev/null 2>&1 || true' EXIT
-          git worktree add --detach "$promotion_root" "$main_sha" >/dev/null
+          git worktree add --detach "$promotion_root" "$ACTIVE_CANDIDATE_SHA" >/dev/null
           published="$(date -u -d "$PUBLISHED_AT" +%Y-%m-%dT%H:%M:%SZ)"
-          if git show "$main_sha:commerce/legal/production-manifest.json" | jq -e --arg version "$CANDIDATE_LEGAL_VERSION" --arg published "$published" '.version == $version and .publish_time == $published' >/dev/null; then
-            promotion_sha="$main_sha"
+          if git show "$ACTIVE_CANDIDATE_SHA:commerce/legal/production-manifest.json" | jq -e --arg version "$CANDIDATE_LEGAL_VERSION" --arg published "$published" '.version == $version and .publish_time == $published' >/dev/null; then
+            promotion_sha="$ACTIVE_CANDIDATE_SHA"
           else
             (
               cd "$promotion_root"
@@ -280,7 +360,7 @@ jobs:
             cd "$promotion_payload_root"
             RELEASE_ID="$RELEASE_ID" COMMERCE_RELEASE_MANIFEST_PATH=commerce/legal/production-manifest.json "$GITHUB_WORKSPACE/node_modules/.bin/tsx" "$GITHUB_WORKSPACE/commerce/src/release-cutover-payload.ts" "$promotion_sha"
           ) > promotion-release.json
-          jq -e --slurpfile candidate release.json '.expected.legal_manifest_sha256 == $candidate[0].expected.legal_manifest_sha256 and .expected.legal_hashes == $candidate[0].expected.legal_hashes' promotion-release.json >/dev/null
+          jq -e --slurpfile candidate "$ACTIVE_REQUEST_PATH" '.expected.legal_manifest_sha256 == $candidate[0].expected.legal_manifest_sha256 and .expected.legal_hashes == $candidate[0].expected.legal_hashes' promotion-release.json >/dev/null
           api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
           api -X POST --data-binary @promotion-release.json "$PUBLIC_API_URL/v1/internal/release-control/expectations" > /dev/null
           echo "PROMOTION_SHA=$promotion_sha" >> "$GITHUB_ENV"
