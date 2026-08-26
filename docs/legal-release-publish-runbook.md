@@ -26,6 +26,11 @@ replace legal review or authorize a publication on its own.
 
 ## Atomic checkout cutover
 
+For an interrupted controlled legal or schema cutover, use the
+[legal cutover recovery runbook](runbooks/LEGAL_CUTOVER_RECOVERY.md). It
+governs durable-state recovery and replaces any ad-hoc replay of the historical
+sequence below.
+
 For the age-band release, use the automated controlled procedure in
 [`controlled-production-cutover.md`](controlled-production-cutover.md). Do not
 manually pause, publish and reopen step-by-step: the release owner and durable

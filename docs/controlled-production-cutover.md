@@ -57,6 +57,11 @@ Any timeout, deployment mismatch, legal mismatch, missing timestamp, contract fa
 
 ## Recovery
 
+For a paused or incomplete generic controlled deployment, use the
+[generic deployment recovery runbook](runbooks/GENERIC_DEPLOY_RECOVERY.md).
+It is authoritative for durable-state classification and recovery; do not
+improvise from the historical sequence below.
+
 A failure before successful `acquire` has made no gate mutation: registrations remain open and a corrected commit may be pushed normally. A failure after `pause` is different: keep registrations paused, inspect authenticated `GET /v1/internal/release-control/status`, and rerun the workflow for the same `deploy-<SHA>` owner. A newer `main` SHA must not take the owner or move `production-deploy` while recovery is pending. Do not manually reopen to recover a failed deploy.
 
 If Coolify configuration or a webhook enqueue is the failing proof, repair that deployment configuration first and then rerun the same release. If runtime, frontend/admin descriptor, legal or worker evidence fails, repair the exact candidate deployment and rerun the same release; do not replace the durable expected baseline. Publication may be repeated only when it reports the same version/manifest as active.
