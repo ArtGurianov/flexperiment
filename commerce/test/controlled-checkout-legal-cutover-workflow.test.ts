@@ -74,7 +74,7 @@ describe("controlled anonymous checkout legal cutover workflow", () => {
     const deploy = workflow.indexOf("Set guarded production deployment ref for candidate");
     expect(workflow).toContain("ADOPTING_PREPUBLICATION_REPAIR");
     expect(workflow).toContain("RESUMING_PREPUBLICATION_REPAIR");
-    expect(workflow).toContain("REPAIRED_CANDIDATE");
+    expect(workflow).toContain("RESUMING_POSTPUBLICATION_REPAIR");
     expect(workflow).toContain("assert-checkout-legal-cutover-repair-boundary.ts");
     expect(workflow).toContain("CHECKOUT_LEGAL_CUTOVER_REPAIR_REQUEST_MISMATCH");
     expect(workflow).toContain('if: env.TERMINAL_COMPLETE != \'1\' && env.RESUMING_PROMOTION != \'1\' && env.PREPUBLICATION_REPAIR != \'1\'');
@@ -82,6 +82,14 @@ describe("controlled anonymous checkout legal cutover workflow", () => {
     expect(workflow).toContain('CONTROLLED_DEPLOY_SOURCE_REF="$ACTIVE_CANDIDATE_SOURCE_REF" scripts/set-production-deploy-ref.sh "$ACTIVE_CANDIDATE_SHA"');
     expect(adoption).toBeGreaterThan(pauseProof);
     expect(deploy).toBeGreaterThan(adoption);
+  });
+
+  it("skips adoption and legal publication for an already adopted post-publication repair", () => {
+    expect(workflow).toContain("RESUMING_POSTPUBLICATION_REPAIR");
+    expect(workflow).toContain("CHECKOUT_LEGAL_CUTOVER_POSTPUBLICATION_REPAIR_STATE_INVALID");
+    expect(workflow).toContain(".runtime.source_commit == $sha and .runtime.worker_source_commit == $sha");
+    expect(workflow).toContain(".runtime.legal_hashes == $request[0].expected.legal_hashes");
+    expect(workflow).toContain("current_legal_copies_match | if type == \"boolean\"");
   });
 
   it("keeps repair promotion on the recovery ref while ordinary cutovers retain main guards", () => {

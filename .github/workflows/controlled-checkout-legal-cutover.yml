@@ -101,9 +101,6 @@ jobs:
             echo 'TERMINAL_COMPLETE=1' >> "$GITHUB_ENV"
           else
             current_legal="$(jq -er '.runtime.legal_version | select(type == "string")' durable-before.json)"
-            if [[ -n "${REPAIR_SHA:-}" && "$current_legal" != "$PREVIOUS_LEGAL_VERSION" ]]; then
-              echo "CHECKOUT_LEGAL_CUTOVER_REPAIR_REQUIRES_PREPUBLICATION_STATE" >&2; exit 1
-            fi
             durable_source="$(jq -r '.expected.source_commit // empty' durable-before.json)"
             repair_arg="${REPAIR_SHA:-}"
             # A repair source retains the predecessor canonical manifest. Once
@@ -111,14 +108,21 @@ jobs:
             # artifact without trusting the mutable workflow ref.
             if [[ "$current_legal" == "$CANDIDATE_LEGAL_VERSION" ]] && [[ "$durable_source" =~ ^[a-f0-9]{40}$ ]] && [[ "$durable_source" != "$TARGET_SHA" ]]; then
               if git cat-file -e "$durable_source^{commit}" 2>/dev/null && git show "$durable_source:commerce/legal/production-manifest.json" | jq -e --arg previous "$PREVIOUS_LEGAL_VERSION" '.version == $previous' >/dev/null; then
+                if [[ -n "${REPAIR_SHA:-}" && "$REPAIR_SHA" != "$durable_source" ]]; then
+                  echo "CHECKOUT_LEGAL_CUTOVER_DURABLE_REPAIR_SOURCE_MISMATCH" >&2; exit 1
+                fi
                 repair_arg="$durable_source"
+              elif [[ -n "${REPAIR_SHA:-}" ]]; then
+                git merge-base --is-ancestor "$REPAIR_SHA" "$durable_source" || { echo "CHECKOUT_LEGAL_CUTOVER_DURABLE_PROMOTION_NOT_DESCENDED_FROM_REPAIR" >&2; exit 1; }
+                repair_arg=""
               fi
             fi
             active_request_path=release.json
             active_candidate_sha="$TARGET_SHA"
             active_candidate_source_ref=main
             recovery_source_lane=0
-            pnpm exec tsx commerce/src/decide-checkout-legal-cutover-recovery.ts durable-before.json "$RELEASE_ID" "$TARGET_SHA" "$CANDIDATE_LEGAL_VERSION" "$PREVIOUS_LEGAL_VERSION" "$current_legal" "$repair_arg" > recovery.json
+            current_legal_copies_match="$(jq -er '.runtime.current_legal_copies_match | if type == "boolean" then tostring else error("CHECKOUT_LEGAL_CUTOVER_CURRENT_LEGAL_COPIES_INVALID") end' durable-before.json)"
+            pnpm exec tsx commerce/src/decide-checkout-legal-cutover-recovery.ts durable-before.json "$RELEASE_ID" "$TARGET_SHA" "$CANDIDATE_LEGAL_VERSION" "$PREVIOUS_LEGAL_VERSION" "$current_legal" "$repair_arg" "$current_legal_copies_match" > recovery.json
             validate_json recovery.json RECOVERY
             recovery_mode="$(jq -er '.mode' recovery.json)"
             [[ "$recovery_mode" != BLOCKED ]] || { jq -c . recovery.json >&2; exit 1; }
@@ -147,9 +151,12 @@ jobs:
               jq -e --slurpfile candidate release.json --arg sha "$repair_sha" '.mode == "CONTROLLED_CUTOVER" and .expected.source_commit == $sha and .expected.migration == $candidate[0].expected.migration and .expected.legal_version == $candidate[0].expected.legal_version and .expected.legal_manifest_sha256 == $candidate[0].expected.legal_manifest_sha256 and .expected.legal_hashes == $candidate[0].expected.legal_hashes' repair-release.json >/dev/null || { echo "CHECKOUT_LEGAL_CUTOVER_REPAIR_REQUEST_MISMATCH" >&2; exit 1; }
               git worktree remove --force "$repair_root" >/dev/null
             }
-            if [[ "$recovery_mode" == ADOPTING_PREPUBLICATION_REPAIR || "$recovery_mode" == RESUMING_PREPUBLICATION_REPAIR || "$recovery_mode" == REPAIRED_CANDIDATE ]]; then
-              if [[ "$current_legal" == "$PREVIOUS_LEGAL_VERSION" ]]; then
-                jq -e --arg release "$RELEASE_ID" --arg previous "$PREVIOUS_LEGAL_VERSION" '.sales_paused == true and .owner_release_id == $release and .runtime.legal_version == $previous and .runtime.current_legal_copies_match == true' durable-before.json >/dev/null || { echo "CHECKOUT_LEGAL_CUTOVER_PREPUBLICATION_REPAIR_STATE_INVALID" >&2; exit 1; }
+            if [[ "$recovery_mode" == ADOPTING_PREPUBLICATION_REPAIR ]]; then
+              jq -e --arg release "$RELEASE_ID" --arg previous "$PREVIOUS_LEGAL_VERSION" '.sales_paused == true and .owner_release_id == $release and .runtime.legal_version == $previous and .runtime.current_legal_copies_match == true' durable-before.json >/dev/null || { echo "CHECKOUT_LEGAL_CUTOVER_REPAIR_REQUIRES_PREPUBLICATION_STATE" >&2; exit 1; }
+            fi
+            if [[ "$recovery_mode" == ADOPTING_PREPUBLICATION_REPAIR || "$recovery_mode" == RESUMING_PREPUBLICATION_REPAIR || "$recovery_mode" == RESUMING_POSTPUBLICATION_REPAIR ]]; then
+              if [[ "$recovery_mode" == RESUMING_POSTPUBLICATION_REPAIR ]]; then
+                jq -e --slurpfile request release.json --arg release "$RELEASE_ID" --arg sha "$(jq -er '.repairSourceCommit' recovery.json)" --arg legal "$CANDIDATE_LEGAL_VERSION" '.sales_paused == true and .owner_release_id == $release and .expected.source_commit == $sha and .runtime.source_commit == $sha and .runtime.worker_source_commit == $sha and .runtime.legal_version == $legal and .runtime.legal_manifest_sha256 == $request[0].expected.legal_manifest_sha256 and .runtime.legal_hashes == $request[0].expected.legal_hashes' durable-before.json >/dev/null || { echo "CHECKOUT_LEGAL_CUTOVER_POSTPUBLICATION_REPAIR_STATE_INVALID" >&2; exit 1; }
               fi
               repair_sha="$(jq -er '.repairSourceCommit' recovery.json)"
               prepare_repair_request "$repair_sha"
