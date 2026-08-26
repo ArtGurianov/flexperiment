@@ -16,6 +16,8 @@ describe("generic controlled production deploy workflow", () => {
     expect(workflow).toContain("contents: write");
     expect(workflow).toContain("RELEASE_ID: deploy-${{ github.sha }}");
     expect(workflow).toContain("TARGET_SHA: ${{ github.sha }}");
+    expect(workflow).toContain('mode: "CONTROLLED_CUTOVER"');
+    expect(workflow).not.toContain('mode: "ROLLING"');
   });
 
   it("evaluates the tested schema/legal boundary before it can acquire or pause registrations", () => {

@@ -6,7 +6,7 @@ const sourceCommit = "a".repeat(40);
 const migrationVersions = ["0031_participant_age_band.sql", "0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql", "0034_worker_sweep_evidence.sql"];
 const request: ReleaseControlRequest = {
   release_id: `deploy-${sourceCommit}`,
-  mode: "ROLLING",
+  mode: "CONTROLLED_CUTOVER",
   expected: {
     source_commit: sourceCommit,
     migration: "0034_worker_sweep_evidence.sql",
