@@ -70,7 +70,7 @@ jobs:
             fi
           fi
           TARGET_SHA="$(git rev-parse HEAD)"; echo "TARGET_SHA=$TARGET_SHA" >> "$GITHUB_ENV"
-          pnpm commerce:release-cutover:payload "$TARGET_SHA" > release.json
+          pnpm exec tsx commerce/src/release-cutover-payload.ts "$TARGET_SHA" > release.json
           jq -e '.expected.migration == "0034_worker_sweep_evidence.sql" and .expected.legal_version == "2026-08-25.1"' release.json >/dev/null
           current_legal="$(jq -r '.runtime.legal_version // empty' durable-before.json)"
           if [[ "$current_legal" == 2026-08-23.2 ]]; then
@@ -80,7 +80,8 @@ jobs:
           else
             echo 'Unexpected legal publication state' >&2; exit 1
           fi
-          pnpm commerce:release-cutover:reconcile durable-before.json completion.json release.json "$CANDIDATE_SOURCE_COMMIT" > reconciliation.json
+          pnpm exec tsx commerce/src/reconcile-cutover.ts durable-before.json completion.json release.json "$CANDIDATE_SOURCE_COMMIT" > reconciliation.json
+          jq -e 'type == "object"' reconciliation.json >/dev/null || { echo "CUTOVER_RECONCILIATION_INVALID_JSON" >&2; exit 1; }
           CUTOVER_ACTION="$(jq -er .action reconciliation.json)"; [[ "$CUTOVER_ACTION" != BLOCKED ]] || { jq -c . reconciliation.json >&2; exit 1; }
           echo "CUTOVER_ACTION=$CUTOVER_ACTION" >> "$GITHUB_ENV"; echo 'TERMINAL_COMPLETE=0' >> "$GITHUB_ENV"
 
@@ -116,7 +117,8 @@ jobs:
           api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
-          pnpm commerce:release-cutover:reconcile status.json completion.json release.json "$CANDIDATE_SOURCE_COMMIT" > reconciliation.json
+          pnpm exec tsx commerce/src/reconcile-cutover.ts status.json completion.json release.json "$CANDIDATE_SOURCE_COMMIT" > reconciliation.json
+          jq -e 'type == "object"' reconciliation.json >/dev/null || { echo "CUTOVER_RECONCILIATION_INVALID_JSON" >&2; exit 1; }
           action="$(jq -er .action reconciliation.json)"; [[ "$action" != BLOCKED ]] || exit 1; echo "CUTOVER_ACTION=$action" >> "$GITHUB_ENV"
 
       - name: Set guarded production deployment ref for candidate
@@ -140,7 +142,8 @@ jobs:
             [[ "$attempt" == "$POLL_ATTEMPTS" ]] && exit 1; sleep "$POLL_SECONDS"
           done
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
-          pnpm commerce:release-cutover:reconcile status.json completion.json release.json "$CANDIDATE_SOURCE_COMMIT" > reconciliation.json
+          pnpm exec tsx commerce/src/reconcile-cutover.ts status.json completion.json release.json "$CANDIDATE_SOURCE_COMMIT" > reconciliation.json
+          jq -e 'type == "object"' reconciliation.json >/dev/null || { echo "CUTOVER_RECONCILIATION_INVALID_JSON" >&2; exit 1; }
           [[ "$(jq -er .action reconciliation.json)" == PUBLISH_LEGAL ]] || exit 1
           echo 'CUTOVER_ACTION=PUBLISH_LEGAL' >> "$GITHUB_ENV"
 
@@ -167,7 +170,7 @@ jobs:
             git merge-base --is-ancestor "$CANDIDATE_SOURCE_COMMIT" "$MAIN_SHA" && allowed "$MAIN_SHA" && git show "$MAIN_SHA:commerce/legal/production-manifest.json" > manifest.json && jq -e --arg published "$published" '.version == "2026-08-25.1" and .publish_time == $published' manifest.json >/dev/null || { echo 'main is not the exact promotion' >&2; exit 1; }
             PROMOTION_SHA="$MAIN_SHA"; git checkout --detach "$PROMOTION_SHA"
           fi
-          RELEASE_ID="$RELEASE_ID" COMMERCE_RELEASE_MANIFEST_PATH=commerce/legal/production-manifest.json pnpm commerce:release-cutover:payload "$PROMOTION_SHA" > promotion-release.json
+          RELEASE_ID="$RELEASE_ID" COMMERCE_RELEASE_MANIFEST_PATH=commerce/legal/production-manifest.json pnpm exec tsx commerce/src/release-cutover-payload.ts "$PROMOTION_SHA" > promotion-release.json
           jq -e --slurpfile candidate release.json '.expected.legal_manifest_sha256 == $candidate[0].expected.legal_manifest_sha256 and .expected.legal_hashes == $candidate[0].expected.legal_hashes' promotion-release.json >/dev/null
           api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
           api -X POST --data-binary @promotion-release.json "$PUBLIC_API_URL/v1/internal/release-control/expectations" > /dev/null

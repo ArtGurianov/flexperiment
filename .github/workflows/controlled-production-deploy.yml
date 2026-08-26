@@ -136,7 +136,8 @@ jobs:
               jq -e --slurpfile request release.json '.expected == ($request[0].expected | del(.legal_hashes))' durable-before.json >/dev/null || { echo "GENERIC_DEPLOY_OWNER_EXPECTATIONS_MISMATCH" >&2; exit 1; }
             fi
           fi
-          pnpm commerce:production-deploy:reconcile durable-before.json completion.json release.json > reconciliation.json
+          pnpm exec tsx commerce/src/reconcile-generic-production-deploy.ts durable-before.json completion.json release.json > reconciliation.json
+          validate_json reconciliation.json RECONCILIATION
           action="$(jq -er '.action' reconciliation.json)"
           [[ "$action" != "BLOCKED" ]] || { jq -c . reconciliation.json >&2; exit 1; }
           echo "DEPLOY_ACTION=$action" >> "$GITHUB_ENV"
@@ -191,7 +192,8 @@ jobs:
           api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
-          pnpm commerce:production-deploy:reconcile status.json completion.json release.json > reconciliation.json
+          pnpm exec tsx commerce/src/reconcile-generic-production-deploy.ts status.json completion.json release.json > reconciliation.json
+          jq -e 'type == "object"' reconciliation.json >/dev/null || { echo "RECONCILIATION_INVALID_JSON" >&2; exit 1; }
           action="$(jq -er '.action' reconciliation.json)"
           [[ "$action" == "DEPLOY" || "$action" == "VERIFY_AND_REOPEN" ]] || { jq -c . reconciliation.json >&2; exit 1; }
           echo "DEPLOY_ACTION=$action" >> "$GITHUB_ENV"

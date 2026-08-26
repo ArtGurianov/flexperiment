@@ -23,7 +23,15 @@ describe("controlled cutover production topology", () => {
     expect(workflow).not.toContain("RELEASE_ID: gha-${{ github.run_id }}");
     expect(workflow).toContain('api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID"');
     expect(workflow).toContain('[[ "$owner" == "$RELEASE_ID" ]]');
-    expect(workflow).toContain('RELEASE_ID="$RELEASE_ID" COMMERCE_RELEASE_MANIFEST_PATH=commerce/legal/production-manifest.json pnpm commerce:release-cutover:payload "$PROMOTION_SHA"');
+    expect(workflow).toContain('RELEASE_ID="$RELEASE_ID" COMMERCE_RELEASE_MANIFEST_PATH=commerce/legal/production-manifest.json pnpm exec tsx commerce/src/release-cutover-payload.ts "$PROMOTION_SHA"');
+  });
+
+  it("keeps release payloads and reconciliations off pnpm lifecycle stdout", () => {
+    expect(workflow).not.toContain("pnpm commerce:release-cutover:payload");
+    expect(workflow).not.toContain("pnpm commerce:release-cutover:reconcile");
+    expect(workflow.match(/pnpm exec tsx commerce\/src\/release-cutover-payload\.ts .* > (release|promotion-release)\.json/g)).toHaveLength(2);
+    expect(workflow.match(/pnpm exec tsx commerce\/src\/reconcile-cutover\.ts .* > reconciliation\.json/g)).toHaveLength(3);
+    expect(workflow.match(/CUTOVER_RECONCILIATION_INVALID_JSON/g)).toHaveLength(3);
   });
 
   it("keeps main as the source ref while deploying candidate and promotion through the guarded ref", () => {

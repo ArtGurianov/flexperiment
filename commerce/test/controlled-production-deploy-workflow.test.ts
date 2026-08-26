@@ -78,6 +78,16 @@ describe("generic controlled production deploy workflow", () => {
     expect(manifestValidation).toBeLessThan(workflow.indexOf('jq -e --slurpfile request release.json --arg source_sha'));
   });
 
+  it("keeps reconciliation output off the pnpm lifecycle stdout channel", () => {
+    const preflightReconcile = workflow.indexOf("pnpm exec tsx commerce/src/reconcile-generic-production-deploy.ts durable-before.json completion.json release.json > reconciliation.json");
+    const preflightValidation = workflow.indexOf("validate_json reconciliation.json RECONCILIATION");
+    const pausedReconcile = workflow.indexOf("pnpm exec tsx commerce/src/reconcile-generic-production-deploy.ts status.json completion.json release.json > reconciliation.json");
+    const pausedValidation = workflow.indexOf('jq -e \'type == "object"\' reconciliation.json >/dev/null || { echo "RECONCILIATION_INVALID_JSON"');
+    expect(workflow).not.toContain("pnpm commerce:production-deploy:reconcile");
+    expect(preflightValidation).toBeGreaterThan(preflightReconcile);
+    expect(pausedValidation).toBeGreaterThan(pausedReconcile);
+  });
+
   it("uses a candidate-bound durable owner without legal promotion or CI writes", () => {
     expect(workflow).toContain('"$owner" == "$RELEASE_ID"');
     expect(workflow).toContain("GENERIC_DEPLOY_BLOCKED_BY_RELEASE_OWNER");
