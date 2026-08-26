@@ -151,6 +151,60 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
+  it("uses the same safe public occurrence DTO on every catalogue endpoint", async () => {
+    const { db, app } = appFixture();
+    const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
+    const publicHeaders = { Origin: "https://flexperiment.ru", "X-Forwarded-For": "127.0.0.32" };
+
+    const tour = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers: publicHeaders });
+    const byCity = await app.request("http://api.flexperiment.ru/v1/public/cities/tomsk/occurrences", { headers: publicHeaders });
+    const byId = await app.request(`http://api.flexperiment.ru/v1/public/occurrences/${occurrenceId}`, { headers: publicHeaders });
+    const [tourOccurrence] = (await tour.json() as { cities: unknown[] }).cities;
+    const [cityOccurrence] = (await byCity.json() as { occurrences: unknown[] }).occurrences;
+    const individualOccurrence = await byId.json();
+
+    for (const occurrence of [tourOccurrence, cityOccurrence, individualOccurrence]) {
+      expect(occurrence).toMatchObject({
+        id: occurrenceId,
+        city: "tomsk",
+        city_title: "Томск",
+        venue: { status: "CONFIRMED", name: null, address: null, disclosure_text: null, announce_by: null },
+      });
+      expect(occurrence).not.toHaveProperty("venue_public");
+      expect(occurrence).not.toHaveProperty("venue_name");
+      expect(occurrence).not.toHaveProperty("venue_address");
+    }
+
+    const checkoutContext = await app.request("http://api.flexperiment.ru/v1/public/checkout-context", {
+      method: "POST",
+      headers: { ...publicHeaders, "Content-Type": "application/json" },
+      body: JSON.stringify({ occurrence_id: occurrenceId }),
+    });
+    expect(await checkoutContext.json()).toMatchObject({ venue_disclosure: "Studio: Lenina 1" });
+
+    db.prepare("UPDATE occurrences SET venue_public = 1 WHERE id = ?").run(occurrenceId);
+    const exposed = await app.request("http://api.flexperiment.ru/v1/public/occurrences/" + occurrenceId, { headers: publicHeaders });
+    expect(await exposed.json()).toMatchObject({ venue: { status: "CONFIRMED", name: "Studio", address: "Lenina 1" } });
+    db.close();
+  });
+
+  it("exposes only a TBD venue presentation, never an address", async () => {
+    const { db, app } = appFixture();
+    const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
+    db.prepare(`UPDATE occurrences
+      SET venue_status = 'TO_BE_ANNOUNCED', venue_name = NULL, venue_address = NULL,
+        venue_disclosure_text = 'Площадка уточняется.', venue_announce_by = '2026-09-20T10:00:00.000Z'
+      WHERE id = ?`).run(occurrenceId);
+    const response = await app.request("http://api.flexperiment.ru/v1/public/occurrences/" + occurrenceId, {
+      headers: { Origin: "https://flexperiment.ru", "X-Forwarded-For": "127.0.0.33" },
+    });
+    expect(await response.json()).toMatchObject({ venue: {
+      status: "TO_BE_ANNOUNCED", name: null, address: null,
+      disclosure_text: "Площадка уточняется.", announce_by: "2026-09-20T10:00:00.000Z",
+    } });
+    db.close();
+  });
+
   it("has no generic financial status editor", async () => {
     const { db, app } = appFixture();
     const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.1" }, body: JSON.stringify({ password: "correct horse" }) });

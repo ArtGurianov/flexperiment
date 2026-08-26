@@ -50,6 +50,13 @@ describe("refund email wording", () => {
     expect(ticket.plaintext).not.toContain("оформления билета");
   });
 
+  it("waits for explicit event selection before requesting a checkout quote", () => {
+    const checkoutUi = readFileSync("components/CheckoutFlow.tsx", "utf8");
+    expect(checkoutUi).toContain('setOccurrences(available); setOccurrenceId("")');
+    expect(checkoutUi).not.toContain("const initial = available.find(canRequestCheckout)");
+    expect(checkoutUi).toContain("quote?.venue_disclosure ?? publicVenueDisclosure(selected)");
+  });
+
   it("renders human-readable field changes and the complete current occurrence state", () => {
     const update = renderEmailTemplate("occurrence-updated", {
       before: {

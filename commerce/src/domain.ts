@@ -65,6 +65,56 @@ const formatOccurrenceDateTime = (value: unknown, timeZone: unknown) => {
   }
 };
 
+export type PublicOccurrence = {
+  id: string;
+  city: string;
+  city_title: string;
+  title: string;
+  starts_at: string;
+  ends_at: string;
+  timezone: string;
+  price_kopecks: number;
+  availability: number;
+  sales_status: "OPEN" | "PAUSED" | "CLOSED";
+  fulfillment_status: "SCHEDULED" | "COMPLETED" | "CANCELLED";
+  venue: {
+    status: "CONFIRMED" | "TO_BE_ANNOUNCED";
+    name: string | null;
+    address: string | null;
+    disclosure_text: string | null;
+    announce_by: string | null;
+  };
+};
+
+const nullableString = (value: unknown) => value == null ? null : String(value);
+
+/**
+ * The marketing catalogue is intentionally narrower than both the occurrence
+ * row and checkout's immutable venue disclosure. In particular,
+ * `venue_public` is enforced here and never leaves the API as a client-side
+ * policy flag.
+ */
+export const publicOccurrence = (occurrence: Row): PublicOccurrence => {
+  const venueStatus = occurrence.venue_status === "TO_BE_ANNOUNCED" ? "TO_BE_ANNOUNCED" : "CONFIRMED";
+  const exposeConfirmedVenue = venueStatus === "CONFIRMED" && Number(occurrence.venue_public) === 1;
+  return {
+    id: String(occurrence.id),
+    city: String(occurrence.city),
+    city_title: String(occurrence.city_title),
+    title: String(occurrence.title),
+    starts_at: String(occurrence.starts_at),
+    ends_at: String(occurrence.ends_at),
+    timezone: String(occurrence.timezone),
+    price_kopecks: Number(occurrence.price_kopecks),
+    availability: Number(occurrence.availability),
+    sales_status: occurrence.sales_status === "PAUSED" ? "PAUSED" : occurrence.sales_status === "CLOSED" ? "CLOSED" : "OPEN",
+    fulfillment_status: occurrence.fulfillment_status === "COMPLETED" ? "COMPLETED" : occurrence.fulfillment_status === "CANCELLED" ? "CANCELLED" : "SCHEDULED",
+    venue: venueStatus === "CONFIRMED"
+      ? { status: venueStatus, name: exposeConfirmedVenue ? nullableString(occurrence.venue_name) : null, address: exposeConfirmedVenue ? nullableString(occurrence.venue_address) : null, disclosure_text: null, announce_by: null }
+      : { status: venueStatus, name: null, address: null, disclosure_text: nullableString(occurrence.venue_disclosure_text), announce_by: nullableString(occurrence.venue_announce_by) },
+  };
+};
+
 const occurrenceState = (occurrence: Row) => `${occurrence.visibility}:${occurrence.sales_status}`;
 const allowedOccurrenceStateTransitions = new Set([
   // One-way recovery for legacy rows written before the SQLite invariant.
@@ -312,17 +362,25 @@ export class CommerceDomain {
     }
   }
 
+  private publicOccurrences(where: string, ...params: unknown[]) {
+    return many(this.db, `SELECT
+        o.id, c.slug AS city, c.title AS city_title, o.title, o.starts_at, o.ends_at,
+        o.timezone, o.price_kopecks, o.sales_status, o.fulfillment_status,
+        o.venue_status, o.venue_name, o.venue_address, o.venue_public,
+        o.venue_disclosure_text, o.venue_announce_by,
+        (o.capacity - (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = o.id AND b.status IN ('RESERVED', 'CONFIRMED'))) AS availability
+      FROM cities c
+      JOIN occurrences o ON o.city_id = c.id
+      WHERE o.visibility = 'PUBLISHED' AND ${where}
+      ORDER BY c.title, o.starts_at`, ...params).map(publicOccurrence);
+  }
+
   tour() {
-    return many(this.db, `SELECT c.slug AS city, c.title AS city_title, o.*,
-      (o.capacity - (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = o.id AND b.status IN ('RESERVED', 'CONFIRMED'))) AS availability
-      FROM cities c JOIN occurrences o ON o.city_id = c.id AND o.visibility = 'PUBLISHED'
-      ORDER BY c.title, o.starts_at`);
+    return this.publicOccurrences("1 = 1");
   }
 
   occurrence(occurrenceId: string) {
-    const found = one(this.db, `SELECT o.*, c.slug AS city_slug,
-      (o.capacity - (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = o.id AND b.status IN ('RESERVED', 'CONFIRMED'))) AS availability
-      FROM occurrences o JOIN cities c ON c.id = o.city_id WHERE o.id = ? AND o.visibility = 'PUBLISHED'`, occurrenceId);
+    const found = this.publicOccurrences("o.id = ?", occurrenceId)[0];
     if (!found) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
     return found;
   }

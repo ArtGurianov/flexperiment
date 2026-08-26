@@ -22,6 +22,13 @@ type Occurrence = {
   availability: number;
   sales_status: PublicSalesStatus;
   fulfillment_status: "SCHEDULED" | "COMPLETED" | "CANCELLED";
+  venue: {
+    status: "CONFIRMED" | "TO_BE_ANNOUNCED";
+    name: string | null;
+    address: string | null;
+    disclosure_text: string | null;
+    announce_by: string | null;
+  };
 };
 type Quote = {
   quote_id: string;
@@ -59,6 +66,18 @@ const occurrenceDateTimeLabel = (startsAt: string, timeZone: string) => {
   } catch {
     return new Intl.DateTimeFormat("ru-RU", options).format(date);
   }
+};
+const publicVenueDisclosure = (occurrence: Occurrence) => {
+  const { venue } = occurrence;
+  if (venue.status === "CONFIRMED") {
+    return venue.name && venue.address
+      ? `${venue.name}: ${venue.address}`
+      : "Точное место проведения будет доступно при записи.";
+  }
+  const deadline = venue.announce_by
+    ? ` Сообщим адрес участникам на email не позднее ${occurrenceDateTimeLabel(venue.announce_by, occurrence.timezone)}.`
+    : "";
+  return `${venue.disclosure_text ?? "Площадка уточняется."}${deadline}`;
 };
 const legalPagePaths = {
   PUBLIC_OFFER: "/legal/public-offer",
@@ -115,8 +134,7 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
       .then((data: { cities: Occurrence[] }) => {
         if (!current) return;
         const available = data.cities.filter(isPublicOccurrenceSelectable);
-        const initial = available.find(canRequestCheckout) ?? available[0];
-        setOccurrences(available); setOccurrenceId(initial?.id ?? "");
+        setOccurrences(available); setOccurrenceId("");
         const scheduledCities = data.cities
           .filter((item) => item.fulfillment_status === "SCHEDULED")
           .map((item) => findCityBySlug(item.city))
@@ -254,7 +272,7 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
         </div>
         <div>
           <p className="text-xs uppercase text-bone/70">Место проведения</p>
-          <p className="mt-1 leading-relaxed text-bone/90">{quote?.venue_disclosure ?? (canCheckout ? "Загружаем информацию о площадке…" : "Информация о площадке появится при открытии записи.")}</p>
+          <p className="mt-1 leading-relaxed text-bone/90">{quote?.venue_disclosure ?? publicVenueDisclosure(selected)}</p>
         </div>
       </div>
       {!canCheckout ? <p role="status" className="border border-bone/50 px-3 py-2 text-bone/70">{salesAnnouncement(selected?.sales_status)}</p> : <>
