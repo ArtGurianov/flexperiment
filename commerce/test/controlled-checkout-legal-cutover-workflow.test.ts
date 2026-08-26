@@ -48,7 +48,7 @@ describe("controlled anonymous checkout legal cutover workflow", () => {
     const deploy = workflow.indexOf("Deploy promotion artifact to Commerce Worker Frontend and Admin");
     const reopen = workflow.indexOf('release-control/reopen" > reopened.json');
     const finalProof = workflow.indexOf("Verify durable completion and every post-reopen surface");
-    expect(workflow).toContain("git push origin HEAD:refs/heads/main");
+    expect(workflow).toContain('git push origin "HEAD:refs/heads/$promotion_ref"');
     expect(workflow).toContain("CHECKOUT_LEGAL_CUTOVER_PROMOTION_SCOPE_INVALID");
     expect(workflow).toContain("checkout-legal-cutover-recovery");
     expect(workflow).toContain('scripts/set-production-deploy-ref.sh "$PROMOTION_SHA"');
@@ -74,7 +74,7 @@ describe("controlled anonymous checkout legal cutover workflow", () => {
     const deploy = workflow.indexOf("Set guarded production deployment ref for candidate");
     expect(workflow).toContain("ADOPTING_PREPUBLICATION_REPAIR");
     expect(workflow).toContain("RESUMING_PREPUBLICATION_REPAIR");
-    expect(workflow).toContain("REPAIRED_CANDIDATE");
+    expect(workflow).toContain("RESUMING_POSTPUBLICATION_REPAIR");
     expect(workflow).toContain("assert-checkout-legal-cutover-repair-boundary.ts");
     expect(workflow).toContain("CHECKOUT_LEGAL_CUTOVER_REPAIR_REQUEST_MISMATCH");
     expect(workflow).toContain('if: env.TERMINAL_COMPLETE != \'1\' && env.RESUMING_PROMOTION != \'1\' && env.PREPUBLICATION_REPAIR != \'1\'');
@@ -82,5 +82,44 @@ describe("controlled anonymous checkout legal cutover workflow", () => {
     expect(workflow).toContain('CONTROLLED_DEPLOY_SOURCE_REF="$ACTIVE_CANDIDATE_SOURCE_REF" scripts/set-production-deploy-ref.sh "$ACTIVE_CANDIDATE_SHA"');
     expect(adoption).toBeGreaterThan(pauseProof);
     expect(deploy).toBeGreaterThan(adoption);
+  });
+
+  it("skips adoption and legal publication for an already adopted post-publication repair", () => {
+    expect(workflow).toContain("RESUMING_POSTPUBLICATION_REPAIR");
+    expect(workflow).toContain("CHECKOUT_LEGAL_CUTOVER_POSTPUBLICATION_REPAIR_STATE_INVALID");
+    expect(workflow).toContain(".runtime.source_commit == $sha and .runtime.worker_source_commit == $sha");
+    expect(workflow).toContain(".runtime.legal_hashes == $request[0].expected.legal_hashes");
+    expect(workflow).toContain("current_legal_copies_match | if type == \"boolean\"");
+  });
+
+  it("keeps repair promotion on the recovery ref while ordinary cutovers retain main guards", () => {
+    const candidate = "candidate";
+    const mainFont = "main-font";
+    const repair = "repair";
+    const promotion = "promotion";
+    const parent: Record<string, string | undefined> = {
+      [mainFont]: candidate,
+      [repair]: candidate,
+      [promotion]: repair,
+    };
+    const isAncestor = (ancestor: string, descendant: string): boolean => {
+      for (let current: string | undefined = descendant; current; current = parent[current]) if (current === ancestor) return true;
+      return false;
+    };
+
+    expect(isAncestor(candidate, repair)).toBe(true);
+    expect(isAncestor(repair, promotion)).toBe(true);
+    expect(isAncestor(mainFont, promotion)).toBe(false);
+    expect(workflow).toContain('if [[ "$RECOVERY_SOURCE_LANE" == 1 ]]; then');
+    expect(workflow).toContain('RECOVERY_PROMOTION_REF: ${{ github.ref_name }}-promotion');
+    expect(workflow).toContain('promotion_ref="$RECOVERY_PROMOTION_REF"');
+    expect(workflow).toContain('[[ "$(git rev-parse "$promotion_sha^")" == "$ACTIVE_CANDIDATE_SHA" ]]');
+    expect(workflow).toContain('git diff --name-only "$ACTIVE_CANDIDATE_SHA..$promotion_sha" | grep -Ev \'^(certification\\.sh|commerce/legal/production-manifest\\.json|public/legal/.+)$\'');
+    expect(workflow).toContain('git push origin "$promotion_sha:refs/heads/$promotion_ref"');
+    expect(workflow).toContain('[[ "$promotion_ref_tip" == "$durable_promotion_sha" ]]');
+    expect(workflow).toContain('CONTROLLED_DEPLOY_SOURCE_REF="$RECOVERY_PROMOTION_REF" scripts/set-production-deploy-ref.sh "$PROMOTION_SHA"');
+    expect(workflow).toContain('git push origin "HEAD:refs/heads/$promotion_ref"');
+    expect(workflow).toContain("CHECKOUT_LEGAL_CUTOVER_MAIN_AHEAD_OF_CANDIDATE");
+    expect(workflow).toContain("CHECKOUT_LEGAL_CUTOVER_MAIN_DOES_NOT_CONTAIN_CANDIDATE");
   });
 });

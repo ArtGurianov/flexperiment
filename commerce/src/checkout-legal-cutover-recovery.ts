@@ -4,7 +4,7 @@ export type CheckoutLegalCutoverRecovery =
   | { mode: "CANDIDATE" }
   | { mode: "ADOPTING_PREPUBLICATION_REPAIR"; repairSourceCommit: string }
   | { mode: "RESUMING_PREPUBLICATION_REPAIR"; repairSourceCommit: string }
-  | { mode: "REPAIRED_CANDIDATE"; repairSourceCommit: string }
+  | { mode: "RESUMING_POSTPUBLICATION_REPAIR"; repairSourceCommit: string }
   | { mode: "RESUMING_PROMOTION"; promotionSourceCommit: string }
   | { mode: "BLOCKED"; reason: string };
 
@@ -21,6 +21,7 @@ export const checkoutLegalCutoverRecovery = (input: {
   candidateLegalVersion: string;
   previousLegalVersion: string;
   activeLegalVersion: string | null;
+  currentLegalCopiesMatch?: boolean;
   repairSourceCommit?: string;
 }): CheckoutLegalCutoverRecovery => {
   const {
@@ -30,6 +31,7 @@ export const checkoutLegalCutoverRecovery = (input: {
     candidateLegalVersion,
     previousLegalVersion,
     activeLegalVersion,
+    currentLegalCopiesMatch,
     repairSourceCommit,
   } = input;
   if (!status.owner_release_id) return status.sales_paused ? { mode: "BLOCKED", reason: "PAUSED_WITHOUT_OWNER" } : { mode: "CANDIDATE" };
@@ -41,6 +43,7 @@ export const checkoutLegalCutoverRecovery = (input: {
   if (!/^[a-f0-9]{40}$/.test(durableSourceCommit)) return { mode: "BLOCKED", reason: "DURABLE_SOURCE_INVALID" };
 
   if (activeLegalVersion === previousLegalVersion) {
+    if (currentLegalCopiesMatch === false && (durableSourceCommit !== candidateSourceCommit || repairSourceCommit)) return { mode: "BLOCKED", reason: "PREPUBLICATION_CURRENT_LEGAL_COPIES_MISMATCH" };
     if (durableSourceCommit === candidateSourceCommit) {
       if (!repairSourceCommit) return { mode: "CANDIDATE" };
       return { mode: "ADOPTING_PREPUBLICATION_REPAIR", repairSourceCommit };
@@ -49,7 +52,11 @@ export const checkoutLegalCutoverRecovery = (input: {
     return { mode: "RESUMING_PREPUBLICATION_REPAIR", repairSourceCommit: durableSourceCommit };
   }
 
-  if (durableSourceCommit === candidateSourceCommit) return { mode: "CANDIDATE" };
-  if (repairSourceCommit && durableSourceCommit === repairSourceCommit) return { mode: "REPAIRED_CANDIDATE", repairSourceCommit: durableSourceCommit };
+  if (durableSourceCommit === candidateSourceCommit) {
+    if (repairSourceCommit) return { mode: "BLOCKED", reason: "NEW_REPAIR_AFTER_LEGAL_PUBLICATION" };
+    return { mode: "CANDIDATE" };
+  }
+  if (repairSourceCommit && durableSourceCommit === repairSourceCommit) return { mode: "RESUMING_POSTPUBLICATION_REPAIR", repairSourceCommit: durableSourceCommit };
+  if (repairSourceCommit) return { mode: "BLOCKED", reason: "DURABLE_REPAIR_SOURCE_MISMATCH" };
   return { mode: "RESUMING_PROMOTION", promotionSourceCommit: durableSourceCommit };
 };

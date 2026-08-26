@@ -18,10 +18,11 @@ const status = (overrides: Partial<ReleaseControlStatus> = {}): ReleaseControlSt
 });
 
 describe("checkout/legal cutover recovery", () => {
-  type RecoveryInput = Omit<Parameters<typeof checkoutLegalCutoverRecovery>[0], "previousLegalVersion" | "activeLegalVersion"> & Partial<Pick<Parameters<typeof checkoutLegalCutoverRecovery>[0], "previousLegalVersion" | "activeLegalVersion">>;
+  type RecoveryInput = Omit<Parameters<typeof checkoutLegalCutoverRecovery>[0], "previousLegalVersion" | "activeLegalVersion" | "currentLegalCopiesMatch"> & Partial<Pick<Parameters<typeof checkoutLegalCutoverRecovery>[0], "previousLegalVersion" | "activeLegalVersion" | "currentLegalCopiesMatch">>;
   const recovery = (input: RecoveryInput) => checkoutLegalCutoverRecovery({
     previousLegalVersion: "2026-08-25.1",
     activeLegalVersion: "2026-08-26.1",
+    currentLegalCopiesMatch: true,
     ...input,
   });
 
@@ -81,7 +82,58 @@ describe("checkout/legal cutover recovery", () => {
       activeLegalVersion: "2026-08-26.1",
       repairSourceCommit,
       status: durableRepair,
-    })).toEqual({ mode: "REPAIRED_CANDIDATE", repairSourceCommit });
+    })).toEqual({ mode: "RESUMING_POSTPUBLICATION_REPAIR", repairSourceCommit });
+  });
+
+  it("rejects a new or foreign repair once candidate legal is active", () => {
+    const durableCandidate = status({
+      sales_paused: true,
+      owner_release_id: releaseId,
+      expected: { source_commit: candidateSourceCommit, migration: "0034_worker_sweep_evidence.sql", legal_version: "2026-08-26.1", legal_manifest_sha256: "c".repeat(64) },
+    });
+    expect(recovery({
+      releaseId,
+      candidateSourceCommit,
+      candidateLegalVersion: "2026-08-26.1",
+      repairSourceCommit,
+      status: durableCandidate,
+    })).toEqual({ mode: "BLOCKED", reason: "NEW_REPAIR_AFTER_LEGAL_PUBLICATION" });
+    expect(recovery({
+      releaseId,
+      candidateSourceCommit,
+      candidateLegalVersion: "2026-08-26.1",
+      repairSourceCommit: "e".repeat(40),
+      status: status({
+        sales_paused: true,
+        owner_release_id: releaseId,
+        expected: { source_commit: repairSourceCommit, migration: "0034_worker_sweep_evidence.sql", legal_version: "2026-08-26.1", legal_manifest_sha256: "c".repeat(64) },
+      }),
+    })).toEqual({ mode: "BLOCKED", reason: "DURABLE_REPAIR_SOURCE_MISMATCH" });
+  });
+
+  it("accepts mismatched current legal copies only after candidate legal is active", () => {
+    const durableRepair = status({
+      sales_paused: true,
+      owner_release_id: releaseId,
+      expected: { source_commit: repairSourceCommit, migration: "0034_worker_sweep_evidence.sql", legal_version: "2026-08-26.1", legal_manifest_sha256: "c".repeat(64) },
+    });
+    expect(recovery({
+      releaseId,
+      candidateSourceCommit,
+      candidateLegalVersion: "2026-08-26.1",
+      activeLegalVersion: "2026-08-25.1",
+      currentLegalCopiesMatch: false,
+      status: durableRepair,
+    })).toEqual({ mode: "BLOCKED", reason: "PREPUBLICATION_CURRENT_LEGAL_COPIES_MISMATCH" });
+    expect(recovery({
+      releaseId,
+      candidateSourceCommit,
+      candidateLegalVersion: "2026-08-26.1",
+      activeLegalVersion: "2026-08-26.1",
+      currentLegalCopiesMatch: false,
+      repairSourceCommit,
+      status: durableRepair,
+    })).toEqual({ mode: "RESUMING_POSTPUBLICATION_REPAIR", repairSourceCommit });
   });
 
   it("allows candidate acquire only from a fresh unowned state or the same candidate request", () => {
