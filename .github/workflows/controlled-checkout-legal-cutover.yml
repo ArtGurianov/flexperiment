@@ -1,0 +1,305 @@
+name: Controlled anonymous checkout legal cutover
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: Exact immutable anonymous-checkout candidate source commit
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  cutover:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
+    env:
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+      COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL }}
+      PUBLIC_FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+      ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
+      EXPECTED_CANDIDATE_SHA: 25bb2f96f2f58018aea1747a1c57c62a2c54c145
+      TARGET_SHA: ${{ inputs.target_sha }}
+      RELEASE_ID: checkout-legal-${{ inputs.target_sha }}
+      PREVIOUS_LEGAL_VERSION: 2026-08-25.1
+      CANDIDATE_LEGAL_VERSION: 2026-08-26.1
+      CANDIDATE_MANIFEST_PATH: commerce/legal/production-manifest.2026-08-26.1.draft.json
+      POLL_ATTEMPTS: "30"
+      POLL_SECONDS: "10"
+      POLL_CONNECT_TIMEOUT: "3"
+      POLL_MAX_TIME: "7"
+      INITIAL_READINESS_DELAY_SECONDS: "60"
+    steps:
+      # Keep the controller code on the dispatched workflow ref. Candidate
+      # product files are read from a separate detached worktree below.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build immutable candidate request and reconcile durable state
+        run: |
+          set -euo pipefail
+          [[ "$TARGET_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "CHECKOUT_LEGAL_CUTOVER_INVALID_TARGET_SHA" >&2; exit 1; }
+          [[ "$TARGET_SHA" == "$EXPECTED_CANDIDATE_SHA" ]] || { echo "CHECKOUT_LEGAL_CUTOVER_UNEXPECTED_CANDIDATE_SHA" >&2; exit 1; }
+          [[ "$RELEASE_ID" == "checkout-legal-$TARGET_SHA" ]] || { echo "CHECKOUT_LEGAL_CUTOVER_INVALID_RELEASE_ID" >&2; exit 1; }
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          validate_json() {
+            local file="$1" label="$2" bytes
+            if ! jq -e 'type == "object"' "$file" >/dev/null 2>&1; then
+              echo "${label}_INVALID_JSON" >&2
+              bytes="$(wc -c < "$file")"; echo "${label}_BYTES=$bytes" >&2
+              printf '%s_PREFIX_HEX=' "$label" >&2; LC_ALL=C od -An -tx1 -N64 "$file" | tr -d ' \n' >&2; echo >&2
+              exit 1
+            fi
+          }
+          git fetch --no-tags origin main
+          git cat-file -e "$TARGET_SHA^{commit}" || { echo "CHECKOUT_LEGAL_CUTOVER_CANDIDATE_UNAVAILABLE" >&2; exit 1; }
+          git merge-base --is-ancestor "$TARGET_SHA" origin/main || { echo "CHECKOUT_LEGAL_CUTOVER_CANDIDATE_NOT_REACHABLE_FROM_MAIN" >&2; exit 1; }
+          candidate_root="$(mktemp -d "$RUNNER_TEMP/checkout-legal-candidate.XXXXXX")"
+          trap 'git worktree remove --force "$candidate_root" >/dev/null 2>&1 || true' EXIT
+          git worktree add --detach "$candidate_root" "$TARGET_SHA" >/dev/null
+          checkout_contract_version="$(jq -er '.checkout_contract_version | select(type == "string" and test("^[a-z0-9][a-z0-9.-]{0,63}$"))' "$candidate_root/release-surface-contract.json")"
+          admin_contract_version="$(jq -er '.admin_contract_version | select(type == "string" and test("^[a-z0-9][a-z0-9.-]{0,63}$"))' "$candidate_root/release-surface-contract.json")"
+          [[ "$checkout_contract_version" == age-band-v2 && "$admin_contract_version" == age-band-v2 ]] || { echo "CHECKOUT_LEGAL_CUTOVER_CANDIDATE_CONTRACT_MISMATCH" >&2; exit 1; }
+          echo "CHECKOUT_CONTRACT_VERSION=$checkout_contract_version" >> "$GITHUB_ENV"
+          echo "ADMIN_CONTRACT_VERSION=$admin_contract_version" >> "$GITHUB_ENV"
+          (
+            cd "$candidate_root"
+            RELEASE_ID="$RELEASE_ID" COMMERCE_RELEASE_MANIFEST_PATH="$CANDIDATE_MANIFEST_PATH" "$GITHUB_WORKSPACE/node_modules/.bin/tsx" "$GITHUB_WORKSPACE/commerce/src/release-cutover-payload.ts" "$TARGET_SHA"
+          ) > release.json
+          validate_json release.json RELEASE_REQUEST
+          jq -e --arg legal "$CANDIDATE_LEGAL_VERSION" '.mode == "CONTROLLED_CUTOVER" and .expected.source_commit == env.TARGET_SHA and .expected.migration == "0034_worker_sweep_evidence.sql" and .expected.legal_version == $legal' release.json >/dev/null || { echo "CHECKOUT_LEGAL_CUTOVER_CANDIDATE_REQUEST_MISMATCH" >&2; exit 1; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > durable-before.json; validate_json durable-before.json DURABLE_BEFORE
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json; validate_json completion.json COMPLETION
+          if jq -e '.complete' completion.json >/dev/null; then
+            echo 'TERMINAL_COMPLETE=1' >> "$GITHUB_ENV"
+          else
+            owner="$(jq -r '.owner_release_id // empty' durable-before.json)"
+            [[ -z "$owner" || "$owner" == "$RELEASE_ID" ]] || { echo "CHECKOUT_LEGAL_CUTOVER_BLOCKED_BY_RELEASE_OWNER=$owner" >&2; exit 1; }
+            if [[ -z "$owner" ]]; then
+              jq -e --arg previous "$PREVIOUS_LEGAL_VERSION" '.sales_paused == false and .owner_release_id == null and .owner_mode == null and .runtime.legal_version == $previous and .runtime.current_legal_copies_match == true' durable-before.json >/dev/null || { echo "CHECKOUT_LEGAL_CUTOVER_FRESH_PRODUCTION_BASELINE_INVALID" >&2; exit 1; }
+            else
+              jq -e --arg release "$RELEASE_ID" --arg candidate "$TARGET_SHA" --arg legal "$CANDIDATE_LEGAL_VERSION" '.owner_release_id == $release and .sales_paused == true and .expected.legal_version == $legal and (.expected.source_commit == $candidate or (.expected.source_commit | type == "string" and test("^[a-f0-9]{40}$")))' durable-before.json >/dev/null || { echo "CHECKOUT_LEGAL_CUTOVER_DURABLE_OWNER_MISMATCH" >&2; exit 1; }
+              durable_source="$(jq -er '.expected.source_commit' durable-before.json)"
+              if [[ "$durable_source" != "$TARGET_SHA" ]]; then
+                git cat-file -e "$durable_source^{commit}" && git merge-base --is-ancestor "$TARGET_SHA" "$durable_source" && git merge-base --is-ancestor "$durable_source" origin/main || { echo "CHECKOUT_LEGAL_CUTOVER_DURABLE_PROMOTION_SOURCE_INVALID" >&2; exit 1; }
+              fi
+            fi
+            echo 'TERMINAL_COMPLETE=0' >> "$GITHUB_ENV"
+          fi
+          current_legal="$(jq -r '.runtime.legal_version // empty' durable-before.json)"
+          if [[ "$current_legal" == "$PREVIOUS_LEGAL_VERSION" ]]; then
+            echo 'LEGAL_PUBLICATION_STATE=NOT_PUBLISHED' >> "$GITHUB_ENV"
+          elif [[ "$current_legal" == "$CANDIDATE_LEGAL_VERSION" ]] && jq -e --slurpfile request release.json '.runtime.legal_manifest_sha256 == $request[0].expected.legal_manifest_sha256 and (.runtime.legal_publish_time | type == "string" and length > 0)' durable-before.json >/dev/null; then
+            echo 'LEGAL_PUBLICATION_STATE=PUBLISHED_THIS_CANDIDATE' >> "$GITHUB_ENV"
+          else
+            echo "CHECKOUT_LEGAL_CUTOVER_UNEXPECTED_LEGAL_PUBLICATION_STATE" >&2; exit 1
+          fi
+          pnpm exec tsx commerce/src/reconcile-cutover.ts durable-before.json completion.json release.json "$TARGET_SHA" "$PREVIOUS_LEGAL_VERSION" > reconciliation.json
+          validate_json reconciliation.json RECONCILIATION
+          action="$(jq -er '.action' reconciliation.json)"; [[ "$action" != BLOCKED ]] || { jq -c . reconciliation.json >&2; exit 1; }
+          echo "CUTOVER_ACTION=$action" >> "$GITHUB_ENV"
+
+      - name: Verify an already completed checkout/legal cutover
+        if: env.TERMINAL_COMPLETE == '1'
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
+          promotion_sha="$(jq -er '.expected.source_commit' completion.json)"
+          jq -e --arg sha "$promotion_sha" --arg legal "$CANDIDATE_LEGAL_VERSION" '.sales_paused == false and .owner_release_id == null and .owner_mode == null and .runtime.source_commit == $sha and .runtime.worker_source_commit == $sha and .runtime.legal_version == $legal and (.runtime.worker_last_successful_sweep_at | type == "string")' status.json >/dev/null
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_FRONTEND_URL/release.json" > frontend.json
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$ADMIN_RELEASE_URL" > admin.json
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/v1/public/legal-config" > legal.json
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/healthz" | jq -e '.ok == true' >/dev/null
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/readyz" | jq -e '.ok == true' >/dev/null
+          jq -e --arg sha "$promotion_sha" --arg contract "$CHECKOUT_CONTRACT_VERSION" '.source_commit == $sha and .checkout_contract_version == $contract' frontend.json >/dev/null
+          jq -e --arg sha "$promotion_sha" --arg contract "$ADMIN_CONTRACT_VERSION" '.source_commit == $sha and .admin_contract_version == $contract' admin.json >/dev/null
+          jq -e --slurpfile request completion.json '(.version == $request[0].expected.legal_version) and ({PUBLIC_OFFER: .manifest.documents.PUBLIC_OFFER.sha256, PRIVACY_POLICY: .manifest.documents.PRIVACY_POLICY.sha256, PD_CONSENT: .manifest.documents.PD_CONSENT.sha256, CHECKOUT_DISCLOSURE: .manifest.documents.CHECKOUT_DISCLOSURE.sha256} == $request[0].expected.legal_hashes)' legal.json >/dev/null
+
+      - name: Acquire owner and pause registrations
+        if: env.TERMINAL_COMPLETE != '1'
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/acquire" > /dev/null
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/pause" > pause.json
+          jq -e --arg release "$RELEASE_ID" '.sales_paused == true and .owner_release_id == $release' pause.json >/dev/null
+
+      - name: Prove public checkout pause before deployment
+        if: env.TERMINAL_COMPLETE != '1'
+        run: |
+          set -euo pipefail
+          pause_status="$(curl --silent --show-error --connect-timeout 10 --max-time 30 --output paused-checkout.json --write-out '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: checkout-legal-pause-proof-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --data '{}' "$PUBLIC_API_URL/v1/public/checkouts")"
+          [[ "$pause_status" == "503" ]] || { cat paused-checkout.json >&2; exit 1; }
+          jq -e '.error.code == "SALES_TEMPORARILY_PAUSED"' paused-checkout.json >/dev/null
+
+      - name: Reconcile paused checkout/legal cutover
+        if: env.TERMINAL_COMPLETE != '1'
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
+          pnpm exec tsx commerce/src/reconcile-cutover.ts status.json completion.json release.json "$TARGET_SHA" "$PREVIOUS_LEGAL_VERSION" > reconciliation.json
+          jq -e 'type == "object"' reconciliation.json >/dev/null || { echo "CHECKOUT_LEGAL_CUTOVER_RECONCILIATION_INVALID_JSON" >&2; exit 1; }
+          action="$(jq -er '.action' reconciliation.json)"; [[ "$action" != BLOCKED ]] || { jq -c . reconciliation.json >&2; exit 1; }
+          echo "CUTOVER_ACTION=$action" >> "$GITHUB_ENV"
+
+      - name: Set guarded production deployment ref for candidate
+        if: env.TERMINAL_COMPLETE != '1' && env.CUTOVER_ACTION == 'DEPLOY_CANDIDATE'
+        run: scripts/set-production-deploy-ref.sh "$TARGET_SHA"
+
+      - name: Deploy candidate to Commerce Worker Frontend and Admin
+        if: env.TERMINAL_COMPLETE != '1' && env.CUTOVER_ACTION == 'DEPLOY_CANDIDATE'
+        run: |
+          set -euo pipefail
+          scripts/controlled-coolify-deploy.sh "$TARGET_SHA"
+          echo 'COOLIFY_CANDIDATE_DEPLOY_DISPATCHED=1' >> "$GITHUB_ENV"
+
+      - name: Prove candidate before legal publication
+        if: env.TERMINAL_COMPLETE != '1' && (env.CUTOVER_ACTION == 'DEPLOY_CANDIDATE' || env.CUTOVER_ACTION == 'PUBLISH_LEGAL')
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          if [[ "${COOLIFY_CANDIDATE_DEPLOY_DISPATCHED:-0}" == "1" ]]; then
+            echo "Allowing Coolify candidate deployments to start for ${INITIAL_READINESS_DELAY_SECONDS}s..."
+            sleep "$INITIAL_READINESS_DELAY_SECONDS"
+          fi
+          scripts/controlled-production-readiness.sh release.json candidate-pre-publication
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
+          pnpm exec tsx commerce/src/reconcile-cutover.ts status.json completion.json release.json "$TARGET_SHA" "$PREVIOUS_LEGAL_VERSION" > reconciliation.json
+          jq -e 'type == "object" and .action == "PUBLISH_LEGAL"' reconciliation.json >/dev/null || { jq -c . reconciliation.json >&2; exit 1; }
+          echo 'CUTOVER_ACTION=PUBLISH_LEGAL' >> "$GITHUB_ENV"
+
+      - name: Publish candidate legal release
+        if: env.TERMINAL_COMPLETE != '1' && env.CUTOVER_ACTION == 'PUBLISH_LEGAL'
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/legal-publish" > publication.json
+          published_at="$(jq -er '.effectiveAt' publication.json)"
+          echo "PUBLISHED_AT=$published_at" >> "$GITHUB_ENV"
+
+      - name: Reconcile after legal publication
+        if: env.TERMINAL_COMPLETE != '1'
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
+          if [[ -z "${PUBLISHED_AT:-}" ]]; then echo "PUBLISHED_AT=$(jq -er '.runtime.legal_publish_time' status.json)" >> "$GITHUB_ENV"; fi
+          pnpm exec tsx commerce/src/reconcile-cutover.ts status.json completion.json release.json "$TARGET_SHA" "$PREVIOUS_LEGAL_VERSION" > reconciliation.json
+          jq -e 'type == "object" and (.action == "CREATE_PROMOTION" or .action == "DEPLOY_PROMOTION" or .action == "VERIFY_AND_REOPEN")' reconciliation.json >/dev/null || { jq -c . reconciliation.json >&2; exit 1; }
+          echo "CUTOVER_ACTION=$(jq -er '.action' reconciliation.json)" >> "$GITHUB_ENV"
+
+      - name: Create or recover immutable legal promotion artifact
+        if: env.TERMINAL_COMPLETE != '1'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          main_sha="$(git rev-parse origin/main)"
+          allowed_main_ahead() {
+            ! git diff --name-only "$TARGET_SHA..$1" | grep -Ev '^(certification\.sh|commerce/legal/production-manifest\.json|public/legal/.+|\.github/workflows/controlled-checkout-legal-cutover\.yml|\.github/workflows/controlled-production-deploy\.yml|commerce/src/(assert-candidate-runtime-ready|candidate-runtime-readiness|generic-production-deploy-boundary|reconcile-cutover)\.ts|commerce/test/(candidate-runtime-readiness|controlled-checkout-legal-cutover-workflow|controlled-production-deploy-workflow|controlled-production-readiness-script|generic-production-deploy-boundary)\.test\.ts|scripts/controlled-production-readiness\.sh)$' | grep -q .
+          }
+          git merge-base --is-ancestor "$TARGET_SHA" "$main_sha" || { echo "CHECKOUT_LEGAL_CUTOVER_MAIN_DOES_NOT_CONTAIN_CANDIDATE" >&2; exit 1; }
+          allowed_main_ahead "$main_sha" || { echo "CHECKOUT_LEGAL_CUTOVER_MAIN_AHEAD_OF_CANDIDATE" >&2; exit 1; }
+          promotion_root="$(mktemp -d "$RUNNER_TEMP/checkout-legal-promotion.XXXXXX")"
+          trap 'git worktree remove --force "$promotion_root" >/dev/null 2>&1 || true' EXIT
+          git worktree add --detach "$promotion_root" "$main_sha" >/dev/null
+          published="$(date -u -d "$PUBLISHED_AT" +%Y-%m-%dT%H:%M:%SZ)"
+          if git show "$main_sha:commerce/legal/production-manifest.json" | jq -e --arg version "$CANDIDATE_LEGAL_VERSION" --arg published "$published" '.version == $version and .publish_time == $published' >/dev/null; then
+            promotion_sha="$main_sha"
+          else
+            (
+              cd "$promotion_root"
+              COMMERCE_LEGAL_PROMOTION_VERSION="$CANDIDATE_LEGAL_VERSION" COMMERCE_LEGAL_PROMOTION_PUBLISH_TIME="$PUBLISHED_AT" "$GITHUB_WORKSPACE/node_modules/.bin/tsx" "$GITHUB_WORKSPACE/commerce/src/promote-legal-release.ts"
+              git add certification.sh commerce/legal/production-manifest.json public/legal
+              git diff --cached --exit-code && { echo "CHECKOUT_LEGAL_CUTOVER_PROMOTION_EMPTY" >&2; exit 1; }
+              git diff --cached --name-only | grep -Ev '^(certification\.sh|commerce/legal/production-manifest\.json|public/legal/.+)$' | grep -q . && { echo "CHECKOUT_LEGAL_CUTOVER_PROMOTION_SCOPE_INVALID" >&2; exit 1; }
+              git config user.name flexperiment-release-bot
+              git config user.email flexperiment-release-bot@users.noreply.github.com
+              git commit -m 'chore(legal): promote 2026-08-26.1'
+              git push origin HEAD:refs/heads/main
+            )
+            promotion_sha="$(git -C "$promotion_root" rev-parse HEAD)"
+          fi
+          git show "$promotion_sha:release-surface-contract.json" > promotion-contract.json
+          jq -e --arg checkout "$CHECKOUT_CONTRACT_VERSION" --arg admin "$ADMIN_CONTRACT_VERSION" '.checkout_contract_version == $checkout and .admin_contract_version == $admin' promotion-contract.json >/dev/null || { echo "CHECKOUT_LEGAL_CUTOVER_PROMOTION_CONTRACT_MISMATCH" >&2; exit 1; }
+          promotion_payload_root="$(mktemp -d "$RUNNER_TEMP/checkout-legal-promotion-payload.XXXXXX")"
+          trap 'git worktree remove --force "$promotion_root" >/dev/null 2>&1 || true; git worktree remove --force "$promotion_payload_root" >/dev/null 2>&1 || true' EXIT
+          git worktree add --detach "$promotion_payload_root" "$promotion_sha" >/dev/null
+          (
+            cd "$promotion_payload_root"
+            RELEASE_ID="$RELEASE_ID" COMMERCE_RELEASE_MANIFEST_PATH=commerce/legal/production-manifest.json "$GITHUB_WORKSPACE/node_modules/.bin/tsx" "$GITHUB_WORKSPACE/commerce/src/release-cutover-payload.ts" "$promotion_sha"
+          ) > promotion-release.json
+          jq -e --slurpfile candidate release.json '.expected.legal_manifest_sha256 == $candidate[0].expected.legal_manifest_sha256 and .expected.legal_hashes == $candidate[0].expected.legal_hashes' promotion-release.json >/dev/null
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          api -X POST --data-binary @promotion-release.json "$PUBLIC_API_URL/v1/internal/release-control/expectations" > /dev/null
+          echo "PROMOTION_SHA=$promotion_sha" >> "$GITHUB_ENV"
+
+      - name: Set guarded production deployment ref for promotion
+        if: env.TERMINAL_COMPLETE != '1'
+        run: scripts/set-production-deploy-ref.sh "$PROMOTION_SHA"
+
+      - name: Deploy promotion artifact to Commerce Worker Frontend and Admin
+        if: env.TERMINAL_COMPLETE != '1'
+        run: |
+          set -euo pipefail
+          scripts/controlled-coolify-deploy.sh "$PROMOTION_SHA"
+          echo 'COOLIFY_PROMOTION_DEPLOY_DISPATCHED=1' >> "$GITHUB_ENV"
+
+      - name: Prove promotion surfaces and guarded reopen
+        if: env.TERMINAL_COMPLETE != '1'
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          if [[ "${COOLIFY_PROMOTION_DEPLOY_DISPATCHED:-0}" == "1" ]]; then
+            echo "Allowing Coolify promotion deployments to start for ${INITIAL_READINESS_DELAY_SECONDS}s..."
+            sleep "$INITIAL_READINESS_DELAY_SECONDS"
+          fi
+          TARGET_SHA="$PROMOTION_SHA" scripts/controlled-production-readiness.sh promotion-release.json promotion
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          api -X POST --data-binary @promotion-release.json "$PUBLIC_API_URL/v1/internal/release-control/reopen" > reopened.json
+          jq -e '.sales_paused == false and .owner_release_id == null and .owner_mode == null' reopened.json >/dev/null
+
+      - name: Verify durable completion and every post-reopen surface
+        if: env.TERMINAL_COMPLETE != '1'
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
+          jq -e --slurpfile request promotion-release.json '.complete and .expected == $request[0].expected' completion.json >/dev/null
+          jq -e --arg sha "$PROMOTION_SHA" --arg legal "$CANDIDATE_LEGAL_VERSION" '.sales_paused == false and .owner_release_id == null and .owner_mode == null and .runtime.source_commit == $sha and .runtime.worker_source_commit == $sha and .runtime.legal_version == $legal and (.runtime.worker_last_successful_sweep_at | type == "string") and .runtime.current_legal_copies_match == true' status.json >/dev/null
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_FRONTEND_URL/release.json" > frontend.json
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$ADMIN_RELEASE_URL" > admin.json
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/v1/public/legal-config" > legal.json
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/healthz" | jq -e '.ok == true' >/dev/null
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/readyz" | jq -e '.ok == true' >/dev/null
+          jq -e --arg sha "$PROMOTION_SHA" --arg contract "$CHECKOUT_CONTRACT_VERSION" '.source_commit == $sha and .checkout_contract_version == $contract' frontend.json >/dev/null
+          jq -e --arg sha "$PROMOTION_SHA" --arg contract "$ADMIN_CONTRACT_VERSION" '.source_commit == $sha and .admin_contract_version == $contract' admin.json >/dev/null
+          jq -e --slurpfile request promotion-release.json '(.version == $request[0].expected.legal_version) and ({PUBLIC_OFFER: .manifest.documents.PUBLIC_OFFER.sha256, PRIVACY_POLICY: .manifest.documents.PRIVACY_POLICY.sha256, PD_CONSENT: .manifest.documents.PD_CONSENT.sha256, CHECKOUT_DISCLOSURE: .manifest.documents.CHECKOUT_DISCLOSURE.sha256} == $request[0].expected.legal_hashes)' legal.json >/dev/null
