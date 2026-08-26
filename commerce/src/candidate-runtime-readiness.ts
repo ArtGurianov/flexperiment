@@ -10,7 +10,7 @@ export const candidateRuntimeReady = (input: {
   const { runtime, sourceCommit, expectedMigration, previousLegalVersion = "2026-08-23.2" } = input;
   const requiredMigrations = requiredMigrationsFor(expectedMigration);
   const requiresWorkerSweep = requiredMigrations?.includes("0034_worker_sweep_evidence.sql") === true;
-  if (!input.salesPaused || !runtime || !requiredMigrations || runtime.source_commit !== sourceCommit) return false;
+  if (!input.salesPaused || !runtime || !requiredMigrations || runtime.source_commit !== sourceCommit || !runtime.current_legal_copies_match) return false;
   if (!runtime.migration_versions.includes(expectedMigration) || requiredMigrations.some((version) => runtime.required_migrations[version] !== true)) return false;
   if (!requiresWorkerSweep) return runtime.legal_version === previousLegalVersion;
   return workerEvidenceIsFresh(runtime.worker_source_commit, runtime.worker_observed_at, sourceCommit)
