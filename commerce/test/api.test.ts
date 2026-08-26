@@ -47,7 +47,7 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
-  it("rejects the retired participant date-of-birth field at the public checkout boundary", async () => {
+  it("rejects retired identity fields at the public checkout boundary", async () => {
     const { db, app } = appFixture();
     const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
     const context = await app.request("http://api.flexperiment.ru/v1/public/checkout-context", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.24" }, body: JSON.stringify({ occurrence_id: occurrenceId }) });
@@ -55,10 +55,32 @@ describe("commerce HTTP boundary", () => {
     const response = await app.request("http://api.flexperiment.ru/v1/public/checkouts", {
       method: "POST",
       headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": "retired-dob-rejected", "X-Forwarded-For": "127.0.0.24" },
-      body: JSON.stringify({ quote_id: quoteId, customer_name: "Заказчик", customer_email: "buyer@example.test", customer_adult_confirmed: true, participant: { self: true, date_of_birth: "1990-01-01" }, offer_accepted: true, pd_consent_accepted: true }),
+      body: JSON.stringify({ quote_id: quoteId, customer_name: "Покупатель", customer_email: "buyer@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", participant: { name: "Участник", date_of_birth: "1990-01-01" }, offer_accepted: true, pd_consent_accepted: true }),
     });
     expect(response.status).toBe(422);
     expect(db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual({ count: 0 });
+    db.close();
+  });
+
+  it("uses a ticket capability, not a name, for public admission", async () => {
+    const { db, app } = appFixture();
+    const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
+    const domain = new CommerceDomain(db, new MockProvider());
+    const quote = domain.checkoutContext({ occurrenceId });
+    const checkout = await domain.checkoutAsync({
+      quote_id: quote.quote_id, customer_email: "buyer@example.test", customer_adult_confirmed: true,
+      participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true,
+    }, "anonymous-ticket-admission-001", "https://flexperiment.ru");
+    const payment = db.prepare("SELECT id FROM payments WHERE order_id = (SELECT id FROM orders WHERE public_status_id = ?)").get(checkout.status_id) as { id: string };
+    domain.markPaymentPaid(payment.id, 100_000, "provider-payment");
+    const ticket = db.prepare("SELECT capability_ciphertext, capability_nonce FROM tickets").get() as { capability_ciphertext: string; capability_nonce: string };
+    const capability = decryptTicketCapability(ticket.capability_ciphertext, ticket.capability_nonce);
+    const response = await app.request("http://api.flexperiment.ru/v1/public/ticket", { headers: { Authorization: `Bearer ${capability}`, "X-Forwarded-For": "127.0.0.24" } });
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, unknown>;
+    expect(body).toMatchObject({ status: "VALID", participant_age_band: "ADULT" });
+    expect(body).not.toHaveProperty("customer_name");
+    expect(body).not.toHaveProperty("participant_name");
     db.close();
   });
 
@@ -68,7 +90,7 @@ describe("commerce HTTP boundary", () => {
     const context = await app.request("http://api.flexperiment.ru/v1/public/checkout-context", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.26" }, body: JSON.stringify({ occurrence_id: occurrenceId }) });
     const quoteId = (await context.json() as { quote_id: string }).quote_id;
     const key = "legacy-dob-idempotency-key";
-    const current = { quote_id: quoteId, customer_name: "Заказчик", customer_email: "buyer@example.test", customer_adult_confirmed: true, participant: { self: true }, offer_accepted: true, pd_consent_accepted: true };
+    const current = { quote_id: quoteId, customer_email: "buyer@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true };
     const created = await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": key, "X-Forwarded-For": "127.0.0.26" }, body: JSON.stringify(current) });
     const original = await created.json() as { status_id: string; payment_url: string | null };
     db.prepare("UPDATE checkout_idempotency SET canonical_request_hash = ? WHERE idempotency_key_hash = ?").run("v1:historical-dob-request", sha256(key));
@@ -80,21 +102,21 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
-  it("replays normalized current checkout bodies and binds nested participant fields", async () => {
+  it("replays normalized anonymous checkout bodies and binds the age band", async () => {
     const { db, app } = appFixture();
     const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
     const context = await app.request("http://api.flexperiment.ru/v1/public/checkout-context", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.27" }, body: JSON.stringify({ occurrence_id: occurrenceId }) });
     const quoteId = (await context.json() as { quote_id: string }).quote_id;
     const key = "normalized-current-idempotency";
-    const body = { quote_id: quoteId, customer_name: " Заказчик ", customer_email: " BUYER@example.test ", customer_adult_confirmed: true, participant: { self: false, name: " Участник ", age_band: "MINOR_14_17" }, minor_legal_representative_confirmed: true, offer_accepted: true, pd_consent_accepted: true };
+    const body = { quote_id: quoteId, customer_email: " BUYER@example.test ", customer_adult_confirmed: true, participant_age_band: "MINOR_14_17", minor_legal_representative_confirmed: true, offer_accepted: true, pd_consent_accepted: true };
     const headers = { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": key, "X-Forwarded-For": "127.0.0.27" };
     const created = await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers, body: JSON.stringify(body) });
     expect(created.status).toBe(201);
     const original = await created.json();
-    const replay = await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers, body: JSON.stringify({ ...body, customer_name: "Заказчик", customer_email: "BUYER@example.test", participant: { ...body.participant, name: "Участник" } }) });
+    const replay = await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers, body: JSON.stringify({ ...body, customer_email: "BUYER@example.test" }) });
     expect(replay.status).toBe(200);
     expect(await replay.json()).toMatchObject(original);
-    const conflict = await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers, body: JSON.stringify({ ...body, participant: { ...body.participant, name: "Другой участник" } }) });
+    const conflict = await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers, body: JSON.stringify({ ...body, participant_age_band: "ADULT" }) });
     expect(conflict.status).toBe(409);
     expect(await conflict.json()).toEqual({ error: { code: "IDEMPOTENCY_CONFLICT" } });
     db.close();
@@ -115,7 +137,7 @@ describe("commerce HTTP boundary", () => {
       const response = await app.request("http://api.flexperiment.ru/v1/public/checkouts", {
         method: "POST",
         headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": "paused-stale-dob-client", "X-Forwarded-For": "127.0.0.25" },
-        body: JSON.stringify({ quote_id: quoteId, customer_name: "Заказчик", customer_email: "buyer@example.test", participant: { self: true, date_of_birth: "1990-01-01" }, offer_accepted: true, pd_consent_accepted: true }),
+        body: JSON.stringify({ quote_id: quoteId, customer_email: "buyer@example.test", participant: { self: true, date_of_birth: "1990-01-01" }, offer_accepted: true, pd_consent_accepted: true }),
       });
       expect(response.status).toBe(503);
       expect(await response.json()).toEqual({ error: { code: "SALES_TEMPORARILY_PAUSED" } });
@@ -449,7 +471,7 @@ describe("commerce HTTP boundary", () => {
     const domain = new CommerceDomain(db, new MockProvider());
     const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
     const quote = domain.checkoutContext({ occurrenceId });
-    const checkout = await domain.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Арт", customer_email: "art@example.test", customer_adult_confirmed: true, participant: { self: true }, offer_accepted: true, pd_consent_accepted: true }, "995e27bc-77c6-47b1-b6d0-000000000001", "https://flexperiment.ru");
+    const checkout = await domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "995e27bc-77c6-47b1-b6d0-000000000001", "https://flexperiment.ru");
     const order = db.prepare("SELECT o.id, o.public_order_number, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(checkout.status_id) as { id: string; public_order_number: string; payment_id: string };
     domain.markPaymentPaid(order.payment_id, 100000, "provider-payment");
     domain.requestCustomerRefund(order.public_order_number.replace(/-/g, ""));
@@ -682,7 +704,7 @@ describe("commerce HTTP boundary", () => {
     const occurrenceId = (db.prepare("SELECT id FROM occurrences").get() as { id: string }).id;
     const context = await app.request("http://api.flexperiment.ru/v1/public/checkout-context", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.1" }, body: JSON.stringify({ occurrence_id: occurrenceId }) });
     const quoteId = (await context.json() as { quote_id: string }).quote_id;
-    await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000009", "X-Forwarded-For": "127.0.0.1", "User-Agent": "Customer acceptance test" }, body: JSON.stringify({ quote_id: quoteId, customer_name: "Арт", customer_email: "art@example.test", customer_adult_confirmed: true, participant: { self: true }, offer_accepted: true, pd_consent_accepted: true }) });
+    await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000009", "X-Forwarded-For": "127.0.0.1", "User-Agent": "Customer acceptance test" }, body: JSON.stringify({ quote_id: quoteId, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }) });
     const orderId = (db.prepare("SELECT id FROM orders").get() as { id: string }).id;
     const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.1" }, body: JSON.stringify({ password: "correct horse" }) });
     const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
@@ -694,7 +716,7 @@ describe("commerce HTTP boundary", () => {
     expect(evidenceBody).toMatchObject({ order: { id: orderId }, booking: { status: "RESERVED" }, ticket: null, email_outbox: [] });
     expect(evidenceBody.payment).not.toHaveProperty("payment_url");
     expect(db.prepare("SELECT customer_adult_confirmed_at, customer_acceptance_ip, customer_acceptance_user_agent, participant_name, participant_age_band, participant_is_customer FROM orders WHERE id = ?").get(orderId))
-      .toMatchObject({ customer_adult_confirmed_at: expect.any(String), customer_acceptance_ip: "127.0.0.1", customer_acceptance_user_agent: "Customer acceptance test", participant_name: null, participant_age_band: "ADULT", participant_is_customer: 1 });
+      .toMatchObject({ customer_adult_confirmed_at: expect.any(String), customer_acceptance_ip: "127.0.0.1", customer_acceptance_user_agent: "Customer acceptance test", participant_name: null, participant_age_band: "ADULT", participant_is_customer: null });
     expect(db.prepare("SELECT COUNT(*) AS count FROM reservation_abandonments").get()).toEqual(beforeCount);
     const abandoned = await app.request(`http://admin.flexperiment.ru/v1/admin/orders/${orderId}/abandon-reservation`, { method: "POST", headers: { ...headers, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000010" }, body: JSON.stringify({ reason: "Certification interrupted before payment" }) });
     expect(abandoned.status).toBe(200);
@@ -710,7 +732,7 @@ describe("commerce HTTP boundary", () => {
       const occurrenceId = (db.prepare("SELECT id FROM occurrences").get() as { id: string }).id;
       const context = await app.request("http://api.flexperiment.ru/v1/public/checkout-context", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.61" }, body: JSON.stringify({ occurrence_id: occurrenceId }) });
       const quoteId = (await context.json() as { quote_id: string }).quote_id;
-      await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": "certification-evidence-checkout", "X-Forwarded-For": "127.0.0.61" }, body: JSON.stringify({ quote_id: quoteId, customer_name: "Certification Customer", customer_email: "certification@example.test", customer_adult_confirmed: true, participant: { self: true }, offer_accepted: true, pd_consent_accepted: true }) });
+      await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": "certification-evidence-checkout", "X-Forwarded-For": "127.0.0.61" }, body: JSON.stringify({ quote_id: quoteId, customer_email: "certification@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }) });
       const order = db.prepare("SELECT id FROM orders").get() as { id: string };
       const payment = db.prepare("SELECT id FROM payments WHERE order_id = ?").get(order.id) as { id: string };
       const booking = db.prepare("SELECT id FROM bookings WHERE order_id = ?").get(order.id) as { id: string };
@@ -895,7 +917,7 @@ describe("commerce HTTP boundary", () => {
     const checkout = async (idempotencyKey: string, email: string) => {
       const context = await app.request("http://api.flexperiment.ru/v1/public/checkout-context", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.71" }, body: JSON.stringify({ occurrence_id: occurrenceId }) });
       const quoteId = (await context.json() as { quote_id: string }).quote_id;
-      await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": idempotencyKey, "X-Forwarded-For": "127.0.0.71" }, body: JSON.stringify({ quote_id: quoteId, customer_name: "Buyer", customer_email: email, customer_adult_confirmed: true, participant: { self: true }, offer_accepted: true, pd_consent_accepted: true }) });
+      await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": idempotencyKey, "X-Forwarded-For": "127.0.0.71" }, body: JSON.stringify({ quote_id: quoteId, customer_email: email, customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }) });
       const order = db.prepare("SELECT id FROM orders WHERE customer_email = ?").get(email) as { id: string };
       const payment = db.prepare("SELECT id FROM payments WHERE order_id = ?").get(order.id) as { id: string };
       return { orderId: order.id, paymentId: payment.id };
@@ -933,7 +955,7 @@ describe("commerce HTTP boundary", () => {
     const occurrenceId = (db.prepare("SELECT id FROM occurrences").get() as { id: string }).id;
     const context = await app.request("http://api.flexperiment.ru/v1/public/checkout-context", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.72" }, body: JSON.stringify({ occurrence_id: occurrenceId }) });
     const quoteId = (await context.json() as { quote_id: string }).quote_id;
-    await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": "refund-filter-checkout", "X-Forwarded-For": "127.0.0.72" }, body: JSON.stringify({ quote_id: quoteId, customer_name: "Buyer", customer_email: "refund-filter@example.test", customer_adult_confirmed: true, participant: { self: true }, offer_accepted: true, pd_consent_accepted: true }) });
+    await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": "refund-filter-checkout", "X-Forwarded-For": "127.0.0.72" }, body: JSON.stringify({ quote_id: quoteId, customer_email: "refund-filter@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }) });
     const order = db.prepare("SELECT id FROM orders ORDER BY created_at DESC LIMIT 1").get() as { id: string };
     const payment = db.prepare("SELECT id FROM payments WHERE order_id = ?").get(order.id) as { id: string };
     db.prepare("UPDATE payments SET status = 'PARTIALLY_REFUNDED', captured_amount_kopecks = 100000 WHERE id = ?").run(payment.id);
@@ -965,7 +987,7 @@ describe("commerce HTTP boundary", () => {
       const ip = `127.0.0.${ipSuffix++}`; // "checkout-new" allows only 3 first-time checkouts per IP / 10min
       const context = await app.request("http://api.flexperiment.ru/v1/public/checkout-context", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": ip }, body: JSON.stringify({ occurrence_id: occurrenceId }) });
       const quoteId = (await context.json() as { quote_id: string }).quote_id;
-      const checkout = await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": `pending-refunds-checkout-${status}`, "X-Forwarded-For": ip }, body: JSON.stringify({ quote_id: quoteId, customer_name: "Buyer", customer_email: email, customer_adult_confirmed: true, participant: { self: true }, offer_accepted: true, pd_consent_accepted: true }) });
+      const checkout = await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": `pending-refunds-checkout-${status}`, "X-Forwarded-For": ip }, body: JSON.stringify({ quote_id: quoteId, customer_email: email, customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }) });
       expect(checkout.status).toBe(201);
       const order = db.prepare("SELECT id FROM orders WHERE customer_email = ?").get(email) as { id: string };
       const payment = db.prepare("SELECT id FROM payments WHERE order_id = ?").get(order.id) as { id: string };

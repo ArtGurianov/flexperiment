@@ -223,7 +223,10 @@ describe("production certification runbook checkpoints", () => {
     expect([...source.matchAll(/Real test email:/g)]).toHaveLength(1);
     expect(prepare).toContain('[[ -n "${CHECKOUT_REQUEST_BODY+x}" ]] && return 0');
     expect(prepare).toContain("CHECKOUT_REQUEST_SHA256");
-    expect(prepare).toContain("unset CUSTOMER_EMAIL CUSTOMER_NAME");
+    expect(prepare).toContain("unset CUSTOMER_EMAIL checkout_request_sha");
+    expect(prepare).not.toContain("Customer name:");
+    expect(prepare).not.toContain('"customer_name"');
+    expect(prepare).toContain('"participant_age_band": "ADULT"');
     expect(prepare).not.toContain("CUSTOMER_DOB");
     expect(replay).toContain("prepare_checkout_request");
     expect(replay).toContain('"$CHECKOUT_REQUEST_BODY"');

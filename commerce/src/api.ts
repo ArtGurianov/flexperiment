@@ -155,7 +155,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     const capability = authorization?.startsWith("Bearer ") ? authorization.slice(7) : undefined;
     if (!capability) throw new DomainError("TICKET_CAPABILITY_REQUIRED", 401);
     rateLimit(clientIpRateLimitKey("ticket-ip", c.req.raw.headers), 20, 60_000); rateLimit(`ticket-capability:${sha256(capability)}`, 5, 60_000);
-    const ticket = sqlite.prepare(`SELECT t.id, t.status, o.id AS order_id, COALESCE(o.participant_name, o.customer_name) AS participant_name,
+    const ticket = sqlite.prepare(`SELECT t.id, t.status, o.id AS order_id, o.participant_age_band,
       COALESCE(o.participant_requires_adult_accompaniment, 0) AS requires_adult_accompaniment,
       oc.title, oc.starts_at, oc.timezone, oc.venue_name, oc.venue_address
       FROM tickets t JOIN bookings b ON b.id = t.booking_id JOIN orders o ON o.id = b.order_id JOIN occurrences oc ON oc.id = b.occurrence_id WHERE t.capability_hash = ?`).get(sha256(capability));
@@ -463,8 +463,12 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   releaseControl.get("/contract", (c) => c.json({
     participant_age_bands: ["ADULT", "MINOR_14_17", "MINOR_UNDER_14"],
     deprecated_date_of_birth_rejected: !checkoutRequestSchema.safeParse({
+      quote_id: "00000000-0000-4000-8000-000000000000", customer_email: "buyer@example.test",
+      customer_adult_confirmed: true, participant_age_band: "ADULT", participant: { date_of_birth: "1990-01-01" }, offer_accepted: true, pd_consent_accepted: true,
+    }).success,
+    deprecated_name_rejected: !checkoutRequestSchema.safeParse({
       quote_id: "00000000-0000-4000-8000-000000000000", customer_name: "Покупатель", customer_email: "buyer@example.test",
-      customer_adult_confirmed: true, participant: { self: true, date_of_birth: "1990-01-01" }, offer_accepted: true, pd_consent_accepted: true,
+      customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true,
     }).success,
   }));
   releaseControl.post("/reopen", async (c) => c.json(domain.reopenNewOrders(releaseControlSchema.parse(await jsonBody(c.req.raw)))));

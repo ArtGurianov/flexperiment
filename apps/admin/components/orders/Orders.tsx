@@ -111,7 +111,7 @@ export function Orders() {
           <>
             <table aria-busy={orders.isFetching} className={orders.isPlaceholderData ? "table-updating" : ""}>
               <thead>
-                <tr><th>Дата</th><th>Заказ</th><th>Событие</th><th>Заказчик</th><th>Участник</th><th>Сумма</th><th>Состояния</th></tr>
+                <tr><th>Дата</th><th>Заказ</th><th>Событие</th><th>Контакт заказа</th><th>Участник</th><th>Сумма</th><th>Состояния</th></tr>
               </thead>
               <tbody>
                 {orders.data.orders.map((order) => (
@@ -123,15 +123,17 @@ export function Orders() {
                     <td>{formatDate(order.created_at)}</td>
                     <td><strong>{string(order.public_order_number) || `${string(order.public_status_id).slice(0, 11)}…`}</strong><small>{string(order.id)}</small></td>
                     <td>{string(order.city_title)}<small>{string(order.occurrence_title)}</small></td>
-                    <td>{string(order.customer_name)}<small>{string(order.customer_email)}</small></td>
+                    <td>{string(order.customer_name) && <strong>{string(order.customer_name)}</strong>}<small>{string(order.customer_email)}</small></td>
                     <td>
-                      {string(order.participant_name) || string(order.customer_name)}
+                      {string(order.participant_name) || (string(order.customer_name) ? string(order.customer_name) : "Без имени")}
                       <small>{ageBandLabel(order.participant_age_band)
                         ? `Возраст при оформлении: ${ageBandLabel(order.participant_age_band)}`
                         : order.participant_age_at_occurrence === null || order.participant_age_at_occurrence === undefined
                           ? "Возраст legacy: неизвестен"
                           : `Возраст на дату события (legacy): ${number(order.participant_age_at_occurrence)} лет`}</small>
-                      <small>{order.participant_is_customer === 1 ? "Заказчик и участник" : "Другой участник"}</small>
+                      {order.participant_is_customer === 1 && <small>Заказчик и участник</small>}
+                      {order.participant_is_customer === 0 && <small>Другой участник</small>}
+                      {order.participant_is_customer === null && <small>Допуск по билету</small>}
                       {Boolean(order.minor_legal_representative_confirmed_at) && <Badge>ПРЕДСТАВИТЕЛЬ ПОДТВЕРЖДЁН</Badge>}
                       {order.participant_requires_adult_accompaniment === 1 && <Badge>ТРЕБУЕТСЯ СОПРОВОЖДЕНИЕ</Badge>}
                     </td>

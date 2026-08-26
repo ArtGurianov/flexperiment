@@ -33,8 +33,8 @@ pending operation on a changed baseline.
 EXPECTED_SOURCE_COMMIT=<exact-deployed-SOURCE_COMMIT> ./certification.sh
 ```
 
-It prompts for the Admin password, schedule/venue facts, then Customer name
-and email. It opens the provider payment link locally without
+It prompts for the Admin password, schedule/venue facts, then the ordering
+email. It opens the provider payment link locally without
 printing or persisting it. The operator completes the payment and confirms
 actual ticket-mailbox/ticket-page verification.
 

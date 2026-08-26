@@ -101,11 +101,8 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
   const [promoCode, setPromoCode] = useState("");
   const [appliedPromoCode, setAppliedPromoCode] = useState<string | null>(null);
   const [quote, setQuote] = useState<Quote | null>(null);
-  const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [customerAdult, setCustomerAdult] = useState(false);
-  const [participantSelf, setParticipantSelf] = useState(true);
-  const [participantName, setParticipantName] = useState("");
   const [participantAgeBand, setParticipantAgeBand] = useState<ParticipantAgeBand | "">("");
   const [minorRepresentative, setMinorRepresentative] = useState(false);
   const [offer, setOffer] = useState(false);
@@ -118,7 +115,7 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
   const [view, setView] = useState<"catalog" | "booking" | "city-interest">("catalog");
   const selected = useMemo(() => occurrences.find((item) => item.id === occurrenceId), [occurrences, occurrenceId]);
   const canCheckout = canRequestCheckout(selected);
-  const participantIsMinor = !participantSelf && participantAgeBand !== "" && participantAgeBand !== "ADULT";
+  const participantIsMinor = participantAgeBand !== "" && participantAgeBand !== "ADULT";
   const participantRequiresAdultAccompaniment = participantAgeBand === "MINOR_UNDER_14";
   const legalLabels = {
     PUBLIC_OFFER: "публичной оферты",
@@ -192,6 +189,11 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
     setPromoCode("");
     setAppliedPromoCode(null);
     setQuote(null);
+    setCustomerAdult(false);
+    setParticipantAgeBand("");
+    setMinorRepresentative(false);
+    setOffer(false);
+    setConsent(false);
     setMessage(null);
     onBookingTitle(`${occurrence.city_title} × ${occurrenceDateLabel(occurrence.starts_at)}`);
     setView("booking");
@@ -211,7 +213,7 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (!quote || submitting) return;
+    if (!quote || !participantAgeBand || submitting) return;
     setSubmitting(true); setMessage(null);
     const key = attemptKey(quote.quote_id);
     let attempt: Attempt;
@@ -224,7 +226,7 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
       const response = await fetch(commerceApiUrl("/v1/public/checkouts"), {
         method: "POST",
         headers: { "Content-Type": "application/json", "Idempotency-Key": attempt.idempotencyKey },
-        body: JSON.stringify({ quote_id: quote.quote_id, customer_name: name, customer_email: email, customer_adult_confirmed: customerAdult, participant: participantSelf ? { self: true } : { self: false, name: participantName, age_band: participantAgeBand }, minor_legal_representative_confirmed: participantIsMinor ? minorRepresentative : undefined, offer_accepted: offer, pd_consent_accepted: consent }),
+        body: JSON.stringify({ quote_id: quote.quote_id, customer_email: email, customer_adult_confirmed: customerAdult, participant_age_band: participantAgeBand, minor_legal_representative_confirmed: participantIsMinor ? minorRepresentative : undefined, offer_accepted: offer, pd_consent_accepted: consent }),
       });
       const data = await response.json();
       if (!response.ok) {
@@ -278,23 +280,15 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
       {!canCheckout ? <p role="status" className="border border-bone/50 px-3 py-2 text-bone/70">{salesAnnouncement(selected?.sales_status)}</p> : <>
       <label className="grid gap-1.5">Email <input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>
       <fieldset className="grid gap-2 border border-bone/50 p-3">
-        <legend className="px-1">Кто будет участвовать?</legend>
-        <label><input type="radio" checked={participantSelf} onChange={() => setParticipantSelf(true)} /> Я сам</label>
-        <label><input type="radio" checked={!participantSelf} onChange={() => setParticipantSelf(false)} /> Другой человек</label>
-        <label className="grid gap-1.5">{participantSelf ? "Ваше имя" : "Ваше имя (Заказчика)"}<input required value={name} onChange={(event) => setName(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>
-        {!participantSelf ? <>
-          <label className="grid gap-1.5">Имя участника <input required value={participantName} onChange={(event) => setParticipantName(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>
-          <fieldset className="grid gap-1.5"><legend>Возраст участника на момент оформления заказа</legend>
-            <label><input required type="radio" name="participant-age-band" checked={participantAgeBand === "ADULT"} onChange={() => setParticipantAgeBand("ADULT")} /> 18 лет или старше</label>
-            <label><input required type="radio" name="participant-age-band" checked={participantAgeBand === "MINOR_14_17"} onChange={() => setParticipantAgeBand("MINOR_14_17")} /> 14–17 лет</label>
-            <label><input required type="radio" name="participant-age-band" checked={participantAgeBand === "MINOR_UNDER_14"} onChange={() => setParticipantAgeBand("MINOR_UNDER_14")} /> младше 14 лет</label>
-          </fieldset>
-          {participantIsMinor ? <label><input required type="checkbox" checked={minorRepresentative} onChange={(event) => setMinorRepresentative(event.target.checked)} /> Я являюсь совершеннолетним законным представителем указанного несовершеннолетнего участника.</label> : null}
-          {participantRequiresAdultAccompaniment ? <p role="status" className="text-bone/70">Участник, которому на момент оформления заказа не исполнилось 14 лет, посещает мастер-класс в сопровождении взрослого.</p> : null}
-        </> : null}
+        <legend className="px-1">Возрастная категория участника</legend>
+        <label><input required type="radio" name="participant-age-band" checked={participantAgeBand === "ADULT"} onChange={() => setParticipantAgeBand("ADULT")} /> 18 лет или старше</label>
+        <label><input required type="radio" name="participant-age-band" checked={participantAgeBand === "MINOR_14_17"} onChange={() => setParticipantAgeBand("MINOR_14_17")} /> 14–17 лет</label>
+        <label><input required type="radio" name="participant-age-band" checked={participantAgeBand === "MINOR_UNDER_14"} onChange={() => setParticipantAgeBand("MINOR_UNDER_14")} /> младше 14 лет</label>
+        {participantIsMinor ? <label><input required type="checkbox" checked={minorRepresentative} onChange={(event) => setMinorRepresentative(event.target.checked)} /> Я являюсь совершеннолетним законным представителем несовершеннолетнего участника, для которого оформляю этот заказ.</label> : null}
+        {participantRequiresAdultAccompaniment ? <p role="status" className="text-bone/70">Участник, которому на момент оформления заказа не исполнилось 14 лет, посещает мастер-класс в сопровождении взрослого.</p> : null}
       </fieldset>
       <div className="grid gap-2 text-xs leading-snug">
-        <label><input required type="checkbox" checked={customerAdult} onChange={(event) => setCustomerAdult(event.target.checked)} /> Мне исполнилось 18 лет. Я оформляю заказ от своего имени.</label>
+        <label><input required type="checkbox" checked={customerAdult} onChange={(event) => setCustomerAdult(event.target.checked)} /> {participantAgeBand === "ADULT" ? "Мне исполнилось 18 лет. Я оформляю заказ от своего имени." : "Мне исполнилось 18 лет. Я оформляю заказ как совершеннолетнее лицо."}</label>
         <label><input required type="checkbox" checked={offer} onChange={(event) => setOffer(event.target.checked)} /> Я принимаю условия {quote ? <a className="text-acid underline underline-offset-4" href={legalPagePaths.PUBLIC_OFFER} target="_blank" rel="noopener noreferrer">{legalLabels.PUBLIC_OFFER}</a> : "публичной оферты"}.</label>
         <label><input required type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /> Я даю согласие на обработку моих персональных данных как Заказчика.</label>
         {quote && <p className="text-bone/70">Версия legal release {quote.legal_release.version}: {(Object.keys(legalLabels) as (keyof typeof legalLabels)[]).map((id, index) => <span key={id}>{index > 0 ? " · " : ""}<a className="text-acid underline underline-offset-4" href={legalPagePaths[id]} target="_blank" rel="noopener noreferrer">{legalLabels[id]}</a></span>)}</p>}
@@ -302,7 +296,7 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
       {message && <p role="status" className="border border-acid px-3 py-2 text-acid">{message}</p>}
       <label className="grid gap-1.5">Промокод <span className="flex gap-2"><input disabled={Boolean(appliedPromoCode)} value={appliedPromoCode ? `Промокод [${appliedPromoCode}] применен` : promoCode} onChange={(event) => setPromoCode(event.target.value)} className="min-w-0 flex-1 border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid disabled:cursor-not-allowed disabled:opacity-70" /><button type="button" disabled={loading} onClick={() => void (appliedPromoCode ? resetPromo() : applyPromo())} className="shrink-0 border border-acid px-3 py-2 font-display uppercase text-acid transition-colors hover:bg-acid hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid disabled:cursor-wait disabled:opacity-60">{appliedPromoCode ? "Сброс" : "Применить"}</button></span></label>
       {quote && <div className="border border-acid/60 p-3 text-bone"><p>{selected?.city_title}: {rub(quote.final_amount_kopecks)}{quote.discount_kopecks > 0 ? " со скидкой" : ""}</p></div>}
-      <button disabled={!quote || submitting} className="w-full border-2 border-acid bg-acid px-4 py-3 font-display text-lg uppercase text-ink disabled:cursor-not-allowed disabled:opacity-60">{submitting ? "Создаём оплату…" : "Перейти к оплате"}</button>
+      <button disabled={!quote || !participantAgeBand || submitting} className="w-full border-2 border-acid bg-acid px-4 py-3 font-display text-lg uppercase text-ink disabled:cursor-not-allowed disabled:opacity-60">{submitting ? "Создаём оплату…" : "Перейти к оплате"}</button>
       </>}
     </form>
     </>

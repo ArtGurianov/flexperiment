@@ -31,8 +31,8 @@ describe("refund email wording", () => {
     const full = renderEmailTemplate("refund-succeeded", { fulfillment_outcome: "FULL" });
     const partial = renderEmailTemplate("refund-succeeded", { fulfillment_outcome: "PARTIAL" });
     expect(ticket.plaintext).toContain("Оплата подтверждена");
-    expect(ticket.plaintext).toContain("Заказчик: Заказчик");
-    expect(ticket.plaintext).toContain("Участник: Участник");
+    expect(ticket.plaintext).not.toContain("Заказчик:");
+    expect(ticket.plaintext).not.toContain("Участник:");
     expect(ticket.plaintext).toContain("на момент оформления заказа не исполнилось 14 лет");
     expect(update.plaintext).toContain("полный возврат");
     expect(full.plaintext).toContain("аннулированы");
@@ -42,7 +42,7 @@ describe("refund email wording", () => {
   it("uses order-time age-band wording consistently in the new checkout UI and ticket email", () => {
     const checkoutUi = readFileSync("components/CheckoutFlow.tsx", "utf8");
     const ticket = renderEmailTemplate("ticket", { participant_requires_adult_accompaniment: true });
-    expect(checkoutUi).toContain("Возраст участника на момент оформления заказа");
+    expect(checkoutUi).toContain("Возрастная категория участника");
     expect(checkoutUi).toContain("на момент оформления заказа не исполнилось 14 лет");
     expect(checkoutUi).not.toContain("оформления билета");
     expect(ticket.plaintext).toContain("на момент оформления заказа не исполнилось 14 лет");

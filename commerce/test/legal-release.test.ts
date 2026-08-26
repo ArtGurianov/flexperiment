@@ -154,6 +154,25 @@ describe("production legal-release publisher", () => {
     expect(() => verifyCurrentLegalSourceHashes(active.manifest)).not.toThrow();
   });
 
+  it("prepares an anonymous checkout candidate without changing the active legal release", () => {
+    const candidate = loadCanonicalLegalRelease("commerce/legal/production-manifest.2026-08-26.1.draft.json");
+    expect(candidate.version).toBe("2026-08-26.1");
+    expect(candidate.manifest.documents.PRIVACY_POLICY).toMatchObject({
+      version: "2026-08-26",
+      archive_url: "https://flexperiment.ru/legal/archive/privacy/2026-08-26.1/privacy-policy.md",
+    });
+    expect(candidate.manifest.documents.PD_CONSENT).toMatchObject({
+      version: "2026-08-26",
+      archive_url: "https://flexperiment.ru/legal/archive/personal-data-consent/2026-08-26.1/personal-data-consent.md",
+    });
+    const privacy = readFileSync("public/legal/archive/privacy/2026-08-26.1/privacy-policy.md", "utf8");
+    const consent = readFileSync("public/legal/archive/personal-data-consent/2026-08-26.1/personal-data-consent.md", "utf8");
+    expect(privacy).toContain("Оператор не собирает имя Заказчика или Участника через форму оформления заказа");
+    expect(consent).toContain("Оператор не собирает имя Участника");
+    expect(privacy).toContain("исторические сведения заказа");
+    expect(loadCanonicalLegalRelease("commerce/legal/production-manifest.json").version).toBe("2026-08-25.1");
+  });
+
   it("keeps current Flexperiment legal documents free of legacy operator contacts", () => {
     const currentDocuments = [
       "public/legal/privacy-policy.md",

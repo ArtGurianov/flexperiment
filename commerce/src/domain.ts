@@ -5,7 +5,7 @@ import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import { LegalReleasePublishError, loadCanonicalLegalRelease, publishLegalRelease, verifyCurrentLegalSourceHashes } from "./legal-release";
 import type { PaymentProvider } from "./provider";
 import { ReleaseControlError, ReleaseSalesGate, type ReleaseControlRequest, releaseRuntimeEvidence } from "./release-control";
-import { checkoutRequestSchema, type CheckoutRequest, type ParticipantAgeBand } from "./types";
+import { checkoutRequestSchema, participantAgeBandSchema, type CheckoutRequest, type ParticipantAgeBand } from "./types";
 import { findCityBySlug } from "../../lib/city-catalog";
 
 type Row = Record<string, unknown>;
@@ -51,6 +51,25 @@ const discountFor = (price: number, type: unknown, value: unknown) => {
 const isMinorAgeBand = (ageBand: ParticipantAgeBand) => ageBand !== "ADULT";
 const requiresAccompanimentForAgeBand = (ageBand: ParticipantAgeBand) => ageBand === "MINOR_UNDER_14";
 const checkoutRequestHashV2 = (input: CheckoutRequest) => `v2:${sha256(canonicalV2(input))}`;
+type DirectAnonymousCheckoutRequest = Omit<CheckoutRequest, "participant_age_band"> & { participant_age_band: string };
+type CheckoutInput = DirectAnonymousCheckoutRequest;
+
+// The HTTP boundary already validates this contract. Direct domain callers use
+// the same fields, while parsing here keeps an invalid internal age band from
+// entering persistence or the V2 idempotency hash.
+const normalizeCheckoutInput = (input: CheckoutInput): CheckoutRequest => {
+  const parsedAgeBand = participantAgeBandSchema.safeParse(input.participant_age_band);
+  if (!parsedAgeBand.success) throw new DomainError("PARTICIPANT_AGE_BAND_REQUIRED", 422);
+  return {
+    quote_id: input.quote_id,
+    customer_email: input.customer_email,
+    customer_adult_confirmed: input.customer_adult_confirmed,
+    participant_age_band: parsedAgeBand.data,
+    minor_legal_representative_confirmed: input.minor_legal_representative_confirmed,
+    offer_accepted: input.offer_accepted,
+    pd_consent_accepted: input.pd_consent_accepted,
+  };
+};
 
 const formatOccurrenceDateTime = (value: unknown, timeZone: unknown) => {
   const date = new Date(String(value ?? ""));
@@ -662,10 +681,11 @@ export class CommerceDomain {
     });
   }
 
-  checkout(input: CheckoutRequest, idempotencyKey: string, acceptance: { ip?: string; userAgent?: string } = {}) {
+  checkout(input: CheckoutInput, idempotencyKey: string, acceptance: { ip?: string; userAgent?: string } = {}) {
+    const checkoutInput = normalizeCheckoutInput(input);
     if (idempotencyKey.length < 16 || idempotencyKey.length > 200) throw new DomainError("IDEMPOTENCY_KEY_INVALID", 400);
     const keyHash = sha256(idempotencyKey);
-    const requestHash = checkoutRequestHashV2(input);
+    const requestHash = checkoutRequestHashV2(checkoutInput);
     const result = withImmediateTransaction(this.db, () => {
       const replay = one(this.db, `SELECT ci.canonical_request_hash, o.public_status_id AS status_id, p.state, p.status, p.payment_url
         FROM checkout_idempotency ci JOIN orders o ON o.id = ci.order_id JOIN payments p ON p.order_id = o.id WHERE ci.idempotency_key_hash = ?`, keyHash);
@@ -675,26 +695,19 @@ export class CommerceDomain {
         return { replay: true, status_id: replay.status_id, state: replay.state, status: replay.status, payment_url: replay.payment_url };
       }
       this.assertNewOrdersOpen();
-      const quote = one(this.db, "SELECT * FROM quotes WHERE id = ?", input.quote_id);
+      const quote = one(this.db, "SELECT * FROM quotes WHERE id = ?", checkoutInput.quote_id);
       if (!quote || new Date(String(quote.expires_at)).getTime() < Date.now()) throw new DomainError("QUOTE_EXPIRED", 409);
       const occurrence = one(this.db, "SELECT o.*, c.title AS city_title FROM occurrences o JOIN cities c ON c.id = o.city_id WHERE o.id = ?", quote.occurrence_id);
       if (!occurrence || occurrence.material_revision !== quote.material_revision) throw new DomainError("QUOTE_STALE", 409);
       if (occurrence.sales_status !== "OPEN" || occurrence.fulfillment_status !== "SCHEDULED") throw new DomainError("SALES_NOT_OPEN", 409);
-      if (input.customer_adult_confirmed !== true) throw new DomainError("CUSTOMER_ADULT_CONFIRMATION_REQUIRED", 422);
-      if (input.participant.self && input.participant.name !== undefined) throw new DomainError("SELF_PARTICIPANT_NAME_FORBIDDEN", 422);
-      const participantAgeBand = input.participant.self ? "ADULT" : input.participant.age_band;
-      if (!participantAgeBand) throw new DomainError("PARTICIPANT_AGE_BAND_REQUIRED", 422);
-      if (input.participant.self && input.participant.age_band !== undefined && input.participant.age_band !== "ADULT") {
-        throw new DomainError("SELF_PARTICIPANT_AGE_BAND_INVALID", 422);
-      }
-      const participantName = input.participant.self ? null : input.participant.name?.trim();
-      if (!input.participant.self && !participantName) throw new DomainError("PARTICIPANT_NAME_REQUIRED", 422);
+      if (checkoutInput.customer_adult_confirmed !== true) throw new DomainError("CUSTOMER_ADULT_CONFIRMATION_REQUIRED", 422);
+      const participantAgeBand = checkoutInput.participant_age_band;
       const participantIsMinor = isMinorAgeBand(participantAgeBand);
       const participantRequiresAdultAccompaniment = requiresAccompanimentForAgeBand(participantAgeBand);
-      if (participantIsMinor && input.minor_legal_representative_confirmed !== true) {
+      if (participantIsMinor && checkoutInput.minor_legal_representative_confirmed !== true) {
         throw new DomainError("MINOR_LEGAL_REPRESENTATIVE_CONFIRMATION_REQUIRED", 422);
       }
-      if (!participantIsMinor && input.minor_legal_representative_confirmed !== undefined) {
+      if (!participantIsMinor && checkoutInput.minor_legal_representative_confirmed !== undefined) {
         throw new DomainError("UNEXPECTED_MINOR_LEGAL_REPRESENTATIVE_CONFIRMATION", 422);
       }
       const release = one(this.db, "SELECT * FROM legal_releases WHERE active = 1");
@@ -725,9 +738,10 @@ export class CommerceDomain {
       const fiscalItemName = `Участие в мастер-классе ФЛЭКСПЕРИМЕНТ — ${String(occurrence.city_title)}, ${workshopDate}`;
       this.db.prepare(`INSERT INTO orders(id, public_status_id, public_order_number, occurrence_id, customer_name, customer_email, customer_email_hash, amount_kopecks, occurrence_material_revision, venue_disclosure_snapshot, checkout_legal_release_id, legal_snapshot_json, eligibility_confirmed_at, attributed_agent_id, reward_type_snapshot, reward_value_snapshot, promo_code_snapshot, discount_type_snapshot, discount_value_snapshot, fiscal_purpose_snapshot, fiscal_item_name_snapshot, public_offer_version, public_offer_sha256, public_offer_accepted_at, privacy_policy_version, privacy_policy_sha256, privacy_policy_presented_at, pd_consent_version, pd_consent_sha256, pd_consent_accepted_at, checkout_disclosure_version, checkout_disclosure_sha256, customer_adult_confirmed_at, customer_acceptance_ip, customer_acceptance_user_agent, participant_name, participant_age_band, participant_date_of_birth, participant_age_at_occurrence, participant_is_minor, participant_requires_adult_accompaniment, participant_is_customer, minor_legal_representative_confirmed_at, minor_legal_representative_confirmation_text, under_14_accompaniment_confirmed_at, under_14_accompaniment_confirmation_text)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        // SQLite baseline made this legacy column NOT NULL. New records carry an
-        // explicit deprecation sentinel, never a false self-purchase assertion.
-        .run(orderId, statusId, orderNumber, occurrence.id, input.customer_name.trim(), input.customer_email.trim().toLowerCase(), emailHash(input.customer_email), quote.final_amount_kopecks, quote.material_revision, quote.venue_disclosure, quote.legal_release_id, JSON.stringify(manifest), "DEPRECATED_NOT_EVIDENCE", attributedAgentId, agent?.default_reward_type ?? null, agent?.default_reward_value ?? null, quote.promo_code_snapshot ?? null, quote.discount_type_snapshot ?? null, quote.discount_value_snapshot ?? null, fiscalPurpose, fiscalItemName, manifest.documents.PUBLIC_OFFER.version, manifest.documents.PUBLIC_OFFER.sha256, timestamp, manifest.documents.PRIVACY_POLICY.version, manifest.documents.PRIVACY_POLICY.sha256, timestamp, manifest.documents.PD_CONSENT.version, manifest.documents.PD_CONSENT.sha256, timestamp, manifest.documents.CHECKOUT_DISCLOSURE.version, manifest.documents.CHECKOUT_DISCLOSURE.sha256, timestamp, acceptance.ip ?? null, acceptance.userAgent?.slice(0, 1_000) ?? null, participantName, participantAgeBand, null, null, Number(participantIsMinor), Number(participantRequiresAdultAccompaniment), Number(input.participant.self), participantIsMinor ? timestamp : null, participantIsMinor ? "Я являюсь совершеннолетним законным представителем указанного несовершеннолетнего участника." : null, null, null);
+        // SQLite baseline made this historical column NOT NULL. New anonymous
+        // orders retain only an empty legacy value; no name is collected or
+        // presented as order evidence.
+        .run(orderId, statusId, orderNumber, occurrence.id, "", checkoutInput.customer_email.trim().toLowerCase(), emailHash(checkoutInput.customer_email), quote.final_amount_kopecks, quote.material_revision, quote.venue_disclosure, quote.legal_release_id, JSON.stringify(manifest), "DEPRECATED_NOT_EVIDENCE", attributedAgentId, agent?.default_reward_type ?? null, agent?.default_reward_value ?? null, quote.promo_code_snapshot ?? null, quote.discount_type_snapshot ?? null, quote.discount_value_snapshot ?? null, fiscalPurpose, fiscalItemName, manifest.documents.PUBLIC_OFFER.version, manifest.documents.PUBLIC_OFFER.sha256, timestamp, manifest.documents.PRIVACY_POLICY.version, manifest.documents.PRIVACY_POLICY.sha256, timestamp, manifest.documents.PD_CONSENT.version, manifest.documents.PD_CONSENT.sha256, timestamp, manifest.documents.CHECKOUT_DISCLOSURE.version, manifest.documents.CHECKOUT_DISCLOSURE.sha256, timestamp, acceptance.ip ?? null, acceptance.userAgent?.slice(0, 1_000) ?? null, null, participantAgeBand, null, null, Number(participantIsMinor), Number(participantRequiresAdultAccompaniment), null, participantIsMinor ? timestamp : null, participantIsMinor ? "Я являюсь совершеннолетним законным представителем несовершеннолетнего участника, для которого оформляю этот заказ." : null, null, null);
       this.db.prepare("INSERT INTO bookings(id, order_id, occurrence_id, status) VALUES (?, ?, ?, 'RESERVED')").run(bookingId, orderId, occurrence.id);
       this.db.prepare(`INSERT INTO payments(id, order_id, state, status, provider_idempotency_key, creation_started_at) VALUES (?, ?, 'CREATING', 'PENDING', ?, ?)`)
         .run(paymentId, orderId, publicId(), timestamp);
@@ -741,7 +755,7 @@ export class CommerceDomain {
   }
 
   /** Performs external payment creation only after checkout state has committed. */
-  async checkoutAsync(input: CheckoutRequest, idempotencyKey: string, successBaseUrl: string, acceptance: { ip?: string; userAgent?: string } = {}) {
+  async checkoutAsync(input: CheckoutInput, idempotencyKey: string, successBaseUrl: string, acceptance: { ip?: string; userAgent?: string } = {}) {
     const first = this.checkout(input, idempotencyKey, acceptance);
     const payment = one(this.db, `SELECT p.*, p.id AS payment_id, o.id AS order_id, o.amount_kopecks, o.customer_email, o.fiscal_purpose_snapshot, o.fiscal_item_name_snapshot
       FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?`, first.status_id);
@@ -782,8 +796,8 @@ export class CommerceDomain {
         this.db.prepare("UPDATE bookings SET status = 'CONFIRMED' WHERE id = ? AND status = 'RESERVED'").run(booking.id);
         const capability = publicId();
         const encrypted = encryptTicketCapability(capability);
-        const order = one(this.db, `SELECT o.customer_name, o.customer_email, o.customer_email_hash, o.public_order_number,
-          o.participant_name, o.participant_age_at_occurrence, o.participant_is_minor, o.participant_requires_adult_accompaniment,
+        const order = one(this.db, `SELECT o.customer_email, o.customer_email_hash, o.public_order_number,
+          o.participant_age_band, o.participant_requires_adult_accompaniment,
           oc.title, oc.starts_at, oc.ends_at, oc.timezone, oc.venue_status, oc.venue_name,
           oc.venue_address, oc.venue_disclosure_text, oc.venue_announce_by, c.title AS city_title
           FROM orders o JOIN occurrences oc ON oc.id = o.occurrence_id JOIN cities c ON c.id = oc.city_id
@@ -801,10 +815,7 @@ export class CommerceDomain {
           public_order_number: order.public_order_number,
           payment_confirmed: true,
           amount_kopecks: capturedAmount,
-          customer_name: order.customer_name,
-          participant_name: order.participant_name ?? order.customer_name,
-          participant_age_at_occurrence: order.participant_age_at_occurrence,
-          participant_is_minor: Boolean(order.participant_is_minor),
+          participant_age_band: order.participant_age_band,
           participant_requires_adult_accompaniment: Boolean(order.participant_requires_adult_accompaniment),
           occurrence: occurrenceCustomerSnapshot(order),
           city_title: order.city_title,

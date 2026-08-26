@@ -409,21 +409,20 @@ prepare_checkout_request() {
   local checkout_request_sha
   [[ -n "${CHECKOUT_REQUEST_BODY+x}" ]] && return 0
   read -rp "Real test email: " CUSTOMER_EMAIL </dev/tty
-  read -rp "Customer name: " CUSTOMER_NAME </dev/tty
-  CHECKOUT_REQUEST_BODY="$(printf '%s\n%s' "$CUSTOMER_NAME" "$CUSTOMER_EMAIL" | python3 -c '
+  CHECKOUT_REQUEST_BODY="$(printf '%s' "$CUSTOMER_EMAIL" | python3 -c '
 import json
 import sys
-name, email = sys.stdin.read().splitlines()
-print(json.dumps({"quote_id": sys.argv[1], "customer_name": name, "customer_email": email, "customer_adult_confirmed": True, "participant": {"self": True}, "offer_accepted": True, "pd_consent_accepted": True}, ensure_ascii=False, separators=(",", ":")))
+email = sys.stdin.read().strip()
+print(json.dumps({"quote_id": sys.argv[1], "customer_email": email, "customer_adult_confirmed": True, "participant_age_band": "ADULT", "offer_accepted": True, "pd_consent_accepted": True}, ensure_ascii=False, separators=(",", ":")))
 ' "$QUOTE_ID")"
   checkout_request_sha="$(printf '%s' "$CHECKOUT_REQUEST_BODY" | shasum -a 256 | awk '{print $1}')"
   if [[ -z "${CHECKOUT_REQUEST_SHA256:-}" ]]; then
     CHECKOUT_REQUEST_SHA256="$checkout_request_sha"; save_state
   elif ! certification_checkout_request_hash_matches "$CHECKOUT_REQUEST_SHA256" "$checkout_request_sha"; then
-    unset CHECKOUT_REQUEST_BODY CUSTOMER_EMAIL CUSTOMER_NAME checkout_request_sha
+    unset CHECKOUT_REQUEST_BODY CUSTOMER_EMAIL checkout_request_sha
     fail "re-entered checkout data does not match the persisted pre-dispatch request hash; do not create another checkout"
   fi
-  unset CUSTOMER_EMAIL CUSTOMER_NAME checkout_request_sha
+  unset CUSTOMER_EMAIL checkout_request_sha
 }
 replay_checkout() {
   prepare_checkout_request
@@ -498,7 +497,7 @@ if [[ "$PHASE" == ORDER_IDENTIFIED ]]; then
       and .booking.status == "CONFIRMED"
       and .ticket.status == "VALID"
       and (.order.customer_adult_confirmed_at | type == "string" and length > 0)
-      and .order.participant_is_customer == 1
+      and .order.participant_is_customer == null
       and .order.participant_is_minor == 0
       and .order.participant_age_band == "ADULT"
       and .order.participant_age_at_occurrence == null
@@ -603,7 +602,7 @@ assert_final_order_evidence() {
       and .booking.status == "CANCELLED"
       and .ticket.status == "VOID"
       and (.order.customer_adult_confirmed_at | type == "string" and length > 0)
-      and .order.participant_is_customer == 1
+      and .order.participant_is_customer == null
       and .order.participant_is_minor == 0
       and .order.participant_age_band == "ADULT"
       and .order.participant_age_at_occurrence == null
@@ -641,7 +640,7 @@ if [[ "$PHASE" == OCCURRENCE_CLEANED ]]; then
   jq -n --slurpfile system "$RUN_TMP/system-evidence.json" --slurpfile evidence "$RUN_TMP/order-evidence.json" --slurpfile occurrence_evidence "$RUN_TMP/occurrence.json" --arg run "$RUN_ID" --arg started "$STARTED_AT" --arg completed "$COMPLETED_AT" --arg occurrence_id "$OCCURRENCE_ID" --arg status "$STATUS_ID" --arg booking "$BOOKING_ID" --arg ticket "$TICKET_ID" --arg human_verified_at "$HUMAN_TICKET_VERIFIED_AT" --arg obligation "$REFUND_OBLIGATION_ID" --arg refund "$REFUND_ID" --argjson initial_availability "$INITIAL_AVAILABILITY" --argjson paid_availability "$PAID_AVAILABILITY" --argjson post_cancel_availability "$POST_CANCEL_AVAILABILITY" --argjson ticket_email "$TICKET_FINAL_EMAIL_JSON" --argjson booking_cancelled_email "$BOOKING_CANCELLED_FINAL_EMAIL_JSON" --argjson refund_succeeded_email "$REFUND_SUCCEEDED_FINAL_EMAIL_JSON" '
     def email_evidence($outbox):
       {outbox:$outbox,provider_events:[$evidence[0].email_provider_events[] | select(.outbox_id == $outbox.id)]};
-    {result:"PASS",run_id:$run,environment:"production",started_at:$started,completed_at:$completed,build:$system[0],occurrence:{id:$occurrence_id,final_sales_status:$occurrence_evidence[0].sales_status,final_visibility:$occurrence_evidence[0].visibility,public_cleanup_verified:true,availability:{before_payment:$initial_availability,after_payment:$paid_availability,after_customer_cancellation:$post_cancel_availability}},order:{id:$evidence[0].order.id,status_id:$status,currency:$evidence[0].order.currency,legal_snapshot:{release_id:$evidence[0].order.checkout_legal_release_id,public_offer:{version:$evidence[0].order.public_offer_version,sha256:$evidence[0].order.public_offer_sha256},privacy_policy:{version:$evidence[0].order.privacy_policy_version,sha256:$evidence[0].order.privacy_policy_sha256},pd_consent:{version:$evidence[0].order.pd_consent_version,sha256:$evidence[0].order.pd_consent_sha256},checkout_disclosure:{version:$evidence[0].order.checkout_disclosure_version,sha256:$evidence[0].order.checkout_disclosure_sha256}},participant_assertions:{customer_adult_confirmed:($evidence[0].order.customer_adult_confirmed_at != null),participant_is_customer:($evidence[0].order.participant_is_customer == 1),participant_is_minor:($evidence[0].order.participant_is_minor == 1),adult_self_participant_verified:($evidence[0].order.customer_adult_confirmed_at != null and $evidence[0].order.participant_is_customer == 1 and $evidence[0].order.participant_age_band == "ADULT" and $evidence[0].order.participant_age_at_occurrence == null and $evidence[0].order.participant_requires_adult_accompaniment == 0 and $evidence[0].order.minor_legal_representative_confirmed_at == null and $evidence[0].order.under_14_accompaniment_confirmed_at == null)}},payment:$evidence[0].payment,tochka_webhook_events:$evidence[0].tochka_webhook_events,booking:{id:$booking,before_cancellation:"CONFIRMED",after_cancellation:$evidence[0].booking.status},ticket:{id:$ticket,before_cancellation:"VALID",after_cancellation:$evidence[0].ticket.status,human_verified:true,human_verified_at:$human_verified_at},emails:{ticket:email_evidence($ticket_email),booking_cancelled:email_evidence($booking_cancelled_email),refund_succeeded:email_evidence($refund_succeeded_email)},refund_obligation:($evidence[0].refund_obligation|select(.id==$obligation)),refund:($evidence[0].refunds[]|select(.id==$refund))}' > "$MANIFEST_TMP"
+    {result:"PASS",run_id:$run,environment:"production",started_at:$started,completed_at:$completed,build:$system[0],occurrence:{id:$occurrence_id,final_sales_status:$occurrence_evidence[0].sales_status,final_visibility:$occurrence_evidence[0].visibility,public_cleanup_verified:true,availability:{before_payment:$initial_availability,after_payment:$paid_availability,after_customer_cancellation:$post_cancel_availability}},order:{id:$evidence[0].order.id,status_id:$status,currency:$evidence[0].order.currency,legal_snapshot:{release_id:$evidence[0].order.checkout_legal_release_id,public_offer:{version:$evidence[0].order.public_offer_version,sha256:$evidence[0].order.public_offer_sha256},privacy_policy:{version:$evidence[0].order.privacy_policy_version,sha256:$evidence[0].order.privacy_policy_sha256},pd_consent:{version:$evidence[0].order.pd_consent_version,sha256:$evidence[0].order.pd_consent_sha256},checkout_disclosure:{version:$evidence[0].order.checkout_disclosure_version,sha256:$evidence[0].order.checkout_disclosure_sha256}},age_band_assertions:{customer_adult_confirmed:($evidence[0].order.customer_adult_confirmed_at != null),participant_is_minor:($evidence[0].order.participant_is_minor == 1),adult_checkout_verified:($evidence[0].order.customer_adult_confirmed_at != null and $evidence[0].order.participant_age_band == "ADULT" and $evidence[0].order.participant_age_at_occurrence == null and $evidence[0].order.participant_requires_adult_accompaniment == 0 and $evidence[0].order.minor_legal_representative_confirmed_at == null and $evidence[0].order.under_14_accompaniment_confirmed_at == null)}},payment:$evidence[0].payment,tochka_webhook_events:$evidence[0].tochka_webhook_events,booking:{id:$booking,before_cancellation:"CONFIRMED",after_cancellation:$evidence[0].booking.status},ticket:{id:$ticket,before_cancellation:"VALID",after_cancellation:$evidence[0].ticket.status,human_verified:true,human_verified_at:$human_verified_at},emails:{ticket:email_evidence($ticket_email),booking_cancelled:email_evidence($booking_cancelled_email),refund_succeeded:email_evidence($refund_succeeded_email)},refund_obligation:($evidence[0].refund_obligation|select(.id==$obligation)),refund:($evidence[0].refunds[]|select(.id==$refund))}' > "$MANIFEST_TMP"
   certification_manifest_is_valid "$MANIFEST_TMP" "$OCCURRENCE_ID" || fail "final certification manifest is not one valid PASS object"
   chmod 600 "$MANIFEST_TMP"; mv "$MANIFEST_TMP" "$MANIFEST"
   MANIFEST_WRITTEN_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; set_phase COMPLETE

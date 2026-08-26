@@ -41,6 +41,28 @@ describe("Orders", () => {
   beforeEach(() => { originalFetch = global.fetch; });
   afterEach(() => { global.fetch = originalFetch; vi.restoreAllMocks(); });
 
+  it("shows new anonymous orders as ticket admission while retaining legacy names when present", async () => {
+    const anonymousOrder = {
+      ...order,
+      customer_name: "",
+      participant_name: null,
+      participant_is_customer: null,
+    };
+    global.fetch = routeFetch({
+      "/cities": () => ({ cities: [] }),
+      "/occurrences": () => ({ occurrences: [] }),
+      "/orders": () => ({ orders: [anonymousOrder] }),
+    });
+
+    const client = createTestQueryClient();
+    render(<Orders />, { wrapper: (props) => <QueryClientWrapper client={client}>{props.children}</QueryClientWrapper> });
+
+    await waitFor(() => expect(screen.getByText("FX-1")).toBeInTheDocument());
+    expect(screen.getByText("Без имени")).toBeInTheDocument();
+    expect(screen.getByText("Допуск по билету")).toBeInTheDocument();
+    expect(screen.queryByText("Другой участник")).not.toBeInTheDocument();
+  });
+
   it("updates the badge in the already-open evidence panel and the underlying table after a refund, with no remount and no hard reload (A1)", async () => {
     let paymentStatus = "PAID";
     let refundCount = 0;

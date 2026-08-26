@@ -8,18 +8,13 @@ export const participantAgeBandSchema = z.enum(participantAgeBands);
 
 export const checkoutRequestSchema = z.object({
   quote_id: z.string().uuid(),
-  customer_name: z.string().trim().min(2).max(160),
   customer_email: z.string().trim().email().max(320),
   customer_adult_confirmed: z.boolean().optional(),
-  participant: z.object({
-    self: z.boolean(),
-    name: z.string().trim().min(2).max(160).optional(),
-    age_band: participantAgeBandSchema.optional(),
-  }).strict(),
+  participant_age_band: participantAgeBandSchema,
   minor_legal_representative_confirmed: z.boolean().optional(),
   offer_accepted: z.literal(true),
   pd_consent_accepted: z.literal(true),
-});
+}).strict();
 
 export const checkoutContextSchema = z.object({
   occurrence_id: z.string().uuid(),

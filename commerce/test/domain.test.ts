@@ -25,7 +25,7 @@ function fixture(filename = ":memory:") {
 }
 
 function checkoutPayload(quoteId: string) {
-  return { quote_id: quoteId, customer_name: "Арт", customer_email: "art@example.test", customer_adult_confirmed: true as const, participant: { self: true }, offer_accepted: true as const, pd_consent_accepted: true as const };
+  return { quote_id: quoteId, customer_email: "art@example.test", customer_adult_confirmed: true as const, participant_age_band: "ADULT", offer_accepted: true as const, pd_consent_accepted: true as const };
 }
 
 const controlledRelease = (releaseId = randomUUID()) => ({
@@ -514,14 +514,14 @@ describe("commerce domain", () => {
   it("permanently binds a checkout idempotency key and reserves one seat", async () => {
     const setup = fixture(); databases.push(setup.db);
     const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "promoter" });
-    const payload = { quote_id: quote.quote_id, customer_name: "Арт Гурьянов", customer_email: "art@example.test", customer_adult_confirmed: true as const, participant: { self: true }, offer_accepted: true as const, pd_consent_accepted: true as const };
+    const payload = { quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true as const, participant_age_band: "ADULT", offer_accepted: true as const, pd_consent_accepted: true as const };
     const first = await setup.domain.checkoutAsync(payload, "8f3a27bc-77c6-47b1-b6d0-000000000001", "https://flexperiment.ru");
     const replay = await setup.domain.checkoutAsync(payload, "8f3a27bc-77c6-47b1-b6d0-000000000001", "https://flexperiment.ru");
     expect(first.status_id).toBe(replay.status_id);
     expect(replay.payment_url).toContain("/payment/success?order=");
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM bookings").get()).toMatchObject({ count: 1 });
     expect(setup.db.prepare("SELECT public_offer_version, public_offer_sha256, public_offer_accepted_at, privacy_policy_version, privacy_policy_presented_at, pd_consent_version, pd_consent_accepted_at, checkout_disclosure_version FROM orders").get()).toMatchObject({ public_offer_version: "test-1", public_offer_sha256: "0".repeat(64), privacy_policy_version: "test-1", pd_consent_version: "test-1", checkout_disclosure_version: "test-1" });
-    await expect(setup.domain.checkoutAsync({ ...payload, customer_name: "Другой" }, "8f3a27bc-77c6-47b1-b6d0-000000000001", "https://flexperiment.ru")).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
+    await expect(setup.domain.checkoutAsync({ ...payload, participant_age_band: "MINOR_14_17", minor_legal_representative_confirmed: true }, "8f3a27bc-77c6-47b1-b6d0-000000000001", "https://flexperiment.ru")).rejects.toMatchObject({ code: "IDEMPOTENCY_CONFLICT" });
   });
 
   it("releases a reserved seat only after provider-authoritative failure", async () => {
@@ -530,7 +530,7 @@ describe("commerce domain", () => {
     provider.reconcilePayment = async () => ({ status: "FAILED" as const });
     const domain = new CommerceDomain(setup.db, provider);
     const quote = domain.checkoutContext({ occurrenceId: setup.occurrenceId });
-    await domain.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Арт", customer_email: "art@example.test", customer_adult_confirmed: true, participant: { self: true }, offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000010", "https://flexperiment.ru");
+    await domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000010", "https://flexperiment.ru");
     expect(setup.db.prepare("SELECT status FROM bookings").get()).toMatchObject({ status: "RESERVED" });
     await domain.reconcilePendingPayments();
     expect(setup.db.prepare("SELECT status, cancellation_reason FROM bookings").get()).toMatchObject({ status: "CANCELLED", cancellation_reason: "PAYMENT_PROVIDER_FAILED" });
@@ -543,7 +543,7 @@ describe("commerce domain", () => {
     provider.createPayment = async () => { throw new Error("response lost"); };
     const domain = new CommerceDomain(setup.db, provider);
     const quote = domain.checkoutContext({ occurrenceId: setup.occurrenceId });
-    await domain.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Арт", customer_email: "art@example.test", customer_adult_confirmed: true, participant: { self: true }, offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000011", "https://flexperiment.ru");
+    await domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000011", "https://flexperiment.ru");
     await domain.reconcilePendingPayments();
     expect(setup.db.prepare("SELECT state, status FROM payments").get()).toMatchObject({ state: "CREATE_UNKNOWN", status: "PENDING" });
     expect(setup.db.prepare("SELECT status FROM bookings").get()).toMatchObject({ status: "RESERVED" });
@@ -667,7 +667,7 @@ describe("commerce domain", () => {
   it("abandons a reservation idempotently and routes a late payment into refund review", async () => {
     const setup = fixture(); databases.push(setup.db);
     const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "promoter" });
-    await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Арт", customer_email: "art@example.test", customer_adult_confirmed: true, participant: { self: true }, offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000012", "https://flexperiment.ru");
+    await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000012", "https://flexperiment.ru");
     const ids = setup.db.prepare("SELECT o.id AS order_id, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id").get() as { order_id: string; payment_id: string };
     const key = "8f3a27bc-77c6-47b1-b6d0-000000000013";
     const first = setup.domain.abandonReservation(ids.order_id, { reason: "Certification interrupted before payment" }, key, "admin");
@@ -690,7 +690,7 @@ describe("commerce domain", () => {
   it("does not resurrect a customer-cancelled booking when payment is approved late", async () => {
     const setup = fixture(); databases.push(setup.db);
     const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
-    const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Арт", customer_email: "art@example.test", customer_adult_confirmed: true, participant: { self: true }, offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000002", "https://flexperiment.ru");
+    const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000002", "https://flexperiment.ru");
     const booking = setup.db.prepare("SELECT b.id, p.id AS payment_id FROM bookings b JOIN orders o ON o.id = b.order_id JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; payment_id: string };
     setup.domain.cancelCustomerBooking(booking.id, { reason: "Support request", confirmation_text: `CANCEL ${booking.id}` }, "8f3a27bc-77c6-47b1-b6d0-000000000003");
     setup.domain.markPaymentPaid(booking.payment_id, 100000, "late-provider-payment");
@@ -702,7 +702,7 @@ describe("commerce domain", () => {
   it("keeps a confirmed booking active for an admin compensation refund", async () => {
     const setup = fixture(); databases.push(setup.db);
     const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
-    const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Арт", customer_email: "art@example.test", customer_adult_confirmed: true, participant: { self: true }, offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000004", "https://flexperiment.ru");
+    const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000004", "https://flexperiment.ru");
     const order = setup.db.prepare("SELECT o.id, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; payment_id: string };
     setup.domain.markPaymentPaid(order.payment_id, 100000, "provider-payment");
     const refund = setup.domain.createCompensationRefund(order.id, { amount_kopecks: 10000, reason: "Venue inconvenience" }, "8f3a27bc-77c6-47b1-b6d0-000000000005");
@@ -913,7 +913,7 @@ describe("commerce domain", () => {
   it("cancels an occurrence once and upserts a full refund obligation without a ticket", async () => {
     const setup = fixture(); databases.push(setup.db);
     const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
-    const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Арт", customer_email: "art@example.test", customer_adult_confirmed: true, participant: { self: true }, offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000006", "https://flexperiment.ru");
+    const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000006", "https://flexperiment.ru");
     const data = setup.db.prepare("SELECT b.id AS booking_id, p.id AS payment_id FROM bookings b JOIN orders o ON o.id = b.order_id JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { booking_id: string; payment_id: string };
     setup.domain.markPaymentPaid(data.payment_id, 100000, "provider-payment");
     const key = "8f3a27bc-77c6-47b1-b6d0-000000000007";
@@ -933,7 +933,7 @@ describe("commerce domain", () => {
   it("uses a one-time email confirmation for a pre-cutoff self-service full refund", async () => {
     const setup = fixture(); databases.push(setup.db);
     const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
-    const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Арт", customer_email: "art@example.test", customer_adult_confirmed: true, participant: { self: true }, offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000014", "https://flexperiment.ru");
+    const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000014", "https://flexperiment.ru");
     const order = setup.db.prepare("SELECT o.id, o.public_order_number, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; public_order_number: string; payment_id: string };
     setup.domain.markPaymentPaid(order.payment_id, 100000, "provider-payment");
     expect(setup.domain.requestCustomerRefund(order.public_order_number.replace(/-/g, ""))).toEqual({ accepted: true });
@@ -956,7 +956,7 @@ describe("commerce domain", () => {
   it("fails closed for a customer refund request at or after the one-hour cutoff", async () => {
     const setup = fixture(); databases.push(setup.db);
     const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
-    const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Арт", customer_email: "art@example.test", customer_adult_confirmed: true, participant: { self: true }, offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000015", "https://flexperiment.ru");
+    const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000015", "https://flexperiment.ru");
     const order = setup.db.prepare("SELECT o.id, o.public_order_number, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; public_order_number: string; payment_id: string };
     setup.domain.markPaymentPaid(order.payment_id, 100000, "provider-payment");
     setup.db.prepare("UPDATE occurrences SET starts_at = ? WHERE id = ?").run(new Date(Date.now() + 30 * 60_000).toISOString(), setup.occurrenceId);
@@ -970,7 +970,7 @@ describe("commerce domain", () => {
     setup.db.prepare("UPDATE occurrences SET starts_at = ? WHERE id = ?").run(new Date(start).toISOString(), setup.occurrenceId);
     const beforeCutoff = new CommerceDomain(setup.db, new MockProvider(), undefined, () => start - 60 * 60_000 - 1);
     const quote = beforeCutoff.checkoutContext({ occurrenceId: setup.occurrenceId });
-    const result = await beforeCutoff.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Арт", customer_email: "art@example.test", customer_adult_confirmed: true, participant: { self: true }, offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000018", "https://flexperiment.ru");
+    const result = await beforeCutoff.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000018", "https://flexperiment.ru");
     const order = setup.db.prepare("SELECT o.id, o.public_order_number, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; public_order_number: string; payment_id: string };
     beforeCutoff.markPaymentPaid(order.payment_id, 100000, "provider-payment");
     beforeCutoff.requestCustomerRefund(order.public_order_number.replace(/-/g, ""));
@@ -990,7 +990,7 @@ describe("commerce domain", () => {
     const email: EmailProvider = { async lookup() { return { status: "UNKNOWN" }; }, async send(input) { if (input.template === "customer-refund-confirmation" && input.outboxId) calls.push(input.outboxId); return { jobId: `mail-${calls.length}` }; } };
     const domain = new CommerceDomain(setup.db, new MockProvider(), email);
     const quote = domain.checkoutContext({ occurrenceId: setup.occurrenceId });
-    const result = await domain.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Арт", customer_email: "art@example.test", customer_adult_confirmed: true, participant: { self: true }, offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000019", "https://flexperiment.ru");
+    const result = await domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000019", "https://flexperiment.ru");
     const order = setup.db.prepare("SELECT o.id, o.public_order_number, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; public_order_number: string; payment_id: string };
     domain.markPaymentPaid(order.payment_id, 100000, "provider-payment");
     domain.requestCustomerRefund(order.public_order_number.replace(/-/g, ""));
@@ -1008,7 +1008,7 @@ describe("commerce domain", () => {
     const setup = fixture(); databases.push(setup.db);
     const domain = new CommerceDomain(setup.db, new MockProvider());
     const quote = domain.checkoutContext({ occurrenceId: setup.occurrenceId });
-    const result = await domain.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Арт", customer_email: "art@example.test", customer_adult_confirmed: true, participant: { self: true }, offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000024", "https://flexperiment.ru");
+    const result = await domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000024", "https://flexperiment.ru");
     const order = setup.db.prepare("SELECT o.id, o.public_order_number, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; public_order_number: string; payment_id: string };
     domain.markPaymentPaid(order.payment_id, 100000, "provider-payment");
     domain.requestCustomerRefund(order.public_order_number.replace(/-/g, ""));
@@ -1026,7 +1026,7 @@ describe("commerce domain", () => {
     const email: EmailProvider = { async lookup() { return { status: "ACCEPTED", jobId: "mail-reconciled" }; }, async send() { throw new Error("must not resend before reconciliation"); } };
     const domain = new CommerceDomain(setup.db, new MockProvider(), email);
     const quote = domain.checkoutContext({ occurrenceId: setup.occurrenceId });
-    const result = await domain.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Арт", customer_email: "art@example.test", customer_adult_confirmed: true, participant: { self: true }, offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000025", "https://flexperiment.ru");
+    const result = await domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000025", "https://flexperiment.ru");
     const order = setup.db.prepare("SELECT o.id, o.public_order_number, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; public_order_number: string; payment_id: string };
     domain.markPaymentPaid(order.payment_id, 100000, "provider-payment");
     domain.requestCustomerRefund(order.public_order_number.replace(/-/g, ""));
@@ -1040,7 +1040,7 @@ describe("commerce domain", () => {
     const setup = fixture(); databases.push(setup.db);
     const domain = new CommerceDomain(setup.db, new MockProvider());
     const quote = domain.checkoutContext({ occurrenceId: setup.occurrenceId });
-    const result = await domain.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Арт", customer_email: "art@example.test", customer_adult_confirmed: true, participant: { self: true }, offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000028", "https://flexperiment.ru");
+    const result = await domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000028", "https://flexperiment.ru");
     const order = setup.db.prepare("SELECT o.id, o.public_order_number, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; public_order_number: string; payment_id: string };
     domain.markPaymentPaid(order.payment_id, 100000, "provider-payment");
     domain.requestCustomerRefund(order.public_order_number.replace(/-/g, ""));
@@ -1055,7 +1055,7 @@ describe("commerce domain", () => {
   it("fully unwinds captured money when an organizer cancels a previously cancelled booking", async () => {
     const setup = fixture(); databases.push(setup.db);
     const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
-    const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Арт", customer_email: "art@example.test", customer_adult_confirmed: true, participant: { self: true }, offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000020", "https://flexperiment.ru");
+    const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000020", "https://flexperiment.ru");
     const payment = setup.db.prepare("SELECT p.id, p.order_id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; order_id: string };
     setup.domain.markPaymentPaid(payment.id, 5000, "provider-payment");
     setup.db.prepare("UPDATE bookings SET status = 'CANCELLED', cancellation_reason = 'EARLIER_CUSTOMER_CASE' WHERE order_id = ?").run(payment.order_id);
@@ -1074,7 +1074,7 @@ describe("commerce domain", () => {
   it("does not issue another obligation refund while a previous provider submission is unknown", async () => {
     const setup = fixture(); databases.push(setup.db);
     const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
-    const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Арт", customer_email: "art@example.test", customer_adult_confirmed: true, participant: { self: true }, offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000026", "https://flexperiment.ru");
+    const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000026", "https://flexperiment.ru");
     const payment = setup.db.prepare("SELECT p.id, p.order_id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; order_id: string };
     setup.domain.markPaymentPaid(payment.id, 5000, "provider-payment");
     setup.db.prepare(`INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash)
@@ -1096,7 +1096,7 @@ describe("commerce domain", () => {
     setup.db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, enabled, default_reward_type, default_reward_value, npd_status_checked_at)
       VALUES (?, 'cancelled-promoter', 'Promoter', 'Promoter Legal', 'promoter@example.test', 'SELF_EMPLOYED', '123456789012', 'C-2', 1, 'PERCENT', 1000, datetime('now'))`).run(agentId);
     const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
-    const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Арт", customer_email: "art@example.test", customer_adult_confirmed: true, participant: { self: true }, offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000022", "https://flexperiment.ru");
+    const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000022", "https://flexperiment.ru");
     const payment = setup.db.prepare("SELECT p.id, p.order_id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; order_id: string };
     setup.domain.markPaymentPaid(payment.id, 100000, "provider-payment");
     setup.db.prepare("UPDATE orders SET attributed_agent_id = ?, reward_type_snapshot = 'PERCENT', reward_value_snapshot = 1000 WHERE id = ?").run(agentId, payment.order_id);
@@ -1113,7 +1113,7 @@ describe("commerce domain", () => {
     setup.db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, enabled, default_reward_type, default_reward_value, npd_status_checked_at)
       VALUES (?, 'promoter', 'Promoter', 'Promoter Legal', 'promoter@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', 1, 'PERCENT', 1000, datetime('now'))`).run(agentId);
     const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "promoter" });
-    const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_name: "Арт", customer_email: "art@example.test", customer_adult_confirmed: true, participant: { self: true }, offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000008", "https://flexperiment.ru");
+    const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000008", "https://flexperiment.ru");
     const order = setup.db.prepare("SELECT o.id, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; payment_id: string };
     setup.domain.markPaymentPaid(order.payment_id, 100000, "provider-payment");
     setup.db.prepare("UPDATE occurrences SET ends_at = '2020-01-01T00:00:00.000Z' WHERE id = ?").run(setup.occurrenceId);
@@ -2622,48 +2622,40 @@ describe("commerce domain", () => {
   });
 });
 
-describe("customer and participant ticketing", () => {
+describe("anonymous age-band ticketing", () => {
   const databases: ReturnType<typeof fixture>["db"][] = [];
   afterEach(() => { while (databases.length) databases.pop()?.close(); });
-  const checkoutFor = (quote_id: string, age_band: "ADULT" | "MINOR_14_17" | "MINOR_UNDER_14", overrides: Record<string, unknown> = {}) => ({
-    quote_id, customer_name: "Заказчик", customer_email: "customer@example.test", customer_adult_confirmed: true as const,
-    participant: { self: false, name: "Участник", age_band }, offer_accepted: true as const, pd_consent_accepted: true as const, ...overrides,
+  const checkoutFor = (quote_id: string, participant_age_band: "ADULT" | "MINOR_14_17" | "MINOR_UNDER_14", overrides: Record<string, unknown> = {}) => ({
+    quote_id, customer_email: "customer@example.test", customer_adult_confirmed: true as const,
+    participant_age_band, offer_accepted: true as const, pd_consent_accepted: true as const, ...overrides,
   });
 
-  it("records SELF as an adult customer without duplicating a participant name", async () => {
+  it("records an anonymous adult participant without an identity assertion", async () => {
     const setup = fixture(); databases.push(setup.db);
     const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
     const result = await setup.domain.checkoutAsync({
-      quote_id: quote.quote_id, customer_name: "Заказчик", customer_email: "customer@example.test", customer_adult_confirmed: true,
-      participant: { self: true }, offer_accepted: true, pd_consent_accepted: true,
+      quote_id: quote.quote_id, customer_email: "customer@example.test", customer_adult_confirmed: true,
+      participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true,
     }, randomUUID(), "https://flexperiment.ru");
     expect(setup.db.prepare("SELECT participant_name, participant_age_band, participant_date_of_birth, participant_age_at_occurrence, participant_is_customer, participant_is_minor FROM orders WHERE public_status_id = ?").get(result.status_id))
-      .toEqual({ participant_name: null, participant_age_band: "ADULT", participant_date_of_birth: null, participant_age_at_occurrence: null, participant_is_customer: 1, participant_is_minor: 0 });
+      .toEqual({ participant_name: null, participant_age_band: "ADULT", participant_date_of_birth: null, participant_age_at_occurrence: null, participant_is_customer: null, participant_is_minor: 0 });
   });
 
-  it("keeps Customer authority while allowing an adult participant who is another person", async () => {
+  it("stores no name for an anonymous adult participant", async () => {
     const setup = fixture(); databases.push(setup.db);
     const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
     const result = await setup.domain.checkoutAsync(checkoutFor(quote.quote_id, "ADULT"), randomUUID(), "https://flexperiment.ru");
     const order = setup.db.prepare("SELECT customer_name, participant_name, participant_age_band, participant_is_customer, participant_is_minor, eligibility_confirmed_at FROM orders WHERE public_status_id = ?").get(result.status_id);
-    expect(order).toEqual({ customer_name: "Заказчик", participant_name: "Участник", participant_age_band: "ADULT", participant_is_customer: 0, participant_is_minor: 0, eligibility_confirmed_at: "DEPRECATED_NOT_EVIDENCE" });
+    expect(order).toEqual({ customer_name: "", participant_name: null, participant_age_band: "ADULT", participant_is_customer: null, participant_is_minor: 0, eligibility_confirmed_at: "DEPRECATED_NOT_EVIDENCE" });
   });
 
-  it("requires an explicit age band and rejects contradictory self or adult assertions", async () => {
+  it("requires an explicit age band and rejects incompatible declarations", async () => {
     const setup = fixture(); databases.push(setup.db);
     const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
     await expect(setup.domain.checkoutAsync({
-      quote_id: quote.quote_id, customer_name: "Заказчик", customer_email: "customer@example.test", customer_adult_confirmed: false,
-      participant: { self: true }, offer_accepted: true, pd_consent_accepted: true,
+      quote_id: quote.quote_id, customer_email: "customer@example.test", customer_adult_confirmed: false,
+      participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true,
     }, randomUUID(), "https://flexperiment.ru")).rejects.toMatchObject({ code: "CUSTOMER_ADULT_CONFIRMATION_REQUIRED" });
-    await expect(setup.domain.checkoutAsync({
-      quote_id: quote.quote_id, customer_name: "Заказчик", customer_email: "customer@example.test", customer_adult_confirmed: true,
-      participant: { self: false, name: "Участник" }, offer_accepted: true, pd_consent_accepted: true,
-    } as never, randomUUID(), "https://flexperiment.ru")).rejects.toMatchObject({ code: "PARTICIPANT_AGE_BAND_REQUIRED" });
-    await expect(setup.domain.checkoutAsync({
-      quote_id: quote.quote_id, customer_name: "Заказчик", customer_email: "customer@example.test", customer_adult_confirmed: true,
-      participant: { self: true, age_band: "MINOR_14_17" }, offer_accepted: true, pd_consent_accepted: true,
-    } as never, randomUUID(), "https://flexperiment.ru")).rejects.toMatchObject({ code: "SELF_PARTICIPANT_AGE_BAND_INVALID" });
     await expect(setup.domain.checkoutAsync({
       ...checkoutFor(quote.quote_id, "ADULT"), minor_legal_representative_confirmed: false,
     } as never, randomUUID(), "https://flexperiment.ru")).rejects.toMatchObject({ code: "UNEXPECTED_MINOR_LEGAL_REPRESENTATIVE_CONFIRMATION" });
@@ -2678,7 +2670,7 @@ describe("customer and participant ticketing", () => {
     expect(setup.db.prepare("SELECT participant_age_band, participant_date_of_birth, participant_age_at_occurrence, participant_is_minor, participant_requires_adult_accompaniment, minor_legal_representative_confirmed_at, under_14_accompaniment_confirmed_at FROM orders WHERE public_status_id = ?").get(result.status_id))
       .toMatchObject({ participant_age_band: "MINOR_UNDER_14", participant_date_of_birth: null, participant_age_at_occurrence: null, participant_is_minor: 1, participant_requires_adult_accompaniment: 1, minor_legal_representative_confirmed_at: expect.any(String), under_14_accompaniment_confirmed_at: null });
     expect(setup.db.prepare("SELECT minor_legal_representative_confirmation_text FROM orders WHERE public_status_id = ?").get(result.status_id))
-      .toEqual({ minor_legal_representative_confirmation_text: "Я являюсь совершеннолетним законным представителем указанного несовершеннолетнего участника." });
+      .toEqual({ minor_legal_representative_confirmation_text: "Я являюсь совершеннолетним законным представителем несовершеннолетнего участника, для которого оформляю этот заказ." });
   });
 
   it("preserves booking-time age evidence and reschedule refund effects for later and earlier dates", async () => {
