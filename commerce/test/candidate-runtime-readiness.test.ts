@@ -11,7 +11,7 @@ const runtime = (overrides: Partial<ReleaseRuntimeEvidence> = {}): ReleaseRuntim
   legal_manifest_sha256: null,
   legal_hashes: null,
   legal_publish_time: null,
-  current_legal_copies_match: false,
+  current_legal_copies_match: true,
   worker_source_commit: sourceCommit,
   worker_started_at: new Date(Date.now() - 1_000).toISOString(),
   worker_observed_at: new Date().toISOString(),
@@ -47,6 +47,10 @@ describe("candidate runtime readiness", () => {
   it("requires the release-specific previous legal version before publication", () => {
     expect(candidateRuntimeReady({ salesPaused: true, sourceCommit, expectedMigration: "0034_worker_sweep_evidence.sql", previousLegalVersion: "2026-08-25.1", runtime: runtime({ legal_version: "2026-08-25.1" }) })).toBe(true);
     expect(candidateRuntimeReady({ salesPaused: true, sourceCommit, expectedMigration: "0034_worker_sweep_evidence.sql", previousLegalVersion: "2026-08-25.1", runtime: runtime() })).toBe(false);
+  });
+
+  it("does not publish while the active convenience copies disagree with runtime evidence", () => {
+    expect(candidateRuntimeReady({ salesPaused: true, sourceCommit, expectedMigration: "0034_worker_sweep_evidence.sql", runtime: runtime({ current_legal_copies_match: false }) })).toBe(false);
   });
 
   it("fails closed for an unknown or unapplied target migration", () => {

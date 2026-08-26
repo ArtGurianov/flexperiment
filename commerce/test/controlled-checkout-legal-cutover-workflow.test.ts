@@ -25,7 +25,8 @@ describe("controlled anonymous checkout legal cutover workflow", () => {
     expect(workflow).toContain("CANDIDATE_MANIFEST_PATH: commerce/legal/production-manifest.2026-08-26.1.draft.json");
     expect(workflow).toContain('COMMERCE_RELEASE_MANIFEST_PATH="$CANDIDATE_MANIFEST_PATH"');
     expect(workflow).toContain('"$TARGET_SHA" "$PREVIOUS_LEGAL_VERSION" > reconciliation.json');
-    expect(workflow).toContain("CHECKOUT_LEGAL_CUTOVER_BLOCKED_BY_RELEASE_OWNER");
+    expect(workflow).toContain("decide-checkout-legal-cutover-recovery.ts");
+    expect(workflow).toContain('validate_json recovery.json RECOVERY');
   });
 
   it("proves the public pause before candidate deployment and legal publication", () => {
@@ -48,10 +49,21 @@ describe("controlled anonymous checkout legal cutover workflow", () => {
     const finalProof = workflow.indexOf("Verify durable completion and every post-reopen surface");
     expect(workflow).toContain("git push origin HEAD:refs/heads/main");
     expect(workflow).toContain("CHECKOUT_LEGAL_CUTOVER_PROMOTION_SCOPE_INVALID");
+    expect(workflow).toContain("checkout-legal-cutover-recovery");
     expect(workflow).toContain('scripts/set-production-deploy-ref.sh "$PROMOTION_SHA"');
     expect(workflow).toContain('TARGET_SHA="$PROMOTION_SHA" scripts/controlled-production-readiness.sh promotion-release.json promotion');
     expect(deploy).toBeGreaterThan(promotion);
     expect(reopen).toBeGreaterThan(deploy);
     expect(finalProof).toBeGreaterThan(reopen);
+  });
+
+  it("reuses a durable promotion request without replaying candidate acquire, pause, or promotion creation", () => {
+    expect(workflow).toContain("decide-checkout-legal-cutover-recovery.ts");
+    expect(workflow).toContain("RESUMING_PROMOTION=1");
+    expect(workflow).toContain("DURABLE_PROMOTION_REQUEST_MISMATCH");
+    expect(workflow).toContain("DURABLE_PROMOTION_MANIFEST_MISMATCH");
+    expect(workflow).toContain('if: env.TERMINAL_COMPLETE != \'1\' && env.RESUMING_PROMOTION != \'1\'');
+    expect(workflow).toContain('pnpm exec tsx commerce/src/reconcile-cutover.ts status.json completion.json "$ACTIVE_REQUEST_PATH"');
+    expect(workflow).toContain("env.CUTOVER_ACTION == 'DEPLOY_PROMOTION'");
   });
 });
