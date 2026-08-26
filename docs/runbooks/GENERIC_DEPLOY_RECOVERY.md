@@ -17,6 +17,16 @@ Before any mutation, perform read-only inspection and record:
 - `current_legal_copies_match`
 - `completion`
 
+Capture this snapshot with:
+
+```bash
+scripts/print-production-recovery-state.sh
+```
+
+On a VPS without an exported token, pass `--container <exact-commerce-container>`;
+the helper fails rather than selecting an ambiguous container. To inspect a
+completed release after its owner has cleared, pass `--release-id <release-id>`.
+
 Use the durable record, not `HEAD`, `main`, or a controller branch, to decide
 what may happen next.
 

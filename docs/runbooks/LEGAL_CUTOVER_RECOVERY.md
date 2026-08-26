@@ -70,5 +70,20 @@ promotion files. Controller commits are excluded from its ancestry. Current
 legal copies must be true only after promotion deploy and before completion or
 reopen.
 
+Before a recovery action, inspect the exact identities and promotion provenance
+locally:
+
+```bash
+scripts/inspect-release-topology.sh \
+  --candidate <candidate-sha> \
+  --repair <repair-sha> \
+  --controller <controller-sha-or-ref> \
+  --promotion <promotion-sha-or-ref>
+scripts/verify-legal-promotion.sh <repair-sha> <promotion-sha>
+```
+
+Both helpers are read-only and require the referenced Git objects to already be
+available locally.
+
 See [deployment invariants](../release/DEPLOYMENT_INVARIANTS.md) and
 [recovery branch topology](RECOVERY_BRANCH_TOPOLOGY.md).

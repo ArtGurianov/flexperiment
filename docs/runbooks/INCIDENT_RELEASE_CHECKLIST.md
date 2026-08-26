@@ -1,5 +1,9 @@
 # Incident release checklist
 
+- [ ] Optional read-only state capture:
+  `scripts/print-production-recovery-state.sh [--release-id <release-id>]`.
+- [ ] Optional legal-promotion proof:
+  `scripts/verify-legal-promotion.sh <repair-sha> <promotion-sha>`.
 - [ ] Read durable status first; do not infer from `HEAD` or `main`.
 - [ ] Record owner/release ID, expected source, runtime and worker source,
   active legal version, and current legal-copy state.

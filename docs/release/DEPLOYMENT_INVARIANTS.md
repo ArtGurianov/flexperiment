@@ -4,6 +4,13 @@ These invariants govern every production controlled deploy and recovery. They
 are intentionally independent of the current `HEAD`, `main`, and any one
 workflow implementation.
 
+The operational helpers in `scripts/` are diagnostic and verifier tools only.
+They do not authorize a deployment, pointer update, release-control mutation,
+or reopen. They report facts and boolean invariants only; release-state
+classification and every next-action decision remain in the tested controller
+code and recovery runbooks. A helper must not emit a recommended action or a
+parallel controller state such as `RESUMING_POSTPUBLICATION_REPAIR`.
+
 ## Durable release state is authoritative
 
 - A paused or owned release **MUST** be classified from durable
