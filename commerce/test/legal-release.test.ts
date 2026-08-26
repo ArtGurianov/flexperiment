@@ -52,7 +52,7 @@ describe("production legal-release publisher", () => {
   });
 
   it("verifies the active archive release and a prepared historical candidate", () => {
-    expect(loadCanonicalLegalRelease("commerce/legal/production-manifest.json").version).toBe("2026-08-25.1");
+    expect(loadCanonicalLegalRelease("commerce/legal/production-manifest.json").version).toBe("2026-08-26.1");
     expect(JSON.parse(readFileSync("commerce/legal/production-manifest.2026-08-21.2.draft.json", "utf8"))).toMatchObject({
       version: "2026-08-21.2",
     });
@@ -103,7 +103,7 @@ describe("production legal-release publisher", () => {
     expect(createHash("sha256").update(canonicalLegalManifest(candidate.manifest)).digest("hex")).toBe(
       "c62da8ac3ed8f119f4d46b1aa7864d7df2494bd7a3499fab2080bb696e8739cb",
     );
-    expect(loadCanonicalLegalRelease("commerce/legal/production-manifest.json").version).toBe("2026-08-25.1");
+    expect(loadCanonicalLegalRelease("commerce/legal/production-manifest.json").version).toBe("2026-08-26.1");
   });
 
   it("keeps the booking-time age-band draft immutable after promotion", () => {
@@ -150,11 +150,11 @@ describe("production legal-release publisher", () => {
       publish_time: "PENDING_AUTHORITATIVE_PUBLISH_TIMESTAMP",
     });
     const active = loadCanonicalLegalRelease("commerce/legal/production-manifest.json");
-    expect(active.version).toBe("2026-08-25.1");
+    expect(active.version).toBe("2026-08-26.1");
     expect(() => verifyCurrentLegalSourceHashes(active.manifest)).not.toThrow();
   });
 
-  it("prepares an anonymous checkout candidate without changing the active legal release", () => {
+  it("keeps the anonymous checkout legal candidate immutable after promotion", () => {
     const candidate = loadCanonicalLegalRelease("commerce/legal/production-manifest.2026-08-26.1.draft.json");
     expect(candidate.version).toBe("2026-08-26.1");
     expect(candidate.manifest.documents.PRIVACY_POLICY).toMatchObject({
@@ -170,7 +170,7 @@ describe("production legal-release publisher", () => {
     expect(privacy).toContain("Оператор не собирает имя Заказчика или Участника через форму оформления заказа");
     expect(consent).toContain("Оператор не собирает имя Участника");
     expect(privacy).toContain("исторические сведения заказа");
-    expect(loadCanonicalLegalRelease("commerce/legal/production-manifest.json").version).toBe("2026-08-25.1");
+    expect(loadCanonicalLegalRelease("commerce/legal/production-manifest.json").version).toBe("2026-08-26.1");
   });
 
   it("keeps current Flexperiment legal documents free of legacy operator contacts", () => {
@@ -188,7 +188,7 @@ describe("production legal-release publisher", () => {
   it("keeps every current legal convenience file byte-identical to the canonical manifest", () => {
     const release = loadCanonicalLegalRelease("commerce/legal/production-manifest.json");
     expect(() => verifyCurrentLegalSourceHashes(release.manifest)).not.toThrow();
-    expect(release.version).toBe("2026-08-25.1");
+    expect(release.version).toBe("2026-08-26.1");
     expect(release.manifest.documents.PUBLIC_OFFER.sha256).toBe("bd20b056a269ed1286c6ea35a728fbfd58e90a2f845b72ac112fe3544ec9ecaf");
   });
 
