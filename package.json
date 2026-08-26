@@ -19,6 +19,8 @@
     "commerce:release-cutover:payload": "tsx commerce/src/release-cutover-payload.ts",
     "commerce:release-cutover:reconcile": "tsx commerce/src/reconcile-cutover.ts",
     "commerce:release-cutover:assert-candidate-ready": "tsx commerce/src/assert-candidate-runtime-ready.ts",
+    "commerce:production-deploy:reconcile": "tsx commerce/src/reconcile-generic-production-deploy.ts",
+    "commerce:production-deploy:assert-ready": "tsx commerce/src/assert-generic-production-deploy-ready.ts",
     "release:static-descriptor": "tsx commerce/src/write-static-release-descriptor.ts",
     "commerce:city-interest:repair-delivered": "tsx commerce/src/repair-delivered-city-interest.ts",
     "commerce:city-interest:repair-superseded": "tsx commerce/src/repair-superseded-city-interest.ts",

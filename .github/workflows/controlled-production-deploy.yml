@@ -1,0 +1,210 @@
+name: Controlled production deploy
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
+    env:
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+      COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL }}
+      PUBLIC_FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+      ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
+      RELEASE_ID: deploy-${{ github.sha }}
+      TARGET_SHA: ${{ github.sha }}
+      POLL_ATTEMPTS: "30"
+      POLL_SECONDS: "10"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Preflight immutable generic-deploy boundaries
+        run: |
+          set -euo pipefail
+          [[ "$TARGET_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "GENERIC_DEPLOY_INVALID_SOURCE_COMMIT" >&2; exit 1; }
+          [[ "$RELEASE_ID" == "deploy-$TARGET_SHA" ]] || { echo "GENERIC_DEPLOY_INVALID_RELEASE_ID" >&2; exit 1; }
+          git fetch origin main
+          [[ "$(git rev-parse origin/main)" == "$TARGET_SHA" ]] || { echo "GENERIC_DEPLOY_TARGET_IS_NOT_MAIN_HEAD" >&2; exit 1; }
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > durable-before.json
+          production_source="$(jq -er '.runtime.source_commit' durable-before.json)"
+          [[ "$production_source" =~ ^[a-f0-9]{40}$ ]] || { echo "GENERIC_DEPLOY_PRODUCTION_SOURCE_UNAVAILABLE" >&2; exit 1; }
+          git cat-file -e "$production_source^{commit}" || { echo "GENERIC_DEPLOY_PRODUCTION_SOURCE_NOT_IN_REPOSITORY" >&2; exit 1; }
+          if ! git diff --quiet "$production_source" "$TARGET_SHA" -- commerce/migrations; then echo "GENERIC_DEPLOY_REQUIRES_CONTROLLED_SCHEMA_CUTOVER" >&2; exit 1; fi
+          if ! git diff --quiet "$production_source" "$TARGET_SHA" -- commerce/legal public/legal; then echo "GENERIC_DEPLOY_REQUIRES_CONTROLLED_LEGAL_CUTOVER" >&2; exit 1; fi
+          jq -e --arg release_id "$RELEASE_ID" --arg source_commit "$TARGET_SHA" '
+            .runtime as $runtime |
+            if
+              $runtime.required_migrations["0031_participant_age_band.sql"] == true and
+              $runtime.required_migrations["0032_release_sales_gate.sql"] == true and
+              $runtime.required_migrations["0033_runtime_release_evidence.sql"] == true and
+              $runtime.required_migrations["0034_worker_sweep_evidence.sql"] == true and
+              ($runtime.migration_versions | index("0034_worker_sweep_evidence.sql")) != null and
+              ($runtime.legal_version | type == "string") and
+              ($runtime.legal_manifest_sha256 | type == "string") and
+              ($runtime.legal_hashes | type == "object") and
+              ($runtime.current_legal_copies_match == true)
+            then {
+              release_id: $release_id,
+              mode: "ROLLING",
+              expected: {
+                source_commit: $source_commit,
+                migration: "0034_worker_sweep_evidence.sql",
+                legal_version: $runtime.legal_version,
+                legal_manifest_sha256: $runtime.legal_manifest_sha256,
+                legal_hashes: $runtime.legal_hashes
+              }
+            }
+            else error("GENERIC_DEPLOY_PRODUCTION_BASELINE_INVALID")
+            end
+          ' durable-before.json > release.json
+          manifest_source_sha="$(shasum -a 256 commerce/legal/production-manifest.json | awk '{ print $1 }')"
+          manifest_publish_time="$(jq -er '.publish_time' commerce/legal/production-manifest.json)"
+          jq -e --slurpfile request release.json --arg source_sha "$manifest_source_sha" --arg publish_time "$manifest_publish_time" '
+            .runtime as $runtime | $request[0].expected as $expected |
+            $runtime.legal_version == $expected.legal_version and
+            $runtime.legal_manifest_sha256 == $expected.legal_manifest_sha256 and
+            $runtime.legal_hashes == $expected.legal_hashes and
+            $runtime.current_legal_copies_match == true and
+            $runtime.source_legal_manifest_sha256 == $source_sha and
+            $runtime.source_legal_publish_time == $publish_time
+          ' durable-before.json >/dev/null || { echo "GENERIC_DEPLOY_REQUIRES_CONTROLLED_LEGAL_CUTOVER" >&2; exit 1; }
+          jq -e --slurpfile request release.json '
+            . as $candidate | $request[0].expected as $expected |
+            $candidate.version == $expected.legal_version and
+            {
+              PUBLIC_OFFER: $candidate.manifest.documents.PUBLIC_OFFER.sha256,
+              PRIVACY_POLICY: $candidate.manifest.documents.PRIVACY_POLICY.sha256,
+              PD_CONSENT: $candidate.manifest.documents.PD_CONSENT.sha256,
+              CHECKOUT_DISCLOSURE: $candidate.manifest.documents.CHECKOUT_DISCLOSURE.sha256
+            } == $expected.legal_hashes
+          ' commerce/legal/production-manifest.json >/dev/null || { echo "GENERIC_DEPLOY_REQUIRES_CONTROLLED_LEGAL_CUTOVER" >&2; exit 1; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
+          if ! jq -e '.complete' completion.json >/dev/null; then
+            owner="$(jq -r '.owner_release_id // empty' durable-before.json)"
+            [[ -z "$owner" || "$owner" == "$RELEASE_ID" ]] || { echo "GENERIC_DEPLOY_BLOCKED_BY_RELEASE_OWNER=$owner" >&2; exit 1; }
+            jq -e --slurpfile request release.json '
+              if .owner_release_id == $request[0].release_id then
+                .expected == ($request[0].expected | del(.legal_hashes))
+              else
+                true
+              end
+            ' durable-before.json >/dev/null || { echo "GENERIC_DEPLOY_OWNER_EXPECTATIONS_MISMATCH" >&2; exit 1; }
+          fi
+          pnpm commerce:production-deploy:reconcile durable-before.json completion.json release.json > reconciliation.json
+          action="$(jq -er '.action' reconciliation.json)"
+          [[ "$action" != "BLOCKED" ]] || { jq -c . reconciliation.json >&2; exit 1; }
+          echo "DEPLOY_ACTION=$action" >> "$GITHUB_ENV"
+
+      - name: Verify an already completed deployment
+        if: env.DEPLOY_ACTION == 'RELEASE_ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
+          pnpm commerce:production-deploy:assert-ready status.json release.json open
+          jq -e --slurpfile request release.json '.complete and .expected == $request[0].expected' completion.json >/dev/null
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_FRONTEND_URL/release.json" > frontend.json
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$ADMIN_RELEASE_URL" > admin.json
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/v1/public/legal-config" > legal.json
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/healthz" | jq -e '.ok' >/dev/null
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/readyz" | jq -e '.ok' >/dev/null
+          jq -e --arg sha "$TARGET_SHA" '.source_commit == $sha and .checkout_contract_version == "age-band-v1"' frontend.json >/dev/null
+          jq -e --arg sha "$TARGET_SHA" '.source_commit == $sha and .admin_contract_version == "age-band-v1"' admin.json >/dev/null
+          jq -e --slurpfile request release.json '
+            (.version == $request[0].expected.legal_version) and
+            ({
+              PUBLIC_OFFER: .manifest.documents.PUBLIC_OFFER.sha256,
+              PRIVACY_POLICY: .manifest.documents.PRIVACY_POLICY.sha256,
+              PD_CONSENT: .manifest.documents.PD_CONSENT.sha256,
+              CHECKOUT_DISCLOSURE: .manifest.documents.CHECKOUT_DISCLOSURE.sha256
+            } == $request[0].expected.legal_hashes)
+          ' legal.json >/dev/null
+
+      - name: Acquire owner and pause registrations
+        if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/acquire" > /dev/null
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/pause" > paused.json
+          jq -e '.sales_paused and .owner_release_id == env.RELEASE_ID' paused.json >/dev/null
+
+      - name: Reconcile paused deployment
+        if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
+          pnpm commerce:production-deploy:reconcile status.json completion.json release.json > reconciliation.json
+          action="$(jq -er '.action' reconciliation.json)"
+          [[ "$action" == "DEPLOY" || "$action" == "VERIFY_AND_REOPEN" ]] || { jq -c . reconciliation.json >&2; exit 1; }
+          echo "DEPLOY_ACTION=$action" >> "$GITHUB_ENV"
+
+      - name: Deploy exact production candidate
+        if: env.DEPLOY_ACTION == 'DEPLOY'
+        run: scripts/controlled-coolify-deploy.sh "$TARGET_SHA"
+
+      - name: Prove all surfaces and guarded reopen
+        if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          for attempt in $(seq 1 "$POLL_ATTEMPTS"); do
+            api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json || true
+            curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_FRONTEND_URL/release.json" > frontend.json || true
+            curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$ADMIN_RELEASE_URL" > admin.json || true
+            curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/v1/public/legal-config" > legal.json || true
+            if pnpm commerce:production-deploy:assert-ready status.json release.json paused && jq -e --arg sha "$TARGET_SHA" '.source_commit == $sha and .checkout_contract_version == "age-band-v1"' frontend.json >/dev/null && jq -e --arg sha "$TARGET_SHA" '.source_commit == $sha and .admin_contract_version == "age-band-v1"' admin.json >/dev/null && jq -e --slurpfile request release.json '
+              (.version == $request[0].expected.legal_version) and
+              ({
+                PUBLIC_OFFER: .manifest.documents.PUBLIC_OFFER.sha256,
+                PRIVACY_POLICY: .manifest.documents.PRIVACY_POLICY.sha256,
+                PD_CONSENT: .manifest.documents.PD_CONSENT.sha256,
+                CHECKOUT_DISCLOSURE: .manifest.documents.CHECKOUT_DISCLOSURE.sha256
+              } == $request[0].expected.legal_hashes)
+            ' legal.json >/dev/null; then break; fi
+            [[ "$attempt" == "$POLL_ATTEMPTS" ]] && exit 1; sleep "$POLL_SECONDS"
+          done
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/healthz" | jq -e '.ok' >/dev/null
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/readyz" | jq -e '.ok' >/dev/null
+          api -X POST -H 'Content-Type: application/json' --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/reopen" > reopened.json
+          jq -e '.sales_paused == false and .owner_release_id == null and .owner_mode == null' reopened.json >/dev/null
+
+      - name: Verify durable completion
+        if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
+          pnpm commerce:production-deploy:assert-ready status.json release.json open
+          jq -e --slurpfile request release.json '.complete and .expected == $request[0].expected' completion.json >/dev/null
