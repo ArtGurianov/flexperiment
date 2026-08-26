@@ -61,6 +61,23 @@ describe("generic controlled production deploy workflow", () => {
     expect(workflow).not.toContain("$candidate.manifest.documents.PUBLIC_OFFER.sha256");
   });
 
+  it("validates each preflight JSON input before parsing or slurping it", () => {
+    const statusFetch = workflow.indexOf('release-control/status" > durable-before.json');
+    const statusValidation = workflow.indexOf("validate_json durable-before.json DURABLE_BEFORE");
+    const completionFetch = workflow.indexOf('completion/$RELEASE_ID" > completion.json');
+    const completionValidation = workflow.indexOf("validate_json completion.json COMPLETION");
+    const releaseWrite = workflow.indexOf("' durable-before.json > release.json");
+    const releaseValidation = workflow.indexOf("validate_json release.json RELEASE_REQUEST");
+    const manifestValidation = workflow.indexOf("validate_json commerce/legal/production-manifest.json CANONICAL_LEGAL_MANIFEST");
+    expect(workflow).toContain('${label}_INVALID_JSON');
+    expect(workflow).toContain("printf '%s_PREFIX_HEX=' \"$label\"");
+    expect(statusValidation).toBeGreaterThan(statusFetch);
+    expect(completionValidation).toBeGreaterThan(completionFetch);
+    expect(releaseValidation).toBeGreaterThan(releaseWrite);
+    expect(manifestValidation).toBeGreaterThan(releaseValidation);
+    expect(manifestValidation).toBeLessThan(workflow.indexOf('jq -e --slurpfile request release.json --arg source_sha'));
+  });
+
   it("uses a candidate-bound durable owner without legal promotion or CI writes", () => {
     expect(workflow).toContain('"$owner" == "$RELEASE_ID"');
     expect(workflow).toContain("GENERIC_DEPLOY_BLOCKED_BY_RELEASE_OWNER");
