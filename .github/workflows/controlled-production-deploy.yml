@@ -64,6 +64,22 @@ jobs:
           [[ "$production_source" =~ ^[a-f0-9]{40}$ ]] || { echo "GENERIC_DEPLOY_PRODUCTION_SOURCE_UNAVAILABLE" >&2; exit 1; }
           git cat-file -e "$production_source^{commit}" || { echo "GENERIC_DEPLOY_PRODUCTION_SOURCE_NOT_IN_REPOSITORY" >&2; exit 1; }
           git diff --name-only -z "$production_source" "$TARGET_SHA" -- commerce/migrations commerce/legal public/legal > generic-deploy-boundary-paths.bin
+          echo "=== GENERIC DEPLOY BOUNDARY DIAGNOSTICS ==="
+          echo "TARGET_SHA=$TARGET_SHA"
+          echo "PRODUCTION_SOURCE=$production_source"
+          echo "HEAD=$(git rev-parse HEAD)"
+          echo "ORIGIN_MAIN=$(git rev-parse origin/main)"
+          echo "MERGE_BASE=$(git merge-base "$production_source" "$TARGET_SHA")"
+          echo "BOUNDARY_BYTES=$(wc -c < generic-deploy-boundary-paths.bin)"
+
+          echo "BOUNDARY_PATHS:"
+          while IFS= read -r -d '' path; do
+          printf '  %q\n' "$path"
+          done < generic-deploy-boundary-paths.bin
+
+          echo "DIRECT_DIFF:"
+          git diff --name-status "$production_source" "$TARGET_SHA" -- commerce/migrations commerce/legal public/legal
+
           pnpm commerce:production-deploy:assert-boundary generic-deploy-boundary-paths.bin
           migration_inventory="$(jq -er '
             .runtime.migration_versions |
