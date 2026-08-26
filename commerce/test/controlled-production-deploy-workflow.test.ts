@@ -30,14 +30,14 @@ describe("generic controlled production deploy workflow", () => {
     expect(workflow).not.toContain('.admin_contract_version == "age-band-v1"');
   });
 
-  it("evaluates the tested schema/legal boundary before it can acquire or pause registrations", () => {
+  it("evaluates every protected boundary before it can acquire or pause registrations", () => {
     const preflight = workflow.indexOf("Preflight immutable generic-deploy boundaries");
     const acquire = workflow.indexOf("Acquire owner and pause registrations");
     expect(preflight).toBeGreaterThan(-1);
     expect(acquire).toBeGreaterThan(preflight);
-    expect(workflow).toContain('git diff --name-only -z "$production_source" "$TARGET_SHA" -- commerce/migrations commerce/legal public/legal');
+    expect(workflow).toContain('git diff --name-only -z "$production_source" "$TARGET_SHA" -- commerce/migrations commerce/legal public/legal release-surface-contract.json');
     expect(workflow).toContain("commerce:production-deploy:assert-boundary generic-deploy-boundary-paths.bin");
-    expect(workflow).toContain('commerce/legal public/legal');
+    expect(workflow).toContain('commerce/legal public/legal release-surface-contract.json');
     expect(workflow).not.toContain("GENERIC_DEPLOY_REQUIRES_CONTROLLED_LEGAL_CUTOVER");
   });
 

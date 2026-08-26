@@ -12,7 +12,11 @@ describe("generic production deploy boundary", () => {
     expect(genericProductionDeployBoundaryError(["public/legal/public-offer.md"])).toBe("GENERIC_DEPLOY_LEGAL_PATH_BOUNDARY_CHANGED");
   });
 
-  it("allows an unchanged schema/legal boundary", () => {
+  it("rejects a checkout or admin surface-contract version transition", () => {
+    expect(genericProductionDeployBoundaryError(["release-surface-contract.json"])).toBe("GENERIC_DEPLOY_SURFACE_CONTRACT_BOUNDARY_CHANGED");
+  });
+
+  it("allows an unchanged protected boundary", () => {
     expect(genericProductionDeployBoundaryError([])).toBeUndefined();
     expect(genericProductionDeployBoundaryError(["commerce/src/domain.ts", "apps/admin/app/page.tsx"])).toBeUndefined();
   });
