@@ -48,7 +48,7 @@ describe("controlled anonymous checkout legal cutover workflow", () => {
     const deploy = workflow.indexOf("Deploy promotion artifact to Commerce Worker Frontend and Admin");
     const reopen = workflow.indexOf('release-control/reopen" > reopened.json');
     const finalProof = workflow.indexOf("Verify durable completion and every post-reopen surface");
-    expect(workflow).toContain("git push origin HEAD:refs/heads/main");
+    expect(workflow).toContain('git push origin "HEAD:refs/heads/$promotion_ref"');
     expect(workflow).toContain("CHECKOUT_LEGAL_CUTOVER_PROMOTION_SCOPE_INVALID");
     expect(workflow).toContain("checkout-legal-cutover-recovery");
     expect(workflow).toContain('scripts/set-production-deploy-ref.sh "$PROMOTION_SHA"');
@@ -82,5 +82,31 @@ describe("controlled anonymous checkout legal cutover workflow", () => {
     expect(workflow).toContain('CONTROLLED_DEPLOY_SOURCE_REF="$ACTIVE_CANDIDATE_SOURCE_REF" scripts/set-production-deploy-ref.sh "$ACTIVE_CANDIDATE_SHA"');
     expect(adoption).toBeGreaterThan(pauseProof);
     expect(deploy).toBeGreaterThan(adoption);
+  });
+
+  it("keeps repair promotion on the recovery ref while ordinary cutovers retain main guards", () => {
+    const candidate = "candidate";
+    const mainFont = "main-font";
+    const repair = "repair";
+    const promotion = "promotion";
+    const parent: Record<string, string | undefined> = {
+      [mainFont]: candidate,
+      [repair]: candidate,
+      [promotion]: repair,
+    };
+    const isAncestor = (ancestor: string, descendant: string): boolean => {
+      for (let current: string | undefined = descendant; current; current = parent[current]) if (current === ancestor) return true;
+      return false;
+    };
+
+    expect(isAncestor(candidate, repair)).toBe(true);
+    expect(isAncestor(repair, promotion)).toBe(true);
+    expect(isAncestor(mainFont, promotion)).toBe(false);
+    expect(workflow).toContain('if [[ "$RECOVERY_SOURCE_LANE" == 1 ]]; then');
+    expect(workflow).toContain('git fetch --no-tags origin "$ACTIVE_CANDIDATE_SOURCE_REF"');
+    expect(workflow).toContain('git diff --name-only "$ACTIVE_CANDIDATE_SHA..$promotion_base_sha" | grep -Ev \'^(certification\\.sh|commerce/legal/production-manifest\\.json|public/legal/.+)$\'');
+    expect(workflow).toContain('git push origin "HEAD:refs/heads/$promotion_ref"');
+    expect(workflow).toContain("CHECKOUT_LEGAL_CUTOVER_MAIN_AHEAD_OF_CANDIDATE");
+    expect(workflow).toContain("CHECKOUT_LEGAL_CUTOVER_MAIN_DOES_NOT_CONTAIN_CANDIDATE");
   });
 });
