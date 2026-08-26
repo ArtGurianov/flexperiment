@@ -8,7 +8,7 @@ const sourceCommit = "a".repeat(40);
 const temporaryDirectories: string[] = [];
 afterEach(() => { while (temporaryDirectories.length) rmSync(temporaryDirectories.pop()!, { recursive: true, force: true }); });
 
-const runScript = (script: string, options: { remote?: string; catFileFails?: boolean; mergeBaseFails?: boolean } = {}) => {
+const runScript = (script: string, options: { remote?: string; catFileFails?: boolean; mergeBaseFails?: boolean; sourceRef?: string } = {}) => {
   const directory = mkdtempSync(join(tmpdir(), "flexperiment-deploy-ref-"));
   temporaryDirectories.push(directory);
   const gitLog = join(directory, "git.log");
@@ -44,6 +44,7 @@ esac
       COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL: "https://commerce.example.test/deploy",
       COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL: "https://frontend.example.test/deploy",
       COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL: "https://admin.example.test/deploy",
+      ...(options.sourceRef ? { CONTROLLED_DEPLOY_SOURCE_REF: options.sourceRef } : {}),
     },
   });
   return { result, gitLog: readFileSync(gitLog, "utf8"), curlLog: readFileSync(curlLog, "utf8") };
@@ -86,6 +87,20 @@ describe("guarded production deployment ref scripts", () => {
     const { result, gitLog } = runScript(setRef, { remote: sourceCommit, mergeBaseFails: true });
     expect(result.status).toBe(1);
     expect(gitLog).toContain(`merge-base --is-ancestor ${sourceCommit} origin/main`);
+    expect(gitLog).not.toContain("push origin");
+  });
+
+  it("allows a checked recovery branch as the explicit deploy source ref", () => {
+    const { result, gitLog } = runScript(setRef, { remote: sourceCommit, sourceRef: "recovery/checkout-legal" });
+    expect(result.status).toBe(0);
+    expect(gitLog).toContain("fetch --no-tags origin recovery/checkout-legal");
+    expect(gitLog).toContain(`merge-base --is-ancestor ${sourceCommit} origin/recovery/checkout-legal`);
+    expect(gitLog).toContain(`push origin ${sourceCommit}:refs/heads/production-deploy`);
+  });
+
+  it("rejects an unsafe deploy source ref before it can push", () => {
+    const { result, gitLog } = runScript(setRef, { remote: sourceCommit, sourceRef: "-unsafe" });
+    expect(result.status).toBe(2);
     expect(gitLog).not.toContain("push origin");
   });
 });

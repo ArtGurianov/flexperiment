@@ -7,6 +7,7 @@ describe("controlled anonymous checkout legal cutover workflow", () => {
   it("is a manual candidate-pinned workflow under the shared production lock", () => {
     expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).toContain("target_sha:");
+    expect(workflow).toContain("repair_sha:");
     expect(workflow).toContain("EXPECTED_CANDIDATE_SHA: 25bb2f96f2f58018aea1747a1c57c62a2c54c145");
     expect(workflow).toContain("RELEASE_ID: checkout-legal-${{ inputs.target_sha }}");
     expect(workflow).toContain("group: flexperiment-production-controlled-cutover");
@@ -24,7 +25,7 @@ describe("controlled anonymous checkout legal cutover workflow", () => {
     expect(workflow).toContain('"$candidate_root/release-surface-contract.json"');
     expect(workflow).toContain("CANDIDATE_MANIFEST_PATH: commerce/legal/production-manifest.2026-08-26.1.draft.json");
     expect(workflow).toContain('COMMERCE_RELEASE_MANIFEST_PATH="$CANDIDATE_MANIFEST_PATH"');
-    expect(workflow).toContain('"$TARGET_SHA" "$PREVIOUS_LEGAL_VERSION" > reconciliation.json');
+    expect(workflow).toContain('"$ACTIVE_CANDIDATE_SHA" "$PREVIOUS_LEGAL_VERSION" > reconciliation.json');
     expect(workflow).toContain("decide-checkout-legal-cutover-recovery.ts");
     expect(workflow).toContain('validate_json recovery.json RECOVERY');
   });
@@ -36,7 +37,7 @@ describe("controlled anonymous checkout legal cutover workflow", () => {
     expect(pauseProof).toBeGreaterThan(workflow.indexOf("Acquire owner and pause registrations"));
     expect(pauseProof).toBeLessThan(candidateDeploy);
     expect(workflow).toContain("SALES_TEMPORARILY_PAUSED");
-    expect(workflow).toContain('scripts/controlled-production-readiness.sh release.json candidate-pre-publication');
+    expect(workflow).toContain('TARGET_SHA="$ACTIVE_CANDIDATE_SHA" scripts/controlled-production-readiness.sh "$ACTIVE_REQUEST_PATH" candidate-pre-publication');
     expect(publish).toBeGreaterThan(workflow.indexOf("Prove candidate before legal publication"));
     expect(workflow).toContain("PREVIOUS_LEGAL_VERSION: 2026-08-25.1");
     expect(workflow).toContain("CANDIDATE_LEGAL_VERSION: 2026-08-26.1");
@@ -65,5 +66,21 @@ describe("controlled anonymous checkout legal cutover workflow", () => {
     expect(workflow).toContain('if: env.TERMINAL_COMPLETE != \'1\' && env.RESUMING_PROMOTION != \'1\'');
     expect(workflow).toContain('pnpm exec tsx commerce/src/reconcile-cutover.ts status.json completion.json "$ACTIVE_REQUEST_PATH"');
     expect(workflow).toContain("env.CUTOVER_ACTION == 'DEPLOY_PROMOTION'");
+  });
+
+  it("adopts and resumes an exact same-owner pre-publication repair without replaying acquire or pause", () => {
+    const pauseProof = workflow.indexOf("Prove public checkout pause before deployment");
+    const adoption = workflow.indexOf("Adopt same-owner pre-publication repair expectations");
+    const deploy = workflow.indexOf("Set guarded production deployment ref for candidate");
+    expect(workflow).toContain("ADOPTING_PREPUBLICATION_REPAIR");
+    expect(workflow).toContain("RESUMING_PREPUBLICATION_REPAIR");
+    expect(workflow).toContain("REPAIRED_CANDIDATE");
+    expect(workflow).toContain("assert-checkout-legal-cutover-repair-boundary.ts");
+    expect(workflow).toContain("CHECKOUT_LEGAL_CUTOVER_REPAIR_REQUEST_MISMATCH");
+    expect(workflow).toContain('if: env.TERMINAL_COMPLETE != \'1\' && env.RESUMING_PROMOTION != \'1\' && env.PREPUBLICATION_REPAIR != \'1\'');
+    expect(workflow).toContain('api -X POST --data-binary @repair-release.json "$PUBLIC_API_URL/v1/internal/release-control/expectations"');
+    expect(workflow).toContain('CONTROLLED_DEPLOY_SOURCE_REF="$ACTIVE_CANDIDATE_SOURCE_REF" scripts/set-production-deploy-ref.sh "$ACTIVE_CANDIDATE_SHA"');
+    expect(adoption).toBeGreaterThan(pauseProof);
+    expect(deploy).toBeGreaterThan(adoption);
   });
 });
