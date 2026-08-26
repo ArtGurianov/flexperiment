@@ -106,11 +106,12 @@ for attempt in $(seq 1 "$POLL_ATTEMPTS"); do
     echo "Readiness attempt $attempt/$POLL_ATTEMPTS: PASS"
     exit 0
   fi
-  echo "Readiness attempt $attempt/$POLL_ATTEMPTS: $reason"
   if [[ "$attempt" == "$POLL_ATTEMPTS" ]]; then
+    echo "Readiness attempt $attempt/$POLL_ATTEMPTS: $reason"
     echo "READINESS_POLL_EXHAUSTED: $reason" >&2
     emit_observed "$last_attempt_dir"
     exit 1
   fi
+  echo "Readiness attempt $attempt/$POLL_ATTEMPTS: SURFACES_CONVERGING ($reason)"
   sleep "$POLL_SECONDS"
 done

@@ -32,6 +32,7 @@ jobs:
       POLL_SECONDS: "10"
       POLL_CONNECT_TIMEOUT: "3"
       POLL_MAX_TIME: "7"
+      INITIAL_READINESS_DELAY_SECONDS: "60"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -212,7 +213,10 @@ jobs:
 
       - name: Deploy exact production candidate
         if: env.DEPLOY_ACTION == 'DEPLOY'
-        run: scripts/controlled-coolify-deploy.sh "$TARGET_SHA"
+        run: |
+          set -euo pipefail
+          scripts/controlled-coolify-deploy.sh "$TARGET_SHA"
+          echo 'COOLIFY_DEPLOY_DISPATCHED=1' >> "$GITHUB_ENV"
 
       - name: Prove all surfaces and guarded reopen
         if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'
@@ -220,6 +224,11 @@ jobs:
         run: |
           set -euo pipefail
           api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          if [[ "${COOLIFY_DEPLOY_DISPATCHED:-0}" == "1" ]]; then
+            [[ "$INITIAL_READINESS_DELAY_SECONDS" =~ ^[0-9]+$ ]] || { echo "INITIAL_READINESS_DELAY_CONFIGURATION_INVALID" >&2; exit 1; }
+            echo "Allowing Coolify deployments to start for ${INITIAL_READINESS_DELAY_SECONDS}s..."
+            sleep "$INITIAL_READINESS_DELAY_SECONDS"
+          fi
           scripts/controlled-production-readiness.sh release.json
           api -X POST -H 'Content-Type: application/json' --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/reopen" > reopened.json
           jq -e '.sales_paused == false and .owner_release_id == null and .owner_mode == null' reopened.json >/dev/null

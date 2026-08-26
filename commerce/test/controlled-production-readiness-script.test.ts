@@ -90,7 +90,7 @@ describe("controlled production readiness polling", () => {
   it("does not reuse a prior status file after the next attempt fetch fails", () => {
     const { result } = runReadiness("status-fails-after-first", true);
     expect(result.status).toBe(1);
-    expect(result.stdout).toContain("Readiness attempt 1/2: GENERIC_DEPLOY_RUNTIME_EVIDENCE_NOT_READY");
+    expect(result.stdout).toContain("Readiness attempt 1/2: SURFACES_CONVERGING (GENERIC_DEPLOY_RUNTIME_EVIDENCE_NOT_READY)");
     expect(result.stdout).toContain("Readiness attempt 2/2: GENERIC_DEPLOY_READINESS_FETCH_FAILED:status fetch failed (curl exit 28)");
     expect(result.stderr).toContain("READINESS_POLL_EXHAUSTED: GENERIC_DEPLOY_READINESS_FETCH_FAILED:status fetch failed (curl exit 28)");
     expect(result.stderr).not.toContain("WORKER_SWEEP_EVIDENCE_STALE");

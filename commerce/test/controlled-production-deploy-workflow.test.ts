@@ -139,14 +139,21 @@ describe("generic controlled production deploy workflow", () => {
     expect(finalProofSource).toContain('"$PUBLIC_API_URL/readyz"');
   });
 
-  it("uses bounded, fresh polling without pnpm lifecycle output before reopening", () => {
+  it("waits for a newly dispatched Coolify deployment, then uses bounded fresh polling before reopening", () => {
     const readiness = workflow.indexOf('scripts/controlled-production-readiness.sh release.json');
     const reopen = workflow.indexOf('"$PUBLIC_API_URL/v1/internal/release-control/reopen"');
+    const dispatch = workflow.indexOf("COOLIFY_DEPLOY_DISPATCHED=1");
+    const settlingDelay = workflow.indexOf('sleep "$INITIAL_READINESS_DELAY_SECONDS"');
     expect(workflow).toContain('POLL_CONNECT_TIMEOUT: "3"');
     expect(workflow).toContain('POLL_MAX_TIME: "7"');
+    expect(workflow).toContain('INITIAL_READINESS_DELAY_SECONDS: "60"');
     expect(workflow).toContain("timeout-minutes: 12");
     expect(workflow).not.toContain("pnpm commerce:production-deploy:assert-ready");
+    expect(dispatch).toBeGreaterThan(workflow.indexOf("Deploy exact production candidate"));
+    expect(settlingDelay).toBeGreaterThan(dispatch);
+    expect(workflow).toContain('[[ "${COOLIFY_DEPLOY_DISPATCHED:-0}" == "1" ]]');
     expect(readiness).toBeGreaterThan(workflow.indexOf("Prove all surfaces and guarded reopen"));
+    expect(readiness).toBeGreaterThan(settlingDelay);
     expect(readiness).toBeLessThan(reopen);
   });
 
