@@ -6,22 +6,27 @@ const workflow = readFileSync(".github/workflows/controlled-production-deploy.ym
 const deployHelper = readFileSync("scripts/controlled-coolify-deploy.sh", "utf8");
 
 describe("generic controlled production deploy workflow", () => {
-  it("runs for every push to main under the shared protected production lock", () => {
+  it("keeps push-to-main deployment behavior under the shared protected production lock", () => {
     expect(workflow).toContain("push:\n    branches:\n      - main");
     expect(workflow).not.toContain("paths:");
-    expect(workflow).not.toContain("workflow_dispatch:");
+    expect(workflow).toContain("workflow_dispatch:\n    inputs:\n      target_sha:");
     expect(workflow).toContain("group: flexperiment-production-controlled-cutover");
     expect(workflow).toContain("cancel-in-progress: false");
     expect(workflow).toContain("environment: production");
     expect(workflow).toContain("contents: write");
-    expect(workflow).toContain("RELEASE_ID: deploy-${{ github.sha }}");
-    expect(workflow).toContain("TARGET_SHA: ${{ github.sha }}");
+    expect(workflow).toContain("CONTROLLER_SHA: ${{ github.sha }}");
+    expect(workflow).toContain('target_sha="$GITHUB_SHA"');
+    expect(workflow).toContain('recovery_mode=0');
+    expect(workflow).toContain('echo "TARGET_SHA=$target_sha" >> "$GITHUB_ENV"');
+    expect(workflow).toContain('echo "RELEASE_ID=deploy-$target_sha" >> "$GITHUB_ENV"');
     expect(workflow).toContain('mode: "CONTROLLED_CUTOVER"');
     expect(workflow).not.toContain('mode: "ROLLING"');
   });
 
   it("binds surface proofs to the exact candidate contract identifiers", () => {
     expect(workflow).toContain("release-surface-contract.json");
+    expect(workflow).toContain('git show "$target_sha:release-surface-contract.json" > "$candidate_contract_path"');
+    expect(workflow).toContain('"$CANDIDATE_CONTRACT_PATH"');
     expect(workflow).toContain("CHECKOUT_CONTRACT_VERSION=$checkout_contract_version");
     expect(workflow).toContain("ADMIN_CONTRACT_VERSION=$admin_contract_version");
     expect(workflow).toContain('.checkout_contract_version == $contract');
@@ -50,7 +55,8 @@ describe("generic controlled production deploy workflow", () => {
     expect(workflow).not.toContain('migration_expectation="inventory-sha256:');
     expect(workflow).not.toContain('migration: "inventory-sha256:');
     expect(workflow).not.toContain("commerce:production-deploy:payload");
-    expect(workflow).toContain("commerce/legal/production-manifest.json >/dev/null || { echo \"GENERIC_DEPLOY_LEGAL_CANONICAL_MANIFEST_MISMATCH\"");
+    expect(workflow).toContain('git show "$target_sha:commerce/legal/production-manifest.json" > "$candidate_manifest_path"');
+    expect(workflow).toContain('"$CANDIDATE_MANIFEST_PATH" >/dev/null || { echo "GENERIC_DEPLOY_LEGAL_CANONICAL_MANIFEST_MISMATCH"');
   });
 
   it("keeps the runtime migration inventory equal to the deployed source before acquire", () => {
@@ -93,7 +99,7 @@ describe("generic controlled production deploy workflow", () => {
     const completionValidation = workflow.indexOf("validate_json completion.json COMPLETION");
     const releaseWrite = workflow.indexOf("' durable-before.json > release.json");
     const releaseValidation = workflow.indexOf("validate_json release.json RELEASE_REQUEST");
-    const manifestValidation = workflow.indexOf("validate_json commerce/legal/production-manifest.json CANONICAL_LEGAL_MANIFEST");
+    const manifestValidation = workflow.indexOf("validate_json \"$CANDIDATE_MANIFEST_PATH\" CANDIDATE_LEGAL_MANIFEST");
     expect(workflow).toContain('${label}_INVALID_JSON');
     expect(workflow).toContain("printf '%s_PREFIX_HEX=' \"$label\"");
     expect(statusValidation).toBeGreaterThan(statusFetch);
@@ -180,5 +186,43 @@ describe("generic controlled production deploy workflow", () => {
     expect(ref).toBeLessThan(deploy);
     expect(workflow).toContain('[[ -z "$owner" || "$owner" == "$RELEASE_ID" ]]');
     expect(workflow).toContain('if ! jq -e \'.complete\' completion.json >/dev/null && [[ -z "$owner" ]]; then');
+  });
+
+  it("limits manual dispatch to an exact already-paused same-owner recovery", () => {
+    const dispatch = workflow.indexOf("workflow_dispatch:");
+    const stateGuard = workflow.indexOf("GENERIC_DEPLOY_MANUAL_RECOVERY_STATE_INVALID");
+    const acquire = workflow.indexOf("Acquire owner and pause registrations");
+    const setter = workflow.indexOf('scripts/set-production-deploy-ref.sh "$TARGET_SHA"');
+    const deploy = workflow.indexOf("Deploy exact production candidate");
+    const reopen = workflow.indexOf('"$PUBLIC_API_URL/v1/internal/release-control/reopen"');
+    expect(dispatch).toBeGreaterThan(-1);
+    expect(workflow).toContain('[[ "$GITHUB_EVENT_NAME" == \'workflow_dispatch\' ]]');
+    expect(workflow).toContain('[[ "$INPUT_TARGET_SHA" =~ ^[0-9A-Fa-f]{40}$ ]]');
+    expect(workflow).toContain('target_sha="${INPUT_TARGET_SHA,,}"');
+    expect(workflow).toContain('git fetch --no-tags origin "$target_sha"');
+    expect(workflow).toContain('git cat-file -e "$target_sha^{commit}"');
+    expect(workflow).toContain('.owner_release_id == $release_id and');
+    expect(workflow).toContain('.owner_mode == "CONTROLLED_CUTOVER" and');
+    expect(workflow).toContain('.expected.source_commit == $source_commit');
+    expect(workflow).toContain(".complete == false");
+    expect(stateGuard).toBeGreaterThan(dispatch);
+    expect(workflow).toContain("env.REUSING_PAUSED_OWNER != '1'");
+    expect(setter).toBeGreaterThan(acquire);
+    expect(deploy).toBeGreaterThan(setter);
+    expect(reopen).toBeGreaterThan(deploy);
+    expect(workflow).not.toContain("/expectations");
+  });
+
+  it("reuses an already paused same-owner release without replaying acquire or pause", () => {
+    const reuse = workflow.indexOf("REUSING_PAUSED_OWNER=1");
+    const acquire = workflow.indexOf("Acquire owner and pause registrations");
+    const pausedReconcile = workflow.indexOf("Reconcile paused deployment");
+    expect(reuse).toBeGreaterThan(-1);
+    expect(reuse).toBeLessThan(acquire);
+    expect(workflow).toContain('.sales_paused == true and');
+    expect(workflow).toContain('.owner_mode == "CONTROLLED_CUTOVER" and');
+    expect(workflow).toContain('.expected.source_commit == $source');
+    expect(workflow).toContain("env.REUSING_PAUSED_OWNER != '1'");
+    expect(pausedReconcile).toBeGreaterThan(acquire);
   });
 });

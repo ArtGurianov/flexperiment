@@ -3,20 +3,46 @@ set -euo pipefail
 
 expected_source_commit="${1:?Pass the expected 40-character source commit.}"
 [[ "$expected_source_commit" =~ ^[a-f0-9]{40}$ ]] || { echo "Expected source commit must be a 40-character SHA." >&2; exit 2; }
-source_ref="${CONTROLLED_DEPLOY_SOURCE_REF:-main}"
-[[ "$source_ref" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$ ]] || { echo "Deployment source ref is invalid." >&2; exit 2; }
+remote_ref="refs/heads/production-deploy"
 
-# A deployment candidate must remain reachable from the protected source branch.
-# A same-owner repair may use its explicitly dispatched recovery branch. The
-# workflow verifies that branch before setting this override; all normal
-# callers remain pinned to main.
-git fetch --no-tags origin "$source_ref"
+# The calling controlled workflow authorizes the candidate before it pauses
+# registrations. This ref is only a mutable deployment pointer, not source
+# history, so its old tip must not constrain a new authorized target.
+read_remote_pointer() {
+  local output
+  output="$(git ls-remote --exit-code origin "$remote_ref")" || return 1
+  printf '%s\n' "$output" | awk -v ref="$remote_ref" '
+    NF != 2 || $2 != ref { invalid = 1; next }
+    { count += 1; sha = $1 }
+    END {
+      if (invalid || count != 1) exit 1
+      print sha
+    }
+  '
+}
+
+if ! observed_remote_sha="$(read_remote_pointer)"; then
+  echo "PRODUCTION_DEPLOY_REMOTE_POINTER_INVALID" >&2
+  exit 1
+fi
+[[ "$observed_remote_sha" =~ ^[0-9a-f]{40}$ ]] || {
+  echo "PRODUCTION_DEPLOY_REMOTE_POINTER_INVALID" >&2
+  exit 1
+}
 git cat-file -e "$expected_source_commit^{commit}" || { echo "Deployment source commit is unavailable locally." >&2; exit 1; }
-git merge-base --is-ancestor "$expected_source_commit" "origin/$source_ref" || { echo "Deployment source commit is not reachable from origin/$source_ref." >&2; exit 1; }
 
-git push origin "$expected_source_commit:refs/heads/production-deploy"
-configured_deploy_ref="$(git ls-remote origin refs/heads/production-deploy | awk 'NR == 1 { print $1 }')"
-[[ "$configured_deploy_ref" == "$expected_source_commit" ]] || {
-  echo "production-deploy did not resolve to the expected source commit." >&2
+if [[ "$observed_remote_sha" != "$expected_source_commit" ]]; then
+  git push \
+    "--force-with-lease=${remote_ref}:${observed_remote_sha}" \
+    origin \
+    "${expected_source_commit}:${remote_ref}"
+fi
+
+if ! actual_remote_sha="$(read_remote_pointer)"; then
+  echo "PRODUCTION_DEPLOY_POINTER_POSTCONDITION_FAILED" >&2
+  exit 1
+fi
+[[ "$actual_remote_sha" == "$expected_source_commit" ]] || {
+  echo "PRODUCTION_DEPLOY_POINTER_POSTCONDITION_FAILED" >&2
   exit 1
 }

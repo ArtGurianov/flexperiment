@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - main
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: Exact paused same-owner deployment SHA to recover.
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -26,8 +32,8 @@ jobs:
       PUBLIC_FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
       PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
       ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
-      RELEASE_ID: deploy-${{ github.sha }}
-      TARGET_SHA: ${{ github.sha }}
+      CONTROLLER_SHA: ${{ github.sha }}
+      INPUT_TARGET_SHA: ${{ inputs.target_sha || '' }}
       POLL_ATTEMPTS: "30"
       POLL_SECONDS: "10"
       POLL_CONNECT_TIMEOUT: "3"
@@ -38,6 +44,30 @@ jobs:
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+
+      - name: Resolve controller and immutable deployment target
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == 'workflow_dispatch' ]]; then
+            [[ "$INPUT_TARGET_SHA" =~ ^[0-9A-Fa-f]{40}$ ]] || { echo 'GENERIC_DEPLOY_MANUAL_RECOVERY_TARGET_INVALID' >&2; exit 1; }
+            target_sha="${INPUT_TARGET_SHA,,}"
+            recovery_mode=1
+          else
+            target_sha="$GITHUB_SHA"
+            recovery_mode=0
+          fi
+          [[ "$target_sha" =~ ^[a-f0-9]{40}$ ]] || { echo 'GENERIC_DEPLOY_INVALID_SOURCE_COMMIT' >&2; exit 1; }
+          git fetch --no-tags origin "$target_sha"
+          git cat-file -e "$target_sha^{commit}" || { echo 'GENERIC_DEPLOY_TARGET_NOT_IN_REPOSITORY' >&2; exit 1; }
+          candidate_contract_path="$RUNNER_TEMP/generic-deploy-release-surface-contract.json"
+          candidate_manifest_path="$RUNNER_TEMP/generic-deploy-production-manifest.json"
+          git show "$target_sha:release-surface-contract.json" > "$candidate_contract_path"
+          git show "$target_sha:commerce/legal/production-manifest.json" > "$candidate_manifest_path"
+          echo "TARGET_SHA=$target_sha" >> "$GITHUB_ENV"
+          echo "RELEASE_ID=deploy-$target_sha" >> "$GITHUB_ENV"
+          echo "RECOVERY_MODE=$recovery_mode" >> "$GITHUB_ENV"
+          echo "CANDIDATE_CONTRACT_PATH=$candidate_contract_path" >> "$GITHUB_ENV"
+          echo "CANDIDATE_MANIFEST_PATH=$candidate_manifest_path" >> "$GITHUB_ENV"
       - uses: pnpm/action-setup@v4
         with:
           version: 10.29.3
@@ -52,8 +82,8 @@ jobs:
           set -euo pipefail
           [[ "$TARGET_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "GENERIC_DEPLOY_INVALID_SOURCE_COMMIT" >&2; exit 1; }
           [[ "$RELEASE_ID" == "deploy-$TARGET_SHA" ]] || { echo "GENERIC_DEPLOY_INVALID_RELEASE_ID" >&2; exit 1; }
-          checkout_contract_version="$(jq -er '.checkout_contract_version | select(type == "string" and test("^[a-z0-9][a-z0-9.-]{0,63}$"))' release-surface-contract.json)" || { echo "GENERIC_DEPLOY_CHECKOUT_CONTRACT_VERSION_INVALID" >&2; exit 1; }
-          admin_contract_version="$(jq -er '.admin_contract_version | select(type == "string" and test("^[a-z0-9][a-z0-9.-]{0,63}$"))' release-surface-contract.json)" || { echo "GENERIC_DEPLOY_ADMIN_CONTRACT_VERSION_INVALID" >&2; exit 1; }
+          checkout_contract_version="$(jq -er '.checkout_contract_version | select(type == "string" and test("^[a-z0-9][a-z0-9.-]{0,63}$"))' "$CANDIDATE_CONTRACT_PATH")" || { echo "GENERIC_DEPLOY_CHECKOUT_CONTRACT_VERSION_INVALID" >&2; exit 1; }
+          admin_contract_version="$(jq -er '.admin_contract_version | select(type == "string" and test("^[a-z0-9][a-z0-9.-]{0,63}$"))' "$CANDIDATE_CONTRACT_PATH")" || { echo "GENERIC_DEPLOY_ADMIN_CONTRACT_VERSION_INVALID" >&2; exit 1; }
           echo "CHECKOUT_CONTRACT_VERSION=$checkout_contract_version" >> "$GITHUB_ENV"
           echo "ADMIN_CONTRACT_VERSION=$admin_contract_version" >> "$GITHUB_ENV"
           api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
@@ -75,6 +105,18 @@ jobs:
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
           validate_json completion.json COMPLETION
           owner="$(jq -r '.owner_release_id // empty' durable-before.json)"
+          if [[ "$RECOVERY_MODE" == 1 ]]; then
+            jq -e --arg release_id "$RELEASE_ID" --arg source_commit "$TARGET_SHA" '
+              .sales_paused == true and
+              .owner_release_id == $release_id and
+              .owner_mode == "CONTROLLED_CUTOVER" and
+              .expected.source_commit == $source_commit
+            ' durable-before.json >/dev/null &&
+              jq -e '.complete == false' completion.json >/dev/null || {
+                echo "GENERIC_DEPLOY_MANUAL_RECOVERY_STATE_INVALID" >&2
+                exit 1
+              }
+          fi
           if ! jq -e '.complete' completion.json >/dev/null; then
             [[ -z "$owner" || "$owner" == "$RELEASE_ID" ]] || { echo "GENERIC_DEPLOY_BLOCKED_BY_RELEASE_OWNER=$owner" >&2; exit 1; }
           fi
@@ -122,9 +164,9 @@ jobs:
             end
           ' durable-before.json > release.json
           validate_json release.json RELEASE_REQUEST
-          validate_json commerce/legal/production-manifest.json CANONICAL_LEGAL_MANIFEST
-          manifest_source_sha="$(shasum -a 256 commerce/legal/production-manifest.json | awk '{ print $1 }')"
-          manifest_publish_time="$(jq -er '.publish_time' commerce/legal/production-manifest.json)"
+          validate_json "$CANDIDATE_MANIFEST_PATH" CANDIDATE_LEGAL_MANIFEST
+          manifest_source_sha="$(shasum -a 256 "$CANDIDATE_MANIFEST_PATH" | awk '{ print $1 }')"
+          manifest_publish_time="$(jq -er '.publish_time' "$CANDIDATE_MANIFEST_PATH")"
           jq -e --slurpfile request release.json --arg source_sha "$manifest_source_sha" --arg publish_time "$manifest_publish_time" '
             .runtime as $runtime | $request[0].expected as $expected |
             $runtime.legal_version == $expected.legal_version and
@@ -143,11 +185,22 @@ jobs:
               PD_CONSENT: $candidate.documents.PD_CONSENT.sha256,
               CHECKOUT_DISCLOSURE: $candidate.documents.CHECKOUT_DISCLOSURE.sha256
             } == $expected.legal_hashes
-          ' commerce/legal/production-manifest.json >/dev/null || { echo "GENERIC_DEPLOY_LEGAL_CANONICAL_MANIFEST_MISMATCH" >&2; exit 1; }
+          ' "$CANDIDATE_MANIFEST_PATH" >/dev/null || { echo "GENERIC_DEPLOY_LEGAL_CANONICAL_MANIFEST_MISMATCH" >&2; exit 1; }
           if ! jq -e '.complete' completion.json >/dev/null; then
             if [[ "$owner" == "$RELEASE_ID" ]]; then
               jq -e --slurpfile request release.json '.expected == ($request[0].expected | del(.legal_hashes))' durable-before.json >/dev/null || { echo "GENERIC_DEPLOY_OWNER_EXPECTATIONS_MISMATCH" >&2; exit 1; }
             fi
+          fi
+          if ! jq -e '.complete' completion.json >/dev/null && \
+            [[ "$owner" == "$RELEASE_ID" ]] && \
+            jq -e --arg source "$TARGET_SHA" '
+              .sales_paused == true and
+              .owner_mode == "CONTROLLED_CUTOVER" and
+              .expected.source_commit == $source
+            ' durable-before.json >/dev/null; then
+            echo 'REUSING_PAUSED_OWNER=1' >> "$GITHUB_ENV"
+          else
+            echo 'REUSING_PAUSED_OWNER=0' >> "$GITHUB_ENV"
           fi
           pnpm exec tsx commerce/src/reconcile-generic-production-deploy.ts durable-before.json completion.json release.json > reconciliation.json
           validate_json reconciliation.json RECONCILIATION
@@ -182,7 +235,7 @@ jobs:
           ' legal.json >/dev/null
 
       - name: Acquire owner and pause registrations
-        if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'
+        if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE' && env.REUSING_PAUSED_OWNER != '1'
         run: |
           set -euo pipefail
           api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
