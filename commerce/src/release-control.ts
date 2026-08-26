@@ -51,6 +51,13 @@ const requiredMigrationsByExpectedMigration: Record<string, readonly string[]> =
   "0034_worker_sweep_evidence.sql": diagnosticCutoverMigrations,
 };
 export const requiredMigrationsFor = (expectedMigration: string): readonly string[] | undefined => requiredMigrationsByExpectedMigration[expectedMigration];
+const migrationInventoryPrefix = "inventory-sha256:";
+export const migrationInventoryExpectation = (versions: readonly string[]): string =>
+  `${migrationInventoryPrefix}${createHash("sha256").update([...versions].sort().join("\n")).digest("hex")}`;
+const isMigrationInventoryExpectation = (expectedMigration: string): boolean =>
+  new RegExp(`^${migrationInventoryPrefix}[a-f0-9]{64}$`).test(expectedMigration);
+const supportedMigrationExpectation = (expectedMigration: string): boolean =>
+  requiredMigrationsFor(expectedMigration) !== undefined || isMigrationInventoryExpectation(expectedMigration);
 export const WORKER_EVIDENCE_MAX_AGE_MS = 90_000;
 
 export const workerEvidenceIsFresh = (workerSourceCommit: string | null, workerObservedAt: string | null, expectedSourceCommit: string, currentTime = Date.now()): boolean => {
@@ -117,10 +124,12 @@ const sameExpectations = (gate: GateRow, request: ReleaseControlRequest) =>
 export const evaluateReopenGate = (request: ReleaseControlRequest, evidence: ReleaseRuntimeEvidence): string | undefined => {
   if (evidence.source_commit !== request.expected.source_commit) return "SOURCE_COMMIT_MISMATCH";
   const requiredMigrations = requiredMigrationsFor(request.expected.migration);
-  if (!requiredMigrations) return "UNKNOWN_EXPECTED_MIGRATION";
-  if (requiredMigrations.some((version) => evidence.required_migrations[version] !== true)) return "REQUIRED_MIGRATION_NOT_APPLIED";
-  if (!evidence.migration_versions.includes(request.expected.migration)) return "EXPECTED_MIGRATION_NOT_APPLIED";
-  if (requiredMigrations.includes("0034_worker_sweep_evidence.sql")) {
+  const inventoryExpectation = isMigrationInventoryExpectation(request.expected.migration);
+  if (!requiredMigrations && !inventoryExpectation) return "UNKNOWN_EXPECTED_MIGRATION";
+  if (requiredMigrations?.some((version) => evidence.required_migrations[version] !== true)) return "REQUIRED_MIGRATION_NOT_APPLIED";
+  if (requiredMigrations && !evidence.migration_versions.includes(request.expected.migration)) return "EXPECTED_MIGRATION_NOT_APPLIED";
+  if (inventoryExpectation && migrationInventoryExpectation(evidence.migration_versions) !== request.expected.migration) return "MIGRATION_INVENTORY_MISMATCH";
+  if (inventoryExpectation || requiredMigrations?.includes("0034_worker_sweep_evidence.sql")) {
     if (!evidence.worker_source_commit || !evidence.worker_started_at || !evidence.worker_observed_at) return "WORKER_NOT_READY";
     if (evidence.worker_source_commit !== request.expected.source_commit) return "WORKER_SOURCE_COMMIT_MISMATCH";
     if (!workerEvidenceIsFresh(evidence.worker_source_commit, evidence.worker_observed_at, request.expected.source_commit)) return "WORKER_EVIDENCE_STALE";
@@ -167,7 +176,7 @@ export class ReleaseSalesGate {
     const transaction = this.db.transaction(() => {
       const gate = row(this.db);
       if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
-      if (!requiredMigrationsFor(request.expected.migration)) throw new ReleaseControlError("UNKNOWN_EXPECTED_MIGRATION");
+      if (!supportedMigrationExpectation(request.expected.migration)) throw new ReleaseControlError("UNKNOWN_EXPECTED_MIGRATION");
       if (sameExpectations(gate, request)) return status(gate);
       if (gate.owner_release_id) throw new ReleaseControlError("RELEASE_CONTROL_OWNED");
       const changed = this.db.prepare(`UPDATE release_sales_gate SET owner_release_id = ?, owner_mode = ?,
@@ -203,7 +212,7 @@ export class ReleaseSalesGate {
     const transaction = this.db.transaction(() => {
       const gate = row(this.db);
       if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
-      if (!requiredMigrationsFor(request.expected.migration)) throw new ReleaseControlError("UNKNOWN_EXPECTED_MIGRATION");
+      if (!supportedMigrationExpectation(request.expected.migration)) throw new ReleaseControlError("UNKNOWN_EXPECTED_MIGRATION");
       if (gate.owner_release_id !== request.release_id || gate.sales_paused !== 1) throw new ReleaseControlError("RELEASE_CONTROL_OWNER_MISMATCH");
       const changed = this.db.prepare(`UPDATE release_sales_gate SET owner_mode = ?, expected_source_commit = ?, expected_migration = ?,
         expected_legal_version = ?, expected_legal_manifest_sha256 = ?, updated_at = datetime('now')

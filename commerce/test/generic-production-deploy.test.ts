@@ -1,14 +1,15 @@
 import { describe, expect, it } from "vitest";
 import { genericProductionRuntimeReady, reconcileGenericProductionDeploy } from "../src/generic-production-deploy";
-import type { ReleaseCompletion, ReleaseControlRequest, ReleaseControlStatus, ReleaseRuntimeEvidence } from "../src/release-control";
+import { migrationInventoryExpectation, type ReleaseCompletion, type ReleaseControlRequest, type ReleaseControlStatus, type ReleaseRuntimeEvidence } from "../src/release-control";
 
 const sourceCommit = "a".repeat(40);
+const migrationVersions = ["0031_participant_age_band.sql", "0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql", "0034_worker_sweep_evidence.sql"];
 const request: ReleaseControlRequest = {
   release_id: `deploy-${sourceCommit}`,
   mode: "ROLLING",
   expected: {
     source_commit: sourceCommit,
-    migration: "0034_worker_sweep_evidence.sql",
+    migration: migrationInventoryExpectation(migrationVersions),
     legal_version: "2026-08-25.1",
     legal_manifest_sha256: "b".repeat(64),
     legal_hashes: { PUBLIC_OFFER: "c".repeat(64), PRIVACY_POLICY: "d".repeat(64), PD_CONSENT: "e".repeat(64), CHECKOUT_DISCLOSURE: "f".repeat(64) },
@@ -18,7 +19,7 @@ const status = (overrides: Partial<ReleaseControlStatus> = {}): ReleaseControlSt
 const runtime = (overrides: Partial<ReleaseRuntimeEvidence> = {}): ReleaseRuntimeEvidence => ({
   source_commit: sourceCommit,
   required_migrations: { "0031_participant_age_band.sql": true, "0032_release_sales_gate.sql": true, "0033_runtime_release_evidence.sql": true, "0034_worker_sweep_evidence.sql": true },
-  migration_versions: ["0031_participant_age_band.sql", "0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql", "0034_worker_sweep_evidence.sql"],
+  migration_versions: migrationVersions,
   legal_version: request.expected.legal_version,
   legal_manifest_sha256: request.expected.legal_manifest_sha256,
   legal_hashes: request.expected.legal_hashes,
@@ -37,6 +38,10 @@ const reconcile = (state: Partial<ReleaseControlStatus> = {}, evidence: Partial<
   reconcileGenericProductionDeploy({ request, status: status(state), runtime: runtime(evidence), completion: completion(done) });
 
 describe("generic production deploy reconciliation", () => {
+  it("freezes an order-independent full migration inventory", () => {
+    expect(request.expected.migration).toBe(migrationInventoryExpectation([...migrationVersions].reverse()));
+  });
+
   it("advances a fresh deployment through acquire, pause, deploy, and guarded reopen", () => {
     expect(reconcile().action).toBe("ACQUIRE_OWNER");
     expect(reconcile({ owner_release_id: request.release_id }).action).toBe("PAUSE_SALES");
@@ -63,5 +68,6 @@ describe("generic production deploy reconciliation", () => {
     expect(genericProductionRuntimeReady(request, runtime({ legal_version: "2026-08-23.2" }))).toBe(false);
     expect(genericProductionRuntimeReady(request, runtime({ legal_hashes: { ...request.expected.legal_hashes, PUBLIC_OFFER: "0".repeat(64) } }))).toBe(false);
     expect(genericProductionRuntimeReady(request, runtime({ worker_last_successful_sweep_at: null }))).toBe(false);
+    expect(genericProductionRuntimeReady(request, runtime({ migration_versions: [...migrationVersions, "0035_future_schema.sql"] }))).toBe(false);
   });
 });

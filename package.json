@@ -21,6 +21,7 @@
     "commerce:release-cutover:assert-candidate-ready": "tsx commerce/src/assert-candidate-runtime-ready.ts",
     "commerce:production-deploy:reconcile": "tsx commerce/src/reconcile-generic-production-deploy.ts",
     "commerce:production-deploy:assert-ready": "tsx commerce/src/assert-generic-production-deploy-ready.ts",
+    "commerce:production-deploy:assert-boundary": "tsx commerce/src/assert-generic-production-deploy-boundary.ts",
     "release:static-descriptor": "tsx commerce/src/write-static-release-descriptor.ts",
     "commerce:city-interest:repair-delivered": "tsx commerce/src/repair-delivered-city-interest.ts",
     "commerce:city-interest:repair-superseded": "tsx commerce/src/repair-superseded-city-interest.ts",

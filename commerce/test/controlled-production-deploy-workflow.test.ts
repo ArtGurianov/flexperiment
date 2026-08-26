@@ -16,15 +16,13 @@ describe("generic controlled production deploy workflow", () => {
     expect(workflow).toContain("TARGET_SHA: ${{ github.sha }}");
   });
 
-  it("rejects every migration and legal-tree change before it can acquire or pause registrations", () => {
+  it("evaluates the tested schema/legal boundary before it can acquire or pause registrations", () => {
     const preflight = workflow.indexOf("Preflight immutable generic-deploy boundaries");
     const acquire = workflow.indexOf("Acquire owner and pause registrations");
     expect(preflight).toBeGreaterThan(-1);
     expect(acquire).toBeGreaterThan(preflight);
-    expect(workflow).toContain('git diff --quiet "$production_source" "$TARGET_SHA" -- commerce/migrations');
-    expect(workflow).toContain("GENERIC_DEPLOY_REQUIRES_CONTROLLED_SCHEMA_CUTOVER");
-    expect(workflow).toContain('git diff --quiet "$production_source" "$TARGET_SHA" -- commerce/legal public/legal');
-    expect(workflow).toContain("GENERIC_DEPLOY_REQUIRES_CONTROLLED_LEGAL_CUTOVER");
+    expect(workflow).toContain('git diff --name-only -z "$production_source" "$TARGET_SHA" -- commerce/migrations commerce/legal public/legal');
+    expect(workflow).toContain("commerce:production-deploy:assert-boundary generic-deploy-boundary-paths.bin");
     expect(workflow).toContain('commerce/legal public/legal');
   });
 
@@ -32,6 +30,8 @@ describe("generic controlled production deploy workflow", () => {
     expect(workflow).toContain(".runtime as $runtime");
     expect(workflow).toContain("' durable-before.json > release.json");
     expect(workflow).toContain("GENERIC_DEPLOY_PRODUCTION_BASELINE_INVALID");
+    expect(workflow).toContain('migration_expectation="inventory-sha256:');
+    expect(workflow).not.toContain('migration: "0034_worker_sweep_evidence.sql"');
     expect(workflow).not.toContain("commerce:production-deploy:payload");
     expect(workflow).toContain("commerce/legal/production-manifest.json >/dev/null || { echo \"GENERIC_DEPLOY_REQUIRES_CONTROLLED_LEGAL_CUTOVER\"");
   });
@@ -50,5 +50,24 @@ describe("generic controlled production deploy workflow", () => {
     expect(workflow).not.toContain("legal-publish");
     expect(workflow).not.toContain("git push");
     expect(deployHelper).toContain("only an enqueue acknowledgement");
+  });
+
+  it("proves the public pause before deploy and rechecks every surface after reopening", () => {
+    const pause = workflow.indexOf("Prove public checkout pause before deployment");
+    const deploy = workflow.indexOf("Deploy exact production candidate");
+    const reopen = workflow.indexOf('"$PUBLIC_API_URL/v1/internal/release-control/reopen"');
+    const finalProof = workflow.indexOf("Verify post-reopen completion and all production surfaces");
+    expect(pause).toBeGreaterThan(workflow.indexOf("Acquire owner and pause registrations"));
+    expect(pause).toBeLessThan(deploy);
+    expect(workflow).toContain('"$PUBLIC_API_URL/v1/public/checkouts"');
+    expect(workflow).toContain('"$pause_status" == "503"');
+    expect(workflow).toContain("SALES_TEMPORARILY_PAUSED");
+    expect(finalProof).toBeGreaterThan(reopen);
+    const finalProofSource = workflow.slice(finalProof);
+    expect(finalProofSource).toContain('"$PUBLIC_FRONTEND_URL/release.json"');
+    expect(finalProofSource).toContain('"$ADMIN_RELEASE_URL"');
+    expect(finalProofSource).toContain('"$PUBLIC_API_URL/v1/public/legal-config"');
+    expect(finalProofSource).toContain('"$PUBLIC_API_URL/healthz"');
+    expect(finalProofSource).toContain('"$PUBLIC_API_URL/readyz"');
   });
 });
