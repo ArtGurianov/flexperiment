@@ -37,6 +37,7 @@ jobs:
       TARGET_SHA: ${{ inputs.target_sha }}
       REPAIR_SHA: ${{ inputs.repair_sha }}
       REPAIR_SOURCE_REF: ${{ github.ref_name }}
+      RECOVERY_PROMOTION_REF: ${{ github.ref_name }}-promotion
       RELEASE_ID: checkout-legal-${{ inputs.target_sha }}
       PREVIOUS_LEGAL_VERSION: 2026-08-25.1
       CANDIDATE_LEGAL_VERSION: 2026-08-26.1
@@ -79,6 +80,7 @@ jobs:
             fi
           }
           [[ "$REPAIR_SOURCE_REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$ ]] || { echo "CHECKOUT_LEGAL_CUTOVER_REPAIR_SOURCE_REF_INVALID" >&2; exit 1; }
+          [[ "$RECOVERY_PROMOTION_REF" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$ ]] || { echo "CHECKOUT_LEGAL_CUTOVER_PROMOTION_REF_INVALID" >&2; exit 1; }
           git fetch --no-tags origin "$REPAIR_SOURCE_REF"
           git cat-file -e "$TARGET_SHA^{commit}" || { echo "CHECKOUT_LEGAL_CUTOVER_CANDIDATE_UNAVAILABLE" >&2; exit 1; }
           candidate_root="$(mktemp -d "$RUNNER_TEMP/checkout-legal-candidate.XXXXXX")"
@@ -183,7 +185,14 @@ jobs:
               durable_promotion_sha="$(jq -er '.promotionSourceCommit' recovery.json)"
               git cat-file -e "$durable_promotion_sha^{commit}" || { echo "CHECKOUT_LEGAL_CUTOVER_DURABLE_PROMOTION_SOURCE_INVALID" >&2; exit 1; }
               git merge-base --is-ancestor "$TARGET_SHA" "$durable_promotion_sha" || { echo "CHECKOUT_LEGAL_CUTOVER_DURABLE_PROMOTION_SOURCE_INVALID" >&2; exit 1; }
-              if [[ "$REPAIR_SOURCE_REF" != main ]] && git merge-base --is-ancestor "$durable_promotion_sha" "origin/$REPAIR_SOURCE_REF"; then
+              if [[ "$REPAIR_SOURCE_REF" != main ]]; then
+                promotion_ref_tip="$(git ls-remote origin "refs/heads/$RECOVERY_PROMOTION_REF" | awk 'NR == 1 { print $1 }')"
+                [[ "$promotion_ref_tip" == "$durable_promotion_sha" ]] || { echo "CHECKOUT_LEGAL_CUTOVER_DURABLE_PROMOTION_REF_MISMATCH" >&2; exit 1; }
+                git fetch --no-tags origin "$RECOVERY_PROMOTION_REF"
+                durable_repair_sha="$(git rev-parse "$durable_promotion_sha^")"
+                [[ -z "${REPAIR_SHA:-}" || "$REPAIR_SHA" == "$durable_repair_sha" ]] || { echo "CHECKOUT_LEGAL_CUTOVER_DURABLE_PROMOTION_REPAIR_MISMATCH" >&2; exit 1; }
+                prepare_repair_request "$durable_repair_sha"
+                git diff --name-only "$durable_repair_sha..$durable_promotion_sha" | grep -Ev '^(certification\.sh|commerce/legal/production-manifest\.json|public/legal/.+)$' | grep -q . && { echo "CHECKOUT_LEGAL_CUTOVER_RECOVERY_PROMOTION_SCOPE_INVALID" >&2; exit 1; }
                 recovery_source_lane=1
               else
                 git fetch --no-tags origin main
@@ -347,14 +356,37 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$RECOVERY_SOURCE_LANE" == 1 ]]; then
-            # The recovery lane is independent of main: main may contain an
-            # unrelated commit while sales are paused. Its ref may contain
-            # only the active repair or its already-created legal promotion.
-            git fetch --no-tags origin "$ACTIVE_CANDIDATE_SOURCE_REF"
-            promotion_ref="$ACTIVE_CANDIDATE_SOURCE_REF"
-            promotion_base_sha="$(git rev-parse "origin/$promotion_ref")"
-            git merge-base --is-ancestor "$ACTIVE_CANDIDATE_SHA" "$promotion_base_sha" || { echo "CHECKOUT_LEGAL_CUTOVER_RECOVERY_PROMOTION_NOT_DESCENDANT" >&2; exit 1; }
-            git diff --name-only "$ACTIVE_CANDIDATE_SHA..$promotion_base_sha" | grep -Ev '^(certification\.sh|commerce/legal/production-manifest\.json|public/legal/.+)$' | grep -q . && { echo "CHECKOUT_LEGAL_CUTOVER_RECOVERY_PROMOTION_SCOPE_INVALID" >&2; exit 1; }
+            # The controller ref may move independently. The deterministic
+            # promotion ref is the only recovery production source and every
+            # new promotion is a direct child of the exact durable repair.
+            promotion_ref="$RECOVERY_PROMOTION_REF"
+            promotion_tip="$(git ls-remote origin "refs/heads/$promotion_ref" | awk 'NR == 1 { print $1 }')"
+            published="$(date -u -d "$PUBLISHED_AT" +%Y-%m-%dT%H:%M:%SZ)"
+            if [[ -n "$promotion_tip" ]]; then
+              git fetch --no-tags origin "$promotion_ref"
+              [[ "$(git rev-parse "$promotion_tip^")" == "$ACTIVE_CANDIDATE_SHA" ]] || { echo "CHECKOUT_LEGAL_CUTOVER_RECOVERY_PROMOTION_PARENT_INVALID" >&2; exit 1; }
+              git diff --name-only "$ACTIVE_CANDIDATE_SHA..$promotion_tip" | grep -Ev '^(certification\.sh|commerce/legal/production-manifest\.json|public/legal/.+)$' | grep -q . && { echo "CHECKOUT_LEGAL_CUTOVER_RECOVERY_PROMOTION_SCOPE_INVALID" >&2; exit 1; }
+              git show "$promotion_tip:commerce/legal/production-manifest.json" | jq -e --arg version "$CANDIDATE_LEGAL_VERSION" --arg published "$published" '.version == $version and .publish_time == $published' >/dev/null || { echo "CHECKOUT_LEGAL_CUTOVER_RECOVERY_PROMOTION_MANIFEST_INVALID" >&2; exit 1; }
+              promotion_sha="$promotion_tip"
+            else
+              promotion_root="$(mktemp -d "$RUNNER_TEMP/checkout-legal-promotion.XXXXXX")"
+              trap 'git worktree remove --force "$promotion_root" >/dev/null 2>&1 || true' EXIT
+              git worktree add --detach "$promotion_root" "$ACTIVE_CANDIDATE_SHA" >/dev/null
+              (
+                cd "$promotion_root"
+                COMMERCE_LEGAL_PROMOTION_VERSION="$CANDIDATE_LEGAL_VERSION" COMMERCE_LEGAL_PROMOTION_PUBLISH_TIME="$PUBLISHED_AT" "$GITHUB_WORKSPACE/node_modules/.bin/tsx" "$GITHUB_WORKSPACE/commerce/src/promote-legal-release.ts"
+                git add certification.sh commerce/legal/production-manifest.json public/legal
+                git diff --cached --exit-code && { echo "CHECKOUT_LEGAL_CUTOVER_PROMOTION_EMPTY" >&2; exit 1; }
+                git diff --cached --name-only | grep -Ev '^(certification\.sh|commerce/legal/production-manifest\.json|public/legal/.+)$' | grep -q . && { echo "CHECKOUT_LEGAL_CUTOVER_PROMOTION_SCOPE_INVALID" >&2; exit 1; }
+                git config user.name flexperiment-release-bot
+                git config user.email flexperiment-release-bot@users.noreply.github.com
+                git commit -m 'chore(legal): promote 2026-08-26.1'
+              )
+              promotion_sha="$(git -C "$promotion_root" rev-parse HEAD)"
+              [[ "$(git rev-parse "$promotion_sha^")" == "$ACTIVE_CANDIDATE_SHA" ]] || { echo "CHECKOUT_LEGAL_CUTOVER_RECOVERY_PROMOTION_PARENT_INVALID" >&2; exit 1; }
+              git diff --name-only "$ACTIVE_CANDIDATE_SHA..$promotion_sha" | grep -Ev '^(certification\.sh|commerce/legal/production-manifest\.json|public/legal/.+)$' | grep -q . && { echo "CHECKOUT_LEGAL_CUTOVER_RECOVERY_PROMOTION_SCOPE_INVALID" >&2; exit 1; }
+              git push origin "$promotion_sha:refs/heads/$promotion_ref"
+            fi
           else
             # Ordinary cutovers stay bound to main and may carry only the
             # already-approved controller or legal-promotion changes.
@@ -363,26 +395,26 @@ jobs:
             promotion_base_sha="$(git rev-parse origin/main)"
             git merge-base --is-ancestor "$ACTIVE_CANDIDATE_SHA" "$promotion_base_sha" || { echo "CHECKOUT_LEGAL_CUTOVER_MAIN_DOES_NOT_CONTAIN_CANDIDATE" >&2; exit 1; }
             git diff --name-only "$ACTIVE_CANDIDATE_SHA..$promotion_base_sha" | grep -Ev '^(certification\.sh|commerce/legal/production-manifest\.json|public/legal/.+|\.github/workflows/controlled-checkout-legal-cutover\.yml|\.github/workflows/controlled-production-deploy\.yml|commerce/src/(assert-candidate-runtime-ready|candidate-runtime-readiness|checkout-legal-cutover-recovery|decide-checkout-legal-cutover-recovery|generic-production-deploy-boundary|reconcile-cutover)\.ts|commerce/test/(candidate-runtime-readiness|checkout-legal-cutover-recovery|controlled-checkout-legal-cutover-workflow|controlled-production-deploy-workflow|controlled-production-readiness-script|generic-production-deploy-boundary)\.test\.ts|scripts/controlled-production-readiness\.sh)$' | grep -q . && { echo "CHECKOUT_LEGAL_CUTOVER_MAIN_AHEAD_OF_CANDIDATE" >&2; exit 1; }
-          fi
-          promotion_root="$(mktemp -d "$RUNNER_TEMP/checkout-legal-promotion.XXXXXX")"
-          trap 'git worktree remove --force "$promotion_root" >/dev/null 2>&1 || true' EXIT
-          git worktree add --detach "$promotion_root" "$promotion_base_sha" >/dev/null
-          published="$(date -u -d "$PUBLISHED_AT" +%Y-%m-%dT%H:%M:%SZ)"
-          if git show "$promotion_base_sha:commerce/legal/production-manifest.json" | jq -e --arg version "$CANDIDATE_LEGAL_VERSION" --arg published "$published" '.version == $version and .publish_time == $published' >/dev/null; then
-            promotion_sha="$promotion_base_sha"
-          else
-            (
-              cd "$promotion_root"
-              COMMERCE_LEGAL_PROMOTION_VERSION="$CANDIDATE_LEGAL_VERSION" COMMERCE_LEGAL_PROMOTION_PUBLISH_TIME="$PUBLISHED_AT" "$GITHUB_WORKSPACE/node_modules/.bin/tsx" "$GITHUB_WORKSPACE/commerce/src/promote-legal-release.ts"
-              git add certification.sh commerce/legal/production-manifest.json public/legal
-              git diff --cached --exit-code && { echo "CHECKOUT_LEGAL_CUTOVER_PROMOTION_EMPTY" >&2; exit 1; }
-              git diff --cached --name-only | grep -Ev '^(certification\.sh|commerce/legal/production-manifest\.json|public/legal/.+)$' | grep -q . && { echo "CHECKOUT_LEGAL_CUTOVER_PROMOTION_SCOPE_INVALID" >&2; exit 1; }
-              git config user.name flexperiment-release-bot
-              git config user.email flexperiment-release-bot@users.noreply.github.com
-              git commit -m 'chore(legal): promote 2026-08-26.1'
-              git push origin "HEAD:refs/heads/$promotion_ref"
-            )
-            promotion_sha="$(git -C "$promotion_root" rev-parse HEAD)"
+            promotion_root="$(mktemp -d "$RUNNER_TEMP/checkout-legal-promotion.XXXXXX")"
+            trap 'git worktree remove --force "$promotion_root" >/dev/null 2>&1 || true' EXIT
+            git worktree add --detach "$promotion_root" "$promotion_base_sha" >/dev/null
+            published="$(date -u -d "$PUBLISHED_AT" +%Y-%m-%dT%H:%M:%SZ)"
+            if git show "$promotion_base_sha:commerce/legal/production-manifest.json" | jq -e --arg version "$CANDIDATE_LEGAL_VERSION" --arg published "$published" '.version == $version and .publish_time == $published' >/dev/null; then
+              promotion_sha="$promotion_base_sha"
+            else
+              (
+                cd "$promotion_root"
+                COMMERCE_LEGAL_PROMOTION_VERSION="$CANDIDATE_LEGAL_VERSION" COMMERCE_LEGAL_PROMOTION_PUBLISH_TIME="$PUBLISHED_AT" "$GITHUB_WORKSPACE/node_modules/.bin/tsx" "$GITHUB_WORKSPACE/commerce/src/promote-legal-release.ts"
+                git add certification.sh commerce/legal/production-manifest.json public/legal
+                git diff --cached --exit-code && { echo "CHECKOUT_LEGAL_CUTOVER_PROMOTION_EMPTY" >&2; exit 1; }
+                git diff --cached --name-only | grep -Ev '^(certification\.sh|commerce/legal/production-manifest\.json|public/legal/.+)$' | grep -q . && { echo "CHECKOUT_LEGAL_CUTOVER_PROMOTION_SCOPE_INVALID" >&2; exit 1; }
+                git config user.name flexperiment-release-bot
+                git config user.email flexperiment-release-bot@users.noreply.github.com
+                git commit -m 'chore(legal): promote 2026-08-26.1'
+                git push origin "HEAD:refs/heads/$promotion_ref"
+              )
+              promotion_sha="$(git -C "$promotion_root" rev-parse HEAD)"
+            fi
           fi
           git show "$promotion_sha:release-surface-contract.json" > promotion-contract.json
           jq -e --arg checkout "$CHECKOUT_CONTRACT_VERSION" --arg admin "$ADMIN_CONTRACT_VERSION" '.checkout_contract_version == $checkout and .admin_contract_version == $admin' promotion-contract.json >/dev/null || { echo "CHECKOUT_LEGAL_CUTOVER_PROMOTION_CONTRACT_MISMATCH" >&2; exit 1; }
@@ -404,7 +436,7 @@ jobs:
         run: |
           set -euo pipefail
           if [[ "$RECOVERY_SOURCE_LANE" == 1 ]]; then
-            CONTROLLED_DEPLOY_SOURCE_REF="$REPAIR_SOURCE_REF" scripts/set-production-deploy-ref.sh "$PROMOTION_SHA"
+            CONTROLLED_DEPLOY_SOURCE_REF="$RECOVERY_PROMOTION_REF" scripts/set-production-deploy-ref.sh "$PROMOTION_SHA"
           else
             scripts/set-production-deploy-ref.sh "$PROMOTION_SHA"
           fi

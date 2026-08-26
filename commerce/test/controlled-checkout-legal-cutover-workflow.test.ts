@@ -111,8 +111,13 @@ describe("controlled anonymous checkout legal cutover workflow", () => {
     expect(isAncestor(repair, promotion)).toBe(true);
     expect(isAncestor(mainFont, promotion)).toBe(false);
     expect(workflow).toContain('if [[ "$RECOVERY_SOURCE_LANE" == 1 ]]; then');
-    expect(workflow).toContain('git fetch --no-tags origin "$ACTIVE_CANDIDATE_SOURCE_REF"');
-    expect(workflow).toContain('git diff --name-only "$ACTIVE_CANDIDATE_SHA..$promotion_base_sha" | grep -Ev \'^(certification\\.sh|commerce/legal/production-manifest\\.json|public/legal/.+)$\'');
+    expect(workflow).toContain('RECOVERY_PROMOTION_REF: ${{ github.ref_name }}-promotion');
+    expect(workflow).toContain('promotion_ref="$RECOVERY_PROMOTION_REF"');
+    expect(workflow).toContain('[[ "$(git rev-parse "$promotion_sha^")" == "$ACTIVE_CANDIDATE_SHA" ]]');
+    expect(workflow).toContain('git diff --name-only "$ACTIVE_CANDIDATE_SHA..$promotion_sha" | grep -Ev \'^(certification\\.sh|commerce/legal/production-manifest\\.json|public/legal/.+)$\'');
+    expect(workflow).toContain('git push origin "$promotion_sha:refs/heads/$promotion_ref"');
+    expect(workflow).toContain('[[ "$promotion_ref_tip" == "$durable_promotion_sha" ]]');
+    expect(workflow).toContain('CONTROLLED_DEPLOY_SOURCE_REF="$RECOVERY_PROMOTION_REF" scripts/set-production-deploy-ref.sh "$PROMOTION_SHA"');
     expect(workflow).toContain('git push origin "HEAD:refs/heads/$promotion_ref"');
     expect(workflow).toContain("CHECKOUT_LEGAL_CUTOVER_MAIN_AHEAD_OF_CANDIDATE");
     expect(workflow).toContain("CHECKOUT_LEGAL_CUTOVER_MAIN_DOES_NOT_CONTAIN_CANDIDATE");
