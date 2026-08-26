@@ -34,7 +34,7 @@ describe("static release descriptors", () => {
     const output = temporaryOutput("frontend");
     writeStaticReleaseDescriptor({ sourceCommit, output });
 
-    expect(readDescriptor(output)).toEqual({ source_commit: sourceCommit, checkout_contract_version: "age-band-v1" });
+    expect(readDescriptor(output)).toEqual({ source_commit: sourceCommit, checkout_contract_version: "age-band-v2" });
   });
 
   it("rejects missing and malformed admin source commits", () => {
@@ -46,7 +46,7 @@ describe("static release descriptors", () => {
     const output = temporaryOutput("admin");
     writeAdminReleaseDescriptor({ sourceCommit, output });
 
-    expect(readDescriptor(output)).toEqual({ source_commit: sourceCommit, admin_contract_version: "age-band-v1" });
+    expect(readDescriptor(output)).toEqual({ source_commit: sourceCommit, admin_contract_version: "age-band-v2" });
   });
 
   it("copies both static exports, including release.json, into their final nginx images", () => {

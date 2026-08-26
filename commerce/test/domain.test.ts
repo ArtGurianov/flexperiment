@@ -2641,6 +2641,18 @@ describe("anonymous age-band ticketing", () => {
       .toEqual({ participant_name: null, participant_age_band: "ADULT", participant_date_of_birth: null, participant_age_at_occurrence: null, participant_is_customer: null, participant_is_minor: 0 });
   });
 
+  it("applies the strict public checkout contract to direct domain callers", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    await expect(setup.domain.checkoutAsync({
+      quote_id: quote.quote_id, customer_email: "customer@example.test", customer_name: "Deprecated",
+      customer_adult_confirmed: true, participant_age_band: "ADULT", participant: { self: true },
+      offer_accepted: true, pd_consent_accepted: true,
+    } as unknown as Parameters<typeof setup.domain.checkoutAsync>[0], randomUUID(), "https://flexperiment.ru"))
+      .rejects.toMatchObject({ code: "CHECKOUT_REQUEST_INVALID" });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual({ count: 0 });
+  });
+
   it("stores no name for an anonymous adult participant", async () => {
     const setup = fixture(); databases.push(setup.db);
     const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });

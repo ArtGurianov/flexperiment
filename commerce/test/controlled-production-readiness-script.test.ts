@@ -47,8 +47,8 @@ const runReadiness = (scenario: "ready" | "status-fails-after-first", nodeExit =
     `  printf '%s' '{"sales_paused":true,"owner_release_id":"deploy-${sourceCommit}","runtime":{}}' > "$output"; exit 0`,
     "fi",
     'case "$url" in',
-    `  https://frontend.test/release.json) body='{"source_commit":"${sourceCommit}","checkout_contract_version":"age-band-v1"}' ;;`,
-    `  https://admin.test/release.json) body='{"source_commit":"${sourceCommit}","admin_contract_version":"age-band-v1"}' ;;`,
+    `  https://frontend.test/release.json) body='{"source_commit":"${sourceCommit}","checkout_contract_version":"age-band-v2"}' ;;`,
+    `  https://admin.test/release.json) body='{"source_commit":"${sourceCommit}","admin_contract_version":"age-band-v2"}' ;;`,
     `  https://api.test/v1/public/legal-config) body='{"version":"2026-08-25.1","manifest":{"documents":{"PUBLIC_OFFER":{"sha256":"${"c".repeat(64)}"},"PRIVACY_POLICY":{"sha256":"${"d".repeat(64)}"},"PD_CONSENT":{"sha256":"${"e".repeat(64)}"},"CHECKOUT_DISCLOSURE":{"sha256":"${"f".repeat(64)}"}}}}' ;;`,
     '  https://api.test/healthz|https://api.test/readyz) body=\'{"ok":true}\' ;;',
     "  *) exit 22 ;;",
@@ -70,7 +70,7 @@ const runReadiness = (scenario: "ready" | "status-fails-after-first", nodeExit =
       ...process.env, PATH: `${bin}:${process.env.PATH}`, CURL_LOG: curlLog, NODE_LOG: nodeLog, STATUS_CALLS: statusCalls,
       READINESS_SCENARIO: scenario, READINESS_NODE_EXIT: nodeExit ? "1" : "0",
       PUBLIC_API_URL: "https://api.test", PUBLIC_FRONTEND_URL: "https://frontend.test", ADMIN_RELEASE_URL: "https://admin.test/release.json",
-      COMMERCE_RELEASE_CONTROL_TOKEN: "test-token", TARGET_SHA: sourceCommit, POLL_ATTEMPTS: "2", POLL_SECONDS: "0", POLL_CONNECT_TIMEOUT: "3", POLL_MAX_TIME: "7",
+      COMMERCE_RELEASE_CONTROL_TOKEN: "test-token", TARGET_SHA: sourceCommit, CHECKOUT_CONTRACT_VERSION: "age-band-v2", ADMIN_CONTRACT_VERSION: "age-band-v2", POLL_ATTEMPTS: "2", POLL_SECONDS: "0", POLL_CONNECT_TIMEOUT: "3", POLL_MAX_TIME: "7",
     },
   });
   return { result, curlLog: readFileSync(curlLog, "utf8"), nodeLog: readFileSync(nodeLog, "utf8") };

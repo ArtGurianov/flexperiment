@@ -7,6 +7,8 @@ request_path="${1:?Pass the durable release request JSON path.}"
 : "${ADMIN_RELEASE_URL:?ADMIN_RELEASE_URL is required}"
 : "${COMMERCE_RELEASE_CONTROL_TOKEN:?COMMERCE_RELEASE_CONTROL_TOKEN is required}"
 : "${TARGET_SHA:?TARGET_SHA is required}"
+: "${CHECKOUT_CONTRACT_VERSION:?CHECKOUT_CONTRACT_VERSION is required}"
+: "${ADMIN_CONTRACT_VERSION:?ADMIN_CONTRACT_VERSION is required}"
 : "${POLL_ATTEMPTS:?POLL_ATTEMPTS is required}"
 : "${POLL_SECONDS:?POLL_SECONDS is required}"
 
@@ -92,9 +94,9 @@ for attempt in $(seq 1 "$POLL_ATTEMPTS"); do
     reason="GENERIC_DEPLOY_READINESS_FETCH_FAILED:${fetch_reasons[*]}"
   elif ! node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$attempt_dir/status.json" "$request_path" paused >/dev/null 2>"$attempt_dir/runtime.stderr"; then
     reason="GENERIC_DEPLOY_RUNTIME_EVIDENCE_NOT_READY"
-  elif ! jq -e --arg sha "$TARGET_SHA" '.source_commit == $sha and .checkout_contract_version == "age-band-v1"' "$attempt_dir/frontend.json" >/dev/null; then
+  elif ! jq -e --arg sha "$TARGET_SHA" --arg contract "$CHECKOUT_CONTRACT_VERSION" '.source_commit == $sha and .checkout_contract_version == $contract' "$attempt_dir/frontend.json" >/dev/null; then
     reason="GENERIC_DEPLOY_FRONTEND_RELEASE_EVIDENCE_MISMATCH"
-  elif ! jq -e --arg sha "$TARGET_SHA" '.source_commit == $sha and .admin_contract_version == "age-band-v1"' "$attempt_dir/admin.json" >/dev/null; then
+  elif ! jq -e --arg sha "$TARGET_SHA" --arg contract "$ADMIN_CONTRACT_VERSION" '.source_commit == $sha and .admin_contract_version == $contract' "$attempt_dir/admin.json" >/dev/null; then
     reason="GENERIC_DEPLOY_ADMIN_RELEASE_EVIDENCE_MISMATCH"
   elif ! jq -e --slurpfile request "$request_path" '(.version == $request[0].expected.legal_version) and ({PUBLIC_OFFER: .manifest.documents.PUBLIC_OFFER.sha256, PRIVACY_POLICY: .manifest.documents.PRIVACY_POLICY.sha256, PD_CONSENT: .manifest.documents.PD_CONSENT.sha256, CHECKOUT_DISCLOSURE: .manifest.documents.CHECKOUT_DISCLOSURE.sha256} == $request[0].expected.legal_hashes)' "$attempt_dir/legal.json" >/dev/null; then
     reason="GENERIC_DEPLOY_PUBLIC_LEGAL_EVIDENCE_MISMATCH"

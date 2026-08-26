@@ -52,6 +52,10 @@ jobs:
           set -euo pipefail
           [[ "$TARGET_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "GENERIC_DEPLOY_INVALID_SOURCE_COMMIT" >&2; exit 1; }
           [[ "$RELEASE_ID" == "deploy-$TARGET_SHA" ]] || { echo "GENERIC_DEPLOY_INVALID_RELEASE_ID" >&2; exit 1; }
+          checkout_contract_version="$(jq -er '.checkout_contract_version | select(type == "string" and test("^[a-z0-9][a-z0-9.-]{0,63}$"))' release-surface-contract.json)" || { echo "GENERIC_DEPLOY_CHECKOUT_CONTRACT_VERSION_INVALID" >&2; exit 1; }
+          admin_contract_version="$(jq -er '.admin_contract_version | select(type == "string" and test("^[a-z0-9][a-z0-9.-]{0,63}$"))' release-surface-contract.json)" || { echo "GENERIC_DEPLOY_ADMIN_CONTRACT_VERSION_INVALID" >&2; exit 1; }
+          echo "CHECKOUT_CONTRACT_VERSION=$checkout_contract_version" >> "$GITHUB_ENV"
+          echo "ADMIN_CONTRACT_VERSION=$admin_contract_version" >> "$GITHUB_ENV"
           api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
           validate_json() {
             local file="$1" label="$2" bytes
@@ -165,8 +169,8 @@ jobs:
           curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/v1/public/legal-config" > legal.json
           curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/healthz" | jq -e '.ok' >/dev/null
           curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/readyz" | jq -e '.ok' >/dev/null
-          jq -e --arg sha "$TARGET_SHA" '.source_commit == $sha and .checkout_contract_version == "age-band-v1"' frontend.json >/dev/null
-          jq -e --arg sha "$TARGET_SHA" '.source_commit == $sha and .admin_contract_version == "age-band-v1"' admin.json >/dev/null
+          jq -e --arg sha "$TARGET_SHA" --arg contract "$CHECKOUT_CONTRACT_VERSION" '.source_commit == $sha and .checkout_contract_version == $contract' frontend.json >/dev/null
+          jq -e --arg sha "$TARGET_SHA" --arg contract "$ADMIN_CONTRACT_VERSION" '.source_commit == $sha and .admin_contract_version == $contract' admin.json >/dev/null
           jq -e --slurpfile request release.json '
             (.version == $request[0].expected.legal_version) and
             ({
@@ -247,8 +251,8 @@ jobs:
           curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/v1/public/legal-config" > legal.json
           curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/healthz" | jq -e '.ok' >/dev/null
           curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/readyz" | jq -e '.ok' >/dev/null
-          jq -e --arg sha "$TARGET_SHA" '.source_commit == $sha and .checkout_contract_version == "age-band-v1"' frontend.json >/dev/null
-          jq -e --arg sha "$TARGET_SHA" '.source_commit == $sha and .admin_contract_version == "age-band-v1"' admin.json >/dev/null
+          jq -e --arg sha "$TARGET_SHA" --arg contract "$CHECKOUT_CONTRACT_VERSION" '.source_commit == $sha and .checkout_contract_version == $contract' frontend.json >/dev/null
+          jq -e --arg sha "$TARGET_SHA" --arg contract "$ADMIN_CONTRACT_VERSION" '.source_commit == $sha and .admin_contract_version == $contract' admin.json >/dev/null
           jq -e --slurpfile request release.json '
             (.version == $request[0].expected.legal_version) and
             ({

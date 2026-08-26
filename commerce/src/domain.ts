@@ -5,7 +5,7 @@ import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import { LegalReleasePublishError, loadCanonicalLegalRelease, publishLegalRelease, verifyCurrentLegalSourceHashes } from "./legal-release";
 import type { PaymentProvider } from "./provider";
 import { ReleaseControlError, ReleaseSalesGate, type ReleaseControlRequest, releaseRuntimeEvidence } from "./release-control";
-import { checkoutRequestSchema, participantAgeBandSchema, type CheckoutRequest, type ParticipantAgeBand } from "./types";
+import { checkoutRequestSchema, type CheckoutRequest, type ParticipantAgeBand } from "./types";
 import { findCityBySlug } from "../../lib/city-catalog";
 
 type Row = Record<string, unknown>;
@@ -54,21 +54,13 @@ const checkoutRequestHashV2 = (input: CheckoutRequest) => `v2:${sha256(canonical
 type DirectAnonymousCheckoutRequest = Omit<CheckoutRequest, "participant_age_band"> & { participant_age_band: string };
 type CheckoutInput = DirectAnonymousCheckoutRequest;
 
-// The HTTP boundary already validates this contract. Direct domain callers use
-// the same fields, while parsing here keeps an invalid internal age band from
-// entering persistence or the V2 idempotency hash.
-const normalizeCheckoutInput = (input: CheckoutInput): CheckoutRequest => {
-  const parsedAgeBand = participantAgeBandSchema.safeParse(input.participant_age_band);
-  if (!parsedAgeBand.success) throw new DomainError("PARTICIPANT_AGE_BAND_REQUIRED", 422);
-  return {
-    quote_id: input.quote_id,
-    customer_email: input.customer_email,
-    customer_adult_confirmed: input.customer_adult_confirmed,
-    participant_age_band: parsedAgeBand.data,
-    minor_legal_representative_confirmed: input.minor_legal_representative_confirmed,
-    offer_accepted: input.offer_accepted,
-    pd_consent_accepted: input.pd_consent_accepted,
-  };
+// HTTP callers already pass this schema; direct domain callers use the same
+// strict authority, so they cannot silently discard deprecated fields or hash
+// a differently-normalized request.
+const normalizeCheckoutInput = (input: unknown): CheckoutRequest => {
+  const parsed = checkoutRequestSchema.safeParse(input);
+  if (!parsed.success) throw new DomainError("CHECKOUT_REQUEST_INVALID", 422);
+  return parsed.data;
 };
 
 const formatOccurrenceDateTime = (value: unknown, timeZone: unknown) => {

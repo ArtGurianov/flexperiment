@@ -64,7 +64,7 @@ describe("controlled cutover production topology", () => {
   });
 
   it("generates immutable admin deployment evidence", () => {
-    expect(adminDescriptor).toContain("admin_contract_version: \"age-band-v1\"");
+    expect(adminDescriptor).toContain("release-surface-contract.json");
     expect(adminDescriptor).toContain("SOURCE_COMMIT must be the exact 40-character");
   });
 

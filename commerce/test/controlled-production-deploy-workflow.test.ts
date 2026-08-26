@@ -20,6 +20,16 @@ describe("generic controlled production deploy workflow", () => {
     expect(workflow).not.toContain('mode: "ROLLING"');
   });
 
+  it("binds surface proofs to the exact candidate contract identifiers", () => {
+    expect(workflow).toContain("release-surface-contract.json");
+    expect(workflow).toContain("CHECKOUT_CONTRACT_VERSION=$checkout_contract_version");
+    expect(workflow).toContain("ADMIN_CONTRACT_VERSION=$admin_contract_version");
+    expect(workflow).toContain('.checkout_contract_version == $contract');
+    expect(workflow).toContain('.admin_contract_version == $contract');
+    expect(workflow).not.toContain('.checkout_contract_version == "age-band-v1"');
+    expect(workflow).not.toContain('.admin_contract_version == "age-band-v1"');
+  });
+
   it("evaluates the tested schema/legal boundary before it can acquire or pause registrations", () => {
     const preflight = workflow.indexOf("Preflight immutable generic-deploy boundaries");
     const acquire = workflow.indexOf("Acquire owner and pause registrations");
