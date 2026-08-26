@@ -2,6 +2,7 @@
 set -euo pipefail
 
 request_path="${1:?Pass the durable release request JSON path.}"
+readiness_phase="${2:-promotion}"
 : "${PUBLIC_API_URL:?PUBLIC_API_URL is required}"
 : "${PUBLIC_FRONTEND_URL:?PUBLIC_FRONTEND_URL is required}"
 : "${ADMIN_RELEASE_URL:?ADMIN_RELEASE_URL is required}"
@@ -11,6 +12,14 @@ request_path="${1:?Pass the durable release request JSON path.}"
 : "${ADMIN_CONTRACT_VERSION:?ADMIN_CONTRACT_VERSION is required}"
 : "${POLL_ATTEMPTS:?POLL_ATTEMPTS is required}"
 : "${POLL_SECONDS:?POLL_SECONDS is required}"
+
+case "$readiness_phase" in
+  promotion) ;;
+  candidate-pre-publication)
+    : "${PREVIOUS_LEGAL_VERSION:?PREVIOUS_LEGAL_VERSION is required for candidate-pre-publication readiness}"
+    ;;
+  *) echo "READINESS_PHASE_INVALID" >&2; exit 2 ;;
+esac
 
 poll_connect_timeout="${POLL_CONNECT_TIMEOUT:-3}"
 poll_max_time="${POLL_MAX_TIME:-7}"
@@ -92,13 +101,17 @@ for attempt in $(seq 1 "$POLL_ATTEMPTS"); do
       fi
     done
     reason="GENERIC_DEPLOY_READINESS_FETCH_FAILED:${fetch_reasons[*]}"
-  elif ! node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$attempt_dir/status.json" "$request_path" paused >/dev/null 2>"$attempt_dir/runtime.stderr"; then
+  elif [[ "$readiness_phase" == "candidate-pre-publication" ]] && ! node --import tsx commerce/src/assert-candidate-runtime-ready.ts "$attempt_dir/status.json" "$TARGET_SHA" "$(jq -er '.expected.migration' "$request_path")" "$PREVIOUS_LEGAL_VERSION" >/dev/null 2>"$attempt_dir/runtime.stderr"; then
+    reason="GENERIC_DEPLOY_RUNTIME_EVIDENCE_NOT_READY"
+  elif [[ "$readiness_phase" == "promotion" ]] && ! node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$attempt_dir/status.json" "$request_path" paused >/dev/null 2>"$attempt_dir/runtime.stderr"; then
     reason="GENERIC_DEPLOY_RUNTIME_EVIDENCE_NOT_READY"
   elif ! jq -e --arg sha "$TARGET_SHA" --arg contract "$CHECKOUT_CONTRACT_VERSION" '.source_commit == $sha and .checkout_contract_version == $contract' "$attempt_dir/frontend.json" >/dev/null; then
     reason="GENERIC_DEPLOY_FRONTEND_RELEASE_EVIDENCE_MISMATCH"
   elif ! jq -e --arg sha "$TARGET_SHA" --arg contract "$ADMIN_CONTRACT_VERSION" '.source_commit == $sha and .admin_contract_version == $contract' "$attempt_dir/admin.json" >/dev/null; then
     reason="GENERIC_DEPLOY_ADMIN_RELEASE_EVIDENCE_MISMATCH"
-  elif ! jq -e --slurpfile request "$request_path" '(.version == $request[0].expected.legal_version) and ({PUBLIC_OFFER: .manifest.documents.PUBLIC_OFFER.sha256, PRIVACY_POLICY: .manifest.documents.PRIVACY_POLICY.sha256, PD_CONSENT: .manifest.documents.PD_CONSENT.sha256, CHECKOUT_DISCLOSURE: .manifest.documents.CHECKOUT_DISCLOSURE.sha256} == $request[0].expected.legal_hashes)' "$attempt_dir/legal.json" >/dev/null; then
+  elif [[ "$readiness_phase" == "candidate-pre-publication" ]] && ! jq -e --arg previous "$PREVIOUS_LEGAL_VERSION" '.version == $previous' "$attempt_dir/legal.json" >/dev/null; then
+    reason="GENERIC_DEPLOY_PREVIOUS_LEGAL_EVIDENCE_MISMATCH"
+  elif [[ "$readiness_phase" == "promotion" ]] && ! jq -e --slurpfile request "$request_path" '(.version == $request[0].expected.legal_version) and ({PUBLIC_OFFER: .manifest.documents.PUBLIC_OFFER.sha256, PRIVACY_POLICY: .manifest.documents.PRIVACY_POLICY.sha256, PD_CONSENT: .manifest.documents.PD_CONSENT.sha256, CHECKOUT_DISCLOSURE: .manifest.documents.CHECKOUT_DISCLOSURE.sha256} == $request[0].expected.legal_hashes)' "$attempt_dir/legal.json" >/dev/null; then
     reason="GENERIC_DEPLOY_PUBLIC_LEGAL_EVIDENCE_MISMATCH"
   elif ! jq -e '.ok == true' "$attempt_dir/health.json" >/dev/null; then
     reason="GENERIC_DEPLOY_HEALTHZ_NOT_READY"

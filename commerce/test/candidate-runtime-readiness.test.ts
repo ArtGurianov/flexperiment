@@ -44,6 +44,11 @@ describe("candidate runtime readiness", () => {
     expect(candidateRuntimeReady({ salesPaused: true, sourceCommit, expectedMigration: "0034_worker_sweep_evidence.sql", runtime: runtime() })).toBe(true);
   });
 
+  it("requires the release-specific previous legal version before publication", () => {
+    expect(candidateRuntimeReady({ salesPaused: true, sourceCommit, expectedMigration: "0034_worker_sweep_evidence.sql", previousLegalVersion: "2026-08-25.1", runtime: runtime({ legal_version: "2026-08-25.1" }) })).toBe(true);
+    expect(candidateRuntimeReady({ salesPaused: true, sourceCommit, expectedMigration: "0034_worker_sweep_evidence.sql", previousLegalVersion: "2026-08-25.1", runtime: runtime() })).toBe(false);
+  });
+
   it("fails closed for an unknown or unapplied target migration", () => {
     expect(candidateRuntimeReady({ salesPaused: true, sourceCommit, expectedMigration: "0099_future.sql", runtime: runtime() })).toBe(false);
     expect(candidateRuntimeReady({ salesPaused: true, sourceCommit, expectedMigration: "0034_worker_sweep_evidence.sql", runtime: runtime({ migration_versions: ["0031_participant_age_band.sql", "0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql"] }) })).toBe(false);

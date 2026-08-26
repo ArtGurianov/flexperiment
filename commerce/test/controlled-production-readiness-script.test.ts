@@ -8,7 +8,7 @@ const sourceCommit = "a".repeat(40);
 const temporaryDirectories: string[] = [];
 afterEach(() => { while (temporaryDirectories.length) rmSync(temporaryDirectories.pop()!, { recursive: true, force: true }); });
 
-const runReadiness = (scenario: "ready" | "status-fails-after-first", nodeExit = false) => {
+const runReadiness = (scenario: "ready" | "status-fails-after-first", nodeExit = false, phase: "promotion" | "candidate-pre-publication" = "promotion") => {
   const directory = mkdtempSync(join(tmpdir(), "flexperiment-readiness-test-"));
   temporaryDirectories.push(directory);
   const bin = join(directory, "bin");
@@ -65,12 +65,12 @@ const runReadiness = (scenario: "ready" | "status-fails-after-first", nodeExit =
   ].join("\n"));
   writeFileSync(sleep, "#!/usr/bin/env bash\nexit 0\n");
   chmodSync(curl, 0o755); chmodSync(node, 0o755); chmodSync(sleep, 0o755);
-  const result = spawnSync("bash", ["scripts/controlled-production-readiness.sh", request], {
+  const result = spawnSync("bash", ["scripts/controlled-production-readiness.sh", request, phase], {
     cwd: process.cwd(), encoding: "utf8", env: {
       ...process.env, PATH: `${bin}:${process.env.PATH}`, CURL_LOG: curlLog, NODE_LOG: nodeLog, STATUS_CALLS: statusCalls,
       READINESS_SCENARIO: scenario, READINESS_NODE_EXIT: nodeExit ? "1" : "0",
       PUBLIC_API_URL: "https://api.test", PUBLIC_FRONTEND_URL: "https://frontend.test", ADMIN_RELEASE_URL: "https://admin.test/release.json",
-      COMMERCE_RELEASE_CONTROL_TOKEN: "test-token", TARGET_SHA: sourceCommit, CHECKOUT_CONTRACT_VERSION: "age-band-v2", ADMIN_CONTRACT_VERSION: "age-band-v2", POLL_ATTEMPTS: "2", POLL_SECONDS: "0", POLL_CONNECT_TIMEOUT: "3", POLL_MAX_TIME: "7",
+      COMMERCE_RELEASE_CONTROL_TOKEN: "test-token", TARGET_SHA: sourceCommit, CHECKOUT_CONTRACT_VERSION: "age-band-v2", ADMIN_CONTRACT_VERSION: "age-band-v2", PREVIOUS_LEGAL_VERSION: "2026-08-25.1", POLL_ATTEMPTS: "2", POLL_SECONDS: "0", POLL_CONNECT_TIMEOUT: "3", POLL_MAX_TIME: "7",
     },
   });
   return { result, curlLog: readFileSync(curlLog, "utf8"), nodeLog: readFileSync(nodeLog, "utf8") };
@@ -85,6 +85,13 @@ describe("controlled production readiness polling", () => {
     expect(curlLog).toContain("https://api.test/healthz");
     expect(curlLog).toContain("https://api.test/readyz");
     expect(curlLog).not.toContain("reopen");
+  });
+
+  it("proves candidate surfaces against the previous active legal release before publication", () => {
+    const { result, nodeLog } = runReadiness("ready", false, "candidate-pre-publication");
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(nodeLog).toContain("--import tsx commerce/src/assert-candidate-runtime-ready.ts");
+    expect(nodeLog).toContain("0034_worker_sweep_evidence.sql 2026-08-25.1");
   });
 
   it("does not reuse a prior status file after the next attempt fetch fails", () => {
