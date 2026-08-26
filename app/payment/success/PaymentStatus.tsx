@@ -38,5 +38,5 @@ export default function PaymentStatus() {
 
   const current = statusId ? status : "FAILED";
   const message = current === "PAID" ? "Оплата получена. Инструкции уже отправлены на email." : current === "FAILED" ? "Оплату не удалось подтвердить. Проверьте email или обратитесь в поддержку." : timedOut ? "Проверка заняла больше времени, чем обычно. Проверьте email или обратитесь в поддержку." : "Проверяем оплату…";
-  return <main className="mx-auto flex min-h-dvh max-w-lg items-center px-6 text-center"><div className="w-full border-2 border-acid bg-ink p-8 font-mono text-bone"><h1 className="font-display text-3xl uppercase text-acid">{current === "PAID" ? "Спасибо" : "FLEXPERIMENT"}</h1><p className="mt-4">{message}</p>{error && <p role="status" className="mt-4 text-sm text-bone/70">Связь прервалась — повторяем проверку.</p>}</div></main>;
+  return <main className="mx-auto flex min-h-dvh max-w-lg items-center px-6 text-center"><div className="w-full border-2 border-acid bg-ink p-8 font-mono text-bone"><h1 className="font-display text-3xl text-acid">{current === "PAID" ? "Спасибо" : "FLEXPERIMENT"}</h1><p className="mt-4">{message}</p>{error && <p role="status" className="mt-4 text-sm text-bone/70">Связь прервалась — повторяем проверку.</p>}</div></main>;
 }

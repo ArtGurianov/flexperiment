@@ -28,7 +28,7 @@ export default function PaymentNotice() {
   return createPortal(
     <div
       role="alert"
-      className="fixed inset-x-4 bottom-4 z-[90] mx-auto max-w-md border-2 border-acid bg-ink px-4 py-3 text-center font-display text-[0.95rem] leading-snug uppercase text-acid"
+      className="fixed inset-x-4 bottom-4 z-[90] mx-auto max-w-md border-2 border-acid bg-ink px-4 py-3 text-center font-display text-[0.95rem] leading-snug text-acid"
     >
       Не удалось загрузить форму оплаты. Проверьте соединение и нажмите кнопку
       ещё раз.

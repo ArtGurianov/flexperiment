@@ -101,8 +101,8 @@ export default function AnalyticsConsent() {
           <div className="mt-4 flex flex-row flex-wrap items-center justify-center gap-x-6 gap-y-2">
             <p className="text-center text-bone/70">Подробнее — в <a className="text-acid underline underline-offset-4" href={PRIVACY_URL} target="_blank" rel="noopener noreferrer">политике конфиденциальности</a>.</p>
             <div className="flex flex-row flex-wrap justify-center gap-2">
-              <button type="button" className="border border-bone/60 px-3 py-2 font-display uppercase hover:border-acid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid" onClick={() => choose("DENIED")}>Только необходимые</button>
-              <button type="button" className="border-2 border-acid bg-acid px-3 py-2 font-display uppercase text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid" onClick={() => choose("ALLOWED")}>Разрешить аналитику</button>
+              <button type="button" className="border border-bone/60 px-3 py-2 font-display hover:border-acid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid" onClick={() => choose("DENIED")}>Только необходимые</button>
+              <button type="button" className="border-2 border-acid bg-acid px-3 py-2 font-display text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid" onClick={() => choose("ALLOWED")}>Разрешить аналитику</button>
             </div>
           </div>
         </section>,
@@ -112,7 +112,7 @@ export default function AnalyticsConsent() {
       {settingsOpen && (
         <section role="dialog" aria-modal="true" aria-label="Настройки cookies" className="fixed inset-0 z-[121] grid place-items-end bg-ink/75 p-3 sm:place-items-center">
           <div className="w-full max-w-md border-2 border-acid bg-ink p-5 font-mono text-sm text-bone shadow-[5px_6px_0_var(--color-shadow)]">
-            <h2 className="font-display text-2xl uppercase text-acid">Настройки cookies</h2>
+            <h2 className="font-display text-2xl text-acid">Настройки cookies</h2>
             <p className="mt-3">Необязательная аналитика отключена, пока вы её не разрешите. Вы можете изменить выбор в любое время.</p>
             <div className="mt-4 grid gap-2">
               <button type="button" aria-pressed={consent === "DENIED"} className="border border-bone/60 px-3 py-2 text-left hover:border-acid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid" onClick={() => choose("DENIED")}>Только необходимые{consent === "DENIED" ? " — выбрано" : ""}</button>

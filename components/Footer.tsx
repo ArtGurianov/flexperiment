@@ -34,7 +34,7 @@ export default function Footer({ className }: { className?: string }) {
   return (
     <footer
       className={cn(
-        "@container relative z-30 w-full bg-panel px-4 pt-6 pb-[max(1rem,env(safe-area-inset-bottom))] font-display leading-tight text-bone uppercase",
+        "@container relative z-30 w-full bg-panel px-4 pt-6 pb-[max(1rem,env(safe-area-inset-bottom))] font-display leading-tight text-bone",
         className,
       )}
     >
@@ -95,8 +95,6 @@ export default function Footer({ className }: { className?: string }) {
             <a href="tel:+79267280420" className={LINK}>
               +7 926 728-04-20
             </a>
-            {/* normal-case only here: an uppercased address reads as a different
-                string, and people do retype what a footer shows. */}
             <a
               href="mailto:art@flexperiment.ru"
               className={cn(LINK, "normal-case")}

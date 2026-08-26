@@ -49,7 +49,7 @@ export default function CityInterestForm({ scheduledCitySlugs }: Props) {
       </label>
       <label className="flex items-start gap-2 text-xs leading-snug"><input required type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /> <span>Подтверждаю согласие с <Link className="text-acid underline underline-offset-4" href="/legal/privacy-policy" target="_blank" rel="noopener noreferrer">политикой конфиденциальности</Link> и даю <Link className="text-acid underline underline-offset-4" href="/legal/personal-data-consent" target="_blank" rel="noopener noreferrer">согласие на обработку персональных данных</Link> для уведомления о мастер-классе в выбранном городе.</span></label>
       <SmartCaptcha onToken={setCaptchaToken} resetKey={captchaResetKey} />
-      <button disabled={!captchaToken || state === "submitting"} className="border border-acid px-3 py-2 font-display uppercase text-acid disabled:cursor-not-allowed disabled:opacity-60">{state === "submitting" ? "Сохраняем…" : "Сообщить о мастер-классе"}</button>
+      <button disabled={!captchaToken || state === "submitting"} className="border border-acid px-3 py-2 font-display text-acid disabled:cursor-not-allowed disabled:opacity-60">{state === "submitting" ? "Сохраняем…" : "Сообщить о мастер-классе"}</button>
       {state === "error" && <p role="status" className="text-bone/75">Не удалось сохранить запрос. Пройдите проверку ещё раз и повторите попытку.</p>}
     </form>}
   </section>;

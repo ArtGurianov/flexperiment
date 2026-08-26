@@ -53,9 +53,9 @@ export async function generateMetadata(
  */
 const PROSE = [
   "font-sans text-[clamp(0.85rem,3.3cqw,1rem)] leading-relaxed text-bone/85",
-  "[&_h1]:mt-0 [&_h1]:mb-[6cqw] [&_h1]:font-display [&_h1]:text-[clamp(1.3rem,5.6cqw,1.9rem)] [&_h1]:leading-tight [&_h1]:text-acid [&_h1]:uppercase [&_h1]:[text-shadow:2px_3px_0_var(--color-shadow)]",
-  "[&_h2]:mt-[9cqw] [&_h2]:mb-[3cqw] [&_h2]:font-display [&_h2]:text-[clamp(1.05rem,4.2cqw,1.35rem)] [&_h2]:leading-tight [&_h2]:text-bone [&_h2]:uppercase",
-  "[&_h3]:mt-[6cqw] [&_h3]:mb-[2cqw] [&_h3]:font-display [&_h3]:text-[clamp(0.95rem,3.6cqw,1.15rem)] [&_h3]:text-bone [&_h3]:uppercase",
+  "[&_h1]:mt-0 [&_h1]:mb-[6cqw] [&_h1]:font-display [&_h1]:text-[clamp(1.3rem,5.6cqw,1.9rem)] [&_h1]:leading-tight [&_h1]:text-acid [&_h1]:[text-shadow:2px_3px_0_var(--color-shadow)]",
+  "[&_h2]:mt-[9cqw] [&_h2]:mb-[3cqw] [&_h2]:font-display [&_h2]:text-[clamp(1.05rem,4.2cqw,1.35rem)] [&_h2]:leading-tight [&_h2]:text-bone",
+  "[&_h3]:mt-[6cqw] [&_h3]:mb-[2cqw] [&_h3]:font-display [&_h3]:text-[clamp(0.95rem,3.6cqw,1.15rem)] [&_h3]:text-bone",
   "[&_p]:my-[3.5cqw]",
   "[&_ul]:my-[3.5cqw] [&_ul]:list-disc [&_ol]:my-[3.5cqw] [&_ol]:list-decimal",
   "[&_ol]:pl-[1.5em] [&_ul]:pl-[1.5em]",
@@ -92,7 +92,7 @@ export default async function LegalPage(props: PageProps<"/legal/[slug]">) {
         <Section className="pb-[10cqw]">
           <Link
             href="/"
-            className="mb-[7cqw] inline-block text-[clamp(0.8rem,3cqw,1rem)] text-acid uppercase underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid"
+            className="mb-[7cqw] inline-block text-[clamp(0.8rem,3cqw,1rem)] text-acid underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid"
           >
             ← На главную
           </Link>

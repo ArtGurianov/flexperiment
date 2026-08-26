@@ -254,10 +254,10 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
       {catalogState === "error" ? <p role="status" className="border border-bone/50 px-4 py-5 text-bone/70 text-center">Произошла ошибка. Перезагрузите страницу</p> : null}
       {catalogState === "ready" && !occurrences.length ? <p role="status" className="border border-bone/50 px-4 py-5 text-bone/70 text-center">Запись на ближайшие даты пока не открыта.</p> : null}
       {occurrences.map((occurrence) => <button key={occurrence.id} type="button" onClick={() => showBooking(occurrence)} className="flex w-full flex-col gap-4 border-2 border-bone/50 bg-bone px-4 py-5 text-left text-ink transition-colors hover:border-acid hover:bg-acid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid">
-        <span className="font-display text-2xl uppercase">{occurrence.city_title} × {occurrenceDateLabel(occurrence.starts_at)}</span>
+        <span className="font-display text-2xl">{occurrence.city_title} × {occurrenceDateLabel(occurrence.starts_at)}</span>
       </button>)}
       <button type="button" onClick={showCityInterest} className="flex w-full flex-col gap-4 border-2 border-bone/50 bg-bone px-4 py-5 text-left text-ink transition-colors hover:border-acid hover:bg-acid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid">
-        <span className="font-display text-2xl uppercase">Твой город × Скоро</span>
+        <span className="font-display text-2xl">Твой город × Скоро</span>
       </button>
     </div>
   );
@@ -269,11 +269,11 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
     <form className="space-y-4 font-mono text-sm" onSubmit={submit}>
       <div className="grid gap-3 border border-acid/60 p-3">
         <div>
-          <p className="text-xs uppercase text-bone/70">Дата и время</p>
-          <p className="mt-1 font-display text-xl uppercase text-acid">{occurrenceDateTimeLabel(selected.starts_at, selected.timezone)}</p>
+          <p className="text-xs text-bone/70">Дата и время</p>
+          <p className="mt-1 font-display text-xl text-acid">{occurrenceDateTimeLabel(selected.starts_at, selected.timezone)}</p>
         </div>
         <div>
-          <p className="text-xs uppercase text-bone/70">Место проведения</p>
+          <p className="text-xs text-bone/70">Место проведения</p>
           <p className="mt-1 leading-relaxed text-bone/90">{quote?.venue_disclosure ?? publicVenueDisclosure(selected)}</p>
         </div>
       </div>
@@ -294,9 +294,9 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
         {quote && <p className="text-bone/70">Версия legal release {quote.legal_release.version}: {(Object.keys(legalLabels) as (keyof typeof legalLabels)[]).map((id, index) => <span key={id}>{index > 0 ? " · " : ""}<a className="text-acid underline underline-offset-4" href={legalPagePaths[id]} target="_blank" rel="noopener noreferrer">{legalLabels[id]}</a></span>)}</p>}
       </div>
       {message && <p role="status" className="border border-acid px-3 py-2 text-acid">{message}</p>}
-      <label className="grid gap-1.5">Промокод <span className="flex gap-2"><input disabled={Boolean(appliedPromoCode)} value={appliedPromoCode ? `Промокод [${appliedPromoCode}] применен` : promoCode} onChange={(event) => setPromoCode(event.target.value)} className="min-w-0 flex-1 border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid disabled:cursor-not-allowed disabled:opacity-70" /><button type="button" disabled={loading} onClick={() => void (appliedPromoCode ? resetPromo() : applyPromo())} className="shrink-0 border border-acid px-3 py-2 font-display uppercase text-acid transition-colors hover:bg-acid hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid disabled:cursor-wait disabled:opacity-60">{appliedPromoCode ? "Сброс" : "Применить"}</button></span></label>
+      <label className="grid gap-1.5">Промокод <span className="flex gap-2"><input disabled={Boolean(appliedPromoCode)} value={appliedPromoCode ? `Промокод [${appliedPromoCode}] применен` : promoCode} onChange={(event) => setPromoCode(event.target.value)} className="min-w-0 flex-1 border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid disabled:cursor-not-allowed disabled:opacity-70" /><button type="button" disabled={loading} onClick={() => void (appliedPromoCode ? resetPromo() : applyPromo())} className="shrink-0 border border-acid px-3 py-2 font-display text-acid transition-colors hover:bg-acid hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid disabled:cursor-wait disabled:opacity-60">{appliedPromoCode ? "Сброс" : "Применить"}</button></span></label>
       {quote && <div className="border border-acid/60 p-3 text-bone"><p>{selected?.city_title}: {rub(quote.final_amount_kopecks)}{quote.discount_kopecks > 0 ? " со скидкой" : ""}</p></div>}
-      <button disabled={!quote || !participantAgeBand || submitting} className="w-full border-2 border-acid bg-acid px-4 py-3 font-display text-lg uppercase text-ink disabled:cursor-not-allowed disabled:opacity-60">{submitting ? "Создаём оплату…" : "Перейти к оплате"}</button>
+      <button disabled={!quote || !participantAgeBand || submitting} className="w-full border-2 border-acid bg-acid px-4 py-3 font-display text-lg text-ink disabled:cursor-not-allowed disabled:opacity-60">{submitting ? "Создаём оплату…" : "Перейти к оплате"}</button>
       </>}
     </form>
     </>

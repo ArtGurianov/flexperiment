@@ -39,7 +39,7 @@ export default function TeacherCredentials({ className }: { className?: string }
           />
 
           <div>
-            <h3 className="leading-[1.05] whitespace-nowrap uppercase text-acid [text-shadow:2px_3px_0_var(--color-shadow)]">
+            <h3 className="leading-[1.05] whitespace-nowrap text-acid [text-shadow:2px_3px_0_var(--color-shadow)]">
               {title}
             </h3>
 

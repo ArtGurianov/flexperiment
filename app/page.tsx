@@ -20,22 +20,6 @@ export default function Home() {
     // waiting for a video that was never there. It wraps the page rather than
     // sitting beside it so it can inert what it covers.
     <AssetPreloader>
-      {/* Ahead of the navbar in the DOM so it is the very first tab stop.
-          Visible only while focused.
-
-          z-[110] puts it above the loader's z-[100]. That is not about the load
-          itself — the wrapper inside AssetPreloader inerts this link along with
-          everything else while the overlay covers the page, so it cannot take
-          focus then at all. It matters for the fade window: inert lifts the
-          moment the fade starts, so for those 500ms the page is interactive
-          while the overlay is still painting over it. */}
-      <a
-        href="#main"
-        className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-[110] focus:bg-acid focus:px-4 focus:py-2 focus:font-display focus:text-ink focus:uppercase"
-      >
-        Перейти к содержанию
-      </a>
-
       {/* Outside <main> on purpose: a navigation landmark nested inside the
           main landmark is not reachable as a site-level nav. Still the first
           flex child of the column, so nothing moves. */}

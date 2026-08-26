@@ -21,7 +21,7 @@ export interface DialogDrawerProps {
 }
 
 const SURFACE = "flex flex-col bg-ink/90 text-bone";
-const TITLE = "text-center font-display text-[1.6rem] leading-none uppercase text-acid";
+const TITLE = "text-center font-display text-[1.6rem] leading-none text-acid";
 const CLOSE =
   "absolute top-4 right-4 rounded-full p-1 text-acid transition-colors hover:bg-acid hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid";
 /** overscroll-contain stops a flick past the end of the body from chaining to

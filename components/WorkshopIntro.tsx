@@ -11,7 +11,7 @@ import body from "@/public/body.webp";
 export default function WorkshopIntro() {
   return (
     <Section>
-      <h2 className="relative z-30 text-end text-[clamp(1.75rem,8.6cqw,2.75rem)] leading-[1.3] tracking-[0.015em] uppercase text-acid [text-shadow:2px_3px_0_rgb(0_0_0_/_0.9),0_0_4px_rgb(202_255_86_/_0.25)]">
+      <h2 className="relative z-30 text-end text-[clamp(1.75rem,8.6cqw,2.75rem)] leading-[1.3] tracking-[0.015em] text-acid [text-shadow:2px_3px_0_rgb(0_0_0_/_0.9),0_0_4px_rgb(202_255_86_/_0.25)]">
         Разблокируй новый уровень контроля над телом
       </h2>
 
@@ -29,8 +29,8 @@ export default function WorkshopIntro() {
         {/* Left padding is wider than right: the figure now reaches ~46cqw, so
             the copy starts past it instead of being overlapped. */}
         <DarkPanel className="z-10 col-start-1 row-start-1 w-[60cqw] self-end justify-self-end pt-[6cqw] px-[5cqw] pb-[5cqw] text-center">
-          <h3 className="text-[clamp(1.45rem,6.4cqw,2rem)] leading-tight tracking-[0.015em] uppercase underline decoration-2 underline-offset-8">
-            Впервые в Сибири
+          <h3 className="text-[clamp(1.45rem,6.4cqw,2rem)] leading-tight tracking-[0.015em] underline decoration-2 underline-offset-8">
+            ВПЕРВЫЕ В СИБИРИ
           </h3>
 
           {/* Width-constrained instead of hard line breaks, so the copy rewraps

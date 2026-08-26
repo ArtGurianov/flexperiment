@@ -1,5 +1,5 @@
 import type { Metadata, Viewport } from "next";
-import { Geist_Mono, Shafarik } from "next/font/google";
+import { Geist_Mono, Monomakh as Shafarik } from "next/font/google";
 import { Suspense } from "react";
 import AnalyticsConsent from "@/components/AnalyticsConsent";
 import ReferralCapture from "@/components/ReferralCapture";

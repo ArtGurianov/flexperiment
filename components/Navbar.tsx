@@ -3,7 +3,7 @@ import PaymentCta from "@/components/PaymentCta";
 import { BOOKING_LABEL, SITE_LINKS } from "@/lib/navigation";
 
 // The floor used to be 0.62rem, which resolved to 9.9px on a 320px phone —
-// below the ~11px where uppercase Shafarik stops being comfortably legible.
+// below the ~11px where Shafarik stops being comfortably legible.
 // py-1.5 lifts the row from a 23px tap target towards the 24px minimum; the
 // four items still fit on one line at 320px with room to spare.
 const NAV_TYPE = "py-1.5 text-[clamp(0.75rem,2.9cqw,0.95rem)]";
