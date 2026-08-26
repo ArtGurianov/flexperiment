@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
@@ -35,6 +36,29 @@ describe("generic controlled production deploy workflow", () => {
     expect(workflow).not.toContain('migration: "0034_worker_sweep_evidence.sql"');
     expect(workflow).not.toContain("commerce:production-deploy:payload");
     expect(workflow).toContain("commerce/legal/production-manifest.json >/dev/null || { echo \"GENERIC_DEPLOY_REQUIRES_CONTROLLED_LEGAL_CUTOVER\"");
+  });
+
+  it("accepts the top-level document hashes in the canonical candidate manifest", () => {
+    const manifestPath = "commerce/legal/production-manifest.json";
+    const candidate = JSON.parse(readFileSync(manifestPath, "utf8")) as { version: string; documents: Record<string, { sha256: string }> };
+    const expected = {
+      legal_version: candidate.version,
+      legal_hashes: Object.fromEntries(Object.entries(candidate.documents).map(([name, document]) => [name, document.sha256])),
+    };
+    const filter = `
+      . as $candidate | $expected as $expected |
+      $candidate.version == $expected.legal_version and
+      {
+        PUBLIC_OFFER: $candidate.documents.PUBLIC_OFFER.sha256,
+        PRIVACY_POLICY: $candidate.documents.PRIVACY_POLICY.sha256,
+        PD_CONSENT: $candidate.documents.PD_CONSENT.sha256,
+        CHECKOUT_DISCLOSURE: $candidate.documents.CHECKOUT_DISCLOSURE.sha256
+      } == $expected.legal_hashes
+    `;
+    const result = spawnSync("jq", ["-e", "--argjson", "expected", JSON.stringify(expected), filter, manifestPath], { encoding: "utf8" });
+    expect(result.status, result.stderr).toBe(0);
+    expect(workflow).toContain("$candidate.documents.PUBLIC_OFFER.sha256");
+    expect(workflow).not.toContain("$candidate.manifest.documents.PUBLIC_OFFER.sha256");
   });
 
   it("uses a candidate-bound durable owner without legal promotion or CI writes", () => {
