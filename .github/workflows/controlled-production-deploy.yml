@@ -86,8 +86,14 @@ jobs:
             else error("GENERIC_DEPLOY_PRODUCTION_BASELINE_INVALID")
             end
           ' durable-before.json)"
-          migration_expectation="inventory-sha256:$(printf %s "$migration_inventory" | shasum -a 256 | awk '{ print $1 }')"
-          jq -e --arg release_id "$RELEASE_ID" --arg source_commit "$TARGET_SHA" --arg migration "$migration_expectation" '
+          source_migration_inventory="$(git ls-tree -r --name-only "$production_source" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
+          [[ -n "$source_migration_inventory" ]] || { echo "GENERIC_DEPLOY_PRODUCTION_MIGRATION_INVENTORY_EMPTY" >&2; exit 1; }
+          [[ "$migration_inventory" == "$source_migration_inventory" ]] || { echo "GENERIC_DEPLOY_PRODUCTION_MIGRATION_INVENTORY_MISMATCH" >&2; exit 1; }
+          migration_inventory_sha256="$(printf %s "$migration_inventory" | shasum -a 256 | awk '{ print $1 }')"
+          echo "MIGRATION_INVENTORY_SHA256=$migration_inventory_sha256"
+          durable_migration="$(jq -er '.expected.migration | select(type == "string" and test("^[0-9]{4}_.+\\.sql$"))' durable-before.json)"
+          [[ -n "$durable_migration" ]] || { echo "GENERIC_DEPLOY_PRODUCTION_MIGRATION_EXPECTATION_INVALID" >&2; exit 1; }
+          jq -e --arg release_id "$RELEASE_ID" --arg source_commit "$TARGET_SHA" --arg migration "$durable_migration" '
             .runtime as $runtime |
             if
               ($runtime.legal_version | type == "string") and

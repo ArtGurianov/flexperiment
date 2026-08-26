@@ -1,3 +1,4 @@
+import { readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import { recordRuntimeHeartbeatEvidence, recordRuntimeStartupEvidence, recordSuccessfulWorkerSweep } from "../src/runtime-release-evidence";
@@ -28,11 +29,13 @@ describe("worker successful-sweep evidence", () => {
     expect(recordSuccessfulWorkerSweep(db, sourceCommit)).toBe(true);
     expect(recordRuntimeHeartbeatEvidence(db, "WORKER", sourceCommit)).toBe(true);
     expect(db.prepare("SELECT last_successful_sweep_at FROM runtime_release_evidence WHERE unit = 'WORKER'").get()).toEqual({ last_successful_sweep_at: expect.any(String) });
-    expect(releaseRuntimeEvidence(db, { sourceCommit, currentLegalCopiesMatch: () => false })).toMatchObject({
+    const runtime = releaseRuntimeEvidence(db, { sourceCommit, currentLegalCopiesMatch: () => false });
+    expect(runtime).toMatchObject({
       worker_source_commit: sourceCommit,
       worker_started_at: expect.any(String),
       worker_last_successful_sweep_at: expect.any(String),
     });
+    expect(runtime.migration_versions).toEqual(readdirSync("commerce/migrations").filter((name) => name.endsWith(".sql")).sort());
     expect(recordRuntimeStartupEvidence(db, "WORKER", sourceCommit)).toBe(true);
     expect(db.prepare("SELECT last_successful_sweep_at FROM runtime_release_evidence WHERE unit = 'WORKER'").get()).toEqual({ last_successful_sweep_at: null });
     db.close();

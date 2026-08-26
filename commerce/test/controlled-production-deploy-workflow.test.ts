@@ -30,12 +30,24 @@ describe("generic controlled production deploy workflow", () => {
 
   it("freezes release expectations from durable production evidence, never candidate helper code", () => {
     expect(workflow).toContain(".runtime as $runtime");
+    expect(workflow).toContain('.expected.migration | select(type == "string" and test("^[0-9]{4}_.+\\\\.sql$"))');
+    expect(workflow).toContain("migration: $migration");
     expect(workflow).toContain("' durable-before.json > release.json");
     expect(workflow).toContain("GENERIC_DEPLOY_PRODUCTION_BASELINE_INVALID");
-    expect(workflow).toContain('migration_expectation="inventory-sha256:');
-    expect(workflow).not.toContain('migration: "0034_worker_sweep_evidence.sql"');
+    expect(workflow).not.toContain('migration_expectation="inventory-sha256:');
+    expect(workflow).not.toContain('migration: "inventory-sha256:');
     expect(workflow).not.toContain("commerce:production-deploy:payload");
     expect(workflow).toContain("commerce/legal/production-manifest.json >/dev/null || { echo \"GENERIC_DEPLOY_REQUIRES_CONTROLLED_LEGAL_CUTOVER\"");
+  });
+
+  it("keeps the runtime migration inventory equal to the deployed source before acquire", () => {
+    const sourceInventory = workflow.indexOf('git ls-tree -r --name-only "$production_source" -- commerce/migrations');
+    const inventoryMismatch = workflow.indexOf("GENERIC_DEPLOY_PRODUCTION_MIGRATION_INVENTORY_MISMATCH");
+    const releaseRequest = workflow.indexOf("' durable-before.json > release.json");
+    expect(sourceInventory).toBeGreaterThan(workflow.indexOf("commerce:production-deploy:assert-boundary generic-deploy-boundary-paths.bin"));
+    expect(inventoryMismatch).toBeGreaterThan(sourceInventory);
+    expect(inventoryMismatch).toBeLessThan(releaseRequest);
+    expect(workflow).toContain('[[ "$migration_inventory" == "$source_migration_inventory" ]]');
   });
 
   it("accepts the top-level document hashes in the canonical candidate manifest", () => {
