@@ -59,6 +59,8 @@ describe("static release descriptors", () => {
     expect(frontendDockerfile).toContain("COPY --from=build /app/out /usr/share/nginx/html");
     expect(adminDockerfile).toContain("ARG SOURCE_COMMIT");
     expect(adminDockerfile).toContain("ENV SOURCE_COMMIT=${SOURCE_COMMIT}");
+    expect(adminDockerfile).toContain("COPY release-surface-contract.json ./");
+    expect(adminDockerfile.indexOf("COPY release-surface-contract.json ./")).toBeLessThan(adminDockerfile.indexOf("RUN pnpm --filter @flexperiment/admin build"));
     expect(adminDockerfile).toContain("COPY --from=build /app/apps/admin/out /usr/share/nginx/html");
   });
 });

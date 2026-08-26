@@ -12,6 +12,7 @@ COPY apps/admin ./apps/admin
 # Admin shares the canonical city catalogue with Commerce at the repository
 # root; include it before resolving the static export's imports.
 COPY lib ./lib
+COPY release-surface-contract.json ./
 RUN pnpm --filter @flexperiment/admin build
 
 FROM nginx:1.29-alpine
