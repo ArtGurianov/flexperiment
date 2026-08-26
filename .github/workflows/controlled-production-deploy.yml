@@ -30,6 +30,8 @@ jobs:
       TARGET_SHA: ${{ github.sha }}
       POLL_ATTEMPTS: "30"
       POLL_SECONDS: "10"
+      POLL_CONNECT_TIMEOUT: "3"
+      POLL_MAX_TIME: "7"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -126,7 +128,7 @@ jobs:
             $runtime.current_legal_copies_match == true and
             $runtime.source_legal_manifest_sha256 == $source_sha and
             $runtime.source_legal_publish_time == $publish_time
-          ' durable-before.json >/dev/null || { echo "GENERIC_DEPLOY_REQUIRES_CONTROLLED_LEGAL_CUTOVER" >&2; exit 1; }
+          ' durable-before.json >/dev/null || { echo "GENERIC_DEPLOY_LEGAL_RUNTIME_BASELINE_MISMATCH" >&2; exit 1; }
           jq -e --slurpfile request release.json '
             . as $candidate | $request[0].expected as $expected |
             $candidate.version == $expected.legal_version and
@@ -136,7 +138,7 @@ jobs:
               PD_CONSENT: $candidate.documents.PD_CONSENT.sha256,
               CHECKOUT_DISCLOSURE: $candidate.documents.CHECKOUT_DISCLOSURE.sha256
             } == $expected.legal_hashes
-          ' commerce/legal/production-manifest.json >/dev/null || { echo "GENERIC_DEPLOY_REQUIRES_CONTROLLED_LEGAL_CUTOVER" >&2; exit 1; }
+          ' commerce/legal/production-manifest.json >/dev/null || { echo "GENERIC_DEPLOY_LEGAL_CANONICAL_MANIFEST_MISMATCH" >&2; exit 1; }
           if ! jq -e '.complete' completion.json >/dev/null; then
             if [[ "$owner" == "$RELEASE_ID" ]]; then
               jq -e --slurpfile request release.json '.expected == ($request[0].expected | del(.legal_hashes))' durable-before.json >/dev/null || { echo "GENERIC_DEPLOY_OWNER_EXPECTATIONS_MISMATCH" >&2; exit 1; }
@@ -155,7 +157,7 @@ jobs:
           api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
-          pnpm commerce:production-deploy:assert-ready status.json release.json open
+          node --import tsx commerce/src/assert-generic-production-deploy-ready.ts status.json release.json open
           jq -e --slurpfile request release.json '.complete and .expected == $request[0].expected' completion.json >/dev/null
           curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_FRONTEND_URL/release.json" > frontend.json
           curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$ADMIN_RELEASE_URL" > admin.json
@@ -214,27 +216,11 @@ jobs:
 
       - name: Prove all surfaces and guarded reopen
         if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'
+        timeout-minutes: 12
         run: |
           set -euo pipefail
           api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
-          for attempt in $(seq 1 "$POLL_ATTEMPTS"); do
-            api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json || true
-            curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_FRONTEND_URL/release.json" > frontend.json || true
-            curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$ADMIN_RELEASE_URL" > admin.json || true
-            curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/v1/public/legal-config" > legal.json || true
-            if pnpm commerce:production-deploy:assert-ready status.json release.json paused && jq -e --arg sha "$TARGET_SHA" '.source_commit == $sha and .checkout_contract_version == "age-band-v1"' frontend.json >/dev/null && jq -e --arg sha "$TARGET_SHA" '.source_commit == $sha and .admin_contract_version == "age-band-v1"' admin.json >/dev/null && jq -e --slurpfile request release.json '
-              (.version == $request[0].expected.legal_version) and
-              ({
-                PUBLIC_OFFER: .manifest.documents.PUBLIC_OFFER.sha256,
-                PRIVACY_POLICY: .manifest.documents.PRIVACY_POLICY.sha256,
-                PD_CONSENT: .manifest.documents.PD_CONSENT.sha256,
-                CHECKOUT_DISCLOSURE: .manifest.documents.CHECKOUT_DISCLOSURE.sha256
-              } == $request[0].expected.legal_hashes)
-            ' legal.json >/dev/null; then break; fi
-            [[ "$attempt" == "$POLL_ATTEMPTS" ]] && exit 1; sleep "$POLL_SECONDS"
-          done
-          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/healthz" | jq -e '.ok' >/dev/null
-          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/readyz" | jq -e '.ok' >/dev/null
+          scripts/controlled-production-readiness.sh release.json
           api -X POST -H 'Content-Type: application/json' --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/reopen" > reopened.json
           jq -e '.sales_paused == false and .owner_release_id == null and .owner_mode == null' reopened.json >/dev/null
 
@@ -245,7 +231,7 @@ jobs:
           api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
-          pnpm commerce:production-deploy:assert-ready status.json release.json open
+          node --import tsx commerce/src/assert-generic-production-deploy-ready.ts status.json release.json open
           jq -e --slurpfile request release.json '.complete and .expected == $request[0].expected' completion.json >/dev/null
           curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_FRONTEND_URL/release.json" > frontend.json
           curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$ADMIN_RELEASE_URL" > admin.json

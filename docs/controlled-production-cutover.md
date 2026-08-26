@@ -1,12 +1,20 @@
-# Controlled production cutover
+# Controlled production deployment and special cutovers
 
-This is the only supported automation for the booking-time age-band and legal release `2026-08-25.1`. It is a release state machine, not a deployment hook. The workflow is [controlled-age-band-cutover.yml](../.github/workflows/controlled-age-band-cutover.yml).
+Every push to `main` is handled by [controlled-production-deploy.yml](../.github/workflows/controlled-production-deploy.yml). It is a controlled production deploy: it freezes the live legal and migration baseline, acquires the durable owner, pauses new registrations, deploys the exact SHA, proves all public and internal surfaces, then guardedly reopens registrations. A failed post-pause run is fail-closed: registrations stay paused for recovery by the same release ID.
+
+The historical booking-time age-band and legal release `2026-08-25.1` is handled by the separate manual [controlled-age-band-cutover.yml](../.github/workflows/controlled-age-band-cutover.yml). That state machine is only for a future approved schema or legal promotion; routine pushes must never publish legal content or create a promotion commit.
 
 ## Deployment architecture found
 
 Verified production topology is three independent manual-deploy Coolify resources: `https://flexperiment.ru` is the static frontend, `https://admin.flexperiment.ru` is the static admin, and `https://api.flexperiment.ru` is the shared Commerce/Worker Compose resource with one persistent SQLite volume. The browser intentionally calls the API cross-origin; Commerce CORS is restricted to the frontend origin.
 
-Every release deploy invokes all three authenticated Coolify deploy webhooks with a Deploy-scoped `COOLIFY_TOKEN`. Webhook acceptance is only enqueue acknowledgement. Commerce/Worker runtime evidence, frontend `/release.json`, admin `/release.json`, health endpoints and the API legal-config remain authoritative deployment proof.
+Every release deploy invokes all three authenticated Coolify deploy webhooks with a Deploy-scoped `COOLIFY_TOKEN`. Webhook acceptance is only enqueue acknowledgement. Commerce/Worker runtime evidence, frontend `/release.json`, admin `/release.json`, health endpoints and the API legal-config remain authoritative deployment proof. All three Coolify resources must use `production-deploy` as their Git source branch; `main` remains the development and source-of-truth branch and is never itself a Coolify deploy trigger.
+
+## Routine deploy safety contract
+
+The generic workflow rejects any candidate that changes `commerce/migrations`, `commerce/legal`, or `public/legal`; those changes require an explicitly approved manual controlled cutover. Before acquiring the owner, it also verifies that the production database migration inventory equals the immutable production source commit, and that the current canonical legal manifest matches live durable legal evidence. This prevents a candidate from changing the expected baseline and the object being checked in the same run.
+
+Readiness polling is bounded to 30 attempts with a 10-second interval and 3/7-second connect/total request timeouts. Each attempt uses a fresh temporary directory; a response is consumed only after its fetch and JSON-object validation succeed. Normal readiness lag is logged once per attempt without `pnpm` lifecycle output. On final failure the workflow prints the last safe observed source/worker/legal state and gate diagnostic, never a bearer token or response body.
 
 ## Bootstrap is mandatory
 
@@ -49,6 +57,8 @@ Any timeout, deployment mismatch, legal mismatch, missing timestamp, contract fa
 
 ## Recovery
 
-Use authenticated `GET /v1/internal/release-control/status` to inspect owner, pause state and runtime evidence. Retry read-only `verify` safely. Publication may be repeated only when it reports the same version/manifest as active. Resume the same release owner when possible. Do not manually reopen to recover a failed deploy.
+A failure before successful `acquire` has made no gate mutation: registrations remain open and a corrected commit may be pushed normally. A failure after `pause` is different: keep registrations paused, inspect authenticated `GET /v1/internal/release-control/status`, and rerun the workflow for the same `deploy-<SHA>` owner. A newer `main` SHA must not take the owner or move `production-deploy` while recovery is pending. Do not manually reopen to recover a failed deploy.
+
+If Coolify configuration or a webhook enqueue is the failing proof, repair that deployment configuration first and then rerun the same release. If runtime, frontend/admin descriptor, legal or worker evidence fails, repair the exact candidate deployment and rerun the same release; do not replace the durable expected baseline. Publication may be repeated only when it reports the same version/manifest as active.
 
 Emergency reopening is deliberately a guarded internal `reopen` request with the original owner and exact expected SHA, migration, legal version and hashes. If any fact is unknown, keep sales paused and repair deployment or legal state first.

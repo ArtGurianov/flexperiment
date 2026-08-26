@@ -15,8 +15,8 @@ export const genericProductionDeployBoundary = (changedPaths: readonly string[])
 export const genericProductionDeployBoundaryError = (changedPaths: readonly string[]): string | undefined => {
   const boundary = genericProductionDeployBoundary(changedPaths);
   return boundary === "SCHEMA"
-    ? "GENERIC_DEPLOY_REQUIRES_CONTROLLED_SCHEMA_CUTOVER"
+    ? "GENERIC_DEPLOY_SCHEMA_PATH_BOUNDARY_CHANGED"
     : boundary === "LEGAL"
-      ? "GENERIC_DEPLOY_REQUIRES_CONTROLLED_LEGAL_CUTOVER"
+      ? "GENERIC_DEPLOY_LEGAL_PATH_BOUNDARY_CHANGED"
       : undefined;
 };

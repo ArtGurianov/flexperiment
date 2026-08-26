@@ -28,6 +28,7 @@ describe("generic controlled production deploy workflow", () => {
     expect(workflow).toContain('git diff --name-only -z "$production_source" "$TARGET_SHA" -- commerce/migrations commerce/legal public/legal');
     expect(workflow).toContain("commerce:production-deploy:assert-boundary generic-deploy-boundary-paths.bin");
     expect(workflow).toContain('commerce/legal public/legal');
+    expect(workflow).not.toContain("GENERIC_DEPLOY_REQUIRES_CONTROLLED_LEGAL_CUTOVER");
   });
 
   it("freezes release expectations from durable production evidence, never candidate helper code", () => {
@@ -39,7 +40,7 @@ describe("generic controlled production deploy workflow", () => {
     expect(workflow).not.toContain('migration_expectation="inventory-sha256:');
     expect(workflow).not.toContain('migration: "inventory-sha256:');
     expect(workflow).not.toContain("commerce:production-deploy:payload");
-    expect(workflow).toContain("commerce/legal/production-manifest.json >/dev/null || { echo \"GENERIC_DEPLOY_REQUIRES_CONTROLLED_LEGAL_CUTOVER\"");
+    expect(workflow).toContain("commerce/legal/production-manifest.json >/dev/null || { echo \"GENERIC_DEPLOY_LEGAL_CANONICAL_MANIFEST_MISMATCH\"");
   });
 
   it("keeps the runtime migration inventory equal to the deployed source before acquire", () => {
@@ -136,6 +137,17 @@ describe("generic controlled production deploy workflow", () => {
     expect(finalProofSource).toContain('"$PUBLIC_API_URL/v1/public/legal-config"');
     expect(finalProofSource).toContain('"$PUBLIC_API_URL/healthz"');
     expect(finalProofSource).toContain('"$PUBLIC_API_URL/readyz"');
+  });
+
+  it("uses bounded, fresh polling without pnpm lifecycle output before reopening", () => {
+    const readiness = workflow.indexOf('scripts/controlled-production-readiness.sh release.json');
+    const reopen = workflow.indexOf('"$PUBLIC_API_URL/v1/internal/release-control/reopen"');
+    expect(workflow).toContain('POLL_CONNECT_TIMEOUT: "3"');
+    expect(workflow).toContain('POLL_MAX_TIME: "7"');
+    expect(workflow).toContain("timeout-minutes: 12");
+    expect(workflow).not.toContain("pnpm commerce:production-deploy:assert-ready");
+    expect(readiness).toBeGreaterThan(workflow.indexOf("Prove all surfaces and guarded reopen"));
+    expect(readiness).toBeLessThan(reopen);
   });
 
   it("allows only the durable owner to recover after main advances", () => {

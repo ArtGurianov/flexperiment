@@ -34,6 +34,11 @@ describe("controlled cutover production topology", () => {
     expect(workflow.match(/CUTOVER_RECONCILIATION_INVALID_JSON/g)).toHaveLength(3);
   });
 
+  it("does not emit pnpm lifecycle banners during candidate readiness retries", () => {
+    expect(workflow).toContain("node --import tsx commerce/src/assert-candidate-runtime-ready.ts status.json");
+    expect(workflow).not.toContain("pnpm commerce:release-cutover:assert-candidate-ready");
+  });
+
   it("keeps main as the source ref while deploying candidate and promotion through the guarded ref", () => {
     expect(workflow).toContain("New release target must equal origin/main");
     expect(workflow).toContain("git push origin HEAD:refs/heads/main");
