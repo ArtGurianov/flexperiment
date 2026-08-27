@@ -1,0 +1,283 @@
+name: Controlled R5 post-CAS recovery deploy
+
+# One-shot, hard-bound deploy-only recovery controller.
+#
+# Context: production-deploy and runtime-candidate were already moved to
+# exact R5 by a separately authorized, directly-verified guarded CAS
+# (scripts/set-production-deploy-ref.sh). That authority move is durable and
+# is never redone or reversed here. Commerce/worker were stopped for that
+# operation and for the prior R4->R5 generic-owner expectation recovery
+# (maintenance-r4-to-r5-generic-owner-recovery), so this workflow cannot use
+# the ordinary controlled-production-deploy.yml pre-deploy public-pause proof
+# (it requires a live Commerce API response, and Commerce is currently
+# stopped by design). The evidence for the paused/owned state going into this
+# run is the direct-DB verification already performed out-of-band immediately
+# before dispatch, not anything this workflow re-derives.
+#
+# This workflow therefore contains no acquire/pause/updateExpectations/
+# reopen call, no production-deploy ref mutation, and no arbitrary target
+# input. It only proves the already-authorized production-deploy pointer is
+# still exactly R5, deploys exactly R5 via the existing Coolify webhook
+# primitive, and proves the resulting runtime is healthy and still paused
+# under the existing generic owner. See "Runtime candidates and maintenance
+# commits are different artifact classes" and "One-shot recovery bridges are
+# non-reusable by construction" in docs/release/DEPLOYMENT_INVARIANTS.md.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Must be exactly DEPLOY-ALREADY-AUTHORIZED-R5-WHILE-PAUSED
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 30
+    env:
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+      COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL }}
+      PUBLIC_FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+      ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
+      CONTROLLER_SHA: ${{ github.sha }}
+      INPUT_CONFIRM: ${{ inputs.confirm }}
+      # Hard-bound identities for this exact one-shot recovery. None of these
+      # are dispatch inputs and none may be overridden at run time.
+      REQUIRED_CONFIRM_PHRASE: "DEPLOY-ALREADY-AUTHORIZED-R5-WHILE-PAUSED"
+      EXPECTED_PRODUCTION_DEPLOY: "71f6971cea630d4da9a1cb1c57f3ad01e8fdffe1"
+      EXPECTED_RUNTIME_CANDIDATE: "71f6971cea630d4da9a1cb1c57f3ad01e8fdffe1"
+      DEPLOYMENT_TARGET: "71f6971cea630d4da9a1cb1c57f3ad01e8fdffe1"
+      TOPOLOGY_BASELINE: "97678cc19d2549146b0d4999466a4cded9320208"
+      EXPECTED_OWNER_RELEASE_ID: "deploy-aa492d5a6361c8d43f8cbb2a4e3b245611f4f76b"
+      EXPECTED_MIGRATION: "0036_tochka_provider_error_evidence.sql"
+      EXPECTED_PROMO_SOURCE_COMMIT: "97678cc19d2549146b0d4999466a4cded9320208"
+      EXPECTED_PROMO_RELEASE_ID: "promo-codes-v0:b01f217ffd2a798fd32aa3d88e125a2e460bd39f"
+      EXPECTED_PROMO_GENERATION: "5"
+      EXPECTED_PROMO_PHASE_SEQUENCE: "5"
+      EXPECTED_PROMO_STATE_HASH: "2a81cf2ec0eab1f9806d4aedb627c0df98ff125aabbd76ea8faa4b37cc997962"
+      INITIAL_READINESS_DELAY_SECONDS: "60"
+      POLL_ATTEMPTS: "30"
+      POLL_SECONDS: "10"
+      POLL_CONNECT_TIMEOUT: "3"
+      POLL_MAX_TIME: "7"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Assert this controller is exact, current main
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "DEPLOY_CONTROLLER_NOT_MAIN" >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo "DEPLOY_CONTROLLER_MAIN_MOVED" >&2; exit 1; }
+
+      - name: Assert confirmation phrase
+        run: |
+          set -euo pipefail
+          [[ "$INPUT_CONFIRM" == "$REQUIRED_CONFIRM_PHRASE" ]] || { echo "RECOVERY_DEPLOY_CONFIRM_PHRASE_MISMATCH" >&2; exit 1; }
+
+      - name: Resolve hard-bound identities
+        run: |
+          set -euo pipefail
+          for sha in "$EXPECTED_PRODUCTION_DEPLOY" "$EXPECTED_RUNTIME_CANDIDATE" "$DEPLOYMENT_TARGET" "$TOPOLOGY_BASELINE" "$EXPECTED_PROMO_SOURCE_COMMIT"; do
+            [[ "$sha" =~ ^[a-f0-9]{40}$ ]] || { echo "RECOVERY_DEPLOY_HARDBOUND_SHA_INVALID" >&2; exit 1; }
+          done
+          [[ "$EXPECTED_PRODUCTION_DEPLOY" == "$EXPECTED_RUNTIME_CANDIDATE" && "$EXPECTED_RUNTIME_CANDIDATE" == "$DEPLOYMENT_TARGET" ]] || { echo "RECOVERY_DEPLOY_HARDBOUND_TARGET_MISMATCH" >&2; exit 1; }
+          git fetch --no-tags origin "$DEPLOYMENT_TARGET"
+          git fetch --no-tags origin "$TOPOLOGY_BASELINE"
+          git cat-file -e "$DEPLOYMENT_TARGET^{commit}" || { echo "RECOVERY_DEPLOY_TARGET_NOT_IN_REPOSITORY" >&2; exit 1; }
+          git cat-file -e "$TOPOLOGY_BASELINE^{commit}" || { echo "RECOVERY_DEPLOY_BASELINE_NOT_IN_REPOSITORY" >&2; exit 1; }
+          if git cat-file -e "${DEPLOYMENT_TARGET}:.release/maintenance-only" 2>/dev/null; then
+            echo "RECOVERY_DEPLOY_TARGET_IS_MAINTENANCE_ONLY" >&2
+            exit 1
+          fi
+
+      - name: Assert runtime-candidate is exactly the hard-bound target
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin runtime-candidate
+          current_candidate_sha="$(git rev-parse origin/runtime-candidate)"
+          [[ "$current_candidate_sha" == "$EXPECTED_RUNTIME_CANDIDATE" ]] || { echo "RUNTIME_CANDIDATE_UNEXPECTED_SHA=$current_candidate_sha" >&2; exit 1; }
+
+      - name: Assert production-deploy is already exactly the hard-bound target
+        # This workflow never calls scripts/set-production-deploy-ref.sh. The
+        # authority move already happened under a separate, already-verified
+        # authorization; this step only proves it is still true.
+        run: |
+          set -euo pipefail
+          current_production_deploy_sha="$(scripts/read-production-deploy-ref.sh)"
+          [[ "$current_production_deploy_sha" == "$EXPECTED_PRODUCTION_DEPLOY" ]] || { echo "PRODUCTION_DEPLOY_UNEXPECTED_SHA=$current_production_deploy_sha" >&2; exit 1; }
+
+      - name: Assert deployment target topology relative to prior known-good production
+        run: |
+          set -euo pipefail
+          scripts/inspect-runtime-candidate-topology.sh --production-deploy "$TOPOLOGY_BASELINE" --candidate "$DEPLOYMENT_TARGET" > topology.json
+          jq -e '.candidate_is_descendant_of_production_deploy == true' topology.json >/dev/null || { echo "RECOVERY_DEPLOY_TARGET_NOT_DESCENDANT_OF_BASELINE" >&2; exit 1; }
+          jq -e '(.maintenance_commits_in_range | length) == 0' topology.json >/dev/null || { jq -c '.maintenance_commits_in_range' topology.json >&2; echo "RECOVERY_DEPLOY_TARGET_CONTAINS_MAINTENANCE_COMMIT" >&2; exit 1; }
+          jq -e '(.merge_commits_in_range | length) == 0' topology.json >/dev/null || { jq -c '.merge_commits_in_range' topology.json >&2; echo "RECOVERY_DEPLOY_TARGET_NOT_LINEAR" >&2; exit 1; }
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Assert no migration/legal/contract boundary crossing since baseline
+        run: |
+          set -euo pipefail
+          git diff --name-only -z "$TOPOLOGY_BASELINE" "$DEPLOYMENT_TARGET" -- commerce/migrations commerce/legal public/legal release-surface-contract.json > recovery-deploy-boundary-paths.bin
+          pnpm commerce:production-deploy:assert-boundary recovery-deploy-boundary-paths.bin
+
+      - name: Reread runtime-candidate and production-deploy immediately before the Coolify mutation
+        # Closes the TOCTOU window between the earlier ref checks (before
+        # install/boundary steps ran) and the one real mutation in this
+        # workflow, mirroring the equivalent immediate-pre-mutation reread in
+        # the ordinary Stage A workflow. Still hard-bound - no dynamic target.
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin runtime-candidate
+          current_candidate_sha="$(git rev-parse origin/runtime-candidate)"
+          [[ "$current_candidate_sha" == "$DEPLOYMENT_TARGET" ]] || { echo "RUNTIME_CANDIDATE_MOVED_SINCE_PREFLIGHT" >&2; exit 1; }
+          current_production_deploy_sha="$(scripts/read-production-deploy-ref.sh)"
+          [[ "$current_production_deploy_sha" == "$DEPLOYMENT_TARGET" ]] || { echo "PRODUCTION_DEPLOY_MOVED_SINCE_PREFLIGHT" >&2; exit 1; }
+
+      - name: Deploy exact R5 via the existing Coolify webhook primitive
+        # controlled-coolify-deploy.sh fires the Commerce (which owns the
+        # worker in the same Coolify resource/compose stack), frontend, and
+        # admin webhooks together.
+        # There is no staged variant of this script, and none is invented here.
+        run: scripts/controlled-coolify-deploy.sh "$DEPLOYMENT_TARGET"
+
+      - name: Allow Coolify deployments to start
+        run: |
+          set -euo pipefail
+          [[ "$INITIAL_READINESS_DELAY_SECONDS" =~ ^[0-9]+$ ]] || { echo "INITIAL_READINESS_DELAY_CONFIGURATION_INVALID" >&2; exit 1; }
+          echo "Allowing Coolify deployments to start for ${INITIAL_READINESS_DELAY_SECONDS}s..."
+          sleep "$INITIAL_READINESS_DELAY_SECONDS"
+
+      - name: Poll until Commerce/worker/frontend/admin converge on exact R5 while still paused
+        # Bounded fresh polling, not a single fixed-delay check - Coolify's
+        # own settling time is not guaranteed to fit inside the initial
+        # delay. Every proof (generic gate owner/paused/expected, full
+        # runtime readiness in "paused" mode, frontend/admin source, health,
+        # ready) must hold together in the same iteration before this step
+        # can succeed; on success the incident-defining proofs below start
+        # from a runtime that is already known-converged.
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout "$POLL_CONNECT_TIMEOUT" --max-time "$POLL_MAX_TIME" -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          get() { curl --fail-with-body --silent --show-error --connect-timeout "$POLL_CONNECT_TIMEOUT" --max-time "$POLL_MAX_TIME" "$@"; }
+          for attempt in $(seq 1 "$POLL_ATTEMPTS"); do
+            if api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json && \
+              get "$PUBLIC_FRONTEND_URL/release.json" > frontend.json && \
+              get "$ADMIN_RELEASE_URL" > admin.json && \
+              get "$PUBLIC_API_URL/healthz" > health.json && \
+              get "$PUBLIC_API_URL/readyz" > ready.json && \
+              jq -e --arg owner "$EXPECTED_OWNER_RELEASE_ID" --arg source "$DEPLOYMENT_TARGET" --arg migration "$EXPECTED_MIGRATION" '
+                .sales_paused == true and
+                .owner_release_id == $owner and
+                .owner_mode == "CONTROLLED_CUTOVER" and
+                .expected.source_commit == $source and
+                .expected.migration == $migration
+              ' status.json >/dev/null && \
+              jq '{release_id: .owner_release_id, mode: .owner_mode, expected: .expected}' status.json > release.json && \
+              node --import tsx commerce/src/assert-generic-production-deploy-ready.ts status.json release.json paused && \
+              jq -e --arg sha "$DEPLOYMENT_TARGET" '.source_commit == $sha' frontend.json >/dev/null && \
+              jq -e --arg sha "$DEPLOYMENT_TARGET" '.source_commit == $sha' admin.json >/dev/null && \
+              jq -e '.ok == true' health.json >/dev/null && \
+              jq -e '.ok == true' ready.json >/dev/null; then break; fi
+            [[ "$attempt" == "$POLL_ATTEMPTS" ]] && { echo "RECOVERY_DEPLOY_RUNTIME_NOT_READY" >&2; exit 1; }
+            sleep "$POLL_SECONDS"
+          done
+
+      - name: Prove public checkout is paused, not corrupt
+        run: |
+          set -euo pipefail
+          pause_status="$(curl --silent --show-error --connect-timeout 10 --max-time 30 --output paused-checkout.json --write-out '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: recovery-pause-proof-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --data '{}' "$PUBLIC_API_URL/v1/public/checkouts")"
+          [[ "$pause_status" == "503" ]] || { cat paused-checkout.json >&2; echo "RECOVERY_DEPLOY_CHECKOUT_UNEXPECTED_STATUS=$pause_status" >&2; exit 1; }
+          jq -e '.error.code == "SALES_TEMPORARILY_PAUSED"' paused-checkout.json >/dev/null || { cat paused-checkout.json >&2; exit 1; }
+
+      - name: Prove Promo v2 head is unchanged
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json
+          jq -e --arg release_id "$EXPECTED_PROMO_RELEASE_ID" --arg source "$EXPECTED_PROMO_SOURCE_COMMIT" --argjson generation "$EXPECTED_PROMO_GENERATION" --argjson sequence "$EXPECTED_PROMO_PHASE_SEQUENCE" --arg hash "$EXPECTED_PROMO_STATE_HASH" '
+            .head.release_id == $release_id and
+            .head.phase == "COMPLETE" and
+            .head.candidate_generation == $generation and
+            .head.phase_sequence == $sequence and
+            .head.source_commit == $source and
+            .state_hash == $hash
+          ' candidate-head.json >/dev/null || { cat candidate-head.json >&2; echo "RECOVERY_DEPLOY_PROMO_HEAD_CHANGED" >&2; exit 1; }
+
+      - name: Prove provider readiness is read-only healthy
+        # providerReadiness() returns exactly the TochkaProvider.probe()
+        # result, { environment: "production" | "sandbox" | "mock" } - probe()
+        # itself already performed the read-only /retailers and bounded
+        # payment-list GETs before returning, and throws (surfaced by
+        # --fail-with-body as a non-2xx here) on any failure. There is no
+        # probeError/retailers field in the response to check separately.
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/provider-readiness" > provider-readiness.json
+          jq -e '.environment == "production"' provider-readiness.json >/dev/null || { cat provider-readiness.json >&2; echo "RECOVERY_DEPLOY_PROVIDER_READINESS_UNEXPECTED" >&2; exit 1; }
+
+      - name: Final authority snapshot remains exact R5 and paused
+        # A green run must mean the authority state is still exactly what we
+        # proved at the moment this workflow finishes, not only at some
+        # earlier point during the run - the pre-Coolify reread and the
+        # convergence loop both happened before/during the Coolify rollout,
+        # not after every incident-defining proof completed. This is the
+        # last executable step and repeats nothing else: no provider probe,
+        # no checkout call - only fresh reads of the same authority sources
+        # already used above, evaluated together one final time.
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          git fetch --no-tags origin runtime-candidate
+          final_candidate_sha="$(git rev-parse origin/runtime-candidate)"
+          [[ "$final_candidate_sha" == "$DEPLOYMENT_TARGET" ]] || { echo "FINAL_RUNTIME_CANDIDATE_UNEXPECTED_SHA=$final_candidate_sha" >&2; exit 1; }
+          final_production_deploy_sha="$(scripts/read-production-deploy-ref.sh)"
+          [[ "$final_production_deploy_sha" == "$DEPLOYMENT_TARGET" ]] || { echo "FINAL_PRODUCTION_DEPLOY_UNEXPECTED_SHA=$final_production_deploy_sha" >&2; exit 1; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > final-status.json
+          jq -e --arg owner "$EXPECTED_OWNER_RELEASE_ID" --arg source "$DEPLOYMENT_TARGET" --arg migration "$EXPECTED_MIGRATION" '
+            .sales_paused == true and
+            .owner_release_id == $owner and
+            .owner_mode == "CONTROLLED_CUTOVER" and
+            .expected.source_commit == $source and
+            .expected.migration == $migration
+          ' final-status.json >/dev/null || { cat final-status.json >&2; echo "FINAL_GENERIC_GATE_UNEXPECTED_STATE" >&2; exit 1; }
+          api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > final-candidate-head.json
+          jq -e --arg release_id "$EXPECTED_PROMO_RELEASE_ID" --arg source "$EXPECTED_PROMO_SOURCE_COMMIT" --argjson generation "$EXPECTED_PROMO_GENERATION" --argjson sequence "$EXPECTED_PROMO_PHASE_SEQUENCE" --arg hash "$EXPECTED_PROMO_STATE_HASH" '
+            .head.release_id == $release_id and
+            .head.phase == "COMPLETE" and
+            .head.candidate_generation == $generation and
+            .head.phase_sequence == $sequence and
+            .head.source_commit == $source and
+            .state_hash == $hash
+          ' final-candidate-head.json >/dev/null || { cat final-candidate-head.json >&2; echo "FINAL_PROMO_HEAD_CHANGED" >&2; exit 1; }
+
+      # No reopen step exists in this workflow. Production remains paused
+      # under the existing deploy-R4 owner on exact R5 when this run succeeds.
