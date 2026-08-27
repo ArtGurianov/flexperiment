@@ -36,17 +36,35 @@ describe("provider contracts", () => {
     const requests: Request[] = [];
     const provider = new TochkaProvider(tochkaConfig, async (input, init) => {
       const request = new Request(input, init); requests.push(request);
-      return request.url.endsWith("/retailers")
+      return new URL(request.url).pathname.endsWith("/retailers")
         ? Response.json({ Data: { Retailers: [] }, Links: {}, Meta: {} })
         : Response.json({ Data: { Operation: [] }, Links: {}, Meta: {} });
     }, () => Date.parse("2026-08-27T16:45:00.000Z"));
     await expect(provider.probe()).resolves.toEqual({ environment: "production" });
     expect(requests).toHaveLength(2);
-    expect(requests[0]?.url).toBe("https://enter.tochka.com/uapi/acquiring/v1.0/retailers");
+    expect(requests[0]?.url).toContain("/uapi/acquiring/v1.0/retailers?");
+    expect(Object.fromEntries(new URL(requests[0]!.url).searchParams)).toEqual({ customerCode: tochkaConfig.customerCode });
     expect(requests[1]?.url).toContain("/uapi/acquiring/v1.0/payments?");
     expect(Object.fromEntries(new URL(requests[1]!.url).searchParams)).toEqual({ customerCode: tochkaConfig.customerCode, fromDate: "2026-08-27", toDate: "2026-08-27", page: "1", perPage: "1" });
     expect(requests.every((request) => request.method === "GET")).toBe(true);
     expect(requests[0]?.headers.get("authorization")).toBe("Bearer test-jwt-not-a-secret");
+  });
+
+  it("requires production readiness to pass both the retailers and payment-list probes without merchantId or pageSize", async () => {
+    const requests: Request[] = [];
+    const provider = new TochkaProvider(tochkaConfig, async (input, init) => {
+      const request = new Request(input, init); requests.push(request);
+      return new URL(request.url).pathname.endsWith("/retailers")
+        ? Response.json({ Data: { Retailers: [] } })
+        : Response.json({ Data: { Operation: [] } });
+    });
+    await expect(provider.probe()).resolves.toMatchObject({ environment: "production" });
+    const retailersParams = Object.fromEntries(new URL(requests[0]!.url).searchParams);
+    expect(retailersParams).toEqual({ customerCode: tochkaConfig.customerCode });
+    const paymentListParams = Object.fromEntries(new URL(requests[1]!.url).searchParams);
+    expect(paymentListParams).toEqual({ customerCode: tochkaConfig.customerCode, fromDate: expect.any(String), toDate: expect.any(String), page: "1", perPage: "1" });
+    expect(paymentListParams).not.toHaveProperty("merchantId");
+    expect(paymentListParams).not.toHaveProperty("pageSize");
   });
 
   it("paginates the read-only payment list and preserves every matching paymentLinkId", async () => {
@@ -72,7 +90,7 @@ describe("provider contracts", () => {
 
   it("recognizes sandbox provider configuration separately from production", async () => {
     const provider = new TochkaProvider({ ...tochkaConfig, baseUrl: "https://enter.tochka.com/sandbox/v2", clientId: undefined }, async (input) =>
-      String(input).endsWith("/retailers") ? Response.json({ Data: { Retailers: [] } }) : Response.json({ Data: { Operation: [] } }));
+      new URL(String(input)).pathname.endsWith("/retailers") ? Response.json({ Data: { Retailers: [] } }) : Response.json({ Data: { Operation: [] } }));
     await expect(provider.probe()).resolves.toEqual({ environment: "sandbox" });
   });
 

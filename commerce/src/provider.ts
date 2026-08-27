@@ -133,7 +133,8 @@ export class TochkaProvider implements PaymentProvider {
 
   /** Read-only authorization and transport check. It never creates a payment link. */
   async probe(): Promise<ProviderProbe> {
-    await parseJson(await this.call("/acquiring/v1.0/retailers", { method: "GET" }));
+    const retailersQuery = new URLSearchParams({ customerCode: this.config.customerCode });
+    await parseJson(await this.call(`/acquiring/v1.0/retailers?${retailersQuery}`, { method: "GET" }));
     // A valid documented list call verifies the exact calendar-date contract
     // used to reconcile CREATE_UNKNOWN; it is still read-only and bounded.
     const date = new Date(this.clock()).toISOString();
