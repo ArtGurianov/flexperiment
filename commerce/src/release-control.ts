@@ -44,6 +44,22 @@ export const gen2BootstrapAdoption = {
   to_source_commit: "4ae2e047ef9236a22cb8bcd5f4dc9127d282d6ca",
   target_replay_sha256: "27036ae4f14b0188a14e4fc8130443a70627c1effb8ded9b6a9e270d23e94ffc",
 } as const;
+/**
+ * Bound to the exact deployed-but-defective generation 3 candidate. Unlike
+ * gen2BootstrapAdoption this classifies the same generation in place; it
+ * never changes candidate_generation or source_commit, and the already-
+ * deployed runtime can still replay the resulting ledger afterward.
+ */
+export const gen3ReadinessClassification = {
+  release_id: "promo-codes-v0:b01f217ffd2a798fd32aa3d88e125a2e460bd39f",
+  generation: 3,
+  source_commit: "4ae2e047ef9236a22cb8bcd5f4dc9127d282d6ca",
+  from_phase: "PAUSED",
+  phase_sequence: 0,
+  readiness_component: "PROVIDER_READINESS",
+  error_class: "PROVIDER_BAD_REQUEST",
+  error_code: "HTTP_400",
+} as const;
 export type CandidateAcquireRequest = { head: GenerationHead };
 export type CandidateAdoptRequest = { head: GenerationHead; expected_generation: number; from_sha: string; expected_state_hash: string };
 export type CandidatePhaseRequest = { release_id: string; candidate_generation: number; expected_state_hash: string; from_phase: ReleasePhase; phase_sequence: number; to_phase: Exclude<ReleasePhase, "COMPLETE"> };
@@ -431,6 +447,59 @@ export class ReleaseSalesGate {
     });
   }
 
+  /**
+   * Offline-only, self-disabling classifier. It cannot accept a caller-
+   * selected release/generation/source/error: every field but the freshly
+   * read state hash is bound to gen3ReadinessClassification. Unlike
+   * bootstrapGenerationTwoAdoption this does not change candidate_generation
+   * or source_commit, so the already-deployed defective runtime can still
+   * replay the resulting ledger without redeployment.
+   */
+  classifyGenerationThreeReadinessDefect(input: { expected_state_hash: string }, runtimeEvidence: () => ReleaseRuntimeEvidence) {
+    return this.immediate(() => {
+      const gate = row(this.db); if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
+      const current = this.v2Head(gen3ReadinessClassification.release_id);
+      if (current.candidate_generation === gen3ReadinessClassification.generation && current.source_commit === gen3ReadinessClassification.source_commit && current.phase === "RECOVERY_REQUIRED") throw new ReleaseControlError("GEN3_CLASSIFY_ALREADY_APPLIED");
+      if (gate.owner_release_id !== gen3ReadinessClassification.release_id || gate.sales_paused !== 1 || current.release_id !== gen3ReadinessClassification.release_id || current.candidate_generation !== gen3ReadinessClassification.generation || current.source_commit !== gen3ReadinessClassification.source_commit || current.phase !== gen3ReadinessClassification.from_phase || current.phase_sequence !== gen3ReadinessClassification.phase_sequence || current.certification || releaseStateHash(current) !== input.expected_state_hash) throw new ReleaseControlError("GEN3_CLASSIFY_PRECONDITION_FAILED");
+      const expected = this.expectedForHead(current);
+      const evidence = runtimeEvidence();
+      const migrationsMatch = evidence.migration_versions.length === Object.keys(current.migration_inventory.files).length
+        && evidence.migration_versions.every((version) => current.migration_inventory.files[version] !== undefined)
+        && Object.entries(current.migration_inventory.files).every(([version, hash]) => evidence.migration_source_hashes?.[version] === hash);
+      const expectedMigrationApplied = evidence.required_migrations[expected.migration] === true || evidence.migration_versions.includes(expected.migration);
+      if (evidence.source_commit !== current.source_commit || evidence.worker_source_commit !== current.source_commit || !expectedMigrationApplied || !migrationsMatch) throw new ReleaseControlError("GEN3_CLASSIFY_CANDIDATE_NOT_DEPLOYED");
+      const head = { ...current, phase: "RECOVERY_REQUIRED" as const, phase_sequence: current.phase_sequence + 1 };
+      const runtime_readiness_defect = {
+        reason: "RUNTIME_READINESS_DEFECT" as const,
+        readiness_component: gen3ReadinessClassification.readiness_component,
+        error_class: gen3ReadinessClassification.error_class,
+        error_code: gen3ReadinessClassification.error_code,
+        source_commit: current.source_commit,
+      };
+      const events = this.db.prepare("SELECT rowid AS seq, release_id, action, details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid ASC").all(current.release_id) as V2Event[];
+      const proposed = { seq: (events.at(-1)?.seq ?? 0) + 1, release_id: current.release_id, action: "PAUSED" as const, details_json: JSON.stringify({ schema_version: 2, kind: "RUNTIME_READINESS_DEFECT", from_phase: current.phase, from_phase_sequence: current.phase_sequence, head, runtime_readiness_defect }) };
+      const replay = replayReleaseGenerationChain([...events, proposed]);
+      if (replay.corrupt || releaseStateHash(replay.head ?? head) !== releaseStateHash(head)) throw new ReleaseControlError("GEN3_CLASSIFY_REPLAY_FAILED");
+      if (reconcileHeadWithProjection(head, {
+        owner_release_id: current.release_id, sales_paused: true,
+        expected_source_commit: expected.source_commit, expected_migration: expected.migration,
+        expected_legal_version: expected.legal_version, expected_legal_manifest_sha256: expected.legal_manifest_sha256,
+      })) throw new ReleaseControlError("GEN3_CLASSIFY_PROJECTION_FAILED");
+      event(this.db, current.release_id, "PAUSED", JSON.parse(proposed.details_json));
+      const persistedHead = this.v2Head(current.release_id);
+      const persistedGate = row(this.db);
+      if (!persistedGate || releaseStateHash(persistedHead) !== releaseStateHash(head) || reconcileHeadWithProjection(persistedHead, {
+        owner_release_id: persistedGate.owner_release_id,
+        sales_paused: persistedGate.sales_paused === 1,
+        expected_source_commit: persistedGate.expected_source_commit,
+        expected_migration: persistedGate.expected_migration,
+        expected_legal_version: persistedGate.expected_legal_version,
+        expected_legal_manifest_sha256: persistedGate.expected_legal_manifest_sha256,
+      })) throw new ReleaseControlError("GEN3_CLASSIFY_FINAL_VALIDATION_FAILED");
+      return { ...status(persistedGate), head: persistedHead, state_hash: releaseStateHash(persistedHead) };
+    });
+  }
+
   changeCandidatePhase(input: CandidatePhaseRequest) {
     const transaction = () => this.immediate(() => {
       const gate = row(this.db); if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
@@ -465,7 +534,8 @@ export class ReleaseSalesGate {
       const migrationsMatch = evidence.migration_versions.length === Object.keys(current.migration_inventory.files).length
         && evidence.migration_versions.every((version) => current.migration_inventory.files[version] !== undefined)
         && Object.entries(current.migration_inventory.files).every(([version, hash]) => evidence.migration_source_hashes?.[version] === hash);
-      if (evidence.source_commit !== current.source_commit || evidence.worker_source_commit !== current.source_commit || !evidence.required_migrations[expected.migration] || !migrationsMatch) throw new ReleaseControlError("RUNTIME_READINESS_CANDIDATE_NOT_DEPLOYED");
+      const expectedMigrationApplied = evidence.required_migrations[expected.migration] === true || evidence.migration_versions.includes(expected.migration);
+      if (evidence.source_commit !== current.source_commit || evidence.worker_source_commit !== current.source_commit || !expectedMigrationApplied || !migrationsMatch) throw new ReleaseControlError("RUNTIME_READINESS_CANDIDATE_NOT_DEPLOYED");
       const head = { ...current, phase: "RECOVERY_REQUIRED" as const, phase_sequence: current.phase_sequence + 1 };
       const runtime_readiness_defect = { reason: "RUNTIME_READINESS_DEFECT" as const, readiness_component: input.readiness_component, error_class: input.error_class, error_code: input.error_code, source_commit: current.source_commit };
       const details = { schema_version: 2, kind: "RUNTIME_READINESS_DEFECT" as const, from_phase: current.phase, from_phase_sequence: current.phase_sequence, head, runtime_readiness_defect };

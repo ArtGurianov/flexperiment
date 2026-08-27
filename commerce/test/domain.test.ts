@@ -331,6 +331,39 @@ describe("commerce domain", () => {
     expect(JSON.parse(event.details_json)).toMatchObject({ kind: "RUNTIME_READINESS_DEFECT", runtime_readiness_defect: { reason: "RUNTIME_READINESS_DEFECT", readiness_component: "PROVIDER_READINESS", error_class: "PROVIDER_BAD_REQUEST", error_code: "HTTP_400", source_commit: acquired.head.source_commit } });
   });
 
+  it("recognizes an applied 0036+ candidate migration via migration_versions even though required_migrations only tracks 0031-0034", () => {
+    const setup = fixture(); databases.push(setup.db);
+    const migrationFiles = { "0031_participant_age_band.sql": "1".repeat(64), "0032_release_sales_gate.sql": "2".repeat(64), "0033_runtime_release_evidence.sql": "3".repeat(64), "0034_worker_sweep_evidence.sql": "4".repeat(64), "0035_promo_codes_v0.sql": "5".repeat(64), "0036_tochka_provider_error_evidence.sql": "6".repeat(64) };
+    const candidate = { ...promoCandidateHead(), migration_inventory: { files: migrationFiles } };
+    const acquired = setup.domain.acquirePromoCandidate({ head: candidate });
+    const gate = new ReleaseSalesGate(setup.db);
+    const realisticRuntime = (overrides: Partial<ReleaseRuntimeEvidence> = {}): ReleaseRuntimeEvidence => ({
+      source_commit: acquired.head.source_commit,
+      required_migrations: { "0031_participant_age_band.sql": true, "0032_release_sales_gate.sql": true, "0033_runtime_release_evidence.sql": true, "0034_worker_sweep_evidence.sql": true },
+      migration_versions: Object.keys(migrationFiles),
+      migration_source_hashes: migrationFiles,
+      legal_version: "2026-08-25.1",
+      legal_manifest_sha256: "c".repeat(64),
+      legal_hashes: candidate.legal_baseline.legal_hashes,
+      legal_publish_time: new Date().toISOString(),
+      current_legal_copies_match: true,
+      worker_source_commit: acquired.head.source_commit,
+      worker_started_at: new Date().toISOString(),
+      worker_observed_at: new Date().toISOString(),
+      worker_last_successful_sweep_at: new Date().toISOString(),
+      source_legal_manifest_sha256: "c".repeat(64),
+      source_legal_publish_time: new Date().toISOString(),
+      ...overrides,
+    });
+    const request = { release_id: acquired.head.release_id, candidate_generation: 1, expected_state_hash: releaseStateHash(acquired.head), readiness_component: "PROVIDER_READINESS" as const, error_class: "PROVIDER_BAD_REQUEST" as const, error_code: "HTTP_400" };
+    expect(() => gate.markRuntimeReadinessDefect(request, () => realisticRuntime({ migration_versions: Object.keys(migrationFiles).filter((version) => version !== "0036_tochka_provider_error_evidence.sql") }))).toThrow("RUNTIME_READINESS_CANDIDATE_NOT_DEPLOYED");
+    expect(() => gate.markRuntimeReadinessDefect(request, () => realisticRuntime({ migration_source_hashes: { ...migrationFiles, "0036_tochka_provider_error_evidence.sql": "f".repeat(64) } }))).toThrow("RUNTIME_READINESS_CANDIDATE_NOT_DEPLOYED");
+    expect(() => gate.markRuntimeReadinessDefect(request, () => realisticRuntime({ source_commit: "b".repeat(40) }))).toThrow("RUNTIME_READINESS_CANDIDATE_NOT_DEPLOYED");
+    expect(() => gate.markRuntimeReadinessDefect(request, () => realisticRuntime({ worker_source_commit: "b".repeat(40) }))).toThrow("RUNTIME_READINESS_CANDIDATE_NOT_DEPLOYED");
+    const recovered = gate.markRuntimeReadinessDefect(request, realisticRuntime);
+    expect(recovered.head).toMatchObject({ phase: "RECOVERY_REQUIRED", phase_sequence: 1 });
+  });
+
   it("rejects non-fixture leases and permits a same-generation retry only after a terminal operational failure", () => {
     const setup = fixture(); databases.push(setup.db);
     const promo = setup.domain.createPromo({ code: "NOTCERT", status: "ACTIVE", discount_type: "FIXED", discount_value: 1 });

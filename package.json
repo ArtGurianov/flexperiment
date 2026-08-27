@@ -29,6 +29,7 @@
     "commerce:full-refund:repair": "tsx commerce/src/repair-full-refund-fulfillment.ts",
     "commerce:create-unknown:repair": "tsx commerce/src/repair-create-unknown-payment.ts",
     "commerce:promo:gen2-bootstrap-adopt": "tsx commerce/src/gen2-bootstrap-adopt.ts",
+    "commerce:promo:gen3-classify-readiness-defect": "tsx commerce/src/gen3-classify-readiness-defect.ts",
     "commerce:email:unack": "tsx commerce/src/clear-email-operational-acknowledgement.ts",
     "commerce:test:image": "bash commerce/test/docker-image-smoke.sh",
     "admin:build": "pnpm --filter @flexperiment/admin build",
