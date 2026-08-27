@@ -3,7 +3,8 @@ import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
-import { r3ToR4MigrationAllowlistBootstrap, ReleaseSalesGate } from "../src/release-control";
+import { reconcileGenericProductionDeploy } from "../src/generic-production-deploy";
+import { diagnosticCutoverMigrations, r3ToR4MigrationAllowlistBootstrap, ReleaseSalesGate, type ReleaseCompletion, type ReleaseControlRequest, type ReleaseRuntimeEvidence } from "../src/release-control";
 import { releaseStateHash, replayReleaseGenerationChain, type GenerationHead, type V2Event } from "../src/release-generation";
 
 const bootstrap = r3ToR4MigrationAllowlistBootstrap;
@@ -103,6 +104,51 @@ describe("R3->R4 migration-allowlist bootstrap", () => {
     // The promo-codes-v0 v2 chain itself is untouched: same exact replayed head.
     const promoEvents = db.prepare("SELECT COUNT(*) AS count FROM release_sales_gate_events WHERE release_id = ?").get(bootstrap.release_id) as { count: number };
     expect(promoEvents.count).toBeGreaterThan(0);
+  });
+
+  it("hands off to the ordinary generic-deploy reconciliation, which resumes this exact R4 owner toward DEPLOY", () => {
+    // Not just that M4's own effect is correct in isolation, but that the
+    // generic-deploy workflow's own decision function - fed the resulting
+    // durable state - recognizes deploy-R4 as its already-paused owner and
+    // proceeds toward deploying it, rather than treating it as a foreign
+    // owner, an unrelated fresh acquire, or an already-complete release.
+    const { gate, head } = completedGenerationFive();
+    const result = gate.bootstrapR3ToR4MigrationAllowlistTransition({ expected_state_hash: releaseStateHash(head) });
+
+    const request: ReleaseControlRequest = {
+      release_id: bootstrap.deploy_release_id,
+      mode: "CONTROLLED_CUTOVER",
+      expected: {
+        source_commit: bootstrap.to_source_commit,
+        migration: bootstrap.expected_migration,
+        legal_version: "test-1",
+        legal_manifest_sha256: "a".repeat(64),
+        legal_hashes: { PUBLIC_OFFER: "1".repeat(64), PRIVACY_POLICY: "2".repeat(64), PD_CONSENT: "3".repeat(64), CHECKOUT_DISCLOSURE: "4".repeat(64) },
+      },
+    };
+    const completion: ReleaseCompletion = { complete: false, expected: null, reopened_at: null };
+    // R4 has not actually been deployed to any container yet - the running
+    // source is still R3 - so reconciliation must choose DEPLOY, not
+    // VERIFY_AND_REOPEN.
+    const runtime: ReleaseRuntimeEvidence = {
+      source_commit: bootstrap.from_source_commit,
+      required_migrations: { "0031_participant_age_band.sql": true, "0032_release_sales_gate.sql": true, "0033_runtime_release_evidence.sql": true, "0034_worker_sweep_evidence.sql": true },
+      migration_versions: [...diagnosticCutoverMigrations, "0035_promo_codes_v0.sql", "0036_tochka_provider_error_evidence.sql"],
+      legal_version: request.expected.legal_version,
+      legal_manifest_sha256: request.expected.legal_manifest_sha256,
+      legal_hashes: request.expected.legal_hashes,
+      legal_publish_time: new Date().toISOString(),
+      current_legal_copies_match: true,
+      worker_source_commit: bootstrap.from_source_commit,
+      worker_started_at: new Date().toISOString(),
+      worker_observed_at: new Date().toISOString(),
+      worker_last_successful_sweep_at: new Date().toISOString(),
+      source_legal_manifest_sha256: request.expected.legal_manifest_sha256,
+      source_legal_publish_time: new Date().toISOString(),
+    };
+
+    const reconciliation = reconcileGenericProductionDeploy({ request, status: result, runtime, completion });
+    expect(reconciliation).toEqual({ action: "DEPLOY" });
   });
 
   it("fails closed on a second invocation without changing state", () => {
