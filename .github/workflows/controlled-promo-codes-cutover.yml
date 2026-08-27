@@ -151,9 +151,13 @@ jobs:
           jq -e --argjson production "$production_inventory" --argjson candidate "$(cat "$PROMO_MIGRATION_INVENTORY")" '
             ($production | keys | sort) as $applied |
             ($candidate | keys | sort) as $candidate_names |
-            ($candidate_names[0:($applied | length)] == $applied) and
-            ([ $applied[] | select($candidate[.] != $production[.]) ] | length == 0)
+            $candidate_names[0:($applied | length)] == $applied
           ' >/dev/null || { echo "PROMO_CUTOVER_APPLIED_MIGRATION_PREFIX_INVALID" >&2; exit 1; }
+          git diff --no-ext-diff --name-status "$production_source" "$EFFECTIVE_TARGET_SHA" -- commerce/migrations |
+            awk 'NF > 0 && $1 != "A" { exit 1 }' || {
+              echo "PROMO_CUTOVER_APPLIED_MIGRATION_PREFIX_INVALID" >&2
+              exit 1
+            }
           jq -e --argjson inventory "$(cat "$PROMO_MIGRATION_INVENTORY")" '
             .runtime as $runtime |
             if ($runtime.legal_version | type == "string") and ($runtime.legal_manifest_sha256 | type == "string") and ($runtime.legal_hashes | type == "object") and ($runtime.current_legal_copies_match == true)

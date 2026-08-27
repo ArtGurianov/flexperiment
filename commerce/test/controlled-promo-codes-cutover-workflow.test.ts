@@ -31,7 +31,8 @@ describe("controlled promo codes v0 cutover workflow", () => {
     expect(workflow).toContain("PROMO_CUTOVER_PRODUCTION_MIGRATION_SOURCE_MISMATCH");
     expect(workflow).toContain("PROMO_CUTOVER_APPLIED_MIGRATION_PREFIX_INVALID");
     expect(workflow).toContain("$candidate_names[0:($applied | length)] == $applied");
-    expect(workflow).toContain("[ $applied[] | select($candidate[.] != $production[.]) ] | length == 0");
+    expect(workflow).toContain('git diff --no-ext-diff --name-status "$production_source" "$EFFECTIVE_TARGET_SHA" -- commerce/migrations');
+    expect(workflow).toContain('awk \'NF > 0 && $1 != "A" { exit 1 }\'');
   });
 
   it("uses legacy acquire/status only before the feature is deployed, then reads server-issued heads and CAS hashes", () => {
