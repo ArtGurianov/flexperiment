@@ -13,6 +13,15 @@ credential and uses the returned `state_hash` verbatim for every next CAS
 transition. Do not derive a hash from workflow inputs or reconstruct a lease
 binding.
 
+The deploy source (including a `replacement_sha`) must descend from the
+authority-head API hardening commit `91c78c9545820698cb2433f426b75bd5e1ca262c`.
+Before generation one is acquired, the workflow proves every already applied
+production migration is an identical sorted prefix of the candidate inventory.
+Before `DEPLOYED_READ_ONLY` can issue a lease, it verifies exact Commerce,
+worker, frontend and admin source evidence; fresh worker heartbeat/sweep;
+complete migration hashes; immutable legal baseline/copies; and health/ready
+responses.
+
 Run `prepare` first without certification inputs. It acquires generation one,
 proves public checkout is paused, deploys the exact source, and reaches
 `DEPLOYED_READ_ONLY`. Create the hidden/closed 101-kopeck occurrence and active

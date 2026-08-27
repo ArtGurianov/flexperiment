@@ -92,6 +92,11 @@ jobs:
             git fetch --no-tags origin "$effective_sha"
             git cat-file -e "$effective_sha^{commit}" || { echo "PROMO_CUTOVER_REPLACEMENT_UNAVAILABLE" >&2; exit 1; }
           fi
+          AUTHORITY_HEAD_MIN_SHA=91c78c9545820698cb2433f426b75bd5e1ca262c
+          git merge-base --is-ancestor "$AUTHORITY_HEAD_MIN_SHA" "$effective_sha" || {
+            echo "PROMO_CUTOVER_AUTHORITY_HEAD_RUNTIME_REQUIRED" >&2
+            exit 1
+          }
           present=0
           for value in "$INPUT_CERTIFICATION_OCCURRENCE_ID" "$INPUT_CERTIFICATION_PROMO_ID" "$INPUT_CERTIFICATION_IDEMPOTENCY_KEY_HASH" "$INPUT_CERTIFICATION_LEASE_SECONDS"; do [[ -n "$value" ]] && present=$((present + 1)); done
           [[ "$present" == 0 || "$present" == 4 ]] || { echo "PROMO_CUTOVER_CERTIFICATION_INPUTS_PARTIAL" >&2; exit 1; }
@@ -143,6 +148,12 @@ jobs:
             production_inventory="$(jq -cn --argjson inventory "$production_inventory" --arg migration "$migration" --arg hash "$hash" '$inventory + {($migration): $hash}')"
           done < <(git ls-tree -r --name-only "$production_source" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)
           jq -e --argjson inventory "$production_inventory" '.runtime.migration_source_hashes == $inventory' durable-before.json >/dev/null || { echo "PROMO_CUTOVER_PRODUCTION_MIGRATION_SOURCE_MISMATCH" >&2; exit 1; }
+          jq -e --argjson production "$production_inventory" --argjson candidate "$(cat "$PROMO_MIGRATION_INVENTORY")" '
+            ($production | keys | sort) as $applied |
+            ($candidate | keys | sort) as $candidate_names |
+            ($candidate_names[0:($applied | length)] == $applied) and
+            all($applied[]; $candidate[.] == $production[.])
+          ' >/dev/null || { echo "PROMO_CUTOVER_APPLIED_MIGRATION_PREFIX_INVALID" >&2; exit 1; }
           jq -e --argjson inventory "$(cat "$PROMO_MIGRATION_INVENTORY")" '
             .runtime as $runtime |
             if ($runtime.legal_version | type == "string") and ($runtime.legal_manifest_sha256 | type == "string") and ($runtime.legal_hashes | type == "object") and ($runtime.current_legal_copies_match == true)
@@ -207,11 +218,39 @@ jobs:
           set -euo pipefail
           api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
           for attempt in $(seq 1 "$POLL_ATTEMPTS"); do
-            if api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json && api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json && jq -e --arg source "$EFFECTIVE_TARGET_SHA" --arg release_id "$RELEASE_ID" --argjson inventory "$(cat "$PROMO_MIGRATION_INVENTORY")" '
-              .schema_version == 2 and .head.release_id == $release_id and .head.source_commit == $source and (.state_hash | test("^[a-f0-9]{64}$"))
-            ' candidate-head.json >/dev/null && jq -e --arg source "$EFFECTIVE_TARGET_SHA" --argjson inventory "$(cat "$PROMO_MIGRATION_INVENTORY")" '
-              .sales_paused == true and .owner_release_id == env.RELEASE_ID and .runtime.source_commit == $source and .runtime.worker_source_commit == $source and .runtime.current_legal_copies_match == true and (.runtime.migration_source_hashes == $inventory)
-            ' status.json >/dev/null; then break; fi
+            if api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json && \
+              api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json && \
+              curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_FRONTEND_URL/release.json" > frontend.json && \
+              curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$ADMIN_RELEASE_URL" > admin.json && \
+              curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/healthz" > health.json && \
+              curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/readyz" > ready.json && \
+              jq -e --arg source "$EFFECTIVE_TARGET_SHA" --arg release_id "$RELEASE_ID" '
+                .schema_version == 2 and .head.release_id == $release_id and .head.source_commit == $source and (.state_hash | test("^[a-f0-9]{64}$"))
+              ' candidate-head.json >/dev/null && \
+              jq -e --slurpfile candidate candidate-head.json --arg source "$EFFECTIVE_TARGET_SHA" --argjson inventory "$(cat "$PROMO_MIGRATION_INVENTORY")" '
+                .runtime as $runtime | $candidate[0].head as $head |
+                .sales_paused == true and .owner_release_id == env.RELEASE_ID and
+                $runtime.source_commit == $source and $runtime.worker_source_commit == $source and
+                ($runtime.migration_source_hashes == $inventory) and
+                ($runtime.migration_versions | sort == ($head.migration_inventory.files | keys | sort)) and
+                $runtime.legal_version == $head.legal_baseline.legal_version and
+                $runtime.legal_manifest_sha256 == $head.legal_baseline.legal_manifest_sha256 and
+                $runtime.legal_hashes == $head.legal_baseline.legal_hashes and
+                $runtime.current_legal_copies_match == true
+              ' status.json >/dev/null && \
+              node -e '
+                const fs = require("node:fs");
+                const runtime = JSON.parse(fs.readFileSync("status.json", "utf8")).runtime;
+                const now = Date.now(); const freshness = 90_000;
+                const observed = Date.parse(runtime.worker_observed_at ?? "");
+                const sweep = Date.parse(runtime.worker_last_successful_sweep_at ?? "");
+                const started = Date.parse(runtime.worker_started_at ?? "");
+                if (![observed, sweep, started].every(Number.isFinite) || observed < now - freshness || observed > now + 5_000 || sweep < now - freshness || sweep > now + 5_000 || sweep < started) process.exit(1);
+              ' && \
+              jq -e --arg source "$EFFECTIVE_TARGET_SHA" --slurpfile candidate candidate-head.json '.source_commit == $source and .checkout_contract_version == $candidate[0].head.checkout_contract_version' frontend.json >/dev/null && \
+              jq -e --arg source "$EFFECTIVE_TARGET_SHA" --slurpfile candidate candidate-head.json '.source_commit == $source and .admin_contract_version == $candidate[0].head.admin_contract_version' admin.json >/dev/null && \
+              jq -e '.ok == true' health.json >/dev/null && \
+              jq -e '.ok == true' ready.json >/dev/null; then break; fi
             [[ "$attempt" == "$POLL_ATTEMPTS" ]] && { echo "PROMO_CUTOVER_RUNTIME_NOT_READY" >&2; exit 1; }
             sleep "$POLL_SECONDS"
           done

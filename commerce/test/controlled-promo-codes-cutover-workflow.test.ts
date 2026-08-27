@@ -15,6 +15,8 @@ describe("controlled promo codes v0 cutover workflow", () => {
     expect(workflow).toContain("INPUT_TARGET_SHA: ${{ inputs.target_sha }}");
     expect(workflow).toContain("git merge-base --is-ancestor \"$target_sha\" \"$CONTROLLER_SHA\"");
     expect(workflow).toContain("RELEASE_ID=promo-codes-v0:$target_sha");
+    expect(workflow).toContain("AUTHORITY_HEAD_MIN_SHA=91c78c9545820698cb2433f426b75bd5e1ca262c");
+    expect(workflow).toContain("PROMO_CUTOVER_AUTHORITY_HEAD_RUNTIME_REQUIRED");
   });
 
   it("rejects partial certification authority inputs and binds the source to the promo v0 surface and bytes", () => {
@@ -27,13 +29,21 @@ describe("controlled promo codes v0 cutover workflow", () => {
     expect(workflow).toContain('has("0035_promo_codes_v0.sql")');
     expect(workflow).toContain("PROMO_MIGRATION_INVENTORY");
     expect(workflow).toContain("PROMO_CUTOVER_PRODUCTION_MIGRATION_SOURCE_MISMATCH");
+    expect(workflow).toContain("PROMO_CUTOVER_APPLIED_MIGRATION_PREFIX_INVALID");
+    expect(workflow).toContain("$candidate_names[0:($applied | length)] == $applied");
   });
 
   it("uses legacy acquire/status only before the feature is deployed, then reads server-issued heads and CAS hashes", () => {
     const acquire = workflow.indexOf("Acquire generation one or read its authoritative state");
     const deploy = workflow.indexOf("Deploy the exact paused generation");
     const reconcile = workflow.indexOf("Reconcile deployed candidate and enter read-only phase");
+    const authorityHeadGate = workflow.indexOf("PROMO_CUTOVER_AUTHORITY_HEAD_RUNTIME_REQUIRED");
+    const prefixGate = workflow.indexOf("PROMO_CUTOVER_APPLIED_MIGRATION_PREFIX_INVALID");
     expect(acquire).toBeGreaterThan(-1);
+    expect(authorityHeadGate).toBeGreaterThan(-1);
+    expect(prefixGate).toBeGreaterThan(-1);
+    expect(authorityHeadGate).toBeLessThan(acquire);
+    expect(prefixGate).toBeLessThan(acquire);
     expect(deploy).toBeGreaterThan(acquire);
     expect(reconcile).toBeGreaterThan(deploy);
     expect(workflow).toContain('"$PUBLIC_API_URL/v1/internal/release-control/candidates/acquire"');
@@ -41,6 +51,13 @@ describe("controlled promo codes v0 cutover workflow", () => {
     expect(workflow).toContain("PROMO_CUTOVER_HEAD_READ_UNAVAILABLE");
     expect(workflow).toContain("expected_state_hash: $current[0].state_hash");
     expect(workflow).not.toContain("releaseStateHash(");
+    expect(workflow).toContain("worker_last_successful_sweep_at");
+    expect(workflow).toContain("$runtime.legal_hashes == $head.legal_baseline.legal_hashes");
+    expect(workflow).toContain('"$PUBLIC_FRONTEND_URL/release.json"');
+    expect(workflow).toContain('"$ADMIN_RELEASE_URL"');
+    expect(workflow).toContain('"$PUBLIC_API_URL/healthz"');
+    expect(workflow).toContain('"$PUBLIC_API_URL/readyz"');
+    expect(workflow.indexOf('"$PUBLIC_API_URL/healthz"')).toBeLessThan(workflow.indexOf('to_phase: "DEPLOYED_READ_ONLY"'));
   });
 
   it("enforces the paused deploy, two-pass certification, retry, recovery, and certified-only completion sequence", () => {
