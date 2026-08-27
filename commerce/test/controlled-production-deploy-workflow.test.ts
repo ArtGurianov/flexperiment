@@ -33,6 +33,24 @@ describe("generic controlled production deploy workflow", () => {
     expect(workflow).not.toContain('scripts/set-production-deploy-ref.sh "$CONTROLLER_SHA"');
   });
 
+  it("refuses to run as a controller unless dispatched from exact, current main", () => {
+    const checkout = workflow.indexOf("uses: actions/checkout@v4");
+    const controllerGuard = workflow.indexOf("Assert this controller is exact, current main");
+    const readPointer = workflow.indexOf("Read current production-deploy pointer");
+    expect(controllerGuard).toBeGreaterThan(checkout);
+    expect(controllerGuard).toBeLessThan(readPointer);
+    // Dispatched from a non-main ref: rejected before any candidate
+    // inspection or production API call.
+    expect(workflow).toContain('[[ "$GITHUB_REF" == "refs/heads/main" ]]');
+    expect(workflow).toContain("DEPLOY_CONTROLLER_NOT_MAIN");
+    // Dispatched from main, but main has since advanced past this run's
+    // pinned commit: rejected too - the controller itself must stay fresh,
+    // mirroring the runtime-candidate freshness rule in the other direction.
+    expect(workflow).toContain("git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main");
+    expect(workflow).toContain('[[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]]');
+    expect(workflow).toContain("DEPLOY_CONTROLLER_MAIN_MOVED");
+  });
+
   it("resolves an ordinary deploy's candidate from the runtime-candidate ref, with an optional defensive check", () => {
     expect(workflow).toContain('if [[ -n "$INPUT_TARGET_SHA" ]]; then');
     expect(workflow).toContain("recovery_mode=1");

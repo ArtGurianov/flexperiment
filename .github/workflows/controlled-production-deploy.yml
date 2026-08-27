@@ -51,6 +51,17 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
 
+      - name: Assert this controller is exact, current main
+        # main is trusted deployment-controller code; runtime-candidate is an
+        # untrusted/read-only candidate object. A workflow_dispatch can be
+        # run from any ref, so this must be proven explicitly - unlike the
+        # old push-to-main trigger, dispatch does not itself guarantee it.
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "DEPLOY_CONTROLLER_NOT_MAIN" >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo "DEPLOY_CONTROLLER_MAIN_MOVED" >&2; exit 1; }
+
       - name: Read current production-deploy pointer
         run: |
           set -euo pipefail
