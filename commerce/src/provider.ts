@@ -116,14 +116,13 @@ export class TochkaProvider implements PaymentProvider {
     return date.toISOString().slice(0, 10);
   }
 
-  private async paymentOperationPage(input: { fromDate: string; toDate: string; page: number; pageSize: number }) {
+  private async paymentOperationPage(input: { fromDate: string; toDate: string; page: number; perPage: number }) {
     const query = new URLSearchParams({
       customerCode: this.config.customerCode,
-      merchantId: this.config.merchantId,
       fromDate: this.calendarDate(input.fromDate),
       toDate: this.calendarDate(input.toDate),
       page: String(input.page),
-      pageSize: String(input.pageSize),
+      perPage: String(input.perPage),
     });
     const payload = await parseJson(await this.call(`/acquiring/v1.0/payments?${query}`, { method: "GET" }));
     const result = data(payload);
@@ -138,7 +137,7 @@ export class TochkaProvider implements PaymentProvider {
     // A valid documented list call verifies the exact calendar-date contract
     // used to reconcile CREATE_UNKNOWN; it is still read-only and bounded.
     const date = new Date(this.clock()).toISOString();
-    await this.paymentOperationPage({ fromDate: date, toDate: date, page: 1, pageSize: 1 });
+    await this.paymentOperationPage({ fromDate: date, toDate: date, page: 1, perPage: 1 });
     return { environment: this.config.baseUrl.endsWith("/sandbox/v2") ? "sandbox" : "production" };
   }
 
@@ -166,10 +165,10 @@ export class TochkaProvider implements PaymentProvider {
    */
   async findPaymentOperationsByLinkId(input: { paymentLinkId: string; fromDate: string; toDate: string }) {
     const matches: PaymentLinkOperation[] = [];
-    const pageSize = 100;
+    const perPage = 100;
     const maxPages = 20;
     for (let page = 1; page <= maxPages; page += 1) {
-      const { payload, operations } = await this.paymentOperationPage({ fromDate: input.fromDate, toDate: input.toDate, page, pageSize });
+      const { payload, operations } = await this.paymentOperationPage({ fromDate: input.fromDate, toDate: input.toDate, page, perPage });
       for (const value of operations) {
         if (!value || typeof value !== "object") continue;
         const operation = value as Record<string, unknown>;
@@ -187,7 +186,7 @@ export class TochkaProvider implements PaymentProvider {
       const pagination = meta.pagination && typeof meta.pagination === "object" ? meta.pagination as Record<string, unknown> : meta;
       const totalPages = Number(pagination.totalPages ?? pagination.pageCount ?? pagination.pages);
       const hasMore = (Number.isFinite(totalPages) && totalPages > page)
-        || (!Number.isFinite(totalPages) && operations.length === pageSize);
+        || (!Number.isFinite(totalPages) && operations.length === perPage);
       if (hasMore && page === maxPages) throw new TochkaProviderError({ provider_error_class: "PROVIDER_RESPONSE_INVALID", provider_error_code: "PAYMENT_LIST_PAGE_LIMIT" }, "Tochka payment operation list exceeds the bounded recovery page limit.");
       if (hasMore) continue;
       break;

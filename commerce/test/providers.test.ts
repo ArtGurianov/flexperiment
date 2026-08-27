@@ -44,7 +44,7 @@ describe("provider contracts", () => {
     expect(requests).toHaveLength(2);
     expect(requests[0]?.url).toBe("https://enter.tochka.com/uapi/acquiring/v1.0/retailers");
     expect(requests[1]?.url).toContain("/uapi/acquiring/v1.0/payments?");
-    expect(Object.fromEntries(new URL(requests[1]!.url).searchParams)).toMatchObject({ fromDate: "2026-08-27", toDate: "2026-08-27", page: "1", pageSize: "1" });
+    expect(Object.fromEntries(new URL(requests[1]!.url).searchParams)).toEqual({ customerCode: tochkaConfig.customerCode, fromDate: "2026-08-27", toDate: "2026-08-27", page: "1", perPage: "1" });
     expect(requests.every((request) => request.method === "GET")).toBe(true);
     expect(requests[0]?.headers.get("authorization")).toBe("Bearer test-jwt-not-a-secret");
   });
@@ -66,7 +66,7 @@ describe("provider contracts", () => {
     expect(requests).toHaveLength(2);
     const first = new URL(requests[0].url);
     expect(first.pathname).toBe("/uapi/acquiring/v1.0/payments");
-    expect(Object.fromEntries(first.searchParams)).toEqual({ customerCode: tochkaConfig.customerCode, merchantId: tochkaConfig.merchantId, fromDate: "2026-08-23", toDate: "2026-08-23", page: "1", pageSize: "100" });
+    expect(Object.fromEntries(first.searchParams)).toEqual({ customerCode: tochkaConfig.customerCode, fromDate: "2026-08-23", toDate: "2026-08-23", page: "1", perPage: "100" });
     expect(requests.every((request) => request.method === "GET")).toBe(true);
   });
 

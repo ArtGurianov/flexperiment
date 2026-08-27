@@ -7,11 +7,11 @@ export type CertificationLeaseStatus = "ACTIVE" | "CONSUMED" | "EXPIRED" | "REVO
 export type CertificationBinding = { lease_id: string; occurrence_id: string; promo_id: string; expected_idempotency_key_hash: string; lease_expires_at: string; status: CertificationLeaseStatus };
 export type GenerationHead = { release_id: string; candidate_generation: number; source_commit: string; migration_inventory: MigrationInventory; legal_baseline: unknown; release_family: string; checkout_contract_version: string; admin_contract_version: string; phase: ReleasePhase; phase_sequence: number; certification?: CertificationBinding };
 export type V2Event = { seq: number; release_id: string; action: "ACQUIRED" | "PAUSED" | "REOPENED"; details_json: string };
-type Envelope = { schema_version: 2; kind: "CANDIDATE_ACQUIRED" | "CANDIDATE_SUPERSEDED" | "PHASE_CHANGED"; [key: string]: unknown };
+type Envelope = { schema_version: 2; kind: "CANDIDATE_ACQUIRED" | "CANDIDATE_SUPERSEDED" | "PHASE_CHANGED" | "RUNTIME_READINESS_DEFECT"; [key: string]: unknown };
 
 const phases = new Set<string>(releasePhases);
 const permittedPhaseChanges: Readonly<Record<Exclude<ReleasePhase, "COMPLETE">, readonly ReleasePhase[]>> = {
-  PAUSED: ["DEPLOYED_READ_ONLY"],
+  PAUSED: ["DEPLOYED_READ_ONLY", "RECOVERY_REQUIRED"],
   DEPLOYED_READ_ONLY: ["CERTIFICATION_ONLY", "RECOVERY_REQUIRED"],
   CERTIFICATION_ONLY: ["CERTIFICATION_IN_FLIGHT", "DEPLOYED_READ_ONLY", "RECOVERY_REQUIRED"],
   CERTIFICATION_IN_FLIGHT: ["CERTIFIED", "DEPLOYED_READ_ONLY", "RECOVERY_REQUIRED"],
@@ -43,6 +43,25 @@ const certificationDefectReasons = new Set(["CERTIFICATION_ORDER_MISMATCH", "CER
 export const parseCertificationDefectEvidence = (value: unknown): boolean => {
   const evidence = asRecord(value);
   return Boolean(evidence && typeof evidence.reason === "string" && certificationDefectReasons.has(evidence.reason) && nonEmptyString(evidence.order_id));
+};
+export const runtimeReadinessErrorClasses = ["TLS_CERT_CHAIN_UNTRUSTED", "PROVIDER_BAD_REQUEST", "PROVIDER_NETWORK", "PROVIDER_RESPONSE_INVALID"] as const;
+export type RuntimeReadinessErrorClass = (typeof runtimeReadinessErrorClasses)[number];
+export type RuntimeReadinessDefectEvidence = {
+  reason: "RUNTIME_READINESS_DEFECT";
+  readiness_component: "PROVIDER_READINESS";
+  error_class: RuntimeReadinessErrorClass;
+  error_code: string;
+  source_commit: string;
+};
+const runtimeReadinessErrorClassSet = new Set<string>(runtimeReadinessErrorClasses);
+export const parseRuntimeReadinessDefectEvidence = (value: unknown, sourceCommit: string): value is RuntimeReadinessDefectEvidence => {
+  const evidence = asRecord(value);
+  if (!evidence || Object.keys(evidence).length !== 5) return false;
+  return evidence.reason === "RUNTIME_READINESS_DEFECT"
+    && evidence.readiness_component === "PROVIDER_READINESS"
+    && typeof evidence.error_class === "string" && runtimeReadinessErrorClassSet.has(evidence.error_class)
+    && typeof evidence.error_code === "string" && /^[A-Z0-9_]{1,80}$/.test(evidence.error_code)
+    && evidence.source_commit === sourceCommit;
 };
 const headFrom = (value: unknown): GenerationHead | undefined => {
   const input = asRecord(value);
@@ -82,9 +101,17 @@ export function replayReleaseGenerationChain(events: readonly V2Event[]): { head
       current = next;
       continue;
     }
-    if (envelope.kind !== "PHASE_CHANGED") return { corrupt: "UNKNOWN_V2_EVENT_KIND" };
+    if (envelope.kind !== "PHASE_CHANGED" && envelope.kind !== "RUNTIME_READINESS_DEFECT") return { corrupt: "UNKNOWN_V2_EVENT_KIND" };
     const next = headFrom(envelope.head);
     if (!next || current.phase === "COMPLETE" || next.release_id !== current.release_id || next.candidate_generation !== current.candidate_generation || next.source_commit !== current.source_commit || canonicalV2(next.migration_inventory) !== canonicalV2(current.migration_inventory) || canonicalV2(next.legal_baseline) !== canonicalV2(current.legal_baseline) || next.release_family !== current.release_family || next.checkout_contract_version !== current.checkout_contract_version || next.admin_contract_version !== current.admin_contract_version || envelope.from_phase !== current.phase || envelope.from_phase_sequence !== current.phase_sequence || next.phase_sequence !== current.phase_sequence + 1 || !permittedPhaseChanges[current.phase].includes(next.phase)) return { corrupt: "INVALID_PHASE_CHANGE" };
+    const runtimeReadinessDefectTransition = current.phase === "PAUSED" && next.phase === "RECOVERY_REQUIRED";
+    if (runtimeReadinessDefectTransition) {
+      const unexpectedEvidence = ["certification_evidence", "certification_retry", "certification_defect"].some((key) => envelope[key] !== undefined);
+      if (envelope.kind !== "RUNTIME_READINESS_DEFECT" || event.action !== "PAUSED" || current.certification || next.certification || unexpectedEvidence || !parseRuntimeReadinessDefectEvidence(envelope.runtime_readiness_defect, current.source_commit)) return { corrupt: "INVALID_RUNTIME_READINESS_DEFECT" };
+      current = next;
+      continue;
+    }
+    if (envelope.kind !== "PHASE_CHANGED") return { corrupt: "INVALID_RUNTIME_READINESS_DEFECT" };
     if (!current.certification && next.certification) {
       if (current.phase !== "DEPLOYED_READ_ONLY" || next.phase !== "CERTIFICATION_ONLY" || next.certification.status !== "ACTIVE" || hasConsumedFixture(next.certification)) return { corrupt: "INVALID_CERTIFICATION_BINDING" };
     } else if (current.certification) {

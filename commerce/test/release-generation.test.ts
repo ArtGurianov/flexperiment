@@ -26,6 +26,20 @@ describe("v2 release generation chain", () => {
     expect(reconcileHeadWithProjection(head, { owner_release_id: null, sales_paused: false })).toBe("RELEASE_STATE_CORRUPT");
   });
 
+  it("allows a paused runtime-readiness defect only with bounded evidence", () => {
+    const acquired = { seq: 1, release_id: head.release_id, action: "ACQUIRED" as const, details_json: JSON.stringify({ schema_version: 2, kind: "CANDIDATE_ACQUIRED", head }) };
+    const recovered = { ...head, phase: "RECOVERY_REQUIRED" as const, phase_sequence: 1 };
+    const event = { seq: 2, release_id: head.release_id, action: "PAUSED" as const, details_json: JSON.stringify({
+      schema_version: 2, kind: "RUNTIME_READINESS_DEFECT", from_phase: "PAUSED", from_phase_sequence: 0, head: recovered,
+      runtime_readiness_defect: { reason: "RUNTIME_READINESS_DEFECT", readiness_component: "PROVIDER_READINESS", error_class: "PROVIDER_BAD_REQUEST", error_code: "HTTP_400", source_commit: head.source_commit },
+    }) };
+    expect(replayReleaseGenerationChain([acquired, event]).head).toEqual(recovered);
+    const generic = { ...event, details_json: JSON.stringify({ schema_version: 2, kind: "PHASE_CHANGED", from_phase: "PAUSED", from_phase_sequence: 0, head: recovered }) };
+    expect(replayReleaseGenerationChain([acquired, generic]).corrupt).toBe("INVALID_RUNTIME_READINESS_DEFECT");
+    const smuggledCertification = { ...event, details_json: JSON.stringify({ schema_version: 2, kind: "RUNTIME_READINESS_DEFECT", from_phase: "PAUSED", from_phase_sequence: 0, head: recovered, certification_evidence: {}, runtime_readiness_defect: { reason: "RUNTIME_READINESS_DEFECT", readiness_component: "PROVIDER_READINESS", error_class: "PROVIDER_BAD_REQUEST", error_code: "HTTP_400", source_commit: head.source_commit } }) };
+    expect(replayReleaseGenerationChain([acquired, smuggledCertification]).corrupt).toBe("INVALID_RUNTIME_READINESS_DEFECT");
+  });
+
   it("preserves only the ledger-applied migration prefix across recovery", () => {
     const old = { files: { "0001.sql": "a".repeat(64), "0002.sql": "b".repeat(64) } };
     const replacement = { files: { "0001.sql": "a".repeat(64), "0002.sql": "c".repeat(64), "0003.sql": "d".repeat(64) } };

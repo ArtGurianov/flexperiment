@@ -7,7 +7,7 @@ describe("controlled promo codes v0 cutover workflow", () => {
   it("is manual, serialized with production, and keeps controller and source identities distinct", () => {
     expect(workflow).toContain("workflow_dispatch:");
     expect(workflow).toContain("stage:");
-    expect(workflow).toContain("options: [prepare, complete]");
+    expect(workflow).toContain("options: [prepare, classify_runtime_readiness_defect, complete]");
     expect(workflow).toContain("group: flexperiment-production-controlled-cutover");
     expect(workflow).toContain("cancel-in-progress: false");
     expect(workflow).toContain("environment: production");
@@ -93,5 +93,17 @@ describe("controlled promo codes v0 cutover workflow", () => {
     expect(workflow.indexOf("git config --local --unset-all http.https://github.com/.extraheader || true")).toBeLessThan(workflow.indexOf('git remote set-url origin "https://x-access-token:${PRODUCTION_DEPLOY_REF_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"'));
     expect(workflow).toContain("scripts/controlled-coolify-deploy.sh");
     expect(workflow).not.toContain("git push");
+  });
+
+  it("classifies a paused runtime-readiness defect only through an explicit evidence-owned controller stage", () => {
+    expect(workflow).toContain("runtime_readiness_error_class");
+    expect(workflow).toContain("runtime_readiness_error_code");
+    expect(workflow).toContain("PROMO_CUTOVER_RUNTIME_READINESS_CLASS_INVALID");
+    expect(workflow).toContain("PROMO_CUTOVER_RUNTIME_READINESS_CODE_INVALID");
+    expect(workflow).toContain("Classify an explicitly evidenced deployed runtime-readiness defect");
+    expect(workflow).toContain('"$PUBLIC_API_URL/v1/internal/release-control/candidates/runtime-readiness-defect"');
+    expect(workflow).toContain("PROMO_CUTOVER_RUNTIME_READINESS_NOT_DEPLOYED");
+    expect(workflow).toContain("PROMO_CUTOVER_RUNTIME_READINESS_TRANSITION_INVALID");
+    expect(workflow.indexOf("Classify an explicitly evidenced deployed runtime-readiness defect")).toBeGreaterThan(workflow.indexOf("Reconcile deployed candidate and enter read-only phase"));
   });
 });

@@ -4,10 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       stage:
-        description: Prepare the paused candidate/certification lease, or complete a certified candidate.
+        description: Prepare the paused candidate/certification lease, classify an explicitly evidenced readiness defect, or complete a certified candidate.
         required: true
         type: choice
-        options: [prepare, complete]
+        options: [prepare, classify_runtime_readiness_defect, complete]
       target_sha:
         description: Exact immutable Phase-0/feature source SHA for this same-owner epoch.
         required: true
@@ -34,6 +34,14 @@ on:
         type: string
       retry_reason:
         description: Set only to OPERATIONAL for a resolved terminal payment failure and a fresh fixture.
+        required: false
+        type: string
+      runtime_readiness_error_class:
+        description: Controlled provider readiness error class for explicit PAUSED recovery classification only.
+        required: false
+        type: string
+      runtime_readiness_error_code:
+        description: Controlled provider readiness error code for explicit PAUSED recovery classification only.
         required: false
         type: string
 
@@ -68,6 +76,8 @@ jobs:
       INPUT_CERTIFICATION_IDEMPOTENCY_KEY_HASH: ${{ inputs.certification_idempotency_key_hash || '' }}
       INPUT_CERTIFICATION_LEASE_SECONDS: ${{ inputs.certification_lease_seconds || '' }}
       INPUT_RETRY_REASON: ${{ inputs.retry_reason || '' }}
+      INPUT_RUNTIME_READINESS_ERROR_CLASS: ${{ inputs.runtime_readiness_error_class || '' }}
+      INPUT_RUNTIME_READINESS_ERROR_CODE: ${{ inputs.runtime_readiness_error_code || '' }}
       POLL_ATTEMPTS: "30"
       POLL_SECONDS: "10"
       INITIAL_READINESS_DELAY_SECONDS: "60"
@@ -80,7 +90,7 @@ jobs:
       - name: Resolve immutable controller, source, and input bundle
         run: |
           set -euo pipefail
-          [[ "$INPUT_STAGE" == prepare || "$INPUT_STAGE" == complete ]] || { echo "PROMO_CUTOVER_STAGE_INVALID" >&2; exit 1; }
+          [[ "$INPUT_STAGE" == prepare || "$INPUT_STAGE" == classify_runtime_readiness_defect || "$INPUT_STAGE" == complete ]] || { echo "PROMO_CUTOVER_STAGE_INVALID" >&2; exit 1; }
           [[ "$INPUT_STAGE" != prepare || -n "$PRODUCTION_DEPLOY_REF_TOKEN" ]] || { echo "PROMO_CUTOVER_DEPLOY_REF_TOKEN_REQUIRED" >&2; exit 1; }
           [[ "$INPUT_TARGET_SHA" =~ ^[0-9A-Fa-f]{40}$ ]] || { echo "PROMO_CUTOVER_TARGET_SHA_INVALID" >&2; exit 1; }
           target_sha="${INPUT_TARGET_SHA,,}"
@@ -109,7 +119,14 @@ jobs:
           fi
           [[ -z "$INPUT_RETRY_REASON" || "$INPUT_RETRY_REASON" == OPERATIONAL ]] || { echo "PROMO_CUTOVER_RETRY_REASON_INVALID" >&2; exit 1; }
           [[ -z "$INPUT_RETRY_REASON" || "$present" == 4 ]] || { echo "PROMO_CUTOVER_RETRY_REQUIRES_FRESH_FIXTURE" >&2; exit 1; }
-          [[ "$INPUT_STAGE" == prepare || ("$present" == 0 && -z "$INPUT_RETRY_REASON") ]] || { echo "PROMO_CUTOVER_COMPLETE_INPUTS_FORBIDDEN" >&2; exit 1; }
+          if [[ "$INPUT_STAGE" == classify_runtime_readiness_defect ]]; then
+            [[ -z "$INPUT_REPLACEMENT_SHA" && "$present" == 0 && -z "$INPUT_RETRY_REASON" ]] || { echo "PROMO_CUTOVER_RUNTIME_READINESS_INPUTS_FORBIDDEN" >&2; exit 1; }
+            [[ "$INPUT_RUNTIME_READINESS_ERROR_CLASS" =~ ^(TLS_CERT_CHAIN_UNTRUSTED|PROVIDER_BAD_REQUEST|PROVIDER_NETWORK|PROVIDER_RESPONSE_INVALID)$ ]] || { echo "PROMO_CUTOVER_RUNTIME_READINESS_CLASS_INVALID" >&2; exit 1; }
+            [[ "$INPUT_RUNTIME_READINESS_ERROR_CODE" =~ ^[A-Z0-9_]{1,80}$ ]] || { echo "PROMO_CUTOVER_RUNTIME_READINESS_CODE_INVALID" >&2; exit 1; }
+          else
+            [[ -z "$INPUT_RUNTIME_READINESS_ERROR_CLASS" && -z "$INPUT_RUNTIME_READINESS_ERROR_CODE" ]] || { echo "PROMO_CUTOVER_RUNTIME_READINESS_INPUTS_FORBIDDEN" >&2; exit 1; }
+            [[ "$INPUT_STAGE" == prepare || ("$present" == 0 && -z "$INPUT_RETRY_REASON") ]] || { echo "PROMO_CUTOVER_COMPLETE_INPUTS_FORBIDDEN" >&2; exit 1; }
+          fi
           echo "TARGET_SHA=$target_sha" >> "$GITHUB_ENV"
           echo "EFFECTIVE_TARGET_SHA=$effective_sha" >> "$GITHUB_ENV"
           echo "RELEASE_ID=promo-codes-v0:$target_sha" >> "$GITHUB_ENV"
@@ -274,6 +291,34 @@ jobs:
           fi
           api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json
           jq -e --arg source "$EFFECTIVE_TARGET_SHA" '.head.source_commit == $source and (.state_hash | test("^[a-f0-9]{64}$"))' candidate-head.json >/dev/null
+
+      - name: Classify an explicitly evidenced deployed runtime-readiness defect
+        if: env.INPUT_STAGE == 'classify_runtime_readiness_defect'
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
+          jq -e --arg release_id "$RELEASE_ID" '
+            .schema_version == 2 and .head.release_id == $release_id and .head.phase == "PAUSED" and
+            (.head.certification == null) and (.state_hash | test("^[a-f0-9]{64}$"))
+          ' candidate-head.json >/dev/null || { echo "PROMO_CUTOVER_RUNTIME_READINESS_STATE_INVALID" >&2; exit 1; }
+          jq -e --slurpfile candidate candidate-head.json '
+            .sales_paused == true and .owner_release_id == $candidate[0].head.release_id and
+            .runtime.source_commit == $candidate[0].head.source_commit and
+            .runtime.worker_source_commit == $candidate[0].head.source_commit
+          ' status.json >/dev/null || { echo "PROMO_CUTOVER_RUNTIME_READINESS_NOT_DEPLOYED" >&2; exit 1; }
+          jq -n --slurpfile current candidate-head.json \
+            --arg error_class "$INPUT_RUNTIME_READINESS_ERROR_CLASS" --arg error_code "$INPUT_RUNTIME_READINESS_ERROR_CODE" '
+            {release_id: $current[0].head.release_id, candidate_generation: $current[0].head.candidate_generation,
+             expected_state_hash: $current[0].state_hash, readiness_component: "PROVIDER_READINESS",
+             error_class: $error_class, error_code: $error_code}
+          ' > runtime-readiness-defect.json
+          api -X POST --data-binary @runtime-readiness-defect.json "$PUBLIC_API_URL/v1/internal/release-control/candidates/runtime-readiness-defect" > recovered.json
+          jq -e --arg release_id "$RELEASE_ID" '
+            .head.release_id == $release_id and .head.phase == "RECOVERY_REQUIRED" and
+            (.head.certification == null)
+          ' recovered.json >/dev/null || { echo "PROMO_CUTOVER_RUNTIME_READINESS_TRANSITION_INVALID" >&2; exit 1; }
 
       - name: Activate or reconcile the certification lease
         if: env.INPUT_STAGE == 'prepare' && env.CERTIFICATION_INPUTS_PRESENT == '4'

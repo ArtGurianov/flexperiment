@@ -47,9 +47,38 @@ requires a fresh full fixture after resolved terminal payment failure.
 adopts generation N+1 under the same release ID; it never rewrites the old
 generation or reuses a consumed fixture.
 
+## Runtime-readiness defect classification
+
+`PAUSED → RECOVERY_REQUIRED` is not a substitute for a successful
+readiness proof and is never performed by the polling loop. It is available
+only through the explicit `classify_runtime_readiness_defect` workflow stage,
+after an operator has recorded a bounded provider-readiness failure. The stage
+reads the durable head and its server-issued CAS token afresh, requires the
+candidate to be deployed on both Commerce and worker with sales still paused
+and no certification binding, then appends exactly this evidence:
+
+```text
+reason              = RUNTIME_READINESS_DEFECT
+readiness_component = PROVIDER_READINESS
+error_class         = TLS_CERT_CHAIN_UNTRUSTED | PROVIDER_BAD_REQUEST |
+                      PROVIDER_NETWORK | PROVIDER_RESPONSE_INVALID
+error_code          = controlled uppercase code, for example HTTP_400
+source_commit       = authoritative candidate source
+```
+
+No provider body, JWT, request headers, buyer data, order, payment, or
+certification evidence may be included. Replay rejects a generic phase change,
+a certification binding, or any other evidence for this edge. The stage does
+not deploy, change `production-deploy`, create a lease, call payment create,
+or perform an adoption. It is for a candidate whose deployed runtime already
+contains this authority endpoint; an older paused candidate that lacks it
+requires a separately reviewed one-shot bootstrap authority operation. Do not
+misrepresent that bootstrap as `PAUSED → DEPLOYED_READ_ONLY`, hot-deploy a
+different source, or edit its durable source commit.
+
 | Durable phase | Allowed next transition |
 | --- | --- |
-| `PAUSED` | deploy the exact generation, then `DEPLOYED_READ_ONLY` |
+| `PAUSED` | deploy the exact generation, then `DEPLOYED_READ_ONLY`; or explicit bounded runtime-readiness defect classification to `RECOVERY_REQUIRED` |
 | `DEPLOYED_READ_ONLY` | activate a bounded certification lease |
 | `CERTIFICATION_ONLY` | exact leased certification checkout |
 | `CERTIFICATION_IN_FLIGHT` | evidence classification only |

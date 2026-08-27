@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import type Database from "better-sqlite3";
 import { canonicalLegalManifest, parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import { parseUtcTimestamp } from "./utc-timestamp";
-import { assertAppliedMigrationPrefix, candidateExpectedMigration, reconcileHeadWithProjection, releaseStateHash, replayReleaseGenerationChain, type GenerationHead, type ReleasePhase, type V2Event } from "./release-generation";
+import { assertAppliedMigrationPrefix, candidateExpectedMigration, reconcileHeadWithProjection, releaseStateHash, replayReleaseGenerationChain, runtimeReadinessErrorClasses, type GenerationHead, type ReleasePhase, type RuntimeReadinessErrorClass, type V2Event } from "./release-generation";
 import { evaluateCertificationEvidence } from "./certification-evidence";
 import { pricePromo } from "./promo-pricing";
 
@@ -34,6 +34,14 @@ export type ReleaseCompletion = {
 export type CandidateAcquireRequest = { head: GenerationHead };
 export type CandidateAdoptRequest = { head: GenerationHead; expected_generation: number; from_sha: string; expected_state_hash: string };
 export type CandidatePhaseRequest = { release_id: string; candidate_generation: number; expected_state_hash: string; from_phase: ReleasePhase; phase_sequence: number; to_phase: Exclude<ReleasePhase, "COMPLETE"> };
+export type RuntimeReadinessDefectRequest = {
+  release_id: string;
+  candidate_generation: number;
+  expected_state_hash: string;
+  readiness_component: "PROVIDER_READINESS";
+  error_class: RuntimeReadinessErrorClass;
+  error_code: string;
+};
 export type CandidateCompleteRequest = { release_id: string; candidate_generation: number; expected_state_hash: string };
 export type CandidateHeadSnapshot = { schema_version: 2; head: GenerationHead | null; state_hash: string | null };
 export type CertificationLeaseRequest = {
@@ -250,7 +258,7 @@ export class ReleaseSalesGate {
     return replay.head;
   }
 
-  private v2Event(releaseId: string, action: "ACQUIRED" | "PAUSED" | "REOPENED", kind: "CANDIDATE_ACQUIRED" | "CANDIDATE_SUPERSEDED" | "PHASE_CHANGED", details: Record<string, unknown>) {
+  private v2Event(releaseId: string, action: "ACQUIRED" | "PAUSED" | "REOPENED", kind: "CANDIDATE_ACQUIRED" | "CANDIDATE_SUPERSEDED" | "PHASE_CHANGED" | "RUNTIME_READINESS_DEFECT", details: Record<string, unknown>) {
     event(this.db, releaseId, action, { schema_version: 2, kind, ...details });
   }
 
@@ -354,6 +362,7 @@ export class ReleaseSalesGate {
       if (gate.owner_release_id !== current.release_id) throw new ReleaseControlError("RELEASE_CANDIDATE_SUPERSEDED");
       if (current.candidate_generation !== input.candidate_generation || current.phase !== input.from_phase || current.phase_sequence !== input.phase_sequence || releaseStateHash(current) !== input.expected_state_hash) throw new ReleaseControlError("RELEASE_STATE_STALE");
       if (input.to_phase === "CERTIFICATION_ONLY" || input.to_phase === "CERTIFICATION_IN_FLIGHT" || input.to_phase === "CERTIFIED" || current.phase === "CERTIFICATION_IN_FLIGHT") throw new ReleaseControlError("CERTIFICATION_TRANSITION_REQUIRES_EVIDENCE");
+      if (current.phase === "PAUSED" && input.to_phase === "RECOVERY_REQUIRED") throw new ReleaseControlError("RUNTIME_READINESS_DEFECT_EVIDENCE_REQUIRED");
       let certification = current.certification;
       if (current.phase === "CERTIFICATION_ONLY" && current.certification?.status === "ACTIVE") {
         this.requireCertificationTable();
@@ -367,6 +376,27 @@ export class ReleaseSalesGate {
       return { ...status(row(this.db)!), head };
     });
     return transaction();
+  }
+
+  markRuntimeReadinessDefect(input: RuntimeReadinessDefectRequest, runtimeEvidence: () => ReleaseRuntimeEvidence) {
+    return this.immediate(() => {
+      const gate = row(this.db); if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
+      const current = this.v2Head(input.release_id);
+      if (gate.owner_release_id !== current.release_id || gate.sales_paused !== 1 || current.phase !== "PAUSED" || current.certification || current.candidate_generation !== input.candidate_generation || releaseStateHash(current) !== input.expected_state_hash) throw new ReleaseControlError("RELEASE_STATE_STALE");
+      if (input.readiness_component !== "PROVIDER_READINESS" || !runtimeReadinessErrorClasses.includes(input.error_class) || !/^[A-Z0-9_]{1,80}$/.test(input.error_code)) throw new ReleaseControlError("RUNTIME_READINESS_DEFECT_INVALID");
+      const expected = this.expectedForHead(current);
+      const evidence = runtimeEvidence();
+      const migrationsMatch = evidence.migration_versions.length === Object.keys(current.migration_inventory.files).length
+        && evidence.migration_versions.every((version) => current.migration_inventory.files[version] !== undefined)
+        && Object.entries(current.migration_inventory.files).every(([version, hash]) => evidence.migration_source_hashes?.[version] === hash);
+      if (evidence.source_commit !== current.source_commit || evidence.worker_source_commit !== current.source_commit || !evidence.required_migrations[expected.migration] || !migrationsMatch) throw new ReleaseControlError("RUNTIME_READINESS_CANDIDATE_NOT_DEPLOYED");
+      const head = { ...current, phase: "RECOVERY_REQUIRED" as const, phase_sequence: current.phase_sequence + 1 };
+      const runtime_readiness_defect = { reason: "RUNTIME_READINESS_DEFECT" as const, readiness_component: input.readiness_component, error_class: input.error_class, error_code: input.error_code, source_commit: current.source_commit };
+      const details = { schema_version: 2, kind: "RUNTIME_READINESS_DEFECT" as const, from_phase: current.phase, from_phase_sequence: current.phase_sequence, head, runtime_readiness_defect };
+      this.assertProposedV2Event(current.release_id, { action: "PAUSED", details_json: JSON.stringify(details) });
+      this.v2Event(current.release_id, "PAUSED", "RUNTIME_READINESS_DEFECT", { from_phase: current.phase, from_phase_sequence: current.phase_sequence, head, runtime_readiness_defect });
+      return { ...status(row(this.db)!), head };
+    });
   }
 
   completeCandidate(input: CandidateCompleteRequest, runtimeEvidence: () => ReleaseRuntimeEvidence) {

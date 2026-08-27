@@ -299,6 +299,38 @@ describe("commerce domain", () => {
     expect(inFlight.sales_paused).toBe(true);
   });
 
+  it("records a deployed paused provider-readiness defect only through its evidence-owned transition", () => {
+    const setup = fixture(); databases.push(setup.db);
+    const candidate = promoCandidateHead();
+    const acquired = setup.domain.acquirePromoCandidate({ head: candidate });
+    const gate = new ReleaseSalesGate(setup.db);
+    const runtime = (): ReleaseRuntimeEvidence => ({
+      source_commit: acquired.head.source_commit,
+      required_migrations: { "0035_promo_codes_v0.sql": true },
+      migration_versions: ["0035_promo_codes_v0.sql"],
+      migration_source_hashes: acquired.head.migration_inventory.files,
+      legal_version: "2026-08-25.1",
+      legal_manifest_sha256: "c".repeat(64),
+      legal_hashes: candidate.legal_baseline.legal_hashes,
+      legal_publish_time: new Date().toISOString(),
+      current_legal_copies_match: true,
+      worker_source_commit: acquired.head.source_commit,
+      worker_started_at: new Date().toISOString(),
+      worker_observed_at: new Date().toISOString(),
+      worker_last_successful_sweep_at: new Date().toISOString(),
+      source_legal_manifest_sha256: "c".repeat(64),
+      source_legal_publish_time: new Date().toISOString(),
+    });
+    expect(() => gate.changeCandidatePhase({ release_id: acquired.head.release_id, candidate_generation: 1, expected_state_hash: releaseStateHash(acquired.head), from_phase: "PAUSED", phase_sequence: 0, to_phase: "RECOVERY_REQUIRED" })).toThrow("RUNTIME_READINESS_DEFECT_EVIDENCE_REQUIRED");
+    expect(() => gate.markRuntimeReadinessDefect({ release_id: acquired.head.release_id, candidate_generation: 1, expected_state_hash: "0".repeat(64), readiness_component: "PROVIDER_READINESS", error_class: "PROVIDER_BAD_REQUEST", error_code: "HTTP_400" }, runtime)).toThrow("RELEASE_STATE_STALE");
+    expect(() => gate.markRuntimeReadinessDefect({ release_id: acquired.head.release_id, candidate_generation: 1, expected_state_hash: releaseStateHash(acquired.head), readiness_component: "PROVIDER_READINESS", error_class: "PROVIDER_BAD_REQUEST", error_code: "HTTP_400" }, () => ({ ...runtime(), source_commit: "b".repeat(40) }))).toThrow("RUNTIME_READINESS_CANDIDATE_NOT_DEPLOYED");
+    const recovered = gate.markRuntimeReadinessDefect({ release_id: acquired.head.release_id, candidate_generation: 1, expected_state_hash: releaseStateHash(acquired.head), readiness_component: "PROVIDER_READINESS", error_class: "PROVIDER_BAD_REQUEST", error_code: "HTTP_400" }, runtime);
+    expect(recovered.head).toMatchObject({ phase: "RECOVERY_REQUIRED", phase_sequence: 1 });
+    expect(recovered.head).not.toHaveProperty("certification");
+    const event = setup.db.prepare("SELECT details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid DESC LIMIT 1").get(acquired.head.release_id) as { details_json: string };
+    expect(JSON.parse(event.details_json)).toMatchObject({ kind: "RUNTIME_READINESS_DEFECT", runtime_readiness_defect: { reason: "RUNTIME_READINESS_DEFECT", readiness_component: "PROVIDER_READINESS", error_class: "PROVIDER_BAD_REQUEST", error_code: "HTTP_400", source_commit: acquired.head.source_commit } });
+  });
+
   it("rejects non-fixture leases and permits a same-generation retry only after a terminal operational failure", () => {
     const setup = fixture(); databases.push(setup.db);
     const promo = setup.domain.createPromo({ code: "NOTCERT", status: "ACTIVE", discount_type: "FIXED", discount_value: 1 });

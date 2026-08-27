@@ -4,7 +4,7 @@ import { EmailProviderRejectedError, EventDumpCreateRejectedError, isEmailDelive
 import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import { LegalReleasePublishError, loadCanonicalLegalRelease, publishLegalRelease, verifyCurrentLegalSourceHashes } from "./legal-release";
 import { providerErrorEvidence, type PaymentProvider } from "./provider";
-import { ReleaseControlError, ReleaseSalesGate, type CandidateAcquireRequest, type CandidateAdoptRequest, type CandidateCompleteRequest, type CandidateHeadSnapshot, type CandidatePhaseRequest, type CertificationEvidenceRequest, type CertificationLeaseRequest, type CertificationOrderContext, type CertificationRetryRequest, type ReleaseControlRequest, releaseRuntimeEvidence } from "./release-control";
+import { ReleaseControlError, ReleaseSalesGate, type CandidateAcquireRequest, type CandidateAdoptRequest, type CandidateCompleteRequest, type CandidateHeadSnapshot, type CandidatePhaseRequest, type CertificationEvidenceRequest, type CertificationLeaseRequest, type CertificationOrderContext, type CertificationRetryRequest, type ReleaseControlRequest, type RuntimeReadinessDefectRequest, releaseRuntimeEvidence } from "./release-control";
 import { checkoutRequestSchema, persistedAgentSchema, promoSchema, type CheckoutRequest, type ParticipantAgeBand } from "./types";
 import { PromoPricingError, pricePromo } from "./promo-pricing";
 import { findCityBySlug } from "../../lib/city-catalog";
@@ -322,6 +322,11 @@ export class CommerceDomain {
 
   changePromoCandidatePhase(input: CandidatePhaseRequest) {
     try { return this.releaseSalesGate().changeCandidatePhase(input); }
+    catch (error) { if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status); throw error; }
+  }
+
+  markPromoCandidateRuntimeReadinessDefect(input: RuntimeReadinessDefectRequest) {
+    try { return this.releaseSalesGate().markRuntimeReadinessDefect(input, () => this.releaseRuntimeEvidence()); }
     catch (error) { if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status); throw error; }
   }
 
