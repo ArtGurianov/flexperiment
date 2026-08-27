@@ -1,0 +1,4 @@
+This commit merges a runtime candidate with one-shot maintenance/recovery
+tooling for review and audit. It MUST NEVER become production-deploy's or
+runtime-candidate's target - see "Runtime candidates and maintenance commits
+are different artifact classes" in docs/release/DEPLOYMENT_INVARIANTS.md.

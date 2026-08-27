@@ -94,6 +94,26 @@ const isMigrationInventoryExpectation = (expectedMigration: string): boolean =>
   new RegExp(`^${migrationInventoryPrefix}[a-f0-9]{64}$`).test(expectedMigration);
 const supportedMigrationExpectation = (expectedMigration: string): boolean =>
   requiredMigrationsFor(expectedMigration) !== undefined || isMigrationInventoryExpectation(expectedMigration);
+
+/**
+ * Hard-bound, one-shot, non-reusable: see recoverGenericOwnerR4ToR5 and
+ * "One-shot recovery bridges are non-reusable by construction" in
+ * docs/release/DEPLOYMENT_INVARIANTS.md. Moves the already-paused generic
+ * owner's expected source from R4 to R5 via the ordinary updateExpectations()
+ * implementation - no new event, no ownership change, no acquire/pause.
+ */
+export const r4ToR5GenericOwnerRecovery = {
+  promo_release_id: "promo-codes-v0:b01f217ffd2a798fd32aa3d88e125a2e460bd39f",
+  promo_generation: 5,
+  promo_phase: "COMPLETE",
+  promo_phase_sequence: 5,
+  promo_source_commit: "97678cc19d2549146b0d4999466a4cded9320208",
+  from_source_commit: "aa492d5a6361c8d43f8cbb2a4e3b245611f4f76b",
+  to_source_commit: "71f6971cea630d4da9a1cb1c57f3ad01e8fdffe1",
+  deploy_release_id: "deploy-aa492d5a6361c8d43f8cbb2a4e3b245611f4f76b",
+  expected_migration: "0036_tochka_provider_error_evidence.sql",
+} as const;
+
 export const WORKER_EVIDENCE_MAX_AGE_MS = 90_000;
 
 export const workerEvidenceIsFresh = (workerSourceCommit: string | null, workerObservedAt: string | null, expectedSourceCommit: string, currentTime = Date.now()): boolean => {
@@ -683,6 +703,73 @@ export class ReleaseSalesGate {
       return this.status();
     });
     return transaction();
+  }
+
+  /**
+   * One-shot, hard-bound recovery for the exact already-paused deploy-R4
+   * owner: moves its expected source from R4 to R5 using the ordinary
+   * updateExpectations() implementation (not hand-written SQL), preserving
+   * the same release_id, the same ACQUIRED/PAUSED history, and
+   * sales_paused=true throughout. It does not acquire a new owner, does not
+   * touch the promo-codes-v0 v2 chain, and does not move production-deploy
+   * or deploy anything.
+   */
+  recoverGenericOwnerR4ToR5(input: { expected_state_hash: string }) {
+    const recovery = r4ToR5GenericOwnerRecovery;
+    return this.immediate(() => {
+      const gate = row(this.db);
+      if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
+      if (
+        gate.owner_release_id !== recovery.deploy_release_id
+        || gate.sales_paused !== 1
+        || gate.expected_source_commit !== recovery.from_source_commit
+        || gate.expected_migration !== recovery.expected_migration
+      ) throw new ReleaseControlError("R4_R5_RECOVERY_PRECONDITION_FAILED");
+
+      // The owner must already be a *proven* generic owner (ACQUIRED+PAUSED,
+      // agreeing with sales_paused=true) before we touch it - this recovery
+      // must never appear to repair an owner that was already corrupt.
+      const ownerActions = (this.db.prepare("SELECT action FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid ASC").all(recovery.deploy_release_id) as { action: string }[]).map((r) => r.action);
+      if (reconcileLegacyOwnerWithProjection(ownerActions, true)) throw new ReleaseControlError("R4_R5_RECOVERY_OWNER_NOT_PROVEN");
+
+      const promoHead = this.v2Head(recovery.promo_release_id);
+      if (
+        promoHead.phase !== recovery.promo_phase
+        || promoHead.candidate_generation !== recovery.promo_generation
+        || promoHead.phase_sequence !== recovery.promo_phase_sequence
+        || promoHead.source_commit !== recovery.promo_source_commit
+      ) throw new ReleaseControlError("R4_R5_RECOVERY_PROMO_HEAD_MISMATCH");
+      if (releaseStateHash(promoHead) !== input.expected_state_hash) throw new ReleaseControlError("RELEASE_STATE_STALE");
+
+      const legal = this.expectedForHead(promoHead);
+      const request: ReleaseControlRequest = {
+        release_id: recovery.deploy_release_id,
+        mode: "CONTROLLED_CUTOVER",
+        expected: {
+          source_commit: recovery.to_source_commit,
+          migration: recovery.expected_migration,
+          legal_version: legal.legal_version,
+          legal_manifest_sha256: legal.legal_manifest_sha256,
+          legal_hashes: legal.legal_hashes,
+        },
+      };
+      // Nested inside this outer BEGIN IMMEDIATE transaction; better-sqlite3
+      // runs it as a SAVEPOINT rather than a separate BEGIN.
+      const updated = this.updateExpectations(request);
+
+      const persistedGate = row(this.db)!;
+      if (
+        persistedGate.owner_release_id !== recovery.deploy_release_id
+        || persistedGate.sales_paused !== 1
+        || persistedGate.expected_source_commit !== recovery.to_source_commit
+      ) throw new ReleaseControlError("R4_R5_RECOVERY_FINAL_VALIDATION_FAILED");
+      const ownerActionsAfter = (this.db.prepare("SELECT action FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid ASC").all(recovery.deploy_release_id) as { action: string }[]).map((r) => r.action);
+      if (reconcileLegacyOwnerWithProjection(ownerActionsAfter, true)) throw new ReleaseControlError("R4_R5_RECOVERY_FINAL_VALIDATION_FAILED");
+      const promoHeadAfter = this.v2Head(recovery.promo_release_id);
+      if (releaseStateHash(promoHeadAfter) !== input.expected_state_hash) throw new ReleaseControlError("R4_R5_RECOVERY_PROMO_HEAD_CHANGED");
+
+      return updated;
+    });
   }
 
   assertPausedOwner(request: ReleaseControlRequest) {
