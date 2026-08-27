@@ -216,6 +216,7 @@ jobs:
         if: env.INPUT_STAGE == 'prepare' && (env.PROMO_HEAD_READ_REQUIRED_AFTER_DEPLOY == '1' || env.INPUT_REPLACEMENT_SHA != '')
         run: |
           set -euo pipefail
+          git config --local --unset-all http.https://github.com/.extraheader || true
           git remote set-url origin "https://x-access-token:${PRODUCTION_DEPLOY_REF_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           scripts/set-production-deploy-ref.sh "$EFFECTIVE_TARGET_SHA"
           scripts/controlled-coolify-deploy.sh "$EFFECTIVE_TARGET_SHA"

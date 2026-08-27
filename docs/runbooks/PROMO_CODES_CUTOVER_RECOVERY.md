@@ -19,7 +19,9 @@ environment secret with repository contents-write and workflow-write authority:
 the immutable feature source itself includes a workflow file, which the default
 Actions token is not permitted to update through a ref move. The workflow
 requires this credential before it can acquire an owner, and uses it only for
-the pointer helper; never pass it as a dispatch input or print it in logs.
+the pointer helper. It first removes the checkout-provided GitHub App auth
+header so the dedicated credential is actually selected; never pass it as a
+dispatch input or print it in logs.
 
 The deploy source (including a `replacement_sha`) must descend from the
 authority-head API hardening commit `91c78c9545820698cb2433f426b75bd5e1ca262c`.

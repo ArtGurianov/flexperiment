@@ -85,7 +85,9 @@ describe("controlled promo codes v0 cutover workflow", () => {
     expect(workflow).toContain('"$PUBLIC_API_URL/v1/internal/release-control/candidates/complete"');
     expect(workflow).toContain("PROMO_CUTOVER_CERTIFICATION_ALREADY_STARTED");
     expect(workflow).toContain("scripts/set-production-deploy-ref.sh");
+    expect(workflow).toContain("git config --local --unset-all http.https://github.com/.extraheader || true");
     expect(workflow).toContain('git remote set-url origin "https://x-access-token:${PRODUCTION_DEPLOY_REF_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"');
+    expect(workflow.indexOf("git config --local --unset-all http.https://github.com/.extraheader || true")).toBeLessThan(workflow.indexOf('git remote set-url origin "https://x-access-token:${PRODUCTION_DEPLOY_REF_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"'));
     expect(workflow).toContain("scripts/controlled-coolify-deploy.sh");
     expect(workflow).not.toContain("git push");
   });
