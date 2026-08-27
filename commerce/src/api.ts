@@ -476,6 +476,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     noStore(c.res.headers);
   });
   releaseControl.get("/status", (c) => c.json({ ...domain.releaseControlStatus(), runtime: domain.releaseRuntimeEvidence() }));
+  releaseControl.get("/provider-readiness", async (c) => c.json(await domain.providerReadiness()));
   releaseControl.get("/completion/:releaseId", (c) => c.json(domain.releaseControlCompletion(c.req.param("releaseId"))));
   releaseControl.post("/candidates/acquire", async (c) => c.json(domain.acquirePromoCandidate(await jsonBody(c.req.raw) as { head: import("./release-generation").GenerationHead })));
   releaseControl.post("/candidates/adopt", async (c) => c.json(domain.adoptPromoCandidate(await jsonBody(c.req.raw) as import("./release-control").CandidateAdoptRequest)));

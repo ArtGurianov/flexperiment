@@ -10,6 +10,10 @@ ENV NODE_ENV=production
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY package.json pnpm-lock.yaml ./
 COPY commerce ./commerce
+# Node's bundled trust store does not include every Russian trusted root used
+# by the production acquiring provider. Keep this root certificate immutable
+# with the runtime source; never disable TLS verification.
+ENV NODE_EXTRA_CA_CERTS=/app/commerce/certs/russian-trusted-root-ca.pem
 # Commerce runtime imports the canonical city catalogue from the shared root
 # module. Keep shared runtime dependencies explicit in the production image.
 COPY lib ./lib

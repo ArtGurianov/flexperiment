@@ -231,6 +231,7 @@ jobs:
           for attempt in $(seq 1 "$POLL_ATTEMPTS"); do
             if api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json && \
               api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json && \
+              api "$PUBLIC_API_URL/v1/internal/release-control/provider-readiness" > provider-readiness.json && \
               curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_FRONTEND_URL/release.json" > frontend.json && \
               curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$ADMIN_RELEASE_URL" > admin.json && \
               curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/healthz" > health.json && \
@@ -249,6 +250,7 @@ jobs:
                 $runtime.legal_hashes == $head.legal_baseline.legal_hashes and
                 $runtime.current_legal_copies_match == true
               ' status.json >/dev/null && \
+              jq -e '.environment == "production"' provider-readiness.json >/dev/null && \
               node -e '
                 const fs = require("node:fs");
                 const runtime = JSON.parse(fs.readFileSync("status.json", "utf8")).runtime;

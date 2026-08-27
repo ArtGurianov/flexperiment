@@ -37,8 +37,11 @@ documented fixed JWT, customer code, and merchant ID; it has no sandbox
 `client_id`, so `TOCHKA_CLIENT_ID` is optional only for the sandbox URL.
 
 Before any checkout, run `pnpm commerce:provider:probe`. It makes only the
-documented read-only `GET /acquiring/v1.0/retailers` request and returns an
-environment label without logging provider payloads or creating SQLite data.
+documented read-only `GET /acquiring/v1.0/retailers` and a bounded
+`GET /acquiring/v1.0/payments` with calendar-date `fromDate`/`toDate`
+parameters. It returns an environment label without logging provider payloads
+or creating SQLite data. The controlled production workflow invokes the same
+read-only proof through the authenticated Commerce runtime before certification.
 
 To test the sandbox create-request/response boundary, run
 `pnpm commerce:sandbox:create-probe` in the Commerce runtime. It accepts only

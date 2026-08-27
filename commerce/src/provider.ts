@@ -3,6 +3,10 @@ import { tochkaConfigFromEnvironment, type TochkaConfig } from "./provider-confi
 type Fetch = typeof fetch;
 type PaymentCreateInput = { paymentId: string; paymentLinkId: string; amountKopecks: number; idempotencyKey: string; successUrl: string; customerEmail: string; purpose: string; receiptItemName: string };
 export type ProviderProbe = { environment: "production" | "sandbox" | "mock" };
+export type ProviderErrorEvidence = {
+  provider_error_class: "TLS_CERT_CHAIN_UNTRUSTED" | "PROVIDER_BAD_REQUEST" | "PROVIDER_HTTP_ERROR" | "PROVIDER_NETWORK" | "PROVIDER_RESPONSE_INVALID";
+  provider_error_code: string;
+};
 export type PaymentLinkOperation = {
   paymentLinkId?: string;
   operationId?: string;
@@ -20,6 +24,32 @@ export interface PaymentProvider {
   reconcilePayment(input: { providerPaymentId: string }): Promise<{ status: "PAID" | "PENDING" | "FAILED" | "UNKNOWN"; capturedAmountKopecks?: number }>;
   reconcileRefund(input: { providerPaymentId: string; providerReference: string | null; amountKopecks: number; idempotencyKey: string }): Promise<{ status: "SUCCEEDED" | "PENDING" | "FAILED" | "UNKNOWN"; refundedAmountKopecks?: number }>;
 }
+
+/**
+ * The durable payment record intentionally stores this compact evidence, never
+ * a provider payload, bearer token, request headers, customer data, or raw
+ * transport exception. The original Error remains available only to the
+ * immediate caller while the process is alive.
+ */
+export class TochkaProviderError extends Error {
+  constructor(readonly evidence: ProviderErrorEvidence, message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "TochkaProviderError";
+  }
+}
+
+const errorCode = (error: unknown) => {
+  if (!error || typeof error !== "object") return undefined;
+  const value = error as { code?: unknown; cause?: { code?: unknown } };
+  return typeof value.code === "string" ? value.code : typeof value.cause?.code === "string" ? value.cause.code : undefined;
+};
+
+export const providerErrorEvidence = (error: unknown): ProviderErrorEvidence => {
+  if (error instanceof TochkaProviderError) return error.evidence;
+  const code = errorCode(error);
+  if (code === "SELF_SIGNED_CERT_IN_CHAIN") return { provider_error_class: "TLS_CERT_CHAIN_UNTRUSTED", provider_error_code: code };
+  return { provider_error_class: "PROVIDER_NETWORK", provider_error_code: code ?? "NETWORK_ERROR" };
+};
 
 export const rublesFromKopecks = (kopecks: number) => {
   if (!Number.isSafeInteger(kopecks) || kopecks <= 0) throw new Error("Kopeck amount must be a positive safe integer.");
@@ -49,8 +79,13 @@ const providerErrorSummary = (payload: Record<string, unknown>) => {
 
 const parseJson = async (response: Response) => {
   const payload = await response.json().catch(() => undefined) as Record<string, unknown> | undefined;
-  if (!response.ok) throw new Error(`Tochka HTTP ${response.status}${payload ? `: ${providerErrorSummary(payload)}` : ""}`);
-  if (!payload) throw new Error("Tochka returned no JSON payload.");
+  if (!response.ok) {
+    throw new TochkaProviderError(
+      { provider_error_class: response.status >= 400 && response.status < 500 ? "PROVIDER_BAD_REQUEST" : "PROVIDER_HTTP_ERROR", provider_error_code: `HTTP_${response.status}` },
+      `Tochka HTTP ${response.status}${payload ? `: ${providerErrorSummary(payload)}` : ""}`,
+    );
+  }
+  if (!payload) throw new TochkaProviderError({ provider_error_class: "PROVIDER_RESPONSE_INVALID", provider_error_code: "EMPTY_JSON" }, "Tochka returned no JSON payload.");
   return payload;
 };
 const data = (payload: Record<string, unknown>) => payload.Data as Record<string, unknown> | undefined;
@@ -62,19 +97,48 @@ const kopecksFromRubles = (amount: unknown) => {
 
 /** Live adapter. Commands are persisted by CommerceDomain before this class is invoked. */
 export class TochkaProvider implements PaymentProvider {
-  constructor(readonly config: TochkaConfig, readonly request: Fetch = fetch) {}
+  constructor(readonly config: TochkaConfig, readonly request: Fetch = fetch, readonly clock: () => number = Date.now) {}
 
   private async call(path: string, init: RequestInit) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 20_000);
     try {
       return await this.request(`${this.config.baseUrl}${path}`, { ...init, signal: controller.signal, headers: { Authorization: `Bearer ${this.config.jwt}`, "Content-Type": "application/json", ...(init.headers ?? {}) } });
+    } catch (error) {
+      const evidence = providerErrorEvidence(error);
+      throw new TochkaProviderError(evidence, evidence.provider_error_code === "SELF_SIGNED_CERT_IN_CHAIN" ? "Tochka TLS certificate chain is untrusted." : "Tochka transport request failed.", { cause: error });
     } finally { clearTimeout(timer); }
+  }
+
+  private calendarDate(value: string) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) throw new TochkaProviderError({ provider_error_class: "PROVIDER_RESPONSE_INVALID", provider_error_code: "LOOKUP_DATE_INVALID" }, "Tochka payment lookup date is invalid.");
+    return date.toISOString().slice(0, 10);
+  }
+
+  private async paymentOperationPage(input: { fromDate: string; toDate: string; page: number; pageSize: number }) {
+    const query = new URLSearchParams({
+      customerCode: this.config.customerCode,
+      merchantId: this.config.merchantId,
+      fromDate: this.calendarDate(input.fromDate),
+      toDate: this.calendarDate(input.toDate),
+      page: String(input.page),
+      pageSize: String(input.pageSize),
+    });
+    const payload = await parseJson(await this.call(`/acquiring/v1.0/payments?${query}`, { method: "GET" }));
+    const result = data(payload);
+    const operations = result?.Operation;
+    if (!Array.isArray(operations)) throw new TochkaProviderError({ provider_error_class: "PROVIDER_RESPONSE_INVALID", provider_error_code: "PAYMENT_LIST_SCHEMA_INVALID" }, "Tochka payment operation list is malformed.");
+    return { payload, operations };
   }
 
   /** Read-only authorization and transport check. It never creates a payment link. */
   async probe(): Promise<ProviderProbe> {
     await parseJson(await this.call("/acquiring/v1.0/retailers", { method: "GET" }));
+    // A valid documented list call verifies the exact calendar-date contract
+    // used to reconcile CREATE_UNKNOWN; it is still read-only and bounded.
+    const date = new Date(this.clock()).toISOString();
+    await this.paymentOperationPage({ fromDate: date, toDate: date, page: 1, pageSize: 1 });
     return { environment: this.config.baseUrl.endsWith("/sandbox/v2") ? "sandbox" : "production" };
   }
 
@@ -90,7 +154,7 @@ export class TochkaProvider implements PaymentProvider {
     } };
     const response = await this.call("/acquiring/v1.0/payments_with_receipt", { method: "POST", body: JSON.stringify(payload) });
     const result = data(await parseJson(response));
-    if (!result || typeof result.operationId !== "string" || typeof result.paymentLink !== "string") throw new Error("Tochka create response is missing operationId or paymentLink.");
+    if (!result || typeof result.operationId !== "string" || typeof result.paymentLink !== "string") throw new TochkaProviderError({ provider_error_class: "PROVIDER_RESPONSE_INVALID", provider_error_code: "CREATE_RESPONSE_SCHEMA_INVALID" }, "Tochka create response is missing operationId or paymentLink.");
     return { providerPaymentId: result.operationId, paymentUrl: result.paymentLink };
   }
 
@@ -105,18 +169,7 @@ export class TochkaProvider implements PaymentProvider {
     const pageSize = 100;
     const maxPages = 20;
     for (let page = 1; page <= maxPages; page += 1) {
-      const query = new URLSearchParams({
-        customerCode: this.config.customerCode,
-        merchantId: this.config.merchantId,
-        fromDate: input.fromDate,
-        toDate: input.toDate,
-        page: String(page),
-        pageSize: String(pageSize),
-      });
-      const payload = await parseJson(await this.call(`/acquiring/v1.0/payments?${query}`, { method: "GET" }));
-      const result = data(payload);
-      const operations = result?.Operation;
-      if (!Array.isArray(operations)) throw new Error("Tochka payment operation list is malformed.");
+      const { payload, operations } = await this.paymentOperationPage({ fromDate: input.fromDate, toDate: input.toDate, page, pageSize });
       for (const value of operations) {
         if (!value || typeof value !== "object") continue;
         const operation = value as Record<string, unknown>;
@@ -135,7 +188,7 @@ export class TochkaProvider implements PaymentProvider {
       const totalPages = Number(pagination.totalPages ?? pagination.pageCount ?? pagination.pages);
       const hasMore = (Number.isFinite(totalPages) && totalPages > page)
         || (!Number.isFinite(totalPages) && operations.length === pageSize);
-      if (hasMore && page === maxPages) throw new Error("Tochka payment operation list exceeds the bounded recovery page limit.");
+      if (hasMore && page === maxPages) throw new TochkaProviderError({ provider_error_class: "PROVIDER_RESPONSE_INVALID", provider_error_code: "PAYMENT_LIST_PAGE_LIMIT" }, "Tochka payment operation list exceeds the bounded recovery page limit.");
       if (hasMore) continue;
       break;
     }
@@ -145,7 +198,7 @@ export class TochkaProvider implements PaymentProvider {
   async refund(input: { refundId: string; providerPaymentId: string; amountKopecks: number; idempotencyKey: string }) {
     const response = await this.call(`/acquiring/v1.0/payments/${encodeURIComponent(input.providerPaymentId)}/refund`, { method: "POST", body: JSON.stringify({ Data: { amount: Number(rublesFromKopecks(input.amountKopecks)) } }) });
     const result = data(await parseJson(response));
-    if (!result || result.isRefund !== true || (typeof result.orderId !== "string" && typeof result.orderId !== "number")) throw new Error("Tochka refund response is not an accepted refund.");
+    if (!result || result.isRefund !== true || (typeof result.orderId !== "string" && typeof result.orderId !== "number")) throw new TochkaProviderError({ provider_error_class: "PROVIDER_RESPONSE_INVALID", provider_error_code: "REFUND_RESPONSE_SCHEMA_INVALID" }, "Tochka refund response is not an accepted refund.");
     return { providerReference: String(result.orderId) };
   }
 

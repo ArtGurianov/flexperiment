@@ -650,12 +650,14 @@ describe("commerce domain", () => {
   it("retains a reservation when payment creation is unknown", async () => {
     const setup = fixture(); databases.push(setup.db);
     const provider: PaymentProvider = new MockProvider();
-    provider.createPayment = async () => { throw new Error("response lost"); };
+    provider.createPayment = async () => { throw Object.assign(new Error("certificate details must not be stored"), { code: "SELF_SIGNED_CERT_IN_CHAIN" }); };
     const domain = new CommerceDomain(setup.db, provider);
     const quote = domain.checkoutContext({ occurrenceId: setup.occurrenceId });
     await domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000011", "https://flexperiment.ru");
     await domain.reconcilePendingPayments();
-    expect(setup.db.prepare("SELECT state, status FROM payments").get()).toMatchObject({ state: "CREATE_UNKNOWN", status: "PENDING" });
+    expect(setup.db.prepare("SELECT state, status, provider_error_class, provider_error_code FROM payments").get()).toEqual({
+      state: "CREATE_UNKNOWN", status: "PENDING", provider_error_class: "TLS_CERT_CHAIN_UNTRUSTED", provider_error_code: "SELF_SIGNED_CERT_IN_CHAIN",
+    });
     expect(setup.db.prepare("SELECT status FROM bookings").get()).toMatchObject({ status: "RESERVED" });
   });
 
@@ -689,10 +691,10 @@ describe("commerce domain", () => {
       .toEqual({ state: "CREATE_UNKNOWN", status: "PENDING", create_unknown_lookup_attempts: 1, create_unknown_next_lookup_at: new Date(timestamp + CREATE_UNKNOWN_LOOKUP_INITIAL_BACKOFF_MS).toISOString() });
 
     setup.db.prepare("UPDATE payments SET create_unknown_next_lookup_at = NULL WHERE id = ?").run(unknown.paymentId);
-    provider.findPaymentOperationsByLinkId = async () => { throw new Error("provider list unavailable"); };
+    provider.findPaymentOperationsByLinkId = async () => { throw Object.assign(new Error("provider list unavailable"), { code: "ECONNRESET" }); };
     await unknown.domain.reconcileCreateUnknownPayments();
-    expect(setup.db.prepare("SELECT state, status, create_unknown_lookup_attempts FROM payments WHERE id = ?").get(unknown.paymentId))
-      .toEqual({ state: "CREATE_UNKNOWN", status: "PENDING", create_unknown_lookup_attempts: 2 });
+    expect(setup.db.prepare("SELECT state, status, create_unknown_lookup_attempts, provider_error_class, provider_error_code FROM payments WHERE id = ?").get(unknown.paymentId))
+      .toEqual({ state: "CREATE_UNKNOWN", status: "PENDING", create_unknown_lookup_attempts: 2, provider_error_class: "PROVIDER_NETWORK", provider_error_code: "ECONNRESET" });
 
     let calls = 0;
     setup.db.prepare("UPDATE payments SET create_unknown_lookup_attempts = ?, create_unknown_next_lookup_at = NULL WHERE id = ?").run(CREATE_UNKNOWN_LOOKUP_MAX_ATTEMPTS, unknown.paymentId);

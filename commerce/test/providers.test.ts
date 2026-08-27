@@ -2,7 +2,7 @@ import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { EmailProviderAmbiguousError, EmailProviderRejectedError, EventDumpCreateRejectedError, UnisenderGoProvider } from "../src/email-provider";
 import { tochkaConfigFromEnvironment } from "../src/provider-config";
-import { TochkaProvider, rublesFromKopecks } from "../src/provider";
+import { TochkaProvider, providerErrorEvidence, rublesFromKopecks } from "../src/provider";
 import { TochkaWebhookVerifier, webhookAmountKopecks } from "../src/tochka-webhook";
 import { verifyUnisenderWebhook } from "../src/unisender-webhook";
 
@@ -32,16 +32,21 @@ describe("provider contracts", () => {
     expect(body.Data).not.toHaveProperty("consumerId");
   });
 
-  it("performs a read-only retailer probe without creating a payment", async () => {
-    let request: Request | undefined;
+  it("performs documented read-only retailer and calendar-date list probes without creating a payment", async () => {
+    const requests: Request[] = [];
     const provider = new TochkaProvider(tochkaConfig, async (input, init) => {
-      request = new Request(input, init);
-      return Response.json({ Data: { Retailers: [] }, Links: {}, Meta: {} });
-    });
+      const request = new Request(input, init); requests.push(request);
+      return request.url.endsWith("/retailers")
+        ? Response.json({ Data: { Retailers: [] }, Links: {}, Meta: {} })
+        : Response.json({ Data: { Operation: [] }, Links: {}, Meta: {} });
+    }, () => Date.parse("2026-08-27T16:45:00.000Z"));
     await expect(provider.probe()).resolves.toEqual({ environment: "production" });
-    expect(request?.url).toBe("https://enter.tochka.com/uapi/acquiring/v1.0/retailers");
-    expect(request?.method).toBe("GET");
-    expect(request?.headers.get("authorization")).toBe("Bearer test-jwt-not-a-secret");
+    expect(requests).toHaveLength(2);
+    expect(requests[0]?.url).toBe("https://enter.tochka.com/uapi/acquiring/v1.0/retailers");
+    expect(requests[1]?.url).toContain("/uapi/acquiring/v1.0/payments?");
+    expect(Object.fromEntries(new URL(requests[1]!.url).searchParams)).toMatchObject({ fromDate: "2026-08-27", toDate: "2026-08-27", page: "1", pageSize: "1" });
+    expect(requests.every((request) => request.method === "GET")).toBe(true);
+    expect(requests[0]?.headers.get("authorization")).toBe("Bearer test-jwt-not-a-secret");
   });
 
   it("paginates the read-only payment list and preserves every matching paymentLinkId", async () => {
@@ -61,12 +66,13 @@ describe("provider contracts", () => {
     expect(requests).toHaveLength(2);
     const first = new URL(requests[0].url);
     expect(first.pathname).toBe("/uapi/acquiring/v1.0/payments");
-    expect(Object.fromEntries(first.searchParams)).toEqual({ customerCode: tochkaConfig.customerCode, merchantId: tochkaConfig.merchantId, fromDate: "2026-08-23T00:00:00.000Z", toDate: "2026-08-23T01:00:00.000Z", page: "1", pageSize: "100" });
+    expect(Object.fromEntries(first.searchParams)).toEqual({ customerCode: tochkaConfig.customerCode, merchantId: tochkaConfig.merchantId, fromDate: "2026-08-23", toDate: "2026-08-23", page: "1", pageSize: "100" });
     expect(requests.every((request) => request.method === "GET")).toBe(true);
   });
 
   it("recognizes sandbox provider configuration separately from production", async () => {
-    const provider = new TochkaProvider({ ...tochkaConfig, baseUrl: "https://enter.tochka.com/sandbox/v2", clientId: undefined }, async () => Response.json({ Data: { Retailers: [] } }));
+    const provider = new TochkaProvider({ ...tochkaConfig, baseUrl: "https://enter.tochka.com/sandbox/v2", clientId: undefined }, async (input) =>
+      String(input).endsWith("/retailers") ? Response.json({ Data: { Retailers: [] } }) : Response.json({ Data: { Operation: [] } }));
     await expect(provider.probe()).resolves.toEqual({ environment: "sandbox" });
   });
 
@@ -74,6 +80,14 @@ describe("provider contracts", () => {
     const provider = new TochkaProvider(tochkaConfig, async () => Response.json({ code: "400", id: "error-1", message: "Validation failed", Errors: [{ errorCode: "Validation Error", message: "paymentMode is required" }] }, { status: 400 }));
     await expect(provider.createPayment({ paymentId: "payment-1", paymentLinkId: "payment-1", amountKopecks: 100, idempotencyKey: "stable-key", successUrl: "https://flexperiment.ru/payment/success", customerEmail: "buyer@example.test", purpose: "Probe", receiptItemName: "Probe" }))
       .rejects.toThrow("Tochka HTTP 400: code=400; id=error-1; Validation failed; errors=Validation Error: paymentMode is required");
+  });
+
+  it("classifies untrusted TLS and HTTP failures without retaining raw transport details", async () => {
+    const tlsProvider = new TochkaProvider(tochkaConfig, async () => { throw Object.assign(new Error("certificate chain changed"), { code: "SELF_SIGNED_CERT_IN_CHAIN" }); });
+    await expect(tlsProvider.probe()).rejects.toMatchObject({ evidence: { provider_error_class: "TLS_CERT_CHAIN_UNTRUSTED", provider_error_code: "SELF_SIGNED_CERT_IN_CHAIN" } });
+    expect(providerErrorEvidence(Object.assign(new Error("bad gateway"), { code: "ECONNRESET" }))).toEqual({ provider_error_class: "PROVIDER_NETWORK", provider_error_code: "ECONNRESET" });
+    const httpProvider = new TochkaProvider(tochkaConfig, async () => Response.json({ message: "details that are not durable evidence" }, { status: 400 }));
+    await expect(httpProvider.probe()).rejects.toMatchObject({ evidence: { provider_error_class: "PROVIDER_BAD_REQUEST", provider_error_code: "HTTP_400" } });
   });
 
   it("keeps financial values in kopecks until exact edge serialization", () => {

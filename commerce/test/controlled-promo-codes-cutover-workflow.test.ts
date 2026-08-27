@@ -63,6 +63,9 @@ describe("controlled promo codes v0 cutover workflow", () => {
     expect(workflow).toContain('"$ADMIN_RELEASE_URL"');
     expect(workflow).toContain('"$PUBLIC_API_URL/healthz"');
     expect(workflow).toContain('"$PUBLIC_API_URL/readyz"');
+    expect(workflow).toContain('"$PUBLIC_API_URL/v1/internal/release-control/provider-readiness"');
+    expect(workflow).toContain("provider-readiness.json");
+    expect(workflow).toContain('.environment == "production"');
     expect(workflow.indexOf('"$PUBLIC_API_URL/healthz"')).toBeLessThan(workflow.indexOf('to_phase: "DEPLOYED_READ_ONLY"'));
   });
 

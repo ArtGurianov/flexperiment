@@ -14,6 +14,7 @@ trap cleanup EXIT INT TERM
 
 docker build -f Dockerfile.commerce -t "$IMAGE_TAG" .
 docker run --rm --entrypoint sh "$IMAGE_TAG" -c 'test -f /app/lib/city-catalog.ts'
+docker run --rm --entrypoint sh "$IMAGE_TAG" -c 'test "$NODE_EXTRA_CA_CERTS" = /app/commerce/certs/russian-trusted-root-ca.pem && test -s "$NODE_EXTRA_CA_CERTS"'
 
 docker run -d --name "$CONTAINER_NAME" \
   -e COMMERCE_PROVIDER=mock \

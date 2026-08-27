@@ -3,7 +3,7 @@ import { canonical, canonicalV2, decryptTicketCapability, emailHash, encryptTick
 import { EmailProviderRejectedError, EventDumpCreateRejectedError, isEmailDeliveryEvidenceProvider, type EmailProvider, type UnisenderDumpEvent, UNISENDER_EVENT_DUMP_EVENT_LIMIT, UnconfiguredEmailProvider } from "./email-provider";
 import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import { LegalReleasePublishError, loadCanonicalLegalRelease, publishLegalRelease, verifyCurrentLegalSourceHashes } from "./legal-release";
-import type { PaymentProvider } from "./provider";
+import { providerErrorEvidence, type PaymentProvider } from "./provider";
 import { ReleaseControlError, ReleaseSalesGate, type CandidateAcquireRequest, type CandidateAdoptRequest, type CandidateCompleteRequest, type CandidateHeadSnapshot, type CandidatePhaseRequest, type CertificationEvidenceRequest, type CertificationLeaseRequest, type CertificationOrderContext, type CertificationRetryRequest, type ReleaseControlRequest, releaseRuntimeEvidence } from "./release-control";
 import { checkoutRequestSchema, persistedAgentSchema, promoSchema, type CheckoutRequest, type ParticipantAgeBand } from "./types";
 import { PromoPricingError, pricePromo } from "./promo-pricing";
@@ -809,8 +809,11 @@ export class CommerceDomain {
       if (!payment.fiscal_item_name_snapshot || !payment.fiscal_purpose_snapshot) throw new Error("Order has no immutable fiscal snapshot.");
       const created = await this.provider.createPayment({ paymentId: String(payment.payment_id), paymentLinkId: String(payment.payment_id), amountKopecks: Number(payment.amount_kopecks), idempotencyKey: String(payment.provider_idempotency_key), successUrl: `${successBaseUrl}/payment/success?order=${first.status_id}`, customerEmail: String(payment.customer_email), purpose: String(payment.fiscal_purpose_snapshot), receiptItemName: String(payment.fiscal_item_name_snapshot) });
       this.db.prepare("UPDATE payments SET state = 'CREATED', provider_payment_id = ?, payment_url = ?, updated_at = ? WHERE id = ? AND state = 'CREATING'").run(created.providerPaymentId, created.paymentUrl, now(), payment.payment_id);
-    } catch {
-      this.db.prepare("UPDATE payments SET state = 'CREATE_UNKNOWN', updated_at = ? WHERE id = ? AND state = 'CREATING'").run(now(), payment.payment_id);
+    } catch (error) {
+      const evidence = providerErrorEvidence(error);
+      this.db.prepare(`UPDATE payments
+        SET state = 'CREATE_UNKNOWN', provider_error_class = ?, provider_error_code = ?, updated_at = ?
+        WHERE id = ? AND state = 'CREATING'`).run(evidence.provider_error_class, evidence.provider_error_code, now(), payment.payment_id);
     }
     return this.checkoutStatus(String(first.status_id));
   }
@@ -1098,6 +1101,11 @@ export class CommerceDomain {
     return "ELIGIBLE";
   }
 
+  /** Read-only provider/TLS and documented payment-list contract evidence. */
+  async providerReadiness() {
+    return this.provider.probe();
+  }
+
   orderEvidence(orderId: string) {
     // Deliberately redacted operational evidence: do not turn this endpoint
     // into an alternate customer/ticket-detail API.
@@ -1110,7 +1118,7 @@ export class CommerceDomain {
       minor_legal_representative_confirmed_at, under_14_accompaniment_confirmed_at
       FROM orders WHERE id = ?`, orderId);
     if (!order) throw new DomainError("ORDER_NOT_FOUND", 404);
-    const payment = one(this.db, "SELECT id, state, status, provider_payment_id, captured_amount_kopecks, created_at, updated_at, last_reconcile_at FROM payments WHERE order_id = ?", orderId);
+    const payment = one(this.db, "SELECT id, state, status, provider_payment_id, captured_amount_kopecks, provider_error_class, provider_error_code, created_at, updated_at, last_reconcile_at FROM payments WHERE order_id = ?", orderId);
     const booking = one(this.db, "SELECT id, status, created_at, cancelled_at FROM bookings WHERE order_id = ?", orderId);
     const ticket = booking ? one(this.db, "SELECT id, status, created_at, voided_at FROM tickets WHERE booking_id = ?", booking.id) ?? null : null;
     const obligation = payment ? one(this.db, `SELECT id, payment_id, initial_source,
@@ -2004,8 +2012,8 @@ export class CommerceDomain {
       let operations;
       try {
         operations = await this.provider.findPaymentOperationsByLinkId({ paymentLinkId: String(payment.id), fromDate, toDate });
-      } catch {
-        this.deferCreateUnknownLookup(String(payment.id), Number(payment.create_unknown_lookup_attempts));
+      } catch (error) {
+        this.deferCreateUnknownLookup(String(payment.id), Number(payment.create_unknown_lookup_attempts), providerErrorEvidence(error));
         continue;
       }
       if (operations.length === 0) {
@@ -2048,16 +2056,20 @@ export class CommerceDomain {
     return new Date(this.clock() + delay).toISOString();
   }
 
-  private deferCreateUnknownLookup(paymentId: string, attempts: number) {
+  private deferCreateUnknownLookup(paymentId: string, attempts: number, evidence?: import("./provider").ProviderErrorEvidence) {
     const nextAttempts = attempts + 1;
     this.db.prepare(`UPDATE payments
       SET create_unknown_lookup_attempts = ?,
           create_unknown_next_lookup_at = ?, updated_at = ?
+          , provider_error_class = COALESCE(?, provider_error_class)
+          , provider_error_code = COALESCE(?, provider_error_code)
       WHERE id = ? AND state = 'CREATE_UNKNOWN' AND status = 'PENDING'
         AND provider_payment_id IS NULL`).run(
       nextAttempts,
       nextAttempts >= CREATE_UNKNOWN_LOOKUP_MAX_ATTEMPTS ? null : this.createUnknownLookupRetryAt(nextAttempts),
       now(),
+      evidence?.provider_error_class ?? null,
+      evidence?.provider_error_code ?? null,
       paymentId,
     );
   }
