@@ -7,7 +7,7 @@ export type CertificationLeaseStatus = "ACTIVE" | "CONSUMED" | "EXPIRED" | "REVO
 export type CertificationBinding = { lease_id: string; occurrence_id: string; promo_id: string; expected_idempotency_key_hash: string; lease_expires_at: string; status: CertificationLeaseStatus };
 export type GenerationHead = { release_id: string; candidate_generation: number; source_commit: string; migration_inventory: MigrationInventory; legal_baseline: unknown; release_family: string; checkout_contract_version: string; admin_contract_version: string; phase: ReleasePhase; phase_sequence: number; certification?: CertificationBinding };
 export type V2Event = { seq: number; release_id: string; action: "ACQUIRED" | "PAUSED" | "REOPENED"; details_json: string };
-type Envelope = { schema_version: 2; kind: "CANDIDATE_ACQUIRED" | "CANDIDATE_SUPERSEDED" | "PHASE_CHANGED" | "RUNTIME_READINESS_DEFECT"; [key: string]: unknown };
+type Envelope = { schema_version: 2; kind: "CANDIDATE_ACQUIRED" | "CANDIDATE_SUPERSEDED" | "PHASE_CHANGED" | "RUNTIME_READINESS_DEFECT" | "PUBLIC_FRONTEND_DEFECT"; [key: string]: unknown };
 
 const phases = new Set<string>(releasePhases);
 const permittedPhaseChanges: Readonly<Record<Exclude<ReleasePhase, "COMPLETE">, readonly ReleasePhase[]>> = {
@@ -63,6 +63,31 @@ export const parseRuntimeReadinessDefectEvidence = (value: unknown, sourceCommit
     && typeof evidence.error_code === "string" && /^[A-Z0-9_]{1,80}$/.test(evidence.error_code)
     && evidence.source_commit === sourceCommit;
 };
+export const publicFrontendDefectErrorClasses = ["STATIC_ROUTING"] as const;
+export type PublicFrontendDefectErrorClass = (typeof publicFrontendDefectErrorClasses)[number];
+export type PublicFrontendDefectEvidence = {
+  reason: "PUBLIC_FRONTEND_DEFECT";
+  component: "PUBLIC_FRONTEND";
+  error_class: PublicFrontendDefectErrorClass;
+  error_code: string;
+  probe_path: string;
+  http_status: number;
+  observed_frontend_source_commit: string;
+  source_commit: string;
+};
+const publicFrontendDefectErrorClassSet = new Set<string>(publicFrontendDefectErrorClasses);
+export const parsePublicFrontendDefectEvidence = (value: unknown, sourceCommit: string): value is PublicFrontendDefectEvidence => {
+  const evidence = asRecord(value);
+  if (!evidence || Object.keys(evidence).length !== 8) return false;
+  return evidence.reason === "PUBLIC_FRONTEND_DEFECT"
+    && evidence.component === "PUBLIC_FRONTEND"
+    && typeof evidence.error_class === "string" && publicFrontendDefectErrorClassSet.has(evidence.error_class)
+    && typeof evidence.error_code === "string" && /^[A-Z0-9_]{1,80}$/.test(evidence.error_code)
+    && typeof evidence.probe_path === "string" && /^\/[!-~]*$/.test(evidence.probe_path)
+    && typeof evidence.http_status === "number" && Number.isInteger(evidence.http_status) && evidence.http_status >= 100 && evidence.http_status <= 599
+    && typeof evidence.observed_frontend_source_commit === "string" && /^[a-f0-9]{40}$/.test(evidence.observed_frontend_source_commit)
+    && evidence.source_commit === sourceCommit;
+};
 const headFrom = (value: unknown): GenerationHead | undefined => {
   const input = asRecord(value);
   if (!input || typeof input.release_id !== "string" || !Number.isInteger(input.candidate_generation) || typeof input.source_commit !== "string" || typeof input.phase !== "string" || !phases.has(input.phase) || !Number.isInteger(input.phase_sequence)) return undefined;
@@ -101,13 +126,24 @@ export function replayReleaseGenerationChain(events: readonly V2Event[]): { head
       current = next;
       continue;
     }
-    if (envelope.kind !== "PHASE_CHANGED" && envelope.kind !== "RUNTIME_READINESS_DEFECT") return { corrupt: "UNKNOWN_V2_EVENT_KIND" };
+    if (envelope.kind !== "PHASE_CHANGED" && envelope.kind !== "RUNTIME_READINESS_DEFECT" && envelope.kind !== "PUBLIC_FRONTEND_DEFECT") return { corrupt: "UNKNOWN_V2_EVENT_KIND" };
     const next = headFrom(envelope.head);
     if (!next || current.phase === "COMPLETE" || next.release_id !== current.release_id || next.candidate_generation !== current.candidate_generation || next.source_commit !== current.source_commit || canonicalV2(next.migration_inventory) !== canonicalV2(current.migration_inventory) || canonicalV2(next.legal_baseline) !== canonicalV2(current.legal_baseline) || next.release_family !== current.release_family || next.checkout_contract_version !== current.checkout_contract_version || next.admin_contract_version !== current.admin_contract_version || envelope.from_phase !== current.phase || envelope.from_phase_sequence !== current.phase_sequence || next.phase_sequence !== current.phase_sequence + 1 || !permittedPhaseChanges[current.phase].includes(next.phase)) return { corrupt: "INVALID_PHASE_CHANGE" };
     const runtimeReadinessDefectTransition = current.phase === "PAUSED" && next.phase === "RECOVERY_REQUIRED";
     if (runtimeReadinessDefectTransition) {
-      const unexpectedEvidence = ["certification_evidence", "certification_retry", "certification_defect"].some((key) => envelope[key] !== undefined);
+      const unexpectedEvidence = ["certification_evidence", "certification_retry", "certification_defect", "public_frontend_defect"].some((key) => envelope[key] !== undefined);
       if (envelope.kind !== "RUNTIME_READINESS_DEFECT" || event.action !== "PAUSED" || current.certification || next.certification || unexpectedEvidence || !parseRuntimeReadinessDefectEvidence(envelope.runtime_readiness_defect, current.source_commit)) return { corrupt: "INVALID_RUNTIME_READINESS_DEFECT" };
+      current = next;
+      continue;
+    }
+    // A certified candidate can be recovered only through this specific,
+    // evidence-owned edge: the financial certification binding must survive
+    // byte-for-byte, since this recovers a public-surface defect discovered
+    // after certification, not the certification itself.
+    const publicFrontendDefectTransition = current.phase === "CERTIFIED" && next.phase === "RECOVERY_REQUIRED";
+    if (publicFrontendDefectTransition) {
+      const unexpectedEvidence = ["certification_evidence", "certification_retry", "certification_defect", "runtime_readiness_defect"].some((key) => envelope[key] !== undefined);
+      if (envelope.kind !== "PUBLIC_FRONTEND_DEFECT" || event.action !== "PAUSED" || !current.certification || !next.certification || canonicalV2(next.certification) !== canonicalV2(current.certification) || unexpectedEvidence || !parsePublicFrontendDefectEvidence(envelope.public_frontend_defect, current.source_commit)) return { corrupt: "INVALID_PUBLIC_FRONTEND_DEFECT" };
       current = next;
       continue;
     }
@@ -125,7 +161,9 @@ export function replayReleaseGenerationChain(events: readonly V2Event[]): { head
         || (current.phase === "CERTIFICATION_IN_FLIGHT" && next.phase === "DEPLOYED_READ_ONLY" && current.certification.status === "CONSUMED" && next.certification.status === "CONSUMED" && parseCertificationRetryEvidence(envelope.certification_retry))
         || (current.phase === "CERTIFICATION_IN_FLIGHT" && next.phase === "RECOVERY_REQUIRED" && current.certification.status === "CONSUMED" && next.certification.status === "CONSUMED" && parseCertificationDefectEvidence(envelope.certification_defect))
         || (current.phase === "DEPLOYED_READ_ONLY" && next.phase === "RECOVERY_REQUIRED" && ["CONSUMED", "REVOKED"].includes(current.certification.status) && next.certification.status === current.certification.status)
-        || (current.phase === "CERTIFIED" && ["COMPLETE", "RECOVERY_REQUIRED"].includes(next.phase) && current.certification.status === "CONSUMED" && next.certification.status === "CONSUMED");
+        // CERTIFIED -> RECOVERY_REQUIRED is handled exclusively by
+        // publicFrontendDefectTransition above; it is unreachable here.
+        || (current.phase === "CERTIFIED" && next.phase === "COMPLETE" && current.certification.status === "CONSUMED" && next.certification.status === "CONSUMED");
       if (!validStatusTransition) return { corrupt: "INVALID_CERTIFICATION_STATUS_TRANSITION" };
     }
     if (event.action === "PAUSED" && next.phase === "COMPLETE") return { corrupt: "COMPLETE_MUST_REOPEN" };

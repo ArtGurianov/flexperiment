@@ -363,6 +363,7 @@ export class ReleaseSalesGate {
       if (current.candidate_generation !== input.candidate_generation || current.phase !== input.from_phase || current.phase_sequence !== input.phase_sequence || releaseStateHash(current) !== input.expected_state_hash) throw new ReleaseControlError("RELEASE_STATE_STALE");
       if (input.to_phase === "CERTIFICATION_ONLY" || input.to_phase === "CERTIFICATION_IN_FLIGHT" || input.to_phase === "CERTIFIED" || current.phase === "CERTIFICATION_IN_FLIGHT") throw new ReleaseControlError("CERTIFICATION_TRANSITION_REQUIRES_EVIDENCE");
       if (current.phase === "PAUSED" && input.to_phase === "RECOVERY_REQUIRED") throw new ReleaseControlError("RUNTIME_READINESS_DEFECT_EVIDENCE_REQUIRED");
+      if (current.phase === "CERTIFIED" && input.to_phase === "RECOVERY_REQUIRED") throw new ReleaseControlError("PUBLIC_FRONTEND_DEFECT_EVIDENCE_REQUIRED");
       let certification = current.certification;
       if (current.phase === "CERTIFICATION_ONLY" && current.certification?.status === "ACTIVE") {
         this.requireCertificationTable();
