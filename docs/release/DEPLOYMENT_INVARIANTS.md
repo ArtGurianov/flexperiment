@@ -49,35 +49,64 @@ This does not authorize arbitrary rewriting:
 Three identities, kept structurally distinct:
 
 ```text
-main              = integration/audit history; CI only; NEVER implicitly
-                    means "deploy this SHA"
-runtime-candidate = the protected ref selected for the next controlled
-                    production deploy
+main              = deployment-controller / integration history; CI only;
+                    NEVER implicitly means "deploy this SHA"
+runtime-candidate = the exact candidate authority pointer, moved by its own
+                    explicit CAS act (mirroring production-deploy's own
+                    discipline) — publishing a candidate is a pure
+                    declaration of intent and triggers nothing by itself
 production-deploy = the exact last successfully deployed runtime (see above)
 ```
 
-The generic controlled-production-deploy workflow triggers **only** on a
-push to `refs/heads/runtime-candidate`, never on a push to `main`. Publishing
-a runtime candidate is therefore its own explicit act (an exact CAS move of
-`runtime-candidate`, mirroring `production-deploy`'s own CAS discipline), not
-a side effect of merging to `main`.
+`controlled-production-deploy.yml` lives on `main` (the default branch, as
+`workflow_dispatch` requires) and triggers **only** on manual
+`workflow_dispatch` — never on any `push`, to `main` or to any other branch.
+Moving `runtime-candidate` does not, by itself, deploy anything: a GitHub
+Actions `push` event always runs the workflow version present at the pushed
+ref, so a workflow file living only on `main` could never reliably govern a
+`push`-triggered deploy off a separate `runtime-candidate` ref in the first
+place — this is why the workflow is dispatch-only rather than push-triggered
+against that ref.
 
-Before any production mutation, the workflow proves, from the runtime
-candidate it resolved (never by inferring one from `main`):
+Inside the run, three identities are kept explicitly distinct end to end and
+never conflated:
 
-- the candidate is a descendant of the current `production-deploy` (linear
-  runtime ancestry — `scripts/inspect-runtime-candidate-topology.sh`);
-- no commit in that exact range carries `.release/maintenance-only` (so a
-  maintenance/audit commit's tooling can never re-enter runtime history via
-  a normal deploy, even as an ancestor several commits back);
+```text
+CONTROLLER_SHA = github.sha            (this workflow's own commit)
+CANDIDATE_SHA  = git rev-parse origin/runtime-candidate,
+                 or the explicit recovery target_sha input
+PRODUCTION_SHA = scripts/read-production-deploy-ref.sh
+```
+
+`CONTROLLER_SHA` **MUST NOT** be used as the candidate SHA, `source_commit`,
+Coolify deploy target, `production-deploy` CAS target, or release-control
+acquire target. An ordinary (non-recovery) dispatch takes no candidate SHA
+input at all — only an optional `expected_candidate_sha`, a defensive check
+that must equal the exact SHA already at `runtime-candidate` or the run
+refuses; the actual candidate is always read fresh from the ref itself.
+
+Before any production mutation, the workflow proves, from that resolved
+candidate (never by inferring one from `main` or from its own commit):
+
+- the candidate is a descendant of the current `production-deploy`, with
+  **no merge commit anywhere in that exact range** — an ordinary runtime
+  candidate is a strictly linear chain, so a side lineage cannot enter
+  runtime history through a merge that itself carries no
+  `.release/maintenance-only` marker (`scripts/inspect-runtime-candidate-topology.sh`,
+  a pure read-only verifier that examines every commit's own tree along the
+  path, not just the candidate's tip or an aggregate diff — a later commit
+  deleting the marker file does not erase the historical fact that a
+  maintenance commit occurred, since the check walks the whole range);
+- no commit in that exact range carries `.release/maintenance-only`;
 - `production-deploy` still equals the value read at the start of the run
   (`scripts/read-production-deploy-ref.sh`, read again immediately before
   the CAS move).
 
-A recovery (`workflow_dispatch`, resuming an already-owned, already-paused
-same-owner deployment) acts under its own separate authority and explicitly
-waives the descendant/maintenance-lineage rule — it is recovering a specific
-already-authorized SHA, not selecting a new one.
+A recovery (`workflow_dispatch` with an explicit `target_sha`, resuming an
+already-owned, already-paused same-owner deployment) acts under its own
+separate authority and explicitly waives the descendant/linear/maintenance-
+lineage rule above — it is recovering a specific already-authorized SHA, not
+selecting a new one.
 
 ## Runtime candidates and maintenance commits are different artifact classes
 

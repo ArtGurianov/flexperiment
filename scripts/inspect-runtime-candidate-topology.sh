@@ -58,11 +58,19 @@ candidate_is_descendant="$(is_ancestor "$production_deploy" "$candidate")"
 # walks the exact candidate ancestry path and reports every commit in range
 # that carries the marker, rather than checking only the candidate's own tip.
 maintenance_commits_json="[]"
+merge_commits_json="[]"
 if [[ "$candidate_is_descendant" == true && "$production_deploy" != "$candidate" ]]; then
   maintenance_commits_json="$(
     git rev-list --ancestry-path "${production_deploy}..${candidate}" | while IFS= read -r commit; do
       if git cat-file -e "${commit}:.release/maintenance-only" 2>/dev/null; then printf '%s\n' "$commit"; fi
     done | jq -Rsc 'split("\n") | map(select(length > 0))'
+  )"
+  # An ordinary runtime candidate is a strictly linear chain from
+  # production-deploy: any merge commit in range means some other lineage
+  # (which may not itself carry the maintenance-only marker) entered runtime
+  # history. Recovery workflows waive this rule under their own authority.
+  merge_commits_json="$(
+    git rev-list --min-parents=2 --ancestry-path "${production_deploy}..${candidate}" | jq -Rsc 'split("\n") | map(select(length > 0))'
   )"
 fi
 
@@ -70,11 +78,13 @@ jq -cn \
   --arg production_deploy "$production_deploy" \
   --arg candidate "$candidate" \
   --argjson candidate_is_descendant_of_production_deploy "$candidate_is_descendant" \
-  --argjson maintenance_commits_in_range "$maintenance_commits_json" '
+  --argjson maintenance_commits_in_range "$maintenance_commits_json" \
+  --argjson merge_commits_in_range "$merge_commits_json" '
   {
     production_deploy: $production_deploy,
     candidate: $candidate,
     candidate_is_descendant_of_production_deploy: $candidate_is_descendant_of_production_deploy,
-    maintenance_commits_in_range: $maintenance_commits_in_range
+    maintenance_commits_in_range: $maintenance_commits_in_range,
+    merge_commits_in_range: $merge_commits_in_range
   }
 '

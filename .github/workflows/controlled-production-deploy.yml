@@ -1,14 +1,15 @@
 name: Controlled production deploy
 
 on:
-  push:
-    branches:
-      - runtime-candidate
   workflow_dispatch:
     inputs:
       target_sha:
-        description: Exact paused same-owner deployment SHA to recover.
-        required: true
+        description: Manual recovery only - exact paused same-owner deployment SHA to recover. Leave empty for an ordinary deploy of the current runtime-candidate.
+        required: false
+        type: string
+      expected_candidate_sha:
+        description: Optional defensive check for an ordinary (non-recovery) deploy - if set, must equal the exact SHA currently at runtime-candidate, or the run refuses.
+        required: false
         type: string
 
 permissions:
@@ -32,8 +33,13 @@ jobs:
       PUBLIC_FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
       PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
       ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
+      # This controller's own commit. It MUST NEVER be used as the deployment
+      # candidate, source_commit, Coolify target, or release acquire target -
+      # see "main is never an implicit deploy target" in
+      # docs/release/DEPLOYMENT_INVARIANTS.md.
       CONTROLLER_SHA: ${{ github.sha }}
       INPUT_TARGET_SHA: ${{ inputs.target_sha || '' }}
+      INPUT_EXPECTED_CANDIDATE_SHA: ${{ inputs.expected_candidate_sha || '' }}
       POLL_ATTEMPTS: "30"
       POLL_SECONDS: "10"
       POLL_CONNECT_TIMEOUT: "3"
@@ -55,15 +61,22 @@ jobs:
       - name: Resolve controller and immutable deployment target
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_EVENT_NAME" == 'workflow_dispatch' ]]; then
+          if [[ -n "$INPUT_TARGET_SHA" ]]; then
+            # Manual recovery of an already-owned, already-paused same-owner
+            # deployment, under its own separate authority (see the
+            # RECOVERY_MODE==1 precondition below).
             [[ "$INPUT_TARGET_SHA" =~ ^[0-9A-Fa-f]{40}$ ]] || { echo 'GENERIC_DEPLOY_MANUAL_RECOVERY_TARGET_INVALID' >&2; exit 1; }
             target_sha="${INPUT_TARGET_SHA,,}"
             recovery_mode=1
           else
-            # This workflow only triggers on a push to the dedicated
-            # runtime-candidate ref (never main), so GITHUB_SHA here is
-            # already exactly that ref's tip.
-            target_sha="$GITHUB_SHA"
+            # Ordinary controlled deploy: the candidate authority is the
+            # dedicated runtime-candidate ref. This is never $GITHUB_SHA -
+            # that is this controller's own commit, a distinct identity.
+            git fetch --no-tags origin runtime-candidate
+            target_sha="$(git rev-parse origin/runtime-candidate)"
+            if [[ -n "$INPUT_EXPECTED_CANDIDATE_SHA" ]]; then
+              [[ "${INPUT_EXPECTED_CANDIDATE_SHA,,}" == "$target_sha" ]] || { echo "RUNTIME_CANDIDATE_UNEXPECTED_SHA=$target_sha" >&2; exit 1; }
+            fi
             recovery_mode=0
           fi
           [[ "$target_sha" =~ ^[a-f0-9]{40}$ ]] || { echo 'GENERIC_DEPLOY_INVALID_SOURCE_COMMIT' >&2; exit 1; }
@@ -90,6 +103,7 @@ jobs:
           scripts/inspect-runtime-candidate-topology.sh --production-deploy "$PRODUCTION_DEPLOY_SHA" --candidate "$TARGET_SHA" > topology.json
           jq -e '.candidate_is_descendant_of_production_deploy == true' topology.json >/dev/null || { echo "RUNTIME_CANDIDATE_NOT_DESCENDANT_OF_PRODUCTION_DEPLOY" >&2; exit 1; }
           jq -e '(.maintenance_commits_in_range | length) == 0' topology.json >/dev/null || { jq -c '.maintenance_commits_in_range' topology.json >&2; echo "RUNTIME_CANDIDATE_CONTAINS_MAINTENANCE_COMMIT" >&2; exit 1; }
+          jq -e '(.merge_commits_in_range | length) == 0' topology.json >/dev/null || { jq -c '.merge_commits_in_range' topology.json >&2; echo "RUNTIME_CANDIDATE_NOT_LINEAR" >&2; exit 1; }
 
       - uses: pnpm/action-setup@v4
         with:

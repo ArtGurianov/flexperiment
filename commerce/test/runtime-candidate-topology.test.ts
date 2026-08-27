@@ -46,6 +46,7 @@ describe("runtime candidate topology inspection", () => {
       production_deploy: r3, candidate: r4,
       candidate_is_descendant_of_production_deploy: true,
       maintenance_commits_in_range: [],
+      merge_commits_in_range: [],
     });
   });
 
@@ -54,7 +55,7 @@ describe("runtime candidate topology inspection", () => {
     const r3 = createCommit(directory, { "a.txt": "r3\n" }, "R3");
     const result = run(directory, r3, r3);
     expect(result.status, result.stderr).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({ candidate_is_descendant_of_production_deploy: true, maintenance_commits_in_range: [] });
+    expect(JSON.parse(result.stdout)).toMatchObject({ candidate_is_descendant_of_production_deploy: true, maintenance_commits_in_range: [], merge_commits_in_range: [] });
   });
 
   it("flags every maintenance commit in the ancestry path, not only the tip", () => {
@@ -81,7 +82,26 @@ describe("runtime candidate topology inspection", () => {
       production_deploy: r3, candidate: r4,
       candidate_is_descendant_of_production_deploy: true,
       maintenance_commits_in_range: [],
+      merge_commits_in_range: [],
     });
+  });
+
+  it("flags a merge commit in the ordinary runtime range even without a maintenance marker", () => {
+    const directory = initRepo();
+    const r3 = createCommit(directory, { "a.txt": "r3\n" }, "R3");
+    git(directory, ["checkout", "-q", "-b", "side", r3]);
+    const side = createCommit(directory, { "side.txt": "side\n" }, "side branch (no maintenance marker)");
+    git(directory, ["checkout", "-q", "-b", "runtime", r3]);
+    createCommit(directory, { "runtime.txt": "runtime\n" }, "runtime commit");
+    git(directory, ["merge", "-q", "--no-ff", side, "-m", "merge side into runtime"]);
+    const merge = git(directory, ["rev-parse", "HEAD"]);
+    const r4 = createCommit(directory, { "commerce/src/release-control.ts": "0036 fix\n" }, "R4");
+    const result = run(directory, r3, r4);
+    expect(result.status, result.stderr).toBe(0);
+    const parsed = JSON.parse(result.stdout);
+    expect(parsed.candidate_is_descendant_of_production_deploy).toBe(true);
+    expect(parsed.maintenance_commits_in_range).toEqual([]);
+    expect(parsed.merge_commits_in_range).toEqual([merge]);
   });
 
   it("reports false for a candidate that is not a descendant of production-deploy", () => {

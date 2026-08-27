@@ -6,22 +6,51 @@ const workflow = readFileSync(".github/workflows/controlled-production-deploy.ym
 const deployHelper = readFileSync("scripts/controlled-coolify-deploy.sh", "utf8");
 
 describe("generic controlled production deploy workflow", () => {
-  it("keeps push-to-runtime-candidate deployment behavior under the shared protected production lock", () => {
-    expect(workflow).toContain("push:\n    branches:\n      - runtime-candidate");
-    expect(workflow).not.toContain("push:\n    branches:\n      - main");
+  it("deploys only from workflow_dispatch on main, never from a push to main or any branch", () => {
+    const onBlock = workflow.slice(workflow.indexOf("\non:\n"), workflow.indexOf("\npermissions:"));
+    expect(onBlock).not.toContain("push:");
+    expect(onBlock).toContain("workflow_dispatch:");
     expect(workflow).not.toContain("paths:");
     expect(workflow).toContain("workflow_dispatch:\n    inputs:\n      target_sha:");
+    expect(workflow).toContain("expected_candidate_sha:");
     expect(workflow).toContain("group: flexperiment-production-controlled-cutover");
     expect(workflow).toContain("cancel-in-progress: false");
     expect(workflow).toContain("environment: production");
     expect(workflow).toContain("contents: write");
-    expect(workflow).toContain("CONTROLLER_SHA: ${{ github.sha }}");
-    expect(workflow).toContain('target_sha="$GITHUB_SHA"');
-    expect(workflow).toContain('recovery_mode=0');
-    expect(workflow).toContain('echo "TARGET_SHA=$target_sha" >> "$GITHUB_ENV"');
+    expect(workflow).toContain("echo \"TARGET_SHA=$target_sha\" >> \"$GITHUB_ENV\"");
     expect(workflow).toContain('echo "RELEASE_ID=deploy-$target_sha" >> "$GITHUB_ENV"');
     expect(workflow).toContain('mode: "CONTROLLED_CUTOVER"');
     expect(workflow).not.toContain('mode: "ROLLING"');
+  });
+
+  it("never resolves the deployment candidate from this controller's own commit", () => {
+    expect(workflow).toContain("CONTROLLER_SHA: ${{ github.sha }}");
+    expect(workflow).toContain("MUST NEVER be used as the deployment");
+    expect(workflow).not.toContain('target_sha="$GITHUB_SHA"');
+    expect(workflow).not.toContain('target_sha="$CONTROLLER_SHA"');
+    expect(workflow).not.toContain("SOURCE_COMMIT=$CONTROLLER_SHA");
+    expect(workflow).not.toContain('scripts/controlled-coolify-deploy.sh "$CONTROLLER_SHA"');
+    expect(workflow).not.toContain('scripts/set-production-deploy-ref.sh "$CONTROLLER_SHA"');
+  });
+
+  it("resolves an ordinary deploy's candidate from the runtime-candidate ref, with an optional defensive check", () => {
+    expect(workflow).toContain('if [[ -n "$INPUT_TARGET_SHA" ]]; then');
+    expect(workflow).toContain("recovery_mode=1");
+    expect(workflow).toContain("git fetch --no-tags origin runtime-candidate");
+    expect(workflow).toContain('target_sha="$(git rev-parse origin/runtime-candidate)"');
+    expect(workflow).toContain("recovery_mode=0");
+    expect(workflow).toContain('if [[ -n "$INPUT_EXPECTED_CANDIDATE_SHA" ]]; then');
+    expect(workflow).toContain("RUNTIME_CANDIDATE_UNEXPECTED_SHA");
+  });
+
+  it("requires a strictly linear runtime range with no merge commits, in addition to no maintenance commits", () => {
+    expect(workflow).toContain("merge_commits_in_range");
+    expect(workflow).toContain("RUNTIME_CANDIDATE_NOT_LINEAR");
+    const topology = workflow.indexOf("Assert runtime-candidate topology");
+    const noMaintenance = workflow.indexOf("RUNTIME_CANDIDATE_CONTAINS_MAINTENANCE_COMMIT");
+    const noMerge = workflow.indexOf("RUNTIME_CANDIDATE_NOT_LINEAR");
+    expect(noMaintenance).toBeGreaterThan(topology);
+    expect(noMerge).toBeGreaterThan(noMaintenance);
   });
 
   it("resolves an explicit runtime-candidate authority instead of implying main is always the deploy target", () => {
@@ -218,7 +247,7 @@ describe("generic controlled production deploy workflow", () => {
     const deploy = workflow.indexOf("Deploy exact production candidate");
     const reopen = workflow.indexOf('"$PUBLIC_API_URL/v1/internal/release-control/reopen"');
     expect(dispatch).toBeGreaterThan(-1);
-    expect(workflow).toContain('[[ "$GITHUB_EVENT_NAME" == \'workflow_dispatch\' ]]');
+    expect(workflow).toContain('if [[ -n "$INPUT_TARGET_SHA" ]]; then');
     expect(workflow).toContain('[[ "$INPUT_TARGET_SHA" =~ ^[0-9A-Fa-f]{40}$ ]]');
     expect(workflow).toContain('target_sha="${INPUT_TARGET_SHA,,}"');
     expect(workflow).toContain('git fetch --no-tags origin "$target_sha"');
