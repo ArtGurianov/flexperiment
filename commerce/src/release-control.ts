@@ -94,6 +94,24 @@ const isMigrationInventoryExpectation = (expectedMigration: string): boolean =>
   new RegExp(`^${migrationInventoryPrefix}[a-f0-9]{64}$`).test(expectedMigration);
 const supportedMigrationExpectation = (expectedMigration: string): boolean =>
   requiredMigrationsFor(expectedMigration) !== undefined || isMigrationInventoryExpectation(expectedMigration);
+
+const r3ToR4Candidate = "aa492d5a6361c8d43f8cbb2a4e3b245611f4f76b";
+/**
+ * Hard-bound, one-shot, non-reusable: see
+ * bootstrapR3ToR4MigrationAllowlistTransition and "One-shot recovery bridges
+ * are non-reusable by construction" in docs/release/DEPLOYMENT_INVARIANTS.md.
+ */
+export const r3ToR4MigrationAllowlistBootstrap = {
+  release_id: "promo-codes-v0:b01f217ffd2a798fd32aa3d88e125a2e460bd39f",
+  from_source_commit: "97678cc19d2549146b0d4999466a4cded9320208",
+  from_generation: 5,
+  from_phase: "COMPLETE",
+  from_phase_sequence: 5,
+  to_source_commit: r3ToR4Candidate,
+  deploy_release_id: `deploy-${r3ToR4Candidate}`,
+  expected_migration: "0036_tochka_provider_error_evidence.sql",
+} as const;
+
 export const WORKER_EVIDENCE_MAX_AGE_MS = 90_000;
 
 export const workerEvidenceIsFresh = (workerSourceCommit: string | null, workerObservedAt: string | null, expectedSourceCommit: string, currentTime = Date.now()): boolean => {
@@ -625,6 +643,76 @@ export class ReleaseSalesGate {
       return this.status();
     });
     return transaction();
+  }
+
+  /**
+   * One-shot, hard-bound bootstrap for the exact R3->R4 transition: R3's
+   * running acquire() rejects migration 0036 (the stale allowlist this same
+   * commit fixes), so the ordinary generic-deploy workflow cannot reach far
+   * enough to run R4's own fixed acquire()/pause(). This performs that exact
+   * acquire+pause using R4's already-fixed semantics (this method ships in
+   * the same commit as the fix) against the still-running R3 database,
+   * offline. It writes only the ordinary ACQUIRED/PAUSED events R3 already
+   * understands - no new ledger event kind, no generation change to the
+   * promo-codes-v0 v2 chain, which this leaves untouched.
+   */
+  bootstrapR3ToR4MigrationAllowlistTransition(input: { expected_state_hash: string }) {
+    const bootstrap = r3ToR4MigrationAllowlistBootstrap;
+    return this.immediate(() => {
+      const gate = row(this.db);
+      if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
+      if (gate.owner_release_id === bootstrap.deploy_release_id) throw new ReleaseControlError("R3_R4_BOOTSTRAP_ALREADY_APPLIED");
+      const current = this.v2Head(bootstrap.release_id);
+      if (
+        current.phase !== bootstrap.from_phase
+        || current.candidate_generation !== bootstrap.from_generation
+        || current.phase_sequence !== bootstrap.from_phase_sequence
+        || current.source_commit !== bootstrap.from_source_commit
+      ) throw new ReleaseControlError("R3_R4_BOOTSTRAP_PRECONDITION_FAILED");
+      // Under the healthy-system invariant (reconcileHeadWithProjection), a
+      // COMPLETE v2 head already implies the simple gate is open (owner
+      // null, unpaused); this remains a defense-in-depth check against a
+      // corrupted/inconsistent gate rather than the primary diagnostic.
+      if (gate.owner_release_id || gate.sales_paused === 1) throw new ReleaseControlError("R3_R4_BOOTSTRAP_GATE_NOT_OPEN");
+      if (releaseStateHash(current) !== input.expected_state_hash) throw new ReleaseControlError("RELEASE_STATE_STALE");
+      const expected = this.expectedForHead(current);
+      if (expected.migration !== bootstrap.expected_migration) throw new ReleaseControlError("R3_R4_BOOTSTRAP_MIGRATION_MISMATCH");
+
+      const acquireRequest: ReleaseControlRequest = {
+        release_id: bootstrap.deploy_release_id,
+        mode: "CONTROLLED_CUTOVER",
+        expected: {
+          source_commit: bootstrap.to_source_commit,
+          migration: bootstrap.expected_migration,
+          legal_version: expected.legal_version,
+          legal_manifest_sha256: expected.legal_manifest_sha256,
+          legal_hashes: expected.legal_hashes,
+        },
+      };
+      // Nested inside this outer BEGIN IMMEDIATE transaction; better-sqlite3
+      // runs each as a SAVEPOINT rather than a separate BEGIN, so the whole
+      // bootstrap remains one atomic unit.
+      this.acquire(acquireRequest);
+      const paused = this.pause(acquireRequest);
+
+      const replayedAfter = this.v2Head(bootstrap.release_id);
+      if (
+        replayedAfter.phase !== current.phase
+        || replayedAfter.candidate_generation !== current.candidate_generation
+        || replayedAfter.phase_sequence !== current.phase_sequence
+        || replayedAfter.source_commit !== current.source_commit
+      ) throw new ReleaseControlError("R3_R4_BOOTSTRAP_REPLAY_FAILED");
+
+      const persistedGate = row(this.db)!;
+      if (
+        persistedGate.owner_release_id !== bootstrap.deploy_release_id
+        || persistedGate.sales_paused !== 1
+        || persistedGate.expected_source_commit !== bootstrap.to_source_commit
+        || persistedGate.expected_migration !== bootstrap.expected_migration
+      ) throw new ReleaseControlError("R3_R4_BOOTSTRAP_FINAL_VALIDATION_FAILED");
+
+      return paused;
+    });
   }
 
   updateExpectations(request: ReleaseControlRequest) {
