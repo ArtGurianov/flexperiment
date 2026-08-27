@@ -6,8 +6,9 @@ const workflow = readFileSync(".github/workflows/controlled-production-deploy.ym
 const deployHelper = readFileSync("scripts/controlled-coolify-deploy.sh", "utf8");
 
 describe("generic controlled production deploy workflow", () => {
-  it("keeps push-to-main deployment behavior under the shared protected production lock", () => {
-    expect(workflow).toContain("push:\n    branches:\n      - main");
+  it("keeps push-to-runtime-candidate deployment behavior under the shared protected production lock", () => {
+    expect(workflow).toContain("push:\n    branches:\n      - runtime-candidate");
+    expect(workflow).not.toContain("push:\n    branches:\n      - main");
     expect(workflow).not.toContain("paths:");
     expect(workflow).toContain("workflow_dispatch:\n    inputs:\n      target_sha:");
     expect(workflow).toContain("group: flexperiment-production-controlled-cutover");
@@ -21,6 +22,27 @@ describe("generic controlled production deploy workflow", () => {
     expect(workflow).toContain('echo "RELEASE_ID=deploy-$target_sha" >> "$GITHUB_ENV"');
     expect(workflow).toContain('mode: "CONTROLLED_CUTOVER"');
     expect(workflow).not.toContain('mode: "ROLLING"');
+  });
+
+  it("resolves an explicit runtime-candidate authority instead of implying main is always the deploy target", () => {
+    const readPointer = workflow.indexOf("Read current production-deploy pointer");
+    const resolveTarget = workflow.indexOf("Resolve controller and immutable deployment target");
+    const topology = workflow.indexOf("Assert runtime-candidate topology");
+    const reconfirm = workflow.indexOf("Reconfirm production-deploy has not moved since preflight");
+    const setRef = workflow.indexOf("Set guarded production deployment ref");
+    expect(readPointer).toBeGreaterThan(-1);
+    expect(readPointer).toBeLessThan(resolveTarget);
+    expect(workflow).toContain('production_deploy_sha="$(scripts/read-production-deploy-ref.sh)"');
+    expect(workflow).toContain('echo "PRODUCTION_DEPLOY_SHA=$production_deploy_sha" >> "$GITHUB_ENV"');
+    expect(topology).toBeGreaterThan(resolveTarget);
+    expect(workflow).toContain("if: env.RECOVERY_MODE == '0'");
+    expect(workflow).toContain('scripts/inspect-runtime-candidate-topology.sh --production-deploy "$PRODUCTION_DEPLOY_SHA" --candidate "$TARGET_SHA"');
+    expect(workflow).toContain("RUNTIME_CANDIDATE_NOT_DESCENDANT_OF_PRODUCTION_DEPLOY");
+    expect(workflow).toContain("RUNTIME_CANDIDATE_CONTAINS_MAINTENANCE_COMMIT");
+    expect(reconfirm).toBeGreaterThan(workflow.indexOf("Reconcile paused deployment"));
+    expect(reconfirm).toBeLessThan(setRef);
+    expect(workflow).toContain('current_production_deploy_sha="$(scripts/read-production-deploy-ref.sh)"');
+    expect(workflow).toContain("PRODUCTION_DEPLOY_MOVED_SINCE_PREFLIGHT");
   });
 
   it("binds surface proofs to the exact candidate contract identifiers", () => {
@@ -173,15 +195,15 @@ describe("generic controlled production deploy workflow", () => {
     expect(readiness).toBeLessThan(reopen);
   });
 
-  it("allows only the durable owner to recover after main advances", () => {
+  it("allows only the durable owner to recover after runtime-candidate advances", () => {
     const status = workflow.indexOf('release-control/status" > durable-before.json');
     const owner = workflow.indexOf("owner=\"$(jq -r '.owner_release_id // empty' durable-before.json)\"");
-    const freshMain = workflow.indexOf("GENERIC_DEPLOY_TARGET_IS_NOT_MAIN_HEAD");
+    const freshCandidate = workflow.indexOf("GENERIC_DEPLOY_TARGET_IS_NOT_RUNTIME_CANDIDATE_HEAD");
     const ref = workflow.indexOf("Set guarded production deployment ref");
     const deploy = workflow.indexOf("Deploy exact production candidate");
     expect(status).toBeGreaterThan(-1);
     expect(owner).toBeGreaterThan(status);
-    expect(freshMain).toBeGreaterThan(owner);
+    expect(freshCandidate).toBeGreaterThan(owner);
     expect(ref).toBeGreaterThan(workflow.indexOf("Reconcile paused deployment"));
     expect(ref).toBeLessThan(deploy);
     expect(workflow).toContain('[[ -z "$owner" || "$owner" == "$RELEASE_ID" ]]');

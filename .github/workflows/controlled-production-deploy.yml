@@ -3,7 +3,7 @@ name: Controlled production deploy
 on:
   push:
     branches:
-      - main
+      - runtime-candidate
   workflow_dispatch:
     inputs:
       target_sha:
@@ -45,6 +45,13 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
 
+      - name: Read current production-deploy pointer
+        run: |
+          set -euo pipefail
+          production_deploy_sha="$(scripts/read-production-deploy-ref.sh)"
+          git fetch --no-tags origin "$production_deploy_sha"
+          echo "PRODUCTION_DEPLOY_SHA=$production_deploy_sha" >> "$GITHUB_ENV"
+
       - name: Resolve controller and immutable deployment target
         run: |
           set -euo pipefail
@@ -53,6 +60,9 @@ jobs:
             target_sha="${INPUT_TARGET_SHA,,}"
             recovery_mode=1
           else
+            # This workflow only triggers on a push to the dedicated
+            # runtime-candidate ref (never main), so GITHUB_SHA here is
+            # already exactly that ref's tip.
             target_sha="$GITHUB_SHA"
             recovery_mode=0
           fi
@@ -68,6 +78,19 @@ jobs:
           echo "RECOVERY_MODE=$recovery_mode" >> "$GITHUB_ENV"
           echo "CANDIDATE_CONTRACT_PATH=$candidate_contract_path" >> "$GITHUB_ENV"
           echo "CANDIDATE_MANIFEST_PATH=$candidate_manifest_path" >> "$GITHUB_ENV"
+
+      - name: Assert runtime-candidate topology
+        # A recovery (workflow_dispatch) resumes an already-owned, already-
+        # paused same-owner deployment under its own separate authority and
+        # may target a SHA that predates the current production-deploy tip;
+        # it explicitly waives the descendant/maintenance-lineage rule below.
+        if: env.RECOVERY_MODE == '0'
+        run: |
+          set -euo pipefail
+          scripts/inspect-runtime-candidate-topology.sh --production-deploy "$PRODUCTION_DEPLOY_SHA" --candidate "$TARGET_SHA" > topology.json
+          jq -e '.candidate_is_descendant_of_production_deploy == true' topology.json >/dev/null || { echo "RUNTIME_CANDIDATE_NOT_DESCENDANT_OF_PRODUCTION_DEPLOY" >&2; exit 1; }
+          jq -e '(.maintenance_commits_in_range | length) == 0' topology.json >/dev/null || { jq -c '.maintenance_commits_in_range' topology.json >&2; echo "RUNTIME_CANDIDATE_CONTAINS_MAINTENANCE_COMMIT" >&2; exit 1; }
+
       - uses: pnpm/action-setup@v4
         with:
           version: 10.29.3
@@ -120,9 +143,9 @@ jobs:
           if ! jq -e '.complete' completion.json >/dev/null; then
             [[ -z "$owner" || "$owner" == "$RELEASE_ID" ]] || { echo "GENERIC_DEPLOY_BLOCKED_BY_RELEASE_OWNER=$owner" >&2; exit 1; }
           fi
-          git fetch origin main
+          git fetch origin runtime-candidate
           if ! jq -e '.complete' completion.json >/dev/null && [[ -z "$owner" ]]; then
-            [[ "$(git rev-parse origin/main)" == "$TARGET_SHA" ]] || { echo "GENERIC_DEPLOY_TARGET_IS_NOT_MAIN_HEAD" >&2; exit 1; }
+            [[ "$(git rev-parse origin/runtime-candidate)" == "$TARGET_SHA" ]] || { echo "GENERIC_DEPLOY_TARGET_IS_NOT_RUNTIME_CANDIDATE_HEAD" >&2; exit 1; }
           fi
           production_source="$(jq -er '.runtime.source_commit' durable-before.json)"
           [[ "$production_source" =~ ^[a-f0-9]{40}$ ]] || { echo "GENERIC_DEPLOY_PRODUCTION_SOURCE_UNAVAILABLE" >&2; exit 1; }
@@ -263,6 +286,13 @@ jobs:
           action="$(jq -er '.action' reconciliation.json)"
           [[ "$action" == "DEPLOY" || "$action" == "VERIFY_AND_REOPEN" ]] || { jq -c . reconciliation.json >&2; exit 1; }
           echo "DEPLOY_ACTION=$action" >> "$GITHUB_ENV"
+
+      - name: Reconfirm production-deploy has not moved since preflight
+        if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          current_production_deploy_sha="$(scripts/read-production-deploy-ref.sh)"
+          [[ "$current_production_deploy_sha" == "$PRODUCTION_DEPLOY_SHA" ]] || { echo "PRODUCTION_DEPLOY_MOVED_SINCE_PREFLIGHT" >&2; exit 1; }
 
       - name: Set guarded production deployment ref
         if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'

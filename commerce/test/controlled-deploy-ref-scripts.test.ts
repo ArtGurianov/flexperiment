@@ -81,6 +81,19 @@ esac
 describe("guarded production deployment ref scripts", () => {
   const deployHelper = "scripts/controlled-coolify-deploy.sh";
   const setRef = "scripts/set-production-deploy-ref.sh";
+  const readRef = "scripts/read-production-deploy-ref.sh";
+
+  it("reads the exact production-deploy pointer", () => {
+    const { result } = runScript(readRef, { remote: sourceCommit });
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toBe(sourceCommit);
+  });
+
+  it.each(["missing", "malformed", "ambiguous"] as const)("fails closed reading a %s production-deploy pointer", (remoteMode) => {
+    const { result } = runScript(readRef, { remote: "b".repeat(40), remoteMode });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("PRODUCTION_DEPLOY_REMOTE_POINTER_INVALID");
+  });
 
   it.each([undefined, "b".repeat(40)])("rejects a missing or wrong production-deploy ref before a webhook", (remote) => {
     const { result, curlLog } = runScript(deployHelper, { remote });

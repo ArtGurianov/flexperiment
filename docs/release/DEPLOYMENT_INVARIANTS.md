@@ -44,6 +44,41 @@ This does not authorize arbitrary rewriting:
   equality with the requested target.
 - Plain `--force` **MUST NOT** be used.
 
+## `main` is never an implicit deploy target
+
+Three identities, kept structurally distinct:
+
+```text
+main              = integration/audit history; CI only; NEVER implicitly
+                    means "deploy this SHA"
+runtime-candidate = the protected ref selected for the next controlled
+                    production deploy
+production-deploy = the exact last successfully deployed runtime (see above)
+```
+
+The generic controlled-production-deploy workflow triggers **only** on a
+push to `refs/heads/runtime-candidate`, never on a push to `main`. Publishing
+a runtime candidate is therefore its own explicit act (an exact CAS move of
+`runtime-candidate`, mirroring `production-deploy`'s own CAS discipline), not
+a side effect of merging to `main`.
+
+Before any production mutation, the workflow proves, from the runtime
+candidate it resolved (never by inferring one from `main`):
+
+- the candidate is a descendant of the current `production-deploy` (linear
+  runtime ancestry — `scripts/inspect-runtime-candidate-topology.sh`);
+- no commit in that exact range carries `.release/maintenance-only` (so a
+  maintenance/audit commit's tooling can never re-enter runtime history via
+  a normal deploy, even as an ancestor several commits back);
+- `production-deploy` still equals the value read at the start of the run
+  (`scripts/read-production-deploy-ref.sh`, read again immediately before
+  the CAS move).
+
+A recovery (`workflow_dispatch`, resuming an already-owned, already-paused
+same-owner deployment) acts under its own separate authority and explicitly
+waives the descendant/maintenance-lineage rule — it is recovering a specific
+already-authorized SHA, not selecting a new one.
+
 ## Runtime candidates and maintenance commits are different artifact classes
 
 A commit that merges a runtime candidate with one-shot recovery/bridge
