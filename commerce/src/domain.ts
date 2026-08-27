@@ -4,7 +4,7 @@ import { EmailProviderRejectedError, EventDumpCreateRejectedError, isEmailDelive
 import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import { LegalReleasePublishError, loadCanonicalLegalRelease, publishLegalRelease, verifyCurrentLegalSourceHashes } from "./legal-release";
 import type { PaymentProvider } from "./provider";
-import { ReleaseControlError, ReleaseSalesGate, type ReleaseControlRequest, releaseRuntimeEvidence } from "./release-control";
+import { ReleaseControlError, ReleaseSalesGate, type CandidateAcquireRequest, type CandidateAdoptRequest, type CandidateCompleteRequest, type CandidatePhaseRequest, type CertificationEvidenceRequest, type CertificationLeaseRequest, type CertificationOrderContext, type CertificationRetryRequest, type ReleaseControlRequest, releaseRuntimeEvidence } from "./release-control";
 import { checkoutRequestSchema, type CheckoutRequest, type ParticipantAgeBand } from "./types";
 import { findCityBySlug } from "../../lib/city-catalog";
 
@@ -304,6 +304,41 @@ export class CommerceDomain {
     }
   }
 
+  acquirePromoCandidate(input: CandidateAcquireRequest) {
+    try { return this.releaseSalesGate().acquireCandidate(input); }
+    catch (error) { if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status); throw error; }
+  }
+
+  adoptPromoCandidate(input: CandidateAdoptRequest) {
+    try { return this.releaseSalesGate().adoptCandidate(input); }
+    catch (error) { if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status); throw error; }
+  }
+
+  changePromoCandidatePhase(input: CandidatePhaseRequest) {
+    try { return this.releaseSalesGate().changeCandidatePhase(input); }
+    catch (error) { if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status); throw error; }
+  }
+
+  completePromoCandidate(input: CandidateCompleteRequest) {
+    try { return this.releaseSalesGate().completeCandidate(input, () => this.releaseRuntimeEvidence()); }
+    catch (error) { if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status); throw error; }
+  }
+
+  activatePromoCertificationLease(input: CertificationLeaseRequest) {
+    try { return this.releaseSalesGate().activateCertificationLease(input); }
+    catch (error) { if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status); throw error; }
+  }
+
+  certifyPromoCandidate(input: CertificationEvidenceRequest) {
+    try { return this.releaseSalesGate().certifyCandidate(input); }
+    catch (error) { if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status); throw error; }
+  }
+
+  retryPromoCertification(input: CertificationRetryRequest) {
+    try { return this.releaseSalesGate().retryCertification(input); }
+    catch (error) { if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status); throw error; }
+  }
+
   pauseNewOrders(input: ReleaseControlRequest) {
     try { return this.releaseSalesGate().pause(input); }
     catch (error) {
@@ -348,8 +383,8 @@ export class CommerceDomain {
     }
   }
 
-  assertNewOrdersOpen() {
-    try { this.releaseSalesGate().assertNewOrdersOpen(); }
+  assertNewOrdersOpen(context?: CertificationOrderContext) {
+    try { return this.releaseSalesGate().assertNewOrdersOpen(context); }
     catch (error) {
       if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
       throw error;

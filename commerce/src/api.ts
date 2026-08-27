@@ -452,6 +452,13 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   });
   releaseControl.get("/status", (c) => c.json({ ...domain.releaseControlStatus(), runtime: domain.releaseRuntimeEvidence() }));
   releaseControl.get("/completion/:releaseId", (c) => c.json(domain.releaseControlCompletion(c.req.param("releaseId"))));
+  releaseControl.post("/candidates/acquire", async (c) => c.json(domain.acquirePromoCandidate(await jsonBody(c.req.raw) as { head: import("./release-generation").GenerationHead })));
+  releaseControl.post("/candidates/adopt", async (c) => c.json(domain.adoptPromoCandidate(await jsonBody(c.req.raw) as import("./release-control").CandidateAdoptRequest)));
+  releaseControl.post("/candidates/phase", async (c) => c.json(domain.changePromoCandidatePhase(await jsonBody(c.req.raw) as import("./release-control").CandidatePhaseRequest)));
+  releaseControl.post("/candidates/certification/activate", async (c) => c.json(domain.activatePromoCertificationLease(await jsonBody(c.req.raw) as import("./release-control").CertificationLeaseRequest)));
+  releaseControl.post("/candidates/certification/certify", async (c) => c.json(domain.certifyPromoCandidate(await jsonBody(c.req.raw) as import("./release-control").CertificationEvidenceRequest)));
+  releaseControl.post("/candidates/certification/retry", async (c) => c.json(domain.retryPromoCertification(await jsonBody(c.req.raw) as import("./release-control").CertificationRetryRequest)));
+  releaseControl.post("/candidates/complete", async (c) => c.json(domain.completePromoCandidate(await jsonBody(c.req.raw) as import("./release-control").CandidateCompleteRequest)));
   releaseControl.post("/acquire", async (c) => c.json(domain.acquireReleaseControl(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
   releaseControl.post("/pause", async (c) => c.json(domain.pauseNewOrders(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
   releaseControl.post("/expectations", async (c) => c.json(domain.updateReleaseControlExpectations(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
