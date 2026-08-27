@@ -31,6 +31,19 @@ export type ReleaseCompletion = {
   expected: ReleaseExpectations | null;
   reopened_at: string | null;
 };
+/**
+ * A deliberately non-generic bridge for the one paused production generation
+ * which predates RUNTIME_READINESS_DEFECT replay support. Do not reuse these
+ * constants for a future recovery path.
+ */
+export const gen2BootstrapAdoption = {
+  release_id: "promo-codes-v0:b01f217ffd2a798fd32aa3d88e125a2e460bd39f",
+  from_generation: 2,
+  from_source_commit: "631876c16d03bf593d2a383ef89099b1f9d435ca",
+  to_generation: 3,
+  to_source_commit: "4ae2e047ef9236a22cb8bcd5f4dc9127d282d6ca",
+  target_replay_sha256: "27036ae4f14b0188a14e4fc8130443a70627c1effb8ded9b6a9e270d23e94ffc",
+} as const;
 export type CandidateAcquireRequest = { head: GenerationHead };
 export type CandidateAdoptRequest = { head: GenerationHead; expected_generation: number; from_sha: string; expected_state_hash: string };
 export type CandidatePhaseRequest = { release_id: string; candidate_generation: number; expected_state_hash: string; from_phase: ReleasePhase; phase_sequence: number; to_phase: Exclude<ReleasePhase, "COMPLETE"> };
@@ -353,6 +366,69 @@ export class ReleaseSalesGate {
       return { ...status(row(this.db)!), head: input.head };
     });
     return transaction();
+  }
+
+  /**
+   * Offline-only, self-disabling bridge. It cannot accept a caller-selected
+   * generation or source and must run while the old runtime is stopped: after
+   * the first appended event, that runtime could not replay the ledger.
+   */
+  bootstrapGenerationTwoAdoption(input: { expected_state_hash: string }) {
+    return this.immediate(() => {
+      const gate = row(this.db); if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
+      const current = this.v2Head(gen2BootstrapAdoption.release_id);
+      if (current.candidate_generation === gen2BootstrapAdoption.to_generation && current.source_commit === gen2BootstrapAdoption.to_source_commit && current.phase === "PAUSED" && current.phase_sequence === 0 && !current.certification) throw new ReleaseControlError("GEN2_BOOTSTRAP_ADOPT_ALREADY_APPLIED");
+      if (gate.owner_release_id !== gen2BootstrapAdoption.release_id || gate.sales_paused !== 1 || current.release_id !== gen2BootstrapAdoption.release_id || current.candidate_generation !== gen2BootstrapAdoption.from_generation || current.source_commit !== gen2BootstrapAdoption.from_source_commit || current.phase !== "PAUSED" || current.phase_sequence !== 0 || current.certification || releaseStateHash(current) !== input.expected_state_hash) throw new ReleaseControlError("GEN2_BOOTSTRAP_ADOPT_PRECONDITION_FAILED");
+      const applied = (this.db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as Array<{ version: string }>).map((row) => row.version);
+      const replacementInventory = { files: Object.fromEntries(readdirSync(resolve(process.cwd(), "commerce/migrations")).filter((name) => name.endsWith(".sql")).sort().map((name) => [name, createHash("sha256").update(readFileSync(resolve(process.cwd(), "commerce/migrations", name))).digest("hex")])) };
+      if (assertAppliedMigrationPrefix(applied, current.migration_inventory, replacementInventory) || Object.keys(replacementInventory.files).length !== Object.keys(current.migration_inventory.files).length || Object.entries(current.migration_inventory.files).some(([name, hash]) => replacementInventory.files[name] !== hash)) throw new ReleaseControlError("GEN2_BOOTSTRAP_ADOPT_MIGRATION_PREFIX_INVALID");
+      const defectHead = { ...current, phase: "RECOVERY_REQUIRED" as const, phase_sequence: current.phase_sequence + 1 };
+      const runtime_readiness_defect = {
+        reason: "RUNTIME_READINESS_DEFECT" as const,
+        readiness_component: "PROVIDER_READINESS" as const,
+        error_class: "PROVIDER_BAD_REQUEST" as const,
+        error_code: "HTTP_400",
+        source_commit: current.source_commit,
+      };
+      const next = {
+        ...current,
+        candidate_generation: gen2BootstrapAdoption.to_generation,
+        source_commit: gen2BootstrapAdoption.to_source_commit,
+        migration_inventory: replacementInventory,
+        phase: "PAUSED" as const,
+        phase_sequence: 0,
+      };
+      const expected = this.expectedForHead(next);
+      const events = this.db.prepare("SELECT rowid AS seq, release_id, action, details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid ASC").all(current.release_id) as V2Event[];
+      const defect = { seq: (events.at(-1)?.seq ?? 0) + 1, release_id: current.release_id, action: "PAUSED" as const, details_json: JSON.stringify({ schema_version: 2, kind: "RUNTIME_READINESS_DEFECT", from_phase: current.phase, from_phase_sequence: current.phase_sequence, head: defectHead, runtime_readiness_defect }) };
+      const supersede = { seq: defect.seq + 1, release_id: current.release_id, action: "PAUSED" as const, details_json: JSON.stringify({ schema_version: 2, kind: "CANDIDATE_SUPERSEDED", from_generation: current.candidate_generation, from_sha: current.source_commit, head: next }) };
+      const replay = replayReleaseGenerationChain([...events, defect, supersede]);
+      if (replay.corrupt || releaseStateHash(replay.head ?? defectHead) !== releaseStateHash(next)) throw new ReleaseControlError("GEN2_BOOTSTRAP_ADOPT_REPLAY_FAILED");
+      if (reconcileHeadWithProjection(next, {
+        owner_release_id: current.release_id, sales_paused: true,
+        expected_source_commit: expected.source_commit, expected_migration: expected.migration,
+        expected_legal_version: expected.legal_version, expected_legal_manifest_sha256: expected.legal_manifest_sha256,
+      })) throw new ReleaseControlError("GEN2_BOOTSTRAP_ADOPT_PROJECTION_FAILED");
+      const changed = this.db.prepare(`UPDATE release_sales_gate SET expected_source_commit = ?, expected_migration = ?, expected_legal_version = ?, expected_legal_manifest_sha256 = ?, sales_paused = 1, updated_at = datetime('now')
+        WHERE singleton = 1 AND owner_release_id = ? AND sales_paused = 1 AND expected_source_commit = ?`).run(
+        expected.source_commit, expected.migration, expected.legal_version, expected.legal_manifest_sha256,
+        current.release_id, current.source_commit,
+      );
+      if (changed.changes !== 1) throw new ReleaseControlError("GEN2_BOOTSTRAP_ADOPT_PRECONDITION_FAILED");
+      event(this.db, current.release_id, "PAUSED", JSON.parse(defect.details_json));
+      event(this.db, current.release_id, "PAUSED", JSON.parse(supersede.details_json));
+      const persistedHead = this.v2Head(current.release_id);
+      const persistedGate = row(this.db);
+      if (!persistedGate || releaseStateHash(persistedHead) !== releaseStateHash(next) || reconcileHeadWithProjection(persistedHead, {
+        owner_release_id: persistedGate.owner_release_id,
+        sales_paused: persistedGate.sales_paused === 1,
+        expected_source_commit: persistedGate.expected_source_commit,
+        expected_migration: persistedGate.expected_migration,
+        expected_legal_version: persistedGate.expected_legal_version,
+        expected_legal_manifest_sha256: persistedGate.expected_legal_manifest_sha256,
+      })) throw new ReleaseControlError("GEN2_BOOTSTRAP_ADOPT_FINAL_VALIDATION_FAILED");
+      return { ...status(persistedGate), head: persistedHead, state_hash: releaseStateHash(persistedHead) };
+    });
   }
 
   changeCandidatePhase(input: CandidatePhaseRequest) {

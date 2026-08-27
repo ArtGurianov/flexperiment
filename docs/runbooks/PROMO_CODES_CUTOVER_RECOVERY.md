@@ -76,6 +76,34 @@ requires a separately reviewed one-shot bootstrap authority operation. Do not
 misrepresent that bootstrap as `PAUSED → DEPLOYED_READ_ONLY`, hot-deploy a
 different source, or edit its durable source commit.
 
+### Fixed generation-two bridge
+
+The only supported bridge shape for the existing pre-endpoint generation is the
+offline `commerce:promo:gen2-bootstrap-adopt` utility; its execution always
+requires separate explicit authorization. It is intentionally not a workflow
+stage: an Actions runner does not own the SQLite volume and cannot prove that
+the old Commerce and worker have stopped. The utility accepts no
+release, generation, source, replacement, or error inputs. Its only mutable
+input is a fresh authoritative `expected_state_hash`, and it is hard-bound to:
+
+```text
+promo-codes-v0:b01f217ffd2a798fd32aa3d88e125a2e460bd39f
+generation 2 / 631876c16d03bf593d2a383ef89099b1f9d435ca
+generation 3 / 4ae2e047ef9236a22cb8bcd5f4dc9127d282d6ca
+```
+
+After separately authorized service shutdown, it uses one `BEGIN IMMEDIATE`
+transaction to verify the exact paused generation-two head, hash, owner,
+empty certification binding, and applied migration prefix; append the bounded
+`RUNTIME_READINESS_DEFECT`; adopt generation three with the inherited legal
+and migration contracts; verify that its bundled migration inventory is
+byte-identical to generation two; replay the whole proposed ledger using the
+exact SHA-256-pinned `4ae2e04` replay source; reconcile the projected gate;
+and commit. Any failed check rolls back the whole transaction. A second invocation fails
+`GEN2_BOOTSTRAP_ADOPT_ALREADY_APPLIED` without changing state. Do not start
+old `631876c` again after a successful commit: update `production-deploy` by
+its exact CAS and deploy `4ae2e04` before traffic resumes.
+
 | Durable phase | Allowed next transition |
 | --- | --- |
 | `PAUSED` | deploy the exact generation, then `DEPLOYED_READ_ONLY`; or explicit bounded runtime-readiness defect classification to `RECOVERY_REQUIRED` |
