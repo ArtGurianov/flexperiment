@@ -4,7 +4,7 @@ import { EmailProviderRejectedError, EventDumpCreateRejectedError, isEmailDelive
 import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import { LegalReleasePublishError, loadCanonicalLegalRelease, publishLegalRelease, verifyCurrentLegalSourceHashes } from "./legal-release";
 import type { PaymentProvider } from "./provider";
-import { ReleaseControlError, ReleaseSalesGate, type CandidateAcquireRequest, type CandidateAdoptRequest, type CandidateCompleteRequest, type CandidatePhaseRequest, type CertificationEvidenceRequest, type CertificationLeaseRequest, type CertificationOrderContext, type CertificationRetryRequest, type ReleaseControlRequest, releaseRuntimeEvidence } from "./release-control";
+import { ReleaseControlError, ReleaseSalesGate, type CandidateAcquireRequest, type CandidateAdoptRequest, type CandidateCompleteRequest, type CandidateHeadSnapshot, type CandidatePhaseRequest, type CertificationEvidenceRequest, type CertificationLeaseRequest, type CertificationOrderContext, type CertificationRetryRequest, type ReleaseControlRequest, releaseRuntimeEvidence } from "./release-control";
 import { checkoutRequestSchema, persistedAgentSchema, promoSchema, type CheckoutRequest, type ParticipantAgeBand } from "./types";
 import { PromoPricingError, pricePromo } from "./promo-pricing";
 import { findCityBySlug } from "../../lib/city-catalog";
@@ -297,6 +297,10 @@ export class CommerceDomain {
 
   releaseControlStatus() { return this.releaseSalesGate().status(); }
   releaseControlCompletion(releaseId: string) { return this.releaseSalesGate().completion(releaseId); }
+  promoCandidateHead(): CandidateHeadSnapshot {
+    try { return this.releaseSalesGate().candidateHead(); }
+    catch (error) { if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status); throw error; }
+  }
 
   acquireReleaseControl(input: ReleaseControlRequest) {
     try { return this.releaseSalesGate().acquire(input); }

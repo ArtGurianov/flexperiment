@@ -35,6 +35,7 @@ export type CandidateAcquireRequest = { head: GenerationHead };
 export type CandidateAdoptRequest = { head: GenerationHead; expected_generation: number; from_sha: string; expected_state_hash: string };
 export type CandidatePhaseRequest = { release_id: string; candidate_generation: number; expected_state_hash: string; from_phase: ReleasePhase; phase_sequence: number; to_phase: Exclude<ReleasePhase, "COMPLETE"> };
 export type CandidateCompleteRequest = { release_id: string; candidate_generation: number; expected_state_hash: string };
+export type CandidateHeadSnapshot = { schema_version: 2; head: GenerationHead | null; state_hash: string | null };
 export type CertificationLeaseRequest = {
   release_id: string;
   candidate_generation: number;
@@ -208,6 +209,38 @@ export class ReleaseSalesGate {
       if (!expected) return { complete: false, expected: null, reopened_at: null };
       return { complete: true, expected, reopened_at: eventRow.created_at };
     } catch { return { complete: false, expected: null, reopened_at: null }; }
+  }
+
+  candidateHead(): CandidateHeadSnapshot {
+    const gate = row(this.db);
+    if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
+    const events = this.db.prepare("SELECT rowid AS seq, release_id, action, details_json FROM release_sales_gate_events ORDER BY rowid ASC").all() as V2Event[];
+    const byRelease = new Map<string, V2Event[]>();
+    for (const event of events) {
+      try { if ((JSON.parse(event.details_json) as { schema_version?: unknown }).schema_version !== 2) continue; }
+      catch { continue; }
+      byRelease.set(event.release_id, [...(byRelease.get(event.release_id) ?? []), event]);
+    }
+    const replays = [...byRelease.values()].map((releaseEvents) => ({ events: releaseEvents, replay: replayReleaseGenerationChain(releaseEvents) }));
+    if (replays.some(({ replay }) => replay.corrupt)) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
+    const active = replays.flatMap(({ replay }) => replay.head && replay.head.phase !== "COMPLETE" ? [replay.head] : []);
+    const projection = {
+      owner_release_id: gate.owner_release_id, sales_paused: gate.sales_paused === 1,
+      expected_source_commit: gate.expected_source_commit, expected_migration: gate.expected_migration,
+      expected_legal_version: gate.expected_legal_version, expected_legal_manifest_sha256: gate.expected_legal_manifest_sha256,
+    };
+    if (gate.owner_release_id !== null) {
+      if (active.length !== 1 || reconcileHeadWithProjection(active[0], projection)) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
+      return { schema_version: 2, head: active[0], state_hash: releaseStateHash(active[0]) };
+    }
+    if (gate.sales_paused === 1 || active.length) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
+    const completed = replays
+      .filter(({ replay }) => replay.head?.phase === "COMPLETE")
+      .sort((left, right) => (right.events.at(-1)?.seq ?? 0) - (left.events.at(-1)?.seq ?? 0));
+    const head = completed.at(0)?.replay.head;
+    if (!head) return { schema_version: 2, head: null, state_hash: null };
+    if (reconcileHeadWithProjection(head, projection)) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
+    return { schema_version: 2, head, state_hash: releaseStateHash(head) };
   }
 
   private v2Head(releaseId: string) {

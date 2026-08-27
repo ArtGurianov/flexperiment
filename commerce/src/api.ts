@@ -468,8 +468,6 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     })();
     c.header("Set-Cookie", adminSessionCookie(cookieValue, 43_200)); return c.json({ ok: true });
   });
-  app.route("/v1/admin", admin);
-
   const releaseControl = new Hono();
   releaseControl.use("*", async (c, next) => {
     if (!verifyReleaseControlToken(c.req.header("Authorization"))) throw new DomainError("RELEASE_CONTROL_AUTH_REQUIRED", 401);
@@ -506,6 +504,16 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     }).success,
   }));
   releaseControl.post("/reopen", async (c) => c.json(domain.reopenNewOrders(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
+  const releaseControlHead = new Hono();
+  releaseControlHead.use("*", async (c, next) => {
+    if (!verifyReleaseControlToken(c.req.header("Authorization"))) throw new DomainError("RELEASE_CONTROL_AUTH_REQUIRED", 401);
+    noStore(c.res.headers);
+    await next();
+    noStore(c.res.headers);
+  });
+  releaseControlHead.get("/candidates/head", (c) => c.json(domain.promoCandidateHead()));
   app.route("/v1/internal/release-control", releaseControl);
+  app.route("/v1/admin/release-control", releaseControlHead);
+  app.route("/v1/admin", admin);
   return app;
 }

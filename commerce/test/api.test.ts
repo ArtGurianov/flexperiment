@@ -5,6 +5,7 @@ import { MockProvider } from "../src/provider";
 import { UnisenderGoProvider } from "../src/email-provider";
 import { CommerceDomain } from "../src/domain";
 import { decryptTicketCapability, sha256 } from "../src/crypto";
+import { releaseStateHash, type GenerationHead } from "../src/release-generation";
 import type { SmartCaptchaVerifier } from "../src/smartcaptcha";
 
 process.env.COMMERCE_SESSION_SECRET = "test-session-secret";
@@ -25,7 +26,133 @@ function appFixture(smartCaptcha: SmartCaptchaVerifier = passingCaptcha) {
   return { db, app: createApp(db, new MockProvider(), undefined, smartCaptcha) };
 }
 
+function promoCandidateHead(releaseId = randomUUID()): GenerationHead {
+  return {
+    release_id: releaseId,
+    candidate_generation: 1,
+    source_commit: "a".repeat(40),
+    migration_inventory: { files: { "0035_promo_codes_v0.sql": "b".repeat(64) } },
+    legal_baseline: {
+      legal_version: "test-1", legal_manifest_sha256: "0".repeat(64),
+      legal_hashes: Object.fromEntries(Object.keys(legalManifest.documents).map((name) => [name, "0".repeat(64)])),
+    },
+    release_family: "promo-codes-v0",
+    checkout_contract_version: "promo-codes-v0",
+    admin_contract_version: "promo-codes-v0",
+    phase: "PAUSED",
+    phase_sequence: 0,
+  };
+}
+
+const releaseControlHeaders = { Authorization: "Bearer release-control-test-token", "Content-Type": "application/json" };
+
+function appendV2Event(db: ReturnType<typeof openDatabase>, releaseId: string, action: "ACQUIRED" | "PAUSED" | "REOPENED", details: Record<string, unknown>) {
+  db.prepare("INSERT INTO release_sales_gate_events(release_id, action, details_json) VALUES (?, ?, ?)").run(releaseId, action, JSON.stringify({ schema_version: 2, ...details }));
+}
+
 describe("commerce HTTP boundary", () => {
+  it("returns the exact authoritative active v2 candidate head and server CAS hash", async () => {
+    const previousToken = process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
+    process.env.COMMERCE_RELEASE_CONTROL_TOKEN = "release-control-test-token";
+    const { db, app } = appFixture();
+    try {
+      const head = promoCandidateHead();
+      const acquired = await app.request("http://api.flexperiment.ru/v1/internal/release-control/candidates/acquire", { method: "POST", headers: releaseControlHeaders, body: JSON.stringify({ head }) });
+      expect(acquired.status).toBe(200);
+      const response = await app.request("http://api.flexperiment.ru/v1/admin/release-control/candidates/head", { headers: releaseControlHeaders });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ schema_version: 2, head, state_hash: releaseStateHash(head) });
+      const internal = await app.request("http://api.flexperiment.ru/v1/internal/release-control/candidates/head", { headers: releaseControlHeaders });
+      expect(internal.status).toBe(404);
+    } finally {
+      db.close();
+      if (previousToken === undefined) delete process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
+      else process.env.COMMERCE_RELEASE_CONTROL_TOKEN = previousToken;
+    }
+  });
+
+  it("returns the most recent completed v2 candidate head", async () => {
+    const previousToken = process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
+    process.env.COMMERCE_RELEASE_CONTROL_TOKEN = "release-control-test-token";
+    const { db, app } = appFixture();
+    try {
+      const paused = promoCandidateHead();
+      const deployed = { ...paused, phase: "DEPLOYED_READ_ONLY" as const, phase_sequence: 1 };
+      const binding = { lease_id: randomUUID(), occurrence_id: randomUUID(), promo_id: randomUUID(), expected_idempotency_key_hash: "c".repeat(64), lease_expires_at: "2030-01-01T00:00:00.000Z", status: "ACTIVE" as const };
+      const certificationOnly = { ...deployed, phase: "CERTIFICATION_ONLY" as const, phase_sequence: 2, certification: binding };
+      const inFlight = { ...certificationOnly, phase: "CERTIFICATION_IN_FLIGHT" as const, phase_sequence: 3, certification: { ...binding, status: "CONSUMED" as const } };
+      const certified = { ...inFlight, phase: "CERTIFIED" as const, phase_sequence: 4 };
+      const complete = { ...certified, phase: "COMPLETE" as const, phase_sequence: 5 };
+      appendV2Event(db, paused.release_id, "ACQUIRED", { kind: "CANDIDATE_ACQUIRED", head: paused });
+      appendV2Event(db, paused.release_id, "PAUSED", { kind: "PHASE_CHANGED", from_phase: paused.phase, from_phase_sequence: paused.phase_sequence, head: deployed });
+      appendV2Event(db, paused.release_id, "PAUSED", { kind: "PHASE_CHANGED", from_phase: deployed.phase, from_phase_sequence: deployed.phase_sequence, head: certificationOnly });
+      appendV2Event(db, paused.release_id, "PAUSED", { kind: "PHASE_CHANGED", from_phase: certificationOnly.phase, from_phase_sequence: certificationOnly.phase_sequence, head: inFlight });
+      appendV2Event(db, paused.release_id, "PAUSED", { kind: "PHASE_CHANGED", from_phase: inFlight.phase, from_phase_sequence: inFlight.phase_sequence, head: certified, certification_evidence: { occurrence_id: binding.occurrence_id, promo_id: binding.promo_id, order_id: randomUUID(), payment_id: randomUUID(), refund_id: randomUUID(), price_kopecks: 101, discount_kopecks: 1, amount_kopecks: 100, captured_kopecks: 100, refunded_kopecks: 100 } });
+      appendV2Event(db, paused.release_id, "REOPENED", { kind: "PHASE_CHANGED", from_phase: certified.phase, from_phase_sequence: certified.phase_sequence, head: complete });
+      const response = await app.request("http://api.flexperiment.ru/v1/admin/release-control/candidates/head", { headers: releaseControlHeaders });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ schema_version: 2, head: complete, state_hash: releaseStateHash(complete) });
+    } finally {
+      db.close();
+      if (previousToken === undefined) delete process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
+      else process.env.COMMERCE_RELEASE_CONTROL_TOKEN = previousToken;
+    }
+  });
+
+  it("fails closed when v2 replay or its projection is corrupt", async () => {
+    const previousToken = process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
+    process.env.COMMERCE_RELEASE_CONTROL_TOKEN = "release-control-test-token";
+    const { db, app } = appFixture();
+    try {
+      appendV2Event(db, randomUUID(), "PAUSED", { kind: "PHASE_CHANGED" });
+      const response = await app.request("http://api.flexperiment.ru/v1/admin/release-control/candidates/head", { headers: releaseControlHeaders });
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: { code: "RELEASE_STATE_CORRUPT" } });
+
+      const projectionFixture = appFixture();
+      try {
+        const head = promoCandidateHead();
+        const acquired = await projectionFixture.app.request("http://api.flexperiment.ru/v1/internal/release-control/candidates/acquire", { method: "POST", headers: releaseControlHeaders, body: JSON.stringify({ head }) });
+        expect(acquired.status).toBe(200);
+        projectionFixture.db.prepare("UPDATE release_sales_gate SET expected_source_commit = ? WHERE singleton = 1").run("f".repeat(40));
+        const projectionResponse = await projectionFixture.app.request("http://api.flexperiment.ru/v1/admin/release-control/candidates/head", { headers: releaseControlHeaders });
+        expect(projectionResponse.status).toBe(503);
+        expect(await projectionResponse.json()).toEqual({ error: { code: "RELEASE_STATE_CORRUPT" } });
+      } finally {
+        projectionFixture.db.close();
+      }
+    } finally {
+      db.close();
+      if (previousToken === undefined) delete process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
+      else process.env.COMMERCE_RELEASE_CONTROL_TOKEN = previousToken;
+    }
+  });
+
+  it("returns the server-created certification binding and its subsequent CAS hash", async () => {
+    const previousToken = process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
+    process.env.COMMERCE_RELEASE_CONTROL_TOKEN = "release-control-test-token";
+    const { db, app } = appFixture();
+    try {
+      const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
+      db.prepare("UPDATE occurrences SET price_kopecks = 101, visibility = 'HIDDEN', sales_status = 'CLOSED', fulfillment_status = 'SCHEDULED' WHERE id = ?").run(occurrenceId);
+      const domain = new CommerceDomain(db, new MockProvider());
+      const promo = domain.createPromo({ code: "HEADLEASE", status: "ACTIVE", discount_type: "FIXED", discount_value: 1 });
+      const acquired = domain.acquirePromoCandidate({ head: promoCandidateHead() });
+      const deployed = domain.changePromoCandidatePhase({ release_id: acquired.head.release_id, candidate_generation: acquired.head.candidate_generation, expected_state_hash: releaseStateHash(acquired.head), from_phase: "PAUSED", phase_sequence: 0, to_phase: "DEPLOYED_READ_ONLY" });
+      const activated = domain.activatePromoCertificationLease({ release_id: deployed.head.release_id, candidate_generation: deployed.head.candidate_generation, expected_state_hash: releaseStateHash(deployed.head), occurrence_id: occurrenceId, promo_id: String(promo.id), expected_idempotency_key_hash: sha256("candidate-head-certification-key"), lease_seconds: 180 });
+      const response = await app.request("http://api.flexperiment.ru/v1/admin/release-control/candidates/head", { headers: releaseControlHeaders });
+      expect(response.status).toBe(200);
+      const body = await response.json() as { schema_version: number; head: GenerationHead; state_hash: string };
+      expect(body).toMatchObject({ schema_version: 2, head: activated.head });
+      expect(body.state_hash).toBe(releaseStateHash(body.head));
+      expect(body.head.certification?.lease_id).toBe(activated.lease.lease_id);
+    } finally {
+      db.close();
+      if (previousToken === undefined) delete process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
+      else process.env.COMMERCE_RELEASE_CONTROL_TOKEN = previousToken;
+    }
+  });
+
   it("allows the configured public browser origin and required checkout headers", async () => {
     const { db, app } = appFixture();
     const response = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers: { Origin: "https://flexperiment.ru", "X-Forwarded-For": "127.0.0.1" } });
