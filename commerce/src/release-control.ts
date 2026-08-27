@@ -157,6 +157,32 @@ const sameExpectations = (gate: GateRow, request: ReleaseControlRequest) =>
   && gate.expected_legal_version === request.expected.legal_version
   && gate.expected_legal_manifest_sha256 === request.expected.legal_manifest_sha256;
 
+/**
+ * A non-v2 (legacy/generic) owner's coarse lifecycle is exactly
+ * ACQUIRED -> PAUSED -> REOPENED, ordered by rowid (never timestamps),
+ * each step optional but only reachable from the previous one, no repeats,
+ * and no event after the terminal REOPENED. This proves a foreign gate
+ * owner is a genuine generic deployment in a state consistent with the
+ * projection - not merely a release_id that happens not to be a v2 release
+ * (see "completed v2 + garbage owner" - that must still be corrupt).
+ * updateExpectations() intentionally does not append a new ACQUIRED/PAUSED
+ * event when it changes a paused owner's expected source/migration, so this
+ * only checks coarse ownership/pause state, never the frozen expected
+ * payload of the original event.
+ */
+const reconcileLegacyOwnerWithProjection = (actions: readonly string[], salesPaused: boolean): string | undefined => {
+  let state: "NONE" | "ACQUIRED" | "PAUSED" | "REOPENED" = "NONE";
+  for (const action of actions) {
+    if (action === "ACQUIRED" && state === "NONE") state = "ACQUIRED";
+    else if (action === "PAUSED" && state === "ACQUIRED") state = "PAUSED";
+    else if (action === "REOPENED" && state === "PAUSED") state = "REOPENED";
+    else return "RELEASE_STATE_CORRUPT";
+  }
+  if (state === "ACQUIRED") return salesPaused ? "RELEASE_STATE_CORRUPT" : undefined;
+  if (state === "PAUSED") return salesPaused ? undefined : "RELEASE_STATE_CORRUPT";
+  return "RELEASE_STATE_CORRUPT";
+};
+
 export const evaluateReopenGate = (request: ReleaseControlRequest, evidence: ReleaseRuntimeEvidence): string | undefined => {
   if (evidence.source_commit !== request.expected.source_commit) return "SOURCE_COMMIT_MISMATCH";
   const requiredMigrations = requiredMigrationsFor(request.expected.migration);
@@ -583,7 +609,20 @@ export class ReleaseSalesGate {
       if (active.length || gate.sales_paused === 1) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
     } else if (gate.owner_release_id !== null && active.length) {
       if (active.length !== 1 || reconcileHeadWithProjection(active[0], { owner_release_id: gate.owner_release_id, sales_paused: gate.sales_paused === 1, expected_source_commit: gate.expected_source_commit, expected_migration: gate.expected_migration, expected_legal_version: gate.expected_legal_version, expected_legal_manifest_sha256: gate.expected_legal_manifest_sha256 })) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
-    } else if (byRelease.size && gate.owner_release_id !== null) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
+    } else if (gate.owner_release_id !== null) {
+      // A completed v2 release's own reconcile invariant (its owner must be
+      // null) still applies specifically to its own release_id: it must
+      // never itself reappear as the gate's owner.
+      if (byRelease.has(gate.owner_release_id)) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
+      // Any other owner is a distinct, allowed mode - a completed v2 head
+      // remains historical integrity evidence but no longer owns the coarse
+      // projection once superseded - but it must be a *proven* generic
+      // owner, not merely a release_id that happens not to be a v2 release:
+      // reconcile its own coarse ACQUIRED/PAUSED/REOPENED history against
+      // this exact projection.
+      const ownerActions = (this.db.prepare("SELECT action FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid ASC").all(gate.owner_release_id) as { action: string }[]).map((row) => row.action);
+      if (reconcileLegacyOwnerWithProjection(ownerActions, gate.sales_paused === 1)) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
+    }
     if (gate.sales_paused !== 1) return undefined;
     if (!context || active.length !== 1) throw new ReleaseControlError("SALES_TEMPORARILY_PAUSED", 503);
     return this.certificationLeaseFor(active[0], context);
