@@ -34,7 +34,7 @@ function AgentForm({ initial = defaults, immutableSlug = false, submit, pending,
     <label>Тип исполнителя <select {...register("contractor_type")}><option value="SELF_EMPLOYED">Самозанятый</option><option value="INDIVIDUAL_ENTREPRENEUR">ИП</option></select></label>
     <label>Тип вознаграждения <select {...register("default_reward_type")}><option value="PERCENT">Процент</option><option value="FIXED">Фиксированное</option></select></label>
     {rewardType === "PERCENT" ? <label>Процент <input inputMode="decimal" {...register("percent", { required: true })} /><small>Например, 10%.</small></label> : <label>Вознаграждение, ₽<Controller control={control} name="fixedRubles" rules={{ required: true }} render={({ field }) => <MoneyInput value={field.value} onChange={field.onChange} required />} /></label>}
-    <label><input type="checkbox" {...register("enabled")} /> Активен</label>
+    <label className="checkbox-field"><input type="checkbox" {...register("enabled")} aria-describedby="agent-enabled-help" /><span><strong>Агент активен</strong><small id="agent-enabled-help">Отключённый агент не получает новые attribution через промокоды и referral links. История заказов сохраняется.</small></span></label>
     <Notice error={error} /><button className="primary" disabled={pending}>{pending ? "Сохраняем…" : "Сохранить"}</button>
   </form>;
 }
