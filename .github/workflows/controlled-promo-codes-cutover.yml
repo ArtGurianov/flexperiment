@@ -1,0 +1,272 @@
+name: Controlled Promo Codes v0 cutover
+
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Prepare the paused candidate/certification lease, or complete a certified candidate.
+        required: true
+        type: choice
+        options: [prepare, complete]
+      target_sha:
+        description: Exact immutable Phase-0/feature source SHA for this same-owner epoch.
+        required: true
+        type: string
+      replacement_sha:
+        description: Exact forward-only same-owner recovery source SHA (only from RECOVERY_REQUIRED).
+        required: false
+        type: string
+      certification_occurrence_id:
+        description: Hidden, closed 101-kopeck certification occurrence UUID.
+        required: false
+        type: string
+      certification_promo_id:
+        description: Active FIXED-1 certification promo UUID.
+        required: false
+        type: string
+      certification_idempotency_key_hash:
+        description: SHA-256 of the stable certification checkout idempotency key.
+        required: false
+        type: string
+      certification_lease_seconds:
+        description: Lease duration, from 180 to 300 seconds.
+        required: false
+        type: string
+      retry_reason:
+        description: Set only to OPERATIONAL for a resolved terminal payment failure and a fresh fixture.
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  cutover:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
+    env:
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+      COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL }}
+      PUBLIC_FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+      ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
+      CONTROLLER_SHA: ${{ github.sha }}
+      INPUT_STAGE: ${{ inputs.stage }}
+      INPUT_TARGET_SHA: ${{ inputs.target_sha }}
+      INPUT_REPLACEMENT_SHA: ${{ inputs.replacement_sha || '' }}
+      INPUT_CERTIFICATION_OCCURRENCE_ID: ${{ inputs.certification_occurrence_id || '' }}
+      INPUT_CERTIFICATION_PROMO_ID: ${{ inputs.certification_promo_id || '' }}
+      INPUT_CERTIFICATION_IDEMPOTENCY_KEY_HASH: ${{ inputs.certification_idempotency_key_hash || '' }}
+      INPUT_CERTIFICATION_LEASE_SECONDS: ${{ inputs.certification_lease_seconds || '' }}
+      INPUT_RETRY_REASON: ${{ inputs.retry_reason || '' }}
+      POLL_ATTEMPTS: "30"
+      POLL_SECONDS: "10"
+      INITIAL_READINESS_DELAY_SECONDS: "60"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Resolve immutable controller, source, and input bundle
+        run: |
+          set -euo pipefail
+          [[ "$INPUT_STAGE" == prepare || "$INPUT_STAGE" == complete ]] || { echo "PROMO_CUTOVER_STAGE_INVALID" >&2; exit 1; }
+          [[ "$INPUT_TARGET_SHA" =~ ^[0-9A-Fa-f]{40}$ ]] || { echo "PROMO_CUTOVER_TARGET_SHA_INVALID" >&2; exit 1; }
+          target_sha="${INPUT_TARGET_SHA,,}"
+          git fetch --no-tags origin "$target_sha"
+          git cat-file -e "$target_sha^{commit}" || { echo "PROMO_CUTOVER_TARGET_UNAVAILABLE" >&2; exit 1; }
+          git merge-base --is-ancestor "$target_sha" "$CONTROLLER_SHA" || { echo "PROMO_CUTOVER_TARGET_NOT_REACHABLE_FROM_CONTROLLER" >&2; exit 1; }
+          effective_sha="$target_sha"
+          if [[ -n "$INPUT_REPLACEMENT_SHA" ]]; then
+            [[ "$INPUT_STAGE" == prepare && "$INPUT_REPLACEMENT_SHA" =~ ^[0-9A-Fa-f]{40}$ ]] || { echo "PROMO_CUTOVER_REPLACEMENT_SHA_INVALID" >&2; exit 1; }
+            effective_sha="${INPUT_REPLACEMENT_SHA,,}"
+            git fetch --no-tags origin "$effective_sha"
+            git cat-file -e "$effective_sha^{commit}" || { echo "PROMO_CUTOVER_REPLACEMENT_UNAVAILABLE" >&2; exit 1; }
+          fi
+          present=0
+          for value in "$INPUT_CERTIFICATION_OCCURRENCE_ID" "$INPUT_CERTIFICATION_PROMO_ID" "$INPUT_CERTIFICATION_IDEMPOTENCY_KEY_HASH" "$INPUT_CERTIFICATION_LEASE_SECONDS"; do [[ -n "$value" ]] && present=$((present + 1)); done
+          [[ "$present" == 0 || "$present" == 4 ]] || { echo "PROMO_CUTOVER_CERTIFICATION_INPUTS_PARTIAL" >&2; exit 1; }
+          if [[ "$present" == 4 ]]; then
+            [[ "$INPUT_CERTIFICATION_OCCURRENCE_ID" =~ ^[0-9a-fA-F-]{36}$ && "$INPUT_CERTIFICATION_PROMO_ID" =~ ^[0-9a-fA-F-]{36}$ ]] || { echo "PROMO_CUTOVER_CERTIFICATION_SCOPE_INVALID" >&2; exit 1; }
+            [[ "$INPUT_CERTIFICATION_IDEMPOTENCY_KEY_HASH" =~ ^[a-f0-9]{64}$ ]] || { echo "PROMO_CUTOVER_CERTIFICATION_HASH_INVALID" >&2; exit 1; }
+            [[ "$INPUT_CERTIFICATION_LEASE_SECONDS" =~ ^[0-9]+$ && "$INPUT_CERTIFICATION_LEASE_SECONDS" -ge 180 && "$INPUT_CERTIFICATION_LEASE_SECONDS" -le 300 ]] || { echo "PROMO_CUTOVER_CERTIFICATION_LEASE_INVALID" >&2; exit 1; }
+          fi
+          [[ -z "$INPUT_RETRY_REASON" || "$INPUT_RETRY_REASON" == OPERATIONAL ]] || { echo "PROMO_CUTOVER_RETRY_REASON_INVALID" >&2; exit 1; }
+          [[ -z "$INPUT_RETRY_REASON" || "$present" == 4 ]] || { echo "PROMO_CUTOVER_RETRY_REQUIRES_FRESH_FIXTURE" >&2; exit 1; }
+          [[ "$INPUT_STAGE" == prepare || ("$present" == 0 && -z "$INPUT_RETRY_REASON") ]] || { echo "PROMO_CUTOVER_COMPLETE_INPUTS_FORBIDDEN" >&2; exit 1; }
+          echo "TARGET_SHA=$target_sha" >> "$GITHUB_ENV"
+          echo "EFFECTIVE_TARGET_SHA=$effective_sha" >> "$GITHUB_ENV"
+          echo "RELEASE_ID=promo-codes-v0:$target_sha" >> "$GITHUB_ENV"
+          echo "CERTIFICATION_INPUTS_PRESENT=$present" >> "$GITHUB_ENV"
+
+      - name: Bind source migration and surface contracts
+        run: |
+          set -euo pipefail
+          contract="$RUNNER_TEMP/promo-release-surface-contract.json"
+          git show "$EFFECTIVE_TARGET_SHA:release-surface-contract.json" > "$contract"
+          jq -e '.checkout_contract_version == "promo-codes-v0" and .admin_contract_version == "promo-codes-v0"' "$contract" >/dev/null || { echo "PROMO_CUTOVER_SURFACE_CONTRACT_MISMATCH" >&2; exit 1; }
+          inventory='{}'
+          while IFS= read -r migration; do
+            [[ -n "$migration" ]] || continue
+            hash="$(git show "$EFFECTIVE_TARGET_SHA:commerce/migrations/$migration" | shasum -a 256 | awk '{ print $1 }')"
+            inventory="$(jq -cn --argjson inventory "$inventory" --arg migration "$migration" --arg hash "$hash" '$inventory + {($migration): $hash}')"
+          done < <(git ls-tree -r --name-only "$EFFECTIVE_TARGET_SHA" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)
+          jq -e 'has("0035_promo_codes_v0.sql")' <<<"$inventory" >/dev/null || { echo "PROMO_CUTOVER_MIGRATION_0035_MISSING" >&2; exit 1; }
+          echo "$inventory" > "$RUNNER_TEMP/promo-migration-inventory.json"
+          echo "PROMO_MIGRATION_INVENTORY=$RUNNER_TEMP/promo-migration-inventory.json" >> "$GITHUB_ENV"
+
+      - name: Read durable baseline and build generation-one request
+        if: env.INPUT_STAGE == 'prepare' && env.INPUT_REPLACEMENT_SHA == ''
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > durable-before.json
+          jq -e '(.sales_paused == false and .owner_release_id == null and (.runtime.source_commit | type == "string"))' durable-before.json >/dev/null || {
+            owner="$(jq -r '.owner_release_id // empty' durable-before.json)"
+            [[ "$owner" == "$RELEASE_ID" ]] || { echo "PROMO_CUTOVER_BLOCKED_BY_RELEASE_OWNER=$owner" >&2; exit 1; }
+          }
+          production_source="$(jq -er '.runtime.source_commit | select(type == "string" and test("^[a-f0-9]{40}$"))' durable-before.json)"
+          git fetch --no-tags origin "$production_source"
+          production_inventory='{}'
+          while IFS= read -r migration; do
+            [[ -n "$migration" ]] || continue
+            hash="$(git show "$production_source:commerce/migrations/$migration" | shasum -a 256 | awk '{ print $1 }')"
+            production_inventory="$(jq -cn --argjson inventory "$production_inventory" --arg migration "$migration" --arg hash "$hash" '$inventory + {($migration): $hash}')"
+          done < <(git ls-tree -r --name-only "$production_source" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)
+          jq -e --argjson inventory "$production_inventory" '.runtime.migration_source_hashes == $inventory' durable-before.json >/dev/null || { echo "PROMO_CUTOVER_PRODUCTION_MIGRATION_SOURCE_MISMATCH" >&2; exit 1; }
+          jq -e --argjson inventory "$(cat "$PROMO_MIGRATION_INVENTORY")" '
+            .runtime as $runtime |
+            if ($runtime.legal_version | type == "string") and ($runtime.legal_manifest_sha256 | type == "string") and ($runtime.legal_hashes | type == "object") and ($runtime.current_legal_copies_match == true)
+            then {release_id: env.RELEASE_ID, candidate_generation: 1, source_commit: env.EFFECTIVE_TARGET_SHA, migration_inventory: {files: $inventory}, legal_baseline: {legal_version: $runtime.legal_version, legal_manifest_sha256: $runtime.legal_manifest_sha256, legal_hashes: $runtime.legal_hashes}, release_family: "promo-codes-v0", checkout_contract_version: "promo-codes-v0", admin_contract_version: "promo-codes-v0", phase: "PAUSED", phase_sequence: 0}
+            else error("PROMO_CUTOVER_PRODUCTION_BASELINE_INVALID") end
+          ' durable-before.json > initial-head.json
+
+      - name: Acquire generation one or read its authoritative state
+        if: env.INPUT_STAGE == 'prepare' && env.INPUT_REPLACEMENT_SHA == ''
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          owner="$(jq -r '.owner_release_id // empty' durable-before.json)"
+          [[ -z "$owner" || "$owner" == "$RELEASE_ID" ]] || { echo "PROMO_CUTOVER_BLOCKED_BY_RELEASE_OWNER=$owner" >&2; exit 1; }
+          if api -X POST --data-binary @<(jq -n --slurpfile head initial-head.json '{head: $head[0]}') "$PUBLIC_API_URL/v1/internal/release-control/candidates/acquire" > acquired.json; then
+            jq -e '.head.phase == "PAUSED" and .head.release_id == env.RELEASE_ID' acquired.json >/dev/null
+            echo "PROMO_HEAD_READ_REQUIRED_AFTER_DEPLOY=1" >> "$GITHUB_ENV"
+          else
+            api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json || { echo "PROMO_CUTOVER_HEAD_READ_UNAVAILABLE" >&2; exit 1; }
+            jq -e --arg release_id "$RELEASE_ID" '.schema_version == 2 and .head.release_id == $release_id and (.state_hash | test("^[a-f0-9]{64}$"))' candidate-head.json >/dev/null || { echo "PROMO_CUTOVER_HEAD_RECONCILIATION_INVALID" >&2; exit 1; }
+            echo "PROMO_HEAD_READ_REQUIRED_AFTER_DEPLOY=0" >> "$GITHUB_ENV"
+          fi
+
+      - name: Adopt a forward-only recovery generation
+        if: env.INPUT_STAGE == 'prepare' && env.INPUT_REPLACEMENT_SHA != ''
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json || { echo "PROMO_CUTOVER_HEAD_READ_UNAVAILABLE" >&2; exit 1; }
+          jq -e --arg release_id "$RELEASE_ID" '.schema_version == 2 and .head.release_id == $release_id and .head.phase == "RECOVERY_REQUIRED" and (.state_hash | test("^[a-f0-9]{64}$"))' candidate-head.json >/dev/null || { echo "PROMO_CUTOVER_RECOVERY_STATE_INVALID" >&2; exit 1; }
+          jq -n --slurpfile current candidate-head.json --argjson inventory "$(cat "$PROMO_MIGRATION_INVENTORY")" --arg source "$EFFECTIVE_TARGET_SHA" '
+            $current[0] as $current | {
+              head: ($current.head | .candidate_generation += 1 | .source_commit = $source | .migration_inventory = {files: $inventory} | .phase = "PAUSED" | .phase_sequence = 0 | del(.certification)),
+              expected_generation: $current.head.candidate_generation,
+              from_sha: $current.head.source_commit,
+              expected_state_hash: $current.state_hash
+            }
+          ' > adopt.json
+          api -X POST --data-binary @adopt.json "$PUBLIC_API_URL/v1/internal/release-control/candidates/adopt" > adopted.json
+          echo "PROMO_HEAD_READ_REQUIRED_AFTER_DEPLOY=1" >> "$GITHUB_ENV"
+
+      - name: Prove public checkout is paused before candidate deployment
+        if: env.INPUT_STAGE == 'prepare' && (env.PROMO_HEAD_READ_REQUIRED_AFTER_DEPLOY == '1' || env.INPUT_REPLACEMENT_SHA != '')
+        run: |
+          set -euo pipefail
+          pause_status="$(curl --silent --show-error --connect-timeout 10 --max-time 30 --output paused-checkout.json --write-out '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: promo-cutover-pause-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --data '{}' "$PUBLIC_API_URL/v1/public/checkouts")"
+          [[ "$pause_status" == "503" ]] || { cat paused-checkout.json >&2; exit 1; }
+          jq -e '.error.code == "SALES_TEMPORARILY_PAUSED"' paused-checkout.json >/dev/null
+
+      - name: Deploy the exact paused generation
+        if: env.INPUT_STAGE == 'prepare' && (env.PROMO_HEAD_READ_REQUIRED_AFTER_DEPLOY == '1' || env.INPUT_REPLACEMENT_SHA != '')
+        run: |
+          set -euo pipefail
+          scripts/set-production-deploy-ref.sh "$EFFECTIVE_TARGET_SHA"
+          scripts/controlled-coolify-deploy.sh "$EFFECTIVE_TARGET_SHA"
+          echo "Allowing Coolify deployments to start for ${INITIAL_READINESS_DELAY_SECONDS}s..."
+          sleep "$INITIAL_READINESS_DELAY_SECONDS"
+
+      - name: Reconcile deployed candidate and enter read-only phase
+        if: env.INPUT_STAGE == 'prepare'
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          for attempt in $(seq 1 "$POLL_ATTEMPTS"); do
+            if api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json && api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json && jq -e --arg source "$EFFECTIVE_TARGET_SHA" --arg release_id "$RELEASE_ID" --argjson inventory "$(cat "$PROMO_MIGRATION_INVENTORY")" '
+              .schema_version == 2 and .head.release_id == $release_id and .head.source_commit == $source and (.state_hash | test("^[a-f0-9]{64}$"))
+            ' candidate-head.json >/dev/null && jq -e --arg source "$EFFECTIVE_TARGET_SHA" --argjson inventory "$(cat "$PROMO_MIGRATION_INVENTORY")" '
+              .sales_paused == true and .owner_release_id == env.RELEASE_ID and .runtime.source_commit == $source and .runtime.worker_source_commit == $source and .runtime.current_legal_copies_match == true and (.runtime.migration_source_hashes == $inventory)
+            ' status.json >/dev/null; then break; fi
+            [[ "$attempt" == "$POLL_ATTEMPTS" ]] && { echo "PROMO_CUTOVER_RUNTIME_NOT_READY" >&2; exit 1; }
+            sleep "$POLL_SECONDS"
+          done
+          phase="$(jq -r '.head.phase' candidate-head.json)"
+          if [[ "$phase" == PAUSED ]]; then
+            jq -n --slurpfile current candidate-head.json '{release_id: $current[0].head.release_id, candidate_generation: $current[0].head.candidate_generation, expected_state_hash: $current[0].state_hash, from_phase: $current[0].head.phase, phase_sequence: $current[0].head.phase_sequence, to_phase: "DEPLOYED_READ_ONLY"}' > phase.json
+            api -X POST --data-binary @phase.json "$PUBLIC_API_URL/v1/internal/release-control/candidates/phase" > phase-result.json
+          fi
+          api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json
+          jq -e --arg source "$EFFECTIVE_TARGET_SHA" '.head.source_commit == $source and (.state_hash | test("^[a-f0-9]{64}$"))' candidate-head.json >/dev/null
+
+      - name: Activate or reconcile the certification lease
+        if: env.INPUT_STAGE == 'prepare' && env.CERTIFICATION_INPUTS_PRESENT == '4'
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json
+          if [[ -n "$INPUT_RETRY_REASON" ]]; then
+            jq -e '.head.phase == "CERTIFICATION_IN_FLIGHT"' candidate-head.json >/dev/null || { echo "PROMO_CUTOVER_RETRY_STATE_INVALID" >&2; exit 1; }
+            jq -n --slurpfile current candidate-head.json '{release_id: $current[0].head.release_id, candidate_generation: $current[0].head.candidate_generation, expected_state_hash: $current[0].state_hash, retry_reason: "OPERATIONAL"}' > retry.json
+            api -X POST --data-binary @retry.json "$PUBLIC_API_URL/v1/internal/release-control/candidates/certification/retry" > retry-result.json
+            api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json
+          fi
+          phase="$(jq -r '.head.phase' candidate-head.json)"
+          if [[ "$phase" == DEPLOYED_READ_ONLY ]]; then
+            jq -n --slurpfile current candidate-head.json --arg occurrence "$INPUT_CERTIFICATION_OCCURRENCE_ID" --arg promo "$INPUT_CERTIFICATION_PROMO_ID" --arg key_hash "$INPUT_CERTIFICATION_IDEMPOTENCY_KEY_HASH" --argjson lease_seconds "$INPUT_CERTIFICATION_LEASE_SECONDS" '{release_id: $current[0].head.release_id, candidate_generation: $current[0].head.candidate_generation, expected_state_hash: $current[0].state_hash, occurrence_id: $occurrence, promo_id: $promo, expected_idempotency_key_hash: $key_hash, lease_seconds: $lease_seconds}' > activate.json
+            api -X POST --data-binary @activate.json "$PUBLIC_API_URL/v1/internal/release-control/candidates/certification/activate" > activated.json
+            api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json
+          fi
+          phase="$(jq -r '.head.phase' candidate-head.json)"
+          if [[ "$phase" == CERTIFICATION_IN_FLIGHT || "$phase" == CERTIFIED ]]; then
+            jq -e --arg occurrence "$INPUT_CERTIFICATION_OCCURRENCE_ID" --arg promo "$INPUT_CERTIFICATION_PROMO_ID" --arg key_hash "$INPUT_CERTIFICATION_IDEMPOTENCY_KEY_HASH" '
+              .head.certification.occurrence_id == $occurrence and .head.certification.promo_id == $promo and .head.certification.expected_idempotency_key_hash == $key_hash and .head.certification.status == "CONSUMED" and (.state_hash | test("^[a-f0-9]{64}$"))
+            ' candidate-head.json >/dev/null || { echo "PROMO_CUTOVER_CERTIFICATION_RECONCILIATION_INVALID" >&2; exit 1; }
+            echo "PROMO_CUTOVER_CERTIFICATION_ALREADY_STARTED=$phase"
+            exit 0
+          fi
+          jq -e --arg occurrence "$INPUT_CERTIFICATION_OCCURRENCE_ID" --arg promo "$INPUT_CERTIFICATION_PROMO_ID" --arg key_hash "$INPUT_CERTIFICATION_IDEMPOTENCY_KEY_HASH" '
+            .head.phase == "CERTIFICATION_ONLY" and .head.certification.status == "ACTIVE" and .head.certification.occurrence_id == $occurrence and .head.certification.promo_id == $promo and .head.certification.expected_idempotency_key_hash == $key_hash and (.state_hash | test("^[a-f0-9]{64}$"))
+          ' candidate-head.json >/dev/null || { echo "PROMO_CUTOVER_CERTIFICATION_RECONCILIATION_INVALID" >&2; exit 1; }
+
+      - name: Complete only a certified authoritative candidate
+        if: env.INPUT_STAGE == 'complete'
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json
+          if jq -e --arg release_id "$RELEASE_ID" '.schema_version == 2 and .head.release_id == $release_id and .head.phase == "COMPLETE" and (.state_hash | test("^[a-f0-9]{64}$"))' candidate-head.json >/dev/null; then
+            api "$PUBLIC_API_URL/v1/internal/release-control/status" > completed-status.json
+            jq -e '.sales_paused == false and .owner_release_id == null' completed-status.json >/dev/null
+            exit 0
+          fi
+          jq -e --arg release_id "$RELEASE_ID" '.schema_version == 2 and .head.release_id == $release_id and (.head.source_commit | type == "string" and test("^[a-f0-9]{40}$")) and .head.phase == "CERTIFIED" and .head.certification.status == "CONSUMED" and (.state_hash | test("^[a-f0-9]{64}$"))' candidate-head.json >/dev/null || { echo "PROMO_CUTOVER_COMPLETE_STATE_INVALID" >&2; exit 1; }
+          jq -n --slurpfile current candidate-head.json '{release_id: $current[0].head.release_id, candidate_generation: $current[0].head.candidate_generation, expected_state_hash: $current[0].state_hash}' > complete.json
+          api -X POST --data-binary @complete.json "$PUBLIC_API_URL/v1/internal/release-control/candidates/complete" > completed.json
+          jq -e '.sales_paused == false and .owner_release_id == null and .head.phase == "COMPLETE"' completed.json >/dev/null
+          api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > completed-head.json
+          jq -e '.head.phase == "COMPLETE" and (.state_hash | test("^[a-f0-9]{64}$"))' completed-head.json >/dev/null

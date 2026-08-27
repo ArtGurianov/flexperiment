@@ -3,6 +3,31 @@
 Classify durable release-control state before any action. Do not use `HEAD` or
 `main` as authority and do not manually reopen sales.
 
+Use the manual
+[`controlled-promo-codes-cutover.yml`](../../.github/workflows/controlled-promo-codes-cutover.yml)
+workflow only. Its controller SHA is not the deployment source: operators pass
+the exact initial `target_sha`, and the durable release ID remains
+`promo-codes-v0:<initial-sha>` throughout recovery. The workflow reads
+`GET /v1/admin/release-control/candidates/head` with the release-control bearer
+credential and uses the returned `state_hash` verbatim for every next CAS
+transition. Do not derive a hash from workflow inputs or reconstruct a lease
+binding.
+
+Run `prepare` first without certification inputs. It acquires generation one,
+proves public checkout is paused, deploys the exact source, and reaches
+`DEPLOYED_READ_ONLY`. Create the hidden/closed 101-kopeck occurrence and active
+`FIXED 1` promo, retain a stable checkout idempotency key and pass its SHA-256
+with all other certification inputs to `prepare` again. That second pass only
+activates the lease and leaves the ordinary public/provider checkout flow to
+produce the consumed evidence. After evidence has reached `CERTIFIED`, use
+`complete`; it is the only workflow path that reopens sales.
+
+All four certification inputs are all-or-nothing. `retry_reason=OPERATIONAL`
+requires a fresh full fixture after resolved terminal payment failure.
+`replacement_sha` is accepted only by `prepare` from `RECOVERY_REQUIRED` and
+adopts generation N+1 under the same release ID; it never rewrites the old
+generation or reuses a consumed fixture.
+
 | Durable phase | Allowed next transition |
 | --- | --- |
 | `PAUSED` | deploy the exact generation, then `DEPLOYED_READ_ONLY` |
