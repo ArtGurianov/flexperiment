@@ -60,6 +60,53 @@ export const gen3ReadinessClassification = {
   error_class: "PROVIDER_BAD_REQUEST",
   error_code: "HTTP_400",
 } as const;
+/**
+ * Bound to the exact certified gen4/R2 history and its own recorded
+ * certification evidence. Unlike gen3ReadinessClassification this appends
+ * two events in one transaction (PUBLIC_FRONTEND_DEFECT then
+ * CANDIDATE_SUPERSEDED): the target runtime must already understand the
+ * defect edge before it exists in production history, so this bridge must
+ * only ever run built from that target runtime's own commit.
+ */
+export const gen4PublicFrontendRecoveryBridge = {
+  release_id: "promo-codes-v0:b01f217ffd2a798fd32aa3d88e125a2e460bd39f",
+  from_generation: 4,
+  from_source_commit: "5bdbb1a16505fc1711ba8eccdcdd64c6fc1451d9",
+  from_phase: "CERTIFIED",
+  from_phase_sequence: 4,
+  to_generation: 5,
+  to_source_commit: "97678cc19d2549146b0d4999466a4cded9320208",
+  defect: {
+    component: "PUBLIC_FRONTEND",
+    error_class: "STATIC_ROUTING",
+    error_code: "NESTED_TRAILING_SLASH_403",
+    probe_path: "/legal/public-offer/",
+    http_status: 403,
+    observed_frontend_source_commit: "4ae2e047ef9236a22cb8bcd5f4dc9127d282d6ca",
+  },
+  certification: {
+    lease_id: "e6cd4cd5-bb5c-41cd-8fd9-fe55be495eee",
+    occurrence_id: "768ebffe-90cc-4f4a-85c4-4864f0ac3b3a",
+    promo_id: "9c379dae-2528-49ed-b45c-927214861718",
+    expected_idempotency_key_hash: "2541e4acf822ec6b0c8557915bbe7092e8a8c8a5f8944fb1bc9e8bf0cf622cd1",
+    lease_expires_at: "2026-08-27T12:10:41.003Z",
+    order_id: "11a8efe2-8d9a-4869-b0f8-f770292ed246",
+    payment_id: "b51bde32-1de0-4088-a64a-fe2e34f77f10",
+    refund_id: "bc82e297-f067-4eac-99b7-536263f25d7b",
+    price_kopecks: 101,
+    discount_kopecks: 1,
+    amount_kopecks: 100,
+    captured_kopecks: 100,
+    refunded_kopecks: 100,
+  },
+  fixture: {
+    visibility: "HIDDEN",
+    sales_status: "CLOSED",
+    fulfillment_status: "SCHEDULED",
+    price_kopecks: 101,
+  },
+  target_replay_sha256: "088bc22ca1aafe40b3c075998a94588275093b10e1646b7cefddc3be01bff6c6",
+} as const;
 export type CandidateAcquireRequest = { head: GenerationHead };
 export type CandidateAdoptRequest = { head: GenerationHead; expected_generation: number; from_sha: string; expected_state_hash: string };
 export type CandidatePhaseRequest = { release_id: string; candidate_generation: number; expected_state_hash: string; from_phase: ReleasePhase; phase_sequence: number; to_phase: Exclude<ReleasePhase, "COMPLETE"> };
@@ -500,6 +547,119 @@ export class ReleaseSalesGate {
     });
   }
 
+  /**
+   * Offline-only, self-disabling bridge. It cannot accept a caller-selected
+   * release/generation/source/defect/certification: every field but the
+   * freshly read state hash is bound to gen4PublicFrontendRecoveryBridge. It
+   * appends PUBLIC_FRONTEND_DEFECT then CANDIDATE_SUPERSEDED in one
+   * transaction so no operational window exists where a runtime that cannot
+   * replay the new event kind is ever asked to.
+   */
+  bridgeGenerationFourToFive(input: { expected_state_hash: string }) {
+    return this.immediate(() => {
+      const gate = row(this.db); if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
+      const bridge = gen4PublicFrontendRecoveryBridge;
+      const current = this.v2Head(bridge.release_id);
+      if (current.candidate_generation === bridge.to_generation && current.source_commit === bridge.to_source_commit && current.phase === "PAUSED" && current.phase_sequence === 0 && !current.certification) throw new ReleaseControlError("GEN4_BRIDGE_ALREADY_APPLIED");
+      if (
+        gate.owner_release_id !== bridge.release_id || gate.sales_paused !== 1 ||
+        current.release_id !== bridge.release_id ||
+        current.candidate_generation !== bridge.from_generation ||
+        current.source_commit !== bridge.from_source_commit ||
+        current.phase !== bridge.from_phase ||
+        current.phase_sequence !== bridge.from_phase_sequence ||
+        !current.certification ||
+        current.certification.lease_id !== bridge.certification.lease_id ||
+        current.certification.occurrence_id !== bridge.certification.occurrence_id ||
+        current.certification.promo_id !== bridge.certification.promo_id ||
+        current.certification.expected_idempotency_key_hash !== bridge.certification.expected_idempotency_key_hash ||
+        current.certification.lease_expires_at !== bridge.certification.lease_expires_at ||
+        current.certification.status !== "CONSUMED" ||
+        releaseStateHash(current) !== input.expected_state_hash
+      ) throw new ReleaseControlError("GEN4_BRIDGE_PRECONDITION_FAILED");
+
+      // Cross-check the durable financial and fixture evidence directly
+      // against live rows, rather than trusting the word CERTIFIED alone.
+      const lease = this.db.prepare(`SELECT status, consumed_order_id FROM release_certification_allowlist
+        WHERE lease_id = ? AND owner_release_id = ? AND candidate_generation = ? AND expected_source_commit = ? AND occurrence_id = ? AND promo_id = ?`).get(
+        bridge.certification.lease_id, bridge.release_id, bridge.from_generation, bridge.from_source_commit, bridge.certification.occurrence_id, bridge.certification.promo_id,
+      ) as { status: string; consumed_order_id: string | null } | undefined;
+      if (!lease || lease.status !== "CONSUMED" || lease.consumed_order_id !== bridge.certification.order_id) throw new ReleaseControlError("GEN4_BRIDGE_EVIDENCE_MISMATCH");
+      const promo = this.db.prepare("SELECT status FROM promo_codes WHERE id = ?").get(bridge.certification.promo_id) as { status: string } | undefined;
+      if (!promo || promo.status !== "DISABLED") throw new ReleaseControlError("GEN4_BRIDGE_EVIDENCE_MISMATCH");
+      const occurrence = this.db.prepare("SELECT visibility, sales_status, fulfillment_status, price_kopecks FROM occurrences WHERE id = ?").get(bridge.certification.occurrence_id) as { visibility: string; sales_status: string; fulfillment_status: string; price_kopecks: number } | undefined;
+      if (!occurrence || occurrence.visibility !== bridge.fixture.visibility || occurrence.sales_status !== bridge.fixture.sales_status || occurrence.fulfillment_status !== bridge.fixture.fulfillment_status || Number(occurrence.price_kopecks) !== bridge.fixture.price_kopecks) throw new ReleaseControlError("GEN4_BRIDGE_EVIDENCE_MISMATCH");
+      const order = this.db.prepare("SELECT occurrence_id, amount_kopecks, discount_value_snapshot FROM orders WHERE id = ?").get(bridge.certification.order_id) as { occurrence_id: string; amount_kopecks: number; discount_value_snapshot: number | null } | undefined;
+      if (!order || order.occurrence_id !== bridge.certification.occurrence_id || Number(order.amount_kopecks) !== bridge.certification.amount_kopecks || Number(order.discount_value_snapshot) !== bridge.certification.discount_kopecks) throw new ReleaseControlError("GEN4_BRIDGE_EVIDENCE_MISMATCH");
+      const payment = this.db.prepare("SELECT id, order_id, captured_amount_kopecks FROM payments WHERE id = ?").get(bridge.certification.payment_id) as { id: string; order_id: string; captured_amount_kopecks: number } | undefined;
+      if (!payment || payment.order_id !== bridge.certification.order_id || Number(payment.captured_amount_kopecks) !== bridge.certification.captured_kopecks) throw new ReleaseControlError("GEN4_BRIDGE_EVIDENCE_MISMATCH");
+      const refund = this.db.prepare("SELECT id, payment_id, status, amount_kopecks FROM refunds WHERE id = ?").get(bridge.certification.refund_id) as { id: string; payment_id: string; status: string; amount_kopecks: number } | undefined;
+      if (!refund || refund.payment_id !== bridge.certification.payment_id || refund.status !== "SUCCEEDED" || Number(refund.amount_kopecks) !== bridge.certification.refunded_kopecks) throw new ReleaseControlError("GEN4_BRIDGE_EVIDENCE_MISMATCH");
+      if (Number(payment.captured_amount_kopecks) - Number(refund.amount_kopecks) !== 0) throw new ReleaseControlError("GEN4_BRIDGE_EVIDENCE_MISMATCH");
+
+      // F/R3 never touch migrations, so gen5's inventory must still equal
+      // gen4's, and it must still equal what is actually applied.
+      const applied = (this.db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as Array<{ version: string }>).map((row) => row.version);
+      if (applied.length !== Object.keys(current.migration_inventory.files).length || applied.some((name) => current.migration_inventory.files[name] === undefined)) throw new ReleaseControlError("GEN4_BRIDGE_MIGRATION_MISMATCH");
+      const onDiskHashes = Object.fromEntries(readdirSync(resolve(process.cwd(), "commerce/migrations")).filter((name) => name.endsWith(".sql")).sort().map((name) => [name, createHash("sha256").update(readFileSync(resolve(process.cwd(), "commerce/migrations", name))).digest("hex")]));
+      if (Object.entries(current.migration_inventory.files).some(([name, hash]) => onDiskHashes[name] !== hash)) throw new ReleaseControlError("GEN4_BRIDGE_MIGRATION_MISMATCH");
+
+      const recoveryHead = { ...current, phase: "RECOVERY_REQUIRED" as const, phase_sequence: current.phase_sequence + 1 };
+      const public_frontend_defect = {
+        reason: "PUBLIC_FRONTEND_DEFECT" as const,
+        component: bridge.defect.component,
+        error_class: bridge.defect.error_class,
+        error_code: bridge.defect.error_code,
+        probe_path: bridge.defect.probe_path,
+        http_status: bridge.defect.http_status,
+        observed_frontend_source_commit: bridge.defect.observed_frontend_source_commit,
+        source_commit: current.source_commit,
+      };
+      const gen5Head = {
+        release_id: current.release_id,
+        candidate_generation: bridge.to_generation,
+        source_commit: bridge.to_source_commit,
+        migration_inventory: current.migration_inventory,
+        legal_baseline: current.legal_baseline,
+        release_family: current.release_family,
+        checkout_contract_version: current.checkout_contract_version,
+        admin_contract_version: current.admin_contract_version,
+        phase: "PAUSED" as const,
+        phase_sequence: 0,
+      };
+      const events = this.db.prepare("SELECT rowid AS seq, release_id, action, details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid ASC").all(current.release_id) as V2Event[];
+      const defectEvent = { seq: (events.at(-1)?.seq ?? 0) + 1, release_id: current.release_id, action: "PAUSED" as const, details_json: JSON.stringify({ schema_version: 2, kind: "PUBLIC_FRONTEND_DEFECT", from_phase: current.phase, from_phase_sequence: current.phase_sequence, head: recoveryHead, public_frontend_defect }) };
+      const supersedeEvent = { seq: defectEvent.seq + 1, release_id: current.release_id, action: "PAUSED" as const, details_json: JSON.stringify({ schema_version: 2, kind: "CANDIDATE_SUPERSEDED", from_generation: recoveryHead.candidate_generation, from_sha: recoveryHead.source_commit, head: gen5Head }) };
+      const replay = replayReleaseGenerationChain([...events, defectEvent, supersedeEvent]);
+      if (replay.corrupt || releaseStateHash(replay.head ?? gen5Head) !== releaseStateHash(gen5Head)) throw new ReleaseControlError("GEN4_BRIDGE_REPLAY_FAILED");
+      const expected = this.expectedForHead(gen5Head);
+      if (reconcileHeadWithProjection(gen5Head, {
+        owner_release_id: current.release_id, sales_paused: true,
+        expected_source_commit: expected.source_commit, expected_migration: expected.migration,
+        expected_legal_version: expected.legal_version, expected_legal_manifest_sha256: expected.legal_manifest_sha256,
+      })) throw new ReleaseControlError("GEN4_BRIDGE_PROJECTION_FAILED");
+      const changed = this.db.prepare(`UPDATE release_sales_gate SET expected_source_commit = ?, expected_migration = ?, expected_legal_version = ?, expected_legal_manifest_sha256 = ?, sales_paused = 1, updated_at = datetime('now')
+        WHERE singleton = 1 AND owner_release_id = ? AND sales_paused = 1 AND expected_source_commit = ?`).run(
+        expected.source_commit, expected.migration, expected.legal_version, expected.legal_manifest_sha256,
+        current.release_id, current.source_commit,
+      );
+      if (changed.changes !== 1) throw new ReleaseControlError("GEN4_BRIDGE_PRECONDITION_FAILED");
+      event(this.db, current.release_id, "PAUSED", JSON.parse(defectEvent.details_json));
+      event(this.db, current.release_id, "PAUSED", JSON.parse(supersedeEvent.details_json));
+      const persistedHead = this.v2Head(current.release_id);
+      const persistedGate = row(this.db);
+      if (!persistedGate || releaseStateHash(persistedHead) !== releaseStateHash(gen5Head) || reconcileHeadWithProjection(persistedHead, {
+        owner_release_id: persistedGate.owner_release_id,
+        sales_paused: persistedGate.sales_paused === 1,
+        expected_source_commit: persistedGate.expected_source_commit,
+        expected_migration: persistedGate.expected_migration,
+        expected_legal_version: persistedGate.expected_legal_version,
+        expected_legal_manifest_sha256: persistedGate.expected_legal_manifest_sha256,
+      })) throw new ReleaseControlError("GEN4_BRIDGE_FINAL_VALIDATION_FAILED");
+      return { ...status(persistedGate), head: persistedHead, state_hash: releaseStateHash(persistedHead) };
+    });
+  }
+
   changeCandidatePhase(input: CandidatePhaseRequest) {
     const transaction = () => this.immediate(() => {
       const gate = row(this.db); if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
@@ -508,6 +668,7 @@ export class ReleaseSalesGate {
       if (current.candidate_generation !== input.candidate_generation || current.phase !== input.from_phase || current.phase_sequence !== input.phase_sequence || releaseStateHash(current) !== input.expected_state_hash) throw new ReleaseControlError("RELEASE_STATE_STALE");
       if (input.to_phase === "CERTIFICATION_ONLY" || input.to_phase === "CERTIFICATION_IN_FLIGHT" || input.to_phase === "CERTIFIED" || current.phase === "CERTIFICATION_IN_FLIGHT") throw new ReleaseControlError("CERTIFICATION_TRANSITION_REQUIRES_EVIDENCE");
       if (current.phase === "PAUSED" && input.to_phase === "RECOVERY_REQUIRED") throw new ReleaseControlError("RUNTIME_READINESS_DEFECT_EVIDENCE_REQUIRED");
+      if (current.phase === "CERTIFIED" && input.to_phase === "RECOVERY_REQUIRED") throw new ReleaseControlError("PUBLIC_FRONTEND_DEFECT_EVIDENCE_REQUIRED");
       let certification = current.certification;
       if (current.phase === "CERTIFICATION_ONLY" && current.certification?.status === "ACTIVE") {
         this.requireCertificationTable();

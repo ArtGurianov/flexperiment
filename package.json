@@ -30,10 +30,12 @@
     "commerce:create-unknown:repair": "tsx commerce/src/repair-create-unknown-payment.ts",
     "commerce:promo:gen2-bootstrap-adopt": "tsx commerce/src/gen2-bootstrap-adopt.ts",
     "commerce:promo:gen3-classify-readiness-defect": "tsx commerce/src/gen3-classify-readiness-defect.ts",
+    "commerce:promo:gen4-to-gen5-public-frontend-bridge": "tsx commerce/src/gen4-to-gen5-public-frontend-bridge.ts",
     "commerce:email:unack": "tsx commerce/src/clear-email-operational-acknowledgement.ts",
     "commerce:test:image": "bash commerce/test/docker-image-smoke.sh",
     "admin:build": "pnpm --filter @flexperiment/admin build",
     "admin:test:nginx": "bash deploy/test-admin-nginx-config.sh",
+    "frontend:test:nginx": "bash deploy/test-frontend-nginx-routing.sh",
     "admin:dev": "pnpm --filter @flexperiment/admin dev",
     "test": "vitest run",
     "test:watch": "vitest"

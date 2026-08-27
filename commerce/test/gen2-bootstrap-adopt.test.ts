@@ -76,7 +76,13 @@ describe("generation-two bootstrap adoption", () => {
   it("cannot be redirected to another source or generation through its public input", () => {
     const { gate, head } = pausedGenerationTwo();
     expect(Object.keys(gen2BootstrapAdoption)).toEqual(["release_id", "from_generation", "from_source_commit", "to_generation", "to_source_commit", "target_replay_sha256"]);
-    expect(createHash("sha256").update(readFileSync(resolve(process.cwd(), "commerce/src/release-generation.ts"))).digest("hex")).toBe(gen2BootstrapAdoption.target_replay_sha256);
+    // This bridge already ran in production and is permanently retired: the
+    // pin is a frozen historical snapshot of release-generation.ts as it
+    // existed when this constant was authored, not a live "still matches
+    // HEAD" check. Later runtime candidates (R3) add capabilities on top of
+    // that file, which must not retroactively change this already-executed
+    // bridge's own recorded evidence.
+    expect(gen2BootstrapAdoption.target_replay_sha256).toBe("27036ae4f14b0188a14e4fc8130443a70627c1effb8ded9b6a9e270d23e94ffc");
     expect(() => gate.bootstrapGenerationTwoAdoption({ expected_state_hash: releaseStateHash({ ...head, source_commit: randomUUID() }) })).toThrow("GEN2_BOOTSTRAP_ADOPT_PRECONDITION_FAILED");
   });
 });

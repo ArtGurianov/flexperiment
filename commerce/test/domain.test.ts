@@ -296,6 +296,7 @@ describe("commerce domain", () => {
     const certificationEvent = setup.db.prepare("SELECT details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid DESC LIMIT 1").get(activated.head.release_id) as { details_json: string };
     expect(JSON.parse(certificationEvent.details_json).certification_evidence).toMatchObject({ occurrence_id: setup.occurrenceId, promo_id: promo.id, order_id: payment.order_id, payment_id: payment.id, price_kopecks: 101, discount_kopecks: 1, amount_kopecks: 100, captured_kopecks: 100, refunded_kopecks: 100 });
     expect(() => setup.domain.completePromoCandidate({ release_id: certified.head.release_id, candidate_generation: certified.head.candidate_generation, expected_state_hash: releaseStateHash(certified.head) })).toThrow("CERTIFICATION_CLEANUP_INCOMPLETE");
+    expect(() => setup.domain.changePromoCandidatePhase({ release_id: certified.head.release_id, candidate_generation: certified.head.candidate_generation, expected_state_hash: releaseStateHash(certified.head), from_phase: "CERTIFIED", phase_sequence: certified.head.phase_sequence, to_phase: "RECOVERY_REQUIRED" })).toThrow("PUBLIC_FRONTEND_DEFECT_EVIDENCE_REQUIRED");
     expect(inFlight.sales_paused).toBe(true);
   });
 
