@@ -53,6 +53,46 @@ describe("generic controlled production deploy workflow", () => {
     expect(noMerge).toBeGreaterThan(noMaintenance);
   });
 
+  it("rechecks runtime-candidate freshness right before the first durable mutation, not after", () => {
+    const preflight = workflow.indexOf("Preflight immutable generic-deploy boundaries");
+    const recheck = workflow.indexOf("Reconfirm runtime-candidate has not moved since preflight");
+    const acquire = workflow.indexOf("Acquire owner and pause registrations");
+    const setRef = workflow.indexOf("Set guarded production deployment ref");
+    expect(recheck).toBeGreaterThan(preflight);
+    expect(recheck).toBeLessThan(acquire);
+    expect(workflow).toContain("if: env.RECOVERY_MODE == '0' && env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE' && env.REUSING_PAUSED_OWNER != '1'");
+    expect(workflow).toContain('current_candidate_sha="$(git rev-parse origin/runtime-candidate)"');
+    expect(workflow).toContain("RUNTIME_CANDIDATE_MOVED_SINCE_PREFLIGHT");
+    // Only one freshness recheck for the candidate - it does not repeat
+    // after the first mutation, since the durable owner becomes
+    // authoritative at that point.
+    const firstOccurrence = workflow.indexOf("RUNTIME_CANDIDATE_MOVED_SINCE_PREFLIGHT");
+    expect(firstOccurrence).toBeGreaterThan(-1);
+    expect(workflow.indexOf("RUNTIME_CANDIDATE_MOVED_SINCE_PREFLIGHT", firstOccurrence + 1)).toBe(-1);
+    expect(setRef).toBeGreaterThan(acquire);
+  });
+
+  it("runs every policy/boundary script from the controller's own checkout, never the candidate's tree", () => {
+    const checkoutSteps = [...workflow.matchAll(/uses:\s*actions\/checkout@/g)];
+    expect(checkoutSteps).toHaveLength(1);
+    expect(workflow).toContain("ref: ${{ github.sha }}");
+    expect(workflow).not.toMatch(/git checkout ["']?\$TARGET_SHA["']?/);
+    expect(workflow).not.toMatch(/git checkout ["']?\$CANDIDATE_SHA["']?/);
+    // The candidate SHA is touched only through read-only object reads.
+    expect(workflow).toContain('git show "$target_sha:release-surface-contract.json"');
+    expect(workflow).toContain('git show "$target_sha:commerce/legal/production-manifest.json"');
+    expect(workflow).toContain('git cat-file -e "$target_sha^{commit}"');
+    expect(workflow).toContain('git diff --name-only -z "$production_source" "$TARGET_SHA"');
+    expect(workflow).toContain('git ls-tree -r --name-only "$production_source"');
+    // Policy scripts referenced at literal controller-relative paths, never
+    // a path derived from the candidate SHA or a second worktree.
+    expect(workflow).toContain("scripts/read-production-deploy-ref.sh");
+    expect(workflow).toContain("scripts/inspect-runtime-candidate-topology.sh");
+    expect(workflow).toContain("scripts/set-production-deploy-ref.sh");
+    expect(workflow).not.toMatch(/\$TARGET_SHA\/scripts/);
+    expect(workflow).not.toContain("candidate/scripts/");
+  });
+
   it("resolves an explicit runtime-candidate authority instead of implying main is always the deploy target", () => {
     const readPointer = workflow.indexOf("Read current production-deploy pointer");
     const resolveTarget = workflow.indexOf("Resolve controller and immutable deployment target");

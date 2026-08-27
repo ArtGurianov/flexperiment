@@ -100,13 +100,35 @@ candidate (never by inferring one from `main` or from its own commit):
 - no commit in that exact range carries `.release/maintenance-only`;
 - `production-deploy` still equals the value read at the start of the run
   (`scripts/read-production-deploy-ref.sh`, read again immediately before
-  the CAS move).
+  the CAS move);
+- `runtime-candidate` still equals the value resolved during preflight,
+  reread immediately before the first durable mutation (the "Acquire owner
+  and pause registrations" step) — but **only up to that point**. Once
+  acquire/pause has actually run, the durable owner (`deploy-<candidate>`)
+  is authoritative; `runtime-candidate` is free to move again afterward
+  without stranding the paused deployment already in flight, so this
+  freshness check does not repeat after the first mutation.
 
 A recovery (`workflow_dispatch` with an explicit `target_sha`, resuming an
 already-owned, already-paused same-owner deployment) acts under its own
 separate authority and explicitly waives the descendant/linear/maintenance-
 lineage rule above — it is recovering a specific already-authorized SHA, not
 selecting a new one.
+
+### Controller code never executes from the candidate's tree
+
+The workflow performs exactly one checkout, at its own commit
+(`ref: ${{ github.sha }}`) — the candidate SHA is never checked out as the
+working tree. Every script invoked to reason about or gate the deployment
+(`scripts/read-production-deploy-ref.sh`, `scripts/inspect-runtime-candidate-topology.sh`,
+`scripts/set-production-deploy-ref.sh`, the `commerce:production-deploy:*`
+policy tooling) runs from that controller checkout, at controller-relative
+paths. The candidate SHA is touched only through read-only Git object reads
+(`git show`, `git cat-file`, `git diff`, `git ls-tree`) to compare specific
+file contents — never `git checkout`, and never executed. A candidate commit
+therefore cannot ship a same-named script that approves itself: the
+controller's own copy is what always runs, regardless of what the candidate
+contains at that path.
 
 ## Runtime candidates and maintenance commits are different artifact classes
 

@@ -271,6 +271,18 @@ jobs:
             } == $request[0].expected.legal_hashes)
           ' legal.json >/dev/null
 
+      - name: Reconfirm runtime-candidate has not moved since preflight
+        # Freshness matters only up to the first durable mutation: once
+        # acquire/pause has actually run (recovery, or a rerun reusing an
+        # already-paused owner), the durable owner is authoritative and
+        # runtime-candidate is free to move again without stranding it.
+        if: env.RECOVERY_MODE == '0' && env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE' && env.REUSING_PAUSED_OWNER != '1'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin runtime-candidate
+          current_candidate_sha="$(git rev-parse origin/runtime-candidate)"
+          [[ "$current_candidate_sha" == "$TARGET_SHA" ]] || { echo "RUNTIME_CANDIDATE_MOVED_SINCE_PREFLIGHT" >&2; exit 1; }
+
       - name: Acquire owner and pause registrations
         if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE' && env.REUSING_PAUSED_OWNER != '1'
         run: |
