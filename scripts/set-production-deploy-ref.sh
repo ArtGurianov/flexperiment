@@ -31,6 +31,15 @@ fi
 }
 git cat-file -e "$expected_source_commit^{commit}" || { echo "Deployment source commit is unavailable locally." >&2; exit 1; }
 
+# A maintenance/audit commit (a runtime candidate merged with one-shot bridge
+# tooling for review) declares itself with this marker and must never become
+# a deploy target: see "Runtime candidates and maintenance commits are
+# different artifact classes" in docs/release/DEPLOYMENT_INVARIANTS.md.
+if git cat-file -e "${expected_source_commit}:.release/maintenance-only" 2>/dev/null; then
+  echo "PRODUCTION_DEPLOY_TARGET_IS_MAINTENANCE_ONLY" >&2
+  exit 1
+fi
+
 if [[ "$observed_remote_sha" != "$expected_source_commit" ]]; then
   git push \
     "--force-with-lease=${remote_ref}:${observed_remote_sha}" \

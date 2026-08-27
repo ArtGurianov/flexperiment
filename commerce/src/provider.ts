@@ -3,8 +3,16 @@ import { tochkaConfigFromEnvironment, type TochkaConfig } from "./provider-confi
 type Fetch = typeof fetch;
 type PaymentCreateInput = { paymentId: string; paymentLinkId: string; amountKopecks: number; idempotencyKey: string; successUrl: string; customerEmail: string; purpose: string; receiptItemName: string };
 export type ProviderProbe = { environment: "production" | "sandbox" | "mock" };
+/**
+ * The single source of truth for every class this adapter can classify a
+ * failure as. `commerce/src/release-generation.ts`'s `runtimeReadinessErrorClasses`
+ * must accept every value here: see the parity test in
+ * `commerce/test/providers.test.ts`.
+ */
+export const providerErrorClasses = ["TLS_CERT_CHAIN_UNTRUSTED", "PROVIDER_BAD_REQUEST", "PROVIDER_HTTP_ERROR", "PROVIDER_NETWORK", "PROVIDER_RESPONSE_INVALID"] as const;
+export type ProviderErrorClass = (typeof providerErrorClasses)[number];
 export type ProviderErrorEvidence = {
-  provider_error_class: "TLS_CERT_CHAIN_UNTRUSTED" | "PROVIDER_BAD_REQUEST" | "PROVIDER_HTTP_ERROR" | "PROVIDER_NETWORK" | "PROVIDER_RESPONSE_INVALID";
+  provider_error_class: ProviderErrorClass;
   provider_error_code: string;
 };
 export type PaymentLinkOperation = {

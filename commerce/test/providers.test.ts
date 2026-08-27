@@ -2,7 +2,8 @@ import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { EmailProviderAmbiguousError, EmailProviderRejectedError, EventDumpCreateRejectedError, UnisenderGoProvider } from "../src/email-provider";
 import { tochkaConfigFromEnvironment } from "../src/provider-config";
-import { TochkaProvider, providerErrorEvidence, rublesFromKopecks } from "../src/provider";
+import { TochkaProvider, providerErrorClasses, providerErrorEvidence, rublesFromKopecks } from "../src/provider";
+import { runtimeReadinessErrorClasses } from "../src/release-generation";
 import { TochkaWebhookVerifier, webhookAmountKopecks } from "../src/tochka-webhook";
 import { verifyUnisenderWebhook } from "../src/unisender-webhook";
 
@@ -100,12 +101,25 @@ describe("provider contracts", () => {
       .rejects.toThrow("Tochka HTTP 400: code=400; id=error-1; Validation failed; errors=Validation Error: paymentMode is required");
   });
 
+  it("keeps every provider error class classifiable as a runtime-readiness defect", () => {
+    // A provider_error_class the release ledger's evidence parser cannot
+    // accept would silently block classifying a real production readiness
+    // failure of that class into RECOVERY_REQUIRED. This pins parity between
+    // the adapter's actual error taxonomy and the ledger's allowlist so the
+    // two can never drift apart again.
+    for (const errorClass of providerErrorClasses) {
+      expect(runtimeReadinessErrorClasses).toContain(errorClass);
+    }
+  });
+
   it("classifies untrusted TLS and HTTP failures without retaining raw transport details", async () => {
     const tlsProvider = new TochkaProvider(tochkaConfig, async () => { throw Object.assign(new Error("certificate chain changed"), { code: "SELF_SIGNED_CERT_IN_CHAIN" }); });
     await expect(tlsProvider.probe()).rejects.toMatchObject({ evidence: { provider_error_class: "TLS_CERT_CHAIN_UNTRUSTED", provider_error_code: "SELF_SIGNED_CERT_IN_CHAIN" } });
     expect(providerErrorEvidence(Object.assign(new Error("bad gateway"), { code: "ECONNRESET" }))).toEqual({ provider_error_class: "PROVIDER_NETWORK", provider_error_code: "ECONNRESET" });
     const httpProvider = new TochkaProvider(tochkaConfig, async () => Response.json({ message: "details that are not durable evidence" }, { status: 400 }));
     await expect(httpProvider.probe()).rejects.toMatchObject({ evidence: { provider_error_class: "PROVIDER_BAD_REQUEST", provider_error_code: "HTTP_400" } });
+    const serverErrorProvider = new TochkaProvider(tochkaConfig, async () => Response.json({ message: "upstream unavailable" }, { status: 503 }));
+    await expect(serverErrorProvider.probe()).rejects.toMatchObject({ evidence: { provider_error_class: "PROVIDER_HTTP_ERROR", provider_error_code: "HTTP_503" } });
   });
 
   it("keeps financial values in kopecks until exact edge serialization", () => {

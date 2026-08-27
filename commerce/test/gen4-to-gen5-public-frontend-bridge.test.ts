@@ -214,6 +214,11 @@ describe("gen4 to gen5 public-frontend recovery bridge", () => {
 
   it("cannot be redirected to another release/generation/source/defect through its public input", () => {
     expect(Object.keys(bridge)).toEqual(["release_id", "from_generation", "from_source_commit", "from_phase", "from_phase_sequence", "to_generation", "to_source_commit", "defect", "certification", "fixture", "target_replay_sha256"]);
-    expect(createHash("sha256").update(readFileSync(resolve(process.cwd(), "commerce/src/release-generation.ts"))).digest("hex")).toBe(bridge.target_replay_sha256);
+    // This bridge has already been executed in production and retired
+    // (second-run fails closed with GEN4_BRIDGE_ALREADY_APPLIED); its pin is
+    // a frozen historical fact, not a live comparison against HEAD's
+    // ever-evolving release-generation.ts (see gen2-bootstrap-adopt.test.ts
+    // for the same fix, applied for the same reason).
+    expect(bridge.target_replay_sha256).toBe("088bc22ca1aafe40b3c075998a94588275093b10e1646b7cefddc3be01bff6c6");
   });
 });

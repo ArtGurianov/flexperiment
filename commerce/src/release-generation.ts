@@ -44,7 +44,7 @@ export const parseCertificationDefectEvidence = (value: unknown): boolean => {
   const evidence = asRecord(value);
   return Boolean(evidence && typeof evidence.reason === "string" && certificationDefectReasons.has(evidence.reason) && nonEmptyString(evidence.order_id));
 };
-export const runtimeReadinessErrorClasses = ["TLS_CERT_CHAIN_UNTRUSTED", "PROVIDER_BAD_REQUEST", "PROVIDER_NETWORK", "PROVIDER_RESPONSE_INVALID"] as const;
+export const runtimeReadinessErrorClasses = ["TLS_CERT_CHAIN_UNTRUSTED", "PROVIDER_BAD_REQUEST", "PROVIDER_HTTP_ERROR", "PROVIDER_NETWORK", "PROVIDER_RESPONSE_INVALID"] as const;
 export type RuntimeReadinessErrorClass = (typeof runtimeReadinessErrorClasses)[number];
 export type RuntimeReadinessDefectEvidence = {
   reason: "RUNTIME_READINESS_DEFECT";

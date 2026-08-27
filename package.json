@@ -31,6 +31,7 @@
     "commerce:promo:gen2-bootstrap-adopt": "tsx commerce/src/gen2-bootstrap-adopt.ts",
     "commerce:promo:gen3-classify-readiness-defect": "tsx commerce/src/gen3-classify-readiness-defect.ts",
     "commerce:promo:gen4-to-gen5-public-frontend-bridge": "tsx commerce/src/gen4-to-gen5-public-frontend-bridge.ts",
+    "commerce:certification:create-fixture": "tsx commerce/src/create-certification-fixture.ts",
     "commerce:email:unack": "tsx commerce/src/clear-email-operational-acknowledgement.ts",
     "commerce:test:image": "bash commerce/test/docker-image-smoke.sh",
     "admin:build": "pnpm --filter @flexperiment/admin build",

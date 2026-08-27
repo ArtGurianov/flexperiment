@@ -11,6 +11,7 @@ afterEach(() => { while (temporaryDirectories.length) rmSync(temporaryDirectorie
 const runScript = (script: string, options: {
   remote?: string;
   catFileFails?: boolean;
+  maintenanceMarkerPresent?: boolean;
   remoteMode?: "missing" | "malformed" | "ambiguous";
   pushMode?: "lease-rejects" | "postcondition-mismatch";
 } = {}) => {
@@ -35,7 +36,16 @@ case "$1" in
       *) printf '%s\\t%s\\n' "$(cat "$GIT_REMOTE_STATE")" "$4" ;;
     esac
     ;;
-  cat-file) if [ "$GIT_CAT_FILE_FAILS" = 1 ]; then exit 1; fi ;;
+  cat-file)
+    case "$3" in
+      *:.release/maintenance-only)
+        [ "$GIT_MAINTENANCE_MARKER_PRESENT" = 1 ] && exit 0 || exit 1
+        ;;
+      *)
+        if [ "$GIT_CAT_FILE_FAILS" = 1 ]; then exit 1; fi
+        ;;
+    esac
+    ;;
   push)
     if [ "$GIT_PUSH_MODE" = lease-rejects ]; then exit 1; fi
     if [ "$GIT_PUSH_MODE" != postcondition-mismatch ]; then printf '%s' "$GIT_EXPECTED_SOURCE" > "$GIT_REMOTE_STATE"; fi
@@ -58,6 +68,7 @@ esac
       GIT_PUSH_MODE: options.pushMode ?? "success",
       GIT_EXPECTED_SOURCE: sourceCommit,
       GIT_CAT_FILE_FAILS: options.catFileFails ? "1" : "0",
+      GIT_MAINTENANCE_MARKER_PRESENT: options.maintenanceMarkerPresent ? "1" : "0",
       COOLIFY_TOKEN: "test-token",
       COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL: "https://commerce.example.test/deploy",
       COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL: "https://frontend.example.test/deploy",
@@ -126,6 +137,19 @@ describe("guarded production deployment ref scripts", () => {
     const { result, gitLog } = runScript(setRef, { remote: sourceCommit, catFileFails: true });
     expect(result.status).toBe(1);
     expect(gitLog).not.toContain("push origin");
+  });
+
+  it("refuses a maintenance/audit commit marked ineligible for deployment", () => {
+    const { result, gitLog } = runScript(setRef, { remote: "b".repeat(40), maintenanceMarkerPresent: true });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("PRODUCTION_DEPLOY_TARGET_IS_MAINTENANCE_ONLY");
+    expect(gitLog).not.toContain("push origin");
+  });
+
+  it("allows a runtime candidate that carries no maintenance-only marker", () => {
+    const { result, gitLog } = runScript(setRef, { remote: "b".repeat(40), maintenanceMarkerPresent: false });
+    expect(result.status).toBe(0);
+    expect(gitLog).toContain(`push --force-with-lease=refs/heads/production-deploy:${"b".repeat(40)} origin ${sourceCommit}:refs/heads/production-deploy`);
   });
 
 });
