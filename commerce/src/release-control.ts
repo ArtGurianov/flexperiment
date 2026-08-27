@@ -84,6 +84,7 @@ const requiredMigrationsByExpectedMigration: Record<string, readonly string[]> =
   "0033_runtime_release_evidence.sql": ["0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql"],
   "0034_worker_sweep_evidence.sql": diagnosticCutoverMigrations,
   "0035_promo_codes_v0.sql": [...diagnosticCutoverMigrations, "0035_promo_codes_v0.sql"],
+  "0036_tochka_provider_error_evidence.sql": [...diagnosticCutoverMigrations, "0035_promo_codes_v0.sql", "0036_tochka_provider_error_evidence.sql"],
 };
 export const requiredMigrationsFor = (expectedMigration: string): readonly string[] | undefined => requiredMigrationsByExpectedMigration[expectedMigration];
 const migrationInventoryPrefix = "inventory-sha256:";
