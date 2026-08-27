@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import { r3ToR4MigrationAllowlistBootstrap, ReleaseSalesGate } from "../src/release-control";
-import { releaseStateHash, type GenerationHead, type V2Event } from "../src/release-generation";
+import { releaseStateHash, replayReleaseGenerationChain, type GenerationHead, type V2Event } from "../src/release-generation";
 
 const bootstrap = r3ToR4MigrationAllowlistBootstrap;
 const databases: ReturnType<typeof openDatabase>[] = [];
@@ -192,16 +192,56 @@ describe("R3->R4 migration-allowlist bootstrap", () => {
     expect(() => gate.bootstrapR3ToR4MigrationAllowlistTransition({ expected_state_hash: releaseStateHash(complete) })).toThrow("R3_R4_BOOTSTRAP_MIGRATION_MISMATCH");
   });
 
-  it("rolls back the whole transaction if the ledger write is forced to fail after the projection update", () => {
+  it("rolls back the whole transaction if pause() is forced to fail after acquire() already ran", () => {
+    // acquire() and pause() each run as their own this.db.transaction(...),
+    // but nested inside this method's outer BEGIN IMMEDIATE they execute as
+    // SAVEPOINTs, not separate BEGIN/COMMIT pairs - so a failure inside
+    // pause(), after acquire() already committed its savepoint, must still
+    // unwind the whole thing back to nothing, not leave acquire()'s effect
+    // persisted. Force the failure exactly there: the trigger fires on the
+    // sales_paused UPDATE that only pause() performs.
     const { db, gate, head } = completedGenerationFive();
-    const trigger = "CREATE TEMP TRIGGER r3_r4_bootstrap_block AFTER INSERT ON release_sales_gate_events WHEN NEW.action = 'PAUSED' AND NEW.release_id = 'INTENTIONALLY_UNUSED' BEGIN SELECT 1; END;";
-    db.exec(trigger);
-    const forcedFailureTrigger = `CREATE TEMP TRIGGER r3_r4_bootstrap_force_fail AFTER UPDATE OF sales_paused ON release_sales_gate WHEN NEW.sales_paused = 1 BEGIN SELECT RAISE(ABORT, 'forced'); END;`;
-    db.exec(forcedFailureTrigger);
+    const beforeGateRow = db.prepare("SELECT * FROM release_sales_gate WHERE singleton = 1").get();
+    const beforeDeployEventCount = (db.prepare("SELECT COUNT(*) AS count FROM release_sales_gate_events WHERE release_id = ?").get(bootstrap.deploy_release_id) as { count: number }).count;
+    const beforePromoEventCount = (db.prepare("SELECT COUNT(*) AS count FROM release_sales_gate_events WHERE release_id = ?").get(bootstrap.release_id) as { count: number }).count;
+    expect(beforeDeployEventCount).toBe(0);
+
+    db.exec("CREATE TEMP TRIGGER r3_r4_bootstrap_force_fail AFTER UPDATE OF sales_paused ON release_sales_gate WHEN NEW.sales_paused = 1 BEGIN SELECT RAISE(ABORT, 'forced'); END;");
     expect(() => gate.bootstrapR3ToR4MigrationAllowlistTransition({ expected_state_hash: releaseStateHash(head) })).toThrow();
-    const gateRow = db.prepare("SELECT sales_paused, owner_release_id FROM release_sales_gate WHERE singleton = 1").get();
-    expect(gateRow).toMatchObject({ sales_paused: 0, owner_release_id: null });
-    const deployEvents = db.prepare("SELECT COUNT(*) AS count FROM release_sales_gate_events WHERE release_id = ?").get(bootstrap.deploy_release_id) as { count: number };
-    expect(deployEvents.count).toBe(0);
+
+    const afterGateRow = db.prepare("SELECT * FROM release_sales_gate WHERE singleton = 1").get();
+    expect(afterGateRow).toEqual(beforeGateRow);
+    const afterDeployEventCount = (db.prepare("SELECT COUNT(*) AS count FROM release_sales_gate_events WHERE release_id = ?").get(bootstrap.deploy_release_id) as { count: number }).count;
+    expect(afterDeployEventCount).toBe(0);
+    const afterPromoEventCount = (db.prepare("SELECT COUNT(*) AS count FROM release_sales_gate_events WHERE release_id = ?").get(bootstrap.release_id) as { count: number }).count;
+    expect(afterPromoEventCount).toBe(beforePromoEventCount);
+    const afterEvents = db.prepare("SELECT rowid AS seq, release_id, action, details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid ASC").all(bootstrap.release_id) as V2Event[];
+    const afterReplay = replayReleaseGenerationChain(afterEvents);
+    expect(afterReplay.corrupt).toBeUndefined();
+    expect(afterReplay.head).toEqual(head);
+  });
+
+  it("proves R3's own (unmodified) replay implementation understands the resulting ledger unchanged - release-generation.ts is byte-identical between R3 and R4", () => {
+    // Frozen historical fact, not a live git/HEAD comparison (a shallow CI
+    // checkout may not have R3's commit object at all, and per this repo's
+    // own convention a bridge's provenance pin is checked against the
+    // literal recorded at build time - see docs/release/DEPLOYMENT_INVARIANTS.md,
+    // "One-shot recovery bridges are non-reusable by construction"). Verified
+    // once directly: `git show 97678cc...:commerce/src/release-generation.ts`
+    // and the current file hash to the same value.
+    const r3ReleaseGenerationSha256 = "088bc22ca1aafe40b3c075998a94588275093b10e1646b7cefddc3be01bff6c6";
+    const currentSource = readFileSync(resolve(process.cwd(), "commerce/src/release-generation.ts"));
+    expect(createHash("sha256").update(currentSource).digest("hex")).toBe(r3ReleaseGenerationSha256);
+
+    // Given that identity, replayReleaseGenerationChain here IS R3's own
+    // replay implementation - this is the defining safety difference from
+    // the earlier gen4->gen5 bridge, which had to introduce a brand new
+    // event kind R3-era code could not have replayed.
+    const { db, gate, head } = completedGenerationFive();
+    gate.bootstrapR3ToR4MigrationAllowlistTransition({ expected_state_hash: releaseStateHash(head) });
+    const events = db.prepare("SELECT rowid AS seq, release_id, action, details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid ASC").all(bootstrap.release_id) as V2Event[];
+    const replay = replayReleaseGenerationChain(events);
+    expect(replay.corrupt).toBeUndefined();
+    expect(replay.head).toEqual(head);
   });
 });
