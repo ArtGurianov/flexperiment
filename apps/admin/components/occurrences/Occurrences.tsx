@@ -65,7 +65,11 @@ export function Occurrences() {
     const startsAt = fromLocalInput(form.starts_at);
     const startsAtMs = Date.parse(startsAt);
     const durationMinutes = parseHoursAndMinutes(form.duration);
-    const announcementLeadMinutes = parseHoursAndMinutes(form.venue_announcement_lead);
+    // `shouldUnregister` removes this conditional field for a confirmed venue.
+    // It is required only when the venue is to be announced later.
+    const announcementLeadMinutes = form.venue_status === "TO_BE_ANNOUNCED"
+      ? parseHoursAndMinutes(form.venue_announcement_lead)
+      : null;
     if (!Number.isFinite(startsAtMs) || durationMinutes === null || durationMinutes <= 0 || (form.venue_status === "TO_BE_ANNOUNCED" && (announcementLeadMinutes === null || announcementLeadMinutes <= 0))) {
       setValidationError("VALIDATION_ERROR"); return;
     }
