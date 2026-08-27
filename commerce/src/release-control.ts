@@ -389,7 +389,8 @@ export class ReleaseSalesGate {
       const migrationsMatch = evidence.migration_versions.length === Object.keys(current.migration_inventory.files).length
         && evidence.migration_versions.every((version) => current.migration_inventory.files[version] !== undefined)
         && Object.entries(current.migration_inventory.files).every(([version, hash]) => evidence.migration_source_hashes?.[version] === hash);
-      if (evidence.source_commit !== current.source_commit || evidence.worker_source_commit !== current.source_commit || !evidence.required_migrations[expected.migration] || !migrationsMatch) throw new ReleaseControlError("RUNTIME_READINESS_CANDIDATE_NOT_DEPLOYED");
+      const expectedMigrationApplied = evidence.required_migrations[expected.migration] === true || evidence.migration_versions.includes(expected.migration);
+      if (evidence.source_commit !== current.source_commit || evidence.worker_source_commit !== current.source_commit || !expectedMigrationApplied || !migrationsMatch) throw new ReleaseControlError("RUNTIME_READINESS_CANDIDATE_NOT_DEPLOYED");
       const head = { ...current, phase: "RECOVERY_REQUIRED" as const, phase_sequence: current.phase_sequence + 1 };
       const runtime_readiness_defect = { reason: "RUNTIME_READINESS_DEFECT" as const, readiness_component: input.readiness_component, error_class: input.error_class, error_code: input.error_code, source_commit: current.source_commit };
       const details = { schema_version: 2, kind: "RUNTIME_READINESS_DEFECT" as const, from_phase: current.phase, from_phase_sequence: current.phase_sequence, head, runtime_readiness_defect };
