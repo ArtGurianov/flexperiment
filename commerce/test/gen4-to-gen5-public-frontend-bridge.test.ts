@@ -167,6 +167,14 @@ describe("gen4 to gen5 public-frontend recovery bridge", () => {
     expect(() => gate.bridgeGenerationFourToFive({ expected_state_hash: releaseStateHash(head) })).toThrow("GEN4_BRIDGE_EVIDENCE_MISMATCH");
   });
 
+  it("rejects when another refund exists for the same payment, even if net capture is still zero", () => {
+    const { db, gate, head } = certifiedGenerationFour();
+    db.prepare(`INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash)
+      VALUES (?, ?, ?, ?, 1, 'stray attempt', 'ADMIN_COMPENSATION', 'FAILED', ?, ?)`)
+      .run(randomUUID(), randomUUID(), bridge.certification.order_id, bridge.certification.payment_id, randomUUID(), randomUUID());
+    expect(() => gate.bridgeGenerationFourToFive({ expected_state_hash: releaseStateHash(head) })).toThrow("GEN4_BRIDGE_EVIDENCE_MISMATCH");
+  });
+
   it("rejects when the fixture occurrence is not HIDDEN/CLOSED/SCHEDULED/101", () => {
     for (const fixtureOverride of [{ visibility: "PUBLISHED", sales_status: "CLOSED" }, { visibility: "PUBLISHED", sales_status: "OPEN" }, { price_kopecks: 100 }]) {
       const { gate, head } = certifiedGenerationFour({ fixtureOverride });

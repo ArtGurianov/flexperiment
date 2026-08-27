@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { openDatabase } from "./db";
 import { gen4PublicFrontendRecoveryBridge, ReleaseControlError, ReleaseSalesGate } from "./release-control";
@@ -17,6 +18,9 @@ if (process.env.COMMERCE_GEN4_BRIDGE_CONFIRM !== "GEN4-CERTIFIED-TO-GEN5-PAUSED"
 }
 if (!expectedStateHash || !/^[a-f0-9]{64}$/.test(expectedStateHash)) {
   throw new Error("COMMERCE_GEN4_BRIDGE_EXPECTED_STATE_HASH must be the freshly read authoritative state hash.");
+}
+if (createHash("sha256").update(readFileSync(resolve(process.cwd(), "commerce/src/release-generation.ts"))).digest("hex") !== gen4PublicFrontendRecoveryBridge.target_replay_sha256) {
+  throw new Error("GEN4_BRIDGE_TARGET_REPLAY_SOURCE_MISMATCH");
 }
 
 const db = openDatabase(databasePath);

@@ -595,6 +595,10 @@ export class ReleaseSalesGate {
       if (!payment || payment.order_id !== bridge.certification.order_id || Number(payment.captured_amount_kopecks) !== bridge.certification.captured_kopecks) throw new ReleaseControlError("GEN4_BRIDGE_EVIDENCE_MISMATCH");
       const refund = this.db.prepare("SELECT id, payment_id, status, amount_kopecks FROM refunds WHERE id = ?").get(bridge.certification.refund_id) as { id: string; payment_id: string; status: string; amount_kopecks: number } | undefined;
       if (!refund || refund.payment_id !== bridge.certification.payment_id || refund.status !== "SUCCEEDED" || Number(refund.amount_kopecks) !== bridge.certification.refunded_kopecks) throw new ReleaseControlError("GEN4_BRIDGE_EVIDENCE_MISMATCH");
+      // Terminal-state proof, not just arithmetic: this must be the payment's
+      // only refund activity, with nothing else still unresolved.
+      const otherRefunds = this.db.prepare(`SELECT COUNT(*) AS count FROM refunds WHERE payment_id = ? AND id != ?`).get(bridge.certification.payment_id, bridge.certification.refund_id) as { count: number };
+      if (Number(otherRefunds.count) !== 0) throw new ReleaseControlError("GEN4_BRIDGE_EVIDENCE_MISMATCH");
       if (Number(payment.captured_amount_kopecks) - Number(refund.amount_kopecks) !== 0) throw new ReleaseControlError("GEN4_BRIDGE_EVIDENCE_MISMATCH");
 
       // F/R3 never touch migrations, so gen5's inventory must still equal
