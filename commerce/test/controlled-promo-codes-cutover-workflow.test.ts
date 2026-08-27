@@ -12,7 +12,9 @@ describe("controlled promo codes v0 cutover workflow", () => {
     expect(workflow).toContain("cancel-in-progress: false");
     expect(workflow).toContain("environment: production");
     expect(workflow).toContain("CONTROLLER_SHA: ${{ github.sha }}");
+    expect(workflow).toContain("PRODUCTION_DEPLOY_REF_TOKEN: ${{ secrets.PRODUCTION_DEPLOY_REF_TOKEN }}");
     expect(workflow).toContain("INPUT_TARGET_SHA: ${{ inputs.target_sha }}");
+    expect(workflow).toContain("PROMO_CUTOVER_DEPLOY_REF_TOKEN_REQUIRED");
     expect(workflow).toContain("git merge-base --is-ancestor \"$target_sha\" \"$CONTROLLER_SHA\"");
     expect(workflow).toContain("RELEASE_ID=promo-codes-v0:$target_sha");
     expect(workflow).toContain("AUTHORITY_HEAD_MIN_SHA=91c78c9545820698cb2433f426b75bd5e1ca262c");
@@ -83,6 +85,7 @@ describe("controlled promo codes v0 cutover workflow", () => {
     expect(workflow).toContain('"$PUBLIC_API_URL/v1/internal/release-control/candidates/complete"');
     expect(workflow).toContain("PROMO_CUTOVER_CERTIFICATION_ALREADY_STARTED");
     expect(workflow).toContain("scripts/set-production-deploy-ref.sh");
+    expect(workflow).toContain('git remote set-url origin "https://x-access-token:${PRODUCTION_DEPLOY_REF_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"');
     expect(workflow).toContain("scripts/controlled-coolify-deploy.sh");
     expect(workflow).not.toContain("git push");
   });

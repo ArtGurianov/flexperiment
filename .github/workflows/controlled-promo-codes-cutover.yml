@@ -51,6 +51,7 @@ jobs:
     timeout-minutes: 45
     env:
       COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      PRODUCTION_DEPLOY_REF_TOKEN: ${{ secrets.PRODUCTION_DEPLOY_REF_TOKEN }}
       COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
       COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL }}
       COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL }}
@@ -80,6 +81,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$INPUT_STAGE" == prepare || "$INPUT_STAGE" == complete ]] || { echo "PROMO_CUTOVER_STAGE_INVALID" >&2; exit 1; }
+          [[ "$INPUT_STAGE" != prepare || -n "$PRODUCTION_DEPLOY_REF_TOKEN" ]] || { echo "PROMO_CUTOVER_DEPLOY_REF_TOKEN_REQUIRED" >&2; exit 1; }
           [[ "$INPUT_TARGET_SHA" =~ ^[0-9A-Fa-f]{40}$ ]] || { echo "PROMO_CUTOVER_TARGET_SHA_INVALID" >&2; exit 1; }
           target_sha="${INPUT_TARGET_SHA,,}"
           git fetch --no-tags origin "$target_sha"
@@ -214,6 +216,7 @@ jobs:
         if: env.INPUT_STAGE == 'prepare' && (env.PROMO_HEAD_READ_REQUIRED_AFTER_DEPLOY == '1' || env.INPUT_REPLACEMENT_SHA != '')
         run: |
           set -euo pipefail
+          git remote set-url origin "https://x-access-token:${PRODUCTION_DEPLOY_REF_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           scripts/set-production-deploy-ref.sh "$EFFECTIVE_TARGET_SHA"
           scripts/controlled-coolify-deploy.sh "$EFFECTIVE_TARGET_SHA"
           echo "Allowing Coolify deployments to start for ${INITIAL_READINESS_DELAY_SECONDS}s..."

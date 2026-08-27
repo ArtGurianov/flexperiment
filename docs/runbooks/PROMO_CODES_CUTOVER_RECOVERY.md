@@ -13,6 +13,14 @@ credential and uses the returned `state_hash` verbatim for every next CAS
 transition. Do not derive a hash from workflow inputs or reconstruct a lease
 binding.
 
+The protected `production-deploy` pointer is updated only by the workflow's
+exact CAS helper. Configure `PRODUCTION_DEPLOY_REF_TOKEN` as a production
+environment secret with repository contents-write and workflow-write authority:
+the immutable feature source itself includes a workflow file, which the default
+Actions token is not permitted to update through a ref move. The workflow
+requires this credential before it can acquire an owner, and uses it only for
+the pointer helper; never pass it as a dispatch input or print it in logs.
+
 The deploy source (including a `replacement_sha`) must descend from the
 authority-head API hardening commit `91c78c9545820698cb2433f426b75bd5e1ca262c`.
 Before generation one is acquired, the workflow proves every already applied
