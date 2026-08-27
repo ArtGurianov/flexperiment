@@ -29,8 +29,10 @@ describe("controlled promo codes v0 cutover workflow", () => {
     expect(workflow).toContain('has("0035_promo_codes_v0.sql")');
     expect(workflow).toContain("PROMO_MIGRATION_INVENTORY");
     expect(workflow).toContain("PROMO_CUTOVER_PRODUCTION_MIGRATION_SOURCE_MISMATCH");
-    expect(workflow).toContain("PROMO_CUTOVER_APPLIED_MIGRATION_PREFIX_INVALID");
-    expect(workflow).toContain("$candidate_names[0:($applied | length)] == $applied");
+    expect(workflow).toContain("PROMO_CUTOVER_APPLIED_MIGRATION_NAMES_NOT_PREFIX");
+    expect(workflow).toContain("PROMO_CUTOVER_APPLIED_MIGRATION_BYTES_CHANGED");
+    expect(workflow).toContain("production_migration_names");
+    expect(workflow).toContain("candidate_applied_prefix");
     expect(workflow).toContain('git diff --no-ext-diff --name-status "$production_source" "$EFFECTIVE_TARGET_SHA" -- commerce/migrations');
     expect(workflow).toContain('awk \'NF > 0 && $1 != "A" { exit 1 }\'');
   });
@@ -40,7 +42,7 @@ describe("controlled promo codes v0 cutover workflow", () => {
     const deploy = workflow.indexOf("Deploy the exact paused generation");
     const reconcile = workflow.indexOf("Reconcile deployed candidate and enter read-only phase");
     const authorityHeadGate = workflow.indexOf("PROMO_CUTOVER_AUTHORITY_HEAD_RUNTIME_REQUIRED");
-    const prefixGate = workflow.indexOf("PROMO_CUTOVER_APPLIED_MIGRATION_PREFIX_INVALID");
+    const prefixGate = workflow.indexOf("PROMO_CUTOVER_APPLIED_MIGRATION_NAMES_NOT_PREFIX");
     expect(acquire).toBeGreaterThan(-1);
     expect(authorityHeadGate).toBeGreaterThan(-1);
     expect(prefixGate).toBeGreaterThan(-1);

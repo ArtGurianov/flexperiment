@@ -148,14 +148,17 @@ jobs:
             production_inventory="$(jq -cn --argjson inventory "$production_inventory" --arg migration "$migration" --arg hash "$hash" '$inventory + {($migration): $hash}')"
           done < <(git ls-tree -r --name-only "$production_source" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)
           jq -e --argjson inventory "$production_inventory" '.runtime.migration_source_hashes == $inventory' durable-before.json >/dev/null || { echo "PROMO_CUTOVER_PRODUCTION_MIGRATION_SOURCE_MISMATCH" >&2; exit 1; }
-          jq -e --argjson production "$production_inventory" --argjson candidate "$(cat "$PROMO_MIGRATION_INVENTORY")" '
-            ($production | keys | sort) as $applied |
-            ($candidate | keys | sort) as $candidate_names |
-            $candidate_names[0:($applied | length)] == $applied
-          ' >/dev/null || { echo "PROMO_CUTOVER_APPLIED_MIGRATION_PREFIX_INVALID" >&2; exit 1; }
+          production_migration_names="$(git ls-tree -r --name-only "$production_source" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
+          candidate_migration_names="$(git ls-tree -r --name-only "$EFFECTIVE_TARGET_SHA" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
+          production_migration_count="$(printf '%s\n' "$production_migration_names" | awk 'NF { count += 1 } END { print count + 0 }')"
+          candidate_applied_prefix="$(printf '%s\n' "$candidate_migration_names" | sed -n "1,${production_migration_count}p")"
+          [[ "$candidate_applied_prefix" == "$production_migration_names" ]] || {
+            echo "PROMO_CUTOVER_APPLIED_MIGRATION_NAMES_NOT_PREFIX" >&2
+            exit 1
+          }
           git diff --no-ext-diff --name-status "$production_source" "$EFFECTIVE_TARGET_SHA" -- commerce/migrations |
             awk 'NF > 0 && $1 != "A" { exit 1 }' || {
-              echo "PROMO_CUTOVER_APPLIED_MIGRATION_PREFIX_INVALID" >&2
+              echo "PROMO_CUTOVER_APPLIED_MIGRATION_BYTES_CHANGED" >&2
               exit 1
             }
           jq -e --argjson inventory "$(cat "$PROMO_MIGRATION_INVENTORY")" '
