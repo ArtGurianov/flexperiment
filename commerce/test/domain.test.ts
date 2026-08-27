@@ -8,8 +8,9 @@ import { CommerceDomain, CREATE_UNKNOWN_LOOKUP_INITIAL_BACKOFF_MS, CREATE_UNKNOW
 import { runWorkerSweep } from "../src/worker-sweep";
 import { EventDumpCreateRejectedError, UnisenderGoProvider, type EmailDeliveryEvidenceProvider, type EmailProvider } from "../src/email-provider";
 import { MockProvider, type PaymentProvider } from "../src/provider";
-import { decryptTicketCapability, emailHash } from "../src/crypto";
+import { decryptTicketCapability, emailHash, sha256 } from "../src/crypto";
 import { evaluateReopenGate, ReleaseSalesGate, type ReleaseRuntimeEvidence } from "../src/release-control";
+import { releaseStateHash } from "../src/release-generation";
 
 const legalManifest = { documents: Object.fromEntries(["PUBLIC_OFFER", "PRIVACY_POLICY", "PD_CONSENT", "CHECKOUT_DISCLOSURE"].map((document) => [document, { document_id: document, version: "test-1", sha256: "0".repeat(64), current_url: `https://example.test/legal/${document}`, archive_url: `https://example.test/archive/${document}`, checkout_relevant: true }])) };
 const unisenderTestConfig = { apiKey: "test-key-not-a-secret", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" };
@@ -35,6 +36,14 @@ const controlledRelease = (releaseId = randomUUID()) => ({
     source_commit: "a".repeat(40), migration: "0034_worker_sweep_evidence.sql", legal_version: "2026-08-25.1", legal_manifest_sha256: "b".repeat(64),
     legal_hashes: { PUBLIC_OFFER: "c".repeat(64), PRIVACY_POLICY: "d".repeat(64), PD_CONSENT: "e".repeat(64), CHECKOUT_DISCLOSURE: "f".repeat(64) },
   },
+});
+
+const promoCandidateHead = (releaseId = `promo-codes-v0:${randomUUID()}`) => ({
+  release_id: releaseId, candidate_generation: 1, source_commit: "a".repeat(40),
+  migration_inventory: { files: { "0035_promo_codes_v0.sql": "b".repeat(64) } },
+  legal_baseline: { legal_version: "2026-08-25.1", legal_manifest_sha256: "c".repeat(64), legal_hashes: { PUBLIC_OFFER: "d".repeat(64), PRIVACY_POLICY: "e".repeat(64), PD_CONSENT: "f".repeat(64), CHECKOUT_DISCLOSURE: "1".repeat(64) } },
+  release_family: "promo-codes-v0", checkout_contract_version: "promo-codes-v0", admin_contract_version: "promo-codes-v0",
+  phase: "PAUSED" as const, phase_sequence: 0,
 });
 
 function promoter(setup: ReturnType<typeof fixture>, slug: string, rewardType: "PERCENT" | "FIXED" = "PERCENT", rewardValue = 1_000) {
@@ -248,6 +257,107 @@ describe("commerce domain", () => {
     // A payment URL issued before the pause is outside the new-order path.
     expect(setup.domain.markPaymentPaid(payment.id, 100_000, "pre-pause-payment")).toMatchObject({ status: "PAID" });
     expect(new CommerceDomain(setup.db, new MockProvider()).releaseControlStatus()).toMatchObject({ sales_paused: true, owner_release_id: release.release_id });
+  });
+
+  it("permits exactly one paused certification checkout and certifies only complete stored capture/refund evidence", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    setup.db.prepare("UPDATE occurrences SET price_kopecks = 101, visibility = 'HIDDEN', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
+    const promo = setup.domain.createPromo({ code: "CERT100", status: "ACTIVE", discount_type: "FIXED", discount_value: 1 });
+    const acquired = setup.domain.acquirePromoCandidate({ head: promoCandidateHead() });
+    const deployed = setup.domain.changePromoCandidatePhase({ release_id: acquired.head.release_id, candidate_generation: acquired.head.candidate_generation, expected_state_hash: releaseStateHash(acquired.head), from_phase: "PAUSED", phase_sequence: 0, to_phase: "DEPLOYED_READ_ONLY" });
+    const idempotencyKey = "certification-checkout-0001";
+    const activated = setup.domain.activatePromoCertificationLease({
+      release_id: deployed.head.release_id, candidate_generation: deployed.head.candidate_generation, expected_state_hash: releaseStateHash(deployed.head),
+      occurrence_id: setup.occurrenceId, promo_id: String(promo.id), expected_idempotency_key_hash: sha256(idempotencyKey), lease_seconds: 180,
+    });
+    setup.db.prepare("UPDATE release_certification_allowlist SET expected_idempotency_key_hash = ? WHERE lease_id = ?").run("f".repeat(64), activated.lease.lease_id);
+    expect(() => setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, promoCode: "CERT100" })).toThrow("SALES_TEMPORARILY_PAUSED");
+    setup.db.prepare("UPDATE release_certification_allowlist SET expected_idempotency_key_hash = ? WHERE lease_id = ?").run(sha256(idempotencyKey), activated.lease.lease_id);
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, promoCode: "CERT100" });
+    expect(quote.final_amount_kopecks).toBe(100);
+    const checkout = setup.domain.checkout(checkoutPayload(quote.quote_id), idempotencyKey);
+    expect(setup.domain.checkout(checkoutPayload(quote.quote_id), idempotencyKey).status_id).toBe(checkout.status_id);
+    expect(() => setup.domain.checkout(checkoutPayload(quote.quote_id), "certification-checkout-other-0002")).toThrow("SALES_TEMPORARILY_PAUSED");
+    const inFlight = setup.domain.releaseControlStatus();
+    const payment = setup.db.prepare("SELECT p.id, p.order_id FROM payments p WHERE p.order_id = (SELECT order_id FROM checkout_idempotency WHERE idempotency_key_hash = ?)").get(sha256(idempotencyKey)) as { id: string; order_id: string };
+    const inFlightHead = { ...activated.head, phase: "CERTIFICATION_IN_FLIGHT" as const, phase_sequence: activated.head.phase_sequence + 1, certification: { ...activated.head.certification, status: "CONSUMED" as const } };
+    expect(() => setup.domain.changePromoCandidatePhase({ release_id: inFlightHead.release_id, candidate_generation: inFlightHead.candidate_generation, expected_state_hash: releaseStateHash(inFlightHead), from_phase: "CERTIFICATION_IN_FLIGHT", phase_sequence: inFlightHead.phase_sequence, to_phase: "DEPLOYED_READ_ONLY" })).toThrow("CERTIFICATION_TRANSITION_REQUIRES_EVIDENCE");
+    expect(() => setup.domain.certifyPromoCandidate({ release_id: activated.head.release_id, candidate_generation: activated.head.candidate_generation, expected_state_hash: releaseStateHash(inFlightHead), order_id: payment.order_id })).toThrow("CERTIFICATION_PAYMENT_REFUND_MISSING");
+    setup.domain.markPaymentPaid(payment.id, 100, "certification-payment");
+    const refund = setup.domain.createCompensationRefund(payment.order_id, { amount_kopecks: 100, reason: "Certification refund" }, randomUUID());
+    expect(() => setup.domain.certifyPromoCandidate({ release_id: activated.head.release_id, candidate_generation: activated.head.candidate_generation, expected_state_hash: releaseStateHash(inFlightHead), order_id: payment.order_id })).toThrow("CERTIFICATION_PAYMENT_REFUND_MISSING");
+    const pendingRefundHead = setup.db.prepare("SELECT details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid DESC LIMIT 1").get(activated.head.release_id) as { details_json: string };
+    expect(JSON.parse(pendingRefundHead.details_json).head.phase).toBe("CERTIFICATION_IN_FLIGHT");
+    await setup.domain.submitRequestedRefunds();
+    (setup.domain.provider as PaymentProvider).reconcileRefund = async () => ({ status: "SUCCEEDED", refundedAmountKopecks: 100 });
+    await setup.domain.reconcileRefund(String(refund.id));
+    const certified = setup.domain.certifyPromoCandidate({ release_id: activated.head.release_id, candidate_generation: activated.head.candidate_generation, expected_state_hash: releaseStateHash(inFlightHead), order_id: payment.order_id });
+    expect(certified.head).toMatchObject({ phase: "CERTIFIED", certification: { status: "CONSUMED" } });
+    const certificationEvent = setup.db.prepare("SELECT details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid DESC LIMIT 1").get(activated.head.release_id) as { details_json: string };
+    expect(JSON.parse(certificationEvent.details_json).certification_evidence).toMatchObject({ occurrence_id: setup.occurrenceId, promo_id: promo.id, order_id: payment.order_id, payment_id: payment.id, price_kopecks: 101, discount_kopecks: 1, amount_kopecks: 100, captured_kopecks: 100, refunded_kopecks: 100 });
+    expect(() => setup.domain.completePromoCandidate({ release_id: certified.head.release_id, candidate_generation: certified.head.candidate_generation, expected_state_hash: releaseStateHash(certified.head) })).toThrow("CERTIFICATION_CLEANUP_INCOMPLETE");
+    expect(inFlight.sales_paused).toBe(true);
+  });
+
+  it("rejects non-fixture leases and permits a same-generation retry only after a terminal operational failure", () => {
+    const setup = fixture(); databases.push(setup.db);
+    const promo = setup.domain.createPromo({ code: "NOTCERT", status: "ACTIVE", discount_type: "FIXED", discount_value: 1 });
+    const acquired = setup.domain.acquirePromoCandidate({ head: promoCandidateHead() });
+    const deployed = setup.domain.changePromoCandidatePhase({ release_id: acquired.head.release_id, candidate_generation: acquired.head.candidate_generation, expected_state_hash: releaseStateHash(acquired.head), from_phase: "PAUSED", phase_sequence: 0, to_phase: "DEPLOYED_READ_ONLY" });
+    expect(() => setup.domain.activatePromoCertificationLease({ release_id: deployed.head.release_id, candidate_generation: deployed.head.candidate_generation, expected_state_hash: releaseStateHash(deployed.head), occurrence_id: setup.occurrenceId, promo_id: String(promo.id), expected_idempotency_key_hash: sha256("wrong-fixture-certification-key"), lease_seconds: 180 })).toThrow("CERTIFICATION_FIXTURE_INVALID");
+
+    setup.db.prepare("UPDATE occurrences SET price_kopecks = 101, visibility = 'HIDDEN', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
+    const certPromo = setup.domain.createPromo({ code: "RETRYCERT", status: "ACTIVE", discount_type: "FIXED", discount_value: 1 });
+    const idempotencyKey = "certification-retry-checkout-0001";
+    const activated = setup.domain.activatePromoCertificationLease({ release_id: deployed.head.release_id, candidate_generation: deployed.head.candidate_generation, expected_state_hash: releaseStateHash(deployed.head), occurrence_id: setup.occurrenceId, promo_id: String(certPromo.id), expected_idempotency_key_hash: sha256(idempotencyKey), lease_seconds: 180 });
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, promoCode: "RETRYCERT" });
+    setup.domain.checkout(checkoutPayload(quote.quote_id), idempotencyKey);
+    const inFlight = { ...activated.head, phase: "CERTIFICATION_IN_FLIGHT" as const, phase_sequence: activated.head.phase_sequence + 1, certification: { ...activated.head.certification, status: "CONSUMED" as const } };
+    expect(() => setup.domain.retryPromoCertification({ release_id: inFlight.release_id, candidate_generation: inFlight.candidate_generation, expected_state_hash: releaseStateHash(inFlight), retry_reason: "OPERATIONAL" })).toThrow("CERTIFICATION_RETRY_BLOCKED");
+    const order = setup.db.prepare("SELECT order_id FROM checkout_idempotency WHERE idempotency_key_hash = ?").get(sha256(idempotencyKey)) as { order_id: string };
+    setup.db.prepare("UPDATE payments SET state = 'CREATE_FAILED', status = 'CANCELLED' WHERE order_id = ?").run(order.order_id);
+    const retried = setup.domain.retryPromoCertification({ release_id: inFlight.release_id, candidate_generation: inFlight.candidate_generation, expected_state_hash: releaseStateHash(inFlight), retry_reason: "OPERATIONAL" });
+    expect(retried.head).toMatchObject({ phase: "DEPLOYED_READ_ONLY", candidate_generation: 1, certification: { status: "CONSUMED" } });
+    expect(() => setup.domain.activatePromoCertificationLease({ release_id: retried.head.release_id, candidate_generation: retried.head.candidate_generation, expected_state_hash: releaseStateHash(retried.head), occurrence_id: setup.occurrenceId, promo_id: String(certPromo.id), expected_idempotency_key_hash: sha256("certification-retry-checkout-0002"), lease_seconds: 180 })).toThrow("CERTIFICATION_FRESH_FIXTURE_REQUIRED");
+    const city = setup.db.prepare("SELECT city_id FROM occurrences WHERE id = ?").get(setup.occurrenceId) as { city_id: string };
+    const freshOccurrenceId = randomUUID();
+    setup.db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, sales_status, venue_status, venue_name, venue_address)
+      VALUES (?, ?, 'FLEXPERIMENT certification retry', '2026-11-01T10:00:00.000Z', '2026-11-01T13:00:00.000Z', 'Asia/Novosibirsk', 101, 1, 'HIDDEN', 'CLOSED', 'CONFIRMED', 'Studio', 'Lenina 1')`).run(freshOccurrenceId, city.city_id);
+    const freshPromo = setup.domain.createPromo({ code: "RETRYCERT2", status: "ACTIVE", discount_type: "FIXED", discount_value: 1 });
+    const reactivated = setup.domain.activatePromoCertificationLease({ release_id: retried.head.release_id, candidate_generation: retried.head.candidate_generation, expected_state_hash: releaseStateHash(retried.head), occurrence_id: freshOccurrenceId, promo_id: String(freshPromo.id), expected_idempotency_key_hash: sha256("certification-retry-checkout-0002"), lease_seconds: 180 });
+    expect(reactivated.head).toMatchObject({ phase: "CERTIFICATION_ONLY", candidate_generation: 1, certification: { status: "ACTIVE" } });
+    setup.db.prepare("UPDATE release_certification_allowlist SET lease_expires_at = '2000-01-01T00:00:00.000Z' WHERE lease_id = ?").run(reactivated.lease.lease_id);
+    expect(() => setup.domain.checkoutContext({ occurrenceId: freshOccurrenceId, promoCode: "RETRYCERT2" })).toThrow("SALES_TEMPORARILY_PAUSED");
+  });
+
+  it("records persistent certification evidence defects as recovery-required", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    setup.db.prepare("UPDATE occurrences SET price_kopecks = 101, visibility = 'HIDDEN', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
+    const promo = setup.domain.createPromo({ code: "DEFECTCERT", status: "ACTIVE", discount_type: "FIXED", discount_value: 1 });
+    const appliedManifest = { files: Object.fromEntries((setup.db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as Array<{ version: string }>).map(({ version }) => [version, sha256(version)])) };
+    const originalHead = { ...promoCandidateHead(), migration_inventory: appliedManifest };
+    const acquired = setup.domain.acquirePromoCandidate({ head: originalHead });
+    const deployed = setup.domain.changePromoCandidatePhase({ release_id: acquired.head.release_id, candidate_generation: acquired.head.candidate_generation, expected_state_hash: releaseStateHash(acquired.head), from_phase: "PAUSED", phase_sequence: 0, to_phase: "DEPLOYED_READ_ONLY" });
+    const key = "certification-defect-checkout-0001";
+    const activated = setup.domain.activatePromoCertificationLease({ release_id: deployed.head.release_id, candidate_generation: deployed.head.candidate_generation, expected_state_hash: releaseStateHash(deployed.head), occurrence_id: setup.occurrenceId, promo_id: String(promo.id), expected_idempotency_key_hash: sha256(key), lease_seconds: 180 });
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, promoCode: "DEFECTCERT" });
+    setup.domain.checkout(checkoutPayload(quote.quote_id), key);
+    const payment = setup.db.prepare("SELECT p.id, p.order_id FROM payments p WHERE p.order_id = (SELECT order_id FROM checkout_idempotency WHERE idempotency_key_hash = ?)").get(sha256(key)) as { id: string; order_id: string };
+    setup.domain.markPaymentPaid(payment.id, 100, "defect-payment");
+    const refund = setup.domain.createCompensationRefund(payment.order_id, { amount_kopecks: 100, reason: "Certification refund" }, randomUUID());
+    await setup.domain.submitRequestedRefunds();
+    (setup.domain.provider as PaymentProvider).reconcileRefund = async () => ({ status: "SUCCEEDED", refundedAmountKopecks: 100 });
+    await setup.domain.reconcileRefund(String(refund.id));
+    setup.db.prepare("UPDATE orders SET price_kopecks_snapshot = 100 WHERE id = ?").run(payment.order_id);
+    const inFlight = { ...activated.head, phase: "CERTIFICATION_IN_FLIGHT" as const, phase_sequence: activated.head.phase_sequence + 1, certification: { ...activated.head.certification, status: "CONSUMED" as const } };
+    const recovered = setup.domain.certifyPromoCandidate({ release_id: inFlight.release_id, candidate_generation: inFlight.candidate_generation, expected_state_hash: releaseStateHash(inFlight), order_id: payment.order_id });
+    expect(recovered.head.phase).toBe("RECOVERY_REQUIRED");
+    const defectEvent = setup.db.prepare("SELECT details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid DESC LIMIT 1").get(inFlight.release_id) as { details_json: string };
+    expect(JSON.parse(defectEvent.details_json).certification_defect).toMatchObject({ reason: "CERTIFICATION_FIXTURE_EVIDENCE_MISMATCH", order_id: payment.order_id, payment_id: payment.id });
+    const replacement = { ...originalHead, candidate_generation: 2, source_commit: "2".repeat(40) };
+    const adopted = setup.domain.adoptPromoCandidate({ head: replacement, expected_generation: recovered.head.candidate_generation, from_sha: recovered.head.source_commit, expected_state_hash: releaseStateHash(recovered.head) });
+    const redeployed = setup.domain.changePromoCandidatePhase({ release_id: adopted.head.release_id, candidate_generation: adopted.head.candidate_generation, expected_state_hash: releaseStateHash(adopted.head), from_phase: "PAUSED", phase_sequence: 0, to_phase: "DEPLOYED_READ_ONLY" });
+    expect(() => setup.domain.activatePromoCertificationLease({ release_id: redeployed.head.release_id, candidate_generation: redeployed.head.candidate_generation, expected_state_hash: releaseStateHash(redeployed.head), occurrence_id: setup.occurrenceId, promo_id: String(promo.id), expected_idempotency_key_hash: sha256("defect-retry-checkout-0002"), lease_seconds: 180 })).toThrow("CERTIFICATION_FRESH_FIXTURE_REQUIRED");
   });
 
   it("includes the venue-announcement deadline in a checkout quote", () => {

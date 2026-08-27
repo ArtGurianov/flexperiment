@@ -6,6 +6,7 @@ import { canonicalLegalManifest, parseLegalManifest, type LegalManifest } from "
 import { parseUtcTimestamp } from "./utc-timestamp";
 import { assertAppliedMigrationPrefix, candidateExpectedMigration, reconcileHeadWithProjection, releaseStateHash, replayReleaseGenerationChain, type GenerationHead, type ReleasePhase, type V2Event } from "./release-generation";
 import { evaluateCertificationEvidence } from "./certification-evidence";
+import { pricePromo } from "./promo-pricing";
 
 export type ReleaseMode = "CONTROLLED_CUTOVER" | "ROLLING";
 export type ReleaseExpectations = {
@@ -378,7 +379,9 @@ export class ReleaseSalesGate {
       const occurrence = this.db.prepare("SELECT id, visibility, sales_status, fulfillment_status, price_kopecks FROM occurrences WHERE id = ?").get(input.occurrence_id) as Record<string, unknown> | undefined;
       const promo = this.db.prepare("SELECT id, status, discount_type, discount_value FROM promo_codes WHERE id = ?").get(input.promo_id) as Record<string, unknown> | undefined;
       if (!occurrence || !promo) throw new ReleaseControlError("CERTIFICATION_SCOPE_NOT_FOUND");
-      if (occurrence.visibility !== "HIDDEN" || occurrence.sales_status !== "CLOSED" || occurrence.fulfillment_status !== "SCHEDULED" || Number(occurrence.price_kopecks) !== 101 || promo.status !== "ACTIVE" || promo.discount_type !== "FIXED" || Number(promo.discount_value) !== 1) throw new ReleaseControlError("CERTIFICATION_FIXTURE_INVALID");
+      let pricing: { discountKopecks: number; finalAmountKopecks: number } | undefined;
+      try { pricing = pricePromo(Number(occurrence.price_kopecks), promo.discount_type, promo.discount_value); } catch { throw new ReleaseControlError("CERTIFICATION_FIXTURE_INVALID"); }
+      if (occurrence.visibility !== "HIDDEN" || occurrence.sales_status !== "CLOSED" || occurrence.fulfillment_status !== "SCHEDULED" || Number(occurrence.price_kopecks) !== 101 || promo.status !== "ACTIVE" || promo.discount_type !== "FIXED" || Number(promo.discount_value) !== 1 || pricing.discountKopecks !== 1 || pricing.finalAmountKopecks !== 100) throw new ReleaseControlError("CERTIFICATION_FIXTURE_INVALID");
       this.db.prepare("UPDATE release_certification_allowlist SET status = 'EXPIRED' WHERE status = 'ACTIVE' AND lease_expires_at <= ?").run(new Date().toISOString());
       const active = this.db.prepare("SELECT 1 FROM release_certification_allowlist WHERE status = 'ACTIVE' LIMIT 1").get();
       if (active) throw new ReleaseControlError("CERTIFICATION_LEASE_ALREADY_ACTIVE");

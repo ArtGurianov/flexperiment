@@ -58,6 +58,16 @@ A same-owner recovery preserves the release ID, mode, target, legal
 expectations, and migration expectations unless its documented transition
 explicitly changes one of them.
 
+## Promo Codes v0 controlled epoch
+
+Promo Codes v0 is a separate controlled epoch. Its v2 event chain is ordered
+by `release_sales_gate_events.rowid`, never timestamps. While its owner is
+active, the projection and replayed generation head must agree or sales fail
+closed with `RELEASE_STATE_CORRUPT`. A completed head instead requires an empty
+owner and open sales. Recovery is forward-only and same-owner: it adopts a new
+generation while preserving the release ID and legal baseline; it never rolls
+back or silently reopens sales.
+
 ## Legal cutovers
 
 Before legal publication, a validated repair may be adopted only through the

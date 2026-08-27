@@ -25,7 +25,7 @@ export default defineConfig({
           include: nodeInclude,
           // A .dom.test.tsx picked up by the widened admin glob above would
           // otherwise run in both environments.
-          exclude: [...configDefaults.exclude, "apps/admin/**/*.dom.test.tsx"],
+          exclude: [...configDefaults.exclude, "apps/admin/**/*.dom.test.tsx", "components/**/*.dom.test.tsx"],
         },
       },
       {
@@ -33,7 +33,7 @@ export default defineConfig({
         test: {
           name: "jsdom",
           environment: "jsdom",
-          include: ["apps/admin/**/*.dom.test.tsx"],
+          include: ["apps/admin/**/*.dom.test.tsx", "components/**/*.dom.test.tsx"],
           setupFiles: ["./vitest.setup.dom.ts"],
         },
       },

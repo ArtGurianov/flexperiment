@@ -20,7 +20,7 @@ export const checkoutContextSchema = z.object({
   occurrence_id: z.string().uuid(),
   promo_code: z.string().trim().max(64).optional(),
   referral_slug: z.string().trim().max(100).optional(),
-});
+}).strict();
 
 const releaseHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const releaseExpectedSchema = z.object({
@@ -147,7 +147,7 @@ export const reservationAbandonSchema = z.object({ reason: z.string().trim().min
 export const occurrenceCompleteSchema = z.object({ confirmation_text: z.string().trim(), reason: z.string().trim().min(3).max(1_000) });
 
 export const agentSchema = z.object({
-  slug: z.string().trim().regex(/^[a-z0-9-]{2,100}$/),
+  slug: z.string().trim().transform((value) => value.toLowerCase()).pipe(z.string().regex(/^[a-z0-9-]{2,100}$/)),
   display_name: z.string().trim().min(2).max(200),
   legal_name: z.string().trim().min(2).max(300),
   email: z.string().trim().email().max(320),
@@ -157,26 +157,27 @@ export const agentSchema = z.object({
   enabled: z.boolean().default(true),
   default_reward_type: z.enum(["PERCENT", "FIXED"]),
   default_reward_value: z.number().int().nonnegative(),
-});
+}).strict();
 export const agentPatchSchema = agentSchema.partial().omit({ slug: true }).extend({
+  npd_status_checked_at: z.string().datetime().nullable().optional(),
+}).strict();
+export const persistedAgentSchema = agentSchema.extend({
   npd_status_checked_at: z.string().datetime().nullable().optional(),
 });
 
 const promoSchemaBase = z.object({
   agent_id: z.string().uuid().nullable().optional(),
-  code: z.string().trim().min(2).max(64),
+  code: z.string().trim().transform((value) => value.toUpperCase()).pipe(z.string().regex(/^[A-Z0-9_-]{2,64}$/)),
   status: z.enum(["ACTIVE", "DISABLED"]).default("ACTIVE"),
   discount_type: z.enum(["NONE", "PERCENT", "FIXED"]),
   discount_value: z.number().int().nonnegative(),
 });
-export const promoSchema = promoSchemaBase.superRefine((input, ctx) => {
-  if (input.discount_type === "PERCENT" && input.discount_value > 10_000) ctx.addIssue({ code: "custom", message: "Percent discount cannot exceed 100%." });
+export const promoSchema = promoSchemaBase.strict().superRefine((input, ctx) => {
+  if (input.discount_type === "PERCENT" && (input.discount_value < 1 || input.discount_value > 9_999)) ctx.addIssue({ code: "custom", message: "Percent discount must be between 1 and 9999 basis points." });
   if (input.discount_type === "NONE" && input.discount_value !== 0) ctx.addIssue({ code: "custom", message: "NONE discount requires value zero." });
+  if (input.discount_type === "FIXED" && input.discount_value <= 0) ctx.addIssue({ code: "custom", message: "FIXED discount requires a positive value." });
 });
-export const promoPatchSchema = promoSchemaBase.partial().omit({ code: true }).superRefine((input, ctx) => {
-  if (input.discount_type === "PERCENT" && (input.discount_value ?? 0) > 10_000) ctx.addIssue({ code: "custom", message: "Percent discount cannot exceed 100%." });
-  if (input.discount_type === "NONE" && input.discount_value !== undefined && input.discount_value !== 0) ctx.addIssue({ code: "custom", message: "NONE discount requires value zero." });
-});
+export const promoPatchSchema = promoSchemaBase.partial().omit({ code: true }).strict();
 
 export const settlementPrepareSchema = z.object({
   agent_id: z.string().uuid(),

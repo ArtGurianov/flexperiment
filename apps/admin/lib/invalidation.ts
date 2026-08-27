@@ -1,7 +1,7 @@
 import type { QueryKey } from "@tanstack/react-query";
 import {
   cityKeys, dashboardKeys, emailAttentionKeys, incidentKeys,
-  occurrenceKeys, orderKeys, refundKeys, settlementKeys,
+  occurrenceKeys, orderKeys, refundKeys, settlementKeys, agentKeys, promoKeys,
 } from "./query-keys";
 
 export type AdminMutation =
@@ -10,13 +10,16 @@ export type AdminMutation =
   | "order.refund" | "order.abandonReservation"
   | "email.acknowledge" | "incident.resolve"
   | "settlement.paymentMade" | "settlement.documentsComplete"
-  | "settlement.cancelBeforePayment" | "settlement.recovery";
+  | "settlement.cancelBeforePayment" | "settlement.recovery"
+  | "agent.create" | "agent.patch" | "promo.create" | "promo.patch";
 
 export type MutationContext = {
   cityId?: string;
   occurrenceId?: string;
   orderId?: string;
   settlementId?: string;
+  agentId?: string;
+  promoId?: string;
 };
 
 /**
@@ -55,6 +58,12 @@ export function invalidationKeysFor(mutation: AdminMutation, ctx: MutationContex
     case "settlement.cancelBeforePayment":
     case "settlement.recovery":
       return [settlementKeys.lists(), ...(ctx.settlementId ? [settlementKeys.detail(ctx.settlementId)] : []), dashboardKeys.summary()];
+    case "agent.create":
+    case "agent.patch":
+      return [agentKeys.lists(), promoKeys.lists(), dashboardKeys.summary()];
+    case "promo.create":
+    case "promo.patch":
+      return [promoKeys.lists(), agentKeys.lists(), dashboardKeys.summary()];
   }
 }
 
@@ -65,4 +74,5 @@ export const ALL_ADMIN_MUTATIONS: readonly AdminMutation[] = [
   "email.acknowledge", "incident.resolve",
   "settlement.paymentMade", "settlement.documentsComplete",
   "settlement.cancelBeforePayment", "settlement.recovery",
+  "agent.create", "agent.patch", "promo.create", "promo.patch",
 ];

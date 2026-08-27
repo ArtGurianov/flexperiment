@@ -32,8 +32,10 @@ type Occurrence = {
 };
 type Quote = {
   quote_id: string;
+  price_kopecks: number;
   final_amount_kopecks: number;
   discount_kopecks: number;
+  promo: null | { id: string; code: string; discount_type: "NONE" | "PERCENT" | "FIXED"; discount_value: number; discount_kopecks: number };
   venue_disclosure: string;
   expires_at: string;
   legal_release: {
@@ -161,8 +163,10 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
       return true;
     } catch (error) {
       setQuote(null);
-      setMessage(error instanceof Error && error.message === "SALES_NOT_OPEN"
-        ? "Продажи пока закрыты."
+      const code = error instanceof Error ? error.message : "QUOTE_UNAVAILABLE";
+      setMessage(code === "SALES_NOT_OPEN" ? "Продажи пока закрыты."
+        : code === "PROMO_NOT_FOUND" ? "Промокод не найден."
+        : ["PROMO_NOT_ELIGIBLE", "PROMO_ZERO_PRICE_NOT_ALLOWED"].includes(code) ? "Промокод недоступен."
         : "Не удалось получить актуальные условия. Проверьте соединение и повторите попытку.");
       return false;
     } finally { setLoading(false); }
@@ -232,8 +236,14 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
       if (!response.ok) {
         if (["QUOTE_STALE", "PROMO_NO_LONGER_ELIGIBLE", "LEGAL_VERSION_CHANGED"].includes(data.error?.code)) {
           setQuote(null); setCustomerAdult(false); setMinorRepresentative(false); setOffer(false); setConsent(false);
-          setMessage("Условия изменились. Мы обновили форму — подтвердите условия заново.");
-          await fetchQuote(occurrenceId, appliedPromoCode ?? "");
+          if (data.error?.code === "PROMO_NO_LONGER_ELIGIBLE") {
+            setPromoCode(""); setAppliedPromoCode(null);
+            setMessage("Промокод больше недоступен. Мы показали цену без него — подтвердите условия заново.");
+            await fetchQuote(occurrenceId, "");
+          } else {
+            setMessage("Условия изменились. Мы обновили форму — подтвердите условия заново.");
+            await fetchQuote(occurrenceId, appliedPromoCode ?? "");
+          }
           return;
         }
         throw new Error(data.error?.code ?? "CHECKOUT_FAILED");
@@ -293,9 +303,9 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
         <label><input required type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /> Я даю согласие на обработку моих персональных данных как Заказчика.</label>
         {quote && <p className="text-bone/70">Версия legal release {quote.legal_release.version}: {(Object.keys(legalLabels) as (keyof typeof legalLabels)[]).map((id, index) => <span key={id}>{index > 0 ? " · " : ""}<a className="text-acid underline underline-offset-4" href={legalPagePaths[id]} target="_blank" rel="noopener noreferrer">{legalLabels[id]}</a></span>)}</p>}
       </div>
-      {message && <p role="status" className="border border-acid px-3 py-2 text-acid">{message}</p>}
+      <p role="status" aria-live="polite" className={message ? "border border-acid px-3 py-2 text-acid" : "sr-only"}>{message ?? ""}</p>
       <label className="grid gap-1.5">Промокод <span className="flex gap-2"><input disabled={Boolean(appliedPromoCode)} value={appliedPromoCode ? `Промокод [${appliedPromoCode}] применен` : promoCode} onChange={(event) => setPromoCode(event.target.value)} className="min-w-0 flex-1 border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid disabled:cursor-not-allowed disabled:opacity-70" /><button type="button" disabled={loading} onClick={() => void (appliedPromoCode ? resetPromo() : applyPromo())} className="shrink-0 border border-acid px-3 py-2 font-display text-acid transition-colors hover:bg-acid hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid disabled:cursor-wait disabled:opacity-60">{appliedPromoCode ? "Сброс" : "Применить"}</button></span></label>
-      {quote && <div className="border border-acid/60 p-3 text-bone"><p>{selected?.city_title}: {rub(quote.final_amount_kopecks)}{quote.discount_kopecks > 0 ? " со скидкой" : ""}</p></div>}
+      {quote && <div className="grid gap-1 border border-acid/60 p-3 text-bone"><p>{selected?.city_title}</p><p>Исходная цена: {rub(quote.price_kopecks)}</p>{quote.discount_kopecks > 0 ? <p>Скидка{quote.promo ? ` (${quote.promo.code})` : ""}: −{rub(quote.discount_kopecks)}</p> : null}<p className="font-display text-lg text-acid">Итого: {rub(quote.final_amount_kopecks)}</p></div>}
       <button disabled={!quote || !participantAgeBand || submitting} className="w-full border-2 border-acid bg-acid px-4 py-3 font-display text-lg text-ink disabled:cursor-not-allowed disabled:opacity-60">{submitting ? "Создаём оплату…" : "Перейти к оплате"}</button>
       </>}
     </form>

@@ -11,6 +11,10 @@ const PRESENTATIONS: Readonly<Record<string, AdminErrorPresentation>> = {
     message: "Эта команда уже была принята с другим содержимым.",
     hint: "Состояние перечитано. Не создавайте новый ключ, пока не подтвердите, что исходная команда не создала запись.",
   },
+  PROMO_CODE_ALREADY_EXISTS: { message: "Такой промокод уже существует." },
+  AGENT_SLUG_ALREADY_EXISTS: { message: "Такой slug агента уже существует." },
+  PROMO_NOT_FOUND: { message: "Промокод не найден." },
+  IMMUTABLE_FIELD: { message: "Это поле нельзя изменить после создания." },
   REFUND_AMOUNT_EXCEEDS_AVAILABLE: {
     message: "Сумма возврата больше доступного остатка.",
     hint: "Перечитайте evidence: другой возврат мог уже занять часть суммы.",

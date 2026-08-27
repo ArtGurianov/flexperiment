@@ -134,9 +134,12 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     const keyHash = sha256(idempotencyKey);
     const existing = sqlite.prepare("SELECT 1 FROM checkout_idempotency WHERE idempotency_key_hash = ?").get(keyHash);
     const raw = await jsonBody(c.req.raw);
-    // A stale DOB-era browser must see the durable pause before schema parsing;
-    // an existing exact idempotency replay remains a read of its old order.
-    if (!existing) domain.assertNewOrdersOpen();
+    // Keep the durable pause ahead of request-schema validation, while allowing
+    // only the server-verified lease scope to reach the normal checkout path.
+    const quoteId = raw && typeof raw === "object" && !Array.isArray(raw) && typeof (raw as { quote_id?: unknown }).quote_id === "string"
+      ? (raw as { quote_id: string }).quote_id : undefined;
+    const leaseScope = quoteId ? sqlite.prepare("SELECT occurrence_id, promo_id FROM quotes WHERE id = ?").get(quoteId) as { occurrence_id: string; promo_id: string | null } | undefined : undefined;
+    if (!existing) domain.assertNewOrdersOpen(leaseScope ? { occurrence_id: leaseScope.occurrence_id, promo_id: leaseScope.promo_id, idempotency_key_hash: keyHash } : undefined);
     if (existing) return c.json(domain.replayCheckout(raw, idempotencyKey), 200);
     const input = checkoutRequestSchema.parse(raw);
     rateLimit(clientIpRateLimitKey("checkout-new", c.req.raw.headers), 3, 10 * 60_000);
@@ -412,11 +415,35 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   admin.post("/refunds/:id/reconcile", async (c) => { try { const refund = await domain.reconcileRefund(c.req.param("id")); audit(c.var.adminId!, "REFUND_RECONCILED", "refund", c.req.param("id"), {}); return c.json(refund); } catch (error) { if (error instanceof DomainError) throw error; throw new DomainError("PROVIDER_RECONCILIATION_UNAVAILABLE", 503); } });
   admin.post("/payments/:id/provider-reference", async (c) => { const payload = providerReferenceSchema.parse(await jsonBody(c.req.raw)); sqlite.prepare("UPDATE payments SET provider_payment_id = COALESCE(provider_payment_id, ?), updated_at = datetime('now') WHERE id = ?").run(payload.provider_reference, c.req.param("id")); audit(c.var.adminId!, "PAYMENT_PROVIDER_EVIDENCE_ATTACHED", "payment", c.req.param("id"), payload); try { return c.json(await domain.reconcilePayment(c.req.param("id"))); } catch (error) { if (error instanceof DomainError) throw error; throw new DomainError("PROVIDER_RECONCILIATION_UNAVAILABLE", 503); } });
   admin.post("/refunds/:id/provider-reference", async (c) => { const payload = providerReferenceSchema.parse(await jsonBody(c.req.raw)); sqlite.prepare("UPDATE refunds SET provider_reference = COALESCE(provider_reference, ?) WHERE id = ?").run(payload.provider_reference, c.req.param("id")); audit(c.var.adminId!, "REFUND_PROVIDER_EVIDENCE_ATTACHED", "refund", c.req.param("id"), payload); try { return c.json(await domain.reconcileRefund(c.req.param("id"))); } catch (error) { if (error instanceof DomainError) throw error; throw new DomainError("PROVIDER_RECONCILIATION_UNAVAILABLE", 503); } });
-  admin.post("/agents", async (c) => { const payload = agentSchema.parse(await jsonBody(c.req.raw)); const agent = domain.createAgent(payload); audit(c.var.adminId!, "AGENT_CREATED", "agent", String(agent.id), {}); return c.json(agent, 201); });
-  admin.patch("/agents/:id", async (c) => { const payload = agentPatchSchema.parse(await jsonBody(c.req.raw)); const agent = domain.patchAgent(c.req.param("id"), payload); audit(c.var.adminId!, "AGENT_EDITED", "agent", c.req.param("id"), payload); return c.json(agent); });
+  admin.get("/agents", (c) => c.json({ agents: domain.agentList() }));
+  admin.post("/agents", async (c) => {
+    const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
+    const raw = await jsonBody(c.req.raw) as Record<string, unknown>; const { audit_context, ...body } = raw;
+    const payload = agentSchema.parse(body); const agent = domain.createAgentCommand(payload, key, c.var.adminId!, typeof audit_context === "string" ? audit_context : undefined);
+    return c.json(agent, 201);
+  });
+  admin.patch("/agents/:id", async (c) => {
+    const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
+    const raw = await jsonBody(c.req.raw) as Record<string, unknown>; if ("slug" in raw) throw new DomainError("IMMUTABLE_FIELD", 409);
+    const { audit_context, ...body } = raw; const payload = agentPatchSchema.parse(body);
+    const agent = domain.patchAgentCommand(c.req.param("id"), payload, key, c.var.adminId!, typeof audit_context === "string" ? audit_context : undefined);
+    return c.json(agent);
+  });
   admin.get("/agents/:id/balances", (c) => { const occurrenceId = c.req.query("occurrence_id"); if (!occurrenceId) throw new DomainError("OCCURRENCE_ID_REQUIRED", 400); return c.json(domain.rewardBalance(c.req.param("id"), occurrenceId)); });
-  admin.post("/promo-codes", async (c) => { const payload = promoSchema.parse(await jsonBody(c.req.raw)); const promo = domain.createPromo(payload); audit(c.var.adminId!, "PROMO_CREATED", "promo", String(promo.id), {}); return c.json(promo, 201); });
-  admin.patch("/promo-codes/:id", async (c) => { const payload = promoPatchSchema.parse(await jsonBody(c.req.raw)); const promo = domain.patchPromo(c.req.param("id"), payload); audit(c.var.adminId!, "PROMO_EDITED", "promo", c.req.param("id"), payload); return c.json(promo); });
+  admin.get("/promo-codes", (c) => c.json({ promo_codes: domain.promoList() }));
+  admin.post("/promo-codes", async (c) => {
+    const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
+    const raw = await jsonBody(c.req.raw) as Record<string, unknown>; const { audit_context, ...body } = raw;
+    const payload = promoSchema.parse(body); const promo = domain.createPromoCommand(payload, key, c.var.adminId!, typeof audit_context === "string" ? audit_context : undefined);
+    return c.json(promo, 201);
+  });
+  admin.patch("/promo-codes/:id", async (c) => {
+    const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
+    const raw = await jsonBody(c.req.raw) as Record<string, unknown>; if ("code" in raw) throw new DomainError("IMMUTABLE_FIELD", 409);
+    const { audit_context, ...body } = raw; const payload = promoPatchSchema.parse(body);
+    const promo = domain.patchPromoCommand(c.req.param("id"), payload, key, c.var.adminId!, typeof audit_context === "string" ? audit_context : undefined);
+    return c.json(promo);
+  });
   admin.post("/reward-settlements", async (c) => { const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400); const payload = settlementPrepareSchema.parse(await jsonBody(c.req.raw)); const settlement = domain.prepareSettlement(payload, key, c.var.adminId!); audit(c.var.adminId!, "SETTLEMENT_PREPARED", "reward_settlement", String(settlement.id), payload); return c.json(settlement, 201); });
   admin.get("/reward-settlements", (c) => c.json({ settlements: domain.settlementList({ stalePrepared: c.req.query("stale_prepared") === "1" ? true : undefined }) }));
   admin.get("/reward-settlements/:id", (c) => c.json(domain.settlementDetail(c.req.param("id"))));

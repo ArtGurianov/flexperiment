@@ -62,6 +62,13 @@ export const agentKeys = {
   balance: (agentId: string, occurrenceId: string) => ["agents", "balance", agentId, occurrenceId] as const,
 };
 
+export const promoKeys = {
+  all: () => ["promo-codes"] as const,
+  lists: () => ["promo-codes", "list"] as const,
+  list: () => ["promo-codes", "list"] as const,
+  detail: (id: string) => ["promo-codes", "detail", id] as const,
+};
+
 export const dashboardKeys = {
   all: () => ["dashboard"] as const,
   summary: () => ["dashboard", "summary"] as const,

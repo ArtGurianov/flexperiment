@@ -5,7 +5,8 @@ import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import { LegalReleasePublishError, loadCanonicalLegalRelease, publishLegalRelease, verifyCurrentLegalSourceHashes } from "./legal-release";
 import type { PaymentProvider } from "./provider";
 import { ReleaseControlError, ReleaseSalesGate, type CandidateAcquireRequest, type CandidateAdoptRequest, type CandidateCompleteRequest, type CandidatePhaseRequest, type CertificationEvidenceRequest, type CertificationLeaseRequest, type CertificationOrderContext, type CertificationRetryRequest, type ReleaseControlRequest, releaseRuntimeEvidence } from "./release-control";
-import { checkoutRequestSchema, type CheckoutRequest, type ParticipantAgeBand } from "./types";
+import { checkoutRequestSchema, persistedAgentSchema, promoSchema, type CheckoutRequest, type ParticipantAgeBand } from "./types";
+import { PromoPricingError, pricePromo } from "./promo-pricing";
 import { findCityBySlug } from "../../lib/city-catalog";
 
 type Row = Record<string, unknown>;
@@ -42,11 +43,12 @@ const isPromoEligible = (promo: Row | undefined) => Boolean(promo && promo.statu
 const activeAgentBySlug = (db: Database.Database, slug: string | undefined) => slug
   ? one(db, "SELECT id, slug, default_reward_type, default_reward_value FROM agents WHERE slug = ? AND enabled = 1", slug)
   : undefined;
-const discountFor = (price: number, type: unknown, value: unknown) => {
-  const amount = Number(value ?? 0);
-  if (type === "PERCENT") return Math.min(price, Math.floor((price * amount + 5_000) / 10_000));
-  if (type === "FIXED") return Math.min(price, amount);
-  return 0;
+const promoPrice = (price: number, type: unknown, value: unknown) => {
+  try { return pricePromo(price, type, value); }
+  catch (error) {
+    if (error instanceof PromoPricingError) throw new DomainError(error.code, error.code === "PROMO_ZERO_PRICE_NOT_ALLOWED" ? 409 : 422);
+    throw error;
+  }
 };
 const isMinorAgeBand = (ageBand: ParticipantAgeBand) => ageBand !== "ADULT";
 const requiresAccompanimentForAgeBand = (ageBand: ParticipantAgeBand) => ageBand === "MINOR_UNDER_14";
@@ -672,22 +674,26 @@ export class CommerceDomain {
 
   checkoutContext(input: { occurrenceId: string; promoCode?: string; referralSlug?: string }) {
     return withImmediateTransaction(this.db, () => {
-      this.assertNewOrdersOpen();
       const occurrence = one(this.db, "SELECT * FROM occurrences WHERE id = ?", input.occurrenceId);
-      if (!occurrence || occurrence.visibility !== "PUBLISHED") throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
-      if (occurrence.sales_status !== "OPEN" || occurrence.fulfillment_status !== "SCHEDULED") throw new DomainError("SALES_NOT_OPEN", 409);
-      const availability = Number(occurrence.capacity) - Number(one(this.db, "SELECT COUNT(*) AS occupied FROM bookings WHERE occurrence_id = ? AND status IN ('RESERVED', 'CONFIRMED')", occurrence.id)?.occupied ?? 0);
-      if (availability <= 0) throw new DomainError("SOLD_OUT", 409);
-      const release = one(this.db, "SELECT * FROM legal_releases WHERE active = 1");
-      if (!release) throw new DomainError("LEGAL_RELEASE_NOT_ACTIVE", 503);
-      const manifest = legalManifest(JSON.parse(String(release.manifest_json)));
-
       let promo: Row | undefined;
       if (input.promoCode) {
         promo = one(this.db, `SELECT p.*, a.enabled AS agent_enabled FROM promo_codes p
           LEFT JOIN agents a ON a.id = p.agent_id WHERE p.normalized_code = ?`, input.promoCode.trim().toUpperCase());
-        if (!isPromoEligible(promo)) throw new DomainError("PROMO_NOT_ELIGIBLE", 409);
       }
+      // During the global pause the gate is intentionally consulted before
+      // revealing fixture-specific errors; it only receives opaque IDs.
+      const certificationLease = this.assertNewOrdersOpen({ occurrence_id: occurrence ? String(occurrence.id) : input.occurrenceId, promo_id: promo?.id ? String(promo.id) : null });
+      if (!occurrence) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
+      if (input.promoCode && !promo) throw new DomainError("PROMO_NOT_FOUND", 404);
+      if (promo && !isPromoEligible(promo)) throw new DomainError("PROMO_NOT_ELIGIBLE", 409);
+      if (!certificationLease && occurrence.visibility !== "PUBLISHED") throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
+      if (!certificationLease && (occurrence.sales_status !== "OPEN" || occurrence.fulfillment_status !== "SCHEDULED")) throw new DomainError("SALES_NOT_OPEN", 409);
+      if (certificationLease && occurrence.fulfillment_status !== "SCHEDULED") throw new DomainError("SALES_NOT_OPEN", 409);
+      const release = one(this.db, "SELECT * FROM legal_releases WHERE active = 1");
+      if (!release) throw new DomainError("LEGAL_RELEASE_NOT_ACTIVE", 503);
+      const manifest = legalManifest(JSON.parse(String(release.manifest_json)));
+      const availability = Number(occurrence.capacity) - Number(one(this.db, "SELECT COUNT(*) AS occupied FROM bookings WHERE occurrence_id = ? AND status IN ('RESERVED', 'CONFIRMED')", occurrence.id)?.occupied ?? 0);
+      if (availability <= 0) throw new DomainError("SOLD_OUT", 409);
       // The first-party landing capture owns the 30-day lifetime. Checkout only
       // revalidates the established marker's currently eligible promoter.
       const referralAgent = activeAgentBySlug(this.db, input.referralSlug);
@@ -695,16 +701,16 @@ export class CommerceDomain {
       const attributedAgentId: string | null = promoAgentId ?? (referralAgent?.id as string | undefined) ?? null;
       const referralSlug = referralAgent?.slug as string | undefined;
       const price = Number(occurrence.price_kopecks);
-      const discount = discountFor(price, promo?.discount_type, promo?.discount_value);
+      const pricing = promo ? promoPrice(price, promo.discount_type, promo.discount_value) : { discountKopecks: 0, finalAmountKopecks: price };
       const quoteId = id();
       const disclosure = occurrence.venue_status === "CONFIRMED"
         ? `${occurrence.venue_name}: ${occurrence.venue_address}`
         : `${String(occurrence.venue_disclosure_text)} Сообщим адрес участникам на email не позднее ${formatOccurrenceDateTime(occurrence.venue_announce_by, occurrence.timezone)}.`;
       const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
-      this.db.prepare(`INSERT INTO quotes(id, occurrence_id, material_revision, legal_release_id, promo_id, attributed_agent_id, price_kopecks, discount_kopecks, final_amount_kopecks, venue_disclosure, expires_at, referral_slug, promo_code_snapshot, discount_type_snapshot, discount_value_snapshot)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(quoteId, occurrence.id, occurrence.material_revision, release.id, promo?.id ?? null, attributedAgentId, price, discount, price - discount, disclosure, expiresAt, referralSlug ?? null, promo?.code ?? null, promo?.discount_type ?? null, promo?.discount_value ?? null);
-      return { quote_id: quoteId, occurrence_id: occurrence.id, material_revision: occurrence.material_revision, availability, price_kopecks: price, discount_kopecks: discount, final_amount_kopecks: price - discount, currency: "RUB", venue_disclosure: disclosure, legal_release: { id: release.id, version: release.version, manifest }, expires_at: expiresAt };
+      this.db.prepare(`INSERT INTO quotes(id, occurrence_id, material_revision, legal_release_id, promo_id, attributed_agent_id, price_kopecks, discount_kopecks, final_amount_kopecks, venue_disclosure, expires_at, referral_slug, promo_code_snapshot, discount_type_snapshot, discount_value_snapshot, promo_agent_id_snapshot)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(quoteId, occurrence.id, occurrence.material_revision, release.id, promo?.id ?? null, attributedAgentId, price, pricing.discountKopecks, pricing.finalAmountKopecks, disclosure, expiresAt, referralSlug ?? null, promo?.code ?? null, promo?.discount_type ?? null, promo?.discount_value ?? null, promoAgentId);
+      return { quote_id: quoteId, occurrence_id: occurrence.id, material_revision: occurrence.material_revision, availability, price_kopecks: price, discount_kopecks: pricing.discountKopecks, final_amount_kopecks: pricing.finalAmountKopecks, promo: promo ? { id: promo.id, code: promo.code, discount_type: promo.discount_type, discount_value: promo.discount_value, discount_kopecks: pricing.discountKopecks } : null, currency: "RUB", venue_disclosure: disclosure, legal_release: { id: release.id, version: release.version, manifest }, expires_at: expiresAt };
     });
   }
 
@@ -721,12 +727,13 @@ export class CommerceDomain {
         if (replay.canonical_request_hash !== requestHash) throw new DomainError("IDEMPOTENCY_CONFLICT", 409);
         return { replay: true, status_id: replay.status_id, state: replay.state, status: replay.status, payment_url: replay.payment_url };
       }
-      this.assertNewOrdersOpen();
       const quote = one(this.db, "SELECT * FROM quotes WHERE id = ?", checkoutInput.quote_id);
-      if (!quote || new Date(String(quote.expires_at)).getTime() < Date.now()) throw new DomainError("QUOTE_EXPIRED", 409);
+      if (!quote) { this.assertNewOrdersOpen(); throw new DomainError("QUOTE_EXPIRED", 409); }
       const occurrence = one(this.db, "SELECT o.*, c.title AS city_title FROM occurrences o JOIN cities c ON c.id = o.city_id WHERE o.id = ?", quote.occurrence_id);
-      if (!occurrence || occurrence.material_revision !== quote.material_revision) throw new DomainError("QUOTE_STALE", 409);
-      if (occurrence.sales_status !== "OPEN" || occurrence.fulfillment_status !== "SCHEDULED") throw new DomainError("SALES_NOT_OPEN", 409);
+      if (!occurrence) { this.assertNewOrdersOpen(); throw new DomainError("QUOTE_STALE", 409); }
+      const certificationLease = this.assertNewOrdersOpen({ occurrence_id: String(occurrence.id), promo_id: quote.promo_id ? String(quote.promo_id) : null, idempotency_key_hash: keyHash });
+      if (new Date(String(quote.expires_at)).getTime() < Date.now()) throw new DomainError("QUOTE_EXPIRED", 409);
+      if (occurrence.material_revision !== quote.material_revision) throw new DomainError("QUOTE_STALE", 409);
       if (checkoutInput.customer_adult_confirmed !== true) throw new DomainError("CUSTOMER_ADULT_CONFIRMATION_REQUIRED", 422);
       const participantAgeBand = checkoutInput.participant_age_band;
       const participantIsMinor = isMinorAgeBand(participantAgeBand);
@@ -743,14 +750,19 @@ export class CommerceDomain {
       let promo: Row | undefined;
       if (quote.promo_id) {
         promo = one(this.db, `SELECT p.*, a.enabled AS agent_enabled FROM promo_codes p LEFT JOIN agents a ON a.id = p.agent_id WHERE p.id = ?`, quote.promo_id);
-        if (!isPromoEligible(promo)) throw new DomainError("PROMO_NO_LONGER_ELIGIBLE", 409);
+        if (!promo || !isPromoEligible(promo)) throw new DomainError("PROMO_NO_LONGER_ELIGIBLE", 409);
+        if (promo.discount_type !== quote.discount_type_snapshot || Number(promo.discount_value) !== Number(quote.discount_value_snapshot) || (promo.agent_id ?? null) !== (quote.promo_agent_id_snapshot ?? null)) throw new DomainError("QUOTE_STALE", 409);
       }
+      if (!certificationLease && (occurrence.sales_status !== "OPEN" || occurrence.fulfillment_status !== "SCHEDULED")) throw new DomainError("SALES_NOT_OPEN", 409);
+      if (certificationLease && occurrence.fulfillment_status !== "SCHEDULED") throw new DomainError("SALES_NOT_OPEN", 409);
       // Attribution is decided now, inside the checkout transaction. Quotes are
       // intentionally not eligibility authority: a promoter can be disabled
       // after context creation without entering a new order.
       const promoAgentId = promo?.agent_id as string | null ?? null;
       const referralAgent = activeAgentBySlug(this.db, quote.referral_slug as string | undefined);
       const attributedAgentId = promoAgentId ?? (referralAgent?.id as string | undefined) ?? null;
+      const currentPricing = promo ? promoPrice(Number(occurrence.price_kopecks), promo.discount_type, promo.discount_value) : { discountKopecks: 0, finalAmountKopecks: Number(occurrence.price_kopecks) };
+      if (currentPricing.discountKopecks !== Number(quote.discount_kopecks) || currentPricing.finalAmountKopecks !== Number(quote.final_amount_kopecks)) throw new DomainError("QUOTE_STALE", 409);
       const occupied = Number(one(this.db, "SELECT COUNT(*) AS occupied FROM bookings WHERE occurrence_id = ? AND status IN ('RESERVED', 'CONFIRMED')", occurrence.id)?.occupied ?? 0);
       if (occupied >= Number(occurrence.capacity)) throw new DomainError("SOLD_OUT", 409);
       const orderId = id(); const bookingId = id(); const paymentId = id(); const statusId = publicId();
@@ -763,16 +775,17 @@ export class CommerceDomain {
       const workshopDate = new Intl.DateTimeFormat("ru-RU", { timeZone: String(occurrence.timezone), day: "numeric", month: "long", year: "numeric" }).format(new Date(String(occurrence.starts_at)));
       const fiscalPurpose = "Оплата участия в мастер-классе ФЛЭКСПЕРИМЕНТ";
       const fiscalItemName = `Участие в мастер-классе ФЛЭКСПЕРИМЕНТ — ${String(occurrence.city_title)}, ${workshopDate}`;
-      this.db.prepare(`INSERT INTO orders(id, public_status_id, public_order_number, occurrence_id, customer_name, customer_email, customer_email_hash, amount_kopecks, occurrence_material_revision, venue_disclosure_snapshot, checkout_legal_release_id, legal_snapshot_json, eligibility_confirmed_at, attributed_agent_id, reward_type_snapshot, reward_value_snapshot, promo_code_snapshot, discount_type_snapshot, discount_value_snapshot, fiscal_purpose_snapshot, fiscal_item_name_snapshot, public_offer_version, public_offer_sha256, public_offer_accepted_at, privacy_policy_version, privacy_policy_sha256, privacy_policy_presented_at, pd_consent_version, pd_consent_sha256, pd_consent_accepted_at, checkout_disclosure_version, checkout_disclosure_sha256, customer_adult_confirmed_at, customer_acceptance_ip, customer_acceptance_user_agent, participant_name, participant_age_band, participant_date_of_birth, participant_age_at_occurrence, participant_is_minor, participant_requires_adult_accompaniment, participant_is_customer, minor_legal_representative_confirmed_at, minor_legal_representative_confirmation_text, under_14_accompaniment_confirmed_at, under_14_accompaniment_confirmation_text)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      this.db.prepare(`INSERT INTO orders(id, public_status_id, public_order_number, occurrence_id, customer_name, customer_email, customer_email_hash, amount_kopecks, occurrence_material_revision, venue_disclosure_snapshot, checkout_legal_release_id, legal_snapshot_json, eligibility_confirmed_at, attributed_agent_id, reward_type_snapshot, reward_value_snapshot, promo_code_snapshot, discount_type_snapshot, discount_value_snapshot, promo_id_snapshot, promo_agent_id_snapshot, price_kopecks_snapshot, discount_kopecks_snapshot, fiscal_purpose_snapshot, fiscal_item_name_snapshot, public_offer_version, public_offer_sha256, public_offer_accepted_at, privacy_policy_version, privacy_policy_sha256, privacy_policy_presented_at, pd_consent_version, pd_consent_sha256, pd_consent_accepted_at, checkout_disclosure_version, checkout_disclosure_sha256, customer_adult_confirmed_at, customer_acceptance_ip, customer_acceptance_user_agent, participant_name, participant_age_band, participant_date_of_birth, participant_age_at_occurrence, participant_is_minor, participant_requires_adult_accompaniment, participant_is_customer, minor_legal_representative_confirmed_at, minor_legal_representative_confirmation_text, under_14_accompaniment_confirmed_at, under_14_accompaniment_confirmation_text)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         // SQLite baseline made this historical column NOT NULL. New anonymous
         // orders retain only an empty legacy value; no name is collected or
         // presented as order evidence.
-        .run(orderId, statusId, orderNumber, occurrence.id, "", checkoutInput.customer_email.trim().toLowerCase(), emailHash(checkoutInput.customer_email), quote.final_amount_kopecks, quote.material_revision, quote.venue_disclosure, quote.legal_release_id, JSON.stringify(manifest), "DEPRECATED_NOT_EVIDENCE", attributedAgentId, agent?.default_reward_type ?? null, agent?.default_reward_value ?? null, quote.promo_code_snapshot ?? null, quote.discount_type_snapshot ?? null, quote.discount_value_snapshot ?? null, fiscalPurpose, fiscalItemName, manifest.documents.PUBLIC_OFFER.version, manifest.documents.PUBLIC_OFFER.sha256, timestamp, manifest.documents.PRIVACY_POLICY.version, manifest.documents.PRIVACY_POLICY.sha256, timestamp, manifest.documents.PD_CONSENT.version, manifest.documents.PD_CONSENT.sha256, timestamp, manifest.documents.CHECKOUT_DISCLOSURE.version, manifest.documents.CHECKOUT_DISCLOSURE.sha256, timestamp, acceptance.ip ?? null, acceptance.userAgent?.slice(0, 1_000) ?? null, null, participantAgeBand, null, null, Number(participantIsMinor), Number(participantRequiresAdultAccompaniment), null, participantIsMinor ? timestamp : null, participantIsMinor ? "Я являюсь совершеннолетним законным представителем несовершеннолетнего участника, для которого оформляю этот заказ." : null, null, null);
+        .run(orderId, statusId, orderNumber, occurrence.id, "", checkoutInput.customer_email.trim().toLowerCase(), emailHash(checkoutInput.customer_email), quote.final_amount_kopecks, quote.material_revision, quote.venue_disclosure, quote.legal_release_id, JSON.stringify(manifest), "DEPRECATED_NOT_EVIDENCE", attributedAgentId, agent?.default_reward_type ?? null, agent?.default_reward_value ?? null, quote.promo_code_snapshot ?? null, quote.discount_type_snapshot ?? null, quote.discount_value_snapshot ?? null, quote.promo_id ?? null, quote.promo_agent_id_snapshot ?? null, quote.price_kopecks, quote.discount_kopecks, fiscalPurpose, fiscalItemName, manifest.documents.PUBLIC_OFFER.version, manifest.documents.PUBLIC_OFFER.sha256, timestamp, manifest.documents.PRIVACY_POLICY.version, manifest.documents.PRIVACY_POLICY.sha256, timestamp, manifest.documents.PD_CONSENT.version, manifest.documents.PD_CONSENT.sha256, timestamp, manifest.documents.CHECKOUT_DISCLOSURE.version, manifest.documents.CHECKOUT_DISCLOSURE.sha256, timestamp, acceptance.ip ?? null, acceptance.userAgent?.slice(0, 1_000) ?? null, null, participantAgeBand, null, null, Number(participantIsMinor), Number(participantRequiresAdultAccompaniment), null, participantIsMinor ? timestamp : null, participantIsMinor ? "Я являюсь совершеннолетним законным представителем несовершеннолетнего участника, для которого оформляю этот заказ." : null, null, null);
       this.db.prepare("INSERT INTO bookings(id, order_id, occurrence_id, status) VALUES (?, ?, ?, 'RESERVED')").run(bookingId, orderId, occurrence.id);
       this.db.prepare(`INSERT INTO payments(id, order_id, state, status, provider_idempotency_key, creation_started_at) VALUES (?, ?, 'CREATING', 'PENDING', ?, ?)`)
         .run(paymentId, orderId, publicId(), timestamp);
       this.db.prepare("INSERT INTO checkout_idempotency(idempotency_key_hash, canonical_request_hash, order_id) VALUES (?, ?, ?)").run(keyHash, requestHash, orderId);
+      if (certificationLease) this.releaseSalesGate().consumeCertificationLease({ occurrence_id: String(occurrence.id), promo_id: quote.promo_id ? String(quote.promo_id) : null, idempotency_key_hash: keyHash }, orderId);
       return { replay: false, order_id: orderId, payment_id: paymentId, status_id: statusId, amount_kopecks: Number(quote.final_amount_kopecks) };
     });
     if ("replay" in result && result.replay) return this.checkoutResult(result);
@@ -1548,6 +1561,12 @@ export class CommerceDomain {
     return one(this.db, "SELECT * FROM agents WHERE id = ?", agentId)!;
   }
 
+  agentList() {
+    return many(this.db, `SELECT a.*, COUNT(p.id) AS promo_count
+      FROM agents a LEFT JOIN promo_codes p ON p.agent_id = a.id
+      GROUP BY a.id ORDER BY a.created_at DESC, a.id DESC`);
+  }
+
   patchAgent(agentId: string, input: Record<string, unknown>) {
     const existing = one(this.db, "SELECT * FROM agents WHERE id = ?", agentId);
     if (!existing) throw new DomainError("AGENT_NOT_FOUND", 404);
@@ -1562,8 +1581,45 @@ export class CommerceDomain {
     if (input.agent_id && !one(this.db, "SELECT id FROM agents WHERE id = ?", input.agent_id)) throw new DomainError("AGENT_NOT_FOUND", 404);
     const promoId = id(); const normalized = String(input.code).trim().toUpperCase();
     this.db.prepare("INSERT INTO promo_codes(id, agent_id, code, normalized_code, status, discount_type, discount_value) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(promoId, input.agent_id ?? null, input.code, normalized, input.status ?? "ACTIVE", input.discount_type, input.discount_value);
+      .run(promoId, input.agent_id ?? null, normalized, normalized, input.status ?? "ACTIVE", input.discount_type, input.discount_value);
     return one(this.db, "SELECT * FROM promo_codes WHERE id = ?", promoId)!;
+  }
+
+  promoList() {
+    return many(this.db, `SELECT p.*, a.id AS agent_id, a.slug AS agent_slug, a.display_name AS agent_display_name, a.enabled AS agent_enabled
+      FROM promo_codes p LEFT JOIN agents a ON a.id = p.agent_id ORDER BY p.created_at DESC, p.id DESC`)
+      .map((promo) => ({ ...promo, agent: promo.agent_id ? { id: promo.agent_id, slug: promo.agent_slug, display_name: promo.agent_display_name, enabled: promo.agent_enabled } : null }));
+  }
+
+  createAgentCommand(input: Record<string, unknown>, idempotencyKey: string, adminId: string, auditContext?: string) {
+    return this.withAdminCommandV2("agent.create", idempotencyKey, adminId, null, input, auditContext, "agents", "AGENT_CREATED", "agent", () => this.createAgent(input));
+  }
+
+  patchAgentCommand(agentId: string, patch: Record<string, unknown>, idempotencyKey: string, adminId: string, auditContext?: string) {
+    return this.withAdminCommandV2("agent.patch", idempotencyKey, adminId, agentId, patch, auditContext, "agents", "AGENT_EDITED", "agent", () => {
+      const existing = one(this.db, "SELECT * FROM agents WHERE id = ?", agentId);
+      if (!existing) throw new DomainError("AGENT_NOT_FOUND", 404);
+      const merged = persistedAgentSchema.parse({
+        slug: existing.slug, display_name: existing.display_name, legal_name: existing.legal_name, email: existing.email,
+        contractor_type: existing.contractor_type, inn: existing.inn, contract_reference: existing.contract_reference,
+        enabled: Number(existing.enabled) === 1, default_reward_type: existing.default_reward_type,
+        default_reward_value: existing.default_reward_value, npd_status_checked_at: existing.npd_status_checked_at, ...patch,
+      });
+      return this.patchAgent(agentId, merged);
+    });
+  }
+
+  createPromoCommand(input: Record<string, unknown>, idempotencyKey: string, adminId: string, auditContext?: string) {
+    return this.withAdminCommandV2("promo.create", idempotencyKey, adminId, null, input, auditContext, "promo_codes", "PROMO_CREATED", "promo", () => this.createPromo(input));
+  }
+
+  patchPromoCommand(promoId: string, patch: Record<string, unknown>, idempotencyKey: string, adminId: string, auditContext?: string) {
+    return this.withAdminCommandV2("promo.patch", idempotencyKey, adminId, promoId, patch, auditContext, "promo_codes", "PROMO_EDITED", "promo", () => {
+      const existing = one(this.db, "SELECT * FROM promo_codes WHERE id = ?", promoId);
+      if (!existing) throw new DomainError("PROMO_NOT_FOUND", 404);
+      const merged = promoSchema.parse({ code: existing.code, agent_id: existing.agent_id, status: existing.status, discount_type: existing.discount_type, discount_value: existing.discount_value, ...patch });
+      return this.patchPromo(promoId, merged);
+    });
   }
 
   patchPromo(promoId: string, input: Record<string, unknown>) {
@@ -2893,6 +2949,33 @@ export class CommerceDomain {
       }
       const created = operation();
       this.db.prepare("INSERT INTO admin_command_idempotency(command, idempotency_key_hash, canonical_request_hash, entity_id) VALUES (?, ?, ?, ?)").run(command, keyHash, payloadHash, created.id);
+      return created;
+    });
+  }
+
+  /** V2 captures the response before another operator can mutate its row. */
+  private withAdminCommandV2<T extends Row>(command: string, idempotencyKey: string, adminId: string, resourceId: string | null, body: unknown, auditContext: string | undefined, table: "agents" | "promo_codes", action: string, entityType: string, operation: () => T): T {
+    if (idempotencyKey.length < 16 || idempotencyKey.length > 200) throw new DomainError("IDEMPOTENCY_KEY_INVALID", 400);
+    const keyHash = sha256(idempotencyKey);
+    const fingerprint = `v2:${sha256(canonicalV2({ admin_id: adminId, command, resource_id: resourceId, body, audit_context: auditContext ?? null }))}`;
+    return withImmediateTransaction(this.db, () => {
+      const existing = one(this.db, "SELECT canonical_request_hash, response_json FROM admin_command_idempotency WHERE command = ? AND idempotency_key_hash = ?", command, keyHash);
+      if (existing) {
+        if (existing.canonical_request_hash !== fingerprint) throw new DomainError("IDEMPOTENCY_CONFLICT", 409);
+        if (!existing.response_json) throw new DomainError("IDEMPOTENCY_CONTRACT_SUPERSEDED", 409);
+        return JSON.parse(String(existing.response_json)) as T;
+      }
+      let created: T;
+      try { created = operation(); }
+      catch (error) {
+        const sqlite = error as { code?: string; message?: string };
+        if (sqlite.code === "SQLITE_CONSTRAINT_UNIQUE" && sqlite.message?.includes("agents.slug")) throw new DomainError("AGENT_SLUG_ALREADY_EXISTS", 409);
+        if (sqlite.code === "SQLITE_CONSTRAINT_UNIQUE" && sqlite.message?.includes("promo_codes.normalized_code")) throw new DomainError("PROMO_CODE_ALREADY_EXISTS", 409);
+        throw error;
+      }
+      this.recordAdminCommandAudit(adminId, action, entityType, String(created.id), auditContext, idempotencyKey, { command, resource_id: resourceId, body });
+      this.db.prepare("INSERT INTO admin_command_idempotency(command, idempotency_key_hash, canonical_request_hash, entity_id, response_json) VALUES (?, ?, ?, ?, ?)")
+        .run(command, keyHash, fingerprint, created.id, JSON.stringify(created));
       return created;
     });
   }
