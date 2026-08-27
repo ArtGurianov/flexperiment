@@ -152,7 +152,7 @@ jobs:
             ($production | keys | sort) as $applied |
             ($candidate | keys | sort) as $candidate_names |
             ($candidate_names[0:($applied | length)] == $applied) and
-            all($applied[]; $candidate[.] == $production[.])
+            ([ $applied[] | select($candidate[.] != $production[.]) ] | length == 0)
           ' >/dev/null || { echo "PROMO_CUTOVER_APPLIED_MIGRATION_PREFIX_INVALID" >&2; exit 1; }
           jq -e --argjson inventory "$(cat "$PROMO_MIGRATION_INVENTORY")" '
             .runtime as $runtime |
