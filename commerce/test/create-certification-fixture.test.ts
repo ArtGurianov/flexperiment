@@ -95,7 +95,10 @@ describe("certification fixture creation script", () => {
       const failure = runFailure(partial);
       expect(failure, `expected failure when ${key} is missing`).toBeDefined();
     }
-  });
+    // One tsx subprocess per required parameter. That is comfortably under the
+    // 5s default on a developer machine but not on a CI runner, where this
+    // measured 5484ms and timed out.
+  }, 60_000);
 
   it("creates the occurrence, promo, key file, and manifest only when explicitly executed", () => {
     const fixture = fixtureEnvironment();
