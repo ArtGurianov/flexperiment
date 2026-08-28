@@ -1,6 +1,6 @@
 # Controlled production deployment and special cutovers
 
-Every push to `main` is handled by [controlled-production-deploy.yml](../.github/workflows/controlled-production-deploy.yml). It is a controlled production deploy: it freezes the live legal and migration baseline, acquires the durable owner, pauses new registrations, deploys the exact SHA, proves all public and internal surfaces, then guardedly reopens registrations. A failed post-pause run is fail-closed: registrations stay paused for recovery by the same release ID.
+The manual [controlled-production-deploy.yml](../.github/workflows/controlled-production-deploy.yml) dispatch is the routine controlled production deploy; a push to `main` never deploys. It freezes the live legal and migration baseline, acquires the durable owner, pauses new registrations, deploys the exact runtime-candidate SHA, proves all public and internal surfaces, then guardedly reopens registrations. A failed post-pause run is fail-closed: registrations stay paused for recovery by the same release ID.
 
 The historical booking-time age-band and legal release `2026-08-25.1` is handled by the separate manual [controlled-age-band-cutover.yml](../.github/workflows/controlled-age-band-cutover.yml). That state machine is only for a future approved schema or legal promotion; routine pushes must never publish legal content or create a promotion commit.
 
