@@ -110,12 +110,17 @@ jobs:
         # first dispatch (UNKNOWN_EXPECTED_MIGRATION). This materializes an
         # isolated, detached worktree at exact R6, with R6's own dependency
         # graph installed from R6's own lockfile, once, before the poll loop
-        # starts - never repeated inside a poll iteration.
+        # starts - never repeated inside a poll iteration. Install runs with
+        # --ignore-scripts: only the one named readiness parser is
+        # authorized to execute from this tree - dependency lifecycle/build
+        # scripts are not, so the worktree never becomes a broader
+        # arbitrary-code-execution surface than that single parser call.
         run: |
           set -euo pipefail
           git fetch --no-tags origin "$EXPECTED_PRODUCTION_DEPLOY"
           git worktree add --detach "$RUNTIME_ASSERT_DIR" "$EXPECTED_PRODUCTION_DEPLOY"
-          (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile)
+          [[ "$(git -C "$RUNTIME_ASSERT_DIR" rev-parse HEAD)" == "$EXPECTED_PRODUCTION_DEPLOY" ]] || { echo "RUNTIME_ASSERT_WORKTREE_WRONG_SHA" >&2; exit 1; }
+          (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile --ignore-scripts)
 
       - name: Poll until Commerce/worker/frontend/admin converge on exact R6 while still paused
         # Bounded fresh polling (a few minutes) to absorb ordinary

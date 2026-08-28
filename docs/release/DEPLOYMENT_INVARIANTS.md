@@ -322,17 +322,25 @@ be read as evidence of a bad R5 runtime.
 
 **Fix pattern**: materialize an isolated, detached `git worktree` at the
 exact runtime SHA being judged (e.g. `git worktree add --detach "$DIR"
-"$RUNTIME_SHA"`), install that worktree's own dependency graph from its
-own lockfile (`pnpm install --frozen-lockfile`) once - never inside a
-retry/poll loop - and run the readiness parser from inside that worktree
-(`cd "$DIR" && node --import tsx commerce/src/assert-generic-production-deploy-ready.ts
+"$RUNTIME_SHA"`, then prove `git -C "$DIR" rev-parse HEAD` equals that
+exact SHA), install that worktree's own dependency graph from its own
+lockfile once - never inside a retry/poll loop - and run the readiness
+parser from inside that worktree (`cd "$DIR" && node --import tsx
+commerce/src/assert-generic-production-deploy-ready.ts
 <absolute-path-to-evidence-files> ...`), passing the controller's own
 evidence files by absolute path (e.g. `$GITHUB_WORKSPACE/status.json`)
-since the working directory has changed. A submit-style one-shot
-controller pins to the runtime it is leaving; a verify-only controller
-pins to the runtime it is proving converged. This is a narrow, deliberate
-exception to "controller code never executes from the candidate's tree"
-above: here the controller is not executing untrusted candidate code as
-itself, but is deliberately invoking one specific, already-reviewed,
-already-deployed runtime's own semantics to judge evidence about that same
+since the working directory has changed. **Dependency materialization
+must disable lifecycle scripts** (`pnpm install --frozen-lockfile
+--ignore-scripts`): only the one explicitly named readiness parser is
+authorized to execute from the runtime tree - a plain install may run
+arbitrary package install/postinstall/build scripts from that tree, which
+is a materially broader trusted-execution surface than "run this one
+script," especially in a job that also holds production mutation
+credentials (Coolify's included). A submit-style one-shot controller pins
+to the runtime it is leaving; a verify-only controller pins to the runtime
+it is proving converged. This is a narrow, deliberate exception to
+"controller code never executes from the candidate's tree" above: here the
+controller is not executing untrusted candidate code as itself, but is
+deliberately invoking one specific, already-reviewed, already-deployed
+runtime's own semantics to judge evidence about that same
 runtime - the two are exact opposites, not the same mistake.

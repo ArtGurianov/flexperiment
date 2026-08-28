@@ -166,11 +166,17 @@ jobs:
         # first dispatch (UNKNOWN_EXPECTED_MIGRATION) before any mutation.
         # This materializes an isolated, detached worktree at exact R5, with
         # R5's own dependency graph installed from R5's own lockfile, once,
-        # before any readiness call - never inside a retry/poll loop.
+        # before any readiness call - never inside a retry/poll loop. Install
+        # runs with --ignore-scripts: only the one named readiness parser
+        # below is authorized to execute from this tree - dependency
+        # lifecycle/build scripts are not, since this job holds production
+        # mutation credentials (including Coolify's) and the worktree must
+        # not become a broader arbitrary-code-execution surface than that.
         run: |
           set -euo pipefail
           git worktree add --detach "$RUNTIME_ASSERT_DIR" "$TOPOLOGY_BASELINE"
-          (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile)
+          [[ "$(git -C "$RUNTIME_ASSERT_DIR" rev-parse HEAD)" == "$TOPOLOGY_BASELINE" ]] || { echo "RUNTIME_ASSERT_WORKTREE_WRONG_SHA" >&2; exit 1; }
+          (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile --ignore-scripts)
 
       - name: Prove full R5 readiness before the first mutation
         # A single fresh read, not a polling loop - Commerce is already

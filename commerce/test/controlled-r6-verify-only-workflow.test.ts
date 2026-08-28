@@ -65,7 +65,13 @@ describe("controlled R6 verify-only workflow", () => {
     expect(nextStep).toBeGreaterThan(step);
     const section = workflow.slice(step, nextStep);
     expect(section).toContain('git worktree add --detach "$RUNTIME_ASSERT_DIR" "$EXPECTED_PRODUCTION_DEPLOY"');
-    expect(section).toContain('(cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile)');
+    // Explicit postcondition: the worktree's own HEAD really is exact R6.
+    expect(section).toContain('[[ "$(git -C "$RUNTIME_ASSERT_DIR" rev-parse HEAD)" == "$EXPECTED_PRODUCTION_DEPLOY" ]]');
+    expect(section).toContain("RUNTIME_ASSERT_WORKTREE_WRONG_SHA");
+    // --ignore-scripts: only the one named readiness parser is authorized to
+    // execute from this tree.
+    expect(section).toContain('(cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile --ignore-scripts)');
+    expect(workflow).not.toContain('pnpm install --frozen-lockfile)');
     expect(workflow).toContain("RUNTIME_ASSERT_DIR: ${{ runner.temp }}/r6-readiness-runtime");
     // Only one worktree materialization in this workflow - never repeated
     // inside the poll loop.
