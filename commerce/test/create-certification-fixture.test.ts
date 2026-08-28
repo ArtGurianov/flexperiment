@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { resolve } from "node:path";
@@ -163,6 +163,24 @@ describe("certification fixture creation script", () => {
     const db = openDatabase(fixture.databasePath);
     expect(db.prepare("SELECT COUNT(*) AS count FROM occurrences").get()).toEqual({ count: 1 });
     expect(db.prepare("SELECT COUNT(*) AS count FROM promo_codes").get()).toEqual({ count: 1 });
+    db.close();
+  });
+
+  it("never deletes staged recovery artifacts owned by a previous run", () => {
+    const fixture = fixtureEnvironment();
+    const stagedKey = "previous-run-key-material";
+    const stagedManifest = '{"run_id":"previous-run"}\n';
+    writeFileSync(`${fixture.keyPath}.tmp`, stagedKey, { mode: 0o600 });
+    writeFileSync(`${fixture.manifestPath}.tmp`, stagedManifest, { mode: 0o600 });
+
+    const failure = runFailure({ ...baseEnv(fixture), COMMERCE_CERTIFICATION_FIXTURE_EXECUTE: "CREATE-CERTIFICATION-FIXTURE" });
+    expect(failure?.stderr).toContain("CERTIFICATION_FIXTURE_STAGING_ALREADY_EXISTS");
+    expect(readFileSync(`${fixture.keyPath}.tmp`, "utf8")).toBe(stagedKey);
+    expect(readFileSync(`${fixture.manifestPath}.tmp`, "utf8")).toBe(stagedManifest);
+
+    const db = openDatabase(fixture.databasePath);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM occurrences").get()).toEqual({ count: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM promo_codes").get()).toEqual({ count: 0 });
     db.close();
   });
 });

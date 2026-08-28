@@ -7,7 +7,7 @@ import { migrate, openDatabase } from "../src/db";
 import { CommerceDomain, CREATE_UNKNOWN_LOOKUP_INITIAL_BACKOFF_MS, CREATE_UNKNOWN_LOOKUP_MAX_ATTEMPTS, DomainError, EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS, STALE_PREPARED_SETTLEMENT_MS, classifyOccurrenceRevision } from "../src/domain";
 import { runWorkerSweep } from "../src/worker-sweep";
 import { EventDumpCreateRejectedError, UnisenderGoProvider, type EmailDeliveryEvidenceProvider, type EmailProvider } from "../src/email-provider";
-import { MockProvider, type PaymentProvider } from "../src/provider";
+import { MockProvider, TochkaProviderError, type PaymentProvider } from "../src/provider";
 import { decryptTicketCapability, emailHash, sha256 } from "../src/crypto";
 import { evaluateReopenGate, ReleaseSalesGate, type ReleaseRuntimeEvidence } from "../src/release-control";
 import { releaseStateHash } from "../src/release-generation";
@@ -330,6 +330,32 @@ describe("commerce domain", () => {
     expect(recovered.head).not.toHaveProperty("certification");
     const event = setup.db.prepare("SELECT details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid DESC LIMIT 1").get(acquired.head.release_id) as { details_json: string };
     expect(JSON.parse(event.details_json)).toMatchObject({ kind: "RUNTIME_READINESS_DEFECT", runtime_readiness_defect: { reason: "RUNTIME_READINESS_DEFECT", readiness_component: "PROVIDER_READINESS", error_class: "PROVIDER_BAD_REQUEST", error_code: "HTTP_400", source_commit: acquired.head.source_commit } });
+  });
+
+  it("rejects non-actionable HTTP readiness evidence without appending a ledger event", () => {
+    const setup = fixture(); databases.push(setup.db);
+    const acquired = setup.domain.acquirePromoCandidate({ head: promoCandidateHead() });
+    const gate = new ReleaseSalesGate(setup.db);
+    const before = setup.db.prepare("SELECT COUNT(*) AS count FROM release_sales_gate_events WHERE release_id = ?").get(acquired.head.release_id) as { count: number };
+
+    expect(() => gate.markRuntimeReadinessDefect({
+      release_id: acquired.head.release_id,
+      candidate_generation: acquired.head.candidate_generation,
+      expected_state_hash: releaseStateHash(acquired.head),
+      readiness_component: "PROVIDER_READINESS",
+      error_class: "PROVIDER_HTTP_ERROR" as never,
+      error_code: "HTTP_503",
+    }, () => { throw new Error("runtime evidence must not be read"); })).toThrow("RUNTIME_READINESS_DEFECT_INVALID");
+
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM release_sales_gate_events WHERE release_id = ?").get(acquired.head.release_id)).toEqual(before);
+  });
+
+  it("merges promo PATCHes with the stored mutable contract before enforcing promo terms", () => {
+    const setup = fixture(); databases.push(setup.db);
+    const promo = setup.domain.createPromo({ code: "PATCHSAFE", status: "ACTIVE", discount_type: "PERCENT", discount_value: 1000 });
+    const updated = setup.domain.patchPromoCommand(String(promo.id), { discount_type: "FIXED" }, randomUUID(), "admin");
+    expect(updated).toMatchObject({ discount_type: "FIXED", discount_value: 1000 });
+    expect(() => setup.domain.patchPromoCommand(String(promo.id), { discount_type: "NONE" }, randomUUID(), "admin")).toThrow();
   });
 
   it("recognizes an applied 0036+ candidate migration via migration_versions even though required_migrations only tracks 0031-0034", () => {
@@ -767,6 +793,33 @@ describe("commerce domain", () => {
     provider.findPaymentOperationsByLinkId = async () => { calls += 1; return []; };
     await unknown.domain.reconcileCreateUnknownPayments();
     expect(calls).toBe(0);
+  });
+
+  it("persists the completing CREATE_UNKNOWN attempt when a lookup exhausts", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const provider: PaymentProvider = new MockProvider();
+    const unknown = await createUnknownPayment(setup, provider, Date.parse("2026-08-23T12:00:00.000Z"));
+    setup.db.prepare("UPDATE payments SET create_unknown_lookup_attempts = ?, create_unknown_next_lookup_at = NULL WHERE id = ?")
+      .run(CREATE_UNKNOWN_LOOKUP_MAX_ATTEMPTS - 1, unknown.paymentId);
+    provider.findPaymentOperationsByLinkId = async () => [];
+
+    await unknown.domain.reconcileCreateUnknownPayments();
+    expect(setup.db.prepare("SELECT state, status, create_unknown_lookup_attempts, create_unknown_next_lookup_at FROM payments WHERE id = ?").get(unknown.paymentId))
+      .toEqual({ state: "CREATE_UNKNOWN", status: "REVIEW_REQUIRED", create_unknown_lookup_attempts: CREATE_UNKNOWN_LOOKUP_MAX_ATTEMPTS, create_unknown_next_lookup_at: null });
+  });
+
+  it("does not count a deterministic CREATE_UNKNOWN page-limit review as an attempted lookup", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const provider: PaymentProvider = new MockProvider();
+    const unknown = await createUnknownPayment(setup, provider, Date.parse("2026-08-23T12:00:00.000Z"));
+    setup.db.prepare("UPDATE payments SET create_unknown_lookup_attempts = 3, create_unknown_next_lookup_at = NULL WHERE id = ?").run(unknown.paymentId);
+    provider.findPaymentOperationsByLinkId = async () => {
+      throw new TochkaProviderError({ provider_error_class: "PROVIDER_RESPONSE_INVALID", provider_error_code: "PAYMENT_LIST_PAGE_LIMIT", pages_scanned: 20, page_limit: 20 }, "pagination cap reached");
+    };
+
+    await unknown.domain.reconcileCreateUnknownPayments();
+    expect(setup.db.prepare("SELECT state, status, create_unknown_lookup_attempts, create_unknown_next_lookup_at FROM payments WHERE id = ?").get(unknown.paymentId))
+      .toEqual({ state: "CREATE_UNKNOWN", status: "REVIEW_REQUIRED", create_unknown_lookup_attempts: 3, create_unknown_next_lookup_at: null });
   });
 
   it.each([

@@ -89,6 +89,33 @@ describe("provider contracts", () => {
     expect(requests.every((request) => request.method === "GET")).toBe(true);
   });
 
+  it("warns once at page 15 without repeating pages or letting logging affect recovery", async () => {
+    const pages: string[] = [];
+    const warnings: string[] = [];
+    const provider = new TochkaProvider(tochkaConfig, async (input) => {
+      const page = new URL(String(input)).searchParams.get("page")!;
+      pages.push(page);
+      return Response.json({ Data: { Operation: [] }, Meta: { totalPages: 15 } });
+    }, Date.now, { warn: (message) => { warnings.push(message); throw new Error("logger unavailable"); } });
+
+    await expect(provider.findPaymentOperationsByLinkId({ paymentLinkId: "payment-link-1", fromDate: "2026-08-23T00:00:00.000Z", toDate: "2026-08-23T01:00:00.000Z" })).resolves.toEqual([]);
+    expect(pages).toEqual(Array.from({ length: 15 }, (_, index) => String(index + 1)));
+    expect(warnings).toHaveLength(1);
+    expect(JSON.parse(warnings[0]!)).toMatchObject({ event: "PROVIDER_PAYMENT_LOOKUP_CAPACITY_WARNING", pages_scanned: 15, page_limit: 20 });
+  });
+
+  it("fails closed after page 20 when the provider still reports more pages", async () => {
+    const pages: string[] = [];
+    const provider = new TochkaProvider(tochkaConfig, async (input) => {
+      pages.push(new URL(String(input)).searchParams.get("page")!);
+      return Response.json({ Data: { Operation: [] }, Meta: { totalPages: 21 } });
+    });
+
+    await expect(provider.findPaymentOperationsByLinkId({ paymentLinkId: "payment-link-1", fromDate: "2026-08-23T00:00:00.000Z", toDate: "2026-08-23T01:00:00.000Z" }))
+      .rejects.toMatchObject({ evidence: { provider_error_code: "PAYMENT_LIST_PAGE_LIMIT", pages_scanned: 20, page_limit: 20 } });
+    expect(pages).toEqual(Array.from({ length: 20 }, (_, index) => String(index + 1)));
+  });
+
   it("recognizes sandbox provider configuration separately from production", async () => {
     const provider = new TochkaProvider({ ...tochkaConfig, baseUrl: "https://enter.tochka.com/sandbox/v2", clientId: undefined }, async (input) =>
       new URL(String(input)).pathname.endsWith("/retailers") ? Response.json({ Data: { Retailers: [] } }) : Response.json({ Data: { Operation: [] } }));

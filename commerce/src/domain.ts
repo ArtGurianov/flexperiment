@@ -2059,12 +2059,12 @@ export class CommerceDomain {
             provider_error_class: evidence.provider_error_class,
             provider_error_code: evidence.provider_error_code,
             attempts: Number(payment.create_unknown_lookup_attempts) + 1,
-          }, evidence);
+          }, evidence, Number(payment.create_unknown_lookup_attempts) + 1);
         } else this.deferCreateUnknownLookup(String(payment.id), Number(payment.create_unknown_lookup_attempts), evidence);
         continue;
       }
       if (operations.length === 0) {
-        if (Number(payment.create_unknown_lookup_attempts) + 1 >= CREATE_UNKNOWN_LOOKUP_MAX_ATTEMPTS) this.reviewCreateUnknownPayment(String(payment.id), { reason: "CREATE_UNKNOWN_LOOKUP_EXHAUSTED", attempts: Number(payment.create_unknown_lookup_attempts) + 1 });
+        if (Number(payment.create_unknown_lookup_attempts) + 1 >= CREATE_UNKNOWN_LOOKUP_MAX_ATTEMPTS) this.reviewCreateUnknownPayment(String(payment.id), { reason: "CREATE_UNKNOWN_LOOKUP_EXHAUSTED", attempts: Number(payment.create_unknown_lookup_attempts) + 1 }, undefined, Number(payment.create_unknown_lookup_attempts) + 1);
         else this.deferCreateUnknownLookup(String(payment.id), Number(payment.create_unknown_lookup_attempts));
         continue;
       }
@@ -2122,13 +2122,14 @@ export class CommerceDomain {
     );
   }
 
-  private reviewCreateUnknownPayment(paymentId: string, observed: Record<string, unknown>, evidence?: import("./provider").ProviderErrorEvidence) {
+  private reviewCreateUnknownPayment(paymentId: string, observed: Record<string, unknown>, evidence?: import("./provider").ProviderErrorEvidence, completedAttempts?: number) {
     withImmediateTransaction(this.db, () => {
       const reviewed = this.db.prepare(`UPDATE payments
         SET status = 'REVIEW_REQUIRED', create_unknown_next_lookup_at = NULL, updated_at = ?,
+            create_unknown_lookup_attempts = COALESCE(?, create_unknown_lookup_attempts),
             provider_error_class = COALESCE(?, provider_error_class), provider_error_code = COALESCE(?, provider_error_code)
         WHERE id = ? AND state = 'CREATE_UNKNOWN' AND status = 'PENDING'
-          AND provider_payment_id IS NULL`).run(now(), evidence?.provider_error_class ?? null, evidence?.provider_error_code ?? null, paymentId);
+          AND provider_payment_id IS NULL`).run(now(), completedAttempts ?? null, evidence?.provider_error_class ?? null, evidence?.provider_error_code ?? null, paymentId);
       if (reviewed.changes) this.recordProviderDrift("PAYMENT", paymentId, { create_unknown_recovery: observed });
     });
   }

@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { runtimeReadinessActionableErrorClasses } from "../src/release-generation";
 
 const workflow = readFileSync(".github/workflows/controlled-promo-codes-cutover.yml", "utf8");
 
@@ -105,5 +106,10 @@ describe("controlled promo codes v0 cutover workflow", () => {
     expect(workflow).toContain("PROMO_CUTOVER_RUNTIME_READINESS_NOT_DEPLOYED");
     expect(workflow).toContain("PROMO_CUTOVER_RUNTIME_READINESS_TRANSITION_INVALID");
     expect(workflow.indexOf("Classify an explicitly evidenced deployed runtime-readiness defect")).toBeGreaterThan(workflow.indexOf("Reconcile deployed candidate and enter read-only phase"));
+  });
+
+  it("keeps the workflow input allowlist exactly aligned with runtime readiness classification", () => {
+    const match = workflow.match(/INPUT_RUNTIME_READINESS_ERROR_CLASS" =~ \^\(([^)]+)\)\$/);
+    expect(match?.[1].split("|").sort()).toEqual([...runtimeReadinessActionableErrorClasses].sort());
   });
 });

@@ -135,7 +135,7 @@ export function replayReleaseGenerationChain(events: readonly V2Event[]): { head
     const runtimeReadinessDefectTransition = current.phase === "PAUSED" && next.phase === "RECOVERY_REQUIRED";
     if (runtimeReadinessDefectTransition) {
       const unexpectedEvidence = ["certification_evidence", "certification_retry", "certification_defect", "public_frontend_defect"].some((key) => envelope[key] !== undefined);
-      if (envelope.kind !== "RUNTIME_READINESS_DEFECT") return { corrupt: envelope.kind === "PUBLIC_FRONTEND_DEFECT" ? "INVALID_PUBLIC_FRONTEND_DEFECT" : "INVALID_RUNTIME_READINESS_DEFECT" };
+      if (envelope.kind !== "RUNTIME_READINESS_DEFECT") return { corrupt: envelope.kind === "PUBLIC_FRONTEND_DEFECT" ? "INVALID_PUBLIC_FRONTEND_DEFECT" : envelope.kind === "PHASE_CHANGED" ? "INVALID_RUNTIME_READINESS_DEFECT" : "UNKNOWN_V2_EVENT_KIND" };
       if (event.action !== "PAUSED" || current.certification || next.certification || unexpectedEvidence || !parseRuntimeReadinessDefectEvidence(envelope.runtime_readiness_defect, current.source_commit)) return { corrupt: "INVALID_RUNTIME_READINESS_DEFECT" };
       current = next;
       continue;

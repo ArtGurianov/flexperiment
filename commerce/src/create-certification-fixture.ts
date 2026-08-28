@@ -84,6 +84,7 @@ const resolvedManifestPath = resolve(manifestPath);
 const stagedKeyPath = `${resolvedKeyPath}.tmp`;
 const stagedManifestPath = `${resolvedManifestPath}.tmp`;
 let committed = false;
+const createdStagedPaths = new Set<string>();
 
 function fsyncDirectory(path: string) {
   const descriptor = openSync(path, "r");
@@ -91,12 +92,18 @@ function fsyncDirectory(path: string) {
 }
 
 function writeStaged(path: string, content: string) {
-  const descriptor = openSync(path, "wx", 0o600);
+  let descriptor: number;
+  try { descriptor = openSync(path, "wx", 0o600); }
+  catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") throw new Error(`CERTIFICATION_FIXTURE_STAGING_ALREADY_EXISTS: ${path}. Reconcile the existing staged artifacts before retrying.`);
+    throw error;
+  }
+  createdStagedPaths.add(path);
   try { writeSync(descriptor, content); fsyncSync(descriptor); } finally { closeSync(descriptor); }
 }
 
-function removeStagedArtifacts() {
-  for (const path of [stagedKeyPath, stagedManifestPath]) {
+function removeOwnedStagedArtifacts() {
+  for (const path of createdStagedPaths) {
     try { unlinkSync(path); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
@@ -145,7 +152,7 @@ try {
     fsyncDirectory(dirname(resolvedKeyPath));
     if (dirname(resolvedManifestPath) !== dirname(resolvedKeyPath)) fsyncDirectory(dirname(resolvedManifestPath));
   } catch (error) {
-    removeStagedArtifacts();
+    removeOwnedStagedArtifacts();
     throw error;
   }
 
@@ -163,7 +170,7 @@ try {
     });
     committed = true;
   } catch (error) {
-    removeStagedArtifacts();
+    removeOwnedStagedArtifacts();
     throw error;
   }
 
@@ -198,7 +205,7 @@ try {
   }, null, 2));
 } finally {
   if (!committed) {
-    try { removeStagedArtifacts(); } catch { /* preserve the original failure */ }
+    try { removeOwnedStagedArtifacts(); } catch { /* preserve the original failure */ }
   }
   db.close();
 }
