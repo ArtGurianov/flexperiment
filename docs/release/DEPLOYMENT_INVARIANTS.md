@@ -396,3 +396,58 @@ verify-only controller must always consume its judged runtime's own real,
 unmodified evidence - if a runtime's own parser cannot consume that
 runtime's own real evidence, the runtime is defective and verify-only must
 fail, not bridge it.
+
+## A read-only convergence loop must not collapse a parser exception into "not converged yet"
+
+A read-only convergence loop must never collapse a parser exception or a
+mismatch in **semantic/authority evidence** (durable release-control state:
+owner, mode, paused-state, expected target) into a generic "not converged
+yet" result - that state does not change by waiting, so any nonzero exit or
+mismatch there is fatal and terminal. **Observable rollout surfaces**
+(frontend/admin/health/ready responses, deployment source commits) are a
+different class: while a deployment is still in flight they may legitimately
+be absent, incomplete, or briefly malformed - JSON parse failures there
+remain retryable, exactly like a plain connection timeout, since a
+mid-restart container returning a truncated or empty body is expected
+transient behavior, not evidence of a defect. Semantic readiness proofs run
+only after rollout-surface convergence, and fail terminally.
+
+This bit on 2026-08-28 (run 33143519915): `controlled-r7-verify-only.yml`'s
+poll loop chained the semantic readiness parser (`assert-generic-production-
+deploy-ready.ts`) into the same `&&`-guarded `if` as the observable surface
+checks. The parser crashed with a `TypeError` on every single attempt - its
+`release.json` had been built by copying `status.json`'s `.expected` field
+verbatim, which never carries `legal_hashes` (that field lives only under
+`.runtime.legal_hashes`) - so `evaluateReopenGate()`'s legal-hash comparison
+dereferenced `undefined`. Because the crash lived inside the same `&&` chain
+as the retryable checks, the loop's exhaustion path reported the generic
+`VERIFY_RUNTIME_NOT_CONVERGED_YET`, indistinguishable from ordinary Coolify
+convergence delay - even though this was a deterministic bug that would
+reproduce identically no matter how long the loop waited or how many times
+it was redispatched.
+
+**Fix pattern**: separate the failure classes explicitly, and order the
+checks so an earlier one can never be masked by a later one failing in the
+same iteration.
+1. Fetching the durable status itself is the first, independently
+   retryable operation - a transport failure or timeout here says nothing
+   about authority or surfaces, so it just retries.
+2. Once that status read succeeds, its **authority fields** (owner, mode,
+   paused-state, expected target) are asserted immediately and
+   unconditionally - using `||` to a distinct exit code, never nested
+   inside an outer condition that also depends on the observable-surface
+   fetches below succeeding. An earlier fix attempt for this same incident
+   (commit `a2a34b1`) still nested the authority assertion inside the same
+   outer `&&` as the frontend/admin/health/ready fetches, so a genuine
+   authority violation could still be masked as `NOT_CONVERGED_YET` by an
+   unrelated, unlucky transient fetch failure in the same iteration -
+   correctness here requires unconditional evaluation, not just fatal-not-
+   retryable evaluation.
+3. Only once authority is proven does **observable surface convergence**
+   (runtime/worker source commit, frontend, admin, health, ready) become
+   the retryable condition, and the only thing
+   `VERIFY_RUNTIME_NOT_CONVERGED_YET` may ever mean.
+4. The **semantic readiness parser** runs exactly once, in its own step,
+   only after surface convergence is reached - never inside the retry loop.
+   Any nonzero exit from it is fatal and preserves its own stderr; it must
+   never be retried or reinterpreted as non-convergence.

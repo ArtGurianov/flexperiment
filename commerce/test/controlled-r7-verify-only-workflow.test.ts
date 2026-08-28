@@ -85,28 +85,142 @@ describe("controlled R7 verify-only workflow", () => {
     expect(workflow.match(/git worktree add --detach/g)).toHaveLength(1);
   });
 
-  it("polls with a bounded, short budget whose failure means only not-converged-yet, using the exact-R7 worktree parser each iteration", () => {
+  it("polls with a bounded, short budget for observable surface convergence only - no readiness parser inside the loop", () => {
     expect(workflow).toContain('POLL_ATTEMPTS: "18"');
     expect(workflow).toContain('POLL_SECONDS: "10"');
     const poll = workflow.indexOf("Poll until Commerce/worker/frontend/admin converge on exact R7 while still paused");
-    const checkoutProof = workflow.indexOf("Prove public checkout is paused, not corrupt");
-    const section = workflow.slice(poll, checkoutProof);
+    const readinessStep = workflow.indexOf("Run the exact-R7 pinned readiness parser exactly once, now that surfaces have converged");
+    const section = workflow.slice(poll, readinessStep);
     expect(section).toContain('for attempt in $(seq 1 "$POLL_ATTEMPTS"); do');
     expect(section).toContain("VERIFY_RUNTIME_NOT_CONVERGED_YET");
-    expect(section).toContain('(cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$GITHUB_WORKSPACE/status.json" "$GITHUB_WORKSPACE/release.json" paused)');
-    expect(section).not.toMatch(/^\s*node --import tsx commerce\/src\/assert-generic-production-deploy-ready\.ts status\.json/m);
-    expect(section).not.toContain("assert-generic-production-deploy-ready.ts \"$GITHUB_WORKSPACE/status.json\" \"$GITHUB_WORKSPACE/release.json\" open");
+    // The readiness parser must not be invoked anywhere inside the poll loop
+    // - it moved to its own step, run exactly once after convergence.
+    expect(section).not.toContain("assert-generic-production-deploy-ready.ts");
+    expect(section).not.toContain("RUNTIME_ASSERT_DIR");
     expect(section).not.toContain("git worktree add");
     expect(section).not.toContain("pnpm install");
-    // The narrower "no compatibility projection anywhere" invariant is
-    // covered by its own dedicated test above (script name / file-suffix
-    // checks) - this section is allowed to explain in prose, in a comment,
-    // why no compatibility projection is used here.
+    // The retryable convergence predicate covers the observable surfaces.
+    expect(section).toContain(".runtime.source_commit == $source and");
+    expect(section).toContain(".runtime.worker_source_commit == $source");
+    expect(section).toContain('.source_commit == $sha\' frontend.json');
+    expect(section).toContain('.source_commit == $sha\' admin.json');
+    expect(section).toContain(".ok == true' health.json");
+    expect(section).toContain(".ok == true' ready.json");
+  });
+
+  it("treats an authority mismatch as fatal and immediate, never as a retryable not-converged-yet condition", () => {
+    const poll = workflow.indexOf("Poll until Commerce/worker/frontend/admin converge on exact R7 while still paused");
+    const readinessStep = workflow.indexOf("Run the exact-R7 pinned readiness parser exactly once, now that surfaces have converged");
+    const section = workflow.slice(poll, readinessStep);
+    // The authority check (paused/owner/mode/expected) uses `||` to a
+    // distinct fatal exit, not `&&` chained into the retry condition -
+    // a wrong owner/mode/expected/paused-state can never be fixed by
+    // waiting longer, so it must not be reported as non-convergence.
+    const authorityCheckIndex = section.indexOf(".sales_paused == true and");
+    const authorityExitIndex = section.indexOf("VERIFY_AUTHORITY_UNEXPECTED_STATE");
+    // The loop now has two distinct VERIFY_RUNTIME_NOT_CONVERGED_YET exit
+    // points (status-fetch-retry exhaustion, then surface-convergence
+    // exhaustion) - the authority exit must precede the final one, i.e. the
+    // surface-convergence loop's own exhaustion marker, which is what it
+    // must never be confused with.
+    const finalConvergenceLoopIndex = section.lastIndexOf("VERIFY_RUNTIME_NOT_CONVERGED_YET");
+    expect(authorityCheckIndex).toBeGreaterThan(-1);
+    expect(authorityExitIndex).toBeGreaterThan(authorityCheckIndex);
+    expect(authorityExitIndex).toBeLessThan(finalConvergenceLoopIndex);
+    expect(section).toContain('status.json >/dev/null || { cat status.json >&2; echo "VERIFY_AUTHORITY_UNEXPECTED_STATE" >&2; exit 1; }');
+  });
+
+  it("asserts authority unconditionally on status.json before any frontend/admin/health/ready fetch - never nested inside their outer condition", () => {
+    // Regression test for the masking bug found in the first fix attempt
+    // (commit a2a34b1): there, the authority assertion lived inside the
+    // same outer `if status && frontend && admin && health && ready; then`
+    // as the surface fetches, so a genuine authority violation could be
+    // hidden behind an unrelated, unlucky transient frontend/admin/health/
+    // ready failure in the same iteration, surfacing only as
+    // VERIFY_RUNTIME_NOT_CONVERGED_YET after the loop exhausted. The status
+    // fetch must be its own independently retryable operation, and once it
+    // succeeds, authority must be evaluated before - not conditional on -
+    // any of the other fetches.
+    const poll = workflow.indexOf("Poll until Commerce/worker/frontend/admin converge on exact R7 while still paused");
+    const readinessStep = workflow.indexOf("Run the exact-R7 pinned readiness parser exactly once, now that surfaces have converged");
+    const section = workflow.slice(poll, readinessStep);
+    const statusFetchIndex = section.indexOf('curl --silent --show-error --connect-timeout "$POLL_CONNECT_TIMEOUT" --max-time "$POLL_MAX_TIME" --output status.json --write-out \'%{http_code}\'');
+    const authorityCheckIndex = section.indexOf(".sales_paused == true and");
+    const frontendFetchIndex = section.indexOf('get "$PUBLIC_FRONTEND_URL/release.json" > frontend.json');
+    expect(statusFetchIndex).toBeGreaterThan(-1);
+    expect(authorityCheckIndex).toBeGreaterThan(statusFetchIndex);
+    expect(frontendFetchIndex).toBeGreaterThan(authorityCheckIndex);
+    // The status fetch is a standalone, negated, independently retryable
+    // check with its own `continue` - not the first clause of a multi-line
+    // `&&` chain that also fetches frontend/admin/health/ready.
+    expect(section).toContain("if ! status_http=\"$(curl --silent --show-error --connect-timeout \"$POLL_CONNECT_TIMEOUT\" --max-time \"$POLL_MAX_TIME\" --output status.json --write-out '%{http_code}'");
+    const statusFailureBranch = section.slice(statusFetchIndex, authorityCheckIndex);
+    expect(statusFailureBranch).toContain("continue");
+    expect(statusFailureBranch).not.toContain("get \"$PUBLIC_FRONTEND_URL/release.json\"");
+  });
+
+  it("classifies status HTTP errors as fatal, distinct from transport failures and from surface non-convergence", () => {
+    // Regression test for the second-round blocker: `--fail-with-body`
+    // treats any non-2xx HTTP response the same as a connection/timeout
+    // failure, so a revoked token, broken route, or other deterministic
+    // status-endpoint failure (401/403/404/500/...) could still exhaust the
+    // loop and emit the genuine-convergence-delay marker. The status fetch
+    // must capture the HTTP code explicitly and treat anything but 200 as
+    // fatal - never folded into either the transport-retry path or the
+    // surface-convergence retry path.
+    const poll = workflow.indexOf("Poll until Commerce/worker/frontend/admin converge on exact R7 while still paused");
+    const readinessStep = workflow.indexOf("Run the exact-R7 pinned readiness parser exactly once, now that surfaces have converged");
+    const section = workflow.slice(poll, readinessStep);
+    // The status fetch uses a bare curl (no --fail-with-body) so a non-2xx
+    // response does not itself fail the command - only a genuine transport
+    // error does.
+    expect(section).toContain("status_http=\"$(curl --silent --show-error --connect-timeout \"$POLL_CONNECT_TIMEOUT\" --max-time \"$POLL_MAX_TIME\" --output status.json --write-out '%{http_code}' -H \"Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN\" \"$PUBLIC_API_URL/v1/internal/release-control/status\")");
+    expect(section).not.toMatch(/curl --fail-with-body[^\n]*\/v1\/internal\/release-control\/status/);
+    const httpCheckIndex = section.indexOf('[[ "$status_http" == "200" ]]');
+    const fatalHttpExitIndex = section.indexOf("VERIFY_STATUS_UNEXPECTED_HTTP");
+    const authorityCheckIndex = section.indexOf(".sales_paused == true and");
+    const finalConvergenceLoopIndex = section.lastIndexOf("VERIFY_RUNTIME_NOT_CONVERGED_YET");
+    expect(httpCheckIndex).toBeGreaterThan(-1);
+    expect(fatalHttpExitIndex).toBeGreaterThan(httpCheckIndex);
+    expect(fatalHttpExitIndex).toBeLessThan(authorityCheckIndex);
+    expect(fatalHttpExitIndex).toBeLessThan(finalConvergenceLoopIndex);
+    expect(section).toContain('[[ "$status_http" == "200" ]] || { cat status.json >&2; echo "VERIFY_STATUS_UNEXPECTED_HTTP=$status_http" >&2; exit 1; }');
+    // A non-200 HTTP status must not be reachable from the retryable
+    // transport-failure branch (it only fires when curl itself fails).
+    const transportFailureBranch = section.slice(section.indexOf("if ! status_http="), httpCheckIndex);
+    expect(transportFailureBranch).not.toContain("VERIFY_STATUS_UNEXPECTED_HTTP");
+  });
+
+  it("runs the readiness parser exactly once, after the convergence loop, never re-entering it on failure", () => {
+    const poll = workflow.indexOf("Poll until Commerce/worker/frontend/admin converge on exact R7 while still paused");
+    const readinessStep = workflow.indexOf("Run the exact-R7 pinned readiness parser exactly once, now that surfaces have converged");
+    const checkoutProof = workflow.indexOf("Prove public checkout is paused, not corrupt");
+    expect(readinessStep).toBeGreaterThan(poll);
+    expect(checkoutProof).toBeGreaterThan(readinessStep);
+    const section = workflow.slice(readinessStep, checkoutProof);
+    // release.json is now built with the same shape as the already-proven
+    // submit workflow's request construction: legal_hashes explicitly
+    // pulled from runtime.legal_hashes, never copied verbatim from
+    // status.json's own `.expected` (which never carries legal_hashes -
+    // this was exactly the run-33143519915 defect).
+    expect(section).toContain("legal_hashes: $s.runtime.legal_hashes");
+    expect(section).not.toContain("expected: .expected");
+    expect(section).not.toMatch(/\{\s*release_id:\s*\.owner_release_id,\s*mode:\s*\.owner_mode,\s*expected:\s*\.expected\s*\}/);
+    expect(section).toContain('(cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$GITHUB_WORKSPACE/status.json" "$GITHUB_WORKSPACE/release.json" paused)');
+    // Runs exactly once - no loop, no retry, no sleep, no attempt counter.
+    expect(section).not.toContain("for attempt in");
+    expect(section).not.toContain("sleep ");
+    expect(section).not.toContain("VERIFY_RUNTIME_NOT_CONVERGED_YET");
+    expect(section).not.toContain("git worktree add");
+    expect(section).not.toContain("pnpm install");
+    // Only one readiness-parser invocation exists anywhere in the workflow.
+    expect(workflow.match(/node --import tsx commerce\/src\/assert-generic-production-deploy-ready\.ts/g)).toHaveLength(1);
   });
 
   it("proves candidates/head is a clean 200 with the exact historical Promo head - this is exactly what R6 fixes, carried forward into R7", () => {
+    const readinessStep = workflow.indexOf("Run the exact-R7 pinned readiness parser exactly once, now that surfaces have converged");
     const step = workflow.indexOf("Prove candidates/head is now a clean 200 with the exact historical Promo head");
-    expect(step).toBeGreaterThan(-1);
+    expect(step).toBeGreaterThan(readinessStep);
     const section = workflow.slice(step);
     expect(section).toContain('"$PUBLIC_API_URL/v1/admin/release-control/candidates/head"');
     expect(section).toContain(".head.release_id == $release_id and");

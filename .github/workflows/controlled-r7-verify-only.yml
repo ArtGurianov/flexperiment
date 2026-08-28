@@ -136,43 +136,113 @@ jobs:
           (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile --ignore-scripts)
 
       - name: Poll until Commerce/worker/frontend/admin converge on exact R7 while still paused
-        # Bounded fresh polling (a few minutes) to absorb ordinary
-        # frontend/backend rollout skew, not to wait out an indefinite
-        # Coolify delay - if this exhausts its budget, that means only
-        # "not converged yet", never a deployment failure. This workflow
-        # performs no mutation, so it is always safe to dispatch again. The
-        # readiness call each iteration runs inside the exact-R7 worktree
-        # materialized above (prepared once, reused every iteration),
-        # against R7's own real, unmodified evidence - never from this
-        # controller's own main checkout, never re-materialized inside the
-        # loop, and never through any compatibility projection.
+        # Three ordered failure classes, deliberately never conflated:
+        #   - a transient TRANSPORT failure to even reach the status
+        #     endpoint (connection refused, TLS failure, DNS failure,
+        #     timeout) is retryable - this iteration simply couldn't observe
+        #     anything yet, so it says nothing about authority or surfaces.
+        #     An HTTP error response (401/403/404/500/...) is a distinct,
+        #     FATAL condition, not folded into this retryable class: it
+        #     means the endpoint answered but refused or failed the
+        #     request, which more waiting cannot fix (a revoked token or a
+        #     broken route will not repair itself). The status fetch below
+        #     therefore captures the HTTP status code explicitly instead of
+        #     using the `--fail-with-body` helper used elsewhere in this
+        #     workflow, specifically so a non-200 response cannot be
+        #     misclassified as a plain transport failure.
+        #   - once status.json IS successfully read (HTTP 200), its authority fields
+        #     (owner/mode/expected/paused-state) are asserted immediately and
+        #     unconditionally - never gated behind whether the frontend,
+        #     admin, health, or ready fetches below also happen to succeed
+        #     this iteration. These fields are durable state set by the
+        #     submit workflow, not something Coolify convergence affects - if
+        #     they are wrong, more waiting cannot fix it, and a transient
+        #     frontend/admin/health/ready hiccup must never be able to mask
+        #     that fatal finding behind a retryable-looking timeout. An
+        #     earlier draft of this fix (commit a2a34b1) still nested the
+        #     authority assertion inside the same outer `&&` as the surface
+        #     fetches, so a wrong owner could still be masked as
+        #     VERIFY_RUNTIME_NOT_CONVERGED_YET if, say, the frontend fetch
+        #     happened to time out in the same iteration.
+        #   - only once authority is proven does this loop treat the
+        #     observable deployment surfaces (runtime/worker source commit,
+        #     frontend, admin, health, ready) not yet matching R7 as the
+        #     retryable condition - this is genuinely time-bound (Coolify's
+        #     webhook acceptance is not deployment convergence).
+        # The semantic readiness parser is deliberately NOT called from this
+        # step at all: see the next step. This is exactly the defect found in
+        # run 33143519915 on 2026-08-28 - the parser's own TypeError (its
+        # release.json had been built by copying status.json's `.expected`
+        # verbatim, which never carries `legal_hashes`; see
+        # commerce/src/release-control.ts's serializeStatus()) was silently
+        # absorbed by this retry loop and reported as ordinary
+        # non-convergence on all 18 attempts, when it was in fact a
+        # deterministic bug that no amount of waiting could ever resolve.
         timeout-minutes: 10
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout "$POLL_CONNECT_TIMEOUT" --max-time "$POLL_MAX_TIME" -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
           get() { curl --fail-with-body --silent --show-error --connect-timeout "$POLL_CONNECT_TIMEOUT" --max-time "$POLL_MAX_TIME" "$@"; }
           for attempt in $(seq 1 "$POLL_ATTEMPTS"); do
-            if api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json && \
-              get "$PUBLIC_FRONTEND_URL/release.json" > frontend.json && \
+            status_http=""
+            if ! status_http="$(curl --silent --show-error --connect-timeout "$POLL_CONNECT_TIMEOUT" --max-time "$POLL_MAX_TIME" --output status.json --write-out '%{http_code}' -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$PUBLIC_API_URL/v1/internal/release-control/status")"; then
+              # Genuine transport/read failure (connection refused, TLS/DNS
+              # failure, timeout): retryable.
+              [[ "$attempt" == "$POLL_ATTEMPTS" ]] && { echo "VERIFY_RUNTIME_NOT_CONVERGED_YET" >&2; exit 1; }
+              sleep "$POLL_SECONDS"
+              continue
+            fi
+            [[ "$status_http" == "200" ]] || { cat status.json >&2; echo "VERIFY_STATUS_UNEXPECTED_HTTP=$status_http" >&2; exit 1; }
+            jq -e --arg owner "$EXPECTED_OWNER_RELEASE_ID" --arg source "$EXPECTED_PRODUCTION_DEPLOY" --arg migration "$EXPECTED_MIGRATION" '
+              .sales_paused == true and
+              .owner_release_id == $owner and
+              .owner_mode == "CONTROLLED_CUTOVER" and
+              .expected.source_commit == $source and
+              .expected.migration == $migration
+            ' status.json >/dev/null || { cat status.json >&2; echo "VERIFY_AUTHORITY_UNEXPECTED_STATE" >&2; exit 1; }
+            if get "$PUBLIC_FRONTEND_URL/release.json" > frontend.json && \
               get "$ADMIN_RELEASE_URL" > admin.json && \
               get "$PUBLIC_API_URL/healthz" > health.json && \
               get "$PUBLIC_API_URL/readyz" > ready.json && \
-              jq -e --arg owner "$EXPECTED_OWNER_RELEASE_ID" --arg source "$EXPECTED_PRODUCTION_DEPLOY" --arg migration "$EXPECTED_MIGRATION" '
-                .sales_paused == true and
-                .owner_release_id == $owner and
-                .owner_mode == "CONTROLLED_CUTOVER" and
-                .expected.source_commit == $source and
-                .expected.migration == $migration
+              jq -e --arg source "$EXPECTED_PRODUCTION_DEPLOY" '
+                .runtime.source_commit == $source and
+                .runtime.worker_source_commit == $source
               ' status.json >/dev/null && \
-              jq '{release_id: .owner_release_id, mode: .owner_mode, expected: .expected}' status.json > release.json && \
-              (cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$GITHUB_WORKSPACE/status.json" "$GITHUB_WORKSPACE/release.json" paused) && \
               jq -e --arg sha "$EXPECTED_PRODUCTION_DEPLOY" '.source_commit == $sha' frontend.json >/dev/null && \
               jq -e --arg sha "$EXPECTED_PRODUCTION_DEPLOY" '.source_commit == $sha' admin.json >/dev/null && \
               jq -e '.ok == true' health.json >/dev/null && \
-              jq -e '.ok == true' ready.json >/dev/null; then break; fi
+              jq -e '.ok == true' ready.json >/dev/null; then
+              break
+            fi
             [[ "$attempt" == "$POLL_ATTEMPTS" ]] && { echo "VERIFY_RUNTIME_NOT_CONVERGED_YET" >&2; exit 1; }
             sleep "$POLL_SECONDS"
           done
+
+      - name: Run the exact-R7 pinned readiness parser exactly once, now that surfaces have converged
+        # A deterministic semantic proof, not a polling mechanism: it runs
+        # once, against the just-converged status.json, inside the exact-R7
+        # worktree materialized above - never from this controller's own
+        # main checkout, and never through any compatibility projection (no
+        # compatibility projection is permitted anywhere in this workflow).
+        # Any nonzero exit here - a crash, an invariant violation, malformed
+        # evidence - is fatal and preserves the parser's own stderr; it must
+        # never be retried or reinterpreted as non-convergence.
+        run: |
+          set -euo pipefail
+          jq '
+            . as $s |
+            {
+              release_id: $s.owner_release_id,
+              mode: $s.owner_mode,
+              expected: {
+                source_commit: $s.expected.source_commit,
+                migration: $s.expected.migration,
+                legal_version: $s.expected.legal_version,
+                legal_manifest_sha256: $s.expected.legal_manifest_sha256,
+                legal_hashes: $s.runtime.legal_hashes
+              }
+            }
+          ' status.json > release.json
+          (cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$GITHUB_WORKSPACE/status.json" "$GITHUB_WORKSPACE/release.json" paused)
 
       - name: Prove public checkout is paused, not corrupt
         run: |
