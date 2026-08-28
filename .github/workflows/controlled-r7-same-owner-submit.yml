@@ -1,0 +1,375 @@
+name: Controlled R7 same-owner submit
+
+# One-shot, hard-bound submit-only crossing controller for the R5->R7
+# same-owner expectations move plus deployment trigger.
+#
+# This is a new workflow, not a repurposed controlled-r6-same-owner-submit.yml,
+# so that workflow's two real (now-fixed) failures - run 33137857861
+# (UNKNOWN_EXPECTED_MIGRATION: main's own release-control.ts judging R5's
+# evidence) and run 33139603447 (REQUIRED_MIGRATION_NOT_APPLIED: R5's own
+# evaluateReopenGate() genuinely cannot recognize 0035/0036 as applied via
+# required_migrations alone) - remain intact, undisturbed historical
+# evidence of exactly what was wrong and when it was fixed.
+#
+# Context: runtime-candidate is already exact R7 via a separately reviewed,
+# inertly-published guarded CAS. production-deploy and the live runtime are
+# still exact R5, paused under the existing deploy-R4 generic owner. R7 is
+# a direct child of R6 carrying R6's candidateHead() ownership-classifier
+# fix plus one narrow fix: evaluateReopenGate() and evaluateCandidateReopenGate()
+# now share one migrationApplied() predicate (required_migrations[version]
+# === true OR migration_versions.includes(version)) instead of
+# evaluateReopenGate() checking required_migrations alone - see
+# "Runtime-dependent parsers must be pinned to the exact runtime they judge"
+# and the migration-applied-predicate section in DEPLOYMENT_INVARIANTS.md.
+# R7 touches no migration, legal, or Promo v2 state, so Commerce does not
+# need to go offline - this crossing drives the ordinary live internal API
+# while R5 keeps serving.
+#
+# R5/0036 compatibility projection (read this before touching the
+# readiness step below): R5 itself is not being patched, and per the
+# runtime-pinning invariant the submit preflight must judge R5's evidence
+# using R5's own (unfixed) evaluateReopenGate(). R5's live evidence is
+# therefore run through commerce/src/derive-r5-migration-compat-evidence.ts
+# first - a one-shot, hard-bound adapter (fails closed unless the input
+# matches the exact known R5 defect pattern) that fills in exactly the two
+# required_migrations keys (0035, 0036) a correct evaluator would have
+# derived from migration_versions itself, proves no other field differs,
+# and writes a compatibility copy. Only that copy is fed to the exact-R5
+# pinned readiness parser; the original evidence file is never modified and
+# is what every other check in this workflow uses. This adapter runs from
+# the controller's own main checkout, never from the R5 worktree: it holds
+# no runtime-semantic code of its own (only two hard-bound identity
+# constants), so it is not subject to the runtime-pinning invariant the
+# same way the parser itself is.
+#
+# This workflow is deliberately submit-only. It contains no convergence
+# polling and no reopen: see "Coolify webhook acceptance is not deployment
+# convergence" in docs/release/DEPLOYMENT_INVARIANTS.md - proving the
+# resulting runtime actually converged on R7 is controlled-r7-verify-only.yml's
+# job, a separate, purely read-only, freely re-dispatchable workflow. This
+# one calls Coolify's webhook exactly once and stops; whether that
+# deployment has finished by the time this job ends is unknown and
+# irrelevant to this workflow's own success.
+#
+# It does not call GET /v1/admin/release-control/candidates/head: R5's
+# candidateHead() deterministically returns RELEASE_STATE_CORRUPT in this
+# exact legitimate state (the bug R6 fixes), so making that known-broken
+# read a precondition here would prove nothing and only add a spurious
+# failure mode. Nothing else about the crossing depends on it.
+#
+# Failure semantics (see DEPLOYMENT_INVARIANTS.md for the general version):
+#   failure before the expectations update  -> no production mutation at all
+#   failure after expectations, before CAS  -> owner paused, expected R7,
+#                                               production-deploy still R5 -
+#                                               STOP, forward recovery only
+#   failure after CAS, before/at Coolify    -> owner paused, expected R7,
+#                                               production-deploy R7 - STOP,
+#                                               do not move the pointer back
+#   Coolify accepted, runtime not converged -> normal async state; use
+#                                               controlled-r7-verify-only.yml
+# This workflow is intentionally NOT resumable across these states - a
+# one-shot crossing stays one-shot. Any partial-state recovery is its own
+# separately reviewed operation, exactly like the R4->R5 recovery was.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Must be exactly SUBMIT-R7-SAME-OWNER-CROSSING-WHILE-PAUSED
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    env:
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+      COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+      CONTROLLER_SHA: ${{ github.sha }}
+      INPUT_CONFIRM: ${{ inputs.confirm }}
+      # Hard-bound identities for this exact one-shot crossing. None of
+      # these are dispatch inputs and none may be overridden at run time.
+      REQUIRED_CONFIRM_PHRASE: "SUBMIT-R7-SAME-OWNER-CROSSING-WHILE-PAUSED"
+      EXPECTED_RUNTIME_CANDIDATE: "5ec1eadab4373fb1309dd1d323d88bf12f564220"
+      EXPECTED_PRODUCTION_DEPLOY_BEFORE: "71f6971cea630d4da9a1cb1c57f3ad01e8fdffe1"
+      DEPLOYMENT_TARGET: "5ec1eadab4373fb1309dd1d323d88bf12f564220"
+      TOPOLOGY_BASELINE: "71f6971cea630d4da9a1cb1c57f3ad01e8fdffe1"
+      EXPECTED_OWNER_RELEASE_ID: "deploy-aa492d5a6361c8d43f8cbb2a4e3b245611f4f76b"
+      EXPECTED_MIGRATION: "0036_tochka_provider_error_evidence.sql"
+      # RUNTIME_ASSERT_DIR (where the exact-R5 detached worktree is
+      # materialized for runtime-pinned readiness parsing) is set from
+      # $RUNNER_TEMP via $GITHUB_ENV in the "Materialize exact R5" step
+      # below, not here: the `runner` context is not available in a
+      # job-level `env:` block (only github/inputs/matrix/needs/secrets/
+      # strategy/vars are - confirmed with actionlint).
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Assert this controller is exact, current main
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "SUBMIT_CONTROLLER_NOT_MAIN" >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo "SUBMIT_CONTROLLER_MAIN_MOVED" >&2; exit 1; }
+
+      - name: Assert confirmation phrase
+        run: |
+          set -euo pipefail
+          [[ "$INPUT_CONFIRM" == "$REQUIRED_CONFIRM_PHRASE" ]] || { echo "SUBMIT_CONFIRM_PHRASE_MISMATCH" >&2; exit 1; }
+
+      - name: Resolve hard-bound identities
+        run: |
+          set -euo pipefail
+          for sha in "$EXPECTED_RUNTIME_CANDIDATE" "$EXPECTED_PRODUCTION_DEPLOY_BEFORE" "$DEPLOYMENT_TARGET" "$TOPOLOGY_BASELINE"; do
+            [[ "$sha" =~ ^[a-f0-9]{40}$ ]] || { echo "SUBMIT_HARDBOUND_SHA_INVALID" >&2; exit 1; }
+          done
+          [[ "$EXPECTED_RUNTIME_CANDIDATE" == "$DEPLOYMENT_TARGET" ]] || { echo "SUBMIT_HARDBOUND_TARGET_MISMATCH" >&2; exit 1; }
+          git fetch --no-tags origin "$DEPLOYMENT_TARGET"
+          git fetch --no-tags origin "$TOPOLOGY_BASELINE"
+          git cat-file -e "$DEPLOYMENT_TARGET^{commit}" || { echo "SUBMIT_TARGET_NOT_IN_REPOSITORY" >&2; exit 1; }
+          git cat-file -e "$TOPOLOGY_BASELINE^{commit}" || { echo "SUBMIT_BASELINE_NOT_IN_REPOSITORY" >&2; exit 1; }
+          if git cat-file -e "${DEPLOYMENT_TARGET}:.release/maintenance-only" 2>/dev/null; then
+            echo "SUBMIT_TARGET_IS_MAINTENANCE_ONLY" >&2
+            exit 1
+          fi
+
+      - name: Assert runtime-candidate is exactly the hard-bound target
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin runtime-candidate
+          current_candidate_sha="$(git rev-parse origin/runtime-candidate)"
+          [[ "$current_candidate_sha" == "$EXPECTED_RUNTIME_CANDIDATE" ]] || { echo "RUNTIME_CANDIDATE_UNEXPECTED_SHA=$current_candidate_sha" >&2; exit 1; }
+
+      - name: Assert production-deploy is still exactly the hard-bound pre-crossing target
+        run: |
+          set -euo pipefail
+          current_production_deploy_sha="$(scripts/read-production-deploy-ref.sh)"
+          [[ "$current_production_deploy_sha" == "$EXPECTED_PRODUCTION_DEPLOY_BEFORE" ]] || { echo "PRODUCTION_DEPLOY_UNEXPECTED_SHA=$current_production_deploy_sha" >&2; exit 1; }
+
+      - name: Assert R7 topology relative to R5
+        run: |
+          set -euo pipefail
+          scripts/inspect-runtime-candidate-topology.sh --production-deploy "$TOPOLOGY_BASELINE" --candidate "$DEPLOYMENT_TARGET" > topology.json
+          jq -e '.candidate_is_descendant_of_production_deploy == true' topology.json >/dev/null || { echo "SUBMIT_TARGET_NOT_DESCENDANT_OF_BASELINE" >&2; exit 1; }
+          jq -e '(.maintenance_commits_in_range | length) == 0' topology.json >/dev/null || { jq -c '.maintenance_commits_in_range' topology.json >&2; echo "SUBMIT_TARGET_CONTAINS_MAINTENANCE_COMMIT" >&2; exit 1; }
+          jq -e '(.merge_commits_in_range | length) == 0' topology.json >/dev/null || { jq -c '.merge_commits_in_range' topology.json >&2; echo "SUBMIT_TARGET_NOT_LINEAR" >&2; exit 1; }
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Assert no migration/legal/contract boundary crossing between R5 and R7
+        run: |
+          set -euo pipefail
+          git diff --name-only -z "$TOPOLOGY_BASELINE" "$DEPLOYMENT_TARGET" -- commerce/migrations commerce/legal public/legal release-surface-contract.json > submit-boundary-paths.bin
+          pnpm commerce:production-deploy:assert-boundary submit-boundary-paths.bin
+
+      - name: Materialize exact R5 once for runtime-pinned readiness parsing
+        # assert-generic-production-deploy-ready.ts interprets runtime
+        # release evidence using release-control.ts's own semantics - those
+        # semantics belong to the exact runtime commit being proved, not to
+        # whatever main happens to contain, and not to R7's fixed semantics
+        # either: R5 is not being patched, so its preflight must be judged
+        # by R5's own (unfixed) code. This materializes an isolated,
+        # detached worktree at exact R5, with R5's own dependency graph
+        # installed from R5's own lockfile, once, before any readiness call
+        # - never inside a retry/poll loop. Install runs with
+        # --ignore-scripts: only the one named readiness parser below is
+        # authorized to execute from this tree - dependency lifecycle/build
+        # scripts are not, since this job holds production mutation
+        # credentials (including Coolify's) and the worktree must not
+        # become a broader arbitrary-code-execution surface than that.
+        run: |
+          set -euo pipefail
+          RUNTIME_ASSERT_DIR="$RUNNER_TEMP/r5-readiness-runtime"
+          echo "RUNTIME_ASSERT_DIR=$RUNTIME_ASSERT_DIR" >> "$GITHUB_ENV"
+          git worktree add --detach "$RUNTIME_ASSERT_DIR" "$TOPOLOGY_BASELINE"
+          [[ "$(git -C "$RUNTIME_ASSERT_DIR" rev-parse HEAD)" == "$TOPOLOGY_BASELINE" ]] || { echo "RUNTIME_ASSERT_WORKTREE_WRONG_SHA" >&2; exit 1; }
+          (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile --ignore-scripts)
+
+      - name: Prove full R5 readiness before the first mutation
+        # A single fresh read, not a polling loop - Commerce is already
+        # known to be up and healthy on R5 (this crossing does not stop
+        # services, unlike the R3->R4/R4->R5 offline crossings), so there is
+        # nothing here to wait for convergence on. status-before.json is the
+        # immutable original evidence - it is what every other check in this
+        # workflow uses. Only the readiness parser call itself consumes the
+        # derived R5/0036 compatibility copy, because R5's own
+        # evaluateReopenGate() cannot otherwise recognize 0035/0036 as
+        # applied via required_migrations alone (see
+        # commerce/src/derive-r5-migration-compat-evidence.ts and
+        # DEPLOYMENT_INVARIANTS.md) - a real, verified R5 defect, not a
+        # weakening of the readiness proof itself: the adapter fails closed
+        # unless the live evidence exactly matches that one known pattern.
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-before.json
+          jq -e --arg owner "$EXPECTED_OWNER_RELEASE_ID" --arg source "$TOPOLOGY_BASELINE" --arg migration "$EXPECTED_MIGRATION" '
+            .sales_paused == true and
+            .owner_release_id == $owner and
+            .owner_mode == "CONTROLLED_CUTOVER" and
+            .expected.source_commit == $source and
+            .expected.migration == $migration
+          ' status-before.json >/dev/null || { cat status-before.json >&2; echo "SUBMIT_LIVE_PRECONDITION_UNEXPECTED_STATE" >&2; exit 1; }
+          node --import tsx commerce/src/derive-r5-migration-compat-evidence.ts status-before.json status-before-r5-compat.json
+          jq -n --slurpfile status status-before.json --arg release_id "$EXPECTED_OWNER_RELEASE_ID" --arg source "$TOPOLOGY_BASELINE" '
+            $status[0] as $s |
+            {
+              release_id: $release_id,
+              mode: "CONTROLLED_CUTOVER",
+              expected: {
+                source_commit: $source,
+                migration: $s.expected.migration,
+                legal_version: $s.expected.legal_version,
+                legal_manifest_sha256: $s.expected.legal_manifest_sha256,
+                legal_hashes: $s.runtime.legal_hashes,
+              }
+            }
+          ' > release-before.json
+          (cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$GITHUB_WORKSPACE/status-before-r5-compat.json" "$GITHUB_WORKSPACE/release-before.json" paused)
+          pause_status="$(curl --silent --show-error --connect-timeout 10 --max-time 30 --output paused-checkout.json --write-out '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: r7-submit-pause-proof-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --data '{}' "$PUBLIC_API_URL/v1/public/checkouts")"
+          [[ "$pause_status" == "503" ]] || { cat paused-checkout.json >&2; echo "SUBMIT_CHECKOUT_UNEXPECTED_STATUS=$pause_status" >&2; exit 1; }
+          jq -e '.error.code == "SALES_TEMPORARILY_PAUSED"' paused-checkout.json >/dev/null || { cat paused-checkout.json >&2; exit 1; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/provider-readiness" > provider-readiness.json
+          jq -e '.environment == "production"' provider-readiness.json >/dev/null || { cat provider-readiness.json >&2; echo "SUBMIT_PROVIDER_READINESS_UNEXPECTED" >&2; exit 1; }
+
+      - name: Move the same owner's expectations from R5 to R7
+        # Ordinary updateExpectations() via the ordinary internal API - the
+        # exact primitive proven by the R4->R5 recovery and by R6's own
+        # same-owner regression test. No new acquire, no new pause, no new
+        # release_id. Migration and legal fields are read from the currently
+        # running R5's own durable/runtime evidence (the immutable original,
+        # never the compatibility copy) and passed through unchanged - only
+        # source_commit moves.
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          jq -n --slurpfile status status-before.json --arg release_id "$EXPECTED_OWNER_RELEASE_ID" --arg source "$DEPLOYMENT_TARGET" '
+            $status[0] as $s |
+            {
+              release_id: $release_id,
+              mode: "CONTROLLED_CUTOVER",
+              expected: {
+                source_commit: $source,
+                migration: $s.expected.migration,
+                legal_version: $s.expected.legal_version,
+                legal_manifest_sha256: $s.expected.legal_manifest_sha256,
+                legal_hashes: $s.runtime.legal_hashes,
+              }
+            }
+          ' > expectations-request.json
+          api -X POST --data-binary @expectations-request.json "$PUBLIC_API_URL/v1/internal/release-control/expectations" > expectations-result.json
+          jq -e --arg owner "$EXPECTED_OWNER_RELEASE_ID" --arg source "$DEPLOYMENT_TARGET" --arg migration "$EXPECTED_MIGRATION" '
+            .sales_paused == true and
+            .owner_release_id == $owner and
+            .expected.source_commit == $source and
+            .expected.migration == $migration
+          ' expectations-result.json >/dev/null || { cat expectations-result.json >&2; echo "SUBMIT_EXPECTATIONS_UPDATE_UNEXPECTED_RESULT" >&2; exit 1; }
+
+      - name: Prove the expectations move landed exactly as expected, everything else unchanged, runtime still R5
+        # Migration/legal fields must be byte-identical to the pre-mutation
+        # baseline - only source_commit and updated_at may have changed.
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-after-expectations.json
+          jq -e --slurpfile baseline status-before.json --arg owner "$EXPECTED_OWNER_RELEASE_ID" --arg source "$DEPLOYMENT_TARGET" --arg runtime_source "$TOPOLOGY_BASELINE" --arg migration "$EXPECTED_MIGRATION" '
+            $baseline[0] as $before |
+            .sales_paused == true and
+            .owner_release_id == $owner and
+            .owner_mode == $before.owner_mode and
+            .expected.source_commit == $source and
+            .expected.migration == $migration and
+            .expected.migration == $before.expected.migration and
+            .expected.legal_version == $before.expected.legal_version and
+            .expected.legal_manifest_sha256 == $before.expected.legal_manifest_sha256 and
+            .runtime.source_commit == $runtime_source
+          ' status-after-expectations.json >/dev/null || { cat status-after-expectations.json >&2; echo "SUBMIT_POST_EXPECTATIONS_STATE_UNEXPECTED" >&2; exit 1; }
+          pause_status="$(curl --silent --show-error --connect-timeout 10 --max-time 30 --output paused-checkout-after.json --write-out '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: r7-submit-pause-proof-after-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --data '{}' "$PUBLIC_API_URL/v1/public/checkouts")"
+          [[ "$pause_status" == "503" ]] || { cat paused-checkout-after.json >&2; exit 1; }
+          jq -e '.error.code == "SALES_TEMPORARILY_PAUSED"' paused-checkout-after.json >/dev/null || { cat paused-checkout-after.json >&2; exit 1; }
+
+      - name: Freshly prove gate and refs immediately before the production-deploy CAS, then CAS
+        # The mutation is literally the last command in this step, after
+        # every fresh proof - not a separate "prove" step followed by a
+        # separate "mutate" step, closing the TOCTOU window between the
+        # earlier checks and the CAS as tightly as possible.
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-pre-cas.json
+          jq -e --slurpfile baseline status-before.json --arg owner "$EXPECTED_OWNER_RELEASE_ID" --arg source "$DEPLOYMENT_TARGET" --arg runtime_source "$TOPOLOGY_BASELINE" --arg migration "$EXPECTED_MIGRATION" '
+            $baseline[0] as $before |
+            .sales_paused == true and
+            .owner_release_id == $owner and
+            .owner_mode == $before.owner_mode and
+            .expected.source_commit == $source and
+            .expected.migration == $migration and
+            .expected.legal_version == $before.expected.legal_version and
+            .expected.legal_manifest_sha256 == $before.expected.legal_manifest_sha256 and
+            .runtime.source_commit == $runtime_source
+          ' status-pre-cas.json >/dev/null || { cat status-pre-cas.json >&2; echo "SUBMIT_PRE_CAS_GATE_UNEXPECTED_STATE" >&2; exit 1; }
+          git fetch --no-tags origin runtime-candidate
+          current_candidate_sha="$(git rev-parse origin/runtime-candidate)"
+          [[ "$current_candidate_sha" == "$DEPLOYMENT_TARGET" ]] || { echo "RUNTIME_CANDIDATE_MOVED_SINCE_PREFLIGHT" >&2; exit 1; }
+          current_production_deploy_sha="$(scripts/read-production-deploy-ref.sh)"
+          [[ "$current_production_deploy_sha" == "$TOPOLOGY_BASELINE" ]] || { echo "PRODUCTION_DEPLOY_MOVED_SINCE_PREFLIGHT" >&2; exit 1; }
+          scripts/set-production-deploy-ref.sh "$DEPLOYMENT_TARGET"
+
+      - name: Freshly prove post-CAS authority immediately before Coolify, then deploy exactly once
+        # Same discipline as the previous step: every fresh proof first, the
+        # one Coolify call literally last. Runtime must still report R5 here
+        # - if a deployment had somehow already started between the CAS and
+        # this step, blindly enqueuing another one would be wrong. No
+        # polling, no readiness wait, no reopen after this - whether the
+        # deployment has converged by the time this job ends is unknown and
+        # is controlled-r7-verify-only.yml's job to prove, not this one's.
+        run: |
+          set -euo pipefail
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$DEPLOYMENT_TARGET" ]] || { echo "PRODUCTION_DEPLOY_POST_CAS_UNEXPECTED" >&2; exit 1; }
+          git fetch --no-tags origin runtime-candidate
+          [[ "$(git rev-parse origin/runtime-candidate)" == "$DEPLOYMENT_TARGET" ]] || { echo "RUNTIME_CANDIDATE_POST_CAS_UNEXPECTED" >&2; exit 1; }
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-pre-coolify.json
+          jq -e --slurpfile baseline status-before.json --arg owner "$EXPECTED_OWNER_RELEASE_ID" --arg source "$DEPLOYMENT_TARGET" --arg runtime_source "$TOPOLOGY_BASELINE" --arg migration "$EXPECTED_MIGRATION" '
+            $baseline[0] as $before |
+            .sales_paused == true and
+            .owner_release_id == $owner and
+            .owner_mode == $before.owner_mode and
+            .expected.source_commit == $source and
+            .expected.migration == $migration and
+            .expected.legal_version == $before.expected.legal_version and
+            .expected.legal_manifest_sha256 == $before.expected.legal_manifest_sha256 and
+            .runtime.source_commit == $runtime_source and
+            .runtime.worker_source_commit == $runtime_source
+          ' status-pre-coolify.json >/dev/null || { cat status-pre-coolify.json >&2; echo "SUBMIT_PRE_COOLIFY_GATE_UNEXPECTED_STATE" >&2; exit 1; }
+          scripts/controlled-coolify-deploy.sh "$DEPLOYMENT_TARGET"
+
+      # STOP. No convergence polling, no candidates/head check, no reopen.
+      # Production-deploy and runtime-candidate are both exact R7; the
+      # generic owner remains deploy-R4, paused, expecting R7. Use
+      # controlled-r7-verify-only.yml (freely re-dispatchable, read-only) to
+      # prove the runtime actually converged.

@@ -1,0 +1,240 @@
+name: Controlled R7 verify-only
+
+# Purely read-only, freely re-dispatchable proof that the R5->R7 same-owner
+# crossing (controlled-r7-same-owner-submit.yml) has actually converged.
+#
+# This is a new workflow, not a repurposed controlled-r6-verify-only.yml, so
+# that workflow (and the submit workflow's two historical failures) remain
+# undisturbed evidence of exactly what was wrong and when it was fixed.
+#
+# No compatibility projection is used or permitted here, unlike the R7
+# submit workflow's R5 preflight: this workflow pins to and consumes R7's
+# own real, unmodified runtime evidence. If R7's own readiness parser
+# cannot consume R7's own real evidence, R7 is defective and this must fail
+# - bridging that would defeat the entire point of shipping R7's fix.
+#
+# This workflow performs no mutation of any kind: no ref write, no
+# release-control endpoint beyond plain reads, no Coolify call. Its failure
+# means only "not converged yet" - see "Coolify webhook acceptance is not
+# deployment convergence" in docs/release/DEPLOYMENT_INVARIANTS.md. It is
+# safe to dispatch again five minutes, thirty minutes, or two hours later
+# without any risk of triggering a second deployment or any other mutation,
+# because it cannot mutate anything - unlike the submit workflow, which is
+# one-shot by design and must never be re-dispatched to "retry" a partial
+# crossing.
+#
+# It does not reopen sales. A green run here only proves the R7 runtime is
+# healthy and the generic owner/Promo state are exactly as expected while
+# still paused - reopening the same owner is a separate, later, and
+# separately authorized operation.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Must be exactly VERIFY-R7-SAME-OWNER-CROSSING-WHILE-PAUSED
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    env:
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      PUBLIC_FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+      ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
+      CONTROLLER_SHA: ${{ github.sha }}
+      INPUT_CONFIRM: ${{ inputs.confirm }}
+      REQUIRED_CONFIRM_PHRASE: "VERIFY-R7-SAME-OWNER-CROSSING-WHILE-PAUSED"
+      EXPECTED_RUNTIME_CANDIDATE: "5ec1eadab4373fb1309dd1d323d88bf12f564220"
+      EXPECTED_PRODUCTION_DEPLOY: "5ec1eadab4373fb1309dd1d323d88bf12f564220"
+      EXPECTED_OWNER_RELEASE_ID: "deploy-aa492d5a6361c8d43f8cbb2a4e3b245611f4f76b"
+      EXPECTED_MIGRATION: "0036_tochka_provider_error_evidence.sql"
+      EXPECTED_PROMO_RELEASE_ID: "promo-codes-v0:b01f217ffd2a798fd32aa3d88e125a2e460bd39f"
+      EXPECTED_PROMO_SOURCE_COMMIT: "97678cc19d2549146b0d4999466a4cded9320208"
+      EXPECTED_PROMO_GENERATION: "5"
+      EXPECTED_PROMO_PHASE_SEQUENCE: "5"
+      EXPECTED_PROMO_STATE_HASH: "2a81cf2ec0eab1f9806d4aedb627c0df98ff125aabbd76ea8faa4b37cc997962"
+      POLL_ATTEMPTS: "18"
+      POLL_SECONDS: "10"
+      POLL_CONNECT_TIMEOUT: "3"
+      POLL_MAX_TIME: "7"
+      # RUNTIME_ASSERT_DIR (where the exact-R7 detached worktree is
+      # materialized for runtime-pinned readiness parsing) is set from
+      # $RUNNER_TEMP via $GITHUB_ENV in the "Materialize exact R7" step
+      # below, not here: the `runner` context is not available in a
+      # job-level `env:` block (only github/inputs/matrix/needs/secrets/
+      # strategy/vars are - confirmed with actionlint).
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Assert this controller is exact, current main
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "VERIFY_CONTROLLER_NOT_MAIN" >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo "VERIFY_CONTROLLER_MAIN_MOVED" >&2; exit 1; }
+
+      - name: Assert confirmation phrase
+        run: |
+          set -euo pipefail
+          [[ "$INPUT_CONFIRM" == "$REQUIRED_CONFIRM_PHRASE" ]] || { echo "VERIFY_CONFIRM_PHRASE_MISMATCH" >&2; exit 1; }
+
+      - name: Assert runtime-candidate and production-deploy are already exact R7
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin runtime-candidate
+          [[ "$(git rev-parse origin/runtime-candidate)" == "$EXPECTED_RUNTIME_CANDIDATE" ]] || { echo "RUNTIME_CANDIDATE_UNEXPECTED_SHA" >&2; exit 1; }
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$EXPECTED_PRODUCTION_DEPLOY" ]] || { echo "PRODUCTION_DEPLOY_UNEXPECTED_SHA" >&2; exit 1; }
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Materialize exact R7 once for runtime-pinned readiness parsing
+        # assert-generic-production-deploy-ready.ts interprets runtime
+        # release evidence using release-control.ts's own semantics (e.g.
+        # which migrations it recognizes) - those semantics belong to the
+        # exact runtime commit being proved, not to whatever main happens to
+        # contain. main and the R3->R4->R5->R6->R7 lineage are deliberately
+        # separate identities, so running this parser from main's own
+        # checkout would judge R7's evidence using main's own (stale)
+        # semantics. This materializes an isolated, detached worktree at
+        # exact R7, with R7's own dependency graph installed from R7's own
+        # lockfile, once, before the poll loop starts - never repeated
+        # inside a poll iteration. Install runs with --ignore-scripts: only
+        # the one named readiness parser is authorized to execute from this
+        # tree - dependency lifecycle/build scripts are not, so the
+        # worktree never becomes a broader arbitrary-code-execution surface
+        # than that single parser call.
+        run: |
+          set -euo pipefail
+          RUNTIME_ASSERT_DIR="$RUNNER_TEMP/r7-readiness-runtime"
+          echo "RUNTIME_ASSERT_DIR=$RUNTIME_ASSERT_DIR" >> "$GITHUB_ENV"
+          git fetch --no-tags origin "$EXPECTED_PRODUCTION_DEPLOY"
+          git worktree add --detach "$RUNTIME_ASSERT_DIR" "$EXPECTED_PRODUCTION_DEPLOY"
+          [[ "$(git -C "$RUNTIME_ASSERT_DIR" rev-parse HEAD)" == "$EXPECTED_PRODUCTION_DEPLOY" ]] || { echo "RUNTIME_ASSERT_WORKTREE_WRONG_SHA" >&2; exit 1; }
+          (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile --ignore-scripts)
+
+      - name: Poll until Commerce/worker/frontend/admin converge on exact R7 while still paused
+        # Bounded fresh polling (a few minutes) to absorb ordinary
+        # frontend/backend rollout skew, not to wait out an indefinite
+        # Coolify delay - if this exhausts its budget, that means only
+        # "not converged yet", never a deployment failure. This workflow
+        # performs no mutation, so it is always safe to dispatch again. The
+        # readiness call each iteration runs inside the exact-R7 worktree
+        # materialized above (prepared once, reused every iteration),
+        # against R7's own real, unmodified evidence - never from this
+        # controller's own main checkout, never re-materialized inside the
+        # loop, and never through any compatibility projection.
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout "$POLL_CONNECT_TIMEOUT" --max-time "$POLL_MAX_TIME" -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          get() { curl --fail-with-body --silent --show-error --connect-timeout "$POLL_CONNECT_TIMEOUT" --max-time "$POLL_MAX_TIME" "$@"; }
+          for attempt in $(seq 1 "$POLL_ATTEMPTS"); do
+            if api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json && \
+              get "$PUBLIC_FRONTEND_URL/release.json" > frontend.json && \
+              get "$ADMIN_RELEASE_URL" > admin.json && \
+              get "$PUBLIC_API_URL/healthz" > health.json && \
+              get "$PUBLIC_API_URL/readyz" > ready.json && \
+              jq -e --arg owner "$EXPECTED_OWNER_RELEASE_ID" --arg source "$EXPECTED_PRODUCTION_DEPLOY" --arg migration "$EXPECTED_MIGRATION" '
+                .sales_paused == true and
+                .owner_release_id == $owner and
+                .owner_mode == "CONTROLLED_CUTOVER" and
+                .expected.source_commit == $source and
+                .expected.migration == $migration
+              ' status.json >/dev/null && \
+              jq '{release_id: .owner_release_id, mode: .owner_mode, expected: .expected}' status.json > release.json && \
+              (cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$GITHUB_WORKSPACE/status.json" "$GITHUB_WORKSPACE/release.json" paused) && \
+              jq -e --arg sha "$EXPECTED_PRODUCTION_DEPLOY" '.source_commit == $sha' frontend.json >/dev/null && \
+              jq -e --arg sha "$EXPECTED_PRODUCTION_DEPLOY" '.source_commit == $sha' admin.json >/dev/null && \
+              jq -e '.ok == true' health.json >/dev/null && \
+              jq -e '.ok == true' ready.json >/dev/null; then break; fi
+            [[ "$attempt" == "$POLL_ATTEMPTS" ]] && { echo "VERIFY_RUNTIME_NOT_CONVERGED_YET" >&2; exit 1; }
+            sleep "$POLL_SECONDS"
+          done
+
+      - name: Prove public checkout is paused, not corrupt
+        run: |
+          set -euo pipefail
+          pause_status="$(curl --silent --show-error --connect-timeout 10 --max-time 30 --output paused-checkout.json --write-out '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: r7-verify-pause-proof-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --data '{}' "$PUBLIC_API_URL/v1/public/checkouts")"
+          [[ "$pause_status" == "503" ]] || { cat paused-checkout.json >&2; echo "VERIFY_CHECKOUT_UNEXPECTED_STATUS=$pause_status" >&2; exit 1; }
+          jq -e '.error.code == "SALES_TEMPORARILY_PAUSED"' paused-checkout.json >/dev/null || { cat paused-checkout.json >&2; exit 1; }
+
+      - name: Prove candidates/head is now a clean 200 with the exact historical Promo head
+        # This is exactly what R6 fixes (carried forward into R7): on R5
+        # this endpoint deterministically returned RELEASE_STATE_CORRUPT for
+        # this same legitimate state.
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json
+          jq -e --arg release_id "$EXPECTED_PROMO_RELEASE_ID" --arg source "$EXPECTED_PROMO_SOURCE_COMMIT" --argjson generation "$EXPECTED_PROMO_GENERATION" --argjson sequence "$EXPECTED_PROMO_PHASE_SEQUENCE" --arg hash "$EXPECTED_PROMO_STATE_HASH" '
+            .head.release_id == $release_id and
+            .head.phase == "COMPLETE" and
+            .head.candidate_generation == $generation and
+            .head.phase_sequence == $sequence and
+            .head.source_commit == $source and
+            .state_hash == $hash
+          ' candidate-head.json >/dev/null || { cat candidate-head.json >&2; echo "VERIFY_PROMO_HEAD_UNEXPECTED" >&2; exit 1; }
+
+      - name: Prove provider readiness is read-only healthy
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/provider-readiness" > provider-readiness.json
+          jq -e '.environment == "production"' provider-readiness.json >/dev/null || { cat provider-readiness.json >&2; echo "VERIFY_PROVIDER_READINESS_UNEXPECTED" >&2; exit 1; }
+
+      - name: Final authority snapshot remains exact R7 and paused
+        # Last executable step: a fresh, final snapshot of every authority
+        # source, after every incident-defining proof above, so a green run
+        # means the authority state is still exactly what was proved at the
+        # moment this workflow finished.
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          git fetch --no-tags origin runtime-candidate
+          final_candidate_sha="$(git rev-parse origin/runtime-candidate)"
+          [[ "$final_candidate_sha" == "$EXPECTED_RUNTIME_CANDIDATE" ]] || { echo "FINAL_RUNTIME_CANDIDATE_UNEXPECTED_SHA=$final_candidate_sha" >&2; exit 1; }
+          final_production_deploy_sha="$(scripts/read-production-deploy-ref.sh)"
+          [[ "$final_production_deploy_sha" == "$EXPECTED_PRODUCTION_DEPLOY" ]] || { echo "FINAL_PRODUCTION_DEPLOY_UNEXPECTED_SHA=$final_production_deploy_sha" >&2; exit 1; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > final-status.json
+          jq -e --arg owner "$EXPECTED_OWNER_RELEASE_ID" --arg source "$EXPECTED_PRODUCTION_DEPLOY" --arg migration "$EXPECTED_MIGRATION" '
+            .sales_paused == true and
+            .owner_release_id == $owner and
+            .owner_mode == "CONTROLLED_CUTOVER" and
+            .expected.source_commit == $source and
+            .expected.migration == $migration
+          ' final-status.json >/dev/null || { cat final-status.json >&2; echo "FINAL_GENERIC_GATE_UNEXPECTED_STATE" >&2; exit 1; }
+          api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > final-candidate-head.json
+          jq -e --arg release_id "$EXPECTED_PROMO_RELEASE_ID" --arg source "$EXPECTED_PROMO_SOURCE_COMMIT" --argjson generation "$EXPECTED_PROMO_GENERATION" --argjson sequence "$EXPECTED_PROMO_PHASE_SEQUENCE" --arg hash "$EXPECTED_PROMO_STATE_HASH" '
+            .head.release_id == $release_id and
+            .head.phase == "COMPLETE" and
+            .head.candidate_generation == $generation and
+            .head.phase_sequence == $sequence and
+            .head.source_commit == $source and
+            .state_hash == $hash
+          ' final-candidate-head.json >/dev/null || { cat final-candidate-head.json >&2; echo "FINAL_PROMO_HEAD_CHANGED" >&2; exit 1; }
+
+      # No reopen step exists in this workflow. Production remains paused
+      # under the existing deploy-R4 owner on exact R7 when this run succeeds.

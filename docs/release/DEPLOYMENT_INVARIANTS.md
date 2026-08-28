@@ -344,3 +344,55 @@ controller is not executing untrusted candidate code as itself, but is
 deliberately invoking one specific, already-reviewed, already-deployed
 runtime's own semantics to judge evidence about that same
 runtime - the two are exact opposites, not the same mistake.
+
+## The migration-applied predicate: `required_migrations` is a hint, `migration_versions` is authoritative
+
+Runtime release evidence carries two independent views of what migrations
+are applied: `required_migrations` is a map that is only ever populated for
+the fixed `diagnosticCutoverMigrations` set (0031-0034) - it never gains
+keys for later migrations (0035, 0036, or any future one), on any commit,
+old or new. `migration_versions` is the complete, authoritative
+applied-migration inventory and always correctly lists every migration that
+has actually run, including ones postdating the diagnostic set.
+`required_migrations[version] === true` is therefore sufficient positive
+evidence on its own, but its absence or `false` is never sufficient
+negative evidence by itself - `migration_versions` must also be checked
+before concluding a version was not applied.
+
+This bit on 2026-08-28 (run 33139603447): `evaluateReopenGate()` checked
+only `required_migrations`, so it unconditionally rejected any expected
+migration beyond the diagnostic set even when that migration was genuinely
+applied and correctly listed in `migration_versions` - the same defect
+directly blocks `ReleaseSalesGate.reopen()`, the real domain method behind
+the production reopen endpoint, for any owner expecting migration 0035 or
+later. `evaluateCandidateReopenGate()` already had the correct
+`required_migrations[version] === true || migration_versions.includes(version)`
+check. **Fix pattern**: extract that check into one shared, exported
+`migrationApplied()` predicate and have every consumer use it, so the two
+gates cannot drift apart again - not by inflating `required_migrations` to
+cover every future migration (`migration_versions` is already the complete
+inventory; the bug was one consumer ignoring it).
+
+**R5/0036 compatibility projection**: this predicate fix (shipped as R7)
+is a runtime code change, not a data migration - R5 itself is not being
+patched, and per the runtime-pinning invariant above, any preflight that
+judges R5's live evidence must do so using R5's own (unfixed)
+`evaluateReopenGate()`. A same-owner crossing whose submit preflight needs
+to prove R5's readiness therefore cannot simply route R5's evidence through
+R7's parser without weakening the runtime-pinning invariant itself.
+Instead, a narrow, one-shot, hard-bound compatibility adapter
+(`commerce/src/derive-r5-migration-compat-evidence.ts`) derives a
+compatibility copy of R5's evidence, adding exactly the `required_migrations`
+keys a correct evaluator would have derived from `migration_versions`
+itself. It fails closed unless the input matches the exact known defect
+pattern - hard-bound to both the owner's `expected.source_commit`/
+`expected.migration` and the runtime's own `source_commit` (not merely one
+or the other, since the adapter is itself a safety primitive and must
+enforce its own contract rather than depend on an adjacent caller guard) -
+and proves the derived copy differs from the original in no way beyond
+those added keys before writing it. This adapter is permitted **only** in
+a submit preflight, and only for the one runtime it is hard-bound to; a
+verify-only controller must always consume its judged runtime's own real,
+unmodified evidence - if a runtime's own parser cannot consume that
+runtime's own real evidence, the runtime is defective and verify-only must
+fail, not bridge it.
