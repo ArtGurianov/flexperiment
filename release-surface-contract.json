@@ -1,4 +1,4 @@
 {
-  "checkout_contract_version": "promo-codes-v0",
-  "admin_contract_version": "promo-codes-v0"
+  "checkout_contract_version": "sales-availability-v1",
+  "admin_contract_version": "sales-availability-v1"
 }
