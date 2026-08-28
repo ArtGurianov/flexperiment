@@ -175,9 +175,13 @@ describe("commerce domain", () => {
     const cancelledId = randomUUID();
     setup.db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, sales_status, fulfillment_status, cancelled_at, venue_status, venue_name, venue_address)
       VALUES (?, ?, 'Cancelled', '2030-01-01T10:00:00Z', '2030-01-01T12:00:00Z', 'UTC', 100, 1, 'PUBLISHED', 'CLOSED', 'CANCELLED', datetime('now'), 'CONFIRMED', 'Studio', 'Address')`).run(cancelledId, cityId.city_id);
-    const insert = setup.db.prepare(`INSERT INTO occurrence_notification_requests(id, email_normalized, email_hash, occurrence_id, privacy_policy_version, privacy_policy_sha256, pd_consent_version, pd_consent_sha256, consent_accepted_at) VALUES (?, ?, ?, ?, 'v', ?, 'v', ?, datetime('now'))`);
-    for (let index = 0; index < 50; index += 1) insert.run(randomUUID(), `live-${index}@example.test`, `live-${index}`, setup.occurrenceId, "0".repeat(64), "0".repeat(64));
-    const terminatedId = randomUUID(); insert.run(terminatedId, "terminated@example.test", "terminated", cancelledId, "0".repeat(64), "0".repeat(64));
+    const insert = setup.db.prepare(`INSERT INTO occurrence_notification_requests(id, email_normalized, email_hash, occurrence_id, privacy_policy_version, privacy_policy_sha256, pd_consent_version, pd_consent_sha256, consent_accepted_at, created_at) VALUES (?, ?, ?, ?, 'v', ?, 'v', ?, ?, ?)`);
+    for (let index = 0; index < 50; index += 1) {
+      const createdAt = new Date(Date.UTC(2020, 0, 1, 0, 0, index)).toISOString();
+      insert.run(randomUUID(), `live-${index}@example.test`, `live-${index}`, setup.occurrenceId, "0".repeat(64), "0".repeat(64), createdAt, createdAt);
+    }
+    const terminatedId = randomUUID();
+    insert.run(terminatedId, "terminated@example.test", "terminated", cancelledId, "0".repeat(64), "0".repeat(64), "2030-01-01T00:00:00.000Z", "2030-01-01T00:00:00.000Z");
     (setup.domain as unknown as { occurrenceNotificationsAvailable: () => boolean }).occurrenceNotificationsAvailable = () => true;
     setup.domain.processOccurrenceNotificationLifecycle();
     expect(setup.db.prepare("SELECT id FROM occurrence_notification_requests WHERE id = ?").get(terminatedId)).toBeUndefined();
