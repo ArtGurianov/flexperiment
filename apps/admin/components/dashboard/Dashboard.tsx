@@ -52,7 +52,7 @@ export function Dashboard() {
       <section className="hero">
         <p className="eyebrow">OPERATIONAL OVERVIEW / TODAY</p>
         <h1>Данные без<br /><i>магии статусов.</i></h1>
-        <p>Commerce и SQLite остаются источником истины. Этот экран ничего не мутирует.</p>
+        <p>Commerce и SQLite остаются источником истины. Экстренная остановка продаж требует явного подтверждения.</p>
       </section>
       <Freshness query={{ ...query, hasData: Boolean(query.data) }} />
       <section className="metrics">

@@ -761,7 +761,15 @@ export class CommerceDomain {
       const hash = emailHash(input.email);
       const existing = one(this.db, `SELECT id FROM occurrence_notification_requests
         WHERE email_hash = ? AND occurrence_id = ? AND superseded_at IS NULL`, hash, input.occurrence_id);
-      if (existing) {
+      if (existing && this.canRenewOccurrenceNotification(String(existing.id))) {
+        const replacementId = id();
+        this.db.prepare(`UPDATE occurrence_notification_intents SET superseded_at = ?
+          WHERE notification_request_id = ? AND superseded_at IS NULL`).run(timestamp, existing.id);
+        this.db.prepare(`UPDATE occurrence_notification_requests
+          SET email_normalized = '', email_hash = '', superseded_at = ?, superseded_by_request_id = ?
+          WHERE id = ? AND superseded_at IS NULL`).run(timestamp, replacementId, existing.id);
+        this.insertOccurrenceNotificationRequest({ requestId: replacementId, email: input.email, emailHash: hash, occurrenceId: input.occurrence_id, manifest, timestamp });
+      } else if (existing) {
         this.db.prepare(`UPDATE occurrence_notification_requests SET email_normalized = ?, privacy_policy_version = ?,
           privacy_policy_sha256 = ?, pd_consent_version = ?, pd_consent_sha256 = ?, consent_accepted_at = ?, created_at = ?
           WHERE id = ? AND superseded_at IS NULL`).run(input.email,
@@ -781,7 +789,8 @@ export class CommerceDomain {
       const terminated = many(this.db, `SELECT request.id, o.starts_at, o.fulfillment_status FROM occurrence_notification_requests request
         JOIN occurrences o ON o.id = request.occurrence_id
         WHERE request.superseded_at IS NULL
-        ORDER BY request.created_at LIMIT 50`)
+          AND (o.fulfillment_status = 'CANCELLED' OR julianday(o.starts_at) <= julianday(?))
+        ORDER BY request.created_at LIMIT 50`, timestamp)
         .filter((request) => request.fulfillment_status === "CANCELLED" || parseUtcTimestamp(String(request.starts_at)) <= this.clock());
       for (const request of terminated) this.purgeOccurrenceNotificationRequest(String(request.id));
       return { deleted: terminated.length, intents_created: this.consumeEligibleOccurrenceNotifications(50) };
@@ -3032,6 +3041,7 @@ export class CommerceDomain {
 
   private consumeEligibleOccurrenceNotifications(limit = 50) {
     if (!this.occurrenceNotificationsAvailable() || this.newOrdersBlocked()) return 0;
+    const timestamp = new Date(this.clock()).toISOString();
     const requests = many(this.db, `SELECT request.id, request.email_normalized, request.email_hash,
       o.id AS occurrence_id, o.title AS occurrence_title, o.starts_at, o.timezone, c.title AS city_title,
       o.sales_status, o.fulfillment_status,
@@ -3040,9 +3050,13 @@ export class CommerceDomain {
       JOIN occurrences o ON o.id = request.occurrence_id
       JOIN cities c ON c.id = o.city_id
       WHERE request.superseded_at IS NULL
+        AND o.sales_status = 'OPEN'
+        AND o.fulfillment_status = 'SCHEDULED'
+        AND julianday(o.starts_at) > julianday(?)
+        AND o.capacity - (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = o.id AND b.status IN ('RESERVED', 'CONFIRMED')) > 0
         AND NOT EXISTS (SELECT 1 FROM occurrence_notification_intents intent
           WHERE intent.notification_request_id = request.id AND intent.superseded_at IS NULL)
-      ORDER BY request.created_at, request.id LIMIT ?`, limit)
+      ORDER BY request.created_at, request.id LIMIT ?`, timestamp, limit)
       .filter((request) => purchaseStatus({
         salesStatus: request.sales_status === "PAUSED" ? "PAUSED" : request.sales_status === "CLOSED" ? "CLOSED" : "OPEN",
         fulfillmentStatus: request.fulfillment_status === "COMPLETED" ? "COMPLETED" : request.fulfillment_status === "CANCELLED" ? "CANCELLED" : "SCHEDULED",
@@ -3055,6 +3069,16 @@ export class CommerceDomain {
       this.db.prepare("INSERT INTO occurrence_notification_intents(id, notification_request_id, outbox_id) VALUES (?, ?, ?)").run(outboxId, request.id, outboxId);
     }
     return requests.length;
+  }
+
+  /** A fresh explicit submission can replace only a final failed epoch. */
+  private canRenewOccurrenceNotification(requestId: string) {
+    const current = one(this.db, `SELECT outbox.status,
+      EXISTS(SELECT 1 FROM email_provider_events WHERE outbox_id = outbox.id AND provider_status = 'hard_bounced') AS has_hard_bounced,
+      EXISTS(SELECT 1 FROM email_provider_events WHERE outbox_id = outbox.id AND provider_status = 'delivered') AS has_delivered
+      FROM occurrence_notification_intents intent JOIN email_outbox outbox ON outbox.id = intent.outbox_id
+      WHERE intent.notification_request_id = ? AND intent.superseded_at IS NULL`, requestId);
+    return current?.status === "FAILED" || (Boolean(current?.has_hard_bounced) && !Boolean(current?.has_delivered));
   }
 
   private isActiveOccurrenceNotification(outboxId: string) {

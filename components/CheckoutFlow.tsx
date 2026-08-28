@@ -154,6 +154,17 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
     return () => { current = false; };
   }, []);
 
+  const refreshOccurrenceState = useCallback(async (id: string) => {
+    setQuote(null); setCustomerAdult(false); setMinorRepresentative(false); setOffer(false); setConsent(false);
+    try {
+      const response = await fetch(commerceApiUrl(`/v1/public/occurrences/${encodeURIComponent(id)}`), { cache: "no-store" });
+      if (!response.ok) throw new Error("OCCURRENCE_REFRESH_FAILED");
+      const current = await response.json() as Occurrence;
+      setOccurrences((items) => items.map((item) => item.id === id ? current : item));
+      setMessage(null);
+    } catch { setMessage("Не удалось обновить состояние даты. Проверьте соединение и повторите попытку."); }
+  }, []);
+
   const fetchQuote = useCallback(async (id: string, promo: string, options?: { clearMessage?: boolean }) => {
     if (!id) return false;
     setLoading(true); if (options?.clearMessage !== false) setMessage(null);
@@ -172,10 +183,8 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
       setQuote(null);
       const code = error instanceof Error ? error.message : "QUOTE_UNAVAILABLE";
       if (["SOLD_OUT", "SALES_NOT_OPEN", "SALES_TEMPORARILY_PAUSED"].includes(code)) {
-        try {
-          const response = await fetch(commerceApiUrl(`/v1/public/occurrences/${encodeURIComponent(id)}`), { cache: "no-store" });
-          if (response.ok) { const current = await response.json() as Occurrence; setOccurrences((items) => items.map((item) => item.id === id ? current : item)); }
-        } catch { /* the message below remains honest if the refresh also fails */ }
+        await refreshOccurrenceState(id);
+        return false;
       }
       setMessage(["SALES_NOT_OPEN", "SOLD_OUT", "SALES_TEMPORARILY_PAUSED"].includes(code) ? "Состояние записи изменилось. Обновляем дату…"
         : code === "PROMO_NOT_FOUND" ? "Промокод не найден."
@@ -183,18 +192,7 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
         : "Не удалось получить актуальные условия. Проверьте соединение и повторите попытку.");
       return false;
     } finally { setLoading(false); }
-  }, []);
-
-  const refreshOccurrenceState = useCallback(async (id: string) => {
-    setQuote(null); setCustomerAdult(false); setMinorRepresentative(false); setOffer(false); setConsent(false);
-    try {
-      const response = await fetch(commerceApiUrl(`/v1/public/occurrences/${encodeURIComponent(id)}`), { cache: "no-store" });
-      if (!response.ok) throw new Error("OCCURRENCE_REFRESH_FAILED");
-      const current = await response.json() as Occurrence;
-      setOccurrences((items) => items.map((item) => item.id === id ? current : item));
-      setMessage(null);
-    } catch { setMessage("Не удалось обновить состояние даты. Проверьте соединение и повторите попытку."); }
-  }, []);
+  }, [refreshOccurrenceState]);
 
   const applyPromo = async () => {
     const code = promoCode.trim().toUpperCase();
@@ -302,7 +300,7 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
 
   return (
     <>
-    <form className="space-y-4 font-mono text-sm" onSubmit={submit}>
+    <div className="space-y-4 font-mono text-sm">
       <div className="grid gap-3 border border-acid/60 p-3">
         <div>
           <p className="text-xs text-bone/70">Дата и время</p>
@@ -313,7 +311,7 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
           <p className="mt-1 leading-relaxed text-bone/90">{quote?.venue_disclosure ?? publicVenueDisclosure(selected)}</p>
         </div>
       </div>
-      {!canCheckout ? <><p role="status" className="border border-bone/50 px-3 py-2 text-bone/70">{purchaseStatusAnnouncement(selected.purchase_status)}</p>{occurrenceNotificationsAvailable && selected.purchase_status !== "UNAVAILABLE" ? <OccurrenceNotifyForm occurrenceId={selected.id} onAlreadyAvailable={() => void refreshOccurrenceState(selected.id)} /> : null}</> : <>
+      {!canCheckout ? <><p role="status" className="border border-bone/50 px-3 py-2 text-bone/70">{purchaseStatusAnnouncement(selected.purchase_status)}</p>{occurrenceNotificationsAvailable && selected.purchase_status !== "UNAVAILABLE" ? <OccurrenceNotifyForm occurrenceId={selected.id} onAlreadyAvailable={() => void refreshOccurrenceState(selected.id)} /> : null}</> : <form className="space-y-4" onSubmit={submit}>
       <label className="grid gap-1.5">Email <input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>
       <fieldset className="grid gap-2 border border-bone/50 p-3">
         <legend className="px-1">Возрастная категория участника</legend>
@@ -333,8 +331,8 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
       <label className="grid gap-1.5">Промокод <span className="flex gap-2"><input disabled={Boolean(appliedPromoCode)} value={appliedPromoCode ? `Промокод [${appliedPromoCode}] применен` : promoCode} onChange={(event) => setPromoCode(event.target.value)} className="min-w-0 flex-1 border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid disabled:cursor-not-allowed disabled:opacity-70" /><button type="button" disabled={loading} onClick={() => void (appliedPromoCode ? resetPromo() : applyPromo())} className="shrink-0 border border-acid px-3 py-2 font-display text-acid transition-colors hover:bg-acid hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid disabled:cursor-wait disabled:opacity-60">{appliedPromoCode ? "Сброс" : "Применить"}</button></span></label>
       {quote && <div className="grid gap-1 border border-acid/60 p-3 text-bone"><p>{selected?.city_title}</p><p>Исходная цена: {rub(quote.price_kopecks)}</p>{quote.discount_kopecks > 0 ? <p>Скидка{quote.promo ? ` (${quote.promo.code})` : ""}: −{rub(quote.discount_kopecks)}</p> : null}<p className="font-display text-lg text-acid">Итого: {rub(quote.final_amount_kopecks)}</p></div>}
       <button disabled={!quote || !participantAgeBand || submitting} className="w-full border-2 border-acid bg-acid px-4 py-3 font-display text-lg text-ink disabled:cursor-not-allowed disabled:opacity-60">{submitting ? "Создаём оплату…" : "Перейти к оплате"}</button>
-      </>}
-    </form>
+      </form>}
+    </div>
     </>
   );
 }
