@@ -12,6 +12,7 @@ import { Panel } from "../ui/Panel";
 type SalesControl = { effective_status: "OPEN" | "PAUSED"; emergency: { sales_paused: boolean; revision: number; paused_at: string | null; paused_reason: string | null }; release_paused: boolean };
 type FormValues = { reason: string };
 type PendingAction = { mode: "pause" | "reopen"; expectedRevision: number; reason?: string };
+type SubmittedAction = { mode: "pause" | "reopen"; expectedRevision: number; reason: string };
 
 export function SalesControl({ control }: { control: SalesControl }) {
   const [action, setAction] = useState<PendingAction | null>(null);
@@ -22,11 +23,13 @@ export function SalesControl({ control }: { control: SalesControl }) {
     ({ mode, body, idempotencyKey }: { mode: "pause" | "reopen"; body: { expected_revision: number; reason: string }; idempotencyKey: string }) => api(`/emergency-sales/${mode}`, { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": idempotencyKey }, body: JSON.stringify(body) }),
     {},
   );
-  const open = (mode: PendingAction["mode"]) => { key.clear(); form.reset(); setAction({ mode, expectedRevision: control.emergency.revision }); };
-  const close = () => { if (!mutation.isPending) { key.clear(); setAction(null); form.reset(); } };
+  const open = (mode: PendingAction["mode"]) => { mutation.reset(); key.clear(); form.reset(); setAction({ mode, expectedRevision: control.emergency.revision }); };
+  const close = () => { if (!mutation.isPending) { mutation.reset(); key.clear(); setAction(null); form.reset(); } };
   const submit = form.handleSubmit(async ({ reason }) => {
     if (!action) return;
-    const command = action.reason === undefined ? { ...action, reason } : action;
+    const command: SubmittedAction = action.reason === undefined
+      ? { mode: action.mode, expectedRevision: action.expectedRevision, reason }
+      : { mode: action.mode, expectedRevision: action.expectedRevision, reason: action.reason };
     if (action.reason === undefined) setAction(command);
     try { await mutation.mutateAsync({ mode: command.mode, body: { expected_revision: command.expectedRevision, reason: command.reason }, idempotencyKey: key.acquire() }); key.clear(); close(); }
     catch { /* error is rendered in the modal */ }
