@@ -322,6 +322,43 @@ export class ReleaseSalesGate {
     } catch { return { complete: false, expected: null, reopened_at: null }; }
   }
 
+  /**
+   * Shared ownership-consistency check between the current legacy/generic
+   * gate row and the v2 candidate-generation ledger. Used identically by
+   * assertNewOrdersOpen() (checkout-path enforcement) and candidateHead()
+   * (audit/read path) so the two readers can never again diverge on what
+   * counts as a consistent vs corrupt combination of owner + v2 history -
+   * that divergence (candidateHead() assuming a non-null owner always means
+   * exactly one still-active v2 candidate) is what let a legitimate
+   * completed-v2-epoch + ordinary-generic-owner production state be
+   * misclassified as corrupt here while assertNewOrdersOpen() already
+   * accepted it correctly.
+   *
+   * Throws RELEASE_STATE_CORRUPT on any inconsistency; otherwise returns
+   * normally. Deliberately says nothing about sales_paused gating, active-head
+   * selection, or historical-head selection - callers own that.
+   */
+  private reconcileGateOwnership(gate: GateRow, byRelease: ReadonlyMap<string, V2Event[]>, active: readonly GenerationHead[]): void {
+    if (byRelease.size && gate.owner_release_id === null) {
+      if (active.length || gate.sales_paused === 1) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
+    } else if (gate.owner_release_id !== null && active.length) {
+      if (active.length !== 1 || reconcileHeadWithProjection(active[0], { owner_release_id: gate.owner_release_id, sales_paused: gate.sales_paused === 1, expected_source_commit: gate.expected_source_commit, expected_migration: gate.expected_migration, expected_legal_version: gate.expected_legal_version, expected_legal_manifest_sha256: gate.expected_legal_manifest_sha256 })) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
+    } else if (gate.owner_release_id !== null) {
+      // A completed v2 release's own reconcile invariant (its owner must be
+      // null) still applies specifically to its own release_id: it must
+      // never itself reappear as the gate's owner.
+      if (byRelease.has(gate.owner_release_id)) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
+      // Any other owner is a distinct, allowed mode - a completed v2 head
+      // remains historical integrity evidence but no longer owns the coarse
+      // projection once superseded - but it must be a *proven* generic
+      // owner, not merely a release_id that happens not to be a v2 release:
+      // reconcile its own coarse ACQUIRED/PAUSED/REOPENED history against
+      // this exact projection.
+      const ownerActions = (this.db.prepare("SELECT action FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid ASC").all(gate.owner_release_id) as { action: string }[]).map((row) => row.action);
+      if (reconcileLegacyOwnerWithProjection(ownerActions, gate.sales_paused === 1)) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
+    }
+  }
+
   candidateHead(): CandidateHeadSnapshot {
     const gate = row(this.db);
     if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
@@ -335,21 +372,33 @@ export class ReleaseSalesGate {
     const replays = [...byRelease.values()].map((releaseEvents) => ({ events: releaseEvents, replay: replayReleaseGenerationChain(releaseEvents) }));
     if (replays.some(({ replay }) => replay.corrupt)) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
     const active = replays.flatMap(({ replay }) => replay.head && replay.head.phase !== "COMPLETE" ? [replay.head] : []);
+    this.reconcileGateOwnership(gate, byRelease, active);
+    const completedHead = () => {
+      const completed = replays
+        .filter(({ replay }) => replay.head?.phase === "COMPLETE")
+        .sort((left, right) => (right.events.at(-1)?.seq ?? 0) - (left.events.at(-1)?.seq ?? 0));
+      return completed.at(0)?.replay.head ?? null;
+    };
+    if (gate.owner_release_id !== null) {
+      if (active.length === 1) return { schema_version: 2, head: active[0], state_hash: releaseStateHash(active[0]) };
+      // active.length === 0 here (reconcileGateOwnership already proved the
+      // owner is either a legitimately reconciled generic deployment, or
+      // there is no v2 history at all). A completed v2 epoch, once
+      // superseded by an ordinary generic deploy, remains readable as
+      // historical authoritative evidence - it is not reconciled against the
+      // *current* generic owner's expectations, which belong to a different,
+      // unrelated deployment.
+      const head = completedHead();
+      return head ? { schema_version: 2, head, state_hash: releaseStateHash(head) } : { schema_version: 2, head: null, state_hash: null };
+    }
+    if (gate.sales_paused === 1 || active.length) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
+    const head = completedHead();
+    if (!head) return { schema_version: 2, head: null, state_hash: null };
     const projection = {
       owner_release_id: gate.owner_release_id, sales_paused: gate.sales_paused === 1,
       expected_source_commit: gate.expected_source_commit, expected_migration: gate.expected_migration,
       expected_legal_version: gate.expected_legal_version, expected_legal_manifest_sha256: gate.expected_legal_manifest_sha256,
     };
-    if (gate.owner_release_id !== null) {
-      if (active.length !== 1 || reconcileHeadWithProjection(active[0], projection)) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
-      return { schema_version: 2, head: active[0], state_hash: releaseStateHash(active[0]) };
-    }
-    if (gate.sales_paused === 1 || active.length) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
-    const completed = replays
-      .filter(({ replay }) => replay.head?.phase === "COMPLETE")
-      .sort((left, right) => (right.events.at(-1)?.seq ?? 0) - (left.events.at(-1)?.seq ?? 0));
-    const head = completed.at(0)?.replay.head;
-    if (!head) return { schema_version: 2, head: null, state_hash: null };
     if (reconcileHeadWithProjection(head, projection)) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
     return { schema_version: 2, head, state_hash: releaseStateHash(head) };
   }
@@ -914,24 +963,7 @@ export class ReleaseSalesGate {
     const heads = [...byRelease.values()].map((events) => replayReleaseGenerationChain(events));
     if (heads.some((replay) => replay.corrupt)) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
     const active = heads.flatMap((replay) => replay.head && replay.head.phase !== "COMPLETE" ? [replay.head] : []);
-    if (byRelease.size && gate.owner_release_id === null) {
-      if (active.length || gate.sales_paused === 1) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
-    } else if (gate.owner_release_id !== null && active.length) {
-      if (active.length !== 1 || reconcileHeadWithProjection(active[0], { owner_release_id: gate.owner_release_id, sales_paused: gate.sales_paused === 1, expected_source_commit: gate.expected_source_commit, expected_migration: gate.expected_migration, expected_legal_version: gate.expected_legal_version, expected_legal_manifest_sha256: gate.expected_legal_manifest_sha256 })) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
-    } else if (gate.owner_release_id !== null) {
-      // A completed v2 release's own reconcile invariant (its owner must be
-      // null) still applies specifically to its own release_id: it must
-      // never itself reappear as the gate's owner.
-      if (byRelease.has(gate.owner_release_id)) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
-      // Any other owner is a distinct, allowed mode - a completed v2 head
-      // remains historical integrity evidence but no longer owns the coarse
-      // projection once superseded - but it must be a *proven* generic
-      // owner, not merely a release_id that happens not to be a v2 release:
-      // reconcile its own coarse ACQUIRED/PAUSED/REOPENED history against
-      // this exact projection.
-      const ownerActions = (this.db.prepare("SELECT action FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid ASC").all(gate.owner_release_id) as { action: string }[]).map((row) => row.action);
-      if (reconcileLegacyOwnerWithProjection(ownerActions, gate.sales_paused === 1)) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
-    }
+    this.reconcileGateOwnership(gate, byRelease, active);
     if (gate.sales_paused !== 1) return undefined;
     if (!context || active.length !== 1) throw new ReleaseControlError("SALES_TEMPORARILY_PAUSED", 503);
     return this.certificationLeaseFor(active[0], context);
