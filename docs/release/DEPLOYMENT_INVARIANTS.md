@@ -451,3 +451,37 @@ same iteration.
    only after surface convergence is reached - never inside the retry loop.
    Any nonzero exit from it is fatal and preserves its own stderr; it must
    never be retried or reinterpreted as non-convergence.
+
+## A same-owner reopen must use the durable owner identity, never a deployment target SHA
+
+A preserved same-owner recovery lineage must reopen using the durable owner
+identity that actually holds the gate. A deployment target SHA must never
+be used to synthesize a replacement release identity for reopen.
+
+`controlled-production-deploy.yml`'s reopen path unconditionally computes
+`RELEASE_ID=deploy-$TARGET_SHA` - correct for the ordinary fresh-deploy flow
+it was built for (where the release identity and the deployment target are
+the same thing), but wrong for any lineage whose owner identity predates
+and outlives its deployment target, such as the deploy-R4 owner preserved
+across the entire R3->R4->R5->R6->R7 same-owner crossings: its
+`release_id` (`deploy-aa492d5a...`) was fixed at the original R3/R4
+recovery and has never changed, while its `expected.source_commit` has
+moved through every subsequent crossing. Reopening this owner through
+`controlled-production-deploy.yml` would derive a release identity
+(`deploy-<current target SHA>`) that does not match the durable owner on
+record, and fail closed on `GENERIC_DEPLOY_BLOCKED_BY_RELEASE_OWNER` at
+best - or, if ever "fixed" by loosening that check, silently operate on
+the wrong release identity.
+
+**Fix pattern**: a same-owner reopen is its own narrowly-scoped,
+one-shot controller (see `controlled-r7-same-owner-reopen.yml`), which
+hard-binds the release identity to the actual durable owner constant, never
+derives it from any SHA, and treats a previous green verify-only run as
+useful audit evidence only - never as its own safety precondition. It
+re-proves every invariant (refs, authority, surfaces, checkout-paused,
+candidateHead/Promo state, provider readiness) fresh, immediately before
+its one mutation, with the POST itself as the literal last command and no
+retry loop: if the POST's result is ambiguous (e.g. the connection drops
+mid-response), the workflow stops rather than issuing a second POST -
+resolving that ambiguity is a separate, read-only investigation, never an
+automatic retry.
