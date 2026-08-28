@@ -390,6 +390,18 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrences WHERE id = ?").get(occurrenceId)).toEqual({ count: 1 });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM promo_codes WHERE id = ?").get(promoId)).toEqual({ count: 1 });
 
+    const mixedPromoId = randomUUID(); const mixedPromoKey = randomUUID();
+    expect(() => setup.domain.createCertificationFixture({ ...input, promo_id: mixedPromoId, promo_key: mixedPromoKey, promo: { code: "CERTMIXEDPROMO", status: "ACTIVE", discount_type: "FIXED", discount_value: 1 } })).toThrow("CERTIFICATION_FIXTURE_IDEMPOTENCY_REPLAY");
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM promo_codes WHERE id = ?").get(mixedPromoId)).toEqual({ count: 0 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM admin_audit_log WHERE entity_id = ?").get(mixedPromoId)).toEqual({ count: 0 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM admin_command_idempotency WHERE idempotency_key_hash = ?").get(sha256(mixedPromoKey))).toEqual({ count: 0 });
+
+    const mixedOccurrenceId = randomUUID(); const mixedOccurrenceKey = randomUUID();
+    expect(() => setup.domain.createCertificationFixture({ ...input, occurrence_id: mixedOccurrenceId, occurrence_key: mixedOccurrenceKey })).toThrow("CERTIFICATION_FIXTURE_IDEMPOTENCY_REPLAY");
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrences WHERE id = ?").get(mixedOccurrenceId)).toEqual({ count: 0 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM admin_audit_log WHERE entity_id = ?").get(mixedOccurrenceId)).toEqual({ count: 0 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM admin_command_idempotency WHERE idempotency_key_hash = ?").get(sha256(mixedOccurrenceKey))).toEqual({ count: 0 });
+
     const failedOccurrenceId = randomUUID();
     const failedOccurrenceKey = randomUUID(); const failedPromoKey = randomUUID();
     expect(() => setup.domain.createCertificationFixture({ ...input, occurrence_id: failedOccurrenceId, occurrence_key: failedOccurrenceKey, promo_id: promoId, promo_key: failedPromoKey, promo: { code: "BROKEN", status: "ACTIVE", discount_type: "FIXED", discount_value: 1 } })).toThrow();

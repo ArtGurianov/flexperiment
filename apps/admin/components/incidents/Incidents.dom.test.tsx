@@ -35,7 +35,10 @@ describe("OperationalIncidents provider drift", () => {
     expect(requests.filter((request) => request.method === "POST")).toHaveLength(0);
     await user.type(within(dialog).getByRole("textbox"), "Evidence reconciled");
     await user.click(within(dialog).getByRole("button", { name: "Закрыть review" }));
-    await waitFor(() => expect(requests.find((request) => request.method === "POST")).toMatchObject({ body: JSON.stringify({ note: "Evidence reconciled" }) }));
-    expect(requests.every((request) => !request.url.includes("/payments/") || request.method !== "POST")).toBe(true);
+    await waitFor(() => expect(screen.getByText("Открытых provider drift review пока нет.")).toBeInTheDocument());
+    const posts = requests.filter((request) => request.method === "POST");
+    expect(posts).toEqual([expect.objectContaining({ url: expect.stringContaining("/provider-drift-reviews/drift-1/resolve"), body: JSON.stringify({ note: "Evidence reconciled" }) })]);
+    expect(requests.filter((request) => request.url.includes("/provider-drift-reviews") && request.method === "GET")).toHaveLength(2);
+    expect(requests.filter((request) => request.url.includes("/operational-incidents") && request.method === "GET")).toHaveLength(2);
   });
 });

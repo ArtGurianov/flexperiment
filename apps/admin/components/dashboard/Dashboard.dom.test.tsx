@@ -13,6 +13,7 @@ const baseResponse = {
     email_attention: { count: 0 },
     stale_prepared_settlements: { count: 0 },
     operational_incidents: { count: 0 },
+    provider_drift: { count: 2 },
   },
   upcoming: [],
 };
@@ -57,6 +58,7 @@ describe("Dashboard", () => {
       "Email attention": ["/email-attention", ""],
       "Stale PREPARED": ["/settlements", "?stale_prepared=1"],
       "Operational incidents": ["/incidents", "?status=OPEN"],
+      "Provider drift": ["/incidents", "?provider_drift=1"],
     };
     for (const [label, [pathname, search]] of Object.entries(expected)) {
       const href = screen.getByText(label).closest("a")?.getAttribute("href") ?? "";
