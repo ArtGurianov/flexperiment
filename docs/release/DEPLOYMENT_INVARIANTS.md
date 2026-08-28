@@ -289,3 +289,50 @@ purely read-only, freely re-dispatchable verification step/workflow with a
 realistic budget) over simply inflating a single job's poll-attempt count,
 since a combined submit+verify job that times out cannot be safely re-run
 without re-triggering the mutation it already performed.
+
+## Runtime-dependent parsers must be pinned to the exact runtime they judge
+
+A controller is authored and published from `main`, but `main` and the
+R-lineage (R3/R4/R5/R6/...) are deliberately separate identities - a
+runtime-candidate fix (like R4's migration-allowlist entry) lives only on
+that lineage and is never merged back into `main`. **A controller must
+never interpret runtime release evidence using runtime-semantic code
+checked out from `main` when the runtime artifact it is judging lives on
+a different immutable lineage.** `main`'s copy of that code reflects
+`main`'s own history, not the exact runtime commit whose evidence is being
+parsed - the two can and do disagree about what a valid migration, legal
+baseline, or readiness shape looks like.
+
+This bit on 2026-08-28: `controlled-r6-same-owner-submit.yml`'s first
+dispatch called `commerce/src/assert-generic-production-deploy-ready.ts`
+directly from the controller's own `main` checkout to evaluate R5's live
+readiness. That script imports `release-control.ts`'s
+`evaluateReopenGate()`, which rejects any migration absent from
+`requiredMigrationsByExpectedMigration` - and `main`'s own copy of that
+map has never received R4's fix (adding `0036_tochka_provider_error_evidence.sql`),
+because that fix lives only on the R-lineage. The run therefore failed
+with `UNKNOWN_EXPECTED_MIGRATION` for an entirely healthy R5, before any
+mutation. **This is also the corrected, more specific explanation for why
+the earlier R5 post-CAS recovery workflow's poll loop never had a single
+successful iteration**: on top of the genuine ~90-minute Coolify liveness
+gap documented above, its poll's own readiness check (the same
+main-checked-out parser) was a second, independent, always-failing
+blocker - that run's `UNKNOWN_EXPECTED_MIGRATION`-shaped symptoms must not
+be read as evidence of a bad R5 runtime.
+
+**Fix pattern**: materialize an isolated, detached `git worktree` at the
+exact runtime SHA being judged (e.g. `git worktree add --detach "$DIR"
+"$RUNTIME_SHA"`), install that worktree's own dependency graph from its
+own lockfile (`pnpm install --frozen-lockfile`) once - never inside a
+retry/poll loop - and run the readiness parser from inside that worktree
+(`cd "$DIR" && node --import tsx commerce/src/assert-generic-production-deploy-ready.ts
+<absolute-path-to-evidence-files> ...`), passing the controller's own
+evidence files by absolute path (e.g. `$GITHUB_WORKSPACE/status.json`)
+since the working directory has changed. A submit-style one-shot
+controller pins to the runtime it is leaving; a verify-only controller
+pins to the runtime it is proving converged. This is a narrow, deliberate
+exception to "controller code never executes from the candidate's tree"
+above: here the controller is not executing untrusted candidate code as
+itself, but is deliberately invoking one specific, already-reviewed,
+already-deployed runtime's own semantics to judge evidence about that same
+runtime - the two are exact opposites, not the same mistake.

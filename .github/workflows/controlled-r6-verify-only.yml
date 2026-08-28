@@ -59,6 +59,10 @@ jobs:
       POLL_SECONDS: "10"
       POLL_CONNECT_TIMEOUT: "3"
       POLL_MAX_TIME: "7"
+      # Where the exact-R6 detached worktree is materialized for
+      # runtime-pinned readiness parsing - see the "Materialize exact R6"
+      # step below for why this must never be main's own checkout.
+      RUNTIME_ASSERT_DIR: ${{ runner.temp }}/r6-readiness-runtime
 
     steps:
       - uses: actions/checkout@v4
@@ -94,12 +98,35 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
 
+      - name: Materialize exact R6 once for runtime-pinned readiness parsing
+        # assert-generic-production-deploy-ready.ts interprets runtime
+        # release evidence using release-control.ts's own semantics (e.g.
+        # which migrations it recognizes) - those semantics belong to the
+        # exact runtime commit being proved, not to whatever main happens to
+        # contain. main and the R3->R4->R5->R6 lineage are deliberately
+        # separate identities, so running this parser from main's own
+        # checkout would judge R6's evidence using main's own (stale)
+        # semantics - exactly the defect that failed the submit workflow's
+        # first dispatch (UNKNOWN_EXPECTED_MIGRATION). This materializes an
+        # isolated, detached worktree at exact R6, with R6's own dependency
+        # graph installed from R6's own lockfile, once, before the poll loop
+        # starts - never repeated inside a poll iteration.
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "$EXPECTED_PRODUCTION_DEPLOY"
+          git worktree add --detach "$RUNTIME_ASSERT_DIR" "$EXPECTED_PRODUCTION_DEPLOY"
+          (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile)
+
       - name: Poll until Commerce/worker/frontend/admin converge on exact R6 while still paused
         # Bounded fresh polling (a few minutes) to absorb ordinary
         # frontend/backend rollout skew, not to wait out an indefinite
         # Coolify delay - if this exhausts its budget, that means only
         # "not converged yet", never a deployment failure. This workflow
-        # performs no mutation, so it is always safe to dispatch again.
+        # performs no mutation, so it is always safe to dispatch again. The
+        # readiness call each iteration runs inside the exact-R6 worktree
+        # materialized above (prepared once, reused every iteration) - never
+        # from this controller's own main checkout, and never
+        # re-materialized inside the loop.
         timeout-minutes: 10
         run: |
           set -euo pipefail
@@ -119,7 +146,7 @@ jobs:
                 .expected.migration == $migration
               ' status.json >/dev/null && \
               jq '{release_id: .owner_release_id, mode: .owner_mode, expected: .expected}' status.json > release.json && \
-              node --import tsx commerce/src/assert-generic-production-deploy-ready.ts status.json release.json paused && \
+              (cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$GITHUB_WORKSPACE/status.json" "$GITHUB_WORKSPACE/release.json" paused) && \
               jq -e --arg sha "$EXPECTED_PRODUCTION_DEPLOY" '.source_commit == $sha' frontend.json >/dev/null && \
               jq -e --arg sha "$EXPECTED_PRODUCTION_DEPLOY" '.source_commit == $sha' admin.json >/dev/null && \
               jq -e '.ok == true' health.json >/dev/null && \

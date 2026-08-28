@@ -78,6 +78,10 @@ jobs:
       TOPOLOGY_BASELINE: "71f6971cea630d4da9a1cb1c57f3ad01e8fdffe1"
       EXPECTED_OWNER_RELEASE_ID: "deploy-aa492d5a6361c8d43f8cbb2a4e3b245611f4f76b"
       EXPECTED_MIGRATION: "0036_tochka_provider_error_evidence.sql"
+      # Where the exact-R5 detached worktree is materialized for
+      # runtime-pinned readiness parsing - see the "Materialize exact R5"
+      # step below for why this must never be main's own checkout.
+      RUNTIME_ASSERT_DIR: ${{ runner.temp }}/r5-readiness-runtime
 
     steps:
       - uses: actions/checkout@v4
@@ -149,6 +153,25 @@ jobs:
           git diff --name-only -z "$TOPOLOGY_BASELINE" "$DEPLOYMENT_TARGET" -- commerce/migrations commerce/legal public/legal release-surface-contract.json > submit-boundary-paths.bin
           pnpm commerce:production-deploy:assert-boundary submit-boundary-paths.bin
 
+      - name: Materialize exact R5 once for runtime-pinned readiness parsing
+        # assert-generic-production-deploy-ready.ts interprets runtime
+        # release evidence using release-control.ts's own semantics (e.g.
+        # which migrations it recognizes) - those semantics belong to the
+        # exact runtime commit being proved, not to whatever main happens to
+        # contain. main and the R3->R4->R5->R6 lineage are deliberately
+        # separate identities (R4's migration-allowlist fix was made only on
+        # that lineage and never merged back into main), so running this
+        # parser from main's own checkout judges R5's evidence using main's
+        # stale semantics - exactly the defect that failed this workflow's
+        # first dispatch (UNKNOWN_EXPECTED_MIGRATION) before any mutation.
+        # This materializes an isolated, detached worktree at exact R5, with
+        # R5's own dependency graph installed from R5's own lockfile, once,
+        # before any readiness call - never inside a retry/poll loop.
+        run: |
+          set -euo pipefail
+          git worktree add --detach "$RUNTIME_ASSERT_DIR" "$TOPOLOGY_BASELINE"
+          (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile)
+
       - name: Prove full R5 readiness before the first mutation
         # A single fresh read, not a polling loop - Commerce is already
         # known to be up and healthy on R5 (this crossing does not stop
@@ -157,7 +180,9 @@ jobs:
         # readiness class the ordinary controller and the verify-only
         # workflow use (worker freshness, migrations, legal baseline), not
         # only a source_commit comparison - there is no reason to accept a
-        # degraded baseline immediately before mutating it.
+        # degraded baseline immediately before mutating it. The readiness
+        # call itself runs inside the exact-R5 worktree materialized above,
+        # never from this controller's own main checkout.
         run: |
           set -euo pipefail
           api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
@@ -183,7 +208,7 @@ jobs:
               }
             }
           ' > release-before.json
-          node --import tsx commerce/src/assert-generic-production-deploy-ready.ts status-before.json release-before.json paused
+          (cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$GITHUB_WORKSPACE/status-before.json" "$GITHUB_WORKSPACE/release-before.json" paused)
           pause_status="$(curl --silent --show-error --connect-timeout 10 --max-time 30 --output paused-checkout.json --write-out '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: r6-submit-pause-proof-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --data '{}' "$PUBLIC_API_URL/v1/public/checkouts")"
           [[ "$pause_status" == "503" ]] || { cat paused-checkout.json >&2; echo "SUBMIT_CHECKOUT_UNEXPECTED_STATUS=$pause_status" >&2; exit 1; }
           jq -e '.error.code == "SALES_TEMPORARILY_PAUSED"' paused-checkout.json >/dev/null || { cat paused-checkout.json >&2; exit 1; }

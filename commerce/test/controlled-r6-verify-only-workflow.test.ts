@@ -58,7 +58,21 @@ describe("controlled R6 verify-only workflow", () => {
     expect(workflow).toContain("VERIFY_CONFIRM_PHRASE_MISMATCH");
   });
 
-  it("polls with a bounded, short budget whose failure means only not-converged-yet", () => {
+  it("materializes an exact-R6 detached worktree once, before the poll loop, with its own frozen install", () => {
+    const step = workflow.indexOf("Materialize exact R6 once for runtime-pinned readiness parsing");
+    const nextStep = workflow.indexOf("Poll until Commerce/worker/frontend/admin converge on exact R6 while still paused");
+    expect(step).toBeGreaterThan(-1);
+    expect(nextStep).toBeGreaterThan(step);
+    const section = workflow.slice(step, nextStep);
+    expect(section).toContain('git worktree add --detach "$RUNTIME_ASSERT_DIR" "$EXPECTED_PRODUCTION_DEPLOY"');
+    expect(section).toContain('(cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile)');
+    expect(workflow).toContain("RUNTIME_ASSERT_DIR: ${{ runner.temp }}/r6-readiness-runtime");
+    // Only one worktree materialization in this workflow - never repeated
+    // inside the poll loop.
+    expect(workflow.match(/git worktree add --detach/g)).toHaveLength(1);
+  });
+
+  it("polls with a bounded, short budget whose failure means only not-converged-yet, using the exact-R6 worktree parser each iteration", () => {
     expect(workflow).toContain('POLL_ATTEMPTS: "18"');
     expect(workflow).toContain('POLL_SECONDS: "10"');
     const poll = workflow.indexOf("Poll until Commerce/worker/frontend/admin converge on exact R6 while still paused");
@@ -66,8 +80,15 @@ describe("controlled R6 verify-only workflow", () => {
     const section = workflow.slice(poll, checkoutProof);
     expect(section).toContain('for attempt in $(seq 1 "$POLL_ATTEMPTS"); do');
     expect(section).toContain("VERIFY_RUNTIME_NOT_CONVERGED_YET");
-    expect(section).toContain("assert-generic-production-deploy-ready.ts status.json release.json paused");
-    expect(section).not.toContain("assert-generic-production-deploy-ready.ts status.json release.json open");
+    // The readiness parser runs inside the pinned exact-R6 worktree, against
+    // absolute paths to the controller's own evidence files, not as a bare
+    // invocation from main's own checkout.
+    expect(section).toContain('(cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$GITHUB_WORKSPACE/status.json" "$GITHUB_WORKSPACE/release.json" paused)');
+    expect(section).not.toMatch(/^\s*node --import tsx commerce\/src\/assert-generic-production-deploy-ready\.ts status\.json/m);
+    expect(section).not.toContain("assert-generic-production-deploy-ready.ts \"$GITHUB_WORKSPACE/status.json\" \"$GITHUB_WORKSPACE/release.json\" open");
+    // No re-materialization inside the loop.
+    expect(section).not.toContain("git worktree add");
+    expect(section).not.toContain("pnpm install");
   });
 
   it("proves candidates/head is a clean 200 with the exact historical Promo head - this is exactly what R6 fixes", () => {
@@ -103,9 +124,17 @@ describe("controlled R6 verify-only workflow", () => {
     expect(workflow).toContain("environment: production");
   });
 
-  it("runs every policy script from the controller's own checkout, never a second worktree", () => {
+  it("runs every ref/status policy check from the controller's single checkout - only the runtime readiness parser uses the pinned R6 worktree", () => {
     const checkoutSteps = [...workflow.matchAll(/uses:\s*actions\/checkout@/g)];
     expect(checkoutSteps).toHaveLength(1);
     expect(workflow).toContain("ref: ${{ github.sha }}");
+    expect(workflow.match(/git worktree add --detach/g)).toHaveLength(1);
+  });
+
+  it("never invokes the readiness parser as a bare command against main's own checkout, anywhere in the workflow", () => {
+    const bareInvocations = [...workflow.matchAll(/^\s*node --import tsx commerce\/src\/assert-generic-production-deploy-ready\.ts/gm)];
+    expect(bareInvocations).toHaveLength(0);
+    const pinnedInvocations = [...workflow.matchAll(/\(cd "\$RUNTIME_ASSERT_DIR" && node --import tsx commerce\/src\/assert-generic-production-deploy-ready\.ts/g)];
+    expect(pinnedInvocations).toHaveLength(1);
   });
 });

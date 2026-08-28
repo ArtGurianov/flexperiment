@@ -72,7 +72,20 @@ describe("controlled R6 same-owner submit workflow", () => {
     expect(workflow).not.toMatch(/api\s+"\$PUBLIC_API_URL\/v1\/admin\/release-control\/candidates\/head"/);
   });
 
-  it("proves full R5 readiness (paused-mode assert-generic-production-deploy-ready) with a single read, not a polling loop", () => {
+  it("materializes an exact-R5 detached worktree once, before any readiness call, with its own frozen install", () => {
+    const step = workflow.indexOf("Materialize exact R5 once for runtime-pinned readiness parsing");
+    const nextStep = workflow.indexOf("Prove full R5 readiness before the first mutation");
+    expect(step).toBeGreaterThan(-1);
+    expect(nextStep).toBeGreaterThan(step);
+    const section = workflow.slice(step, nextStep);
+    expect(section).toContain('git worktree add --detach "$RUNTIME_ASSERT_DIR" "$TOPOLOGY_BASELINE"');
+    expect(section).toContain('(cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile)');
+    expect(workflow).toContain("RUNTIME_ASSERT_DIR: ${{ runner.temp }}/r5-readiness-runtime");
+    // Only one worktree materialization in this workflow - never repeated.
+    expect(workflow.match(/git worktree add --detach/g)).toHaveLength(1);
+  });
+
+  it("proves full R5 readiness (paused-mode assert-generic-production-deploy-ready) with a single read, not a polling loop, using the exact-R5 worktree parser", () => {
     const step = workflow.indexOf("Prove full R5 readiness before the first mutation");
     const nextStep = workflow.indexOf("Move the same owner's expectations from R5 to R6");
     const section = workflow.slice(step, nextStep);
@@ -80,8 +93,13 @@ describe("controlled R6 same-owner submit workflow", () => {
     expect(section).not.toContain("sleep ");
     expect(section).toContain('.owner_release_id == $owner and');
     expect(section).toContain('.expected.source_commit == $source and');
-    expect(section).toContain("assert-generic-production-deploy-ready.ts status-before.json release-before.json paused");
-    expect(section).not.toContain("assert-generic-production-deploy-ready.ts status-before.json release-before.json open");
+    // The readiness parser runs inside the exact-R5 worktree, against
+    // absolute paths to the controller's own evidence files - never as a
+    // bare invocation from main's own checkout (which would use main's
+    // stale release-control.ts semantics).
+    expect(section).toContain('(cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$GITHUB_WORKSPACE/status-before.json" "$GITHUB_WORKSPACE/release-before.json" paused)');
+    expect(section).not.toMatch(/^\s*node --import tsx commerce\/src\/assert-generic-production-deploy-ready\.ts status-before\.json/m);
+    expect(section).not.toContain("assert-generic-production-deploy-ready.ts \"$GITHUB_WORKSPACE/status-before.json\" \"$GITHUB_WORKSPACE/release-before.json\" open");
     expect(section).toContain("SALES_TEMPORARILY_PAUSED");
     expect(section).toContain('.environment == "production"');
   });
@@ -188,11 +206,29 @@ describe("controlled R6 same-owner submit workflow", () => {
     expect(workflow).not.toContain("release-control/legal-publish");
   });
 
-  it("runs every policy script from the controller's own checkout, never a second worktree", () => {
+  it("runs every ref/topology/boundary policy script from the controller's single checkout - only the runtime readiness parser uses the pinned R5 worktree", () => {
     const checkoutSteps = [...workflow.matchAll(/uses:\s*actions\/checkout@/g)];
     expect(checkoutSteps).toHaveLength(1);
     expect(workflow).toContain("ref: ${{ github.sha }}");
     expect(workflow).not.toMatch(/git checkout ["']?\$DEPLOYMENT_TARGET["']?/);
+    // The deliberate, narrow exception: a detached worktree exists solely to
+    // pin the readiness parser to R5's own runtime semantics, never to run
+    // arbitrary candidate code as this controller.
+    expect(workflow.match(/git worktree add --detach/g)).toHaveLength(1);
+    expect(workflow).toContain('git worktree add --detach "$RUNTIME_ASSERT_DIR" "$TOPOLOGY_BASELINE"');
+  });
+
+  it("never invokes the readiness parser as a bare command against main's own checkout, anywhere in the workflow", () => {
+    // Every call must be wrapped in a subshell that cd's into the pinned
+    // exact-R5 worktree first - a bare `node --import tsx
+    // commerce/src/assert-generic-production-deploy-ready.ts` at the
+    // default (main) working directory is exactly the defect that failed
+    // this workflow's first dispatch (UNKNOWN_EXPECTED_MIGRATION), because
+    // main never received R4's migration-allowlist fix.
+    const bareInvocations = [...workflow.matchAll(/^\s*node --import tsx commerce\/src\/assert-generic-production-deploy-ready\.ts/gm)];
+    expect(bareInvocations).toHaveLength(0);
+    const pinnedInvocations = [...workflow.matchAll(/\(cd "\$RUNTIME_ASSERT_DIR" && node --import tsx commerce\/src\/assert-generic-production-deploy-ready\.ts/g)];
+    expect(pinnedInvocations).toHaveLength(1);
   });
 
   it("uses the shared production concurrency group so it cannot overlap other controllers", () => {
