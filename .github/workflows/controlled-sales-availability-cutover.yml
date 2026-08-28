@@ -401,10 +401,15 @@ jobs:
             exit 0
           fi
           jq -e --arg release_id "$RELEASE_ID" '.schema_version == 2 and .head.release_id == $release_id and (.head.source_commit | type == "string" and test("^[a-f0-9]{40}$")) and .head.phase == "CERTIFIED" and .head.certification.status == "CONSUMED" and (.state_hash | test("^[a-f0-9]{64}$"))' candidate-head.json >/dev/null || { echo "SALES_AVAILABILITY_CUTOVER_COMPLETE_STATE_INVALID" >&2; exit 1; }
-          # completeCandidate zeroes the release gate. The operator must have
-          # already latched the emergency stop, or customer sales reopen in the
-          # window before Epoch B acquires. The emergency gate is absolute, so
-          # this latch must come strictly AFTER certification consumed its lease.
+          # completeCandidate zeroes the release gate, so customer sales reopen
+          # here. For a standalone Epoch A that is the intended end state: the
+          # new code is live and the notification purpose stays dormant.
+          #
+          # Only if Epoch B is to follow immediately should the operator latch
+          # the emergency stop first, to avoid sales flapping open between the
+          # two epochs. That latch must come strictly AFTER certification has
+          # consumed its lease, because the emergency gate is absolute and
+          # would otherwise refuse the certification order itself.
           curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/v1/public/legal-config" > legal-config.json
           jq -e '.occurrence_notifications_available == false' legal-config.json >/dev/null || { echo "SALES_AVAILABILITY_CUTOVER_NOTIFICATIONS_UNEXPECTEDLY_ACTIVE" >&2; exit 1; }
           jq -n --slurpfile current candidate-head.json '{release_id: $current[0].head.release_id, candidate_generation: $current[0].head.candidate_generation, expected_state_hash: $current[0].state_hash}' > complete.json
