@@ -97,11 +97,13 @@ jobs:
           candidate_manifest_path="$RUNNER_TEMP/generic-deploy-production-manifest.json"
           git show "$target_sha:release-surface-contract.json" > "$candidate_contract_path"
           git show "$target_sha:commerce/legal/production-manifest.json" > "$candidate_manifest_path"
-          echo "TARGET_SHA=$target_sha" >> "$GITHUB_ENV"
-          echo "RELEASE_ID=deploy-$target_sha" >> "$GITHUB_ENV"
-          echo "RECOVERY_MODE=$recovery_mode" >> "$GITHUB_ENV"
-          echo "CANDIDATE_CONTRACT_PATH=$candidate_contract_path" >> "$GITHUB_ENV"
-          echo "CANDIDATE_MANIFEST_PATH=$candidate_manifest_path" >> "$GITHUB_ENV"
+          {
+            echo "TARGET_SHA=$target_sha"
+            echo "RELEASE_ID=deploy-$target_sha"
+            echo "RECOVERY_MODE=$recovery_mode"
+            echo "CANDIDATE_CONTRACT_PATH=$candidate_contract_path"
+            echo "CANDIDATE_MANIFEST_PATH=$candidate_manifest_path"
+          } >> "$GITHUB_ENV"
 
       - name: Assert runtime-candidate topology
         # A recovery (workflow_dispatch) resumes an already-owned, already-
@@ -124,6 +126,21 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+
+      - name: Materialize exact runtime readiness parser
+        # Runtime readiness evidence must be interpreted with the exact
+        # runtime's semantics, never with main's controller copy. In
+        # particular, migration recognition intentionally differs between
+        # maintenance/controller history and a deployed runtime lineage.
+        # Only this explicitly named parser may execute from the runtime
+        # worktree; dependency lifecycle scripts remain disabled.
+        run: |
+          set -euo pipefail
+          RUNTIME_ASSERT_DIR="$RUNNER_TEMP/generic-runtime-readiness"
+          git worktree add --detach "$RUNTIME_ASSERT_DIR" "$TARGET_SHA"
+          [[ "$(git -C "$RUNTIME_ASSERT_DIR" rev-parse HEAD)" == "$TARGET_SHA" ]] || { echo "RUNTIME_ASSERT_WORKTREE_WRONG_SHA" >&2; exit 1; }
+          (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile --ignore-scripts)
+          echo "RUNTIME_ASSERT_DIR=$RUNTIME_ASSERT_DIR" >> "$GITHUB_ENV"
 
       - name: Preflight immutable generic-deploy boundaries
         run: |
@@ -154,16 +171,15 @@ jobs:
           validate_json completion.json COMPLETION
           owner="$(jq -r '.owner_release_id // empty' durable-before.json)"
           if [[ "$RECOVERY_MODE" == 1 ]]; then
-            jq -e --arg release_id "$RELEASE_ID" --arg source_commit "$TARGET_SHA" '
+            if ! jq -e --arg release_id "$RELEASE_ID" --arg source_commit "$TARGET_SHA" '
               .sales_paused == true and
               .owner_release_id == $release_id and
               .owner_mode == "CONTROLLED_CUTOVER" and
               .expected.source_commit == $source_commit
-            ' durable-before.json >/dev/null &&
-              jq -e '.complete == false' completion.json >/dev/null || {
-                echo "GENERIC_DEPLOY_MANUAL_RECOVERY_STATE_INVALID" >&2
-                exit 1
-              }
+            ' durable-before.json >/dev/null || ! jq -e '.complete == false' completion.json >/dev/null; then
+              echo "GENERIC_DEPLOY_MANUAL_RECOVERY_STATE_INVALID" >&2
+              exit 1
+            fi
           fi
           if ! jq -e '.complete' completion.json >/dev/null; then
             [[ -z "$owner" || "$owner" == "$RELEASE_ID" ]] || { echo "GENERIC_DEPLOY_BLOCKED_BY_RELEASE_OWNER=$owner" >&2; exit 1; }
@@ -263,7 +279,7 @@ jobs:
           api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
-          node --import tsx commerce/src/assert-generic-production-deploy-ready.ts status.json release.json open
+          (cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$GITHUB_WORKSPACE/status.json" "$GITHUB_WORKSPACE/release.json" open)
           jq -e --slurpfile request release.json '.complete and .expected == $request[0].expected' completion.json >/dev/null
           curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_FRONTEND_URL/release.json" > frontend.json
           curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$ADMIN_RELEASE_URL" > admin.json
@@ -353,7 +369,7 @@ jobs:
             echo "Allowing Coolify deployments to start for ${INITIAL_READINESS_DELAY_SECONDS}s..."
             sleep "$INITIAL_READINESS_DELAY_SECONDS"
           fi
-          scripts/controlled-production-readiness.sh release.json
+          RUNTIME_ASSERT_DIR="$RUNTIME_ASSERT_DIR" scripts/controlled-production-readiness.sh release.json
           api -X POST -H 'Content-Type: application/json' --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/reopen" > reopened.json
           jq -e '.sales_paused == false and .owner_release_id == null and .owner_mode == null' reopened.json >/dev/null
 
@@ -364,7 +380,7 @@ jobs:
           api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
-          node --import tsx commerce/src/assert-generic-production-deploy-ready.ts status.json release.json open
+          (cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$GITHUB_WORKSPACE/status.json" "$GITHUB_WORKSPACE/release.json" open)
           jq -e --slurpfile request release.json '.complete and .expected == $request[0].expected' completion.json >/dev/null
           curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_FRONTEND_URL/release.json" > frontend.json
           curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$ADMIN_RELEASE_URL" > admin.json

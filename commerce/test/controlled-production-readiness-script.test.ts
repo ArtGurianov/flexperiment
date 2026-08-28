@@ -8,18 +8,21 @@ const sourceCommit = "a".repeat(40);
 const temporaryDirectories: string[] = [];
 afterEach(() => { while (temporaryDirectories.length) rmSync(temporaryDirectories.pop()!, { recursive: true, force: true }); });
 
-const runReadiness = (scenario: "ready" | "status-fails-after-first", nodeExit = false, phase: "promotion" | "candidate-pre-publication" = "promotion") => {
+const runReadiness = (scenario: "ready" | "status-fails-after-first", nodeExit = false, phase: "promotion" | "candidate-pre-publication" = "promotion", pinRuntimeParser = false) => {
   const directory = mkdtempSync(join(tmpdir(), "flexperiment-readiness-test-"));
   temporaryDirectories.push(directory);
   const bin = join(directory, "bin");
   const request = join(directory, "release.json");
   const curlLog = join(directory, "curl.log");
   const nodeLog = join(directory, "node.log");
+  const nodeCwdLog = join(directory, "node-cwd.log");
   const statusCalls = join(directory, "status-calls");
   const curl = join(bin, "curl");
   const node = join(bin, "node");
   const sleep = join(bin, "sleep");
+  const runtimeAssertDir = join(directory, "runtime-assert");
   mkdirSync(bin);
+  if (pinRuntimeParser) mkdirSync(runtimeAssertDir);
   writeFileSync(request, JSON.stringify({
     release_id: `deploy-${sourceCommit}`,
     mode: "CONTROLLED_CUTOVER",
@@ -58,6 +61,7 @@ const runReadiness = (scenario: "ready" | "status-fails-after-first", nodeExit =
   ].join("\n"));
   writeFileSync(node, [
     "#!/usr/bin/env bash",
+    "pwd >> \"$NODE_CWD_LOG\"",
     "printf '%s\\n' \"$*\" >> \"$NODE_LOG\"",
     '[[ "$READINESS_NODE_EXIT" == "1" ]] && { echo "WORKER_SWEEP_EVIDENCE_STALE" >&2; exit 1; }',
     "exit 0",
@@ -68,12 +72,12 @@ const runReadiness = (scenario: "ready" | "status-fails-after-first", nodeExit =
   const result = spawnSync("bash", ["scripts/controlled-production-readiness.sh", request, phase], {
     cwd: process.cwd(), encoding: "utf8", env: {
       ...process.env, PATH: `${bin}:${process.env.PATH}`, CURL_LOG: curlLog, NODE_LOG: nodeLog, STATUS_CALLS: statusCalls,
-      READINESS_SCENARIO: scenario, READINESS_NODE_EXIT: nodeExit ? "1" : "0",
+      READINESS_SCENARIO: scenario, READINESS_NODE_EXIT: nodeExit ? "1" : "0", NODE_CWD_LOG: nodeCwdLog,
       PUBLIC_API_URL: "https://api.test", PUBLIC_FRONTEND_URL: "https://frontend.test", ADMIN_RELEASE_URL: "https://admin.test/release.json",
-      COMMERCE_RELEASE_CONTROL_TOKEN: "test-token", TARGET_SHA: sourceCommit, CHECKOUT_CONTRACT_VERSION: "age-band-v2", ADMIN_CONTRACT_VERSION: "age-band-v2", PREVIOUS_LEGAL_VERSION: "2026-08-25.1", POLL_ATTEMPTS: "2", POLL_SECONDS: "0", POLL_CONNECT_TIMEOUT: "3", POLL_MAX_TIME: "7",
+      COMMERCE_RELEASE_CONTROL_TOKEN: "test-token", TARGET_SHA: sourceCommit, CHECKOUT_CONTRACT_VERSION: "age-band-v2", ADMIN_CONTRACT_VERSION: "age-band-v2", PREVIOUS_LEGAL_VERSION: "2026-08-25.1", POLL_ATTEMPTS: "2", POLL_SECONDS: "0", POLL_CONNECT_TIMEOUT: "3", POLL_MAX_TIME: "7", ...(pinRuntimeParser ? { RUNTIME_ASSERT_DIR: runtimeAssertDir } : {}),
     },
   });
-  return { result, curlLog: readFileSync(curlLog, "utf8"), nodeLog: readFileSync(nodeLog, "utf8") };
+  return { result, curlLog: readFileSync(curlLog, "utf8"), nodeLog: readFileSync(nodeLog, "utf8"), nodeCwds: readFileSync(nodeCwdLog, "utf8") };
 };
 
 describe("controlled production readiness polling", () => {
@@ -85,6 +89,12 @@ describe("controlled production readiness polling", () => {
     expect(curlLog).toContain("https://api.test/healthz");
     expect(curlLog).toContain("https://api.test/readyz");
     expect(curlLog).not.toContain("reopen");
+  });
+
+  it("runs the promotion parser from a supplied exact runtime worktree", () => {
+    const { result, nodeCwds } = runReadiness("ready", false, "promotion", true);
+    expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+    expect(nodeCwds.trim().endsWith("/runtime-assert")).toBe(true);
   });
 
   it("proves candidate surfaces against the previous active legal release before publication", () => {

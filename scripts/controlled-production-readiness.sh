@@ -30,6 +30,16 @@ workspace="$(mktemp -d "${TMPDIR:-/tmp}/flexperiment-readiness.XXXXXX")"
 last_attempt_dir=""
 trap 'rm -rf "$workspace"' EXIT
 
+run_runtime_readiness_parser() {
+  local status_path="$1" request_path="$2" sales_state="$3"
+  if [[ -n "${RUNTIME_ASSERT_DIR:-}" ]]; then
+    [[ -d "$RUNTIME_ASSERT_DIR" ]] || { echo "RUNTIME_ASSERT_WORKTREE_MISSING" >&2; return 1; }
+    (cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$status_path" "$request_path" "$sales_state")
+  else
+    node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$status_path" "$request_path" "$sales_state"
+  fi
+}
+
 fetch_json() {
   local label="$1" url="$2" destination="$3" authenticated="$4"
   local temporary="${destination}.tmp" stderr_path="${destination}.stderr" curl_status
@@ -103,7 +113,7 @@ for attempt in $(seq 1 "$POLL_ATTEMPTS"); do
     reason="GENERIC_DEPLOY_READINESS_FETCH_FAILED:${fetch_reasons[*]}"
   elif [[ "$readiness_phase" == "candidate-pre-publication" ]] && ! node --import tsx commerce/src/assert-candidate-runtime-ready.ts "$attempt_dir/status.json" "$TARGET_SHA" "$(jq -er '.expected.migration' "$request_path")" "$PREVIOUS_LEGAL_VERSION" >/dev/null 2>"$attempt_dir/runtime.stderr"; then
     reason="GENERIC_DEPLOY_RUNTIME_EVIDENCE_NOT_READY"
-  elif [[ "$readiness_phase" == "promotion" ]] && ! node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$attempt_dir/status.json" "$request_path" paused >/dev/null 2>"$attempt_dir/runtime.stderr"; then
+  elif [[ "$readiness_phase" == "promotion" ]] && ! run_runtime_readiness_parser "$attempt_dir/status.json" "$request_path" paused >/dev/null 2>"$attempt_dir/runtime.stderr"; then
     reason="GENERIC_DEPLOY_RUNTIME_EVIDENCE_NOT_READY"
   elif ! jq -e --arg sha "$TARGET_SHA" --arg contract "$CHECKOUT_CONTRACT_VERSION" '.source_commit == $sha and .checkout_contract_version == $contract' "$attempt_dir/frontend.json" >/dev/null; then
     reason="GENERIC_DEPLOY_FRONTEND_RELEASE_EVIDENCE_MISMATCH"

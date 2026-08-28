@@ -17,8 +17,9 @@ describe("generic controlled production deploy workflow", () => {
     expect(workflow).toContain("cancel-in-progress: false");
     expect(workflow).toContain("environment: production");
     expect(workflow).toContain("contents: write");
-    expect(workflow).toContain("echo \"TARGET_SHA=$target_sha\" >> \"$GITHUB_ENV\"");
-    expect(workflow).toContain('echo "RELEASE_ID=deploy-$target_sha" >> "$GITHUB_ENV"');
+    expect(workflow).toContain('echo "TARGET_SHA=$target_sha"');
+    expect(workflow).toContain('echo "RELEASE_ID=deploy-$target_sha"');
+    expect(workflow).toContain('} >> "$GITHUB_ENV"');
     expect(workflow).toContain('mode: "CONTROLLED_CUTOVER"');
     expect(workflow).not.toContain('mode: "ROLLING"');
   });
@@ -109,6 +110,24 @@ describe("generic controlled production deploy workflow", () => {
     expect(workflow).toContain("scripts/set-production-deploy-ref.sh");
     expect(workflow).not.toMatch(/\$TARGET_SHA\/scripts/);
     expect(workflow).not.toContain("candidate/scripts/");
+  });
+
+  it("pins every runtime-semantic readiness parser to the exact target without running lifecycle scripts", () => {
+    const materialize = workflow.indexOf("Materialize exact runtime readiness parser");
+    const preflight = workflow.indexOf("Preflight immutable generic-deploy boundaries");
+    expect(materialize).toBeGreaterThan(workflow.indexOf("pnpm install --frozen-lockfile"));
+    expect(materialize).toBeLessThan(preflight);
+    expect(workflow).toContain('RUNTIME_ASSERT_DIR="$RUNNER_TEMP/generic-runtime-readiness"');
+    expect(workflow).toContain('git worktree add --detach "$RUNTIME_ASSERT_DIR" "$TARGET_SHA"');
+    expect(workflow).toContain('[[ "$(git -C "$RUNTIME_ASSERT_DIR" rev-parse HEAD)" == "$TARGET_SHA" ]]');
+    expect(workflow).toContain("RUNTIME_ASSERT_WORKTREE_WRONG_SHA");
+    expect(workflow).toContain('(cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile --ignore-scripts)');
+    expect(workflow).toContain('echo "RUNTIME_ASSERT_DIR=$RUNTIME_ASSERT_DIR" >> "$GITHUB_ENV"');
+    expect(workflow).toContain('RUNTIME_ASSERT_DIR="$RUNTIME_ASSERT_DIR" scripts/controlled-production-readiness.sh release.json');
+    const bareParsers = [...workflow.matchAll(/^\s*node --import tsx commerce\/src\/assert-generic-production-deploy-ready\.ts/gm)];
+    expect(bareParsers).toHaveLength(0);
+    const pinnedParsers = [...workflow.matchAll(/\(cd "\$RUNTIME_ASSERT_DIR" && node --import tsx commerce\/src\/assert-generic-production-deploy-ready\.ts/g)];
+    expect(pinnedParsers).toHaveLength(2);
   });
 
   it("resolves an explicit runtime-candidate authority instead of implying main is always the deploy target", () => {
