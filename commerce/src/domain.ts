@@ -506,7 +506,7 @@ export class CommerceDomain {
   }
 
   pauseEmergencySales(input: { expected_revision: number; reason: string }, adminId: string, idempotencyKey: string) {
-    return this.withAdminCommandV2("emergency-sales-pause", idempotencyKey, adminId, "emergency-sales-gate", input, input.reason, "EMERGENCY_SALES_PAUSED", "emergency_sales_gate", () => {
+    return this.withAdminCommandV2("emergency-sales-pause", idempotencyKey, adminId, "emergency-sales-gate", input, undefined, "emergency_sales_gate", "EMERGENCY_SALES_PAUSED", "emergency_sales_gate", () => {
       const timestamp = new Date(this.clock()).toISOString();
       const changed = this.db.prepare(`UPDATE emergency_sales_gate SET sales_paused = 1, revision = revision + 1,
         paused_at = ?, paused_reason = ?, paused_by_admin_id = ?, updated_at = ? WHERE singleton = 1 AND revision = ?`).run(timestamp, input.reason, adminId, timestamp, input.expected_revision).changes;
@@ -518,7 +518,7 @@ export class CommerceDomain {
   }
 
   reopenEmergencySales(input: { expected_revision: number; reason: string }, adminId: string, idempotencyKey: string) {
-    return this.withAdminCommandV2("emergency-sales-reopen", idempotencyKey, adminId, "emergency-sales-gate", input, input.reason, "EMERGENCY_SALES_REOPENED", "emergency_sales_gate", () => {
+    return this.withAdminCommandV2("emergency-sales-reopen", idempotencyKey, adminId, "emergency-sales-gate", input, undefined, "emergency_sales_gate", "EMERGENCY_SALES_REOPENED", "emergency_sales_gate", () => {
       const timestamp = new Date(this.clock()).toISOString();
       const changed = this.db.prepare(`UPDATE emergency_sales_gate SET sales_paused = 0, revision = revision + 1,
         reopened_at = ?, updated_at = ? WHERE singleton = 1 AND revision = ?`).run(timestamp, timestamp, input.expected_revision).changes;
@@ -3219,7 +3219,7 @@ export class CommerceDomain {
   }
 
   /** V2 captures the response before another operator can mutate its row. */
-  private withAdminCommandV2<T extends Row>(command: string, idempotencyKey: string, adminId: string, resourceId: string | null, body: unknown, auditContext: string | undefined, table: "agents" | "promo_codes", action: string, entityType: string, operation: () => T): T {
+  private withAdminCommandV2<T extends Row>(command: string, idempotencyKey: string, adminId: string, resourceId: string | null, body: unknown, auditContext: string | undefined, table: "agents" | "promo_codes" | "emergency_sales_gate", action: string, entityType: string, operation: () => T): T {
     if (idempotencyKey.length < 16 || idempotencyKey.length > 200) throw new DomainError("IDEMPOTENCY_KEY_INVALID", 400);
     const keyHash = sha256(idempotencyKey);
     const fingerprint = `v2:${sha256(canonicalV2({ admin_id: adminId, command, resource_id: resourceId, body, audit_context: auditContext ?? null }))}`;
