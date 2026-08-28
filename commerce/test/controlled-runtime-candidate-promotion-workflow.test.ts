@@ -11,9 +11,10 @@ describe("controlled runtime-candidate promotion workflow", () => {
     expect(workflowDispatch).not.toContain("push:");
     expect(workflowDispatch).not.toContain("schedule:");
     for (const input of ["target_sha", "expected_runtime_candidate_sha", "expected_production_deploy_sha", "reason"]) expect(workflowDispatch).toMatch(new RegExp(`${input}:\\n\\s+description:[^\\n]+\\n\\s+required: true`));
-    expect(workflow).toContain("group: controlled-runtime-candidate-promotion");
+    expect(workflow).toContain("group: flexperiment-production-controlled-cutover");
     expect(workflow).toContain("cancel-in-progress: false");
-    expect(workflow).toContain("contents: write");
+    expect(workflow).toContain("environment: production");
+    expect(workflow).toContain("contents: read");
     expect(workflow).toContain('[[ "$GITHUB_REF" == "refs/heads/main" ]]');
     expect(workflow).toContain("RUNTIME_CANDIDATE_PROMOTION_CONTROLLER_MAIN_MOVED");
     expect(workflow).toContain('[[ "$INPUT_TARGET_SHA" =~ ^[0-9a-f]{40}$ ]]');
@@ -25,12 +26,13 @@ describe("controlled runtime-candidate promotion workflow", () => {
   it("uses only a dedicated credential and exact remote CAS evidence", () => {
     expect(workflow).toContain("RUNTIME_CANDIDATE_REF_TOKEN");
     expect(workflow).not.toContain("PRODUCTION_DEPLOY_REF_TOKEN");
+    expect(workflow).not.toContain("contents: write");
     expect(workflow).toContain("git ls-remote --exit-code origin refs/heads/runtime-candidate");
     expect(workflow).toContain("git ls-remote --exit-code origin refs/heads/production-deploy");
     expect(workflow).toContain("RUNTIME_CANDIDATE_CAS_MISMATCH");
     expect(workflow).toContain("PRODUCTION_DEPLOY_CAS_MISMATCH");
     expect(workflow).toContain("RUNTIME_CANDIDATE_PRE_CAS_FETCH_MISMATCH");
-    expect(workflow).toContain("PRODUCTION_DEPLOY_POST_CAS_MISMATCH");
+    expect(workflow).toContain("PRODUCTION_DEPLOY_PRE_CAS_FETCH_MISMATCH");
     expect(workflow).toContain("RUNTIME_CANDIDATE_TARGET_NOT_PUBLISHED_RUNTIME_BRANCH");
     expect(workflow).toContain("refs/remotes/origin/runtime/*");
     expect(workflow).toContain('git push --force-with-lease="refs/heads/runtime-candidate:${INPUT_EXPECTED_RUNTIME_CANDIDATE_SHA}"');
@@ -40,8 +42,8 @@ describe("controlled runtime-candidate promotion workflow", () => {
   it("requires ordinary forward topology before the lease-backed update and exact post-state after it", () => {
     const topology = workflow.indexOf("Resolve exact remote refs and prove ordinary promotion topology");
     const reconfirm = workflow.indexOf("Reconfirm exact CAS inputs immediately before promotion");
-    const mutation = workflow.indexOf("Advance runtime candidate by exact lease-backed CAS");
-    const postState = workflow.indexOf("Prove exact post-promotion refs and write audit summary");
+    const mutation = workflow.indexOf("Attempt runtime-candidate lease-backed CAS");
+    const postState = workflow.indexOf("Reconcile authoritative post-CAS refs and write audit summary");
     expect(topology).toBeGreaterThan(-1);
     expect(reconfirm).toBeGreaterThan(topology);
     expect(mutation).toBeGreaterThan(reconfirm);
@@ -50,8 +52,16 @@ describe("controlled runtime-candidate promotion workflow", () => {
     expect(workflow).toContain('git merge-base --is-ancestor "$actual_production_deploy" "$INPUT_TARGET_SHA"');
     expect(workflow).toContain('git merge-base --is-ancestor "$actual_runtime_candidate" "$INPUT_TARGET_SHA"');
     expect(workflow).toContain("RUNTIME_CANDIDATE_TARGET_ALREADY_CURRENT");
-    expect(workflow).toContain('[[ "$runtime_candidate_after" == "$INPUT_TARGET_SHA" ]]');
-    expect(workflow).toContain('[[ "$production_deploy_after" == "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" ]]');
+    expect(workflow.match(/git push --force-with-lease=/g)).toHaveLength(1);
+    expect(workflow).toContain("set -uo pipefail");
+    expect(workflow).toContain("set +e");
+    expect(workflow).toContain("CAS_PUSH_RC=$cas_push_rc");
+    expect(workflow).toContain("read_remote_ref refs/heads/runtime-candidate");
+    expect(workflow).toContain("read_remote_ref refs/heads/production-deploy");
+    expect(workflow).toContain('[[ "$runtime_candidate_after" == "$INPUT_TARGET_SHA" && "$production_deploy_after" == "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" ]]');
+    expect(workflow).toContain("CAS_PUSH_NOT_APPLIED");
+    expect(workflow).toContain("POST_CAS_AUTHORITY_UNEXPECTED");
+    expect(workflow).toContain("RUNTIME_CANDIDATE_PROMOTION_POST_STATE_UNAVAILABLE");
   });
 
   it("does not couple candidate promotion to deployment or release-control mutation", () => {
@@ -60,6 +70,6 @@ describe("controlled runtime-candidate promotion workflow", () => {
     expect(workflow).not.toContain("gh workflow run");
     expect(workflow).not.toContain("/v1/admin/release-control/");
     expect(workflow).not.toContain("COOLIFY_");
-    expect(workflow).toContain("Lease-backed CAS update: PASS");
+    expect(workflow).toContain("Lease-backed CAS outcome:");
   });
 });

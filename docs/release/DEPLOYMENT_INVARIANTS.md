@@ -71,10 +71,11 @@ production-deploy = the exact last successfully deployed runtime (see above)
 `runtime-candidate` is advanced only by
 `controlled-runtime-candidate-promotion.yml`; `production-deploy` is
 advanced only by `controlled-production-deploy.yml`. They are separate CAS
-authorities: an ordinary candidate promotion requires its target to descend
-from both the current `production-deploy` and current `runtime-candidate`,
-then advances only `runtime-candidate` with an exact lease. Candidate
-promotion never deploys production or mutates release-control state.
+authorities, serialized through `flexperiment-production-controlled-cutover`:
+an ordinary candidate promotion requires its target to descend from both the
+current `production-deploy` and current `runtime-candidate`, then advances
+only `runtime-candidate` with an exact lease. Candidate promotion never
+deploys production or mutates release-control state.
 
 `controlled-production-deploy.yml` lives on `main` (the default branch, as
 `workflow_dispatch` requires) and triggers **only** on manual

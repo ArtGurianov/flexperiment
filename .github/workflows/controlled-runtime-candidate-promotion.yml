@@ -21,15 +21,16 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
-  group: controlled-runtime-candidate-promotion
+  group: flexperiment-production-controlled-cutover
   cancel-in-progress: false
 
 jobs:
   promote:
     runs-on: ubuntu-latest
+    environment: production
     timeout-minutes: 10
     env:
       CONTROLLER_SHA: ${{ github.sha }}
@@ -104,21 +105,35 @@ jobs:
           [[ "$(git rev-parse origin/runtime-candidate)" == "$current_runtime_candidate" ]] || { echo "RUNTIME_CANDIDATE_PRE_CAS_FETCH_MISMATCH" >&2; exit 1; }
           [[ "$(git rev-parse origin/production-deploy)" == "$current_production_deploy" ]] || { echo "PRODUCTION_DEPLOY_PRE_CAS_FETCH_MISMATCH" >&2; exit 1; }
 
-      - name: Advance runtime candidate by exact lease-backed CAS
+      - name: Attempt runtime-candidate lease-backed CAS
         run: |
-          set -euo pipefail
+          set -uo pipefail
+          set +e
           git push --force-with-lease="refs/heads/runtime-candidate:${INPUT_EXPECTED_RUNTIME_CANDIDATE_SHA}" origin "${INPUT_TARGET_SHA}:refs/heads/runtime-candidate"
+          cas_push_rc=$?
+          set -e
+          echo "CAS_PUSH_RC=$cas_push_rc" >> "$GITHUB_ENV"
 
-      - name: Prove exact post-promotion refs and write audit summary
+      - name: Reconcile authoritative post-CAS refs and write audit summary
         run: |
           set -euo pipefail
-          git fetch --no-tags origin \
-            refs/heads/runtime-candidate:refs/remotes/origin/runtime-candidate \
-            refs/heads/production-deploy:refs/remotes/origin/production-deploy
-          runtime_candidate_after="$(git rev-parse origin/runtime-candidate)"
-          production_deploy_after="$(git rev-parse origin/production-deploy)"
-          [[ "$runtime_candidate_after" == "$INPUT_TARGET_SHA" ]] || { echo "RUNTIME_CANDIDATE_POST_CAS_MISMATCH=$runtime_candidate_after" >&2; exit 1; }
-          [[ "$production_deploy_after" == "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" ]] || { echo "PRODUCTION_DEPLOY_POST_CAS_MISMATCH=$production_deploy_after" >&2; exit 1; }
+          read_remote_ref() {
+            local ref="$1" value
+            value="$(git ls-remote --exit-code origin "$ref" | awk '{print $1}')" || return 1
+            [[ "$value" =~ ^[0-9a-f]{40}$ ]] || return 1
+            printf '%s\n' "$value"
+          }
+          runtime_candidate_after="$(read_remote_ref refs/heads/runtime-candidate)" || { echo "RUNTIME_CANDIDATE_PROMOTION_POST_STATE_UNAVAILABLE" >&2; exit 1; }
+          production_deploy_after="$(read_remote_ref refs/heads/production-deploy)" || { echo "RUNTIME_CANDIDATE_PROMOTION_POST_STATE_UNAVAILABLE" >&2; exit 1; }
+          if [[ "$runtime_candidate_after" == "$INPUT_TARGET_SHA" && "$production_deploy_after" == "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" ]]; then
+            cas_outcome=SUCCESS
+          elif [[ "$runtime_candidate_after" == "$INPUT_EXPECTED_RUNTIME_CANDIDATE_SHA" && "$production_deploy_after" == "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" ]]; then
+            echo "CAS_PUSH_NOT_APPLIED" >&2
+            exit 1
+          else
+            echo "POST_CAS_AUTHORITY_UNEXPECTED runtime-candidate=$runtime_candidate_after production-deploy=$production_deploy_after" >&2
+            exit 1
+          fi
           {
             echo "## Runtime candidate promotion"
             echo "- Controller SHA: $CONTROLLER_SHA"
@@ -130,5 +145,5 @@ jobs:
             echo "- Runtime candidate after: $runtime_candidate_after"
             echo "- Production deploy after: $production_deploy_after"
             echo "- Topology checks: PASS"
-            echo "- Lease-backed CAS update: PASS"
+            echo "- Lease-backed CAS outcome: $cas_outcome (transport rc: $CAS_PUSH_RC)"
           } >> "$GITHUB_STEP_SUMMARY"
