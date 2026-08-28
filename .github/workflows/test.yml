@@ -24,6 +24,12 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
+      # next-env.d.ts imports ./.next/types/*.d.ts, which only exist after a
+      # build or typegen. Without them that file fails to load, taking its
+      # next/image-types/global reference down with it, so a clean checkout
+      # reports PageProps/LayoutProps and every image module as missing.
+      # Locally these are masked by leftover .next/dev/types from next dev.
+      - run: pnpm exec next typegen
       - run: pnpm exec tsc --noEmit
       - run: pnpm test
       - name: Real-Nginx frontend static-export routing contract
