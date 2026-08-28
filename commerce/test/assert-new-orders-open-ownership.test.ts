@@ -220,7 +220,7 @@ describe("assertNewOrdersOpen ownership classification", () => {
     expect(() => gate.assertNewOrdersOpen()).toThrow("SALES_TEMPORARILY_PAUSED");
   });
 
-  it("reproduces the exact production shape: /candidates/head style replay stays a clean 200 with an unchanged state_hash", () => {
+  it("reproduces the exact production shape: GET /v1/admin/release-control/candidates/head stays a clean 200 with an unchanged state_hash", () => {
     const db = setupDb();
     const releaseId = "promo-codes-v0:b01f217ffd2a798fd32aa3d88e125a2e460bd39f";
     const r4 = "aa492d5a6361c8d43f8cbb2a4e3b245611f4f76b";
@@ -231,15 +231,15 @@ describe("assertNewOrdersOpen ownership classification", () => {
     const request = genericRequest(`deploy-${r4}`, r4);
     gate.acquire(request);
     gate.pause(request);
-    // A foreign paused owner must not affect this v2 release's own replay:
-    // re-replay its exact event history independently of the gate row and
-    // confirm it is still the same clean, unchanged COMPLETE head - this is
-    // the read GET /v1/admin/release-control/candidates/head performs.
-    const events = db.prepare("SELECT rowid AS seq, release_id, action, details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid ASC").all(releaseId) as { seq: number; release_id: string; action: string; details_json: string }[];
-    expect(events.length).toBeGreaterThan(0);
-    expect(releaseStateHash(complete)).toBe(stateHashBefore);
-    // And the checkout-gating path (which shares the same byRelease/replay
-    // logic) must not report this release's own replay as corrupt either.
+    // A foreign paused owner must not affect this v2 release's own replay.
+    // This previously only re-replayed the events independently and checked
+    // assertNewOrdersOpen() - it never actually called candidateHead() itself,
+    // which is exactly why candidateHead()'s own (separate) ownership bug
+    // went undetected here: see release-control-candidate-head-ownership.test.ts
+    // for the full matrix now covering this read path directly.
+    expect(gate.candidateHead()).toEqual({ schema_version: 2, head: complete, state_hash: stateHashBefore });
+    // And the checkout-gating path (which shares the same ownership
+    // classifier) must not report this release's own replay as corrupt either.
     expect(() => gate.assertNewOrdersOpen()).not.toThrow("RELEASE_STATE_CORRUPT");
   });
 
