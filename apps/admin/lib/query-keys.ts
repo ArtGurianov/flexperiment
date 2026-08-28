@@ -73,3 +73,8 @@ export const dashboardKeys = {
   all: () => ["dashboard"] as const,
   summary: () => ["dashboard", "summary"] as const,
 };
+
+export const salesControlKeys = {
+  all: () => ["sales-control"] as const,
+  summary: () => ["sales-control", "summary"] as const,
+};

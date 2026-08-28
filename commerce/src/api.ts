@@ -10,7 +10,7 @@ import { clientIpRateLimitKey, rateLimit, trustedClientIp } from "./rate-limit";
 import { TochkaWebhookVerifier, webhookAmountKopecks } from "./tochka-webhook";
 import { verifyUnisenderWebhook } from "./unisender-webhook";
 import { type SmartCaptchaVerifier, UnconfiguredSmartCaptchaVerifier } from "./smartcaptcha";
-import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityInterestWithdrawalSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, emailAttentionAcknowledgeSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrencePatchSchema, promoPatchSchema, promoSchema, providerReferenceSchema, releaseControlSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
+import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityInterestWithdrawalSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, emailAttentionAcknowledgeSchema, emergencySalesCommandSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrenceNotificationSchema, occurrencePatchSchema, promoPatchSchema, promoSchema, providerReferenceSchema, releaseControlSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
 
 type AppBindings = { Variables: { adminId?: string; adminSessionId?: string } };
 const noStore = (headers: Headers) => headers.set("Cache-Control", "no-store");
@@ -92,6 +92,15 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     rateLimit(`city-interest-email:${emailHash(input.email)}:${input.city}`, 3, 30 * 60_000);
     await verifyCaptcha(input.captcha_token, c.req.raw.headers);
     return c.json(domain.registerCityInterest(input), 202);
+  });
+  publicApi.post("/occurrence-notifications", async (c) => {
+    rateLimit(clientIpRateLimitKey("occurrence-notification-ip", c.req.raw.headers), 5, 10 * 60_000);
+    const input = occurrenceNotificationSchema.parse(await jsonBody(c.req.raw));
+    const hash = emailHash(input.email);
+    rateLimit(`occurrence-notification-email:${hash}`, 10, 60 * 60_000);
+    rateLimit(`occurrence-notification-email-occurrence:${hash}:${input.occurrence_id}`, 3, 30 * 60_000);
+    await verifyCaptcha(input.captcha_token, c.req.raw.headers);
+    return c.json(domain.registerOccurrenceNotification(input), 202);
   });
   publicApi.post("/refunds/request", async (c) => {
     rateLimit(clientIpRateLimitKey("customer-refund-request-ip", c.req.raw.headers), 5, 10 * 60_000);
@@ -289,6 +298,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
       operational_incidents: { count: domain.operationalIncidentCount() },
       stale_prepared_settlements: sqlite.prepare("SELECT COUNT(*) AS count FROM settlement_prepared_reviews WHERE status = 'OPEN'").get(),
     },
+    sales_control: domain.salesControl(),
     upcoming: sqlite.prepare(`SELECT o.id, o.title, o.starts_at, o.capacity, o.sales_status, o.visibility, c.title AS city_title,
       o.capacity - (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = o.id AND b.status IN ('RESERVED', 'CONFIRMED')) AS availability
       FROM occurrences o JOIN cities c ON c.id = o.city_id WHERE o.fulfillment_status = 'SCHEDULED' AND o.ends_at >= datetime('now') ORDER BY o.starts_at LIMIT 8`).all(),
@@ -353,9 +363,22 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     const payload = reservationAbandonSchema.parse(await jsonBody(c.req.raw));
     return c.json(domain.abandonReservation(c.req.param("id"), payload, key, c.var.adminId!));
   });
+  admin.post("/notification-consent/withdraw", async (c) => {
+    const payload = cityInterestWithdrawalSchema.parse(await jsonBody(c.req.raw));
+    return c.json(domain.withdrawNotificationConsent(payload.email, payload.reason, c.var.adminId!));
+  });
   admin.post("/city-interest/withdraw", async (c) => {
     const payload = cityInterestWithdrawalSchema.parse(await jsonBody(c.req.raw));
     return c.json(domain.withdrawCityInterest(payload.email, payload.reason, c.var.adminId!));
+  });
+  admin.get("/sales-control", (c) => c.json(domain.salesControl()));
+  admin.post("/emergency-sales/pause", async (c) => {
+    const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
+    return c.json(domain.pauseEmergencySales(emergencySalesCommandSchema.parse(await jsonBody(c.req.raw)), c.var.adminId!, key));
+  });
+  admin.post("/emergency-sales/reopen", async (c) => {
+    const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
+    return c.json(domain.reopenEmergencySales(emergencySalesCommandSchema.parse(await jsonBody(c.req.raw)), c.var.adminId!, key));
   });
   admin.post("/cities", async (c) => {
     const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);

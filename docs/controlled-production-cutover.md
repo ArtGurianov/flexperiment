@@ -57,6 +57,18 @@ Any timeout, deployment mismatch, legal mismatch, missing timestamp, contract fa
 
 ## Recovery
 
+## Sales-status and notification cutover
+
+This change is a two-epoch manual cutover. Epoch A deploys migrations 0037 and
+0038 plus the dormant public/admin contracts through the candidate mechanism;
+after certification the operator latches the independent emergency gate before
+completing the candidate. Epoch B publishes and promotes legal release
+`2026-08-28.1` as a direct child of the runtime source, verifies the active
+capability, then releases the deployment gate. The workflow must never clear
+the emergency gate: an operator clears it only after end-to-end notification
+verification. Classify either owner from durable release-control status before
+any recovery; `main` and `HEAD` are not recovery evidence.
+
 For a paused or incomplete generic controlled deployment, use the
 [generic deployment recovery runbook](runbooks/GENERIC_DEPLOY_RECOVERY.md).
 It is authoritative for durable-state classification and recovery; do not

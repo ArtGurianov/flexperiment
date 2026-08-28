@@ -11,7 +11,8 @@ export type AdminMutation =
   | "email.acknowledge" | "incident.resolve"
   | "settlement.paymentMade" | "settlement.documentsComplete"
   | "settlement.cancelBeforePayment" | "settlement.recovery"
-  | "agent.create" | "agent.patch" | "promo.create" | "promo.patch";
+  | "agent.create" | "agent.patch" | "promo.create" | "promo.patch"
+  | "emergency-sales-pause" | "emergency-sales-reopen";
 
 export type MutationContext = {
   cityId?: string;
@@ -64,6 +65,9 @@ export function invalidationKeysFor(mutation: AdminMutation, ctx: MutationContex
     case "promo.create":
     case "promo.patch":
       return [promoKeys.lists(), agentKeys.lists(), dashboardKeys.summary()];
+    case "emergency-sales-pause":
+    case "emergency-sales-reopen":
+      return [dashboardKeys.summary()];
   }
 }
 
@@ -75,4 +79,5 @@ export const ALL_ADMIN_MUTATIONS: readonly AdminMutation[] = [
   "settlement.paymentMade", "settlement.documentsComplete",
   "settlement.cancelBeforePayment", "settlement.recovery",
   "agent.create", "agent.patch", "promo.create", "promo.patch",
+  "emergency-sales-pause", "emergency-sales-reopen",
 ];

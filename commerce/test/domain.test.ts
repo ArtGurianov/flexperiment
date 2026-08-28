@@ -2691,7 +2691,7 @@ describe("commerce domain", () => {
     expect(setup.domain.withdrawCityInterest("withdraw@example.test", "Consent withdrawal received", "admin")).toEqual({ withdrawn: true, deleted_count: 2 });
     expect(setup.db.prepare("SELECT email_normalized FROM city_interest_requests ORDER BY email_normalized").all()).toEqual([{ email_normalized: "other@example.test" }]);
     expect(setup.domain.withdrawCityInterest("withdraw@example.test", "Consent withdrawal received", "admin")).toEqual({ withdrawn: true, deleted_count: 0 });
-    const audit = setup.db.prepare("SELECT entity_id, details_json FROM admin_audit_log WHERE action = 'CITY_INTEREST_WITHDRAWN' ORDER BY created_at LIMIT 1").get() as { entity_id: string; details_json: string };
+    const audit = setup.db.prepare("SELECT entity_id, details_json FROM admin_audit_log WHERE action = 'NOTIFICATION_CONSENT_WITHDRAWN' ORDER BY created_at LIMIT 1").get() as { entity_id: string; details_json: string };
     expect(audit.entity_id).toBe("all-matching-requests");
     expect(audit.details_json).not.toContain("withdraw@example.test");
   });

@@ -7,8 +7,9 @@ import { ensureCurrentReferralCapture } from "@/components/referral-capture-clie
 import { referralCaptureCoordinator } from "@/components/referral-capture-state";
 import { storedReferralSlug } from "@/components/referral-marker";
 import CityInterestForm from "@/components/CityInterestForm";
+import OccurrenceNotifyForm from "@/components/OccurrenceNotifyForm";
 import { findCityBySlug, type CitySlug } from "@/lib/city-catalog";
-import { canRequestCheckout, isPublicOccurrenceSelectable, salesAnnouncement, type PublicSalesStatus } from "@/lib/occurrence-sales";
+import { canRequestCheckout, purchaseStatusAnnouncement, type PurchaseStatus } from "@/lib/occurrence-sales";
 import { formatRubles as rub } from "@/lib/money";
 
 type Occurrence = {
@@ -20,8 +21,9 @@ type Occurrence = {
   timezone: string;
   price_kopecks: number;
   availability: number;
-  sales_status: PublicSalesStatus;
+  sales_status: "OPEN" | "PAUSED" | "CLOSED";
   fulfillment_status: "SCHEDULED" | "COMPLETED" | "CANCELLED";
+  purchase_status: PurchaseStatus;
   venue: {
     status: "CONFIRMED" | "TO_BE_ANNOUNCED";
     name: string | null;
@@ -114,6 +116,7 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
   const [message, setMessage] = useState<string | null>(null);
   const [scheduledCitySlugs, setScheduledCitySlugs] = useState<CitySlug[]>([]);
   const [catalogState, setCatalogState] = useState<"loading" | "ready" | "error">("loading");
+  const [occurrenceNotificationsAvailable, setOccurrenceNotificationsAvailable] = useState(false);
   const [view, setView] = useState<"catalog" | "booking" | "city-interest">("catalog");
   const selected = useMemo(() => occurrences.find((item) => item.id === occurrenceId), [occurrences, occurrenceId]);
   const canCheckout = canRequestCheckout(selected);
@@ -132,7 +135,7 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
       .then(async (response) => response.ok ? response.json() : Promise.reject(new Error("TOUR_UNAVAILABLE")))
       .then((data: { cities: Occurrence[] }) => {
         if (!current) return;
-        const available = data.cities.filter(isPublicOccurrenceSelectable);
+        const available = data.cities;
         setOccurrences(available); setOccurrenceId("");
         const scheduledCities = data.cities
           .filter((item) => item.fulfillment_status === "SCHEDULED")
@@ -144,6 +147,10 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
       })
       .catch(() => current && setCatalogState("error"))
       .finally(() => current && setLoading(false));
+    fetch(commerceApiUrl("/v1/public/legal-config"), { cache: "no-store" })
+      .then((response) => response.ok ? response.json() : { occurrence_notifications_available: false })
+      .then((data: { occurrence_notifications_available?: boolean }) => current && setOccurrenceNotificationsAvailable(data.occurrence_notifications_available === true))
+      .catch(() => current && setOccurrenceNotificationsAvailable(false));
     return () => { current = false; };
   }, []);
 
@@ -164,12 +171,29 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
     } catch (error) {
       setQuote(null);
       const code = error instanceof Error ? error.message : "QUOTE_UNAVAILABLE";
-      setMessage(code === "SALES_NOT_OPEN" ? "Продажи пока закрыты."
+      if (["SOLD_OUT", "SALES_NOT_OPEN", "SALES_TEMPORARILY_PAUSED"].includes(code)) {
+        try {
+          const response = await fetch(commerceApiUrl(`/v1/public/occurrences/${encodeURIComponent(id)}`), { cache: "no-store" });
+          if (response.ok) { const current = await response.json() as Occurrence; setOccurrences((items) => items.map((item) => item.id === id ? current : item)); }
+        } catch { /* the message below remains honest if the refresh also fails */ }
+      }
+      setMessage(["SALES_NOT_OPEN", "SOLD_OUT", "SALES_TEMPORARILY_PAUSED"].includes(code) ? "Состояние записи изменилось. Обновляем дату…"
         : code === "PROMO_NOT_FOUND" ? "Промокод не найден."
         : ["PROMO_NOT_ELIGIBLE", "PROMO_ZERO_PRICE_NOT_ALLOWED"].includes(code) ? "Промокод недоступен."
         : "Не удалось получить актуальные условия. Проверьте соединение и повторите попытку.");
       return false;
     } finally { setLoading(false); }
+  }, []);
+
+  const refreshOccurrenceState = useCallback(async (id: string) => {
+    setQuote(null); setCustomerAdult(false); setMinorRepresentative(false); setOffer(false); setConsent(false);
+    try {
+      const response = await fetch(commerceApiUrl(`/v1/public/occurrences/${encodeURIComponent(id)}`), { cache: "no-store" });
+      if (!response.ok) throw new Error("OCCURRENCE_REFRESH_FAILED");
+      const current = await response.json() as Occurrence;
+      setOccurrences((items) => items.map((item) => item.id === id ? current : item));
+      setMessage(null);
+    } catch { setMessage("Не удалось обновить состояние даты. Проверьте соединение и повторите попытку."); }
   }, []);
 
   const applyPromo = async () => {
@@ -246,7 +270,9 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
           }
           return;
         }
-        throw new Error(data.error?.code ?? "CHECKOUT_FAILED");
+        const code = data.error?.code ?? "CHECKOUT_FAILED";
+        if (["SOLD_OUT", "SALES_NOT_OPEN", "SALES_TEMPORARILY_PAUSED"].includes(code)) { await refreshOccurrenceState(occurrenceId); return; }
+        throw new Error(code);
       }
       attempt.statusId = data.status_id; storage.set(key, JSON.stringify(attempt));
       if (data.payment_url) { window.location.href = data.payment_url; return; }
@@ -287,7 +313,7 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
           <p className="mt-1 leading-relaxed text-bone/90">{quote?.venue_disclosure ?? publicVenueDisclosure(selected)}</p>
         </div>
       </div>
-      {!canCheckout ? <p role="status" className="border border-bone/50 px-3 py-2 text-bone/70">{salesAnnouncement(selected?.sales_status)}</p> : <>
+      {!canCheckout ? <><p role="status" className="border border-bone/50 px-3 py-2 text-bone/70">{purchaseStatusAnnouncement(selected.purchase_status)}</p>{occurrenceNotificationsAvailable && selected.purchase_status !== "UNAVAILABLE" ? <OccurrenceNotifyForm occurrenceId={selected.id} onAlreadyAvailable={() => void refreshOccurrenceState(selected.id)} /> : null}</> : <>
       <label className="grid gap-1.5">Email <input required type="email" value={email} onChange={(event) => setEmail(event.target.value)} className="border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid" /></label>
       <fieldset className="grid gap-2 border border-bone/50 p-3">
         <legend className="px-1">Возрастная категория участника</legend>

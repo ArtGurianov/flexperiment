@@ -1,5 +1,17 @@
 # City-interest lifecycle operations
 
+## Two notification purposes
+
+City-interest remains a city-level purpose with its own twelve-month expiry.
+`occurrence_notification_requests` is a separate consent purpose: one email,
+one selected occurrence and no city fallback. It has no clock-based expiry;
+the worker deletes it at occurrence start or cancellation, on withdrawal, or
+after provider-evidenced `DELIVERED`. One active request and one active intent
+are database invariants. A newly unavailable occurrence suppresses a pending
+intent and leaves the request available for a later eligible sweep. The legacy
+city-interest repair commands are intentionally not extended: the new tables
+were created with the referential and uniqueness invariants those scripts repair.
+
 `city_interest_requests` is purpose-limited data. Its purpose is completed only
 by a provider-evidenced Unisender `DELIVERED` event for the city-specific
 notification. A durable enqueue, Unisender `ACCEPTED`, or `SENT` is not purpose
@@ -115,14 +127,15 @@ rows.
 ## Operator withdrawal procedure
 
 An authenticated Admin operator receives a withdrawal at `art@flexperiment.ru`
-and calls `POST /v1/admin/city-interest/withdraw` with:
+and calls `POST /v1/admin/notification-consent/withdraw` with:
 
 ```json
 { "email": "subject@example.test", "reason": "Consent withdrawal received" }
 ```
 
-The command deletes all matching source requests by the normalized email's HMAC
-hash. In the same transaction it records a durable suppression marker on each
+The legacy `POST /v1/admin/city-interest/withdraw` path remains an alias. The
+command deletes both matching notification purposes by the normalized email's
+HMAC hash and returns separate aggregate counts. In the same transaction it records a durable suppression marker on each
 related outbox, suppresses every non-delivered row as `SKIPPED`, and redacts
 local outbox PII. Expiry uses the same suppression and redaction path. The
 worker rechecks the durable relation and expiry inside its send claim

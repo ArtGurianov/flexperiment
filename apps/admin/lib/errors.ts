@@ -45,6 +45,7 @@ const PRESENTATIONS: Readonly<Record<string, AdminErrorPresentation>> = {
   OCCURRENCE_NOT_ENDED: { message: "Событие ещё не завершилось по времени сервера." },
   OCCURRENCE_SALES_MUST_BE_CLOSED: { message: "Перед завершением события закройте продажи." },
   OCCURRENCE_TERMINAL: { message: "Терминальное событие нельзя изменить этой командой." },
+  SALES_GATE_REVISION_CONFLICT: { message: "Состояние экстренной остановки уже изменил другой оператор.", hint: "Состояние перечитано. Откройте новое подтверждение с актуальной ревизией." },
 };
 
 export const presentAdminError = (code: string): AdminErrorPresentation =>
