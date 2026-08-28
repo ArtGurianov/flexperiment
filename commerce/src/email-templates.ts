@@ -99,5 +99,15 @@ export function renderEmailTemplate(template: string, payload: Record<string, un
       html: `<p>Вы просили сообщить, когда FLEXPERIMENT появится в ${city}.</p><p>Запланирован мастер-класс «${title}».</p><p>Дата и время: ${startsAt}</p>`,
     };
   }
+  if (template === "occurrence-available") {
+    const title = String(payload.occurrence_title ?? "FLEXPERIMENT");
+    const startsAt = String(payload.starts_at ?? "дата уточняется");
+    const url = `https://flexperiment.ru/#booking`;
+    return {
+      subject: "Запись на выбранную дату FLEXPERIMENT открыта",
+      plaintext: `На выбранную дату «${title}» теперь можно записаться. Дата и время: ${startsAt}. Открыть запись: ${url}`,
+      html: `<p>На выбранную дату «${escapeHtml(title)}» теперь можно записаться.</p><p>Дата и время: ${escapeHtml(startsAt)}</p><p><a href="${url}">Открыть запись</a></p>`,
+    };
+  }
   throw new Error(`Unknown code-owned email template: ${template}`);
 }

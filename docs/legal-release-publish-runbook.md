@@ -66,6 +66,14 @@ schema with the new legal release.
 
 ## After publication
 
+For legal release `2026-08-28.1`, retain the emergency sales gate after the
+runtime epoch. Publish the draft once, record its returned `effective_at`, then
+build the promotion artifact as a direct child of the deployed runtime source.
+Only that promotion copies the immutable privacy and consent archives into the
+non-versioned current files. Verify archive bytes and hashes before publication,
+and verify `occurrence_notifications_available: true` only after the promoted
+current copies are deployed.
+
 1. Verify each checkout link and its SHA-256 again.
 2. Verify a new checkout records the new legal snapshot while historical order
    evidence still names its original release and hashes.

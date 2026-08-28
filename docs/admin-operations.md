@@ -42,3 +42,13 @@ it does not generate another command automatically: inspect the relevant
 catalog row or order evidence before deciding whether to replay the same key.
 No UI routes exist for force-changing payment, booking, ticket, or provider
 reference state.
+
+## Emergency sales control
+
+The dashboard emergency control owns `emergency_sales_gate`, never
+`release_sales_gate`. It requires a reason and the currently displayed revision;
+the command is idempotent and uses compare-and-swap. It is an absolute stop,
+including certification orders. Reopening clears only this operator gate: a
+release pause or corrupt release ledger remains visible as `release_paused` and
+continues to block purchases. Operators may use the control while a release
+owns its independent deployment gate.

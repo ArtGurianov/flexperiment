@@ -133,6 +133,16 @@ export const cityInterestSchema = z.object({
   pd_consent_accepted: z.literal(true),
   captcha_token: z.string().trim().min(1).max(4_096),
 }).strict();
+export const occurrenceNotificationSchema = z.object({
+  email: z.string().trim().email().max(320).transform((value) => value.toLowerCase()),
+  occurrence_id: z.string().uuid(),
+  pd_consent_accepted: z.literal(true),
+  captcha_token: z.string().trim().min(1).max(4_096),
+}).strict();
+export const emergencySalesCommandSchema = z.object({
+  expected_revision: z.number().int().positive(),
+  reason: z.string().trim().min(3).max(1_000),
+}).strict();
 export const cityInterestWithdrawalSchema = z.object({
   email: z.string().trim().email().max(320).transform((value) => value.toLowerCase()),
   reason: z.string().trim().min(3).max(1_000),

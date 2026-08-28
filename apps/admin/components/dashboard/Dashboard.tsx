@@ -14,8 +14,9 @@ import { Metric } from "../ui/Metric";
 import { Notice } from "../ui/Notice";
 import { Panel } from "../ui/Panel";
 import { Freshness } from "../ui/Freshness";
+import { SalesControl } from "./SalesControl";
 
-type DashboardResponse = { today: Row; health: Record<string, Row>; upcoming: Row[] };
+type DashboardResponse = { today: Row; health: Record<string, Row>; upcoming: Row[]; sales_control: { effective_status: "OPEN" | "PAUSED"; emergency: { sales_paused: boolean; revision: number; paused_at: string | null; paused_reason: string | null }; release_paused: boolean } };
 
 // Every destination filter here has a backend test asserting its predicate
 // equals the counter's predicate (commerce/test/api.test.ts) — D3.
@@ -60,6 +61,7 @@ export function Dashboard() {
         <Metric label="Возвращено" value={formatMoney(today.refunded_kopecks)} />
       </section>
       <section className="two-col">
+        {query.data.sales_control ? <SalesControl control={query.data.sales_control} /> : null}
         <Panel title="Операционное внимание">
           <div className="signal-list">
             {HEALTH_ROWS.map((row) => {

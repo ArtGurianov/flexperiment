@@ -605,7 +605,7 @@ describe("commerce HTTP boundary", () => {
     expect(withdrawn.status).toBe(200);
     expect(await withdrawn.json()).toEqual({ withdrawn: true, deleted_count: 2 });
     expect(db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE email_normalized = 'withdraw@example.test'").get()).toEqual({ count: 0 });
-    expect(db.prepare("SELECT details_json FROM admin_audit_log WHERE action = 'CITY_INTEREST_WITHDRAWN'").get()).toEqual({ details_json: expect.not.stringContaining("withdraw@example.test") });
+    expect(db.prepare("SELECT details_json FROM admin_audit_log WHERE action = 'NOTIFICATION_CONSENT_WITHDRAWN'").get()).toEqual({ details_json: expect.not.stringContaining("withdraw@example.test") });
     db.close();
   });
 
@@ -679,14 +679,14 @@ describe("commerce HTTP boundary", () => {
     const occurrencePayload = {
       city_id: city.id,
       title: "FLEXPERIMENT — Tochka certification",
-      starts_at: "2026-08-22T12:00:00+07:00",
-      ends_at: "2026-08-22T15:00:00+07:00",
+      starts_at: "2030-08-22T12:00:00+07:00",
+      ends_at: "2030-08-22T15:00:00+07:00",
       timezone: "Asia/Omsk",
       price_kopecks: 100,
       capacity: 1,
       venue_status: "TO_BE_ANNOUNCED",
       venue_disclosure_text: "Venue will be announced to registered participants.",
-      venue_announce_by: "2026-08-21T12:00:00+07:00",
+      venue_announce_by: "2030-08-21T12:00:00+07:00",
       audit_context: "Tochka Phase 0 certification",
     };
     const occurrenceKey = "b6a8e45a-9334-4626-8041-000000000002";
@@ -898,7 +898,7 @@ describe("commerce HTTP boundary", () => {
     const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")! };
     const system = await app.request("http://admin.flexperiment.ru/v1/admin/system/evidence", { headers });
     expect(system.headers.get("cache-control")).toBe("no-store");
-    expect(await system.json()).toMatchObject({ source_commit: process.env.SOURCE_COMMIT, migration_head: { version: "0036_tochka_provider_error_evidence.sql" }, migration_versions: expect.arrayContaining([{ version: "0031_participant_age_band.sql" }]), active_legal_release: { version: "test" } });
+    expect(await system.json()).toMatchObject({ source_commit: process.env.SOURCE_COMMIT, migration_head: { version: "0038_occurrence_availability_notifications.sql" }, migration_versions: expect.arrayContaining([{ version: "0031_participant_age_band.sql" }]), active_legal_release: { version: "test" } });
       const evidence = await app.request(`http://admin.flexperiment.ru/v1/admin/orders/${order.id}/evidence`, { headers });
       const body = await evidence.json() as { order: { currency: string } } & Record<string, unknown>;
     expect(body).toMatchObject({

@@ -3,7 +3,7 @@ import { CommerceDomain, DomainError } from "./domain";
 export type WorkerSweepDomain = Pick<CommerceDomain,
   "recoverStaleCommands" | "detectStalePreparedSettlements" | "reconcileCreateUnknownPayments" | "reconcilePendingPayments" |
   "createObligationRefunds" | "submitRequestedRefunds" | "reconcilePendingRefunds" | "processEmailOutbox" |
-  "reconcileUnisenderEventDumps" | "processCityInterestLifecycle" | "detectOverdueVenueAnnouncements">;
+  "reconcileUnisenderEventDumps" | "processCityInterestLifecycle" | "processOccurrenceNotificationLifecycle" | "detectOverdueVenueAnnouncements">;
 
 /**
  * Runs the financial recovery sequence. A stale PREPARED review is useful
@@ -24,5 +24,11 @@ export async function runWorkerSweep(domain: WorkerSweepDomain) {
   await domain.processEmailOutbox();
   await domain.reconcileUnisenderEventDumps();
   domain.detectOverdueVenueAnnouncements();
-  return domain.processCityInterestLifecycle();
+  const cityInterest = await domain.processCityInterestLifecycle();
+  // Compatibility with deployed worker test doubles is intentional: the new
+  // lifecycle is additive and must not prevent the established recovery cycle.
+  if (typeof (domain as Partial<WorkerSweepDomain>).processOccurrenceNotificationLifecycle === "function") {
+    await domain.processOccurrenceNotificationLifecycle();
+  }
+  return cityInterest;
 }

@@ -9,6 +9,8 @@ import { checkoutRequestSchema, promoMergedSchema, type CheckoutRequest, type Pa
 import { PromoPricingError, pricePromo } from "./promo-pricing";
 import { basisPointsOf } from "./basis-points";
 import { findCityBySlug } from "../../lib/city-catalog";
+import { purchaseStatus, type PurchaseStatus } from "./purchase-status";
+import { parseUtcTimestamp } from "./utc-timestamp";
 
 type Row = Record<string, unknown>;
 const one = <T extends Row>(db: Database.Database, sql: string, ...params: unknown[]) => db.prepare(sql).get(...params) as T | undefined;
@@ -91,6 +93,7 @@ export type PublicOccurrence = {
   availability: number;
   sales_status: "OPEN" | "PAUSED" | "CLOSED";
   fulfillment_status: "SCHEDULED" | "COMPLETED" | "CANCELLED";
+  purchase_status: PurchaseStatus;
   venue: {
     status: "CONFIRMED" | "TO_BE_ANNOUNCED";
     name: string | null;
@@ -108,9 +111,11 @@ const nullableString = (value: unknown) => value == null ? null : String(value);
  * `venue_public` is enforced here and never leaves the API as a client-side
  * policy flag.
  */
-export const publicOccurrence = (occurrence: Row): PublicOccurrence => {
+export const publicOccurrence = (occurrence: Row, newOrdersBlocked: boolean, nowMs: number): PublicOccurrence => {
   const venueStatus = occurrence.venue_status === "TO_BE_ANNOUNCED" ? "TO_BE_ANNOUNCED" : "CONFIRMED";
   const exposeConfirmedVenue = venueStatus === "CONFIRMED" && Number(occurrence.venue_public) === 1;
+  const salesStatus = occurrence.sales_status === "PAUSED" ? "PAUSED" : occurrence.sales_status === "CLOSED" ? "CLOSED" : "OPEN";
+  const fulfillmentStatus = occurrence.fulfillment_status === "COMPLETED" ? "COMPLETED" : occurrence.fulfillment_status === "CANCELLED" ? "CANCELLED" : "SCHEDULED";
   return {
     id: String(occurrence.id),
     city: String(occurrence.city),
@@ -121,8 +126,16 @@ export const publicOccurrence = (occurrence: Row): PublicOccurrence => {
     timezone: String(occurrence.timezone),
     price_kopecks: Number(occurrence.price_kopecks),
     availability: Number(occurrence.availability),
-    sales_status: occurrence.sales_status === "PAUSED" ? "PAUSED" : occurrence.sales_status === "CLOSED" ? "CLOSED" : "OPEN",
-    fulfillment_status: occurrence.fulfillment_status === "COMPLETED" ? "COMPLETED" : occurrence.fulfillment_status === "CANCELLED" ? "CANCELLED" : "SCHEDULED",
+    sales_status: salesStatus,
+    fulfillment_status: fulfillmentStatus,
+    purchase_status: purchaseStatus({
+      salesStatus,
+      fulfillmentStatus,
+      startsAtMs: parseUtcTimestamp(String(occurrence.starts_at)),
+      nowMs,
+      availability: Number(occurrence.availability),
+      newOrdersBlocked,
+    }),
     venue: venueStatus === "CONFIRMED"
       ? { status: venueStatus, name: exposeConfirmedVenue ? nullableString(occurrence.venue_name) : null, address: exposeConfirmedVenue ? nullableString(occurrence.venue_address) : null, disclosure_text: null, announce_by: null }
       : { status: venueStatus, name: null, address: null, disclosure_text: nullableString(occurrence.venue_disclosure_text), announce_by: nullableString(occurrence.venue_announce_by) },
@@ -296,6 +309,17 @@ export class CommerceDomain {
 
   private releaseSalesGate() { return new ReleaseSalesGate(this.db); }
 
+  private emergencySalesPaused() {
+    return Number(one(this.db, "SELECT sales_paused FROM emergency_sales_gate WHERE singleton = 1")?.sales_paused ?? 1) === 1;
+  }
+
+  /** Fail closed: release corruption/unavailability is customer-visible only as a pause. */
+  private newOrdersBlocked() {
+    if (this.emergencySalesPaused()) return true;
+    try { this.releaseSalesGate().assertNewOrdersOpen(); return false; }
+    catch (error) { if (error instanceof ReleaseControlError) return true; throw error; }
+  }
+
   releaseControlStatus() { return this.releaseSalesGate().status(); }
   releaseControlCompletion(releaseId: string) { return this.releaseSalesGate().completion(releaseId); }
   promoCandidateHead(): CandidateHeadSnapshot {
@@ -396,6 +420,7 @@ export class CommerceDomain {
   }
 
   assertNewOrdersOpen(context?: CertificationOrderContext) {
+    if (this.emergencySalesPaused()) throw new DomainError("SALES_TEMPORARILY_PAUSED", 503);
     try { return this.releaseSalesGate().assertNewOrdersOpen(context); }
     catch (error) {
       if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
@@ -420,7 +445,9 @@ export class CommerceDomain {
     }
   }
 
-  private publicOccurrences(where: string, ...params: unknown[]) {
+  private publicOccurrences(where: string, options: { catalogue: boolean }, ...params: unknown[]) {
+    const newOrdersBlocked = this.newOrdersBlocked();
+    const nowMs = this.clock();
     return many(this.db, `SELECT
         o.id, c.slug AS city, c.title AS city_title, o.title, o.starts_at, o.ends_at,
         o.timezone, o.price_kopecks, o.sales_status, o.fulfillment_status,
@@ -429,16 +456,20 @@ export class CommerceDomain {
         (o.capacity - (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = o.id AND b.status IN ('RESERVED', 'CONFIRMED'))) AS availability
       FROM cities c
       JOIN occurrences o ON o.city_id = c.id
-      WHERE o.visibility = 'PUBLISHED' AND ${where}
-      ORDER BY c.title, o.starts_at`, ...params).map(publicOccurrence);
+      WHERE o.visibility = 'PUBLISHED'
+        ${options.catalogue ? "AND o.fulfillment_status = 'SCHEDULED'" : ""}
+        AND ${where}
+      ORDER BY c.title, o.starts_at`, ...params)
+      .map((entry) => publicOccurrence(entry, newOrdersBlocked, nowMs))
+      .filter((entry) => !options.catalogue || parseUtcTimestamp(entry.starts_at) > nowMs);
   }
 
   tour() {
-    return this.publicOccurrences("1 = 1");
+    return this.publicOccurrences("1 = 1", { catalogue: true });
   }
 
   occurrence(occurrenceId: string) {
-    const found = this.publicOccurrences("o.id = ?", occurrenceId)[0];
+    const found = this.publicOccurrences("o.id = ?", { catalogue: false }, occurrenceId)[0];
     if (!found) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
     return found;
   }
@@ -446,7 +477,57 @@ export class CommerceDomain {
   legalConfig() {
     const release = one(this.db, "SELECT id, version, effective_at, manifest_json FROM legal_releases WHERE active = 1");
     if (!release) throw new DomainError("LEGAL_RELEASE_NOT_ACTIVE", 503);
-    return { ...release, manifest: legalManifest(JSON.parse(String(release.manifest_json))) };
+    const manifest = legalManifest(JSON.parse(String(release.manifest_json)));
+    return { ...release, manifest, occurrence_notifications_available: this.occurrenceNotificationsAvailable(manifest, String(release.version)) };
+  }
+
+  private occurrenceNotificationsAvailable(manifest?: LegalManifest, activeVersion?: string) {
+    const active = manifest ?? (() => {
+      const release = one(this.db, "SELECT manifest_json, version FROM legal_releases WHERE active = 1");
+      if (release) activeVersion = String(release.version);
+      return release ? legalManifest(JSON.parse(String(release.manifest_json))) : undefined;
+    })();
+    if (!active || activeVersion !== "2026-08-28.1") return false;
+    try { verifyCurrentLegalSourceHashes(active); } catch { return false; }
+    return active.documents.PRIVACY_POLICY.sha256 === "642d11458733e8c1e5bfb28d0cde7f917a276dfcb3e32dc52adc34fac6326339"
+      && active.documents.PD_CONSENT.sha256 === "acdb8a31a846c1c697cfd977fb67f24e75d280ab72cb6fbce5bbf0146d4ba5b6";
+  }
+
+  salesControl() {
+    const emergency = one(this.db, `SELECT sales_paused, revision, paused_at, paused_reason, paused_by_admin_id
+      FROM emergency_sales_gate WHERE singleton = 1`)!;
+    let releasePaused: boolean;
+    try { this.releaseSalesGate().assertNewOrdersOpen(); releasePaused = false; }
+    catch (error) { if (error instanceof ReleaseControlError) releasePaused = true; else throw error; }
+    return {
+      id: "emergency-sales-gate", effective_status: this.emergencySalesPaused() || releasePaused ? "PAUSED" : "OPEN",
+      emergency: { sales_paused: Boolean(emergency.sales_paused), revision: Number(emergency.revision), paused_at: emergency.paused_at, paused_reason: emergency.paused_reason, paused_by_admin_id: emergency.paused_by_admin_id },
+      release_paused: releasePaused,
+    };
+  }
+
+  pauseEmergencySales(input: { expected_revision: number; reason: string }, adminId: string, idempotencyKey: string) {
+    return this.withAdminCommandV2("emergency-sales-pause", idempotencyKey, adminId, "emergency-sales-gate", input, input.reason, "EMERGENCY_SALES_PAUSED", "emergency_sales_gate", () => {
+      const timestamp = new Date(this.clock()).toISOString();
+      const changed = this.db.prepare(`UPDATE emergency_sales_gate SET sales_paused = 1, revision = revision + 1,
+        paused_at = ?, paused_reason = ?, paused_by_admin_id = ?, updated_at = ? WHERE singleton = 1 AND revision = ?`).run(timestamp, input.reason, adminId, timestamp, input.expected_revision).changes;
+      if (!changed) throw new DomainError("SALES_GATE_REVISION_CONFLICT", 409);
+      const gate = one(this.db, "SELECT revision FROM emergency_sales_gate WHERE singleton = 1")!;
+      this.db.prepare("INSERT INTO emergency_sales_gate_events(id, action, admin_id, reason, revision) VALUES (?, 'PAUSED', ?, ?, ?)").run(id(), adminId, input.reason, gate.revision);
+      return this.salesControl();
+    });
+  }
+
+  reopenEmergencySales(input: { expected_revision: number; reason: string }, adminId: string, idempotencyKey: string) {
+    return this.withAdminCommandV2("emergency-sales-reopen", idempotencyKey, adminId, "emergency-sales-gate", input, input.reason, "EMERGENCY_SALES_REOPENED", "emergency_sales_gate", () => {
+      const timestamp = new Date(this.clock()).toISOString();
+      const changed = this.db.prepare(`UPDATE emergency_sales_gate SET sales_paused = 0, revision = revision + 1,
+        reopened_at = ?, updated_at = ? WHERE singleton = 1 AND revision = ?`).run(timestamp, timestamp, input.expected_revision).changes;
+      if (!changed) throw new DomainError("SALES_GATE_REVISION_CONFLICT", 409);
+      const gate = one(this.db, "SELECT revision FROM emergency_sales_gate WHERE singleton = 1")!;
+      this.db.prepare("INSERT INTO emergency_sales_gate_events(id, action, admin_id, reason, revision) VALUES (?, 'REOPENED', ?, ?, ?)").run(id(), adminId, input.reason, gate.revision);
+      return this.salesControl();
+    });
   }
 
   emailAttentionCount() {
@@ -658,6 +739,55 @@ export class CommerceDomain {
     });
   }
 
+  registerOccurrenceNotification(input: { email: string; occurrence_id: string }) {
+    return withImmediateTransaction(this.db, () => {
+      if (!this.occurrenceNotificationsAvailable()) throw new DomainError("NOTIFICATIONS_NOT_AVAILABLE", 503);
+      const occurrence = one(this.db, `SELECT o.*, o.capacity - (SELECT COUNT(*) FROM bookings b
+        WHERE b.occurrence_id = o.id AND b.status IN ('RESERVED', 'CONFIRMED')) AS availability
+        FROM occurrences o WHERE o.id = ? AND o.visibility = 'PUBLISHED'`, input.occurrence_id);
+      if (!occurrence || occurrence.fulfillment_status !== "SCHEDULED" || parseUtcTimestamp(String(occurrence.starts_at)) <= this.clock()) {
+        throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
+      }
+      const status = purchaseStatus({
+        salesStatus: occurrence.sales_status === "PAUSED" ? "PAUSED" : occurrence.sales_status === "CLOSED" ? "CLOSED" : "OPEN",
+        fulfillmentStatus: "SCHEDULED", startsAtMs: parseUtcTimestamp(String(occurrence.starts_at)), nowMs: this.clock(),
+        availability: Number(occurrence.availability), newOrdersBlocked: this.newOrdersBlocked(),
+      });
+      if (status === "AVAILABLE") throw new DomainError("OCCURRENCE_ALREADY_AVAILABLE", 409);
+      const release = one(this.db, "SELECT manifest_json FROM legal_releases WHERE active = 1");
+      if (!release) throw new DomainError("LEGAL_RELEASE_NOT_ACTIVE", 503);
+      const manifest = legalManifest(JSON.parse(String(release.manifest_json)));
+      const timestamp = new Date(this.clock()).toISOString();
+      const hash = emailHash(input.email);
+      const existing = one(this.db, `SELECT id FROM occurrence_notification_requests
+        WHERE email_hash = ? AND occurrence_id = ? AND superseded_at IS NULL`, hash, input.occurrence_id);
+      if (existing) {
+        this.db.prepare(`UPDATE occurrence_notification_requests SET email_normalized = ?, privacy_policy_version = ?,
+          privacy_policy_sha256 = ?, pd_consent_version = ?, pd_consent_sha256 = ?, consent_accepted_at = ?, created_at = ?
+          WHERE id = ? AND superseded_at IS NULL`).run(input.email,
+          manifest.documents.PRIVACY_POLICY.version, manifest.documents.PRIVACY_POLICY.sha256,
+          manifest.documents.PD_CONSENT.version, manifest.documents.PD_CONSENT.sha256, timestamp, timestamp, existing.id);
+      } else {
+        this.insertOccurrenceNotificationRequest({ requestId: id(), email: input.email, emailHash: hash, occurrenceId: input.occurrence_id, manifest, timestamp });
+      }
+      this.consumeEligibleOccurrenceNotifications(50);
+      return { accepted: true };
+    });
+  }
+
+  processOccurrenceNotificationLifecycle() {
+    return withImmediateTransaction(this.db, () => {
+      const timestamp = new Date(this.clock()).toISOString();
+      const terminated = many(this.db, `SELECT request.id, o.starts_at, o.fulfillment_status FROM occurrence_notification_requests request
+        JOIN occurrences o ON o.id = request.occurrence_id
+        WHERE request.superseded_at IS NULL
+        ORDER BY request.created_at LIMIT 50`)
+        .filter((request) => request.fulfillment_status === "CANCELLED" || parseUtcTimestamp(String(request.starts_at)) <= this.clock());
+      for (const request of terminated) this.purgeOccurrenceNotificationRequest(String(request.id));
+      return { deleted: terminated.length, intents_created: this.consumeEligibleOccurrenceNotifications(50) };
+    });
+  }
+
   /** Applies expiry before scanning for newly eligible requests. */
   processCityInterestLifecycle() {
     return withImmediateTransaction(this.db, () => {
@@ -671,15 +801,23 @@ export class CommerceDomain {
     });
   }
 
-  withdrawCityInterest(email: string, reason: string, adminId: string) {
+  withdrawNotificationConsent(email: string, reason: string, adminId: string) {
     return withImmediateTransaction(this.db, () => {
       const requests = many(this.db, "SELECT id FROM city_interest_requests WHERE email_hash = ? AND superseded_at IS NULL", emailHash(email));
       for (const request of requests) this.purgeCityInterestRequest(String(request.id));
+      const occurrenceRequests = many(this.db, "SELECT id FROM occurrence_notification_requests WHERE email_hash = ? AND superseded_at IS NULL", emailHash(email));
+      for (const request of occurrenceRequests) this.purgeOccurrenceNotificationRequest(String(request.id));
       // Retain only aggregate operator evidence: never an email or its hash.
-      this.db.prepare("INSERT INTO admin_audit_log(id, admin_id, action, entity_type, entity_id, details_json) VALUES (?, ?, 'CITY_INTEREST_WITHDRAWN', 'city_interest', 'all-matching-requests', ?)")
-        .run(id(), adminId, JSON.stringify({ reason, deleted_count: requests.length }));
-      return { withdrawn: true, deleted_count: requests.length };
+      this.db.prepare("INSERT INTO admin_audit_log(id, admin_id, action, entity_type, entity_id, details_json) VALUES (?, ?, 'NOTIFICATION_CONSENT_WITHDRAWN', 'notification_consent', 'all-matching-requests', ?)")
+        .run(id(), adminId, JSON.stringify({ reason, city_interest_deleted: requests.length, occurrence_notification_deleted: occurrenceRequests.length }));
+      return { withdrawn: true, city_interest_deleted: requests.length, occurrence_notification_deleted: occurrenceRequests.length };
     });
+  }
+
+  /** Compatibility alias for existing operational runbooks and integrations. */
+  withdrawCityInterest(email: string, reason: string, adminId: string) {
+    const result = this.withdrawNotificationConsent(email, reason, adminId);
+    return { withdrawn: result.withdrawn, deleted_count: result.city_interest_deleted };
   }
 
   checkoutContext(input: { occurrenceId: string; promoCode?: string; referralSlug?: string }) {
@@ -2173,10 +2311,11 @@ export class CommerceDomain {
       )
       ORDER BY created_at LIMIT 50`, timestamp);
     for (const outbox of rows) {
-      if (outbox.type === "CITY_INTEREST_AVAILABLE") {
+      if (outbox.type === "CITY_INTEREST_AVAILABLE" || outbox.type === "OCCURRENCE_AVAILABLE") {
         const active = withImmediateTransaction(this.db, () => {
-          if (this.isActiveCityInterestNotification(String(outbox.id))) return true;
-          this.suppressCityInterestOutbox(String(outbox.id));
+          if (outbox.type === "CITY_INTEREST_AVAILABLE" ? this.isActiveCityInterestNotification(String(outbox.id)) : this.isActiveOccurrenceNotification(String(outbox.id))) return true;
+          if (outbox.type === "CITY_INTEREST_AVAILABLE") this.suppressCityInterestOutbox(String(outbox.id));
+          else this.suppressOccurrenceNotificationOutbox(String(outbox.id));
           return false;
         });
         if (!active) continue;
@@ -2212,6 +2351,10 @@ export class CommerceDomain {
       const claimed = withImmediateTransaction(this.db, () => {
         if (outbox.type === "CITY_INTEREST_AVAILABLE" && !this.isActiveCityInterestNotification(String(outbox.id))) {
           this.suppressCityInterestOutbox(String(outbox.id));
+          return 0;
+        }
+        if (outbox.type === "OCCURRENCE_AVAILABLE" && !this.isActiveOccurrenceNotification(String(outbox.id))) {
+          this.suppressOccurrenceNotificationOutbox(String(outbox.id));
           return 0;
         }
         // Recheck inside the claim transaction so an invalidated queued token
@@ -2877,6 +3020,72 @@ export class CommerceDomain {
     this.db.prepare("DELETE FROM city_interest_requests WHERE id = ?").run(requestId);
   }
 
+  private insertOccurrenceNotificationRequest(input: { requestId: string; email: string; emailHash: string; occurrenceId: string; manifest: LegalManifest; timestamp: string }) {
+    this.db.prepare(`INSERT INTO occurrence_notification_requests(
+      id, email_normalized, email_hash, occurrence_id, privacy_policy_version, privacy_policy_sha256,
+      pd_consent_version, pd_consent_sha256, consent_accepted_at, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(input.requestId, input.email, input.emailHash, input.occurrenceId,
+        input.manifest.documents.PRIVACY_POLICY.version, input.manifest.documents.PRIVACY_POLICY.sha256,
+        input.manifest.documents.PD_CONSENT.version, input.manifest.documents.PD_CONSENT.sha256, input.timestamp, input.timestamp);
+  }
+
+  private consumeEligibleOccurrenceNotifications(limit = 50) {
+    if (!this.occurrenceNotificationsAvailable() || this.newOrdersBlocked()) return 0;
+    const requests = many(this.db, `SELECT request.id, request.email_normalized, request.email_hash,
+      o.id AS occurrence_id, o.title AS occurrence_title, o.starts_at, o.timezone, c.title AS city_title,
+      o.sales_status, o.fulfillment_status,
+      o.capacity - (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = o.id AND b.status IN ('RESERVED', 'CONFIRMED')) AS availability
+      FROM occurrence_notification_requests request
+      JOIN occurrences o ON o.id = request.occurrence_id
+      JOIN cities c ON c.id = o.city_id
+      WHERE request.superseded_at IS NULL
+        AND NOT EXISTS (SELECT 1 FROM occurrence_notification_intents intent
+          WHERE intent.notification_request_id = request.id AND intent.superseded_at IS NULL)
+      ORDER BY request.created_at, request.id LIMIT ?`, limit)
+      .filter((request) => purchaseStatus({
+        salesStatus: request.sales_status === "PAUSED" ? "PAUSED" : request.sales_status === "CLOSED" ? "CLOSED" : "OPEN",
+        fulfillmentStatus: request.fulfillment_status === "COMPLETED" ? "COMPLETED" : request.fulfillment_status === "CANCELLED" ? "CANCELLED" : "SCHEDULED",
+        startsAtMs: parseUtcTimestamp(String(request.starts_at)), nowMs: this.clock(), availability: Number(request.availability), newOrdersBlocked: false,
+      }) === "AVAILABLE");
+    for (const request of requests) {
+      const outboxId = this.enqueueEmail("OCCURRENCE_AVAILABLE", String(request.email_normalized), String(request.email_hash), "occurrence-available", `occurrence-notification:${request.id}`, {
+        city_title: request.city_title, occurrence_id: request.occurrence_id, occurrence_title: request.occurrence_title, starts_at: request.starts_at, timezone: request.timezone,
+      });
+      this.db.prepare("INSERT INTO occurrence_notification_intents(id, notification_request_id, outbox_id) VALUES (?, ?, ?)").run(outboxId, request.id, outboxId);
+    }
+    return requests.length;
+  }
+
+  private isActiveOccurrenceNotification(outboxId: string) {
+    const request = one(this.db, `SELECT request.id, o.sales_status, o.fulfillment_status, o.starts_at,
+      o.capacity - (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = o.id AND b.status IN ('RESERVED', 'CONFIRMED')) AS availability
+      FROM occurrence_notification_intents intent JOIN occurrence_notification_requests request ON request.id = intent.notification_request_id
+      JOIN occurrences o ON o.id = request.occurrence_id
+      WHERE intent.outbox_id = ? AND intent.superseded_at IS NULL AND request.superseded_at IS NULL`, outboxId);
+    if (!request || !this.occurrenceNotificationsAvailable()) return false;
+    return purchaseStatus({
+      salesStatus: request.sales_status === "PAUSED" ? "PAUSED" : request.sales_status === "CLOSED" ? "CLOSED" : "OPEN",
+      fulfillmentStatus: request.fulfillment_status === "COMPLETED" ? "COMPLETED" : request.fulfillment_status === "CANCELLED" ? "CANCELLED" : "SCHEDULED",
+      startsAtMs: parseUtcTimestamp(String(request.starts_at)), nowMs: this.clock(), availability: Number(request.availability), newOrdersBlocked: this.newOrdersBlocked(),
+    }) === "AVAILABLE";
+  }
+
+  private suppressOccurrenceNotificationOutbox(outboxId: string) {
+    this.db.prepare(`UPDATE email_outbox SET status = CASE WHEN status = 'DELIVERED' THEN status ELSE 'SKIPPED' END,
+      lease_owner = NULL, lease_expires_at = NULL, last_error = CASE WHEN status = 'DELIVERED' THEN last_error ELSE 'OCCURRENCE_NOTIFICATION_NO_LONGER_ACTIVE' END,
+      suppressed_at = CASE WHEN status = 'DELIVERED' THEN suppressed_at ELSE COALESCE(suppressed_at, ?) END,
+      recipient_email = '', recipient_email_hash = '', payload_snapshot = '{}'
+      WHERE id = ? AND type = 'OCCURRENCE_AVAILABLE'`).run(now(), outboxId);
+    this.db.prepare("UPDATE occurrence_notification_intents SET superseded_at = COALESCE(superseded_at, ?) WHERE outbox_id = ?").run(now(), outboxId);
+  }
+
+  private purgeOccurrenceNotificationRequest(requestId: string) {
+    const outboxes = many(this.db, "SELECT outbox_id FROM occurrence_notification_intents WHERE notification_request_id = ?", requestId);
+    for (const outbox of outboxes) this.suppressOccurrenceNotificationOutbox(String(outbox.outbox_id));
+    this.db.prepare("DELETE FROM occurrence_notification_requests WHERE id = ?").run(requestId);
+  }
+
   private recordProviderDrift(entityType: "PAYMENT" | "REFUND", entityId: string, observed: Record<string, unknown>) {
     const existing = one(this.db, "SELECT id FROM provider_drift_reviews WHERE entity_type = ? AND entity_id = ? AND status = 'OPEN'", entityType, entityId);
     if (!existing) this.db.prepare("INSERT INTO provider_drift_reviews(id, entity_type, entity_id, observed_json) VALUES (?, ?, ?, ?)").run(id(), entityType, entityId, JSON.stringify(observed));
@@ -2909,6 +3118,14 @@ export class CommerceDomain {
     // A late delivery of a superseded intent must not delete the renewed
     // request, but the old delivered outbox itself is still redacted.
     this.redactDeliveredCityInterestOutbox(outboxId);
+  }
+
+  private completeDeliveredOccurrenceNotification(outboxId: string) {
+    const intent = one(this.db, `SELECT notification_request_id FROM occurrence_notification_intents
+      WHERE outbox_id = ? AND superseded_at IS NULL`, outboxId);
+    if (intent) this.db.prepare("DELETE FROM occurrence_notification_requests WHERE id = ?").run(intent.notification_request_id);
+    this.db.prepare(`UPDATE email_outbox SET recipient_email = '', recipient_email_hash = '', payload_snapshot = '{}'
+      WHERE id = ? AND type = 'OCCURRENCE_AVAILABLE'`).run(outboxId);
   }
 
   /**
@@ -2990,7 +3207,10 @@ export class CommerceDomain {
       if (!outbox) throw new DomainError("UNISENDER_OUTBOX_NOT_FOUND", 404);
       const inserted = this.db.prepare("INSERT OR IGNORE INTO email_provider_events(id, outbox_id, semantic_key, status, provider_status, job_id) VALUES (?, ?, ?, ?, ?, ?)").run(id(), input.outboxId, input.semanticKey, input.status, input.providerStatus, input.jobId ?? null);
       if (!inserted.changes) return { duplicate: true };
-      if (input.providerStatus === "delivered") this.completeDeliveredCityInterest(input.outboxId);
+      if (input.providerStatus === "delivered") {
+        this.completeDeliveredCityInterest(input.outboxId);
+        this.completeDeliveredOccurrenceNotification(input.outboxId);
+      }
       this.applyEmailObservation(input.outboxId, { status: input.status, jobId: input.jobId });
       return { duplicate: false };
     });
