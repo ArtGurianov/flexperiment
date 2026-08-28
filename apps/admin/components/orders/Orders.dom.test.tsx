@@ -63,6 +63,20 @@ describe("Orders", () => {
     expect(screen.queryByText("Другой участник")).not.toBeInTheDocument();
   });
 
+  it("opens the exact order evidence supplied by an id deep link", async () => {
+    window.history.replaceState(null, "", "/orders/?id=order-1");
+    global.fetch = routeFetch({
+      "/cities": () => ({ cities: [] }),
+      "/occurrences": () => ({ occurrences: [] }),
+      "/orders/order-1/evidence": () => evidenceFor("REVIEW_REQUIRED", 0),
+      "/orders": () => ({ orders: [order] }),
+    });
+    const client = createTestQueryClient();
+    render(<Orders />, { wrapper: (props) => <QueryClientWrapper client={client}>{props.children}</QueryClientWrapper> });
+    await waitFor(() => expect(screen.getByText("Order evidence")).toBeInTheDocument());
+    expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("/orders/order-1/evidence"), expect.anything());
+  });
+
   it("updates the badge in the already-open evidence panel and the underlying table after a refund, with no remount and no hard reload (A1)", async () => {
     let paymentStatus = "PAID";
     let refundCount = 0;

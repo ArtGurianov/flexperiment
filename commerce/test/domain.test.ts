@@ -358,6 +358,38 @@ describe("commerce domain", () => {
     expect(() => setup.domain.patchPromoCommand(String(promo.id), { discount_type: "NONE" }, randomUUID(), "admin")).toThrow();
   });
 
+  it("does not reactivate a disabled promo when PATCH omits status", () => {
+    const setup = fixture(); databases.push(setup.db);
+    const promo = setup.domain.createPromo({ code: "DISABLEDSAFE", status: "DISABLED", discount_type: "PERCENT", discount_value: 1000 });
+    const updated = setup.domain.patchPromoCommand(String(promo.id), { discount_type: "FIXED", discount_value: 100 }, randomUUID(), "admin");
+    expect(updated).toMatchObject({ status: "DISABLED", discount_type: "FIXED", discount_value: 100 });
+  });
+
+  it("can disable a legacy promo without rewriting its historical code identity", () => {
+    const setup = fixture(); databases.push(setup.db);
+    const promo = setup.domain.createPromo({ code: "LEGACYSAFE", status: "ACTIVE", discount_type: "FIXED", discount_value: 100 });
+    setup.db.prepare("UPDATE promo_codes SET code = ?, normalized_code = ? WHERE id = ?").run("СТАРЫЙ КОД", "СТАРЫЙ КОД", promo.id);
+    const updated = setup.domain.patchPromoCommand(String(promo.id), { status: "DISABLED" }, randomUUID(), "admin");
+    expect(updated).toMatchObject({ code: "СТАРЫЙ КОД", normalized_code: "СТАРЫЙ КОД", status: "DISABLED" });
+  });
+
+  it("commits certification fixture facts and their command evidence atomically", () => {
+    const setup = fixture(); databases.push(setup.db);
+    const occurrenceId = randomUUID(); const promoId = randomUUID();
+    const input = {
+      occurrence: { city_id: (setup.db.prepare("SELECT city_id FROM occurrences WHERE id = ?").get(setup.occurrenceId) as { city_id: string }).city_id, title: "Certification fixture", starts_at: "2027-03-01T09:00:00.000Z", ends_at: "2027-03-01T10:00:00.000Z", timezone: "Asia/Novosibirsk", price_kopecks: 101, capacity: 1, venue_status: "CONFIRMED" as const, venue_name: "Studio", venue_address: "Street 1", audit_context: "fixture" },
+      occurrence_id: occurrenceId, occurrence_key: randomUUID(), promo: { code: "CERTFIXTURE", status: "ACTIVE", discount_type: "FIXED", discount_value: 1 }, promo_id: promoId, promo_key: randomUUID(), admin_id: "admin", audit_context: "fixture",
+    };
+    setup.domain.createCertificationFixture(input);
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrences WHERE id = ?").get(occurrenceId)).toEqual({ count: 1 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM promo_codes WHERE id = ?").get(promoId)).toEqual({ count: 1 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM admin_audit_log WHERE entity_id IN (?, ?)").get(occurrenceId, promoId)).toEqual({ count: 2 });
+
+    const failedOccurrenceId = randomUUID();
+    expect(() => setup.domain.createCertificationFixture({ ...input, occurrence_id: failedOccurrenceId, occurrence_key: randomUUID(), promo_id: promoId, promo_key: randomUUID(), promo: { code: "BROKEN", status: "ACTIVE", discount_type: "FIXED", discount_value: 1 } })).toThrow();
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrences WHERE id = ?").get(failedOccurrenceId)).toEqual({ count: 0 });
+  });
+
   it("recognizes an applied 0036+ candidate migration via migration_versions even though required_migrations only tracks 0031-0034", () => {
     const setup = fixture(); databases.push(setup.db);
     const migrationFiles = { "0031_participant_age_band.sql": "1".repeat(64), "0032_release_sales_gate.sql": "2".repeat(64), "0033_runtime_release_evidence.sql": "3".repeat(64), "0034_worker_sweep_evidence.sql": "4".repeat(64), "0035_promo_codes_v0.sql": "5".repeat(64), "0036_tochka_provider_error_evidence.sql": "6".repeat(64) };

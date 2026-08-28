@@ -158,16 +158,25 @@ export const agentSchema = z.object({
   default_reward_type: z.enum(["PERCENT", "FIXED"]),
   default_reward_value: z.number().int().nonnegative(),
 }).strict();
-export const agentPatchSchema = agentSchema.partial().omit({ slug: true }).extend({
+export const agentPatchSchema = z.object({
+  display_name: z.string().trim().min(2).max(200).optional(),
+  legal_name: z.string().trim().min(2).max(300).optional(),
+  email: z.string().trim().email().max(320).optional(),
+  contractor_type: z.enum(["SELF_EMPLOYED", "INDIVIDUAL_ENTREPRENEUR"]).optional(),
+  inn: z.string().trim().regex(/^\d{10}(\d{2})?$/).optional(),
+  contract_reference: z.string().trim().min(2).max(500).optional(),
+  enabled: z.boolean().optional(),
+  default_reward_type: z.enum(["PERCENT", "FIXED"]).optional(),
+  default_reward_value: z.number().int().nonnegative().optional(),
   npd_status_checked_at: z.string().datetime().nullable().optional(),
 }).strict();
-const promoSchemaBase = z.object({
+const promoCodeSchema = z.string().trim().transform((value) => value.toUpperCase()).pipe(z.string().regex(/^[A-Z0-9_-]{2,64}$/));
+const promoMutableShape = {
   agent_id: z.string().uuid().nullable().optional(),
-  code: z.string().trim().transform((value) => value.toUpperCase()).pipe(z.string().regex(/^[A-Z0-9_-]{2,64}$/)),
-  status: z.enum(["ACTIVE", "DISABLED"]).default("ACTIVE"),
+  status: z.enum(["ACTIVE", "DISABLED"]),
   discount_type: z.enum(["NONE", "PERCENT", "FIXED"]),
   discount_value: z.number().int().nonnegative(),
-});
+};
 const promoTerms = (input: { discount_type: "NONE" | "PERCENT" | "FIXED"; discount_value: number }, ctx: z.RefinementCtx) => {
   if (input.discount_type === "PERCENT" && (input.discount_value < 1 || input.discount_value > 9_999)) ctx.addIssue({ code: "custom", message: "Percent discount must be between 1 and 9999 basis points." });
   if (input.discount_type === "NONE" && input.discount_value !== 0) ctx.addIssue({ code: "custom", message: "NONE discount requires value zero." });
@@ -176,9 +185,14 @@ const promoTerms = (input: { discount_type: "NONE" | "PERCENT" | "FIXED"; discou
 const partialPromoTerms = (input: Partial<{ discount_type: "NONE" | "PERCENT" | "FIXED"; discount_value: number }>, ctx: z.RefinementCtx) => {
   if (input.discount_type !== undefined && input.discount_value !== undefined) promoTerms(input as { discount_type: "NONE" | "PERCENT" | "FIXED"; discount_value: number }, ctx);
 };
-export const promoSchema = promoSchemaBase.strict().superRefine(promoTerms);
-export const promoPatchSchema = promoSchemaBase.omit({ code: true }).partial().strict().superRefine(partialPromoTerms);
-export const promoMergedSchema = promoSchemaBase.omit({ code: true }).strict().superRefine(promoTerms);
+export const promoSchema = z.object({ code: promoCodeSchema, ...promoMutableShape, status: promoMutableShape.status.default("ACTIVE") }).strict().superRefine(promoTerms);
+export const promoPatchSchema = z.object({
+  agent_id: promoMutableShape.agent_id,
+  status: promoMutableShape.status.optional(),
+  discount_type: promoMutableShape.discount_type.optional(),
+  discount_value: promoMutableShape.discount_value.optional(),
+}).strict().superRefine(partialPromoTerms);
+export const promoMergedSchema = z.object(promoMutableShape).strict().superRefine(promoTerms);
 
 export const settlementPrepareSchema = z.object({
   agent_id: z.string().uuid(),

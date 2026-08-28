@@ -1654,13 +1654,13 @@ export class CommerceDomain {
     return this.withAdminCommandV2("promo.patch", idempotencyKey, adminId, promoId, patch, auditContext, "PROMO_EDITED", "promo", () => {
       const existing = one(this.db, "SELECT * FROM promo_codes WHERE id = ?", promoId);
       if (!existing) throw new DomainError("PROMO_NOT_FOUND", 404);
-      const merged = promoMergedSchema.parse({
+      promoMergedSchema.parse({
         agent_id: patch.agent_id === undefined ? existing.agent_id : patch.agent_id,
         status: patch.status === undefined ? existing.status : patch.status,
         discount_type: patch.discount_type === undefined ? existing.discount_type : patch.discount_type,
         discount_value: patch.discount_value === undefined ? existing.discount_value : patch.discount_value,
       });
-      return this.patchPromo(promoId, { ...patch, ...merged });
+      return this.patchPromo(promoId, patch);
     });
   }
 
