@@ -188,6 +188,20 @@ describe("commerce domain", () => {
     expect(evaluateReopenGate(release, evidence)).toBe("WORKER_NOT_READY");
   });
 
+  it("purges a terminated occurrence notification beyond fifty older live requests", () => {
+    const setup = fixture(); databases.push(setup.db);
+    const cityId = setup.db.prepare("SELECT city_id FROM occurrences WHERE id = ?").get(setup.occurrenceId) as { city_id: string };
+    const cancelledId = randomUUID();
+    setup.db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, sales_status, fulfillment_status, cancelled_at, venue_status, venue_name, venue_address)
+      VALUES (?, ?, 'Cancelled', '2030-01-01T10:00:00Z', '2030-01-01T12:00:00Z', 'UTC', 100, 1, 'PUBLISHED', 'CLOSED', 'CANCELLED', datetime('now'), 'CONFIRMED', 'Studio', 'Address')`).run(cancelledId, cityId.city_id);
+    const insert = setup.db.prepare(`INSERT INTO occurrence_notification_requests(id, email_normalized, email_hash, occurrence_id, privacy_policy_version, privacy_policy_sha256, pd_consent_version, pd_consent_sha256, consent_accepted_at) VALUES (?, ?, ?, ?, 'v', ?, 'v', ?, datetime('now'))`);
+    for (let index = 0; index < 50; index += 1) insert.run(randomUUID(), `live-${index}@example.test`, `live-${index}`, setup.occurrenceId, "0".repeat(64), "0".repeat(64));
+    const terminatedId = randomUUID(); insert.run(terminatedId, "terminated@example.test", "terminated", cancelledId, "0".repeat(64), "0".repeat(64));
+    (setup.domain as unknown as { occurrenceNotificationsAvailable: () => boolean }).occurrenceNotificationsAvailable = () => true;
+    setup.domain.processOccurrenceNotificationLifecycle();
+    expect(setup.db.prepare("SELECT id FROM occurrence_notification_requests WHERE id = ?").get(terminatedId)).toBeUndefined();
+  });
+
   it("keeps Phase 0 reopen available without 0031, 0034, or a worker sweep", () => {
     const baseRelease = controlledRelease();
     const phase0Release = { ...baseRelease, expected: { ...baseRelease.expected, migration: "0033_runtime_release_evidence.sql" } };
@@ -2810,9 +2824,10 @@ describe("commerce domain", () => {
       reconcileUnisenderEventDumps: async () => { calls.push("event-dump"); },
       detectOverdueVenueAnnouncements: () => { calls.push("venue-overdue"); },
       processCityInterestLifecycle: () => { calls.push("city-interest"); return { expired_deleted: 0, intents_created: 0 }; },
+      processOccurrenceNotificationLifecycle: () => { calls.push("occurrence-notifications"); return { deleted: 0, intents_created: 0 }; },
     };
     await runWorkerSweep(busyDomain as never);
-    expect(calls).toEqual(["recover-stale", "detect", "create-unknown", "payments", "obligations", "submit-refunds", "reconcile-refunds", "email", "event-dump", "venue-overdue", "city-interest"]);
+    expect(calls).toEqual(["recover-stale", "detect", "create-unknown", "payments", "obligations", "submit-refunds", "reconcile-refunds", "email", "event-dump", "venue-overdue", "city-interest", "occurrence-notifications"]);
 
     const unexpectedDomain = { ...busyDomain, detectStalePreparedSettlements: () => { throw new Error("unexpected stale detector failure"); } };
     await expect(runWorkerSweep(unexpectedDomain as never)).rejects.toThrow("unexpected stale detector failure");

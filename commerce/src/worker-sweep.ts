@@ -25,10 +25,6 @@ export async function runWorkerSweep(domain: WorkerSweepDomain) {
   await domain.reconcileUnisenderEventDumps();
   domain.detectOverdueVenueAnnouncements();
   const cityInterest = await domain.processCityInterestLifecycle();
-  // Compatibility with deployed worker test doubles is intentional: the new
-  // lifecycle is additive and must not prevent the established recovery cycle.
-  if (typeof (domain as Partial<WorkerSweepDomain>).processOccurrenceNotificationLifecycle === "function") {
-    await domain.processOccurrenceNotificationLifecycle();
-  }
+  await domain.processOccurrenceNotificationLifecycle();
   return cityInterest;
 }

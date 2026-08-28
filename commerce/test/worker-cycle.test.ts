@@ -19,6 +19,7 @@ const workerDomain = (collectProviderDrift: () => Promise<void>) => ({
   reconcileUnisenderEventDumps: async () => undefined,
   detectOverdueVenueAnnouncements: () => undefined,
   processCityInterestLifecycle: async () => ({ expired_deleted: 0, intents_created: 0 }),
+  processOccurrenceNotificationLifecycle: async () => ({ deleted: 0, intents_created: 0 }),
   collectProviderDrift,
 }) as unknown as Parameters<typeof runWorkerCycle>[0]["domain"];
 

@@ -1,3 +1,4 @@
+-- Keep one active consent request and one delivery intent per occurrence notification.
 CREATE TABLE occurrence_notification_requests (
   id TEXT PRIMARY KEY,
   email_normalized TEXT NOT NULL,
