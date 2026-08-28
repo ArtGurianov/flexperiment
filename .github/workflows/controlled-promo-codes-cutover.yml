@@ -127,10 +127,12 @@ jobs:
             [[ -z "$INPUT_RUNTIME_READINESS_ERROR_CLASS" && -z "$INPUT_RUNTIME_READINESS_ERROR_CODE" ]] || { echo "PROMO_CUTOVER_RUNTIME_READINESS_INPUTS_FORBIDDEN" >&2; exit 1; }
             [[ "$INPUT_STAGE" == prepare || ("$present" == 0 && -z "$INPUT_RETRY_REASON") ]] || { echo "PROMO_CUTOVER_COMPLETE_INPUTS_FORBIDDEN" >&2; exit 1; }
           fi
-          echo "TARGET_SHA=$target_sha" >> "$GITHUB_ENV"
-          echo "EFFECTIVE_TARGET_SHA=$effective_sha" >> "$GITHUB_ENV"
-          echo "RELEASE_ID=promo-codes-v0:$target_sha" >> "$GITHUB_ENV"
-          echo "CERTIFICATION_INPUTS_PRESENT=$present" >> "$GITHUB_ENV"
+          {
+            echo "TARGET_SHA=$target_sha"
+            echo "EFFECTIVE_TARGET_SHA=$effective_sha"
+            echo "RELEASE_ID=promo-codes-v0:$target_sha"
+            echo "CERTIFICATION_INPUTS_PRESENT=$present"
+          } >> "$GITHUB_ENV"
 
       - name: Bind source migration and surface contracts
         run: |
