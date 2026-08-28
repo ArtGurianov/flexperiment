@@ -58,7 +58,7 @@ describe("controlled cutover production topology", () => {
 
   it("requires deploy-token authorization and never treats a webhook as runtime proof", () => {
     expect(deployHelper).toContain("Authorization: Bearer $COOLIFY_TOKEN");
-    expect(deployHelper.match(/deploy \"\$COOLIFY_/g)).toHaveLength(3);
+    expect(deployHelper.match(/deploy \w+ "\$COOLIFY_/g)).toHaveLength(3);
     expect(deployHelper).toContain("Configured production ref does not match");
     expect(deployHelper).toContain("only an enqueue acknowledgement");
   });

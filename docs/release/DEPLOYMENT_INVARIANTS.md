@@ -253,3 +253,39 @@ See [generic recovery](../runbooks/GENERIC_DEPLOY_RECOVERY.md),
 [legal cutover recovery](../runbooks/LEGAL_CUTOVER_RECOVERY.md),
 [recovery branch topology](../runbooks/RECOVERY_BRANCH_TOPOLOGY.md), and
 [Promo Codes v0 cutover recovery](../runbooks/PROMO_CODES_CUTOVER_RECOVERY.md).
+
+## Coolify webhook acceptance is not deployment convergence
+
+`scripts/controlled-coolify-deploy.sh` treats an HTTP 2xx from a Coolify
+deploy webhook as only an enqueue acknowledgement, never as evidence that a
+deployment has started, let alone finished - every controller that calls it
+is expected to prove the deployed source independently afterward, from the
+Commerce/frontend/admin surfaces themselves.
+
+**Do not assume webhook acceptance implies deployment starts promptly.**
+During the 2026-08-27 R5 post-CAS recovery deploy, the webhook call and the
+subsequent container `create` both happened within seconds of each other (as
+expected), but the container did not actually `start` until roughly 90
+minutes later. A controller budgeting a short fixed settling delay plus a
+few minutes of bounded polling (as every controller in this repo did at the
+time) will time out and have to be cancelled even when the deployment
+eventually succeeds cleanly - this is a false failure of the *controller*,
+not evidence of a bad deployment, and must not be treated as one (do not
+roll back `production-deploy`, reopen, or otherwise react to it as a real
+production defect without first checking, read-only, whether the deployment
+actually converged after the controller gave up).
+
+This is an open, unresolved gap in controller design, not yet fixed: no
+controller in this repo currently has a reliable way to distinguish "still
+slowly progressing" from "genuinely stuck," because none of them inspect
+Coolify's own deployment status - they only guess a fixed delay/poll budget
+and then check the resulting runtime surfaces. Closing this gap requires
+first establishing, empirically, whether Coolify's webhook response body (or
+its own API) exposes a stable deployment identifier/status a controller
+could poll directly - this has never been verified in this repo, and no
+controller should assume its shape without checking. Until it is verified,
+prefer decoupling a deploy trigger from its convergence proof (a separate,
+purely read-only, freely re-dispatchable verification step/workflow with a
+realistic budget) over simply inflating a single job's poll-attempt count,
+since a combined submit+verify job that times out cannot be safely re-run
+without re-triggering the mutation it already performed.
