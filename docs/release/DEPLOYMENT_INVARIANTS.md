@@ -77,6 +77,12 @@ current `production-deploy` and current `runtime-candidate`, then advances
 only `runtime-candidate` with an exact lease. Candidate promotion never
 deploys production or mutates release-control state.
 
+The candidate-promotion workflow binds the dedicated `production`
+environment secret `RUNTIME_CANDIDATE_REF_TOKEN` only to that lease-backed
+`runtime-candidate` CAS. It must not use or be replaced with
+`PRODUCTION_DEPLOY_REF_TOKEN`, and it is not a credential for deployment,
+recovery, release-control mutation, or any other ref.
+
 `controlled-production-deploy.yml` lives on `main` (the default branch, as
 `workflow_dispatch` requires) and triggers **only** on manual
 `workflow_dispatch` — never on any `push`, to `main` or to any other branch.
