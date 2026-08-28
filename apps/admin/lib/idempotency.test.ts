@@ -26,4 +26,11 @@ describe("admin command idempotency", () => {
     expect(safeToMintNewKey(new AdminApiError(422, "VALIDATION_ERROR"))).toBe(true);
     expect(safeToMintNewKey(new AdminApiError(409, "IDEMPOTENCY_CONFLICT"))).toBe(false);
   });
+
+  it("lets a malformed pre-mutation key be replaced but retains a superseded command key", () => {
+    const invalid = new AdminApiError(400, "IDEMPOTENCY_KEY_INVALID");
+    expect(safeToMintNewKey(invalid)).toBe(true);
+    expect(shouldRefreshAuthoritativeState(invalid)).toBe(false);
+    expect(safeToMintNewKey(new AdminApiError(409, "IDEMPOTENCY_CONTRACT_SUPERSEDED"))).toBe(false);
+  });
 });

@@ -27,6 +27,7 @@ const HEALTH_ROWS: { key: string; label: string; href: string }[] = [
   { key: "email_attention", label: "Email attention", href: "/email-attention/" },
   { key: "stale_prepared_settlements", label: "Stale PREPARED", href: "/settlements/?stale_prepared=1" },
   { key: "operational_incidents", label: "Operational incidents", href: "/incidents/?status=OPEN" },
+  { key: "provider_drift", label: "Provider drift", href: "/incidents/?provider_drift=1" },
 ];
 
 export function Dashboard() {

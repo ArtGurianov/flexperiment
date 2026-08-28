@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { tochkaConfigFromEnvironment, type TochkaConfig } from "./provider-config";
 
 type Fetch = typeof fetch;
@@ -14,6 +15,8 @@ export type ProviderErrorClass = (typeof providerErrorClasses)[number];
 export type ProviderErrorEvidence = {
   provider_error_class: ProviderErrorClass;
   provider_error_code: string;
+  pages_scanned?: number;
+  page_limit?: number;
 };
 export type PaymentLinkOperation = {
   paymentLinkId?: string;
@@ -105,7 +108,7 @@ const kopecksFromRubles = (amount: unknown) => {
 
 /** Live adapter. Commands are persisted by CommerceDomain before this class is invoked. */
 export class TochkaProvider implements PaymentProvider {
-  constructor(readonly config: TochkaConfig, readonly request: Fetch = fetch, readonly clock: () => number = Date.now) {}
+  constructor(readonly config: TochkaConfig, readonly request: Fetch = fetch, readonly clock: () => number = Date.now, readonly logger: Pick<Console, "warn"> = console) {}
 
   private async call(path: string, init: RequestInit) {
     const controller = new AbortController();
@@ -196,7 +199,10 @@ export class TochkaProvider implements PaymentProvider {
       const totalPages = Number(pagination.totalPages ?? pagination.pageCount ?? pagination.pages);
       const hasMore = (Number.isFinite(totalPages) && totalPages > page)
         || (!Number.isFinite(totalPages) && operations.length === perPage);
-      if (hasMore && page === maxPages) throw new TochkaProviderError({ provider_error_class: "PROVIDER_RESPONSE_INVALID", provider_error_code: "PAYMENT_LIST_PAGE_LIMIT" }, "Tochka payment operation list exceeds the bounded recovery page limit.");
+      if (page === 15) {
+        try { this.logger.warn(JSON.stringify({ event: "PROVIDER_PAYMENT_LOOKUP_CAPACITY_WARNING", provider: "TOCHKA", pages_scanned: page, page_limit: maxPages, from_date: this.calendarDate(input.fromDate), to_date: this.calendarDate(input.toDate), payment_link_id_hash: createHash("sha256").update(input.paymentLinkId).digest("hex") })); } catch { /* observability must not affect reconciliation */ }
+      }
+      if (hasMore && page === maxPages) throw new TochkaProviderError({ provider_error_class: "PROVIDER_RESPONSE_INVALID", provider_error_code: "PAYMENT_LIST_PAGE_LIMIT", pages_scanned: page, page_limit: maxPages }, "Tochka payment operation list exceeds the bounded recovery page limit.");
       if (hasMore) continue;
       break;
     }

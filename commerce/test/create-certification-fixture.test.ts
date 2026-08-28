@@ -148,4 +148,21 @@ describe("certification fixture creation script", () => {
     expect(db.prepare("SELECT COUNT(*) AS count FROM promo_codes").get()).toEqual({ count: 2 });
     db.close();
   });
+
+  it("retains two complete staged artifacts when finalization fails after the single DB commit", () => {
+    const fixture = fixtureEnvironment();
+    const failure = runFailure({ ...baseEnv(fixture), COMMERCE_CERTIFICATION_FIXTURE_EXECUTE: "CREATE-CERTIFICATION-FIXTURE", COMMERCE_CERTIFICATION_FIXTURE_TEST_FAIL_AFTER_COMMIT: "1" });
+    expect(failure?.status).toBe(2);
+    expect(failure?.stderr).toContain("CERTIFICATION_FIXTURE_ARTIFACT_FINALIZATION_FAILED");
+    expect(existsSync(`${fixture.keyPath}.tmp`)).toBe(true);
+    expect(existsSync(`${fixture.manifestPath}.tmp`)).toBe(true);
+    const key = readFileSync(`${fixture.keyPath}.tmp`, "utf8");
+    const manifest = JSON.parse(readFileSync(`${fixture.manifestPath}.tmp`, "utf8"));
+    expect(manifest.idempotency_key_sha256).toMatch(/^[a-f0-9]{64}$/);
+    expect(failure?.stderr).not.toContain(key);
+    const db = openDatabase(fixture.databasePath);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM occurrences").get()).toEqual({ count: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM promo_codes").get()).toEqual({ count: 1 });
+    db.close();
+  });
 });

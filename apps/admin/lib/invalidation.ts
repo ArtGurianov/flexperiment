@@ -1,14 +1,14 @@
 import type { QueryKey } from "@tanstack/react-query";
 import {
   cityKeys, dashboardKeys, emailAttentionKeys, incidentKeys,
-  occurrenceKeys, orderKeys, refundKeys, settlementKeys, agentKeys, promoKeys,
+  occurrenceKeys, orderKeys, refundKeys, settlementKeys, agentKeys, promoKeys, driftKeys,
 } from "./query-keys";
 
 export type AdminMutation =
   | "city.create" | "city.patch"
   | "occurrence.create" | "occurrence.patch" | "occurrence.cancel" | "occurrence.complete"
   | "order.refund" | "order.abandonReservation"
-  | "email.acknowledge" | "incident.resolve"
+  | "email.acknowledge" | "incident.resolve" | "drift.resolve"
   | "settlement.paymentMade" | "settlement.documentsComplete"
   | "settlement.cancelBeforePayment" | "settlement.recovery"
   | "agent.create" | "agent.patch" | "promo.create" | "promo.patch";
@@ -53,6 +53,8 @@ export function invalidationKeysFor(mutation: AdminMutation, ctx: MutationContex
       return [emailAttentionKeys.lists(), dashboardKeys.summary()];
     case "incident.resolve":
       return [incidentKeys.lists(), dashboardKeys.summary()];
+    case "drift.resolve":
+      return [driftKeys.lists(), incidentKeys.lists(), dashboardKeys.summary()];
     case "settlement.paymentMade":
     case "settlement.documentsComplete":
     case "settlement.cancelBeforePayment":
@@ -71,7 +73,7 @@ export const ALL_ADMIN_MUTATIONS: readonly AdminMutation[] = [
   "city.create", "city.patch",
   "occurrence.create", "occurrence.patch", "occurrence.cancel", "occurrence.complete",
   "order.refund", "order.abandonReservation",
-  "email.acknowledge", "incident.resolve",
+  "email.acknowledge", "incident.resolve", "drift.resolve",
   "settlement.paymentMade", "settlement.documentsComplete",
   "settlement.cancelBeforePayment", "settlement.recovery",
   "agent.create", "agent.patch", "promo.create", "promo.patch",

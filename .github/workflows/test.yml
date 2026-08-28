@@ -3,13 +3,11 @@ name: Test
 on:
   pull_request:
   push:
-    branches-ignore:
-      - main
   workflow_dispatch: {}
 
 concurrency:
   group: flexperiment-test-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   test:

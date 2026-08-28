@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { EmailProviderAmbiguousError, EmailProviderRejectedError, EventDumpCreateRejectedError, UnisenderGoProvider } from "../src/email-provider";
 import { tochkaConfigFromEnvironment } from "../src/provider-config";
 import { TochkaProvider, providerErrorClasses, providerErrorEvidence, rublesFromKopecks } from "../src/provider";
-import { runtimeReadinessErrorClasses } from "../src/release-generation";
+import { runtimeReadinessActionableErrorClasses, runtimeReadinessErrorClasses } from "../src/release-generation";
 import { TochkaWebhookVerifier, webhookAmountKopecks } from "../src/tochka-webhook";
 import { verifyUnisenderWebhook } from "../src/unisender-webhook";
 
@@ -101,15 +101,15 @@ describe("provider contracts", () => {
       .rejects.toThrow("Tochka HTTP 400: code=400; id=error-1; Validation failed; errors=Validation Error: paymentMode is required");
   });
 
-  it("keeps every provider error class classifiable as a runtime-readiness defect", () => {
-    // A provider_error_class the release ledger's evidence parser cannot
-    // accept would silently block classifying a real production readiness
-    // failure of that class into RECOVERY_REQUIRED. This pins parity between
-    // the adapter's actual error taxonomy and the ledger's allowlist so the
-    // two can never drift apart again.
+  it("keeps every provider error class replayable while write eligibility stays deliberately narrower", () => {
+    // Historical provider evidence must always replay. Classifying a new
+    // candidate defect is a separate policy: transient upstream HTTP 5xx is
+    // not evidence that adopting another candidate can repair the provider.
     for (const errorClass of providerErrorClasses) {
       expect(runtimeReadinessErrorClasses).toContain(errorClass);
     }
+    expect(runtimeReadinessActionableErrorClasses).not.toContain("PROVIDER_HTTP_ERROR");
+    expect(runtimeReadinessActionableErrorClasses.every((errorClass) => runtimeReadinessErrorClasses.includes(errorClass))).toBe(true);
   });
 
   it("classifies untrusted TLS and HTTP failures without retaining raw transport details", async () => {

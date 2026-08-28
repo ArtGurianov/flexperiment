@@ -134,13 +134,13 @@ describe("v2 release generation chain", () => {
     // code; from any other phase it falls through to the generic kind guard.
     const fromPaused = { seq: 2, release_id: head.release_id, action: "PAUSED" as const, details_json: JSON.stringify({ schema_version: 2, kind: "PUBLIC_FRONTEND_DEFECT", from_phase: "PAUSED", from_phase_sequence: 0, head: { ...head, phase: "RECOVERY_REQUIRED", phase_sequence: 1 }, public_frontend_defect: publicFrontendDefectEvidence() }) };
     const acquiredOnly = [events[0]];
-    expect(replayReleaseGenerationChain([...acquiredOnly, fromPaused]).corrupt).toBe("INVALID_RUNTIME_READINESS_DEFECT");
+    expect(replayReleaseGenerationChain([...acquiredOnly, fromPaused]).corrupt).toBe("INVALID_PUBLIC_FRONTEND_DEFECT");
     const deployedOnly = [events[0], events[1]];
     const fromDeployed = { seq: 3, release_id: head.release_id, action: "PAUSED" as const, details_json: JSON.stringify({ schema_version: 2, kind: "PUBLIC_FRONTEND_DEFECT", from_phase: "DEPLOYED_READ_ONLY", from_phase_sequence: 1, head: { ...head, phase: "RECOVERY_REQUIRED", phase_sequence: 2 }, public_frontend_defect: publicFrontendDefectEvidence() }) };
-    expect(replayReleaseGenerationChain([...deployedOnly, fromDeployed]).corrupt).toBe("INVALID_RUNTIME_READINESS_DEFECT");
+    expect(replayReleaseGenerationChain([...deployedOnly, fromDeployed]).corrupt).toBe("INVALID_PUBLIC_FRONTEND_DEFECT");
     const inFlightChain = events.slice(0, 4);
     const fromInFlight = { seq: 5, release_id: head.release_id, action: "PAUSED" as const, details_json: JSON.stringify({ schema_version: 2, kind: "PUBLIC_FRONTEND_DEFECT", from_phase: "CERTIFICATION_IN_FLIGHT", from_phase_sequence: 3, head: { ...certified, phase: "RECOVERY_REQUIRED", phase_sequence: 4 }, public_frontend_defect: publicFrontendDefectEvidence() }) };
-    expect(replayReleaseGenerationChain([...inFlightChain, fromInFlight]).corrupt).toBe("INVALID_RUNTIME_READINESS_DEFECT");
+    expect(replayReleaseGenerationChain([...inFlightChain, fromInFlight]).corrupt).toBe("INVALID_PUBLIC_FRONTEND_DEFECT");
 
     // Rejects altered evidence fields one at a time.
     for (const overrides of [{ reason: "OTHER" }, { component: "OTHER" }, { error_class: "OTHER" }, { error_code: "lowercase" }, { probe_path: "no-leading-slash" }, { http_status: 999 }, { observed_frontend_source_commit: "not-a-sha" }]) {

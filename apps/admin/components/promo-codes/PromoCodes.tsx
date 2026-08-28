@@ -16,6 +16,7 @@ import { Notice } from "../ui/Notice";
 import { Panel } from "../ui/Panel";
 import { PageTitle } from "../ui/PageTitle";
 import { MoneyInput } from "../ui/MoneyInput";
+import { PercentInput } from "../ui/PercentInput";
 import { parseRublesToKopecks } from "../../../../lib/money";
 
 type PromoInput = { code: string; agent_id: string | null; status: "ACTIVE" | "DISABLED"; discount_type: "NONE" | "PERCENT" | "FIXED"; discount_value: number };
@@ -23,12 +24,12 @@ const defaults: PromoInput = { code: "", agent_id: null, status: "ACTIVE", disco
 function PromoForm({ initial = defaults, immutableCode = false, agents, submit, pending, error }: { initial?: PromoInput; immutableCode?: boolean; agents: Row[]; submit: (value: PromoInput) => Promise<void>; pending: boolean; error?: string }) {
   const { register, handleSubmit, watch, control } = useForm<PromoInput & { percent: string; fixedRubles: string }>({ defaultValues: { ...initial, percent: initial.discount_type === "PERCENT" ? formatBasisPoints(initial.discount_value).replace("%", "") : "", fixedRubles: initial.discount_type === "FIXED" ? (initial.discount_value / 100).toFixed(2).replace(".", ",") : "" } });
   const type = watch("discount_type");
-  return <form className="form" onSubmit={handleSubmit(async (value) => { const amount = type === "NONE" ? 0 : type === "PERCENT" ? parsePercentToBasisPoints(value.percent) : parseRublesToKopecks(value.fixedRubles); if (amount === null) return; try { await submit({ code: value.code, agent_id: value.agent_id || null, status: value.status, discount_type: value.discount_type, discount_value: amount }); } catch { /* visible below */ } })}>
+  return <form className="form" onSubmit={handleSubmit(async (value) => { const amount = type === "NONE" ? 0 : type === "PERCENT" ? parsePercentToBasisPoints(value.percent) : parseRublesToKopecks(value.fixedRubles); if (amount === null || (type === "PERCENT" && (amount < 1 || amount > 9_999))) return; try { await submit({ code: value.code, agent_id: value.agent_id || null, status: value.status, discount_type: value.discount_type, discount_value: amount }); } catch { /* visible below */ } })}>
     <label>Код <input {...register("code", { required: true })} readOnly={immutableCode} /></label>
     <label>Агент <select {...register("agent_id")}><option value="">Без агента</option>{agents.map((agent) => <option key={string(agent.id)} value={string(agent.id)}>{string(agent.display_name)} ({string(agent.slug)})</option>)}</select></label>
     <label>Статус <select {...register("status")}><option value="ACTIVE">Активен</option><option value="DISABLED">Отключён</option></select></label>
     <label>Тип скидки <select {...register("discount_type")}><option value="NONE">Без скидки</option><option value="PERCENT">Процент</option><option value="FIXED">Фиксированная</option></select></label>
-    {type === "PERCENT" ? <label>Процент <input inputMode="decimal" {...register("percent", { required: true })} /><small>Например, 1,25%.</small></label> : type === "FIXED" ? <label>Скидка, ₽<Controller control={control} name="fixedRubles" rules={{ required: true }} render={({ field }) => <MoneyInput value={field.value} onChange={field.onChange} required />} /></label> : null}
+    {type === "PERCENT" ? <label>Процент <Controller control={control} name="percent" rules={{ required: true }} render={({ field }) => <PercentInput value={field.value} onChange={field.onChange} minBasisPoints={1} maxBasisPoints={9_999} />} /></label> : type === "FIXED" ? <label>Скидка, ₽<Controller control={control} name="fixedRubles" rules={{ required: true }} render={({ field }) => <MoneyInput value={field.value} onChange={field.onChange} required />} /></label> : null}
     <Notice error={error} /><button className="primary" disabled={pending}>{pending ? "Сохраняем…" : "Сохранить"}</button>
   </form>;
 }

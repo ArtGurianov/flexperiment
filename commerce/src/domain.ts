@@ -5,8 +5,9 @@ import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import { LegalReleasePublishError, loadCanonicalLegalRelease, publishLegalRelease, verifyCurrentLegalSourceHashes } from "./legal-release";
 import { providerErrorEvidence, type PaymentProvider } from "./provider";
 import { ReleaseControlError, ReleaseSalesGate, type CandidateAcquireRequest, type CandidateAdoptRequest, type CandidateCompleteRequest, type CandidateHeadSnapshot, type CandidatePhaseRequest, type CertificationEvidenceRequest, type CertificationLeaseRequest, type CertificationOrderContext, type CertificationRetryRequest, type ReleaseControlRequest, type RuntimeReadinessDefectRequest, releaseRuntimeEvidence } from "./release-control";
-import { checkoutRequestSchema, persistedAgentSchema, promoSchema, type CheckoutRequest, type ParticipantAgeBand } from "./types";
+import { checkoutRequestSchema, promoMergedSchema, type CheckoutRequest, type ParticipantAgeBand } from "./types";
 import { PromoPricingError, pricePromo } from "./promo-pricing";
+import { basisPointsOf } from "./basis-points";
 import { findCityBySlug } from "../../lib/city-catalog";
 
 type Row = Record<string, unknown>;
@@ -1406,6 +1407,30 @@ export class CommerceDomain {
     });
   }
 
+  private createOccurrenceRecord(input: {
+    city_id: string; title: string; starts_at: string; ends_at: string; timezone: string;
+    price_kopecks: number; capacity: number; venue_status: "CONFIRMED" | "TO_BE_ANNOUNCED";
+    venue_name?: string | null; venue_address?: string | null; venue_disclosure_text?: string | null;
+    venue_announce_by?: string | null; audit_context?: string;
+  }, occurrenceId: string = id()) {
+    if (!one(this.db, "SELECT id FROM cities WHERE id = ?", input.city_id)) throw new DomainError("CITY_NOT_FOUND", 404);
+    if (!Number.isInteger(input.price_kopecks) || input.price_kopecks <= 0 || !Number.isInteger(input.capacity) || input.capacity <= 0 || Date.parse(input.ends_at) <= Date.parse(input.starts_at)) {
+      throw new DomainError("OCCURRENCE_CREATE_INVALID", 422);
+    }
+    if (input.venue_status === "CONFIRMED" && (!input.venue_name || !input.venue_address)) throw new DomainError("VENUE_CONFIRMATION_INCOMPLETE", 422);
+    if (input.venue_status === "TO_BE_ANNOUNCED" && (!input.venue_disclosure_text || !input.venue_announce_by)) throw new DomainError("VENUE_TBD_INCOMPLETE", 422);
+    if (input.venue_status === "TO_BE_ANNOUNCED" && Date.parse(input.venue_announce_by!) >= Date.parse(input.starts_at)) throw new DomainError("VENUE_ANNOUNCEMENT_TOO_LATE", 422);
+    this.db.prepare(`INSERT INTO occurrences(
+        id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity,
+        sales_status, visibility, venue_status, venue_name, venue_address, venue_public,
+        venue_disclosure_text, venue_announce_by
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CLOSED', 'HIDDEN', ?, ?, ?, 0, ?, ?)`)
+      .run(occurrenceId, input.city_id, input.title, input.starts_at, input.ends_at, input.timezone,
+        input.price_kopecks, input.capacity, input.venue_status, input.venue_name ?? null,
+        input.venue_address ?? null, input.venue_disclosure_text ?? null, input.venue_announce_by ?? null);
+    return one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId)!;
+  }
+
   createOccurrence(input: {
     city_id: string; title: string; starts_at: string; ends_at: string; timezone: string;
     price_kopecks: number; capacity: number; venue_status: "CONFIRMED" | "TO_BE_ANNOUNCED";
@@ -1413,24 +1438,8 @@ export class CommerceDomain {
     venue_announce_by?: string | null; audit_context?: string;
   }, idempotencyKey: string, adminId: string) {
     return this.withAdminCommand("occurrence-create", idempotencyKey, input, "occurrences", () => {
-      if (!one(this.db, "SELECT id FROM cities WHERE id = ?", input.city_id)) throw new DomainError("CITY_NOT_FOUND", 404);
-      if (!Number.isInteger(input.price_kopecks) || input.price_kopecks <= 0 || !Number.isInteger(input.capacity) || input.capacity <= 0 || Date.parse(input.ends_at) <= Date.parse(input.starts_at)) {
-        throw new DomainError("OCCURRENCE_CREATE_INVALID", 422);
-      }
-      if (input.venue_status === "CONFIRMED" && (!input.venue_name || !input.venue_address)) throw new DomainError("VENUE_CONFIRMATION_INCOMPLETE", 422);
-      if (input.venue_status === "TO_BE_ANNOUNCED" && (!input.venue_disclosure_text || !input.venue_announce_by)) throw new DomainError("VENUE_TBD_INCOMPLETE", 422);
-      if (input.venue_status === "TO_BE_ANNOUNCED" && Date.parse(input.venue_announce_by!) >= Date.parse(input.starts_at)) throw new DomainError("VENUE_ANNOUNCEMENT_TOO_LATE", 422);
-      const occurrenceId = id();
-      this.db.prepare(`INSERT INTO occurrences(
-        id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity,
-        sales_status, visibility, venue_status, venue_name, venue_address, venue_public,
-        venue_disclosure_text, venue_announce_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CLOSED', 'HIDDEN', ?, ?, ?, 0, ?, ?)`)
-        .run(occurrenceId, input.city_id, input.title, input.starts_at, input.ends_at, input.timezone,
-          input.price_kopecks, input.capacity, input.venue_status, input.venue_name ?? null,
-          input.venue_address ?? null, input.venue_disclosure_text ?? null, input.venue_announce_by ?? null);
-      const occurrence = one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId)!;
-      this.recordAdminCommandAudit(adminId, "OCCURRENCE_CREATED", "occurrence", occurrenceId, input.audit_context, idempotencyKey, input);
+      const occurrence = this.createOccurrenceRecord(input);
+      this.recordAdminCommandAudit(adminId, "OCCURRENCE_CREATED", "occurrence", String(occurrence.id), input.audit_context, idempotencyKey, input);
       return occurrence;
     });
   }
@@ -1594,12 +1603,29 @@ export class CommerceDomain {
     return one(this.db, "SELECT * FROM agents WHERE id = ?", agentId)!;
   }
 
-  createPromo(input: Record<string, unknown>) {
+  createPromo(input: Record<string, unknown>, promoId: string = id()) {
     if (input.agent_id && !one(this.db, "SELECT id FROM agents WHERE id = ?", input.agent_id)) throw new DomainError("AGENT_NOT_FOUND", 404);
-    const promoId = id(); const normalized = String(input.code).trim().toUpperCase();
+    const normalized = String(input.code).trim().toUpperCase();
     this.db.prepare("INSERT INTO promo_codes(id, agent_id, code, normalized_code, status, discount_type, discount_value) VALUES (?, ?, ?, ?, ?, ?, ?)")
       .run(promoId, input.agent_id ?? null, normalized, normalized, input.status ?? "ACTIVE", input.discount_type, input.discount_value);
     return one(this.db, "SELECT * FROM promo_codes WHERE id = ?", promoId)!;
+  }
+
+  createCertificationFixture(input: {
+    occurrence: Parameters<CommerceDomain["createOccurrence"]>[0]; occurrence_id: string; occurrence_key: string;
+    promo: Record<string, unknown>; promo_id: string; promo_key: string; admin_id: string; audit_context?: string;
+  }) {
+    this.assertV2IdempotencyKey(input.promo_key);
+    return withImmediateTransaction(this.db, () => {
+      const occurrence = this.withAdminCommandCore("occurrence-create", input.occurrence_key, input.occurrence, "occurrences", () => {
+        const created = this.createOccurrenceRecord(input.occurrence, input.occurrence_id);
+        this.recordAdminCommandAudit(input.admin_id, "OCCURRENCE_CREATED", "occurrence", String(created.id), input.occurrence.audit_context, input.occurrence_key, input.occurrence);
+        return created;
+      });
+      const promo = this.withAdminCommandV2Core("promo.create", input.promo_key, input.admin_id, null, input.promo, input.audit_context, "PROMO_CREATED", "promo", () => this.createPromo(input.promo, input.promo_id));
+      if (occurrence.disposition !== "CREATED" || promo.disposition !== "CREATED") throw new DomainError("CERTIFICATION_FIXTURE_IDEMPOTENCY_REPLAY", 409);
+      return { occurrence: occurrence.row, promo: promo.row };
+    });
   }
 
   promoList() {
@@ -1609,33 +1635,32 @@ export class CommerceDomain {
   }
 
   createAgentCommand(input: Record<string, unknown>, idempotencyKey: string, adminId: string, auditContext?: string) {
-    return this.withAdminCommandV2("agent.create", idempotencyKey, adminId, null, input, auditContext, "agents", "AGENT_CREATED", "agent", () => this.createAgent(input));
+    return this.withAdminCommandV2("agent.create", idempotencyKey, adminId, null, input, auditContext, "AGENT_CREATED", "agent", () => this.createAgent(input));
   }
 
   patchAgentCommand(agentId: string, patch: Record<string, unknown>, idempotencyKey: string, adminId: string, auditContext?: string) {
-    return this.withAdminCommandV2("agent.patch", idempotencyKey, adminId, agentId, patch, auditContext, "agents", "AGENT_EDITED", "agent", () => {
+    return this.withAdminCommandV2("agent.patch", idempotencyKey, adminId, agentId, patch, auditContext, "AGENT_EDITED", "agent", () => {
       const existing = one(this.db, "SELECT * FROM agents WHERE id = ?", agentId);
       if (!existing) throw new DomainError("AGENT_NOT_FOUND", 404);
-      const merged = persistedAgentSchema.parse({
-        slug: existing.slug, display_name: existing.display_name, legal_name: existing.legal_name, email: existing.email,
-        contractor_type: existing.contractor_type, inn: existing.inn, contract_reference: existing.contract_reference,
-        enabled: Number(existing.enabled) === 1, default_reward_type: existing.default_reward_type,
-        default_reward_value: existing.default_reward_value, npd_status_checked_at: existing.npd_status_checked_at, ...patch,
-      });
-      return this.patchAgent(agentId, merged);
+      return this.patchAgent(agentId, patch);
     });
   }
 
   createPromoCommand(input: Record<string, unknown>, idempotencyKey: string, adminId: string, auditContext?: string) {
-    return this.withAdminCommandV2("promo.create", idempotencyKey, adminId, null, input, auditContext, "promo_codes", "PROMO_CREATED", "promo", () => this.createPromo(input));
+    return this.withAdminCommandV2("promo.create", idempotencyKey, adminId, null, input, auditContext, "PROMO_CREATED", "promo", () => this.createPromo(input));
   }
 
   patchPromoCommand(promoId: string, patch: Record<string, unknown>, idempotencyKey: string, adminId: string, auditContext?: string) {
-    return this.withAdminCommandV2("promo.patch", idempotencyKey, adminId, promoId, patch, auditContext, "promo_codes", "PROMO_EDITED", "promo", () => {
+    return this.withAdminCommandV2("promo.patch", idempotencyKey, adminId, promoId, patch, auditContext, "PROMO_EDITED", "promo", () => {
       const existing = one(this.db, "SELECT * FROM promo_codes WHERE id = ?", promoId);
       if (!existing) throw new DomainError("PROMO_NOT_FOUND", 404);
-      const merged = promoSchema.parse({ code: existing.code, agent_id: existing.agent_id, status: existing.status, discount_type: existing.discount_type, discount_value: existing.discount_value, ...patch });
-      return this.patchPromo(promoId, merged);
+      const merged = promoMergedSchema.parse({
+        agent_id: patch.agent_id === undefined ? existing.agent_id : patch.agent_id,
+        status: patch.status === undefined ? existing.status : patch.status,
+        discount_type: patch.discount_type === undefined ? existing.discount_type : patch.discount_type,
+        discount_value: patch.discount_value === undefined ? existing.discount_value : patch.discount_value,
+      });
+      return this.patchPromo(promoId, { ...patch, ...merged });
     });
   }
 
@@ -1652,7 +1677,7 @@ export class CommerceDomain {
 
   private rewardForOrder(order: Row, netCaptured: number) {
     if (netCaptured <= 0 || !order.attributed_agent_id || !order.reward_type_snapshot) return 0;
-    if (order.reward_type_snapshot === "PERCENT") return Math.floor((netCaptured * Number(order.reward_value_snapshot ?? 0) + 5_000) / 10_000);
+    if (order.reward_type_snapshot === "PERCENT") return basisPointsOf(netCaptured, Number(order.reward_value_snapshot ?? 0));
     return Math.min(netCaptured, Number(order.reward_value_snapshot ?? 0));
   }
 
@@ -2018,11 +2043,29 @@ export class CommerceDomain {
       try {
         operations = await this.provider.findPaymentOperationsByLinkId({ paymentLinkId: String(payment.id), fromDate, toDate });
       } catch (error) {
-        this.deferCreateUnknownLookup(String(payment.id), Number(payment.create_unknown_lookup_attempts), providerErrorEvidence(error));
+        const evidence = providerErrorEvidence(error);
+        if (evidence.provider_error_code === "PAYMENT_LIST_PAGE_LIMIT") {
+          this.reviewCreateUnknownPayment(String(payment.id), {
+            reason: "CREATE_UNKNOWN_PROVIDER_PAGE_LIMIT",
+            provider_error_class: evidence.provider_error_class,
+            provider_error_code: evidence.provider_error_code,
+            attempts: Number(payment.create_unknown_lookup_attempts),
+            pages_scanned: evidence.pages_scanned,
+            page_limit: evidence.page_limit,
+          }, evidence);
+        } else if (Number(payment.create_unknown_lookup_attempts) + 1 >= CREATE_UNKNOWN_LOOKUP_MAX_ATTEMPTS) {
+          this.reviewCreateUnknownPayment(String(payment.id), {
+            reason: "CREATE_UNKNOWN_LOOKUP_EXHAUSTED",
+            provider_error_class: evidence.provider_error_class,
+            provider_error_code: evidence.provider_error_code,
+            attempts: Number(payment.create_unknown_lookup_attempts) + 1,
+          }, evidence);
+        } else this.deferCreateUnknownLookup(String(payment.id), Number(payment.create_unknown_lookup_attempts), evidence);
         continue;
       }
       if (operations.length === 0) {
-        this.deferCreateUnknownLookup(String(payment.id), Number(payment.create_unknown_lookup_attempts));
+        if (Number(payment.create_unknown_lookup_attempts) + 1 >= CREATE_UNKNOWN_LOOKUP_MAX_ATTEMPTS) this.reviewCreateUnknownPayment(String(payment.id), { reason: "CREATE_UNKNOWN_LOOKUP_EXHAUSTED", attempts: Number(payment.create_unknown_lookup_attempts) + 1 });
+        else this.deferCreateUnknownLookup(String(payment.id), Number(payment.create_unknown_lookup_attempts));
         continue;
       }
       const operation = operations.length === 1 ? operations[0] : undefined;
@@ -2079,12 +2122,13 @@ export class CommerceDomain {
     );
   }
 
-  private reviewCreateUnknownPayment(paymentId: string, observed: Record<string, unknown>) {
+  private reviewCreateUnknownPayment(paymentId: string, observed: Record<string, unknown>, evidence?: import("./provider").ProviderErrorEvidence) {
     withImmediateTransaction(this.db, () => {
       const reviewed = this.db.prepare(`UPDATE payments
-        SET status = 'REVIEW_REQUIRED', create_unknown_next_lookup_at = NULL, updated_at = ?
+        SET status = 'REVIEW_REQUIRED', create_unknown_next_lookup_at = NULL, updated_at = ?,
+            provider_error_class = COALESCE(?, provider_error_class), provider_error_code = COALESCE(?, provider_error_code)
         WHERE id = ? AND state = 'CREATE_UNKNOWN' AND status = 'PENDING'
-          AND provider_payment_id IS NULL`).run(now(), paymentId);
+          AND provider_payment_id IS NULL`).run(now(), evidence?.provider_error_class ?? null, evidence?.provider_error_code ?? null, paymentId);
       if (reviewed.changes) this.recordProviderDrift("PAYMENT", paymentId, { create_unknown_recovery: observed });
     });
   }
@@ -2960,45 +3004,53 @@ export class CommerceDomain {
       }));
   }
 
-  private withAdminCommand<T extends Row>(command: string, idempotencyKey: string, payload: unknown, table: "cities" | "occurrences" | "reward_settlements" | "bookings", operation: () => T) {
+  private withAdminCommandCore<T extends Row>(command: string, idempotencyKey: string, payload: unknown, table: "cities" | "occurrences" | "reward_settlements" | "bookings", operation: () => T): { row: T; disposition: "CREATED" | "REPLAYED" } {
     const keyHash = sha256(idempotencyKey); const payloadHash = sha256(canonical(payload));
-    return withImmediateTransaction(this.db, () => {
-      const existing = one(this.db, "SELECT canonical_request_hash, entity_id FROM admin_command_idempotency WHERE command = ? AND idempotency_key_hash = ?", command, keyHash);
-      if (existing) {
-        if (existing.canonical_request_hash !== payloadHash) throw new DomainError("IDEMPOTENCY_CONFLICT", 409);
-        return one(this.db, `SELECT * FROM ${table} WHERE id = ?`, existing.entity_id)! as T;
-      }
-      const created = operation();
-      this.db.prepare("INSERT INTO admin_command_idempotency(command, idempotency_key_hash, canonical_request_hash, entity_id) VALUES (?, ?, ?, ?)").run(command, keyHash, payloadHash, created.id);
-      return created;
-    });
+    const existing = one(this.db, "SELECT canonical_request_hash, entity_id FROM admin_command_idempotency WHERE command = ? AND idempotency_key_hash = ?", command, keyHash);
+    if (existing) {
+      if (existing.canonical_request_hash !== payloadHash) throw new DomainError("IDEMPOTENCY_CONFLICT", 409);
+      return { row: one(this.db, `SELECT * FROM ${table} WHERE id = ?`, existing.entity_id)! as T, disposition: "REPLAYED" };
+    }
+    const created = operation();
+    this.db.prepare("INSERT INTO admin_command_idempotency(command, idempotency_key_hash, canonical_request_hash, entity_id) VALUES (?, ?, ?, ?)").run(command, keyHash, payloadHash, created.id);
+    return { row: created, disposition: "CREATED" };
+  }
+
+  private withAdminCommand<T extends Row>(command: string, idempotencyKey: string, payload: unknown, table: "cities" | "occurrences" | "reward_settlements" | "bookings", operation: () => T) {
+    return withImmediateTransaction(this.db, () => this.withAdminCommandCore(command, idempotencyKey, payload, table, operation).row);
   }
 
   /** V2 captures the response before another operator can mutate its row. */
-  private withAdminCommandV2<T extends Row>(command: string, idempotencyKey: string, adminId: string, resourceId: string | null, body: unknown, auditContext: string | undefined, table: "agents" | "promo_codes", action: string, entityType: string, operation: () => T): T {
+  private assertV2IdempotencyKey(idempotencyKey: string) {
     if (idempotencyKey.length < 16 || idempotencyKey.length > 200) throw new DomainError("IDEMPOTENCY_KEY_INVALID", 400);
+  }
+
+  private withAdminCommandV2Core<T extends Row>(command: string, idempotencyKey: string, adminId: string, resourceId: string | null, body: unknown, auditContext: string | undefined, action: string, entityType: string, operation: () => T): { row: T; disposition: "CREATED" | "REPLAYED" } {
     const keyHash = sha256(idempotencyKey);
     const fingerprint = `v2:${sha256(canonicalV2({ admin_id: adminId, command, resource_id: resourceId, body, audit_context: auditContext ?? null }))}`;
-    return withImmediateTransaction(this.db, () => {
-      const existing = one(this.db, "SELECT canonical_request_hash, response_json FROM admin_command_idempotency WHERE command = ? AND idempotency_key_hash = ?", command, keyHash);
-      if (existing) {
-        if (existing.canonical_request_hash !== fingerprint) throw new DomainError("IDEMPOTENCY_CONFLICT", 409);
-        if (!existing.response_json) throw new DomainError("IDEMPOTENCY_CONTRACT_SUPERSEDED", 409);
-        return JSON.parse(String(existing.response_json)) as T;
-      }
-      let created: T;
-      try { created = operation(); }
-      catch (error) {
-        const sqlite = error as { code?: string; message?: string };
-        if (sqlite.code === "SQLITE_CONSTRAINT_UNIQUE" && sqlite.message?.includes("agents.slug")) throw new DomainError("AGENT_SLUG_ALREADY_EXISTS", 409);
-        if (sqlite.code === "SQLITE_CONSTRAINT_UNIQUE" && sqlite.message?.includes("promo_codes.normalized_code")) throw new DomainError("PROMO_CODE_ALREADY_EXISTS", 409);
-        throw error;
-      }
-      this.recordAdminCommandAudit(adminId, action, entityType, String(created.id), auditContext, idempotencyKey, { command, resource_id: resourceId, body });
-      this.db.prepare("INSERT INTO admin_command_idempotency(command, idempotency_key_hash, canonical_request_hash, entity_id, response_json) VALUES (?, ?, ?, ?, ?)")
-        .run(command, keyHash, fingerprint, created.id, JSON.stringify(created));
-      return created;
-    });
+    const existing = one(this.db, "SELECT canonical_request_hash, response_json FROM admin_command_idempotency WHERE command = ? AND idempotency_key_hash = ?", command, keyHash);
+    if (existing) {
+      if (existing.canonical_request_hash !== fingerprint) throw new DomainError("IDEMPOTENCY_CONFLICT", 409);
+      if (!existing.response_json) throw new DomainError("IDEMPOTENCY_CONTRACT_SUPERSEDED", 409);
+      return { row: JSON.parse(String(existing.response_json)) as T, disposition: "REPLAYED" };
+    }
+    let created: T;
+    try { created = operation(); }
+    catch (error) {
+      const sqlite = error as { code?: string; message?: string };
+      if (sqlite.code === "SQLITE_CONSTRAINT_UNIQUE" && sqlite.message?.includes("agents.slug")) throw new DomainError("AGENT_SLUG_ALREADY_EXISTS", 409);
+      if (sqlite.code === "SQLITE_CONSTRAINT_UNIQUE" && sqlite.message?.includes("promo_codes.normalized_code")) throw new DomainError("PROMO_CODE_ALREADY_EXISTS", 409);
+      throw error;
+    }
+    this.recordAdminCommandAudit(adminId, action, entityType, String(created.id), auditContext, idempotencyKey, { command, resource_id: resourceId, body });
+    this.db.prepare("INSERT INTO admin_command_idempotency(command, idempotency_key_hash, canonical_request_hash, entity_id, response_json) VALUES (?, ?, ?, ?, ?)")
+      .run(command, keyHash, fingerprint, created.id, JSON.stringify(created));
+    return { row: created, disposition: "CREATED" };
+  }
+
+  private withAdminCommandV2<T extends Row>(command: string, idempotencyKey: string, adminId: string, resourceId: string | null, body: unknown, auditContext: string | undefined, action: string, entityType: string, operation: () => T): T {
+    this.assertV2IdempotencyKey(idempotencyKey);
+    return withImmediateTransaction(this.db, () => this.withAdminCommandV2Core(command, idempotencyKey, adminId, resourceId, body, auditContext, action, entityType, operation).row);
   }
 
   recoverStaleCommands() {

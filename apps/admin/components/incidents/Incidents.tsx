@@ -16,6 +16,8 @@ import { Notice } from "../ui/Notice";
 import { PageTitle } from "../ui/PageTitle";
 import { Freshness } from "../ui/Freshness";
 import { OperationalIncidentResolution } from "./OperationalIncidentResolution";
+import { ProviderDriftResolution } from "./ProviderDriftResolution";
+import { driftKeys } from "../../lib/query-keys";
 
 export function OperationalIncidents() {
   const searchParams = useSearchParams();
@@ -27,6 +29,8 @@ export function OperationalIncidents() {
     ...pollingQuery(POLL_INTERVAL.incidents),
   });
   const [resolving, setResolving] = useState<Row | null>(null);
+  const drift = useQuery({ queryKey: driftKeys.list(), queryFn: () => api<{ reviews: Row[] }>("/provider-drift-reviews"), ...pollingQuery(POLL_INTERVAL.incidents) });
+  const [resolvingDrift, setResolvingDrift] = useState<Row | null>(null);
 
   return (
     <>
@@ -76,7 +80,13 @@ export function OperationalIncidents() {
           </>
         )}
       </section>
+      <section className="panel">
+        <h2>Provider drift</h2>
+        <p className="notice">Закрытие этой записи — только bookkeeping review. Оно не меняет статус оплаты; payment выходит из REVIEW_REQUIRED только по provider evidence.</p>
+        {drift.isLoadingError ? <Notice error={(drift.error as { code?: string } | null)?.code ?? "UNKNOWN"} /> : !drift.data ? <Loading /> : drift.data.reviews.length ? <table><thead><tr><th>Создан</th><th>Сущность</th><th>Evidence</th><th /></tr></thead><tbody>{drift.data.reviews.map((review) => <tr key={string(review.id)}><td>{formatDate(review.created_at)}</td><td><strong>{string(review.entity_type)}</strong><small>{string(review.entity_id)}</small></td><td><code>{string(review.observed_json)}</code></td><td><button onClick={() => setResolvingDrift(review)}>Закрыть review</button></td></tr>)}</tbody></table> : <Empty label="Открытых provider drift review пока нет." />}
+      </section>
       {resolving && <OperationalIncidentResolution incident={resolving} close={() => setResolving(null)} done={() => setResolving(null)} />}
+      {resolvingDrift && <ProviderDriftResolution review={resolvingDrift} close={() => setResolvingDrift(null)} done={() => setResolvingDrift(null)} />}
     </>
   );
 }

@@ -1,5 +1,6 @@
 import { openReadOnlyDatabase } from "./db";
 import { pricePromo, validatePromoTerms } from "./promo-pricing";
+import { basisPointsOf } from "./basis-points";
 
 type Finding = { kind: string; id?: string; detail: string };
 const database = openReadOnlyDatabase();
@@ -24,6 +25,16 @@ for (const promo of promos) {
 }
 for (const [code, ids] of normalizedCodes) if (ids.length > 1) findings.push({ kind: "NORMALIZATION_COLLISION", detail: `${code}: ${ids.join(",")}` });
 for (const agent of database.prepare("SELECT id, slug FROM agents").all() as Array<{ id: string; slug: string }>) if (!/^[a-z0-9-]{2,100}$/.test(agent.slug)) findings.push({ kind: "NONCANONICAL_AGENT_SLUG", id: agent.id, detail: agent.slug });
+for (const order of database.prepare(`SELECT o.id, o.reward_type_snapshot, o.reward_value_snapshot,
+  p.captured_amount_kopecks, COALESCE((SELECT SUM(r.amount_kopecks) FROM refunds r WHERE r.payment_id = p.id AND r.status = 'SUCCEEDED'), 0) AS refunded_kopecks
+  FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.reward_type_snapshot = 'PERCENT'`).all() as Array<Record<string, unknown>>) {
+  const captured = Number(order.captured_amount_kopecks);
+  const net = Math.max(0, captured - Number(order.refunded_kopecks));
+  for (const amount of [captured, net]) {
+    try { basisPointsOf(amount, Number(order.reward_value_snapshot)); }
+    catch (error) { findings.push({ kind: "REWARD_BASIS_POINTS_OUT_OF_RANGE", id: String(order.id), detail: (error as Error).message }); break; }
+  }
+}
 const historicalPromoOrders = Number((database.prepare("SELECT COUNT(*) AS count FROM orders WHERE promo_code_snapshot IS NOT NULL").get() as { count: number }).count);
 console.log(JSON.stringify({ findings, historical_promo_order_baseline: historicalPromoOrders }, null, 2));
 database.close();

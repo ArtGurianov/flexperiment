@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, renameSync, unlinkSync, writeSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { openDatabase } from "./db";
 import { CommerceDomain } from "./domain";
@@ -72,59 +72,133 @@ if (!execute) {
 if (existsSync(keyPath) && !replaceKey) {
   throw new Error(`Refusing to overwrite existing key file at ${keyPath}. Set COMMERCE_CERTIFICATION_FIXTURE_REPLACE_KEY=${REPLACE_KEY_CONFIRM} only after confirming that key is unused.`);
 }
+if (existsSync(manifestPath) && !replaceKey) {
+  throw new Error(`Refusing to overwrite existing manifest file at ${manifestPath}. Set COMMERCE_CERTIFICATION_FIXTURE_REPLACE_KEY=${REPLACE_KEY_CONFIRM} only after confirming that fixture is unused.`);
+}
 
 const runId = randomUUID();
 const db = openDatabase(databasePath);
 const domain = new CommerceDomain(db, new MockProvider());
+const resolvedKeyPath = resolve(keyPath);
+const resolvedManifestPath = resolve(manifestPath);
+const stagedKeyPath = `${resolvedKeyPath}.tmp`;
+const stagedManifestPath = `${resolvedManifestPath}.tmp`;
+let committed = false;
+
+function fsyncDirectory(path: string) {
+  const descriptor = openSync(path, "r");
+  try { fsyncSync(descriptor); } finally { closeSync(descriptor); }
+}
+
+function writeStaged(path: string, content: string) {
+  const descriptor = openSync(path, "wx", 0o600);
+  try { writeSync(descriptor, content); fsyncSync(descriptor); } finally { closeSync(descriptor); }
+}
+
+function removeStagedArtifacts() {
+  for (const path of [stagedKeyPath, stagedManifestPath]) {
+    try { unlinkSync(path); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+  }
+}
+
+function finalizationPacket(error: unknown, occurrenceId: string, promoId: string, promoCode: string, keyHash: string) {
+  return JSON.stringify({
+    error: "CERTIFICATION_FIXTURE_ARTIFACT_FINALIZATION_FAILED",
+    message: error instanceof Error ? error.message : "Artifact finalization failed.",
+    run_id: runId,
+    occurrence_id: occurrenceId,
+    promo_id: promoId,
+    promo_code: promoCode,
+    idempotency_key_sha256: keyHash,
+    artifacts: [
+      { current_path: stagedKeyPath, target_path: resolvedKeyPath, finalized: existsSync(resolvedKeyPath) },
+      { current_path: stagedManifestPath, target_path: resolvedManifestPath, finalized: existsSync(resolvedManifestPath) },
+    ],
+  });
+}
 
 try {
   const occurrenceKey = randomBytes(16).toString("hex");
-  const occurrence = domain.createOccurrence(occurrenceInput, occurrenceKey, "release-control-operator");
-
   const promoCode = `CERT101-${randomBytes(4).toString("hex").toUpperCase()}`;
   const promoKey = randomBytes(16).toString("hex");
-  const promo = domain.createPromoCommand(
-    { code: promoCode, status: "ACTIVE", discount_type: "FIXED", discount_value: 1 },
-    promoKey,
-    "release-control-operator",
-    label,
-  );
-
   const checkoutIdempotencyKey = randomBytes(32).toString("hex");
   const checkoutIdempotencyKeyHash = createHash("sha256").update(checkoutIdempotencyKey).digest("hex");
-
-  mkdirSync(dirname(resolve(keyPath)), { recursive: true });
-  writeFileSync(keyPath, checkoutIdempotencyKey, { mode: 0o600 });
-
+  const occurrenceId = randomUUID();
+  const promoId = randomUUID();
   const manifest = {
     run_id: runId,
     label,
-    occurrence_id: occurrence.id,
-    promo_id: promo.id,
-    promo_code: promo.code,
+    occurrence_id: occurrenceId,
+    promo_id: promoId,
+    promo_code: promoCode,
     idempotency_key_sha256: checkoutIdempotencyKeyHash,
-    key_path: resolve(keyPath),
+    key_path: resolvedKeyPath,
     created_at: new Date().toISOString(),
   };
-  mkdirSync(dirname(resolve(manifestPath)), { recursive: true });
-  writeFileSync(manifestPath, JSON.stringify(manifest, null, 2) + "\n", { mode: 0o600 });
+  try {
+    mkdirSync(dirname(resolvedKeyPath), { recursive: true });
+    mkdirSync(dirname(resolvedManifestPath), { recursive: true });
+    writeStaged(stagedKeyPath, checkoutIdempotencyKey);
+    writeStaged(stagedManifestPath, JSON.stringify(manifest, null, 2) + "\n");
+    fsyncDirectory(dirname(resolvedKeyPath));
+    if (dirname(resolvedManifestPath) !== dirname(resolvedKeyPath)) fsyncDirectory(dirname(resolvedManifestPath));
+  } catch (error) {
+    removeStagedArtifacts();
+    throw error;
+  }
 
-  console.log(JSON.stringify({
+  let fixture: ReturnType<CommerceDomain["createCertificationFixture"]>;
+  try {
+    fixture = domain.createCertificationFixture({
+      occurrence: occurrenceInput,
+      occurrence_id: occurrenceId,
+      occurrence_key: occurrenceKey,
+      promo: { code: promoCode, status: "ACTIVE", discount_type: "FIXED", discount_value: 1 },
+      promo_id: promoId,
+      promo_key: promoKey,
+      admin_id: "release-control-operator",
+      audit_context: label,
+    });
+    committed = true;
+  } catch (error) {
+    removeStagedArtifacts();
+    throw error;
+  }
+
+  let finalized = false;
+  try {
+    if (process.env.NODE_ENV === "test" && process.env.COMMERCE_CERTIFICATION_FIXTURE_TEST_FAIL_AFTER_COMMIT === "1") throw new Error("Injected finalization failure.");
+    renameSync(stagedKeyPath, resolvedKeyPath);
+    renameSync(stagedManifestPath, resolvedManifestPath);
+    fsyncDirectory(dirname(resolvedKeyPath));
+    if (dirname(resolvedManifestPath) !== dirname(resolvedKeyPath)) fsyncDirectory(dirname(resolvedManifestPath));
+    finalized = true;
+  } catch (error) {
+    console.error(finalizationPacket(error, occurrenceId, promoId, promoCode, checkoutIdempotencyKeyHash));
+    process.exitCode = 2;
+  }
+
+  if (finalized) console.log(JSON.stringify({
     dry_run: false,
     run_id: runId,
-    occurrence_id: occurrence.id,
-    occurrence_visibility: occurrence.visibility,
-    occurrence_sales_status: occurrence.sales_status,
-    occurrence_fulfillment_status: occurrence.fulfillment_status,
-    occurrence_price_kopecks: occurrence.price_kopecks,
-    promo_id: promo.id,
-    promo_code: promo.code,
-    promo_status: promo.status,
-    promo_discount_type: promo.discount_type,
-    promo_discount_value: promo.discount_value,
+    occurrence_id: fixture.occurrence.id,
+    occurrence_visibility: fixture.occurrence.visibility,
+    occurrence_sales_status: fixture.occurrence.sales_status,
+    occurrence_fulfillment_status: fixture.occurrence.fulfillment_status,
+    occurrence_price_kopecks: fixture.occurrence.price_kopecks,
+    promo_id: fixture.promo.id,
+    promo_code: fixture.promo.code,
+    promo_status: fixture.promo.status,
+    promo_discount_type: fixture.promo.discount_type,
+    promo_discount_value: fixture.promo.discount_value,
     idempotency_key_sha256: checkoutIdempotencyKeyHash,
-    manifest_path: resolve(manifestPath),
+    manifest_path: resolvedManifestPath,
   }, null, 2));
 } finally {
+  if (!committed) {
+    try { removeStagedArtifacts(); } catch { /* preserve the original failure */ }
+  }
   db.close();
 }

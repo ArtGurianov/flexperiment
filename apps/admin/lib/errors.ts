@@ -11,6 +11,16 @@ const PRESENTATIONS: Readonly<Record<string, AdminErrorPresentation>> = {
     message: "Эта команда уже была принята с другим содержимым.",
     hint: "Состояние перечитано. Не создавайте новый ключ, пока не подтвердите, что исходная команда не создала запись.",
   },
+  IDEMPOTENCY_CONTRACT_SUPERSEDED: {
+    message: "Предыдущая команда использует устаревший контракт.",
+    hint: "Состояние перечитано. Не создавайте новый ключ, пока не подтвердите результат исходной команды.",
+  },
+  IDEMPOTENCY_KEY_INVALID: {
+    message: "Ключ идемпотентности имеет неверный формат.",
+    hint: "Команда не была начата; повторите её с новым ключом.",
+  },
+  DRIFT_REVIEW_NOT_OPEN: { message: "Эта drift-проверка уже закрыта другим оператором." },
+  RESOLUTION_NOTE_REQUIRED: { message: "Для закрытия drift-проверки укажите причину." },
   PROMO_CODE_ALREADY_EXISTS: { message: "Такой промокод уже существует." },
   AGENT_SLUG_ALREADY_EXISTS: { message: "Такой slug агента уже существует." },
   PROMO_NOT_FOUND: { message: "Промокод не найден." },

@@ -1,4 +1,5 @@
 export type PromoDiscountType = "NONE" | "PERCENT" | "FIXED";
+import { basisPointsOf } from "./basis-points";
 
 export class PromoPricingError extends Error {
   constructor(readonly code: "PROMO_TERMS_INVALID" | "PROMO_ZERO_PRICE_NOT_ALLOWED") { super(code); }
@@ -32,7 +33,7 @@ export function pricePromo(priceKopecks: number, type: unknown, value: unknown):
   if (discountType === "NONE") {
     discountKopecks = 0;
   } else if (discountType === "PERCENT") {
-    discountKopecks = Math.floor((priceKopecks * discountValue + 5_000) / 10_000);
+    discountKopecks = basisPointsOf(priceKopecks, discountValue);
   } else if (discountType === "FIXED") {
     discountKopecks = discountValue;
   } else {

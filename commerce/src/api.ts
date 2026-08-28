@@ -287,6 +287,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
       pending_refunds: sqlite.prepare("SELECT COUNT(*) AS count FROM refunds WHERE status IN ('REQUESTED', 'SUBMITTING', 'SUBMIT_UNKNOWN', 'RECONCILING')").get(),
       email_attention: { count: domain.emailAttentionCount() },
       operational_incidents: { count: domain.operationalIncidentCount() },
+      provider_drift: sqlite.prepare("SELECT COUNT(*) AS count FROM provider_drift_reviews WHERE status = 'OPEN'").get(),
       stale_prepared_settlements: sqlite.prepare("SELECT COUNT(*) AS count FROM settlement_prepared_reviews WHERE status = 'OPEN'").get(),
     },
     upcoming: sqlite.prepare(`SELECT o.id, o.title, o.starts_at, o.capacity, o.sales_status, o.visibility, c.title AS city_title,

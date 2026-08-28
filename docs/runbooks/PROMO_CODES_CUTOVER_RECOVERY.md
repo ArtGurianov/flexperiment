@@ -104,9 +104,11 @@ and no certification binding, then appends exactly this evidence:
 ```text
 reason              = RUNTIME_READINESS_DEFECT
 readiness_component = PROVIDER_READINESS
-error_class         = TLS_CERT_CHAIN_UNTRUSTED | PROVIDER_BAD_REQUEST |
+replay-accepted     = TLS_CERT_CHAIN_UNTRUSTED | PROVIDER_BAD_REQUEST |
                       PROVIDER_HTTP_ERROR | PROVIDER_NETWORK |
                       PROVIDER_RESPONSE_INVALID
+classifiable         = TLS_CERT_CHAIN_UNTRUSTED | PROVIDER_BAD_REQUEST |
+                      PROVIDER_NETWORK | PROVIDER_RESPONSE_INVALID
 error_code          = controlled uppercase code, for example HTTP_400
 source_commit       = authoritative candidate source
 ```
@@ -259,6 +261,17 @@ consumed lease and cleanup invariant instead: the fixture is still hidden and
 closed at 101 kopecks and its `FIXED 1` promo is disabled before sales reopen.
 After a consumed attempt, any same-owner retry uses a fresh occurrence and a
 fresh promo; it must never reuse either part of the prior fixture.
+
+### Partially created fixture artifacts
+
+`commerce:certification:create-fixture` stages the complete key and manifest
+with `0600` before its single database transaction. If it exits 2 with
+`CERTIFICATION_FIXTURE_ARTIFACT_FINALIZATION_FAILED`, do not retry
+automatically: the named hidden occurrence and promo are durable and both
+complete `.tmp` artifacts are the recovery evidence. Reconcile the packet,
+then either complete both renames manually or deliberately abandon that
+identified fixture and create a fresh pair. Never delete the durable history
+as compensation and never reuse only one half of it.
 
 ## Post-completion public smoke test
 

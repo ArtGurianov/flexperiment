@@ -147,9 +147,9 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
     return () => { current = false; };
   }, []);
 
-  const fetchQuote = useCallback(async (id: string, promo: string) => {
+  const fetchQuote = useCallback(async (id: string, promo: string, options?: { clearMessage?: boolean }) => {
     if (!id) return false;
-    setLoading(true); setMessage(null);
+    setLoading(true); if (options?.clearMessage !== false) setMessage(null);
     try {
       await ensureCurrentReferralCapture();
       await referralCaptureCoordinator.waitForCurrentCapture();
@@ -239,10 +239,10 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
           if (data.error?.code === "PROMO_NO_LONGER_ELIGIBLE") {
             setPromoCode(""); setAppliedPromoCode(null);
             setMessage("Промокод больше недоступен. Мы показали цену без него — подтвердите условия заново.");
-            await fetchQuote(occurrenceId, "");
+            await fetchQuote(occurrenceId, "", { clearMessage: false });
           } else {
             setMessage("Условия изменились. Мы обновили форму — подтвердите условия заново.");
-            await fetchQuote(occurrenceId, appliedPromoCode ?? "");
+            await fetchQuote(occurrenceId, appliedPromoCode ?? "", { clearMessage: false });
           }
           return;
         }

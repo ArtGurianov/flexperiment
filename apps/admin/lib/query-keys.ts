@@ -49,6 +49,12 @@ export const incidentKeys = {
   list: (filters: IncidentFilters = {}) => ["operational-incidents", "list", normalizeIncidentFilters(filters)] as const,
 };
 
+export const driftKeys = {
+  all: () => ["provider-drift-reviews"] as const,
+  lists: () => ["provider-drift-reviews", "list"] as const,
+  list: () => ["provider-drift-reviews", "list"] as const,
+};
+
 export const auditKeys = {
   all: () => ["audit"] as const,
   lists: () => ["audit", "list"] as const,

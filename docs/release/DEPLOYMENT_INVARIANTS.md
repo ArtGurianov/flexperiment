@@ -11,6 +11,16 @@ classification and every next-action decision remain in the tested controller
 code and recovery runbooks. A helper must not emit a recommended action or a
 parallel controller state such as `RESUMING_POSTPUBLICATION_REPAIR`.
 
+## Runtime-readiness evidence
+
+The release ledger accepts five historical provider evidence classes for
+replay: `TLS_CERT_CHAIN_UNTRUSTED`, `PROVIDER_BAD_REQUEST`,
+`PROVIDER_HTTP_ERROR`, `PROVIDER_NETWORK`, and `PROVIDER_RESPONSE_INVALID`.
+New `PAUSED → RECOVERY_REQUIRED` classifications may use every class except
+`PROVIDER_HTTP_ERROR`: an upstream HTTP 5xx keeps the release paused for a
+later readiness retry; it is not evidence that superseding the candidate can
+repair the provider.
+
 ## Durable release state is authoritative
 
 - A paused or owned release **MUST** be classified from durable

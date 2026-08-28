@@ -46,6 +46,9 @@ export const parseCertificationDefectEvidence = (value: unknown): boolean => {
 };
 export const runtimeReadinessErrorClasses = ["TLS_CERT_CHAIN_UNTRUSTED", "PROVIDER_BAD_REQUEST", "PROVIDER_HTTP_ERROR", "PROVIDER_NETWORK", "PROVIDER_RESPONSE_INVALID"] as const;
 export type RuntimeReadinessErrorClass = (typeof runtimeReadinessErrorClasses)[number];
+/** Persisted evidence stays replayable across historical provider failures. */
+export const runtimeReadinessActionableErrorClasses = ["TLS_CERT_CHAIN_UNTRUSTED", "PROVIDER_BAD_REQUEST", "PROVIDER_NETWORK", "PROVIDER_RESPONSE_INVALID"] as const;
+export type RuntimeReadinessActionableErrorClass = (typeof runtimeReadinessActionableErrorClasses)[number];
 export type RuntimeReadinessDefectEvidence = {
   reason: "RUNTIME_READINESS_DEFECT";
   readiness_component: "PROVIDER_READINESS";
@@ -132,7 +135,8 @@ export function replayReleaseGenerationChain(events: readonly V2Event[]): { head
     const runtimeReadinessDefectTransition = current.phase === "PAUSED" && next.phase === "RECOVERY_REQUIRED";
     if (runtimeReadinessDefectTransition) {
       const unexpectedEvidence = ["certification_evidence", "certification_retry", "certification_defect", "public_frontend_defect"].some((key) => envelope[key] !== undefined);
-      if (envelope.kind !== "RUNTIME_READINESS_DEFECT" || event.action !== "PAUSED" || current.certification || next.certification || unexpectedEvidence || !parseRuntimeReadinessDefectEvidence(envelope.runtime_readiness_defect, current.source_commit)) return { corrupt: "INVALID_RUNTIME_READINESS_DEFECT" };
+      if (envelope.kind !== "RUNTIME_READINESS_DEFECT") return { corrupt: envelope.kind === "PUBLIC_FRONTEND_DEFECT" ? "INVALID_PUBLIC_FRONTEND_DEFECT" : "INVALID_RUNTIME_READINESS_DEFECT" };
+      if (event.action !== "PAUSED" || current.certification || next.certification || unexpectedEvidence || !parseRuntimeReadinessDefectEvidence(envelope.runtime_readiness_defect, current.source_commit)) return { corrupt: "INVALID_RUNTIME_READINESS_DEFECT" };
       current = next;
       continue;
     }
@@ -147,7 +151,7 @@ export function replayReleaseGenerationChain(events: readonly V2Event[]): { head
       current = next;
       continue;
     }
-    if (envelope.kind !== "PHASE_CHANGED") return { corrupt: "INVALID_RUNTIME_READINESS_DEFECT" };
+    if (envelope.kind !== "PHASE_CHANGED") return { corrupt: envelope.kind === "PUBLIC_FRONTEND_DEFECT" ? "INVALID_PUBLIC_FRONTEND_DEFECT" : envelope.kind === "RUNTIME_READINESS_DEFECT" ? "INVALID_RUNTIME_READINESS_DEFECT" : "UNKNOWN_V2_EVENT_KIND" };
     if (!current.certification && next.certification) {
       if (current.phase !== "DEPLOYED_READ_ONLY" || next.phase !== "CERTIFICATION_ONLY" || next.certification.status !== "ACTIVE" || hasConsumedFixture(next.certification)) return { corrupt: "INVALID_CERTIFICATION_BINDING" };
     } else if (current.certification) {

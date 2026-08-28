@@ -161,10 +161,6 @@ export const agentSchema = z.object({
 export const agentPatchSchema = agentSchema.partial().omit({ slug: true }).extend({
   npd_status_checked_at: z.string().datetime().nullable().optional(),
 }).strict();
-export const persistedAgentSchema = agentSchema.extend({
-  npd_status_checked_at: z.string().datetime().nullable().optional(),
-});
-
 const promoSchemaBase = z.object({
   agent_id: z.string().uuid().nullable().optional(),
   code: z.string().trim().transform((value) => value.toUpperCase()).pipe(z.string().regex(/^[A-Z0-9_-]{2,64}$/)),
@@ -172,12 +168,17 @@ const promoSchemaBase = z.object({
   discount_type: z.enum(["NONE", "PERCENT", "FIXED"]),
   discount_value: z.number().int().nonnegative(),
 });
-export const promoSchema = promoSchemaBase.strict().superRefine((input, ctx) => {
+const promoTerms = (input: { discount_type: "NONE" | "PERCENT" | "FIXED"; discount_value: number }, ctx: z.RefinementCtx) => {
   if (input.discount_type === "PERCENT" && (input.discount_value < 1 || input.discount_value > 9_999)) ctx.addIssue({ code: "custom", message: "Percent discount must be between 1 and 9999 basis points." });
   if (input.discount_type === "NONE" && input.discount_value !== 0) ctx.addIssue({ code: "custom", message: "NONE discount requires value zero." });
   if (input.discount_type === "FIXED" && input.discount_value <= 0) ctx.addIssue({ code: "custom", message: "FIXED discount requires a positive value." });
-});
-export const promoPatchSchema = promoSchemaBase.partial().omit({ code: true }).strict();
+};
+const partialPromoTerms = (input: Partial<{ discount_type: "NONE" | "PERCENT" | "FIXED"; discount_value: number }>, ctx: z.RefinementCtx) => {
+  if (input.discount_type !== undefined && input.discount_value !== undefined) promoTerms(input as { discount_type: "NONE" | "PERCENT" | "FIXED"; discount_value: number }, ctx);
+};
+export const promoSchema = promoSchemaBase.strict().superRefine(promoTerms);
+export const promoPatchSchema = promoSchemaBase.omit({ code: true }).partial().strict().superRefine(partialPromoTerms);
+export const promoMergedSchema = promoSchemaBase.omit({ code: true }).strict().superRefine(promoTerms);
 
 export const settlementPrepareSchema = z.object({
   agent_id: z.string().uuid(),

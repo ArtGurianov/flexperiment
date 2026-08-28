@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PromoPricingError, pricePromo, validatePromoTerms } from "../src/promo-pricing";
+import { basisPointsOf } from "../src/basis-points";
 
 describe("Promo Codes v0 pricing", () => {
   it("keeps percentage half-up arithmetic in integer kopecks", () => {
@@ -17,5 +18,13 @@ describe("Promo Codes v0 pricing", () => {
     expect(() => validatePromoTerms("NONE", 1)).toThrow(new PromoPricingError("PROMO_TERMS_INVALID"));
     expect(() => validatePromoTerms("PERCENT", 0)).toThrow(new PromoPricingError("PROMO_TERMS_INVALID"));
     expect(() => validatePromoTerms("FIXED", 0)).toThrow(new PromoPricingError("PROMO_TERMS_INVALID"));
+  });
+
+  it("uses exact non-negative basis-point arithmetic across the safe-integer contract", () => {
+    expect(basisPointsOf(Number.MAX_SAFE_INTEGER, 9_999)).toBe(Number((BigInt(Number.MAX_SAFE_INTEGER) * BigInt(9_999) + BigInt(5_000)) / BigInt(10_000)));
+    expect(() => basisPointsOf(-1, 1)).toThrow(RangeError);
+    expect(() => basisPointsOf(1, -1)).toThrow(RangeError);
+    expect(() => basisPointsOf(Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER)).toThrow(RangeError);
+    expect(() => basisPointsOf(1.5, 1)).toThrow(RangeError);
   });
 });

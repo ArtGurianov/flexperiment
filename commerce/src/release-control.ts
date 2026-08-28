@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import type Database from "better-sqlite3";
 import { canonicalLegalManifest, parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import { parseUtcTimestamp } from "./utc-timestamp";
-import { assertAppliedMigrationPrefix, candidateExpectedMigration, reconcileHeadWithProjection, releaseStateHash, replayReleaseGenerationChain, runtimeReadinessErrorClasses, type GenerationHead, type ReleasePhase, type RuntimeReadinessErrorClass, type V2Event } from "./release-generation";
+import { assertAppliedMigrationPrefix, candidateExpectedMigration, reconcileHeadWithProjection, releaseStateHash, replayReleaseGenerationChain, runtimeReadinessActionableErrorClasses, type GenerationHead, type ReleasePhase, type RuntimeReadinessActionableErrorClass, type V2Event } from "./release-generation";
 import { evaluateCertificationEvidence } from "./certification-evidence";
 import { pricePromo } from "./promo-pricing";
 
@@ -115,7 +115,7 @@ export type RuntimeReadinessDefectRequest = {
   candidate_generation: number;
   expected_state_hash: string;
   readiness_component: "PROVIDER_READINESS";
-  error_class: RuntimeReadinessErrorClass;
+  error_class: RuntimeReadinessActionableErrorClass;
   error_code: string;
 };
 export type CandidateCompleteRequest = { release_id: string; candidate_generation: number; expected_state_hash: string };
@@ -693,7 +693,7 @@ export class ReleaseSalesGate {
       const gate = row(this.db); if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
       const current = this.v2Head(input.release_id);
       if (gate.owner_release_id !== current.release_id || gate.sales_paused !== 1 || current.phase !== "PAUSED" || current.certification || current.candidate_generation !== input.candidate_generation || releaseStateHash(current) !== input.expected_state_hash) throw new ReleaseControlError("RELEASE_STATE_STALE");
-      if (input.readiness_component !== "PROVIDER_READINESS" || !runtimeReadinessErrorClasses.includes(input.error_class) || !/^[A-Z0-9_]{1,80}$/.test(input.error_code)) throw new ReleaseControlError("RUNTIME_READINESS_DEFECT_INVALID");
+      if (input.readiness_component !== "PROVIDER_READINESS" || !runtimeReadinessActionableErrorClasses.includes(input.error_class) || !/^[A-Z0-9_]{1,80}$/.test(input.error_code)) throw new ReleaseControlError("RUNTIME_READINESS_DEFECT_INVALID");
       const expected = this.expectedForHead(current);
       const evidence = runtimeEvidence();
       const migrationsMatch = evidence.migration_versions.length === Object.keys(current.migration_inventory.files).length
