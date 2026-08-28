@@ -152,9 +152,28 @@ describe("commerce domain", () => {
     expect(evaluateReopenGate(release, evidence)).toBe("SOURCE_COMMIT_MISMATCH");
     evidence.source_commit = release.expected.source_commit;
     for (const migration of ["0031_participant_age_band.sql", "0032_release_sales_gate.sql", "0033_runtime_release_evidence.sql", "0034_worker_sweep_evidence.sql"]) {
+      // A migration genuinely not applied must be absent from BOTH evidence
+      // views, not just required_migrations: migration_versions is the
+      // complete applied-migration inventory, and a version present there
+      // counts as applied even if required_migrations disagrees (see
+      // migrationApplied() - required_migrations alone is never
+      // authoritative, only ever a bounded hint for the diagnostic set).
       evidence.required_migrations[migration] = false;
+      const versionIndex = evidence.migration_versions.indexOf(migration);
+      evidence.migration_versions.splice(versionIndex, 1);
       expect(evaluateReopenGate(release, evidence)).toBe("REQUIRED_MIGRATION_NOT_APPLIED");
       evidence.required_migrations[migration] = true;
+      evidence.migration_versions.splice(versionIndex, 0, migration);
+    }
+    // required_migrations[version] === true alone is still sufficient even
+    // when migration_versions disagrees - it is an OR, not requiring both.
+    {
+      const migration = "0031_participant_age_band.sql";
+      const versionIndex = evidence.migration_versions.indexOf(migration);
+      evidence.migration_versions.splice(versionIndex, 1);
+      expect(evidence.required_migrations[migration]).toBe(true);
+      expect(evaluateReopenGate(release, evidence)).toBeUndefined();
+      evidence.migration_versions.splice(versionIndex, 0, migration);
     }
     evidence.worker_last_successful_sweep_at = "not-a-timestamp";
     expect(evaluateReopenGate(release, evidence)).toBe("WORKER_SUCCESSFUL_SWEEP_INVALID");

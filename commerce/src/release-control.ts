@@ -259,12 +259,32 @@ const reconcileLegacyOwnerWithProjection = (actions: readonly string[], salesPau
   return "RELEASE_STATE_CORRUPT";
 };
 
+/**
+ * Runtime evidence carries two independent views of what's applied:
+ * `required_migrations` is a bounded map (only ever populated for the fixed
+ * diagnosticCutoverMigrations set - see releaseRuntimeEvidence()), while
+ * `migration_versions` is the complete applied-migration inventory. A
+ * version can be legitimately applied and correctly reported while absent
+ * from `required_migrations` simply because it postdates that fixed set
+ * (e.g. 0035/0036) - `required_migrations[version] === true` is therefore
+ * sufficient positive evidence on its own, but its absence or `false` is
+ * NOT sufficient negative evidence: `migration_versions` is the complete
+ * applied-migration inventory, so it must also be checked before concluding
+ * a version was not applied. evaluateCandidateReopenGate() already used the
+ * correct OR; evaluateReopenGate() used only the map and was unconditionally
+ * broken for any expected migration beyond the diagnostic set (see the
+ * 2026-08-28 run 33139603447 regression - reproduced exactly in the test
+ * suite). Shared here so the two gates cannot drift again.
+ */
+export const migrationApplied = (evidence: ReleaseRuntimeEvidence, version: string): boolean =>
+  evidence.required_migrations[version] === true || evidence.migration_versions.includes(version);
+
 export const evaluateReopenGate = (request: ReleaseControlRequest, evidence: ReleaseRuntimeEvidence): string | undefined => {
   if (evidence.source_commit !== request.expected.source_commit) return "SOURCE_COMMIT_MISMATCH";
   const requiredMigrations = requiredMigrationsFor(request.expected.migration);
   const inventoryExpectation = isMigrationInventoryExpectation(request.expected.migration);
   if (!requiredMigrations && !inventoryExpectation) return "UNKNOWN_EXPECTED_MIGRATION";
-  if (requiredMigrations?.some((version) => evidence.required_migrations[version] !== true)) return "REQUIRED_MIGRATION_NOT_APPLIED";
+  if (requiredMigrations?.some((version) => !migrationApplied(evidence, version))) return "REQUIRED_MIGRATION_NOT_APPLIED";
   if (requiredMigrations && !evidence.migration_versions.includes(request.expected.migration)) return "EXPECTED_MIGRATION_NOT_APPLIED";
   if (inventoryExpectation && migrationInventoryExpectation(evidence.migration_versions) !== request.expected.migration) return "MIGRATION_INVENTORY_MISMATCH";
   if (inventoryExpectation || requiredMigrations?.includes("0034_worker_sweep_evidence.sql")) {
@@ -288,7 +308,7 @@ const evaluateCandidateReopenGate = (request: ReleaseControlRequest, evidence: R
   const migration = request.expected.migration;
   if (!/^\d{4}_[a-z0-9_]+\.sql$/.test(migration)) return "UNKNOWN_EXPECTED_MIGRATION";
   if (evidence.source_commit !== request.expected.source_commit) return "SOURCE_COMMIT_MISMATCH";
-  if (![...diagnosticCutoverMigrations, migration].every((version) => evidence.required_migrations[version] === true || evidence.migration_versions.includes(version))) return "REQUIRED_MIGRATION_NOT_APPLIED";
+  if (![...diagnosticCutoverMigrations, migration].every((version) => migrationApplied(evidence, version))) return "REQUIRED_MIGRATION_NOT_APPLIED";
   if (!evidence.migration_versions.includes(migration)) return "EXPECTED_MIGRATION_NOT_APPLIED";
   if (!evidence.worker_source_commit || !evidence.worker_started_at || !evidence.worker_observed_at) return "WORKER_NOT_READY";
   if (!workerEvidenceIsFresh(evidence.worker_source_commit, evidence.worker_observed_at, request.expected.source_commit)) return "WORKER_EVIDENCE_STALE";
