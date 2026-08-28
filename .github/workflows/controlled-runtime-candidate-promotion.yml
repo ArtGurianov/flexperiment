@@ -1,0 +1,134 @@
+name: Controlled runtime candidate promotion
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: Exact published runtime-candidate commit SHA to promote.
+        required: true
+        type: string
+      expected_runtime_candidate_sha:
+        description: Exact current runtime-candidate SHA required for the CAS update.
+        required: true
+        type: string
+      expected_production_deploy_sha:
+        description: Exact current production-deploy SHA required as topology evidence.
+        required: true
+        type: string
+      reason:
+        description: Bounded human-readable audit reason for this ordinary candidate promotion.
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: controlled-runtime-candidate-promotion
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      CONTROLLER_SHA: ${{ github.sha }}
+      INPUT_TARGET_SHA: ${{ inputs.target_sha }}
+      INPUT_EXPECTED_RUNTIME_CANDIDATE_SHA: ${{ inputs.expected_runtime_candidate_sha }}
+      INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA: ${{ inputs.expected_production_deploy_sha }}
+      INPUT_REASON: ${{ inputs.reason }}
+      RUNTIME_CANDIDATE_REF_TOKEN: ${{ secrets.RUNTIME_CANDIDATE_REF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind dedicated candidate-ref credential
+        run: |
+          set -euo pipefail
+          [[ -n "$RUNTIME_CANDIDATE_REF_TOKEN" ]] || { echo "RUNTIME_CANDIDATE_REF_TOKEN_REQUIRED" >&2; exit 1; }
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git remote set-url origin "https://x-access-token:${RUNTIME_CANDIDATE_REF_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: Assert exact current main controller and validate immutable inputs
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_CONTROLLER_NOT_MAIN" >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_CONTROLLER_MAIN_MOVED" >&2; exit 1; }
+          [[ "$INPUT_TARGET_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_TARGET_SHA_INVALID" >&2; exit 1; }
+          [[ "$INPUT_EXPECTED_RUNTIME_CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_EXPECTED_RUNTIME_CANDIDATE_SHA_INVALID" >&2; exit 1; }
+          [[ "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_EXPECTED_PRODUCTION_DEPLOY_SHA_INVALID" >&2; exit 1; }
+          [[ "$INPUT_REASON" =~ ^[[:print:]]{1,240}$ ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_REASON_INVALID" >&2; exit 1; }
+
+      - name: Resolve exact remote refs and prove ordinary promotion topology
+        run: |
+          set -euo pipefail
+          actual_runtime_candidate="$(git ls-remote --exit-code origin refs/heads/runtime-candidate | awk '{print $1}')"
+          actual_production_deploy="$(git ls-remote --exit-code origin refs/heads/production-deploy | awk '{print $1}')"
+          [[ "$actual_runtime_candidate" =~ ^[0-9a-f]{40}$ ]] || { echo "RUNTIME_CANDIDATE_REMOTE_REF_INVALID" >&2; exit 1; }
+          [[ "$actual_production_deploy" =~ ^[0-9a-f]{40}$ ]] || { echo "PRODUCTION_DEPLOY_REMOTE_REF_INVALID" >&2; exit 1; }
+          [[ "$actual_runtime_candidate" == "$INPUT_EXPECTED_RUNTIME_CANDIDATE_SHA" ]] || { echo "RUNTIME_CANDIDATE_CAS_MISMATCH=$actual_runtime_candidate" >&2; exit 1; }
+          [[ "$actual_production_deploy" == "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" ]] || { echo "PRODUCTION_DEPLOY_CAS_MISMATCH=$actual_production_deploy" >&2; exit 1; }
+          git fetch --no-tags origin \
+            refs/heads/runtime-candidate:refs/remotes/origin/runtime-candidate \
+            refs/heads/production-deploy:refs/remotes/origin/production-deploy \
+            '+refs/heads/runtime/*:refs/remotes/origin/runtime/*'
+          [[ "$(git rev-parse origin/runtime-candidate)" == "$actual_runtime_candidate" ]] || { echo "RUNTIME_CANDIDATE_REMOTE_FETCH_MISMATCH" >&2; exit 1; }
+          [[ "$(git rev-parse origin/production-deploy)" == "$actual_production_deploy" ]] || { echo "PRODUCTION_DEPLOY_REMOTE_FETCH_MISMATCH" >&2; exit 1; }
+          git cat-file -e "$INPUT_TARGET_SHA^{commit}" || { echo "RUNTIME_CANDIDATE_TARGET_NOT_COMMIT" >&2; exit 1; }
+          candidate_source_branch="$(git for-each-ref --format='%(refname:short)' --contains "$INPUT_TARGET_SHA" 'refs/remotes/origin/runtime/*' | head -n 1)"
+          [[ -n "$candidate_source_branch" ]] || { echo "RUNTIME_CANDIDATE_TARGET_NOT_PUBLISHED_RUNTIME_BRANCH" >&2; exit 1; }
+          git merge-base --is-ancestor "$actual_production_deploy" "$actual_runtime_candidate" || { echo "RUNTIME_CANDIDATE_NOT_DESCENDANT_OF_PRODUCTION" >&2; exit 1; }
+          git merge-base --is-ancestor "$actual_production_deploy" "$INPUT_TARGET_SHA" || { echo "RUNTIME_CANDIDATE_TARGET_NOT_DESCENDANT_OF_PRODUCTION" >&2; exit 1; }
+          git merge-base --is-ancestor "$actual_runtime_candidate" "$INPUT_TARGET_SHA" || { echo "RUNTIME_CANDIDATE_TARGET_NOT_DESCENDANT_OF_CURRENT" >&2; exit 1; }
+          [[ "$INPUT_TARGET_SHA" != "$actual_runtime_candidate" ]] || { echo "RUNTIME_CANDIDATE_TARGET_ALREADY_CURRENT" >&2; exit 1; }
+          {
+            echo "ACTUAL_RUNTIME_CANDIDATE=$actual_runtime_candidate"
+            echo "ACTUAL_PRODUCTION_DEPLOY=$actual_production_deploy"
+            echo "CANDIDATE_SOURCE_BRANCH=$candidate_source_branch"
+          } >> "$GITHUB_ENV"
+
+      - name: Reconfirm exact CAS inputs immediately before promotion
+        run: |
+          set -euo pipefail
+          current_runtime_candidate="$(git ls-remote --exit-code origin refs/heads/runtime-candidate | awk '{print $1}')"
+          current_production_deploy="$(git ls-remote --exit-code origin refs/heads/production-deploy | awk '{print $1}')"
+          [[ "$current_runtime_candidate" == "$INPUT_EXPECTED_RUNTIME_CANDIDATE_SHA" ]] || { echo "RUNTIME_CANDIDATE_CAS_MISMATCH=$current_runtime_candidate" >&2; exit 1; }
+          [[ "$current_production_deploy" == "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" ]] || { echo "PRODUCTION_DEPLOY_CAS_MISMATCH=$current_production_deploy" >&2; exit 1; }
+          git fetch --no-tags origin \
+            refs/heads/runtime-candidate:refs/remotes/origin/runtime-candidate \
+            refs/heads/production-deploy:refs/remotes/origin/production-deploy
+          [[ "$(git rev-parse origin/runtime-candidate)" == "$current_runtime_candidate" ]] || { echo "RUNTIME_CANDIDATE_PRE_CAS_FETCH_MISMATCH" >&2; exit 1; }
+          [[ "$(git rev-parse origin/production-deploy)" == "$current_production_deploy" ]] || { echo "PRODUCTION_DEPLOY_PRE_CAS_FETCH_MISMATCH" >&2; exit 1; }
+
+      - name: Advance runtime candidate by exact lease-backed CAS
+        run: |
+          set -euo pipefail
+          git push --force-with-lease="refs/heads/runtime-candidate:${INPUT_EXPECTED_RUNTIME_CANDIDATE_SHA}" origin "${INPUT_TARGET_SHA}:refs/heads/runtime-candidate"
+
+      - name: Prove exact post-promotion refs and write audit summary
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            refs/heads/runtime-candidate:refs/remotes/origin/runtime-candidate \
+            refs/heads/production-deploy:refs/remotes/origin/production-deploy
+          runtime_candidate_after="$(git rev-parse origin/runtime-candidate)"
+          production_deploy_after="$(git rev-parse origin/production-deploy)"
+          [[ "$runtime_candidate_after" == "$INPUT_TARGET_SHA" ]] || { echo "RUNTIME_CANDIDATE_POST_CAS_MISMATCH=$runtime_candidate_after" >&2; exit 1; }
+          [[ "$production_deploy_after" == "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" ]] || { echo "PRODUCTION_DEPLOY_POST_CAS_MISMATCH=$production_deploy_after" >&2; exit 1; }
+          {
+            echo "## Runtime candidate promotion"
+            echo "- Controller SHA: $CONTROLLER_SHA"
+            echo "- Reason: $INPUT_REASON"
+            echo "- Production deploy before: $ACTUAL_PRODUCTION_DEPLOY"
+            echo "- Runtime candidate before: $ACTUAL_RUNTIME_CANDIDATE"
+            echo "- Target SHA: $INPUT_TARGET_SHA"
+            echo "- Candidate source branch: $CANDIDATE_SOURCE_BRANCH"
+            echo "- Runtime candidate after: $runtime_candidate_after"
+            echo "- Production deploy after: $production_deploy_after"
+            echo "- Topology checks: PASS"
+            echo "- Lease-backed CAS update: PASS"
+          } >> "$GITHUB_STEP_SUMMARY"
