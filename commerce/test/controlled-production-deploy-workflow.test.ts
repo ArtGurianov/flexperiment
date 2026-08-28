@@ -128,6 +128,10 @@ describe("generic controlled production deploy workflow", () => {
     expect(bareParsers).toHaveLength(0);
     const pinnedParsers = [...workflow.matchAll(/\(cd "\$RUNTIME_ASSERT_DIR" && node --import tsx commerce\/src\/assert-generic-production-deploy-ready\.ts/g)];
     expect(pinnedParsers).toHaveLength(2);
+    const bareReconcilers = [...workflow.matchAll(/^\s*pnpm exec tsx commerce\/src\/reconcile-generic-production-deploy\.ts/gm)];
+    expect(bareReconcilers).toHaveLength(0);
+    const pinnedReconcilers = [...workflow.matchAll(/\(cd "\$RUNTIME_ASSERT_DIR" && node --import tsx commerce\/src\/reconcile-generic-production-deploy\.ts/g)];
+    expect(pinnedReconcilers).toHaveLength(2);
   });
 
   it("resolves an explicit runtime-candidate authority instead of implying main is always the deploy target", () => {
@@ -237,10 +241,10 @@ describe("generic controlled production deploy workflow", () => {
     expect(manifestValidation).toBeLessThan(workflow.indexOf('jq -e --slurpfile request release.json --arg source_sha'));
   });
 
-  it("keeps reconciliation output off the pnpm lifecycle stdout channel", () => {
-    const preflightReconcile = workflow.indexOf("pnpm exec tsx commerce/src/reconcile-generic-production-deploy.ts durable-before.json completion.json release.json > reconciliation.json");
+  it("keeps reconciliation output off the pnpm lifecycle stdout channel and pins it to runtime semantics", () => {
+    const preflightReconcile = workflow.indexOf('(cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/reconcile-generic-production-deploy.ts "$GITHUB_WORKSPACE/durable-before.json" "$GITHUB_WORKSPACE/completion.json" "$GITHUB_WORKSPACE/release.json") > reconciliation.json');
     const preflightValidation = workflow.indexOf("validate_json reconciliation.json RECONCILIATION");
-    const pausedReconcile = workflow.indexOf("pnpm exec tsx commerce/src/reconcile-generic-production-deploy.ts status.json completion.json release.json > reconciliation.json");
+    const pausedReconcile = workflow.indexOf('(cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/reconcile-generic-production-deploy.ts "$GITHUB_WORKSPACE/status.json" "$GITHUB_WORKSPACE/completion.json" "$GITHUB_WORKSPACE/release.json") > reconciliation.json');
     const pausedValidation = workflow.indexOf('jq -e \'type == "object"\' reconciliation.json >/dev/null || { echo "RECONCILIATION_INVALID_JSON"');
     expect(workflow).not.toContain("pnpm commerce:production-deploy:reconcile");
     expect(preflightValidation).toBeGreaterThan(preflightReconcile);

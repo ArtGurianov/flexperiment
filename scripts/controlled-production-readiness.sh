@@ -13,6 +13,10 @@ readiness_phase="${2:-promotion}"
 : "${POLL_ATTEMPTS:?POLL_ATTEMPTS is required}"
 : "${POLL_SECONDS:?POLL_SECONDS is required}"
 
+# A pinned runtime parser runs from its own detached worktree, so the
+# controller-owned request must be resolved before that directory change.
+request_path="$(cd "$(dirname "$request_path")" && pwd)/$(basename "$request_path")"
+
 case "$readiness_phase" in
   promotion) ;;
   candidate-pre-publication)

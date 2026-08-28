@@ -1,6 +1,6 @@
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -63,14 +63,15 @@ const runReadiness = (scenario: "ready" | "status-fails-after-first", nodeExit =
     "#!/usr/bin/env bash",
     "pwd >> \"$NODE_CWD_LOG\"",
     "printf '%s\\n' \"$*\" >> \"$NODE_LOG\"",
+    'for argument in "$@"; do [[ "$argument" != *.json || -f "$argument" ]] || { echo "MISSING_JSON_ARGUMENT=$argument" >&2; exit 1; }; done',
     '[[ "$READINESS_NODE_EXIT" == "1" ]] && { echo "WORKER_SWEEP_EVIDENCE_STALE" >&2; exit 1; }',
     "exit 0",
     "",
   ].join("\n"));
   writeFileSync(sleep, "#!/usr/bin/env bash\nexit 0\n");
   chmodSync(curl, 0o755); chmodSync(node, 0o755); chmodSync(sleep, 0o755);
-  const result = spawnSync("bash", ["scripts/controlled-production-readiness.sh", request, phase], {
-    cwd: process.cwd(), encoding: "utf8", env: {
+  const result = spawnSync("bash", [resolve(process.cwd(), "scripts/controlled-production-readiness.sh"), "release.json", phase], {
+    cwd: directory, encoding: "utf8", env: {
       ...process.env, PATH: `${bin}:${process.env.PATH}`, CURL_LOG: curlLog, NODE_LOG: nodeLog, STATUS_CALLS: statusCalls,
       READINESS_SCENARIO: scenario, READINESS_NODE_EXIT: nodeExit ? "1" : "0", NODE_CWD_LOG: nodeCwdLog,
       PUBLIC_API_URL: "https://api.test", PUBLIC_FRONTEND_URL: "https://frontend.test", ADMIN_RELEASE_URL: "https://admin.test/release.json",

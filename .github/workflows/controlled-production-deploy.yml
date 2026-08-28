@@ -132,8 +132,9 @@ jobs:
         # runtime's semantics, never with main's controller copy. In
         # particular, migration recognition intentionally differs between
         # maintenance/controller history and a deployed runtime lineage.
-        # Only this explicitly named parser may execute from the runtime
-        # worktree; dependency lifecycle scripts remain disabled.
+        # Only the explicitly named readiness evaluator and reconciler may
+        # execute from the runtime worktree; dependency lifecycle scripts
+        # remain disabled.
         run: |
           set -euo pipefail
           RUNTIME_ASSERT_DIR="$RUNNER_TEMP/generic-runtime-readiness"
@@ -266,7 +267,7 @@ jobs:
           else
             echo 'REUSING_PAUSED_OWNER=0' >> "$GITHUB_ENV"
           fi
-          pnpm exec tsx commerce/src/reconcile-generic-production-deploy.ts durable-before.json completion.json release.json > reconciliation.json
+          (cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/reconcile-generic-production-deploy.ts "$GITHUB_WORKSPACE/durable-before.json" "$GITHUB_WORKSPACE/completion.json" "$GITHUB_WORKSPACE/release.json") > reconciliation.json
           validate_json reconciliation.json RECONCILIATION
           action="$(jq -er '.action' reconciliation.json)"
           [[ "$action" != "BLOCKED" ]] || { jq -c . reconciliation.json >&2; exit 1; }
@@ -334,7 +335,7 @@ jobs:
           api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
-          pnpm exec tsx commerce/src/reconcile-generic-production-deploy.ts status.json completion.json release.json > reconciliation.json
+          (cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/reconcile-generic-production-deploy.ts "$GITHUB_WORKSPACE/status.json" "$GITHUB_WORKSPACE/completion.json" "$GITHUB_WORKSPACE/release.json") > reconciliation.json
           jq -e 'type == "object"' reconciliation.json >/dev/null || { echo "RECONCILIATION_INVALID_JSON" >&2; exit 1; }
           action="$(jq -er '.action' reconciliation.json)"
           [[ "$action" == "DEPLOY" || "$action" == "VERIFY_AND_REOPEN" ]] || { jq -c . reconciliation.json >&2; exit 1; }
