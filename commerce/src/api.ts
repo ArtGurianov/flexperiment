@@ -452,10 +452,14 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   admin.post("/reward-settlements/:id/documents-complete", async (c) => { const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400); const payload = settlementDocumentSchema.parse(await jsonBody(c.req.raw)); const settlement = domain.completeSettlementDocuments(c.req.param("id"), payload, key); audit(c.var.adminId!, "SETTLEMENT_DOCUMENTS_COMPLETE", "reward_settlement", c.req.param("id"), {}); return c.json(settlement); });
   admin.post("/reward-settlements/:id/cancel-before-payment", async (c) => { const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400); const payload = settlementCancelSchema.parse(await jsonBody(c.req.raw)); const settlement = domain.cancelSettlementBeforePayment(c.req.param("id"), payload, key); audit(c.var.adminId!, "SETTLEMENT_CANCELLED_BEFORE_PAYMENT", "reward_settlement", c.req.param("id"), { reason: payload.reason }); return c.json(settlement); });
   admin.post("/reward-settlements/:id/recoveries", async (c) => { const key = c.req.header("Idempotency-Key"); if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400); const payload = settlementRecoverySchema.parse(await jsonBody(c.req.raw)); const recovery = domain.addSettlementRecovery(c.req.param("id"), payload, key); audit(c.var.adminId!, "SETTLEMENT_RECOVERY_RECORDED", "reward_settlement", c.req.param("id"), { amount_kopecks: payload.amount_recovered_kopecks, reason: payload.reason }); return c.json(recovery, 201); });
-  admin.get("/provider-drift-reviews", (c) => c.json({ reviews: sqlite.prepare(`SELECT review.*, payment.id AS payment_id, payment.status AS payment_status,
-    order_row.id AS order_id, order_row.public_order_number
+  admin.get("/provider-drift-reviews", (c) => c.json({ reviews: sqlite.prepare(`SELECT review.*, drift_refund.id AS refund_id, drift_refund.source AS refund_source,
+    payment.id AS payment_id, payment.status AS payment_status, order_row.id AS order_id, order_row.public_order_number
     FROM provider_drift_reviews review
-    LEFT JOIN payments payment ON review.entity_type = 'PAYMENT' AND payment.id = review.entity_id
+    LEFT JOIN refunds drift_refund ON review.entity_type = 'REFUND' AND drift_refund.id = review.entity_id
+    LEFT JOIN payments payment ON payment.id = CASE
+      WHEN review.entity_type = 'PAYMENT' THEN review.entity_id
+      WHEN review.entity_type = 'REFUND' THEN drift_refund.payment_id
+    END
     LEFT JOIN orders order_row ON order_row.id = payment.order_id
     WHERE review.status = 'OPEN' ORDER BY review.created_at DESC`).all() }));
   admin.post("/provider-drift-reviews/:id/resolve", async (c) => { const body = await jsonBody(c.req.raw) as { note?: string }; if (!body.note?.trim()) throw new DomainError("RESOLUTION_NOTE_REQUIRED", 422); const result = sqlite.prepare("UPDATE provider_drift_reviews SET status = 'RESOLVED', resolution_note = ?, resolved_at = datetime('now') WHERE id = ? AND status = 'OPEN'").run(body.note.trim(), c.req.param("id")); if (!result.changes) throw new DomainError("DRIFT_REVIEW_NOT_OPEN", 409); audit(c.var.adminId!, "PROVIDER_DRIFT_RESOLVED", "provider_drift_review", c.req.param("id"), { note: body.note.trim() }); return c.json({ resolved: true }); });

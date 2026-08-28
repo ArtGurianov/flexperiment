@@ -384,10 +384,18 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrences WHERE id = ?").get(occurrenceId)).toEqual({ count: 1 });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM promo_codes WHERE id = ?").get(promoId)).toEqual({ count: 1 });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM admin_audit_log WHERE entity_id IN (?, ?)").get(occurrenceId, promoId)).toEqual({ count: 2 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM admin_command_idempotency WHERE idempotency_key_hash IN (?, ?)").get(sha256(input.occurrence_key), sha256(input.promo_key))).toEqual({ count: 2 });
+
+    expect(() => setup.domain.createCertificationFixture(input)).toThrow("CERTIFICATION_FIXTURE_IDEMPOTENCY_REPLAY");
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrences WHERE id = ?").get(occurrenceId)).toEqual({ count: 1 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM promo_codes WHERE id = ?").get(promoId)).toEqual({ count: 1 });
 
     const failedOccurrenceId = randomUUID();
-    expect(() => setup.domain.createCertificationFixture({ ...input, occurrence_id: failedOccurrenceId, occurrence_key: randomUUID(), promo_id: promoId, promo_key: randomUUID(), promo: { code: "BROKEN", status: "ACTIVE", discount_type: "FIXED", discount_value: 1 } })).toThrow();
+    const failedOccurrenceKey = randomUUID(); const failedPromoKey = randomUUID();
+    expect(() => setup.domain.createCertificationFixture({ ...input, occurrence_id: failedOccurrenceId, occurrence_key: failedOccurrenceKey, promo_id: promoId, promo_key: failedPromoKey, promo: { code: "BROKEN", status: "ACTIVE", discount_type: "FIXED", discount_value: 1 } })).toThrow();
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrences WHERE id = ?").get(failedOccurrenceId)).toEqual({ count: 0 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM admin_audit_log WHERE entity_id = ?").get(failedOccurrenceId)).toEqual({ count: 0 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM admin_command_idempotency WHERE idempotency_key_hash IN (?, ?)").get(sha256(failedOccurrenceKey), sha256(failedPromoKey))).toEqual({ count: 0 });
   });
 
   it("recognizes an applied 0036+ candidate migration via migration_versions even though required_migrations only tracks 0031-0034", () => {

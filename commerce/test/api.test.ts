@@ -1093,6 +1093,28 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
+  it("links both payment and refund provider-drift reviews to their financial evidence", async () => {
+    const { db, app } = appFixture();
+    const occurrenceId = (db.prepare("SELECT id FROM occurrences").get() as { id: string }).id;
+    const context = await app.request("http://api.flexperiment.ru/v1/public/checkout-context", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json" }, body: JSON.stringify({ occurrence_id: occurrenceId }) });
+    const quoteId = (await context.json() as { quote_id: string }).quote_id;
+    await app.request("http://api.flexperiment.ru/v1/public/checkouts", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": randomUUID() }, body: JSON.stringify({ quote_id: quoteId, customer_email: "drift@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }) });
+    const order = db.prepare("SELECT id, public_order_number FROM orders WHERE customer_email = ?").get("drift@example.test") as { id: string; public_order_number: string };
+    const payment = db.prepare("SELECT id FROM payments WHERE order_id = ?").get(order.id) as { id: string };
+    const refundId = randomUUID();
+    db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash) VALUES (?, ?, ?, ?, 1, 'drift', 'ADMIN_COMPENSATION', 'REVIEW_REQUIRED', ?, ?)").run(refundId, randomUUID(), order.id, payment.id, randomUUID(), randomUUID());
+    db.prepare("INSERT INTO provider_drift_reviews(id, entity_type, entity_id, observed_json) VALUES (?, ?, ?, '{}')").run(randomUUID(), "PAYMENT", payment.id);
+    db.prepare("INSERT INTO provider_drift_reviews(id, entity_type, entity_id, observed_json) VALUES (?, ?, ?, '{}')").run(randomUUID(), "REFUND", refundId);
+    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.33" }, body: JSON.stringify({ password: "correct horse" }) });
+    const response = await app.request("http://admin.flexperiment.ru/v1/admin/provider-drift-reviews", { headers: { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")! } });
+    const reviews = (await response.json() as { reviews: Array<Record<string, unknown>> }).reviews;
+    expect(reviews).toEqual(expect.arrayContaining([
+      expect.objectContaining({ entity_type: "PAYMENT", payment_id: payment.id, order_id: order.id, public_order_number: order.public_order_number }),
+      expect.objectContaining({ entity_type: "REFUND", refund_id: refundId, payment_id: payment.id, order_id: order.id, public_order_number: order.public_order_number, refund_source: "ADMIN_COMPENSATION" }),
+    ]));
+    db.close();
+  });
+
   it("filters /refunds by status and source independently", async () => {
     const { db, app } = appFixture();
     const occurrenceId = (db.prepare("SELECT id FROM occurrences").get() as { id: string }).id;
