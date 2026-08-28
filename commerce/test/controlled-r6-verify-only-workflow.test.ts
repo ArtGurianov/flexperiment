@@ -72,7 +72,12 @@ describe("controlled R6 verify-only workflow", () => {
     // execute from this tree.
     expect(section).toContain('(cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile --ignore-scripts)');
     expect(workflow).not.toContain('pnpm install --frozen-lockfile)');
-    expect(workflow).toContain("RUNTIME_ASSERT_DIR: ${{ runner.temp }}/r6-readiness-runtime");
+    // Computed via $RUNNER_TEMP and persisted through $GITHUB_ENV, never as
+    // a job-level `env:` expression - the `runner` context is not available
+    // there (only github/inputs/matrix/needs/secrets/strategy/vars are).
+    expect(section).toContain('RUNTIME_ASSERT_DIR="$RUNNER_TEMP/r6-readiness-runtime"');
+    expect(section).toContain('echo "RUNTIME_ASSERT_DIR=$RUNTIME_ASSERT_DIR" >> "$GITHUB_ENV"');
+    expect(workflow).not.toMatch(/RUNTIME_ASSERT_DIR:\s*\$\{\{\s*runner\./);
     // Only one worktree materialization in this workflow - never repeated
     // inside the poll loop.
     expect(workflow.match(/git worktree add --detach/g)).toHaveLength(1);

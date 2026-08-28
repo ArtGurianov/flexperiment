@@ -59,10 +59,12 @@ jobs:
       POLL_SECONDS: "10"
       POLL_CONNECT_TIMEOUT: "3"
       POLL_MAX_TIME: "7"
-      # Where the exact-R6 detached worktree is materialized for
-      # runtime-pinned readiness parsing - see the "Materialize exact R6"
-      # step below for why this must never be main's own checkout.
-      RUNTIME_ASSERT_DIR: ${{ runner.temp }}/r6-readiness-runtime
+      # RUNTIME_ASSERT_DIR (where the exact-R6 detached worktree is
+      # materialized for runtime-pinned readiness parsing) is set from
+      # $RUNNER_TEMP via $GITHUB_ENV in the "Materialize exact R6" step
+      # below, not here: the `runner` context is not available in a
+      # job-level `env:` block (only github/inputs/matrix/needs/secrets/
+      # strategy/vars are - confirmed with actionlint).
 
     steps:
       - uses: actions/checkout@v4
@@ -117,6 +119,8 @@ jobs:
         # arbitrary-code-execution surface than that single parser call.
         run: |
           set -euo pipefail
+          RUNTIME_ASSERT_DIR="$RUNNER_TEMP/r6-readiness-runtime"
+          echo "RUNTIME_ASSERT_DIR=$RUNTIME_ASSERT_DIR" >> "$GITHUB_ENV"
           git fetch --no-tags origin "$EXPECTED_PRODUCTION_DEPLOY"
           git worktree add --detach "$RUNTIME_ASSERT_DIR" "$EXPECTED_PRODUCTION_DEPLOY"
           [[ "$(git -C "$RUNTIME_ASSERT_DIR" rev-parse HEAD)" == "$EXPECTED_PRODUCTION_DEPLOY" ]] || { echo "RUNTIME_ASSERT_WORKTREE_WRONG_SHA" >&2; exit 1; }

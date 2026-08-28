@@ -78,10 +78,12 @@ jobs:
       TOPOLOGY_BASELINE: "71f6971cea630d4da9a1cb1c57f3ad01e8fdffe1"
       EXPECTED_OWNER_RELEASE_ID: "deploy-aa492d5a6361c8d43f8cbb2a4e3b245611f4f76b"
       EXPECTED_MIGRATION: "0036_tochka_provider_error_evidence.sql"
-      # Where the exact-R5 detached worktree is materialized for
-      # runtime-pinned readiness parsing - see the "Materialize exact R5"
-      # step below for why this must never be main's own checkout.
-      RUNTIME_ASSERT_DIR: ${{ runner.temp }}/r5-readiness-runtime
+      # RUNTIME_ASSERT_DIR (where the exact-R5 detached worktree is
+      # materialized for runtime-pinned readiness parsing) is set from
+      # $RUNNER_TEMP via $GITHUB_ENV in the "Materialize exact R5" step
+      # below, not here: the `runner` context is not available in a
+      # job-level `env:` block (only github/inputs/matrix/needs/secrets/
+      # strategy/vars are - confirmed with actionlint).
 
     steps:
       - uses: actions/checkout@v4
@@ -174,6 +176,8 @@ jobs:
         # not become a broader arbitrary-code-execution surface than that.
         run: |
           set -euo pipefail
+          RUNTIME_ASSERT_DIR="$RUNNER_TEMP/r5-readiness-runtime"
+          echo "RUNTIME_ASSERT_DIR=$RUNTIME_ASSERT_DIR" >> "$GITHUB_ENV"
           git worktree add --detach "$RUNTIME_ASSERT_DIR" "$TOPOLOGY_BASELINE"
           [[ "$(git -C "$RUNTIME_ASSERT_DIR" rev-parse HEAD)" == "$TOPOLOGY_BASELINE" ]] || { echo "RUNTIME_ASSERT_WORKTREE_WRONG_SHA" >&2; exit 1; }
           (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile --ignore-scripts)
