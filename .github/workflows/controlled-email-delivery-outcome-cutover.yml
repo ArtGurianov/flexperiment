@@ -363,7 +363,7 @@ jobs:
                 (.runtime.migration_source_hashes["0039_email_delivery_outcome.sql"]
                   == $inventory[0]["0039_email_delivery_outcome.sql"])
               ' status.json >/dev/null && \
-              jq -e 'has("emergency_sales_paused")' status.json >/dev/null && \
+              jq -e 'has("emergency_sales_paused") and .emergency_sales_paused == false' status.json >/dev/null && \
               jq -e --arg source "$EFFECTIVE_TARGET_SHA" --slurpfile candidate candidate-head.json '.source_commit == $source and .checkout_contract_version == $candidate[0].head.checkout_contract_version' frontend.json >/dev/null && \
               jq -e --arg source "$EFFECTIVE_TARGET_SHA" --slurpfile candidate candidate-head.json '.source_commit == $source and .admin_contract_version == $candidate[0].head.admin_contract_version' admin.json >/dev/null && \
               jq -e '.ok == true' health.json >/dev/null && \
@@ -378,6 +378,34 @@ jobs:
           fi
           api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json
           jq -e --arg source "$EFFECTIVE_TARGET_SHA" '.head.source_commit == $source and (.state_hash | test("^[a-f0-9]{64}$"))' candidate-head.json >/dev/null
+
+      - name: Prove the emergency capability appeared with the candidate
+        if: env.INPUT_STAGE == 'prepare'
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          # Two facts, both fail-closed, proven while the generation is still at
+          # DEPLOYED_READ_ONLY and therefore still abortable:
+          #
+          #   the field EXISTS      the deployed runtime predates it, so its
+          #                         presence is what proves the candidate is
+          #                         actually live rather than a stale container
+          #   the latch is CLEAR    certification places a real 1-RUB order and
+          #                         the emergency gate is absolute, so a latch
+          #                         set now would fail the payment, not the run
+          #
+          # An absent field must never read as false, which is why existence is
+          # asserted separately rather than inferred from the comparison.
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > handshake-status.json
+          jq -e 'has("emergency_sales_paused")' handshake-status.json >/dev/null || {
+            echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_EMERGENCY_CAPABILITY_MISSING_AFTER_DEPLOY" >&2
+            echo "The candidate is not live, or is not the candidate. Abort is available from here." >&2
+            exit 1
+          }
+          jq -e '.emergency_sales_paused == false' handshake-status.json >/dev/null || {
+            echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_EMERGENCY_LATCH_SET_TOO_EARLY" >&2
+            exit 1
+          }
 
       - name: Classify an explicitly evidenced deployed runtime-readiness defect
         if: env.INPUT_STAGE == 'classify_runtime_readiness_defect'
