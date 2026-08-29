@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
+import { CommerceDomain } from "../src/domain";
+import { MockProvider } from "../src/provider";
 import { ReleaseSalesGate, type ReleaseRuntimeEvidence } from "../src/release-control";
 import { releaseStateHash, type GenerationHead } from "../src/release-generation";
 
@@ -137,11 +139,21 @@ describe("candidate abort", () => {
     db.prepare("UPDATE emergency_sales_gate SET sales_paused = 1, revision = revision + 1 WHERE singleton = 1").run();
     gate.abortCandidate(abortRequest(releaseId, current), () => evidence());
 
-    // The release gate is clear...
+    // The release gate is clear - ReleaseSalesGate knows nothing about the
+    // emergency gate, so its own check passes...
     expect(gateRow(db)).toEqual({ sales_paused: 0, owner_release_id: null });
     expect(() => gate.assertNewOrdersOpen()).not.toThrow();
-    // ...but the emergency gate is a separate authority and still holds.
     expect(db.prepare("SELECT sales_paused FROM emergency_sales_gate WHERE singleton = 1").get()).toEqual({ sales_paused: 1 });
+
+    // ...but the composed enforcement is what customers actually hit, and it
+    // must still deny. Asserting only the release-gate half would let a future
+    // refactor drop the emergency check without failing a test.
+    const domain = new CommerceDomain(db, new MockProvider());
+    expect(() => domain.assertNewOrdersOpen()).toThrow("SALES_TEMPORARILY_PAUSED");
+
+    // And once the operator clears it, sales genuinely reopen.
+    db.prepare("UPDATE emergency_sales_gate SET sales_paused = 0, revision = revision + 1 WHERE singleton = 1").run();
+    expect(() => domain.assertNewOrdersOpen()).not.toThrow();
   });
 
   it("reports corruption rather than repairing a projection that already disagrees", () => {
