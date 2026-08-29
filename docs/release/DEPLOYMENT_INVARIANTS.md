@@ -672,3 +672,92 @@ retry loop: if the POST's result is ambiguous (e.g. the connection drops
 mid-response), the workflow stops rather than issuing a second POST -
 resolving that ambiguity is a separate, read-only investigation, never an
 automatic retry.
+
+## Prove the fact at the seam that consumes it
+
+A safety property is enforced where the orchestration actually consumes it, and
+nowhere else. Green unit tests on a pure implementation are not evidence of
+enforcement; neither is a sentence in this document, nor a comment in the
+controller that states the rule correctly.
+
+Three defects of this exact shape were found on 2026-08-29, all with correct
+logic behind a disconnected seam:
+
+```text
+ancestry fence        invariant real, production ref never fetched by CI
+semantic boundary     invariant real, sensitive paths cut by a git pathspec
+                      before the classifier ever saw them
+controller identity   invariant real, values never compared - and in two lanes
+                      a reflexive `merge-base --is-ancestor` ADMITTED the
+                      collision it appeared to forbid
+```
+
+Each would have produced a green production run that proved nothing. The third
+is the sharpest: a check that looks like protection can be the hole.
+
+**Therefore:** when adding or repairing an invariant, add a structural test
+against the workflow seam itself, and read the exact command a controller runs
+before dispatching it. `commerce/test/generic-deploy-boundary-enforcement.test.ts`
+and `commerce/test/controller-target-distinctness.test.ts` are the pattern.
+
+## Deploy lanes
+
+Three lanes, chosen by what the change set crosses. The category is a *deny*
+reason for the generic lane; it does not by itself say how a refused change
+should ship, and conflating those two is how a lane becomes a bypass.
+
+```text
+generic                     nothing crossed
+release-semantics cutover   RELEASE_CONTROL only
+candidate protocol          SCHEMA or LEGAL
+```
+
+`RELEASE_CONTROL` is the state machine and its enforcement, for which pause →
+deploy → convergence → reopen is sufficient proof. `COMPATIBILITY` — crypto,
+certification evidence, promo pricing, basis points, legal manifest shape,
+timestamp semantics — changes what a durable value *means*, and a converged
+runtime proves none of it: the old and new meanings can each be self-consistent
+and still disagree about state written under the other. It fails closed out of
+the cutover lane and has no lane of its own yet.
+
+### Known imprecision: `types.ts`
+
+`commerce/src/types.ts` is classified `RELEASE_CONTROL` because it owns the
+release request schema, but it also carries the checkout, refund, city, agent,
+promo and settlement schemas. An unrelated DTO edit is therefore over-classified
+into the controlled lane.
+
+This is accepted deliberately: the lane is *more* conservative than a generic
+deploy, so the failure direction is safe, and failing the whole file closed
+would have blocked the release-control hardening from the lane built for it.
+
+The fix is classification precision, not hunk-level or symbol-level git
+analysis:
+
+```text
+split releaseControlSchema out of types.ts
+  -> commerce/src/release-control-schema.ts   RELEASE_CONTROL
+  -> commerce/src/types.ts                    ordinary classification
+```
+
+### First execution of the release-semantics lane
+
+`680bdd3` (the release hardening: ABORT, the ancestry fence, runtime-candidate
+de-authorization, the single expectation owner, the boundary repair) deployed
+2026-08-29 as the lane's first production use.
+
+```text
+admission           RELEASE_SEMANTICS_CUTOVER_BOUNDARY_EXACT
+categories          RELEASE_CONTROL only, no COMPATIBILITY path touched
+controller/target   1f64edf / 680bdd3, distinct
+topology            descendant of production-deploy; no merge commits;
+                    no maintenance commits in range
+pause proof         POST /v1/public/checkouts -> 503 SALES_TEMPORARILY_PAUSED
+pause window        08:39:03Z -> 08:41:01Z (1m58s)
+convergence         commerce, worker and admin all at 680bdd3; worker sweeping
+reopen              sales_paused=false, owner released
+production-deploy   680bdd3
+```
+
+For comparison, the two Epoch A pauses were 12h09m and 11m32s. The difference
+is sequencing, not luck: everything provable was proved before acquiring.
