@@ -23,11 +23,13 @@ const WORKFLOWS = ".github/workflows";
 const workflowsAssertingTheBoundary = readdirSync(WORKFLOWS)
   .filter((name) => name.endsWith(".yml"))
   .map((name) => ({ name, source: readFileSync(`${WORKFLOWS}/${name}`, "utf8") }))
-  .filter(({ source }) => source.includes("production-deploy:assert-boundary"));
+  .filter(({ source }) => source.includes(":assert-boundary"));
 
 describe("generic deploy boundary enforcement", () => {
   it("is asserted by at least one workflow", () => {
-    // Guards against the whole suite passing vacuously if the step is renamed.
+    // Matches any :assert-boundary lane, so a new controller with its own
+    // admission script is covered the day it is added rather than the day
+    // someone remembers to add it here.
     expect(workflowsAssertingTheBoundary.map(({ name }) => name)).not.toHaveLength(0);
   });
 
