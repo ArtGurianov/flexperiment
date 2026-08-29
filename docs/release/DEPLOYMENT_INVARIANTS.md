@@ -370,7 +370,7 @@ deliberately invoking one specific, already-reviewed, already-deployed
 runtime's own semantics to judge evidence about that same
 runtime - the two are exact opposites, not the same mistake.
 
-## The generic-deploy boundary is about release semantics, not file paths
+## The release-semantic surface
 
 The question a generic deploy must answer is not *"did migration files
 change?"* but *"can this diff change how durable release state is interpreted
@@ -397,6 +397,34 @@ be release-sensitive and the controlled cutover - real money, a real pause -
 would become the only way to ship anything at all. That is a boundary nobody
 would keep. If enforcement ever moves back into `domain.ts`, the boundary
 silently stops covering it; a test asserts it has not.
+
+Call it the **release-semantic surface**, not "sensitive paths". A file is
+controlled not because it looks dangerous but because changing it can alter the
+interpretation of durable release state, migration state, certification
+evidence, state and inventory hashes, sales-gate enforcement, or the HTTP and
+domain release contracts.
+
+Two members make the distinction concrete, and both are worth remembering the
+next time someone proposes simplifying this back to `commerce/migrations/**`:
+
+```text
+crypto.ts       -> state hash / inventory hash -> CAS + expectation equivalence
+promo-pricing.ts -> certification evidence arithmetic -> what counts as certified
+```
+
+`crypto.ts` is not a utility as far as this protocol is concerned; it is part of
+the wire and state format. And pricing maths can invalidate certification
+evidence that already exists, without touching release-control at all. Neither
+is anywhere near a migration file, and no directory-name heuristic would find
+either.
+
+Because the set is derived from dependencies, it drifts the moment someone adds
+an import. `release-semantic-closure.test.ts` recomputes the runtime closure
+from the declared roots and fails with `NEW_RELEASE_SENSITIVE_DEPENDENCY` if
+anything reachable is unprotected. The assertion is containment, not equality:
+the protected set may reasonably be wider, since controllers and shell couple
+to files no import reaches. Type-only edges are excluded deliberately - they
+are erased before anything runs and cannot change interpretation.
 
 ## `runtime-candidate` is never an authority
 
