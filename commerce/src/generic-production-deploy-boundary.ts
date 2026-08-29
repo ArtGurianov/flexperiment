@@ -21,6 +21,8 @@ const isIn = (path: string, directory: string): boolean => path === directory ||
  * anything at all.
  */
 export const releaseSemanticsPaths: readonly string[] = [
+  // The sole owner of expectation grammar and canonicalization.
+  "commerce/src/release-expectation.ts",
   // The state machine, its replay, and the evidence it trusts.
   "commerce/src/release-control.ts",
   "commerce/src/release-generation.ts",

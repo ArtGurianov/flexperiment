@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { isMigrationFilenameExpectation, isMigrationInventoryExpectation, migrationInventoryExpectation } from "./release-expectation";
 import { readFileSync, readdirSync } from "node:fs";
 import { resolve } from "node:path";
 import type Database from "better-sqlite3";
@@ -168,11 +169,7 @@ const requiredMigrationsByExpectedMigration: Record<string, readonly string[]> =
   "0038_occurrence_availability_notifications.sql": [...diagnosticCutoverMigrations, "0035_promo_codes_v0.sql", "0036_tochka_provider_error_evidence.sql", "0037_emergency_sales_gate.sql", "0038_occurrence_availability_notifications.sql"],
 };
 export const requiredMigrationsFor = (expectedMigration: string): readonly string[] | undefined => requiredMigrationsByExpectedMigration[expectedMigration];
-const migrationInventoryPrefix = "inventory-sha256:";
-export const migrationInventoryExpectation = (versions: readonly string[]): string =>
-  `${migrationInventoryPrefix}${createHash("sha256").update([...versions].sort().join("\n")).digest("hex")}`;
-const isMigrationInventoryExpectation = (expectedMigration: string): boolean =>
-  new RegExp(`^${migrationInventoryPrefix}[a-f0-9]{64}$`).test(expectedMigration);
+export { migrationInventoryExpectation } from "./release-expectation";
 const supportedMigrationExpectation = (expectedMigration: string): boolean =>
   requiredMigrationsFor(expectedMigration) !== undefined || isMigrationInventoryExpectation(expectedMigration);
 export const WORKER_EVIDENCE_MAX_AGE_MS = 90_000;
@@ -311,7 +308,7 @@ export const evaluateReopenGate = (request: ReleaseControlRequest, evidence: Rel
 /** Candidate generations may append 0036+; the generic legacy controller may not. */
 const evaluateCandidateReopenGate = (request: ReleaseControlRequest, evidence: ReleaseRuntimeEvidence): string | undefined => {
   const migration = request.expected.migration;
-  if (!/^\d{4}_[a-z0-9_]+\.sql$/.test(migration)) return "UNKNOWN_EXPECTED_MIGRATION";
+  if (!isMigrationFilenameExpectation(migration)) return "UNKNOWN_EXPECTED_MIGRATION";
   if (evidence.source_commit !== request.expected.source_commit) return "SOURCE_COMMIT_MISMATCH";
   if (![...diagnosticCutoverMigrations, migration].every((version) => migrationApplied(evidence, version))) return "REQUIRED_MIGRATION_NOT_APPLIED";
   if (!evidence.migration_versions.includes(migration)) return "EXPECTED_MIGRATION_NOT_APPLIED";

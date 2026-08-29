@@ -1,4 +1,5 @@
 import { canonicalV2, sha256 } from "./crypto";
+import { isMigrationFilenameExpectation } from "./release-expectation";
 
 export const releasePhases = ["PAUSED", "DEPLOYED_READ_ONLY", "CERTIFICATION_ONLY", "CERTIFICATION_IN_FLIGHT", "CERTIFIED", "COMPLETE", "ABORTED", "RECOVERY_REQUIRED"] as const;
 /**
@@ -208,7 +209,7 @@ export function reconcileHeadWithProjection(head: GenerationHead, projection: { 
 export function candidateExpectedMigration(head: GenerationHead): string {
   const migrations = Object.keys(head.migration_inventory.files).sort();
   const migration = migrations.at(-1);
-  if (!migration || !/^\d{4}_[a-z0-9_]+\.sql$/.test(migration)) throw new Error("INVALID_MIGRATION_INVENTORY");
+  if (!migration || !isMigrationFilenameExpectation(migration)) throw new Error("INVALID_MIGRATION_INVENTORY");
   return migration;
 }
 

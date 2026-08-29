@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { isReleaseExpectation } from "./release-expectation";
 
 export type { CityCatalogueEntry, CitySlug, CityTitle } from "../../lib/city-catalog";
 
@@ -25,12 +26,10 @@ export const checkoutContextSchema = z.object({
 const releaseHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const releaseExpectedSchema = z.object({
   source_commit: z.string().regex(/^[a-f0-9]{7,64}$/),
-  // Both forms release-control already understands. The inventory hash exists
-  // because a filename is validated against the deployed runtime's static
-  // allowlist, so a cutover that leaves a newer filename in durable state makes
-  // every later generic acquire fail. Rejecting it here made that support
-  // unreachable from the API and cost a production deploy path.
-  migration: z.string().regex(/^(\d{4}_[a-z0-9_]+\.sql|inventory-sha256:[a-f0-9]{64})$/),
+  // Delegated, never re-derived: the DTO and release-control must agree on one
+  // grammar or a form ends up supported by one layer and rejected by the other,
+  // which is exactly what made inventory-sha256 unreachable over the wire.
+  migration: z.string().refine(isReleaseExpectation, { message: "migration must be a canonical release expectation" }),
   legal_version: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
   legal_manifest_sha256: releaseHashSchema,
   legal_hashes: z.object({
