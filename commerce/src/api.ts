@@ -518,6 +518,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   releaseControl.post("/candidates/certification/activate", async (c) => c.json(domain.activatePromoCertificationLease(await jsonBody(c.req.raw) as import("./release-control").CertificationLeaseRequest)));
   releaseControl.post("/candidates/certification/certify", async (c) => c.json(domain.certifyPromoCandidate(await jsonBody(c.req.raw) as import("./release-control").CertificationEvidenceRequest)));
   releaseControl.post("/candidates/certification/retry", async (c) => c.json(domain.retryPromoCertification(await jsonBody(c.req.raw) as import("./release-control").CertificationRetryRequest)));
+  releaseControl.post("/candidates/abort", async (c) => c.json(domain.abortPromoCandidate(await jsonBody(c.req.raw) as import("./release-control").CandidateAbortRequest)));
   releaseControl.post("/candidates/complete", async (c) => c.json(domain.completePromoCandidate(await jsonBody(c.req.raw) as import("./release-control").CandidateCompleteRequest)));
   releaseControl.post("/acquire", async (c) => c.json(domain.acquireReleaseControl(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
   releaseControl.post("/pause", async (c) => c.json(domain.pauseNewOrders(releaseControlSchema.parse(await jsonBody(c.req.raw)))));

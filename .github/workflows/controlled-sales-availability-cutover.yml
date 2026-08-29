@@ -267,8 +267,11 @@ jobs:
           api -X POST --data-binary @adopt.json "$PUBLIC_API_URL/v1/internal/release-control/candidates/adopt" > adopted.json
           echo "SALES_AVAILABILITY_HEAD_READ_REQUIRED_AFTER_DEPLOY=1" >> "$GITHUB_ENV"
 
+      # Unconditional on every prepare, including a re-run of an already
+      # acquired generation. Enforcement is exactly what a resume most needs
+      # proven, and the read model saying "paused" is not the same fact.
       - name: Prove public checkout is paused before candidate deployment
-        if: env.INPUT_STAGE == 'prepare' && (env.SALES_AVAILABILITY_HEAD_READ_REQUIRED_AFTER_DEPLOY == '1' || env.INPUT_REPLACEMENT_SHA != '')
+        if: env.INPUT_STAGE == 'prepare'
         run: |
           set -euo pipefail
           pause_status="$(curl --silent --show-error --connect-timeout 10 --max-time 30 --output paused-checkout.json --write-out '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: sales-availability-cutover-pause-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --data '{}' "$PUBLIC_API_URL/v1/public/checkouts")"

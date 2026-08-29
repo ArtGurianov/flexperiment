@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import type Database from "better-sqlite3";
 import { canonicalLegalManifest, parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import { parseUtcTimestamp } from "./utc-timestamp";
-import { assertAppliedMigrationPrefix, candidateExpectedMigration, reconcileHeadWithProjection, releaseStateHash, replayReleaseGenerationChain, runtimeReadinessActionableErrorClasses, type GenerationHead, type ReleasePhase, type RuntimeReadinessActionableErrorClass, type V2Event } from "./release-generation";
+import { assertAppliedMigrationPrefix, candidateExpectedMigration, isTerminalPhase, reconcileHeadWithProjection, releaseStateHash, replayReleaseGenerationChain, runtimeReadinessActionableErrorClasses, type GenerationHead, type ReleasePhase, type RuntimeReadinessActionableErrorClass, type V2Event } from "./release-generation";
 import { evaluateCertificationEvidence } from "./certification-evidence";
 import { pricePromo } from "./promo-pricing";
 
@@ -119,6 +119,7 @@ export type RuntimeReadinessDefectRequest = {
   error_code: string;
 };
 export type CandidateCompleteRequest = { release_id: string; candidate_generation: number; expected_state_hash: string };
+export type CandidateAbortRequest = { release_id: string; candidate_generation: number; expected_state_hash: string; reason: string };
 export type CandidateHeadSnapshot = { schema_version: 2; head: GenerationHead | null; state_hash: string | null };
 export type CertificationLeaseRequest = {
   release_id: string;
@@ -395,7 +396,7 @@ export class ReleaseSalesGate {
     }
     const replays = [...byRelease.values()].map((releaseEvents) => ({ events: releaseEvents, replay: replayReleaseGenerationChain(releaseEvents) }));
     if (replays.some(({ replay }) => replay.corrupt)) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
-    const active = replays.flatMap(({ replay }) => replay.head && replay.head.phase !== "COMPLETE" ? [replay.head] : []);
+    const active = replays.flatMap(({ replay }) => replay.head && !isTerminalPhase(replay.head.phase) ? [replay.head] : []);
     this.reconcileGateOwnership(gate, byRelease, active);
     const completedHead = () => {
       const completed = replays
@@ -454,7 +455,7 @@ export class ReleaseSalesGate {
     const events = this.db.prepare("SELECT rowid AS seq, release_id, action, details_json FROM release_sales_gate_events ORDER BY rowid ASC").all() as V2Event[];
     const ids = new Set<string>();
     for (const event of events) { try { if ((JSON.parse(event.details_json) as { schema_version?: unknown }).schema_version === 2) ids.add(event.release_id); } catch { /* forensic legacy row */ } }
-    for (const releaseId of ids) { const replay = this.v2Head(releaseId); if (replay.phase !== "COMPLETE") throw new ReleaseControlError("RELEASE_CONTROL_V2_REQUIRED"); }
+    for (const releaseId of ids) { const replay = this.v2Head(releaseId); if (!isTerminalPhase(replay.phase)) throw new ReleaseControlError("RELEASE_CONTROL_V2_REQUIRED"); }
   }
 
   private immediate<T>(operation: () => T): T {
@@ -810,6 +811,64 @@ export class ReleaseSalesGate {
     });
   }
 
+  /**
+   * The safe pre-mutation exit. Without it the only way out of an acquired
+   * generation was `complete`, which demands a real certification order - so a
+   * candidate abandoned at PAUSED held the gate closed until someone paid 1
+   * rouble. That cost a 12-hour production pause on 2026-08-28.
+   *
+   * Deliberately narrow: reachable only before anything irreversible, and it
+   * proves the world has not moved underneath the generation rather than
+   * assuming it. It clears the release gate only - the emergency gate is a
+   * separate authority and an abort must never reopen sales an operator
+   * stopped.
+   */
+  abortCandidate(input: CandidateAbortRequest, runtimeEvidence: () => ReleaseRuntimeEvidence) {
+    return this.immediate(() => {
+      const gate = row(this.db); if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
+      const current = this.v2Head(input.release_id);
+
+      // Replay reconciliation: an already-aborted generation reports success,
+      // but only for that exact generation. A stale abort must not succeed just
+      // because some later generation was aborted.
+      if (current.phase === "ABORTED") {
+        if (current.candidate_generation !== input.candidate_generation || releaseStateHash(current) !== input.expected_state_hash) throw new ReleaseControlError("RELEASE_STATE_STALE");
+        if (gate.owner_release_id !== null || gate.sales_paused !== 0) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
+        return { ...status(gate), head: current };
+      }
+
+      if (current.candidate_generation !== input.candidate_generation || releaseStateHash(current) !== input.expected_state_hash) throw new ReleaseControlError("RELEASE_STATE_STALE");
+      if (gate.owner_release_id !== current.release_id || gate.sales_paused !== 1) throw new ReleaseControlError("RELEASE_STATE_STALE");
+
+      // Certified or beyond: the money already moved and a promotion may be in
+      // flight. Recovery owns that, not abort.
+      const priorEvents = this.db.prepare("SELECT details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid ASC").all(current.release_id) as Array<{ details_json: string }>;
+      const everCertified = priorEvents.some((event) => { try { return (JSON.parse(event.details_json) as { head?: { phase?: unknown } }).head?.phase === "CERTIFIED"; } catch { return false; } });
+      if (everCertified) throw new ReleaseControlError("RELEASE_ABORT_ALREADY_CERTIFIED");
+      if (current.phase !== "PAUSED" && current.phase !== "DEPLOYED_READ_ONLY") throw new ReleaseControlError("RELEASE_ABORT_NOT_REVERSIBLE");
+
+      // The world must still be what it was when this generation was acquired.
+      const evidence = runtimeEvidence();
+      // source_commit and migration_inventory are immutable within a
+      // generation - the replay rejects any event that changes them - so the
+      // current head still carries the acquire-time values.
+      if (evidence.source_commit !== current.source_commit) throw new ReleaseControlError("RELEASE_ABORT_PRODUCTION_CHANGED");
+      // Symmetric with the expectation authority: compare the canonical
+      // inventory, not the absence of one named migration.
+      if (migrationInventoryExpectation(evidence.migration_versions) !== migrationInventoryExpectation(Object.keys(current.migration_inventory.files))) throw new ReleaseControlError("RELEASE_ABORT_MIGRATION_STATE_CHANGED");
+
+      const head = { ...current, phase: "ABORTED" as const, phase_sequence: current.phase_sequence + 1 };
+      const details = { schema_version: 2, kind: "PHASE_CHANGED" as const, from_phase: current.phase, from_phase_sequence: current.phase_sequence, head, abort: { reason: input.reason } };
+      this.assertProposedV2Event(current.release_id, { action: "REOPENED", details_json: JSON.stringify(details) });
+      const changed = this.db.prepare(`UPDATE release_sales_gate SET sales_paused = 0, owner_release_id = NULL, owner_mode = NULL,
+        reopened_at = datetime('now'), updated_at = datetime('now')
+        WHERE singleton = 1 AND owner_release_id = ? AND sales_paused = 1`).run(current.release_id);
+      if (changed.changes !== 1) throw new ReleaseControlError("RELEASE_CANDIDATE_SUPERSEDED");
+      this.v2Event(current.release_id, "REOPENED", "PHASE_CHANGED", { from_phase: current.phase, from_phase_sequence: current.phase_sequence, head, abort: { reason: input.reason } });
+      return { ...status(row(this.db)!), head };
+    });
+  }
+
   completeCandidate(input: CandidateCompleteRequest, runtimeEvidence: () => ReleaseRuntimeEvidence) {
     const transaction = () => this.immediate(() => {
       const gate = row(this.db)!; const current = this.v2Head(input.release_id);
@@ -986,7 +1045,7 @@ export class ReleaseSalesGate {
     }
     const heads = [...byRelease.values()].map((events) => replayReleaseGenerationChain(events));
     if (heads.some((replay) => replay.corrupt)) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
-    const active = heads.flatMap((replay) => replay.head && replay.head.phase !== "COMPLETE" ? [replay.head] : []);
+    const active = heads.flatMap((replay) => replay.head && !isTerminalPhase(replay.head.phase) ? [replay.head] : []);
     this.reconcileGateOwnership(gate, byRelease, active);
     if (gate.sales_paused !== 1) return undefined;
     if (!context || active.length !== 1) throw new ReleaseControlError("SALES_TEMPORARILY_PAUSED", 503);
