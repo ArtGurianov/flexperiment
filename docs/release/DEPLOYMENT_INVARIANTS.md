@@ -370,6 +370,34 @@ deliberately invoking one specific, already-reviewed, already-deployed
 runtime's own semantics to judge evidence about that same
 runtime - the two are exact opposites, not the same mistake.
 
+## The generic-deploy boundary is about release semantics, not file paths
+
+The question a generic deploy must answer is not *"did migration files
+change?"* but *"can this diff change how durable release state is interpreted
+or enforced?"*.
+
+R7 is why. `migrationApplied()` was a defect in `release-control.ts` with no
+migration file involved, and it silently changed which releases could reopen.
+A boundary asking only the first question waves that candidate through as an
+ordinary deploy.
+
+`releaseSemanticsPaths` in `commerce/src/generic-production-deploy-boundary.ts`
+is the explicit set, derived from the real import closure of
+`release-control`/`release-generation` rather than guessed by glob. It covers
+the state machine and its replay, gate enforcement, the expectation DTO,
+canonical serialization and hashing, timestamp parsing behind leases and
+freshness, legal manifest shape, the kopeck arithmetic certification evidence
+asserts, and the boundary classifier itself. It is deliberately conservative:
+it fails toward the controlled cutover, which is the safe direction.
+
+**Enforcement lives in `sales-gate.ts`, not `domain.ts`, so that this list can
+stay narrow.** `domain.ts` carries nearly all business logic and changes for
+ordinary work; if the gate composition lived there, every ordinary change would
+be release-sensitive and the controlled cutover - real money, a real pause -
+would become the only way to ship anything at all. That is a boundary nobody
+would keep. If enforcement ever moves back into `domain.ts`, the boundary
+silently stops covering it; a test asserts it has not.
+
 ## `runtime-candidate` is never an authority
 
 It is a **proposal register**. Before acquire it may propose a target; after

@@ -11,6 +11,7 @@ import { basisPointsOf } from "./basis-points";
 import { findCityBySlug } from "../../lib/city-catalog";
 import { purchaseStatus, type PurchaseStatus } from "./purchase-status";
 import { parseUtcTimestamp } from "./utc-timestamp";
+import { assertNewOrdersOpen as assertGateOpen, emergencySalesPaused as gateEmergencyPaused, newOrdersBlocked as gateBlocked } from "./sales-gate";
 
 type Row = Record<string, unknown>;
 const one = <T extends Row>(db: Database.Database, sql: string, ...params: unknown[]) => db.prepare(sql).get(...params) as T | undefined;
@@ -309,16 +310,10 @@ export class CommerceDomain {
 
   private releaseSalesGate() { return new ReleaseSalesGate(this.db); }
 
-  private emergencySalesPaused() {
-    return Number(one(this.db, "SELECT sales_paused FROM emergency_sales_gate WHERE singleton = 1")?.sales_paused ?? 1) === 1;
-  }
-
-  /** Fail closed: release corruption/unavailability is customer-visible only as a pause. */
-  private newOrdersBlocked() {
-    if (this.emergencySalesPaused()) return true;
-    try { this.releaseSalesGate().assertNewOrdersOpen(); return false; }
-    catch (error) { if (error instanceof ReleaseControlError) return true; throw error; }
-  }
+  // Enforcement itself lives in sales-gate.ts so the release-sensitive surface
+  // stays nameable: this file changes for ordinary work, that one does not.
+  private emergencySalesPaused() { return gateEmergencyPaused(this.db); }
+  private newOrdersBlocked() { return gateBlocked(this.db); }
 
   releaseControlStatus() { return this.releaseSalesGate().status(); }
   releaseControlCompletion(releaseId: string) { return this.releaseSalesGate().completion(releaseId); }
@@ -428,8 +423,7 @@ export class CommerceDomain {
   }
 
   assertNewOrdersOpen(context?: CertificationOrderContext) {
-    if (this.emergencySalesPaused()) throw new DomainError("SALES_TEMPORARILY_PAUSED", 503);
-    try { return this.releaseSalesGate().assertNewOrdersOpen(context); }
+    try { return assertGateOpen(this.db, context); }
     catch (error) {
       if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
       throw error;
