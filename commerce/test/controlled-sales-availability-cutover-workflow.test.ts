@@ -6,7 +6,7 @@ const workflow = readFileSync(".github/workflows/controlled-sales-availability-c
 describe("controlled sales-availability v1 cutover workflow", () => {
   it("is manual, serialized with production, and keeps controller and source identities distinct", () => {
     expect(workflow).toContain("workflow_dispatch:");
-    expect(workflow).toContain("options: [prepare, classify_runtime_readiness_defect, complete]");
+    expect(workflow).toContain("options: [prepare, certify, classify_runtime_readiness_defect, complete]");
     expect(workflow).toContain("group: flexperiment-production-controlled-cutover");
     expect(workflow).toContain("cancel-in-progress: false");
     expect(workflow).toContain("environment: production");
@@ -76,6 +76,23 @@ describe("controlled sales-availability v1 cutover workflow", () => {
     expect(workflow).toContain("scripts/set-production-deploy-ref.sh \"$EFFECTIVE_TARGET_SHA\"");
     expect(workflow).toContain("scripts/controlled-coolify-deploy.sh \"$EFFECTIVE_TARGET_SHA\"");
     expect(workflow).not.toContain("git push --force ");
+  });
+
+  /**
+   * certify holds the release-control token in the workflow rather than an
+   * operator shell, so the evidence POST gets the same state-hash CAS and
+   * replay reconciliation as every other transition.
+   */
+  it("records certification evidence only from a consumed in-flight lease", () => {
+    expect(workflow).toContain("certification_order_id:");
+    expect(workflow).toContain("SALES_AVAILABILITY_CUTOVER_CERTIFICATION_ORDER_ID_INVALID");
+    expect(workflow).toContain("SALES_AVAILABILITY_CUTOVER_CERTIFY_INPUTS_FORBIDDEN");
+    expect(workflow).toContain("SALES_AVAILABILITY_CUTOVER_CERTIFY_STATE_INVALID");
+    expect(workflow).toContain("SALES_AVAILABILITY_CUTOVER_CERTIFY_TRANSITION_INVALID");
+    expect(workflow).toContain('.head.phase == "CERTIFICATION_IN_FLIGHT"');
+    expect(workflow).toContain("candidates/certification/certify");
+    // A replay after success must reconcile, not repost evidence.
+    expect(workflow).toContain("SALES_AVAILABILITY_CUTOVER_ALREADY_CERTIFIED");
   });
 
   it("completes only a certified candidate and never publishes legal content", () => {

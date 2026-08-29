@@ -14,10 +14,10 @@ on:
   workflow_dispatch:
     inputs:
       stage:
-        description: Prepare the paused candidate/certification lease, classify an explicitly evidenced readiness defect, or complete a certified candidate.
+        description: Prepare the paused candidate/certification lease, record consumed certification evidence, classify an explicitly evidenced readiness defect, or complete a certified candidate.
         required: true
         type: choice
-        options: [prepare, classify_runtime_readiness_defect, complete]
+        options: [prepare, certify, classify_runtime_readiness_defect, complete]
       target_sha:
         description: Exact immutable runtime source SHA for this same-owner epoch.
         required: true
@@ -40,6 +40,10 @@ on:
         type: string
       certification_lease_seconds:
         description: Lease duration, from 180 to 300 seconds.
+        required: false
+        type: string
+      certification_order_id:
+        description: Order UUID of the consumed real 1-RUB certification checkout. Only for stage=certify.
         required: false
         type: string
       retry_reason:
@@ -85,6 +89,7 @@ jobs:
       INPUT_CERTIFICATION_PROMO_ID: ${{ inputs.certification_promo_id || '' }}
       INPUT_CERTIFICATION_IDEMPOTENCY_KEY_HASH: ${{ inputs.certification_idempotency_key_hash || '' }}
       INPUT_CERTIFICATION_LEASE_SECONDS: ${{ inputs.certification_lease_seconds || '' }}
+      INPUT_CERTIFICATION_ORDER_ID: ${{ inputs.certification_order_id || '' }}
       INPUT_RETRY_REASON: ${{ inputs.retry_reason || '' }}
       INPUT_RUNTIME_READINESS_ERROR_CLASS: ${{ inputs.runtime_readiness_error_class || '' }}
       INPUT_RUNTIME_READINESS_ERROR_CODE: ${{ inputs.runtime_readiness_error_code || '' }}
@@ -100,7 +105,7 @@ jobs:
       - name: Resolve immutable controller, source, and input bundle
         run: |
           set -euo pipefail
-          [[ "$INPUT_STAGE" == prepare || "$INPUT_STAGE" == classify_runtime_readiness_defect || "$INPUT_STAGE" == complete ]] || { echo "SALES_AVAILABILITY_CUTOVER_STAGE_INVALID" >&2; exit 1; }
+          [[ "$INPUT_STAGE" == prepare || "$INPUT_STAGE" == certify || "$INPUT_STAGE" == classify_runtime_readiness_defect || "$INPUT_STAGE" == complete ]] || { echo "SALES_AVAILABILITY_CUTOVER_STAGE_INVALID" >&2; exit 1; }
           [[ "$INPUT_STAGE" != prepare || -n "$PRODUCTION_DEPLOY_REF_TOKEN" ]] || { echo "SALES_AVAILABILITY_CUTOVER_DEPLOY_REF_TOKEN_REQUIRED" >&2; exit 1; }
           [[ "$INPUT_TARGET_SHA" =~ ^[0-9A-Fa-f]{40}$ ]] || { echo "SALES_AVAILABILITY_CUTOVER_TARGET_SHA_INVALID" >&2; exit 1; }
           target_sha="${INPUT_TARGET_SHA,,}"
@@ -139,6 +144,12 @@ jobs:
           else
             [[ -z "$INPUT_RUNTIME_READINESS_ERROR_CLASS" && -z "$INPUT_RUNTIME_READINESS_ERROR_CODE" ]] || { echo "SALES_AVAILABILITY_CUTOVER_RUNTIME_READINESS_INPUTS_FORBIDDEN" >&2; exit 1; }
             [[ "$INPUT_STAGE" == prepare || ("$present" == 0 && -z "$INPUT_RETRY_REASON") ]] || { echo "SALES_AVAILABILITY_CUTOVER_COMPLETE_INPUTS_FORBIDDEN" >&2; exit 1; }
+          fi
+          if [[ "$INPUT_STAGE" == certify ]]; then
+            [[ "$INPUT_CERTIFICATION_ORDER_ID" =~ ^[0-9a-fA-F-]{36}$ ]] || { echo "SALES_AVAILABILITY_CUTOVER_CERTIFICATION_ORDER_ID_INVALID" >&2; exit 1; }
+            [[ -z "$INPUT_REPLACEMENT_SHA" && "$present" == 0 ]] || { echo "SALES_AVAILABILITY_CUTOVER_CERTIFY_INPUTS_FORBIDDEN" >&2; exit 1; }
+          else
+            [[ -z "$INPUT_CERTIFICATION_ORDER_ID" ]] || { echo "SALES_AVAILABILITY_CUTOVER_CERTIFY_INPUTS_FORBIDDEN" >&2; exit 1; }
           fi
           {
             echo "TARGET_SHA=$target_sha"
@@ -388,6 +399,31 @@ jobs:
           jq -e --arg occurrence "$INPUT_CERTIFICATION_OCCURRENCE_ID" --arg promo "$INPUT_CERTIFICATION_PROMO_ID" --arg key_hash "$INPUT_CERTIFICATION_IDEMPOTENCY_KEY_HASH" '
             .head.phase == "CERTIFICATION_ONLY" and .head.certification.status == "ACTIVE" and .head.certification.occurrence_id == $occurrence and .head.certification.promo_id == $promo and .head.certification.expected_idempotency_key_hash == $key_hash and (.state_hash | test("^[a-f0-9]{64}$"))
           ' candidate-head.json >/dev/null || { echo "SALES_AVAILABILITY_CUTOVER_CERTIFICATION_RECONCILIATION_INVALID" >&2; exit 1; }
+
+      - name: Record consumed certification evidence
+        if: env.INPUT_STAGE == 'certify'
+        run: |
+          set -euo pipefail
+          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json
+          # Idempotent: a replay after a successful certify observes CERTIFIED
+          # and reconciles instead of reposting evidence.
+          if jq -e --arg release_id "$RELEASE_ID" '.schema_version == 2 and .head.release_id == $release_id and .head.phase == "CERTIFIED" and .head.certification.status == "CONSUMED"' candidate-head.json >/dev/null; then
+            echo "SALES_AVAILABILITY_CUTOVER_ALREADY_CERTIFIED=1"
+            exit 0
+          fi
+          jq -e --arg release_id "$RELEASE_ID" '
+            .schema_version == 2 and .head.release_id == $release_id and
+            .head.phase == "CERTIFICATION_IN_FLIGHT" and
+            .head.certification.status == "CONSUMED" and
+            (.state_hash | test("^[a-f0-9]{64}$"))
+          ' candidate-head.json >/dev/null || { echo "SALES_AVAILABILITY_CUTOVER_CERTIFY_STATE_INVALID" >&2; exit 1; }
+          jq -n --slurpfile current candidate-head.json --arg order "$INPUT_CERTIFICATION_ORDER_ID" '
+            {release_id: $current[0].head.release_id, candidate_generation: $current[0].head.candidate_generation,
+             expected_state_hash: $current[0].state_hash, order_id: $order}
+          ' > certify.json
+          api -X POST --data-binary @certify.json "$PUBLIC_API_URL/v1/internal/release-control/candidates/certification/certify" > certified.json
+          jq -e --arg release_id "$RELEASE_ID" '.head.release_id == $release_id and .head.phase == "CERTIFIED"' certified.json >/dev/null || { echo "SALES_AVAILABILITY_CUTOVER_CERTIFY_TRANSITION_INVALID" >&2; exit 1; }
 
       - name: Complete only a certified authoritative candidate
         if: env.INPUT_STAGE == 'complete'
