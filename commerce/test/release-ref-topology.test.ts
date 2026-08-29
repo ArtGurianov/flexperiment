@@ -42,21 +42,21 @@ const productionDeploy = resolve("origin/production-deploy");
 const main = resolve("origin/main");
 
 describe("durable release ref topology", () => {
-  it("has the refs it needs to judge, or is a checkout that cannot judge them", () => {
-    // A shallow or fork checkout legitimately lacks these. Skipping is honest;
-    // asserting on absent refs would be a test that passes for the wrong reason.
-    if (!productionDeploy || !main) {
-      expect(productionDeploy ?? main).toBeUndefined();
-      return;
-    }
-    expect(productionDeploy).toMatch(/^[0-9a-f]{40}$/);
-    expect(main).toMatch(/^[0-9a-f]{40}$/);
+  // A fork or a checkout without these refs legitimately cannot judge them, so
+  // those runs skip. CI fetches them explicitly (see test.yml) precisely so the
+  // skip is not the normal outcome - a guard that always skips is not a guard.
+  const judged = productionDeploy && main ? { productionDeploy, main } : undefined;
+
+  it("resolves the refs it judges", (ctx) => {
+    if (!judged) return ctx.skip();
+    expect(judged.productionDeploy).toMatch(/^[0-9a-f]{40}$/);
+    expect(judged.main).toMatch(/^[0-9a-f]{40}$/);
   });
 
-  it("keeps main a descendant of what production actually runs", () => {
-    if (!productionDeploy || !main) return;
+  it("keeps main a descendant of what production actually runs", (ctx) => {
+    if (!judged) return ctx.skip();
     expect(
-      isAncestor(productionDeploy, main),
+      isAncestor(judged.productionDeploy, judged.main),
       `production-deploy is not an ancestor of main.\n`
       + `  production-deploy: ${describes("origin/production-deploy")}\n`
       + `  main:              ${describes("origin/main")}\n`
