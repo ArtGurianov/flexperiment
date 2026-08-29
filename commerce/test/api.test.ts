@@ -874,6 +874,29 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
+  it("exposes the emergency latch on internal release-control status without admin credentials", async () => {
+    // The release controller must be able to see the operator's latch to refuse
+    // completing into open sales, but must never be able to set it: an admin
+    // credential would also let it refund, cancel and mutate.
+    const previousToken = process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
+    process.env.COMMERCE_RELEASE_CONTROL_TOKEN = "release-control-test-token";
+    const { db, app } = appFixture();
+    try {
+      const headers = { Authorization: "Bearer release-control-test-token" };
+      const open = await app.request("http://api.flexperiment.ru/v1/internal/release-control/status", { headers });
+      expect(open.status).toBe(200);
+      expect(await open.json()).toMatchObject({ emergency_sales_paused: false });
+
+      db.prepare("UPDATE emergency_sales_gate SET sales_paused = 1 WHERE singleton = 1").run();
+      const latched = await app.request("http://api.flexperiment.ru/v1/internal/release-control/status", { headers });
+      expect(await latched.json()).toMatchObject({ emergency_sales_paused: true });
+    } finally {
+      db.close();
+      if (previousToken === undefined) delete process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
+      else process.env.COMMERCE_RELEASE_CONTROL_TOKEN = previousToken;
+    }
+  });
+
   it("exposes only authenticated, redacted certification evidence", async () => {
     const previousSourceCommit = process.env.SOURCE_COMMIT;
     process.env.SOURCE_COMMIT = "547b25be75849a84c2f0f37ea9aa7fe7e485818c";
