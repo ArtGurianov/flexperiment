@@ -57,6 +57,18 @@ describe("controlled email delivery-outcome cutover", () => {
       expect(post).toBeGreaterThan(gate);
     });
 
+    it("proves the capability appeared with the candidate, while abort is still available", () => {
+      const handshake = workflow.slice(at("Prove the emergency capability appeared with the candidate"), at("Classify an explicitly evidenced deployed runtime-readiness defect"));
+      expect(handshake).toContain("EMAIL_DELIVERY_OUTCOME_CUTOVER_EMERGENCY_CAPABILITY_MISSING_AFTER_DEPLOY");
+      expect(handshake).toContain("EMAIL_DELIVERY_OUTCOME_CUTOVER_EMERGENCY_LATCH_SET_TOO_EARLY");
+      // Existence is asserted separately: an absent field must never read as
+      // false, and the currently deployed runtime genuinely lacks it.
+      expect(handshake).toContain(`has("emergency_sales_paused")`);
+      expect(handshake).toContain(".emergency_sales_paused == false");
+      // Runs at prepare, so a failure lands at DEPLOYED_READ_ONLY.
+      expect(handshake).toContain("env.INPUT_STAGE == 'prepare'");
+    });
+
     it("orders the certify gate before the complete gate", () => {
       expect(at("Prove the emergency stop is clear before a real payment"))
         .toBeLessThan(at("Complete only a certified authoritative candidate"));
