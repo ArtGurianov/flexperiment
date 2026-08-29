@@ -15,6 +15,16 @@ on:
         description: Exact current production-deploy SHA required as topology evidence.
         required: true
         type: string
+      mode:
+        description: >-
+          ordinary = forward promotion from a healthy candidate.
+          repair_diverged_candidate = one-shot repair when runtime-candidate no
+          longer descends from production-deploy, which blocks every generic
+          deploy. Refuses unless the candidate is genuinely diverged.
+        required: false
+        type: choice
+        default: ordinary
+        options: [ordinary, repair_diverged_candidate]
       reason:
         description: Bounded human-readable audit reason for this ordinary candidate promotion.
         required: true
@@ -38,6 +48,7 @@ jobs:
       INPUT_EXPECTED_RUNTIME_CANDIDATE_SHA: ${{ inputs.expected_runtime_candidate_sha }}
       INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA: ${{ inputs.expected_production_deploy_sha }}
       INPUT_REASON: ${{ inputs.reason }}
+      INPUT_MODE: ${{ inputs.mode || 'ordinary' }}
       RUNTIME_CANDIDATE_REF_TOKEN: ${{ secrets.RUNTIME_CANDIDATE_REF_TOKEN }}
     steps:
       - uses: actions/checkout@v4
@@ -63,6 +74,7 @@ jobs:
           [[ "$INPUT_EXPECTED_RUNTIME_CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_EXPECTED_RUNTIME_CANDIDATE_SHA_INVALID" >&2; exit 1; }
           [[ "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_EXPECTED_PRODUCTION_DEPLOY_SHA_INVALID" >&2; exit 1; }
           [[ "$INPUT_REASON" =~ ^[[:print:]]{1,240}$ ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_REASON_INVALID" >&2; exit 1; }
+          [[ "$INPUT_MODE" == ordinary || "$INPUT_MODE" == repair_diverged_candidate ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_MODE_INVALID" >&2; exit 1; }
 
       - name: Resolve exact remote refs and prove ordinary promotion topology
         run: |
@@ -82,9 +94,23 @@ jobs:
           git cat-file -e "$INPUT_TARGET_SHA^{commit}" || { echo "RUNTIME_CANDIDATE_TARGET_NOT_COMMIT" >&2; exit 1; }
           candidate_source_branch="$(git for-each-ref --format='%(refname:short)' --contains "$INPUT_TARGET_SHA" 'refs/remotes/origin/runtime/*' | head -n 1)"
           [[ -n "$candidate_source_branch" ]] || { echo "RUNTIME_CANDIDATE_TARGET_NOT_PUBLISHED_RUNTIME_BRANCH" >&2; exit 1; }
-          git merge-base --is-ancestor "$actual_production_deploy" "$actual_runtime_candidate" || { echo "RUNTIME_CANDIDATE_NOT_DESCENDANT_OF_PRODUCTION" >&2; exit 1; }
+          # The target must descend from production-deploy in BOTH modes: that
+          # is the property a generic deploy asserts, and the one repair exists
+          # to restore. Only the two assertions about the *current* candidate
+          # differ, because in repair mode the current candidate is precisely
+          # what is broken.
           git merge-base --is-ancestor "$actual_production_deploy" "$INPUT_TARGET_SHA" || { echo "RUNTIME_CANDIDATE_TARGET_NOT_DESCENDANT_OF_PRODUCTION" >&2; exit 1; }
-          git merge-base --is-ancestor "$actual_runtime_candidate" "$INPUT_TARGET_SHA" || { echo "RUNTIME_CANDIDATE_TARGET_NOT_DESCENDANT_OF_CURRENT" >&2; exit 1; }
+          if [[ "$INPUT_MODE" == ordinary ]]; then
+            git merge-base --is-ancestor "$actual_production_deploy" "$actual_runtime_candidate" || { echo "RUNTIME_CANDIDATE_NOT_DESCENDANT_OF_PRODUCTION" >&2; exit 1; }
+            git merge-base --is-ancestor "$actual_runtime_candidate" "$INPUT_TARGET_SHA" || { echo "RUNTIME_CANDIDATE_TARGET_NOT_DESCENDANT_OF_CURRENT" >&2; exit 1; }
+          else
+            # Self-disabling: repair is refused on a healthy candidate, so this
+            # mode can never serve as a general force primitive.
+            if git merge-base --is-ancestor "$actual_production_deploy" "$actual_runtime_candidate"; then
+              echo "RUNTIME_CANDIDATE_REPAIR_NOT_DIVERGED" >&2
+              exit 1
+            fi
+          fi
           [[ "$INPUT_TARGET_SHA" != "$actual_runtime_candidate" ]] || { echo "RUNTIME_CANDIDATE_TARGET_ALREADY_CURRENT" >&2; exit 1; }
           {
             echo "ACTUAL_RUNTIME_CANDIDATE=$actual_runtime_candidate"
@@ -136,6 +162,7 @@ jobs:
           fi
           {
             echo "## Runtime candidate promotion"
+            echo "- Mode: $INPUT_MODE"
             echo "- Controller SHA: $CONTROLLER_SHA"
             echo "- Reason: $INPUT_REASON"
             echo "- Production deploy before: $ACTUAL_PRODUCTION_DEPLOY"
