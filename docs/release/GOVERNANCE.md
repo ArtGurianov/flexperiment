@@ -49,12 +49,18 @@ probed against the live remote rather than trusted from its API response.
 | direct push to `main` | rejected — `GH006`, naming both the PR requirement and the `test` check |
 | force push to `main` | rejected — `GH006` |
 | delete `main` | rejected — refused as the current default branch |
-| merge with `test` not yet green | blocked — PR unmergeable while the check is pending |
+| merge with `test` not yet green | rejected — "the base branch policy prohibits the merge" |
 | merge with `test` green | permitted — this document's own pull request |
 
 The last two are why this file arrived through a pull request instead of a push:
 the positive probe has to be a real merge, or it proves only that the negative
 ones fire.
+
+Admin bypass is closed on the push path by direct evidence rather than by
+reading the flag: the rejected pushes above were made with a token holding admin
+on this repository. The merge path shares the same `enforce_admins` setting but
+was not separately probed, so treat it as configured-and-consistent rather than
+demonstrated.
 
 Note that the deletion refusal above is issued by the default-branch rule, which
 fires before `allow_deletions`. Both are set; only one gets to speak. If `main`
