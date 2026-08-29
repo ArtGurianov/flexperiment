@@ -82,13 +82,18 @@ jobs:
           git cat-file -e "$INPUT_TARGET_SHA^{commit}" || { echo "RUNTIME_CANDIDATE_TARGET_NOT_COMMIT" >&2; exit 1; }
           candidate_source_branch="$(git for-each-ref --format='%(refname:short)' --contains "$INPUT_TARGET_SHA" 'refs/remotes/origin/runtime/*' | head -n 1)"
           [[ -n "$candidate_source_branch" ]] || { echo "RUNTIME_CANDIDATE_TARGET_NOT_PUBLISHED_RUNTIME_BRANCH" >&2; exit 1; }
-          # Ordinary promotion is forward-only from a healthy candidate. A
-          # diverged candidate is NOT repaired here and must never fall back
-          # into repair: that is controlled-runtime-candidate-repair.yml, which
-          # carries its own break-glass approval boundary.
+          # runtime-candidate is a proposal register, never an authority. The
+          # only ancestry that matters is that the NEW target descends from what
+          # production is actually running - the previous proposal's value and
+          # its ancestry are irrelevant to whether it may be replaced.
+          #
+          # Requiring the old value to be healthy made a stale pointer
+          # unreplaceable by the ordinary path, and a successful cutover leaves
+          # it stale with no bug involved: the release advances production-deploy
+          # while the pointer stays put. That is why this needed a break-glass
+          # repair twice in one day, for a pointer that was never broken - only
+          # superseded.
           git merge-base --is-ancestor "$actual_production_deploy" "$INPUT_TARGET_SHA" || { echo "RUNTIME_CANDIDATE_TARGET_NOT_DESCENDANT_OF_PRODUCTION" >&2; exit 1; }
-          git merge-base --is-ancestor "$actual_production_deploy" "$actual_runtime_candidate" || { echo "RUNTIME_CANDIDATE_NOT_DESCENDANT_OF_PRODUCTION" >&2; exit 1; }
-          git merge-base --is-ancestor "$actual_runtime_candidate" "$INPUT_TARGET_SHA" || { echo "RUNTIME_CANDIDATE_TARGET_NOT_DESCENDANT_OF_CURRENT" >&2; exit 1; }
           [[ "$INPUT_TARGET_SHA" != "$actual_runtime_candidate" ]] || { echo "RUNTIME_CANDIDATE_TARGET_ALREADY_CURRENT" >&2; exit 1; }
           {
             echo "ACTUAL_RUNTIME_CANDIDATE=$actual_runtime_candidate"

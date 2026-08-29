@@ -370,49 +370,56 @@ deliberately invoking one specific, already-reviewed, already-deployed
 runtime's own semantics to judge evidence about that same
 runtime - the two are exact opposites, not the same mistake.
 
-## Candidate repair is break glass, not a lifecycle action
+## `runtime-candidate` is never an authority
 
-`controlled-runtime-candidate-repair.yml` exists because a cutover that
-advances `production-deploy` without moving `runtime-candidate` leaves the
-candidate no longer descending from production, which blocks every generic
-deploy - and the ordinary promotion path cannot repair it, because it
-validates that same property first.
+It is a **proposal register**. Before acquire it may propose a target; after
+acquire the generation's recorded `target_sha` is the sole epoch authority and
+the pointer is irrelevant. It is authority at no point in between.
 
-It was used twice within days of being written. At that rate it is a
-production escape hatch, not a lifecycle step, and an escape hatch sharing an
-approval boundary with routine actions is one mis-click from being routine.
-It therefore:
+The only ancestry that decides whether a proposal may be adopted is:
 
-- lives in its own workflow, so the ordinary path **MUST NOT** fall back into
-  it;
-- runs in the separate `production-break-glass` environment, so approval can
-  be required independently;
-- requires an `incident_reference` as well as a reason, and records actor,
-  run id, target, and both before/after ref states as audit;
-- refuses on a healthy candidate (`RUNTIME_CANDIDATE_REPAIR_NOT_DIVERGED`), so
-  it can never become a general force primitive;
-- waives **only** the two assertions about the current candidate. Descent from
-  `production-deploy`, published `runtime/*` provenance and the lease-backed
-  CAS are never waived;
-- never deploys and never mutates release-control state.
+```text
+production-deploy  ancestor-of  NEW target
+```
 
-Each use is a signal that the dual-authority problem below is still open.
-Repairing the ref again is treating the symptom.
+The previous proposal's value and its ancestry **MUST NOT** gate its own
+replacement. Two checks that did exactly that were removed on 2026-08-29:
 
-## `runtime-candidate` is a second mutable authority, and that is the defect
+```text
+production-deploy ancestor-of current runtime-candidate   (removed)
+current runtime-candidate ancestor-of new target          (removed)
+```
 
-A successful release is sufficient on its own to invalidate the topology: the
-release state machine advances `candidate_generation`/`target_sha` and
-`production-deploy`, while `runtime-candidate` stays where it was. No local
-bug is required. Both live divergences observed on 2026-08-28/29 arose exactly
-this way.
+They looked like safety and were not. A successful cutover advances
+`production-deploy` while the pointer stays put, so the pointer goes stale with
+no bug involved - and those checks then made the stale value unreplaceable by
+the ordinary path. That forced a break-glass repair twice in one day for a
+pointer that was never broken, only superseded.
 
-The target state is that after acquire, the recorded immutable `target_sha`
-inside the generation is the sole candidate authority. `prepare`, `certify`,
-`promote`, `abort` and resume **MUST NOT** re-resolve the mutable ref or
-compare an in-flight epoch against its current value. `runtime-candidate`
-remains a dispatch convenience, a provenance pointer and a CI hygiene target -
-not part of the correctness of a generation already under way.
+The pointer's value is still read, as a **CAS lease** rather than an authority:
+a concurrent writer must never be silently clobbered
+(`--force-with-lease=refs/heads/runtime-candidate:<observed>`). Those are
+different functions and only the first was wrong.
+
+For the same reason there is **no CI gate** on
+`production-deploy ancestor-of runtime-candidate`. Making ordinary staleness a
+CI failure would reintroduce the same dual authority through the test suite:
+the runtime treating a stale pointer as fine while CI called it illegal.
+`production-deploy ancestor-of main` remains a required invariant - that one
+guards against a semantic rollback and is not a proposal.
+
+### Why the break-glass repair controller was deleted
+
+`controlled-runtime-candidate-repair.yml` existed for one capability: relaxing
+the two current-pointer assertions above. With those gone it had no legitimate
+operation left - every other invariant it faced (descent from production,
+`runtime/*` provenance, the CAS lease, release-control state) is one it must
+never bypass. A second privileged implementation of an operation the ordinary
+path performs safely is attack surface, not resilience.
+
+It is kept in history (`903a6a7`) rather than maintained. It was not wasted:
+building it is what localised the invariant that turned out to be wrong. The
+root cause was eliminated rather than the recovery automated.
 
 ## A generic deploy acquires with the inventory expectation, never a filename
 

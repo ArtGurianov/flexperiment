@@ -67,16 +67,18 @@ describe("runtime-candidate authority boundary", () => {
   });
 
   /**
-   * The repair controller's whole purpose is a diverged pointer, so it reads
-   * the ref freely - but it must never take ownership, deploy, or touch
-   * release-control state. Its blast radius is exactly one ref.
+   * The break-glass repair controller was removed once the ordinary path could
+   * replace a stale pointer. Its only unique capability was relaxing the
+   * current-pointer assertions, and those no longer exist; keeping a second
+   * privileged implementation of the same operation would be pure attack
+   * surface. See DEPLOYMENT_INVARIANTS: the root cause was eliminated rather
+   * than the recovery automated.
    */
-  it("keeps break-glass repair scoped to the pointer alone", () => {
-    const repair = readFileSync(`${directory}/controlled-runtime-candidate-repair.yml`, "utf8");
-    expect(ACQUIRES.test(repair)).toBe(false);
-    for (const forbidden of ["release-control/", "COOLIFY", "PRODUCTION_DEPLOY_REF_TOKEN"]) {
-      expect(repair, `repair must not reference ${forbidden}`).not.toContain(forbidden);
-    }
+  it("has no break-glass repair controller to fall back to", () => {
+    expect(controllers).not.toContain("controlled-runtime-candidate-repair.yml");
+    const promotion = readFileSync(`${directory}/controlled-runtime-candidate-promotion.yml`, "utf8");
+    expect(promotion).not.toContain("RUNTIME_CANDIDATE_REPAIR_NOT_DIVERGED");
+    expect(promotion).not.toContain("repair_diverged_candidate");
   });
 
   /**

@@ -48,9 +48,11 @@ describe("controlled runtime-candidate promotion workflow", () => {
     expect(reconfirm).toBeGreaterThan(topology);
     expect(mutation).toBeGreaterThan(reconfirm);
     expect(postState).toBeGreaterThan(mutation);
-    expect(workflow).toContain('git merge-base --is-ancestor "$actual_production_deploy" "$actual_runtime_candidate"');
+    // The only ancestry that decides adoption: the NEW target descends from
+    // what production runs. The previous proposal's value never gates it.
     expect(workflow).toContain('git merge-base --is-ancestor "$actual_production_deploy" "$INPUT_TARGET_SHA"');
-    expect(workflow).toContain('git merge-base --is-ancestor "$actual_runtime_candidate" "$INPUT_TARGET_SHA"');
+    expect(workflow).not.toContain('git merge-base --is-ancestor "$actual_production_deploy" "$actual_runtime_candidate"');
+    expect(workflow).not.toContain('git merge-base --is-ancestor "$actual_runtime_candidate" "$INPUT_TARGET_SHA"');
     expect(workflow).toContain("RUNTIME_CANDIDATE_TARGET_ALREADY_CURRENT");
     expect(workflow.match(/git push --force-with-lease=/g)).toHaveLength(1);
     expect(workflow).toContain("set -uo pipefail");
@@ -70,14 +72,13 @@ describe("controlled runtime-candidate promotion workflow", () => {
    * own break-glass controller with its own approval boundary, and the
    * ordinary path must never fall back into it.
    */
-  it("cannot repair a diverged candidate and offers no fallback into repair", () => {
+  it("replaces a stale pointer through the ordinary path, needing no repair mode", () => {
     expect(workflow).not.toContain("repair_diverged_candidate");
-    expect(workflow).not.toContain("RUNTIME_CANDIDATE_REPAIR_NOT_DIVERGED");
     expect(workflow).not.toContain("INPUT_MODE");
-    // Both current-candidate assertions are unconditional here.
-    expect(workflow).toContain('git merge-base --is-ancestor "$actual_production_deploy" "$actual_runtime_candidate"');
-    expect(workflow).toContain('git merge-base --is-ancestor "$actual_runtime_candidate" "$INPUT_TARGET_SHA"');
-    expect(workflow).toContain("RUNTIME_CANDIDATE_NOT_DESCENDANT_OF_PRODUCTION");
+    expect(workflow).not.toContain("RUNTIME_CANDIDATE_NOT_DESCENDANT_OF_PRODUCTION");
+    // The pointer is still read - as a CAS lease, not as an authority.
+    expect(workflow).toContain('git push --force-with-lease="refs/heads/runtime-candidate:${INPUT_EXPECTED_RUNTIME_CANDIDATE_SHA}"');
+    expect(workflow).toContain("RUNTIME_CANDIDATE_CAS_MISMATCH");
   });
 
   it("does not couple candidate promotion to deployment or release-control mutation", () => {
