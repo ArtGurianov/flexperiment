@@ -61,10 +61,19 @@ CREATE TABLE outbox_attempt (
   message_id TEXT NOT NULL REFERENCES email_outbox(id) ON DELETE CASCADE,
   attempt_no INTEGER NOT NULL CHECK (attempt_no >= 1),
 
-  -- Its own key. Reuse is correct WITHIN an attempt (it is what makes an
-  -- ambiguous replay safe) and wrong ACROSS attempts, where it would make the
-  -- resend a no-op at the provider. Derived, so it is reproducible:
-  --   sha256(message_id || ':' || attempt_no)
+  -- Its own key. Reuse is correct WITHIN an attempt - it is what makes an
+  -- ambiguous replay safe - and wrong ACROSS attempts, where it would make the
+  -- resend a no-op at the provider.
+  --
+  -- Opaque, never derived. enqueueEmail already mints these with publicId()
+  -- (domain.ts:2939), so a derivation rule would both contradict production and
+  -- add a second canonicalization that layers could reproduce differently -
+  -- the mistake release-expectation.ts exists to have fixed. Safety comes from
+  -- persisting the key before any provider call and reusing it within the
+  -- attempt, not from being recomputable.
+  --
+  --   attempt #1    copy the message's existing key byte-for-byte
+  --   attempt #2+   mint a fresh publicId(), persist, then call the provider
   provider_idempotence_key TEXT NOT NULL UNIQUE,
 
   requested_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -84,16 +93,29 @@ CREATE TABLE outbox_attempt (
   lease_owner TEXT,
   lease_expires_at TEXT,
 
-  -- NULL while in flight. Once set, the row is immutable.
+  -- NULL means acceptance or refusal is NOT ESTABLISHED - in flight, or
+  -- ambiguous and unsettled. Settling is monotone and one-way; once non-NULL
+  -- the row is immutable.
   --
-  -- ACCEPTED, not DELIVERED: this records whether the PROVIDER ACCEPTED THIS
-  -- SEND, which is knowable when the attempt ends. Whether the message reached
-  -- anyone is decided later by provider events and belongs to the message.
-  -- Naming it DELIVERED would repeat exactly the conflation 0039 removed, and
-  -- would force a terminal attempt to be rewritten when a bounce arrives.
-  outcome TEXT CHECK (outcome IS NULL OR outcome IN ('ACCEPTED', 'KNOWN_FAILED', 'UNRESOLVED')),
+  --   NULL -> ACCEPTED       provider accepted this send
+  --   NULL -> KNOWN_FAILED   a response refused it
+  --
+  -- There is deliberately no UNRESOLVED here. An unresolved send is one whose
+  -- outcome was never established, and later provider evidence may still settle
+  -- it - which an immutable terminal UNRESOLVED would forbid. Ambiguity is a
+  -- message-level fact and 0039 already models it there.
+  --
+  -- ACCEPTED, not DELIVERED: this records whether the provider accepted THIS
+  -- SEND, knowable when the attempt ends. Whether anyone received it is decided
+  -- later by provider events and belongs to the message. Naming it DELIVERED
+  -- would repeat the conflation 0039 removed and force a terminal attempt to be
+  -- rewritten when a bounce arrives.
+  outcome TEXT CHECK (outcome IS NULL OR outcome IN ('ACCEPTED', 'KNOWN_FAILED')),
   failure_code TEXT,
   failure_detail TEXT,
+  -- Automatic reconciliation budget spent. Scheduling metadata, never evidence:
+  -- it must not settle `outcome`, and no elapsed time may either.
+  reconciliation_exhausted_at TEXT,
 
   UNIQUE (message_id, attempt_no)
 );
@@ -106,9 +128,33 @@ CREATE UNIQUE INDEX outbox_attempt_active_unique
 CREATE INDEX outbox_attempt_message_idx ON outbox_attempt(message_id, attempt_no);
 ```
 
-Immutability of a terminal attempt is enforced the way 0039 enforced its
+Immutability of a *settled* attempt is enforced the way 0039 enforced its
 biconditional — a `BEFORE UPDATE` trigger that aborts when `OLD.outcome IS NOT
-NULL`, since SQLite cannot express it as a constraint.
+NULL`, since SQLite cannot express it as a constraint. An unsettled attempt
+stays mutable precisely so later evidence can settle it.
+
+### The consequence worth noticing
+
+Dropping `UNRESOLVED` from the attempt makes the resend rule structural rather
+than merely asserted. A message that is `FAILED + UNRESOLVED` has an attempt
+whose `outcome IS NULL`, and that attempt occupies the one active slot:
+
+```text
+CREATE UNIQUE INDEX outbox_attempt_active_unique
+  ON outbox_attempt(message_id) WHERE outcome IS NULL;
+```
+
+So no resend attempt can be inserted beside it. The invariant that mattered most
+in this whole design —
+
+```text
+FAILED + UNRESOLVED   no resend, ever
+```
+
+— stops depending on a check inside the transaction and becomes a thing the
+database cannot represent. The `KNOWN_FAILED` assert stays as defence in depth,
+but it is no longer the only thing standing between an unresolved send and a
+duplicate email.
 
 ## Column ownership
 
@@ -166,53 +212,112 @@ and treats worker quiescence as **mandatory**, not as a convenience.
 
 ## Authority cutover
 
-`migrate()` runs at API startup (`commerce/src/server.ts:10`), and the worker is
-a separate container with no suspension mechanism — just a 30-second
-`setInterval`. So by default the migration lands while the *old* worker is still
-running and still writing legacy attempt facts.
+Stopping the worker is necessary and **not sufficient**. The worker is not the
+only writer of attempt facts.
+
+`POST /v1/webhooks/unisender` (`api.ts:204`) reaches `applyUnisenderDelivery()`
+and then `applyEmailObservation()`, which writes `status`, `delivery_outcome`,
+`job_id`, `lease_owner`, `lease_expires_at` and `next_attempt_at` on
+`email_outbox`. That path is driven by the provider, runs in the API process,
+and is entirely independent of worker sweeps:
 
 ```text
-T0  API container starts, applies 0040, backfills attempt #1
-T1  old worker (still alive) writes email_outbox.last_error, next_attempt_at, lease
-T2  new worker starts, reads outbox_attempt, sees pre-T1 state
+worker stopped, backfill done
+        ↓
+provider callback arrives
+        ↓
+API writes legacy attempt facts
+        ↓
+outbox_attempt is stale at birth
 ```
 
-Three shapes were considered:
+Shutting the API off instead is not an option — callbacks would be lost, and the
+release machinery deliberately keeps the API answering throughout a cutover.
+
+### A durable authority selector
+
+The cutover is a state change in the database, not an orchestration window:
+
+```text
+attempt_authority       LEGACY | ATTEMPT
+worker_sweeps_paused    0 | 1
+revision                N            -- CAS token
+```
+
+Every attempt-fact writer — worker and webhook alike — reads the selector and
+projects into whichever store is authoritative. Activation is one transaction:
+
+```text
+authority = LEGACY, worker paused, no lease_owner set, nothing in SENDING
+
+BEGIN IMMEDIATE
+  backfill attempt #1 for every message from its legacy columns
+  assert every message that needs one has exactly one attempt
+  CAS attempt_authority LEGACY -> ATTEMPT at revision N
+COMMIT
+
+authority = ATTEMPT
+```
+
+`BEGIN IMMEDIATE` serializes a callback against the backfill, which is what
+removes the window rather than narrowing it:
+
+```text
+callback commits BEFORE   its write is legacy, and the backfill reads it
+callback commits AFTER    it reads ATTEMPT and writes the attempt row
+```
+
+There is no interleaving in which a legacy write lands after the snapshot that
+was supposed to capture it, and no dual-write phase to keep consistent.
+
+The worker stays paused across the boundary and resumes only once the
+attempt-aware build is proven deployed — that part is still required, because it
+is what prevents the split lease.
+
+**`activate` is therefore defined durably**, not as a sequence of steps:
+
+```text
+activate = atomic backfill + authority CAS LEGACY -> ATTEMPT
+```
+
+which also makes replay obvious: a crashed activation either committed or did
+not, and re-running reads the selector to decide.
+
+### Shapes considered
 
 | Shape | Verdict |
 |---|---|
-| **A. Quiesce the worker around the backfill** | **Chosen.** Stop the worker, prove no active leases, apply and backfill, deploy the attempt-aware worker, resume. |
-| B. Compatibility phase writing both stores atomically | Rejected. It requires the old runtime to already know about the new table, which it does not, and it does not solve the split-lease double-send at all. |
-| C. Materialize attempt #1 lazily on first touch | Rejected for the same reason. It removes the stale-snapshot window neatly, but two workers with two lease stores can still both claim the same message. |
-
-The capability shape A needs does not exist today: nothing can stop the worker
-and prove it stopped. **That capability is the first implementation task, ahead
-of the migration.** It needs to establish, durably:
-
-```text
-worker sweeps stopped
-no lease_owner set anywhere in email_outbox
-no row in SENDING
-```
+| **Durable selector + paused worker + atomic activation** | **Chosen.** Covers every writer, needs no API downtime, no dual-write phase, and gives crash-replay a single durable fact to read. |
+| Quiesce the worker only | Rejected. Necessary but not sufficient — the webhook keeps writing. |
+| Compatibility phase writing both stores | Rejected. Requires the old runtime to know the new table, and does not address the split lease. |
+| Lazy materialization on first touch | Rejected. Removes the stale snapshot but leaves two workers holding two lease stores. |
 
 ### The seam to prove
 
-> No legacy attempt-fact write may occur after the authoritative backfill point.
+> After the authority CAS commits, no writer may write a legacy attempt fact.
 
-This must be proven with two independent connections — one impersonating the old
-worker, one performing the backfill — in the style of
-`commerce/test/support/concurrency-fixture.ts`. A source-level assertion is not
-proof: the parameter-bound write that source review missed in 0039, and which
-only the database trigger caught, is exactly the failure mode here.
+Two independent connections, in the style of
+`commerce/test/support/concurrency-fixture.ts`: one impersonating a provider
+callback, one performing the activation, interleaved in both orders. A
+source-level assertion would not be proof — the parameter-bound write that source
+review missed in 0039, and that only the database trigger caught, is exactly the
+failure mode here.
 
 ### Preventing the next one
 
-The old worker cannot be taught to stand aside for 0040 — it is already
-deployed. But every worker after it can be, cheaply: refuse to sweep when the
-applied migration head is newer than the build knows about, and record that
-refusal as evidence rather than sweeping on stale assumptions. That makes future
-authority cutovers fail closed instead of needing bespoke orchestration each
-time, and it is worth shipping regardless of when 0040 lands.
+The old worker cannot be taught to stand aside for 0040; it is already deployed.
+Every later build can be, cheaply — and the assertion should be a set
+comparison, not a head comparison, because `schema_migrations` already stores
+the applied versions as a set and the release machinery hashes the whole sorted
+inventory rather than trusting one filename:
+
+```text
+applied_migration_versions  ⊆  build_known_migration_versions
+```
+
+If `applied − known` is non-empty, refuse to sweep and name the unknown
+versions. "Head is newer" is another proxy of the kind this programme keeps
+finding to be subtly wrong.
 
 ## Crash boundaries
 
@@ -265,11 +370,11 @@ response rather than minting anything.
 
 | Invariant | Enforced by |
 |---|---|
-| Only a known failure may be resent | `delivery_outcome = 'KNOWN_FAILED'` assert inside the transaction |
+| Only a known failure may be resent | Structural: an unsettled attempt (`outcome IS NULL`) holds the one active slot, so no attempt can be inserted beside it. The `KNOWN_FAILED` assert inside the transaction remains as defence in depth. |
 | A terminal attempt is never modified | `BEFORE UPDATE` trigger on `OLD.outcome IS NOT NULL` |
 | Resend creates a new attempt number | `UNIQUE(message_id, attempt_no)` |
 | At most one active attempt | partial unique index on `outcome IS NULL` |
-| A new attempt never reuses a provider key | `UNIQUE` on the derived key |
+| A new attempt never reuses a provider key | `UNIQUE` on the key column; keys are opaque and freshly minted per attempt |
 | Payload is byte-identical to the original | snapshot lives on the message; the attempt has no payload |
 | A delivered message cannot be resent | message-level guard, not the failed attempt alone |
 | Duplicate resend requests are idempotent | `withAdminCommand` |
@@ -290,14 +395,15 @@ response rather than minting anything.
 
 ```text
 1. this document, reviewed
-2. worker quiescence capability: stop, and prove stopped (no leases, no SENDING)
-3. forward guard: a worker refuses to sweep past a migration head it does not know
+2. durable authority selector + worker pause, with CAS and replay semantics
+3. forward guard: refuse to sweep when applied migrations are not a subset of known
 4. migration 0040: outbox_attempt, immutability trigger - schema only, no backfill
-5. attempt-aware worker built and deployed behind the quiesced window:
-   quiesce -> prove -> backfill attempt #1 -> activate -> resume
-6. audited resend command, transaction exactly as B4 above
-7. admin surface
-8. provider crash and replay tests
+5. every attempt-fact writer reads the selector (worker AND webhook projection)
+6. activate: atomic backfill + authority CAS, worker resumed only after the
+   attempt-aware build is proven deployed
+7. audited resend command, transaction exactly as B4 above
+8. admin surface
+9. provider crash and replay tests
 ```
 
 0040 is deliberately no longer the first task. Until the moment authority
