@@ -2556,6 +2556,29 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT id FROM city_interest_requests WHERE id = ?").get(protectedRow.request_id)).toEqual({ id: protectedRow.request_id });
   });
 
+  it("refuses to repair a superseded epoch whose delivery was never established", () => {
+    // The row reached FAILED because the reconciliation budget ran out, not
+    // because anyone saw it fail. Redacting the old request as a proved failure
+    // would discard the identity needed to reconcile it later, and would treat
+    // "we stopped asking" as "it did not arrive".
+    const setup = fixture(); databases.push(setup.db);
+    const email = "unresolved-repair@example.test";
+    setup.domain.registerCityInterest({ email, city: "novosibirsk" });
+    const old = setup.db.prepare(`SELECT request.id AS request_id, outbox.id AS outbox_id
+      FROM city_interest_requests request
+      JOIN city_interest_notification_intents intent ON intent.city_interest_request_id = request.id
+      JOIN email_outbox outbox ON outbox.id = intent.outbox_id
+      WHERE request.email_normalized = ?`).get(email) as { request_id: string; outbox_id: string };
+    setup.db.prepare("UPDATE email_outbox SET status = 'FAILED', delivery_outcome = 'UNRESOLVED' WHERE id = ?").run(old.outbox_id);
+    setup.domain.registerCityInterest({ email, city: "novosibirsk" });
+    setup.db.prepare("UPDATE city_interest_requests SET email_normalized = ?, email_hash = ? WHERE id = ?")
+      .run(email, emailHash(email), old.request_id);
+
+    expect(setup.domain.repairSupersededFailedCityInterestRequest(old.request_id)).toBe(false);
+    expect(setup.db.prepare("SELECT email_normalized FROM city_interest_requests WHERE id = ?").get(old.request_id))
+      .toEqual({ email_normalized: email });
+  });
+
   it("repairs only a durably linked superseded FAILED city-interest epoch", () => {
     const setup = fixture(); databases.push(setup.db);
     const email = "superseded-repair@example.test";
@@ -2565,7 +2588,7 @@ describe("commerce domain", () => {
       JOIN city_interest_notification_intents intent ON intent.city_interest_request_id = request.id
       JOIN email_outbox outbox ON outbox.id = intent.outbox_id
       WHERE request.email_normalized = ?`).get(email) as { request_id: string; outbox_id: string };
-    setup.db.prepare("UPDATE email_outbox SET status = 'FAILED' WHERE id = ?").run(old.outbox_id);
+    setup.db.prepare("UPDATE email_outbox SET status = 'FAILED', delivery_outcome = 'KNOWN_FAILED' WHERE id = ?").run(old.outbox_id);
     setup.domain.registerCityInterest({ email, city: "novosibirsk" });
 
     // Model the historical omission: the renewal transition is durable, but
