@@ -20,31 +20,80 @@ const isIn = (path: string, directory: string): boolean => path === directory ||
  * as release-sensitive would make the controlled cutover the only way to ship
  * anything at all.
  */
-export const releaseSemanticsPaths: readonly string[] = [
+/**
+ * The release state machine, its enforcement, and the code that decides which
+ * lane a change belongs in. These share one deploy protocol: pause, deploy,
+ * prove convergence, reopen. Nothing here changes what a durable identity or a
+ * piece of evidence *means*, so a converged runtime is sufficient proof.
+ */
+export const releaseControlSemanticsPaths: readonly string[] = [
   // The sole owner of expectation grammar and canonicalization.
   "commerce/src/release-expectation.ts",
-  // The state machine, its replay, and the evidence it trusts.
+  // The state machine and its replay.
   "commerce/src/release-control.ts",
   "commerce/src/release-generation.ts",
-  "commerce/src/certification-evidence.ts",
   // Gate enforcement and its composition with the emergency stop.
   "commerce/src/sales-gate.ts",
   // The request schema: support the DTO rejects is not support, and widening
   // or narrowing it changes which expectations can exist at all.
+  //
+  // Residual tension, deliberately accepted: this file carries every DTO, not
+  // only the release request, so a checkout contract change lands here too. It
+  // stays in this category because that is what makes the release expectation
+  // reachable at all; if the DTOs are ever split, the non-release half should
+  // leave the boundary entirely rather than move category.
   "commerce/src/types.ts",
-  // Canonical serialization and hashing - state hashes, inventory hashes.
-  "commerce/src/crypto.ts",
-  // Timestamp parsing behind lease expiry and worker freshness.
-  "commerce/src/utc-timestamp.ts",
-  // Legal manifest shape behind expected legal hashes.
-  "commerce/src/legal-manifest.ts",
-  // Certification evidence asserts exact 101/1/100 kopeck arithmetic.
-  "commerce/src/promo-pricing.ts",
-  "commerce/src/basis-points.ts",
   // The boundary itself, and the deploy readiness it feeds.
   "commerce/src/generic-production-deploy-boundary.ts",
   "commerce/src/generic-production-deploy.ts",
 ];
+
+/**
+ * Also too sensitive for a generic deploy, but for a different reason, and
+ * therefore not deployable by the same protocol.
+ *
+ * Each of these changes what a durable value *means* rather than how release
+ * state is driven:
+ *
+ *   crypto                 hash format behind state and inventory hashes, so
+ *                          CAS identity itself
+ *   certification-evidence what counts as certified
+ *   promo-pricing          the exact 101/1/100 kopeck arithmetic that
+ *   basis-points           certification evidence asserts
+ *   legal-manifest         the shape behind expected legal hashes
+ *   utc-timestamp          lease expiry and worker freshness
+ *
+ * A converged runtime does not prove any of these correct - the old and new
+ * meanings can each be internally consistent and still disagree about durable
+ * state written under the other. They need an evidence protocol of their own,
+ * so they fail closed out of the release-control lane rather than inheriting
+ * it by sharing a deny category.
+ */
+export const compatibilitySemanticsPaths: readonly string[] = [
+  "commerce/src/crypto.ts",
+  "commerce/src/certification-evidence.ts",
+  "commerce/src/promo-pricing.ts",
+  "commerce/src/basis-points.ts",
+  "commerce/src/legal-manifest.ts",
+  "commerce/src/utc-timestamp.ts",
+];
+
+/**
+ * Why a generic deploy is refused. Deliberately the union: the generic lane
+ * needs one answer, and the categories above exist to decide where a refused
+ * change goes next, which is a different question.
+ */
+export const releaseSemanticsPaths: readonly string[] = [...releaseControlSemanticsPaths, ...compatibilitySemanticsPaths];
+
+export type ReleaseSemanticsCategory = "RELEASE_CONTROL" | "COMPATIBILITY";
+
+/** Every release-semantic category a change set touches, in refusal order. */
+export const releaseSemanticsCategories = (changedPaths: readonly string[]): readonly ReleaseSemanticsCategory[] => {
+  const categories: ReleaseSemanticsCategory[] = [];
+  if (changedPaths.some((path) => compatibilitySemanticsPaths.includes(path))) categories.push("COMPATIBILITY");
+  if (changedPaths.some((path) => releaseControlSemanticsPaths.includes(path))) categories.push("RELEASE_CONTROL");
+  return categories;
+};
 
 /**
  * Generic production deploys never carry schema, legal, or release-surface
