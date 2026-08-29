@@ -38,8 +38,11 @@ function routeFetch(handlers: Record<string, () => unknown>) {
 
 describe("Orders", () => {
   let originalFetch: typeof fetch;
-  beforeEach(() => { originalFetch = global.fetch; });
-  afterEach(() => { global.fetch = originalFetch; vi.restoreAllMocks(); });
+  // Orders seeds `selected` from ?id= and writes it back on change, so without
+  // this reset one test's expanded row leaks into the next as a pre-expanded
+  // accordion and the first click there collapses instead of expands.
+  beforeEach(() => { originalFetch = global.fetch; window.history.replaceState(null, "", "/"); });
+  afterEach(() => { global.fetch = originalFetch; vi.restoreAllMocks(); window.history.replaceState(null, "", "/"); });
 
   it("shows new anonymous orders as ticket admission while retaining legacy names when present", async () => {
     const anonymousOrder = {
@@ -112,8 +115,37 @@ describe("Orders", () => {
     // The already-open evidence panel reflects the new payment status —
     // no remount, no page reload, just the invalidated query refetching.
     await waitFor(() => expect(within(evidencePanel).getByText(/"status": "PARTIALLY_REFUNDED"/)).toBeInTheDocument());
-    // The orders table beside it also picked up the new state.
-    await waitFor(() => expect(within(screen.getByRole("table")).getByText("PARTIALLY_REFUNDED")).toBeInTheDocument());
+    // The order's own row picked up the new state. Scoped to the row rather
+    // than the table: the evidence panel now renders inside the table as the
+    // expanded accordion row, so a table-wide query would also match its JSON.
+    const orderRow = screen.getByText("FX-1").closest("tr")!;
+    await waitFor(() => expect(within(orderRow).getByText("PARTIALLY_REFUNDED")).toBeInTheDocument());
+  });
+
+  it("expands the clicked order inline and collapses it again on a second click", async () => {
+    global.fetch = routeFetch({
+      "/cities": () => ({ cities: [] }),
+      "/occurrences": () => ({ occurrences: [] }),
+      "/orders/order-1/evidence": () => evidenceFor("PAID", 0),
+      "/orders": () => ({ orders: [order] }),
+    });
+    const client = createTestQueryClient();
+    render(<Orders />, { wrapper: (props) => <QueryClientWrapper client={client}>{props.children}</QueryClientWrapper> });
+    await waitFor(() => expect(screen.getByText("FX-1")).toBeInTheDocument());
+
+    const row = screen.getByText("FX-1").closest("tr")!;
+    expect(row).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Order evidence")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("FX-1"));
+    await waitFor(() => expect(screen.getByText("Order evidence")).toBeInTheDocument());
+    expect(row).toHaveAttribute("aria-expanded", "true");
+    // Rendered below the clicked row, inside the same table.
+    expect(screen.getByText("Order evidence").closest("table")).toBe(screen.getByRole("table"));
+
+    fireEvent.click(screen.getByText("FX-1"));
+    await waitFor(() => expect(screen.queryByText("Order evidence")).not.toBeInTheDocument());
+    expect(row).toHaveAttribute("aria-expanded", "false");
   });
 
   it("never invalidates at the all()-width prefix: opening evidence for order-1 survives a refund on a different order's list refresh", async () => {

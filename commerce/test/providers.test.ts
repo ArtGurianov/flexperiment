@@ -169,6 +169,34 @@ describe("provider contracts", () => {
     expect(body.message).not.toHaveProperty("template_id");
   });
 
+  /**
+   * Production 2026-08-24: an unsubscribe from one message suppressed the
+   * address at Unisender, after which five tickets and refund notices were
+   * rejected 204 "No valid recipients". Contractual mail must not carry the
+   * unsubscribe block; consent-based notifications must.
+   */
+  it("puts the unsubscribe block only on consent-based mail, never on contractual mail", async () => {
+    const captured: Record<string, unknown>[] = [];
+    const provider = new UnisenderGoProvider({ apiKey: "test-key-not-a-secret", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async (input, init) => {
+      captured.push(await new Request(input, init).json().then((b: { message: Record<string, unknown> }) => b.message));
+      return Response.json({ status: "success", job_id: "job-1" });
+    });
+    const send = (type: string) => provider.send({ recipientEmail: "buyer@example.test", template: "ticket", type, payload: {}, idempotencyKey: `key-${type}`, outboxId: `outbox-${type}` });
+
+    for (const type of ["TICKET", "REFUND_SUCCEEDED", "CUSTOMER_REFUND_CONFIRMATION", "BOOKING_CANCELLED", "OCCURRENCE_CANCELLED"]) await send(type);
+    expect(captured.map((message) => message.skip_unsubscribe)).toEqual([1, 1, 1, 1, 1]);
+
+    captured.length = 0;
+    for (const type of ["CITY_INTEREST_AVAILABLE", "OCCURRENCE_AVAILABLE"]) await send(type);
+    expect(captured.map((message) => message.skip_unsubscribe)).toEqual([0, 0]);
+
+    // An unknown or absent type falls back to contractual: never risk putting
+    // an unsubscribe link on a ticket.
+    captured.length = 0;
+    await provider.send({ recipientEmail: "buyer@example.test", template: "ticket", payload: {}, idempotencyKey: "key-none", outboxId: "outbox-none" });
+    expect(captured[0].skip_unsubscribe).toBe(1);
+  });
+
   it("classifies a received Unisender HTTP rejection as terminal-safe evidence", async () => {
     const provider = new UnisenderGoProvider({ apiKey: "test-key-not-a-secret", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async () =>
       Response.json({ code: "FORBIDDEN", message: "Sending to buyer@example.test is forbidden; Authorization: test-key-not-a-secret payload: https://flexperiment.ru/ticket#capability" }, { status: 403 }));

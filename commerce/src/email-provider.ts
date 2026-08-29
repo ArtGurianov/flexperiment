@@ -2,8 +2,18 @@ import { renderEmailTemplate } from "./email-templates";
 import { unisenderGoConfigFromEnvironment, type UnisenderGoConfig } from "./provider-config";
 
 export type EmailDeliveryState = "ACCEPTED" | "SENT" | "DELIVERED" | "BOUNCED" | "FAILED" | "UNKNOWN";
+/**
+ * Consent-based mail must carry an unsubscribe link; contractual mail must not.
+ * A ticket or refund confirmation is fulfilment of a paid order, and a customer
+ * who unsubscribes from one can never be sent the other again: Unisender then
+ * rejects every later send to that address with 204 "No valid recipients".
+ * Observed in production on 2026-08-24, which silently blocked five subsequent
+ * tickets and refund notices.
+ */
+export const CONSENT_BASED_EMAIL_TYPES: ReadonlySet<string> = new Set(["CITY_INTEREST_AVAILABLE", "OCCURRENCE_AVAILABLE"]);
+
 export interface EmailProvider {
-  send(input: { recipientEmail: string; template: string; payload: Record<string, unknown>; idempotencyKey: string; outboxId?: string }): Promise<{ jobId: string }>;
+  send(input: { recipientEmail: string; template: string; type?: string; payload: Record<string, unknown>; idempotencyKey: string; outboxId?: string }): Promise<{ jobId: string }>;
   lookup(input: { jobId?: string; idempotencyKey: string }): Promise<{ status: EmailDeliveryState; jobId?: string }>;
 }
 
@@ -152,7 +162,7 @@ const dumpEvidenceFromCsv = (csv: string) => {
 export class UnisenderGoProvider implements EmailProvider, EmailDeliveryEvidenceProvider {
   constructor(readonly config: UnisenderGoConfig, readonly request: typeof fetch = fetch) {}
 
-  async send(input: { recipientEmail: string; template: string; payload: Record<string, unknown>; idempotencyKey: string; outboxId?: string }) {
+  async send(input: { recipientEmail: string; template: string; type?: string; payload: Record<string, unknown>; idempotencyKey: string; outboxId?: string }) {
     if (input.idempotencyKey.length > 64) throw new Error("Unisender idempotence_key exceeds 64 characters.");
     if (!input.outboxId) throw new Error("Unisender requires the persistent outbox id for callback correlation.");
     const rendered = renderEmailTemplate(input.template, input.payload);
@@ -164,6 +174,11 @@ export class UnisenderGoProvider implements EmailProvider, EmailDeliveryEvidence
         global_metadata: { outbox_id: input.outboxId }, body: { html: rendered.html, plaintext: rendered.plaintext }, subject: rendered.subject,
         from_email: this.config.fromEmail, from_name: this.config.fromName, reply_to: this.config.replyToEmail,
         template_engine: "none", idempotence_key: input.idempotencyKey,
+        // Only consent-based mail carries the provider's unsubscribe block. An
+        // unknown type is treated as contractual: never put an unsubscribe link
+        // on a ticket. This does not bypass an existing suppression - that
+        // needs bypass_global + bypass_unsubscribed and Unisender approval.
+        skip_unsubscribe: input.type !== undefined && CONSENT_BASED_EMAIL_TYPES.has(input.type) ? 0 : 1,
       } }),
     });
     const payload = await response.json().catch(() => undefined) as UnisenderSendResponse | undefined;
