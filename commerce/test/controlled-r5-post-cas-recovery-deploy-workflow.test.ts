@@ -107,7 +107,8 @@ describe("controlled R5 post-CAS recovery deploy workflow", () => {
     const deployStep = workflow.indexOf("Deploy exact R5 via the existing Coolify webhook primitive");
     expect(boundary).toBeGreaterThan(-1);
     expect(boundary).toBeLessThan(deployStep);
-    expect(workflow).toContain('git diff --name-only -z "$TOPOLOGY_BASELINE" "$DEPLOYMENT_TARGET" -- commerce/migrations commerce/legal public/legal release-surface-contract.json');
+    // No pathspec: see generic-deploy-boundary-enforcement.test.ts.
+    expect(workflow).toContain('git diff --name-only -z "$TOPOLOGY_BASELINE" "$DEPLOYMENT_TARGET" > recovery-deploy-boundary-paths.bin');
     expect(workflow).toContain("commerce:production-deploy:assert-boundary recovery-deploy-boundary-paths.bin");
   });
 

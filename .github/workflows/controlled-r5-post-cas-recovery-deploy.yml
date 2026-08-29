@@ -144,7 +144,8 @@ jobs:
       - name: Assert no migration/legal/contract boundary crossing since baseline
         run: |
           set -euo pipefail
-          git diff --name-only -z "$TOPOLOGY_BASELINE" "$DEPLOYMENT_TARGET" -- commerce/migrations commerce/legal public/legal release-surface-contract.json > recovery-deploy-boundary-paths.bin
+          # No pathspec: the boundary module owns what counts as sensitive.
+          git diff --name-only -z "$TOPOLOGY_BASELINE" "$DEPLOYMENT_TARGET" > recovery-deploy-boundary-paths.bin
           pnpm commerce:production-deploy:assert-boundary recovery-deploy-boundary-paths.bin
 
       - name: Reread runtime-candidate and production-deploy immediately before the Coolify mutation

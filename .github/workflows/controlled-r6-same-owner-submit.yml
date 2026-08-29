@@ -152,7 +152,8 @@ jobs:
       - name: Assert no migration/legal/contract boundary crossing between R5 and R6
         run: |
           set -euo pipefail
-          git diff --name-only -z "$TOPOLOGY_BASELINE" "$DEPLOYMENT_TARGET" -- commerce/migrations commerce/legal public/legal release-surface-contract.json > submit-boundary-paths.bin
+          # No pathspec: the boundary module owns what counts as sensitive.
+          git diff --name-only -z "$TOPOLOGY_BASELINE" "$DEPLOYMENT_TARGET" > submit-boundary-paths.bin
           pnpm commerce:production-deploy:assert-boundary submit-boundary-paths.bin
 
       - name: Materialize exact R5 once for runtime-pinned readiness parsing

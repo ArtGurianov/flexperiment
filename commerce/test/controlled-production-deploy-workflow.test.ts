@@ -173,9 +173,11 @@ describe("generic controlled production deploy workflow", () => {
     const acquire = workflow.indexOf("Acquire owner and pause registrations");
     expect(preflight).toBeGreaterThan(-1);
     expect(acquire).toBeGreaterThan(preflight);
-    expect(workflow).toContain('git diff --name-only -z "$production_source" "$TARGET_SHA" -- commerce/migrations commerce/legal public/legal release-surface-contract.json');
+    // Deliberately no pathspec. Pinning one here is what kept the widened
+    // RELEASE_SEMANTICS boundary inert: the assertion could only ever see the
+    // directories the shell chose to show it. The module owns the decision.
+    expect(workflow).toContain('git diff --name-only -z "$production_source" "$TARGET_SHA" > generic-deploy-boundary-paths.bin');
     expect(workflow).toContain("commerce:production-deploy:assert-boundary generic-deploy-boundary-paths.bin");
-    expect(workflow).toContain('commerce/legal public/legal release-surface-contract.json');
     expect(workflow).not.toContain("GENERIC_DEPLOY_REQUIRES_CONTROLLED_LEGAL_CUTOVER");
   });
 

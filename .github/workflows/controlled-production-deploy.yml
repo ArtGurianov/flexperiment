@@ -192,7 +192,10 @@ jobs:
           production_source="$(jq -er '.runtime.source_commit' durable-before.json)"
           [[ "$production_source" =~ ^[a-f0-9]{40}$ ]] || { echo "GENERIC_DEPLOY_PRODUCTION_SOURCE_UNAVAILABLE" >&2; exit 1; }
           git cat-file -e "$production_source^{commit}" || { echo "GENERIC_DEPLOY_PRODUCTION_SOURCE_NOT_IN_REPOSITORY" >&2; exit 1; }
-          git diff --name-only -z "$production_source" "$TARGET_SHA" -- commerce/migrations commerce/legal public/legal release-surface-contract.json > generic-deploy-boundary-paths.bin
+          # No pathspec: the boundary module decides what is sensitive, this step
+          # only supplies facts. A pathspec here silently narrowed the boundary
+          # to its original three directories and made RELEASE_SEMANTICS inert.
+          git diff --name-only -z "$production_source" "$TARGET_SHA" > generic-deploy-boundary-paths.bin
           pnpm commerce:production-deploy:assert-boundary generic-deploy-boundary-paths.bin
           migration_inventory="$(jq -er '
             .runtime.migration_versions |
