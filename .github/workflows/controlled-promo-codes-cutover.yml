@@ -97,6 +97,10 @@ jobs:
           git fetch --no-tags origin "$target_sha"
           git cat-file -e "$target_sha^{commit}" || { echo "PROMO_CUTOVER_TARGET_UNAVAILABLE" >&2; exit 1; }
           git merge-base --is-ancestor "$target_sha" "$CONTROLLER_SHA" || { echo "PROMO_CUTOVER_TARGET_NOT_REACHABLE_FROM_CONTROLLER" >&2; exit 1; }
+          # is-ancestor is reflexive, so reachability alone admits the
+          # controller's own commit. Controller and deployment source are
+          # separate identities and must be compared directly.
+          [[ "$target_sha" != "$CONTROLLER_SHA" ]] || { echo "PROMO_CUTOVER_TARGET_IS_CONTROLLER_SHA" >&2; exit 1; }
           effective_sha="$target_sha"
           if [[ -n "$INPUT_REPLACEMENT_SHA" ]]; then
             [[ "$INPUT_STAGE" == prepare && "$INPUT_REPLACEMENT_SHA" =~ ^[0-9A-Fa-f]{40}$ ]] || { echo "PROMO_CUTOVER_REPLACEMENT_SHA_INVALID" >&2; exit 1; }

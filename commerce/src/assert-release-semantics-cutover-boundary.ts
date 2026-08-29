@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { genericProductionDeployBoundary } from "./generic-production-deploy-boundary";
+import { genericProductionDeployBoundary, releaseSemanticsCategories } from "./generic-production-deploy-boundary";
 
 /**
  * The admission test for the release-semantics cutover lane.
@@ -27,7 +27,8 @@ import { genericProductionDeployBoundary } from "./generic-production-deploy-bou
 const path = process.argv[2];
 if (!path) throw new Error("Pass the NUL-delimited git changed-paths file.");
 
-const boundary = genericProductionDeployBoundary(readFileSync(path, "utf8").split("\0").filter(Boolean));
+const changedPaths = readFileSync(path, "utf8").split("\0").filter(Boolean);
+const boundary = genericProductionDeployBoundary(changedPaths);
 
 if (boundary === undefined) {
   console.error("RELEASE_SEMANTICS_CUTOVER_CHANGE_IS_BENIGN_USE_GENERIC_DEPLOY");
@@ -36,5 +37,21 @@ if (boundary === undefined) {
   console.error(`RELEASE_SEMANTICS_CUTOVER_BOUNDARY_TOO_WIDE=${boundary}`);
   process.exitCode = 1;
 } else {
-  console.log("RELEASE_SEMANTICS_CUTOVER_BOUNDARY_EXACT");
+  /**
+   * RELEASE_SEMANTICS says why the generic lane refused the change. It does not
+   * say that everything it refuses should ship the same way, and the two are
+   * easy to conflate because they share a name.
+   *
+   * A compatibility change - hash format, certification arithmetic, timestamp
+   * semantics - is not proven by a converged runtime, so it must not inherit
+   * this lane merely by falling into the same deny category.
+   */
+  const categories = releaseSemanticsCategories(changedPaths);
+  const disallowed = categories.filter((category) => category !== "RELEASE_CONTROL");
+  if (disallowed.length > 0) {
+    console.error(`RELEASE_SEMANTICS_CUTOVER_CATEGORY_NOT_ADMITTED=${disallowed.join(",")}`);
+    process.exitCode = 1;
+  } else {
+    console.log("RELEASE_SEMANTICS_CUTOVER_BOUNDARY_EXACT");
+  }
 }

@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { releaseSemanticsPaths } from "../src/generic-production-deploy-boundary";
+import { releaseControlSemanticsPaths } from "../src/generic-production-deploy-boundary";
 
 const workflow = readFileSync(".github/workflows/controlled-release-semantics-cutover.yml", "utf8");
 const generic = readFileSync(".github/workflows/controlled-production-deploy.yml", "utf8");
@@ -27,8 +27,8 @@ const assertBoundary = (paths: readonly string[]) => {
  * tests below are mostly about what it must REFUSE.
  */
 describe("controlled release-semantics cutover", () => {
-  it("admits a change that is exactly release-semantic", () => {
-    expect(assertBoundary([...releaseSemanticsPaths]).ok).toBe(true);
+  it("admits a change that is exactly release-control semantic", () => {
+    expect(assertBoundary([...releaseControlSemanticsPaths]).ok).toBe(true);
     expect(assertBoundary(["commerce/src/release-control.ts", "commerce/src/domain.ts"]).ok).toBe(true);
   });
 
@@ -47,6 +47,24 @@ describe("controlled release-semantics cutover", () => {
     const result = assertBoundary(["commerce/src/release-control.ts", path]);
     expect(result.ok, `${path} was admitted into the release-semantics lane`).toBe(false);
     expect(result.output).toContain(`RELEASE_SEMANTICS_CUTOVER_BOUNDARY_TOO_WIDE=${category}`);
+  });
+
+  it.each([
+    ["hash format behind CAS identity", "commerce/src/crypto.ts"],
+    ["what counts as certified", "commerce/src/certification-evidence.ts"],
+    ["certification arithmetic", "commerce/src/promo-pricing.ts"],
+    ["basis-point arithmetic", "commerce/src/basis-points.ts"],
+    ["expected legal hash shape", "commerce/src/legal-manifest.ts"],
+    ["lease expiry and worker freshness", "commerce/src/utc-timestamp.ts"],
+  ])("refuses a compatibility change - %s - despite it also being RELEASE_SEMANTICS", (_label, path) => {
+    // The trap this closes: RELEASE_SEMANTICS says why the generic lane refused
+    // a change, not that everything it refuses ships the same way. A converged
+    // runtime does not prove a hash format or a kopeck arithmetic correct - the
+    // old and new meanings can each be self-consistent and still disagree about
+    // durable state written under the other.
+    const result = assertBoundary(["commerce/src/release-control.ts", path]);
+    expect(result.ok, `${path} inherited this lane by sharing a deny category`).toBe(false);
+    expect(result.output).toContain("RELEASE_SEMANTICS_CUTOVER_CATEGORY_NOT_ADMITTED=COMPATIBILITY");
   });
 
   it("shares the generic controller's concurrency group", () => {

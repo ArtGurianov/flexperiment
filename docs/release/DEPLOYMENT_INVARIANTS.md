@@ -72,9 +72,14 @@ production-deploy = the exact last successfully deployed runtime (see above)
 `controlled-runtime-candidate-promotion.yml`; `production-deploy` is
 advanced only by `controlled-production-deploy.yml`. They are separate CAS
 authorities, serialized through `flexperiment-production-controlled-cutover`:
-an ordinary candidate promotion requires its target to descend from both the
-current `production-deploy` and current `runtime-candidate`, then advances
-only `runtime-candidate` with an exact lease. Candidate promotion never
+an ordinary candidate promotion requires its target to descend from the
+current `production-deploy` — and deliberately **not** from the current
+`runtime-candidate`, which is a proposal register, not an authority (see
+"`runtime-candidate` is never an authority" below) — then advances only
+`runtime-candidate` with an exact lease. The target must also differ from the
+controller's own commit: controller and deployment source are separate
+identities, and collapsing them makes every downstream proof that
+distinguishes them compare a value to itself. Candidate promotion never
 deploys production or mutates release-control state.
 
 The candidate-promotion workflow binds the dedicated `production`
