@@ -312,7 +312,14 @@ export class CommerceDomain {
 
   // Enforcement itself lives in sales-gate.ts so the release-sensitive surface
   // stays nameable: this file changes for ordinary work, that one does not.
-  private emergencySalesPaused() { return gateEmergencyPaused(this.db); }
+  /**
+   * Read-only, and public so the release controller can observe the operator's
+   * emergency latch without holding admin credentials. Latching stays an admin
+   * action: a release controller able to stop sales would also be able to
+   * refund, cancel and mutate, which is far wider authority than driving a
+   * release needs. Observation is enough to refuse to complete into open sales.
+   */
+  emergencySalesPaused() { return gateEmergencyPaused(this.db); }
   private newOrdersBlocked() { return gateBlocked(this.db); }
 
   releaseControlStatus() { return this.releaseSalesGate().status(); }
