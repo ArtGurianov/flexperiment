@@ -38,11 +38,23 @@ Three options were considered:
 | Message row holds the in-flight attempt, table holds closed ones | Rejected. Terminating an attempt would mean *copying* it into the table, which is a new write that can be lost — a fresh crash boundary invented to avoid an old one. |
 | **Table is authoritative from creation; the old columns freeze** | **Chosen.** |
 
-Under the chosen option `outbox_attempt` is written at claim time and is the
-only authority for attempt facts. The legacy columns stop being written for new
-attempts and are backfilled once, becoming inert. They can be dropped later with
-`ALTER TABLE DROP COLUMN` (SQLite 3.35+, subject to the usual index and
-constraint restrictions); until then they are read by nothing.
+Under the chosen option, once authority has moved, `outbox_attempt` exists from
+message creation and is the sole authority for per-attempt facts. Existing rows
+are backfilled during activation. The legacy `provider_idempotence_key` remains
+a write-once compatibility shadow, because the column is `NOT NULL UNIQUE`; the
+other legacy attempt columns are frozen and read by nothing, droppable later
+with `ALTER TABLE DROP COLUMN` (SQLite 3.35+, subject to the usual index and
+constraint restrictions).
+
+The temporal distinction matters and is easy to blur:
+
+```text
+before the authority CAS   LEGACY is authoritative. Attempt rows may already
+                           exist - enqueue creates them - but they are not
+                           authority yet.
+after the authority CAS    ATTEMPT is authoritative. Legacy attempt columns are
+                           frozen by trigger.
+```
 
 That transition is the expensive part of this work and is why the migration is
 not written yet. It is also not merely a data-migration problem: see "Where the
@@ -240,15 +252,24 @@ The cutover is a state change in the database, not an orchestration window:
 
 ```text
 attempt_authority       LEGACY | ATTEMPT
-worker_sweeps_paused    0 | 1
+email_dispatch_paused   0 | 1
 revision                N            -- CAS token
 ```
+
+The name is deliberate: **the worker is not paused, outbound email dispatch is.**
+A sweep does twelve things (`worker-sweep.ts`) - refund submission and
+reconciliation, payment recovery, stale prepared settlements, overdue venue
+announcements, command recovery, city-interest and occurrence-notification
+lifecycles, Unisender event-dump reconciliation - and only `processEmailOutbox`
+is dispatch. Freezing all of it to migrate email authority would enlarge the
+blast radius for no benefit, and would stop the very event-dump reconciliation
+that can usefully keep observing provider evidence while dispatch is fenced.
 
 **A selector alone is not enough, and this is the crux.** The worker binary in
 production today never reads it: it wakes every 30 seconds unconditionally. So
 
 ```text
-worker_sweeps_paused = 1, no lease_owner set, nothing in SENDING
+email_dispatch_paused = 1, no lease_owner set, nothing in SENDING
 ```
 
 proves only that the *last* sweep drained. An old, idle worker can wake after
@@ -262,7 +283,7 @@ lease and increments `attempts`, all before calling the provider:
 ```sql
 CREATE TRIGGER email_outbox_dispatch_pause_guard
 BEFORE UPDATE ON email_outbox
-WHEN (SELECT worker_sweeps_paused FROM outbox_authority WHERE singleton = 1) = 1
+WHEN (SELECT email_dispatch_paused FROM outbox_authority WHERE singleton = 1) = 1
  AND OLD.status IN ('PENDING', 'SEND_UNKNOWN')
  AND NEW.status = 'SENDING'
 BEGIN
@@ -274,9 +295,13 @@ A binary that has never heard of the selector now obeys it. That splits the two
 proofs cleanly, and only one of them was previously available:
 
 ```text
-no leases, nothing in SENDING     drain proof      (the last sweep finished)
-dispatch pause trigger            exclusion proof  (no future sweep can start)
+no email leases, nothing in SENDING    drain proof
+email_dispatch_paused + DB trigger     future-dispatch exclusion proof
 ```
+
+Both statements are now precisely true, and neither claims more than it proves:
+the first is about work already finished, the second about work that cannot
+start. Everything else the sweep does continues throughout.
 
 The second permanent guard freezes legacy attempt facts once authority moves:
 
@@ -330,15 +355,16 @@ activate = atomic backfill + authority CAS LEGACY -> ATTEMPT
 which also makes replay obvious: a crashed activation either committed or did
 not, and re-running reads the selector to decide.
 
-The worker resumes only once the attempt-aware build is proven deployed — that
-part is still required, because it is what prevents the split lease.
+Email dispatch resumes only once the attempt-aware build is proven deployed —
+that part is still required, because it is what prevents the split lease. The
+rest of the sweep never stopped.
 
 ### Shapes considered
 
 | Shape | Verdict |
 |---|---|
-| **Durable selector + paused worker + atomic activation** | **Chosen.** Covers every writer, needs no API downtime, no dual-write phase, and gives crash-replay a single durable fact to read. |
-| Quiesce the worker only | Rejected. Necessary but not sufficient — the webhook keeps writing. |
+| **Durable selector + DB-enforced dispatch fence + atomic activation** | **Chosen.** Covers every writer, needs no API downtime and no dual-write phase, fences a binary that cannot read the selector, and gives crash-replay a single durable fact to read. |
+| Stop the worker process | Rejected twice over. It cannot be proven against an already-running binary, and it would freeze eleven unrelated responsibilities to migrate email authority. |
 | Compatibility phase writing both stores | Rejected. Requires the old runtime to know the new table, and does not address the split lease. |
 | Lazy materialization on first touch | Rejected. Removes the stale snapshot but leaves two workers holding two lease stores. |
 
@@ -482,15 +508,21 @@ response rather than minting anything.
 ```text
 1. this document, reviewed
 2. migration 0040 - outbox authority control:
-     selector (attempt_authority, worker_sweeps_paused, revision)
+     selector (attempt_authority, email_dispatch_paused, revision)
      DB-enforced dispatch pause trigger
      legacy-attempt freeze guard, inert until authority = ATTEMPT
-3. forward guard: refuse to sweep when applied migrations are not a subset of known
+
+   Acceptance: the control row starts safe -
+   `attempt_authority = LEGACY`, `email_dispatch_paused = 0`, `revision = 1` -
+   and fence/unfence are explicit CAS transitions carrying audit evidence
+   (actor, reason). The trigger is the enforcement; the authorized command is
+   only how an operator changes its durable input.
+3. forward guard: refuse to dispatch when applied migrations are not a subset of known
 4. migration 0041 - outbox_attempt schema and immutability trigger, no backfill
 5. every attempt-fact writer reads the selector inside its own transaction
    (worker claim AND webhook projection), and enqueue creates attempt #1
-6. pause -> drain -> deploy attempt-aware writers ->
-   activate (atomic backfill + CAS) -> resume
+6. fence dispatch -> drain -> deploy attempt-aware writers ->
+   activate (atomic backfill + CAS) -> resume dispatch
 7. audited resend command, transaction exactly as B4 above
 8. admin surface
 9. provider crash and replay tests
