@@ -5,9 +5,14 @@ import { CommerceDomain } from "../src/domain";
 import { MockProvider } from "../src/provider";
 import { ReleaseSalesGate, type ReleaseRuntimeEvidence } from "../src/release-control";
 import { releaseStateHash, type GenerationHead } from "../src/release-generation";
+import { concurrencyFixture, type ConcurrencyFixture } from "./support/concurrency-fixture";
 
 const databases: ReturnType<typeof openDatabase>[] = [];
-afterEach(() => { while (databases.length) databases.pop()?.close(); });
+const concurrencyFixtures: ConcurrencyFixture[] = [];
+afterEach(() => {
+  while (databases.length) databases.pop()?.close();
+  while (concurrencyFixtures.length) concurrencyFixtures.pop()?.close();
+});
 
 const SOURCE = "a".repeat(40);
 const MIGRATIONS = { "0031_participant_age_band.sql": "1".repeat(64), "0032_release_sales_gate.sql": "2".repeat(64) };
@@ -154,6 +159,37 @@ describe("candidate abort", () => {
     // And once the operator clears it, sales genuinely reopen.
     db.prepare("UPDATE emergency_sales_gate SET sales_paused = 0, revision = revision + 1 WHERE singleton = 1").run();
     expect(() => domain.assertNewOrdersOpen()).not.toThrow();
+  });
+
+  /**
+   * Two connections, one durable gate. The losing abort must be refused rather
+   * than silently applied to a generation that has already moved on. This holds
+   * today by construction - BEGIN IMMEDIATE plus the CAS on the UPDATE - but
+   * that is exactly the kind of property a refactor can drop without noticing.
+   */
+  it("refuses an abort that lost a race to a competing transition", () => {
+    const fixture = concurrencyFixture(); concurrencyFixtures.push(fixture);
+    const a = fixture.primary;
+    const b = fixture.connect();
+    const releaseId = `abort-race:${randomUUID()}`;
+    const start = head(releaseId);
+    new ReleaseSalesGate(a).acquireCandidate({ head: start });
+
+    // A resolves the candidate state it intends to abort.
+    const intended = abortRequest(releaseId, start);
+
+    // B wins the race with a competing transition on the same generation.
+    new ReleaseSalesGate(b).changeCandidatePhase({
+      release_id: releaseId, candidate_generation: 1, expected_state_hash: releaseStateHash(start),
+      from_phase: "PAUSED", phase_sequence: 0, to_phase: "DEPLOYED_READ_ONLY",
+    });
+
+    // A's abort now names a state that no longer exists.
+    expect(() => new ReleaseSalesGate(a).abortCandidate(intended, () => evidence())).toThrow("RELEASE_STATE_STALE");
+
+    // And the generation is intact rather than half-aborted.
+    const gate = a.prepare("SELECT sales_paused, owner_release_id FROM release_sales_gate WHERE singleton = 1").get();
+    expect(gate).toEqual({ sales_paused: 1, owner_release_id: releaseId });
   });
 
   it("reports corruption rather than repairing a projection that already disagrees", () => {
