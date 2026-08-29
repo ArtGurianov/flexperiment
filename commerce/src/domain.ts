@@ -2381,7 +2381,7 @@ export class CommerceDomain {
       if (!claimed) continue;
       try {
         const payload = this.emailPayload(outbox);
-        const sent = await this.emailProvider.send({ recipientEmail: String(outbox.recipient_email), template: String(outbox.template), payload, idempotencyKey: String(outbox.provider_idempotence_key), outboxId: String(outbox.id) });
+        const sent = await this.emailProvider.send({ recipientEmail: String(outbox.recipient_email), template: String(outbox.template), type: String(outbox.type), payload, idempotencyKey: String(outbox.provider_idempotence_key), outboxId: String(outbox.id) });
         withImmediateTransaction(this.db, () => {
           const accepted = this.db.prepare(`UPDATE email_outbox
             SET status = 'ACCEPTED', job_id = ?, lease_owner = NULL, lease_expires_at = NULL,

@@ -1,7 +1,7 @@
 "use client";
 
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { api } from "../../lib/api";
 import { cityKeys, occurrenceKeys, orderKeys } from "../../lib/query-keys";
 import { POLL_INTERVAL, pollingQuery } from "../../lib/polling";
@@ -109,16 +109,23 @@ export function Orders() {
         <Freshness query={{ ...orders, hasData: Boolean(orders.data) }} />
         {orders.isLoadingError ? <Notice error={(orders.error as { code?: string } | null)?.code ?? "UNKNOWN"} /> : !orders.data ? <Loading /> : (
           <>
-            <table aria-busy={orders.isFetching} className={orders.isPlaceholderData ? "table-updating" : ""}>
+            {/* isFetching, not just isPlaceholderData: the refetch that follows a
+                refund or abandonment is exactly when the operator needs to see
+                that the badges below are being re-read. */}
+            <table aria-busy={orders.isFetching} className={orders.isFetching || orders.isPlaceholderData ? "table-updating" : ""}>
               <thead>
                 <tr><th>Дата</th><th>Заказ</th><th>Событие</th><th>Контакт заказа</th><th>Участник</th><th>Сумма</th><th>Состояния</th></tr>
               </thead>
               <tbody>
-                {orders.data.orders.map((order) => (
+                {orders.data.orders.map((order) => {
+                  const orderId = string(order.id);
+                  const expanded = selected === orderId;
+                  return (
+                  <Fragment key={orderId}>
                   <tr
-                    className="click-row"
-                    onClick={() => { setSelected(string(order.id)); }}
-                    key={string(order.id)}
+                    className={expanded ? "click-row row-expanded" : "click-row"}
+                    aria-expanded={expanded}
+                    onClick={() => { setSelected(expanded ? null : orderId); }}
                   >
                     <td>{formatDate(order.created_at)}</td>
                     <td><strong>{string(order.public_order_number) || `${string(order.public_status_id).slice(0, 11)}…`}</strong><small>{string(order.id)}</small></td>
@@ -140,7 +147,16 @@ export function Orders() {
                     <td>{formatMoney(order.amount_kopecks)}</td>
                     <td><Badge>{string(order.payment_state)}</Badge><Badge>{string(order.payment_status)}</Badge><Badge>{string(order.booking_status)}</Badge></td>
                   </tr>
-                ))}
+                  {expanded && (
+                    <tr className="detail-row">
+                      <td colSpan={7}>
+                        <OrderEvidence id={orderId} close={() => { setSelected(null); }} />
+                      </td>
+                    </tr>
+                  )}
+                  </Fragment>
+                  );
+                })}
               </tbody>
             </table>
             <p className="truncation-caption">
@@ -149,7 +165,6 @@ export function Orders() {
           </>
         )}
       </section>
-      {selected && <OrderEvidence id={selected} close={() => { setSelected(null); }} />}
     </>
   );
 }
