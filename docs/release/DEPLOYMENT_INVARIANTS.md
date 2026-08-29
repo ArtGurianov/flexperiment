@@ -407,6 +407,19 @@ durable filename with no recorded rationale. That was safe only while durable
 expectations stayed inside the allowlist, and a cutover can always break that
 assumption. Do not reinstate the filename form here.
 
+**The DTO is the other half of this, and was the reason the escape hatch did
+not work.** `release-control.ts` has always understood `inventory-sha256:`
+expectations, but `releaseControlSchema` in `commerce/src/types.ts` accepted
+only the filename pattern, so any acquire carrying an inventory hash failed
+`422 VALIDATION_ERROR` before reaching the domain. Code support that the
+request schema rejects is not support. Both must accept a form for it to
+exist; when changing one, change and test the other.
+
+Widening that regex is itself a runtime change, so it must be deployed
+through a path that does not call `acquire` - the candidate machinery - before
+any generic deploy can use it. Sequencing matters: ship the DTO first, then
+the generic controller's inventory expectation becomes usable.
+
 ## The migration-applied predicate: `required_migrations` is a hint, `migration_versions` is authoritative
 
 Runtime release evidence carries two independent views of what migrations
