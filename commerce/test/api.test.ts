@@ -1,4 +1,6 @@
 import { createHash, randomUUID, scryptSync } from "node:crypto";
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import { MockProvider } from "../src/provider";
@@ -49,6 +51,10 @@ const releaseControlHeaders = { Authorization: "Bearer release-control-test-toke
 function appendV2Event(db: ReturnType<typeof openDatabase>, releaseId: string, action: "ACQUIRED" | "PAUSED" | "REOPENED", details: Record<string, unknown>) {
   db.prepare("INSERT INTO release_sales_gate_events(release_id, action, details_json) VALUES (?, ?, ?)").run(releaseId, action, JSON.stringify({ schema_version: 2, ...details }));
 }
+
+/** Release-control state, not a fixture: pinning it breaks on every migration. */
+const migrationHead = () =>
+  readdirSync(join(process.cwd(), "commerce", "migrations")).filter((name) => name.endsWith(".sql")).sort().at(-1)!;
 
 describe("commerce HTTP boundary", () => {
   it("returns the exact authoritative active v2 candidate head and server CAS hash", async () => {
@@ -384,10 +390,11 @@ describe("commerce HTTP boundary", () => {
     const { db, app } = appFixture();
     const insert = db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template,
       payload_snapshot, status, provider_idempotence_key, attempts, sent_at, bounced_at,
-      provider_error_code, provider_error_message)
+      provider_error_code, provider_error_message, delivery_outcome)
       VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, ?, 2,
-      '2026-08-23T00:00:00.000Z', '2026-08-23T00:01:00.000Z', 'hard_bounced', 'Mailbox unavailable')`);
-    for (const status of ["FAILED", "BOUNCED", "SEND_UNKNOWN", "DELIVERED"]) insert.run(`api-attention-${status}`, status, `api-attention-key-${status}`);
+      '2026-08-23T00:00:00.000Z', '2026-08-23T00:01:00.000Z', 'hard_bounced', 'Mailbox unavailable',
+      CASE WHEN ? = 'FAILED' THEN 'KNOWN_FAILED' END)`);
+    for (const status of ["FAILED", "BOUNCED", "SEND_UNKNOWN", "DELIVERED"]) insert.run(`api-attention-${status}`, status, `api-attention-key-${status}`, status);
     const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.58" }, body: JSON.stringify({ password: "correct horse" }) });
     const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
 
@@ -898,7 +905,7 @@ describe("commerce HTTP boundary", () => {
     const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")! };
     const system = await app.request("http://admin.flexperiment.ru/v1/admin/system/evidence", { headers });
     expect(system.headers.get("cache-control")).toBe("no-store");
-    expect(await system.json()).toMatchObject({ source_commit: process.env.SOURCE_COMMIT, migration_head: { version: "0038_occurrence_availability_notifications.sql" }, migration_versions: expect.arrayContaining([{ version: "0031_participant_age_band.sql" }]), active_legal_release: { version: "test" } });
+    expect(await system.json()).toMatchObject({ source_commit: process.env.SOURCE_COMMIT, migration_head: { version: migrationHead() }, migration_versions: expect.arrayContaining([{ version: "0031_participant_age_band.sql" }]), active_legal_release: { version: "test" } });
       const evidence = await app.request(`http://admin.flexperiment.ru/v1/admin/orders/${order.id}/evidence`, { headers });
       const body = await evidence.json() as { order: { currency: string } } & Record<string, unknown>;
     expect(body).toMatchObject({

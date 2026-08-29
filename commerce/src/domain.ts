@@ -2402,7 +2402,7 @@ export class CommerceDomain {
           // A received HTTP response is authoritative evidence that this
           // dispatch was rejected. Do not convert it into an ambiguous replay.
           this.db.prepare(`UPDATE email_outbox
-            SET status = 'FAILED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
+            SET status = 'FAILED', delivery_outcome = 'KNOWN_FAILED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
                 last_error = 'UNISENDER_HTTP_REJECTED', provider_error_code = ?, provider_error_message = ?
             WHERE id = ? AND status = 'SENDING'`).run(error.providerCode ?? null, error.providerMessage ?? null, outbox.id);
         } else {
@@ -2687,7 +2687,8 @@ export class CommerceDomain {
     this.db.prepare(`UPDATE unisender_event_dump_targets
       SET state = CASE WHEN EXISTS (
           SELECT 1 FROM email_outbox outbox WHERE outbox.id = unisender_event_dump_targets.outbox_id
-            AND outbox.status IN ('DELIVERED', 'BOUNCED', 'FAILED')
+            AND (outbox.status IN ('DELIVERED', 'BOUNCED')
+              OR (outbox.status = 'FAILED' AND outbox.delivery_outcome = 'KNOWN_FAILED'))
         ) THEN 'CONSUMED'
         WHEN EXISTS (
           SELECT 1 FROM email_outbox outbox WHERE outbox.id = unisender_event_dump_targets.outbox_id
@@ -2698,7 +2699,9 @@ export class CommerceDomain {
         recovery_mode = CASE
           WHEN ? = 1 AND ? = 0
             AND NOT EXISTS (SELECT 1 FROM email_outbox outbox WHERE outbox.id = unisender_event_dump_targets.outbox_id
-              AND (outbox.status IN ('DELIVERED', 'BOUNCED', 'FAILED') OR outbox.superseded_at IS NOT NULL))
+              AND ((outbox.status IN ('DELIVERED', 'BOUNCED')
+                    OR (outbox.status = 'FAILED' AND outbox.delivery_outcome = 'KNOWN_FAILED'))
+                OR outbox.superseded_at IS NOT NULL))
           THEN 'TARGETED_JOB'
           ELSE recovery_mode
         END,
@@ -2743,7 +2746,7 @@ export class CommerceDomain {
 
   private failExhaustedUnknownEmail(outboxId: string) {
     this.db.prepare(`UPDATE email_outbox
-      SET status = 'FAILED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
+      SET status = 'FAILED', delivery_outcome = 'UNRESOLVED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
           last_error = 'UNISENDER_SEND_UNKNOWN_ATTEMPT_LIMIT_REACHED',
           provider_error_code = 'SEND_UNKNOWN_ATTEMPT_LIMIT',
           provider_error_message = 'Ambiguous email dispatch retry limit reached.'
@@ -2758,7 +2761,7 @@ export class CommerceDomain {
    */
   private reconcileLegacyUnisenderHttp403(outboxId?: string) {
     return this.db.prepare(`UPDATE email_outbox
-      SET status = 'FAILED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
+      SET status = 'FAILED', delivery_outcome = 'KNOWN_FAILED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
           last_error = 'UNISENDER_HTTP_REJECTED_LEGACY',
           provider_error_code = 'HTTP_403_LEGACY',
           provider_error_message = 'Legacy deterministic Unisender HTTP 403 rejection.'
@@ -2772,7 +2775,7 @@ export class CommerceDomain {
   private deferOrFailUnknownEmail(outboxId: string, attempts: number) {
     if (attempts >= EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS) {
       this.db.prepare(`UPDATE email_outbox
-        SET status = 'FAILED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
+        SET status = 'FAILED', delivery_outcome = 'UNRESOLVED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
             last_error = 'UNISENDER_SEND_UNKNOWN_ATTEMPT_LIMIT_REACHED',
             provider_error_code = 'SEND_UNKNOWN_ATTEMPT_LIMIT',
             provider_error_message = 'Ambiguous email dispatch retry limit reached.'
@@ -3123,10 +3126,15 @@ export class CommerceDomain {
     const timestamps = observed.status === "SENT" ? ", sent_at = ?" : observed.status === "DELIVERED" ? ", delivered_at = ?" : observed.status === "BOUNCED" ? ", bounced_at = ?" : "";
     // DELIVERED is a durable positive fact. A later spam callback records its
     // own provider evidence but must not turn delivery back into a bounce.
-    this.db.prepare(`UPDATE email_outbox SET status = ?, job_id = COALESCE(job_id, ?), lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL${timestamps}
+    // Reconciliation is the one path that reaches FAILED with the status bound
+    // as a parameter, and the only one that can also move a row back out of it.
+    // A provider report is received evidence, so it classifies KNOWN_FAILED;
+    // any other terminal status clears the classification, because a row that
+    // is not FAILED must not carry one.
+    this.db.prepare(`UPDATE email_outbox SET status = ?, delivery_outcome = CASE WHEN ? = 'FAILED' THEN 'KNOWN_FAILED' END, job_id = COALESCE(job_id, ?), lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL${timestamps}
       WHERE id = ?
         AND NOT (status = 'DELIVERED' AND ? != 'DELIVERED')
-        AND NOT (suppressed_at IS NOT NULL AND ? != 'DELIVERED')`).run(observed.status, observed.jobId ?? null, ...(timestamps ? [now()] : []), outboxId, observed.status, observed.status);
+        AND NOT (suppressed_at IS NOT NULL AND ? != 'DELIVERED')`).run(observed.status, observed.status, observed.jobId ?? null, ...(timestamps ? [now()] : []), outboxId, observed.status, observed.status);
   }
 
   private redactDeliveredCityInterestOutbox(outboxId: string) {
@@ -3210,7 +3218,7 @@ export class CommerceDomain {
           AND replacement.city_slug = previous.city_slug
           AND old_intent.superseded_at IS NOT NULL
           AND (
-            old_outbox.status = 'FAILED'
+            (old_outbox.status = 'FAILED' AND old_outbox.delivery_outcome = 'KNOWN_FAILED')
             OR (
               EXISTS (SELECT 1 FROM email_provider_events event
                 WHERE event.outbox_id = old_outbox.id
@@ -3326,7 +3334,7 @@ export class CommerceDomain {
   private deferOrFailStaleEmail(outboxId: string, attempts: number) {
     if (attempts >= EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS) {
       this.db.prepare(`UPDATE email_outbox
-        SET status = 'FAILED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
+        SET status = 'FAILED', delivery_outcome = 'UNRESOLVED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
             last_error = 'UNISENDER_SEND_UNKNOWN_ATTEMPT_LIMIT_REACHED',
             provider_error_code = 'SEND_UNKNOWN_ATTEMPT_LIMIT',
             provider_error_message = 'Ambiguous email dispatch retry limit reached.'
