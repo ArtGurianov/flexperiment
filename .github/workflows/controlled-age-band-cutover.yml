@@ -53,7 +53,7 @@ jobs:
           [[ "$CANDIDATE_SOURCE_COMMIT" =~ ^[a-f0-9]{40}$ ]] || { echo "target_sha must be a full SHA" >&2; exit 1; }
           git fetch origin main
           MAIN_SHA="$(git rev-parse origin/main)"
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > durable-before.json
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
           if jq -e '.complete' completion.json >/dev/null; then echo 'TERMINAL_COMPLETE=1' >> "$GITHUB_ENV"; exit 0; fi
@@ -89,7 +89,7 @@ jobs:
         if: env.TERMINAL_COMPLETE == '1'
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
           sha="$(jq -er '.expected.source_commit' completion.json)"
@@ -105,7 +105,7 @@ jobs:
         if: env.TERMINAL_COMPLETE != '1'
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/acquire" > /dev/null
           api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/pause" > pause.json
           jq -e '.sales_paused' pause.json >/dev/null
@@ -114,7 +114,7 @@ jobs:
         if: env.TERMINAL_COMPLETE != '1'
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
           pnpm exec tsx commerce/src/reconcile-cutover.ts status.json completion.json release.json "$CANDIDATE_SOURCE_COMMIT" > reconciliation.json
@@ -133,7 +133,7 @@ jobs:
         if: env.TERMINAL_COMPLETE != '1' && env.CUTOVER_ACTION == 'DEPLOY_CANDIDATE'
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           for attempt in $(seq 1 "$POLL_ATTEMPTS"); do
             api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json || true
             curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_FRONTEND_URL/release.json" > frontend.json || true
@@ -151,7 +151,7 @@ jobs:
         if: env.TERMINAL_COMPLETE != '1'
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           if [[ "$LEGAL_PUBLICATION_STATE" == NOT_PUBLISHED ]]; then api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/legal-publish" > publication.json; PUBLISHED_AT="$(jq -er .effectiveAt publication.json)"; else api "$PUBLIC_API_URL/v1/internal/release-control/status" > publication.json; PUBLISHED_AT="$(jq -er .runtime.legal_publish_time publication.json)"; fi
           echo "PUBLISHED_AT=$PUBLISHED_AT" >> "$GITHUB_ENV"
 
@@ -172,7 +172,7 @@ jobs:
           fi
           RELEASE_ID="$RELEASE_ID" COMMERCE_RELEASE_MANIFEST_PATH=commerce/legal/production-manifest.json pnpm exec tsx commerce/src/release-cutover-payload.ts "$PROMOTION_SHA" > promotion-release.json
           jq -e --slurpfile candidate release.json '.expected.legal_manifest_sha256 == $candidate[0].expected.legal_manifest_sha256 and .expected.legal_hashes == $candidate[0].expected.legal_hashes' promotion-release.json >/dev/null
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api -X POST --data-binary @promotion-release.json "$PUBLIC_API_URL/v1/internal/release-control/expectations" > /dev/null
           echo "PROMOTION_SHA=$PROMOTION_SHA" >> "$GITHUB_ENV"
 
@@ -188,7 +188,7 @@ jobs:
         if: env.TERMINAL_COMPLETE != '1'
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           for attempt in $(seq 1 "$POLL_ATTEMPTS"); do
             api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json || true
             curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_FRONTEND_URL/release.json" > frontend.json || true

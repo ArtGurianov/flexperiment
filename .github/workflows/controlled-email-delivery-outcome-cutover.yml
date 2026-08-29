@@ -226,7 +226,7 @@ jobs:
         if: env.INPUT_STAGE == 'prepare' && env.INPUT_REPLACEMENT_SHA == ''
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > durable-before.json
           jq -e '(.sales_paused == false and .owner_release_id == null and (.runtime.source_commit | type == "string"))' durable-before.json >/dev/null || {
             owner="$(jq -r '.owner_release_id // empty' durable-before.json)"
@@ -266,7 +266,7 @@ jobs:
         if: env.INPUT_STAGE == 'prepare' && env.INPUT_REPLACEMENT_SHA == ''
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           owner="$(jq -r '.owner_release_id // empty' durable-before.json)"
           [[ -z "$owner" || "$owner" == "$RELEASE_ID" ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_BLOCKED_BY_RELEASE_OWNER=$owner" >&2; exit 1; }
           if api -X POST --data-binary @<(jq -n --slurpfile head initial-head.json '{head: $head[0]}') "$PUBLIC_API_URL/v1/internal/release-control/candidates/acquire" > acquired.json; then
@@ -282,7 +282,7 @@ jobs:
         if: env.INPUT_STAGE == 'prepare' && env.INPUT_REPLACEMENT_SHA != ''
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_HEAD_READ_UNAVAILABLE" >&2; exit 1; }
           jq -e --arg release_id "$RELEASE_ID" '.schema_version == 2 and .head.release_id == $release_id and .head.phase == "RECOVERY_REQUIRED" and (.state_hash | test("^[a-f0-9]{64}$"))' candidate-head.json >/dev/null || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_RECOVERY_STATE_INVALID" >&2; exit 1; }
           jq -n --slurpfile current candidate-head.json --argjson inventory "$(cat "$EMAIL_DELIVERY_OUTCOME_MIGRATION_INVENTORY")" --arg source "$EFFECTIVE_TARGET_SHA" '
@@ -322,7 +322,7 @@ jobs:
         if: env.INPUT_STAGE == 'prepare'
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           for attempt in $(seq 1 "$POLL_ATTEMPTS"); do
             if api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json && \
               api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json && \
@@ -379,11 +379,11 @@ jobs:
           api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json
           jq -e --arg source "$EFFECTIVE_TARGET_SHA" '.head.source_commit == $source and (.state_hash | test("^[a-f0-9]{64}$"))' candidate-head.json >/dev/null
 
-      - name: Prove the emergency capability appeared with the candidate
+      - name: Prove the emergency stop capability exists and is clear
         if: env.INPUT_STAGE == 'prepare'
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           # Two facts, both fail-closed, proven while the generation is still at
           # DEPLOYED_READ_ONLY and therefore still abortable:
           #
@@ -411,7 +411,7 @@ jobs:
         if: env.INPUT_STAGE == 'classify_runtime_readiness_defect'
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
           jq -e --arg release_id "$RELEASE_ID" '
@@ -435,15 +435,17 @@ jobs:
             (.head.certification == null)
           ' recovered.json >/dev/null || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_RUNTIME_READINESS_TRANSITION_INVALID" >&2; exit 1; }
 
-      - name: Prove the emergency stop is clear before a real payment
+      - name: Reconfirm the emergency stop is still clear
         if: env.INPUT_STAGE == 'certify'
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
-          # The emergency gate is absolute: it is checked before the release gate
-          # and a certification lease does not walk past it. Certification places
-          # a real 1-RUB order, so a latch set too early fails the payment rather
-          # than the workflow, which is a worse failure to diagnose.
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          # A re-check, not the pre-payment guarantee. The payment happens
+          # between prepare and this stage, so by the time this runs the money
+          # has already moved; the guarantee that the latch was clear before the
+          # order is the prepare-stage handshake. What this catches is a latch
+          # set during the interval, which would otherwise surface as a confusing
+          # certification failure rather than a clear one.
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > pre-certify-status.json
           jq -e 'has("emergency_sales_paused")' pre-certify-status.json >/dev/null \
             || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_EMERGENCY_STATE_NOT_OBSERVABLE" >&2; exit 1; }
@@ -457,7 +459,7 @@ jobs:
         if: env.INPUT_STAGE == 'prepare' && env.CERTIFICATION_INPUTS_PRESENT == '4'
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json
           if [[ -n "$INPUT_RETRY_REASON" ]]; then
             jq -e '.head.phase == "CERTIFICATION_IN_FLIGHT"' candidate-head.json >/dev/null || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_RETRY_STATE_INVALID" >&2; exit 1; }
@@ -487,7 +489,7 @@ jobs:
         if: env.INPUT_STAGE == 'certify'
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json
           # Idempotent: a replay after a successful certify observes CERTIFIED
           # and reconciles instead of reposting evidence.
@@ -512,7 +514,7 @@ jobs:
         if: env.INPUT_STAGE == 'abort'
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           # The exit this epoch has and the 12h09m pause did not: a dispatched
           # prepare with no way out except forward through certification.
           # release-control decides reversibility - a certified candidate, a
@@ -541,7 +543,7 @@ jobs:
         if: env.INPUT_STAGE == 'complete'
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json
           if jq -e --arg release_id "$RELEASE_ID" '.schema_version == 2 and .head.release_id == $release_id and .head.phase == "COMPLETE" and (.state_hash | test("^[a-f0-9]{64}$"))' candidate-head.json >/dev/null; then
             # Replay after COMPLETE. The release gate must be open and unowned;

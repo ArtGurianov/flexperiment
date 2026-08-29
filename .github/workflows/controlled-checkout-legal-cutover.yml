@@ -69,7 +69,7 @@ jobs:
           [[ "$TARGET_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "CHECKOUT_LEGAL_CUTOVER_INVALID_TARGET_SHA" >&2; exit 1; }
           [[ "$TARGET_SHA" == "$EXPECTED_CANDIDATE_SHA" ]] || { echo "CHECKOUT_LEGAL_CUTOVER_UNEXPECTED_CANDIDATE_SHA" >&2; exit 1; }
           [[ "$RELEASE_ID" == "checkout-legal-$TARGET_SHA" ]] || { echo "CHECKOUT_LEGAL_CUTOVER_INVALID_RELEASE_ID" >&2; exit 1; }
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           validate_json() {
             local file="$1" label="$2" bytes
             if ! jq -e 'type == "object"' "$file" >/dev/null 2>&1; then
@@ -245,7 +245,7 @@ jobs:
         if: env.TERMINAL_COMPLETE == '1'
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
           promotion_sha="$(jq -er '.expected.source_commit' completion.json)"
@@ -263,7 +263,7 @@ jobs:
         if: env.TERMINAL_COMPLETE != '1' && env.RESUMING_PROMOTION != '1' && env.PREPUBLICATION_REPAIR != '1'
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/acquire" > /dev/null
           api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/pause" > pause.json
           jq -e --arg release "$RELEASE_ID" '.sales_paused == true and .owner_release_id == $release' pause.json >/dev/null
@@ -280,7 +280,7 @@ jobs:
         if: env.TERMINAL_COMPLETE != '1' && env.ADOPTING_PREPUBLICATION_REPAIR == '1'
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api -X POST --data-binary @repair-release.json "$PUBLIC_API_URL/v1/internal/release-control/expectations" > repair-expectations.json
           jq -e --arg release "$RELEASE_ID" --arg sha "$ACTIVE_CANDIDATE_SHA" '.sales_paused == true and .owner_release_id == $release and .expected.source_commit == $sha' repair-expectations.json >/dev/null
 
@@ -288,7 +288,7 @@ jobs:
         if: env.TERMINAL_COMPLETE != '1'
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
           pnpm exec tsx commerce/src/reconcile-cutover.ts status.json completion.json "$ACTIVE_REQUEST_PATH" "$ACTIVE_CANDIDATE_SHA" "$PREVIOUS_LEGAL_VERSION" > reconciliation.json
@@ -323,7 +323,7 @@ jobs:
             sleep "$INITIAL_READINESS_DELAY_SECONDS"
           fi
           TARGET_SHA="$ACTIVE_CANDIDATE_SHA" scripts/controlled-production-readiness.sh "$ACTIVE_REQUEST_PATH" candidate-pre-publication
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
           pnpm exec tsx commerce/src/reconcile-cutover.ts status.json completion.json "$ACTIVE_REQUEST_PATH" "$ACTIVE_CANDIDATE_SHA" "$PREVIOUS_LEGAL_VERSION" > reconciliation.json
@@ -334,7 +334,7 @@ jobs:
         if: env.TERMINAL_COMPLETE != '1' && env.RESUMING_PROMOTION != '1' && env.CUTOVER_ACTION == 'PUBLISH_LEGAL'
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api -X POST --data-binary @"$ACTIVE_REQUEST_PATH" "$PUBLIC_API_URL/v1/internal/release-control/legal-publish" > publication.json
           published_at="$(jq -er '.effectiveAt' publication.json)"
           echo "PUBLISHED_AT=$published_at" >> "$GITHUB_ENV"
@@ -343,7 +343,7 @@ jobs:
         if: env.TERMINAL_COMPLETE != '1' && env.RESUMING_PROMOTION != '1'
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
           if [[ -z "${PUBLISHED_AT:-}" ]]; then echo "PUBLISHED_AT=$(jq -er '.runtime.legal_publish_time' status.json)" >> "$GITHUB_ENV"; fi
@@ -426,7 +426,7 @@ jobs:
             RELEASE_ID="$RELEASE_ID" COMMERCE_RELEASE_MANIFEST_PATH=commerce/legal/production-manifest.json "$GITHUB_WORKSPACE/node_modules/.bin/tsx" "$GITHUB_WORKSPACE/commerce/src/release-cutover-payload.ts" "$promotion_sha"
           ) > promotion-release.json
           jq -e --slurpfile candidate "$ACTIVE_REQUEST_PATH" '.expected.legal_manifest_sha256 == $candidate[0].expected.legal_manifest_sha256 and .expected.legal_hashes == $candidate[0].expected.legal_hashes' promotion-release.json >/dev/null
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api -X POST --data-binary @promotion-release.json "$PUBLIC_API_URL/v1/internal/release-control/expectations" > /dev/null
           echo "PROMOTION_SHA=$promotion_sha" >> "$GITHUB_ENV"
           echo 'CUTOVER_ACTION=DEPLOY_PROMOTION' >> "$GITHUB_ENV"
@@ -458,7 +458,7 @@ jobs:
             sleep "$INITIAL_READINESS_DELAY_SECONDS"
           fi
           TARGET_SHA="$PROMOTION_SHA" scripts/controlled-production-readiness.sh promotion-release.json promotion
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api -X POST --data-binary @promotion-release.json "$PUBLIC_API_URL/v1/internal/release-control/reopen" > reopened.json
           jq -e '.sales_paused == false and .owner_release_id == null and .owner_mode == null' reopened.json >/dev/null
 
@@ -466,7 +466,7 @@ jobs:
         if: env.TERMINAL_COMPLETE != '1'
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
           jq -e --slurpfile request promotion-release.json '.complete and .expected == $request[0].expected' completion.json >/dev/null

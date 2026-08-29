@@ -257,7 +257,7 @@ jobs:
         # this same legitimate state.
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json
           jq -e --arg release_id "$EXPECTED_PROMO_RELEASE_ID" --arg source "$EXPECTED_PROMO_SOURCE_COMMIT" --argjson generation "$EXPECTED_PROMO_GENERATION" --argjson sequence "$EXPECTED_PROMO_PHASE_SEQUENCE" --arg hash "$EXPECTED_PROMO_STATE_HASH" '
             .head.release_id == $release_id and
@@ -271,7 +271,7 @@ jobs:
       - name: Prove provider readiness is read-only healthy
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/provider-readiness" > provider-readiness.json
           jq -e '.environment == "production"' provider-readiness.json >/dev/null || { cat provider-readiness.json >&2; echo "VERIFY_PROVIDER_READINESS_UNEXPECTED" >&2; exit 1; }
 
@@ -282,7 +282,7 @@ jobs:
         # moment this workflow finished.
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           git fetch --no-tags origin runtime-candidate
           final_candidate_sha="$(git rev-parse origin/runtime-candidate)"
           [[ "$final_candidate_sha" == "$EXPECTED_RUNTIME_CANDIDATE" ]] || { echo "FINAL_RUNTIME_CANDIDATE_UNEXPECTED_SHA=$final_candidate_sha" >&2; exit 1; }
