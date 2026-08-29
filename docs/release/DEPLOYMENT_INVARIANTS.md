@@ -370,6 +370,50 @@ deliberately invoking one specific, already-reviewed, already-deployed
 runtime's own semantics to judge evidence about that same
 runtime - the two are exact opposites, not the same mistake.
 
+## Candidate repair is break glass, not a lifecycle action
+
+`controlled-runtime-candidate-repair.yml` exists because a cutover that
+advances `production-deploy` without moving `runtime-candidate` leaves the
+candidate no longer descending from production, which blocks every generic
+deploy - and the ordinary promotion path cannot repair it, because it
+validates that same property first.
+
+It was used twice within days of being written. At that rate it is a
+production escape hatch, not a lifecycle step, and an escape hatch sharing an
+approval boundary with routine actions is one mis-click from being routine.
+It therefore:
+
+- lives in its own workflow, so the ordinary path **MUST NOT** fall back into
+  it;
+- runs in the separate `production-break-glass` environment, so approval can
+  be required independently;
+- requires an `incident_reference` as well as a reason, and records actor,
+  run id, target, and both before/after ref states as audit;
+- refuses on a healthy candidate (`RUNTIME_CANDIDATE_REPAIR_NOT_DIVERGED`), so
+  it can never become a general force primitive;
+- waives **only** the two assertions about the current candidate. Descent from
+  `production-deploy`, published `runtime/*` provenance and the lease-backed
+  CAS are never waived;
+- never deploys and never mutates release-control state.
+
+Each use is a signal that the dual-authority problem below is still open.
+Repairing the ref again is treating the symptom.
+
+## `runtime-candidate` is a second mutable authority, and that is the defect
+
+A successful release is sufficient on its own to invalidate the topology: the
+release state machine advances `candidate_generation`/`target_sha` and
+`production-deploy`, while `runtime-candidate` stays where it was. No local
+bug is required. Both live divergences observed on 2026-08-28/29 arose exactly
+this way.
+
+The target state is that after acquire, the recorded immutable `target_sha`
+inside the generation is the sole candidate authority. `prepare`, `certify`,
+`promote`, `abort` and resume **MUST NOT** re-resolve the mutable ref or
+compare an in-flight epoch against its current value. `runtime-candidate`
+remains a dispatch convenience, a provenance pointer and a CI hygiene target -
+not part of the correctness of a generation already under way.
+
 ## A generic deploy acquires with the inventory expectation, never a filename
 
 `ReleaseSalesGate.acquire()` validates `expected.migration` through

@@ -65,32 +65,19 @@ describe("controlled runtime-candidate promotion workflow", () => {
   });
 
   /**
-   * A cutover that advances production-deploy without touching
-   * runtime-candidate leaves the candidate no longer descending from
-   * production, which blocks every generic deploy - and the ordinary path
-   * cannot repair it, because it validates that same property first.
+   * Repair was used twice in its first days, which makes it a de-facto
+   * production escape hatch rather than a lifecycle step. It now lives in its
+   * own break-glass controller with its own approval boundary, and the
+   * ordinary path must never fall back into it.
    */
-  it("repairs a diverged candidate only while it is genuinely diverged", () => {
-    expect(workflow).toContain("options: [ordinary, repair_diverged_candidate]");
-    expect(workflow).toContain("RUNTIME_CANDIDATE_PROMOTION_MODE_INVALID");
-    // Self-disabling: refuses on a healthy candidate, so it can never become a
-    // general force primitive.
-    expect(workflow).toContain("RUNTIME_CANDIDATE_REPAIR_NOT_DIVERGED");
-
-    // The target must descend from production-deploy in BOTH modes - that is
-    // the invariant repair exists to restore, never one it may waive.
-    const targetDescendsProduction = 'git merge-base --is-ancestor "$actual_production_deploy" "$INPUT_TARGET_SHA"';
-    const guarded = workflow.slice(workflow.indexOf('if [[ "$INPUT_MODE" == ordinary ]]'));
-    expect(workflow.indexOf(targetDescendsProduction)).toBeLessThan(workflow.indexOf('if [[ "$INPUT_MODE" == ordinary ]]'));
-    // Only the two assertions about the *current* candidate are mode-scoped.
-    expect(guarded).toContain('git merge-base --is-ancestor "$actual_production_deploy" "$actual_runtime_candidate"');
-    expect(guarded).toContain('git merge-base --is-ancestor "$actual_runtime_candidate" "$INPUT_TARGET_SHA"');
-
-    // Repair still requires a published runtime branch, the CAS lease, and an
-    // audited mode - it relaxes nothing else.
-    expect(workflow).toContain("RUNTIME_CANDIDATE_TARGET_NOT_PUBLISHED_RUNTIME_BRANCH");
-    expect(workflow.match(/git push --force-with-lease=/g)).toHaveLength(1);
-    expect(workflow).toContain('echo "- Mode: $INPUT_MODE"');
+  it("cannot repair a diverged candidate and offers no fallback into repair", () => {
+    expect(workflow).not.toContain("repair_diverged_candidate");
+    expect(workflow).not.toContain("RUNTIME_CANDIDATE_REPAIR_NOT_DIVERGED");
+    expect(workflow).not.toContain("INPUT_MODE");
+    // Both current-candidate assertions are unconditional here.
+    expect(workflow).toContain('git merge-base --is-ancestor "$actual_production_deploy" "$actual_runtime_candidate"');
+    expect(workflow).toContain('git merge-base --is-ancestor "$actual_runtime_candidate" "$INPUT_TARGET_SHA"');
+    expect(workflow).toContain("RUNTIME_CANDIDATE_NOT_DESCENDANT_OF_PRODUCTION");
   });
 
   it("does not couple candidate promotion to deployment or release-control mutation", () => {
