@@ -1490,10 +1490,11 @@ describe("commerce domain", () => {
     const domain = new CommerceDomain(setup.db, new MockProvider());
     const insert = setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template,
       payload_snapshot, status, provider_idempotence_key, attempts, sent_at, bounced_at,
-      provider_error_code, provider_error_message)
+      provider_error_code, provider_error_message, delivery_outcome)
       VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, ?, 3,
-      '2026-08-23T00:00:00.000Z', '2026-08-23T00:01:00.000Z', 'hard_bounced', 'Mailbox unavailable')`);
-    for (const status of ["FAILED", "BOUNCED", "SEND_UNKNOWN", "DELIVERED"]) insert.run(`attention-${status}`, status, `attention-key-${status}`);
+      '2026-08-23T00:00:00.000Z', '2026-08-23T00:01:00.000Z', 'hard_bounced', 'Mailbox unavailable',
+      CASE WHEN ? = 'FAILED' THEN 'KNOWN_FAILED' END)`);
+    for (const status of ["FAILED", "BOUNCED", "SEND_UNKNOWN", "DELIVERED"]) insert.run(`attention-${status}`, status, `attention-key-${status}`, status);
 
     expect(domain.emailAttentionCount()).toBe(3);
     expect(domain.emailAttentionIncidents().map((incident) => incident.status)).toEqual(["SEND_UNKNOWN", "FAILED", "BOUNCED"]);
@@ -1526,9 +1527,11 @@ describe("commerce domain", () => {
     };
     const domain = new CommerceDomain(setup.db, new MockProvider(), email);
     setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template,
-      payload_snapshot, status, provider_idempotence_key, ops_acknowledged_at, ops_acknowledged_reason)
+      payload_snapshot, status, provider_idempotence_key, ops_acknowledged_at, ops_acknowledged_reason,
+      delivery_outcome)
       VALUES ('acknowledged-terminal', 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}',
-      'FAILED', 'acknowledged-terminal-key', '2026-08-23T00:00:00.000Z', 'LEGACY_PROVIDER_CONFIGURATION')`).run();
+      'FAILED', 'acknowledged-terminal-key', '2026-08-23T00:00:00.000Z', 'LEGACY_PROVIDER_CONFIGURATION',
+      'KNOWN_FAILED')`).run();
 
     await domain.processEmailOutbox();
 
@@ -1542,12 +1545,14 @@ describe("commerce domain", () => {
     const domain = new CommerceDomain(setup.db, new MockProvider());
     const insert = setup.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template,
       payload_snapshot, status, provider_idempotence_key, job_id, attempts, sent_at, delivered_at, bounced_at,
-      suppressed_at, provider_error_code, provider_error_message, ops_acknowledged_at, ops_acknowledged_reason)
+      suppressed_at, provider_error_code, provider_error_message, ops_acknowledged_at, ops_acknowledged_reason,
+      delivery_outcome)
       VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{"snapshot":true}', ?, ?,
       'provider-job', 7, '2026-08-23T00:00:00.000Z', '2026-08-23T00:01:00.000Z',
       '2026-08-23T00:02:00.000Z', NULL, 'provider-code', 'Provider message',
-      '2026-08-23T00:03:00.000Z', 'Mistaken acknowledgement')`);
-    for (const status of ["FAILED", "BOUNCED", "SEND_UNKNOWN"]) insert.run(`unack-${status}`, status, `unack-key-${status}`);
+      '2026-08-23T00:03:00.000Z', 'Mistaken acknowledgement',
+      CASE WHEN ? = 'FAILED' THEN 'KNOWN_FAILED' END)`);
+    for (const status of ["FAILED", "BOUNCED", "SEND_UNKNOWN"]) insert.run(`unack-${status}`, status, `unack-key-${status}`, status);
     const before = setup.db.prepare(`SELECT status, job_id, attempts, sent_at, delivered_at, bounced_at,
       suppressed_at, recipient_email, recipient_email_hash, payload_snapshot, provider_error_code,
       provider_error_message FROM email_outbox WHERE id = 'unack-FAILED'`).get();

@@ -390,10 +390,11 @@ describe("commerce HTTP boundary", () => {
     const { db, app } = appFixture();
     const insert = db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template,
       payload_snapshot, status, provider_idempotence_key, attempts, sent_at, bounced_at,
-      provider_error_code, provider_error_message)
+      provider_error_code, provider_error_message, delivery_outcome)
       VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, ?, 2,
-      '2026-08-23T00:00:00.000Z', '2026-08-23T00:01:00.000Z', 'hard_bounced', 'Mailbox unavailable')`);
-    for (const status of ["FAILED", "BOUNCED", "SEND_UNKNOWN", "DELIVERED"]) insert.run(`api-attention-${status}`, status, `api-attention-key-${status}`);
+      '2026-08-23T00:00:00.000Z', '2026-08-23T00:01:00.000Z', 'hard_bounced', 'Mailbox unavailable',
+      CASE WHEN ? = 'FAILED' THEN 'KNOWN_FAILED' END)`);
+    for (const status of ["FAILED", "BOUNCED", "SEND_UNKNOWN", "DELIVERED"]) insert.run(`api-attention-${status}`, status, `api-attention-key-${status}`, status);
     const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.58" }, body: JSON.stringify({ password: "correct horse" }) });
     const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
 

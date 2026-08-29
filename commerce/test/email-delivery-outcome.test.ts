@@ -111,10 +111,90 @@ describe("email delivery outcome", () => {
       const updates = readFileSync(`commerce/migrations/${MIGRATION}`, "utf8")
         .split(";")
         .filter((statement) => /^\s*UPDATE\b/.test(statement.replace(/^\s*--.*$/gm, "").trim()))
+        .filter((statement) => statement.includes("SET delivery_outcome"))
         .map((statement) => statement.replace(/^\s*--.*$/gm, "").trim());
       expect(updates).toHaveLength(2);
       for (const statement of updates) db.exec(`${statement};`);
       expect(outcomeOf(db, "r6")).toBe("UNRESOLVED");
+    });
+  });
+
+  /**
+   * Structural enforcement. The backfill being right today and a writer
+   * forgetting the column tomorrow leaves the same untrue assertion in the
+   * database, so the rule is stated where the write happens.
+   *
+   * Deliberately structural only: the trigger says every FAILED row carries an
+   * explicit classification and no other row does. It does NOT encode which
+   * classification is correct - copying the last_error grammar into SQL would
+   * rebuild the two-authorities problem this migration removes.
+   */
+  describe("database guards", () => {
+    const migrated = () => {
+      const db = openDatabase(":memory:");
+      applyThrough(db, MIGRATION);
+      return db;
+    };
+    const insert = (db: ReturnType<typeof openDatabase>, id: string, status: string, outcome: string | null) =>
+      db.prepare(`INSERT INTO email_outbox
+        (id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status,
+         provider_idempotence_key, attempts, delivery_outcome)
+        VALUES (?, 'TEST', 'a@b.invalid', 'h-' || ?, 'tpl', '{}', ?, 'k-' || ?, 1, ?)`)
+        .run(id, id, status, id, outcome);
+
+    it("rejects a FAILED row with no delivery classification", () => {
+      const db = migrated();
+      expect(() => insert(db, "g1", "FAILED", null)).toThrow(/EMAIL_OUTBOX_DELIVERY_OUTCOME_INVARIANT/);
+    });
+
+    it("rejects a classification on a row that has not failed", () => {
+      const db = migrated();
+      expect(() => insert(db, "g2", "PENDING", "KNOWN_FAILED")).toThrow(/EMAIL_OUTBOX_DELIVERY_OUTCOME_INVARIANT/);
+    });
+
+    it.each([["KNOWN_FAILED"], ["UNRESOLVED"]])("accepts a FAILED row classified %s", (outcome) => {
+      const db = migrated();
+      expect(() => insert(db, `g3${outcome}`, "FAILED", outcome)).not.toThrow();
+    });
+
+    it("rejects an update into FAILED that forgets the classification", () => {
+      // The path a future writer would take. This is the case the source-level
+      // seam test catches at review time and the trigger catches at runtime.
+      const db = migrated();
+      insert(db, "g4", "PENDING", null);
+      expect(() => db.exec("UPDATE email_outbox SET status = 'FAILED' WHERE id = 'g4'"))
+        .toThrow(/EMAIL_OUTBOX_DELIVERY_OUTCOME_INVARIANT/);
+    });
+
+    it("rejects clearing the classification while the row stays failed", () => {
+      const db = migrated();
+      insert(db, "g5", "FAILED", "UNRESOLVED");
+      expect(() => db.exec("UPDATE email_outbox SET delivery_outcome = NULL WHERE id = 'g5'"))
+        .toThrow(/EMAIL_OUTBOX_DELIVERY_OUTCOME_INVARIANT/);
+    });
+
+    it("guards updates that do not name the columns at all", () => {
+      // BEFORE UPDATE ON, not UPDATE OF: SQLite silently ignores a misspelled
+      // column in an UPDATE OF list, giving a guard that looks installed and
+      // enforces nothing.
+      const db = migrated();
+      insert(db, "g6", "FAILED", "UNRESOLVED");
+      expect(() => db.exec("UPDATE email_outbox SET attempts = attempts + 1, delivery_outcome = NULL WHERE id = 'g6'"))
+        .toThrow(/EMAIL_OUTBOX_DELIVERY_OUTCOME_INVARIANT/);
+    });
+
+    it("aborts the migration when an existing row cannot be classified", () => {
+      // The no-op UPDATE at the end of the migration validates history through
+      // the guard itself. Proven by seeding a row the backfill cannot reach.
+      const db = openDatabase(":memory:");
+      applyThrough(db, PRIOR);
+      db.prepare(`INSERT INTO email_outbox
+        (id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status,
+         provider_idempotence_key, attempts, last_error)
+        VALUES ('bad', 'TEST', 'a@b.invalid', 'h', 'tpl', '{}', 'FAILED', 'k', 1, 'X')`).run();
+      const sql = readFileSync(`commerce/migrations/${MIGRATION}`, "utf8")
+        .replace(/UPDATE email_outbox\s+SET delivery_outcome = 'UNRESOLVED'[\s\S]*?;/, "");
+      expect(() => db.exec(sql)).toThrow(/EMAIL_OUTBOX_DELIVERY_OUTCOME_INVARIANT/);
     });
   });
 
@@ -157,6 +237,22 @@ describe("email delivery outcome", () => {
           statement,
           "KNOWN_FAILED claimed without a received-rejection provenance",
         ).toMatch(/last_error = 'UNISENDER_HTTP_REJECTED(_LEGACY)?'/);
+      }
+    });
+
+    it("classifies the path that binds the status as a parameter", () => {
+      // This one is invisible to the scan above: reconciliation writes
+      // `SET status = ?`, so the literal never appears. It was missed until the
+      // database trigger rejected it, which is the whole argument for enforcing
+      // the fact at the write rather than at review time.
+      const parameterised = source
+        .split(/(?=UPDATE email_outbox SET status = \?)/)
+        .filter((chunk) => chunk.startsWith("UPDATE email_outbox SET status = ?"));
+      expect(parameterised).not.toHaveLength(0);
+      for (const chunk of parameterised) {
+        const statement = chunk.slice(0, chunk.indexOf("`)") + 2);
+        expect(statement, "a parameter-bound status write leaves delivery_outcome unset")
+          .toMatch(/delivery_outcome = CASE WHEN \? = 'FAILED' THEN 'KNOWN_FAILED' END/);
       }
     });
 

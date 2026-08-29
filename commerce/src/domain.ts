@@ -3126,10 +3126,15 @@ export class CommerceDomain {
     const timestamps = observed.status === "SENT" ? ", sent_at = ?" : observed.status === "DELIVERED" ? ", delivered_at = ?" : observed.status === "BOUNCED" ? ", bounced_at = ?" : "";
     // DELIVERED is a durable positive fact. A later spam callback records its
     // own provider evidence but must not turn delivery back into a bounce.
-    this.db.prepare(`UPDATE email_outbox SET status = ?, job_id = COALESCE(job_id, ?), lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL${timestamps}
+    // Reconciliation is the one path that reaches FAILED with the status bound
+    // as a parameter, and the only one that can also move a row back out of it.
+    // A provider report is received evidence, so it classifies KNOWN_FAILED;
+    // any other terminal status clears the classification, because a row that
+    // is not FAILED must not carry one.
+    this.db.prepare(`UPDATE email_outbox SET status = ?, delivery_outcome = CASE WHEN ? = 'FAILED' THEN 'KNOWN_FAILED' END, job_id = COALESCE(job_id, ?), lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL${timestamps}
       WHERE id = ?
         AND NOT (status = 'DELIVERED' AND ? != 'DELIVERED')
-        AND NOT (suppressed_at IS NOT NULL AND ? != 'DELIVERED')`).run(observed.status, observed.jobId ?? null, ...(timestamps ? [now()] : []), outboxId, observed.status, observed.status);
+        AND NOT (suppressed_at IS NOT NULL AND ? != 'DELIVERED')`).run(observed.status, observed.status, observed.jobId ?? null, ...(timestamps ? [now()] : []), outboxId, observed.status, observed.status);
   }
 
   private redactDeliveredCityInterestOutbox(outboxId: string) {
