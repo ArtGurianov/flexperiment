@@ -196,7 +196,7 @@ jobs:
         # never from this controller's own main checkout.
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-before.json
           jq -e --arg owner "$EXPECTED_OWNER_RELEASE_ID" --arg source "$TOPOLOGY_BASELINE" --arg migration "$EXPECTED_MIGRATION" '
             .sales_paused == true and
@@ -235,7 +235,7 @@ jobs:
         # unchanged - only source_commit moves.
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           jq -n --slurpfile status status-before.json --arg release_id "$EXPECTED_OWNER_RELEASE_ID" --arg source "$DEPLOYMENT_TARGET" '
             $status[0] as $s |
             {
@@ -263,7 +263,7 @@ jobs:
         # baseline - only source_commit and updated_at may have changed.
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-after-expectations.json
           jq -e --slurpfile baseline status-before.json --arg owner "$EXPECTED_OWNER_RELEASE_ID" --arg source "$DEPLOYMENT_TARGET" --arg runtime_source "$TOPOLOGY_BASELINE" --arg migration "$EXPECTED_MIGRATION" '
             $baseline[0] as $before |
@@ -288,7 +288,7 @@ jobs:
         # earlier checks and the CAS as tightly as possible.
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-pre-cas.json
           jq -e --slurpfile baseline status-before.json --arg owner "$EXPECTED_OWNER_RELEASE_ID" --arg source "$DEPLOYMENT_TARGET" --arg runtime_source "$TOPOLOGY_BASELINE" --arg migration "$EXPECTED_MIGRATION" '
             $baseline[0] as $before |
@@ -321,7 +321,7 @@ jobs:
           [[ "$(scripts/read-production-deploy-ref.sh)" == "$DEPLOYMENT_TARGET" ]] || { echo "PRODUCTION_DEPLOY_POST_CAS_UNEXPECTED" >&2; exit 1; }
           git fetch --no-tags origin runtime-candidate
           [[ "$(git rev-parse origin/runtime-candidate)" == "$DEPLOYMENT_TARGET" ]] || { echo "RUNTIME_CANDIDATE_POST_CAS_UNEXPECTED" >&2; exit 1; }
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-pre-coolify.json
           jq -e --slurpfile baseline status-before.json --arg owner "$EXPECTED_OWNER_RELEASE_ID" --arg source "$DEPLOYMENT_TARGET" --arg runtime_source "$TOPOLOGY_BASELINE" --arg migration "$EXPECTED_MIGRATION" '
             $baseline[0] as $before |

@@ -37,8 +37,8 @@ describe("controlled email delivery-outcome cutover", () => {
   });
 
   describe("emergency latch ordering", () => {
-    it("requires the latch to be clear before certification", () => {
-      const certify = workflow.slice(at("Prove the emergency stop is clear before a real payment"), at("Activate or reconcile the certification lease"));
+    it("reconfirms the latch is clear at certify", () => {
+      const certify = workflow.slice(at("Reconfirm the emergency stop is still clear"), at("Activate or reconcile the certification lease"));
       expect(certify).toContain(".emergency_sales_paused == false");
       expect(certify).toContain("EMAIL_DELIVERY_OUTCOME_CUTOVER_EMERGENCY_LATCH_BLOCKS_CERTIFICATION");
     });
@@ -57,8 +57,8 @@ describe("controlled email delivery-outcome cutover", () => {
       expect(post).toBeGreaterThan(gate);
     });
 
-    it("proves the capability appeared with the candidate, while abort is still available", () => {
-      const handshake = workflow.slice(at("Prove the emergency capability appeared with the candidate"), at("Classify an explicitly evidenced deployed runtime-readiness defect"));
+    it("proves the capability exists and the stop is clear, while abort is still available", () => {
+      const handshake = workflow.slice(at("Prove the emergency stop capability exists and is clear"), at("Classify an explicitly evidenced deployed runtime-readiness defect"));
       expect(handshake).toContain("EMAIL_DELIVERY_OUTCOME_CUTOVER_EMERGENCY_CAPABILITY_MISSING_AFTER_DEPLOY");
       expect(handshake).toContain("EMAIL_DELIVERY_OUTCOME_CUTOVER_EMERGENCY_LATCH_SET_TOO_EARLY");
       // Existence is asserted separately: an absent field must never read as
@@ -70,7 +70,7 @@ describe("controlled email delivery-outcome cutover", () => {
     });
 
     it("orders the certify gate before the complete gate", () => {
-      expect(at("Prove the emergency stop is clear before a real payment"))
+      expect(at("Reconfirm the emergency stop is still clear"))
         .toBeLessThan(at("Complete only a certified authoritative candidate"));
     });
 

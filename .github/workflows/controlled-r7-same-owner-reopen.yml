@@ -141,7 +141,7 @@ jobs:
         # hard-bound durable owner constant, never derived from R7's SHA.
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           get() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$@"; }
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
           jq -e --arg owner "$EXPECTED_OWNER_RELEASE_ID" --arg source "$EXPECTED_PRODUCTION_DEPLOY" --arg migration "$EXPECTED_MIGRATION" '
@@ -208,7 +208,7 @@ jobs:
           git fetch --no-tags origin runtime-candidate
           [[ "$(git rev-parse origin/runtime-candidate)" == "$EXPECTED_RUNTIME_CANDIDATE" ]] || { echo "RUNTIME_CANDIDATE_MOVED_SINCE_PREFLIGHT" >&2; exit 1; }
           [[ "$(scripts/read-production-deploy-ref.sh)" == "$EXPECTED_PRODUCTION_DEPLOY" ]] || { echo "PRODUCTION_DEPLOY_MOVED_SINCE_PREFLIGHT" >&2; exit 1; }
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-pre-reopen.json
           jq -e --slurpfile baseline status.json --arg owner "$EXPECTED_OWNER_RELEASE_ID" --arg source "$EXPECTED_PRODUCTION_DEPLOY" --arg migration "$EXPECTED_MIGRATION" '
             $baseline[0] as $before |
@@ -247,14 +247,14 @@ jobs:
         run: |
           set -euo pipefail
           jq -e '.sales_paused == false and .owner_release_id == null and .owner_mode == null' reopened.json >/dev/null || { cat reopened.json >&2; echo "REOPEN_RESPONSE_UNEXPECTED" >&2; exit 1; }
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-post-reopen.json
           jq -e '.sales_paused == false and .owner_release_id == null and .owner_mode == null' status-post-reopen.json >/dev/null || { cat status-post-reopen.json >&2; echo "REOPEN_POST_STATUS_UNEXPECTED" >&2; exit 1; }
 
       - name: Prove all surfaces and the Promo head remain exact R7 after reopen
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           get() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$@"; }
           git fetch --no-tags origin runtime-candidate
           [[ "$(git rev-parse origin/runtime-candidate)" == "$EXPECTED_RUNTIME_CANDIDATE" ]] || { echo "FINAL_RUNTIME_CANDIDATE_UNEXPECTED_SHA" >&2; exit 1; }

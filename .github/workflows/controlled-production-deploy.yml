@@ -160,7 +160,7 @@ jobs:
           admin_contract_version="$(jq -er '.admin_contract_version | select(type == "string" and test("^[a-z0-9][a-z0-9.-]{0,63}$"))' "$CANDIDATE_CONTRACT_PATH")" || { echo "GENERIC_DEPLOY_ADMIN_CONTRACT_VERSION_INVALID" >&2; exit 1; }
           echo "CHECKOUT_CONTRACT_VERSION=$checkout_contract_version" >> "$GITHUB_ENV"
           echo "ADMIN_CONTRACT_VERSION=$admin_contract_version" >> "$GITHUB_ENV"
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           validate_json() {
             local file="$1" label="$2" bytes
             if ! jq -e 'type == "object"' "$file" >/dev/null 2>&1; then
@@ -301,7 +301,7 @@ jobs:
         if: env.DEPLOY_ACTION == 'RELEASE_ALREADY_COMPLETE'
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
           (cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$GITHUB_WORKSPACE/status.json" "$GITHUB_WORKSPACE/release.json" open)
@@ -339,7 +339,7 @@ jobs:
         if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE' && env.REUSING_PAUSED_OWNER != '1'
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/acquire" > /dev/null
           api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/pause" > paused.json
           jq -e '.sales_paused and .owner_release_id == env.RELEASE_ID' paused.json >/dev/null
@@ -356,7 +356,7 @@ jobs:
         if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
           (cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/reconcile-generic-production-deploy.ts "$GITHUB_WORKSPACE/status.json" "$GITHUB_WORKSPACE/completion.json" "$GITHUB_WORKSPACE/release.json") > reconciliation.json
@@ -388,7 +388,7 @@ jobs:
         timeout-minutes: 12
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           if [[ "${COOLIFY_DEPLOY_DISPATCHED:-0}" == "1" ]]; then
             [[ "$INITIAL_READINESS_DELAY_SECONDS" =~ ^[0-9]+$ ]] || { echo "INITIAL_READINESS_DELAY_CONFIGURATION_INVALID" >&2; exit 1; }
             echo "Allowing Coolify deployments to start for ${INITIAL_READINESS_DELAY_SECONDS}s..."
@@ -402,7 +402,7 @@ jobs:
         if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'
         run: |
           set -euo pipefail
-          api() { curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" "$@"; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
           (cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$GITHUB_WORKSPACE/status.json" "$GITHUB_WORKSPACE/release.json" open)
