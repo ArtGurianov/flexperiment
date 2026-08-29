@@ -4,7 +4,7 @@ import { EmailProviderRejectedError, EventDumpCreateRejectedError, isEmailDelive
 import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import { LegalReleasePublishError, loadCanonicalLegalRelease, publishLegalRelease, verifyCurrentLegalSourceHashes } from "./legal-release";
 import { providerErrorEvidence, type PaymentProvider } from "./provider";
-import { ReleaseControlError, ReleaseSalesGate, type CandidateAcquireRequest, type CandidateAdoptRequest, type CandidateCompleteRequest, type CandidateHeadSnapshot, type CandidatePhaseRequest, type CertificationEvidenceRequest, type CertificationLeaseRequest, type CertificationOrderContext, type CertificationRetryRequest, type ReleaseControlRequest, type RuntimeReadinessDefectRequest, releaseRuntimeEvidence } from "./release-control";
+import { ReleaseControlError, ReleaseSalesGate, type CandidateAcquireRequest, type CandidateAdoptRequest, type CandidateAbortRequest, type CandidateCompleteRequest, type CandidateHeadSnapshot, type CandidatePhaseRequest, type CertificationEvidenceRequest, type CertificationLeaseRequest, type CertificationOrderContext, type CertificationRetryRequest, type ReleaseControlRequest, type RuntimeReadinessDefectRequest, releaseRuntimeEvidence } from "./release-control";
 import { checkoutRequestSchema, promoMergedSchema, type CheckoutRequest, type ParticipantAgeBand } from "./types";
 import { PromoPricingError, pricePromo } from "./promo-pricing";
 import { basisPointsOf } from "./basis-points";
@@ -353,6 +353,14 @@ export class CommerceDomain {
   markPromoCandidateRuntimeReadinessDefect(input: RuntimeReadinessDefectRequest) {
     try { return this.releaseSalesGate().markRuntimeReadinessDefect(input, () => this.releaseRuntimeEvidence()); }
     catch (error) { if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status); throw error; }
+  }
+
+  abortPromoCandidate(input: CandidateAbortRequest) {
+    try { return this.releaseSalesGate().abortCandidate(input, () => this.releaseRuntimeEvidence()); }
+    catch (error) {
+      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
+      throw error;
+    }
   }
 
   completePromoCandidate(input: CandidateCompleteRequest) {

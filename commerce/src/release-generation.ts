@@ -1,6 +1,12 @@
 import { canonicalV2, sha256 } from "./crypto";
 
-export const releasePhases = ["PAUSED", "DEPLOYED_READ_ONLY", "CERTIFICATION_ONLY", "CERTIFICATION_IN_FLIGHT", "CERTIFIED", "COMPLETE", "RECOVERY_REQUIRED"] as const;
+export const releasePhases = ["PAUSED", "DEPLOYED_READ_ONLY", "CERTIFICATION_ONLY", "CERTIFICATION_IN_FLIGHT", "CERTIFIED", "COMPLETE", "ABORTED", "RECOVERY_REQUIRED"] as const;
+/**
+ * Terminal phases own no gate. ABORTED is not a state of an active candidate:
+ * it ends the generation without promotion and returns the projection to no
+ * active release with sales open, exactly as COMPLETE does after promotion.
+ */
+export const terminalReleasePhases = ["COMPLETE", "ABORTED"] as const;
 export type ReleasePhase = (typeof releasePhases)[number];
 export type MigrationInventory = { files: Record<string, string> };
 export type CertificationLeaseStatus = "ACTIVE" | "CONSUMED" | "EXPIRED" | "REVOKED";
@@ -9,10 +15,15 @@ export type GenerationHead = { release_id: string; candidate_generation: number;
 export type V2Event = { seq: number; release_id: string; action: "ACQUIRED" | "PAUSED" | "REOPENED"; details_json: string };
 type Envelope = { schema_version: 2; kind: "CANDIDATE_ACQUIRED" | "CANDIDATE_SUPERSEDED" | "PHASE_CHANGED" | "RUNTIME_READINESS_DEFECT" | "PUBLIC_FRONTEND_DEFECT"; [key: string]: unknown };
 
+const terminalPhases = new Set<string>(terminalReleasePhases);
+export const isTerminalPhase = (phase: ReleasePhase): phase is (typeof terminalReleasePhases)[number] => terminalPhases.has(phase);
 const phases = new Set<string>(releasePhases);
-const permittedPhaseChanges: Readonly<Record<Exclude<ReleasePhase, "COMPLETE">, readonly ReleasePhase[]>> = {
-  PAUSED: ["DEPLOYED_READ_ONLY", "RECOVERY_REQUIRED"],
-  DEPLOYED_READ_ONLY: ["CERTIFICATION_ONLY", "RECOVERY_REQUIRED"],
+const permittedPhaseChanges: Readonly<Record<Exclude<ReleasePhase, "COMPLETE" | "ABORTED">, readonly ReleasePhase[]>> = {
+  // Abort is reachable only before anything irreversible: no certification has
+  // been certified, no promotion has happened. From CERTIFIED onward the exit
+  // is recovery or completion, never abort.
+  PAUSED: ["DEPLOYED_READ_ONLY", "ABORTED", "RECOVERY_REQUIRED"],
+  DEPLOYED_READ_ONLY: ["CERTIFICATION_ONLY", "ABORTED", "RECOVERY_REQUIRED"],
   CERTIFICATION_ONLY: ["CERTIFICATION_IN_FLIGHT", "DEPLOYED_READ_ONLY", "RECOVERY_REQUIRED"],
   CERTIFICATION_IN_FLIGHT: ["CERTIFIED", "DEPLOYED_READ_ONLY", "RECOVERY_REQUIRED"],
   CERTIFIED: ["COMPLETE", "RECOVERY_REQUIRED"],
@@ -131,7 +142,7 @@ export function replayReleaseGenerationChain(events: readonly V2Event[]): { head
     }
     if (envelope.kind !== "PHASE_CHANGED" && envelope.kind !== "RUNTIME_READINESS_DEFECT" && envelope.kind !== "PUBLIC_FRONTEND_DEFECT") return { corrupt: "UNKNOWN_V2_EVENT_KIND" };
     const next = headFrom(envelope.head);
-    if (!next || current.phase === "COMPLETE" || next.release_id !== current.release_id || next.candidate_generation !== current.candidate_generation || next.source_commit !== current.source_commit || canonicalV2(next.migration_inventory) !== canonicalV2(current.migration_inventory) || canonicalV2(next.legal_baseline) !== canonicalV2(current.legal_baseline) || next.release_family !== current.release_family || next.checkout_contract_version !== current.checkout_contract_version || next.admin_contract_version !== current.admin_contract_version || envelope.from_phase !== current.phase || envelope.from_phase_sequence !== current.phase_sequence || next.phase_sequence !== current.phase_sequence + 1 || !permittedPhaseChanges[current.phase].includes(next.phase)) return { corrupt: "INVALID_PHASE_CHANGE" };
+    if (!next || isTerminalPhase(current.phase) || next.release_id !== current.release_id || next.candidate_generation !== current.candidate_generation || next.source_commit !== current.source_commit || canonicalV2(next.migration_inventory) !== canonicalV2(current.migration_inventory) || canonicalV2(next.legal_baseline) !== canonicalV2(current.legal_baseline) || next.release_family !== current.release_family || next.checkout_contract_version !== current.checkout_contract_version || next.admin_contract_version !== current.admin_contract_version || envelope.from_phase !== current.phase || envelope.from_phase_sequence !== current.phase_sequence || next.phase_sequence !== current.phase_sequence + 1 || !permittedPhaseChanges[current.phase].includes(next.phase)) return { corrupt: "INVALID_PHASE_CHANGE" };
     const runtimeReadinessDefectTransition = current.phase === "PAUSED" && next.phase === "RECOVERY_REQUIRED";
     if (runtimeReadinessDefectTransition) {
       const unexpectedEvidence = ["certification_evidence", "certification_retry", "certification_defect", "public_frontend_defect"].some((key) => envelope[key] !== undefined);
@@ -167,11 +178,15 @@ export function replayReleaseGenerationChain(events: readonly V2Event[]): { head
         || (current.phase === "DEPLOYED_READ_ONLY" && next.phase === "RECOVERY_REQUIRED" && ["CONSUMED", "REVOKED"].includes(current.certification.status) && next.certification.status === current.certification.status)
         // CERTIFIED -> RECOVERY_REQUIRED is handled exclusively by
         // publicFrontendDefectTransition above; it is unreachable here.
-        || (current.phase === "CERTIFIED" && next.phase === "COMPLETE" && current.certification.status === "CONSUMED" && next.certification.status === "CONSUMED");
+        || (current.phase === "CERTIFIED" && next.phase === "COMPLETE" && current.certification.status === "CONSUMED" && next.certification.status === "CONSUMED")
+        // Abort preserves the binding byte-for-byte. A consumed fixture stays
+        // consumed evidence: the generation ended, the money still moved.
+        || (next.phase === "ABORTED" && next.certification.status === current.certification.status);
       if (!validStatusTransition) return { corrupt: "INVALID_CERTIFICATION_STATUS_TRANSITION" };
     }
-    if (event.action === "PAUSED" && next.phase === "COMPLETE") return { corrupt: "COMPLETE_MUST_REOPEN" };
-    if (event.action === "REOPENED" && next.phase !== "COMPLETE") return { corrupt: "REOPENED_NON_COMPLETE" };
+    // Both terminal phases release the gate, so both must be REOPENED events.
+    if (event.action === "PAUSED" && isTerminalPhase(next.phase)) return { corrupt: "COMPLETE_MUST_REOPEN" };
+    if (event.action === "REOPENED" && !isTerminalPhase(next.phase)) return { corrupt: "REOPENED_NON_COMPLETE" };
     if (next.certification?.status === "CONSUMED") rememberConsumedFixture(next.certification);
     current = next;
   }
@@ -179,7 +194,7 @@ export function replayReleaseGenerationChain(events: readonly V2Event[]): { head
 }
 
 export function reconcileHeadWithProjection(head: GenerationHead, projection: { owner_release_id: string | null; sales_paused: boolean; expected_source_commit?: string | null; expected_migration?: string | null; expected_legal_version?: string | null; expected_legal_manifest_sha256?: string | null }): string | undefined {
-  if (head.phase === "COMPLETE") return projection.owner_release_id === null && !projection.sales_paused ? undefined : "RELEASE_STATE_CORRUPT";
+  if (isTerminalPhase(head.phase)) return projection.owner_release_id === null && !projection.sales_paused ? undefined : "RELEASE_STATE_CORRUPT";
   if (projection.owner_release_id !== head.release_id || !projection.sales_paused) return "RELEASE_STATE_CORRUPT";
   if (projection.expected_source_commit !== undefined && projection.expected_source_commit !== head.source_commit) return "RELEASE_STATE_CORRUPT";
   if (projection.expected_migration !== undefined && projection.expected_migration !== candidateExpectedMigration(head)) return "RELEASE_STATE_CORRUPT";
