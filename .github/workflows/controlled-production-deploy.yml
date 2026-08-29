@@ -148,11 +148,14 @@ jobs:
           set -euo pipefail
           [[ "$TARGET_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "GENERIC_DEPLOY_INVALID_SOURCE_COMMIT" >&2; exit 1; }
           [[ "$RELEASE_ID" == "deploy-$TARGET_SHA" ]] || { echo "GENERIC_DEPLOY_INVALID_RELEASE_ID" >&2; exit 1; }
-          # Controller and deployment source are separate identities. Deploying
-          # the controller's own commit collapses them, and every downstream
-          # proof that distinguishes "what decided" from "what runs" silently
-          # starts comparing a value to itself.
-          [[ "$TARGET_SHA" != "$CONTROLLER_SHA" ]] || { echo "GENERIC_DEPLOY_TARGET_IS_CONTROLLER_SHA" >&2; exit 1; }
+          # The controller must not be OLDER than what it deploys, so its policy
+          # covers the code it is judging. Equality is allowed: `main` is a
+          # descendant of every target, so a different SHA never gave the
+          # controller independent authority - it still contained the target's
+          # own policy changes. Strict inequality only forced a ceremonial extra
+          # commit. Real controller independence would need a separate protected
+          # controller artifact, which this is not.
+          git merge-base --is-ancestor "$TARGET_SHA" "$CONTROLLER_SHA" || { echo "GENERIC_DEPLOY_CONTROLLER_OLDER_THAN_TARGET" >&2; exit 1; }
           checkout_contract_version="$(jq -er '.checkout_contract_version | select(type == "string" and test("^[a-z0-9][a-z0-9.-]{0,63}$"))' "$CANDIDATE_CONTRACT_PATH")" || { echo "GENERIC_DEPLOY_CHECKOUT_CONTRACT_VERSION_INVALID" >&2; exit 1; }
           admin_contract_version="$(jq -er '.admin_contract_version | select(type == "string" and test("^[a-z0-9][a-z0-9.-]{0,63}$"))' "$CANDIDATE_CONTRACT_PATH")" || { echo "GENERIC_DEPLOY_ADMIN_CONTRACT_VERSION_INVALID" >&2; exit 1; }
           echo "CHECKOUT_CONTRACT_VERSION=$checkout_contract_version" >> "$GITHUB_ENV"

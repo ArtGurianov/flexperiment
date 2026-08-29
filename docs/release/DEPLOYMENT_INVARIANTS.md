@@ -76,11 +76,8 @@ an ordinary candidate promotion requires its target to descend from the
 current `production-deploy` — and deliberately **not** from the current
 `runtime-candidate`, which is a proposal register, not an authority (see
 "`runtime-candidate` is never an authority" below) — then advances only
-`runtime-candidate` with an exact lease. The target must also differ from the
-controller's own commit: controller and deployment source are separate
-identities, and collapsing them makes every downstream proof that
-distinguishes them compare a value to itself. Candidate promotion never
-deploys production or mutates release-control state.
+`runtime-candidate` with an exact lease. Candidate promotion never deploys
+production or mutates release-control state.
 
 The candidate-promotion workflow binds the dedicated `production`
 environment secret `RUNTIME_CANDIDATE_REF_TOKEN` only to that lease-backed
@@ -707,7 +704,7 @@ reason for the generic lane; it does not by itself say how a refused change
 should ship, and conflating those two is how a lane becomes a bypass.
 
 ```text
-generic                     nothing crossed
+generic                     nothing crossed, or CONTROL_PLANE only
 release-semantics cutover   RELEASE_CONTROL only
 candidate protocol          SCHEMA or LEGAL
 ```
@@ -719,6 +716,57 @@ timestamp semantics — changes what a durable value *means*, and a converged
 runtime proves none of it: the old and new meanings can each be self-consistent
 and still disagree about state written under the other. It fails closed out of
 the cutover lane and has no lane of its own yet.
+
+### `CONTROL_PLANE` is governed, not deployed
+
+Deploy classification, the assert/reconcile scripts and the controllers
+themselves never run in production. A change to them takes effect the moment it
+merges to protected `main`, because a controller executes policy from its own
+checkout.
+
+Classifying them as release-semantic produced an authority error rather than a
+safety property: the same commit that was already effective also demanded a
+production pause, purely so `production-deploy` would catch up and stop showing
+the file in later range diffs. That is servicing an abstraction leak. Their
+governance is protected `main` plus required CI.
+
+The exemption rests on one machine-checked fact, not on intent:
+
+```text
+CONTROL_PLANE  intersect  runtime-import closure  =  empty
+```
+
+Direction matters, and only one direction is forbidden. Control plane may import
+runtime code freely - `generic-production-deploy.ts` imports `evaluateReopenGate`
+and must, to reconcile against real release state. Runtime importing control
+plane is the violation, and
+`commerce/test/control-plane-isolation.test.ts` fails rather than letting the
+exemption quietly widen.
+
+### A controller must not be older than what it deploys
+
+```text
+git merge-base --is-ancestor "$TARGET_SHA" "$CONTROLLER_SHA"   # equality allowed
+```
+
+The policy doing the judging must cover the code being judged. This is
+deliberately **not** "controller and target are different commits", which was
+tried on 2026-08-29 and was wrong twice over.
+
+It bought no independence: `main` is a descendant of every target, so a
+different controller SHA still contains the target's own policy changes - a
+commit that weakened admission would be judged by its own weakened rule either
+way. And it forced a ceremonial extra commit before anything could ship, since a
+controller can never deploy its own HEAD.
+
+Real controller independence requires a separate protected controller artifact
+whose policy does not derive from the candidate. Strict SHA inequality on `main`
+was never that mechanism, and deliberateness is already supplied by the
+`production` environment approval.
+
+What the original invariant forbids is **deriving** the target from the
+controller - `TARGET_SHA="$(git rev-parse HEAD)"`, as `controlled-age-band-cutover.yml`
+does - which is a different statement from the two SHAs coinciding.
 
 ### Known imprecision: `types.ts`
 
