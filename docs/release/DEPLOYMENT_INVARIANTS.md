@@ -370,6 +370,43 @@ deliberately invoking one specific, already-reviewed, already-deployed
 runtime's own semantics to judge evidence about that same
 runtime - the two are exact opposites, not the same mistake.
 
+## A generic deploy acquires with the inventory expectation, never a filename
+
+`ReleaseSalesGate.acquire()` validates `expected.migration` through
+`supportedMigrationExpectation()`, which is evaluated by the **currently
+deployed** runtime against a static allowlist compiled into that build. A
+migration filename is therefore only acquirable while the deployed runtime
+already knows it.
+
+A controlled cutover leaves its own expectation in durable state. On
+2026-08-29 the sales-availability cutover left
+`expected_migration = 0038_occurrence_availability_notifications.sql`, which
+the deployed runtime's allowlist (…0036) could not validate. Because
+`controlled-production-deploy.yml` reused that durable value verbatim, every
+subsequent generic deploy failed `acquire` with HTTP 409
+`UNKNOWN_EXPECTED_MIGRATION` - a permanent, self-inflicted block, not a
+transient fault.
+
+The generic controller therefore **MUST** acquire with the
+`inventory-sha256:` form derived from `.runtime.migration_versions` and
+cross-checked against the production source tree. This is still durable
+production evidence, never candidate helper code; it simply cannot go stale,
+because it describes the applied set rather than naming a file the runtime's
+allowlist may predate. It is sound specifically because the generic
+controller refuses any candidate touching `commerce/migrations`, so the
+applied set is identical before and after the deploy and still describes the
+post-deploy state that `reopen` re-verifies.
+
+The hash must be byte-identical across shell, `jq` and
+`migrationInventoryExpectation()` in TypeScript - sorted, joined with `\n`,
+no trailing newline. That three-way equivalence is pinned by a test; do not
+change one side without it.
+
+An earlier commit (`8831bfd`, 2026-08-26) removed this form in favour of the
+durable filename with no recorded rationale. That was safe only while durable
+expectations stayed inside the allowlist, and a cutover can always break that
+assumption. Do not reinstate the filename form here.
+
 ## The migration-applied predicate: `required_migrations` is a hint, `migration_versions` is authoritative
 
 Runtime release evidence carries two independent views of what migrations

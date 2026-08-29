@@ -205,9 +205,22 @@ jobs:
           [[ "$migration_inventory" == "$source_migration_inventory" ]] || { echo "GENERIC_DEPLOY_PRODUCTION_MIGRATION_INVENTORY_MISMATCH" >&2; exit 1; }
           migration_inventory_sha256="$(printf %s "$migration_inventory" | shasum -a 256 | awk '{ print $1 }')"
           echo "MIGRATION_INVENTORY_SHA256=$migration_inventory_sha256"
-          durable_migration="$(jq -er '.expected.migration | select(type == "string" and test("^[0-9]{4}_.+\\.sql$"))' durable-before.json)"
+          # The durable expectation may be a migration filename (left by a
+          # controlled cutover) or an inventory hash (left by a previous generic
+          # deploy). Either is valid evidence of a coherent baseline.
+          durable_migration="$(jq -er '.expected.migration | select(type == "string" and (test("^[0-9]{4}_.+\\.sql$") or test("^inventory-sha256:[a-f0-9]{64}$")))' durable-before.json)"
           [[ -n "$durable_migration" ]] || { echo "GENERIC_DEPLOY_PRODUCTION_MIGRATION_EXPECTATION_INVALID" >&2; exit 1; }
-          jq -e --arg release_id "$RELEASE_ID" --arg source_commit "$TARGET_SHA" --arg migration "$durable_migration" '
+          # ...but we always ACQUIRE with the inventory form. A filename is
+          # validated against the deployed runtime's static allowlist, so a
+          # cutover that leaves a newer filename there (0038 did) makes every
+          # later generic deploy unacquirable. The inventory hash is derived
+          # from the runtime's own applied migrations, so it cannot go stale.
+          # Safe here precisely because this controller refuses any candidate
+          # touching commerce/migrations: the applied set is identical before
+          # and after the deploy, so this hash still describes the post-deploy
+          # state that reopen re-verifies.
+          expected_migration="inventory-sha256:$migration_inventory_sha256"
+          jq -e --arg release_id "$RELEASE_ID" --arg source_commit "$TARGET_SHA" --arg migration "$expected_migration" '
             .runtime as $runtime |
             if
               ($runtime.legal_version | type == "string") and

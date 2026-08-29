@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { migrationInventoryExpectation } from "../src/release-control";
 
 const workflow = readFileSync(".github/workflows/controlled-production-deploy.yml", "utf8");
 const deployHelper = readFileSync("scripts/controlled-coolify-deploy.sh", "utf8");
@@ -180,12 +181,21 @@ describe("generic controlled production deploy workflow", () => {
 
   it("freezes release expectations from durable production evidence, never candidate helper code", () => {
     expect(workflow).toContain(".runtime as $runtime");
-    expect(workflow).toContain('.expected.migration | select(type == "string" and test("^[0-9]{4}_.+\\\\.sql$"))');
+    expect(workflow).toContain('.expected.migration | select(type == "string" and (test("^[0-9]{4}_.+\\\\.sql$") or test("^inventory-sha256:[a-f0-9]{64}$")))');
     expect(workflow).toContain("migration: $migration");
     expect(workflow).toContain("' durable-before.json > release.json");
     expect(workflow).toContain("GENERIC_DEPLOY_PRODUCTION_BASELINE_INVALID");
-    expect(workflow).not.toContain('migration_expectation="inventory-sha256:');
+    // 8831bfd previously banned the inventory form here, to freeze the
+    // expectation verbatim from durable evidence. That held only while durable
+    // expectations stayed inside the deployed runtime's static allowlist; the
+    // sales-availability cutover left 0038 there and made every generic deploy
+    // unacquirable. The inventory hash is still durable evidence - it is
+    // derived from .runtime.migration_versions and cross-checked against the
+    // production source tree - it simply cannot go stale.
+    expect(workflow).toContain('expected_migration="inventory-sha256:$migration_inventory_sha256"');
+    // Still never a literal, and never from candidate helper code.
     expect(workflow).not.toContain('migration: "inventory-sha256:');
+    expect(workflow).not.toContain('migration: "0034_worker_sweep_evidence.sql"');
     expect(workflow).not.toContain("commerce:production-deploy:payload");
     expect(workflow).toContain('git show "$target_sha:commerce/legal/production-manifest.json" > "$candidate_manifest_path"');
     expect(workflow).toContain('"$CANDIDATE_MANIFEST_PATH" >/dev/null || { echo "GENERIC_DEPLOY_LEGAL_CANONICAL_MANIFEST_MISMATCH"');
@@ -343,6 +353,48 @@ describe("generic controlled production deploy workflow", () => {
     expect(deploy).toBeGreaterThan(setter);
     expect(reopen).toBeGreaterThan(deploy);
     expect(workflow).not.toContain("/expectations");
+  });
+
+  /**
+   * The controller acquires with an inventory-hash expectation rather than a
+   * migration filename, because a filename can name a migration the deployed
+   * runtime's allowlist predates - which is exactly what blocked every generic
+   * deploy after the sales-availability cutover left 0038 as the durable
+   * expectation. That only works if the hash the workflow computes in shell is
+   * byte-identical to the one migrationInventoryExpectation() computes in TS,
+   * so pin the cross-language equivalence rather than assume it.
+   */
+  it("computes the same inventory hash in shell as migrationInventoryExpectation does in TypeScript", () => {
+    const names = readdirSync("commerce/migrations").filter((name) => name.endsWith(".sql"));
+    expect(names.length).toBeGreaterThan(0);
+
+    // Exactly the workflow's pipeline: sort, join with \n, no trailing newline.
+    const quoted = names.map((name) => `'${name}'`).join(" ");
+    const shell = spawnSync("bash", ["-lc", `printf %s "$(printf '%s\\n' ${quoted} | sort)" | shasum -a 256 | awk '{ print $1 }'`], { encoding: "utf8" });
+    expect(shell.status, shell.stderr).toBe(0);
+    expect(migrationInventoryExpectation(names)).toBe(`inventory-sha256:${shell.stdout.trim()}`);
+
+    // jq sorts the runtime's migration_versions; the workflow cross-checks that
+    // against shell sort, so jq must agree with both.
+    // Command substitution strips only the trailing newline, exactly as the
+    // workflow's migration_inventory="$(jq -er ... join("\n"))" does.
+    const viaJq = spawnSync("bash", ["-lc", `printf %s "$(printf '%s' '${JSON.stringify(names)}' | jq -er 'sort | join("\\n")')" | shasum -a 256 | awk '{ print $1 }'`], { encoding: "utf8" });
+    expect(viaJq.status, viaJq.stderr).toBe(0);
+    expect(migrationInventoryExpectation(names)).toBe(`inventory-sha256:${viaJq.stdout.trim()}`);
+  });
+
+  it("acquires with the inventory expectation, never the durable filename", () => {
+    // A filename is checked against the deployed runtime's static allowlist, so
+    // reusing it verbatim made the controller unacquirable the moment a cutover
+    // left a newer filename in durable state.
+    expect(workflow).toContain('expected_migration="inventory-sha256:$migration_inventory_sha256"');
+    expect(workflow).toContain('--arg migration "$expected_migration"');
+    expect(workflow).not.toContain('--arg migration "$durable_migration"');
+    // The durable value is still validated as coherent evidence, in either form.
+    expect(workflow).toContain('test("^inventory-sha256:[a-f0-9]{64}$")');
+    expect(workflow).toContain("GENERIC_DEPLOY_PRODUCTION_MIGRATION_EXPECTATION_INVALID");
+    // Sound only because this controller refuses migration changes outright.
+    expect(workflow).toContain("pnpm commerce:production-deploy:assert-boundary");
   });
 
   it("reuses an already paused same-owner release without replaying acquire or pause", () => {
