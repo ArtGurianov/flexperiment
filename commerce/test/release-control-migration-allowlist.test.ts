@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import { diagnosticCutoverMigrations, requiredMigrationsFor, ReleaseSalesGate } from "../src/release-control";
 import { releaseStateHash, type GenerationHead } from "../src/release-generation";
+import { releaseControlSchema } from "../src/types";
 
 const databases: ReturnType<typeof openDatabase>[] = [];
 afterEach(() => { while (databases.length) databases.pop()?.close(); });
@@ -35,6 +36,33 @@ describe("generic-deploy migration allowlist", () => {
 
   it("keeps the complete predecessor chain for 0036", () => {
     expect(requiredMigrationsFor("0036_tochka_provider_error_evidence.sql")).toEqual([...diagnosticCutoverMigrations, "0035_promo_codes_v0.sql", "0036_tochka_provider_error_evidence.sql"]);
+  });
+
+  it("keeps the complete predecessor chain for 0038, left durable by the sales-availability cutover", () => {
+    expect(requiredMigrationsFor("0038_occurrence_availability_notifications.sql")).toEqual([
+      ...diagnosticCutoverMigrations,
+      "0035_promo_codes_v0.sql",
+      "0036_tochka_provider_error_evidence.sql",
+      "0037_emergency_sales_gate.sql",
+      "0038_occurrence_availability_notifications.sql",
+    ]);
+  });
+
+  /**
+   * release-control has always understood inventory-sha256 expectations, but
+   * releaseControlSchema rejected them at the API edge, so the support was
+   * unreachable. That is what made a durable 0038 filename an unrecoverable
+   * block on every generic acquire.
+   */
+  it("accepts both expectation forms at the API edge", () => {
+    const request = (migration: string) => ({ ...legacyRelease(migration), release_id: "deploy-abcdef12" });
+    expect(releaseControlSchema.safeParse(request("0038_occurrence_availability_notifications.sql")).success).toBe(true);
+    expect(releaseControlSchema.safeParse(request(`inventory-sha256:${"a".repeat(64)}`)).success).toBe(true);
+
+    expect(releaseControlSchema.safeParse(request("inventory-sha256:not-a-hash")).success).toBe(false);
+    expect(releaseControlSchema.safeParse(request(`inventory-sha256:${"A".repeat(64)}`)).success).toBe(false);
+    expect(releaseControlSchema.safeParse(request("0038_occurrence_availability_notifications.txt")).success).toBe(false);
+    expect(releaseControlSchema.safeParse(request("../../etc/passwd")).success).toBe(false);
   });
 
   it("fails closed for an unknown future migration", () => {

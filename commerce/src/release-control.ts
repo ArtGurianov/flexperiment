@@ -161,6 +161,10 @@ const requiredMigrationsByExpectedMigration: Record<string, readonly string[]> =
   "0034_worker_sweep_evidence.sql": diagnosticCutoverMigrations,
   "0035_promo_codes_v0.sql": [...diagnosticCutoverMigrations, "0035_promo_codes_v0.sql"],
   "0036_tochka_provider_error_evidence.sql": [...diagnosticCutoverMigrations, "0035_promo_codes_v0.sql", "0036_tochka_provider_error_evidence.sql"],
+  // The sales-availability cutover left this as the durable expectation. The
+  // generic controller now acquires with the inventory form instead, but a
+  // filename-form acquire for 0038 must still be possible for manual recovery.
+  "0038_occurrence_availability_notifications.sql": [...diagnosticCutoverMigrations, "0035_promo_codes_v0.sql", "0036_tochka_provider_error_evidence.sql", "0037_emergency_sales_gate.sql", "0038_occurrence_availability_notifications.sql"],
 };
 export const requiredMigrationsFor = (expectedMigration: string): readonly string[] | undefined => requiredMigrationsByExpectedMigration[expectedMigration];
 const migrationInventoryPrefix = "inventory-sha256:";

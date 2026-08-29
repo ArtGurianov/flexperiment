@@ -25,7 +25,12 @@ export const checkoutContextSchema = z.object({
 const releaseHashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const releaseExpectedSchema = z.object({
   source_commit: z.string().regex(/^[a-f0-9]{7,64}$/),
-  migration: z.string().regex(/^\d{4}_[a-z0-9_]+\.sql$/),
+  // Both forms release-control already understands. The inventory hash exists
+  // because a filename is validated against the deployed runtime's static
+  // allowlist, so a cutover that leaves a newer filename in durable state makes
+  // every later generic acquire fail. Rejecting it here made that support
+  // unreachable from the API and cost a production deploy path.
+  migration: z.string().regex(/^(\d{4}_[a-z0-9_]+\.sql|inventory-sha256:[a-f0-9]{64})$/),
   legal_version: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/),
   legal_manifest_sha256: releaseHashSchema,
   legal_hashes: z.object({
