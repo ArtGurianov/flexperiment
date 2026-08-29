@@ -30,9 +30,21 @@ describe("generic deploy release-semantics boundary", () => {
     ["state-machine replay", "commerce/src/release-generation.ts"],
     ["certification evidence arithmetic", "commerce/src/certification-evidence.ts"],
     ["lease and freshness timestamp parsing", "commerce/src/utc-timestamp.ts"],
-    ["the boundary classifier itself", "commerce/src/generic-production-deploy-boundary.ts"],
   ])("refuses a candidate that changes %s", (_label, path) => {
     expect(genericProductionDeployBoundary([path])).toBe("RELEASE_SEMANTICS");
+  });
+
+  it("admits a change to the boundary classifier itself", () => {
+    // This asserted the opposite until the authority error behind it was found.
+    // The classifier is control plane: it takes effect when it merges to
+    // protected main, because controllers run policy from their own checkout,
+    // and production never observes it. Denying it here demanded a runtime
+    // cutover purely so production-deploy would catch up and stop showing the
+    // file in later diffs - servicing an abstraction leak, not safety.
+    //
+    // The exemption is safe only because the runtime cannot reach it, which is
+    // machine-checked in control-plane-isolation.test.ts.
+    expect(genericProductionDeployBoundary(["commerce/src/generic-production-deploy-boundary.ts"])).toBeUndefined();
   });
 
   /**

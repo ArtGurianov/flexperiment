@@ -23,7 +23,9 @@ const ROOTS = [
   "commerce/src/sales-gate.ts",
   "commerce/src/certification-evidence.ts",
   "commerce/src/types.ts",
-  "commerce/src/generic-production-deploy-boundary.ts",
+  // The deploy classifier is deliberately NOT a root: it is control plane, it
+  // never runs in production, and control-plane-isolation.test.ts proves the
+  // runtime cannot reach it.
 ];
 
 /**

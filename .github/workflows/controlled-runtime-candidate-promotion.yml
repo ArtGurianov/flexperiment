@@ -60,11 +60,6 @@ jobs:
           git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
           [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_CONTROLLER_MAIN_MOVED" >&2; exit 1; }
           [[ "$INPUT_TARGET_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_TARGET_SHA_INVALID" >&2; exit 1; }
-          # Controller and deployment source are separate identities. Promoting
-          # the controller's own commit collapses them, and every downstream
-          # proof that distinguishes "what decided" from "what runs" silently
-          # starts comparing a value to itself.
-          [[ "$INPUT_TARGET_SHA" != "$CONTROLLER_SHA" ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_TARGET_IS_CONTROLLER_SHA" >&2; exit 1; }
           [[ "$INPUT_EXPECTED_RUNTIME_CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_EXPECTED_RUNTIME_CANDIDATE_SHA_INVALID" >&2; exit 1; }
           [[ "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_EXPECTED_PRODUCTION_DEPLOY_SHA_INVALID" >&2; exit 1; }
           [[ "$INPUT_REASON" =~ ^[[:print:]]{1,240}$ ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_REASON_INVALID" >&2; exit 1; }

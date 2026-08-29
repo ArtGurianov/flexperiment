@@ -76,11 +76,8 @@ an ordinary candidate promotion requires its target to descend from the
 current `production-deploy` — and deliberately **not** from the current
 `runtime-candidate`, which is a proposal register, not an authority (see
 "`runtime-candidate` is never an authority" below) — then advances only
-`runtime-candidate` with an exact lease. The target must also differ from the
-controller's own commit: controller and deployment source are separate
-identities, and collapsing them makes every downstream proof that
-distinguishes them compare a value to itself. Candidate promotion never
-deploys production or mutates release-control state.
+`runtime-candidate` with an exact lease. Candidate promotion never deploys
+production or mutates release-control state.
 
 The candidate-promotion workflow binds the dedicated `production`
 environment secret `RUNTIME_CANDIDATE_REF_TOKEN` only to that lease-backed
@@ -672,3 +669,143 @@ retry loop: if the POST's result is ambiguous (e.g. the connection drops
 mid-response), the workflow stops rather than issuing a second POST -
 resolving that ambiguity is a separate, read-only investigation, never an
 automatic retry.
+
+## Prove the fact at the seam that consumes it
+
+A safety property is enforced where the orchestration actually consumes it, and
+nowhere else. Green unit tests on a pure implementation are not evidence of
+enforcement; neither is a sentence in this document, nor a comment in the
+controller that states the rule correctly.
+
+Three defects of this exact shape were found on 2026-08-29, all with correct
+logic behind a disconnected seam:
+
+```text
+ancestry fence        invariant real, production ref never fetched by CI
+semantic boundary     invariant real, sensitive paths cut by a git pathspec
+                      before the classifier ever saw them
+controller identity   invariant real, values never compared - and in two lanes
+                      a reflexive `merge-base --is-ancestor` ADMITTED the
+                      collision it appeared to forbid
+```
+
+Each would have produced a green production run that proved nothing. The third
+is the sharpest: a check that looks like protection can be the hole.
+
+**Therefore:** when adding or repairing an invariant, add a structural test
+against the workflow seam itself, and read the exact command a controller runs
+before dispatching it. `commerce/test/generic-deploy-boundary-enforcement.test.ts`
+and `commerce/test/controller-target-distinctness.test.ts` are the pattern.
+
+## Deploy lanes
+
+Three lanes, chosen by what the change set crosses. The category is a *deny*
+reason for the generic lane; it does not by itself say how a refused change
+should ship, and conflating those two is how a lane becomes a bypass.
+
+```text
+generic                     nothing crossed, or CONTROL_PLANE only
+release-semantics cutover   RELEASE_CONTROL only
+candidate protocol          SCHEMA or LEGAL
+```
+
+`RELEASE_CONTROL` is the state machine and its enforcement, for which pause →
+deploy → convergence → reopen is sufficient proof. `COMPATIBILITY` — crypto,
+certification evidence, promo pricing, basis points, legal manifest shape,
+timestamp semantics — changes what a durable value *means*, and a converged
+runtime proves none of it: the old and new meanings can each be self-consistent
+and still disagree about state written under the other. It fails closed out of
+the cutover lane and has no lane of its own yet.
+
+### `CONTROL_PLANE` is governed, not deployed
+
+Deploy classification, the assert/reconcile scripts and the controllers
+themselves never run in production. A change to them takes effect the moment it
+merges to protected `main`, because a controller executes policy from its own
+checkout.
+
+Classifying them as release-semantic produced an authority error rather than a
+safety property: the same commit that was already effective also demanded a
+production pause, purely so `production-deploy` would catch up and stop showing
+the file in later range diffs. That is servicing an abstraction leak. Their
+governance is protected `main` plus required CI.
+
+The exemption rests on one machine-checked fact, not on intent:
+
+```text
+CONTROL_PLANE  intersect  runtime-import closure  =  empty
+```
+
+Direction matters, and only one direction is forbidden. Control plane may import
+runtime code freely - `generic-production-deploy.ts` imports `evaluateReopenGate`
+and must, to reconcile against real release state. Runtime importing control
+plane is the violation, and
+`commerce/test/control-plane-isolation.test.ts` fails rather than letting the
+exemption quietly widen.
+
+### A controller must not be older than what it deploys
+
+```text
+git merge-base --is-ancestor "$TARGET_SHA" "$CONTROLLER_SHA"   # equality allowed
+```
+
+The policy doing the judging must cover the code being judged. This is
+deliberately **not** "controller and target are different commits", which was
+tried on 2026-08-29 and was wrong twice over.
+
+It bought no independence: `main` is a descendant of every target, so a
+different controller SHA still contains the target's own policy changes - a
+commit that weakened admission would be judged by its own weakened rule either
+way. And it forced a ceremonial extra commit before anything could ship, since a
+controller can never deploy its own HEAD.
+
+Real controller independence requires a separate protected controller artifact
+whose policy does not derive from the candidate. Strict SHA inequality on `main`
+was never that mechanism, and deliberateness is already supplied by the
+`production` environment approval.
+
+What the original invariant forbids is **deriving** the target from the
+controller - `TARGET_SHA="$(git rev-parse HEAD)"`, as `controlled-age-band-cutover.yml`
+does - which is a different statement from the two SHAs coinciding.
+
+### Known imprecision: `types.ts`
+
+`commerce/src/types.ts` is classified `RELEASE_CONTROL` because it owns the
+release request schema, but it also carries the checkout, refund, city, agent,
+promo and settlement schemas. An unrelated DTO edit is therefore over-classified
+into the controlled lane.
+
+This is accepted deliberately: the lane is *more* conservative than a generic
+deploy, so the failure direction is safe, and failing the whole file closed
+would have blocked the release-control hardening from the lane built for it.
+
+The fix is classification precision, not hunk-level or symbol-level git
+analysis:
+
+```text
+split releaseControlSchema out of types.ts
+  -> commerce/src/release-control-schema.ts   RELEASE_CONTROL
+  -> commerce/src/types.ts                    ordinary classification
+```
+
+### First execution of the release-semantics lane
+
+`680bdd3` (the release hardening: ABORT, the ancestry fence, runtime-candidate
+de-authorization, the single expectation owner, the boundary repair) deployed
+2026-08-29 as the lane's first production use.
+
+```text
+admission           RELEASE_SEMANTICS_CUTOVER_BOUNDARY_EXACT
+categories          RELEASE_CONTROL only, no COMPATIBILITY path touched
+controller/target   1f64edf / 680bdd3, distinct
+topology            descendant of production-deploy; no merge commits;
+                    no maintenance commits in range
+pause proof         POST /v1/public/checkouts -> 503 SALES_TEMPORARILY_PAUSED
+pause window        08:39:03Z -> 08:41:01Z (1m58s)
+convergence         commerce, worker and admin all at 680bdd3; worker sweeping
+reopen              sales_paused=false, owner released
+production-deploy   680bdd3
+```
+
+For comparison, the two Epoch A pauses were 12h09m and 11m32s. The difference
+is sequencing, not luck: everything provable was proved before acquiring.

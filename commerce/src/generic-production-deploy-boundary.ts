@@ -3,8 +3,8 @@ export type GenericProductionDeployBoundary = "SCHEMA" | "LEGAL" | "SURFACE_CONT
 const isIn = (path: string, directory: string): boolean => path === directory || path.startsWith(`${directory}/`);
 
 /**
- * Files that can change how durable release state is interpreted or enforced,
- * even when no migration, legal document or surface descriptor moves.
+ * Runtime files that can change how durable release state is interpreted or
+ * enforced, even when no migration, legal document or surface descriptor moves.
  *
  * R7 is why this list exists: migrationApplied() was a defect in
  * release-control.ts, not in any migration file, and it silently changed which
@@ -19,12 +19,11 @@ const isIn = (path: string, directory: string): boolean => path === directory ||
  * list can stay narrow - domain.ts changes for ordinary work, and treating it
  * as release-sensitive would make the controlled cutover the only way to ship
  * anything at all.
- */
-/**
- * The release state machine, its enforcement, and the code that decides which
- * lane a change belongs in. These share one deploy protocol: pause, deploy,
- * prove convergence, reopen. Nothing here changes what a durable identity or a
- * piece of evidence *means*, so a converged runtime is sufficient proof.
+ *
+ * These share one deploy protocol - pause, deploy, prove convergence, reopen -
+ * because a converged runtime is sufficient proof for all of them. Nothing here
+ * changes what a durable identity or a piece of evidence *means*; that is
+ * COMPATIBILITY below.
  */
 export const releaseControlSemanticsPaths: readonly string[] = [
   // The sole owner of expectation grammar and canonicalization.
@@ -43,9 +42,41 @@ export const releaseControlSemanticsPaths: readonly string[] = [
   // reachable at all; if the DTOs are ever split, the non-release half should
   // leave the boundary entirely rather than move category.
   "commerce/src/types.ts",
-  // The boundary itself, and the deploy readiness it feeds.
+];
+
+/**
+ * Control-plane code: it decides how a deploy is classified and driven, and it
+ * never runs in production.
+ *
+ * These were classified release-semantic, which produced an authority error
+ * rather than a safety property. A change to the classifier took effect the
+ * moment it merged to protected `main`, because controllers execute policy from
+ * their own checkout - and the same change then also demanded a runtime cutover
+ * so that `production-deploy` would "catch up" and stop showing it in future
+ * diffs. That is servicing an abstraction leak: the deployed runtime cannot
+ * observe these files at all.
+ *
+ * Their governance is protected `main` plus required CI, not a production pause.
+ *
+ * The safety of this exemption rests entirely on one machine-checked fact:
+ *
+ *   CONTROL_PLANE  intersect  runtime-import closure  =  empty
+ *
+ * If any of these ever becomes reachable from a runtime entrypoint, it stops
+ * being control plane and must be reclassified - see
+ * commerce/test/control-plane-isolation.test.ts, which fails rather than
+ * letting the exemption quietly widen.
+ */
+export const controlPlanePaths: readonly string[] = [
+  // Deploy classification and the scripts that run it.
   "commerce/src/generic-production-deploy-boundary.ts",
   "commerce/src/generic-production-deploy.ts",
+  "commerce/src/assert-generic-production-deploy-boundary.ts",
+  "commerce/src/assert-release-semantics-cutover-boundary.ts",
+  "commerce/src/assert-generic-production-deploy-ready.ts",
+  "commerce/src/assert-candidate-runtime-ready.ts",
+  "commerce/src/reconcile-generic-production-deploy.ts",
+  "commerce/src/reconcile-cutover.ts",
 ];
 
 /**
