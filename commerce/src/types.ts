@@ -24,6 +24,11 @@ export const checkoutRequestSchema = z.object({
 export const outboxDispatchFenceSchema = z.object({
   expected_revision: z.number().int().nonnegative(),
   reason: z.string().trim().min(3).max(1_000),
+  // The fence is owned by the cutover that acquired it, not by whoever holds
+  // the release-control credential. Without this, a second controller could
+  // read the current revision and unfence mid-migration.
+  release_id: z.string().trim().min(1).max(200),
+  generation: z.number().int().positive().nullable().optional(),
 }).strict();
 
 export const checkoutContextSchema = z.object({

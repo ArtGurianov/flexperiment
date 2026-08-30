@@ -28,6 +28,8 @@ import {
  */
 
 const MIGRATIONS = join(process.cwd(), "commerce", "migrations");
+const EPOCH_A = { release_id: "cutover-a", generation: 1 };
+const EPOCH_B = { release_id: "cutover-b", generation: 1 };
 const open: Database.Database[] = [];
 
 const migrate = (file: string) => {
@@ -74,24 +76,50 @@ describe("outbox authority control", () => {
   describe("control row", () => {
     it("starts safe", () => {
       const { control } = fixture();
-      expect(outboxAuthority(control)).toEqual({ attempt_authority: "LEGACY", email_dispatch_paused: false, revision: 1 });
+      expect(outboxAuthority(control)).toEqual({
+        attempt_authority: "LEGACY", email_dispatch_paused: false,
+        dispatch_owner_release_id: null, dispatch_owner_generation: null, revision: 1,
+      });
     });
 
-    it("fails closed when the control row is missing", () => {
-      // A build that cannot read the control state must not dispatch.
+    it("fails closed for the reader when the control row is missing", () => {
       const { control } = fixture();
       control.exec("DELETE FROM outbox_authority");
       expect(emailDispatchFenced(control)).toBe(true);
     });
 
-    it("ships no way to move attempt authority", () => {
-      // The column admits ATTEMPT so the freeze guard can be inert on arrival.
-      // Nothing in this release may set it, and the event vocabulary has no
-      // action to record it with.
-      const source = readFileSync("commerce/src/outbox-authority.ts", "utf8");
-      expect(source).not.toMatch(/UPDATE outbox_authority[\s\S]*attempt_authority\s*=/);
-      const migration = readFileSync(join(MIGRATIONS, "0040_outbox_authority_control.sql"), "utf8");
-      expect(migration).toContain("CHECK (action IN ('DISPATCH_FENCED', 'DISPATCH_UNFENCED'))");
+    it("fails closed for the OLD BINARY when the control row is missing", () => {
+      // The reader failing closed is not the property that matters. A missing
+      // row yields NULL, and `NULL = 1` is not true, so a trigger written
+      // without COALESCE would fail OPEN for exactly the binary the fence
+      // exists to stop - the database and the application disagreeing about
+      // corruption.
+      const { control, worker } = fixture();
+      control.exec("DELETE FROM outbox_authority");
+      expect(() => legacyClaim(worker)).toThrow(/EMAIL_DISPATCH_PAUSED/);
+      expect(claimFacts(control)).toMatchObject({ status: "PENDING", lease_owner: null, attempts: 0 });
+    });
+
+    it("cannot represent ATTEMPT authority at all", () => {
+      // Not "no command sets it" - the state space does not contain it. Proven
+      // by trying the statement directly rather than by scanning source, which
+      // is the check that missed the parameter-bound write in 0039.
+      const { control } = fixture();
+      expect(() => control.exec("UPDATE outbox_authority SET attempt_authority = 'ATTEMPT' WHERE singleton = 1"))
+        .toThrow(/CHECK constraint failed/);
+      expect(outboxAuthority(control).attempt_authority).toBe("LEGACY");
+    });
+
+    it("has no event vocabulary for an activation", () => {
+      const { control } = fixture();
+      expect(() => control.prepare(`INSERT INTO outbox_authority_events(id, action, owner_release_id, reason, revision)
+        VALUES ('e1', 'AUTHORITY_ACTIVATED', 'x', 'r', 2)`).run()).toThrow(/CHECK constraint failed/);
+    });
+
+    it("keeps fenced and owned as one fact", () => {
+      const { control } = fixture();
+      expect(() => control.exec("UPDATE outbox_authority SET email_dispatch_paused = 1 WHERE singleton = 1"))
+        .toThrow(/CHECK constraint failed/);
     });
   });
 
@@ -101,14 +129,14 @@ describe("outbox authority control", () => {
       expect(legacyClaim(worker).changes).toBe(1);           // open: it works
       control.exec("UPDATE email_outbox SET status = 'PENDING', lease_owner = NULL, attempts = 0 WHERE id = 'm1'");
 
-      fenceEmailDispatch(control, { expected_revision: 1, reason: "authority migration" }, "test");
+      fenceEmailDispatch(control, { expected_revision: 1, reason: "authority migration" }, EPOCH_A);
 
       expect(() => legacyClaim(worker)).toThrow(/EMAIL_DISPATCH_PAUSED/);
     });
 
     it("leaves every claim fact untouched when it aborts", () => {
       const { control, worker } = fixture();
-      fenceEmailDispatch(control, { expected_revision: 1, reason: "authority migration" }, "test");
+      fenceEmailDispatch(control, { expected_revision: 1, reason: "authority migration" }, EPOCH_A);
       const before = claimFacts(control);
       expect(() => legacyClaim(worker)).toThrow();
       expect(claimFacts(control)).toEqual(before);
@@ -118,16 +146,16 @@ describe("outbox authority control", () => {
     it("lets the same statement through again once unfenced", () => {
       // Without this, a trigger that blocks unconditionally would pass.
       const { control, worker } = fixture();
-      fenceEmailDispatch(control, { expected_revision: 1, reason: "fence" }, "test");
+      fenceEmailDispatch(control, { expected_revision: 1, reason: "fence" }, EPOCH_A);
       expect(() => legacyClaim(worker)).toThrow();
-      unfenceEmailDispatch(control, { expected_revision: 2, reason: "done" }, "test");
+      unfenceEmailDispatch(control, { expected_revision: 2, reason: "done" }, EPOCH_A);
       expect(legacyClaim(worker).changes).toBe(1);
     });
 
     it("fences a SEND_UNKNOWN retry as well as a first send", () => {
       const { control, worker } = fixture();
       control.exec("UPDATE email_outbox SET status = 'SEND_UNKNOWN' WHERE id = 'm1'");
-      fenceEmailDispatch(control, { expected_revision: 1, reason: "fence" }, "test");
+      fenceEmailDispatch(control, { expected_revision: 1, reason: "fence" }, EPOCH_A);
       expect(() => legacyClaim(worker)).toThrow(/EMAIL_DISPATCH_PAUSED/);
     });
 
@@ -136,7 +164,7 @@ describe("outbox authority control", () => {
       // supersession must all continue while dispatch is fenced.
       const { control, worker } = fixture();
       expect(legacyClaim(worker).changes).toBe(1);
-      fenceEmailDispatch(control, { expected_revision: 1, reason: "fence" }, "test");
+      fenceEmailDispatch(control, { expected_revision: 1, reason: "fence" }, EPOCH_A);
       expect(() => worker.exec("UPDATE email_outbox SET status = 'ACCEPTED', job_id = 'j1', lease_owner = NULL WHERE id = 'm1'")).not.toThrow();
       expect(() => worker.exec("UPDATE email_outbox SET status = 'DELIVERED', delivered_at = '2026-08-30T00:00:00Z' WHERE id = 'm1'")).not.toThrow();
       expect(() => worker.exec("UPDATE email_outbox SET suppressed_at = '2026-08-30T00:00:00Z' WHERE id = 'm1'")).not.toThrow();
@@ -156,25 +184,65 @@ describe("outbox authority control", () => {
   describe("fence commands", () => {
     it("refuses a stale revision", () => {
       const { control } = fixture();
-      expect(() => fenceEmailDispatch(control, { expected_revision: 99, reason: "stale" }, "test"))
+      expect(() => fenceEmailDispatch(control, { expected_revision: 99, reason: "stale" }, EPOCH_A))
         .toThrow(/OUTBOX_AUTHORITY_REVISION_CONFLICT/);
     });
 
     it("records actor and reason on every transition", () => {
       const { control } = fixture();
-      fenceEmailDispatch(control, { expected_revision: 1, reason: "authority migration" }, "operator-a");
-      unfenceEmailDispatch(control, { expected_revision: 2, reason: "migration complete" }, "operator-b");
-      expect(control.prepare("SELECT action, actor, reason, revision FROM outbox_authority_events ORDER BY revision").all()).toEqual([
-        { action: "DISPATCH_FENCED", actor: "operator-a", reason: "authority migration", revision: 2 },
-        { action: "DISPATCH_UNFENCED", actor: "operator-b", reason: "migration complete", revision: 3 },
+      fenceEmailDispatch(control, { expected_revision: 1, reason: "authority migration" }, EPOCH_A);
+      unfenceEmailDispatch(control, { expected_revision: 2, reason: "migration complete" }, EPOCH_A);
+      // The epoch, not the credential: "who held the token" does not answer
+      // which migration stopped the mail.
+      expect(control.prepare("SELECT action, owner_release_id, owner_generation, reason, revision FROM outbox_authority_events ORDER BY revision").all()).toEqual([
+        { action: "DISPATCH_FENCED", owner_release_id: "cutover-a", owner_generation: 1, reason: "authority migration", revision: 2 },
+        { action: "DISPATCH_UNFENCED", owner_release_id: "cutover-a", owner_generation: 1, reason: "migration complete", revision: 3 },
       ]);
+    });
+
+    it("refuses a fence held by another epoch", () => {
+      // The case CAS cannot cover: epoch B reads the current revision and would
+      // otherwise be able to act in the middle of epoch A's migration.
+      const { control } = fixture();
+      fenceEmailDispatch(control, { expected_revision: 1, reason: "A fences" }, EPOCH_A);
+      const revision = outboxAuthority(control).revision;
+      expect(() => fenceEmailDispatch(control, { expected_revision: revision, reason: "B fences" }, EPOCH_B))
+        .toThrow(/OUTBOX_DISPATCH_OWNER_CONFLICT/);
+      expect(() => unfenceEmailDispatch(control, { expected_revision: revision, reason: "B unfences" }, EPOCH_B))
+        .toThrow(/OUTBOX_DISPATCH_OWNER_CONFLICT/);
+      expect(outboxAuthority(control).email_dispatch_paused).toBe(true);
+    });
+
+    it("lets a later epoch fence once the owner has released", () => {
+      const { control } = fixture();
+      fenceEmailDispatch(control, { expected_revision: 1, reason: "A fences" }, EPOCH_A);
+      unfenceEmailDispatch(control, { expected_revision: 2, reason: "A releases" }, EPOCH_A);
+      expect(() => fenceEmailDispatch(control, { expected_revision: 3, reason: "B fences" }, EPOCH_B)).not.toThrow();
+      expect(outboxAuthority(control).dispatch_owner_release_id).toBe("cutover-b");
+    });
+
+    it("clears ownership on release so the fence is never orphaned", () => {
+      const { control } = fixture();
+      fenceEmailDispatch(control, { expected_revision: 1, reason: "fence" }, EPOCH_A);
+      unfenceEmailDispatch(control, { expected_revision: 2, reason: "unfence" }, EPOCH_A);
+      expect(outboxAuthority(control)).toMatchObject({
+        email_dispatch_paused: false, dispatch_owner_release_id: null, dispatch_owner_generation: null,
+      });
+    });
+
+    it("distinguishes generations of the same release", () => {
+      const { control } = fixture();
+      fenceEmailDispatch(control, { expected_revision: 1, reason: "gen 1" }, { release_id: "cutover-a", generation: 1 });
+      const revision = outboxAuthority(control).revision;
+      expect(() => unfenceEmailDispatch(control, { expected_revision: revision, reason: "gen 2" }, { release_id: "cutover-a", generation: 2 }))
+        .toThrow(/OUTBOX_DISPATCH_OWNER_CONFLICT/);
     });
 
     it("is idempotent for a retried command at the same revision", () => {
       const { control } = fixture();
-      fenceEmailDispatch(control, { expected_revision: 1, reason: "fence" }, "test");
+      fenceEmailDispatch(control, { expected_revision: 1, reason: "fence" }, EPOCH_A);
       const after = outboxAuthority(control);
-      expect(fenceEmailDispatch(control, { expected_revision: after.revision, reason: "fence" }, "test")).toEqual(after);
+      expect(fenceEmailDispatch(control, { expected_revision: after.revision, reason: "fence" }, EPOCH_A)).toEqual(after);
       expect(control.prepare("SELECT COUNT(*) AS n FROM outbox_authority_events").get()).toEqual({ n: 1 });
     });
   });
@@ -182,8 +250,45 @@ describe("outbox authority control", () => {
   describe("legacy attempt freeze guard", () => {
     // Inert on arrival: nothing in this release moves authority, so ATTEMPT is
     // simulated directly to prove the guard is correct before it is relied on.
-    const underAttemptAuthority = (db: Database.Database) =>
+    /**
+     * ATTEMPT is unrepresentable in 0040, so it is reached the way 0041 must:
+     * by widening the CHECK, which means rebuilding the table.
+     *
+     * And rebuilding it is NOT free, which this simulation exists to prove
+     * before 0041 discovers it in production: RENAME rewrites the two triggers'
+     * references to point at the temporary table, so dropping that table leaves
+     * both guards dangling - the fence silently stops fencing. 0041 must
+     * therefore drop and recreate both triggers in the same migration.
+     *
+     * The triggers are recreated here from the migration file itself, so this
+     * test walks the exact upgrade path rather than an idealised one.
+     */
+    const underAttemptAuthority = (db: Database.Database) => {
+      db.exec(`
+        ALTER TABLE outbox_authority RENAME TO outbox_authority_pre_activation;
+        CREATE TABLE outbox_authority (
+          singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+          attempt_authority TEXT NOT NULL DEFAULT 'LEGACY' CHECK (attempt_authority IN ('LEGACY', 'ATTEMPT')),
+          email_dispatch_paused INTEGER NOT NULL DEFAULT 0 CHECK (email_dispatch_paused IN (0, 1)),
+          dispatch_owner_release_id TEXT,
+          dispatch_owner_generation INTEGER,
+          revision INTEGER NOT NULL DEFAULT 1,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          CHECK ((email_dispatch_paused = 1) = (dispatch_owner_release_id IS NOT NULL))
+        );
+        INSERT INTO outbox_authority SELECT * FROM outbox_authority_pre_activation;
+        DROP TABLE outbox_authority_pre_activation;
+        DROP TRIGGER IF EXISTS email_outbox_dispatch_pause_guard;
+        DROP TRIGGER IF EXISTS email_outbox_legacy_attempt_freeze_guard;
+      `);
+      // Recreated verbatim from the migration, so their references resolve to
+      // the rebuilt table.
+      const migration = readFileSync(join(MIGRATIONS, "0040_outbox_authority_control.sql"), "utf8");
+      for (const statement of migration.split(/(?=CREATE TRIGGER)/).slice(1)) {
+        db.exec(statement.slice(0, statement.indexOf("END;") + 4));
+      }
       db.exec("UPDATE outbox_authority SET attempt_authority = 'ATTEMPT' WHERE singleton = 1");
+    };
 
     it("is inert while authority is LEGACY", () => {
       const { control, worker } = fixture();

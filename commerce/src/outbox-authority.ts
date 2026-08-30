@@ -21,8 +21,18 @@ import { id } from "./crypto";
 export type OutboxAuthorityState = {
   attempt_authority: "LEGACY" | "ATTEMPT";
   email_dispatch_paused: boolean;
+  dispatch_owner_release_id: string | null;
+  dispatch_owner_generation: number | null;
   revision: number;
 };
+
+/**
+ * The epoch that holds the fence. Without it the durable authority belongs to
+ * whoever holds the release-control credential rather than to the cutover that
+ * acquired it, and CAS does not help: a second controller can read the current
+ * revision and unfence in the middle of the first one's migration.
+ */
+export type DispatchEpoch = { release_id: string; generation: number | null };
 
 export class OutboxAuthorityError extends Error {
   constructor(readonly code: string, readonly status = 409) {
@@ -32,45 +42,66 @@ export class OutboxAuthorityError extends Error {
 
 /** Fail closed: a missing control row means dispatch is fenced, never open. */
 export const outboxAuthority = (db: Database.Database): OutboxAuthorityState => {
-  const row = db.prepare("SELECT attempt_authority, email_dispatch_paused, revision FROM outbox_authority WHERE singleton = 1").get() as
-    { attempt_authority?: unknown; email_dispatch_paused?: unknown; revision?: unknown } | undefined;
-  if (!row) return { attempt_authority: "LEGACY", email_dispatch_paused: true, revision: 0 };
+  const row = db.prepare(`SELECT attempt_authority, email_dispatch_paused, dispatch_owner_release_id,
+    dispatch_owner_generation, revision FROM outbox_authority WHERE singleton = 1`).get() as Record<string, unknown> | undefined;
+  // Fail closed, and identically to the database trigger, which COALESCEs a
+  // missing row to fenced for exactly the same reason.
+  if (!row) return { attempt_authority: "LEGACY", email_dispatch_paused: true, dispatch_owner_release_id: null, dispatch_owner_generation: null, revision: 0 };
   return {
     attempt_authority: row.attempt_authority === "ATTEMPT" ? "ATTEMPT" : "LEGACY",
     email_dispatch_paused: Number(row.email_dispatch_paused ?? 1) === 1,
+    dispatch_owner_release_id: row.dispatch_owner_release_id === null || row.dispatch_owner_release_id === undefined ? null : String(row.dispatch_owner_release_id),
+    dispatch_owner_generation: row.dispatch_owner_generation === null || row.dispatch_owner_generation === undefined ? null : Number(row.dispatch_owner_generation),
     revision: Number(row.revision ?? 0),
   };
 };
 
 export const emailDispatchFenced = (db: Database.Database): boolean => outboxAuthority(db).email_dispatch_paused;
 
+const sameEpoch = (state: OutboxAuthorityState, epoch: DispatchEpoch) =>
+  state.dispatch_owner_release_id === epoch.release_id
+  && (state.dispatch_owner_generation ?? null) === (epoch.generation ?? null);
+
 const setDispatchFence = (
   db: Database.Database,
   paused: boolean,
   input: { expected_revision: number; reason: string },
-  actor: string,
+  epoch: DispatchEpoch,
 ): OutboxAuthorityState => {
   const current = outboxAuthority(db);
-  // Idempotent: asking for the state it is already in is not a conflict, and a
-  // retried operator command must not consume a revision.
-  if (current.email_dispatch_paused === paused && current.revision === input.expected_revision) return current;
+
+  // A fence held by another epoch is never touched, in either direction. This
+  // is the case CAS cannot cover: a second controller reading the current
+  // revision would otherwise be able to unfence in the middle of the first
+  // one's migration.
+  if (current.email_dispatch_paused && !sameEpoch(current, epoch)) {
+    throw new OutboxAuthorityError("OUTBOX_DISPATCH_OWNER_CONFLICT", 409);
+  }
+
+  // Idempotent replay: the same epoch asking for the state it already holds is
+  // reconciliation, not a conflict, and must not consume a revision.
+  if (current.email_dispatch_paused === paused && (!paused || sameEpoch(current, epoch))) return current;
 
   const changed = db.prepare(`UPDATE outbox_authority
-    SET email_dispatch_paused = ?, revision = revision + 1, updated_at = CURRENT_TIMESTAMP
-    WHERE singleton = 1 AND revision = ?`).run(paused ? 1 : 0, input.expected_revision);
+    SET email_dispatch_paused = ?,
+        dispatch_owner_release_id = ?, dispatch_owner_generation = ?,
+        revision = revision + 1, updated_at = CURRENT_TIMESTAMP
+    WHERE singleton = 1 AND revision = ?`)
+    .run(paused ? 1 : 0, paused ? epoch.release_id : null, paused ? epoch.generation ?? null : null, input.expected_revision);
   if (changed.changes !== 1) throw new OutboxAuthorityError("OUTBOX_AUTHORITY_REVISION_CONFLICT", 409);
 
   const next = outboxAuthority(db);
-  db.prepare("INSERT INTO outbox_authority_events(id, action, actor, reason, revision) VALUES (?, ?, ?, ?, ?)")
-    .run(id(), paused ? "DISPATCH_FENCED" : "DISPATCH_UNFENCED", actor, input.reason, next.revision);
+  db.prepare(`INSERT INTO outbox_authority_events(id, action, owner_release_id, owner_generation, reason, revision)
+    VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(id(), paused ? "DISPATCH_FENCED" : "DISPATCH_UNFENCED", epoch.release_id, epoch.generation ?? null, input.reason, next.revision);
   return next;
 };
 
-export const fenceEmailDispatch = (db: Database.Database, input: { expected_revision: number; reason: string }, actor: string) =>
-  setDispatchFence(db, true, input, actor);
+export const fenceEmailDispatch = (db: Database.Database, input: { expected_revision: number; reason: string }, epoch: DispatchEpoch) =>
+  setDispatchFence(db, true, input, epoch);
 
-export const unfenceEmailDispatch = (db: Database.Database, input: { expected_revision: number; reason: string }, actor: string) =>
-  setDispatchFence(db, false, input, actor);
+export const unfenceEmailDispatch = (db: Database.Database, input: { expected_revision: number; reason: string }, epoch: DispatchEpoch) =>
+  setDispatchFence(db, false, input, epoch);
 
 /**
  * Drain evidence, separate from exclusion evidence.

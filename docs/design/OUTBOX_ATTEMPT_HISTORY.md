@@ -519,6 +519,24 @@ response rather than minting anything.
    business-facing and stays with an operator. Putting it here also means the
    0041 cutover can fence and unfence without a manual handoff at each end.
 
+   The fence is owned by a release EPOCH, not by the credential. Without that,
+   durable authority belongs to whoever holds the release-control token, and CAS
+   does not help: a second controller can read the current revision and unfence
+   in the middle of the first one's migration. Ownership lives on the control
+   row rather than on the release sales gate, so an abort or a completed release
+   cannot strand dispatch fenced.
+
+   Known gap, deliberately not solved here: if an epoch fences and never
+   returns, only that epoch may release it. Mail is delayed, not lost - rows
+   stay PENDING - but a takeover path will eventually be needed. Naming it now
+   so it is a decision rather than a discovery.
+
+   Trap for the activation migration: widening the attempt_authority CHECK means
+   rebuilding outbox_authority, and RENAME rewrites both triggers to reference
+   the temporary table. Dropping it leaves the fence silently not fencing. The
+   widening migration must drop and recreate both triggers in the same
+   transaction.
+
    Acceptance: the control row starts safe -
    `attempt_authority = LEGACY`, `email_dispatch_paused = 0`, `revision = 1` -
    and fence/unfence are explicit CAS transitions carrying audit evidence

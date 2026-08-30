@@ -12,7 +12,7 @@ import { findCityBySlug } from "../../lib/city-catalog";
 import { purchaseStatus, type PurchaseStatus } from "./purchase-status";
 import { parseUtcTimestamp } from "./utc-timestamp";
 import { assertNewOrdersOpen as assertGateOpen, emergencySalesPaused as gateEmergencyPaused, newOrdersBlocked as gateBlocked } from "./sales-gate";
-import { emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations } from "./outbox-authority";
+import { emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations, type DispatchEpoch } from "./outbox-authority";
 
 type Row = Record<string, unknown>;
 const one = <T extends Row>(db: Database.Database, sql: string, ...params: unknown[]) => db.prepare(sql).get(...params) as T | undefined;
@@ -335,12 +335,12 @@ export class CommerceDomain {
     return { ...outboxAuthority(this.db), dispatch: emailDispatchDrained(this.db) };
   }
 
-  fenceEmailDispatch(input: { expected_revision: number; reason: string }, actor: string) {
-    return withImmediateTransaction(this.db, () => ({ ...fenceEmailDispatch(this.db, input, actor), dispatch: emailDispatchDrained(this.db) }));
+  fenceEmailDispatch(input: { expected_revision: number; reason: string }, epoch: DispatchEpoch) {
+    return withImmediateTransaction(this.db, () => ({ ...fenceEmailDispatch(this.db, input, epoch), dispatch: emailDispatchDrained(this.db) }));
   }
 
-  unfenceEmailDispatch(input: { expected_revision: number; reason: string }, actor: string) {
-    return withImmediateTransaction(this.db, () => ({ ...unfenceEmailDispatch(this.db, input, actor), dispatch: emailDispatchDrained(this.db) }));
+  unfenceEmailDispatch(input: { expected_revision: number; reason: string }, epoch: DispatchEpoch) {
+    return withImmediateTransaction(this.db, () => ({ ...unfenceEmailDispatch(this.db, input, epoch), dispatch: emailDispatchDrained(this.db) }));
   }
   private newOrdersBlocked() { return gateBlocked(this.db); }
 
