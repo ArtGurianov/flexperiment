@@ -23,6 +23,21 @@ describe("controlled email delivery-outcome cutover", () => {
     expect(workflow).toContain("group: flexperiment-production-controlled-cutover");
   });
 
+  it("admits abort at the stage validator, not merely in the options list", () => {
+    // The seam. `options:` and a real abort stage both existed while the first
+    // dispatcher rejected the value, so selecting abort exited immediately with
+    // STAGE_INVALID - an exit path that looked present and was unreachable.
+    const validator = workflow
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.includes("STAGE_INVALID"));
+    expect(validator).toHaveLength(1);
+    expect(validator[0], "the stage validator rejects abort").toContain('"$INPUT_STAGE" == abort');
+    for (const stage of ["prepare", "certify", "classify_runtime_readiness_defect", "complete"]) {
+      expect(validator[0]).toContain(`"$INPUT_STAGE" == ${stage}`);
+    }
+  });
+
   it("offers an abort, which is the exit the 12h09m pause did not have", () => {
     expect(workflow).toContain("options: [prepare, certify, classify_runtime_readiness_defect, abort, complete]");
     expect(workflow).toContain("/v1/internal/release-control/candidates/abort");

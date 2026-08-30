@@ -56,14 +56,19 @@ const fixture = () => {
   return { control, worker };
 };
 
-/** Byte-for-byte the deployed worker's claim, executed by the other connection. */
+/**
+ * The deployed worker's claim (domain.ts:2419), executed by the other
+ * connection. Every predicate is reproduced, including `superseded_at IS NULL`
+ * and the next_attempt_at clause - a reduced version would match rows the real
+ * worker never claims and would prove the trigger against a statement
+ * production does not run.
+ */
 const legacyClaim = (worker: Database.Database) =>
-  worker.prepare(`UPDATE email_outbox SET status = 'SENDING', lease_owner = ?,
-      lease_expires_at = datetime('now', '+120 seconds'),
-      send_started_at = COALESCE(send_started_at, ?), provider_request_started_at = ?,
-      next_attempt_at = NULL, attempts = attempts + 1
-    WHERE id = ? AND status IN ('PENDING', 'SEND_UNKNOWN')`)
-    .run("worker-legacy", "2026-08-30T00:00:00.000Z", "2026-08-30T00:00:00.000Z", "m1");
+  worker.prepare(`UPDATE email_outbox SET status = 'SENDING', lease_owner = ?, lease_expires_at = datetime('now', '+120 seconds'), send_started_at = COALESCE(send_started_at, ?), provider_request_started_at = ?, next_attempt_at = NULL, attempts = attempts + 1
+    WHERE id = ? AND status IN ('PENDING', 'SEND_UNKNOWN')
+      AND superseded_at IS NULL
+      AND (status = 'PENDING' OR next_attempt_at IS NULL OR next_attempt_at <= ?)`)
+    .run("worker-legacy", "2026-08-30T00:00:00.000Z", "2026-08-30T00:00:00.000Z", "m1", "2026-08-30T00:00:00.000Z");
 
 const claimFacts = (db: Database.Database) =>
   db.prepare("SELECT status, lease_owner, lease_expires_at, send_started_at, provider_request_started_at, attempts FROM email_outbox WHERE id = 'm1'").get();

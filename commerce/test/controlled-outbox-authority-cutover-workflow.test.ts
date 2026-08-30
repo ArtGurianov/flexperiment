@@ -5,7 +5,7 @@ const workflow = readFileSync(".github/workflows/controlled-outbox-authority-cut
 const at = (needle: string) => workflow.indexOf(needle);
 
 /**
- * The controller for migration 0039.
+ * The controller for migration 0040.
  *
  * Its ordering is safety-critical in both directions, which is unusual and easy
  * to get backwards:
@@ -21,6 +21,21 @@ describe("controlled outbox-authority cutover", () => {
   it("runs from the production environment on the shared cutover concurrency group", () => {
     expect(workflow).toContain("environment: production");
     expect(workflow).toContain("group: flexperiment-production-controlled-cutover");
+  });
+
+  it("admits abort at the stage validator, not merely in the options list", () => {
+    // The seam. `options:` and a real abort stage both existed while the first
+    // dispatcher rejected the value, so selecting abort exited immediately with
+    // STAGE_INVALID - an exit path that looked present and was unreachable.
+    const validator = workflow
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line.includes("STAGE_INVALID"));
+    expect(validator).toHaveLength(1);
+    expect(validator[0], "the stage validator rejects abort").toContain('"$INPUT_STAGE" == abort');
+    for (const stage of ["prepare", "certify", "classify_runtime_readiness_defect", "complete"]) {
+      expect(validator[0]).toContain(`"$INPUT_STAGE" == ${stage}`);
+    }
   });
 
   it("offers an abort, which is the exit the 12h09m pause did not have", () => {

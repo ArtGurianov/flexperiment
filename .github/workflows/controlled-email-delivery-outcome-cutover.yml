@@ -124,7 +124,7 @@ jobs:
       - name: Resolve immutable controller, source, and input bundle
         run: |
           set -euo pipefail
-          [[ "$INPUT_STAGE" == prepare || "$INPUT_STAGE" == certify || "$INPUT_STAGE" == classify_runtime_readiness_defect || "$INPUT_STAGE" == complete ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_STAGE_INVALID" >&2; exit 1; }
+          [[ "$INPUT_STAGE" == prepare || "$INPUT_STAGE" == certify || "$INPUT_STAGE" == classify_runtime_readiness_defect || "$INPUT_STAGE" == abort || "$INPUT_STAGE" == complete ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_STAGE_INVALID" >&2; exit 1; }
           [[ "$INPUT_STAGE" != prepare || -n "$PRODUCTION_DEPLOY_REF_TOKEN" ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_DEPLOY_REF_TOKEN_REQUIRED" >&2; exit 1; }
           [[ "$INPUT_TARGET_SHA" =~ ^[0-9A-Fa-f]{40}$ ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_TARGET_SHA_INVALID" >&2; exit 1; }
           target_sha="${INPUT_TARGET_SHA,,}"
