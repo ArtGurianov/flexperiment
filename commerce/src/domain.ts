@@ -12,7 +12,7 @@ import { findCityBySlug } from "../../lib/city-catalog";
 import { purchaseStatus, type PurchaseStatus } from "./purchase-status";
 import { parseUtcTimestamp } from "./utc-timestamp";
 import { assertNewOrdersOpen as assertGateOpen, emergencySalesPaused as gateEmergencyPaused, newOrdersBlocked as gateBlocked } from "./sales-gate";
-import { claimForDispatch, deferAmbiguousObservation, deferAmbiguousSend, dispatchCandidates, failExhaustedAmbiguous, providerLookupIdentity, recordProviderAcceptance, recordProviderRefusal, claimedAttemptRef, resolveAttemptRef, skipObsoletePendingMessage, supersedeQueuedMessage, suppressMessageDispatch, sendTryCount, staleLeasedSends, type AttemptRef } from "./outbox-attempt-store";
+import { claimForDispatch, deferAmbiguousObservation, deferAmbiguousSend, dispatchCandidates, failExhaustedAmbiguous, providerLookupIdentity, recordProviderAcceptance, recordProviderRefusal, applyProviderObservation, claimedAttemptRef, reconcileHistoricalHttp403, resolveAttemptRef, skipObsoletePendingMessage, supersedeQueuedMessage, suppressMessageDispatch, sendTryCount, staleLeasedSends, type AttemptRef } from "./outbox-attempt-store";
 import { OutboxAuthorityError, emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations, type DispatchEpoch } from "./outbox-authority";
 
 type Row = Record<string, unknown>;
@@ -2425,7 +2425,7 @@ export class CommerceDomain {
         try {
           const observed = await this.emailProvider.lookup({ jobId: lookupIdentity.jobId, idempotencyKey: lookupIdentity.idempotencyKey });
           if (observed.status === "UNKNOWN") this.deferUnknownEmailObservation(String(outbox.id), tryCount, attemptRef);
-          else this.applyEmailObservation(outbox.id as string, observed);
+          else this.applyEmailObservation(outbox.id as string, observed, attemptRef);
         }
         catch { this.deferUnknownEmailObservation(String(outbox.id), tryCount, attemptRef); }
         continue;
@@ -2437,7 +2437,7 @@ export class CommerceDomain {
       if (isUnknown) {
         try {
           const observed = await this.emailProvider.lookup({ idempotencyKey: lookupIdentity.idempotencyKey });
-          if (observed.status !== "UNKNOWN") { this.applyEmailObservation(outbox.id as string, observed); continue; }
+          if (observed.status !== "UNKNOWN") { this.applyEmailObservation(outbox.id as string, observed, attemptRef); continue; }
         } catch { /* same idempotency key will be used if a retry becomes possible */ }
       }
       const claimed = withImmediateTransaction(this.db, () => {
@@ -2836,16 +2836,7 @@ export class CommerceDomain {
    * historical unknowns retain their original recovery semantics.
    */
   private reconcileLegacyUnisenderHttp403(outboxId?: string) {
-    return this.db.prepare(`UPDATE email_outbox
-      SET status = 'FAILED', delivery_outcome = 'KNOWN_FAILED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
-          last_error = 'UNISENDER_HTTP_REJECTED_LEGACY',
-          provider_error_code = 'HTTP_403_LEGACY',
-          provider_error_message = 'Legacy deterministic Unisender HTTP 403 rejection.'
-      WHERE status = 'SEND_UNKNOWN'
-        AND attempts > 5250
-        AND job_id IS NULL
-        AND last_error = 'Unisender send was not accepted (HTTP 403).'
-        AND (? IS NULL OR id = ?)`).run(outboxId ?? null, outboxId ?? null).changes > 0;
+    return this.atomically(() => reconcileHistoricalHttp403(this.db, outboxId ?? null));
   }
 
   private deferOrFailUnknownEmail(outboxId: string, attempts: number, ref: AttemptRef) {
@@ -3209,21 +3200,15 @@ export class CommerceDomain {
     if (!existing) this.db.prepare("INSERT INTO provider_drift_reviews(id, entity_type, entity_id, observed_json) VALUES (?, ?, ?, ?)").run(id(), entityType, entityId, JSON.stringify(observed));
   }
 
-  private applyEmailObservation(outboxId: string, observed: { status: string; jobId?: string }) {
+  private applyEmailObservation(outboxId: string, observed: { status: string; jobId?: string }, known?: AttemptRef) {
     const terminal = ["ACCEPTED", "SENT", "DELIVERED", "BOUNCED", "FAILED"];
     if (!terminal.includes(observed.status)) return;
-    const timestamps = observed.status === "SENT" ? ", sent_at = ?" : observed.status === "DELIVERED" ? ", delivered_at = ?" : observed.status === "BOUNCED" ? ", bounced_at = ?" : "";
-    // DELIVERED is a durable positive fact. A later spam callback records its
-    // own provider evidence but must not turn delivery back into a bounce.
-    // Reconciliation is the one path that reaches FAILED with the status bound
-    // as a parameter, and the only one that can also move a row back out of it.
-    // A provider report is received evidence, so it classifies KNOWN_FAILED;
-    // any other terminal status clears the classification, because a row that
-    // is not FAILED must not carry one.
-    this.db.prepare(`UPDATE email_outbox SET status = ?, delivery_outcome = CASE WHEN ? = 'FAILED' THEN 'KNOWN_FAILED' END, job_id = COALESCE(job_id, ?), lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL${timestamps}
-      WHERE id = ?
-        AND NOT (status = 'DELIVERED' AND ? != 'DELIVERED')
-        AND NOT (suppressed_at IS NOT NULL AND ? != 'DELIVERED')`).run(observed.status, observed.status, observed.jobId ?? null, ...(timestamps ? [now()] : []), outboxId, observed.status, observed.status);
+    // The selector is read inside this transaction by applyProviderObservation.
+    // This is the path that genuinely races the activation CAS: it runs in the
+    // API process from a provider callback and continues while dispatch is
+    // fenced, so a selector read outside the governing transaction would
+    // reintroduce the interleaving BEGIN IMMEDIATE exists to remove.
+    this.atomically(() => applyProviderObservation(this.db, outboxId, observed, now(), known));
   }
 
   private redactDeliveredCityInterestOutbox(outboxId: string) {
