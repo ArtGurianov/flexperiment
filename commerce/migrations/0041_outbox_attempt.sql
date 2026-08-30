@@ -116,6 +116,25 @@ BEGIN
   SELECT RAISE(ABORT, 'OUTBOX_ATTEMPT_SETTLED_IMMUTABLE');
 END;
 
+-- History is not only unmodifiable, it is undiscardable.
+--
+-- Without this the database proved "two unsettled attempts cannot coexist" but
+-- not the property that matters: an unresolved attempt could be DELETED,
+-- freeing the partial-unique slot, and a resend inserted beside a send whose
+-- outcome was never established. It also made "settled history is immutable"
+-- mean only "cannot be updated" while the row could still vanish.
+--
+-- The WHEN clause is what lets the parent cascade through: deleting a message
+-- removes the parent row first, so by the time the cascade reaches its
+-- attempts, EXISTS is false and the guard stands aside. Purging a message still
+-- purges its history; nothing else can.
+CREATE TRIGGER outbox_attempt_delete_guard
+BEFORE DELETE ON outbox_attempt
+WHEN EXISTS (SELECT 1 FROM email_outbox WHERE id = OLD.message_id)
+BEGIN
+  SELECT RAISE(ABORT, 'OUTBOX_ATTEMPT_DELETE_FORBIDDEN');
+END;
+
 -- 2. Drop the 0040 guards BEFORE the rebuild below.
 --
 -- ALTER TABLE RENAME rewrites trigger bodies to follow the renamed table, so

@@ -306,12 +306,50 @@ describe("0041 outbox attempt migration", () => {
         .toThrow(/OUTBOX_ATTEMPT_SETTLED_IMMUTABLE/);
     });
 
-    it("cascades attempts when a message is purged", () => {
-      const { db } = withAttempt();
-      insertAttempt(db, "a1", 1, "ACCEPTED");
-      db.exec("DELETE FROM email_outbox WHERE id = 'm1'");
-      expect(db.prepare("SELECT COUNT(*) AS n FROM outbox_attempt").get()).toEqual({ n: 0 });
-      expect(db.pragma("foreign_key_check")).toEqual([]);
+    describe("history cannot be discarded", () => {
+      it("refuses a direct delete while the message exists", () => {
+        // Without this the database proved only that two unsettled attempts
+        // cannot coexist. Deleting an unresolved attempt frees the partial
+        // unique slot, and a resend could then be inserted beside a send whose
+        // outcome was never established.
+        const { db } = withAttempt();
+        insertAttempt(db, "a1", 1, null);
+        expect(() => db.exec("UPDATE email_outbox SET status = 'PENDING' WHERE id = 'm1'")).not.toThrow();
+        expect(() => db.exec("DELETE FROM outbox_attempt WHERE id = 'a1'"))
+          .toThrow(/OUTBOX_ATTEMPT_DELETE_FORBIDDEN/);
+        expect(db.prepare("SELECT COUNT(*) AS n FROM outbox_attempt WHERE id = 'a1'").get()).toEqual({ n: 1 });
+      });
+
+      it("refuses a direct delete of settled history too", () => {
+        // "Immutable" must not mean "cannot be edited, may be erased".
+        const { db } = withAttempt();
+        insertAttempt(db, "a1", 1, "ACCEPTED");
+        expect(() => db.exec("DELETE FROM outbox_attempt WHERE id = 'a1'"))
+          .toThrow(/OUTBOX_ATTEMPT_DELETE_FORBIDDEN/);
+      });
+
+      it("still lets a purged message take its attempts with it", () => {
+        // The WHEN clause is what permits this: the parent row is gone before
+        // the cascade reaches its attempts, so the guard stands aside. Consent
+        // purges must keep working.
+        const { db } = withAttempt();
+        insertAttempt(db, "a1", 1, "ACCEPTED");
+        expect(() => db.exec("DELETE FROM email_outbox WHERE id = 'm1'")).not.toThrow();
+        expect(db.prepare("SELECT COUNT(*) AS n FROM outbox_attempt").get()).toEqual({ n: 0 });
+        expect(db.pragma("foreign_key_check")).toEqual([]);
+      });
+
+      it("cascades regardless of the recursive_triggers setting", () => {
+        // Verified for both values: a future pragma change must not turn a
+        // consent purge into a blocked delete.
+        for (const recursive of [0, 1]) {
+          const { db } = withAttempt();
+          db.pragma(`recursive_triggers = ${recursive}`);
+          insertAttempt(db, "a1", 1, "ACCEPTED");
+          expect(() => db.exec("DELETE FROM email_outbox WHERE id = 'm1'"), `recursive_triggers=${recursive}`).not.toThrow();
+          expect(db.prepare("SELECT COUNT(*) AS n FROM outbox_attempt").get()).toEqual({ n: 0 });
+        }
+      });
     });
   });
 });
