@@ -256,8 +256,16 @@ jobs:
             echo "CERTIFICATION_INPUTS_PRESENT=$present"
           } >> "$GITHUB_ENV"
 
+      # Deliberately NOT run for abort or unfence.
+      #
+      # This endpoint ships with the candidate, and both recovery stages have to
+      # work on the runtime that is live BEFORE the candidate deploys - prepare
+      # acquires generation 1 against the old binary and only deploys
+      # afterwards, so a failure in between would leave an epoch recoverable
+      # only by a runtime that never arrived. Requiring it here would make abort
+      # unreachable in exactly the window abort exists for.
       - name: Resolve the effective runtime source from durable candidate state
-        if: env.INPUT_STAGE != 'fence' && env.INPUT_STAGE != 'prepare'
+        if: env.INPUT_STAGE != 'fence' && env.INPUT_STAGE != 'prepare' && env.INPUT_STAGE != 'abort' && env.INPUT_STAGE != 'unfence'
         run: |
           set -euo pipefail
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
@@ -857,31 +865,41 @@ jobs:
             # attempt-aware runtime is already deployed.
             #
             # The recovery path is for a cutover that has actually let go.
-            # ABORTED is terminal, so this must be the exact-release read.
-            api "$PUBLIC_API_URL/v1/internal/release-control/candidates/head/$RELEASE_ID" > recovery-head.json || { echo "ATTEMPT_AUTHORITY_CUTOVER_HEAD_READ_UNAVAILABLE" >&2; exit 1; }
+            # The property is "this epoch has no live release candidate", NOT
+            # "the head says ABORTED".
+            #
+            # The fence is taken before the candidate exists, so an operator who
+            # fences and then cancels has nothing to abort - an ABORTED-only
+            # rule would strand that state with mail stopped and no exit. Both
+            # legitimate exits are covered:
+            #
+            #   A  fence acquired, candidate never created
+            #   B  candidate created and later ABORTED
+            #
+            # RECOVERY_REQUIRED is still excluded, because it deliberately KEEPS
+            # the release gate so a forward replacement can be adopted into it;
+            # unfencing there strands the cutover instead.
+            #
+            # Proven through the LIVE candidate read, which exists on the
+            # runtime being replaced. The exact-release read ships with the
+            # candidate, and this stage has to work before that is deployed.
+            # candidateHead() fails closed on any inconsistent active state and
+            # refuses outright when the gate is unowned while an active
+            # candidate exists, so its success alongside an unowned, unpaused
+            # gate is the proof.
+            api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > recovery-head.json || { echo "ATTEMPT_AUTHORITY_CUTOVER_HEAD_READ_UNAVAILABLE" >&2; exit 1; }
             api "$PUBLIC_API_URL/v1/internal/release-control/status" > recovery-status.json
-            # ABORTED only, and RECOVERY_REQUIRED deliberately NOT.
-            #
-            # The two recovery states are not interchangeable:
-            #
-            #   ABORTED             the epoch has let go - gate released, owner
-            #                       cleared - so mail may resume
-            #   RECOVERY_REQUIRED   the epoch still OWNS the release and keeps
-            #                       sales paused precisely so a forward
-            #                       replacement can be adopted into it
-            #
-            # Unfencing a RECOVERY_REQUIRED generation strands the cutover:
-            # replacement prepare then refuses for a missing fence, and the
-            # fence stage cannot retake it while a live epoch owns the release.
-            jq -e --arg release_id "$RELEASE_ID" '.head.release_id == $release_id and .head.phase == "ABORTED"' recovery-head.json >/dev/null || {
-              cat recovery-head.json >&2
-              echo "ATTEMPT_AUTHORITY_CUTOVER_RECOVERY_UNFENCE_CANDIDATE_STILL_LIVE" >&2
-              echo "Only an ABORTED candidate may resume mail. RECOVERY_REQUIRED keeps the fence for its replacement prepare." >&2
-              exit 1
-            }
             jq -e '.owner_release_id == null and .sales_paused == false' recovery-status.json >/dev/null || {
               cat recovery-status.json >&2
-              echo "ATTEMPT_AUTHORITY_CUTOVER_RECOVERY_UNFENCE_GATE_STILL_OWNED" >&2
+              echo "ATTEMPT_AUTHORITY_CUTOVER_RECOVERY_UNFENCE_CANDIDATE_STILL_LIVE" >&2
+              echo "This epoch still owns the release gate. RECOVERY_REQUIRED keeps the fence for its replacement prepare; abort or finish the cutover first." >&2
+              exit 1
+            }
+            jq -e --arg release_id "$RELEASE_ID" '
+              (.head == null) or (.head.release_id != $release_id) or (.head.phase | IN("ABORTED", "COMPLETE"))
+            ' recovery-head.json >/dev/null || {
+              cat recovery-head.json >&2
+              echo "ATTEMPT_AUTHORITY_CUTOVER_RECOVERY_UNFENCE_CANDIDATE_STILL_LIVE" >&2
               exit 1
             }
           fi
@@ -1001,18 +1019,40 @@ jobs:
         run: |
           set -euo pipefail
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
-          # Exact-release: a lost abort response leaves a terminal head that
-          # the live-candidate read can no longer see.
-          api "$PUBLIC_API_URL/v1/internal/release-control/candidates/head/$RELEASE_ID" > abort-head.json
-          if jq -e --arg release_id "$RELEASE_ID" '.head.release_id == $release_id and .head.phase == "ABORTED"' abort-head.json >/dev/null; then
-            echo "ABORT_REPLAY=already-aborted"
+          # Abort must run on EITHER runtime. The exact-release read is the
+          # better source - it alone can see a terminal head, which is what
+          # reconciles a lost abort response - but it ships with the candidate,
+          # and abort's whole purpose is the window before that is live.
+          if api "$PUBLIC_API_URL/v1/internal/release-control/candidates/head/$RELEASE_ID" > abort-head.json; then
+            exact_head=1
           else
-            jq -e --arg release_id "$RELEASE_ID" '.schema_version == 2 and .head.release_id == $release_id and (.state_hash | test("^[a-f0-9]{64}$"))' abort-head.json >/dev/null \
-              || { echo "ATTEMPT_AUTHORITY_CUTOVER_ABORT_STATE_INVALID" >&2; exit 1; }
+            exact_head=0
+            api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > abort-head.json \
+              || { echo "ATTEMPT_AUTHORITY_CUTOVER_HEAD_READ_UNAVAILABLE" >&2; exit 1; }
+          fi
+          if [[ "$exact_head" == 1 ]] && jq -e --arg release_id "$RELEASE_ID" '.head.release_id == $release_id and .head.phase == "ABORTED"' abort-head.json >/dev/null; then
+            echo "ABORT_REPLAY=already-aborted"
+          elif jq -e --arg release_id "$RELEASE_ID" '
+            .schema_version == 2 and .head.release_id == $release_id and
+            (.state_hash | test("^[a-f0-9]{64}$")) and (.head.phase | IN("ABORTED", "COMPLETE") | not)
+          ' abort-head.json >/dev/null; then
             jq -n --slurpfile current abort-head.json --arg reason "$INPUT_ABORT_REASON" \
               '{release_id: $current[0].head.release_id, candidate_generation: $current[0].head.candidate_generation, expected_state_hash: $current[0].state_hash, reason: $reason}' > abort.json
             api -X POST --data-binary @abort.json "$PUBLIC_API_URL/v1/internal/release-control/candidates/abort" > aborted.json
             jq -e '.head.phase == "ABORTED" and .owner_release_id == null' aborted.json >/dev/null
+          else
+            # On the old runtime a completed abort is invisible to the
+            # live-candidate read, so its absence is not evidence of failure.
+            # The same fact is still provable: that read fails closed on any
+            # inconsistent active state, so its success with an unowned,
+            # unpaused gate means no live candidate exists.
+            api "$PUBLIC_API_URL/v1/internal/release-control/status" > abort-status.json
+            jq -e '.owner_release_id == null and .sales_paused == false' abort-status.json >/dev/null || {
+              cat abort-head.json abort-status.json >&2
+              echo "ATTEMPT_AUTHORITY_CUTOVER_ABORT_STATE_INVALID" >&2
+              exit 1
+            }
+            echo "ABORT_REPLAY=no-live-candidate"
           fi
           # Abort releases the release gate. It does NOT lift the dispatch
           # fence, and must not: mail stays stopped until an operator decides

@@ -290,14 +290,15 @@ describe("controlled outbox attempt-authority cutover", () => {
     // strands the run, because the fence stage then refuses an already-advanced
     // runtime. The candidate must actually have let go.
     expect(workflow).toContain("ATTEMPT_AUTHORITY_CUTOVER_RECOVERY_UNFENCE_CANDIDATE_STILL_LIVE");
-    // ABORTED only. The two recovery states are not interchangeable:
-    // RECOVERY_REQUIRED still OWNS the release and keeps the fence precisely so
-    // a forward replacement can be adopted into it, and unfencing there strands
-    // the cutover - replacement prepare then refuses for a missing fence, and
-    // the fence stage cannot retake it while a live epoch owns the release.
-    expect(workflow).toContain('.head.phase == "ABORTED"');
-    expect(workflow).not.toContain('.head.phase == "ABORTED" or .head.phase == "RECOVERY_REQUIRED"');
-    expect(workflow).toContain("ATTEMPT_AUTHORITY_CUTOVER_RECOVERY_UNFENCE_GATE_STILL_OWNED");
+    // The property is "no live release candidate", not "the head says ABORTED".
+    // The fence predates the candidate, so an operator who fences and then
+    // cancels has nothing to abort - an ABORTED-only rule strands that state
+    // with mail stopped and no exit. RECOVERY_REQUIRED is still excluded,
+    // because it deliberately KEEPS the gate for its replacement prepare.
+    const recovery = workflow.slice(at("Resume dispatch under the same epoch"), at("Prove dispatch actually runs"));
+    expect(recovery).toContain(".owner_release_id == null and .sales_paused == false");
+    expect(recovery).toContain('(.head.phase | IN("ABORTED", "COMPLETE"))');
+    expect(recovery).not.toContain('.head.phase == "ABORTED"\' recovery-head.json');
     expect(workflow).toContain('unfence_mode=recovery');
     expect(workflow).toContain("ABORT_DISPATCH_FENCED=");
     // The dispatch proof is skipped on the recovery path: nothing was
@@ -307,20 +308,32 @@ describe("controlled outbox attempt-authority cutover", () => {
 
   it("resolves terminal epochs through the exact-release head read", () => {
     // candidateHead() answers "what is the LIVE candidate": terminal phases are
-    // excluded and its historical fallback selects only COMPLETE. So once abort
-    // commits, every stage after fence/prepare would fail in the shared source
-    // resolver before reaching its own guard - including the ABORTED-only
-    // recovery unfence and abort's own lost-response reconciliation.
-    expect(workflow).toContain("/v1/internal/release-control/candidates/head/$RELEASE_ID");
+    // excluded and its historical fallback selects only COMPLETE, so once abort
+    // commits the epoch is invisible there and the forward stages could not
+    // resolve their own source.
     const resolver = workflow.slice(at("Resolve the effective runtime source from durable candidate state"),
       at("Bind source migration and surface contracts"));
     expect(resolver).toContain("/candidates/head/$RELEASE_ID");
-    expect(resolver).not.toContain("/candidates/head\" >");
-    // The two terminal readers use it too.
-    for (const stage of ["Resume dispatch under the same epoch", "Abort a still-reversible candidate"]) {
-      const block = workflow.slice(at(stage), at(stage) + 2_500);
-      expect(block, stage).toContain("/candidates/head/$RELEASE_ID");
-    }
+  });
+
+  it("never requires the candidate's own endpoint to recover a pre-candidate state", () => {
+    // The bootstrap seam. prepare acquires generation 1 against the OLD binary
+    // and deploys afterwards, so a failure in between leaves an epoch whose
+    // only recovery path would otherwise need a runtime that never arrived -
+    // and the fence is taken before any candidate exists at all.
+    //
+    // So the exact-release read, which ships WITH the candidate, must not gate
+    // either recovery stage.
+    expect(workflow).toContain("env.INPUT_STAGE != 'abort' && env.INPUT_STAGE != 'unfence'");
+    const recovery = workflow.slice(at("Resume dispatch under the same epoch"), at("Prove dispatch actually runs"));
+    expect(recovery).not.toContain("/candidates/head/$RELEASE_ID");
+    expect(recovery).toContain("/v1/admin/release-control/candidates/head");
+    // Abort prefers the exact read and falls back, rather than requiring it.
+    const abort = workflow.slice(at("Abort a still-reversible candidate"), at("Complete only a certified"));
+    expect(abort).toContain("if api \"$PUBLIC_API_URL/v1/internal/release-control/candidates/head/$RELEASE_ID\"");
+    expect(abort).toContain("exact_head=0");
+    expect(abort).toContain("/v1/admin/release-control/candidates/head");
+    expect(abort).toContain("ABORT_REPLAY=no-live-candidate");
   });
 
   it("does not short-circuit the pre-activation replay on phase alone", () => {

@@ -169,7 +169,7 @@ in the middle of this one's migration.
 
 | code | meaning | action |
 |---|---|---|
-| `FENCE_RUNTIME_ALREADY_ADVANCED` | the runtime already has an attempt store | you are past `fence`; read the durable state and resume from there |
+| `FENCE_AUTHORITY_NOT_LEGACY` | authority has already moved | you are past `fence`; read the durable state and resume from there. The attempt store's mere presence is not an error — see the post-abort resting state |
 | `DISPATCH_NOT_DRAINED` | a send is still in flight | wait; the worker sweeps every 30s. Persisting means a stuck lease — inspect before forcing anything |
 | `DISPATCH_NOT_QUIESCENT` | drained once, not twice | something started a send after the fence. Do not proceed; the fence is not doing its job |
 | `FENCE_REQUIRED_BEFORE_PREPARE` | deploying 0041 with mail flowing | run `fence` first |
@@ -214,9 +214,27 @@ RECOVERY_REQUIRED   the epoch still OWNS the release and keeps sales paused
 
 Unfencing a `RECOVERY_REQUIRED` generation strands the cutover completely:
 replacement `prepare` then refuses for a missing fence, `abort` is unavailable
-after certification, and `complete` is the wrong phase. So recovery-unfence
-accepts `ABORTED` only, and additionally requires the release gate to be actually
-released.
+after certification, and `complete` is the wrong phase.
+
+The condition recovery-unfence actually requires is **"this epoch has no live
+release candidate"**, not "the head says `ABORTED`". The fence is taken *before*
+the candidate exists, so there are two legitimate exits:
+
+```text
+A   fence acquired, candidate never created   an operator who fenced, then cancelled
+B   candidate created and later ABORTED       the ordinary abort cleanup
+```
+
+An `ABORTED`-only rule would strand (A) with mail stopped and no exit at all.
+`RECOVERY_REQUIRED`, `PAUSED`, `DEPLOYED_READ_ONLY`, the certification phases and
+`CERTIFIED` are all excluded, because in each of those the epoch still owns the
+release gate.
+
+The proof runs through the **live** `candidateHead()` read, not the exact-release
+one: `candidateHead()` fails closed on any inconsistent active state and refuses
+outright when the gate is unowned while an active candidate exists, so its
+success alongside an unowned, unpaused gate is the evidence — and it exists on
+the runtime being replaced.
 
 To resume mail on a store that was never activated:
 
@@ -270,8 +288,17 @@ commits, the aborted epoch is invisible there — so every stage after `fence` a
 GET /v1/internal/release-control/candidates/head/<release_id>
 ```
 
-Without it the `ABORTED`-only recovery unfence is unreachable across runs, and
-so is `abort`'s own lost-response reconciliation.
+It is required by the forward stages — `certify`, `activate`, the activated
+`unfence` proof, `complete` and the classifications — which all run after the
+candidate is live.
+
+**It is deliberately not required by `abort` or `unfence`.** That endpoint ships
+*with* the candidate, while `prepare` acquires generation 1 against the old
+binary and deploys afterwards: a failure in between leaves an epoch whose only
+recovery path would otherwise need a runtime that never arrived. `abort` prefers
+the exact read and falls back to the live one; when a completed abort is
+invisible to the live read, it reconciles on the same "no live candidate"
+evidence and reports `ABORT_REPLAY=no-live-candidate`.
 
 ## Forward-only replacement
 
