@@ -713,17 +713,38 @@ export const reconcileHistoricalHttp403 = (db: Database.Database, messageId: str
       WHERE ${predicate}`).run(messageId, messageId).changes > 0;
   }
 
-  const targets = db.prepare(`SELECT id FROM email_outbox WHERE ${predicate}`).all(messageId, messageId) as Array<{ id: string }>;
-  if (targets.length === 0) return false;
+  const targets = db.prepare(`SELECT id, provider_idempotence_key FROM email_outbox WHERE ${predicate}`)
+    .all(messageId, messageId) as Array<{ id: string; provider_idempotence_key: string }>;
+  let repaired = false;
+
   for (const target of targets) {
-    db.prepare(`UPDATE email_outbox SET status = 'FAILED', delivery_outcome = 'KNOWN_FAILED' WHERE id = ?`).run(target.id);
-    db.prepare(`UPDATE outbox_attempt
+    // Bound to attempt #1, never to "whatever is unsettled". The frozen 403
+    // signature stays on the message forever by design, so after a resend this
+    // predicate matches again - and resolving by outcome IS NULL would settle
+    // the successor on the strength of the predecessor's evidence.
+    //
+    // The key is matched too: it is the same value attempt #1 was created with,
+    // so it distinguishes the historical send from anything later.
+    const historical = db.prepare(`SELECT id FROM outbox_attempt
+      WHERE message_id = ? AND attempt_no = 1 AND provider_idempotence_key = ? AND outcome IS NULL`)
+      .get(target.id, target.provider_idempotence_key) as { id: string } | undefined;
+    if (!historical) continue;
+
+    // Attempt CAS first, and the message only if it wins - the opposite of the
+    // observation path above. This evidence is a deterministic refusal of send
+    // #1, not a report about the message's lifecycle, so a lost CAS must leave
+    // the message alone rather than move it and find nothing to settle.
+    const settled = db.prepare(`UPDATE outbox_attempt
       SET outcome = 'KNOWN_FAILED', completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
           lease_owner = NULL, lease_expires_at = NULL, next_retry_at = NULL,
-          failure_code = 'UNISENDER_HTTP_REJECTED_LEGACY',
-          failure_detail = ?
-      WHERE message_id = ? AND outcome IS NULL`)
-      .run(JSON.stringify({ provider_error_code: "HTTP_403_LEGACY", provider_error_message: "Legacy deterministic Unisender HTTP 403 rejection." }), target.id);
+          failure_code = 'UNISENDER_HTTP_REJECTED_LEGACY', failure_detail = ?
+      WHERE id = ? AND outcome IS NULL`)
+      .run(JSON.stringify({ provider_error_code: "HTTP_403_LEGACY", provider_error_message: "Legacy deterministic Unisender HTTP 403 rejection." }), historical.id);
+    if (!settled.changes) continue;
+
+    db.prepare(`UPDATE email_outbox SET status = 'FAILED', delivery_outcome = 'KNOWN_FAILED'
+      WHERE id = ? AND status = 'SEND_UNKNOWN'`).run(target.id);
+    repaired = true;
   }
-  return true;
+  return repaired;
 };

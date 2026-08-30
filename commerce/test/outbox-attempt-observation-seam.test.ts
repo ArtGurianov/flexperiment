@@ -3,7 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
-import { applyProviderObservation } from "../src/outbox-attempt-store";
+import { applyProviderObservation, reconcileHistoricalHttp403 } from "../src/outbox-attempt-store";
+import { CommerceDomain } from "../src/domain";
+import { MockProvider } from "../src/provider";
 
 /**
  * Seam 5 of 5: provider observation, and the activation race.
@@ -277,5 +279,75 @@ describe("no legacy attempt-fact writer remains in the domain", () => {
       if (touched.length) offenders.push(`line ${source.slice(0, match.index!).split("\n").length}: ${touched.join(", ")}`);
     }
     expect(offenders, `unconverted legacy attempt-fact writers:\n  ${offenders.join("\n  ")}`).toEqual([]);
+  });
+});
+
+/**
+ * The historical HTTP 403 repair is evidence about SEND #1, not about the
+ * message's lifecycle - so unlike the observation path, the attempt CAS gates
+ * the message projection.
+ *
+ * The frozen 403 signature stays on the message forever by design, and the
+ * repair runs before ordinary identity resolution on every SEND_UNKNOWN. So
+ * after a resend the predicate matches again, and binding to "whatever is
+ * unsettled" would settle the successor on the predecessor's evidence.
+ */
+describe("historical 403 repair is bound to attempt #1", () => {
+  const historical = ({ authority }: { authority: "LEGACY" | "ATTEMPT" }) => {
+    const file = join(mkdtempSync(join(tmpdir(), "http403-")), "commerce.sqlite");
+    copyFileSync(template, file);
+    const db = new Database(file);
+    db.pragma("foreign_keys = ON");
+    open.push(db);
+    db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template,
+      payload_snapshot, status, provider_idempotence_key, attempts, job_id, last_error)
+      VALUES ('m1', 'TEST', 'a@b.invalid', 'h', 'tpl', '{}', 'SEND_UNKNOWN', 'first-key', 5251, NULL,
+        'Unisender send was not accepted (HTTP 403).')`).run();
+    db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key)
+      VALUES ('a1', 'm1', 1, 'first-key')`).run();
+    if (authority === "ATTEMPT") db.exec("UPDATE outbox_authority SET attempt_authority = 'ATTEMPT' WHERE singleton = 1");
+    return db;
+  };
+
+  it("settles the historical attempt and projects the message", () => {
+    const db = historical({ authority: "ATTEMPT" });
+    expect(tx(db, () => reconcileHistoricalHttp403(db, null))).toBe(true);
+    expect(message(db)).toMatchObject({ status: "FAILED", delivery_outcome: "KNOWN_FAILED" });
+    expect(attempt(db, "a1")).toMatchObject({ outcome: "KNOWN_FAILED" });
+  });
+
+  it("never consumes a successor once attempt #1 is repaired", async () => {
+    // Driven through processEmailOutbox, because the dangerous property is
+    // specifically that the legacy repair runs BEFORE ordinary a2 identity
+    // resolution on every SEND_UNKNOWN.
+    const db = historical({ authority: "ATTEMPT" });
+    db.exec("UPDATE outbox_attempt SET outcome = 'KNOWN_FAILED' WHERE id = 'a1'");
+    db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key)
+      VALUES ('a2', 'm1', 2, 'resend-key')`).run();
+    const successorBefore = attempt(db, "a2");
+
+    await new CommerceDomain(db, new MockProvider()).processEmailOutbox();
+
+    expect((message(db) as { status: string }).status).toBe("SEND_UNKNOWN");
+    expect(attempt(db, "a2")).toEqual(successorBefore);
+  });
+
+  it("leaves message and attempt alone when attempt #1 already settled otherwise", () => {
+    // A lost CAS must not move the message and then find nothing to settle -
+    // the seam-2 split-brain shape.
+    const db = historical({ authority: "ATTEMPT" });
+    db.exec("UPDATE outbox_attempt SET outcome = 'ACCEPTED' WHERE id = 'a1'");
+    const before = { message: message(db), attempt: attempt(db, "a1") };
+
+    expect(tx(db, () => reconcileHistoricalHttp403(db, null))).toBe(false);
+
+    expect(message(db)).toEqual(before.message);
+    expect(attempt(db, "a1")).toEqual(before.attempt);
+  });
+
+  it("still repairs under LEGACY", () => {
+    const db = historical({ authority: "LEGACY" });
+    expect(tx(db, () => reconcileHistoricalHttp403(db, null))).toBe(true);
+    expect(message(db)).toMatchObject({ status: "FAILED", delivery_outcome: "KNOWN_FAILED" });
   });
 });
