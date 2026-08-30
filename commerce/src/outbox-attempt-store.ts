@@ -579,3 +579,129 @@ export const suppressMessageDispatch = (
   if (updated.changes && target.status !== "DELIVERED") clearActiveAttemptDispatch(db, messageId);
   return updated.changes;
 };
+
+/**
+ * Seam 5: provider observation.
+ *
+ * INVENTORY, before conversion:
+ *
+ *   READS     the decision reads only external evidence and two MESSAGE facts -
+ *             status and suppressed_at - both correct in either authority. No
+ *             attempt-fact reader, so no reader defect exists here.
+ *
+ *   ORDERING  the message guard gates the attempt, which is the OPPOSITE of
+ *             seams 2 and 3 and worth stating. There, settlement was a fact
+ *             about our own send and the message was its projection. Here the
+ *             observation is evidence about the message's delivery lifecycle,
+ *             and the message guard decides whether that evidence applies at
+ *             all - a spam callback after DELIVERED is rejected outright, and
+ *             must not settle anything on its way past.
+ *
+ *   WRITES    message facts stay; job id, lease and retry scheduling move.
+ *
+ * Which attempt an observation belongs to is resolved from the provider job id
+ * when the evidence carries one. "The current attempt" would be wrong: after a
+ * resend, a late event for attempt #1's job must not settle attempt #2.
+ */
+const attemptForObservation = (db: Database.Database, messageId: string, jobId: string | null) => {
+  if (jobId) {
+    const byJob = db.prepare(`SELECT id, outcome FROM outbox_attempt
+      WHERE message_id = ? AND provider_job_id = ?`).get(messageId, jobId) as { id: string; outcome: string | null } | undefined;
+    if (byJob) return byJob;
+  }
+  return db.prepare(`SELECT id, outcome FROM outbox_attempt
+    WHERE message_id = ? AND outcome IS NULL`).get(messageId) as { id: string; outcome: string | null } | undefined;
+};
+
+/**
+ * Apply received provider evidence.
+ *
+ * A terminal provider status means the send reached the provider, so an
+ * unsettled attempt settles ACCEPTED - or KNOWN_FAILED for a received refusal.
+ * A settled attempt is never rewritten: if acceptance was already recorded, a
+ * later delivery or bounce changes the message and leaves history alone.
+ */
+export const applyProviderObservation = (
+  db: Database.Database,
+  messageId: string,
+  observed: { status: string; jobId?: string },
+  timestamp: string,
+): boolean => {
+  requireTransaction(db);
+  const timestamps = observed.status === "SENT" ? ", sent_at = ?"
+    : observed.status === "DELIVERED" ? ", delivered_at = ?"
+    : observed.status === "BOUNCED" ? ", bounced_at = ?" : "";
+  const stamp = timestamps ? [timestamp] : [];
+  const jobId = observed.jobId ?? null;
+
+  if (!attemptAuthorityIsActive(db)) {
+    return db.prepare(`UPDATE email_outbox SET status = ?, delivery_outcome = CASE WHEN ? = 'FAILED' THEN 'KNOWN_FAILED' END, job_id = COALESCE(job_id, ?), lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL${timestamps}
+      WHERE id = ?
+        AND NOT (status = 'DELIVERED' AND ? != 'DELIVERED')
+        AND NOT (suppressed_at IS NOT NULL AND ? != 'DELIVERED')`)
+      .run(observed.status, observed.status, jobId, ...stamp, messageId, observed.status, observed.status).changes > 0;
+  }
+
+  // The message guard decides whether this evidence applies at all.
+  const applied = db.prepare(`UPDATE email_outbox SET status = ?, delivery_outcome = CASE WHEN ? = 'FAILED' THEN 'KNOWN_FAILED' END${timestamps}
+    WHERE id = ?
+      AND NOT (status = 'DELIVERED' AND ? != 'DELIVERED')
+      AND NOT (suppressed_at IS NOT NULL AND ? != 'DELIVERED')`)
+    .run(observed.status, observed.status, ...stamp, messageId, observed.status, observed.status);
+  if (!applied.changes) return false;
+
+  const attempt = attemptForObservation(db, messageId, jobId);
+  if (!attempt || attempt.outcome !== null) return true;
+  db.prepare(`UPDATE outbox_attempt
+    SET outcome = ?, completed_at = COALESCE(completed_at, ?),
+        provider_job_id = COALESCE(provider_job_id, ?),
+        lease_owner = NULL, lease_expires_at = NULL, next_retry_at = NULL
+    WHERE id = ? AND outcome IS NULL`)
+    .run(observed.status === "FAILED" ? "KNOWN_FAILED" : "ACCEPTED", timestamp, jobId, attempt.id);
+  return true;
+};
+
+/**
+ * Historical repair: an old deployment recorded every send exception as
+ * SEND_UNKNOWN, and this exact signature is deterministic provider rejection.
+ *
+ * Its predicate reads legacy columns - attempts, job_id, last_error - and that
+ * is CORRECT rather than a stale read, which makes it the one exception in this
+ * module. The rows it identifies are pre-0041 history whose provenance lives
+ * nowhere else; frozen is exactly what those values should be. Only the WRITE
+ * needed splitting.
+ *
+ * Such a row backfills to an unsettled attempt, so the repair settles it
+ * KNOWN_FAILED: a received HTTP 403 is evidence of refusal, not ambiguity.
+ */
+export const reconcileHistoricalHttp403 = (db: Database.Database, messageId: string | null): boolean => {
+  requireTransaction(db);
+  const predicate = `status = 'SEND_UNKNOWN'
+      AND attempts > 5250
+      AND job_id IS NULL
+      AND last_error = 'Unisender send was not accepted (HTTP 403).'
+      AND (? IS NULL OR id = ?)`;
+
+  if (!attemptAuthorityIsActive(db)) {
+    return db.prepare(`UPDATE email_outbox
+      SET status = 'FAILED', delivery_outcome = 'KNOWN_FAILED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
+          last_error = 'UNISENDER_HTTP_REJECTED_LEGACY',
+          provider_error_code = 'HTTP_403_LEGACY',
+          provider_error_message = 'Legacy deterministic Unisender HTTP 403 rejection.'
+      WHERE ${predicate}`).run(messageId, messageId).changes > 0;
+  }
+
+  const targets = db.prepare(`SELECT id FROM email_outbox WHERE ${predicate}`).all(messageId, messageId) as Array<{ id: string }>;
+  if (targets.length === 0) return false;
+  for (const target of targets) {
+    db.prepare(`UPDATE email_outbox SET status = 'FAILED', delivery_outcome = 'KNOWN_FAILED' WHERE id = ?`).run(target.id);
+    db.prepare(`UPDATE outbox_attempt
+      SET outcome = 'KNOWN_FAILED', completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
+          lease_owner = NULL, lease_expires_at = NULL, next_retry_at = NULL,
+          failure_code = 'UNISENDER_HTTP_REJECTED_LEGACY',
+          failure_detail = ?
+      WHERE message_id = ? AND outcome IS NULL`)
+      .run(JSON.stringify({ provider_error_code: "HTTP_403_LEGACY", provider_error_message: "Legacy deterministic Unisender HTTP 403 rejection." }), target.id);
+  }
+  return true;
+};
