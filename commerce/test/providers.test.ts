@@ -175,7 +175,7 @@ describe("provider contracts", () => {
    * rejected 204 "No valid recipients". Contractual mail must not carry the
    * unsubscribe block; consent-based notifications must.
    */
-  it("puts the unsubscribe block only on consent-based mail, never on contractual mail", async () => {
+  it("does not send the privileged unsubscribe bypass on contractual mail", async () => {
     const captured: Record<string, unknown>[] = [];
     const provider = new UnisenderGoProvider({ apiKey: "test-key-not-a-secret", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async (input, init) => {
       captured.push(await new Request(input, init).json().then((b: { message: Record<string, unknown> }) => b.message));
@@ -184,17 +184,17 @@ describe("provider contracts", () => {
     const send = (type: string) => provider.send({ recipientEmail: "buyer@example.test", template: "ticket", type, payload: {}, idempotencyKey: `key-${type}`, outboxId: `outbox-${type}` });
 
     for (const type of ["TICKET", "REFUND_SUCCEEDED", "CUSTOMER_REFUND_CONFIRMATION", "BOOKING_CANCELLED", "OCCURRENCE_CANCELLED"]) await send(type);
-    expect(captured.map((message) => message.skip_unsubscribe)).toEqual([1, 1, 1, 1, 1]);
+    expect(captured.map((message) => message.skip_unsubscribe)).toEqual([undefined, undefined, undefined, undefined, undefined]);
 
     captured.length = 0;
     for (const type of ["CITY_INTEREST_AVAILABLE", "OCCURRENCE_AVAILABLE"]) await send(type);
     expect(captured.map((message) => message.skip_unsubscribe)).toEqual([0, 0]);
 
-    // An unknown or absent type falls back to contractual: never risk putting
-    // an unsubscribe link on a ticket.
+    // An unknown or absent type falls back to the provider default. It must
+    // never emit the privileged `skip_unsubscribe=1` bypass.
     captured.length = 0;
     await provider.send({ recipientEmail: "buyer@example.test", template: "ticket", payload: {}, idempotencyKey: "key-none", outboxId: "outbox-none" });
-    expect(captured[0].skip_unsubscribe).toBe(1);
+    expect(captured[0]).not.toHaveProperty("skip_unsubscribe");
   });
 
   it("classifies a received Unisender HTTP rejection as terminal-safe evidence", async () => {
