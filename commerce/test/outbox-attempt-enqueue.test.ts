@@ -104,11 +104,11 @@ describe("enqueueEmail creates a message and attempt #1 atomically", () => {
       .toEqual({ n: 0 });
   });
 
-  it("joins a transactional caller instead of nesting a transaction", () => {
+  it("works inside a transactional caller via a nested savepoint", () => {
     // enqueueEmail is reached from callers that already hold a transaction -
-    // patchOccurrence is one - and from bare sweep paths. Opening a nested
-    // transaction would throw, so the join branch is what makes atomicity a
-    // property rather than a caller convention.
+    // patchOccurrence is one, and so are the lifecycle sweep paths. It nests
+    // deliberately: the SAVEPOINT is what makes atomicity a property of this
+    // seam rather than a caller convention.
     const { db, domain } = fixture();
     db.prepare("UPDATE occurrences SET visibility = 'HIDDEN', sales_status = 'CLOSED'").run();
     enqueueViaCityInterest(domain, "joined@example.test");
