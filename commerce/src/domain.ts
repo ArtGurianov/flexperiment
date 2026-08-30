@@ -12,7 +12,7 @@ import { findCityBySlug } from "../../lib/city-catalog";
 import { purchaseStatus, type PurchaseStatus } from "./purchase-status";
 import { parseUtcTimestamp } from "./utc-timestamp";
 import { assertNewOrdersOpen as assertGateOpen, emergencySalesPaused as gateEmergencyPaused, newOrdersBlocked as gateBlocked } from "./sales-gate";
-import { claimForDispatch, deferAmbiguousObservation, deferAmbiguousSend, dispatchCandidates, failExhaustedAmbiguous, providerLookupIdentity, recordProviderAcceptance, recordProviderRefusal, resolveAttemptRef, sendTryCount, staleLeasedSends, type AttemptRef } from "./outbox-attempt-store";
+import { claimForDispatch, deferAmbiguousObservation, deferAmbiguousSend, dispatchCandidates, failExhaustedAmbiguous, providerLookupIdentity, recordProviderAcceptance, recordProviderRefusal, claimedAttemptRef, resolveAttemptRef, sendTryCount, staleLeasedSends, type AttemptRef } from "./outbox-attempt-store";
 import { OutboxAuthorityError, emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations, type DispatchEpoch } from "./outbox-authority";
 
 type Row = Record<string, unknown>;
@@ -2473,7 +2473,11 @@ export class CommerceDomain {
           // A timeout/network loss after a request starts cannot prove the
           // provider did not accept it. Keep the stable idempotence key, but
           // make recovery finite and rate-limited.
-          this.deferOrFailUnknownEmail(String(outbox.id), claimed.send_try_count, attemptRef);
+          // The ref for THIS provider call is the one the claim actually took.
+          // attemptRef was resolved before the lookup, and the claim may since
+          // have taken a successor - writing the failure against the
+          // predecessor would land on the wrong attempt.
+          this.deferOrFailUnknownEmail(String(outbox.id), claimed.send_try_count, claimedAttemptRef(claimed));
         }
       }
     }
@@ -2837,7 +2841,7 @@ export class CommerceDomain {
         failExhaustedAmbiguous(this.db, { id: outboxId }, ref, "SENDING");
         return;
       }
-      deferAmbiguousSend(this.db, { id: outboxId }, ref, this.unknownEmailRetryAt(attempts), { requireUnsuperseded: false });
+      deferAmbiguousSend(this.db, { id: outboxId }, ref, this.unknownEmailRetryAt(attempts), { supersession: "ANY", requireUnsuppressed: false });
     });
   }
 
@@ -3407,17 +3411,22 @@ export class CommerceDomain {
     // carries a lease, so scanning email_outbox.lease_expires_at would find
     // nothing and stale sends would never be recovered - a silent read defect
     // with no trigger to catch it.
+    // Superseded stale sends: the scan chose them, and the write revalidates
+    // that category. A superseded row must never be rescheduled, so no retry
+    // time - supersession is the permanent no-retry guard.
     for (const outbox of staleLeasedSends(this.db, timestamp, true)) {
       withImmediateTransaction(this.db, () =>
-        deferAmbiguousSend(this.db, { id: String(outbox.id) }, resolveAttemptRef(this.db, String(outbox.id)), null, { requireUnsuperseded: true }));
+        deferAmbiguousSend(this.db, { id: String(outbox.id) }, resolveAttemptRef(this.db, String(outbox.id)), null,
+          { supersession: "REQUIRE_SUPERSEDED", requireUnsuppressed: true }));
     }
     for (const outbox of staleLeasedSends(this.db, timestamp, false)) {
       const id = String(outbox.id);
       withImmediateTransaction(this.db, () => {
         const ref = resolveAttemptRef(this.db, id);
         const tries = sendTryCount(this.db, { id, attempts: outbox.attempts });
-        if (tries >= EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS) { failExhaustedAmbiguous(this.db, { id }, ref, "SENDING"); return; }
-        deferAmbiguousSend(this.db, { id }, ref, this.unknownEmailRetryAt(Math.max(1, tries)), { requireUnsuperseded: true });
+        const guard = { supersession: "REQUIRE_UNSUPERSEDED" as const, requireUnsuppressed: true };
+        if (tries >= EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS) { failExhaustedAmbiguous(this.db, { id }, ref, "SENDING", guard); return; }
+        deferAmbiguousSend(this.db, { id }, ref, this.unknownEmailRetryAt(Math.max(1, tries)), guard);
       });
     }
   }

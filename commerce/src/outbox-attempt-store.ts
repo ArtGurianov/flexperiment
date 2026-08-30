@@ -328,6 +328,40 @@ const EXHAUSTED_ERROR = "UNISENDER_SEND_UNKNOWN_ATTEMPT_LIMIT_REACHED";
 const EXHAUSTED_CODE = "SEND_UNKNOWN_ATTEMPT_LIMIT";
 const EXHAUSTED_MESSAGE = "Ambiguous email dispatch retry limit reached.";
 
+/**
+ * Which supersession category this write is allowed to act on.
+ *
+ * Named rather than a boolean because the previous boolean was wrong twice: it
+ * checked `suppressed_at` while being called `requireUnsuperseded`, and the
+ * loop that had selected SUPERSEDED rows passed it, dropping the
+ * `superseded_at IS NOT NULL` recheck the original statement carried. The scan
+ * happens before the per-row transaction, so the write must revalidate its own
+ * category.
+ */
+export type SupersessionGuard = "ANY" | "REQUIRE_SUPERSEDED" | "REQUIRE_UNSUPERSEDED";
+
+type WriteGuard = { supersession: SupersessionGuard; requireUnsuppressed: boolean };
+
+const guardClause = ({ supersession, requireUnsuppressed }: WriteGuard) =>
+  (requireUnsuppressed ? " AND suppressed_at IS NULL" : "")
+  + (supersession === "REQUIRE_SUPERSEDED" ? " AND superseded_at IS NOT NULL"
+    : supersession === "REQUIRE_UNSUPERSEDED" ? " AND superseded_at IS NULL" : "");
+
+/**
+ * Whether a carried reference still names this message's unsettled attempt.
+ *
+ * Checked BEFORE any message mutation, in the same BEGIN IMMEDIATE as the
+ * writes, so it cannot go stale between the check and them. Without this the
+ * message could be projected on behalf of an attempt that had already settled
+ * while its successor - the genuinely current one - went untouched, which is
+ * the same split seam 2 fixed on the settlement paths.
+ */
+const carriedRefIsCurrent = (db: Database.Database, messageId: string, ref: AttemptRef): boolean => {
+  if (ref.authority === "LEGACY") return true;
+  return Boolean(db.prepare(`SELECT 1 FROM outbox_attempt
+    WHERE id = ? AND message_id = ? AND outcome IS NULL`).get(ref.attempt_id, messageId));
+};
+
 /** Reschedule a still-ambiguous send. The message stays SEND_UNKNOWN either way. */
 export const deferAmbiguousObservation = (
   db: Database.Database,
@@ -340,8 +374,6 @@ export const deferAmbiguousObservation = (
     db.prepare(`UPDATE email_outbox SET next_attempt_at = ? WHERE id = ? AND status = 'SEND_UNKNOWN'`).run(retryAt, message.id);
     return;
   }
-  // Scheduling is an attempt fact, and the identity is the one resolved before
-  // the provider call - not whatever is current now.
   db.prepare(`UPDATE outbox_attempt SET next_retry_at = ? WHERE id = ? AND outcome IS NULL`).run(retryAt, ref.attempt_id);
 };
 
@@ -358,17 +390,21 @@ export const failExhaustedAmbiguous = (
   message: { id: string },
   ref: AttemptRef,
   fromStatus: "SEND_UNKNOWN" | "SENDING",
+  guard: WriteGuard = { supersession: "ANY", requireUnsuppressed: false },
 ) => {
   requireTransaction(db);
+  if (!carriedRefIsCurrent(db, message.id, ref)) return;
+  const clause = guardClause(guard);
+
   if (ref.authority === "LEGACY") {
     db.prepare(`UPDATE email_outbox
       SET status = 'FAILED', delivery_outcome = 'UNRESOLVED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
           last_error = ?, provider_error_code = ?, provider_error_message = ?
-      WHERE id = ? AND status = ?`).run(EXHAUSTED_ERROR, EXHAUSTED_CODE, EXHAUSTED_MESSAGE, message.id, fromStatus);
+      WHERE id = ? AND status = ?${clause}`).run(EXHAUSTED_ERROR, EXHAUSTED_CODE, EXHAUSTED_MESSAGE, message.id, fromStatus);
     return;
   }
   const moved = db.prepare(`UPDATE email_outbox SET status = 'FAILED', delivery_outcome = 'UNRESOLVED'
-    WHERE id = ? AND status = ?`).run(message.id, fromStatus);
+    WHERE id = ? AND status = ?${clause}`).run(message.id, fromStatus);
   if (!moved.changes) return;
   db.prepare(`UPDATE outbox_attempt
     SET lease_owner = NULL, lease_expires_at = NULL, next_retry_at = NULL,
@@ -382,24 +418,30 @@ export const deferAmbiguousSend = (
   message: { id: string },
   ref: AttemptRef,
   retryAt: string | null,
-  guard: { requireUnsuperseded: boolean },
+  guard: WriteGuard,
 ) => {
   requireTransaction(db);
-  const supersededClause = guard.requireUnsuperseded ? " AND suppressed_at IS NULL" : "";
+  if (!carriedRefIsCurrent(db, message.id, ref)) return;
+  const clause = guardClause(guard);
+
   if (ref.authority === "LEGACY") {
     db.prepare(`UPDATE email_outbox
       SET status = 'SEND_UNKNOWN', lease_owner = NULL, lease_expires_at = NULL,
           next_attempt_at = ?, last_error = ?, provider_error_code = NULL, provider_error_message = NULL
-      WHERE id = ? AND status = 'SENDING'${supersededClause}`).run(retryAt, AMBIGUOUS, message.id);
+      WHERE id = ? AND status = 'SENDING'${clause}`).run(retryAt, AMBIGUOUS, message.id);
     return;
   }
   const moved = db.prepare(`UPDATE email_outbox SET status = 'SEND_UNKNOWN'
-    WHERE id = ? AND status = 'SENDING'${supersededClause}`).run(message.id);
+    WHERE id = ? AND status = 'SENDING'${clause}`).run(message.id);
   if (!moved.changes) return;
   db.prepare(`UPDATE outbox_attempt
     SET lease_owner = NULL, lease_expires_at = NULL, next_retry_at = ?, failure_code = ?, failure_detail = NULL
     WHERE id = ? AND outcome IS NULL`).run(retryAt, AMBIGUOUS, ref.attempt_id);
 };
+
+/** The attempt a claim actually took, for carrying across the send() call. */
+export const claimedAttemptRef = (claimed: ClaimedAttempt): AttemptRef =>
+  claimed.authority === "ATTEMPT" ? { authority: "ATTEMPT", attempt_id: claimed.attempt_id } : { authority: "LEGACY" };
 
 /**
  * Sends whose lease has expired, per authority.

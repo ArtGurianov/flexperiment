@@ -7,6 +7,8 @@ import {
   deferAmbiguousObservation, deferAmbiguousSend, failExhaustedAmbiguous,
   resolveAttemptRef, sendTryCount, staleLeasedSends,
 } from "../src/outbox-attempt-store";
+import { CommerceDomain } from "../src/domain";
+import { MockProvider } from "../src/provider";
 
 /**
  * Seam 3 of 5: ambiguity, exhaustion and stale-lease recovery.
@@ -109,7 +111,7 @@ describe("ambiguity seam", () => {
     it("returns an ambiguous send to SEND_UNKNOWN under ATTEMPT", () => {
       const db = fixture({ authority: "ATTEMPT" });
       const legacyBefore = legacyFacts(db);
-      tx(db, () => deferAmbiguousSend(db, { id: "m1" }, resolveAttemptRef(db, "m1"), RETRY_AT, { requireUnsuperseded: false }));
+      tx(db, () => deferAmbiguousSend(db, { id: "m1" }, resolveAttemptRef(db, "m1"), RETRY_AT, { supersession: "ANY", requireUnsuppressed: false }));
       expect((message(db) as { status: string }).status).toBe("SEND_UNKNOWN");
       expect(attempt(db)).toMatchObject({ outcome: null, next_retry_at: RETRY_AT, failure_code: "UNISENDER_TRANSPORT_AMBIGUOUS" });
       expect(legacyFacts(db)).toEqual(legacyBefore);
@@ -154,6 +156,66 @@ describe("ambiguity seam", () => {
     });
   });
 
+  describe("supersession category is revalidated by the write", () => {
+    it("refuses to reschedule a superseded send under REQUIRE_UNSUPERSEDED", () => {
+      // The scan runs before the per-row transaction, so the write must
+      // revalidate its own category. A boolean that checked suppressed_at while
+      // being named for superseded_at dropped this entirely.
+      const db = fixture({ authority: "ATTEMPT", legacy: "UPDATE email_outbox SET superseded_at = '2026-08-30T00:00:00Z', superseded_reason = 'r' WHERE id = 'm1'" });
+      tx(db, () => deferAmbiguousSend(db, { id: "m1" }, resolveAttemptRef(db, "m1"), RETRY_AT,
+        { supersession: "REQUIRE_UNSUPERSEDED", requireUnsuppressed: true }));
+      expect((message(db) as { status: string }).status).toBe("SENDING");
+    });
+
+    it("acts on a superseded send under REQUIRE_SUPERSEDED, without rescheduling it", () => {
+      // Supersession is the permanent no-retry guard, so no retry time.
+      const db = fixture({ authority: "ATTEMPT", legacy: "UPDATE email_outbox SET superseded_at = '2026-08-30T00:00:00Z', superseded_reason = 'r' WHERE id = 'm1'" });
+      tx(db, () => deferAmbiguousSend(db, { id: "m1" }, resolveAttemptRef(db, "m1"), null,
+        { supersession: "REQUIRE_SUPERSEDED", requireUnsuppressed: true }));
+      expect((message(db) as { status: string }).status).toBe("SEND_UNKNOWN");
+      expect(attempt(db)).toMatchObject({ next_retry_at: null, outcome: null });
+    });
+
+    it("refuses an unsuperseded send under REQUIRE_SUPERSEDED", () => {
+      const db = fixture({ authority: "ATTEMPT" });
+      tx(db, () => deferAmbiguousSend(db, { id: "m1" }, resolveAttemptRef(db, "m1"), null,
+        { supersession: "REQUIRE_SUPERSEDED", requireUnsuppressed: true }));
+      expect((message(db) as { status: string }).status).toBe("SENDING");
+    });
+  });
+
+  describe("a stale carried ref moves nothing at all", () => {
+    // Seam 2's ordering lesson, applied to the projecting helpers: validity is
+    // established before ANY message mutation, so a settled predecessor cannot
+    // move the message while its successor goes untouched.
+    const withSuccessor = () => {
+      const db = fixture({ authority: "ATTEMPT" });
+      const stale = tx(db, () => resolveAttemptRef(db, "m1"));
+      db.exec("UPDATE outbox_attempt SET outcome = 'KNOWN_FAILED' WHERE id = 'a1'");
+      db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key)
+        VALUES ('a2', 'm1', 2, 'resend-key')`).run();
+      return { db, stale };
+    };
+
+    it("deferAmbiguousSend leaves message and successor untouched", () => {
+      const { db, stale } = withSuccessor();
+      const before = message(db);
+      tx(db, () => deferAmbiguousSend(db, { id: "m1" }, stale, RETRY_AT, { supersession: "ANY", requireUnsuppressed: false }));
+      expect(message(db)).toEqual(before);
+      expect(db.prepare("SELECT next_retry_at, outcome FROM outbox_attempt WHERE id = 'a2'").get())
+        .toEqual({ next_retry_at: null, outcome: null });
+    });
+
+    it("failExhaustedAmbiguous leaves message and successor untouched", () => {
+      const { db, stale } = withSuccessor();
+      const before = message(db);
+      tx(db, () => failExhaustedAmbiguous(db, { id: "m1" }, stale, "SENDING"));
+      expect(message(db)).toEqual(before);
+      expect(db.prepare("SELECT reconciliation_exhausted_at FROM outbox_attempt WHERE id = 'a2'").get())
+        .toEqual({ reconciliation_exhausted_at: null });
+    });
+  });
+
   describe("carried identity", () => {
     it("applies the resolved attempt, not whatever is current afterwards", () => {
       // Identity is resolved before the provider call. If the current attempt
@@ -172,5 +234,54 @@ describe("ambiguity seam", () => {
       // carried identity names a1, not "the current attempt".
       expect(db.prepare("SELECT next_retry_at FROM outbox_attempt WHERE id = 'a2'").get()).toEqual({ next_retry_at: null });
     });
+  });
+});
+
+/**
+ * Orchestration seam.
+ *
+ * The helper tests prove staleLeasedSends and sendTryCount read the right
+ * store. They do not prove the sweep and the exhaustion decision CONSUME them -
+ * restoring either legacy read would leave every helper test green while
+ * production silently stopped recovering crashed sends.
+ */
+describe("stale recovery consumes authoritative lease and try count", () => {
+  const domainFor = (db: Database.Database) => new CommerceDomain(db, new MockProvider());
+
+  it("recovers a crashed send whose lease lives only on the attempt", () => {
+    // The message carries no lease under ATTEMPT, so the old scan of
+    // email_outbox.lease_expires_at finds nothing at all and this fails.
+    const db = fixture({ authority: "ATTEMPT" });
+    db.exec(`UPDATE outbox_attempt SET lease_owner = 'w1',
+      lease_expires_at = '2000-01-01T00:00:00.000Z', send_try_count = 2 WHERE id = 'a1'`);
+
+    domainFor(db).recoverStaleCommands();
+
+    expect((message(db) as { status: string }).status).toBe("SEND_UNKNOWN");
+    expect(attempt(db)).toMatchObject({ outcome: null, lease_owner: null });
+    expect((attempt(db) as { next_retry_at: string | null }).next_retry_at).not.toBeNull();
+  });
+
+  it("does not exhaust when only the frozen legacy counter is high", () => {
+    // legacy 99, attempt 1: reading the message would abandon a send that has
+    // barely started, and nothing would fire.
+    const db = fixture({ authority: "ATTEMPT", legacy: "UPDATE email_outbox SET attempts = 99 WHERE id = 'm1'" });
+    db.exec(`UPDATE outbox_attempt SET lease_owner = 'w1',
+      lease_expires_at = '2000-01-01T00:00:00.000Z', send_try_count = 1 WHERE id = 'a1'`);
+
+    domainFor(db).recoverStaleCommands();
+
+    expect(message(db)).toEqual({ status: "SEND_UNKNOWN", delivery_outcome: null });
+  });
+
+  it("does exhaust when the attempt's own counter is spent", () => {
+    const db = fixture({ authority: "ATTEMPT", legacy: "UPDATE email_outbox SET attempts = 1 WHERE id = 'm1'" });
+    db.exec(`UPDATE outbox_attempt SET lease_owner = 'w1',
+      lease_expires_at = '2000-01-01T00:00:00.000Z', send_try_count = 8 WHERE id = 'a1'`);
+
+    domainFor(db).recoverStaleCommands();
+
+    expect(message(db)).toEqual({ status: "FAILED", delivery_outcome: "UNRESOLVED" });
+    expect((attempt(db) as { outcome: string | null }).outcome).toBeNull();
   });
 });
