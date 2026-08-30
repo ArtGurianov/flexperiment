@@ -2989,10 +2989,15 @@ export class CommerceDomain {
   /**
    * A message and its first attempt are created together or not at all.
    *
-   * The atomicity is owned here rather than by callers: enqueueEmail is invoked
-   * both from transactional business operations and from sweep loops, so
-   * "the caller already has a transaction" is not an invariant this can rely
-   * on. The property being established is not that two inserts sit next to each
+   * The atomicity is owned HERE, not delegated to the caller. Joining an outer
+   * transaction is not enough: SQLite does not undo an earlier statement when a
+   * later one fails, so a caller that catches the enqueue error and commits
+   * anyway would leave a message with no attempt #1. A nested transaction gives
+   * this pair its own SAVEPOINT, so it succeeds or fails as a unit whatever the
+   * caller does with the exception, while the outer transaction keeps owning
+   * the broader business atomicity.
+   *
+   * The property being established is not that two inserts sit next to each
    * other - it is that a newly created message without attempt #1 cannot exist.
    *
    * The provider key is minted ONCE and copied byte-for-byte into both stores:
@@ -3017,7 +3022,10 @@ export class CommerceDomain {
         VALUES (?, ?, 1, ?)`).run(id(), outboxId, providerKey);
       return outboxId;
     };
-    return this.db.inTransaction ? write() : withImmediateTransaction(this.db, write);
+    const atomicWrite = this.db.transaction(write);
+    // Nested: SAVEPOINT. Outermost: BEGIN IMMEDIATE, matching every other
+    // write path in this domain.
+    return this.db.inTransaction ? atomicWrite() : atomicWrite.immediate();
   }
 
   private insertCityInterestRequest(input: {

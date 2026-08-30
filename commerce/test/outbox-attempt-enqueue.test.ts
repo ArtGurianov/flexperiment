@@ -12,9 +12,12 @@ import { MockProvider } from "../src/provider";
  * tests below break the second insert on purpose and require the first to
  * disappear with it.
  *
- * enqueueEmail is reached from transactional business operations and from sweep
- * loops alike, so both entry shapes are covered: an outer transaction must be
- * joined rather than nested, and a bare call must open its own.
+ * Atomicity is owned by enqueueEmail itself, not by its callers. Joining an
+ * outer transaction is not enough: SQLite does not undo an earlier statement
+ * when a later one fails, so a caller that catches the enqueue error and
+ * commits anyway would leave a message with no attempt #1. The pair therefore
+ * runs in its own nested transaction - a SAVEPOINT - and the decisive test
+ * below swallows the failure inside an outer transaction that then commits.
  */
 
 const legalManifest = {
@@ -82,9 +85,10 @@ describe("enqueueEmail creates a message and attempt #1 atomically", () => {
   });
 
   it("leaves no message behind when the attempt insert fails", () => {
-    // The load-bearing test. A trigger breaks the attempt insert; if the
-    // message insert were not in the same transaction, a message with no
-    // attempt would survive - the exact state the design says cannot exist.
+    // Note this reaches enqueue through registerCityInterest, which opens its
+    // own transaction - so this is a JOINED caller, not a bare one, and it
+    // proves the caller's rollback discipline rather than enqueue's savepoint.
+    // The swallowed-error test below is what proves the savepoint.
     const { db, domain } = fixture();
     const before = (db.prepare("SELECT COUNT(*) AS n FROM email_outbox").get() as { n: number }).n;
 
@@ -132,6 +136,39 @@ describe("enqueueEmail creates a message and attempt #1 atomically", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM outbox_attempt").get()).toEqual({ n: 0 });
     // The occurrence stayed hidden: the caller's write rolled back too.
     expect(db.prepare("SELECT visibility FROM occurrences WHERE id = ?").get(occurrenceId)).toEqual({ visibility: "HIDDEN" });
+  });
+
+  it("rolls back the message even when the caller swallows the failure and commits", () => {
+    // The decisive test, and the only one here that distinguishes a savepoint
+    // from merely joining the caller's transaction.
+    //
+    // It calls enqueueEmail directly because every public caller opens its own
+    // transaction, so none of them can be placed inside an outer one - an
+    // earlier attempt to do that failed with "cannot start a transaction within
+    // a transaction" and passed for that reason rather than the intended one.
+    //
+    // SQLite does not undo an earlier statement when a later one fails, so
+    // without a savepoint this commits a message with no attempt #1.
+    const { db, domain } = fixture();
+    db.exec(`CREATE TRIGGER test_break_attempt_insert BEFORE INSERT ON outbox_attempt
+      BEGIN SELECT RAISE(ABORT, 'INJECTED_ATTEMPT_FAILURE'); END`);
+    const enqueue = (domain as unknown as {
+      enqueueEmail: (type: string, email: string, hash: string, template: string, ref: string, payload: Record<string, unknown>) => string;
+    }).enqueueEmail.bind(domain);
+
+    let swallowed: unknown;
+    db.transaction(() => {
+      // An unrelated caller fact that must SURVIVE the commit.
+      db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, 'omsk', 'Омск')").run(randomUUID());
+      try { enqueue("TEST", "swallowed@example.test", "hash", "tpl", "ref", {}); }
+      catch (error) { swallowed = error; }
+    })();
+
+    expect(swallowed).toBeDefined();
+    expect(String(swallowed)).toMatch(/INJECTED_ATTEMPT_FAILURE/);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM cities WHERE slug = 'omsk'").get()).toEqual({ n: 1 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM email_outbox").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM outbox_attempt").get()).toEqual({ n: 0 });
   });
 
   it("does not activate attempt authority by creating attempts", () => {
