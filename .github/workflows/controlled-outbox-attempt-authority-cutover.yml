@@ -709,9 +709,22 @@ jobs:
             ' candidate-head.json >/dev/null || { echo "ATTEMPT_AUTHORITY_CUTOVER_CERTIFICATION_FIXTURE_MISMATCH" >&2; exit 1; }
             expires="$(jq -r '.head.certification.lease_expires_at // empty' candidate-head.json)"
             status="$(jq -r '.head.certification.status // empty' candidate-head.json)"
+            lease_state=""
             # Parsed, never compared as text: the lease carries an offset-bearing
             # ISO timestamp and lexical ordering against "now" is unsound.
-            if [[ "$status" == ACTIVE ]] && ! node -e 'process.exit(Date.parse(process.argv[1]) > Date.now() ? 0 : 1)' "$expires"; then
+            if [[ "$status" == ACTIVE ]]; then
+              lease_state="$(
+                node -e '
+                  const t = Date.parse(process.argv[1]);
+                  if (!Number.isFinite(t)) process.exit(2);
+                  process.stdout.write(t > Date.now() ? "LIVE" : "EXPIRED");
+                ' "$expires"
+              )" || {
+                echo "ATTEMPT_AUTHORITY_CUTOVER_CERTIFICATION_LEASE_EXPIRY_INVALID" >&2
+                exit 1
+              }
+            fi
+            if [[ "$status" == ACTIVE && "$lease_state" == EXPIRED ]]; then
               echo "CERTIFICATION_LEASE_EXPIRED=$expires"
               jq -n --slurpfile current candidate-head.json '{
                 release_id: $current[0].head.release_id, candidate_generation: $current[0].head.candidate_generation,

@@ -182,9 +182,19 @@ describe("controlled outbox attempt-authority cutover", () => {
     expect(resetPost).toBeGreaterThan(-1);
     expect(activatePost).toBeGreaterThan(-1);
     expect(resetPost).toBeLessThan(activatePost);
+    // A malformed string is neither live nor expired: parsing fails closed
+    // before the phase-reset POST can revoke the old lease. This exact finite
+    // check is intentional mutation coverage: replacing it with a truthy stub
+    // makes this assertion fail, and reintroduces the NaN-as-expired defect.
+    const expiryRefusal = stage.indexOf("ATTEMPT_AUTHORITY_CUTOVER_CERTIFICATION_LEASE_EXPIRY_INVALID");
+    expect(stage).toContain("const t = Date.parse(process.argv[1]);");
+    expect(stage).toContain("Number.isFinite(t)");
+    expect(expiryRefusal).toBeGreaterThan(-1);
+    expect(expiryRefusal).toBeLessThan(resetPost);
+    expect(stage).toContain('[[ "$status" == ACTIVE && "$lease_state" == EXPIRED ]]');
     // Proven expired before anything is revoked, and parsed rather than
     // compared as text - the lease carries an offset-bearing ISO timestamp.
-    expect(stage).toContain("Date.parse(process.argv[1]) > Date.now()");
+    expect(stage).toContain('t > Date.now() ? "LIVE" : "EXPIRED"');
     expect(stage).not.toMatch(/lease_expires_at["']?\s*[<>]\s*["']?\$\(date/);
     // The CAS presents the exact generation, phase sequence and state hash.
     expect(stage).toContain("expected_state_hash: $current[0].state_hash");
