@@ -512,6 +512,13 @@ response rather than minting anything.
      DB-enforced dispatch pause trigger
      legacy-attempt freeze guard, inert until authority = ATTEMPT
 
+   The fence/unfence command is held by RELEASE CONTROL, not admin. Fencing
+   outbound dispatch is a deployment-mechanism act: it delays mail during an
+   authority migration and touches nothing a customer can buy, refund or
+   cancel. That is unlike the emergency sales stop, which is absolute and
+   business-facing and stays with an operator. Putting it here also means the
+   0041 cutover can fence and unfence without a manual handoff at each end.
+
    Acceptance: the control row starts safe -
    `attempt_authority = LEGACY`, `email_dispatch_paused = 0`, `revision = 1` -
    and fence/unfence are explicit CAS transitions carrying audit evidence

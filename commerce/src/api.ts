@@ -10,7 +10,7 @@ import { clientIpRateLimitKey, rateLimit, trustedClientIp } from "./rate-limit";
 import { TochkaWebhookVerifier, webhookAmountKopecks } from "./tochka-webhook";
 import { verifyUnisenderWebhook } from "./unisender-webhook";
 import { type SmartCaptchaVerifier, UnconfiguredSmartCaptchaVerifier } from "./smartcaptcha";
-import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityInterestWithdrawalSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, emailAttentionAcknowledgeSchema, emergencySalesCommandSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrenceNotificationSchema, occurrencePatchSchema, promoPatchSchema, promoSchema, providerReferenceSchema, releaseControlSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
+import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityInterestWithdrawalSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, emailAttentionAcknowledgeSchema, emergencySalesCommandSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrenceNotificationSchema, occurrencePatchSchema, outboxDispatchFenceSchema, promoPatchSchema, promoSchema, providerReferenceSchema, releaseControlSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
 
 type AppBindings = { Variables: { adminId?: string; adminSessionId?: string } };
 const noStore = (headers: Headers) => headers.set("Cache-Control", "no-store");
@@ -508,8 +508,13 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     await next();
     noStore(c.res.headers);
   });
-  releaseControl.get("/status", (c) => c.json({ ...domain.releaseControlStatus(), emergency_sales_paused: domain.emergencySalesPaused(), runtime: domain.releaseRuntimeEvidence() }));
+  releaseControl.get("/status", (c) => c.json({ ...domain.releaseControlStatus(), emergency_sales_paused: domain.emergencySalesPaused(), outbox_authority: domain.outboxAuthority(), runtime: domain.releaseRuntimeEvidence() }));
   releaseControl.get("/provider-readiness", async (c) => c.json(await domain.providerReadiness()));
+  releaseControl.get("/outbox-authority", (c) => c.json(domain.outboxAuthority()));
+  releaseControl.post("/outbox-dispatch/fence", async (c) =>
+    c.json(domain.fenceEmailDispatch(outboxDispatchFenceSchema.parse(await jsonBody(c.req.raw)), "release-control")));
+  releaseControl.post("/outbox-dispatch/unfence", async (c) =>
+    c.json(domain.unfenceEmailDispatch(outboxDispatchFenceSchema.parse(await jsonBody(c.req.raw)), "release-control")));
   releaseControl.get("/completion/:releaseId", (c) => c.json(domain.releaseControlCompletion(c.req.param("releaseId"))));
   releaseControl.post("/candidates/acquire", async (c) => c.json(domain.acquirePromoCandidate(await jsonBody(c.req.raw) as { head: import("./release-generation").GenerationHead })));
   releaseControl.post("/candidates/adopt", async (c) => c.json(domain.adoptPromoCandidate(await jsonBody(c.req.raw) as import("./release-control").CandidateAdoptRequest)));

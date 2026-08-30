@@ -17,6 +17,15 @@ export const checkoutRequestSchema = z.object({
   pd_consent_accepted: z.literal(true),
 }).strict();
 
+/**
+ * Fence and unfence carry a CAS token and a reason. The trigger is the
+ * enforcement; this command is only how an operator changes its durable input.
+ */
+export const outboxDispatchFenceSchema = z.object({
+  expected_revision: z.number().int().nonnegative(),
+  reason: z.string().trim().min(3).max(1_000),
+}).strict();
+
 export const checkoutContextSchema = z.object({
   occurrence_id: z.string().uuid(),
   promo_code: z.string().trim().max(64).optional(),

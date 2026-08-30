@@ -12,6 +12,7 @@ import { findCityBySlug } from "../../lib/city-catalog";
 import { purchaseStatus, type PurchaseStatus } from "./purchase-status";
 import { parseUtcTimestamp } from "./utc-timestamp";
 import { assertNewOrdersOpen as assertGateOpen, emergencySalesPaused as gateEmergencyPaused, newOrdersBlocked as gateBlocked } from "./sales-gate";
+import { emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations } from "./outbox-authority";
 
 type Row = Record<string, unknown>;
 const one = <T extends Row>(db: Database.Database, sql: string, ...params: unknown[]) => db.prepare(sql).get(...params) as T | undefined;
@@ -320,6 +321,27 @@ export class CommerceDomain {
    * release needs. Observation is enough to refuse to complete into open sales.
    */
   emergencySalesPaused() { return gateEmergencyPaused(this.db); }
+
+  /**
+   * Outbox authority control. Fencing email dispatch is a deployment-mechanism
+   * act, not a business one: it delays mail during an authority migration and
+   * touches nothing a customer can buy, refund or cancel. It is therefore held
+   * by release control rather than admin - unlike the emergency sales stop,
+   * which is absolute and business-facing and stays with an operator.
+   *
+   * There is deliberately no method here that moves attempt_authority.
+   */
+  outboxAuthority() {
+    return { ...outboxAuthority(this.db), dispatch: emailDispatchDrained(this.db) };
+  }
+
+  fenceEmailDispatch(input: { expected_revision: number; reason: string }, actor: string) {
+    return withImmediateTransaction(this.db, () => ({ ...fenceEmailDispatch(this.db, input, actor), dispatch: emailDispatchDrained(this.db) }));
+  }
+
+  unfenceEmailDispatch(input: { expected_revision: number; reason: string }, actor: string) {
+    return withImmediateTransaction(this.db, () => ({ ...unfenceEmailDispatch(this.db, input, actor), dispatch: emailDispatchDrained(this.db) }));
+  }
   private newOrdersBlocked() { return gateBlocked(this.db); }
 
   releaseControlStatus() { return this.releaseSalesGate().status(); }
@@ -2321,6 +2343,19 @@ export class CommerceDomain {
   }
 
   async processEmailOutbox() {
+    // Two independent reasons not to dispatch, checked before any row is read.
+    //
+    // The fence is also enforced by a database trigger on the claim itself, so
+    // this check is a courtesy to the operator - it makes a fenced sweep a
+    // quiet no-op instead of 50 aborted transactions. The trigger, not this,
+    // is what makes the fence hold against a binary that predates it.
+    if (emailDispatchFenced(this.db)) return;
+    // A build must not dispatch against a schema it does not understand.
+    const unknown = unknownAppliedMigrations(this.db);
+    if (unknown.length > 0) {
+      console.error(JSON.stringify({ error: "EMAIL_DISPATCH_HALTED_UNKNOWN_MIGRATIONS", unknown_migrations: unknown }));
+      return;
+    }
     const timestamp = new Date(this.clock()).toISOString();
     const rows = many(this.db, `SELECT * FROM email_outbox
       WHERE superseded_at IS NULL AND (
