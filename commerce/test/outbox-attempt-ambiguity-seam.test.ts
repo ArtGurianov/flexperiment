@@ -9,6 +9,7 @@ import {
 } from "../src/outbox-attempt-store";
 import { CommerceDomain } from "../src/domain";
 import { MockProvider } from "../src/provider";
+import type { EmailProvider } from "../src/email-provider";
 
 /**
  * Seam 3 of 5: ambiguity, exhaustion and stale-lease recovery.
@@ -283,5 +284,55 @@ describe("stale recovery consumes authoritative lease and try count", () => {
 
     expect(message(db)).toEqual({ status: "FAILED", delivery_outcome: "UNRESOLVED" });
     expect((attempt(db) as { outcome: string | null }).outcome).toBeNull();
+  });
+});
+
+/**
+ * The send result belongs to the attempt the CLAIM took, not to the one
+ * resolved before the lookup. Those are two external calls and therefore two
+ * carried identities.
+ *
+ * Reachable once resend exists: while the lookup is in flight the resolved
+ * attempt can settle and a successor become current, and claimForDispatch
+ * correctly takes the successor. Writing the failure against the predecessor
+ * then lands on the wrong attempt - or, now that carriedRefIsCurrent guards it,
+ * lands nowhere at all and the failure is silently dropped.
+ */
+describe("send failure is attributed to the claimed attempt", () => {
+  it("updates the successor the claim took, not the pre-lookup attempt", async () => {
+    const db = fixture({
+      authority: "ATTEMPT",
+      legacy: "UPDATE email_outbox SET status = 'SEND_UNKNOWN', job_id = NULL WHERE id = 'm1'",
+    });
+
+    const keys: string[] = [];
+    const emailProvider: EmailProvider = {
+      // The successor appears between identity resolution and the claim, which
+      // is exactly the window the two carried refs exist to distinguish.
+      async lookup() {
+        db.exec("UPDATE outbox_attempt SET outcome = 'KNOWN_FAILED' WHERE id = 'a1'");
+        db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key)
+          VALUES ('a2', 'm1', 2, 'resend-key')`).run();
+        return { status: "UNKNOWN" };
+      },
+      async send({ idempotencyKey }) {
+        keys.push(idempotencyKey);
+        throw new Error("transport ambiguity");
+      },
+    };
+
+    await new CommerceDomain(db, new MockProvider(), emailProvider).processEmailOutbox();
+
+    // The claim took the successor, so the send used its key...
+    expect(keys).toEqual(["resend-key"]);
+    // ...and the ambiguity was recorded against it.
+    expect(db.prepare("SELECT failure_code, next_retry_at, outcome FROM outbox_attempt WHERE id = 'a2'").get())
+      .toMatchObject({ failure_code: "UNISENDER_TRANSPORT_AMBIGUOUS", outcome: null });
+    expect((db.prepare("SELECT next_retry_at FROM outbox_attempt WHERE id = 'a2'").get() as { next_retry_at: string | null }).next_retry_at)
+      .not.toBeNull();
+    expect((message(db) as { status: string }).status).toBe("SEND_UNKNOWN");
+    // The predecessor is untouched history.
+    expect(db.prepare("SELECT outcome, failure_code FROM outbox_attempt WHERE id = 'a1'").get())
+      .toEqual({ outcome: "KNOWN_FAILED", failure_code: null });
   });
 });
