@@ -49,30 +49,39 @@ const migrateThrough = (file: string, last?: string) => {
   return db;
 };
 
+/**
+ * Replaying every migration per test against an on-disk database took long
+ * enough to trip vitest's 5s default on CI - intermittently, which is the worst
+ * kind. Each schema is identical every time, so each is built once and the file
+ * copied. The timeout stays at 5s: it is a real signal, and raising it to pay
+ * for repeated migration replay would spend the signal on the cost.
+ */
+const templateAt = (last?: string) => {
+  const file = join(mkdtempSync(join(tmpdir(), "outbox-authority-template-")), "template.sqlite");
+  migrateThrough(file, last).close();
+  return file;
+};
+
+const template = templateAt();
+const template0040 = templateAt("0040_outbox_authority_control.sql");
+
+const copyOf = (source: string, prefix: string) => {
+  const file = join(mkdtempSync(join(tmpdir(), prefix)), "commerce.sqlite");
+  copyFileSync(source, file);
+  const db = new Database(file);
+  db.pragma("foreign_keys = ON");
+  return { file, db };
+};
+
 const at0040Only = () => {
-  const file = join(mkdtempSync(join(tmpdir(), "outbox-authority-0040-")), "commerce.sqlite");
-  const db = migrateThrough(file, "0040_outbox_authority_control.sql");
+  const { db } = copyOf(template0040, "outbox-authority-0040-");
   open.push(db);
   return db;
 };
 
-/**
- * Replaying 41 migrations per test against an on-disk database took long enough
- * to trip vitest's 5s default on CI - intermittently, which is the worst kind.
- * The schema is identical every time, so it is built once and the file copied.
- */
-const template = (() => {
-  const file = join(mkdtempSync(join(tmpdir(), "outbox-authority-template-")), "template.sqlite");
-  migrateThrough(file).close();
-  return file;
-})();
-
 /** An on-disk database, so a genuinely separate connection can be opened. */
 const fixture = () => {
-  const file = join(mkdtempSync(join(tmpdir(), "outbox-authority-")), "commerce.sqlite");
-  copyFileSync(template, file);
-  const control = new Database(file);
-  control.pragma("foreign_keys = ON");
+  const { file, db: control } = copyOf(template, "outbox-authority-");
   const worker = new Database(file);
   worker.pragma("foreign_keys = ON");
   open.push(control, worker);
