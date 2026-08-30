@@ -37,6 +37,14 @@ export const preActivationDefectSchema = z.object({
   { message: "PRE_ACTIVATION_DEFECT_CODE_REQUIRED", path: ["defect_code"] },
 );
 
+/** No provider/order evidence is accepted over HTTP; the runtime derives it. */
+export const postActivationEmailProviderDefectSchema = z.object({
+  release_id: z.string().trim().min(1).max(200),
+  candidate_generation: z.number().int().positive(),
+  expected_state_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  expected_authority_revision: z.number().int().nonnegative(),
+}).strict();
+
 export const outboxDispatchFenceSchema = z.object({
   expected_revision: z.number().int().nonnegative(),
   reason: z.string().trim().min(3).max(1_000),

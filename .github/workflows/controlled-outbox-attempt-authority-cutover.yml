@@ -59,10 +59,10 @@ on:
   workflow_dispatch:
     inputs:
       stage:
-        description: Fence dispatch, prepare the paused candidate, record certification evidence, activate attempt authority, unfence dispatch, complete, abort, or classify a readiness or pre-activation defect.
+        description: Fence dispatch, prepare the paused candidate, record certification evidence, activate attempt authority, unfence dispatch, contain a post-activation provider refusal, complete, abort, or classify a defect.
         required: true
         type: choice
-        options: [fence, prepare, certify, activate, unfence, complete, abort, classify_runtime_readiness_defect, classify_pre_activation_defect]
+        options: [fence, prepare, certify, activate, unfence, contain_post_activation_email_defect, classify_runtime_readiness_defect, classify_pre_activation_defect, classify_post_activation_email_defect, complete, abort]
       target_sha:
         description: Exact immutable runtime source SHA for this same-owner epoch.
         required: true
@@ -172,7 +172,7 @@ jobs:
       - name: Resolve immutable controller, source, and input bundle
         run: |
           set -euo pipefail
-          [[ "$INPUT_STAGE" =~ ^(fence|prepare|certify|activate|unfence|complete|abort|classify_runtime_readiness_defect|classify_pre_activation_defect)$ ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_STAGE_INVALID" >&2; exit 1; }
+          [[ "$INPUT_STAGE" =~ ^(fence|prepare|certify|activate|unfence|contain_post_activation_email_defect|complete|abort|classify_runtime_readiness_defect|classify_pre_activation_defect|classify_post_activation_email_defect)$ ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_STAGE_INVALID" >&2; exit 1; }
           [[ "$INPUT_STAGE" != prepare || -n "$PRODUCTION_DEPLOY_REF_TOKEN" ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_DEPLOY_REF_TOKEN_REQUIRED" >&2; exit 1; }
           [[ "$INPUT_TARGET_SHA" =~ ^[0-9A-Fa-f]{40}$ ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_TARGET_SHA_INVALID" >&2; exit 1; }
           target_sha="${INPUT_TARGET_SHA,,}"
@@ -230,6 +230,15 @@ jobs:
             [[ "$INPUT_RUNTIME_READINESS_ERROR_CODE" =~ ^[A-Z0-9_]{1,80}$ ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_RUNTIME_READINESS_CODE_INVALID" >&2; exit 1; }
           else
             [[ -z "$INPUT_RUNTIME_READINESS_ERROR_CLASS" && -z "$INPUT_RUNTIME_READINESS_ERROR_CODE" ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_RUNTIME_READINESS_INPUTS_FORBIDDEN" >&2; exit 1; }
+          fi
+          if [[ "$INPUT_STAGE" == contain_post_activation_email_defect || "$INPUT_STAGE" == classify_post_activation_email_defect ]]; then
+            # The terminal provider evidence is resolved from durable outbox
+            # rows. No order, outbox id, provider response, or defect code is
+            # accepted from workflow_dispatch input.
+            [[ -z "$INPUT_REPLACEMENT_SHA" && "$present" == 0 && -z "$INPUT_RETRY_REASON" && -z "$INPUT_CERTIFICATION_ORDER_ID" && -z "$INPUT_UNFENCE_MODE" ]] || {
+              echo "ATTEMPT_AUTHORITY_CUTOVER_POST_ACTIVATION_EMAIL_DEFECT_INPUTS_FORBIDDEN" >&2
+              exit 1
+            }
           fi
           if [[ "$INPUT_STAGE" == certify ]]; then
             [[ "$INPUT_CERTIFICATION_ORDER_ID" =~ ^[0-9a-fA-F-]{36}$ ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_CERTIFICATION_ORDER_ID_INVALID" >&2; exit 1; }
@@ -1004,6 +1013,184 @@ jobs:
           cat dispatch.json >&2
           echo "ATTEMPT_AUTHORITY_CUTOVER_ATTEMPT_DISPATCH_NOT_OBSERVED" >&2
           exit 1
+
+      # ----------------------------------- post-activation email containment
+      - name: Contain a post-activation provider refusal under ATTEMPT
+        if: env.INPUT_STAGE == 'contain_post_activation_email_defect'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+
+          # This stage is deliberately old-runtime-compatible: it uses only
+          # the fence/status/head contracts already present in 68f80a4. It
+          # contains the broken ATTEMPT plane without asking that runtime to
+          # parse or write the new post-activation ledger event.
+          api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json
+          jq -e --arg release_id "$RELEASE_ID" --arg source "$EFFECTIVE_TARGET_SHA" '
+            .schema_version == 2 and .head.release_id == $release_id and .head.source_commit == $source and
+            .head.phase == "CERTIFIED" and .head.certification.status == "CONSUMED" and
+            (.state_hash | test("^[a-f0-9]{64}$"))
+          ' candidate-head.json >/dev/null || {
+            cat candidate-head.json >&2
+            echo "ATTEMPT_AUTHORITY_CUTOVER_POST_ACTIVATION_CONTAINMENT_STATE_INVALID" >&2
+            exit 1
+          }
+
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > release-owner.json
+          jq -e --arg release_id "$RELEASE_ID" '
+            .owner_release_id == $release_id and .sales_paused == true
+          ' release-owner.json >/dev/null || {
+            cat release-owner.json >&2
+            echo "ATTEMPT_AUTHORITY_CUTOVER_POST_ACTIVATION_RELEASE_NOT_OWNED" >&2
+            exit 1
+          }
+
+          api "$PUBLIC_API_URL/v1/internal/release-control/outbox-authority" > authority-before.json
+          if jq -e --arg release_id "$RELEASE_ID" '
+            .attempt_authority == "ATTEMPT" and .email_dispatch_paused == false and
+            .dispatch_owner_release_id == null and .dispatch_owner_generation == null
+          ' authority-before.json >/dev/null; then
+            revision="$(jq -er '.revision' authority-before.json)"
+            jq -n --arg release_id "$RELEASE_ID" --argjson revision "$revision" \
+              '{expected_revision: $revision, reason: "0041 post-activation email-provider containment", release_id: $release_id, generation: null}' > refence.json
+            api -X POST --data-binary @refence.json "$PUBLIC_API_URL/v1/internal/release-control/outbox-dispatch/fence" > refenced.json
+            jq -e --arg release_id "$RELEASE_ID" '
+              .attempt_authority == "ATTEMPT" and .email_dispatch_paused == true and
+              .dispatch_owner_release_id == $release_id and .dispatch_owner_generation == null
+            ' refenced.json >/dev/null || {
+              cat refenced.json >&2
+              echo "ATTEMPT_AUTHORITY_CUTOVER_POST_ACTIVATION_REFENCE_INVALID" >&2
+              exit 1
+            }
+          elif jq -e --arg release_id "$RELEASE_ID" '
+            .attempt_authority == "ATTEMPT" and .email_dispatch_paused == true and
+            .dispatch_owner_release_id == $release_id and .dispatch_owner_generation == null
+          ' authority-before.json >/dev/null; then
+            echo "ATTEMPT_AUTHORITY_CUTOVER_POST_ACTIVATION_CONTAINMENT_REPLAY=1"
+          else
+            cat authority-before.json >&2
+            echo "ATTEMPT_AUTHORITY_CUTOVER_POST_ACTIVATION_REFENCE_NOT_OWNED" >&2
+            exit 1
+          fi
+
+          # Exclusion is not quiescence. Two unchanged-revision observations
+          # prove the last old claim finished and no new one could start.
+          api "$PUBLIC_API_URL/v1/internal/release-control/outbox-authority" > authority-fenced.json
+          fenced_revision="$(jq -er '.revision' authority-fenced.json)"
+          for read in 1 2; do
+            if [[ "$read" != 1 ]]; then
+              sleep "$POLL_SECONDS"
+              api "$PUBLIC_API_URL/v1/internal/release-control/outbox-authority" > authority-drained.json
+            fi
+            [[ "$read" == 1 ]] || cp authority-drained.json authority-fenced.json
+            jq -e --arg release_id "$RELEASE_ID" --argjson revision "$fenced_revision" '
+              .attempt_authority == "ATTEMPT" and .email_dispatch_paused == true and
+              .dispatch_owner_release_id == $release_id and .dispatch_owner_generation == null and
+              .revision == $revision and .dispatch.drained == true
+            ' authority-fenced.json >/dev/null || {
+              cat authority-fenced.json >&2
+              echo "ATTEMPT_AUTHORITY_CUTOVER_POST_ACTIVATION_DISPATCH_NOT_DRAINED" >&2
+              exit 1
+            }
+          done
+          echo "POST_ACTIVATION_EMAIL_DEFECT_CONTAINED=ATTEMPT_FENCED; classify only after a separately authorized runtime-capability bootstrap."
+
+      - name: Classify a contained exact post-activation provider refusal
+        if: env.INPUT_STAGE == 'classify_post_activation_email_defect'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+
+          # This stage has no fence mutation. It starts only after the old
+          # runtime-compatible containment stage has durably fenced ATTEMPT.
+          # A runtime that exposes the following evidence route is required to
+          # replay the new ledger kind before this stage can write it.
+          api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json
+          replay_run=0
+          if jq -e --arg release_id "$RELEASE_ID" --arg source "$EFFECTIVE_TARGET_SHA" '
+            .schema_version == 2 and .head.release_id == $release_id and .head.source_commit == $source and
+            .head.phase == "RECOVERY_REQUIRED" and .head.certification.status == "CONSUMED" and
+            (.state_hash | test("^[a-f0-9]{64}$"))
+          ' candidate-head.json >/dev/null; then
+            replay_run=1
+            echo "ATTEMPT_AUTHORITY_CUTOVER_POST_ACTIVATION_EMAIL_DEFECT_REPLAY=1"
+          else
+            jq -e --arg release_id "$RELEASE_ID" --arg source "$EFFECTIVE_TARGET_SHA" '
+              .schema_version == 2 and .head.release_id == $release_id and .head.source_commit == $source and
+              .head.phase == "CERTIFIED" and .head.certification.status == "CONSUMED" and
+              (.state_hash | test("^[a-f0-9]{64}$"))
+            ' candidate-head.json >/dev/null || {
+              cat candidate-head.json >&2
+              echo "ATTEMPT_AUTHORITY_CUTOVER_POST_ACTIVATION_EMAIL_DEFECT_STATE_INVALID" >&2
+              exit 1
+            }
+          fi
+
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > release-owner.json
+          jq -e --arg release_id "$RELEASE_ID" '
+            .owner_release_id == $release_id and .sales_paused == true
+          ' release-owner.json >/dev/null || {
+            cat release-owner.json >&2
+            echo "ATTEMPT_AUTHORITY_CUTOVER_POST_ACTIVATION_RELEASE_NOT_OWNED" >&2
+            exit 1
+          }
+
+          api "$PUBLIC_API_URL/v1/internal/release-control/outbox-authority" > authority-fenced.json
+          fenced_revision="$(jq -er '.revision' authority-fenced.json)"
+          for read in 1 2; do
+            if [[ "$read" != 1 ]]; then
+              sleep "$POLL_SECONDS"
+              api "$PUBLIC_API_URL/v1/internal/release-control/outbox-authority" > authority-drained.json
+              cp authority-drained.json authority-fenced.json
+            fi
+            jq -e --arg release_id "$RELEASE_ID" --argjson revision "$fenced_revision" '
+              .attempt_authority == "ATTEMPT" and .email_dispatch_paused == true and
+              .dispatch_owner_release_id == $release_id and .dispatch_owner_generation == null and
+              .revision == $revision and .dispatch.drained == true
+            ' authority-fenced.json >/dev/null || {
+              cat authority-fenced.json >&2
+              echo "ATTEMPT_AUTHORITY_CUTOVER_POST_ACTIVATION_CONTAINMENT_REQUIRED" >&2
+              exit 1
+            }
+          done
+
+          # This is an operator-visible preflight only. The POST below derives
+          # the same facts again inside BEGIN IMMEDIATE before it can append the
+          # defect/phase edge, so this read cannot authorize a stale claim.
+          if [[ "$replay_run" == 0 ]]; then
+            if ! api "$PUBLIC_API_URL/v1/internal/release-control/post-activation-email-provider-defect/$RELEASE_ID" > provider-defect.json; then
+              echo "ATTEMPT_AUTHORITY_CUTOVER_POST_ACTIVATION_RUNTIME_CAPABILITY_REQUIRED" >&2
+              exit 1
+            fi
+            jq -e --arg release_id "$RELEASE_ID" '
+              .release_id == $release_id and (.order_id | type == "string") and
+              (.unfenced_at | type == "string") and .exact == true and
+              .ticket_attempt.message_status == "FAILED" and .ticket_attempt.message_delivery_outcome == "KNOWN_FAILED" and
+              .ticket_attempt.attempt_count == 1 and .ticket_attempt.attempt_no == 1 and
+              .ticket_attempt.outcome == "KNOWN_FAILED" and .ticket_attempt.failure_code == "UNISENDER_HTTP_REJECTED" and
+              .ticket_attempt.provider_error_code == "1588" and (.ticket_attempt.started_at | type == "string")
+            ' provider-defect.json >/dev/null || {
+              cat provider-defect.json >&2
+              echo "ATTEMPT_AUTHORITY_CUTOVER_POST_ACTIVATION_PROVIDER_EVIDENCE_INVALID" >&2
+              exit 1
+            }
+          fi
+
+          jq -n --slurpfile current candidate-head.json --argjson revision "$fenced_revision" '
+            {release_id: $current[0].head.release_id, candidate_generation: $current[0].head.candidate_generation,
+             expected_state_hash: $current[0].state_hash, expected_authority_revision: $revision}
+          ' > post-activation-email-defect.json
+          api -X POST --data-binary @post-activation-email-defect.json "$PUBLIC_API_URL/v1/internal/release-control/candidates/post-activation-email-provider-defect" > recovered.json
+          jq -e --arg release_id "$RELEASE_ID" '
+            .head.release_id == $release_id and .head.phase == "RECOVERY_REQUIRED" and
+            .head.certification.status == "CONSUMED"
+          ' recovered.json >/dev/null || {
+            cat recovered.json >&2
+            echo "ATTEMPT_AUTHORITY_CUTOVER_POST_ACTIVATION_EMAIL_DEFECT_TRANSITION_INVALID" >&2
+            exit 1
+          }
+          echo "POST_ACTIVATION_EMAIL_PROVIDER_DEFECT=$(jq -c '.recorded_defect' recovered.json)"
+          echo "POST_ACTIVATION_EMAIL_DEFECT_CLASSIFIED=RECOVERY_REQUIRED; ATTEMPT authority remains fenced. Dispatch prepare with replacement_sha to adopt a forward-only fixed runtime."
 
       - name: Classify a defect found after certification and before activation
         if: env.INPUT_STAGE == 'classify_pre_activation_defect'

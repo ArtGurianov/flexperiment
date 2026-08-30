@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
-import { certificationDispatchEvidence } from "../src/certification-dispatch";
+import { certificationDispatchEvidence, postActivationEmailProviderDefectEvidence } from "../src/certification-dispatch";
 import { CommerceDomain } from "../src/domain";
 import { MockProvider } from "../src/provider";
 import { fenceEmailDispatch } from "../src/outbox-authority";
@@ -75,6 +75,16 @@ const message = (db: Database.Database, id: string, columns: Record<string, unkn
   db.prepare(`INSERT INTO outbox_attempt(${attemptNames.join(", ")}) VALUES (${attemptNames.map((n) => `@${n}`).join(", ")})`).run(row);
 };
 
+const successorAttempt = (db: Database.Database, messageId: string, attemptNo: number, attempt: Record<string, unknown> = {}) => {
+  const row: Record<string, unknown> = {
+    id: `a-${messageId}-${attemptNo}`, message_id: messageId, attempt_no: attemptNo,
+    provider_idempotence_key: `key-${messageId}-${attemptNo}`, started_at: null,
+    provider_request_started_at: null, completed_at: null, outcome: null, ...attempt,
+  };
+  const names = Object.keys(row);
+  db.prepare(`INSERT INTO outbox_attempt(${names.join(", ")}) VALUES (${names.map((n) => `@${n}`).join(", ")})`).run(row);
+};
+
 /** An unrelated, already-dispatched message: the decoy the old proof accepted. */
 const decoy = (db: Database.Database) =>
   message(db, "unrelated", { payload_ref: "some-other-thing", status: "ACCEPTED" },
@@ -137,6 +147,88 @@ describe("certification dispatch evidence", () => {
     const evidence = certificationDispatchEvidence(db, RELEASE);
     expect(evidence.dispatched_after_unfence).toBe(true);
     expect(evidence.unfenced_at).toBe("2026-08-30 10:00:00");
+  });
+
+  it("derives the exact terminal UniSender refusal for post-activation containment", () => {
+    const db = fixture();
+    certify(db);
+    unfenced(db, "2026-08-30 10:00:00.500");
+    message(db, "m1", { status: "FAILED", delivery_outcome: "KNOWN_FAILED" }, {
+      outcome: "KNOWN_FAILED", started_at: "2026-08-30T10:00:00.501Z",
+      completed_at: "2026-08-30T10:00:01.000Z", failure_code: "UNISENDER_HTTP_REJECTED",
+      failure_detail: JSON.stringify({ provider_error_code: "1588", provider_error_message: "not retained by this proof" }),
+    });
+    expect(postActivationEmailProviderDefectEvidence(db, RELEASE)).toMatchObject({
+      release_id: RELEASE, order_id: ORDER, unfenced_at: "2026-08-30 10:00:00.500", exact: true,
+      ticket_attempt: { outbox_id: "m1", message_status: "FAILED", message_delivery_outcome: "KNOWN_FAILED", attempt_count: 1, attempt_no: 1, outcome: "KNOWN_FAILED", failure_code: "UNISENDER_HTTP_REJECTED", provider_error_code: "1588" },
+    });
+  });
+
+  it("fails closed for a non-exact ticket, a pre-boundary start, or the wrong terminal refusal", () => {
+    const variants: Array<Record<string, unknown>> = [
+      { started_at: "2026-08-30T09:59:59.999Z" },
+      { outcome: "ACCEPTED", failure_code: null, failure_detail: null },
+      { failure_detail: JSON.stringify({ provider_error_code: "1589" }) },
+    ];
+    for (const attempt of variants) {
+      const db = fixture();
+      certify(db);
+      unfenced(db, "2026-08-30 10:00:00.000");
+      message(db, "m1", { status: "FAILED", delivery_outcome: "KNOWN_FAILED" }, {
+        outcome: "KNOWN_FAILED", started_at: "2026-08-30T10:00:00.001Z",
+        failure_code: "UNISENDER_HTTP_REJECTED", failure_detail: JSON.stringify({ provider_error_code: "1588" }),
+        ...attempt,
+      });
+      expect(postActivationEmailProviderDefectEvidence(db, RELEASE).exact).toBe(false);
+    }
+  });
+
+  it("fails closed when more than one live certification TICKET could be selected", () => {
+    const db = fixture();
+    certify(db);
+    unfenced(db);
+    for (const id of ["m1", "m2"]) {
+      message(db, id, { status: "FAILED", delivery_outcome: "KNOWN_FAILED" }, {
+        outcome: "KNOWN_FAILED", started_at: "2026-08-30T10:00:01.000Z",
+        failure_code: "UNISENDER_HTTP_REJECTED", failure_detail: JSON.stringify({ provider_error_code: "1588" }),
+      });
+    }
+    expect(postActivationEmailProviderDefectEvidence(db, RELEASE)).toMatchObject({ ticket_attempt: null, exact: false });
+  });
+
+  it("fails closed when a failed attempt #1 has an unsettled or accepted successor", () => {
+    for (const successor of [
+      { started_at: "2026-08-30T10:00:02.000Z" },
+      { outcome: "ACCEPTED", started_at: "2026-08-30T10:00:02.000Z", completed_at: "2026-08-30T10:00:03.000Z" },
+    ]) {
+      const db = fixture();
+      certify(db);
+      unfenced(db);
+      message(db, "m1", { status: "FAILED", delivery_outcome: "KNOWN_FAILED" }, {
+        outcome: "KNOWN_FAILED", started_at: "2026-08-30T10:00:01.000Z",
+        failure_code: "UNISENDER_HTTP_REJECTED", failure_detail: JSON.stringify({ provider_error_code: "1588" }),
+      });
+      successorAttempt(db, "m1", 2, successor);
+      expect(postActivationEmailProviderDefectEvidence(db, RELEASE)).toMatchObject({
+        ticket_attempt: { attempt_no: 1, attempt_count: 2 }, exact: false,
+      });
+    }
+  });
+
+  it("fails closed unless the message itself is terminal KNOWN_FAILED", () => {
+    for (const columns of [
+      { status: "PENDING", delivery_outcome: null },
+      { status: "ACCEPTED", delivery_outcome: null },
+    ]) {
+      const db = fixture();
+      certify(db);
+      unfenced(db);
+      message(db, "m1", columns, {
+        outcome: "KNOWN_FAILED", started_at: "2026-08-30T10:00:01.000Z",
+        failure_code: "UNISENDER_HTTP_REJECTED", failure_detail: JSON.stringify({ provider_error_code: "1588" }),
+      });
+      expect(postActivationEmailProviderDefectEvidence(db, RELEASE).exact).toBe(false);
+    }
   });
 
   it("is not satisfied by an unrelated attempt settling", () => {
