@@ -12,7 +12,7 @@ import { findCityBySlug } from "../../lib/city-catalog";
 import { purchaseStatus, type PurchaseStatus } from "./purchase-status";
 import { parseUtcTimestamp } from "./utc-timestamp";
 import { assertNewOrdersOpen as assertGateOpen, emergencySalesPaused as gateEmergencyPaused, newOrdersBlocked as gateBlocked } from "./sales-gate";
-import { claimForDispatch } from "./outbox-attempt-store";
+import { claimForDispatch, dispatchCandidates } from "./outbox-attempt-store";
 import { OutboxAuthorityError, emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations, type DispatchEpoch } from "./outbox-authority";
 
 type Row = Record<string, unknown>;
@@ -2376,12 +2376,10 @@ export class CommerceDomain {
       return;
     }
     const timestamp = new Date(this.clock()).toISOString();
-    const rows = many(this.db, `SELECT * FROM email_outbox
-      WHERE superseded_at IS NULL AND (
-        status = 'PENDING'
-        OR (status = 'SEND_UNKNOWN' AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
-      )
-      ORDER BY created_at LIMIT 50`, timestamp);
+    // Authority-aware candidate scan. Under ATTEMPT the legacy next_attempt_at
+    // is frozen, so filtering on it here would hide due retries and admit early
+    // ones - and no freeze trigger fires, because a stale READ writes nothing.
+    const rows = dispatchCandidates(this.db, timestamp, 50) as Array<Record<string, unknown>>;
     for (const outbox of rows) {
       if (outbox.type === "CITY_INTEREST_AVAILABLE" || outbox.type === "OCCURRENCE_AVAILABLE") {
         const active = withImmediateTransaction(this.db, () => {

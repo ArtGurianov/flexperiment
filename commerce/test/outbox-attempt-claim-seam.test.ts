@@ -43,7 +43,12 @@ const template = (() => {
 const open: Database.Database[] = [];
 const TS = "2026-08-30T00:00:00.000Z";
 
-const fixture = ({ authority }: { authority: "LEGACY" | "ATTEMPT" }) => {
+/**
+ * `legacy` is written BEFORE authority flips: under ATTEMPT the freeze trigger
+ * refuses legacy attempt writes, including a test's own fixture setup. That is
+ * the guard working, and it means staleness must be staged first.
+ */
+const fixture = ({ authority, legacy }: { authority: "LEGACY" | "ATTEMPT"; legacy?: string }) => {
   const file = join(mkdtempSync(join(tmpdir(), "claim-seam-")), "commerce.sqlite");
   copyFileSync(template, file);
   const db = new Database(file);
@@ -54,6 +59,7 @@ const fixture = ({ authority }: { authority: "LEGACY" | "ATTEMPT" }) => {
     VALUES ('m1', 'TEST', 'a@b.invalid', 'h', 'tpl', '{}', 'PENDING', 'shared-key', 0)`).run();
   db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key)
     VALUES ('a1', 'm1', 1, 'shared-key')`).run();
+  if (legacy) db.exec(legacy);
   if (authority === "ATTEMPT") db.exec("UPDATE outbox_authority SET attempt_authority = 'ATTEMPT' WHERE singleton = 1");
   return db;
 };
@@ -73,6 +79,17 @@ afterEach(() => {
 });
 
 describe("claim seam", () => {
+  it.each([["LEGACY"], ["ATTEMPT"]] as const)("refuses to run outside a transaction under %s", (authority) => {
+    // Executable, not documentary. The ATTEMPT path moves the message and then
+    // requires an attempt; outside a transaction a missing attempt would throw
+    // with the message durably left in SENDING.
+    const db = fixture({ authority });
+    expect(() => claimForDispatch(db, { id: "m1", provider_idempotence_key: "shared-key" }, "worker-1", TS))
+      .toThrow(/OUTBOX_ATTEMPT_TRANSACTION_REQUIRED/);
+    expect(messageStatus(db)).toBe("PENDING");
+    expect(attempt(db)).toMatchObject({ lease_owner: null, send_try_count: 0 });
+  });
+
   describe("under LEGACY", () => {
     it("takes the lease on the message and leaves the shadow attempt alone", () => {
       const db = fixture({ authority: "LEGACY" });
@@ -85,7 +102,15 @@ describe("claim seam", () => {
       // The shadow is not advanced under LEGACY: activation refreshes it from
       // authoritative legacy state. Advancing it here would be dual-write.
       expect(attempt(db)).toEqual(before);
-      expect(claimed?.provider_idempotence_key).toBe("shared-key");
+      expect(claimed).toMatchObject({ authority: "LEGACY", attempt_id: null, provider_idempotence_key: "shared-key" });
+    });
+
+    it("reports the post-claim try count truthfully", () => {
+      // Nothing consumes this yet, which is exactly why a constant here would
+      // survive until seam 3 trusted it and produced a silent exhaustion bug.
+      const db = fixture({ authority: "LEGACY", legacy: "UPDATE email_outbox SET attempts = 3 WHERE id = 'm1'" });
+      const claimed = claim(db);
+      expect(claimed).toMatchObject({ authority: "LEGACY", attempt_id: null, send_try_count: 4 });
     });
 
     it("refuses a message that is not claimable", () => {
@@ -112,7 +137,7 @@ describe("claim seam", () => {
       // ATTEMPT branch touched one, the 0040 freeze trigger would have aborted
       // the transaction instead.
       expect(legacyAttemptFacts(db)).toEqual(legacyBefore);
-      expect(claimed).toMatchObject({ attempt_id: "a1", attempt_no: 1, provider_idempotence_key: "shared-key", send_try_count: 1 });
+      expect(claimed).toMatchObject({ authority: "ATTEMPT", attempt_id: "a1", attempt_no: 1, provider_idempotence_key: "shared-key", send_try_count: 1 });
     });
 
     it("returns the attempt's own key, not the message snapshot", () => {
@@ -140,12 +165,53 @@ describe("claim seam", () => {
     });
 
     it("never silently picks between attempts", () => {
+      // Proves the RUNTIME branch, not the index. Asserting the unique
+      // constraint would only re-test the schema; the guard exists for the case
+      // where the index is gone, so the index is dropped to reach it.
       const db = fixture({ authority: "ATTEMPT" });
-      expect(() => requireUnsettledAttempt(db, "m1")).not.toThrow();
-      // Two unsettled attempts are unrepresentable; the guard exists so that if
-      // the index were ever dropped, the runtime refuses rather than chooses.
-      expect(() => db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key)
-        VALUES ('a2', 'm1', 2, 'other-key')`).run()).toThrow(/UNIQUE constraint failed/);
+      db.exec("DROP INDEX outbox_attempt_active_unique");
+      db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key)
+        VALUES ('a2', 'm1', 2, 'other-key')`).run();
+      expect(() => requireUnsettledAttempt(db, "m1")).toThrow(/OUTBOX_ATTEMPT_AMBIGUOUS/);
+      expect(() => claim(db)).toThrow(/OUTBOX_ATTEMPT_AMBIGUOUS/);
+      expect(messageStatus(db)).toBe("PENDING");
+    });
+
+    it("decides retry eligibility from the attempt, not frozen legacy state", () => {
+      // The defect a freeze trigger cannot catch: reading a legacy column
+      // writes nothing, so a stale read is silent. Legacy says wait, the
+      // attempt says due - the attempt is authoritative.
+      const db = fixture({
+        authority: "ATTEMPT",
+        legacy: `UPDATE email_outbox SET status = 'SEND_UNKNOWN', next_attempt_at = '2026-08-30T15:00:00.000Z' WHERE id = 'm1'`,
+      });
+      db.exec(`UPDATE outbox_attempt SET next_retry_at = '2026-08-30T14:00:00.000Z' WHERE id = 'a1'`);
+
+      const claimed = db.transaction(() =>
+        claimForDispatch(db, { id: "m1", provider_idempotence_key: "shared-key" }, "worker-1", "2026-08-30T14:30:00.000Z")).immediate();
+
+      expect(claimed?.authority).toBe("ATTEMPT");
+      expect(messageStatus(db)).toBe("SENDING");
+    });
+
+    it("refuses an early retry even when frozen legacy state says it is due", () => {
+      const db = fixture({
+        authority: "ATTEMPT",
+        legacy: `UPDATE email_outbox SET status = 'SEND_UNKNOWN', next_attempt_at = '2026-08-30T14:00:00.000Z' WHERE id = 'm1'`,
+      });
+      db.exec(`UPDATE outbox_attempt SET next_retry_at = '2026-08-30T15:00:00.000Z' WHERE id = 'a1'`);
+
+      const claimed = db.transaction(() =>
+        claimForDispatch(db, { id: "m1", provider_idempotence_key: "shared-key" }, "worker-1", "2026-08-30T14:30:00.000Z")).immediate();
+
+      expect(claimed).toBeUndefined();
+      expect(messageStatus(db)).toBe("SEND_UNKNOWN");
+    });
+
+    it("reports the post-claim try count truthfully", () => {
+      const db = fixture({ authority: "ATTEMPT" });
+      db.exec("UPDATE outbox_attempt SET send_try_count = 3 WHERE id = 'a1'");
+      expect(claim(db)?.send_try_count).toBe(4);
     });
 
     it("is still stopped by the 0040 dispatch fence", () => {
