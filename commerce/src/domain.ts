@@ -12,7 +12,7 @@ import { findCityBySlug } from "../../lib/city-catalog";
 import { purchaseStatus, type PurchaseStatus } from "./purchase-status";
 import { parseUtcTimestamp } from "./utc-timestamp";
 import { assertNewOrdersOpen as assertGateOpen, emergencySalesPaused as gateEmergencyPaused, newOrdersBlocked as gateBlocked } from "./sales-gate";
-import { emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations, type DispatchEpoch } from "./outbox-authority";
+import { OutboxAuthorityError, emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations, type DispatchEpoch } from "./outbox-authority";
 
 type Row = Record<string, unknown>;
 const one = <T extends Row>(db: Database.Database, sql: string, ...params: unknown[]) => db.prepare(sql).get(...params) as T | undefined;
@@ -335,12 +335,30 @@ export class CommerceDomain {
     return { ...outboxAuthority(this.db), dispatch: emailDispatchDrained(this.db) };
   }
 
+  /**
+   * Mapped here rather than in the HTTP layer, the way ReleaseControlError is:
+   * DomainError lives in this module, so outbox-authority.ts cannot import it
+   * without a cycle. Without the mapping an owner conflict surfaced as HTTP 500
+   * INTERNAL_ERROR - the refusal was correct and its reason was discarded,
+   * which is the same defect the shared release API client was built to fix,
+   * one layer lower.
+   */
+  private mapOutboxAuthority<T>(operation: () => T): T {
+    try { return operation(); }
+    catch (error) {
+      if (error instanceof OutboxAuthorityError) throw new DomainError(error.code, error.status);
+      throw error;
+    }
+  }
+
   fenceEmailDispatch(input: { expected_revision: number; reason: string }, epoch: DispatchEpoch) {
-    return withImmediateTransaction(this.db, () => ({ ...fenceEmailDispatch(this.db, input, epoch), dispatch: emailDispatchDrained(this.db) }));
+    return this.mapOutboxAuthority(() =>
+      withImmediateTransaction(this.db, () => ({ ...fenceEmailDispatch(this.db, input, epoch), dispatch: emailDispatchDrained(this.db) })));
   }
 
   unfenceEmailDispatch(input: { expected_revision: number; reason: string }, epoch: DispatchEpoch) {
-    return withImmediateTransaction(this.db, () => ({ ...unfenceEmailDispatch(this.db, input, epoch), dispatch: emailDispatchDrained(this.db) }));
+    return this.mapOutboxAuthority(() =>
+      withImmediateTransaction(this.db, () => ({ ...unfenceEmailDispatch(this.db, input, epoch), dispatch: emailDispatchDrained(this.db) })));
   }
   private newOrdersBlocked() { return gateBlocked(this.db); }
 
