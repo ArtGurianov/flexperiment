@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CommerceDomain } from "../src/domain";
 import { MockProvider } from "../src/provider";
 import { activateAttemptAuthority } from "../src/outbox-activation";
-import { claimForDispatch } from "../src/outbox-attempt-store";
+import { LEGACY_EXHAUSTION_ERROR, claimForDispatch } from "../src/outbox-attempt-store";
 
 /**
  * The activation seam: the one-way LEGACY -> ATTEMPT transfer.
@@ -86,14 +86,81 @@ const events = (db: Database.Database) =>
   db.prepare("SELECT action, owner_release_id, owner_generation, revision FROM outbox_authority_events ORDER BY revision").all();
 
 describe("activation preconditions fail closed", () => {
-  it("refuses when the 0041 schema is absent", () => {
+  it("refuses when 0041 was never applied", () => {
     // The old binary's control surface must never be able to claim a transfer
     // into a store that does not exist.
     const { db, domain } = fixture();
     fence(domain);
-    db.exec("DROP TABLE outbox_attempt");
+    db.prepare("DELETE FROM schema_migrations WHERE version = '0041_outbox_attempt.sql'").run();
     expect(() => activate(domain)).toThrow(/OUTBOX_ACTIVATION_SCHEMA_MISSING/);
     expect(authority(db)).toMatchObject({ attempt_authority: "LEGACY" });
+  });
+
+  // "0041 is present" is a property about ENFORCEMENT, and a table-name lookup
+  // is only a proxy for it. Each object below is dropped on its own, from an
+  // otherwise complete and perfectly fenced store, and activation must refuse.
+  //
+  // The freeze guard is the sharpest of them: without this assertion the flip
+  // succeeds and leaves the store ATTEMPT-authoritative with legacy attempt
+  // writes UNFROZEN, which is the single thing the cutover exists to prevent.
+  for (const object of [
+    ["trigger", "email_outbox_legacy_attempt_freeze_guard"],
+    ["trigger", "email_outbox_dispatch_pause_guard"],
+    ["trigger", "outbox_attempt_identity_immutable_guard"],
+    ["trigger", "outbox_attempt_settled_immutable_guard"],
+    ["trigger", "outbox_attempt_delete_guard"],
+    ["index", "outbox_attempt_active_unique"],
+    ["table", "outbox_attempt"],
+  ] as const) {
+    it(`refuses when ${object[1]} is missing`, () => {
+      const { db, domain } = fixture();
+      historical(db, "m1", { status: "PENDING" });
+      fence(domain);
+      db.exec(`DROP ${object[0].toUpperCase()} ${object[1]}`);
+
+      expect(() => activate(domain)).toThrow(/OUTBOX_ACTIVATION_SCHEMA_INCOMPLETE/);
+      // Named, so an operator is not left diffing the schema by hand.
+      expect(() => activate(domain)).toThrow(new RegExp(object[1]));
+      expect(authority(db)).toMatchObject({ attempt_authority: "LEGACY" });
+      // No backfill survived either - the refusal happens before any write.
+      if (object[1] !== "outbox_attempt") {
+        expect(db.prepare("SELECT COUNT(*) AS n FROM outbox_attempt").get()).toEqual({ n: 0 });
+      }
+    });
+  }
+
+  // Under LEGACY the only attempt writer is enqueue, which writes identity and
+  // nothing else. These are the two mutable columns the sync does not write -
+  // and reconciliation_exhausted_at has no legacy source at all - so a value
+  // here would ride through the flip and become authoritative history.
+  //
+  // One case per column rather than a loop inside one case: the gap being
+  // closed WAS a single unhandled column, so a test that stops at the first
+  // failure would leave the second one unpinned.
+  for (const column of ["lease_expires_at", "reconciliation_exhausted_at"]) {
+    it(`refuses a shadow attempt carrying ${column}`, () => {
+      const { db, domain } = fixture();
+      shadowed(db, "m1");
+      db.prepare(`UPDATE outbox_attempt SET ${column} = '2026-08-20T00:00:00.000Z'`).run();
+      fence(domain);
+      expect(() => activate(domain)).toThrow(/OUTBOX_ACTIVATION_UNEXPECTED_SHADOW_STATE/);
+      expect(authority(db)).toMatchObject({ attempt_authority: "LEGACY" });
+    });
+  }
+
+  it("treats every attempt column as identity, refreshed, or asserted absent", () => {
+    // The gap this closes was a column the sync neither wrote nor checked. That
+    // is a per-column omission, so the guard has to be per-column too: a future
+    // migration adding one must land in exactly one of the three sets, or fail
+    // here rather than silently in production.
+    const { db } = fixture();
+    const columns = (db.prepare("SELECT name FROM pragma_table_info('outbox_attempt')").all() as Array<{ name: string }>)
+      .map((row) => row.name).sort();
+    const identity = ["id", "message_id", "attempt_no", "provider_idempotence_key", "requested_at"];
+    const refreshed = ["started_at", "provider_request_started_at", "completed_at", "provider_job_id",
+      "send_try_count", "next_retry_at", "outcome", "failure_code", "failure_detail"];
+    const assertedAbsent = ["lease_owner", "lease_expires_at", "reconciliation_exhausted_at"];
+    expect(columns).toEqual([...identity, ...refreshed, ...assertedAbsent].sort());
   });
 
   it("refuses while dispatch is open", () => {
@@ -300,6 +367,108 @@ describe("backfill maps legacy state onto attempt #1", () => {
     historical(db, "m2", { status: "SENT", sent_at: "2026-08-10T00:00:00.000Z" });
     fence(domain);
     expect(activate(domain)).toMatchObject({ settled_without_completion: 1 });
+  });
+});
+
+describe("failure evidence is mapped separately from outcome", () => {
+  // The five seams built a taxonomy: an attempt's failure_code is evidence
+  // about THIS SEND. Copying legacy last_error unconditionally would let
+  // activation undo it in one statement, and the two shapes below are exactly
+  // where it shows.
+
+  it("does not turn a suppression reason into attempt failure evidence", () => {
+    // Seam 4: legacy last_error is a compatibility slot for legacyReason - a
+    // consent withdrawal is a message-level fact, not a provider or send
+    // failure. Under ATTEMPT nothing writes it, so activation must not either.
+    const { db, domain } = fixture();
+    historical(db, "m1", {
+      status: "SKIPPED", suppressed_at: "2026-08-20T00:00:00.000Z",
+      last_error: "CITY_INTEREST_CONSENT_WITHDRAWN",
+    });
+    fence(domain);
+    activate(domain);
+
+    expect(attemptOf(db, "m1")).toMatchObject({ outcome: null, failure_code: null, failure_detail: null });
+  });
+
+  it("does not turn the scheduler's own exhaustion decision into provider evidence", () => {
+    // Seam 3: legacy exhaustion writes its budget decision into last_error AND
+    // provider_error_code, where it reads exactly like something the provider
+    // said. Under ATTEMPT exhaustion is reconciliation_exhausted_at and nothing
+    // else - and FAILED + UNRESOLVED means precisely that nothing about the
+    // result was established.
+    const { db, domain } = fixture();
+    historical(db, "m1", {
+      status: "FAILED", delivery_outcome: "UNRESOLVED", attempts: 6,
+      last_error: LEGACY_EXHAUSTION_ERROR,
+      provider_error_code: "SEND_UNKNOWN_ATTEMPT_LIMIT",
+      provider_error_message: "Ambiguous email dispatch retry limit reached.",
+    });
+    fence(domain);
+    const result = activate(domain);
+
+    expect(attemptOf(db, "m1")).toMatchObject({
+      outcome: null, failure_code: null, failure_detail: null,
+      // No invented exhaustion instant either: the legacy row has none.
+      reconciliation_exhausted_at: null,
+    });
+    // Counted instead, so the cutover records the number.
+    expect(result).toMatchObject({ exhausted_without_timestamp: 1 });
+  });
+
+  it("preserves per-send ambiguity evidence", () => {
+    // The other side of the rule. UNISENDER_TRANSPORT_AMBIGUOUS IS about this
+    // send, and it is exactly what the ATTEMPT branch of deferAmbiguousSend
+    // writes, so dropping it would lose real evidence.
+    const { db, domain } = fixture();
+    historical(db, "m1", { status: "SEND_UNKNOWN", last_error: "UNISENDER_TRANSPORT_AMBIGUOUS" });
+    fence(domain);
+    activate(domain);
+
+    expect(attemptOf(db, "m1")).toMatchObject({
+      outcome: null, failure_code: "UNISENDER_TRANSPORT_AMBIGUOUS", failure_detail: null,
+    });
+  });
+
+  it("preserves a provider's stated refusal", () => {
+    const { db, domain } = fixture();
+    historical(db, "m1", {
+      status: "FAILED", delivery_outcome: "KNOWN_FAILED", last_error: "UNISENDER_HTTP_REJECTED",
+      provider_error_code: "403", provider_error_message: "forbidden",
+    });
+    fence(domain);
+    activate(domain);
+
+    expect(attemptOf(db, "m1")).toMatchObject({ outcome: "KNOWN_FAILED", failure_code: "UNISENDER_HTTP_REJECTED" });
+    expect(JSON.parse(String(attemptOf(db, "m1").failure_detail)))
+      .toEqual({ provider_error_code: "403", provider_error_message: "forbidden" });
+  });
+
+  it("carries no failure evidence onto an accepted attempt", () => {
+    // Matches recordProviderAcceptance in both authorities, which clears it.
+    const { db, domain } = fixture();
+    historical(db, "m1", { status: "DELIVERED", sent_at: "2026-08-10T00:00:00.000Z", last_error: "stale" });
+    fence(domain);
+    activate(domain);
+    expect(attemptOf(db, "m1")).toMatchObject({ outcome: "ACCEPTED", failure_code: null, failure_detail: null });
+  });
+
+  it("applies the same rule on the refresh path", () => {
+    // Both statements share the mapping, and a fix applied to one of them only
+    // is the exact shape of the defect this replaces.
+    const { db, domain } = fixture();
+    shadowed(db, "m1", {
+      status: "SKIPPED", suppressed_at: "2026-08-20T00:00:00.000Z", last_error: "CITY_INTEREST_CONSENT_WITHDRAWN",
+    });
+    shadowed(db, "m2", {
+      status: "FAILED", delivery_outcome: "UNRESOLVED", last_error: LEGACY_EXHAUSTION_ERROR,
+      provider_error_code: "SEND_UNKNOWN_ATTEMPT_LIMIT",
+    });
+    fence(domain);
+    expect(activate(domain)).toMatchObject({ refreshed: 2, backfilled: 0 });
+
+    expect(attemptOf(db, "m1")).toMatchObject({ failure_code: null, failure_detail: null });
+    expect(attemptOf(db, "m2")).toMatchObject({ failure_code: null, failure_detail: null, reconciliation_exhausted_at: null });
   });
 });
 

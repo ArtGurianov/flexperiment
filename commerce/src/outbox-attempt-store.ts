@@ -324,7 +324,14 @@ export const sendTryCount = (db: Database.Database, message: { id: string; attem
   attemptAuthorityIsActive(db) ? requireUnsettledAttempt(db, message.id).send_try_count : Number(message.attempts);
 
 const AMBIGUOUS = "UNISENDER_TRANSPORT_AMBIGUOUS";
-const EXHAUSTED_ERROR = "UNISENDER_SEND_UNKNOWN_ATTEMPT_LIMIT_REACHED";
+/**
+ * Exported because activation has to RECOGNISE this marker to refuse copying it
+ * into attempt evidence: it is a local scheduler decision, not something the
+ * provider said. A re-typed literal there would stop matching the day this
+ * changes.
+ */
+export const LEGACY_EXHAUSTION_ERROR = "UNISENDER_SEND_UNKNOWN_ATTEMPT_LIMIT_REACHED";
+const EXHAUSTED_ERROR = LEGACY_EXHAUSTION_ERROR;
 const EXHAUSTED_CODE = "SEND_UNKNOWN_ATTEMPT_LIMIT";
 const EXHAUSTED_MESSAGE = "Ambiguous email dispatch retry limit reached.";
 

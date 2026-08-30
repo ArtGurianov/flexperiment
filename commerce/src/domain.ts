@@ -361,7 +361,7 @@ export class CommerceDomain {
   private mapOutboxAuthority<T>(operation: () => T): T {
     try { return operation(); }
     catch (error) {
-      if (error instanceof OutboxAuthorityError) throw new DomainError(error.code, error.status);
+      if (error instanceof OutboxAuthorityError) throw new DomainError(error.code, error.status, error.message);
       throw error;
     }
   }

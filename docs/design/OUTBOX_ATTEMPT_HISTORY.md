@@ -379,7 +379,29 @@ attempt facts while they were not authoritative — and the refresh skips settle
 rows, so the bogus value would be silently adopted by the flip. That is the
 old/new disagreement this cutover exists to serialize, so it is refused.
 
-**Backfill mapping**, from the legacy status and the 0039 outcome split:
+**"0041 present" is asserted as enforcement, not as a table name.** Before any
+sync: `schema_migrations` contains `0041_outbox_attempt.sql`, and `sqlite_master`
+contains `outbox_attempt`, `outbox_attempt_active_unique`, the identity, settled
+and delete guards, and 0040's `email_outbox_dispatch_pause_guard` and
+`email_outbox_legacy_attempt_freeze_guard`. A table-name lookup is a proxy for
+the property, and the counterexample is cheap: drop the freeze guard, fence,
+drain, activate — the flip succeeds and leaves the store ATTEMPT-authoritative
+with legacy attempt writes unfrozen. The two facts deliberately *not* asserted
+are the ones the transaction proves by using them: the CAS fails closed if the
+authority CHECK still forbids `ATTEMPT`, and the audit insert fails closed if the
+event vocabulary still forbids `AUTHORITY_ACTIVATED`.
+
+**Every attempt column is identity, refreshed, or asserted absent.** Identity —
+`id`, `message_id`, `attempt_no`, `provider_idempotence_key`, `requested_at` —
+is validated. Nine progress and evidence columns are refreshed. The remaining
+three — `lease_owner`, `lease_expires_at`, `reconciliation_exhausted_at` — are
+asserted absent, because under LEGACY the only attempt writer is `enqueueEmail`
+and it writes identity alone. A value in one of them is a non-authoritative fact
+that would become authoritative history at the flip, and
+`reconciliation_exhausted_at` has no legacy source to refresh it from anyway.
+Refusing an unexpected value is the fail-closed answer; inventing one is not.
+
+**Outcome mapping**, from the legacy status and the 0039 outcome split:
 
 | legacy | attempt #1 `outcome` |
 |---|---|
@@ -393,13 +415,31 @@ bounce is a later message fact and must never rewrite a settled attempt.
 `UNRESOLVED` maps to `NULL` because it is message-level ambiguity — settling it
 would forbid later provider evidence from ever resolving it.
 
+**Failure evidence is mapped separately from outcome**, and only where the
+legacy columns hold evidence about the *send*. Copying `last_error`
+unconditionally would undo the taxonomy the five seams built, in two specific
+places:
+
+| legacy | `failure_code` / `failure_detail` | why |
+|---|---|---|
+| `FAILED` + `KNOWN_FAILED` | copied, with the provider's code and message | a refusal the provider stated |
+| `SEND_UNKNOWN` | copied (`UNISENDER_TRANSPORT_AMBIGUOUS`, detail `NULL`) | per-send ambiguity, exactly what seam 3 writes under ATTEMPT |
+| `FAILED` + `UNRESOLVED` | `NULL` | legacy writes its own budget decision here — `UNISENDER_SEND_UNKNOWN_ATTEMPT_LIMIT_REACHED` in `last_error`, `SEND_UNKNOWN_ATTEMPT_LIMIT` in `provider_error_code`. Seam 3 records exhaustion as `reconciliation_exhausted_at` and nothing else, and `UNRESOLVED` means nothing about the result was established |
+| `SKIPPED` | `NULL` | legacy `last_error` is the suppression reason — a consent withdrawal is a message fact, and seam 4 deliberately stopped writing it under ATTEMPT |
+| accepted / pending | `NULL` | matches `recordProviderAcceptance`, which clears failure evidence in both authorities |
+
+No exhaustion instant is invented either: `reconciliation_exhausted_at` stays
+`NULL`, and `exhausted_without_timestamp` counts the rows whose legacy marker
+proves the budget ran out without recording when.
+
 `completed_at` comes from `sent_at` and nowhere else: that column means exactly
 "when the provider accepted", so it is right even for a message that later
 bounced. A refusal has no legacy counterpart — there is no `failed_at` — and
 stamping the cutover clock would assert the send failed at activation time,
 which is false evidence in an append-only history. It stays `NULL`, and the
 result reports `settled_without_completion` so the cutover records the number
-instead of inventing the values.
+instead of inventing the values — the same principle as
+`exhausted_without_timestamp` above.
 
 **Replay branches before any sync.** Once authority is `ATTEMPT` the attempt
 rows are the authority and the legacy status is a projection that may

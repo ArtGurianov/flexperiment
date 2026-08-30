@@ -38,8 +38,13 @@ export type OutboxAuthorityState = {
 export type DispatchEpoch = { release_id: string; generation: number | null };
 
 export class OutboxAuthorityError extends Error {
-  constructor(readonly code: string, readonly status = 409) {
-    super(code);
+  /**
+   * `detail` never reaches the wire - the response body carries `code` alone -
+   * but a refusal that cannot say WHICH object was missing costs an operator a
+   * manual schema diff in the middle of a cutover.
+   */
+  constructor(readonly code: string, readonly status = 409, detail?: string) {
+    super(detail ? `${code}: ${detail}` : code);
   }
 }
 

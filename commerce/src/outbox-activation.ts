@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { id } from "./crypto";
 import { OutboxAuthorityError, emailDispatchDrained, outboxAuthority, type DispatchEpoch } from "./outbox-authority";
+import { LEGACY_EXHAUSTION_ERROR } from "./outbox-attempt-store";
 
 /**
  * The one-way transfer of attempt authority: LEGACY -> ATTEMPT.
@@ -30,9 +31,14 @@ export type ActivationResult = {
   refreshed: number;
   /**
    * Settled attempts carrying no settlement instant, because the legacy row
-   * records none. Reported rather than invented: see completedAtFromLegacy.
+   * records none.
    */
   settled_without_completion: number;
+  /**
+   * Attempts whose legacy row proves the reconciliation budget ran out, but
+   * for which no exhaustion instant exists to carry over.
+   */
+  exhausted_without_timestamp: number;
 };
 
 /**
@@ -64,11 +70,97 @@ const COMPLETED_AT_FROM_LEGACY = `CASE
     ELSE NULL
   END`;
 
+/**
+ * Failure evidence is mapped SEPARATELY from outcome, and only where the legacy
+ * columns actually hold evidence about the send.
+ *
+ * Copying `last_error` unconditionally would undo the taxonomy the five seams
+ * established, in two specific ways:
+ *
+ *   SKIPPED       legacy `last_error` is the suppression reason - a
+ *                 message-level fact such as a consent withdrawal. Seam 4
+ *                 deliberately stopped writing it under ATTEMPT: it is not a
+ *                 provider or send failure and must not become one.
+ *
+ *   UNRESOLVED    legacy exhaustion writes UNISENDER_SEND_UNKNOWN_ATTEMPT_LIMIT_
+ *                 REACHED into `last_error` and SEND_UNKNOWN_ATTEMPT_LIMIT into
+ *                 `provider_error_code`. That is the scheduler's own budget
+ *                 decision wearing provider clothes. Seam 3 records exhaustion
+ *                 as `reconciliation_exhausted_at` and nothing else.
+ *
+ * What remains is the evidence that IS about this send:
+ *
+ *   FAILED + KNOWN_FAILED   UNISENDER_HTTP_REJECTED plus the provider's own
+ *                           code and message - a refusal the provider stated.
+ *   SEND_UNKNOWN            UNISENDER_TRANSPORT_AMBIGUOUS, provider fields
+ *                           already NULL - per-send ambiguity, exactly what the
+ *                           ATTEMPT branch of deferAmbiguousSend writes.
+ *
+ * Everything else is NULL, which also matches the runtime directly: acceptance
+ * clears failure evidence in both authorities.
+ */
+const FAILURE_EVIDENCE_APPLIES = `(
+    (o.status = 'FAILED' AND o.delivery_outcome = 'KNOWN_FAILED')
+    OR o.status = 'SEND_UNKNOWN'
+  )`;
+
+const FAILURE_CODE_FROM_LEGACY = `CASE
+    WHEN ${FAILURE_EVIDENCE_APPLIES} THEN o.last_error
+    ELSE NULL
+  END`;
+
 /** Canonical, never a concatenated string: this becomes historical evidence. */
 const FAILURE_DETAIL_FROM_LEGACY = `CASE
+    WHEN NOT ${FAILURE_EVIDENCE_APPLIES} THEN NULL
     WHEN o.provider_error_code IS NULL AND o.provider_error_message IS NULL THEN NULL
     ELSE json_object('provider_error_code', o.provider_error_code, 'provider_error_message', o.provider_error_message)
   END`;
+
+/**
+ * What "0041 is present" actually means.
+ *
+ * A table-name lookup is a proxy for this property, and the counterexample is
+ * cheap: apply 0041, drop email_outbox_legacy_attempt_freeze_guard, fence, drain
+ * and activate. The flip succeeds, and the store is left ATTEMPT-authoritative
+ * with legacy attempt writes UNFROZEN - the one thing the whole cutover exists
+ * to prevent. The enforcement objects are the migration; the table is only
+ * where the rows go.
+ *
+ * The two facts NOT listed are the ones the transaction proves by using them:
+ * the CAS fails closed if the authority CHECK still forbids 'ATTEMPT', and the
+ * audit insert fails closed if the event vocabulary still forbids
+ * 'AUTHORITY_ACTIVATED'. Either aborts the whole transaction, so asserting them
+ * separately would restate a guarantee already held.
+ */
+const REQUIRED_SCHEMA_OBJECTS = [
+  "outbox_attempt",
+  // Structural: one unsettled attempt per message. Without it a resend can be
+  // inserted beside a send whose outcome was never established.
+  "outbox_attempt_active_unique",
+  "outbox_attempt_identity_immutable_guard",
+  "outbox_attempt_settled_immutable_guard",
+  "outbox_attempt_delete_guard",
+  // 0040's guards, dropped and recreated by 0041 around the authority rebuild.
+  // The freeze guard is the one that becomes load-bearing at the instant this
+  // transaction commits.
+  "email_outbox_dispatch_pause_guard",
+  "email_outbox_legacy_attempt_freeze_guard",
+] as const;
+
+const MIGRATION = "0041_outbox_attempt.sql";
+
+const assertSchemaPresent = (db: Database.Database) => {
+  const applied = db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(MIGRATION);
+  if (!applied) throw new OutboxAuthorityError("OUTBOX_ACTIVATION_SCHEMA_MISSING", 409, MIGRATION);
+
+  const placeholders = REQUIRED_SCHEMA_OBJECTS.map(() => "?").join(", ");
+  const found = new Set((db.prepare(`SELECT name FROM sqlite_master WHERE name IN (${placeholders})`)
+    .all(...REQUIRED_SCHEMA_OBJECTS) as Array<{ name: string }>).map((row) => row.name));
+  const missing = REQUIRED_SCHEMA_OBJECTS.filter((name) => !found.has(name));
+  // Named, because a refusal that cannot say which object is gone costs an
+  // operator a manual schema diff in the middle of a cutover.
+  if (missing.length) throw new OutboxAuthorityError("OUTBOX_ACTIVATION_SCHEMA_INCOMPLETE", 409, missing.join(", "));
+};
 
 const assertOrFail = (condition: boolean, code: string) => {
   if (!condition) throw new OutboxAuthorityError(code, 409);
@@ -96,7 +188,7 @@ const replay = (db: Database.Database, epoch: DispatchEpoch, revision: number): 
     event!.owner_release_id === epoch.release_id && (event!.owner_generation ?? null) === (epoch.generation ?? null),
     "OUTBOX_ACTIVATION_OWNER_CONFLICT",
   );
-  return { activated: false, replayed: true, revision, backfilled: 0, refreshed: 0, settled_without_completion: 0 };
+  return { activated: false, replayed: true, revision, backfilled: 0, refreshed: 0, settled_without_completion: 0, exhausted_without_timestamp: 0 };
 };
 
 export const activateAttemptAuthority = (
@@ -108,8 +200,7 @@ export const activateAttemptAuthority = (
   // commit between it and the CAS.
   if (!db.inTransaction) throw new OutboxAuthorityError("OUTBOX_ACTIVATION_TRANSACTION_REQUIRED", 500);
 
-  const schema = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'outbox_attempt'").get();
-  assertOrFail(Boolean(schema), "OUTBOX_ACTIVATION_SCHEMA_MISSING");
+  assertSchemaPresent(db);
 
   const authority = outboxAuthority(db);
   if (authority.attempt_authority === "ATTEMPT") return replay(db, epoch, authority.revision);
@@ -138,6 +229,27 @@ export const activateAttemptAuthority = (
   assertOrFail(count(db, "SELECT COUNT(*) AS n FROM outbox_attempt WHERE outcome IS NOT NULL") === 0,
     "OUTBOX_ACTIVATION_UNEXPECTED_SETTLED_ATTEMPT");
 
+  // A lease in the attempt store would survive the flip as a claim by a worker
+  // that no longer exists, and the drain check above reads only the legacy
+  // columns.
+  assertOrFail(count(db, "SELECT COUNT(*) AS n FROM outbox_attempt WHERE lease_owner IS NOT NULL") === 0,
+    "OUTBOX_ACTIVATION_ATTEMPT_STILL_LEASED");
+
+  // The remaining two mutable columns, which the sync does NOT write.
+  //
+  // Together with the refresh below and the identity validation, this makes the
+  // treatment of outbox_attempt total: every column is either identity
+  // (validated, never written), refreshed from LEGACY, or asserted absent here.
+  // Without this pair a shadow attempt could carry a non-authoritative
+  // lease_expires_at or reconciliation_exhausted_at straight through the flip
+  // and become authoritative history - and reconciliation_exhausted_at in
+  // particular has no legacy source, so there is nothing honest to refresh it
+  // from. Refusing an unexpected value is the fail-closed answer; inventing one
+  // is not.
+  assertOrFail(count(db, `SELECT COUNT(*) AS n FROM outbox_attempt
+    WHERE lease_expires_at IS NOT NULL OR reconciliation_exhausted_at IS NOT NULL`) === 0,
+    "OUTBOX_ACTIVATION_UNEXPECTED_SHADOW_STATE");
+
   // Refresh first, then backfill: the two sets are disjoint at this point, so
   // the reported counts stay meaningful and a freshly backfilled row is never
   // rewritten by a query that was never about it.
@@ -153,7 +265,7 @@ export const activateAttemptAuthority = (
         send_try_count = (SELECT COALESCE(o.attempts, 0) FROM email_outbox o WHERE o.id = t.message_id),
         next_retry_at = (SELECT o.next_attempt_at FROM email_outbox o WHERE o.id = t.message_id),
         outcome = (SELECT ${OUTCOME_FROM_LEGACY} FROM email_outbox o WHERE o.id = t.message_id),
-        failure_code = (SELECT o.last_error FROM email_outbox o WHERE o.id = t.message_id),
+        failure_code = (SELECT ${FAILURE_CODE_FROM_LEGACY} FROM email_outbox o WHERE o.id = t.message_id),
         failure_detail = (SELECT ${FAILURE_DETAIL_FROM_LEGACY} FROM email_outbox o WHERE o.id = t.message_id)
     WHERE t.attempt_no = 1 AND t.outcome IS NULL`).run().changes;
 
@@ -167,7 +279,7 @@ export const activateAttemptAuthority = (
     SELECT lower(hex(randomblob(16))), o.id, 1, o.provider_idempotence_key, o.created_at,
       o.send_started_at, o.provider_request_started_at, ${COMPLETED_AT_FROM_LEGACY}, o.job_id,
       COALESCE(o.attempts, 0), o.next_attempt_at, ${OUTCOME_FROM_LEGACY},
-      o.last_error, ${FAILURE_DETAIL_FROM_LEGACY}
+      ${FAILURE_CODE_FROM_LEGACY}, ${FAILURE_DETAIL_FROM_LEGACY}
     FROM email_outbox o
     WHERE NOT EXISTS (SELECT 1 FROM outbox_attempt a WHERE a.message_id = o.id)`).run().changes;
 
@@ -197,14 +309,16 @@ export const activateAttemptAuthority = (
     SELECT message_id FROM outbox_attempt WHERE outcome IS NULL GROUP BY message_id HAVING COUNT(*) > 1)`) === 0,
     "OUTBOX_ACTIVATION_AMBIGUOUS_ATTEMPT");
 
-  // A lease held in the attempt store would survive the flip as a claim by a
-  // worker that no longer exists, and the drain check above only looked at the
-  // legacy columns.
-  assertOrFail(count(db, "SELECT COUNT(*) AS n FROM outbox_attempt WHERE lease_owner IS NOT NULL") === 0,
-    "OUTBOX_ACTIVATION_ATTEMPT_STILL_LEASED");
-
+  // Two numbers the cutover records instead of two values it would have to
+  // invent. Same principle in both cases: the legacy row establishes that
+  // something happened without establishing when.
   const settledWithoutCompletion = count(db,
     "SELECT COUNT(*) AS n FROM outbox_attempt WHERE outcome IS NOT NULL AND completed_at IS NULL");
+  const exhaustedWithoutTimestamp = Number((db.prepare(`SELECT COUNT(*) AS n FROM outbox_attempt a
+    JOIN email_outbox o ON o.id = a.message_id
+    WHERE a.reconciliation_exhausted_at IS NULL
+      AND o.status = 'FAILED' AND o.delivery_outcome = 'UNRESOLVED'
+      AND o.last_error = ?`).get(LEGACY_EXHAUSTION_ERROR) as { n: number }).n);
 
   // The CAS restates every precondition it depends on, so it is the single
   // statement that either performs the transition or does nothing.
@@ -223,6 +337,8 @@ export const activateAttemptAuthority = (
 
   return {
     activated: true, replayed: false, revision: next.revision,
-    backfilled, refreshed, settled_without_completion: settledWithoutCompletion,
+    backfilled, refreshed,
+    settled_without_completion: settledWithoutCompletion,
+    exhausted_without_timestamp: exhaustedWithoutTimestamp,
   };
 };
