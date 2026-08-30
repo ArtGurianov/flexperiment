@@ -24,6 +24,30 @@ describe("0041 Gen2 deploy-only recovery workflow", () => {
     expect(workflow).toContain('GEN2_DEPLOY_TARGET_IS_MAINTENANCE_ONLY');
   });
 
+  it("pins Node and validates every post-CAS dependency before receipt or CAS", () => {
+    const substratePreflight = workflow.indexOf("Validate deployment and convergence substrate before CAS");
+    const receiptProof = workflow.indexOf("Prove the durable offline bridge receipt");
+    const pointerCas = workflow.indexOf("CAS production-deploy to Gen2 before any webhook");
+    expect(workflow).toContain("OFFLINE_BRIDGE_NODE_BIN: /root/flexperiment-0041-tools/node");
+    expect(workflow).toContain("COMMERCE_GEN1_TO_GEN2_BRIDGE_NODE_BIN=$OFFLINE_BRIDGE_NODE_BIN");
+    expect(substratePreflight).toBeGreaterThanOrEqual(0);
+    expect(substratePreflight).toBeLessThan(receiptProof);
+    expect(substratePreflight).toBeLessThan(pointerCas);
+    for (const name of [
+      "COOLIFY_TOKEN", "COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL", "COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL",
+      "COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL", "COMMERCE_RELEASE_CONTROL_TOKEN", "PUBLIC_API_URL",
+      "PUBLIC_FRONTEND_URL", "ADMIN_RELEASE_URL",
+    ]) expect(workflow).toContain(name);
+    expect(workflow).toContain("require_https_url");
+    expect(receiptReader).toContain("COMMERCE_GEN1_TO_GEN2_BRIDGE_NODE_BIN");
+    const nodeValidation = receiptReader.indexOf("0041_OFFLINE_RECEIPT_NODE_BIN_INVALID");
+    const verifier = receiptReader.indexOf('"$node_bin" --import tsx commerce/src/assert-gen1-to-gen2-offline-bridge.ts');
+    expect(nodeValidation).toBeGreaterThanOrEqual(0);
+    expect(receiptReader).not.toContain("node --import tsx");
+    expect(receiptReader.indexOf('cd "$maintenance_worktree"')).toBeLessThan(verifier);
+    expect(nodeValidation).toBeLessThan(verifier);
+  });
+
   it("requires an executable stop and no-restart proof before the offline DB mutation", () => {
     const disableRestart = offlineBridge.indexOf("docker update --restart=no");
     const stop = offlineBridge.indexOf("docker stop --time 30");
