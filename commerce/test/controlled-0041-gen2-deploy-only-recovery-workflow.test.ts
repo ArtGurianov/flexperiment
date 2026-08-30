@@ -16,6 +16,14 @@ describe("0041 Gen2 deploy-only recovery workflow", () => {
     expect(workflow).toContain("scripts/read-0041-offline-bridge-receipt.sh");
   });
 
+  it("binds the separately reviewed Gen2 runtime without requiring squash-controller ancestry", () => {
+    expect(workflow).not.toContain('git merge-base --is-ancestor "$GEN2_RUNTIME_SHA" "$CONTROLLER_SHA"');
+    expect(workflow).not.toContain("GEN2_DEPLOY_CONTROLLER_OLDER_THAN_TARGET");
+    expect(workflow).toContain('[[ "$(git rev-parse "$GEN2_RUNTIME_SHA^")" == "$GEN1_RUNTIME_SHA" ]]');
+    expect(workflow).toContain('git cat-file -e "$GEN2_RUNTIME_SHA^{commit}"');
+    expect(workflow).toContain('GEN2_DEPLOY_TARGET_IS_MAINTENANCE_ONLY');
+  });
+
   it("requires an executable stop and no-restart proof before the offline DB mutation", () => {
     const disableRestart = offlineBridge.indexOf("docker update --restart=no");
     const stop = offlineBridge.indexOf("docker stop --time 30");

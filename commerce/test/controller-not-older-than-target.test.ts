@@ -26,14 +26,18 @@ import { describe, expect, it } from "vitest";
 
 const WORKFLOWS = ".github/workflows";
 
-const pinnedToConsumedSha = (source: string) =>
-  /^\s+(EXPECTED_[A-Z_]+|DEPLOYMENT_TARGET):\s*"?[0-9a-f]{40}"?\s*$/m.test(source);
+// A one-shot recovery may use a literal runtime SHA whose direct topology is
+// checked by that workflow.  Its squash-merged controller deliberately need
+// not contain that runtime, so it is not a candidate for the generic
+// controller-reachability rule below.
+const hardBoundRecoveryTarget = (source: string) =>
+  /^\s+(EXPECTED_[A-Z_]+|DEPLOYMENT_TARGET|GEN2_RUNTIME_SHA):\s*"?[0-9a-f]{40}"?\s*$/m.test(source);
 
 const DEPLOYING = readdirSync(WORKFLOWS)
   .filter((name) => name.endsWith(".yml"))
   .map((name) => ({ name, source: readFileSync(`${WORKFLOWS}/${name}`, "utf8") }))
   .filter(({ source }) => source.includes("set-production-deploy-ref.sh"))
-  .filter(({ source }) => !pinnedToConsumedSha(source));
+  .filter(({ source }) => !hardBoundRecoveryTarget(source));
 
 describe("a controller is never older than what it deploys", () => {
   it("finds the lanes that advance production", () => {
