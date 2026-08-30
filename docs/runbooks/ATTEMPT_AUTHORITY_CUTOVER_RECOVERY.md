@@ -277,6 +277,39 @@ presence of the attempt store as information rather than an error. An earlier
 revision refused any runtime carrying the attempt store, which would have made
 this resting state permanent.
 
+## An expired certification lease
+
+The lease is 180–300 seconds, and it is activated by `prepare`. Inspecting the
+resulting state carefully — which this runbook asks you to do — can easily
+outlast it. That is not a fault in the durable state and no money has moved.
+
+Re-dispatch `prepare` with the same `target_sha` and the same four fixture
+inputs. It reconciles automatically:
+
+```text
+CERTIFICATION_ONLY, lease expired
+  → prove the binding is the fixture this run asked for
+  → prove expiry, by parsing the timestamp, never comparing it as text
+  → POST /candidates/phase  CERTIFICATION_ONLY → DEPLOYED_READ_ONLY
+      release-control revokes the allowlist row in the same transaction
+  → prove phase DEPLOYED_READ_ONLY and the old lease REVOKED
+  → POST /certification/activate → a fresh lease, new id, new expiry,
+      same unconsumed fixture
+```
+
+**An unexpired lease is never refreshed.** Re-running `prepare` while a window
+is live would revoke the one an operator may be part-way through paying against,
+so the reset happens only after expiry is proven.
+
+The reset is not a way around fresh-fixture enforcement: once a fixture has been
+**consumed**, `activateCertificationLease` refuses it
+(`CERTIFICATION_FRESH_FIXTURE_REQUIRED`) whether or not the phase was reset. Only
+an unconsumed fixture can be re-leased.
+
+Do not call `/candidates/phase` by hand to do this. The controller presents the
+exact generation, phase sequence and state hash as a CAS; a manual call is how a
+phase gets moved against a lease that could not be revoked.
+
 ## Reading a terminal epoch
 
 `candidateHead()` answers *what is the live candidate*: it excludes terminal

@@ -157,6 +157,57 @@ describe("controlled outbox attempt-authority cutover", () => {
       .toBeLessThan(at("/v1/internal/release-control/outbox-authority/activate"));
   });
 
+  it("refreshes an expired certification lease, and only an expired one", () => {
+    // Found in production: prepare activated a 300s lease, the operator stopped
+    // to inspect the resulting state as designed, and the window closed before
+    // the payment. The runtime already had the primitive - CERTIFICATION_ONLY ->
+    // DEPLOYED_READ_ONLY revokes the allowlist row transactionally - but the
+    // controller had no branch that used it, so a correct pause left the
+    // cutover unable to proceed without a manual endpoint call.
+    //
+    // The dangerous half is the converse: refreshing a LIVE lease would revoke
+    // the window an operator is part-way through paying against, every time
+    // prepare is rerun. So the reset is gated on proven expiry.
+    const stage = workflow.slice(at("Activate or reconcile the certification lease"),
+      at("Record consumed certification evidence"));
+    expect(stage).toContain("CERTIFICATION_LEASE_EXPIRED=");
+    expect(stage).toContain('from_phase: "CERTIFICATION_ONLY"');
+    expect(stage).toContain('to_phase: "DEPLOYED_READ_ONLY"');
+    // The reset must be SENT, not merely composed. Asserting the body's
+    // contents proves the request was built; only this proves it is posted -
+    // and it has to precede the fresh lease, since activation refuses while a
+    // lease is still ACTIVE.
+    const resetPost = stage.indexOf('--data-binary @lease-reset.json "$PUBLIC_API_URL/v1/internal/release-control/candidates/phase"');
+    const activatePost = stage.indexOf("/v1/internal/release-control/candidates/certification/activate");
+    expect(resetPost).toBeGreaterThan(-1);
+    expect(activatePost).toBeGreaterThan(-1);
+    expect(resetPost).toBeLessThan(activatePost);
+    // Proven expired before anything is revoked, and parsed rather than
+    // compared as text - the lease carries an offset-bearing ISO timestamp.
+    expect(stage).toContain("Date.parse(process.argv[1]) > Date.now()");
+    expect(stage).not.toMatch(/lease_expires_at["']?\s*[<>]\s*["']?\$\(date/);
+    // The CAS presents the exact generation, phase sequence and state hash.
+    expect(stage).toContain("expected_state_hash: $current[0].state_hash");
+    expect(stage).toContain("phase_sequence: $current[0].head.phase_sequence");
+    // And the revocation is proven before a fresh lease is minted.
+    expect(stage).toContain('.head.phase == "DEPLOYED_READ_ONLY" and .head.certification.status == "REVOKED"');
+    expect(at("ATTEMPT_AUTHORITY_CUTOVER_CERTIFICATION_LEASE_RESET_INVALID"))
+      .toBeLessThan(at("/v1/internal/release-control/candidates/certification/activate"));
+  });
+
+  it("resets only the fixture it was asked for", () => {
+    // A reset revokes a real lease. Doing that to a binding this run did not
+    // request would destroy someone else's certification window.
+    const stage = workflow.slice(at("Activate or reconcile the certification lease"),
+      at("Record consumed certification evidence"));
+    expect(stage).toContain("ATTEMPT_AUTHORITY_CUTOVER_CERTIFICATION_FIXTURE_MISMATCH");
+    expect(stage).toContain(".head.certification.occurrence_id == $occurrence");
+    expect(stage).toContain(".head.certification.promo_id == $promo");
+    expect(stage).toContain(".head.certification.expected_idempotency_key_hash == $key_hash");
+    expect(at("ATTEMPT_AUTHORITY_CUTOVER_CERTIFICATION_FIXTURE_MISMATCH"))
+      .toBeLessThan(at("CERTIFICATION_LEASE_EXPIRED="));
+  });
+
   it("keeps the certification order's mail queued behind the fence", () => {
     // Two properties at once: no mail escapes mid-cutover, and the queued
     // messages become the backlog the dispatch proof consumes after unfence.
