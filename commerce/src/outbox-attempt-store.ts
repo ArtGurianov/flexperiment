@@ -182,6 +182,13 @@ export const claimForDispatch = (
 };
 
 /**
+ * Whether the attempt settlement won its CAS, and whether the message accepted
+ * the resulting projection. The two are distinct: a settlement can win while
+ * the message legitimately refuses, when consent was withdrawn mid-flight.
+ */
+export type SettlementResult = { attempt_settled: boolean; message_updated: boolean };
+
+/**
  * Provider acceptance.
  *
  * Message facts stay on email_outbox in both authority states: status is
@@ -198,7 +205,7 @@ export const recordProviderAcceptance = (
   message: { id: string },
   claimed: ClaimedAttempt,
   jobId: string,
-): boolean => {
+): SettlementResult => {
   requireTransaction(db);
 
   if (claimed.authority === "LEGACY") {
@@ -206,25 +213,31 @@ export const recordProviderAcceptance = (
       SET status = 'ACCEPTED', job_id = ?, lease_owner = NULL, lease_expires_at = NULL,
           next_attempt_at = NULL, last_error = NULL, provider_error_code = NULL, provider_error_message = NULL
       WHERE id = ? AND status = 'SENDING' AND suppressed_at IS NULL AND superseded_at IS NULL`).run(jobId, message.id);
-    if (accepted.changes) return true;
+    if (accepted.changes) return { attempt_settled: true, message_updated: true };
     db.prepare(`UPDATE email_outbox SET job_id = COALESCE(job_id, ?), lease_owner = NULL, lease_expires_at = NULL
       WHERE id = ? AND (suppressed_at IS NOT NULL OR superseded_at IS NOT NULL)`).run(jobId, message.id);
-    return false;
+    // Under LEGACY the message IS the authority, so its refusal is the
+    // settlement's refusal.
+    return { attempt_settled: false, message_updated: false };
   }
 
-  const accepted = db.prepare(`UPDATE email_outbox SET status = 'ACCEPTED'
-    WHERE id = ? AND status = 'SENDING' AND suppressed_at IS NULL AND superseded_at IS NULL`).run(message.id);
-
-  // The attempt settles either way: the provider accepted this send, and that
-  // is a fact about the attempt regardless of whether the message may still be
-  // delivered. ACCEPTED, not DELIVERED - whether anyone receives it is decided
-  // later by provider events and belongs to the message.
-  db.prepare(`UPDATE outbox_attempt
+  // The attempt settlement is the AUTHORITY CAS and therefore goes first. With
+  // the message projected first, a late contradictory settlement moved the
+  // message while the attempt refused to change - leaving message and history
+  // disagreeing, which is precisely the split this design exists to prevent.
+  const settled = db.prepare(`UPDATE outbox_attempt
     SET outcome = 'ACCEPTED', completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
         provider_job_id = ?, lease_owner = NULL, lease_expires_at = NULL, next_retry_at = NULL,
         failure_code = NULL, failure_detail = NULL
     WHERE id = ? AND outcome IS NULL`).run(jobId, claimed.attempt_id);
-  return accepted.changes > 0;
+  if (!settled.changes) return { attempt_settled: false, message_updated: false };
+
+  // Only now project onto the message. It may legitimately refuse: consent can
+  // be withdrawn while send() is in flight, and the provider call cannot be
+  // recalled - so the attempt stays ACCEPTED while the message is not revived.
+  const accepted = db.prepare(`UPDATE email_outbox SET status = 'ACCEPTED'
+    WHERE id = ? AND status = 'SENDING' AND suppressed_at IS NULL AND superseded_at IS NULL`).run(message.id);
+  return { attempt_settled: true, message_updated: accepted.changes > 0 };
 };
 
 /**
@@ -241,25 +254,31 @@ export const recordProviderRefusal = (
   message: { id: string },
   claimed: ClaimedAttempt,
   refusal: { providerCode?: string | null; providerMessage?: string | null },
-) => {
+): SettlementResult => {
   requireTransaction(db);
 
   if (claimed.authority === "LEGACY") {
-    db.prepare(`UPDATE email_outbox
+    const failed = db.prepare(`UPDATE email_outbox
       SET status = 'FAILED', delivery_outcome = 'KNOWN_FAILED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
           last_error = 'UNISENDER_HTTP_REJECTED', provider_error_code = ?, provider_error_message = ?
       WHERE id = ? AND status = 'SENDING'`).run(refusal.providerCode ?? null, refusal.providerMessage ?? null, message.id);
-    return;
+    return { attempt_settled: failed.changes > 0, message_updated: failed.changes > 0 };
   }
 
-  db.prepare(`UPDATE email_outbox SET status = 'FAILED', delivery_outcome = 'KNOWN_FAILED'
-    WHERE id = ? AND status = 'SENDING'`).run(message.id);
-  db.prepare(`UPDATE outbox_attempt
+  // Attempt settlement first, for the same reason as acceptance: it is the
+  // authority CAS, not an immutability convenience applied after the message
+  // has already moved.
+  const settled = db.prepare(`UPDATE outbox_attempt
     SET outcome = 'KNOWN_FAILED', completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
         lease_owner = NULL, lease_expires_at = NULL, next_retry_at = NULL,
         failure_code = 'UNISENDER_HTTP_REJECTED', failure_detail = ?
     WHERE id = ? AND outcome IS NULL`)
     .run(JSON.stringify({ provider_error_code: refusal.providerCode ?? null, provider_error_message: refusal.providerMessage ?? null }), claimed.attempt_id);
+  if (!settled.changes) return { attempt_settled: false, message_updated: false };
+
+  const failed = db.prepare(`UPDATE email_outbox SET status = 'FAILED', delivery_outcome = 'KNOWN_FAILED'
+    WHERE id = ? AND status = 'SENDING'`).run(message.id);
+  return { attempt_settled: true, message_updated: failed.changes > 0 };
 };
 
 /**

@@ -129,20 +129,48 @@ describe("acceptance seam", () => {
 
       const accepted = db.transaction(() => recordProviderAcceptance(db, { id: "m1" }, c, "job-1")).immediate();
 
-      expect(accepted).toBe(false);
+      // The settlement won; only the message projection refused.
+      expect(accepted).toEqual({ attempt_settled: true, message_updated: false });
       expect((message(db) as { status: string }).status).toBe("SENDING");
       expect(attempt(db)).toMatchObject({ outcome: "ACCEPTED", provider_job_id: "job-1" });
     });
 
-    it("never rewrites a settled attempt", () => {
-      const db = fixture({ authority: "ATTEMPT" });
-      const c = claimed(db);
-      db.transaction(() => recordProviderAcceptance(db, { id: "m1" }, c, "job-1")).immediate();
-      // A second settlement is a no-op, not a rewrite: the WHERE clause
-      // requires outcome IS NULL, so the immutability trigger is never reached.
-      db.exec("UPDATE email_outbox SET status = 'SENDING' WHERE id = 'm1'");
-      db.transaction(() => recordProviderRefusal(db, { id: "m1" }, c, { providerCode: "550", providerMessage: "late" })).immediate();
-      expect(attempt(db)).toMatchObject({ outcome: "ACCEPTED", provider_job_id: "job-1", failure_code: null });
+    describe("contradictory late settlement is a no-op everywhere", () => {
+      // The attempt settlement is the authority CAS and runs FIRST. With the
+      // message projected first, a late contradictory settlement moved the
+      // message while the attempt refused - leaving message and history
+      // disagreeing, which is the split this whole design exists to prevent.
+      it("late refusal after acceptance changes neither attempt nor message", () => {
+        const db = fixture({ authority: "ATTEMPT" });
+        const c = claimed(db);
+        db.transaction(() => recordProviderAcceptance(db, { id: "m1" }, c, "job-1")).immediate();
+        db.exec("UPDATE email_outbox SET status = 'SENDING' WHERE id = 'm1'");
+        const messageBefore = message(db);
+        const attemptBefore = attempt(db);
+
+        const result = db.transaction(() => recordProviderRefusal(db, { id: "m1" }, c, { providerCode: "550", providerMessage: "late" })).immediate();
+
+        expect(result).toEqual({ attempt_settled: false, message_updated: false });
+        expect(attempt(db)).toEqual(attemptBefore);
+        expect(message(db)).toEqual(messageBefore);
+      });
+
+      it("late acceptance after refusal changes neither attempt nor message", () => {
+        // The same ordering defect existed on the acceptance path, so the
+        // symmetric direction is asserted rather than assumed.
+        const db = fixture({ authority: "ATTEMPT" });
+        const c = claimed(db);
+        db.transaction(() => recordProviderRefusal(db, { id: "m1" }, c, { providerCode: "550", providerMessage: "nope" })).immediate();
+        db.exec("UPDATE email_outbox SET status = 'SENDING', delivery_outcome = NULL WHERE id = 'm1'");
+        const messageBefore = message(db);
+        const attemptBefore = attempt(db);
+
+        const result = db.transaction(() => recordProviderAcceptance(db, { id: "m1" }, c, "late-job")).immediate();
+
+        expect(result).toEqual({ attempt_settled: false, message_updated: false });
+        expect(attempt(db)).toEqual(attemptBefore);
+        expect(message(db)).toEqual(messageBefore);
+      });
     });
   });
 
