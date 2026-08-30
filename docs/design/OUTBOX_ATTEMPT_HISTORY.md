@@ -319,45 +319,102 @@ parameter-bound write that source review had missed.
 
 ### Activation
 
+Shipped in `commerce/src/outbox-activation.ts`, reached over the release-control
+surface as `POST /v1/internal/release-control/outbox-authority/activate`. It is
+one transaction, and it is one-way: there is no `ATTEMPT -> LEGACY`.
+
 ```text
-authority = LEGACY, dispatch paused and enforced, drained
+authority = LEGACY, dispatch fenced by THIS epoch, drained
 
 BEGIN IMMEDIATE
-  backfill attempt #1 for every message from its legacy columns
-  assert every message that needs one has exactly one attempt
-  CAS attempt_authority LEGACY -> ATTEMPT at revision N
+  assert 0041 schema present
+  read authority
+    already ATTEMPT ->  replay branch, BEFORE any sync (see below)
+  assert dispatch fenced
+  assert fence owner = exact release_id + generation
+  assert revision = expected
+  assert drained: no SENDING message, no legacy lease
+  assert no attempt row is settled, and none has attempt_no <> 1
+  refresh mutable attempt #1 facts from LEGACY   (shadow attempts)
+  backfill missing attempt #1                    (historical messages)
+  validate globally: every message has attempt #1, keys agree, identity
+    complete, no ambiguous pair, no attempt lease held
+  CAS attempt_authority LEGACY -> ATTEMPT at revision N, same owner, still fenced
+  revision := revision + 1
+  append AUTHORITY_ACTIVATED with the epoch and the RESULTING revision
 COMMIT
 
-authority = ATTEMPT
+authority = ATTEMPT, dispatch STILL fenced
 ```
 
-`BEGIN IMMEDIATE` serializes a callback against the backfill:
+`BEGIN IMMEDIATE` serializes a legacy writer against the sync:
 
 ```text
-callback commits BEFORE   its write is legacy, and the backfill reads it
-callback commits AFTER    it reads ATTEMPT and writes the attempt row
+writer commits BEFORE   its write is legacy, and the sync reads it
+writer commits AFTER    it reads ATTEMPT, and the 0040 freeze trigger is over it
 ```
 
 **That proof holds only if the selector read and the projection write happen in
 the same `BEGIN IMMEDIATE` transaction.** A selector cached in process memory, or
 read before the transaction opens, reintroduces exactly the interleaving the
-serialization was meant to remove. The Unisender callback already runs inside
-`withImmediateTransaction`, so this is a property to preserve rather than build —
-but it is the actual reason the argument works, so it is stated here rather than
-assumed.
+serialization was meant to remove. Every converted seam reads the selector
+inside the transaction that writes; this is the reason why.
 
-**`activate` is therefore defined durably**, not as a sequence of steps:
+**Identity is validation material, never an update target.** `id`, `message_id`,
+`attempt_no`, `provider_idempotence_key` and `requested_at` are checked and the
+transaction aborts on disagreement. Aligning them would be rewriting what an
+attempt *is*, and the provider key in particular is the field whose rewrite
+turns a replay into a second email. The 0041 identity trigger is the oracle: an
+activation that touched one aborts rather than passing quietly.
 
-```text
-activate = atomic backfill + authority CAS LEGACY -> ATTEMPT
-```
+**Refresh before backfill.** The two sets are disjoint — shadow attempts created
+by attempt-aware enqueue, and messages predating it — so running them in this
+order keeps the reported counts meaningful and never rewrites a row the second
+statement just created.
 
-which also makes replay obvious: a crashed activation either committed or did
-not, and re-running reads the selector to decide.
+**Two anomalies fail closed rather than being adopted.** Under LEGACY the only
+attempt writer is `enqueueEmail`, which creates exactly one unsettled attempt
+#1. A *settled* attempt, or one with `attempt_no <> 1`, means some binary wrote
+attempt facts while they were not authoritative — and the refresh skips settled
+rows, so the bogus value would be silently adopted by the flip. That is the
+old/new disagreement this cutover exists to serialize, so it is refused.
 
-Email dispatch resumes only once the attempt-aware build is proven deployed —
-that part is still required, because it is what prevents the split lease. The
-rest of the sweep never stopped.
+**Backfill mapping**, from the legacy status and the 0039 outcome split:
+
+| legacy | attempt #1 `outcome` |
+|---|---|
+| `ACCEPTED` / `SENT` / `DELIVERED` / `BOUNCED` | `ACCEPTED` |
+| `FAILED` + `KNOWN_FAILED` | `KNOWN_FAILED` |
+| `FAILED` + `UNRESOLVED` | `NULL` |
+| `SEND_UNKNOWN` / `PENDING` / `SKIPPED` | `NULL` |
+
+`BOUNCED` maps to `ACCEPTED` because the provider did accept the send; the
+bounce is a later message fact and must never rewrite a settled attempt.
+`UNRESOLVED` maps to `NULL` because it is message-level ambiguity — settling it
+would forbid later provider evidence from ever resolving it.
+
+`completed_at` comes from `sent_at` and nowhere else: that column means exactly
+"when the provider accepted", so it is right even for a message that later
+bounced. A refusal has no legacy counterpart — there is no `failed_at` — and
+stamping the cutover clock would assert the send failed at activation time,
+which is false evidence in an append-only history. It stays `NULL`, and the
+result reports `settled_without_completion` so the cutover records the number
+instead of inventing the values.
+
+**Replay branches before any sync.** Once authority is `ATTEMPT` the attempt
+rows are the authority and the legacy status is a projection that may
+legitimately move on; a replay that reached the sync would copy that projection
+back over live history. A repeat by the same epoch with a matching
+`AUTHORITY_ACTIVATED` line reconciles as success and consumes no revision.
+Anything else fails closed: a different epoch is `OUTBOX_ACTIVATION_OWNER_CONFLICT`,
+and `ATTEMPT` with no activation line at all is
+`OUTBOX_ACTIVATION_AUDIT_MISSING` — an inconsistent control plane, not a replay,
+and reconciling it as success would launder it.
+
+**Activation does not unfence.** It flips authority and leaves dispatch fenced.
+Reopening mail is a later step of the cutover, performed by the same epoch only
+after convergence is proven. The two acts are separate because the evidence they
+depend on is separate.
 
 ### Shapes considered
 
@@ -491,6 +548,9 @@ response rather than minting anything.
 | A delivered message cannot be resent | message-level guard, not the failed attempt alone |
 | Duplicate resend requests are idempotent | `withAdminCommand` |
 | Manual resend records actor, reason, incident | `recordAdminCommandAudit` |
+| Attempt identity never changes after INSERT | `outbox_attempt_identity_immutable_guard`; the activation sync validates identity and never writes it |
+| Authority moves LEGACY -> ATTEMPT once, and only by the epoch holding the fence | single-transaction CAS on `attempt_authority` + `revision` + owner, with `AUTHORITY_ACTIVATED` audit evidence at the resulting revision |
+| No legacy attempt fact is written after the flip | `email_outbox_legacy_attempt_freeze_guard`, inert until authority = ATTEMPT |
 
 ## Deliberately not decided here
 
@@ -546,11 +606,18 @@ response rather than minting anything.
 4. migration 0041 - outbox_attempt schema and immutability trigger, no backfill
 5. every attempt-fact writer reads the selector inside its own transaction
    (worker claim AND webhook projection), and enqueue creates attempt #1
-6. fence dispatch -> drain -> deploy attempt-aware writers ->
-   activate (atomic backfill + CAS) -> resume dispatch
-7. audited resend command, transaction exactly as B4 above
-8. admin surface
-9. provider crash and replay tests
+   - shipped across five seams: claim, settlement, send-result, suppression,
+     observation. Each proven under BOTH authorities from one fixture, with the
+     0040 freeze trigger as the oracle for a forgotten ATTEMPT branch.
+6. activation capability: one-way LEGACY -> ATTEMPT in a single
+   BEGIN IMMEDIATE, as specified under "Activation" above
+7. the 0041 cutover, which SPENDS that capability:
+   fence -> drain -> prove -> deploy the attempt-aware candidate ->
+   prove convergence and the preserved control row -> activate -> prove ->
+   same-epoch unfence
+8. audited resend command, transaction exactly as B4 above
+9. admin surface
+10. provider crash and replay tests
 ```
 
 The split into 0040 and 0041 is not cosmetic. 0040 carries no new lease store

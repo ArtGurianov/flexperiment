@@ -905,6 +905,59 @@ describe("commerce HTTP boundary", () => {
     }
   });
 
+  it("performs LEGACY -> ATTEMPT activation only over the fence the caller owns", async () => {
+    // The wire seam the 0041 cutover actually drives. Everything below is
+    // proven at the domain level too; what is proven HERE is that the route
+    // carries the epoch through and surfaces a refusal as its real code rather
+    // than a 500 - the defect found in production during the 0040 fence proof.
+    const previousToken = process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
+    process.env.COMMERCE_RELEASE_CONTROL_TOKEN = "release-control-test-token";
+    const { db, app } = appFixture();
+    const post = (path: string, body: unknown) => app.request(`http://api.flexperiment.ru/v1/internal/release-control/${path}`, {
+      method: "POST",
+      headers: { Authorization: "Bearer release-control-test-token", "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    try {
+      // The transition is release-control authority, not an open endpoint.
+      const anonymous = await app.request("http://api.flexperiment.ru/v1/internal/release-control/outbox-authority/activate", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ expected_revision: 1, reason: "no credential", release_id: "epoch-a", generation: 1 }),
+      });
+      expect(anonymous.status).toBe(401);
+      expect(db.prepare("SELECT attempt_authority FROM outbox_authority WHERE singleton = 1").get())
+        .toEqual({ attempt_authority: "LEGACY" });
+
+      // Dispatch is open: activation must refuse before it reads a single row.
+      const unfenced = await post("outbox-authority/activate", { expected_revision: 1, reason: "activate", release_id: "epoch-a", generation: 1 });
+      expect(unfenced.status).toBe(409);
+      expect(await unfenced.json()).toEqual({ error: { code: "OUTBOX_ACTIVATION_DISPATCH_NOT_FENCED" } });
+
+      expect((await post("outbox-dispatch/fence", { expected_revision: 1, reason: "epoch a fences", release_id: "epoch-a", generation: 1 })).status).toBe(200);
+
+      // A second epoch cannot activate through a fence it does not own.
+      const impostor = await post("outbox-authority/activate", { expected_revision: 2, reason: "epoch b activates", release_id: "epoch-b", generation: 1 });
+      expect(impostor.status).toBe(409);
+      expect(await impostor.json()).toEqual({ error: { code: "OUTBOX_DISPATCH_OWNER_CONFLICT" } });
+      expect(db.prepare("SELECT attempt_authority FROM outbox_authority WHERE singleton = 1").get())
+        .toEqual({ attempt_authority: "LEGACY" });
+
+      const activated = await post("outbox-authority/activate", { expected_revision: 2, reason: "epoch a activates", release_id: "epoch-a", generation: 1 });
+      expect(activated.status).toBe(200);
+      expect(await activated.json()).toMatchObject({ activated: true, replayed: false, revision: 3 });
+
+      const status = await app.request("http://api.flexperiment.ru/v1/internal/release-control/outbox-authority", {
+        headers: { Authorization: "Bearer release-control-test-token" },
+      });
+      // Activated, and still fenced: reopening mail is a separate step.
+      expect(await status.json()).toMatchObject({ attempt_authority: "ATTEMPT", email_dispatch_paused: true, revision: 3 });
+    } finally {
+      db.close();
+      if (previousToken === undefined) delete process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
+      else process.env.COMMERCE_RELEASE_CONTROL_TOKEN = previousToken;
+    }
+  });
+
   it("exposes the emergency latch on internal release-control status without admin credentials", async () => {
     // The release controller must be able to see the operator's latch to refuse
     // completing into open sales, but must never be able to set it: an admin
