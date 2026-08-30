@@ -23,6 +23,7 @@ const migrationInventory = () => {
 const inventory = migrationInventory();
 const legal = { legal_version: "test", legal_manifest_sha256: "a".repeat(64), legal_hashes: {} };
 const certification = { lease_id: "lease", occurrence_id: "occurrence", promo_id: "promo", expected_idempotency_key_hash: "b".repeat(64), lease_expires_at: "2030-01-01T00:00:00.000Z", status: "CONSUMED" as const };
+const activeCertification = (lease_id: string) => ({ ...certification, lease_id, status: "ACTIVE" as const });
 
 const fixture = (databasePath = ":memory:") => {
   const db = openDatabase(databasePath); databases.push(db); migrate(db);
@@ -31,10 +32,14 @@ const fixture = (databasePath = ":memory:") => {
     migration_inventory: inventory, legal_baseline: legal, release_family: "sales-availability-v1", checkout_contract_version: "sales-availability-v1", admin_contract_version: "sales-availability-v1", phase: "PAUSED", phase_sequence: 0 };
   gate.acquireCandidate({ head: paused });
   let current = paused;
-  for (const phase of ["DEPLOYED_READ_ONLY", "CERTIFICATION_ONLY", "CERTIFICATION_IN_FLIGHT", "CERTIFIED"] as const) {
+  const certificationLeases = [activeCertification("lease-expired-1"), activeCertification("lease-expired-2"), activeCertification("lease")];
+  let certificationLeaseIndex = 0;
+  for (const phase of ["DEPLOYED_READ_ONLY", "CERTIFICATION_ONLY", "DEPLOYED_READ_ONLY", "CERTIFICATION_ONLY", "DEPLOYED_READ_ONLY", "CERTIFICATION_ONLY", "CERTIFICATION_IN_FLIGHT", "CERTIFIED"] as const) {
+    const nextCertification = phase === "CERTIFICATION_ONLY" ? certificationLeases[certificationLeaseIndex++]
+      : phase === "DEPLOYED_READ_ONLY" && current.certification ? { ...current.certification, status: "REVOKED" as const }
+        : phase === "CERTIFICATION_IN_FLIGHT" || phase === "CERTIFIED" ? certification : undefined;
     const next = { ...current, phase, phase_sequence: current.phase_sequence + 1,
-      ...(phase === "CERTIFICATION_ONLY" ? { certification: { ...certification, status: "ACTIVE" as const } }
-        : phase === "CERTIFICATION_IN_FLIGHT" || phase === "CERTIFIED" ? { certification } : {}) } as GenerationHead;
+      ...(nextCertification ? { certification: nextCertification } : {}) } as GenerationHead;
     const details: Record<string, unknown> = { schema_version: 2, kind: "PHASE_CHANGED", from_phase: current.phase, from_phase_sequence: current.phase_sequence, head: next };
     if (phase === "CERTIFIED") details.certification_evidence = { occurrence_id: certification.occurrence_id, promo_id: certification.promo_id, order_id: "order", payment_id: "payment", refund_id: "refund", price_kopecks: 101, discount_kopecks: 1, amount_kopecks: 100, captured_kopecks: 100, refunded_kopecks: 100 };
     db.prepare("INSERT INTO release_sales_gate_events(id, release_id, action, details_json) VALUES (?, ?, 'PAUSED', ?)").run(randomUUID(), bridge.release_id, JSON.stringify(details));
@@ -52,6 +57,13 @@ const fixture = (databasePath = ":memory:") => {
 };
 
 describe("0041 offline gen1 to gen2 post-activation bridge", () => {
+  it("hard-binds the observed live certified sequence 8", () => {
+    const { gate, current } = fixture();
+    expect(current).toMatchObject({ phase: "CERTIFIED", phase_sequence: 8, certification: { status: "CONSUMED" } });
+    expect(bridge.from_phase_sequence).toBe(8);
+    expect(gate.releaseHead(bridge.release_id).head).toEqual(current);
+  });
+
   it("executes only a maintenance replay closure byte-identical to exact Gen2", () => {
     for (const [file, expectedHash] of Object.entries(bridge.target_replay_closure_sha256)) {
       const target = execFileSync("git", ["show", `${bridge.to_source_commit}:${file}`]);
@@ -80,12 +92,30 @@ describe("0041 offline gen1 to gen2 post-activation bridge", () => {
     const result = gate.bridgeGen1PostActivationEmailDefectToGen2({ expected_state_hash: releaseStateHash(current) });
     expect(result).toMatchObject({ head: { candidate_generation: 2, source_commit: bridge.to_source_commit, phase: "PAUSED", phase_sequence: 0 }, replayed: false });
     const events = db.prepare("SELECT rowid AS seq, release_id, action, details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid").all(bridge.release_id) as V2Event[];
-    expect(events.slice(-2).map((event) => JSON.parse(event.details_json).kind)).toEqual(["POST_ACTIVATION_EMAIL_PROVIDER_DEFECT", "CANDIDATE_SUPERSEDED"]);
+    const [defect, supersede] = events.slice(-2).map((event) => JSON.parse(event.details_json));
+    expect(defect).toMatchObject({ kind: "POST_ACTIVATION_EMAIL_PROVIDER_DEFECT", from_phase: "CERTIFIED", from_phase_sequence: 8,
+      head: { phase: "RECOVERY_REQUIRED", phase_sequence: 9, certification: { status: "CONSUMED" } } });
+    expect(supersede).toMatchObject({ kind: "CANDIDATE_SUPERSEDED", from_generation: 1, from_sha: bridge.from_source_commit,
+      head: { candidate_generation: 2, source_commit: bridge.to_source_commit, phase: "PAUSED", phase_sequence: 0 } });
     expect(replayReleaseGenerationChain(events)).toMatchObject({ head: result.head });
     expect(db.prepare("SELECT attempt_authority, email_dispatch_paused, dispatch_owner_release_id, dispatch_owner_generation, revision FROM outbox_authority WHERE singleton = 1").get()).toEqual(beforeAuthority);
     const again = gate.bridgeGen1PostActivationEmailDefectToGen2({ expected_state_hash: result.state_hash });
     expect(again).toMatchObject({ replayed: true, head: result.head });
     expect(db.prepare("SELECT COUNT(*) AS n FROM release_sales_gate_events WHERE release_id = ?").get(bridge.release_id)).toEqual({ n: events.length });
+  });
+
+  it("refuses adjacent certified sequence bindings", () => {
+    const mutableBridge = bridge as unknown as { from_phase_sequence: number };
+    const expectedSequence = mutableBridge.from_phase_sequence;
+    try {
+      for (const wrongSequence of [7, 9]) {
+        mutableBridge.from_phase_sequence = wrongSequence;
+        const { gate, current } = fixture();
+        expect(() => gate.bridgeGen1PostActivationEmailDefectToGen2({ expected_state_hash: releaseStateHash(current) })).toThrow("GEN1_TO_GEN2_BRIDGE_PRECONDITION_FAILED");
+      }
+    } finally {
+      mutableBridge.from_phase_sequence = expectedSequence;
+    }
   });
 
   it("rolls both events back when the supersede append fails", () => {

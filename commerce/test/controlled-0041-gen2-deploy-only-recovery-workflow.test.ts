@@ -34,6 +34,10 @@ describe("0041 Gen2 deploy-only recovery workflow", () => {
     expect(receiptReader).toContain("stat -c '%u:%a'");
     expect(offlineBridge).toContain("0041_OFFLINE_BRIDGE_MAINTENANCE_ARTIFACT_MISMATCH");
     expect(receiptReader).toContain("GEN1_TO_GEN2_BRIDGE_RECEIPT_STATE_HASH");
+    expect(offlineBridge).toContain('readonly MAIN_CONTROLLER_SHA="1f76c0eb73958e89356ff830036b8ef1c8b49c5b"');
+    expect(receiptReader).toContain('"1f76c0eb73958e89356ff830036b8ef1c8b49c5b $GEN2_RUNTIME_SHA"');
+    expect(offlineBridge).not.toContain("6500586395034516495a2dcaec868d4b577b853f");
+    expect(receiptReader).not.toContain("6500586395034516495a2dcaec868d4b577b853f");
   });
 
   it("reads the stopped-volume receipt before CAS and cannot webhook Gen1", () => {
