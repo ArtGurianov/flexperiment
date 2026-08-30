@@ -261,19 +261,20 @@ describe("processEmailOutbox honours authoritative retry eligibility", () => {
     return { db, sent, domain: new CommerceDomain(db, new MockProvider(), emailProvider, () => NOW) };
   };
 
-  it("reaches the provider when the attempt is due and frozen legacy state says wait", async () => {
+  it("dispatches when the attempt is due and frozen legacy state says wait", async () => {
     // The discriminating case: with the old legacy-filtering scan the row is
     // never a candidate, so send() is never reached and this fails.
     //
-    // The property under test is admission through to the provider boundary.
-    // Recording acceptance afterwards belongs to seam 2, which is still
-    // unconverted, so its legacy write aborts on the 0040 freeze trigger - the
-    // oracle behaving exactly as intended, and asserted here rather than
-    // hidden. When seam 2 lands, this becomes a clean ACCEPTED.
+    // This asserted a freeze-trigger abort while seam 2 was unconverted, which
+    // was the honest expectation then. Seam 2 has landed, so it is now the
+    // clean acceptance it was always meant to become.
     const { sent, domain, db } = dispatchFixture("2026-08-30T15:00:00.000Z", "2026-08-30T14:00:00.000Z");
-    await expect(domain.processEmailOutbox()).rejects.toThrow(/EMAIL_OUTBOX_LEGACY_ATTEMPT_FROZEN/);
+    const legacyBefore = legacyAttemptFacts(db);
+    await domain.processEmailOutbox();
     expect(sent, "the row never reached the provider").toEqual(["shared-key"]);
-    expect(messageStatus(db)).toBe("SENDING");
+    expect(messageStatus(db)).toBe("ACCEPTED");
+    expect(attempt(db)).toMatchObject({ outcome: "ACCEPTED", lease_owner: null });
+    expect(legacyAttemptFacts(db)).toEqual(legacyBefore);
   });
 
   it("does not dispatch when the attempt is not due, whatever legacy state says", async () => {

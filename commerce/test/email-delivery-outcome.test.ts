@@ -209,7 +209,11 @@ describe("email delivery outcome", () => {
    * migration exists to avoid, so the guarantee is asserted against the source.
    */
   describe("writer paths", () => {
-    const source = readFileSync("commerce/src/domain.ts", "utf8");
+    // Follows the writers wherever they live: seam conversion moved some into
+    // outbox-attempt-store.ts, and a scan pinned to one file would have quietly
+    // stopped covering them.
+    const source = ["commerce/src/domain.ts", "commerce/src/outbox-attempt-store.ts"]
+      .map((file) => readFileSync(file, "utf8")).join("\n");
     const terminalFailureWrites = source
       .split(/(?=SET status = 'FAILED')/)
       .filter((chunk) => chunk.startsWith("SET status = 'FAILED'"));
@@ -230,13 +234,18 @@ describe("email delivery outcome", () => {
     );
 
     it("only claims KNOWN_FAILED where a provider response was actually received", () => {
+      // The provenance is no longer always in the same statement. Under ATTEMPT
+      // authority the message write carries delivery_outcome while the received
+      // rejection is recorded as failure_code on the attempt, in the same
+      // transaction - so the window spans the statement pair rather than one
+      // statement. The rule is unchanged; only where it is written moved.
       for (const chunk of terminalFailureWrites) {
-        const statement = chunk.slice(0, chunk.indexOf("`)") + 2);
-        if (!statement.includes("delivery_outcome = 'KNOWN_FAILED'")) continue;
+        if (!chunk.slice(0, chunk.indexOf("`)") + 2).includes("delivery_outcome = 'KNOWN_FAILED'")) continue;
+        const pair = chunk.slice(0, 1_200);
         expect(
-          statement,
+          pair,
           "KNOWN_FAILED claimed without a received-rejection provenance",
-        ).toMatch(/last_error = 'UNISENDER_HTTP_REJECTED(_LEGACY)?'/);
+        ).toMatch(/(last_error|failure_code) = 'UNISENDER_HTTP_REJECTED(_LEGACY)?'/);
       }
     });
 
@@ -273,7 +282,8 @@ describe("email delivery outcome", () => {
    * absence of evidence the split exists to preserve against.
    */
   describe("consumers", () => {
-    const source = readFileSync("commerce/src/domain.ts", "utf8");
+    const source = ["commerce/src/domain.ts", "commerce/src/outbox-attempt-store.ts"]
+      .map((file) => readFileSync(file, "utf8")).join("\n");
 
     it("no longer treats every FAILED row as a settled outcome", () => {
       expect(source).not.toContain("status IN ('DELIVERED', 'BOUNCED', 'FAILED')");
