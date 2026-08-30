@@ -420,6 +420,42 @@ describe("controlled outbox attempt-authority cutover", () => {
     expect(workflow).toContain('if $defect_code == "" then {} else {defect_code: $defect_code} end');
   });
 
+  it("contains a post-activation provider refusal under ATTEMPT before recording recovery", () => {
+    const stage = workflow.slice(at("Contain and classify an exact post-activation provider refusal"),
+      at("Classify a defect found after certification and before activation"));
+    expect(workflow).toContain("classify_post_activation_email_defect");
+    // No order, provider code, or failure detail comes from workflow input.
+    expect(stage).not.toContain("INPUT_CERTIFICATION_ORDER_ID");
+    expect(stage).not.toContain("provider_error_code \"1588\"");
+    expect(stage).toContain("post-activation-email-provider-defect/$RELEASE_ID");
+    expect(stage).toContain('.ticket_attempt.outcome == "KNOWN_FAILED"');
+    expect(stage).toContain('.ticket_attempt.failure_code == "UNISENDER_HTTP_REJECTED"');
+    expect(stage).toContain('.ticket_attempt.provider_error_code == "1588"');
+    // The first mutation is the established fence primitive, only from open
+    // ATTEMPT, and its post-state must remain owned by this epoch.
+    expect(stage).toContain("/v1/internal/release-control/outbox-dispatch/fence");
+    expect(stage).toContain("ATTEMPT_AUTHORITY_CUTOVER_POST_ACTIVATION_RELEASE_NOT_OWNED");
+    expect(at("post-activation email-provider containment")).toBeLessThan(at("post-activation-email-provider-defect/$RELEASE_ID"));
+    expect(stage).toContain('.attempt_authority == "ATTEMPT" and .email_dispatch_paused == false');
+    expect(stage).toContain('.email_dispatch_paused == true and');
+    expect(stage).toContain("ATTEMPT_AUTHORITY_CUTOVER_POST_ACTIVATION_REFENCE_REPLAY=1");
+    expect(stage).toContain("ATTEMPT_AUTHORITY_CUTOVER_POST_ACTIVATION_DISPATCH_NOT_DRAINED");
+    // The classification request carries only CAS state. The durable runtime
+    // derives and re-proves the refusal inside its transaction.
+    expect(stage).toContain("expected_authority_revision: $revision");
+    expect(stage).toContain("/candidates/post-activation-email-provider-defect");
+    expect(stage).toContain("POST_ACTIVATION_EMAIL_DEFECT_CLASSIFIED=RECOVERY_REQUIRED");
+  });
+
+  it("keeps provider refusal unable to satisfy the acceptance completion proof", () => {
+    const unfenceProof = workflow.slice(at("Prove dispatch actually runs under attempt authority"),
+      at("Contain and classify an exact post-activation provider refusal"));
+    expect(unfenceProof).toContain(".dispatched_after_unfence == true");
+    expect(unfenceProof).not.toContain("KNOWN_FAILED");
+    const complete = workflow.slice(at("Complete only a certified, activated, unfenced candidate"));
+    expect(complete).toContain('.head.phase == "CERTIFIED"');
+  });
+
   it("does not claim certify is reversible by abort", () => {
     // abortCandidate refuses any generation that was ever CERTIFIED, and
     // prepare activates the lease from DEPLOYED_READ_ONLY - so the generation

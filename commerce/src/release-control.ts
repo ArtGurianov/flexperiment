@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import type Database from "better-sqlite3";
 import { canonicalLegalManifest, parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import { parseUtcTimestamp } from "./utc-timestamp";
-import { assertAppliedMigrationPrefix, candidateExpectedMigration, isTerminalPhase, parsePreActivationDefectEvidence, preActivationDefectClasses, reconcileHeadWithProjection, releaseStateHash, replayReleaseGenerationChain, runtimeReadinessActionableErrorClasses, type GenerationHead, type ReleasePhase, type RuntimeReadinessActionableErrorClass, type V2Event } from "./release-generation";
+import { assertAppliedMigrationPrefix, candidateExpectedMigration, isTerminalPhase, parsePostActivationEmailProviderDefectEvidence, parsePreActivationDefectEvidence, preActivationDefectClasses, reconcileHeadWithProjection, releaseStateHash, replayReleaseGenerationChain, runtimeReadinessActionableErrorClasses, type GenerationHead, type ReleasePhase, type RuntimeReadinessActionableErrorClass, type V2Event } from "./release-generation";
 import { evaluateCertificationEvidence } from "./certification-evidence";
 import { pricePromo } from "./promo-pricing";
 
@@ -134,6 +134,42 @@ export type PreActivationDefectRequest = {
   expected_state_hash: string;
   defect_class: "ACTIVATION_REFUSAL" | "CERTIFICATION_DISPATCH_TARGET_INVALID";
   defect_code: string;
+};
+
+/**
+ * A distinct recovery edge after authority has moved.  It carries no provider
+ * claim from the controller: the runtime resolves all failure facts from its
+ * own exact certification-order rows inside the release-control transaction.
+ */
+export type PostActivationEmailProviderDefectRequest = {
+  release_id: string;
+  candidate_generation: number;
+  expected_state_hash: string;
+  expected_authority_revision: number;
+};
+
+export type PostActivationAuthoritySnapshot = {
+  attempt_authority: "LEGACY" | "ATTEMPT";
+  email_dispatch_paused: boolean;
+  dispatch_owner_release_id: string | null;
+  dispatch_owner_generation: number | null;
+  revision: number;
+  drained: boolean;
+};
+
+export type PostActivationEmailProviderDefectReader = () => {
+  order_id: string | null;
+  unfenced_at: string | null;
+  ticket_attempt: {
+    outbox_id: string;
+    attempt_id: string | null;
+    attempt_no: number | null;
+    outcome: string | null;
+    started_at: string | null;
+    failure_code: string | null;
+    provider_error_code: string | null;
+  } | null;
+  exact: boolean;
 };
 
 /**
@@ -505,7 +541,7 @@ export class ReleaseSalesGate {
     return replay.head;
   }
 
-  private v2Event(releaseId: string, action: "ACQUIRED" | "PAUSED" | "REOPENED", kind: "CANDIDATE_ACQUIRED" | "CANDIDATE_SUPERSEDED" | "PHASE_CHANGED" | "RUNTIME_READINESS_DEFECT" | "PRE_ACTIVATION_DEFECT", details: Record<string, unknown>) {
+  private v2Event(releaseId: string, action: "ACQUIRED" | "PAUSED" | "REOPENED", kind: "CANDIDATE_ACQUIRED" | "CANDIDATE_SUPERSEDED" | "PHASE_CHANGED" | "RUNTIME_READINESS_DEFECT" | "PRE_ACTIVATION_DEFECT" | "POST_ACTIVATION_EMAIL_PROVIDER_DEFECT", details: Record<string, unknown>) {
     event(this.db, releaseId, action, { schema_version: 2, kind, ...details });
   }
 
@@ -882,6 +918,93 @@ export class ReleaseSalesGate {
       return { defect_class: parsed.defect_class, defect_code: parsed.defect_code, source_commit: parsed.source_commit };
     }
     return null;
+  }
+
+  /** The most recent recovery edge, used only for loss-response replay. */
+  private lastPostActivationEmailProviderDefect(releaseId: string): Record<string, unknown> | null {
+    const events = this.db.prepare("SELECT details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid DESC").all(releaseId) as Array<{ details_json: string }>;
+    for (const event of events) {
+      let envelope: { kind?: unknown; post_activation_email_provider_defect?: unknown };
+      try { envelope = JSON.parse(event.details_json) as typeof envelope; } catch { continue; }
+      if (envelope.kind !== "POST_ACTIVATION_EMAIL_PROVIDER_DEFECT") {
+        if (typeof envelope.kind === "string") return null;
+        continue;
+      }
+      const evidence = envelope.post_activation_email_provider_defect;
+      const source = (evidence as { source_commit?: unknown } | null)?.source_commit;
+      return typeof source === "string" && parsePostActivationEmailProviderDefectEvidence(evidence, source)
+        ? evidence as Record<string, unknown> : null;
+    }
+    return null;
+  }
+
+  /**
+   * Atomically records the exact terminal UniSender refusal and advances only
+   * CERTIFIED -> RECOVERY_REQUIRED.  Re-fencing is deliberately a prior,
+   * separately durable containment act; this transaction refuses unless that
+   * containment still belongs to the same ATTEMPT epoch and is drained.
+   */
+  markPostActivationEmailProviderDefect(
+    input: PostActivationEmailProviderDefectRequest,
+    authorityReader: () => PostActivationAuthoritySnapshot,
+    defectReader: PostActivationEmailProviderDefectReader,
+  ) {
+    return this.immediate(() => {
+      const gate = row(this.db); if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
+      const current = this.v2Head(input.release_id);
+
+      // A lost response after the committed ledger edge is reconciled from the
+      // ledger. It never replays a mutable provider query and never appends a
+      // second recovery event.
+      if (current.phase === "RECOVERY_REQUIRED") {
+        if (current.candidate_generation !== input.candidate_generation || releaseStateHash(current) !== input.expected_state_hash) throw new ReleaseControlError("RELEASE_STATE_STALE");
+        const recorded = this.lastPostActivationEmailProviderDefect(current.release_id);
+        if (!recorded || recorded.source_commit !== current.source_commit) throw new ReleaseControlError("POST_ACTIVATION_EMAIL_PROVIDER_DEFECT_NOT_RECORDED");
+        return { ...status(gate), head: current, recorded_defect: recorded };
+      }
+
+      if (gate.owner_release_id !== current.release_id || gate.sales_paused !== 1
+        || current.candidate_generation !== input.candidate_generation || releaseStateHash(current) !== input.expected_state_hash
+        || current.phase !== "CERTIFIED" || current.certification?.status !== "CONSUMED") {
+        throw new ReleaseControlError("POST_ACTIVATION_EMAIL_PROVIDER_DEFECT_STATE_INVALID");
+      }
+
+      // This is read inside BEGIN IMMEDIATE with the ledger append. It binds
+      // the resulting RECOVERY_REQUIRED state to a fence that still contains
+      // the broken ATTEMPT data plane, rather than to a stale workflow read.
+      const authority = authorityReader();
+      if (authority.attempt_authority !== "ATTEMPT") throw new ReleaseControlError("POST_ACTIVATION_EMAIL_PROVIDER_DEFECT_AUTHORITY_INVALID");
+      if (!authority.email_dispatch_paused || authority.dispatch_owner_release_id !== current.release_id || authority.dispatch_owner_generation !== null) {
+        throw new ReleaseControlError("POST_ACTIVATION_EMAIL_PROVIDER_DEFECT_FENCE_NOT_OWNED");
+      }
+      if (authority.revision !== input.expected_authority_revision) throw new ReleaseControlError("POST_ACTIVATION_EMAIL_PROVIDER_DEFECT_AUTHORITY_REVISION_STALE");
+      if (!authority.drained) throw new ReleaseControlError("POST_ACTIVATION_EMAIL_PROVIDER_DEFECT_DISPATCH_NOT_DRAINED");
+
+      const observed = defectReader();
+      if (!observed.exact || !observed.order_id || !observed.unfenced_at || !observed.ticket_attempt?.attempt_id
+        || !observed.ticket_attempt.started_at) throw new ReleaseControlError("POST_ACTIVATION_EMAIL_PROVIDER_DEFECT_EVIDENCE_INVALID");
+
+      const head = { ...current, phase: "RECOVERY_REQUIRED" as const, phase_sequence: current.phase_sequence + 1 };
+      const post_activation_email_provider_defect = {
+        reason: "POST_ACTIVATION_EMAIL_PROVIDER_DEFECT" as const,
+        order_id: observed.order_id,
+        outbox_id: observed.ticket_attempt.outbox_id,
+        attempt_id: observed.ticket_attempt.attempt_id,
+        message_type: "TICKET" as const,
+        unfenced_at: observed.unfenced_at,
+        started_at: observed.ticket_attempt.started_at,
+        outcome: "KNOWN_FAILED" as const,
+        failure_code: "UNISENDER_HTTP_REJECTED" as const,
+        provider_error_code: "1588" as const,
+        source_commit: current.source_commit,
+      };
+      const details = { schema_version: 2, kind: "POST_ACTIVATION_EMAIL_PROVIDER_DEFECT" as const, from_phase: current.phase, from_phase_sequence: current.phase_sequence, head, post_activation_email_provider_defect };
+      this.assertProposedV2Event(current.release_id, { action: "PAUSED", details_json: JSON.stringify(details) });
+      // One append contains both the defect evidence and resulting phase. If
+      // this transaction aborts, neither can become durable on its own.
+      this.v2Event(current.release_id, "PAUSED", "POST_ACTIVATION_EMAIL_PROVIDER_DEFECT", { from_phase: current.phase, from_phase_sequence: current.phase_sequence, head, post_activation_email_provider_defect });
+      return { ...status(row(this.db)!), head, recorded_defect: post_activation_email_provider_defect };
+    });
   }
 
   markPreActivationDefect(

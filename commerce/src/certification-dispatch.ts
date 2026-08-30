@@ -78,6 +78,29 @@ export type CertificationDispatchEvidence = {
   dispatched_after_unfence: boolean;
 };
 
+/**
+ * Exact, terminal provider-refusal evidence for the post-activation recovery
+ * seam.  This is intentionally narrower than the normal dispatch proof: an
+ * ACCEPTED attempt proves completion, whereas this object proves the one
+ * observed UniSender refusal that justifies containing a broken ATTEMPT plane.
+ */
+export type PostActivationEmailProviderDefectEvidence = {
+  release_id: string;
+  order_id: string | null;
+  unfenced_at: string | null;
+  ticket_attempt: {
+    outbox_id: string;
+    attempt_id: string | null;
+    attempt_no: number | null;
+    outcome: string | null;
+    started_at: string | null;
+    failure_code: string | null;
+    provider_error_code: string | null;
+  } | null;
+  /** True only for the exact evidence this recovery is permitted to record. */
+  exact: boolean;
+};
+
 /** The order id from the durable CERTIFIED transition, or null if not certified. */
 const certifiedOrderId = (db: Database.Database, releaseId: string): string | null => {
   const events = db.prepare("SELECT details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid ASC")
@@ -115,6 +138,22 @@ const after = (value: string | null, boundary: string | null): boolean => {
   const at = parseUtcTimestamp(value);
   const from = parseUtcTimestamp(boundary);
   return at !== null && from !== null && at >= from;
+};
+
+/** This recovery needs a strict ordering, not the inclusive completion proof. */
+const strictlyAfter = (value: string | null, boundary: string | null): boolean => {
+  if (!value || !boundary) return false;
+  const at = parseUtcTimestamp(value);
+  const from = parseUtcTimestamp(boundary);
+  return at !== null && from !== null && at > from;
+};
+
+const providerErrorCode = (failureDetail: unknown): string | null => {
+  if (typeof failureDetail !== "string") return null;
+  try {
+    const parsed = JSON.parse(failureDetail) as { provider_error_code?: unknown };
+    return typeof parsed.provider_error_code === "string" ? parsed.provider_error_code : null;
+  } catch { return null; }
 };
 
 /**
@@ -184,4 +223,49 @@ export const certificationDispatchEvidence = (db: Database.Database, releaseId: 
     && live.every((message) => message.attempt !== null && message.attempt.started_at !== null);
 
   return { release_id: releaseId, order_id: orderId, unfenced_at: unfencedAt, messages, target_defect: targetDefect(messages, live), queued_unstarted, dispatched_after_unfence };
+};
+
+/**
+ * Recomputes the recovery evidence from durable order, outbox, attempt and
+ * authority-event rows. No order, message, failure code or provider response
+ * is accepted from a controller request.
+ */
+export const postActivationEmailProviderDefectEvidence = (db: Database.Database, releaseId: string): PostActivationEmailProviderDefectEvidence => {
+  const orderId = certifiedOrderId(db, releaseId);
+  const unfencedAt = lastUnfenceAt(db, releaseId);
+  const empty = {
+    release_id: releaseId, order_id: orderId, unfenced_at: unfencedAt,
+    ticket_attempt: null, exact: false,
+  };
+  if (!orderId) return empty;
+  const attemptStore = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'outbox_attempt'").get();
+  if (!attemptStore) return empty;
+
+  // One order may create several messages, but the release proof target is its
+  // one live contractual TICKET. Multiple live TICKET rows are ambiguous, not
+  // an invitation to select whichever happened to be refused.
+  const rows = db.prepare(`SELECT o.id AS outbox_id,
+      a.id AS attempt_id, a.attempt_no, a.outcome, a.started_at, a.failure_code, a.failure_detail
+    FROM email_outbox o
+    LEFT JOIN outbox_attempt a ON a.message_id = o.id AND a.attempt_no = 1
+    WHERE (o.payload_ref = ? OR json_extract(o.payload_snapshot, '$.order_id') = ?)
+      AND o.type = 'TICKET' AND o.suppressed_at IS NULL AND o.superseded_at IS NULL
+    ORDER BY o.created_at, o.id`).all(orderId, orderId) as Array<Record<string, unknown>>;
+  if (rows.length !== 1) return empty;
+  const row = rows[0];
+  const ticket_attempt = {
+    outbox_id: String(row.outbox_id),
+    attempt_id: row.attempt_id === null || row.attempt_id === undefined ? null : String(row.attempt_id),
+    attempt_no: row.attempt_no === null || row.attempt_no === undefined ? null : Number(row.attempt_no),
+    outcome: row.outcome === null || row.outcome === undefined ? null : String(row.outcome),
+    started_at: row.started_at === null || row.started_at === undefined ? null : String(row.started_at),
+    failure_code: row.failure_code === null || row.failure_code === undefined ? null : String(row.failure_code),
+    provider_error_code: providerErrorCode(row.failure_detail),
+  };
+  const exact = ticket_attempt.attempt_id !== null && ticket_attempt.attempt_no === 1
+    && strictlyAfter(ticket_attempt.started_at, unfencedAt)
+    && ticket_attempt.outcome === "KNOWN_FAILED"
+    && ticket_attempt.failure_code === "UNISENDER_HTTP_REJECTED"
+    && ticket_attempt.provider_error_code === "1588";
+  return { release_id: releaseId, order_id: orderId, unfenced_at: unfencedAt, ticket_attempt, exact };
 };

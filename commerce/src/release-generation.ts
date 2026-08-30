@@ -14,7 +14,7 @@ export type CertificationLeaseStatus = "ACTIVE" | "CONSUMED" | "EXPIRED" | "REVO
 export type CertificationBinding = { lease_id: string; occurrence_id: string; promo_id: string; expected_idempotency_key_hash: string; lease_expires_at: string; status: CertificationLeaseStatus };
 export type GenerationHead = { release_id: string; candidate_generation: number; source_commit: string; migration_inventory: MigrationInventory; legal_baseline: unknown; release_family: string; checkout_contract_version: string; admin_contract_version: string; phase: ReleasePhase; phase_sequence: number; certification?: CertificationBinding };
 export type V2Event = { seq: number; release_id: string; action: "ACQUIRED" | "PAUSED" | "REOPENED"; details_json: string };
-type Envelope = { schema_version: 2; kind: "CANDIDATE_ACQUIRED" | "CANDIDATE_SUPERSEDED" | "PHASE_CHANGED" | "RUNTIME_READINESS_DEFECT" | "PUBLIC_FRONTEND_DEFECT" | "PRE_ACTIVATION_DEFECT"; [key: string]: unknown };
+type Envelope = { schema_version: 2; kind: "CANDIDATE_ACQUIRED" | "CANDIDATE_SUPERSEDED" | "PHASE_CHANGED" | "RUNTIME_READINESS_DEFECT" | "PUBLIC_FRONTEND_DEFECT" | "PRE_ACTIVATION_DEFECT" | "POST_ACTIVATION_EMAIL_PROVIDER_DEFECT"; [key: string]: unknown };
 
 const terminalPhases = new Set<string>(terminalReleasePhases);
 export const isTerminalPhase = (phase: ReleasePhase): phase is (typeof terminalReleasePhases)[number] => terminalPhases.has(phase);
@@ -141,6 +141,38 @@ export const parsePreActivationDefectEvidence = (value: unknown, sourceCommit: s
     && evidence.source_commit === sourceCommit;
 };
 
+/**
+ * Evidence for a provider refusal observed only after the irreversible
+ * LEGACY -> ATTEMPT transfer and this epoch's later unfence.  It deliberately
+ * names the exact, terminal response that stranded the cutover; it is not a
+ * general-purpose provider-error escape hatch.
+ */
+export type PostActivationEmailProviderDefectEvidence = {
+  reason: "POST_ACTIVATION_EMAIL_PROVIDER_DEFECT";
+  order_id: string;
+  outbox_id: string;
+  attempt_id: string;
+  message_type: "TICKET";
+  unfenced_at: string;
+  started_at: string;
+  outcome: "KNOWN_FAILED";
+  failure_code: "UNISENDER_HTTP_REJECTED";
+  provider_error_code: "1588";
+  source_commit: string;
+};
+
+export const parsePostActivationEmailProviderDefectEvidence = (value: unknown, sourceCommit: string): value is PostActivationEmailProviderDefectEvidence => {
+  const evidence = asRecord(value);
+  if (!evidence || Object.keys(evidence).length !== 11) return false;
+  return evidence.reason === "POST_ACTIVATION_EMAIL_PROVIDER_DEFECT"
+    && ["order_id", "outbox_id", "attempt_id", "unfenced_at", "started_at"].every((key) => nonEmptyString(evidence[key]))
+    && evidence.message_type === "TICKET"
+    && evidence.outcome === "KNOWN_FAILED"
+    && evidence.failure_code === "UNISENDER_HTTP_REJECTED"
+    && evidence.provider_error_code === "1588"
+    && evidence.source_commit === sourceCommit;
+};
+
 const publicFrontendDefectErrorClassSet = new Set<string>(publicFrontendDefectErrorClasses);
 export const parsePublicFrontendDefectEvidence = (value: unknown, sourceCommit: string): value is PublicFrontendDefectEvidence => {
   const evidence = asRecord(value);
@@ -192,7 +224,7 @@ export function replayReleaseGenerationChain(events: readonly V2Event[]): { head
       current = next;
       continue;
     }
-    if (envelope.kind !== "PHASE_CHANGED" && envelope.kind !== "RUNTIME_READINESS_DEFECT" && envelope.kind !== "PUBLIC_FRONTEND_DEFECT" && envelope.kind !== "PRE_ACTIVATION_DEFECT") return { corrupt: "UNKNOWN_V2_EVENT_KIND" };
+    if (envelope.kind !== "PHASE_CHANGED" && envelope.kind !== "RUNTIME_READINESS_DEFECT" && envelope.kind !== "PUBLIC_FRONTEND_DEFECT" && envelope.kind !== "PRE_ACTIVATION_DEFECT" && envelope.kind !== "POST_ACTIVATION_EMAIL_PROVIDER_DEFECT") return { corrupt: "UNKNOWN_V2_EVENT_KIND" };
     const next = headFrom(envelope.head);
     if (!next || isTerminalPhase(current.phase) || next.release_id !== current.release_id || next.candidate_generation !== current.candidate_generation || next.source_commit !== current.source_commit || canonicalV2(next.migration_inventory) !== canonicalV2(current.migration_inventory) || canonicalV2(next.legal_baseline) !== canonicalV2(current.legal_baseline) || next.release_family !== current.release_family || next.checkout_contract_version !== current.checkout_contract_version || next.admin_contract_version !== current.admin_contract_version || envelope.from_phase !== current.phase || envelope.from_phase_sequence !== current.phase_sequence || next.phase_sequence !== current.phase_sequence + 1 || !permittedPhaseChanges[current.phase].includes(next.phase)) return { corrupt: "INVALID_PHASE_CHANGE" };
     const runtimeReadinessDefectTransition = current.phase === "PAUSED" && next.phase === "RECOVERY_REQUIRED";
@@ -216,6 +248,12 @@ export function replayReleaseGenerationChain(events: readonly V2Event[]): { head
       if (envelope.kind === "PRE_ACTIVATION_DEFECT") {
         const unexpectedEvidence = ["certification_evidence", "certification_retry", "certification_defect", "runtime_readiness_defect", "public_frontend_defect"].some((key) => envelope[key] !== undefined);
         if (event.action !== "PAUSED" || !bindingPreserved || unexpectedEvidence || !parsePreActivationDefectEvidence(envelope.pre_activation_defect, current.source_commit)) return { corrupt: "INVALID_PRE_ACTIVATION_DEFECT" };
+        current = next;
+        continue;
+      }
+      if (envelope.kind === "POST_ACTIVATION_EMAIL_PROVIDER_DEFECT") {
+        const unexpectedEvidence = ["certification_evidence", "certification_retry", "certification_defect", "runtime_readiness_defect", "public_frontend_defect", "pre_activation_defect"].some((key) => envelope[key] !== undefined);
+        if (event.action !== "PAUSED" || !bindingPreserved || unexpectedEvidence || !parsePostActivationEmailProviderDefectEvidence(envelope.post_activation_email_provider_defect, current.source_commit)) return { corrupt: "INVALID_POST_ACTIVATION_EMAIL_PROVIDER_DEFECT" };
         current = next;
         continue;
       }

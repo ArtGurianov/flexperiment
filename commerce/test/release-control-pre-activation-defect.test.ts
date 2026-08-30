@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import { ReleaseSalesGate, type OutboxAuthoritySnapshot, type ReleaseRuntimeEvidence } from "../src/release-control";
 import { releaseStateHash, replayReleaseGenerationChain, type GenerationHead, type V2Event } from "../src/release-generation";
+import { fenceEmailDispatch, outboxAuthority } from "../src/outbox-authority";
 
 /**
  * The recovery edge for a defect found AFTER certification and BEFORE the
@@ -350,5 +351,107 @@ describe("pre-activation defect recovery", () => {
       expected_generation: 1, from_sha: SOURCE, expected_state_hash: releaseStateHash(recovered.head as GenerationHead),
     });
     expect(adopted.head).toMatchObject({ candidate_generation: 2, source_commit: replacement, phase: "PAUSED" });
+  });
+});
+
+/**
+ * This is intentionally not an extension of pre-activation recovery.  The
+ * authority has moved, so the only safe direction is ATTEMPT containment then
+ * a forward replacement; these tests exercise that separate edge directly.
+ */
+describe("post-activation email-provider defect recovery", () => {
+  const exactDefect = () => ({
+    order_id: "order-certified", unfenced_at: "2026-08-30 10:00:00.000",
+    ticket_attempt: {
+      outbox_id: "ticket-1", attempt_id: "attempt-1", attempt_no: 1,
+      outcome: "KNOWN_FAILED", started_at: "2026-08-30T10:00:01.000Z",
+      failure_code: "UNISENDER_HTTP_REJECTED", provider_error_code: "1588",
+    },
+    exact: true,
+  });
+
+  const postRequest = (releaseId: string, current: GenerationHead, authorityRevision: number) => ({
+    release_id: releaseId, candidate_generation: current.candidate_generation,
+    expected_state_hash: releaseStateHash(current), expected_authority_revision: authorityRevision,
+  });
+
+  const postAuthority = (db: ReturnType<typeof openDatabase>, releaseId: string) => {
+    const authority = outboxAuthority(db);
+    return { ...authority, drained: true, dispatch_owner_release_id: releaseId, dispatch_owner_generation: null };
+  };
+
+  it("contains open ATTEMPT with the real epoch CAS, then atomically classifies after drain", () => {
+    const { db, gate, releaseId, current } = certified();
+    // Simulate the durable result of activation/unfence: it is open, ATTEMPT,
+    // and at revision 6. The primitive itself must create the re-fence edge.
+    db.prepare("UPDATE outbox_authority SET attempt_authority = 'ATTEMPT', email_dispatch_paused = 0, dispatch_owner_release_id = NULL, dispatch_owner_generation = NULL, revision = 6 WHERE singleton = 1").run();
+    const fenced = fenceEmailDispatch(db, { expected_revision: 6, reason: "contain provider refusal" }, { release_id: releaseId, generation: null });
+    expect(fenced).toMatchObject({ attempt_authority: "ATTEMPT", email_dispatch_paused: true, dispatch_owner_release_id: releaseId, revision: 7 });
+
+    const recovered = gate.markPostActivationEmailProviderDefect(
+      postRequest(releaseId, current, 7), () => postAuthority(db, releaseId), exactDefect);
+    expect(recovered.head).toMatchObject({ phase: "RECOVERY_REQUIRED", certification: CERTIFICATION });
+    const events = db.prepare("SELECT rowid AS seq, release_id, action, details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid").all(releaseId) as V2Event[];
+    expect(replayReleaseGenerationChain(events)).toMatchObject({ head: { phase: "RECOVERY_REQUIRED", certification: CERTIFICATION } });
+    expect(events.at(-1)?.details_json).toContain('"kind":"POST_ACTIVATION_EMAIL_PROVIDER_DEFECT"');
+  });
+
+  it("replays from already-fenced ATTEMPT without consuming another authority revision", () => {
+    const { db, gate, releaseId, current } = certified();
+    db.prepare("UPDATE outbox_authority SET attempt_authority = 'ATTEMPT', email_dispatch_paused = 0, dispatch_owner_release_id = NULL, dispatch_owner_generation = NULL, revision = 6 WHERE singleton = 1").run();
+    fenceEmailDispatch(db, { expected_revision: 6, reason: "contain provider refusal" }, { release_id: releaseId, generation: null });
+    const once = gate.markPostActivationEmailProviderDefect(postRequest(releaseId, current, 7), () => postAuthority(db, releaseId), exactDefect);
+    const revision = outboxAuthority(db).revision;
+    const replayed = gate.markPostActivationEmailProviderDefect(
+      postRequest(releaseId, once.head as GenerationHead, revision),
+      () => { throw new Error("authority reader must not run for a committed replay"); },
+      () => { throw new Error("defect reader must not run for a committed replay"); },
+    );
+    expect(replayed.head).toEqual(once.head);
+    expect(outboxAuthority(db).revision).toBe(revision);
+  });
+
+  it("refuses foreign ownership, a stale authority revision, and undrained containment", () => {
+    const { gate, releaseId, current } = certified();
+    const base = { attempt_authority: "ATTEMPT" as const, email_dispatch_paused: true, dispatch_owner_release_id: releaseId, dispatch_owner_generation: null, revision: 7, drained: true };
+    expect(() => gate.markPostActivationEmailProviderDefect(postRequest(releaseId, current, 7), () => ({ ...base, dispatch_owner_release_id: "other" }), exactDefect))
+      .toThrow("POST_ACTIVATION_EMAIL_PROVIDER_DEFECT_FENCE_NOT_OWNED");
+    expect(() => gate.markPostActivationEmailProviderDefect(postRequest(releaseId, current, 8), () => base, exactDefect))
+      .toThrow("POST_ACTIVATION_EMAIL_PROVIDER_DEFECT_AUTHORITY_REVISION_STALE");
+    expect(() => gate.markPostActivationEmailProviderDefect(postRequest(releaseId, current, 7), () => ({ ...base, drained: false }), exactDefect))
+      .toThrow("POST_ACTIVATION_EMAIL_PROVIDER_DEFECT_DISPATCH_NOT_DRAINED");
+  });
+
+  it("refuses a non-exact attempt, a pre-unfence attempt, and a different terminal provider failure", () => {
+    const { gate, releaseId, current } = certified();
+    const authority = () => ({ attempt_authority: "ATTEMPT" as const, email_dispatch_paused: true, dispatch_owner_release_id: releaseId, dispatch_owner_generation: null, revision: 7, drained: true });
+    for (const defective of [
+      { ...exactDefect(), exact: false },
+      { ...exactDefect(), ticket_attempt: { ...exactDefect().ticket_attempt, started_at: "2026-08-30T09:59:59.000Z" }, exact: false },
+      { ...exactDefect(), ticket_attempt: { ...exactDefect().ticket_attempt, outcome: "ACCEPTED", failure_code: null }, exact: false },
+      { ...exactDefect(), ticket_attempt: { ...exactDefect().ticket_attempt, provider_error_code: "1589" }, exact: false },
+    ]) {
+      expect(() => gate.markPostActivationEmailProviderDefect(postRequest(releaseId, current, 7), authority, () => defective))
+        .toThrow("POST_ACTIVATION_EMAIL_PROVIDER_DEFECT_EVIDENCE_INVALID");
+    }
+  });
+
+  it("cannot commit an evidence event without its recovery phase", () => {
+    const { db, gate, releaseId, current } = certified();
+    db.exec(`CREATE TRIGGER reject_post_activation_defect BEFORE INSERT ON release_sales_gate_events
+      WHEN NEW.details_json LIKE '%POST_ACTIVATION_EMAIL_PROVIDER_DEFECT%'
+      BEGIN SELECT RAISE(ABORT, 'test atomic rollback'); END;`);
+    const authority = () => ({ attempt_authority: "ATTEMPT" as const, email_dispatch_paused: true, dispatch_owner_release_id: releaseId, dispatch_owner_generation: null, revision: 7, drained: true });
+    expect(() => gate.markPostActivationEmailProviderDefect(postRequest(releaseId, current, 7), authority, exactDefect)).toThrow();
+    expect(gate.releaseHead(releaseId).head?.phase).toBe("CERTIFIED");
+    expect(db.prepare("SELECT COUNT(*) AS n FROM release_sales_gate_events WHERE details_json LIKE '%POST_ACTIVATION_EMAIL_PROVIDER_DEFECT%'").get()).toEqual({ n: 0 });
+  });
+
+  it("keeps complete unreachable after the terminal provider refusal", () => {
+    const { gate, releaseId, current } = certified();
+    const authority = () => ({ attempt_authority: "ATTEMPT" as const, email_dispatch_paused: true, dispatch_owner_release_id: releaseId, dispatch_owner_generation: null, revision: 7, drained: true });
+    const recovered = gate.markPostActivationEmailProviderDefect(postRequest(releaseId, current, 7), authority, exactDefect);
+    expect(() => gate.completeCandidate({ release_id: releaseId, candidate_generation: 1, expected_state_hash: releaseStateHash(recovered.head as GenerationHead) }, () => evidence()))
+      .toThrow("RELEASE_STATE_STALE");
   });
 });
