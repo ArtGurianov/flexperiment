@@ -168,4 +168,47 @@ describe("v2 release generation chain", () => {
     const supersededWithCertification = { seq: 7, release_id: head.release_id, action: "PAUSED" as const, details_json: JSON.stringify({ schema_version: 2, kind: "CANDIDATE_SUPERSEDED", from_generation: 1, from_sha: head.source_commit, head: { ...gen5, certification: recovered.certification } }) };
     expect(replayReleaseGenerationChain([...events, defectEvent(), supersededWithCertification]).corrupt).toBe("INVALID_CANDIDATE_SUPERSEDED");
   });
+
+  it("replays the current gen1 ledger and the atomic post-activation defect-to-gen2 chain", () => {
+    const { events, certified } = certifiedChain();
+    // Existing durable gen1 history remains readable before the new kind is
+    // ever written.
+    expect(replayReleaseGenerationChain(events).head).toEqual(certified);
+
+    const recovered = { ...certified, phase: "RECOVERY_REQUIRED" as const, phase_sequence: 5 };
+    const defect = {
+      seq: 6, release_id: head.release_id, action: "PAUSED" as const, details_json: JSON.stringify({
+        schema_version: 2, kind: "POST_ACTIVATION_EMAIL_PROVIDER_DEFECT", from_phase: "CERTIFIED", from_phase_sequence: 4, head: recovered,
+        post_activation_email_provider_defect: {
+          reason: "POST_ACTIVATION_EMAIL_PROVIDER_DEFECT", order_id: "order-1", outbox_id: "ticket-1", attempt_id: "attempt-1",
+          message_type: "TICKET", message_status: "FAILED", message_delivery_outcome: "KNOWN_FAILED", attempt_count: 1,
+          unfenced_at: "2026-08-30 10:00:00", started_at: "2026-08-30T10:00:01.000Z", outcome: "KNOWN_FAILED",
+          failure_code: "UNISENDER_HTTP_REJECTED", provider_error_code: "1588", source_commit: certified.source_commit,
+        },
+      }),
+    };
+    const gen2 = { release_id: head.release_id, candidate_generation: 2, source_commit: "2".repeat(40), migration_inventory: head.migration_inventory, legal_baseline: head.legal_baseline, release_family: head.release_family, checkout_contract_version: head.checkout_contract_version, admin_contract_version: head.admin_contract_version, phase: "PAUSED" as const, phase_sequence: 0 };
+    const superseded = { seq: 7, release_id: head.release_id, action: "PAUSED" as const, details_json: JSON.stringify({ schema_version: 2, kind: "CANDIDATE_SUPERSEDED", from_generation: 1, from_sha: certified.source_commit, head: gen2 }) };
+    expect(replayReleaseGenerationChain([...events, defect, superseded])).toEqual({ head: gen2 });
+
+    const withEvidence = (timestamps: Record<string, string>) => ({
+      ...defect,
+      details_json: JSON.stringify({
+        ...JSON.parse(defect.details_json),
+        post_activation_email_provider_defect: {
+          ...JSON.parse(defect.details_json).post_activation_email_provider_defect,
+          ...timestamps,
+        },
+      }),
+    });
+    for (const timestamps of [
+      { unfenced_at: "2026-08-30T10:00:01Z", started_at: "2026-08-30T10:00:01Z" },
+      { unfenced_at: "2026-08-30T10:00:05Z", started_at: "2026-08-30T10:00:01Z" },
+      { unfenced_at: "not-a-timestamp", started_at: "2026-08-30T10:00:01Z" },
+      { unfenced_at: "2026-08-30T10:00:00Z", started_at: "not-a-timestamp" },
+    ]) {
+      expect(replayReleaseGenerationChain([...events, withEvidence(timestamps)]).corrupt)
+        .toBe("INVALID_POST_ACTIVATION_EMAIL_PROVIDER_DEFECT");
+    }
+  });
 });

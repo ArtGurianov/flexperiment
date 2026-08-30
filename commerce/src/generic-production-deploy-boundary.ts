@@ -103,6 +103,9 @@ export const controlPlanePaths: readonly string[] = [
 export const compatibilitySemanticsPaths: readonly string[] = [
   "commerce/src/crypto.ts",
   "commerce/src/certification-evidence.ts",
+  // The post-activation refusal classifier recomputes and serializes the
+  // immutable mail-attempt evidence used by release-control replay.
+  "commerce/src/certification-dispatch.ts",
   "commerce/src/promo-pricing.ts",
   "commerce/src/basis-points.ts",
   "commerce/src/legal-manifest.ts",

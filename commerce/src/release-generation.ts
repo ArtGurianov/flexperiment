@@ -1,5 +1,6 @@
 import { canonicalV2, sha256 } from "./crypto";
 import { isMigrationFilenameExpectation } from "./release-expectation";
+import { parseUtcTimestamp } from "./utc-timestamp";
 
 export const releasePhases = ["PAUSED", "DEPLOYED_READ_ONLY", "CERTIFICATION_ONLY", "CERTIFICATION_IN_FLIGHT", "CERTIFIED", "COMPLETE", "ABORTED", "RECOVERY_REQUIRED"] as const;
 /**
@@ -142,10 +143,8 @@ export const parsePreActivationDefectEvidence = (value: unknown, sourceCommit: s
 };
 
 /**
- * Evidence for a provider refusal observed only after the irreversible
- * LEGACY -> ATTEMPT transfer and this epoch's later unfence.  It deliberately
- * names the exact, terminal response that stranded the cutover; it is not a
- * general-purpose provider-error escape hatch.
+ * A provider refusal observed after ATTEMPT activated and then unfenced. This
+ * is deliberately a narrowly typed historical fact, never a completion proof.
  */
 export type PostActivationEmailProviderDefectEvidence = {
   reason: "POST_ACTIVATION_EMAIL_PROVIDER_DEFECT";
@@ -167,8 +166,11 @@ export type PostActivationEmailProviderDefectEvidence = {
 export const parsePostActivationEmailProviderDefectEvidence = (value: unknown, sourceCommit: string): value is PostActivationEmailProviderDefectEvidence => {
   const evidence = asRecord(value);
   if (!evidence || Object.keys(evidence).length !== 14) return false;
+  const unfencedAt = typeof evidence.unfenced_at === "string" ? parseUtcTimestamp(evidence.unfenced_at) : Number.NaN;
+  const startedAt = typeof evidence.started_at === "string" ? parseUtcTimestamp(evidence.started_at) : Number.NaN;
   return evidence.reason === "POST_ACTIVATION_EMAIL_PROVIDER_DEFECT"
     && ["order_id", "outbox_id", "attempt_id", "unfenced_at", "started_at"].every((key) => nonEmptyString(evidence[key]))
+    && Number.isFinite(unfencedAt) && Number.isFinite(startedAt) && startedAt > unfencedAt
     && evidence.message_type === "TICKET"
     && evidence.message_status === "FAILED"
     && evidence.message_delivery_outcome === "KNOWN_FAILED"

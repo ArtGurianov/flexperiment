@@ -46,7 +46,7 @@ describe("a controller is never older than what it deploys", () => {
       const checks = source
         .split("\n")
         .map((line) => line.trim())
-        .filter((line) => /^git merge-base --is-ancestor "\$(TARGET_SHA|target_sha|CANDIDATE_SOURCE_COMMIT)" "\$(CONTROLLER_SHA|MAIN_SHA)"/.test(line));
+        .filter((line) => /^git merge-base --is-ancestor "\$(TARGET_SHA|target_sha|CANDIDATE_SOURCE_COMMIT|GEN2_RUNTIME_SHA)" "\$(CONTROLLER_SHA|MAIN_SHA)"/.test(line));
 
       expect(checks, "nothing proves the controller covers the target it deploys").not.toHaveLength(0);
       for (const line of checks) expect(line, `does not fail the run:\n  ${line}`).toMatch(/exit 1/);

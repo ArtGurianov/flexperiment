@@ -174,11 +174,12 @@ export class UnisenderGoProvider implements EmailProvider, EmailDeliveryEvidence
         global_metadata: { outbox_id: input.outboxId }, body: { html: rendered.html, plaintext: rendered.plaintext }, subject: rendered.subject,
         from_email: this.config.fromEmail, from_name: this.config.fromName, reply_to: this.config.replyToEmail,
         template_engine: "none", idempotence_key: input.idempotencyKey,
-        // Only consent-based mail carries the provider's unsubscribe block. An
-        // unknown type is treated as contractual: never put an unsubscribe link
-        // on a ticket. This does not bypass an existing suppression - that
-        // needs bypass_global + bypass_unsubscribed and Unisender approval.
-        skip_unsubscribe: input.type !== undefined && CONSENT_BASED_EMAIL_TYPES.has(input.type) ? 0 : 1,
+        // Consent mail explicitly keeps the provider unsubscribe block. A
+        // contractual message deliberately omits this flag: `1` is a
+        // privileged bypass rejected by UniSender for the certification
+        // recipient. This does not bypass an existing suppression - that
+        // needs bypass_global + bypass_unsubscribed and provider approval.
+        ...(input.type !== undefined && CONSENT_BASED_EMAIL_TYPES.has(input.type) ? { skip_unsubscribe: 0 } : {}),
       } }),
     });
     const payload = await response.json().catch(() => undefined) as UnisenderSendResponse | undefined;
