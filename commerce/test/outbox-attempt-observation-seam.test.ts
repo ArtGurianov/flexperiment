@@ -126,6 +126,59 @@ describe("observation seam", () => {
       expect(attempt(db)).toEqual(before);
     });
 
+    it("settles nothing when a job id is supplied but matches no attempt", () => {
+      // The dangerous branch, and the one the earlier test missed: it covered a
+      // successful exact match only. Falling back to the current attempt would
+      // settle whatever is in flight on the strength of someone else's job id.
+      const { db } = fixture({ authority: "ATTEMPT", status: "SENDING" });
+      db.exec("UPDATE outbox_attempt SET outcome = 'KNOWN_FAILED' WHERE id = 'a1'");
+      db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key, provider_job_id)
+        VALUES ('a2', 'm1', 2, 'resend-key', 'job-2')`).run();
+
+      tx(db, () => applyProviderObservation(db, "m1", { status: "DELIVERED", jobId: "foreign-job" }, TS));
+
+      expect(attempt(db, "a1")).toMatchObject({ outcome: "KNOWN_FAILED" });
+      expect(attempt(db, "a2")).toMatchObject({ outcome: null });
+    });
+
+    it("settles nothing without a job id once the message has more than one attempt", () => {
+      // The message is proven, the attempt is not. A settled predecessor is
+      // exactly what such an event could belong to.
+      const { db } = fixture({ authority: "ATTEMPT", status: "SENDING" });
+      db.exec("UPDATE outbox_attempt SET outcome = 'KNOWN_FAILED' WHERE id = 'a1'");
+      db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key)
+        VALUES ('a2', 'm1', 2, 'resend-key')`).run();
+
+      tx(db, () => applyProviderObservation(db, "m1", { status: "DELIVERED" }, TS));
+
+      expect(attempt(db, "a2")).toMatchObject({ outcome: null });
+    });
+
+    it("still recovers a lost acceptance without a job id on a first send", () => {
+      // The fix must not kill this: one attempt in the whole history means the
+      // identity is unambiguous even with no job id.
+      const { db } = fixture({ authority: "ATTEMPT", status: "SENDING" });
+      db.exec("UPDATE outbox_attempt SET provider_job_id = NULL WHERE id = 'a1'");
+
+      tx(db, () => applyProviderObservation(db, "m1", { status: "DELIVERED" }, TS));
+
+      expect(attempt(db, "a1")).toMatchObject({ outcome: "ACCEPTED" });
+    });
+
+    it("uses an identity carried across our own provider call", () => {
+      // Our lookups know which attempt they asked about, so a terminal answer
+      // without a job id still settles the right one.
+      const { db } = fixture({ authority: "ATTEMPT", status: "SENDING" });
+      db.exec("UPDATE outbox_attempt SET outcome = 'KNOWN_FAILED' WHERE id = 'a1'");
+      db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key)
+        VALUES ('a2', 'm1', 2, 'resend-key')`).run();
+
+      tx(db, () => applyProviderObservation(db, "m1", { status: "DELIVERED" }, TS,
+        { authority: "ATTEMPT", attempt_id: "a2" }));
+
+      expect(attempt(db, "a2")).toMatchObject({ outcome: "ACCEPTED" });
+    });
+
     it("settles the attempt the evidence belongs to, not merely the current one", () => {
       // After a resend, a late event for attempt #1's job must not settle
       // attempt #2. "The current attempt" would be the wrong resolution.

@@ -2425,7 +2425,7 @@ export class CommerceDomain {
         try {
           const observed = await this.emailProvider.lookup({ jobId: lookupIdentity.jobId, idempotencyKey: lookupIdentity.idempotencyKey });
           if (observed.status === "UNKNOWN") this.deferUnknownEmailObservation(String(outbox.id), tryCount, attemptRef);
-          else this.applyEmailObservation(outbox.id as string, observed);
+          else this.applyEmailObservation(outbox.id as string, observed, attemptRef);
         }
         catch { this.deferUnknownEmailObservation(String(outbox.id), tryCount, attemptRef); }
         continue;
@@ -2437,7 +2437,7 @@ export class CommerceDomain {
       if (isUnknown) {
         try {
           const observed = await this.emailProvider.lookup({ idempotencyKey: lookupIdentity.idempotencyKey });
-          if (observed.status !== "UNKNOWN") { this.applyEmailObservation(outbox.id as string, observed); continue; }
+          if (observed.status !== "UNKNOWN") { this.applyEmailObservation(outbox.id as string, observed, attemptRef); continue; }
         } catch { /* same idempotency key will be used if a retry becomes possible */ }
       }
       const claimed = withImmediateTransaction(this.db, () => {
@@ -3200,7 +3200,7 @@ export class CommerceDomain {
     if (!existing) this.db.prepare("INSERT INTO provider_drift_reviews(id, entity_type, entity_id, observed_json) VALUES (?, ?, ?, ?)").run(id(), entityType, entityId, JSON.stringify(observed));
   }
 
-  private applyEmailObservation(outboxId: string, observed: { status: string; jobId?: string }) {
+  private applyEmailObservation(outboxId: string, observed: { status: string; jobId?: string }, known?: AttemptRef) {
     const terminal = ["ACCEPTED", "SENT", "DELIVERED", "BOUNCED", "FAILED"];
     if (!terminal.includes(observed.status)) return;
     // The selector is read inside this transaction by applyProviderObservation.
@@ -3208,7 +3208,7 @@ export class CommerceDomain {
     // API process from a provider callback and continues while dispatch is
     // fenced, so a selector read outside the governing transaction would
     // reintroduce the interleaving BEGIN IMMEDIATE exists to remove.
-    this.atomically(() => applyProviderObservation(this.db, outboxId, observed, now()));
+    this.atomically(() => applyProviderObservation(this.db, outboxId, observed, now(), known));
   }
 
   private redactDeliveredCityInterestOutbox(outboxId: string) {

@@ -603,14 +603,35 @@ export const suppressMessageDispatch = (
  * when the evidence carries one. "The current attempt" would be wrong: after a
  * resend, a late event for attempt #1's job must not settle attempt #2.
  */
-const attemptForObservation = (db: Database.Database, messageId: string, jobId: string | null) => {
-  if (jobId) {
-    const byJob = db.prepare(`SELECT id, outcome FROM outbox_attempt
-      WHERE message_id = ? AND provider_job_id = ?`).get(messageId, jobId) as { id: string; outcome: string | null } | undefined;
-    if (byJob) return byJob;
+const attemptForObservation = (
+  db: Database.Database,
+  messageId: string,
+  jobId: string | null,
+  known: AttemptRef | undefined,
+): { id: string; outcome: string | null } | undefined => {
+  // An identity carried across our own provider call is the strongest evidence
+  // available and beats rediscovery entirely.
+  if (known?.authority === "ATTEMPT") {
+    return db.prepare("SELECT id, outcome FROM outbox_attempt WHERE id = ? AND message_id = ?")
+      .get(known.attempt_id, messageId) as { id: string; outcome: string | null } | undefined;
   }
-  return db.prepare(`SELECT id, outcome FROM outbox_attempt
-    WHERE message_id = ? AND outcome IS NULL`).get(messageId) as { id: string; outcome: string | null } | undefined;
+
+  if (jobId) {
+    // Present but unmatched means the evidence belongs to a send this row does
+    // not know about. Falling back to the current attempt would settle whatever
+    // happens to be in flight on the strength of someone else's job id.
+    return db.prepare("SELECT id, outcome FROM outbox_attempt WHERE message_id = ? AND provider_job_id = ?")
+      .get(messageId, jobId) as { id: string; outcome: string | null } | undefined;
+  }
+
+  // No job id: the message is proven, the attempt is not. This is only
+  // unambiguous while the message has exactly ONE attempt in its whole history
+  // - not merely one unsettled attempt, because a settled predecessor is
+  // exactly what such an event could belong to. That keeps lost-acceptance
+  // recovery working for a first send and stops guessing once a resend exists.
+  const attempts = db.prepare("SELECT id, outcome FROM outbox_attempt WHERE message_id = ?")
+    .all(messageId) as Array<{ id: string; outcome: string | null }>;
+  return attempts.length === 1 ? attempts[0] : undefined;
 };
 
 /**
@@ -626,6 +647,7 @@ export const applyProviderObservation = (
   messageId: string,
   observed: { status: string; jobId?: string },
   timestamp: string,
+  known?: AttemptRef,
 ): boolean => {
   requireTransaction(db);
   const timestamps = observed.status === "SENT" ? ", sent_at = ?"
@@ -650,7 +672,7 @@ export const applyProviderObservation = (
     .run(observed.status, observed.status, ...stamp, messageId, observed.status, observed.status);
   if (!applied.changes) return false;
 
-  const attempt = attemptForObservation(db, messageId, jobId);
+  const attempt = attemptForObservation(db, messageId, jobId, known);
   if (!attempt || attempt.outcome !== null) return true;
   db.prepare(`UPDATE outbox_attempt
     SET outcome = ?, completed_at = COALESCE(completed_at, ?),
