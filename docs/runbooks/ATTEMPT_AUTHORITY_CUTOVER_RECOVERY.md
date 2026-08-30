@@ -186,7 +186,7 @@ in the middle of this one's migration.
 | `NO_QUEUED_CERTIFICATION_MAIL` | the certified order's mail is missing or already started | checked BEFORE activation, so nothing irreversible has happened. Recover with `classify_pre_activation_defect` and `CERTIFICATION_DISPATCH_TARGET_INVALID`. If a send already started, the fence was not doing its job |
 | `PRE_ACTIVATION_DEFECT_NOT_RECORDED` | replay of a recovery that came from a different edge | the generation is in recovery for another reason; read the ledger before acting |
 | `PRE_ACTIVATION_DEFECT_TARGET_IS_VALID` | the dispatch target is fine | the failure was something else; classify it truthfully |
-| `RECOVERY_UNFENCE_CANDIDATE_STILL_LIVE` | unfencing a candidate that has not let go | only `ABORTED` may resume mail |
+| `RECOVERY_UNFENCE_CANDIDATE_STILL_LIVE` | this epoch still has a live release candidate | mail resumes only when no live candidate remains — a fence-only cancellation or an `ABORTED` cleanup. Abort or finish the cutover first; `RECOVERY_REQUIRED` keeps the gate for its replacement `prepare` |
 | `ATTEMPT_DISPATCH_NOT_OBSERVED` | the certified order's own attempts did not settle after unfence | mail is flowing again either way; investigate the worker. `complete` will refuse until this proof passes |
 | `DISPATCH_PROOF_MISSING_BEFORE_COMPLETE` | the data-plane proof never succeeded | re-run `unfence` (it reconciles) or investigate; do not complete an epoch whose proof failed |
 | `EFFECTIVE_SOURCE_*` | the durable head's source is unreadable or unreachable | the candidate head is the authority for what is deployed; fix that before anything else |
