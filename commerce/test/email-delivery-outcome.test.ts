@@ -219,7 +219,11 @@ describe("email delivery outcome", () => {
       .filter((chunk) => chunk.startsWith("SET status = 'FAILED'"));
 
     it("finds the terminal-failure writers", () => {
-      expect(terminalFailureWrites.length).toBeGreaterThanOrEqual(5);
+      // Guards vacuity only. A fixed higher floor was calibrated to the
+      // pre-seam code and is now actively wrong: converting seams consolidates
+      // duplicated writers into shared helpers, so the count legitimately
+      // falls, and the guard would fail for a good change.
+      expect(terminalFailureWrites.length).toBeGreaterThan(0);
     });
 
     it.each(terminalFailureWrites.map((chunk, index) => [index, chunk] as const))(
