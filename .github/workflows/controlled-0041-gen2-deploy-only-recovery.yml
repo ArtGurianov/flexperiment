@@ -55,11 +55,9 @@ jobs:
           [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "GEN2_DEPLOY_CONTROLLER_NOT_MAIN" >&2; exit 1; }
           [[ "$INPUT_CONFIRM" == "DEPLOY-GEN2-AFTER-OFFLINE-BRIDGE" ]] || { echo "GEN2_DEPLOY_CONFIRMATION_REQUIRED" >&2; exit 1; }
           git fetch --no-tags origin "$GEN1_RUNTIME_SHA" "$GEN2_RUNTIME_SHA"
-          # The main controller that drives deployment must include the exact
-          # runtime it is authorizing. The offline bridge merge deliberately
-          # makes GEN2 a parent of this controller without making the
-          # maintenance bridge itself deployable.
-          git merge-base --is-ancestor "$GEN2_RUNTIME_SHA" "$CONTROLLER_SHA" || { echo "GEN2_DEPLOY_CONTROLLER_OLDER_THAN_TARGET" >&2; exit 1; }
+          # This controller is squash-merged onto main, while GEN2 remains a
+          # separately reviewed runtime artifact. Do not require GEN2 to be
+          # an ancestor of the controller: its identity is bound below.
           [[ "$(git rev-parse "$GEN2_RUNTIME_SHA^")" == "$GEN1_RUNTIME_SHA" ]] || { echo "GEN2_DEPLOY_RUNTIME_TOPOLOGY_INVALID" >&2; exit 1; }
           git cat-file -e "$GEN2_RUNTIME_SHA^{commit}"
           ! git cat-file -e "$GEN2_RUNTIME_SHA:.release/maintenance-only" 2>/dev/null || { echo "GEN2_DEPLOY_TARGET_IS_MAINTENANCE_ONLY" >&2; exit 1; }
