@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -22,9 +22,13 @@ const M0041 = readFileSync(join(MIGRATIONS, "0041_outbox_attempt.sql"), "utf8");
 const EPOCH = { release_id: "cutover-0041", generation: 7 };
 const open: Database.Database[] = [];
 
-/** On-disk, so a genuinely separate connection can play the old worker. */
-const at0040 = () => {
-  const file = join(mkdtempSync(join(tmpdir(), "outbox-attempt-")), "commerce.sqlite");
+/**
+ * Replaying every pre-0041 migration per test was slow enough to trip vitest's
+ * 5s default on CI intermittently. The schema is identical each time, so it is
+ * built once and the file copied.
+ */
+const template = (() => {
+  const file = join(mkdtempSync(join(tmpdir(), "outbox-attempt-template-")), "template.sqlite");
   const db = new Database(file);
   db.pragma("foreign_keys = ON");
   db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)");
@@ -32,6 +36,16 @@ const at0040 = () => {
     db.exec(readFileSync(join(MIGRATIONS, name), "utf8"));
     db.prepare("INSERT INTO schema_migrations(version) VALUES (?)").run(name);
   }
+  db.close();
+  return file;
+})();
+
+/** On-disk, so a genuinely separate connection can play the old worker. */
+const at0040 = () => {
+  const file = join(mkdtempSync(join(tmpdir(), "outbox-attempt-")), "commerce.sqlite");
+  copyFileSync(template, file);
+  const db = new Database(file);
+  db.pragma("foreign_keys = ON");
   const worker = new Database(file);
   worker.pragma("foreign_keys = ON");
   open.push(db, worker);

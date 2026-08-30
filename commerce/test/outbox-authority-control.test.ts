@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, readFileSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
@@ -56,21 +56,23 @@ const at0040Only = () => {
   return db;
 };
 
-const migrate = (file: string) => {
-  const db = new Database(file);
-  db.pragma("foreign_keys = ON");
-  db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)");
-  for (const name of readdirSync(MIGRATIONS).filter((n) => n.endsWith(".sql")).sort()) {
-    db.exec(readFileSync(join(MIGRATIONS, name), "utf8"));
-    db.prepare("INSERT INTO schema_migrations(version) VALUES (?)").run(name);
-  }
-  return db;
-};
+/**
+ * Replaying 41 migrations per test against an on-disk database took long enough
+ * to trip vitest's 5s default on CI - intermittently, which is the worst kind.
+ * The schema is identical every time, so it is built once and the file copied.
+ */
+const template = (() => {
+  const file = join(mkdtempSync(join(tmpdir(), "outbox-authority-template-")), "template.sqlite");
+  migrateThrough(file).close();
+  return file;
+})();
 
 /** An on-disk database, so a genuinely separate connection can be opened. */
 const fixture = () => {
   const file = join(mkdtempSync(join(tmpdir(), "outbox-authority-")), "commerce.sqlite");
-  const control = migrate(file);
+  copyFileSync(template, file);
+  const control = new Database(file);
+  control.pragma("foreign_keys = ON");
   const worker = new Database(file);
   worker.pragma("foreign_keys = ON");
   open.push(control, worker);
