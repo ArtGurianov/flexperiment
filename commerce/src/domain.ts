@@ -13,8 +13,8 @@ import { purchaseStatus, type PurchaseStatus } from "./purchase-status";
 import { parseUtcTimestamp } from "./utc-timestamp";
 import { assertNewOrdersOpen as assertGateOpen, emergencySalesPaused as gateEmergencyPaused, newOrdersBlocked as gateBlocked } from "./sales-gate";
 import { claimForDispatch, deferAmbiguousObservation, deferAmbiguousSend, dispatchCandidates, failExhaustedAmbiguous, providerLookupIdentity, recordProviderAcceptance, recordProviderRefusal, applyProviderObservation, claimedAttemptRef, reconcileHistoricalHttp403, resolveAttemptRef, skipObsoletePendingMessage, supersedeQueuedMessage, suppressMessageDispatch, sendTryCount, staleLeasedSends, type AttemptRef } from "./outbox-attempt-store";
-import { activateAttemptAuthority as runAttemptAuthorityActivation } from "./outbox-activation";
-import { OutboxAuthorityError, emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations, type DispatchEpoch } from "./outbox-authority";
+import { activateAttemptAuthority as runAttemptAuthorityActivation, activationEvidence } from "./outbox-activation";
+import { OutboxAuthorityError, emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, lastAuthorityEvent, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations, type DispatchEpoch } from "./outbox-authority";
 
 type Row = Record<string, unknown>;
 const one = <T extends Row>(db: Database.Database, sql: string, ...params: unknown[]) => db.prepare(sql).get(...params) as T | undefined;
@@ -346,8 +346,22 @@ export class CommerceDomain {
    *
    * There is deliberately no method here that moves attempt_authority.
    */
+  /**
+   * The whole outbox control surface a cutover controller needs, in one read:
+   * the durable selector, drain evidence, the last authority transition, and
+   * store convergence.
+   *
+   * `attempts` is null on a runtime without the attempt table, and that is
+   * load-bearing - before the 0041-aware candidate is live, the field's absence
+   * is what proves the old runtime is still answering.
+   */
   outboxAuthority() {
-    return { ...outboxAuthority(this.db), dispatch: emailDispatchDrained(this.db) };
+    return {
+      ...outboxAuthority(this.db),
+      dispatch: emailDispatchDrained(this.db),
+      last_event: lastAuthorityEvent(this.db),
+      attempts: activationEvidence(this.db),
+    };
   }
 
   /**

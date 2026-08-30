@@ -11,6 +11,36 @@ classification and every next-action decision remain in the tested controller
 code and recovery runbooks. A helper must not emit a recommended action or a
 parallel controller state such as `RESUMING_POSTPUBLICATION_REPAIR`.
 
+
+## The dispatch fence is owned by an epoch, and must be released by it
+
+`outbox_authority.email_dispatch_paused` is held by the cutover that acquired it,
+not by whoever holds the release-control credential. Two consequences are
+load-bearing and neither is obvious:
+
+- A release must not be completed while dispatch is still fenced. Completing ends
+  the epoch's reason to exist, stranded-fence takeover is deliberately not built,
+  and the result would be production with mail stopped and nothing able to resume
+  it. `controlled-outbox-attempt-authority-cutover.yml` refuses with
+  `ATTEMPT_AUTHORITY_CUTOVER_DISPATCH_MUST_BE_RESUMED_BEFORE_COMPLETE`.
+- The dispatch epoch carries no generation. The fence is held across a whole
+  cutover, including a forward-only recovery that bumps the candidate generation;
+  a generation-bound epoch would stop owning its own fence at exactly the moment
+  recovery was needed.
+
+Aborting a cutover releases the release gate and does not lift the fence. That is
+deliberate — mail stays stopped until an operator decides the direction — and the
+way out is the recovery unfence documented in
+[`ATTEMPT_AUTHORITY_CUTOVER_RECOVERY.md`](../runbooks/ATTEMPT_AUTHORITY_CUTOVER_RECOVERY.md).
+
+## Attempt authority moves once, and never back
+
+`LEGACY -> ATTEMPT` is one-way by design. Every reversible proof therefore has to
+happen before it: the real 1-RUB certification runs against the candidate binary
+while `abort` is still available, and activation is admitted only for a candidate
+already `CERTIFIED`. A cutover that activates early has spent its only
+irreversible step on an unproven binary.
+
 ## Runtime-readiness evidence
 
 The release ledger accepts five historical provider evidence classes for

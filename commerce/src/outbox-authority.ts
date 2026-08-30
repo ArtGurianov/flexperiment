@@ -64,6 +64,26 @@ export const outboxAuthority = (db: Database.Database): OutboxAuthorityState => 
   };
 };
 
+export type AuthorityEvent = {
+  action: string;
+  owner_release_id: string;
+  owner_generation: number | null;
+  reason: string;
+  revision: number;
+  created_at: string;
+};
+
+/**
+ * The most recent authority transition, for the cutover controller.
+ *
+ * Without it "the activation was recorded" is asserted only by the code that
+ * wrote the record - the controller would be trusting the same transaction it
+ * is supposed to be verifying from outside.
+ */
+export const lastAuthorityEvent = (db: Database.Database): AuthorityEvent | null =>
+  (db.prepare(`SELECT action, owner_release_id, owner_generation, reason, revision, created_at
+    FROM outbox_authority_events ORDER BY revision DESC, created_at DESC LIMIT 1`).get() as AuthorityEvent | undefined) ?? null;
+
 export const emailDispatchFenced = (db: Database.Database): boolean => outboxAuthority(db).email_dispatch_paused;
 
 const sameEpoch = (state: OutboxAuthorityState, epoch: DispatchEpoch) =>
