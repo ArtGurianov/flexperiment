@@ -693,7 +693,54 @@ jobs:
             api -X POST --data-binary @retry.json "$PUBLIC_API_URL/v1/internal/release-control/candidates/certification/retry" > retry-result.json
             api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json
           fi
+          # An expired lease is not a dead end, but refreshing one that is still
+          # alive would be a defect of its own: it would mint a new lease every
+          # time prepare is rerun, and an operator part-way through a payment
+          # would find the window they were using revoked underneath them. So
+          # the reset happens only after expiry is PROVEN.
           phase="$(jq -r '.head.phase' candidate-head.json)"
+          if [[ "$phase" == CERTIFICATION_ONLY ]]; then
+            # Never revoke a lease bound to some other fixture: this stage may
+            # only reset the one it was asked for.
+            jq -e --arg occurrence "$INPUT_CERTIFICATION_OCCURRENCE_ID" --arg promo "$INPUT_CERTIFICATION_PROMO_ID" --arg key_hash "$INPUT_CERTIFICATION_IDEMPOTENCY_KEY_HASH" '
+              .head.certification.occurrence_id == $occurrence and
+              .head.certification.promo_id == $promo and
+              .head.certification.expected_idempotency_key_hash == $key_hash
+            ' candidate-head.json >/dev/null || { echo "ATTEMPT_AUTHORITY_CUTOVER_CERTIFICATION_FIXTURE_MISMATCH" >&2; exit 1; }
+            expires="$(jq -r '.head.certification.lease_expires_at // empty' candidate-head.json)"
+            status="$(jq -r '.head.certification.status // empty' candidate-head.json)"
+            lease_state=""
+            # Parsed, never compared as text: the lease carries an offset-bearing
+            # ISO timestamp and lexical ordering against "now" is unsound.
+            if [[ "$status" == ACTIVE ]]; then
+              lease_state="$(
+                node -e '
+                  const t = Date.parse(process.argv[1]);
+                  if (!Number.isFinite(t)) process.exit(2);
+                  process.stdout.write(t > Date.now() ? "LIVE" : "EXPIRED");
+                ' "$expires"
+              )" || {
+                echo "ATTEMPT_AUTHORITY_CUTOVER_CERTIFICATION_LEASE_EXPIRY_INVALID" >&2
+                exit 1
+              }
+            fi
+            if [[ "$status" == ACTIVE && "$lease_state" == EXPIRED ]]; then
+              echo "CERTIFICATION_LEASE_EXPIRED=$expires"
+              jq -n --slurpfile current candidate-head.json '{
+                release_id: $current[0].head.release_id, candidate_generation: $current[0].head.candidate_generation,
+                expected_state_hash: $current[0].state_hash, from_phase: "CERTIFICATION_ONLY",
+                phase_sequence: $current[0].head.phase_sequence, to_phase: "DEPLOYED_READ_ONLY"
+              }' > lease-reset.json
+              api -X POST --data-binary @lease-reset.json "$PUBLIC_API_URL/v1/internal/release-control/candidates/phase" > lease-reset-result.json
+              api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json
+              # The revocation is what makes the reset safe to follow with a
+              # fresh lease: release-control revokes the allowlist row in the
+              # same transaction as the phase move.
+              jq -e '.head.phase == "DEPLOYED_READ_ONLY" and .head.certification.status == "REVOKED"' candidate-head.json >/dev/null \
+                || { cat candidate-head.json >&2; echo "ATTEMPT_AUTHORITY_CUTOVER_CERTIFICATION_LEASE_RESET_INVALID" >&2; exit 1; }
+              phase=DEPLOYED_READ_ONLY
+            fi
+          fi
           if [[ "$phase" == DEPLOYED_READ_ONLY ]]; then
             jq -n --slurpfile current candidate-head.json --arg occurrence "$INPUT_CERTIFICATION_OCCURRENCE_ID" --arg promo "$INPUT_CERTIFICATION_PROMO_ID" --arg key_hash "$INPUT_CERTIFICATION_IDEMPOTENCY_KEY_HASH" --argjson lease_seconds "$INPUT_CERTIFICATION_LEASE_SECONDS" '{release_id: $current[0].head.release_id, candidate_generation: $current[0].head.candidate_generation, expected_state_hash: $current[0].state_hash, occurrence_id: $occurrence, promo_id: $promo, expected_idempotency_key_hash: $key_hash, lease_seconds: $lease_seconds}' > lease.json
             api -X POST --data-binary @lease.json "$PUBLIC_API_URL/v1/internal/release-control/candidates/certification/activate" > leased.json
