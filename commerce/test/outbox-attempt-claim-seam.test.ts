@@ -4,6 +4,9 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { claimForDispatch, requireUnsettledAttempt } from "../src/outbox-attempt-store";
+import { CommerceDomain } from "../src/domain";
+import { MockProvider } from "../src/provider";
+import type { EmailProvider } from "../src/email-provider";
 
 /**
  * Seam 1 of 5: claim / lease / start.
@@ -224,5 +227,60 @@ describe("claim seam", () => {
       expect(() => claim(db)).toThrow(/EMAIL_DISPATCH_PAUSED/);
       expect(attempt(db)).toMatchObject({ lease_owner: null, send_try_count: 0 });
     });
+  });
+});
+
+/**
+ * Orchestration seam.
+ *
+ * The tests above prove claimForDispatch and dispatchCandidates. They do not
+ * prove that processEmailOutbox actually consumes them: restoring the old
+ * legacy-filtering scan in the loop would leave every one of them green while
+ * production silently skipped due retries. Same shape as the release-controller
+ * gaps - helper correct, orchestration not connected.
+ */
+describe("processEmailOutbox honours authoritative retry eligibility", () => {
+  const NOW = Date.parse("2026-08-30T14:30:00.000Z");
+
+  const dispatchFixture = (legacyNextAttempt: string, attemptNextRetry: string) => {
+    const db = fixture({
+      authority: "ATTEMPT",
+      // Staged before the flip: a SEND_UNKNOWN row with no known provider job,
+      // so the pre-claim lookup falls through to the claim rather than the
+      // not-yet-converted reconciliation paths deciding the outcome.
+      legacy: `UPDATE email_outbox SET status = 'SEND_UNKNOWN', job_id = NULL, attempts = 0,
+        next_attempt_at = '${legacyNextAttempt}' WHERE id = 'm1'`,
+    });
+    db.exec(`UPDATE outbox_attempt SET next_retry_at = '${attemptNextRetry}' WHERE id = 'a1'`);
+
+    const sent: string[] = [];
+    const emailProvider: EmailProvider = {
+      async send({ idempotencyKey }) { sent.push(idempotencyKey); return { jobId: "job-1" }; },
+      async lookup() { return { status: "UNKNOWN" }; },
+    };
+    return { db, sent, domain: new CommerceDomain(db, new MockProvider(), emailProvider, () => NOW) };
+  };
+
+  it("reaches the provider when the attempt is due and frozen legacy state says wait", async () => {
+    // The discriminating case: with the old legacy-filtering scan the row is
+    // never a candidate, so send() is never reached and this fails.
+    //
+    // The property under test is admission through to the provider boundary.
+    // Recording acceptance afterwards belongs to seam 2, which is still
+    // unconverted, so its legacy write aborts on the 0040 freeze trigger - the
+    // oracle behaving exactly as intended, and asserted here rather than
+    // hidden. When seam 2 lands, this becomes a clean ACCEPTED.
+    const { sent, domain, db } = dispatchFixture("2026-08-30T15:00:00.000Z", "2026-08-30T14:00:00.000Z");
+    await expect(domain.processEmailOutbox()).rejects.toThrow(/EMAIL_OUTBOX_LEGACY_ATTEMPT_FROZEN/);
+    expect(sent, "the row never reached the provider").toEqual(["shared-key"]);
+    expect(messageStatus(db)).toBe("SENDING");
+  });
+
+  it("does not dispatch when the attempt is not due, whatever legacy state says", async () => {
+    const { sent, domain, db } = dispatchFixture("2026-08-30T14:00:00.000Z", "2026-08-30T15:00:00.000Z");
+    await domain.processEmailOutbox();
+    expect(sent).toEqual([]);
+    expect(messageStatus(db)).toBe("SEND_UNKNOWN");
+    expect(attempt(db)).toMatchObject({ lease_owner: null, send_try_count: 0 });
   });
 });
