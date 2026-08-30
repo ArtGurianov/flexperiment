@@ -32,6 +32,30 @@ const EPOCH_A = { release_id: "cutover-a", generation: 1 };
 const EPOCH_B = { release_id: "cutover-b", generation: 1 };
 const open: Database.Database[] = [];
 
+/**
+ * Some assertions are about 0040's own state space, which 0041 deliberately
+ * widens. Those apply migrations only through 0040; everything about fence
+ * behaviour runs against the full current schema, which is the more realistic
+ * subject.
+ */
+const migrateThrough = (file: string, last?: string) => {
+  const db = new Database(file);
+  db.pragma("foreign_keys = ON");
+  db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)");
+  for (const name of readdirSync(MIGRATIONS).filter((n) => n.endsWith(".sql") && (!last || n <= last)).sort()) {
+    db.exec(readFileSync(join(MIGRATIONS, name), "utf8"));
+    db.prepare("INSERT INTO schema_migrations(version) VALUES (?)").run(name);
+  }
+  return db;
+};
+
+const at0040Only = () => {
+  const file = join(mkdtempSync(join(tmpdir(), "outbox-authority-0040-")), "commerce.sqlite");
+  const db = migrateThrough(file, "0040_outbox_authority_control.sql");
+  open.push(db);
+  return db;
+};
+
 const migrate = (file: string) => {
   const db = new Database(file);
   db.pragma("foreign_keys = ON");
@@ -106,17 +130,16 @@ describe("outbox authority control", () => {
     });
 
     it("cannot represent ATTEMPT authority at all", () => {
-      // Not "no command sets it" - the state space does not contain it. Proven
-      // by trying the statement directly rather than by scanning source, which
-      // is the check that missed the parameter-bound write in 0039.
-      const { control } = fixture();
+      // A property of 0040 specifically: 0041 widens this deliberately, so the
+      // assertion is scoped to the release that made the promise.
+      const control = at0040Only();
       expect(() => control.exec("UPDATE outbox_authority SET attempt_authority = 'ATTEMPT' WHERE singleton = 1"))
         .toThrow(/CHECK constraint failed/);
       expect(outboxAuthority(control).attempt_authority).toBe("LEGACY");
     });
 
     it("has no event vocabulary for an activation", () => {
-      const { control } = fixture();
+      const control = at0040Only();
       expect(() => control.prepare(`INSERT INTO outbox_authority_events(id, action, owner_release_id, reason, revision)
         VALUES ('e1', 'AUTHORITY_ACTIVATED', 'x', 'r', 2)`).run()).toThrow(/CHECK constraint failed/);
     });
@@ -363,8 +386,10 @@ describe("outbox authority control", () => {
 
     it("names an applied migration the build has never heard of", () => {
       const { control } = fixture();
-      control.prepare("INSERT INTO schema_migrations(version) VALUES (?)").run("0041_outbox_attempt.sql");
-      expect(unknownAppliedMigrations(control, MIGRATIONS)).toEqual(["0041_outbox_attempt.sql"]);
+      // A version no build will ever ship, so this cannot go stale the way
+      // naming a real future migration did.
+      control.prepare("INSERT INTO schema_migrations(version) VALUES (?)").run("9999_from_a_later_release.sql");
+      expect(unknownAppliedMigrations(control, MIGRATIONS)).toEqual(["9999_from_a_later_release.sql"]);
     });
 
     it("compares sets, not heads", () => {
