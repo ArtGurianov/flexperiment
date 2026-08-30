@@ -305,6 +305,24 @@ describe("controlled outbox attempt-authority cutover", () => {
     expect(workflow).toContain("env.INPUT_UNFENCE_MODE == 'activated'");
   });
 
+  it("resolves terminal epochs through the exact-release head read", () => {
+    // candidateHead() answers "what is the LIVE candidate": terminal phases are
+    // excluded and its historical fallback selects only COMPLETE. So once abort
+    // commits, every stage after fence/prepare would fail in the shared source
+    // resolver before reaching its own guard - including the ABORTED-only
+    // recovery unfence and abort's own lost-response reconciliation.
+    expect(workflow).toContain("/v1/internal/release-control/candidates/head/$RELEASE_ID");
+    const resolver = workflow.slice(at("Resolve the effective runtime source from durable candidate state"),
+      at("Bind source migration and surface contracts"));
+    expect(resolver).toContain("/candidates/head/$RELEASE_ID");
+    expect(resolver).not.toContain("/candidates/head\" >");
+    // The two terminal readers use it too.
+    for (const stage of ["Resume dispatch under the same epoch", "Abort a still-reversible candidate"]) {
+      const block = workflow.slice(at(stage), at(stage) + 2_500);
+      expect(block, stage).toContain("/candidates/head/$RELEASE_ID");
+    }
+  });
+
   it("does not short-circuit the pre-activation replay on phase alone", () => {
     // Three edges reach RECOVERY_REQUIRED. Exiting on the phase would report a
     // runtime-readiness or public-frontend recovery as a successful replay of

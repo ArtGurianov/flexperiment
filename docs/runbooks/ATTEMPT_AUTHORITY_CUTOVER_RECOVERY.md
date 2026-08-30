@@ -54,6 +54,17 @@ stage=classify_pre_activation_defect
   (no code: the runtime derives it from its own evidence)
 ```
 
+The derived code names the cause the rows actually prove, never an inference
+from "not queued and unstarted", which has several possible meanings:
+
+```text
+CERTIFICATION_DISPATCH_TARGET_MISSING           no mail for the certified order
+CERTIFICATION_DISPATCH_TARGET_ALL_SUPPRESSED    every message suppressed/superseded
+CERTIFICATION_DISPATCH_TARGET_ATTEMPT_MISSING   a live message has no attempt #1
+CERTIFICATION_DISPATCH_TARGET_ALREADY_SETTLED   a live attempt is already settled
+CERTIFICATION_DISPATCH_TARGET_ALREADY_STARTED   a live send has already begun
+```
+
 Two classes, because two different things strand a certified candidate and only
 one of them is an activation refusal. `NO_QUEUED_CERTIFICATION_MAIL` is raised by
 the controller *before* activation is ever called, so no activation code exists
@@ -61,6 +72,16 @@ to name — widening the activation vocabulary to cover it would have made the
 ledger claim a refusal that never happened. For that class the runtime verifies
 from `certificationDispatchEvidence` that the certified order exists and its
 target is genuinely unusable, and derives the code itself.
+
+The evidence is read inside release-control's own transaction, not by the
+caller beforehand: the dispatch fence deliberately does not serialize
+message-level changes — seam 4 permits suppression and supersession throughout —
+so evidence read outside it can be stale by the time the edge is appended.
+
+A replay reconciles from the **ledger alone** and never re-reads the target. A
+committed transition has to stay replayable after the thing it recorded is
+repaired: classify `TARGET_MISSING`, lose the response, the mail appears, retry —
+re-deriving present state would refuse a transition that already happened.
 
 A replay is bound to provenance, not to the phase: `RECOVERY_REQUIRED` is
 reachable through three edges, and reconciling on phase alone would report a
@@ -237,6 +258,20 @@ that understands both. A future cutover starts from here, which is why the
 presence of the attempt store as information rather than an error. An earlier
 revision refused any runtime carrying the attempt store, which would have made
 this resting state permanent.
+
+## Reading a terminal epoch
+
+`candidateHead()` answers *what is the live candidate*: it excludes terminal
+phases, and its historical fallback selects only `COMPLETE`. Once `abort`
+commits, the aborted epoch is invisible there — so every stage after `fence` and
+`prepare` resolves its source through the **exact-release** read instead:
+
+```text
+GET /v1/internal/release-control/candidates/head/<release_id>
+```
+
+Without it the `ABORTED`-only recovery unfence is unreachable across runs, and
+so is `abort`'s own lost-response reconciliation.
 
 ## Forward-only replacement
 

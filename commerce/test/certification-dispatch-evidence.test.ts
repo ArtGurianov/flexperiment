@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { certificationDispatchEvidence } from "../src/certification-dispatch";
 import { CommerceDomain } from "../src/domain";
 import { MockProvider } from "../src/provider";
+import { fenceEmailDispatch } from "../src/outbox-authority";
+import { parseUtcTimestamp } from "../src/utc-timestamp";
 import { ACTIVATION_REFUSAL_CODES } from "../src/outbox-activation";
 
 /**
@@ -223,34 +225,55 @@ describe("certification dispatch evidence", () => {
       .toMatchObject({ messages: [], queued_unstarted: false, dispatched_after_unfence: false });
   });
 
-  it("derives the dispatch-target defect code from the store, never from the caller", () => {
-    // This class exists precisely BECAUSE no activation refusal was produced -
-    // the controller refuses before calling activation - so there is no code to
-    // name and nothing to check a caller's assertion against except the store.
+  // Each cause is proven by the rows rather than inferred from the negation of
+  // "queued and unstarted", which has several possible meanings and only one of
+  // them is "already started". Naming the wrong one puts a stronger claim in an
+  // append-only ledger than the evidence supports.
+  const defects: Array<[string, (db: Database.Database) => void, string | null]> = [
+    ["no mail at all", () => {}, "CERTIFICATION_DISPATCH_TARGET_MISSING"],
+    ["every message suppressed", (db) => message(db, "m1", { status: "SKIPPED", suppressed_at: "2026-08-30T09:00:00.000Z" }), "CERTIFICATION_DISPATCH_TARGET_ALL_SUPPRESSED"],
+    ["attempt #1 absent", (db) => message(db, "m1", {}, null), "CERTIFICATION_DISPATCH_TARGET_ATTEMPT_MISSING"],
+    ["attempt already settled", (db) => message(db, "m1", {}, { outcome: "ACCEPTED", completed_at: "2026-08-30T09:00:00.000Z" }), "CERTIFICATION_DISPATCH_TARGET_ALREADY_SETTLED"],
+    ["send already started", (db) => message(db, "m1", { status: "SENDING" }, { started_at: "2026-08-30T09:00:00.000Z" }), "CERTIFICATION_DISPATCH_TARGET_ALREADY_STARTED"],
+    ["provider request already started", (db) => message(db, "m1", { status: "SENDING" }, { provider_request_started_at: "2026-08-30T09:00:00.000Z" }), "CERTIFICATION_DISPATCH_TARGET_ALREADY_STARTED"],
+    ["a valid target", (db) => message(db, "m1"), null],
+  ];
+  for (const [name, seed, expected] of defects) {
+    it(`names the target defect for ${name}`, () => {
+      const db = fixture();
+      certify(db);
+      seed(db);
+      decoy(db);
+      const evidence = certificationDispatchEvidence(db, RELEASE);
+      expect(evidence.target_defect).toBe(expected);
+      // The two are exact complements, so neither can drift from the other.
+      expect(evidence.queued_unstarted).toBe(expected === null);
+    });
+  }
+
+  it("does not read a send in the same second as the unfence as being after it", () => {
+    // The boundary this proof is measured against used to be written at
+    // CURRENT_TIMESTAMP's one-second precision while attempts carry
+    // milliseconds, so a send at 10:00:00.500 - genuinely BEFORE an unfence
+    // that committed at 10:00:00.900 - compared against a stored 10:00:00 and
+    // read as post-unfence. That is a false positive on the only data-plane
+    // proof the cutover has.
     const db = fixture();
     certify(db);
-    const domain = new CommerceDomain(db, new MockProvider());
-    const request = { release_id: RELEASE, candidate_generation: 1, expected_state_hash: "a".repeat(64),
-      defect_class: "CERTIFICATION_DISPATCH_TARGET_INVALID" as const, defect_code: "" };
-
-    // No mail for the certified order at all: a real invalid target, so the
-    // refusal that follows is the release-state one, not a rejection of class.
-    expect(() => domain.markPreActivationDefect(request)).not.toThrow(/PRE_ACTIVATION_DEFECT_TARGET_IS_VALID/);
-
-    // A perfectly good target must NOT be classifiable as broken.
-    message(db, "m1");
-    expect(() => domain.markPreActivationDefect(request)).toThrow(/PRE_ACTIVATION_DEFECT_TARGET_IS_VALID/);
+    unfenced(db, "2026-08-30 10:00:00.900");
+    message(db, "m1", { status: "ACCEPTED" },
+      { outcome: "ACCEPTED", started_at: "2026-08-30T10:00:00.500Z", completed_at: "2026-08-30T10:00:01.000Z" });
+    expect(certificationDispatchEvidence(db, RELEASE).dispatched_after_unfence).toBe(false);
   });
 
-  it("refuses a supplied code that the store does not support", () => {
+  it("writes authority events with sub-second precision", () => {
+    // The runtime, not the fixture: the column default is second-precision, so
+    // the insert has to supply the time itself.
     const db = fixture();
-    certify(db);
-    message(db, "m1", { status: "SENDING" }, { started_at: "2026-08-30T09:00:00.000Z" });
-    const domain = new CommerceDomain(db, new MockProvider());
-    expect(() => domain.markPreActivationDefect({
-      release_id: RELEASE, candidate_generation: 1, expected_state_hash: "a".repeat(64),
-      defect_class: "CERTIFICATION_DISPATCH_TARGET_INVALID", defect_code: "CERTIFICATION_DISPATCH_TARGET_MISSING",
-    })).toThrow(/PRE_ACTIVATION_DEFECT_CODE_NOT_DERIVED/);
+    fenceEmailDispatch(db, { expected_revision: 1, reason: "fence" }, { release_id: RELEASE, generation: null });
+    const created = (db.prepare("SELECT created_at FROM outbox_authority_events ORDER BY revision DESC LIMIT 1").get() as { created_at: string }).created_at;
+    expect(created).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}$/);
+    expect(Number.isFinite(parseUtcTimestamp(created))).toBe(true);
   });
 
   it("refuses an activation-refusal class carrying a code the module never throws", () => {
@@ -264,15 +287,24 @@ describe("certification dispatch evidence", () => {
   });
 
   it("keeps the activation refusal vocabulary in sync with the module that throws it", () => {
-    // The recovery transition binds its defect code to this list, so a code the
-    // list has never heard of cannot justify a recovery - and a code the module
-    // throws but the list omits would strand a real one.
+    // The recovery transition treats membership of this list as authority for a
+    // CERTIFIED -> RECOVERY_REQUIRED ledger edge, so the list must be exactly
+    // the set of codes the module can return - in BOTH directions.
+    //
+    // The earlier version of this test was tautological: it scanned the whole
+    // file, and the allowlist literal lives in that file, so an invented entry
+    // appeared on both sides and the subset check stayed green while the domain
+    // happily accepted the invented code. The declaration is therefore cut out
+    // of the scanned text before matching, and the assertion is set EQUALITY.
     const source = readFileSync(join(process.cwd(), "commerce", "src", "outbox-activation.ts"), "utf8");
-    const listed = new Set<string>(ACTIVATION_REFUSAL_CODES);
-    const thrown = new Set(
-      [...source.matchAll(/"(OUTBOX_[A-Z0-9_]+)"/g)].map((match) => match[1])
-        .filter((code) => !source.includes(`${code}" as`)),
-    );
-    expect([...thrown].filter((code) => !listed.has(code)).sort()).toEqual([]);
+    const start = source.indexOf("export const ACTIVATION_REFUSAL_CODES");
+    expect(start, "the allowlist declaration must be findable to be excluded").toBeGreaterThan(-1);
+    const end = source.indexOf("] as const;", start);
+    expect(end).toBeGreaterThan(start);
+    const withoutDeclaration = source.slice(0, start) + source.slice(end);
+
+    const thrown = [...new Set([...withoutDeclaration.matchAll(/"(OUTBOX_[A-Z0-9_]+)"/g)].map((match) => match[1]))].sort();
+    expect(thrown.length).toBeGreaterThan(10);
+    expect([...ACTIVATION_REFUSAL_CODES].sort()).toEqual(thrown);
   });
 });

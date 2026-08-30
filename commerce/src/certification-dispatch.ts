@@ -40,11 +40,29 @@ export type CertificationDispatchMessage = {
   } | null;
 };
 
+/**
+ * Why the target is unusable, each one directly proven by the rows.
+ *
+ * `queued_unstarted === false` has several possible causes and only one of them
+ * is "already started". Deriving that from the negation would put a stronger
+ * claim in an append-only ledger than the evidence supports, so the cause is
+ * computed explicitly or not named at all.
+ */
+export type CertificationDispatchTargetDefect =
+  | "CERTIFICATION_DISPATCH_TARGET_MISSING"
+  | "CERTIFICATION_DISPATCH_TARGET_ALL_SUPPRESSED"
+  | "CERTIFICATION_DISPATCH_TARGET_ATTEMPT_MISSING"
+  | "CERTIFICATION_DISPATCH_TARGET_ALREADY_SETTLED"
+  | "CERTIFICATION_DISPATCH_TARGET_ALREADY_STARTED"
+  | "CERTIFICATION_DISPATCH_TARGET_NOT_QUEUED_UNSTARTED";
+
 export type CertificationDispatchEvidence = {
   release_id: string;
   order_id: string | null;
   unfenced_at: string | null;
   messages: CertificationDispatchMessage[];
+  /** Null exactly when queued_unstarted is true. */
+  target_defect: CertificationDispatchTargetDefect | null;
   /**
    * Ready to be the proof target: at least one message, and every one of them
    * carries attempt #1, unsettled and never started. Checked BEFORE activation,
@@ -99,10 +117,31 @@ const after = (value: string | null, boundary: string | null): boolean => {
   return at !== null && from !== null && at >= from;
 };
 
+/**
+ * Ordered from the most specific cause to the least, so the first match is the
+ * one the rows actually prove. The final case is the honest fallback: the target
+ * is not queued-and-unstarted and this function cannot say more than that.
+ */
+const targetDefect = (
+  all: CertificationDispatchMessage[],
+  live: CertificationDispatchMessage[],
+): CertificationDispatchTargetDefect | null => {
+  if (all.length === 0) return "CERTIFICATION_DISPATCH_TARGET_MISSING";
+  if (live.length === 0) return "CERTIFICATION_DISPATCH_TARGET_ALL_SUPPRESSED";
+  if (live.some((message) => message.attempt === null || message.attempt.attempt_no !== 1)) return "CERTIFICATION_DISPATCH_TARGET_ATTEMPT_MISSING";
+  if (live.some((message) => message.attempt!.outcome !== null)) return "CERTIFICATION_DISPATCH_TARGET_ALREADY_SETTLED";
+  if (live.some((message) => message.attempt!.started_at !== null || message.attempt!.provider_request_started_at !== null)) return "CERTIFICATION_DISPATCH_TARGET_ALREADY_STARTED";
+  return null;
+};
+
 export const certificationDispatchEvidence = (db: Database.Database, releaseId: string): CertificationDispatchEvidence => {
   const orderId = certifiedOrderId(db, releaseId);
   const unfencedAt = lastUnfenceAt(db, releaseId);
-  const empty = { release_id: releaseId, order_id: orderId, unfenced_at: unfencedAt, messages: [], queued_unstarted: false, dispatched_after_unfence: false };
+  const empty = {
+    release_id: releaseId, order_id: orderId, unfenced_at: unfencedAt, messages: [],
+    target_defect: "CERTIFICATION_DISPATCH_TARGET_MISSING" as const,
+    queued_unstarted: false, dispatched_after_unfence: false,
+  };
   if (!orderId) return empty;
   const attemptStore = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'outbox_attempt'").get();
   if (!attemptStore) return empty;
@@ -144,5 +183,5 @@ export const certificationDispatchEvidence = (db: Database.Database, releaseId: 
     // Nothing left behind: a partially dispatched backlog is not a proof.
     && live.every((message) => message.attempt !== null && message.attempt.started_at !== null);
 
-  return { release_id: releaseId, order_id: orderId, unfenced_at: unfencedAt, messages, queued_unstarted, dispatched_after_unfence };
+  return { release_id: releaseId, order_id: orderId, unfenced_at: unfencedAt, messages, target_defect: targetDefect(messages, live), queued_unstarted, dispatched_after_unfence };
 };

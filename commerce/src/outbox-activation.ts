@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { id } from "./crypto";
-import { OutboxAuthorityError, emailDispatchDrained, outboxAuthority, type DispatchEpoch } from "./outbox-authority";
+import { AUTHORITY_EVENT_NOW, OutboxAuthorityError, emailDispatchDrained, outboxAuthority, type DispatchEpoch } from "./outbox-authority";
 import { LEGACY_EXHAUSTION_ERROR } from "./outbox-attempt-store";
 
 /**
@@ -415,8 +415,8 @@ export const activateAttemptAuthority = (
   assertOrFail(changed.changes === 1, "OUTBOX_AUTHORITY_REVISION_CONFLICT");
 
   const next = outboxAuthority(db);
-  db.prepare(`INSERT INTO outbox_authority_events(id, action, owner_release_id, owner_generation, reason, revision)
-    VALUES (?, 'AUTHORITY_ACTIVATED', ?, ?, ?, ?)`)
+  db.prepare(`INSERT INTO outbox_authority_events(id, action, owner_release_id, owner_generation, reason, revision, created_at)
+    VALUES (?, 'AUTHORITY_ACTIVATED', ?, ?, ?, ?, ${AUTHORITY_EVENT_NOW})`)
     .run(id(), epoch.release_id, epoch.generation ?? null, input.reason, next.revision);
 
   return {

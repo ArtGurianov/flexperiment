@@ -270,7 +270,13 @@ jobs:
           # RELEASE_ID stays derived from the initial target - it is the durable
           # identity of the epoch - but the runtime SOURCE comes from the
           # candidate head, which is the only thing that knows what is deployed.
-          api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > resolved-head.json || { echo "ATTEMPT_AUTHORITY_CUTOVER_HEAD_READ_UNAVAILABLE" >&2; exit 1; }
+          # The EXACT release, not "the live candidate". candidateHead() excludes
+          # terminal phases and its historical fallback selects only COMPLETE,
+          # so once abort commits the aborted epoch becomes unreadable there -
+          # and every stage after fence/prepare would fail here before reaching
+          # its own guard, including the ABORTED-only recovery unfence and
+          # abort's own lost-response reconciliation.
+          api "$PUBLIC_API_URL/v1/internal/release-control/candidates/head/$RELEASE_ID" > resolved-head.json || { echo "ATTEMPT_AUTHORITY_CUTOVER_HEAD_READ_UNAVAILABLE" >&2; exit 1; }
           jq -e --arg release_id "$RELEASE_ID" '.schema_version == 2 and .head.release_id == $release_id' resolved-head.json >/dev/null \
             || { echo "ATTEMPT_AUTHORITY_CUTOVER_EFFECTIVE_SOURCE_RELEASE_MISMATCH" >&2; exit 1; }
           resolved="$(jq -er '.head.source_commit | select(type == "string" and test("^[a-f0-9]{40}$"))' resolved-head.json)" \
@@ -851,7 +857,8 @@ jobs:
             # attempt-aware runtime is already deployed.
             #
             # The recovery path is for a cutover that has actually let go.
-            api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > recovery-head.json || { echo "ATTEMPT_AUTHORITY_CUTOVER_HEAD_READ_UNAVAILABLE" >&2; exit 1; }
+            # ABORTED is terminal, so this must be the exact-release read.
+            api "$PUBLIC_API_URL/v1/internal/release-control/candidates/head/$RELEASE_ID" > recovery-head.json || { echo "ATTEMPT_AUTHORITY_CUTOVER_HEAD_READ_UNAVAILABLE" >&2; exit 1; }
             api "$PUBLIC_API_URL/v1/internal/release-control/status" > recovery-status.json
             # ABORTED only, and RECOVERY_REQUIRED deliberately NOT.
             #
@@ -994,7 +1001,9 @@ jobs:
         run: |
           set -euo pipefail
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
-          api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > abort-head.json
+          # Exact-release: a lost abort response leaves a terminal head that
+          # the live-candidate read can no longer see.
+          api "$PUBLIC_API_URL/v1/internal/release-control/candidates/head/$RELEASE_ID" > abort-head.json
           if jq -e --arg release_id "$RELEASE_ID" '.head.release_id == $release_id and .head.phase == "ABORTED"' abort-head.json >/dev/null; then
             echo "ABORT_REPLAY=already-aborted"
           else

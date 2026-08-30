@@ -396,6 +396,12 @@ export class CommerceDomain {
    * attempt authority. Read-only, and the order id comes from the durable
    * ledger rather than from a caller who could otherwise name a different one.
    */
+  /** One exact release's head, terminal phases included. See releaseHead(). */
+  releaseCandidateHead(releaseId: string) {
+    try { return this.releaseSalesGate().releaseHead(releaseId); }
+    catch (error) { if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status); throw error; }
+  }
+
   certificationDispatchEvidence(releaseId: string) {
     return certificationDispatchEvidence(this.db, releaseId);
   }
@@ -412,21 +418,6 @@ export class CommerceDomain {
       if (!(ACTIVATION_REFUSAL_CODES as readonly string[]).includes(input.defect_code)) {
         throw new DomainError("PRE_ACTIVATION_DEFECT_CODE_UNKNOWN", 422);
       }
-    } else {
-      // The proof target is unusable. Verified here from the runtime's own
-      // evidence rather than taken on the caller's word: this class exists
-      // precisely because no activation refusal was ever produced, so there is
-      // nothing to check the caller's assertion against except the store.
-      const evidence = certificationDispatchEvidence(this.db, input.release_id);
-      if (!evidence.order_id) throw new DomainError("PRE_ACTIVATION_DEFECT_NO_CERTIFIED_ORDER", 409);
-      if (evidence.queued_unstarted) throw new DomainError("PRE_ACTIVATION_DEFECT_TARGET_IS_VALID", 409);
-      // Derived, never supplied. A caller able to name the reason could record
-      // a truthful-looking edge for an untrue cause.
-      const derived = evidence.messages.length === 0
-        ? "CERTIFICATION_DISPATCH_TARGET_MISSING"
-        : "CERTIFICATION_DISPATCH_TARGET_ALREADY_STARTED";
-      if (input.defect_code && input.defect_code !== derived) throw new DomainError("PRE_ACTIVATION_DEFECT_CODE_NOT_DERIVED", 422);
-      input = { ...input, defect_code: derived };
     }
     try {
       return this.releaseSalesGate().markPreActivationDefect(input, () => this.releaseRuntimeEvidence(), () => {
@@ -436,6 +427,13 @@ export class CommerceDomain {
           email_dispatch_paused: authority.email_dispatch_paused,
           dispatch_owner_release_id: authority.dispatch_owner_release_id,
         };
+      }, () => {
+        // Read inside release-control's transaction, and the code is derived
+        // here rather than accepted: a caller able to name the reason could
+        // record a truthful-looking edge for an untrue cause.
+        const evidence = certificationDispatchEvidence(this.db, input.release_id);
+        if (!evidence.order_id) throw new DomainError("PRE_ACTIVATION_DEFECT_NO_CERTIFIED_ORDER", 409);
+        return evidence.target_defect;
       });
     } catch (error) {
       if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);

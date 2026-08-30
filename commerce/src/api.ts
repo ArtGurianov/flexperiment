@@ -528,6 +528,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   releaseControl.post("/candidates/adopt", async (c) => c.json(domain.adoptPromoCandidate(await jsonBody(c.req.raw) as import("./release-control").CandidateAdoptRequest)));
   releaseControl.post("/candidates/phase", async (c) => c.json(domain.changePromoCandidatePhase(await jsonBody(c.req.raw) as import("./release-control").CandidatePhaseRequest)));
   releaseControl.post("/candidates/runtime-readiness-defect", async (c) => c.json(domain.markPromoCandidateRuntimeReadinessDefect(await jsonBody(c.req.raw) as import("./release-control").RuntimeReadinessDefectRequest)));
+  releaseControl.get("/candidates/head/:releaseId", (c) => c.json(domain.releaseCandidateHead(c.req.param("releaseId"))));
   releaseControl.get("/certification-dispatch/:releaseId", (c) => c.json(domain.certificationDispatchEvidence(c.req.param("releaseId"))));
   releaseControl.post("/candidates/pre-activation-defect", async (c) => {
     const input = preActivationDefectSchema.parse(await jsonBody(c.req.raw));

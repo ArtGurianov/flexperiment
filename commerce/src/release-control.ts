@@ -136,6 +136,18 @@ export type PreActivationDefectRequest = {
   defect_code: string;
 };
 
+/**
+ * Injected and evaluated INSIDE the transaction.
+ *
+ * Returns the durable defect code when the certification dispatch target is
+ * unusable, or null when it is fine. A classification rather than raw rows, so
+ * this module still keeps no knowledge of the outbox tables - but read under
+ * the same BEGIN IMMEDIATE that appends the ledger edge, because the
+ * message-level state it describes is deliberately NOT serialized by the
+ * dispatch fence: seam 4 permits suppression and supersession throughout.
+ */
+export type CertificationDispatchTargetReader = () => string | null;
+
 /** Injected, so this module keeps no knowledge of the outbox tables. */
 export type OutboxAuthoritySnapshot = {
   attempt_authority: "LEGACY" | "ATTEMPT";
@@ -411,6 +423,35 @@ export class ReleaseSalesGate {
       const ownerActions = (this.db.prepare("SELECT action FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid ASC").all(gate.owner_release_id) as { action: string }[]).map((row) => row.action);
       if (reconcileLegacyOwnerWithProjection(ownerActions, gate.sales_paused === 1)) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
     }
+  }
+
+  /**
+   * One exact release's head, whatever phase it is in - terminal included.
+   *
+   * candidateHead() answers "what is the live candidate", so it excludes
+   * terminal phases and its historical fallback selects only COMPLETE. That is
+   * right for its callers and wrong for recovery: once abort commits, the
+   * aborted epoch becomes unreadable, and a later controller run cannot resolve
+   * the very epoch it is trying to finish cleaning up after - it cannot even
+   * reconcile its own lost abort response.
+   *
+   * Rather than distort those semantics, this replays exactly the requested
+   * release's chain. Read-only, and it makes no claim about which candidate is
+   * live.
+   */
+  releaseHead(releaseId: string): CandidateHeadSnapshot {
+    const events = this.db.prepare("SELECT rowid AS seq, release_id, action, details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid ASC").all(releaseId) as V2Event[];
+    const v2 = events.filter((event) => {
+      try { return (JSON.parse(event.details_json) as { schema_version?: unknown }).schema_version === 2; }
+      catch { return false; }
+    });
+    // 409 rather than widening the shared status union for one reader; the
+    // named code carries the meaning.
+    if (!v2.length) throw new ReleaseControlError("RELEASE_HEAD_NOT_FOUND");
+    const replay = replayReleaseGenerationChain(v2);
+    if (replay.corrupt) throw new ReleaseControlError("RELEASE_STATE_CORRUPT", 503);
+    if (!replay.head) throw new ReleaseControlError("RELEASE_HEAD_NOT_FOUND");
+    return { schema_version: 2, head: replay.head, state_hash: releaseStateHash(replay.head) };
   }
 
   candidateHead(): CandidateHeadSnapshot {
@@ -847,6 +888,7 @@ export class ReleaseSalesGate {
     input: PreActivationDefectRequest,
     runtimeEvidence: () => ReleaseRuntimeEvidence,
     outboxAuthority: () => OutboxAuthoritySnapshot,
+    dispatchTarget: CertificationDispatchTargetReader,
   ) {
     return this.immediate(() => {
       const gate = row(this.db); if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
@@ -859,14 +901,26 @@ export class ReleaseSalesGate {
       // public-frontend recovery as a successful replay of an activation defect
       // that was never recorded - which is exactly the audit property the
       // separate ledger kind exists to preserve.
+      //
+      // Reconciled from the LEDGER and nothing else. Re-deriving the target
+      // classification here would make a committed transition unreplayable the
+      // moment the thing it recorded got repaired: classify TARGET_MISSING,
+      // lose the response, the mail appears, retry - and the retry would refuse
+      // because the target is now valid, for a transition that has already
+      // happened.
       if (current.phase === "RECOVERY_REQUIRED") {
         if (current.candidate_generation !== input.candidate_generation || releaseStateHash(current) !== input.expected_state_hash) throw new ReleaseControlError("RELEASE_STATE_STALE");
         const recorded = this.lastPreActivationDefect(current.release_id);
         if (!recorded) throw new ReleaseControlError("PRE_ACTIVATION_DEFECT_NOT_RECORDED");
-        if (recorded.defect_class !== input.defect_class || recorded.defect_code !== input.defect_code || recorded.source_commit !== current.source_commit) {
+        if (recorded.defect_class !== input.defect_class || recorded.source_commit !== current.source_commit) {
           throw new ReleaseControlError("PRE_ACTIVATION_DEFECT_EVIDENCE_CONFLICT");
         }
-        return { ...status(gate), head: current };
+        // A derived class carries no caller-supplied code to compare; the
+        // recorded one is the answer.
+        if (input.defect_class === "ACTIVATION_REFUSAL" && recorded.defect_code !== input.defect_code) {
+          throw new ReleaseControlError("PRE_ACTIVATION_DEFECT_EVIDENCE_CONFLICT");
+        }
+        return { ...status(gate), head: current, recorded_defect: recorded };
       }
 
       if (gate.owner_release_id !== current.release_id || gate.sales_paused !== 1) throw new ReleaseControlError("RELEASE_STATE_STALE");
@@ -874,7 +928,11 @@ export class ReleaseSalesGate {
       // The window this exists for, and nothing wider. A generation that has
       // not certified already has abort and readiness classification.
       if (current.phase !== "CERTIFIED" || current.certification?.status !== "CONSUMED") throw new ReleaseControlError("PRE_ACTIVATION_DEFECT_PHASE_INVALID");
-      if (!(preActivationDefectClasses as readonly string[]).includes(input.defect_class) || !/^[A-Z0-9_]{1,80}$/.test(input.defect_code)) throw new ReleaseControlError("PRE_ACTIVATION_DEFECT_INVALID");
+      if (!(preActivationDefectClasses as readonly string[]).includes(input.defect_class)) throw new ReleaseControlError("PRE_ACTIVATION_DEFECT_INVALID");
+      // A code is required only for the class that names one. The derived class
+      // legitimately arrives without it, because the store supplies it below.
+      if (input.defect_class === "ACTIVATION_REFUSAL" && !/^[A-Z0-9_]{1,80}$/.test(input.defect_code)) throw new ReleaseControlError("PRE_ACTIVATION_DEFECT_INVALID");
+      if (input.defect_class !== "ACTIVATION_REFUSAL" && input.defect_code && !/^[A-Z0-9_]{1,80}$/.test(input.defect_code)) throw new ReleaseControlError("PRE_ACTIVATION_DEFECT_INVALID");
 
       // The candidate under recovery must be the one actually deployed.
       const evidence = runtimeEvidence();
@@ -888,8 +946,19 @@ export class ReleaseSalesGate {
       if (authority.attempt_authority !== "LEGACY") throw new ReleaseControlError("PRE_ACTIVATION_DEFECT_AUTHORITY_ALREADY_ACTIVATED");
       if (!authority.email_dispatch_paused || authority.dispatch_owner_release_id !== current.release_id) throw new ReleaseControlError("PRE_ACTIVATION_DEFECT_FENCE_NOT_OWNED");
 
+      // Evaluated HERE, not by the caller before the transaction opened. The
+      // fence does not serialize message-level changes, so evidence read
+      // outside this transaction can be stale by the time the edge is appended.
+      let defectCode = input.defect_code;
+      if (input.defect_class === "CERTIFICATION_DISPATCH_TARGET_INVALID") {
+        const observed = dispatchTarget();
+        if (!observed) throw new ReleaseControlError("PRE_ACTIVATION_DEFECT_TARGET_IS_VALID");
+        if (input.defect_code && input.defect_code !== observed) throw new ReleaseControlError("PRE_ACTIVATION_DEFECT_CODE_NOT_DERIVED");
+        defectCode = observed;
+      }
+
       const head = { ...current, phase: "RECOVERY_REQUIRED" as const, phase_sequence: current.phase_sequence + 1 };
-      const pre_activation_defect = { reason: "PRE_ACTIVATION_DEFECT" as const, defect_class: input.defect_class, defect_code: input.defect_code, source_commit: current.source_commit };
+      const pre_activation_defect = { reason: "PRE_ACTIVATION_DEFECT" as const, defect_class: input.defect_class, defect_code: defectCode, source_commit: current.source_commit };
       const details = { schema_version: 2, kind: "PRE_ACTIVATION_DEFECT" as const, from_phase: current.phase, from_phase_sequence: current.phase_sequence, head, pre_activation_defect };
       this.assertProposedV2Event(current.release_id, { action: "PAUSED", details_json: JSON.stringify(details) });
       this.v2Event(current.release_id, "PAUSED", "PRE_ACTIVATION_DEFECT", { from_phase: current.phase, from_phase_sequence: current.phase_sequence, head, pre_activation_defect });
