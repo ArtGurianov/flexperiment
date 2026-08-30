@@ -8,14 +8,17 @@ import { id } from "./crypto";
  *
  * Two capabilities, and deliberately not a third:
  *
- *   fence / unfence email dispatch   shipped here
- *   observe the control state        shipped here
- *   LEGACY -> ATTEMPT activation     NOT shipped, by design
+ *   fence / unfence email dispatch   here
+ *   observe the control state        here
+ *   LEGACY -> ATTEMPT activation     ./outbox-activation.ts
  *
- * The activation transition belongs to the release that introduces the attempt
- * table and attempt-aware writers. Shipping it now would put a transition in
- * production capable of freezing legacy attempt writes while nothing else can
- * receive them.
+ * The separation is not tidiness. 0040 shipped to production alone, with the
+ * activation transition deliberately absent and `attempt_authority` structurally
+ * pinned to LEGACY, so that the fence could be proven against the worker already
+ * running there before any authority could move. Activation arrived only with
+ * the attempt table and the attempt-aware writers that can receive it, and it
+ * stays out of this module so that reviewing the fence never means reviewing the
+ * flip.
  */
 
 export type OutboxAuthorityState = {
@@ -35,8 +38,13 @@ export type OutboxAuthorityState = {
 export type DispatchEpoch = { release_id: string; generation: number | null };
 
 export class OutboxAuthorityError extends Error {
-  constructor(readonly code: string, readonly status = 409) {
-    super(code);
+  /**
+   * `detail` never reaches the wire - the response body carries `code` alone -
+   * but a refusal that cannot say WHICH object was missing costs an operator a
+   * manual schema diff in the middle of a cutover.
+   */
+  constructor(readonly code: string, readonly status = 409, detail?: string) {
+    super(detail ? `${code}: ${detail}` : code);
   }
 }
 

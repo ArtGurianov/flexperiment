@@ -13,6 +13,7 @@ import { purchaseStatus, type PurchaseStatus } from "./purchase-status";
 import { parseUtcTimestamp } from "./utc-timestamp";
 import { assertNewOrdersOpen as assertGateOpen, emergencySalesPaused as gateEmergencyPaused, newOrdersBlocked as gateBlocked } from "./sales-gate";
 import { claimForDispatch, deferAmbiguousObservation, deferAmbiguousSend, dispatchCandidates, failExhaustedAmbiguous, providerLookupIdentity, recordProviderAcceptance, recordProviderRefusal, applyProviderObservation, claimedAttemptRef, reconcileHistoricalHttp403, resolveAttemptRef, skipObsoletePendingMessage, supersedeQueuedMessage, suppressMessageDispatch, sendTryCount, staleLeasedSends, type AttemptRef } from "./outbox-attempt-store";
+import { activateAttemptAuthority as runAttemptAuthorityActivation } from "./outbox-activation";
 import { OutboxAuthorityError, emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations, type DispatchEpoch } from "./outbox-authority";
 
 type Row = Record<string, unknown>;
@@ -360,7 +361,7 @@ export class CommerceDomain {
   private mapOutboxAuthority<T>(operation: () => T): T {
     try { return operation(); }
     catch (error) {
-      if (error instanceof OutboxAuthorityError) throw new DomainError(error.code, error.status);
+      if (error instanceof OutboxAuthorityError) throw new DomainError(error.code, error.status, error.message);
       throw error;
     }
   }
@@ -368,6 +369,15 @@ export class CommerceDomain {
   fenceEmailDispatch(input: { expected_revision: number; reason: string }, epoch: DispatchEpoch) {
     return this.mapOutboxAuthority(() =>
       withImmediateTransaction(this.db, () => ({ ...fenceEmailDispatch(this.db, input, epoch), dispatch: emailDispatchDrained(this.db) })));
+  }
+
+  /**
+   * The one-way LEGACY -> ATTEMPT transfer. Held by release control, like the
+   * fence, and for the same reason: it is a deployment-mechanism act, not a
+   * business one.
+   */
+  activateAttemptAuthority(input: { expected_revision: number; reason: string }, epoch: DispatchEpoch) {
+    return this.mapOutboxAuthority(() => withImmediateTransaction(this.db, () => runAttemptAuthorityActivation(this.db, epoch, input)));
   }
 
   unfenceEmailDispatch(input: { expected_revision: number; reason: string }, epoch: DispatchEpoch) {

@@ -515,6 +515,10 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     const input = outboxDispatchFenceSchema.parse(await jsonBody(c.req.raw));
     return c.json(domain.fenceEmailDispatch(input, { release_id: input.release_id, generation: input.generation ?? null }));
   });
+  releaseControl.post("/outbox-authority/activate", async (c) => {
+    const input = outboxDispatchFenceSchema.parse(await jsonBody(c.req.raw));
+    return c.json(domain.activateAttemptAuthority(input, { release_id: input.release_id, generation: input.generation ?? null }));
+  });
   releaseControl.post("/outbox-dispatch/unfence", async (c) => {
     const input = outboxDispatchFenceSchema.parse(await jsonBody(c.req.raw));
     return c.json(domain.unfenceEmailDispatch(input, { release_id: input.release_id, generation: input.generation ?? null }));
