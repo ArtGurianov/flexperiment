@@ -2986,11 +2986,38 @@ export class CommerceDomain {
       WHERE order_id = ? AND status = 'OPEN'`).run(now(), reason, orderId);
   }
 
+  /**
+   * A message and its first attempt are created together or not at all.
+   *
+   * The atomicity is owned here rather than by callers: enqueueEmail is invoked
+   * both from transactional business operations and from sweep loops, so
+   * "the caller already has a transaction" is not an invariant this can rely
+   * on. The property being established is not that two inserts sit next to each
+   * other - it is that a newly created message without attempt #1 cannot exist.
+   *
+   * The provider key is minted ONCE and copied byte-for-byte into both stores:
+   *
+   *   LEGACY    email_outbox.provider_idempotence_key   authoritative
+   *             outbox_attempt #1                       shadow
+   *   ATTEMPT   outbox_attempt.provider_idempotence_key authoritative
+   *             email_outbox                            write-once shadow
+   *
+   * No selector branch is needed here. Attempt #1 should exist in either
+   * authority state once an 0041-aware binary is running, and the attempt row
+   * is not authoritative until the activation CAS - so this is not dual-write,
+   * it is creating the row that activation will later refresh and adopt.
+   */
   private enqueueEmail(type: string, recipientEmail: string, recipientEmailHash: string, template: string, payloadRef: string, payload: Record<string, unknown>) {
-    const outboxId = id();
-    this.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_ref, payload_snapshot, provider_idempotence_key)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(outboxId, type, recipientEmail, recipientEmailHash, template, payloadRef, JSON.stringify(payload), publicId());
-    return outboxId;
+    const write = () => {
+      const outboxId = id();
+      const providerKey = publicId();
+      this.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_ref, payload_snapshot, provider_idempotence_key)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(outboxId, type, recipientEmail, recipientEmailHash, template, payloadRef, JSON.stringify(payload), providerKey);
+      this.db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key)
+        VALUES (?, ?, 1, ?)`).run(id(), outboxId, providerKey);
+      return outboxId;
+    };
+    return this.db.inTransaction ? write() : withImmediateTransaction(this.db, write);
   }
 
   private insertCityInterestRequest(input: {
