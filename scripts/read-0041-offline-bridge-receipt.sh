@@ -10,6 +10,8 @@ readonly DATABASE_DESTINATION="/var/lib/flexperiment"
 readonly RECEIPT_NAME=".0041-gen1-to-gen2-offline-bridge.receipt"
 expected_maintenance_artifact_sha="${COMMERCE_GEN1_TO_GEN2_BRIDGE_MAINTENANCE_ARTIFACT_SHA:-}"
 [[ "$expected_maintenance_artifact_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "0041_OFFLINE_RECEIPT_MAINTENANCE_ARTIFACT_SHA_INVALID" >&2; exit 1; }
+node_bin="${COMMERCE_GEN1_TO_GEN2_BRIDGE_NODE_BIN:-}"
+[[ "$node_bin" == /* && -x "$node_bin" ]] || { echo "0041_OFFLINE_RECEIPT_NODE_BIN_INVALID" >&2; exit 1; }
 
 database_directory=""
 commerce_count=0
@@ -48,8 +50,9 @@ maintenance_worktree="$(field maintenance_worktree)"
 [[ "$(git -C "$maintenance_worktree" show -s --format=%P HEAD)" == "1f76c0eb73958e89356ff830036b8ef1c8b49c5b $GEN2_RUNTIME_SHA" ]] || { echo "0041_OFFLINE_RECEIPT_MAINTENANCE_TOPOLOGY_INVALID" >&2; exit 1; }
 git -C "$maintenance_worktree" cat-file -e "$expected_maintenance_artifact_sha:.release/maintenance-only" || { echo "0041_OFFLINE_RECEIPT_MAINTENANCE_MARKER_MISSING" >&2; exit 1; }
 git -C "$maintenance_worktree" diff --quiet && [[ -z "$(git -C "$maintenance_worktree" status --porcelain --untracked-files=all)" ]] || { echo "0041_OFFLINE_RECEIPT_MAINTENANCE_WORKTREE_DIRTY" >&2; exit 1; }
+cd "$maintenance_worktree"
 COMMERCE_DATABASE_PATH="$database_directory/commerce.sqlite" \
 COMMERCE_GEN1_TO_GEN2_BRIDGE_RECEIPT_STATE_HASH="$(field state_hash)" \
-node --import tsx "$maintenance_worktree/commerce/src/assert-gen1-to-gen2-offline-bridge.ts" >/dev/null
+"$node_bin" --import tsx commerce/src/assert-gen1-to-gen2-offline-bridge.ts >/dev/null
 [[ "$(wc -l < "$receipt" | tr -d ' ')" == 10 ]] || { echo "0041_OFFLINE_RECEIPT_SHAPE_INVALID" >&2; exit 1; }
 echo "0041_OFFLINE_BRIDGE_RECEIPT_VALID"

@@ -42,6 +42,8 @@ jobs:
       # Set once, after the reviewed maintenance PR receives its final SHA.
       # It is execution-artifact identity, never a deployment-source input.
       OFFLINE_BRIDGE_MAINTENANCE_ARTIFACT_SHA: ${{ vars.GEN1_OFFLINE_BRIDGE_MAINTENANCE_ARTIFACT_SHA }}
+      # A pinned host executable, not PATH-dependent shell discovery.
+      OFFLINE_BRIDGE_NODE_BIN: /root/flexperiment-0041-tools/node
       INPUT_CONFIRM: ${{ inputs.confirm }}
     steps:
       - uses: actions/checkout@v4
@@ -65,6 +67,23 @@ jobs:
           # contains no permitted path that could restart GEN1 after bridge.
           [[ "$GEN2_RUNTIME_SHA" != "$GEN1_RUNTIME_SHA" ]] || { echo "GEN2_DEPLOY_OLD_RUNTIME_FORBIDDEN" >&2; exit 1; }
 
+      - name: Validate deployment and convergence substrate before CAS
+        run: |
+          set -euo pipefail
+          require_non_empty() {
+            local name="$1" value="${!1:-}"
+            [[ -n "$value" ]] || { echo "GEN2_DEPLOY_REQUIRED_CONFIGURATION_MISSING:$name" >&2; exit 1; }
+          }
+          require_https_url() {
+            local name="$1" value="${!1:-}"
+            [[ "$value" =~ ^https://[^[:space:]]+$ ]] || { echo "GEN2_DEPLOY_REQUIRED_URL_INVALID:$name" >&2; exit 1; }
+          }
+          for name in COOLIFY_TOKEN COMMERCE_RELEASE_CONTROL_TOKEN; do require_non_empty "$name"; done
+          for name in COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL PUBLIC_API_URL PUBLIC_FRONTEND_URL ADMIN_RELEASE_URL; do
+            require_https_url "$name"
+          done
+          [[ "$OFFLINE_BRIDGE_NODE_BIN" == /* ]] || { echo "GEN2_DEPLOY_OFFLINE_NODE_BIN_INVALID" >&2; exit 1; }
+
       - name: Configure the pinned offline bridge substrate
         run: |
           set -euo pipefail
@@ -81,7 +100,7 @@ jobs:
           # This deliberately executes against stopped SQLite's Docker volume,
           # not the Gen1 runtime API. The receipt reader proves both Commerce
           # and worker are stopped and have restart policy disabled.
-          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -i "$HOME/.ssh/0041-offline-bridge" "$OFFLINE_BRIDGE_SSH_HOST" "COMMERCE_GEN1_TO_GEN2_BRIDGE_MAINTENANCE_ARTIFACT_SHA=$OFFLINE_BRIDGE_MAINTENANCE_ARTIFACT_SHA bash -s" < scripts/read-0041-offline-bridge-receipt.sh
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -i "$HOME/.ssh/0041-offline-bridge" "$OFFLINE_BRIDGE_SSH_HOST" "COMMERCE_GEN1_TO_GEN2_BRIDGE_MAINTENANCE_ARTIFACT_SHA=$OFFLINE_BRIDGE_MAINTENANCE_ARTIFACT_SHA COMMERCE_GEN1_TO_GEN2_BRIDGE_NODE_BIN=$OFFLINE_BRIDGE_NODE_BIN bash -s" < scripts/read-0041-offline-bridge-receipt.sh
 
       - name: CAS production-deploy to Gen2 before any webhook
         run: |
