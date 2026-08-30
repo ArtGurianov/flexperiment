@@ -90,6 +90,9 @@ export type PostActivationEmailProviderDefectEvidence = {
   unfenced_at: string | null;
   ticket_attempt: {
     outbox_id: string;
+    message_status: string;
+    message_delivery_outcome: string | null;
+    attempt_count: number;
     attempt_id: string | null;
     attempt_no: number | null;
     outcome: string | null;
@@ -244,7 +247,8 @@ export const postActivationEmailProviderDefectEvidence = (db: Database.Database,
   // One order may create several messages, but the release proof target is its
   // one live contractual TICKET. Multiple live TICKET rows are ambiguous, not
   // an invitation to select whichever happened to be refused.
-  const rows = db.prepare(`SELECT o.id AS outbox_id,
+  const rows = db.prepare(`SELECT o.id AS outbox_id, o.status AS message_status, o.delivery_outcome AS message_delivery_outcome,
+      (SELECT COUNT(*) FROM outbox_attempt attempts WHERE attempts.message_id = o.id) AS attempt_count,
       a.id AS attempt_id, a.attempt_no, a.outcome, a.started_at, a.failure_code, a.failure_detail
     FROM email_outbox o
     LEFT JOIN outbox_attempt a ON a.message_id = o.id AND a.attempt_no = 1
@@ -255,6 +259,11 @@ export const postActivationEmailProviderDefectEvidence = (db: Database.Database,
   const row = rows[0];
   const ticket_attempt = {
     outbox_id: String(row.outbox_id),
+    message_status: String(row.message_status),
+    message_delivery_outcome: row.message_delivery_outcome === null || row.message_delivery_outcome === undefined ? null : String(row.message_delivery_outcome),
+    // `1` proves both that the failed certification attempt is attempt #1 and
+    // that no later resend can have accepted or remain unsettled.
+    attempt_count: Number(row.attempt_count),
     attempt_id: row.attempt_id === null || row.attempt_id === undefined ? null : String(row.attempt_id),
     attempt_no: row.attempt_no === null || row.attempt_no === undefined ? null : Number(row.attempt_no),
     outcome: row.outcome === null || row.outcome === undefined ? null : String(row.outcome),
@@ -262,7 +271,8 @@ export const postActivationEmailProviderDefectEvidence = (db: Database.Database,
     failure_code: row.failure_code === null || row.failure_code === undefined ? null : String(row.failure_code),
     provider_error_code: providerErrorCode(row.failure_detail),
   };
-  const exact = ticket_attempt.attempt_id !== null && ticket_attempt.attempt_no === 1
+  const exact = ticket_attempt.message_status === "FAILED" && ticket_attempt.message_delivery_outcome === "KNOWN_FAILED"
+    && ticket_attempt.attempt_count === 1 && ticket_attempt.attempt_id !== null && ticket_attempt.attempt_no === 1
     && strictlyAfter(ticket_attempt.started_at, unfencedAt)
     && ticket_attempt.outcome === "KNOWN_FAILED"
     && ticket_attempt.failure_code === "UNISENDER_HTTP_REJECTED"

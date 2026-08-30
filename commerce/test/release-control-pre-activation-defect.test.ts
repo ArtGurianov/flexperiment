@@ -363,7 +363,8 @@ describe("post-activation email-provider defect recovery", () => {
   const exactDefect = () => ({
     order_id: "order-certified", unfenced_at: "2026-08-30 10:00:00.000",
     ticket_attempt: {
-      outbox_id: "ticket-1", attempt_id: "attempt-1", attempt_no: 1,
+      outbox_id: "ticket-1", message_status: "FAILED", message_delivery_outcome: "KNOWN_FAILED", attempt_count: 1,
+      attempt_id: "attempt-1", attempt_no: 1,
       outcome: "KNOWN_FAILED", started_at: "2026-08-30T10:00:01.000Z",
       failure_code: "UNISENDER_HTTP_REJECTED", provider_error_code: "1588",
     },

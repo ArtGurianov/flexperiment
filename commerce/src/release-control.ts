@@ -162,6 +162,9 @@ export type PostActivationEmailProviderDefectReader = () => {
   unfenced_at: string | null;
   ticket_attempt: {
     outbox_id: string;
+    message_status: string;
+    message_delivery_outcome: string | null;
+    attempt_count: number;
     attempt_id: string | null;
     attempt_no: number | null;
     outcome: string | null;
@@ -982,7 +985,12 @@ export class ReleaseSalesGate {
 
       const observed = defectReader();
       if (!observed.exact || !observed.order_id || !observed.unfenced_at || !observed.ticket_attempt?.attempt_id
-        || !observed.ticket_attempt.started_at) throw new ReleaseControlError("POST_ACTIVATION_EMAIL_PROVIDER_DEFECT_EVIDENCE_INVALID");
+        || !observed.ticket_attempt.started_at || observed.ticket_attempt.message_status !== "FAILED"
+        || observed.ticket_attempt.message_delivery_outcome !== "KNOWN_FAILED" || observed.ticket_attempt.attempt_count !== 1
+        || observed.ticket_attempt.attempt_no !== 1 || observed.ticket_attempt.outcome !== "KNOWN_FAILED"
+        || observed.ticket_attempt.failure_code !== "UNISENDER_HTTP_REJECTED" || observed.ticket_attempt.provider_error_code !== "1588") {
+        throw new ReleaseControlError("POST_ACTIVATION_EMAIL_PROVIDER_DEFECT_EVIDENCE_INVALID");
+      }
 
       const head = { ...current, phase: "RECOVERY_REQUIRED" as const, phase_sequence: current.phase_sequence + 1 };
       const post_activation_email_provider_defect = {
@@ -991,6 +999,9 @@ export class ReleaseSalesGate {
         outbox_id: observed.ticket_attempt.outbox_id,
         attempt_id: observed.ticket_attempt.attempt_id,
         message_type: "TICKET" as const,
+        message_status: "FAILED" as const,
+        message_delivery_outcome: "KNOWN_FAILED" as const,
+        attempt_count: 1,
         unfenced_at: observed.unfenced_at,
         started_at: observed.ticket_attempt.started_at,
         outcome: "KNOWN_FAILED" as const,

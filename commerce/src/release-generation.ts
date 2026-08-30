@@ -153,6 +153,9 @@ export type PostActivationEmailProviderDefectEvidence = {
   outbox_id: string;
   attempt_id: string;
   message_type: "TICKET";
+  message_status: "FAILED";
+  message_delivery_outcome: "KNOWN_FAILED";
+  attempt_count: 1;
   unfenced_at: string;
   started_at: string;
   outcome: "KNOWN_FAILED";
@@ -163,10 +166,13 @@ export type PostActivationEmailProviderDefectEvidence = {
 
 export const parsePostActivationEmailProviderDefectEvidence = (value: unknown, sourceCommit: string): value is PostActivationEmailProviderDefectEvidence => {
   const evidence = asRecord(value);
-  if (!evidence || Object.keys(evidence).length !== 11) return false;
+  if (!evidence || Object.keys(evidence).length !== 14) return false;
   return evidence.reason === "POST_ACTIVATION_EMAIL_PROVIDER_DEFECT"
     && ["order_id", "outbox_id", "attempt_id", "unfenced_at", "started_at"].every((key) => nonEmptyString(evidence[key]))
     && evidence.message_type === "TICKET"
+    && evidence.message_status === "FAILED"
+    && evidence.message_delivery_outcome === "KNOWN_FAILED"
+    && evidence.attempt_count === 1
     && evidence.outcome === "KNOWN_FAILED"
     && evidence.failure_code === "UNISENDER_HTTP_REJECTED"
     && evidence.provider_error_code === "1588"
