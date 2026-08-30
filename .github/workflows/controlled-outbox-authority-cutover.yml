@@ -1,8 +1,10 @@
-name: Controlled email delivery-outcome cutover
+name: Controlled outbox-authority cutover
 
-# Migration 0039: separates delivery truth from worker workflow state, so
-# `status = 'FAILED'` stops asserting a delivery failure it never observed. No
-# resend capability ships here.
+# Migration 0040: outbox authority control. Introduces no attempt table, no
+# backfill and no authority change - its entire purpose is to retrofit a
+# database-enforced dispatch fence onto the email worker ALREADY RUNNING in
+# production, so the mechanism that will contain the next migration is itself
+# production-proven before that migration exists.
 #
 # This is not a generic deploy and not the release-semantics lane: the candidate
 # carries commerce/migrations, which only the candidate protocol may deliver.
@@ -124,51 +126,51 @@ jobs:
       - name: Resolve immutable controller, source, and input bundle
         run: |
           set -euo pipefail
-          [[ "$INPUT_STAGE" == prepare || "$INPUT_STAGE" == certify || "$INPUT_STAGE" == classify_runtime_readiness_defect || "$INPUT_STAGE" == abort || "$INPUT_STAGE" == complete ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_STAGE_INVALID" >&2; exit 1; }
-          [[ "$INPUT_STAGE" != prepare || -n "$PRODUCTION_DEPLOY_REF_TOKEN" ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_DEPLOY_REF_TOKEN_REQUIRED" >&2; exit 1; }
-          [[ "$INPUT_TARGET_SHA" =~ ^[0-9A-Fa-f]{40}$ ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_TARGET_SHA_INVALID" >&2; exit 1; }
+          [[ "$INPUT_STAGE" == prepare || "$INPUT_STAGE" == certify || "$INPUT_STAGE" == classify_runtime_readiness_defect || "$INPUT_STAGE" == abort || "$INPUT_STAGE" == complete ]] || { echo "OUTBOX_AUTHORITY_CUTOVER_STAGE_INVALID" >&2; exit 1; }
+          [[ "$INPUT_STAGE" != prepare || -n "$PRODUCTION_DEPLOY_REF_TOKEN" ]] || { echo "OUTBOX_AUTHORITY_CUTOVER_DEPLOY_REF_TOKEN_REQUIRED" >&2; exit 1; }
+          [[ "$INPUT_TARGET_SHA" =~ ^[0-9A-Fa-f]{40}$ ]] || { echo "OUTBOX_AUTHORITY_CUTOVER_TARGET_SHA_INVALID" >&2; exit 1; }
           target_sha="${INPUT_TARGET_SHA,,}"
           git fetch --no-tags origin "$target_sha"
-          git cat-file -e "$target_sha^{commit}" || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_TARGET_UNAVAILABLE" >&2; exit 1; }
-          git merge-base --is-ancestor "$target_sha" "$CONTROLLER_SHA" || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_TARGET_NOT_REACHABLE_FROM_CONTROLLER" >&2; exit 1; }
+          git cat-file -e "$target_sha^{commit}" || { echo "OUTBOX_AUTHORITY_CUTOVER_TARGET_UNAVAILABLE" >&2; exit 1; }
+          git merge-base --is-ancestor "$target_sha" "$CONTROLLER_SHA" || { echo "OUTBOX_AUTHORITY_CUTOVER_TARGET_NOT_REACHABLE_FROM_CONTROLLER" >&2; exit 1; }
           effective_sha="$target_sha"
           if [[ -n "$INPUT_REPLACEMENT_SHA" ]]; then
-            [[ "$INPUT_STAGE" == prepare && "$INPUT_REPLACEMENT_SHA" =~ ^[0-9A-Fa-f]{40}$ ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_REPLACEMENT_SHA_INVALID" >&2; exit 1; }
+            [[ "$INPUT_STAGE" == prepare && "$INPUT_REPLACEMENT_SHA" =~ ^[0-9A-Fa-f]{40}$ ]] || { echo "OUTBOX_AUTHORITY_CUTOVER_REPLACEMENT_SHA_INVALID" >&2; exit 1; }
             effective_sha="${INPUT_REPLACEMENT_SHA,,}"
             git fetch --no-tags origin "$effective_sha"
-            git cat-file -e "$effective_sha^{commit}" || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_REPLACEMENT_UNAVAILABLE" >&2; exit 1; }
+            git cat-file -e "$effective_sha^{commit}" || { echo "OUTBOX_AUTHORITY_CUTOVER_REPLACEMENT_UNAVAILABLE" >&2; exit 1; }
           fi
           # The runtime must contain the reconciled shared migrationApplied()
           # predicate. A candidate built from a tree that predates it would
           # silently reinstate the run-33139603447 reopen defect in production.
-          AUTHORITY_HEAD_MIN_SHA=fd09fa5881de1e4bb7ba399a998e4797804061f5
+          AUTHORITY_HEAD_MIN_SHA=100f62ac7ee8c3e49ac009e7888565fd4d04fe8a
           git merge-base --is-ancestor "$AUTHORITY_HEAD_MIN_SHA" "$effective_sha" || {
-            echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_AUTHORITY_HEAD_RUNTIME_REQUIRED" >&2
+            echo "OUTBOX_AUTHORITY_CUTOVER_AUTHORITY_HEAD_RUNTIME_REQUIRED" >&2
             exit 1
           }
           present=0
           for value in "$INPUT_CERTIFICATION_OCCURRENCE_ID" "$INPUT_CERTIFICATION_PROMO_ID" "$INPUT_CERTIFICATION_IDEMPOTENCY_KEY_HASH" "$INPUT_CERTIFICATION_LEASE_SECONDS"; do [[ -n "$value" ]] && present=$((present + 1)); done
-          [[ "$present" == 0 || "$present" == 4 ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_CERTIFICATION_INPUTS_PARTIAL" >&2; exit 1; }
+          [[ "$present" == 0 || "$present" == 4 ]] || { echo "OUTBOX_AUTHORITY_CUTOVER_CERTIFICATION_INPUTS_PARTIAL" >&2; exit 1; }
           if [[ "$present" == 4 ]]; then
-            [[ "$INPUT_CERTIFICATION_OCCURRENCE_ID" =~ ^[0-9a-fA-F-]{36}$ && "$INPUT_CERTIFICATION_PROMO_ID" =~ ^[0-9a-fA-F-]{36}$ ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_CERTIFICATION_SCOPE_INVALID" >&2; exit 1; }
-            [[ "$INPUT_CERTIFICATION_IDEMPOTENCY_KEY_HASH" =~ ^[a-f0-9]{64}$ ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_CERTIFICATION_HASH_INVALID" >&2; exit 1; }
-            [[ "$INPUT_CERTIFICATION_LEASE_SECONDS" =~ ^[0-9]+$ && "$INPUT_CERTIFICATION_LEASE_SECONDS" -ge 180 && "$INPUT_CERTIFICATION_LEASE_SECONDS" -le 300 ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_CERTIFICATION_LEASE_INVALID" >&2; exit 1; }
+            [[ "$INPUT_CERTIFICATION_OCCURRENCE_ID" =~ ^[0-9a-fA-F-]{36}$ && "$INPUT_CERTIFICATION_PROMO_ID" =~ ^[0-9a-fA-F-]{36}$ ]] || { echo "OUTBOX_AUTHORITY_CUTOVER_CERTIFICATION_SCOPE_INVALID" >&2; exit 1; }
+            [[ "$INPUT_CERTIFICATION_IDEMPOTENCY_KEY_HASH" =~ ^[a-f0-9]{64}$ ]] || { echo "OUTBOX_AUTHORITY_CUTOVER_CERTIFICATION_HASH_INVALID" >&2; exit 1; }
+            [[ "$INPUT_CERTIFICATION_LEASE_SECONDS" =~ ^[0-9]+$ && "$INPUT_CERTIFICATION_LEASE_SECONDS" -ge 180 && "$INPUT_CERTIFICATION_LEASE_SECONDS" -le 300 ]] || { echo "OUTBOX_AUTHORITY_CUTOVER_CERTIFICATION_LEASE_INVALID" >&2; exit 1; }
           fi
-          [[ -z "$INPUT_RETRY_REASON" || "$INPUT_RETRY_REASON" == OPERATIONAL ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_RETRY_REASON_INVALID" >&2; exit 1; }
-          [[ -z "$INPUT_RETRY_REASON" || "$present" == 4 ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_RETRY_REQUIRES_FRESH_FIXTURE" >&2; exit 1; }
+          [[ -z "$INPUT_RETRY_REASON" || "$INPUT_RETRY_REASON" == OPERATIONAL ]] || { echo "OUTBOX_AUTHORITY_CUTOVER_RETRY_REASON_INVALID" >&2; exit 1; }
+          [[ -z "$INPUT_RETRY_REASON" || "$present" == 4 ]] || { echo "OUTBOX_AUTHORITY_CUTOVER_RETRY_REQUIRES_FRESH_FIXTURE" >&2; exit 1; }
           if [[ "$INPUT_STAGE" == classify_runtime_readiness_defect ]]; then
-            [[ -z "$INPUT_REPLACEMENT_SHA" && "$present" == 0 && -z "$INPUT_RETRY_REASON" ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_RUNTIME_READINESS_INPUTS_FORBIDDEN" >&2; exit 1; }
-            [[ "$INPUT_RUNTIME_READINESS_ERROR_CLASS" =~ ^(TLS_CERT_CHAIN_UNTRUSTED|PROVIDER_BAD_REQUEST|PROVIDER_NETWORK|PROVIDER_RESPONSE_INVALID)$ ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_RUNTIME_READINESS_CLASS_INVALID" >&2; exit 1; }
-            [[ "$INPUT_RUNTIME_READINESS_ERROR_CODE" =~ ^[A-Z0-9_]{1,80}$ ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_RUNTIME_READINESS_CODE_INVALID" >&2; exit 1; }
+            [[ -z "$INPUT_REPLACEMENT_SHA" && "$present" == 0 && -z "$INPUT_RETRY_REASON" ]] || { echo "OUTBOX_AUTHORITY_CUTOVER_RUNTIME_READINESS_INPUTS_FORBIDDEN" >&2; exit 1; }
+            [[ "$INPUT_RUNTIME_READINESS_ERROR_CLASS" =~ ^(TLS_CERT_CHAIN_UNTRUSTED|PROVIDER_BAD_REQUEST|PROVIDER_NETWORK|PROVIDER_RESPONSE_INVALID)$ ]] || { echo "OUTBOX_AUTHORITY_CUTOVER_RUNTIME_READINESS_CLASS_INVALID" >&2; exit 1; }
+            [[ "$INPUT_RUNTIME_READINESS_ERROR_CODE" =~ ^[A-Z0-9_]{1,80}$ ]] || { echo "OUTBOX_AUTHORITY_CUTOVER_RUNTIME_READINESS_CODE_INVALID" >&2; exit 1; }
           else
-            [[ -z "$INPUT_RUNTIME_READINESS_ERROR_CLASS" && -z "$INPUT_RUNTIME_READINESS_ERROR_CODE" ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_RUNTIME_READINESS_INPUTS_FORBIDDEN" >&2; exit 1; }
-            [[ "$INPUT_STAGE" == prepare || ("$present" == 0 && -z "$INPUT_RETRY_REASON") ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_COMPLETE_INPUTS_FORBIDDEN" >&2; exit 1; }
+            [[ -z "$INPUT_RUNTIME_READINESS_ERROR_CLASS" && -z "$INPUT_RUNTIME_READINESS_ERROR_CODE" ]] || { echo "OUTBOX_AUTHORITY_CUTOVER_RUNTIME_READINESS_INPUTS_FORBIDDEN" >&2; exit 1; }
+            [[ "$INPUT_STAGE" == prepare || ("$present" == 0 && -z "$INPUT_RETRY_REASON") ]] || { echo "OUTBOX_AUTHORITY_CUTOVER_COMPLETE_INPUTS_FORBIDDEN" >&2; exit 1; }
           fi
           if [[ "$INPUT_STAGE" == certify ]]; then
-            [[ "$INPUT_CERTIFICATION_ORDER_ID" =~ ^[0-9a-fA-F-]{36}$ ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_CERTIFICATION_ORDER_ID_INVALID" >&2; exit 1; }
-            [[ -z "$INPUT_REPLACEMENT_SHA" && "$present" == 0 ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_CERTIFY_INPUTS_FORBIDDEN" >&2; exit 1; }
+            [[ "$INPUT_CERTIFICATION_ORDER_ID" =~ ^[0-9a-fA-F-]{36}$ ]] || { echo "OUTBOX_AUTHORITY_CUTOVER_CERTIFICATION_ORDER_ID_INVALID" >&2; exit 1; }
+            [[ -z "$INPUT_REPLACEMENT_SHA" && "$present" == 0 ]] || { echo "OUTBOX_AUTHORITY_CUTOVER_CERTIFY_INPUTS_FORBIDDEN" >&2; exit 1; }
           else
-            [[ -z "$INPUT_CERTIFICATION_ORDER_ID" ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_CERTIFY_INPUTS_FORBIDDEN" >&2; exit 1; }
+            [[ -z "$INPUT_CERTIFICATION_ORDER_ID" ]] || { echo "OUTBOX_AUTHORITY_CUTOVER_CERTIFY_INPUTS_FORBIDDEN" >&2; exit 1; }
           fi
           {
             echo "TARGET_SHA=$target_sha"
@@ -182,28 +184,26 @@ jobs:
           set -euo pipefail
           contract="$RUNNER_TEMP/sales-availability-release-surface-contract.json"
           git show "$EFFECTIVE_TARGET_SHA:release-surface-contract.json" > "$contract"
-          jq -e '.checkout_contract_version == "sales-availability-v1" and .admin_contract_version == "sales-availability-v1"' "$contract" >/dev/null || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_SURFACE_CONTRACT_MISMATCH" >&2; exit 1; }
+          jq -e '.checkout_contract_version == "sales-availability-v1" and .admin_contract_version == "sales-availability-v1"' "$contract" >/dev/null || { echo "OUTBOX_AUTHORITY_CUTOVER_SURFACE_CONTRACT_MISMATCH" >&2; exit 1; }
           inventory='{}'
           while IFS= read -r migration; do
             [[ -n "$migration" ]] || continue
             hash="$(git show "$EFFECTIVE_TARGET_SHA:commerce/migrations/$migration" | shasum -a 256 | awk '{ print $1 }')"
             inventory="$(jq -cn --argjson inventory "$inventory" --arg migration "$migration" --arg hash "$hash" '$inventory + {($migration): $hash}')"
           done < <(git ls-tree -r --name-only "$EFFECTIVE_TARGET_SHA" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)
-          jq -e 'has("0039_email_delivery_outcome.sql")' <<<"$inventory" >/dev/null || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_MIGRATION_0039_MISSING" >&2; exit 1; }
-          # The row-level invariant - every FAILED row carries a delivery
-          # classification - is not polled after the deploy. 0039 ends with a
-          # no-op UPDATE over every row, so each one traverses the enforcement
-          # trigger while the migration runs: an unclassifiable row aborts the
-          # migration and the deploy fails here rather than passing with bad
-          # data. Verifying 0039 applied IS verifying the invariant held.
+          jq -e 'has("0040_outbox_authority_control.sql")' <<<"$inventory" >/dev/null || { echo "OUTBOX_AUTHORITY_CUTOVER_MIGRATION_0040_MISSING" >&2; exit 1; }
+          # 0040 must arrive INERT: legacy authority, dispatch open, no owner.
+          # It ships a fence, and a fence that arrives already closed would stop
+          # production mail. Readiness therefore asserts the control row's
+          # resting state, not merely that the migration applied.
           # The expectation is derived from the candidate's own inventory, never
           # from a filename allowlist. 0038 was the last entry added to that
           # list and stays frozen as historical manual-recovery compatibility;
           # reintroducing filename knowledge per migration would walk back the
           # inventory authority this deploy is meant to keep proving.
-          jq -e 'has("0038_occurrence_availability_notifications.sql")' <<<"$inventory" >/dev/null || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_MIGRATION_BASELINE_MISSING" >&2; exit 1; }
-          echo "$inventory" > "$RUNNER_TEMP/email-delivery-outcome-migration-inventory.json"
-          echo "EMAIL_DELIVERY_OUTCOME_MIGRATION_INVENTORY=$RUNNER_TEMP/email-delivery-outcome-migration-inventory.json" >> "$GITHUB_ENV"
+          jq -e 'has("0039_email_delivery_outcome.sql")' <<<"$inventory" >/dev/null || { echo "OUTBOX_AUTHORITY_CUTOVER_MIGRATION_BASELINE_MISSING" >&2; exit 1; }
+          echo "$inventory" > "$RUNNER_TEMP/outbox-authority-migration-inventory.json"
+          echo "OUTBOX_AUTHORITY_MIGRATION_INVENTORY=$RUNNER_TEMP/outbox-authority-migration-inventory.json" >> "$GITHUB_ENV"
 
       - name: Bind the candidate to a schema-only change surface
         run: |
@@ -212,15 +212,15 @@ jobs:
           # controlled lane. Prove from the source that it does not quietly move
           # legal state: a schema cutover is not a licence to publish anything.
           git show "$EFFECTIVE_TARGET_SHA:commerce/legal/production-manifest.json" > "$RUNNER_TEMP/candidate-active-manifest.json"
-          jq -e '.version != "2026-08-28.1"' "$RUNNER_TEMP/candidate-active-manifest.json" >/dev/null || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_ACTIVE_MANIFEST_ALREADY_PROMOTED" >&2; exit 1; }
+          jq -e '.version != "2026-08-28.1"' "$RUNNER_TEMP/candidate-active-manifest.json" >/dev/null || { echo "OUTBOX_AUTHORITY_CUTOVER_ACTIVE_MANIFEST_ALREADY_PROMOTED" >&2; exit 1; }
           git show "$EFFECTIVE_TARGET_SHA:commerce/legal/production-manifest.2026-08-28.1.draft.json" > "$RUNNER_TEMP/candidate-draft-manifest.json"
-          jq -e '.version == "2026-08-28.1" and .publish_time == "PENDING_AUTHORITATIVE_PUBLISH_TIMESTAMP"' "$RUNNER_TEMP/candidate-draft-manifest.json" >/dev/null || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_DRAFT_MANIFEST_INVALID" >&2; exit 1; }
+          jq -e '.version == "2026-08-28.1" and .publish_time == "PENDING_AUTHORITATIVE_PUBLISH_TIMESTAMP"' "$RUNNER_TEMP/candidate-draft-manifest.json" >/dev/null || { echo "OUTBOX_AUTHORITY_CUTOVER_DRAFT_MANIFEST_INVALID" >&2; exit 1; }
           active_privacy="$(jq -r '.documents.PRIVACY_POLICY.sha256' "$RUNNER_TEMP/candidate-active-manifest.json")"
           candidate_privacy="$(git show "$EFFECTIVE_TARGET_SHA:public/legal/privacy-policy.md" | shasum -a 256 | awk '{ print $1 }')"
-          [[ "$active_privacy" == "$candidate_privacy" ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_CURRENT_LEGAL_COPIES_CHANGED" >&2; exit 1; }
+          [[ "$active_privacy" == "$candidate_privacy" ]] || { echo "OUTBOX_AUTHORITY_CUTOVER_CURRENT_LEGAL_COPIES_CHANGED" >&2; exit 1; }
           active_consent="$(jq -r '.documents.PD_CONSENT.sha256' "$RUNNER_TEMP/candidate-active-manifest.json")"
           candidate_consent="$(git show "$EFFECTIVE_TARGET_SHA:public/legal/personal-data-consent.md" | shasum -a 256 | awk '{ print $1 }')"
-          [[ "$active_consent" == "$candidate_consent" ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_CURRENT_LEGAL_COPIES_CHANGED" >&2; exit 1; }
+          [[ "$active_consent" == "$candidate_consent" ]] || { echo "OUTBOX_AUTHORITY_CUTOVER_CURRENT_LEGAL_COPIES_CHANGED" >&2; exit 1; }
 
       - name: Read durable baseline and build generation-one request
         if: env.INPUT_STAGE == 'prepare' && env.INPUT_REPLACEMENT_SHA == ''
@@ -230,7 +230,7 @@ jobs:
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > durable-before.json
           jq -e '(.sales_paused == false and .owner_release_id == null and (.runtime.source_commit | type == "string"))' durable-before.json >/dev/null || {
             owner="$(jq -r '.owner_release_id // empty' durable-before.json)"
-            [[ "$owner" == "$RELEASE_ID" ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_BLOCKED_BY_RELEASE_OWNER=$owner" >&2; exit 1; }
+            [[ "$owner" == "$RELEASE_ID" ]] || { echo "OUTBOX_AUTHORITY_CUTOVER_BLOCKED_BY_RELEASE_OWNER=$owner" >&2; exit 1; }
           }
           production_source="$(jq -er '.runtime.source_commit | select(type == "string" and test("^[a-f0-9]{40}$"))' durable-before.json)"
           git fetch --no-tags origin "$production_source"
@@ -240,27 +240,27 @@ jobs:
             hash="$(git show "$production_source:commerce/migrations/$migration" | shasum -a 256 | awk '{ print $1 }')"
             production_inventory="$(jq -cn --argjson inventory "$production_inventory" --arg migration "$migration" --arg hash "$hash" '$inventory + {($migration): $hash}')"
           done < <(git ls-tree -r --name-only "$production_source" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)
-          jq -e --argjson inventory "$production_inventory" '.runtime.migration_source_hashes == $inventory' durable-before.json >/dev/null || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_PRODUCTION_MIGRATION_SOURCE_MISMATCH" >&2; exit 1; }
+          jq -e --argjson inventory "$production_inventory" '.runtime.migration_source_hashes == $inventory' durable-before.json >/dev/null || { echo "OUTBOX_AUTHORITY_CUTOVER_PRODUCTION_MIGRATION_SOURCE_MISMATCH" >&2; exit 1; }
           production_migration_names="$(git ls-tree -r --name-only "$production_source" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
           candidate_migration_names="$(git ls-tree -r --name-only "$EFFECTIVE_TARGET_SHA" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
           production_migration_count="$(printf '%s\n' "$production_migration_names" | awk 'NF { count += 1 } END { print count + 0 }')"
           candidate_applied_prefix="$(printf '%s\n' "$candidate_migration_names" | sed -n "1,${production_migration_count}p")"
           [[ "$candidate_applied_prefix" == "$production_migration_names" ]] || {
-            echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_APPLIED_MIGRATION_NAMES_NOT_PREFIX" >&2
+            echo "OUTBOX_AUTHORITY_CUTOVER_APPLIED_MIGRATION_NAMES_NOT_PREFIX" >&2
             exit 1
           }
           git diff --no-ext-diff --name-status "$production_source" "$EFFECTIVE_TARGET_SHA" -- commerce/migrations |
             awk 'NF > 0 && $1 != "A" { exit 1 }' || {
-              echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_APPLIED_MIGRATION_BYTES_CHANGED" >&2
+              echo "OUTBOX_AUTHORITY_CUTOVER_APPLIED_MIGRATION_BYTES_CHANGED" >&2
               exit 1
             }
-          jq -e --argjson inventory "$(cat "$EMAIL_DELIVERY_OUTCOME_MIGRATION_INVENTORY")" '
+          jq -e --argjson inventory "$(cat "$OUTBOX_AUTHORITY_MIGRATION_INVENTORY")" '
             .runtime as $runtime |
             if ($runtime.legal_version | type == "string") and ($runtime.legal_manifest_sha256 | type == "string") and ($runtime.legal_hashes | type == "object") and ($runtime.current_legal_copies_match == true)
             then {release_id: env.RELEASE_ID, candidate_generation: 1, source_commit: env.EFFECTIVE_TARGET_SHA, migration_inventory: {files: $inventory}, legal_baseline: {legal_version: $runtime.legal_version, legal_manifest_sha256: $runtime.legal_manifest_sha256, legal_hashes: $runtime.legal_hashes}, release_family: "sales-availability-v1", checkout_contract_version: "sales-availability-v1", admin_contract_version: "sales-availability-v1", phase: "PAUSED", phase_sequence: 0}
-            else error("EMAIL_DELIVERY_OUTCOME_CUTOVER_PRODUCTION_BASELINE_INVALID") end
+            else error("OUTBOX_AUTHORITY_CUTOVER_PRODUCTION_BASELINE_INVALID") end
           ' durable-before.json > initial-head.json
-          jq -e '.legal_baseline.legal_version != "2026-08-28.1"' initial-head.json >/dev/null || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_LEGAL_BASELINE_ALREADY_PROMOTED" >&2; exit 1; }
+          jq -e '.legal_baseline.legal_version != "2026-08-28.1"' initial-head.json >/dev/null || { echo "OUTBOX_AUTHORITY_CUTOVER_LEGAL_BASELINE_ALREADY_PROMOTED" >&2; exit 1; }
 
       - name: Acquire generation one or read its authoritative state
         if: env.INPUT_STAGE == 'prepare' && env.INPUT_REPLACEMENT_SHA == ''
@@ -268,13 +268,13 @@ jobs:
           set -euo pipefail
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           owner="$(jq -r '.owner_release_id // empty' durable-before.json)"
-          [[ -z "$owner" || "$owner" == "$RELEASE_ID" ]] || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_BLOCKED_BY_RELEASE_OWNER=$owner" >&2; exit 1; }
+          [[ -z "$owner" || "$owner" == "$RELEASE_ID" ]] || { echo "OUTBOX_AUTHORITY_CUTOVER_BLOCKED_BY_RELEASE_OWNER=$owner" >&2; exit 1; }
           if api -X POST --data-binary @<(jq -n --slurpfile head initial-head.json '{head: $head[0]}') "$PUBLIC_API_URL/v1/internal/release-control/candidates/acquire" > acquired.json; then
             jq -e '.head.phase == "PAUSED" and .head.release_id == env.RELEASE_ID' acquired.json >/dev/null
             echo "SALES_AVAILABILITY_HEAD_READ_REQUIRED_AFTER_DEPLOY=1" >> "$GITHUB_ENV"
           else
-            api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_HEAD_READ_UNAVAILABLE" >&2; exit 1; }
-            jq -e --arg release_id "$RELEASE_ID" '.schema_version == 2 and .head.release_id == $release_id and (.state_hash | test("^[a-f0-9]{64}$"))' candidate-head.json >/dev/null || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_HEAD_RECONCILIATION_INVALID" >&2; exit 1; }
+            api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json || { echo "OUTBOX_AUTHORITY_CUTOVER_HEAD_READ_UNAVAILABLE" >&2; exit 1; }
+            jq -e --arg release_id "$RELEASE_ID" '.schema_version == 2 and .head.release_id == $release_id and (.state_hash | test("^[a-f0-9]{64}$"))' candidate-head.json >/dev/null || { echo "OUTBOX_AUTHORITY_CUTOVER_HEAD_RECONCILIATION_INVALID" >&2; exit 1; }
             echo "SALES_AVAILABILITY_HEAD_READ_REQUIRED_AFTER_DEPLOY=0" >> "$GITHUB_ENV"
           fi
 
@@ -283,9 +283,9 @@ jobs:
         run: |
           set -euo pipefail
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
-          api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_HEAD_READ_UNAVAILABLE" >&2; exit 1; }
-          jq -e --arg release_id "$RELEASE_ID" '.schema_version == 2 and .head.release_id == $release_id and .head.phase == "RECOVERY_REQUIRED" and (.state_hash | test("^[a-f0-9]{64}$"))' candidate-head.json >/dev/null || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_RECOVERY_STATE_INVALID" >&2; exit 1; }
-          jq -n --slurpfile current candidate-head.json --argjson inventory "$(cat "$EMAIL_DELIVERY_OUTCOME_MIGRATION_INVENTORY")" --arg source "$EFFECTIVE_TARGET_SHA" '
+          api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json || { echo "OUTBOX_AUTHORITY_CUTOVER_HEAD_READ_UNAVAILABLE" >&2; exit 1; }
+          jq -e --arg release_id "$RELEASE_ID" '.schema_version == 2 and .head.release_id == $release_id and .head.phase == "RECOVERY_REQUIRED" and (.state_hash | test("^[a-f0-9]{64}$"))' candidate-head.json >/dev/null || { echo "OUTBOX_AUTHORITY_CUTOVER_RECOVERY_STATE_INVALID" >&2; exit 1; }
+          jq -n --slurpfile current candidate-head.json --argjson inventory "$(cat "$OUTBOX_AUTHORITY_MIGRATION_INVENTORY")" --arg source "$EFFECTIVE_TARGET_SHA" '
             $current[0] as $current | {
               head: ($current.head | .candidate_generation += 1 | .source_commit = $source | .migration_inventory = {files: $inventory} | .phase = "PAUSED" | .phase_sequence = 0 | del(.certification)),
               expected_generation: $current.head.candidate_generation,
@@ -336,7 +336,7 @@ jobs:
               jq -e --arg source "$EFFECTIVE_TARGET_SHA" --arg release_id "$RELEASE_ID" '
                 .schema_version == 2 and .head.release_id == $release_id and .head.source_commit == $source and (.state_hash | test("^[a-f0-9]{64}$"))
               ' candidate-head.json >/dev/null && \
-              jq -e --slurpfile candidate candidate-head.json --arg source "$EFFECTIVE_TARGET_SHA" --argjson inventory "$(cat "$EMAIL_DELIVERY_OUTCOME_MIGRATION_INVENTORY")" '
+              jq -e --slurpfile candidate candidate-head.json --arg source "$EFFECTIVE_TARGET_SHA" --argjson inventory "$(cat "$OUTBOX_AUTHORITY_MIGRATION_INVENTORY")" '
                 .runtime as $runtime | $candidate[0].head as $head |
                 .sales_paused == true and .owner_release_id == env.RELEASE_ID and
                 $runtime.source_commit == $source and $runtime.worker_source_commit == $source and
@@ -358,17 +358,23 @@ jobs:
                 if (![observed, sweep, started].every(Number.isFinite) || observed < now - freshness || observed > now + 5_000 || sweep < now - freshness || sweep > now + 5_000 || sweep < started) process.exit(1);
               ' && \
               jq -e '.cities | type == "array" and (map(.purchase_status == "TEMPORARILY_PAUSED") | all)' tour.json >/dev/null && \
-              jq -e --slurpfile inventory "$EMAIL_DELIVERY_OUTCOME_MIGRATION_INVENTORY" '
-                (.runtime.migration_versions | index("0039_email_delivery_outcome.sql")) != null and
-                (.runtime.migration_source_hashes["0039_email_delivery_outcome.sql"]
-                  == $inventory[0]["0039_email_delivery_outcome.sql"])
+              jq -e --slurpfile inventory "$OUTBOX_AUTHORITY_MIGRATION_INVENTORY" '
+                (.runtime.migration_versions | index("0040_outbox_authority_control.sql")) != null and
+                (.runtime.migration_source_hashes["0040_outbox_authority_control.sql"]
+                  == $inventory[0]["0040_outbox_authority_control.sql"])
               ' status.json >/dev/null && \
               jq -e 'has("emergency_sales_paused") and .emergency_sales_paused == false' status.json >/dev/null && \
+              jq -e '
+                .outbox_authority.attempt_authority == "LEGACY" and
+                .outbox_authority.email_dispatch_paused == false and
+                .outbox_authority.dispatch_owner_release_id == null and
+                .outbox_authority.revision >= 1
+              ' status.json >/dev/null && \
               jq -e --arg source "$EFFECTIVE_TARGET_SHA" --slurpfile candidate candidate-head.json '.source_commit == $source and .checkout_contract_version == $candidate[0].head.checkout_contract_version' frontend.json >/dev/null && \
               jq -e --arg source "$EFFECTIVE_TARGET_SHA" --slurpfile candidate candidate-head.json '.source_commit == $source and .admin_contract_version == $candidate[0].head.admin_contract_version' admin.json >/dev/null && \
               jq -e '.ok == true' health.json >/dev/null && \
               jq -e '.ok == true' ready.json >/dev/null; then break; fi
-            [[ "$attempt" == "$POLL_ATTEMPTS" ]] && { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_RUNTIME_NOT_READY" >&2; exit 1; }
+            [[ "$attempt" == "$POLL_ATTEMPTS" ]] && { echo "OUTBOX_AUTHORITY_CUTOVER_RUNTIME_NOT_READY" >&2; exit 1; }
             sleep "$POLL_SECONDS"
           done
           phase="$(jq -r '.head.phase' candidate-head.json)"
@@ -398,12 +404,12 @@ jobs:
           # asserted separately rather than inferred from the comparison.
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > handshake-status.json
           jq -e 'has("emergency_sales_paused")' handshake-status.json >/dev/null || {
-            echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_EMERGENCY_CAPABILITY_MISSING_AFTER_DEPLOY" >&2
+            echo "OUTBOX_AUTHORITY_CUTOVER_EMERGENCY_CAPABILITY_MISSING_AFTER_DEPLOY" >&2
             echo "The candidate is not live, or is not the candidate. Abort is available from here." >&2
             exit 1
           }
           jq -e '.emergency_sales_paused == false' handshake-status.json >/dev/null || {
-            echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_EMERGENCY_LATCH_SET_TOO_EARLY" >&2
+            echo "OUTBOX_AUTHORITY_CUTOVER_EMERGENCY_LATCH_SET_TOO_EARLY" >&2
             exit 1
           }
 
@@ -417,12 +423,12 @@ jobs:
           jq -e --arg release_id "$RELEASE_ID" '
             .schema_version == 2 and .head.release_id == $release_id and .head.phase == "PAUSED" and
             (.head.certification == null) and (.state_hash | test("^[a-f0-9]{64}$"))
-          ' candidate-head.json >/dev/null || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_RUNTIME_READINESS_STATE_INVALID" >&2; exit 1; }
+          ' candidate-head.json >/dev/null || { echo "OUTBOX_AUTHORITY_CUTOVER_RUNTIME_READINESS_STATE_INVALID" >&2; exit 1; }
           jq -e --slurpfile candidate candidate-head.json '
             .sales_paused == true and .owner_release_id == $candidate[0].head.release_id and
             .runtime.source_commit == $candidate[0].head.source_commit and
             .runtime.worker_source_commit == $candidate[0].head.source_commit
-          ' status.json >/dev/null || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_RUNTIME_READINESS_NOT_DEPLOYED" >&2; exit 1; }
+          ' status.json >/dev/null || { echo "OUTBOX_AUTHORITY_CUTOVER_RUNTIME_READINESS_NOT_DEPLOYED" >&2; exit 1; }
           jq -n --slurpfile current candidate-head.json \
             --arg error_class "$INPUT_RUNTIME_READINESS_ERROR_CLASS" --arg error_code "$INPUT_RUNTIME_READINESS_ERROR_CODE" '
             {release_id: $current[0].head.release_id, candidate_generation: $current[0].head.candidate_generation,
@@ -433,7 +439,7 @@ jobs:
           jq -e --arg release_id "$RELEASE_ID" '
             .head.release_id == $release_id and .head.phase == "RECOVERY_REQUIRED" and
             (.head.certification == null)
-          ' recovered.json >/dev/null || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_RUNTIME_READINESS_TRANSITION_INVALID" >&2; exit 1; }
+          ' recovered.json >/dev/null || { echo "OUTBOX_AUTHORITY_CUTOVER_RUNTIME_READINESS_TRANSITION_INVALID" >&2; exit 1; }
 
       - name: Reconfirm the emergency stop is still clear
         if: env.INPUT_STAGE == 'certify'
@@ -448,9 +454,9 @@ jobs:
           # certification failure rather than a clear one.
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > pre-certify-status.json
           jq -e 'has("emergency_sales_paused")' pre-certify-status.json >/dev/null \
-            || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_EMERGENCY_STATE_NOT_OBSERVABLE" >&2; exit 1; }
+            || { echo "OUTBOX_AUTHORITY_CUTOVER_EMERGENCY_STATE_NOT_OBSERVABLE" >&2; exit 1; }
           jq -e '.emergency_sales_paused == false' pre-certify-status.json >/dev/null || {
-            echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_EMERGENCY_LATCH_BLOCKS_CERTIFICATION" >&2
+            echo "OUTBOX_AUTHORITY_CUTOVER_EMERGENCY_LATCH_BLOCKS_CERTIFICATION" >&2
             echo "The latch belongs strictly after certification. Clear it, certify, then latch." >&2
             exit 1
           }
@@ -462,7 +468,7 @@ jobs:
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json
           if [[ -n "$INPUT_RETRY_REASON" ]]; then
-            jq -e '.head.phase == "CERTIFICATION_IN_FLIGHT"' candidate-head.json >/dev/null || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_RETRY_STATE_INVALID" >&2; exit 1; }
+            jq -e '.head.phase == "CERTIFICATION_IN_FLIGHT"' candidate-head.json >/dev/null || { echo "OUTBOX_AUTHORITY_CUTOVER_RETRY_STATE_INVALID" >&2; exit 1; }
             jq -n --slurpfile current candidate-head.json '{release_id: $current[0].head.release_id, candidate_generation: $current[0].head.candidate_generation, expected_state_hash: $current[0].state_hash, retry_reason: "OPERATIONAL"}' > retry.json
             api -X POST --data-binary @retry.json "$PUBLIC_API_URL/v1/internal/release-control/candidates/certification/retry" > retry-result.json
             api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json
@@ -477,13 +483,13 @@ jobs:
           if [[ "$phase" == CERTIFICATION_IN_FLIGHT || "$phase" == CERTIFIED ]]; then
             jq -e --arg occurrence "$INPUT_CERTIFICATION_OCCURRENCE_ID" --arg promo "$INPUT_CERTIFICATION_PROMO_ID" --arg key_hash "$INPUT_CERTIFICATION_IDEMPOTENCY_KEY_HASH" '
               .head.certification.occurrence_id == $occurrence and .head.certification.promo_id == $promo and .head.certification.expected_idempotency_key_hash == $key_hash and .head.certification.status == "CONSUMED" and (.state_hash | test("^[a-f0-9]{64}$"))
-            ' candidate-head.json >/dev/null || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_CERTIFICATION_RECONCILIATION_INVALID" >&2; exit 1; }
-            echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_CERTIFICATION_ALREADY_STARTED=$phase"
+            ' candidate-head.json >/dev/null || { echo "OUTBOX_AUTHORITY_CUTOVER_CERTIFICATION_RECONCILIATION_INVALID" >&2; exit 1; }
+            echo "OUTBOX_AUTHORITY_CUTOVER_CERTIFICATION_ALREADY_STARTED=$phase"
             exit 0
           fi
           jq -e --arg occurrence "$INPUT_CERTIFICATION_OCCURRENCE_ID" --arg promo "$INPUT_CERTIFICATION_PROMO_ID" --arg key_hash "$INPUT_CERTIFICATION_IDEMPOTENCY_KEY_HASH" '
             .head.phase == "CERTIFICATION_ONLY" and .head.certification.status == "ACTIVE" and .head.certification.occurrence_id == $occurrence and .head.certification.promo_id == $promo and .head.certification.expected_idempotency_key_hash == $key_hash and (.state_hash | test("^[a-f0-9]{64}$"))
-          ' candidate-head.json >/dev/null || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_CERTIFICATION_RECONCILIATION_INVALID" >&2; exit 1; }
+          ' candidate-head.json >/dev/null || { echo "OUTBOX_AUTHORITY_CUTOVER_CERTIFICATION_RECONCILIATION_INVALID" >&2; exit 1; }
 
       - name: Record consumed certification evidence
         if: env.INPUT_STAGE == 'certify'
@@ -494,7 +500,7 @@ jobs:
           # Idempotent: a replay after a successful certify observes CERTIFIED
           # and reconciles instead of reposting evidence.
           if jq -e --arg release_id "$RELEASE_ID" '.schema_version == 2 and .head.release_id == $release_id and .head.phase == "CERTIFIED" and .head.certification.status == "CONSUMED"' candidate-head.json >/dev/null; then
-            echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_ALREADY_CERTIFIED=1"
+            echo "OUTBOX_AUTHORITY_CUTOVER_ALREADY_CERTIFIED=1"
             exit 0
           fi
           jq -e --arg release_id "$RELEASE_ID" '
@@ -502,13 +508,13 @@ jobs:
             .head.phase == "CERTIFICATION_IN_FLIGHT" and
             .head.certification.status == "CONSUMED" and
             (.state_hash | test("^[a-f0-9]{64}$"))
-          ' candidate-head.json >/dev/null || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_CERTIFY_STATE_INVALID" >&2; exit 1; }
+          ' candidate-head.json >/dev/null || { echo "OUTBOX_AUTHORITY_CUTOVER_CERTIFY_STATE_INVALID" >&2; exit 1; }
           jq -n --slurpfile current candidate-head.json --arg order "$INPUT_CERTIFICATION_ORDER_ID" '
             {release_id: $current[0].head.release_id, candidate_generation: $current[0].head.candidate_generation,
              expected_state_hash: $current[0].state_hash, order_id: $order}
           ' > certify.json
           api -X POST --data-binary @certify.json "$PUBLIC_API_URL/v1/internal/release-control/candidates/certification/certify" > certified.json
-          jq -e --arg release_id "$RELEASE_ID" '.head.release_id == $release_id and .head.phase == "CERTIFIED"' certified.json >/dev/null || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_CERTIFY_TRANSITION_INVALID" >&2; exit 1; }
+          jq -e --arg release_id "$RELEASE_ID" '.head.release_id == $release_id and .head.phase == "CERTIFIED"' certified.json >/dev/null || { echo "OUTBOX_AUTHORITY_CUTOVER_CERTIFY_TRANSITION_INVALID" >&2; exit 1; }
 
       - name: Abort a still-reversible candidate
         if: env.INPUT_STAGE == 'abort'
@@ -529,7 +535,7 @@ jobs:
             exit 0
           fi
           jq -e --arg release_id "$RELEASE_ID" '.schema_version == 2 and .head.release_id == $release_id and (.state_hash | test("^[a-f0-9]{64}$"))' abort-head.json >/dev/null \
-            || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_ABORT_STATE_INVALID" >&2; exit 1; }
+            || { echo "OUTBOX_AUTHORITY_CUTOVER_ABORT_STATE_INVALID" >&2; exit 1; }
           jq -n --slurpfile current abort-head.json --arg reason "$INPUT_ABORT_REASON" \
             '{release_id: $current[0].head.release_id, candidate_generation: $current[0].head.candidate_generation, expected_state_hash: $current[0].state_hash, reason: $reason}' > abort.json
           api -X POST --data-binary @abort.json "$PUBLIC_API_URL/v1/internal/release-control/candidates/abort" > aborted.json
@@ -561,7 +567,7 @@ jobs:
             echo "COMPLETE_REPLAY_EMERGENCY_LATCH=$latched"
             exit 0
           fi
-          jq -e --arg release_id "$RELEASE_ID" '.schema_version == 2 and .head.release_id == $release_id and (.head.source_commit | type == "string" and test("^[a-f0-9]{40}$")) and .head.phase == "CERTIFIED" and .head.certification.status == "CONSUMED" and (.state_hash | test("^[a-f0-9]{64}$"))' candidate-head.json >/dev/null || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_COMPLETE_STATE_INVALID" >&2; exit 1; }
+          jq -e --arg release_id "$RELEASE_ID" '.schema_version == 2 and .head.release_id == $release_id and (.head.source_commit | type == "string" and test("^[a-f0-9]{40}$")) and .head.phase == "CERTIFIED" and .head.certification.status == "CONSUMED" and (.state_hash | test("^[a-f0-9]{64}$"))' candidate-head.json >/dev/null || { echo "OUTBOX_AUTHORITY_CUTOVER_COMPLETE_STATE_INVALID" >&2; exit 1; }
           # completeCandidate zeroes the release gate, so without the operator's
           # emergency latch already in place, customer sales would open here -
           # before the new durable semantics have been inspected in production.
@@ -572,9 +578,9 @@ jobs:
           # driving a release requires. It observes and gates instead.
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > pre-complete-status.json
           jq -e 'has("emergency_sales_paused")' pre-complete-status.json >/dev/null \
-            || { echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_EMERGENCY_STATE_NOT_OBSERVABLE" >&2; exit 1; }
+            || { echo "OUTBOX_AUTHORITY_CUTOVER_EMERGENCY_STATE_NOT_OBSERVABLE" >&2; exit 1; }
           jq -e '.emergency_sales_paused == true' pre-complete-status.json >/dev/null || {
-            echo "EMAIL_DELIVERY_OUTCOME_CUTOVER_EMERGENCY_LATCH_REQUIRED_BEFORE_COMPLETE" >&2
+            echo "OUTBOX_AUTHORITY_CUTOVER_EMERGENCY_LATCH_REQUIRED_BEFORE_COMPLETE" >&2
             echo "Latch the emergency stop from the admin dashboard, then rerun this stage." >&2
             exit 1
           }
