@@ -181,15 +181,87 @@ describe("controlled outbox attempt-authority cutover", () => {
     expect(workflow).toContain(".attempts.leased == 0");
   });
 
-  it("proves dispatch under attempt authority, and refuses a vacuous proof", () => {
-    // "The fence is lifted" is control plane. This is the data-plane fact: a
-    // message enqueued under LEGACY, given its attempt row by activation, is
-    // claimed, sent and settled IN THE ATTEMPT STORE.
-    expect(workflow).toContain("ATTEMPT_AUTHORITY_CUTOVER_NO_BACKLOG_TO_PROVE_DISPATCH");
-    expect(workflow).toContain("(.attempts.settled_accepted > $accepted)");
-    expect(workflow).toContain('[[ "$UNSETTLED_BEFORE_UNFENCE" -ge 1 ]]');
-    // Captured BEFORE the fence lifts, or the comparison races the worker.
-    expect(at("UNSETTLED_BEFORE_UNFENCE=$(jq")).toBeLessThan(at("/v1/internal/release-control/outbox-dispatch/unfence"));
+  it("binds the dispatch proof to the exact certified order, not to a population count", () => {
+    // "settled_accepted went up" passes for the wrong reason: a late provider
+    // callback settling an unrelated older SEND_UNKNOWN increments the same
+    // counter, so a broken ATTEMPT dispatch path reads as green.
+    expect(workflow).toContain("/v1/internal/release-control/certification-dispatch/$RELEASE_ID");
+    expect(workflow).toContain(".dispatched_after_unfence == true");
+    expect(workflow).not.toContain(".attempts.settled_accepted >");
+    // And the order is never named by the workflow - the runtime resolves it
+    // from the durable ledger, so an operator cannot substitute another order.
+    expect(workflow).not.toContain("INPUT_CERTIFICATION_ORDER_ID\" > dispatch");
+    const proof = workflow.slice(at("Prove dispatch actually runs under attempt authority"),
+      at("ATTEMPT_AUTHORITY_CUTOVER_ATTEMPT_DISPATCH_NOT_OBSERVED"));
+    expect(proof).not.toContain("INPUT_CERTIFICATION_ORDER_ID");
+  });
+
+  it("checks the proof target exists BEFORE the irreversible step", () => {
+    // Existence of the backlog is knowable while the transfer is still
+    // reversible, so by this epoch's own rule it belongs before the one-way
+    // CAS - not discovered missing after it.
+    expect(workflow).toContain("ATTEMPT_AUTHORITY_CUTOVER_NO_QUEUED_CERTIFICATION_MAIL");
+    expect(workflow).toContain(".queued_unstarted == true");
+    expect(at("ATTEMPT_AUTHORITY_CUTOVER_NO_QUEUED_CERTIFICATION_MAIL"))
+      .toBeLessThan(at("/v1/internal/release-control/outbox-authority/activate"));
+    // Skipped on a replay, where the backlog has legitimately been dispatched.
+    expect(workflow).toContain('if [[ "$replay_run" == 0 ]]; then');
+  });
+
+  it("re-proves dispatch from durable evidence before completing", () => {
+    // The unfence CAS commits before its dispatch poll runs, so a failed poll
+    // leaves ATTEMPT + dispatch open + CERTIFIED. Without this, complete would
+    // accept that state and finish an epoch whose only data-plane proof failed.
+    expect(workflow).toContain("ATTEMPT_AUTHORITY_CUTOVER_DISPATCH_PROOF_MISSING_BEFORE_COMPLETE");
+    expect(at("ATTEMPT_AUTHORITY_CUTOVER_DISPATCH_PROOF_MISSING_BEFORE_COMPLETE"))
+      .toBeLessThan(at("/v1/internal/release-control/candidates/complete"));
+  });
+
+  it("drives post-prepare stages from the durable source, not the dispatch input", () => {
+    // Every run starts with effective = target and replacement_sha is accepted
+    // only on prepare, so after a forward recovery a later stage would be
+    // looking at the ORIGINAL sha and would refuse the generation it exists to
+    // drive. The release identity stays derived from the initial target; only
+    // the runtime source comes from durable state.
+    expect(workflow).toContain("Resolve the effective runtime source from durable candidate state");
+    expect(workflow).toContain("ATTEMPT_AUTHORITY_CUTOVER_EFFECTIVE_SOURCE_RELEASE_MISMATCH");
+    expect(workflow).toContain('echo "EFFECTIVE_TARGET_SHA=$resolved"');
+    // It must run before anything that binds to the source.
+    expect(at("Resolve the effective runtime source from durable candidate state"))
+      .toBeLessThan(at("Bind source migration and surface contracts"));
+    // And never on the two stages that legitimately predate a durable head.
+    expect(workflow).toContain("if: env.INPUT_STAGE != 'fence' && env.INPUT_STAGE != 'prepare'");
+  });
+
+  it("enforces forward-only replacement in git, not only in the generation counter", () => {
+    // adoptCandidate checks generation, state hash and the applied-migration
+    // prefix; it has no ancestry concept, so an unrelated or older tree would
+    // otherwise satisfy it.
+    expect(workflow).toContain("ATTEMPT_AUTHORITY_CUTOVER_REPLACEMENT_NOT_FORWARD_ONLY");
+    expect(workflow).toContain('git merge-base --is-ancestor "$recovering_from" "$EFFECTIVE_TARGET_SHA"');
+    expect(workflow).toContain("ATTEMPT_AUTHORITY_CUTOVER_REPLACEMENT_NOT_REACHABLE_FROM_CONTROLLER");
+  });
+
+  it("reconciles an adopt whose response was lost", () => {
+    // Adopt is a CAS: a lost response leaves it committed and the rerun unable
+    // to tell, which would otherwise retry into RELEASE_STATE_STALE forever.
+    expect(workflow).toContain("ATTEMPT_AUTHORITY_CUTOVER_ADOPT_REPLAY=");
+  });
+
+  it("recovers a certified candidate whose activation refused", () => {
+    // The window that had no controller path in either direction: abort refuses
+    // any generation that was ever CERTIFIED, readiness classification only
+    // handles PAUSED, and replacement adoption requires RECOVERY_REQUIRED.
+    expect(workflow).toContain("classify_pre_activation_defect");
+    expect(workflow).toContain("/v1/internal/release-control/candidates/pre-activation-defect");
+    expect(workflow).toContain("ATTEMPT_AUTHORITY_CUTOVER_PRE_ACTIVATION_NOT_RECOVERABLE");
+    // Narrower than weakening abort: only while nothing irreversible happened.
+    const stage = workflow.slice(at("Classify a defect found after certification and before activation"),
+      at("ATTEMPT_AUTHORITY_CUTOVER_PRE_ACTIVATION_TRANSITION_INVALID"));
+    expect(stage).toContain('.attempt_authority == "LEGACY"');
+    expect(stage).toContain(".email_dispatch_paused == true");
+    expect(stage).toContain(".dispatch_owner_release_id == $release_id");
+    expect(stage).toContain('.head.phase == "CERTIFIED"');
   });
 
   it("keeps a way out of an aborted cutover that left the fence held", () => {
@@ -199,6 +271,12 @@ describe("controlled outbox attempt-authority cutover", () => {
     // not to build a takeover for.
     expect(workflow).toContain("ATTEMPT_AUTHORITY_CUTOVER_UNFENCE_MODE_REQUIRED");
     expect(workflow).toContain("ATTEMPT_AUTHORITY_CUTOVER_RECOVERY_UNFENCE_ON_ACTIVATED_STORE");
+    // A LEGACY store is not sufficient: mid-cutover the store is also LEGACY,
+    // and opening dispatch there resumes mail under a half-migrated epoch and
+    // strands the run, because the fence stage then refuses an already-advanced
+    // runtime. The candidate must actually have let go.
+    expect(workflow).toContain("ATTEMPT_AUTHORITY_CUTOVER_RECOVERY_UNFENCE_CANDIDATE_STILL_LIVE");
+    expect(workflow).toContain('.head.phase == "ABORTED" or .head.phase == "RECOVERY_REQUIRED"');
     expect(workflow).toContain('unfence_mode=recovery');
     expect(workflow).toContain("ABORT_DISPATCH_FENCED=");
     // The dispatch proof is skipped on the recovery path: nothing was

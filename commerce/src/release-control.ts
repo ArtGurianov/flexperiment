@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import type Database from "better-sqlite3";
 import { canonicalLegalManifest, parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import { parseUtcTimestamp } from "./utc-timestamp";
-import { assertAppliedMigrationPrefix, candidateExpectedMigration, isTerminalPhase, reconcileHeadWithProjection, releaseStateHash, replayReleaseGenerationChain, runtimeReadinessActionableErrorClasses, type GenerationHead, type ReleasePhase, type RuntimeReadinessActionableErrorClass, type V2Event } from "./release-generation";
+import { assertAppliedMigrationPrefix, candidateExpectedMigration, isTerminalPhase, preActivationDefectClasses, reconcileHeadWithProjection, releaseStateHash, replayReleaseGenerationChain, runtimeReadinessActionableErrorClasses, type GenerationHead, type ReleasePhase, type RuntimeReadinessActionableErrorClass, type V2Event } from "./release-generation";
 import { evaluateCertificationEvidence } from "./certification-evidence";
 import { pricePromo } from "./promo-pricing";
 
@@ -111,6 +111,38 @@ export const gen4PublicFrontendRecoveryBridge = {
 export type CandidateAcquireRequest = { head: GenerationHead };
 export type CandidateAdoptRequest = { head: GenerationHead; expected_generation: number; from_sha: string; expected_state_hash: string };
 export type CandidatePhaseRequest = { release_id: string; candidate_generation: number; expected_state_hash: string; from_phase: ReleasePhase; phase_sequence: number; to_phase: Exclude<ReleasePhase, "COMPLETE"> };
+/**
+ * Recovery for a defect discovered AFTER certification and BEFORE activation.
+ *
+ * That window had no controller path in either direction, which is a stranded
+ * state rather than a missing convenience:
+ *
+ *   abort                       refuses any generation that was ever CERTIFIED
+ *   runtime-readiness defect    only classifies a PAUSED generation
+ *   replacement adoption        requires RECOVERY_REQUIRED
+ *
+ * So a candidate that certified cleanly and then failed its activation
+ * preconditions could go neither forward nor back, while attempt authority was
+ * still safely LEGACY and nothing irreversible had happened. This transition is
+ * deliberately narrower than weakening abort: it exists only while the store is
+ * still on LEGACY and the dispatch fence still belongs to this release, so it
+ * cannot be used to walk back anything that has actually moved.
+ */
+export type PreActivationDefectRequest = {
+  release_id: string;
+  candidate_generation: number;
+  expected_state_hash: string;
+  defect_class: "ACTIVATION_PRECONDITION" | "ACTIVATION_SCHEMA" | "ACTIVATION_STORE";
+  defect_code: string;
+};
+
+/** Injected, so this module keeps no knowledge of the outbox tables. */
+export type OutboxAuthoritySnapshot = {
+  attempt_authority: "LEGACY" | "ATTEMPT";
+  email_dispatch_paused: boolean;
+  dispatch_owner_release_id: string | null;
+};
+
 export type RuntimeReadinessDefectRequest = {
   release_id: string;
   candidate_generation: number;
@@ -432,7 +464,7 @@ export class ReleaseSalesGate {
     return replay.head;
   }
 
-  private v2Event(releaseId: string, action: "ACQUIRED" | "PAUSED" | "REOPENED", kind: "CANDIDATE_ACQUIRED" | "CANDIDATE_SUPERSEDED" | "PHASE_CHANGED" | "RUNTIME_READINESS_DEFECT", details: Record<string, unknown>) {
+  private v2Event(releaseId: string, action: "ACQUIRED" | "PAUSED" | "REOPENED", kind: "CANDIDATE_ACQUIRED" | "CANDIDATE_SUPERSEDED" | "PHASE_CHANGED" | "RUNTIME_READINESS_DEFECT" | "PRE_ACTIVATION_DEFECT", details: Record<string, unknown>) {
     event(this.db, releaseId, action, { schema_version: 2, kind, ...details });
   }
 
@@ -784,6 +816,50 @@ export class ReleaseSalesGate {
       return { ...status(row(this.db)!), head };
     });
     return transaction();
+  }
+
+  markPreActivationDefect(
+    input: PreActivationDefectRequest,
+    runtimeEvidence: () => ReleaseRuntimeEvidence,
+    outboxAuthority: () => OutboxAuthoritySnapshot,
+  ) {
+    return this.immediate(() => {
+      const gate = row(this.db); if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
+      const current = this.v2Head(input.release_id);
+
+      // Replay reconciliation, for that exact generation only. A stale request
+      // must not succeed because some later generation is in recovery.
+      if (current.phase === "RECOVERY_REQUIRED") {
+        if (current.candidate_generation !== input.candidate_generation || releaseStateHash(current) !== input.expected_state_hash) throw new ReleaseControlError("RELEASE_STATE_STALE");
+        return { ...status(gate), head: current };
+      }
+
+      if (gate.owner_release_id !== current.release_id || gate.sales_paused !== 1) throw new ReleaseControlError("RELEASE_STATE_STALE");
+      if (current.candidate_generation !== input.candidate_generation || releaseStateHash(current) !== input.expected_state_hash) throw new ReleaseControlError("RELEASE_STATE_STALE");
+      // The window this exists for, and nothing wider. A generation that has
+      // not certified already has abort and readiness classification.
+      if (current.phase !== "CERTIFIED" || current.certification?.status !== "CONSUMED") throw new ReleaseControlError("PRE_ACTIVATION_DEFECT_PHASE_INVALID");
+      if (!(preActivationDefectClasses as readonly string[]).includes(input.defect_class) || !/^[A-Z0-9_]{1,80}$/.test(input.defect_code)) throw new ReleaseControlError("PRE_ACTIVATION_DEFECT_INVALID");
+
+      // The candidate under recovery must be the one actually deployed.
+      const evidence = runtimeEvidence();
+      if (evidence.source_commit !== current.source_commit || evidence.worker_source_commit !== current.source_commit) throw new ReleaseControlError("PRE_ACTIVATION_DEFECT_CANDIDATE_NOT_DEPLOYED");
+
+      // The load-bearing gate. Nothing irreversible may have happened: the
+      // store is still LEGACY, and the fence that stopped mail is still this
+      // release's to release. Once authority has moved, recovery means a
+      // forward path, never this one.
+      const authority = outboxAuthority();
+      if (authority.attempt_authority !== "LEGACY") throw new ReleaseControlError("PRE_ACTIVATION_DEFECT_AUTHORITY_ALREADY_ACTIVATED");
+      if (!authority.email_dispatch_paused || authority.dispatch_owner_release_id !== current.release_id) throw new ReleaseControlError("PRE_ACTIVATION_DEFECT_FENCE_NOT_OWNED");
+
+      const head = { ...current, phase: "RECOVERY_REQUIRED" as const, phase_sequence: current.phase_sequence + 1 };
+      const pre_activation_defect = { reason: "PRE_ACTIVATION_DEFECT" as const, defect_class: input.defect_class, defect_code: input.defect_code, source_commit: current.source_commit };
+      const details = { schema_version: 2, kind: "PRE_ACTIVATION_DEFECT" as const, from_phase: current.phase, from_phase_sequence: current.phase_sequence, head, pre_activation_defect };
+      this.assertProposedV2Event(current.release_id, { action: "PAUSED", details_json: JSON.stringify(details) });
+      this.v2Event(current.release_id, "PAUSED", "PRE_ACTIVATION_DEFECT", { from_phase: current.phase, from_phase_sequence: current.phase_sequence, head, pre_activation_defect });
+      return { ...status(row(this.db)!), head };
+    });
   }
 
   markRuntimeReadinessDefect(input: RuntimeReadinessDefectRequest, runtimeEvidence: () => ReleaseRuntimeEvidence) {

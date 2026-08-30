@@ -201,6 +201,33 @@ const DEFECT_CODES: ReadonlyArray<[keyof typeof STORE_DEFECTS, string]> = [
   ["ambiguous_messages", "OUTBOX_ACTIVATION_AMBIGUOUS_ATTEMPT"],
 ];
 
+/**
+ * Every refusal the activation transaction can return.
+ *
+ * Listed so a recovery request naming one can be bound to the real vocabulary
+ * rather than to a regex, and pinned by a source scan so the list cannot drift
+ * from the module that throws them.
+ */
+export const ACTIVATION_REFUSAL_CODES = [
+  "OUTBOX_ACTIVATION_TRANSACTION_REQUIRED",
+  "OUTBOX_ACTIVATION_SCHEMA_MISSING",
+  "OUTBOX_ACTIVATION_SCHEMA_INCOMPLETE",
+  "OUTBOX_ACTIVATION_DISPATCH_NOT_FENCED",
+  "OUTBOX_ACTIVATION_NOT_DRAINED",
+  "OUTBOX_ACTIVATION_UNEXPECTED_SUCCESSOR_ATTEMPT",
+  "OUTBOX_ACTIVATION_UNEXPECTED_SETTLED_ATTEMPT",
+  "OUTBOX_ACTIVATION_ATTEMPT_STILL_LEASED",
+  "OUTBOX_ACTIVATION_UNEXPECTED_SHADOW_STATE",
+  "OUTBOX_ACTIVATION_MESSAGE_WITHOUT_ATTEMPT",
+  "OUTBOX_ACTIVATION_PROVIDER_KEY_MISMATCH",
+  "OUTBOX_ACTIVATION_IDENTITY_INCOMPLETE",
+  "OUTBOX_ACTIVATION_AMBIGUOUS_ATTEMPT",
+  "OUTBOX_ACTIVATION_AUDIT_MISSING",
+  "OUTBOX_ACTIVATION_OWNER_CONFLICT",
+  "OUTBOX_DISPATCH_OWNER_CONFLICT",
+  "OUTBOX_AUTHORITY_REVISION_CONFLICT",
+] as const;
+
 export type ActivationEvidence = {
   messages: number;
   attempts: number;

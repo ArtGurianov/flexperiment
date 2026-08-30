@@ -528,6 +528,8 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   releaseControl.post("/candidates/adopt", async (c) => c.json(domain.adoptPromoCandidate(await jsonBody(c.req.raw) as import("./release-control").CandidateAdoptRequest)));
   releaseControl.post("/candidates/phase", async (c) => c.json(domain.changePromoCandidatePhase(await jsonBody(c.req.raw) as import("./release-control").CandidatePhaseRequest)));
   releaseControl.post("/candidates/runtime-readiness-defect", async (c) => c.json(domain.markPromoCandidateRuntimeReadinessDefect(await jsonBody(c.req.raw) as import("./release-control").RuntimeReadinessDefectRequest)));
+  releaseControl.get("/certification-dispatch/:releaseId", (c) => c.json(domain.certificationDispatchEvidence(c.req.param("releaseId"))));
+  releaseControl.post("/candidates/pre-activation-defect", async (c) => c.json(domain.markPreActivationDefect(await jsonBody(c.req.raw) as import("./release-control").PreActivationDefectRequest)));
   releaseControl.post("/candidates/certification/activate", async (c) => c.json(domain.activatePromoCertificationLease(await jsonBody(c.req.raw) as import("./release-control").CertificationLeaseRequest)));
   releaseControl.post("/candidates/certification/certify", async (c) => c.json(domain.certifyPromoCandidate(await jsonBody(c.req.raw) as import("./release-control").CertificationEvidenceRequest)));
   releaseControl.post("/candidates/certification/retry", async (c) => c.json(domain.retryPromoCertification(await jsonBody(c.req.raw) as import("./release-control").CertificationRetryRequest)));

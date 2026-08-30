@@ -16,18 +16,49 @@ dispatch epoch throughout recovery, including after a forward-only replacement.
 Every other controlled cutover is reversible until `complete`. This one contains
 a step that is not.
 
-| step | reversible? | how |
+| durable phase | exit available | how |
 |---|---|---|
-| `fence` | yes | `unfence` with `unfence_mode=recovery` |
-| `prepare` | yes | `abort`, then move `production-deploy` back |
-| `certify` | yes | `abort` |
-| **`activate`** | **no** | there is no `ATTEMPT -> LEGACY`, by design |
-| `unfence` | — | terminal; the only step that resumes mail |
-| `complete` | — | ends the epoch |
+| `PAUSED` / `DEPLOYED_READ_ONLY` | back | `abort` |
+| `CERTIFICATION_ONLY` / `_IN_FLIGHT` | forward | certification retry, or certification defect |
+| `CERTIFIED`, authority `LEGACY` | forward | `classify_pre_activation_defect` → replacement |
+| `CERTIFIED`, authority `ATTEMPT` | forward only | finish: `unfence`, then `complete` |
 
-Everything provable is therefore proven before `activate`, which is why the real
-1-RUB certification sits ahead of it: it establishes that the candidate binary
-transacts correctly while rolling back is still an option.
+**`abort` is narrower than it looks.** `abortCandidate()` refuses any generation
+that was *ever* `CERTIFIED`, and otherwise permits only `PAUSED` or
+`DEPLOYED_READ_ONLY`. Since `prepare` activates the certification lease from
+`DEPLOYED_READ_ONLY`, the generation leaves abort's reach before the operator
+ever runs `certify`. Do not plan a rollback around abort past that point; plan it
+around the recovery transitions above.
+
+Everything provable is proven before `activate`, which is why the real 1-RUB
+certification sits ahead of it: it establishes that the candidate binary
+transacts correctly while a forward recovery is still cheap.
+
+## Recovering a certified candidate whose activation refused
+
+This window previously had no controller path in either direction — `abort`
+refuses an ever-certified generation, readiness classification only handles
+`PAUSED`, and replacement adoption requires `RECOVERY_REQUIRED`. So a candidate
+that certified cleanly and then failed its activation preconditions could go
+neither forward nor back, with attempt authority still safely `LEGACY`.
+
+```text
+stage=classify_pre_activation_defect
+  target_sha=<initial>
+  pre_activation_defect_class=ACTIVATION_PRECONDITION | ACTIVATION_SCHEMA | ACTIVATION_STORE
+  pre_activation_defect_code=<the exact OUTBOX_ACTIVATION_* refusal>
+```
+
+It is deliberately narrower than a weaker `abort`: it opens only while attempt
+authority is still `LEGACY` **and** the dispatch fence still belongs to this
+release, so it cannot walk back anything that actually moved. The certification
+binding survives byte for byte — what failed is the step after certification, and
+the money it moved is not un-moved. The defect code is bound to the vocabulary
+the activation transaction actually returns, so a recovery cannot be justified by
+an invented reason.
+
+The generation lands in `RECOVERY_REQUIRED`. From there, dispatch `prepare` with
+`replacement_sha` as usual.
 
 ## The four durable states
 
@@ -56,6 +87,14 @@ is correct and after it means the deployed binary is not the candidate. The
 field's absence is a liveness signal, never a converged store.
 
 ## Stage sequence
+
+Post-`prepare` stages take the runtime source from the **durable candidate
+head**, not from `target_sha`. `replacement_sha` is accepted only on `prepare`,
+so a later independent stage would otherwise be looking at the original SHA and
+would refuse the very generation it exists to drive. `RELEASE_ID` stays derived
+from the initial `target_sha` throughout — it is the epoch's durable identity —
+and the dispatch epoch is derived from it, which is what keeps the fence owned
+across a generation bump.
 
 ```text
 fence      target_sha
@@ -105,14 +144,25 @@ in the middle of this one's migration.
 | `OUTBOX_ACTIVATION_UNEXPECTED_SHADOW_STATE` | a shadow attempt carries a lease expiry or exhaustion instant | stop and inspect; these have no legacy source |
 | `OUTBOX_ACTIVATION_PROVIDER_KEY_MISMATCH` | message and attempt #1 disagree about what was sent | stop. Resolving this by rewriting either key would risk a duplicate send |
 | `STORE_NOT_CONVERGED` | post-activation defects non-zero | the activation transaction would have refused; investigate before unfencing |
-| `NO_BACKLOG_TO_PROVE_DISPATCH` | nothing was queued under the fence | the run cannot prove ATTEMPT dispatch. Enqueue something real, or accept the proof is deferred and record that |
-| `ATTEMPT_DISPATCH_NOT_OBSERVED` | backlog did not settle after unfence | mail is flowing again either way; investigate the worker before completing |
+| `NO_QUEUED_CERTIFICATION_MAIL` | the certified order's mail is missing or already started | checked BEFORE activation, so nothing irreversible has happened. If a send already started, the fence was not doing its job |
+| `ATTEMPT_DISPATCH_NOT_OBSERVED` | the certified order's own attempts did not settle after unfence | mail is flowing again either way; investigate the worker. `complete` will refuse until this proof passes |
+| `DISPATCH_PROOF_MISSING_BEFORE_COMPLETE` | the data-plane proof never succeeded | re-run `unfence` (it reconciles) or investigate; do not complete an epoch whose proof failed |
+| `EFFECTIVE_SOURCE_*` | the durable head's source is unreadable or unreachable | the candidate head is the authority for what is deployed; fix that before anything else |
+| `REPLACEMENT_NOT_FORWARD_ONLY` | the replacement is not a descendant of the recovering source | forward-only means forward in Git, not only in the generation counter |
+| `PRE_ACTIVATION_NOT_RECOVERABLE` | authority moved, or the fence is not ours | recovery is forward only from here: finish with `unfence` then `complete` |
 
 ## Recovering an aborted cutover that left the fence held
 
 `abort` releases the release gate and deliberately does **not** lift the fence:
 mail stays stopped until an operator decides which way the cutover is going. The
 run prints `ABORT_DISPATCH_FENCED` and warns.
+
+The recovery unfence requires the candidate to have actually let go —
+`ABORTED` or `RECOVERY_REQUIRED`. A still-`LEGACY` store is not sufficient on its
+own: mid-cutover, during `CERTIFICATION_ONLY`, the store is also `LEGACY`, and
+opening dispatch there would resume mail under a half-migrated epoch and strand
+the run, because the `fence` stage then refuses a runtime that already carries
+the attempt store.
 
 To resume mail on a store that was never activated:
 
@@ -131,6 +181,13 @@ survives on a rolled-back binary; the old binary simply does not read the new
 columns.
 
 ## Forward-only replacement
+
+`adoptCandidate()` checks the generation, the state hash and the applied-migration
+prefix. It has **no ancestry concept**, so the workflow enforces the Git half:
+the recovering generation's `source_commit` must be an ancestor of the
+replacement, and the replacement must be reachable from the controller. A lost
+adopt response reconciles against the exact adopted generation rather than
+retrying into `RELEASE_STATE_STALE`.
 
 From `RECOVERY_REQUIRED`, dispatch `prepare` with `replacement_sha`. The release
 ID and the dispatch epoch are both derived from the original `target_sha`, so the

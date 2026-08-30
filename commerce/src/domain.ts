@@ -4,7 +4,7 @@ import { EmailProviderRejectedError, EventDumpCreateRejectedError, isEmailDelive
 import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import { LegalReleasePublishError, loadCanonicalLegalRelease, publishLegalRelease, verifyCurrentLegalSourceHashes } from "./legal-release";
 import { providerErrorEvidence, type PaymentProvider } from "./provider";
-import { ReleaseControlError, ReleaseSalesGate, type CandidateAcquireRequest, type CandidateAdoptRequest, type CandidateAbortRequest, type CandidateCompleteRequest, type CandidateHeadSnapshot, type CandidatePhaseRequest, type CertificationEvidenceRequest, type CertificationLeaseRequest, type CertificationOrderContext, type CertificationRetryRequest, type ReleaseControlRequest, type RuntimeReadinessDefectRequest, releaseRuntimeEvidence } from "./release-control";
+import { ReleaseControlError, ReleaseSalesGate, type CandidateAcquireRequest, type CandidateAdoptRequest, type CandidateAbortRequest, type CandidateCompleteRequest, type CandidateHeadSnapshot, type CandidatePhaseRequest, type CertificationEvidenceRequest, type CertificationLeaseRequest, type CertificationOrderContext, type CertificationRetryRequest, type PreActivationDefectRequest, type ReleaseControlRequest, type RuntimeReadinessDefectRequest, releaseRuntimeEvidence } from "./release-control";
 import { checkoutRequestSchema, promoMergedSchema, type CheckoutRequest, type ParticipantAgeBand } from "./types";
 import { PromoPricingError, pricePromo } from "./promo-pricing";
 import { basisPointsOf } from "./basis-points";
@@ -13,7 +13,8 @@ import { purchaseStatus, type PurchaseStatus } from "./purchase-status";
 import { parseUtcTimestamp } from "./utc-timestamp";
 import { assertNewOrdersOpen as assertGateOpen, emergencySalesPaused as gateEmergencyPaused, newOrdersBlocked as gateBlocked } from "./sales-gate";
 import { claimForDispatch, deferAmbiguousObservation, deferAmbiguousSend, dispatchCandidates, failExhaustedAmbiguous, providerLookupIdentity, recordProviderAcceptance, recordProviderRefusal, applyProviderObservation, claimedAttemptRef, reconcileHistoricalHttp403, resolveAttemptRef, skipObsoletePendingMessage, supersedeQueuedMessage, suppressMessageDispatch, sendTryCount, staleLeasedSends, type AttemptRef } from "./outbox-attempt-store";
-import { activateAttemptAuthority as runAttemptAuthorityActivation, activationEvidence } from "./outbox-activation";
+import { ACTIVATION_REFUSAL_CODES, activateAttemptAuthority as runAttemptAuthorityActivation, activationEvidence } from "./outbox-activation";
+import { certificationDispatchEvidence } from "./certification-dispatch";
 import { OutboxAuthorityError, emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, lastAuthorityEvent, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations, type DispatchEpoch } from "./outbox-authority";
 
 type Row = Record<string, unknown>;
@@ -390,6 +391,40 @@ export class CommerceDomain {
    * fence, and for the same reason: it is a deployment-mechanism act, not a
    * business one.
    */
+  /**
+   * Identity-bound proof that the certified order's own mail moved under
+   * attempt authority. Read-only, and the order id comes from the durable
+   * ledger rather than from a caller who could otherwise name a different one.
+   */
+  certificationDispatchEvidence(releaseId: string) {
+    return certificationDispatchEvidence(this.db, releaseId);
+  }
+
+  /**
+   * Recovery for a defect found after certification and before activation.
+   *
+   * The defect code is bound to the vocabulary the activation transaction
+   * actually returns, so a recovery cannot be justified by an invented reason.
+   */
+  markPreActivationDefect(input: PreActivationDefectRequest) {
+    if (!(ACTIVATION_REFUSAL_CODES as readonly string[]).includes(input.defect_code)) {
+      throw new DomainError("PRE_ACTIVATION_DEFECT_CODE_UNKNOWN", 422);
+    }
+    try {
+      return this.releaseSalesGate().markPreActivationDefect(input, () => this.releaseRuntimeEvidence(), () => {
+        const authority = outboxAuthority(this.db);
+        return {
+          attempt_authority: authority.attempt_authority,
+          email_dispatch_paused: authority.email_dispatch_paused,
+          dispatch_owner_release_id: authority.dispatch_owner_release_id,
+        };
+      });
+    } catch (error) {
+      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
+      throw error;
+    }
+  }
+
   activateAttemptAuthority(input: { expected_revision: number; reason: string }, epoch: DispatchEpoch) {
     return this.mapOutboxAuthority(() => withImmediateTransaction(this.db, () => runAttemptAuthorityActivation(this.db, epoch, input)));
   }

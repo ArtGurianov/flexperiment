@@ -48,10 +48,10 @@ on:
   workflow_dispatch:
     inputs:
       stage:
-        description: Fence dispatch, prepare the paused candidate, record certification evidence, activate attempt authority, unfence dispatch, complete, abort, or classify a readiness defect.
+        description: Fence dispatch, prepare the paused candidate, record certification evidence, activate attempt authority, unfence dispatch, complete, abort, or classify a readiness or pre-activation defect.
         required: true
         type: choice
-        options: [fence, prepare, certify, activate, unfence, complete, abort, classify_runtime_readiness_defect]
+        options: [fence, prepare, certify, activate, unfence, complete, abort, classify_runtime_readiness_defect, classify_pre_activation_defect]
       target_sha:
         description: Exact immutable runtime source SHA for this same-owner epoch.
         required: true
@@ -101,6 +101,14 @@ on:
         description: Controlled provider readiness error code for explicit PAUSED recovery classification only.
         required: false
         type: string
+      pre_activation_defect_class:
+        description: ACTIVATION_PRECONDITION, ACTIVATION_SCHEMA or ACTIVATION_STORE. Only for stage=classify_pre_activation_defect.
+        required: false
+        type: string
+      pre_activation_defect_code:
+        description: The exact OUTBOX_ACTIVATION_* refusal the activation stage returned. Only for stage=classify_pre_activation_defect.
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -138,6 +146,8 @@ jobs:
       INPUT_RETRY_REASON: ${{ inputs.retry_reason || '' }}
       INPUT_RUNTIME_READINESS_ERROR_CLASS: ${{ inputs.runtime_readiness_error_class || '' }}
       INPUT_RUNTIME_READINESS_ERROR_CODE: ${{ inputs.runtime_readiness_error_code || '' }}
+      INPUT_PRE_ACTIVATION_DEFECT_CLASS: ${{ inputs.pre_activation_defect_class || '' }}
+      INPUT_PRE_ACTIVATION_DEFECT_CODE: ${{ inputs.pre_activation_defect_code || '' }}
       POLL_ATTEMPTS: "30"
       POLL_SECONDS: "10"
       DRAIN_ATTEMPTS: "30"
@@ -151,7 +161,7 @@ jobs:
       - name: Resolve immutable controller, source, and input bundle
         run: |
           set -euo pipefail
-          [[ "$INPUT_STAGE" =~ ^(fence|prepare|certify|activate|unfence|complete|abort|classify_runtime_readiness_defect)$ ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_STAGE_INVALID" >&2; exit 1; }
+          [[ "$INPUT_STAGE" =~ ^(fence|prepare|certify|activate|unfence|complete|abort|classify_runtime_readiness_defect|classify_pre_activation_defect)$ ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_STAGE_INVALID" >&2; exit 1; }
           [[ "$INPUT_STAGE" != prepare || -n "$PRODUCTION_DEPLOY_REF_TOKEN" ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_DEPLOY_REF_TOKEN_REQUIRED" >&2; exit 1; }
           [[ "$INPUT_TARGET_SHA" =~ ^[0-9A-Fa-f]{40}$ ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_TARGET_SHA_INVALID" >&2; exit 1; }
           target_sha="${INPUT_TARGET_SHA,,}"
@@ -164,6 +174,10 @@ jobs:
             effective_sha="${INPUT_REPLACEMENT_SHA,,}"
             git fetch --no-tags origin "$effective_sha"
             git cat-file -e "$effective_sha^{commit}" || { echo "ATTEMPT_AUTHORITY_CUTOVER_REPLACEMENT_UNAVAILABLE" >&2; exit 1; }
+            # Same immutability rule the original target gets. Without it a
+            # replacement could name a commit that is not reachable from the
+            # controller under review at all.
+            git merge-base --is-ancestor "$effective_sha" "$CONTROLLER_SHA" || { echo "ATTEMPT_AUTHORITY_CUTOVER_REPLACEMENT_NOT_REACHABLE_FROM_CONTROLLER" >&2; exit 1; }
           fi
           # The candidate must be able to RECEIVE authority. Activation, the
           # five selector-aware seams and atomic attempt #1 creation all landed
@@ -185,6 +199,15 @@ jobs:
           fi
           [[ -z "$INPUT_RETRY_REASON" || "$INPUT_RETRY_REASON" == OPERATIONAL ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_RETRY_REASON_INVALID" >&2; exit 1; }
           [[ -z "$INPUT_RETRY_REASON" || "$present" == 4 ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_RETRY_REQUIRES_FRESH_FIXTURE" >&2; exit 1; }
+          if [[ "$INPUT_STAGE" == classify_pre_activation_defect ]]; then
+            [[ -z "$INPUT_REPLACEMENT_SHA" && "$present" == 0 && -z "$INPUT_RETRY_REASON" ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_PRE_ACTIVATION_INPUTS_FORBIDDEN" >&2; exit 1; }
+            [[ "$INPUT_PRE_ACTIVATION_DEFECT_CLASS" =~ ^(ACTIVATION_PRECONDITION|ACTIVATION_SCHEMA|ACTIVATION_STORE)$ ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_PRE_ACTIVATION_CLASS_INVALID" >&2; exit 1; }
+            # The exact refusal the activate stage returned. The runtime binds
+            # it to the activation vocabulary; this only bounds its shape.
+            [[ "$INPUT_PRE_ACTIVATION_DEFECT_CODE" =~ ^OUTBOX_[A-Z0-9_]{1,70}$ ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_PRE_ACTIVATION_CODE_INVALID" >&2; exit 1; }
+          else
+            [[ -z "$INPUT_PRE_ACTIVATION_DEFECT_CLASS" && -z "$INPUT_PRE_ACTIVATION_DEFECT_CODE" ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_PRE_ACTIVATION_INPUTS_FORBIDDEN" >&2; exit 1; }
+          fi
           if [[ "$INPUT_STAGE" == classify_runtime_readiness_defect ]]; then
             [[ -z "$INPUT_REPLACEMENT_SHA" && "$present" == 0 && -z "$INPUT_RETRY_REASON" ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_RUNTIME_READINESS_INPUTS_FORBIDDEN" >&2; exit 1; }
             [[ "$INPUT_RUNTIME_READINESS_ERROR_CLASS" =~ ^(TLS_CERT_CHAIN_UNTRUSTED|PROVIDER_BAD_REQUEST|PROVIDER_NETWORK|PROVIDER_RESPONSE_INVALID)$ ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_RUNTIME_READINESS_CLASS_INVALID" >&2; exit 1; }
@@ -216,6 +239,30 @@ jobs:
             echo "RELEASE_ID=outbox-attempt-authority-v1:$target_sha"
             echo "CERTIFICATION_INPUTS_PRESENT=$present"
           } >> "$GITHUB_ENV"
+
+      - name: Resolve the effective runtime source from durable candidate state
+        if: env.INPUT_STAGE != 'fence' && env.INPUT_STAGE != 'prepare'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          # Every run starts with effective = target, and replacement_sha is
+          # accepted only on prepare. So after a forward recovery adopted
+          # generation N+1 at a replacement source, a later independent stage
+          # would otherwise be looking at the ORIGINAL sha and refuse the
+          # generation it is supposed to be driving.
+          #
+          # RELEASE_ID stays derived from the initial target - it is the durable
+          # identity of the epoch - but the runtime SOURCE comes from the
+          # candidate head, which is the only thing that knows what is deployed.
+          api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > resolved-head.json || { echo "ATTEMPT_AUTHORITY_CUTOVER_HEAD_READ_UNAVAILABLE" >&2; exit 1; }
+          jq -e --arg release_id "$RELEASE_ID" '.schema_version == 2 and .head.release_id == $release_id' resolved-head.json >/dev/null \
+            || { echo "ATTEMPT_AUTHORITY_CUTOVER_EFFECTIVE_SOURCE_RELEASE_MISMATCH" >&2; exit 1; }
+          resolved="$(jq -er '.head.source_commit | select(type == "string" and test("^[a-f0-9]{40}$"))' resolved-head.json)" \
+            || { echo "ATTEMPT_AUTHORITY_CUTOVER_EFFECTIVE_SOURCE_INVALID" >&2; exit 1; }
+          git fetch --no-tags origin "$resolved"
+          git cat-file -e "$resolved^{commit}" || { echo "ATTEMPT_AUTHORITY_CUTOVER_EFFECTIVE_SOURCE_UNAVAILABLE" >&2; exit 1; }
+          git merge-base --is-ancestor "$resolved" "$CONTROLLER_SHA" || { echo "ATTEMPT_AUTHORITY_CUTOVER_EFFECTIVE_SOURCE_NOT_REACHABLE_FROM_CONTROLLER" >&2; exit 1; }
+          echo "EFFECTIVE_TARGET_SHA=$resolved" >> "$GITHUB_ENV"
 
       - name: Bind source migration and surface contracts
         if: env.INPUT_STAGE != 'fence'
@@ -388,7 +435,28 @@ jobs:
           set -euo pipefail
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json || { echo "ATTEMPT_AUTHORITY_CUTOVER_HEAD_READ_UNAVAILABLE" >&2; exit 1; }
+          # Adopt is a CAS, so a lost response leaves the adoption committed and
+          # this run unable to tell. Reconcile that exact state as success
+          # rather than retrying into RELEASE_STATE_STALE.
+          if jq -e --arg release_id "$RELEASE_ID" --arg source "$EFFECTIVE_TARGET_SHA" '
+            .head.release_id == $release_id and .head.phase == "PAUSED" and
+            .head.source_commit == $source and .head.phase_sequence == 0
+          ' candidate-head.json >/dev/null; then
+            echo "ATTEMPT_AUTHORITY_CUTOVER_ADOPT_REPLAY=$(jq -r '.head.candidate_generation' candidate-head.json)"
+            echo "ATTEMPT_AUTHORITY_HEAD_READ_REQUIRED_AFTER_DEPLOY=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
           jq -e --arg release_id "$RELEASE_ID" '.schema_version == 2 and .head.release_id == $release_id and .head.phase == "RECOVERY_REQUIRED" and (.state_hash | test("^[a-f0-9]{64}$"))' candidate-head.json >/dev/null || { echo "ATTEMPT_AUTHORITY_CUTOVER_RECOVERY_STATE_INVALID" >&2; exit 1; }
+          # "Forward-only" has to mean something in Git, not only in the
+          # generation counter. adoptCandidate checks generation, state hash and
+          # the applied-migration prefix; it has no ancestry concept at all, so
+          # without this a replacement could be an unrelated or older tree.
+          recovering_from="$(jq -er '.head.source_commit' candidate-head.json)"
+          git fetch --no-tags origin "$recovering_from"
+          git merge-base --is-ancestor "$recovering_from" "$EFFECTIVE_TARGET_SHA" || {
+            echo "ATTEMPT_AUTHORITY_CUTOVER_REPLACEMENT_NOT_FORWARD_ONLY" >&2
+            exit 1
+          }
           jq -n --slurpfile current candidate-head.json --argjson inventory "$(cat "$ATTEMPT_AUTHORITY_MIGRATION_INVENTORY")" --arg source "$EFFECTIVE_TARGET_SHA" '
             $current[0] as $current | {
               head: ($current.head | .candidate_generation += 1 | .source_commit = $source | .migration_inventory = {files: $inventory} | .phase = "PAUSED" | .phase_sequence = 0 | del(.certification)),
@@ -646,7 +714,9 @@ jobs:
             exit 1
           }
           api "$PUBLIC_API_URL/v1/internal/release-control/outbox-authority" > authority-before.json
+          replay_run=0
           if jq -e '.attempt_authority == "ATTEMPT"' authority-before.json >/dev/null; then
+            replay_run=1
             echo "ATTEMPT_AUTHORITY_CUTOVER_ACTIVATION_REPLAY=1"
           else
             jq -e --arg release_id "$RELEASE_ID" '
@@ -658,6 +728,29 @@ jobs:
               echo "ATTEMPT_AUTHORITY_CUTOVER_ACTIVATE_PRECONDITION_INVALID" >&2
               exit 1
             }
+          fi
+          # The dispatch proof's target must EXIST before the irreversible step,
+          # not be discovered missing after it. Existence is knowable now, so by
+          # this epoch's own rule it is checked now.
+          #
+          # Identity-bound: the certified order is resolved from the durable
+          # ledger inside the runtime, never named by this workflow, so the
+          # proof cannot be satisfied with some other order's mail.
+          # Skipped on a replay, where authority already moved: the backlog it
+          # was proving has since been dispatched, and demanding it still be
+          # queued would fail a run that succeeded.
+          if [[ "$replay_run" == 0 ]]; then
+            api "$PUBLIC_API_URL/v1/internal/release-control/certification-dispatch/$RELEASE_ID" > dispatch-target.json
+            jq -e --arg release_id "$RELEASE_ID" '
+              .release_id == $release_id and (.order_id | type == "string") and
+              (.messages | length) >= 1 and .queued_unstarted == true
+            ' dispatch-target.json >/dev/null || {
+              cat dispatch-target.json >&2
+              echo "ATTEMPT_AUTHORITY_CUTOVER_NO_QUEUED_CERTIFICATION_MAIL" >&2
+              echo "The certification order's mail must be queued and unstarted before activation." >&2
+              exit 1
+            }
+            echo "DISPATCH_TARGET=$(jq -c '{order_id, messages: [.messages[] | {outbox_id, type, status}]}' dispatch-target.json)"
           fi
           revision="$(jq -er '.revision' authority-before.json)"
           jq -n --arg release_id "$RELEASE_ID" --argjson revision "$revision" \
@@ -726,14 +819,26 @@ jobs:
               echo "ATTEMPT_AUTHORITY_CUTOVER_RECOVERY_UNFENCE_ON_ACTIVATED_STORE" >&2
               exit 1
             }
+            # A still-LEGACY store is NOT sufficient. Mid-cutover - during
+            # CERTIFICATION_ONLY, say - the store is also LEGACY, and opening
+            # dispatch there would resume mail under a half-migrated epoch and
+            # strand the run: the fence stage then refuses, because the
+            # attempt-aware runtime is already deployed.
+            #
+            # The recovery path is for a cutover that has actually let go.
+            api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > recovery-head.json || { echo "ATTEMPT_AUTHORITY_CUTOVER_HEAD_READ_UNAVAILABLE" >&2; exit 1; }
+            api "$PUBLIC_API_URL/v1/internal/release-control/status" > recovery-status.json
+            jq -e --arg release_id "$RELEASE_ID" '.head.release_id == $release_id and (.head.phase == "ABORTED" or .head.phase == "RECOVERY_REQUIRED")' recovery-head.json >/dev/null || {
+              cat recovery-head.json >&2
+              echo "ATTEMPT_AUTHORITY_CUTOVER_RECOVERY_UNFENCE_CANDIDATE_STILL_LIVE" >&2
+              echo "Abort or classify the candidate first; a live cutover must not resume mail." >&2
+              exit 1
+            }
           fi
-          # The backlog that accumulated under the fence, captured BEFORE the
-          # fence lifts. Under unfence_mode=activated it is what the dispatch
-          # proof below consumes.
-          {
-            echo "UNSETTLED_BEFORE_UNFENCE=$(jq -r '.attempts.unsettled // 0' authority-before.json)"
-            echo "ACCEPTED_BEFORE_UNFENCE=$(jq -r '.attempts.settled_accepted // 0' authority-before.json)"
-          } >> "$GITHUB_ENV"
+          # Reported for the run log only. The proof itself is identity-bound
+          # and lives in the next step; these are population statistics and
+          # deliberately prove nothing.
+          echo "STORE_BEFORE_UNFENCE=$(jq -c '.attempts' authority-before.json)"
           revision="$(jq -er '.revision' authority-before.json)"
           jq -n --arg release_id "$RELEASE_ID" --argjson revision "$revision" \
             --arg reason "0041 attempt-authority cutover: resume dispatch ($INPUT_UNFENCE_MODE)" \
@@ -753,27 +858,30 @@ jobs:
           set -euo pipefail
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           # "The fence is lifted" is a control-plane fact. This is the data-plane
-          # one: a message enqueued by the candidate under LEGACY, given its
-          # attempt row by activation, is now claimed, sent and SETTLED IN THE
-          # ATTEMPT STORE by the converted worker.
+          # one: THE certification order's own messages, given their attempt rows
+          # by activation, are claimed, sent and settled IN THE ATTEMPT STORE by
+          # the converted worker.
           #
-          # The certification order's mail is that backlog - queued during
-          # certify precisely because the fence held. A run with nothing queued
-          # cannot prove this, and a vacuous proof is worse than a refusal.
-          [[ "$UNSETTLED_BEFORE_UNFENCE" -ge 1 ]] || {
-            echo "ATTEMPT_AUTHORITY_CUTOVER_NO_BACKLOG_TO_PROVE_DISPATCH" >&2
-            echo "Nothing was queued under the fence, so ATTEMPT dispatch cannot be proven by this run." >&2
-            exit 1
-          }
+          # Deliberately not a population count. "settled_accepted went up"
+          # passes for the wrong reason: a late provider callback settling an
+          # unrelated older SEND_UNKNOWN increments the same counter, so a broken
+          # ATTEMPT dispatch path would read as green. The runtime resolves the
+          # certified order from the durable ledger and answers about those exact
+          # attempts, and it compares the send start against the durable
+          # DISPATCH_UNFENCED event through parseUtcTimestamp - the two
+          # timestamps are in different formats and comparing them here would be
+          # the unsound comparison this codebase has already been bitten by.
           for attempt in $(seq 1 "$POLL_ATTEMPTS"); do
-            api "$PUBLIC_API_URL/v1/internal/release-control/outbox-authority" > dispatch.json
-            if jq -e --argjson accepted "$ACCEPTED_BEFORE_UNFENCE" '
-              .attempt_authority == "ATTEMPT" and
-              .email_dispatch_paused == false and
-              (.attempts.settled_accepted > $accepted) and
+            api "$PUBLIC_API_URL/v1/internal/release-control/certification-dispatch/$RELEASE_ID" > dispatch.json
+            api "$PUBLIC_API_URL/v1/internal/release-control/outbox-authority" > dispatch-authority.json
+            if jq -e --arg release_id "$RELEASE_ID" '
+              .release_id == $release_id and (.order_id | type == "string") and
+              (.unfenced_at | type == "string") and .dispatched_after_unfence == true
+            ' dispatch.json >/dev/null && jq -e '
+              .attempt_authority == "ATTEMPT" and .email_dispatch_paused == false and
               (.attempts.defects | to_entries | map(.value == 0) | all)
-            ' dispatch.json >/dev/null; then
-              echo "ATTEMPT_DISPATCH_PROVEN=$(jq -c '.attempts' dispatch.json)"
+            ' dispatch-authority.json >/dev/null; then
+              echo "ATTEMPT_DISPATCH_PROVEN=$(jq -c '{order_id, unfenced_at, messages: [.messages[] | {outbox_id, type, status, outcome: .attempt.outcome, started_at: .attempt.started_at}]}' dispatch.json)"
               exit 0
             fi
             sleep "$POLL_SECONDS"
@@ -781,6 +889,49 @@ jobs:
           cat dispatch.json >&2
           echo "ATTEMPT_AUTHORITY_CUTOVER_ATTEMPT_DISPATCH_NOT_OBSERVED" >&2
           exit 1
+
+      - name: Classify a defect found after certification and before activation
+        if: env.INPUT_STAGE == 'classify_pre_activation_defect'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          # The window that previously had no controller path in EITHER
+          # direction: abort refuses any generation that was ever CERTIFIED,
+          # readiness classification only handles PAUSED, and replacement
+          # adoption requires RECOVERY_REQUIRED. A candidate that certified and
+          # then failed its activation preconditions could go neither forward
+          # nor back, with attempt authority still safely LEGACY.
+          api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json
+          if jq -e --arg release_id "$RELEASE_ID" '.head.release_id == $release_id and .head.phase == "RECOVERY_REQUIRED"' candidate-head.json >/dev/null; then
+            echo "ATTEMPT_AUTHORITY_CUTOVER_PRE_ACTIVATION_DEFECT_REPLAY=1"
+            exit 0
+          fi
+          jq -e --arg release_id "$RELEASE_ID" --arg source "$EFFECTIVE_TARGET_SHA" '
+            .schema_version == 2 and .head.release_id == $release_id and .head.source_commit == $source and
+            .head.phase == "CERTIFIED" and .head.certification.status == "CONSUMED" and
+            (.state_hash | test("^[a-f0-9]{64}$"))
+          ' candidate-head.json >/dev/null || { echo "ATTEMPT_AUTHORITY_CUTOVER_PRE_ACTIVATION_STATE_INVALID" >&2; exit 1; }
+          # Only while nothing irreversible has happened. The runtime enforces
+          # this too; asserting it here means the operator sees why rather than
+          # a bare 409.
+          api "$PUBLIC_API_URL/v1/internal/release-control/outbox-authority" > authority.json
+          jq -e --arg release_id "$RELEASE_ID" '
+            .attempt_authority == "LEGACY" and .email_dispatch_paused == true and
+            .dispatch_owner_release_id == $release_id
+          ' authority.json >/dev/null || {
+            cat authority.json >&2
+            echo "ATTEMPT_AUTHORITY_CUTOVER_PRE_ACTIVATION_NOT_RECOVERABLE" >&2
+            echo "Authority has moved or the fence is not ours; recovery is forward only from here." >&2
+            exit 1
+          }
+          jq -n --slurpfile current candidate-head.json \
+            --arg defect_class "$INPUT_PRE_ACTIVATION_DEFECT_CLASS" --arg defect_code "$INPUT_PRE_ACTIVATION_DEFECT_CODE" '
+            {release_id: $current[0].head.release_id, candidate_generation: $current[0].head.candidate_generation,
+             expected_state_hash: $current[0].state_hash, defect_class: $defect_class, defect_code: $defect_code}
+          ' > pre-activation-defect.json
+          api -X POST --data-binary @pre-activation-defect.json "$PUBLIC_API_URL/v1/internal/release-control/candidates/pre-activation-defect" > recovered.json
+          jq -e --arg release_id "$RELEASE_ID" '.head.release_id == $release_id and .head.phase == "RECOVERY_REQUIRED"' recovered.json >/dev/null || { echo "ATTEMPT_AUTHORITY_CUTOVER_PRE_ACTIVATION_TRANSITION_INVALID" >&2; exit 1; }
+          echo "Recovered to RECOVERY_REQUIRED. Dispatch prepare with replacement_sha to adopt a forward-only generation."
 
       # ---------------------------------------------------------------- abort
       - name: Abort a still-reversible candidate
@@ -849,6 +1000,25 @@ jobs:
           ' pre-complete-status.json >/dev/null || {
             cat pre-complete-status.json >&2
             echo "ATTEMPT_AUTHORITY_CUTOVER_DISPATCH_MUST_BE_RESUMED_BEFORE_COMPLETE" >&2
+            exit 1
+          }
+          # Re-proved here, from durable evidence, rather than trusted because
+          # some earlier run said so.
+          #
+          # The unfence CAS commits before its dispatch poll runs, so a failed
+          # poll leaves ATTEMPT + dispatch open + CERTIFIED - a state complete
+          # would otherwise accept, letting an epoch finish whose only
+          # data-plane proof had just failed. Re-reading also makes a successful
+          # proof survive process loss, workflow loss and a later run, without
+          # inventing another mutable cutover flag to carry it.
+          api "$PUBLIC_API_URL/v1/internal/release-control/certification-dispatch/$RELEASE_ID" > complete-dispatch.json
+          jq -e --arg release_id "$RELEASE_ID" '
+            .release_id == $release_id and (.order_id | type == "string") and
+            (.unfenced_at | type == "string") and .dispatched_after_unfence == true
+          ' complete-dispatch.json >/dev/null || {
+            cat complete-dispatch.json >&2
+            echo "ATTEMPT_AUTHORITY_CUTOVER_DISPATCH_PROOF_MISSING_BEFORE_COMPLETE" >&2
+            echo "The certification order's mail has not been proven dispatched under attempt authority." >&2
             exit 1
           }
           jq -n --slurpfile current candidate-head.json '{release_id: $current[0].head.release_id, candidate_generation: $current[0].head.candidate_generation, expected_state_hash: $current[0].state_hash}' > complete.json
