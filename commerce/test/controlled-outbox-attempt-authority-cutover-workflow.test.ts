@@ -76,11 +76,25 @@ describe("controlled outbox attempt-authority cutover", () => {
       .toBeLessThan(at("ATTEMPT_AUTHORITY_CUTOVER_DISPATCH_NOT_QUIESCENT"));
   });
 
-  it("refuses to fence a runtime that already carries the attempt store", () => {
-    // The fence stage runs against the runtime being REPLACED. An attempt store
-    // there means the stages are being run out of order.
-    expect(workflow).toContain("ATTEMPT_AUTHORITY_CUTOVER_FENCE_RUNTIME_ALREADY_ADVANCED");
-    expect(workflow).toContain(".attempts == null");
+  it("refuses to fence only once authority has actually moved", () => {
+    // The attempt store's PRESENCE is deliberately not a refusal, though it
+    // reads like a natural one.
+    //
+    // An aborted cutover leaves 0041 applied and the attempt-aware runtime
+    // deployed with authority never moved. That is a legitimate resting state,
+    // and rolling the runtime back is not an escape from it: a pre-0041 binary
+    // halts its own sweep on an unknown applied migration. Refusing to fence
+    // there would mean no future cutover could ever start.
+    expect(workflow).toContain("ATTEMPT_AUTHORITY_CUTOVER_FENCE_AUTHORITY_NOT_LEGACY");
+    expect(workflow).not.toContain("ATTEMPT_AUTHORITY_CUTOVER_FENCE_RUNTIME_ALREADY_ADVANCED");
+    expect(workflow).toContain("FENCE_RUNTIME_HAS_ATTEMPT_STORE=");
+    // Inside the fence stage the attempt store may be REPORTED and never gated
+    // on: a line mentioning it that also exits is the refusal coming back.
+    const stage = workflow.slice(at("Fence email dispatch on the deployed runtime"),
+      at("Prove dispatch drained and stays drained"));
+    for (const line of stage.split("\n").filter((candidate) => candidate.includes(".attempts"))) {
+      expect(line, "the attempt store is reported, not gated on").not.toMatch(/exit 1/);
+    }
   });
 
   it("binds the dispatch epoch to the release id with no generation", () => {
@@ -276,12 +290,53 @@ describe("controlled outbox attempt-authority cutover", () => {
     // strands the run, because the fence stage then refuses an already-advanced
     // runtime. The candidate must actually have let go.
     expect(workflow).toContain("ATTEMPT_AUTHORITY_CUTOVER_RECOVERY_UNFENCE_CANDIDATE_STILL_LIVE");
-    expect(workflow).toContain('.head.phase == "ABORTED" or .head.phase == "RECOVERY_REQUIRED"');
+    // ABORTED only. The two recovery states are not interchangeable:
+    // RECOVERY_REQUIRED still OWNS the release and keeps the fence precisely so
+    // a forward replacement can be adopted into it, and unfencing there strands
+    // the cutover - replacement prepare then refuses for a missing fence, and
+    // the fence stage cannot retake it while a live epoch owns the release.
+    expect(workflow).toContain('.head.phase == "ABORTED"');
+    expect(workflow).not.toContain('.head.phase == "ABORTED" or .head.phase == "RECOVERY_REQUIRED"');
+    expect(workflow).toContain("ATTEMPT_AUTHORITY_CUTOVER_RECOVERY_UNFENCE_GATE_STILL_OWNED");
     expect(workflow).toContain('unfence_mode=recovery');
     expect(workflow).toContain("ABORT_DISPATCH_FENCED=");
     // The dispatch proof is skipped on the recovery path: nothing was
     // activated, so there is no ATTEMPT dispatch to prove.
     expect(workflow).toContain("env.INPUT_UNFENCE_MODE == 'activated'");
+  });
+
+  it("does not short-circuit the pre-activation replay on phase alone", () => {
+    // Three edges reach RECOVERY_REQUIRED. Exiting on the phase would report a
+    // runtime-readiness or public-frontend recovery as a successful replay of
+    // an activation defect that was never recorded - the exact audit property
+    // the separate ledger kind exists to preserve.
+    const stage = workflow.slice(at("Classify a defect found after certification and before activation"),
+      at("Recovered to RECOVERY_REQUIRED"));
+    expect(stage).toContain("ATTEMPT_AUTHORITY_CUTOVER_PRE_ACTIVATION_DEFECT_REPLAY=1");
+    // The request is posted on both branches: the answer comes from the ledger.
+    expect(stage.slice(stage.indexOf("PRE_ACTIVATION_DEFECT_REPLAY=1")))
+      .toContain("/v1/internal/release-control/candidates/pre-activation-defect");
+    expect(stage).not.toContain("PRE_ACTIVATION_DEFECT_REPLAY=1\"\n            exit 0");
+  });
+
+  it("names a code only for the class that has one", () => {
+    // CERTIFICATION_DISPATCH_TARGET_INVALID exists because NO activation
+    // refusal was produced, so there is no code to name and the runtime derives
+    // one from its own evidence instead of trusting the caller.
+    expect(workflow).toContain("ACTIVATION_REFUSAL|CERTIFICATION_DISPATCH_TARGET_INVALID");
+    expect(workflow).toContain("ATTEMPT_AUTHORITY_CUTOVER_PRE_ACTIVATION_CODE_FORBIDDEN");
+    expect(workflow).toContain('if $defect_code == "" then {} else {defect_code: $defect_code} end');
+  });
+
+  it("does not claim certify is reversible by abort", () => {
+    // abortCandidate refuses any generation that was ever CERTIFIED, and
+    // prepare activates the lease from DEPLOYED_READ_ONLY - so the generation
+    // leaves abort's reach before certify is ever dispatched. The operator-
+    // facing header must not preserve a premise the state machine disproves.
+    const header = workflow.slice(0, at("on:"));
+    expect(header).not.toContain("certify    reversible");
+    expect(header).toContain("abort is NOT");
+    expect(header).toContain("RECOVERY_REQUIRED   the epoch still owns the release and KEEPS the fence");
   });
 
   it("refuses to complete while dispatch is still fenced", () => {

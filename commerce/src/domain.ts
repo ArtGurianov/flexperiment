@@ -407,8 +407,26 @@ export class CommerceDomain {
    * actually returns, so a recovery cannot be justified by an invented reason.
    */
   markPreActivationDefect(input: PreActivationDefectRequest) {
-    if (!(ACTIVATION_REFUSAL_CODES as readonly string[]).includes(input.defect_code)) {
-      throw new DomainError("PRE_ACTIVATION_DEFECT_CODE_UNKNOWN", 422);
+    if (input.defect_class === "ACTIVATION_REFUSAL") {
+      // The exact code the activation transaction returned, and nothing else.
+      if (!(ACTIVATION_REFUSAL_CODES as readonly string[]).includes(input.defect_code)) {
+        throw new DomainError("PRE_ACTIVATION_DEFECT_CODE_UNKNOWN", 422);
+      }
+    } else {
+      // The proof target is unusable. Verified here from the runtime's own
+      // evidence rather than taken on the caller's word: this class exists
+      // precisely because no activation refusal was ever produced, so there is
+      // nothing to check the caller's assertion against except the store.
+      const evidence = certificationDispatchEvidence(this.db, input.release_id);
+      if (!evidence.order_id) throw new DomainError("PRE_ACTIVATION_DEFECT_NO_CERTIFIED_ORDER", 409);
+      if (evidence.queued_unstarted) throw new DomainError("PRE_ACTIVATION_DEFECT_TARGET_IS_VALID", 409);
+      // Derived, never supplied. A caller able to name the reason could record
+      // a truthful-looking edge for an untrue cause.
+      const derived = evidence.messages.length === 0
+        ? "CERTIFICATION_DISPATCH_TARGET_MISSING"
+        : "CERTIFICATION_DISPATCH_TARGET_ALREADY_STARTED";
+      if (input.defect_code && input.defect_code !== derived) throw new DomainError("PRE_ACTIVATION_DEFECT_CODE_NOT_DERIVED", 422);
+      input = { ...input, defect_code: derived };
     }
     try {
       return this.releaseSalesGate().markPreActivationDefect(input, () => this.releaseRuntimeEvidence(), () => {

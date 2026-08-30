@@ -116,7 +116,7 @@ const certified = () => {
 const request = (releaseId: string, current: GenerationHead, overrides: Record<string, unknown> = {}) => ({
   release_id: releaseId, candidate_generation: current.candidate_generation,
   expected_state_hash: releaseStateHash(current),
-  defect_class: "ACTIVATION_STORE" as const, defect_code: "OUTBOX_ACTIVATION_PROVIDER_KEY_MISMATCH",
+  defect_class: "ACTIVATION_REFUSAL" as const, defect_code: "OUTBOX_ACTIVATION_PROVIDER_KEY_MISMATCH",
   ...overrides,
 });
 
@@ -190,7 +190,7 @@ describe("pre-activation defect recovery", () => {
 
   it("refuses an unbounded defect class or code", () => {
     const { gate, releaseId, current } = certified();
-    expect(() => gate.markPreActivationDefect(request(releaseId, current, { defect_class: "WHATEVER" }), () => evidence(), () => authority({}, releaseId)))
+    expect(() => gate.markPreActivationDefect(request(releaseId, current, { defect_class: "ACTIVATION_STORE" }), () => evidence(), () => authority({}, releaseId)))
       .toThrow("PRE_ACTIVATION_DEFECT_INVALID");
     expect(() => gate.markPreActivationDefect(request(releaseId, current, { defect_code: "not a code" }), () => evidence(), () => authority({}, releaseId)))
       .toThrow("PRE_ACTIVATION_DEFECT_INVALID");
@@ -202,13 +202,43 @@ describe("pre-activation defect recovery", () => {
       .toThrow("RELEASE_STATE_STALE");
   });
 
-  it("reconciles a replay of that exact generation", () => {
+  it("reconciles a replay of that exact generation and evidence", () => {
     const { gate, releaseId, current } = certified();
     const first = gate.markPreActivationDefect(request(releaseId, current), () => evidence(), () => authority({}, releaseId));
     const replayed = gate.markPreActivationDefect(
       request(releaseId, first.head as GenerationHead), () => evidence(), () => authority({}, releaseId));
     expect(replayed.head.phase).toBe("RECOVERY_REQUIRED");
     expect(replayed.head.phase_sequence).toBe(first.head.phase_sequence);
+  });
+
+  it("refuses to reconcile a replay whose evidence differs", () => {
+    // A replay reports what the ledger recorded, not what this request says.
+    const { gate, releaseId, current } = certified();
+    const first = gate.markPreActivationDefect(request(releaseId, current), () => evidence(), () => authority({}, releaseId));
+    expect(() => gate.markPreActivationDefect(
+      request(releaseId, first.head as GenerationHead, { defect_code: "OUTBOX_ACTIVATION_NOT_DRAINED" }),
+      () => evidence(), () => authority({}, releaseId)))
+      .toThrow("PRE_ACTIVATION_DEFECT_EVIDENCE_CONFLICT");
+  });
+
+  it("refuses to reconcile a recovery that came from a different edge", () => {
+    // The audit blocker. RECOVERY_REQUIRED is reachable through three edges, so
+    // reconciling on the phase alone would report a runtime-readiness recovery
+    // as a successful replay of an activation defect that was never recorded -
+    // which is exactly what the separate ledger kind exists to prevent.
+    const db = openDatabase(":memory:"); databases.push(db); migrate(db);
+    const gate = new ReleaseSalesGate(db);
+    const releaseId = `pre-activation-test:${randomUUID()}`;
+    gate.acquireCandidate({ head: head(releaseId) });
+    const recovered = gate.markRuntimeReadinessDefect({
+      release_id: releaseId, candidate_generation: 1, expected_state_hash: releaseStateHash(head(releaseId)),
+      readiness_component: "PROVIDER_READINESS", error_class: "PROVIDER_NETWORK", error_code: "ECONNRESET",
+    }, () => evidence());
+    expect(recovered.head.phase).toBe("RECOVERY_REQUIRED");
+
+    expect(() => gate.markPreActivationDefect(
+      request(releaseId, recovered.head as GenerationHead), () => evidence(), () => authority({}, releaseId)))
+      .toThrow("PRE_ACTIVATION_DEFECT_NOT_RECORDED");
   });
 
   it("hands the generation to a forward-only replacement", () => {

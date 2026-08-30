@@ -21,6 +21,22 @@ export const checkoutRequestSchema = z.object({
  * Fence and unfence carry a CAS token and a reason. The trigger is the
  * enforcement; this command is only how an operator changes its durable input.
  */
+/**
+ * `defect_code` is required only for ACTIVATION_REFUSAL. For the
+ * dispatch-target class the runtime derives it from its own evidence, so a
+ * caller cannot record a reason the store does not support.
+ */
+export const preActivationDefectSchema = z.object({
+  release_id: z.string().trim().min(1).max(200),
+  candidate_generation: z.number().int().positive(),
+  expected_state_hash: z.string().regex(/^[a-f0-9]{64}$/),
+  defect_class: z.enum(["ACTIVATION_REFUSAL", "CERTIFICATION_DISPATCH_TARGET_INVALID"]),
+  defect_code: z.string().regex(/^[A-Z0-9_]{1,80}$/).optional(),
+}).strict().refine(
+  (value) => value.defect_class !== "ACTIVATION_REFUSAL" || Boolean(value.defect_code),
+  { message: "PRE_ACTIVATION_DEFECT_CODE_REQUIRED", path: ["defect_code"] },
+);
+
 export const outboxDispatchFenceSchema = z.object({
   expected_revision: z.number().int().nonnegative(),
   reason: z.string().trim().min(3).max(1_000),

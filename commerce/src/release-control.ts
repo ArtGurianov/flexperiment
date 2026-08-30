@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import type Database from "better-sqlite3";
 import { canonicalLegalManifest, parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import { parseUtcTimestamp } from "./utc-timestamp";
-import { assertAppliedMigrationPrefix, candidateExpectedMigration, isTerminalPhase, preActivationDefectClasses, reconcileHeadWithProjection, releaseStateHash, replayReleaseGenerationChain, runtimeReadinessActionableErrorClasses, type GenerationHead, type ReleasePhase, type RuntimeReadinessActionableErrorClass, type V2Event } from "./release-generation";
+import { assertAppliedMigrationPrefix, candidateExpectedMigration, isTerminalPhase, parsePreActivationDefectEvidence, preActivationDefectClasses, reconcileHeadWithProjection, releaseStateHash, replayReleaseGenerationChain, runtimeReadinessActionableErrorClasses, type GenerationHead, type ReleasePhase, type RuntimeReadinessActionableErrorClass, type V2Event } from "./release-generation";
 import { evaluateCertificationEvidence } from "./certification-evidence";
 import { pricePromo } from "./promo-pricing";
 
@@ -132,7 +132,7 @@ export type PreActivationDefectRequest = {
   release_id: string;
   candidate_generation: number;
   expected_state_hash: string;
-  defect_class: "ACTIVATION_PRECONDITION" | "ACTIVATION_SCHEMA" | "ACTIVATION_STORE";
+  defect_class: "ACTIVATION_REFUSAL" | "CERTIFICATION_DISPATCH_TARGET_INVALID";
   defect_code: string;
 };
 
@@ -818,6 +818,31 @@ export class ReleaseSalesGate {
     return transaction();
   }
 
+  /**
+   * The last PRE_ACTIVATION_DEFECT evidence in the ledger, if the most recent
+   * transition into recovery was one. Deliberately "the last transition", not
+   * "any such event ever": a generation recovered twice through different edges
+   * must not report the older one.
+   */
+  private lastPreActivationDefect(releaseId: string): { defect_class: string; defect_code: string; source_commit: string } | null {
+    const events = this.db.prepare("SELECT details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid DESC").all(releaseId) as Array<{ details_json: string }>;
+    for (const event of events) {
+      let envelope: { kind?: unknown; pre_activation_defect?: unknown };
+      try { envelope = JSON.parse(event.details_json) as typeof envelope; } catch { continue; }
+      if (envelope.kind !== "PRE_ACTIVATION_DEFECT") {
+        // Any other transition-carrying event means the recovery currently in
+        // effect was not this one.
+        if (typeof envelope.kind === "string") return null;
+        continue;
+      }
+      const evidence = envelope.pre_activation_defect;
+      if (!parsePreActivationDefectEvidence(evidence, (evidence as { source_commit?: string } | null)?.source_commit ?? "")) return null;
+      const parsed = evidence as { defect_class: string; defect_code: string; source_commit: string };
+      return { defect_class: parsed.defect_class, defect_code: parsed.defect_code, source_commit: parsed.source_commit };
+    }
+    return null;
+  }
+
   markPreActivationDefect(
     input: PreActivationDefectRequest,
     runtimeEvidence: () => ReleaseRuntimeEvidence,
@@ -827,10 +852,20 @@ export class ReleaseSalesGate {
       const gate = row(this.db); if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
       const current = this.v2Head(input.release_id);
 
-      // Replay reconciliation, for that exact generation only. A stale request
-      // must not succeed because some later generation is in recovery.
+      // Replay reconciliation, bound to PROVENANCE and not merely to the phase.
+      //
+      // A generation can reach RECOVERY_REQUIRED through three different edges.
+      // Reconciling on phase alone would report a runtime-readiness or
+      // public-frontend recovery as a successful replay of an activation defect
+      // that was never recorded - which is exactly the audit property the
+      // separate ledger kind exists to preserve.
       if (current.phase === "RECOVERY_REQUIRED") {
         if (current.candidate_generation !== input.candidate_generation || releaseStateHash(current) !== input.expected_state_hash) throw new ReleaseControlError("RELEASE_STATE_STALE");
+        const recorded = this.lastPreActivationDefect(current.release_id);
+        if (!recorded) throw new ReleaseControlError("PRE_ACTIVATION_DEFECT_NOT_RECORDED");
+        if (recorded.defect_class !== input.defect_class || recorded.defect_code !== input.defect_code || recorded.source_commit !== current.source_commit) {
+          throw new ReleaseControlError("PRE_ACTIVATION_DEFECT_EVIDENCE_CONFLICT");
+        }
         return { ...status(gate), head: current };
       }
 

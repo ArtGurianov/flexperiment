@@ -4,6 +4,8 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { certificationDispatchEvidence } from "../src/certification-dispatch";
+import { CommerceDomain } from "../src/domain";
+import { MockProvider } from "../src/provider";
 import { ACTIVATION_REFUSAL_CODES } from "../src/outbox-activation";
 
 /**
@@ -77,8 +79,8 @@ const decoy = (db: Database.Database) =>
     { outcome: "ACCEPTED", started_at: "2026-08-30T12:00:00.000Z", completed_at: "2026-08-30T12:00:01.000Z" });
 
 const unfenced = (db: Database.Database, at = "2026-08-30 10:00:00") =>
-  db.prepare(`INSERT INTO outbox_authority_events(id, action, owner_release_id, reason, revision, created_at)
-    VALUES ('u1', 'DISPATCH_UNFENCED', ?, 'resume', 5, ?)`).run(RELEASE, at);
+  db.prepare(`INSERT INTO outbox_authority_events(id, action, owner_release_id, owner_generation, reason, revision, created_at)
+    VALUES ('u1', 'DISPATCH_UNFENCED', ?, NULL, 'resume', 5, ?)`).run(RELEASE, at);
 
 describe("certification dispatch evidence", () => {
   it("resolves the order from the durable ledger, never from a caller", () => {
@@ -196,12 +198,69 @@ describe("certification dispatch evidence", () => {
     expect(certificationDispatchEvidence(db, RELEASE).dispatched_after_unfence).toBe(true);
   });
 
+  it("reads this epoch's unfence, not the newest one in the table", () => {
+    // Every other read here is bound to the certified order. A global maximum
+    // would let another epoch's event define the boundary this proof is
+    // measured against.
+    const db = fixture();
+    certify(db);
+    unfenced(db, "2026-08-30 10:00:00");
+    db.prepare(`INSERT INTO outbox_authority_events(id, action, owner_release_id, owner_generation, reason, revision, created_at)
+      VALUES ('u2', 'DISPATCH_UNFENCED', 'someone-else', NULL, 'resume', 99, '2026-08-30 23:00:00')`).run();
+    message(db, "m1", { status: "ACCEPTED" },
+      { outcome: "ACCEPTED", started_at: "2026-08-30T10:00:05.000Z", completed_at: "2026-08-30T10:00:06.000Z" });
+
+    const evidence = certificationDispatchEvidence(db, RELEASE);
+    expect(evidence.unfenced_at).toBe("2026-08-30 10:00:00");
+    expect(evidence.dispatched_after_unfence).toBe(true);
+  });
+
   it("reports nothing rather than throwing on a runtime with no attempt store", () => {
     const db = fixture();
     certify(db);
     db.exec("DROP TABLE outbox_attempt");
     expect(certificationDispatchEvidence(db, RELEASE))
       .toMatchObject({ messages: [], queued_unstarted: false, dispatched_after_unfence: false });
+  });
+
+  it("derives the dispatch-target defect code from the store, never from the caller", () => {
+    // This class exists precisely BECAUSE no activation refusal was produced -
+    // the controller refuses before calling activation - so there is no code to
+    // name and nothing to check a caller's assertion against except the store.
+    const db = fixture();
+    certify(db);
+    const domain = new CommerceDomain(db, new MockProvider());
+    const request = { release_id: RELEASE, candidate_generation: 1, expected_state_hash: "a".repeat(64),
+      defect_class: "CERTIFICATION_DISPATCH_TARGET_INVALID" as const, defect_code: "" };
+
+    // No mail for the certified order at all: a real invalid target, so the
+    // refusal that follows is the release-state one, not a rejection of class.
+    expect(() => domain.markPreActivationDefect(request)).not.toThrow(/PRE_ACTIVATION_DEFECT_TARGET_IS_VALID/);
+
+    // A perfectly good target must NOT be classifiable as broken.
+    message(db, "m1");
+    expect(() => domain.markPreActivationDefect(request)).toThrow(/PRE_ACTIVATION_DEFECT_TARGET_IS_VALID/);
+  });
+
+  it("refuses a supplied code that the store does not support", () => {
+    const db = fixture();
+    certify(db);
+    message(db, "m1", { status: "SENDING" }, { started_at: "2026-08-30T09:00:00.000Z" });
+    const domain = new CommerceDomain(db, new MockProvider());
+    expect(() => domain.markPreActivationDefect({
+      release_id: RELEASE, candidate_generation: 1, expected_state_hash: "a".repeat(64),
+      defect_class: "CERTIFICATION_DISPATCH_TARGET_INVALID", defect_code: "CERTIFICATION_DISPATCH_TARGET_MISSING",
+    })).toThrow(/PRE_ACTIVATION_DEFECT_CODE_NOT_DERIVED/);
+  });
+
+  it("refuses an activation-refusal class carrying a code the module never throws", () => {
+    const db = fixture();
+    certify(db);
+    const domain = new CommerceDomain(db, new MockProvider());
+    expect(() => domain.markPreActivationDefect({
+      release_id: RELEASE, candidate_generation: 1, expected_state_hash: "a".repeat(64),
+      defect_class: "ACTIVATION_REFUSAL", defect_code: "OUTBOX_ACTIVATION_SOMETHING_INVENTED",
+    })).toThrow(/PRE_ACTIVATION_DEFECT_CODE_UNKNOWN/);
   });
 
   it("keeps the activation refusal vocabulary in sync with the module that throws it", () => {

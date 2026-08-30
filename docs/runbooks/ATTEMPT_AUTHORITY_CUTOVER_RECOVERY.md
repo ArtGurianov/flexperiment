@@ -45,9 +45,27 @@ neither forward nor back, with attempt authority still safely `LEGACY`.
 ```text
 stage=classify_pre_activation_defect
   target_sha=<initial>
-  pre_activation_defect_class=ACTIVATION_PRECONDITION | ACTIVATION_SCHEMA | ACTIVATION_STORE
+  pre_activation_defect_class=ACTIVATION_REFUSAL
   pre_activation_defect_code=<the exact OUTBOX_ACTIVATION_* refusal>
+
+  or, when the proof target itself was unusable:
+
+  pre_activation_defect_class=CERTIFICATION_DISPATCH_TARGET_INVALID
+  (no code: the runtime derives it from its own evidence)
 ```
+
+Two classes, because two different things strand a certified candidate and only
+one of them is an activation refusal. `NO_QUEUED_CERTIFICATION_MAIL` is raised by
+the controller *before* activation is ever called, so no activation code exists
+to name — widening the activation vocabulary to cover it would have made the
+ledger claim a refusal that never happened. For that class the runtime verifies
+from `certificationDispatchEvidence` that the certified order exists and its
+target is genuinely unusable, and derives the code itself.
+
+A replay is bound to provenance, not to the phase: `RECOVERY_REQUIRED` is
+reachable through three edges, and reconciling on phase alone would report a
+runtime-readiness or public-frontend recovery as a successful replay of an
+activation defect that was never recorded.
 
 It is deliberately narrower than a weaker `abort`: it opens only while attempt
 authority is still `LEGACY` **and** the dispatch fence still belongs to this
@@ -144,7 +162,10 @@ in the middle of this one's migration.
 | `OUTBOX_ACTIVATION_UNEXPECTED_SHADOW_STATE` | a shadow attempt carries a lease expiry or exhaustion instant | stop and inspect; these have no legacy source |
 | `OUTBOX_ACTIVATION_PROVIDER_KEY_MISMATCH` | message and attempt #1 disagree about what was sent | stop. Resolving this by rewriting either key would risk a duplicate send |
 | `STORE_NOT_CONVERGED` | post-activation defects non-zero | the activation transaction would have refused; investigate before unfencing |
-| `NO_QUEUED_CERTIFICATION_MAIL` | the certified order's mail is missing or already started | checked BEFORE activation, so nothing irreversible has happened. If a send already started, the fence was not doing its job |
+| `NO_QUEUED_CERTIFICATION_MAIL` | the certified order's mail is missing or already started | checked BEFORE activation, so nothing irreversible has happened. Recover with `classify_pre_activation_defect` and `CERTIFICATION_DISPATCH_TARGET_INVALID`. If a send already started, the fence was not doing its job |
+| `PRE_ACTIVATION_DEFECT_NOT_RECORDED` | replay of a recovery that came from a different edge | the generation is in recovery for another reason; read the ledger before acting |
+| `PRE_ACTIVATION_DEFECT_TARGET_IS_VALID` | the dispatch target is fine | the failure was something else; classify it truthfully |
+| `RECOVERY_UNFENCE_CANDIDATE_STILL_LIVE` | unfencing a candidate that has not let go | only `ABORTED` may resume mail |
 | `ATTEMPT_DISPATCH_NOT_OBSERVED` | the certified order's own attempts did not settle after unfence | mail is flowing again either way; investigate the worker. `complete` will refuse until this proof passes |
 | `DISPATCH_PROOF_MISSING_BEFORE_COMPLETE` | the data-plane proof never succeeded | re-run `unfence` (it reconciles) or investigate; do not complete an epoch whose proof failed |
 | `EFFECTIVE_SOURCE_*` | the durable head's source is unreadable or unreachable | the candidate head is the authority for what is deployed; fix that before anything else |
@@ -157,12 +178,24 @@ in the middle of this one's migration.
 mail stays stopped until an operator decides which way the cutover is going. The
 run prints `ABORT_DISPATCH_FENCED` and warns.
 
-The recovery unfence requires the candidate to have actually let go —
-`ABORTED` or `RECOVERY_REQUIRED`. A still-`LEGACY` store is not sufficient on its
-own: mid-cutover, during `CERTIFICATION_ONLY`, the store is also `LEGACY`, and
-opening dispatch there would resume mail under a half-migrated epoch and strand
-the run, because the `fence` stage then refuses a runtime that already carries
-the attempt store.
+## The two recovery states are not interchangeable
+
+This is the distinction the whole recovery model turns on:
+
+```text
+ABORTED             the epoch has LET GO - release gate reopened, owner cleared
+                    may unfence, and that is its stable resting state
+
+RECOVERY_REQUIRED   the epoch still OWNS the release and keeps sales paused
+                    KEEPS the fence, because replacement prepare consumes it
+                    the only path is forward replacement
+```
+
+Unfencing a `RECOVERY_REQUIRED` generation strands the cutover completely:
+replacement `prepare` then refuses for a missing fence, `abort` is unavailable
+after certification, and `complete` is the wrong phase. So recovery-unfence
+accepts `ABORTED` only, and additionally requires the release gate to be actually
+released.
 
 To resume mail on a store that was never activated:
 
@@ -175,10 +208,35 @@ ATTEMPT-dispatch proof, because nothing was activated and there is nothing to
 prove. It refuses with `RECOVERY_UNFENCE_ON_ACTIVATED_STORE` if authority has in
 fact moved — in that case the normal `unfence_mode=activated` path is correct.
 
-Then, if the candidate was deployed, move `production-deploy` back to the
-previous runtime through the guarded helper. 0041 is additive and the control row
-survives on a rolled-back binary; the old binary simply does not read the new
-columns.
+**Do not roll the runtime back to a pre-0041 binary.** That binary halts its own
+sweep on an unknown applied migration:
+
+```ts
+const unknown = unknownAppliedMigrations(this.db);
+if (unknown.length > 0) { console.error(...); return; }
+```
+
+Once `0041_outbox_attempt.sql` is durably applied, a pre-0041 runtime stops
+dispatching email entirely — the database fence would be open and every sweep
+would still refuse. That forward guard is working exactly as designed; the
+mistake would be rolling into it.
+
+### The post-abort resting state
+
+```text
+0041 applied
+attempt_authority   LEGACY        never moved
+dispatch            open
+runtime             the 0041-aware candidate, still deployed
+candidate           ABORTED, release gate released
+```
+
+This is stable and correct: mail flows under legacy attempt semantics on a binary
+that understands both. A future cutover starts from here, which is why the
+`fence` stage refuses only on `attempt_authority = ATTEMPT` and treats the
+presence of the attempt store as information rather than an error. An earlier
+revision refused any runtime carrying the attempt store, which would have made
+this resting state permanent.
 
 ## Forward-only replacement
 

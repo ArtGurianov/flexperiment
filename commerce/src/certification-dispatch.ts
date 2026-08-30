@@ -77,9 +77,18 @@ const certifiedOrderId = (db: Database.Database, releaseId: string): string | nu
   return orderId;
 };
 
-const lastUnfenceAt = (db: Database.Database): string | null => {
+/**
+ * This epoch's unfence, not the newest one in the table.
+ *
+ * Fence ownership serializes unfence, so today there is no normal path on which
+ * another epoch's event could be read here - but every other read in this
+ * module is bound to the certified order, and an identity-bound proof that
+ * takes one global maximum has a hole waiting for the next change.
+ */
+const lastUnfenceAt = (db: Database.Database, releaseId: string): string | null => {
   const row = db.prepare(`SELECT created_at FROM outbox_authority_events
-    WHERE action = 'DISPATCH_UNFENCED' ORDER BY revision DESC, created_at DESC LIMIT 1`).get() as { created_at: string } | undefined;
+    WHERE action = 'DISPATCH_UNFENCED' AND owner_release_id = ? AND owner_generation IS NULL
+    ORDER BY revision DESC, created_at DESC LIMIT 1`).get(releaseId) as { created_at: string } | undefined;
   return row?.created_at ?? null;
 };
 
@@ -92,7 +101,7 @@ const after = (value: string | null, boundary: string | null): boolean => {
 
 export const certificationDispatchEvidence = (db: Database.Database, releaseId: string): CertificationDispatchEvidence => {
   const orderId = certifiedOrderId(db, releaseId);
-  const unfencedAt = lastUnfenceAt(db);
+  const unfencedAt = lastUnfenceAt(db, releaseId);
   const empty = { release_id: releaseId, order_id: orderId, unfenced_at: unfencedAt, messages: [], queued_unstarted: false, dispatched_after_unfence: false };
   if (!orderId) return empty;
   const attemptStore = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'outbox_attempt'").get();

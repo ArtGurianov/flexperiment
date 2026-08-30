@@ -103,7 +103,25 @@ export type PublicFrontendDefectEvidence = {
  * what actually happened. Recording an activation refusal as a public-frontend
  * defect would put a false statement in an append-only ledger.
  */
-export const preActivationDefectClasses = ["ACTIVATION_PRECONDITION", "ACTIVATION_SCHEMA", "ACTIVATION_STORE"] as const;
+/**
+ * Two classes, because two different things can strand a certified candidate
+ * before the one-way step, and only one of them is an activation refusal.
+ *
+ *   ACTIVATION_REFUSAL                    the activation transaction said no,
+ *                                         and `defect_code` is the exact code
+ *                                         it returned
+ *   CERTIFICATION_DISPATCH_TARGET_INVALID the proof target itself is unusable -
+ *                                         the certified order's mail is missing
+ *                                         or already started - which the
+ *                                         controller refuses BEFORE calling
+ *                                         activation, so no activation code
+ *                                         exists to name
+ *
+ * The second class is verified by the runtime from its own evidence rather than
+ * taken on the caller's word; widening the activation vocabulary to cover it
+ * would have made the ledger claim a refusal that never happened.
+ */
+export const preActivationDefectClasses = ["ACTIVATION_REFUSAL", "CERTIFICATION_DISPATCH_TARGET_INVALID"] as const;
 export type PreActivationDefectClass = (typeof preActivationDefectClasses)[number];
 export type PreActivationDefectEvidence = {
   reason: "PRE_ACTIVATION_DEFECT";

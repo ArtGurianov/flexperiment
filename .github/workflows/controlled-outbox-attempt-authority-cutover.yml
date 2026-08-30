@@ -6,15 +6,26 @@ name: Controlled outbox attempt-authority cutover
 # proved. Its shape is not the usual candidate cutover, because one of its steps
 # is irreversible:
 #
-#   fence      reversible   unfence returns production to where it was
-#   deploy     reversible   production-deploy moves back, migrations are additive
-#   certify    reversible   the candidate can still be aborted
-#   activate   ONE-WAY      there is no ATTEMPT -> LEGACY, by design
-#   unfence    -            the terminal act, and the only one that resumes mail
+#   PAUSED / DEPLOYED_READ_ONLY   abort is available
+#   certification lifecycle       abort is NOT: abortCandidate refuses any
+#                                 generation that was ever CERTIFIED, and
+#                                 prepare activates the lease from
+#                                 DEPLOYED_READ_ONLY, so the generation leaves
+#                                 abort's reach before certify is ever run
+#   CERTIFIED, authority LEGACY   forward recovery only, through
+#                                 classify_pre_activation_defect
+#   activate                      ONE-WAY: there is no ATTEMPT -> LEGACY
 #
-# Everything provable is therefore proven BEFORE activate, which is why the real
-# 1-RUB certification sits ahead of it rather than after: it establishes that the
-# candidate binary transacts correctly while rolling back is still an option.
+# So the real 1-RUB certification sits ahead of activation not because it can be
+# undone afterwards, but because a forward recovery is still cheap there while
+# after the transfer there is nothing to recover to.
+#
+# The two recovery states are NOT interchangeable, and conflating them strands
+# the cutover:
+#
+#   ABORTED             the epoch has let go; mail may resume
+#   RECOVERY_REQUIRED   the epoch still owns the release and KEEPS the fence, so
+#                       a forward replacement can be adopted into it
 #
 # The fence must be held before the candidate is deployed, not after. 0041
 # rebuilds outbox_authority and drops and recreates both 0040 guards; performing
@@ -102,11 +113,11 @@ on:
         required: false
         type: string
       pre_activation_defect_class:
-        description: ACTIVATION_PRECONDITION, ACTIVATION_SCHEMA or ACTIVATION_STORE. Only for stage=classify_pre_activation_defect.
+        description: ACTIVATION_REFUSAL or CERTIFICATION_DISPATCH_TARGET_INVALID. Only for stage=classify_pre_activation_defect.
         required: false
         type: string
       pre_activation_defect_code:
-        description: The exact OUTBOX_ACTIVATION_* refusal the activation stage returned. Only for stage=classify_pre_activation_defect.
+        description: The exact OUTBOX_ACTIVATION_* refusal, required for ACTIVATION_REFUSAL and forbidden otherwise.
         required: false
         type: string
 
@@ -201,10 +212,15 @@ jobs:
           [[ -z "$INPUT_RETRY_REASON" || "$present" == 4 ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_RETRY_REQUIRES_FRESH_FIXTURE" >&2; exit 1; }
           if [[ "$INPUT_STAGE" == classify_pre_activation_defect ]]; then
             [[ -z "$INPUT_REPLACEMENT_SHA" && "$present" == 0 && -z "$INPUT_RETRY_REASON" ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_PRE_ACTIVATION_INPUTS_FORBIDDEN" >&2; exit 1; }
-            [[ "$INPUT_PRE_ACTIVATION_DEFECT_CLASS" =~ ^(ACTIVATION_PRECONDITION|ACTIVATION_SCHEMA|ACTIVATION_STORE)$ ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_PRE_ACTIVATION_CLASS_INVALID" >&2; exit 1; }
-            # The exact refusal the activate stage returned. The runtime binds
-            # it to the activation vocabulary; this only bounds its shape.
-            [[ "$INPUT_PRE_ACTIVATION_DEFECT_CODE" =~ ^OUTBOX_[A-Z0-9_]{1,70}$ ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_PRE_ACTIVATION_CODE_INVALID" >&2; exit 1; }
+            [[ "$INPUT_PRE_ACTIVATION_DEFECT_CLASS" =~ ^(ACTIVATION_REFUSAL|CERTIFICATION_DISPATCH_TARGET_INVALID)$ ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_PRE_ACTIVATION_CLASS_INVALID" >&2; exit 1; }
+            if [[ "$INPUT_PRE_ACTIVATION_DEFECT_CLASS" == ACTIVATION_REFUSAL ]]; then
+              # The exact refusal the activate stage returned. The runtime binds
+              # it to the activation vocabulary; this only bounds its shape.
+              [[ "$INPUT_PRE_ACTIVATION_DEFECT_CODE" =~ ^OUTBOX_[A-Z0-9_]{1,70}$ ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_PRE_ACTIVATION_CODE_INVALID" >&2; exit 1; }
+            else
+              # Derived by the runtime from the store, never asserted here.
+              [[ -z "$INPUT_PRE_ACTIVATION_DEFECT_CODE" ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_PRE_ACTIVATION_CODE_FORBIDDEN" >&2; exit 1; }
+            fi
           else
             [[ -z "$INPUT_PRE_ACTIVATION_DEFECT_CLASS" && -z "$INPUT_PRE_ACTIVATION_DEFECT_CODE" ]] || { echo "ATTEMPT_AUTHORITY_CUTOVER_PRE_ACTIVATION_INPUTS_FORBIDDEN" >&2; exit 1; }
           fi
@@ -304,12 +320,21 @@ jobs:
           set -euo pipefail
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/outbox-authority" > authority-before.json
-          # This stage runs against the runtime ALREADY in production, which
-          # predates 0041. Its attempt store must not exist: if it does, this
-          # cutover has already deployed and the fence stage is being replayed
-          # out of order.
+          # The only state that may not be fenced by this stage is one where
+          # authority has already moved: after that the fence is a step of a
+          # cutover that is past this point, not the start of one.
+          #
+          # The presence of the attempt store is deliberately NOT a refusal.
+          # That was a proxy for "the stages are being run out of order", and it
+          # is wrong in a state this epoch can actually reach: an aborted
+          # cutover leaves 0041 applied and the attempt-aware runtime deployed
+          # with authority never moved, which is a legitimate and stable resting
+          # place. Refusing it would mean no future cutover could ever start
+          # from there - and rolling the runtime back is not an escape, because
+          # a pre-0041 binary halts its own sweep on an unknown applied
+          # migration.
           jq -e '.attempt_authority == "LEGACY"' authority-before.json >/dev/null || { echo "ATTEMPT_AUTHORITY_CUTOVER_FENCE_AUTHORITY_NOT_LEGACY" >&2; exit 1; }
-          jq -e '.attempts == null' authority-before.json >/dev/null || { echo "ATTEMPT_AUTHORITY_CUTOVER_FENCE_RUNTIME_ALREADY_ADVANCED" >&2; exit 1; }
+          echo "FENCE_RUNTIME_HAS_ATTEMPT_STORE=$(jq -r 'if .attempts == null then "no" else "yes" end' authority-before.json)"
           revision="$(jq -er '.revision' authority-before.json)"
           jq -n --arg release_id "$RELEASE_ID" --argjson revision "$revision" \
             '{expected_revision: $revision, reason: "0041 attempt-authority cutover: fence before schema rebuild", release_id: $release_id, generation: null}' > fence.json
@@ -828,10 +853,28 @@ jobs:
             # The recovery path is for a cutover that has actually let go.
             api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > recovery-head.json || { echo "ATTEMPT_AUTHORITY_CUTOVER_HEAD_READ_UNAVAILABLE" >&2; exit 1; }
             api "$PUBLIC_API_URL/v1/internal/release-control/status" > recovery-status.json
-            jq -e --arg release_id "$RELEASE_ID" '.head.release_id == $release_id and (.head.phase == "ABORTED" or .head.phase == "RECOVERY_REQUIRED")' recovery-head.json >/dev/null || {
+            # ABORTED only, and RECOVERY_REQUIRED deliberately NOT.
+            #
+            # The two recovery states are not interchangeable:
+            #
+            #   ABORTED             the epoch has let go - gate released, owner
+            #                       cleared - so mail may resume
+            #   RECOVERY_REQUIRED   the epoch still OWNS the release and keeps
+            #                       sales paused precisely so a forward
+            #                       replacement can be adopted into it
+            #
+            # Unfencing a RECOVERY_REQUIRED generation strands the cutover:
+            # replacement prepare then refuses for a missing fence, and the
+            # fence stage cannot retake it while a live epoch owns the release.
+            jq -e --arg release_id "$RELEASE_ID" '.head.release_id == $release_id and .head.phase == "ABORTED"' recovery-head.json >/dev/null || {
               cat recovery-head.json >&2
               echo "ATTEMPT_AUTHORITY_CUTOVER_RECOVERY_UNFENCE_CANDIDATE_STILL_LIVE" >&2
-              echo "Abort or classify the candidate first; a live cutover must not resume mail." >&2
+              echo "Only an ABORTED candidate may resume mail. RECOVERY_REQUIRED keeps the fence for its replacement prepare." >&2
+              exit 1
+            }
+            jq -e '.owner_release_id == null and .sales_paused == false' recovery-status.json >/dev/null || {
+              cat recovery-status.json >&2
+              echo "ATTEMPT_AUTHORITY_CUTOVER_RECOVERY_UNFENCE_GATE_STILL_OWNED" >&2
               exit 1
             }
           fi
@@ -902,32 +945,44 @@ jobs:
           # then failed its activation preconditions could go neither forward
           # nor back, with attempt authority still safely LEGACY.
           api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json
+          # A RECOVERY_REQUIRED generation is NOT short-circuited here.
+          #
+          # Three different edges reach that phase, so exiting on the phase
+          # alone would report a runtime-readiness or public-frontend recovery
+          # as a successful replay of an activation defect that was never
+          # recorded. The runtime reconciles against the durable evidence -
+          # kind, generation, source, class and code - and refuses otherwise, so
+          # the request is sent either way and the answer comes from the ledger.
           if jq -e --arg release_id "$RELEASE_ID" '.head.release_id == $release_id and .head.phase == "RECOVERY_REQUIRED"' candidate-head.json >/dev/null; then
             echo "ATTEMPT_AUTHORITY_CUTOVER_PRE_ACTIVATION_DEFECT_REPLAY=1"
-            exit 0
+          else
+            jq -e --arg release_id "$RELEASE_ID" --arg source "$EFFECTIVE_TARGET_SHA" '
+              .schema_version == 2 and .head.release_id == $release_id and .head.source_commit == $source and
+              .head.phase == "CERTIFIED" and .head.certification.status == "CONSUMED" and
+              (.state_hash | test("^[a-f0-9]{64}$"))
+            ' candidate-head.json >/dev/null || { echo "ATTEMPT_AUTHORITY_CUTOVER_PRE_ACTIVATION_STATE_INVALID" >&2; exit 1; }
+            # Only while nothing irreversible has happened. The runtime enforces
+            # this too; asserting it here means the operator sees why rather
+            # than a bare 409.
+            api "$PUBLIC_API_URL/v1/internal/release-control/outbox-authority" > authority.json
+            jq -e --arg release_id "$RELEASE_ID" '
+              .attempt_authority == "LEGACY" and .email_dispatch_paused == true and
+              .dispatch_owner_release_id == $release_id
+            ' authority.json >/dev/null || {
+              cat authority.json >&2
+              echo "ATTEMPT_AUTHORITY_CUTOVER_PRE_ACTIVATION_NOT_RECOVERABLE" >&2
+              echo "Authority has moved or the fence is not ours; recovery is forward only from here." >&2
+              exit 1
+            }
           fi
-          jq -e --arg release_id "$RELEASE_ID" --arg source "$EFFECTIVE_TARGET_SHA" '
-            .schema_version == 2 and .head.release_id == $release_id and .head.source_commit == $source and
-            .head.phase == "CERTIFIED" and .head.certification.status == "CONSUMED" and
-            (.state_hash | test("^[a-f0-9]{64}$"))
-          ' candidate-head.json >/dev/null || { echo "ATTEMPT_AUTHORITY_CUTOVER_PRE_ACTIVATION_STATE_INVALID" >&2; exit 1; }
-          # Only while nothing irreversible has happened. The runtime enforces
-          # this too; asserting it here means the operator sees why rather than
-          # a bare 409.
-          api "$PUBLIC_API_URL/v1/internal/release-control/outbox-authority" > authority.json
-          jq -e --arg release_id "$RELEASE_ID" '
-            .attempt_authority == "LEGACY" and .email_dispatch_paused == true and
-            .dispatch_owner_release_id == $release_id
-          ' authority.json >/dev/null || {
-            cat authority.json >&2
-            echo "ATTEMPT_AUTHORITY_CUTOVER_PRE_ACTIVATION_NOT_RECOVERABLE" >&2
-            echo "Authority has moved or the fence is not ours; recovery is forward only from here." >&2
-            exit 1
-          }
           jq -n --slurpfile current candidate-head.json \
             --arg defect_class "$INPUT_PRE_ACTIVATION_DEFECT_CLASS" --arg defect_code "$INPUT_PRE_ACTIVATION_DEFECT_CODE" '
             {release_id: $current[0].head.release_id, candidate_generation: $current[0].head.candidate_generation,
-             expected_state_hash: $current[0].state_hash, defect_class: $defect_class, defect_code: $defect_code}
+             expected_state_hash: $current[0].state_hash, defect_class: $defect_class}
+            # Only ACTIVATION_REFUSAL names a code. For the dispatch-target
+            # class the runtime derives it from its own evidence, so a caller
+            # cannot record a reason the store does not support.
+            + (if $defect_code == "" then {} else {defect_code: $defect_code} end)
           ' > pre-activation-defect.json
           api -X POST --data-binary @pre-activation-defect.json "$PUBLIC_API_URL/v1/internal/release-control/candidates/pre-activation-defect" > recovered.json
           jq -e --arg release_id "$RELEASE_ID" '.head.release_id == $release_id and .head.phase == "RECOVERY_REQUIRED"' recovered.json >/dev/null || { echo "ATTEMPT_AUTHORITY_CUTOVER_PRE_ACTIVATION_TRANSITION_INVALID" >&2; exit 1; }
