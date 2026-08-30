@@ -45,7 +45,7 @@ field() { awk -F= -v key="$1" '$1 == key { if (++matches != 1) exit 1; print sub
 [[ "$(field maintenance_artifact_sha)" == "$expected_maintenance_artifact_sha" ]] || { echo "0041_OFFLINE_RECEIPT_MAINTENANCE_ARTIFACT_MISMATCH" >&2; exit 1; }
 maintenance_worktree="$(field maintenance_worktree)"
 [[ "$maintenance_worktree" == /* && "$(git -C "$maintenance_worktree" rev-parse HEAD)" == "$expected_maintenance_artifact_sha" ]] || { echo "0041_OFFLINE_RECEIPT_MAINTENANCE_WORKTREE_INVALID" >&2; exit 1; }
-[[ "$(git -C "$maintenance_worktree" show -s --format=%P HEAD)" == "6500586395034516495a2dcaec868d4b577b853f $GEN2_RUNTIME_SHA" ]] || { echo "0041_OFFLINE_RECEIPT_MAINTENANCE_TOPOLOGY_INVALID" >&2; exit 1; }
+[[ "$(git -C "$maintenance_worktree" show -s --format=%P HEAD)" == "1f76c0eb73958e89356ff830036b8ef1c8b49c5b $GEN2_RUNTIME_SHA" ]] || { echo "0041_OFFLINE_RECEIPT_MAINTENANCE_TOPOLOGY_INVALID" >&2; exit 1; }
 git -C "$maintenance_worktree" cat-file -e "$expected_maintenance_artifact_sha:.release/maintenance-only" || { echo "0041_OFFLINE_RECEIPT_MAINTENANCE_MARKER_MISSING" >&2; exit 1; }
 git -C "$maintenance_worktree" diff --quiet && [[ -z "$(git -C "$maintenance_worktree" status --porcelain --untracked-files=all)" ]] || { echo "0041_OFFLINE_RECEIPT_MAINTENANCE_WORKTREE_DIRTY" >&2; exit 1; }
 COMMERCE_DATABASE_PATH="$database_directory/commerce.sqlite" \

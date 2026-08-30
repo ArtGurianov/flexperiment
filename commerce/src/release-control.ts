@@ -119,7 +119,7 @@ export const gen1PostActivationEmailToGen2Bridge = {
   from_generation: 1,
   from_source_commit: "68f80a411b7f286928ef10826ed225228098d246",
   from_phase: "CERTIFIED",
-  from_phase_sequence: 4,
+  from_phase_sequence: 8,
   to_generation: 2,
   to_source_commit: "0ddc33d0fd0077fe0ba238ec75ae4090fc38ac34",
   authority_revision: 7,
