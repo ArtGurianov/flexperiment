@@ -12,7 +12,7 @@ import { findCityBySlug } from "../../lib/city-catalog";
 import { purchaseStatus, type PurchaseStatus } from "./purchase-status";
 import { parseUtcTimestamp } from "./utc-timestamp";
 import { assertNewOrdersOpen as assertGateOpen, emergencySalesPaused as gateEmergencyPaused, newOrdersBlocked as gateBlocked } from "./sales-gate";
-import { claimForDispatch, dispatchCandidates } from "./outbox-attempt-store";
+import { claimForDispatch, dispatchCandidates, providerLookupIdentity, recordProviderAcceptance, recordProviderRefusal } from "./outbox-attempt-store";
 import { OutboxAuthorityError, emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations, type DispatchEpoch } from "./outbox-authority";
 
 type Row = Record<string, unknown>;
@@ -2399,9 +2399,10 @@ export class CommerceDomain {
       if (isUnknown && this.reconcileLegacyUnisenderHttp403(String(outbox.id))) continue;
       // A known provider job is always reconciled before another send. It is
       // never considered proof that the original request was not dispatched.
-      if (isUnknown && outbox.job_id) {
+      const lookupIdentity = withImmediateTransaction(this.db, () => providerLookupIdentity(this.db, outbox as { id: string; job_id: unknown; provider_idempotence_key: unknown }));
+      if (isUnknown && lookupIdentity.jobId) {
         try {
-          const observed = await this.emailProvider.lookup({ jobId: String(outbox.job_id), idempotencyKey: String(outbox.provider_idempotence_key) });
+          const observed = await this.emailProvider.lookup({ jobId: lookupIdentity.jobId, idempotencyKey: lookupIdentity.idempotencyKey });
           if (observed.status === "UNKNOWN") this.deferUnknownEmailObservation(String(outbox.id), Number(outbox.attempts));
           else this.applyEmailObservation(outbox.id as string, observed);
         }
@@ -2414,7 +2415,7 @@ export class CommerceDomain {
       }
       if (isUnknown) {
         try {
-          const observed = await this.emailProvider.lookup({ idempotencyKey: String(outbox.provider_idempotence_key) });
+          const observed = await this.emailProvider.lookup({ idempotencyKey: lookupIdentity.idempotencyKey });
           if (observed.status !== "UNKNOWN") { this.applyEmailObservation(outbox.id as string, observed); continue; }
         } catch { /* same idempotency key will be used if a retry becomes possible */ }
       }
@@ -2451,26 +2452,15 @@ export class CommerceDomain {
         // mints attempt #2 with its own key.
         const sent = await this.emailProvider.send({ recipientEmail: String(outbox.recipient_email), template: String(outbox.template), type: String(outbox.type), payload, idempotencyKey: claimed.provider_idempotence_key, outboxId: String(outbox.id) });
         withImmediateTransaction(this.db, () => {
-          const accepted = this.db.prepare(`UPDATE email_outbox
-            SET status = 'ACCEPTED', job_id = ?, lease_owner = NULL, lease_expires_at = NULL,
-                next_attempt_at = NULL, last_error = NULL, provider_error_code = NULL, provider_error_message = NULL
-            WHERE id = ? AND status = 'SENDING' AND suppressed_at IS NULL AND superseded_at IS NULL`).run(sent.jobId, outbox.id);
-          if (!accepted.changes) {
-            // Consent may have been withdrawn while send() was in flight. The
-            // already-started provider call cannot be recalled, but its job ID
-            // is durable provider evidence; never revive the local row.
-            this.db.prepare(`UPDATE email_outbox SET job_id = COALESCE(job_id, ?), lease_owner = NULL, lease_expires_at = NULL
-              WHERE id = ? AND (suppressed_at IS NOT NULL OR superseded_at IS NOT NULL)`).run(sent.jobId, outbox.id);
-          }
+          recordProviderAcceptance(this.db, { id: String(outbox.id) }, claimed, sent.jobId);
         });
       } catch (error) {
         if (error instanceof EmailProviderRejectedError) {
           // A received HTTP response is authoritative evidence that this
           // dispatch was rejected. Do not convert it into an ambiguous replay.
-          this.db.prepare(`UPDATE email_outbox
-            SET status = 'FAILED', delivery_outcome = 'KNOWN_FAILED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
-                last_error = 'UNISENDER_HTTP_REJECTED', provider_error_code = ?, provider_error_message = ?
-            WHERE id = ? AND status = 'SENDING'`).run(error.providerCode ?? null, error.providerMessage ?? null, outbox.id);
+          withImmediateTransaction(this.db, () => {
+            recordProviderRefusal(this.db, { id: String(outbox.id) }, claimed, { providerCode: error.providerCode, providerMessage: error.providerMessage });
+          });
         } else {
           // A timeout/network loss after a request starts cannot prove the
           // provider did not accept it. Keep the stable idempotence key, but

@@ -209,7 +209,11 @@ describe("email delivery outcome", () => {
    * migration exists to avoid, so the guarantee is asserted against the source.
    */
   describe("writer paths", () => {
-    const source = readFileSync("commerce/src/domain.ts", "utf8");
+    // Follows the writers wherever they live: seam conversion moved some into
+    // outbox-attempt-store.ts, and a scan pinned to one file would have quietly
+    // stopped covering them.
+    const source = ["commerce/src/domain.ts", "commerce/src/outbox-attempt-store.ts"]
+      .map((file) => readFileSync(file, "utf8")).join("\n");
     const terminalFailureWrites = source
       .split(/(?=SET status = 'FAILED')/)
       .filter((chunk) => chunk.startsWith("SET status = 'FAILED'"));
@@ -230,13 +234,32 @@ describe("email delivery outcome", () => {
     );
 
     it("only claims KNOWN_FAILED where a provider response was actually received", () => {
-      for (const chunk of terminalFailureWrites) {
-        const statement = chunk.slice(0, chunk.indexOf("`)") + 2);
-        if (!statement.includes("delivery_outcome = 'KNOWN_FAILED'")) continue;
+      // Scoped to the ENCLOSING function rather than a forward window.
+      //
+      // Under ATTEMPT the message write carries delivery_outcome while the
+      // received rejection is recorded as the attempt's failure_code, in the
+      // same transaction - and their order is a correctness decision: the
+      // attempt CAS must run first, so the provenance now sits BEHIND the
+      // delivery_outcome write. A forward-scanning window missed it and failed
+      // for a reason unrelated to the rule.
+      // Writers only. `delivery_outcome = 'KNOWN_FAILED'` also appears as a
+      // read predicate in several queries, and those carry no provenance
+      // because they assert nothing.
+      const boundary = /\n(?=export const |  private |  async |  [a-zA-Z]+\()/;
+      const regions = source.split(boundary);
+      const claiming = regions.filter((region) => /SET[\s\S]{0,200}delivery_outcome = 'KNOWN_FAILED'/.test(region));
+      expect(claiming.length, "no KNOWN_FAILED writer found").toBeGreaterThan(0);
+      for (const region of claiming) {
+        // Counted, not merely found. A function holding both a LEGACY and an
+        // ATTEMPT branch would otherwise be satisfied by one branch's
+        // provenance while the other claimed KNOWN_FAILED with none - verified
+        // by removing the ATTEMPT marker and watching a find-based check pass.
+        const claims = region.match(/delivery_outcome = 'KNOWN_FAILED'/g)?.length ?? 0;
+        const evidence = region.match(/(last_error|failure_code) = 'UNISENDER_HTTP_REJECTED(_LEGACY)?'/g)?.length ?? 0;
         expect(
-          statement,
-          "KNOWN_FAILED claimed without a received-rejection provenance",
-        ).toMatch(/last_error = 'UNISENDER_HTTP_REJECTED(_LEGACY)?'/);
+          evidence,
+          `${claims} KNOWN_FAILED claim(s) with only ${evidence} received-rejection provenance marker(s)`,
+        ).toBeGreaterThanOrEqual(claims);
       }
     });
 
@@ -273,7 +296,8 @@ describe("email delivery outcome", () => {
    * absence of evidence the split exists to preserve against.
    */
   describe("consumers", () => {
-    const source = readFileSync("commerce/src/domain.ts", "utf8");
+    const source = ["commerce/src/domain.ts", "commerce/src/outbox-attempt-store.ts"]
+      .map((file) => readFileSync(file, "utf8")).join("\n");
 
     it("no longer treats every FAILED row as a settled outcome", () => {
       expect(source).not.toContain("status IN ('DELIVERED', 'BOUNCED', 'FAILED')");
