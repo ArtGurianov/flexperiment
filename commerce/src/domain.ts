@@ -4,7 +4,7 @@ import { EmailProviderRejectedError, EventDumpCreateRejectedError, isEmailDelive
 import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import { LegalReleasePublishError, loadCanonicalLegalRelease, publishLegalRelease, verifyCurrentLegalSourceHashes } from "./legal-release";
 import { providerErrorEvidence, type PaymentProvider } from "./provider";
-import { ReleaseControlError, ReleaseSalesGate, type CandidateAcquireRequest, type CandidateAdoptRequest, type CandidateAbortRequest, type CandidateCompleteRequest, type CandidateHeadSnapshot, type CandidatePhaseRequest, type CertificationEvidenceRequest, type CertificationLeaseRequest, type CertificationOrderContext, type CertificationRetryRequest, type ReleaseControlRequest, type RuntimeReadinessDefectRequest, releaseRuntimeEvidence } from "./release-control";
+import { ReleaseControlError, ReleaseSalesGate, type CandidateAcquireRequest, type CandidateAdoptRequest, type CandidateAbortRequest, type CandidateCompleteRequest, type CandidateHeadSnapshot, type CandidatePhaseRequest, type CertificationEvidenceRequest, type CertificationLeaseRequest, type CertificationOrderContext, type CertificationRetryRequest, type PreActivationDefectRequest, type ReleaseControlRequest, type RuntimeReadinessDefectRequest, releaseRuntimeEvidence } from "./release-control";
 import { checkoutRequestSchema, promoMergedSchema, type CheckoutRequest, type ParticipantAgeBand } from "./types";
 import { PromoPricingError, pricePromo } from "./promo-pricing";
 import { basisPointsOf } from "./basis-points";
@@ -13,8 +13,9 @@ import { purchaseStatus, type PurchaseStatus } from "./purchase-status";
 import { parseUtcTimestamp } from "./utc-timestamp";
 import { assertNewOrdersOpen as assertGateOpen, emergencySalesPaused as gateEmergencyPaused, newOrdersBlocked as gateBlocked } from "./sales-gate";
 import { claimForDispatch, deferAmbiguousObservation, deferAmbiguousSend, dispatchCandidates, failExhaustedAmbiguous, providerLookupIdentity, recordProviderAcceptance, recordProviderRefusal, applyProviderObservation, claimedAttemptRef, reconcileHistoricalHttp403, resolveAttemptRef, skipObsoletePendingMessage, supersedeQueuedMessage, suppressMessageDispatch, sendTryCount, staleLeasedSends, type AttemptRef } from "./outbox-attempt-store";
-import { activateAttemptAuthority as runAttemptAuthorityActivation } from "./outbox-activation";
-import { OutboxAuthorityError, emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations, type DispatchEpoch } from "./outbox-authority";
+import { ACTIVATION_REFUSAL_CODES, activateAttemptAuthority as runAttemptAuthorityActivation, activationEvidence } from "./outbox-activation";
+import { certificationDispatchEvidence } from "./certification-dispatch";
+import { OutboxAuthorityError, emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, lastAuthorityEvent, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations, type DispatchEpoch } from "./outbox-authority";
 
 type Row = Record<string, unknown>;
 const one = <T extends Row>(db: Database.Database, sql: string, ...params: unknown[]) => db.prepare(sql).get(...params) as T | undefined;
@@ -346,8 +347,22 @@ export class CommerceDomain {
    *
    * There is deliberately no method here that moves attempt_authority.
    */
+  /**
+   * The whole outbox control surface a cutover controller needs, in one read:
+   * the durable selector, drain evidence, the last authority transition, and
+   * store convergence.
+   *
+   * `attempts` is null on a runtime without the attempt table, and that is
+   * load-bearing - before the 0041-aware candidate is live, the field's absence
+   * is what proves the old runtime is still answering.
+   */
   outboxAuthority() {
-    return { ...outboxAuthority(this.db), dispatch: emailDispatchDrained(this.db) };
+    return {
+      ...outboxAuthority(this.db),
+      dispatch: emailDispatchDrained(this.db),
+      last_event: lastAuthorityEvent(this.db),
+      attempts: activationEvidence(this.db),
+    };
   }
 
   /**
@@ -376,6 +391,56 @@ export class CommerceDomain {
    * fence, and for the same reason: it is a deployment-mechanism act, not a
    * business one.
    */
+  /**
+   * Identity-bound proof that the certified order's own mail moved under
+   * attempt authority. Read-only, and the order id comes from the durable
+   * ledger rather than from a caller who could otherwise name a different one.
+   */
+  /** One exact release's head, terminal phases included. See releaseHead(). */
+  releaseCandidateHead(releaseId: string) {
+    try { return this.releaseSalesGate().releaseHead(releaseId); }
+    catch (error) { if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status); throw error; }
+  }
+
+  certificationDispatchEvidence(releaseId: string) {
+    return certificationDispatchEvidence(this.db, releaseId);
+  }
+
+  /**
+   * Recovery for a defect found after certification and before activation.
+   *
+   * The defect code is bound to the vocabulary the activation transaction
+   * actually returns, so a recovery cannot be justified by an invented reason.
+   */
+  markPreActivationDefect(input: PreActivationDefectRequest) {
+    if (input.defect_class === "ACTIVATION_REFUSAL") {
+      // The exact code the activation transaction returned, and nothing else.
+      if (!(ACTIVATION_REFUSAL_CODES as readonly string[]).includes(input.defect_code)) {
+        throw new DomainError("PRE_ACTIVATION_DEFECT_CODE_UNKNOWN", 422);
+      }
+    }
+    try {
+      return this.releaseSalesGate().markPreActivationDefect(input, () => this.releaseRuntimeEvidence(), () => {
+        const authority = outboxAuthority(this.db);
+        return {
+          attempt_authority: authority.attempt_authority,
+          email_dispatch_paused: authority.email_dispatch_paused,
+          dispatch_owner_release_id: authority.dispatch_owner_release_id,
+        };
+      }, () => {
+        // Read inside release-control's transaction, and the code is derived
+        // here rather than accepted: a caller able to name the reason could
+        // record a truthful-looking edge for an untrue cause.
+        const evidence = certificationDispatchEvidence(this.db, input.release_id);
+        if (!evidence.order_id) throw new DomainError("PRE_ACTIVATION_DEFECT_NO_CERTIFIED_ORDER", 409);
+        return evidence.target_defect;
+      });
+    } catch (error) {
+      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
+      throw error;
+    }
+  }
+
   activateAttemptAuthority(input: { expected_revision: number; reason: string }, epoch: DispatchEpoch) {
     return this.mapOutboxAuthority(() => withImmediateTransaction(this.db, () => runAttemptAuthorityActivation(this.db, epoch, input)));
   }

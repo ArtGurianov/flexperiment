@@ -14,7 +14,7 @@ export type CertificationLeaseStatus = "ACTIVE" | "CONSUMED" | "EXPIRED" | "REVO
 export type CertificationBinding = { lease_id: string; occurrence_id: string; promo_id: string; expected_idempotency_key_hash: string; lease_expires_at: string; status: CertificationLeaseStatus };
 export type GenerationHead = { release_id: string; candidate_generation: number; source_commit: string; migration_inventory: MigrationInventory; legal_baseline: unknown; release_family: string; checkout_contract_version: string; admin_contract_version: string; phase: ReleasePhase; phase_sequence: number; certification?: CertificationBinding };
 export type V2Event = { seq: number; release_id: string; action: "ACQUIRED" | "PAUSED" | "REOPENED"; details_json: string };
-type Envelope = { schema_version: 2; kind: "CANDIDATE_ACQUIRED" | "CANDIDATE_SUPERSEDED" | "PHASE_CHANGED" | "RUNTIME_READINESS_DEFECT" | "PUBLIC_FRONTEND_DEFECT"; [key: string]: unknown };
+type Envelope = { schema_version: 2; kind: "CANDIDATE_ACQUIRED" | "CANDIDATE_SUPERSEDED" | "PHASE_CHANGED" | "RUNTIME_READINESS_DEFECT" | "PUBLIC_FRONTEND_DEFECT" | "PRE_ACTIVATION_DEFECT"; [key: string]: unknown };
 
 const terminalPhases = new Set<string>(terminalReleasePhases);
 export const isTerminalPhase = (phase: ReleasePhase): phase is (typeof terminalReleasePhases)[number] => terminalPhases.has(phase);
@@ -90,6 +90,57 @@ export type PublicFrontendDefectEvidence = {
   observed_frontend_source_commit: string;
   source_commit: string;
 };
+/**
+ * A defect found after certification and before an irreversible authority
+ * transfer.
+ *
+ * It shares the CERTIFIED -> RECOVERY_REQUIRED edge with PUBLIC_FRONTEND_DEFECT
+ * and, for the same reason, preserves the certification binding byte for byte:
+ * what failed is the step AFTER certification, not the certification, and the
+ * money it moved is not un-moved by recovering the candidate.
+ *
+ * A separate kind rather than a reused one, because the evidence has to say
+ * what actually happened. Recording an activation refusal as a public-frontend
+ * defect would put a false statement in an append-only ledger.
+ */
+/**
+ * Two classes, because two different things can strand a certified candidate
+ * before the one-way step, and only one of them is an activation refusal.
+ *
+ *   ACTIVATION_REFUSAL                    the activation transaction said no,
+ *                                         and `defect_code` is the exact code
+ *                                         it returned
+ *   CERTIFICATION_DISPATCH_TARGET_INVALID the proof target itself is unusable -
+ *                                         the certified order's mail is missing
+ *                                         or already started - which the
+ *                                         controller refuses BEFORE calling
+ *                                         activation, so no activation code
+ *                                         exists to name
+ *
+ * The second class is verified by the runtime from its own evidence rather than
+ * taken on the caller's word; widening the activation vocabulary to cover it
+ * would have made the ledger claim a refusal that never happened.
+ */
+export const preActivationDefectClasses = ["ACTIVATION_REFUSAL", "CERTIFICATION_DISPATCH_TARGET_INVALID"] as const;
+export type PreActivationDefectClass = (typeof preActivationDefectClasses)[number];
+export type PreActivationDefectEvidence = {
+  reason: "PRE_ACTIVATION_DEFECT";
+  defect_class: PreActivationDefectClass;
+  defect_code: string;
+  source_commit: string;
+};
+const preActivationDefectClassSet = new Set<string>(preActivationDefectClasses);
+export const parsePreActivationDefectEvidence = (value: unknown, sourceCommit: string): value is PreActivationDefectEvidence => {
+  const evidence = asRecord(value);
+  if (!evidence || Object.keys(evidence).length !== 4) return false;
+  return evidence.reason === "PRE_ACTIVATION_DEFECT"
+    && typeof evidence.defect_class === "string" && preActivationDefectClassSet.has(evidence.defect_class)
+    // The refusal code the activation transaction actually returned. Bounded
+    // here by shape; the domain binds it to the activation vocabulary itself.
+    && typeof evidence.defect_code === "string" && /^[A-Z0-9_]{1,80}$/.test(evidence.defect_code)
+    && evidence.source_commit === sourceCommit;
+};
+
 const publicFrontendDefectErrorClassSet = new Set<string>(publicFrontendDefectErrorClasses);
 export const parsePublicFrontendDefectEvidence = (value: unknown, sourceCommit: string): value is PublicFrontendDefectEvidence => {
   const evidence = asRecord(value);
@@ -141,13 +192,13 @@ export function replayReleaseGenerationChain(events: readonly V2Event[]): { head
       current = next;
       continue;
     }
-    if (envelope.kind !== "PHASE_CHANGED" && envelope.kind !== "RUNTIME_READINESS_DEFECT" && envelope.kind !== "PUBLIC_FRONTEND_DEFECT") return { corrupt: "UNKNOWN_V2_EVENT_KIND" };
+    if (envelope.kind !== "PHASE_CHANGED" && envelope.kind !== "RUNTIME_READINESS_DEFECT" && envelope.kind !== "PUBLIC_FRONTEND_DEFECT" && envelope.kind !== "PRE_ACTIVATION_DEFECT") return { corrupt: "UNKNOWN_V2_EVENT_KIND" };
     const next = headFrom(envelope.head);
     if (!next || isTerminalPhase(current.phase) || next.release_id !== current.release_id || next.candidate_generation !== current.candidate_generation || next.source_commit !== current.source_commit || canonicalV2(next.migration_inventory) !== canonicalV2(current.migration_inventory) || canonicalV2(next.legal_baseline) !== canonicalV2(current.legal_baseline) || next.release_family !== current.release_family || next.checkout_contract_version !== current.checkout_contract_version || next.admin_contract_version !== current.admin_contract_version || envelope.from_phase !== current.phase || envelope.from_phase_sequence !== current.phase_sequence || next.phase_sequence !== current.phase_sequence + 1 || !permittedPhaseChanges[current.phase].includes(next.phase)) return { corrupt: "INVALID_PHASE_CHANGE" };
     const runtimeReadinessDefectTransition = current.phase === "PAUSED" && next.phase === "RECOVERY_REQUIRED";
     if (runtimeReadinessDefectTransition) {
       const unexpectedEvidence = ["certification_evidence", "certification_retry", "certification_defect", "public_frontend_defect"].some((key) => envelope[key] !== undefined);
-      if (envelope.kind !== "RUNTIME_READINESS_DEFECT") return { corrupt: envelope.kind === "PUBLIC_FRONTEND_DEFECT" ? "INVALID_PUBLIC_FRONTEND_DEFECT" : envelope.kind === "PHASE_CHANGED" ? "INVALID_RUNTIME_READINESS_DEFECT" : "UNKNOWN_V2_EVENT_KIND" };
+      if (envelope.kind !== "RUNTIME_READINESS_DEFECT") return { corrupt: envelope.kind === "PUBLIC_FRONTEND_DEFECT" ? "INVALID_PUBLIC_FRONTEND_DEFECT" : envelope.kind === "PRE_ACTIVATION_DEFECT" ? "INVALID_PRE_ACTIVATION_DEFECT" : envelope.kind === "PHASE_CHANGED" ? "INVALID_RUNTIME_READINESS_DEFECT" : "UNKNOWN_V2_EVENT_KIND" };
       if (event.action !== "PAUSED" || current.certification || next.certification || unexpectedEvidence || !parseRuntimeReadinessDefectEvidence(envelope.runtime_readiness_defect, current.source_commit)) return { corrupt: "INVALID_RUNTIME_READINESS_DEFECT" };
       current = next;
       continue;
@@ -156,14 +207,24 @@ export function replayReleaseGenerationChain(events: readonly V2Event[]): { head
     // evidence-owned edge: the financial certification binding must survive
     // byte-for-byte, since this recovers a public-surface defect discovered
     // after certification, not the certification itself.
-    const publicFrontendDefectTransition = current.phase === "CERTIFIED" && next.phase === "RECOVERY_REQUIRED";
-    if (publicFrontendDefectTransition) {
-      const unexpectedEvidence = ["certification_evidence", "certification_retry", "certification_defect", "runtime_readiness_defect"].some((key) => envelope[key] !== undefined);
-      if (envelope.kind !== "PUBLIC_FRONTEND_DEFECT" || event.action !== "PAUSED" || !current.certification || !next.certification || canonicalV2(next.certification) !== canonicalV2(current.certification) || unexpectedEvidence || !parsePublicFrontendDefectEvidence(envelope.public_frontend_defect, current.source_commit)) return { corrupt: "INVALID_PUBLIC_FRONTEND_DEFECT" };
+    const certifiedRecoveryTransition = current.phase === "CERTIFIED" && next.phase === "RECOVERY_REQUIRED";
+    if (certifiedRecoveryTransition) {
+      // Two kinds share this edge and each must carry only its own evidence.
+      // The certification binding survives byte for byte either way: what
+      // failed is a step after certification, not the certification itself.
+      const bindingPreserved = current.certification && next.certification && canonicalV2(next.certification) === canonicalV2(current.certification);
+      if (envelope.kind === "PRE_ACTIVATION_DEFECT") {
+        const unexpectedEvidence = ["certification_evidence", "certification_retry", "certification_defect", "runtime_readiness_defect", "public_frontend_defect"].some((key) => envelope[key] !== undefined);
+        if (event.action !== "PAUSED" || !bindingPreserved || unexpectedEvidence || !parsePreActivationDefectEvidence(envelope.pre_activation_defect, current.source_commit)) return { corrupt: "INVALID_PRE_ACTIVATION_DEFECT" };
+        current = next;
+        continue;
+      }
+      const unexpectedEvidence = ["certification_evidence", "certification_retry", "certification_defect", "runtime_readiness_defect", "pre_activation_defect"].some((key) => envelope[key] !== undefined);
+      if (envelope.kind !== "PUBLIC_FRONTEND_DEFECT" || event.action !== "PAUSED" || !bindingPreserved || unexpectedEvidence || !parsePublicFrontendDefectEvidence(envelope.public_frontend_defect, current.source_commit)) return { corrupt: "INVALID_PUBLIC_FRONTEND_DEFECT" };
       current = next;
       continue;
     }
-    if (envelope.kind !== "PHASE_CHANGED") return { corrupt: envelope.kind === "PUBLIC_FRONTEND_DEFECT" ? "INVALID_PUBLIC_FRONTEND_DEFECT" : envelope.kind === "RUNTIME_READINESS_DEFECT" ? "INVALID_RUNTIME_READINESS_DEFECT" : "UNKNOWN_V2_EVENT_KIND" };
+    if (envelope.kind !== "PHASE_CHANGED") return { corrupt: envelope.kind === "PUBLIC_FRONTEND_DEFECT" ? "INVALID_PUBLIC_FRONTEND_DEFECT" : envelope.kind === "RUNTIME_READINESS_DEFECT" ? "INVALID_RUNTIME_READINESS_DEFECT" : envelope.kind === "PRE_ACTIVATION_DEFECT" ? "INVALID_PRE_ACTIVATION_DEFECT" : "UNKNOWN_V2_EVENT_KIND" };
     if (!current.certification && next.certification) {
       if (current.phase !== "DEPLOYED_READ_ONLY" || next.phase !== "CERTIFICATION_ONLY" || next.certification.status !== "ACTIVE" || hasConsumedFixture(next.certification)) return { corrupt: "INVALID_CERTIFICATION_BINDING" };
     } else if (current.certification) {

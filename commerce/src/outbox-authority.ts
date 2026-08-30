@@ -37,6 +37,18 @@ export type OutboxAuthorityState = {
  */
 export type DispatchEpoch = { release_id: string; generation: number | null };
 
+/**
+ * Sub-second precision, deliberately not the column's CURRENT_TIMESTAMP default.
+ *
+ * DISPATCH_UNFENCED is the boundary the ATTEMPT-dispatch proof is measured
+ * against, and the runtime writes attempt timestamps with milliseconds. At
+ * second precision a send at 10:00:00.500 - genuinely BEFORE an unfence that
+ * committed at 10:00:00.900 - compares against a boundary stored as 10:00:00
+ * and reads as post-unfence. That is a false positive on exactly the proof this
+ * event exists to anchor.
+ */
+export const AUTHORITY_EVENT_NOW = "strftime('%Y-%m-%d %H:%M:%f', 'now')";
+
 export class OutboxAuthorityError extends Error {
   /**
    * `detail` never reaches the wire - the response body carries `code` alone -
@@ -63,6 +75,26 @@ export const outboxAuthority = (db: Database.Database): OutboxAuthorityState => 
     revision: Number(row.revision ?? 0),
   };
 };
+
+export type AuthorityEvent = {
+  action: string;
+  owner_release_id: string;
+  owner_generation: number | null;
+  reason: string;
+  revision: number;
+  created_at: string;
+};
+
+/**
+ * The most recent authority transition, for the cutover controller.
+ *
+ * Without it "the activation was recorded" is asserted only by the code that
+ * wrote the record - the controller would be trusting the same transaction it
+ * is supposed to be verifying from outside.
+ */
+export const lastAuthorityEvent = (db: Database.Database): AuthorityEvent | null =>
+  (db.prepare(`SELECT action, owner_release_id, owner_generation, reason, revision, created_at
+    FROM outbox_authority_events ORDER BY revision DESC, created_at DESC LIMIT 1`).get() as AuthorityEvent | undefined) ?? null;
 
 export const emailDispatchFenced = (db: Database.Database): boolean => outboxAuthority(db).email_dispatch_paused;
 
@@ -99,8 +131,8 @@ const setDispatchFence = (
   if (changed.changes !== 1) throw new OutboxAuthorityError("OUTBOX_AUTHORITY_REVISION_CONFLICT", 409);
 
   const next = outboxAuthority(db);
-  db.prepare(`INSERT INTO outbox_authority_events(id, action, owner_release_id, owner_generation, reason, revision)
-    VALUES (?, ?, ?, ?, ?, ?)`)
+  db.prepare(`INSERT INTO outbox_authority_events(id, action, owner_release_id, owner_generation, reason, revision, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ${AUTHORITY_EVENT_NOW})`)
     .run(id(), paused ? "DISPATCH_FENCED" : "DISPATCH_UNFENCED", epoch.release_id, epoch.generation ?? null, input.reason, next.revision);
   return next;
 };

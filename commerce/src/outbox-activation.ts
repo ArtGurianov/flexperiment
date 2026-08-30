@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { id } from "./crypto";
-import { OutboxAuthorityError, emailDispatchDrained, outboxAuthority, type DispatchEpoch } from "./outbox-authority";
+import { AUTHORITY_EVENT_NOW, OutboxAuthorityError, emailDispatchDrained, outboxAuthority, type DispatchEpoch } from "./outbox-authority";
 import { LEGACY_EXHAUSTION_ERROR } from "./outbox-attempt-store";
 
 /**
@@ -162,12 +162,110 @@ const assertSchemaPresent = (db: Database.Database) => {
   if (missing.length) throw new OutboxAuthorityError("OUTBOX_ACTIVATION_SCHEMA_INCOMPLETE", 409, missing.join(", "));
 };
 
+const count = (db: Database.Database, sql: string): number =>
+  Number((db.prepare(sql).get() as { n: number }).n);
+
+/**
+ * The store-level defects activation refuses to carry across, as SQL.
+ *
+ * Shared deliberately. The transaction enforces them; activationEvidence()
+ * reports them over the internal surface so a cutover controller can prove
+ * convergence from outside the process. If those were two copies of the same
+ * SQL, the controller would be proving its own restatement rather than the
+ * property the transaction enforces - and the copies would drift at the first
+ * schema change.
+ */
+export const STORE_DEFECTS = {
+  // A message with no attempt #1 is a message the ATTEMPT runtime cannot
+  // dispatch at all.
+  messages_without_attempt: `SELECT o.id FROM email_outbox o
+    WHERE NOT EXISTS (SELECT 1 FROM outbox_attempt a WHERE a.message_id = o.id AND a.attempt_no = 1)`,
+  // Attempt #1's key must still be the one the message carries as its
+  // compatibility shadow. A mismatch means the two stores disagree about what
+  // was sent to the provider, and after the flip the attempt key is what a
+  // retry would be made under.
+  provider_key_mismatches: `SELECT a.id FROM outbox_attempt a
+    JOIN email_outbox o ON o.id = a.message_id
+    WHERE a.attempt_no = 1 AND a.provider_idempotence_key IS NOT o.provider_idempotence_key`,
+  incomplete_identity: `SELECT id FROM outbox_attempt
+    WHERE id IS NULL OR message_id IS NULL OR attempt_no IS NULL
+      OR provider_idempotence_key IS NULL OR requested_at IS NULL`,
+  ambiguous_messages: `SELECT message_id FROM outbox_attempt
+    WHERE outcome IS NULL GROUP BY message_id HAVING COUNT(*) > 1`,
+} as const;
+
+const DEFECT_CODES: ReadonlyArray<[keyof typeof STORE_DEFECTS, string]> = [
+  ["messages_without_attempt", "OUTBOX_ACTIVATION_MESSAGE_WITHOUT_ATTEMPT"],
+  ["provider_key_mismatches", "OUTBOX_ACTIVATION_PROVIDER_KEY_MISMATCH"],
+  ["incomplete_identity", "OUTBOX_ACTIVATION_IDENTITY_INCOMPLETE"],
+  ["ambiguous_messages", "OUTBOX_ACTIVATION_AMBIGUOUS_ATTEMPT"],
+];
+
+/**
+ * Every refusal the activation transaction can return.
+ *
+ * Listed so a recovery request naming one can be bound to the real vocabulary
+ * rather than to a regex, and pinned by a source scan so the list cannot drift
+ * from the module that throws them.
+ */
+export const ACTIVATION_REFUSAL_CODES = [
+  "OUTBOX_ACTIVATION_TRANSACTION_REQUIRED",
+  "OUTBOX_ACTIVATION_SCHEMA_MISSING",
+  "OUTBOX_ACTIVATION_SCHEMA_INCOMPLETE",
+  "OUTBOX_ACTIVATION_DISPATCH_NOT_FENCED",
+  "OUTBOX_ACTIVATION_NOT_DRAINED",
+  "OUTBOX_ACTIVATION_UNEXPECTED_SUCCESSOR_ATTEMPT",
+  "OUTBOX_ACTIVATION_UNEXPECTED_SETTLED_ATTEMPT",
+  "OUTBOX_ACTIVATION_ATTEMPT_STILL_LEASED",
+  "OUTBOX_ACTIVATION_UNEXPECTED_SHADOW_STATE",
+  "OUTBOX_ACTIVATION_MESSAGE_WITHOUT_ATTEMPT",
+  "OUTBOX_ACTIVATION_PROVIDER_KEY_MISMATCH",
+  "OUTBOX_ACTIVATION_IDENTITY_INCOMPLETE",
+  "OUTBOX_ACTIVATION_AMBIGUOUS_ATTEMPT",
+  "OUTBOX_ACTIVATION_AUDIT_MISSING",
+  "OUTBOX_ACTIVATION_OWNER_CONFLICT",
+  "OUTBOX_DISPATCH_OWNER_CONFLICT",
+  "OUTBOX_AUTHORITY_REVISION_CONFLICT",
+] as const;
+
+export type ActivationEvidence = {
+  messages: number;
+  attempts: number;
+  /** Zero on a converged store. Each key is one of STORE_DEFECTS. */
+  defects: Record<keyof typeof STORE_DEFECTS, number>;
+  unsettled: number;
+  settled_accepted: number;
+  settled_known_failed: number;
+  leased: number;
+};
+
+/**
+ * Convergence evidence for the cutover controller, read-only.
+ *
+ * Returns null when the attempt store does not exist, which is not an error:
+ * before the 0041-aware candidate is deployed the field's ABSENCE is itself
+ * the evidence that the old runtime is still live. An absent field must never
+ * read as a converged store, so this is null rather than a zeroed record.
+ */
+export const activationEvidence = (db: Database.Database): ActivationEvidence | null => {
+  const present = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'outbox_attempt'").get();
+  if (!present) return null;
+  const defects = Object.fromEntries(Object.entries(STORE_DEFECTS)
+    .map(([name, sql]) => [name, count(db, `SELECT COUNT(*) AS n FROM (${sql})`)])) as ActivationEvidence["defects"];
+  return {
+    messages: count(db, "SELECT COUNT(*) AS n FROM email_outbox"),
+    attempts: count(db, "SELECT COUNT(*) AS n FROM outbox_attempt"),
+    defects,
+    unsettled: count(db, "SELECT COUNT(*) AS n FROM outbox_attempt WHERE outcome IS NULL"),
+    settled_accepted: count(db, "SELECT COUNT(*) AS n FROM outbox_attempt WHERE outcome = 'ACCEPTED'"),
+    settled_known_failed: count(db, "SELECT COUNT(*) AS n FROM outbox_attempt WHERE outcome = 'KNOWN_FAILED'"),
+    leased: count(db, "SELECT COUNT(*) AS n FROM outbox_attempt WHERE lease_owner IS NOT NULL"),
+  };
+};
+
 const assertOrFail = (condition: boolean, code: string) => {
   if (!condition) throw new OutboxAuthorityError(code, 409);
 };
-
-const count = (db: Database.Database, sql: string): number =>
-  Number((db.prepare(sql).get() as { n: number }).n);
 
 /**
  * Replay branches BEFORE any refresh or backfill.
@@ -287,27 +385,13 @@ export const activateAttemptAuthority = (
   // per-row one: the property being established is about the store, and a
   // check that only covers the rows this transaction happened to touch would
   // not establish it.
-  assertOrFail(count(db, `SELECT COUNT(*) AS n FROM email_outbox o
-    WHERE NOT EXISTS (SELECT 1 FROM outbox_attempt a WHERE a.message_id = o.id AND a.attempt_no = 1)`) === 0,
-    "OUTBOX_ACTIVATION_MESSAGE_WITHOUT_ATTEMPT");
-
-  // Attempt #1's key must still be the one the message carries as its
-  // compatibility shadow. A mismatch means the two stores disagree about what
-  // was sent to the provider, which no refresh may paper over - after the flip
-  // the attempt key is what a retry would be made under.
-  assertOrFail(count(db, `SELECT COUNT(*) AS n FROM outbox_attempt a
-    JOIN email_outbox o ON o.id = a.message_id
-    WHERE a.attempt_no = 1 AND a.provider_idempotence_key IS NOT o.provider_idempotence_key`) === 0,
-    "OUTBOX_ACTIVATION_PROVIDER_KEY_MISMATCH");
-
-  assertOrFail(count(db, `SELECT COUNT(*) AS n FROM outbox_attempt
-    WHERE id IS NULL OR message_id IS NULL OR attempt_no IS NULL
-      OR provider_idempotence_key IS NULL OR requested_at IS NULL`) === 0,
-    "OUTBOX_ACTIVATION_IDENTITY_INCOMPLETE");
-
-  assertOrFail(count(db, `SELECT COUNT(*) AS n FROM (
-    SELECT message_id FROM outbox_attempt WHERE outcome IS NULL GROUP BY message_id HAVING COUNT(*) > 1)`) === 0,
-    "OUTBOX_ACTIVATION_AMBIGUOUS_ATTEMPT");
+  //
+  // The predicates come from STORE_DEFECTS, which activationEvidence() also
+  // reads. A cutover controller that checked convergence with its own copy of
+  // this SQL would be proving a restatement rather than the property.
+  for (const [defect, code] of DEFECT_CODES) {
+    assertOrFail(count(db, `SELECT COUNT(*) AS n FROM (${STORE_DEFECTS[defect]})`) === 0, code);
+  }
 
   // Two numbers the cutover records instead of two values it would have to
   // invent. Same principle in both cases: the legacy row establishes that
@@ -331,8 +415,8 @@ export const activateAttemptAuthority = (
   assertOrFail(changed.changes === 1, "OUTBOX_AUTHORITY_REVISION_CONFLICT");
 
   const next = outboxAuthority(db);
-  db.prepare(`INSERT INTO outbox_authority_events(id, action, owner_release_id, owner_generation, reason, revision)
-    VALUES (?, 'AUTHORITY_ACTIVATED', ?, ?, ?, ?)`)
+  db.prepare(`INSERT INTO outbox_authority_events(id, action, owner_release_id, owner_generation, reason, revision, created_at)
+    VALUES (?, 'AUTHORITY_ACTIVATED', ?, ?, ?, ?, ${AUTHORITY_EVENT_NOW})`)
     .run(id(), epoch.release_id, epoch.generation ?? null, input.reason, next.revision);
 
   return {

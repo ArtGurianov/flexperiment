@@ -5,7 +5,7 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { CommerceDomain } from "../src/domain";
 import { MockProvider } from "../src/provider";
-import { activateAttemptAuthority } from "../src/outbox-activation";
+import { STORE_DEFECTS, activateAttemptAuthority, activationEvidence } from "../src/outbox-activation";
 import { LEGACY_EXHAUSTION_ERROR, claimForDispatch } from "../src/outbox-attempt-store";
 
 /**
@@ -572,6 +572,80 @@ describe("the transition itself", () => {
 
     expect(claimed).toMatchObject({ authority: "ATTEMPT", provider_idempotence_key: "key-m1", attempt_no: 1 });
     expect(attemptOf(db, "m1")).toMatchObject({ lease_owner: "worker-1", send_try_count: 2 });
+  });
+});
+
+describe("convergence evidence for the cutover controller", () => {
+  it("is null before the attempt store exists", () => {
+    // Load-bearing: before the 0041-aware candidate is deployed, the ABSENCE of
+    // this field is what proves the old runtime is still answering. A zeroed
+    // record would read as a converged store.
+    const { db } = fixture();
+    db.exec("DROP TABLE outbox_attempt");
+    expect(activationEvidence(db)).toBeNull();
+  });
+
+  it("reports a converged store after activation", () => {
+    const { db, domain } = fixture();
+    historical(db, "accepted", { status: "SENT", sent_at: "2026-08-10T00:00:00.000Z" });
+    historical(db, "failed", { status: "FAILED", delivery_outcome: "KNOWN_FAILED" });
+    shadowed(db, "pending", { status: "PENDING" });
+    fence(domain);
+    activate(domain);
+
+    expect(activationEvidence(db)).toEqual({
+      messages: 3, attempts: 3,
+      defects: { messages_without_attempt: 0, provider_key_mismatches: 0, incomplete_identity: 0, ambiguous_messages: 0 },
+      unsettled: 1, settled_accepted: 1, settled_known_failed: 1, leased: 0,
+    });
+  });
+
+  it("reports the defect that activation would have refused", () => {
+    // The controller reads the same numbers the transaction refuses on, so a
+    // pre-flight and the transaction cannot disagree about whether the store is
+    // ready.
+    const { db, domain } = fixture();
+    shadowed(db, "m1");
+    db.prepare("UPDATE email_outbox SET provider_idempotence_key = 'key-rotated' WHERE id = 'm1'").run();
+    fence(domain);
+
+    expect(() => activate(domain)).toThrow(/OUTBOX_ACTIVATION_PROVIDER_KEY_MISMATCH/);
+    expect(activationEvidence(db)!.defects.provider_key_mismatches).toBe(1);
+  });
+
+  it("computes evidence and enforcement from one set of predicates", () => {
+    // Not a style preference. A controller checking convergence with its own
+    // copy of this SQL would be proving a restatement, and the copies would
+    // drift at the first schema change. The assertion is that every defect the
+    // transaction refuses on is also a reported key, and nothing else is.
+    expect(Object.keys(STORE_DEFECTS).sort()).toEqual([
+      "ambiguous_messages", "incomplete_identity", "messages_without_attempt", "provider_key_mismatches",
+    ]);
+    const { db } = fixture();
+    expect(Object.keys(activationEvidence(db)!.defects).sort()).toEqual(Object.keys(STORE_DEFECTS).sort());
+  });
+
+  it("surfaces the activation audit line over the domain reader", () => {
+    // "The activation was recorded" must be checkable from outside the
+    // transaction that wrote the record.
+    const { db, domain } = fixture();
+    fence(domain);
+    activate(domain);
+
+    const surface = domain.outboxAuthority();
+    expect(surface).toMatchObject({
+      attempt_authority: "ATTEMPT", email_dispatch_paused: true, revision: 3,
+      dispatch: { drained: true, sending: 0, leased: 0 },
+      last_event: {
+        action: "AUTHORITY_ACTIVATED", owner_release_id: EPOCH.release_id,
+        owner_generation: 7, revision: 3,
+      },
+    });
+    expect(surface.attempts).not.toBeNull();
+    // The reader agrees with the durable row it claims to report.
+    expect(db.prepare(`SELECT action, owner_release_id, owner_generation, revision
+      FROM outbox_authority_events ORDER BY revision DESC LIMIT 1`).get())
+      .toEqual({ action: "AUTHORITY_ACTIVATED", owner_release_id: EPOCH.release_id, owner_generation: 7, revision: 3 });
   });
 });
 
