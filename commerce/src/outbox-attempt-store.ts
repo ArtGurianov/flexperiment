@@ -303,3 +303,161 @@ export const providerLookupIdentity = (
   const attempt = requireUnsettledAttempt(db, message.id);
   return { jobId: attempt.provider_job_id, idempotencyKey: attempt.provider_idempotence_key };
 };
+
+/**
+ * A resolved attempt identity, carried across an external provider call.
+ *
+ * Identity is resolved once, inside a transaction, and then passed forward -
+ * never rediscovered from message_id after the call returns. Between the two,
+ * authority can flip and the current attempt can change, so evidence retrieved
+ * for one attempt must never be applied to another.
+ */
+export type AttemptRef =
+  | { authority: "LEGACY" }
+  | { authority: "ATTEMPT"; attempt_id: string };
+
+export const resolveAttemptRef = (db: Database.Database, messageId: string): AttemptRef =>
+  attemptAuthorityIsActive(db) ? { authority: "ATTEMPT", attempt_id: requireUnsettledAttempt(db, messageId).attempt_id } : { authority: "LEGACY" };
+
+/** The try count the exhaustion decision is made against, per authority. */
+export const sendTryCount = (db: Database.Database, message: { id: string; attempts: unknown }): number =>
+  attemptAuthorityIsActive(db) ? requireUnsettledAttempt(db, message.id).send_try_count : Number(message.attempts);
+
+const AMBIGUOUS = "UNISENDER_TRANSPORT_AMBIGUOUS";
+const EXHAUSTED_ERROR = "UNISENDER_SEND_UNKNOWN_ATTEMPT_LIMIT_REACHED";
+const EXHAUSTED_CODE = "SEND_UNKNOWN_ATTEMPT_LIMIT";
+const EXHAUSTED_MESSAGE = "Ambiguous email dispatch retry limit reached.";
+
+/**
+ * Which supersession category this write is allowed to act on.
+ *
+ * Named rather than a boolean because the previous boolean was wrong twice: it
+ * checked `suppressed_at` while being called `requireUnsuperseded`, and the
+ * loop that had selected SUPERSEDED rows passed it, dropping the
+ * `superseded_at IS NOT NULL` recheck the original statement carried. The scan
+ * happens before the per-row transaction, so the write must revalidate its own
+ * category.
+ */
+export type SupersessionGuard = "ANY" | "REQUIRE_SUPERSEDED" | "REQUIRE_UNSUPERSEDED";
+
+type WriteGuard = { supersession: SupersessionGuard; requireUnsuppressed: boolean };
+
+const guardClause = ({ supersession, requireUnsuppressed }: WriteGuard) =>
+  (requireUnsuppressed ? " AND suppressed_at IS NULL" : "")
+  + (supersession === "REQUIRE_SUPERSEDED" ? " AND superseded_at IS NOT NULL"
+    : supersession === "REQUIRE_UNSUPERSEDED" ? " AND superseded_at IS NULL" : "");
+
+/**
+ * Whether a carried reference still names this message's unsettled attempt.
+ *
+ * Checked BEFORE any message mutation, in the same BEGIN IMMEDIATE as the
+ * writes, so it cannot go stale between the check and them. Without this the
+ * message could be projected on behalf of an attempt that had already settled
+ * while its successor - the genuinely current one - went untouched, which is
+ * the same split seam 2 fixed on the settlement paths.
+ */
+const carriedRefIsCurrent = (db: Database.Database, messageId: string, ref: AttemptRef): boolean => {
+  if (ref.authority === "LEGACY") return true;
+  return Boolean(db.prepare(`SELECT 1 FROM outbox_attempt
+    WHERE id = ? AND message_id = ? AND outcome IS NULL`).get(ref.attempt_id, messageId));
+};
+
+/** Reschedule a still-ambiguous send. The message stays SEND_UNKNOWN either way. */
+export const deferAmbiguousObservation = (
+  db: Database.Database,
+  message: { id: string },
+  ref: AttemptRef,
+  retryAt: string,
+) => {
+  requireTransaction(db);
+  if (ref.authority === "LEGACY") {
+    db.prepare(`UPDATE email_outbox SET next_attempt_at = ? WHERE id = ? AND status = 'SEND_UNKNOWN'`).run(retryAt, message.id);
+    return;
+  }
+  db.prepare(`UPDATE outbox_attempt SET next_retry_at = ? WHERE id = ? AND outcome IS NULL`).run(retryAt, ref.attempt_id);
+};
+
+/**
+ * The automatic reconciliation budget is spent.
+ *
+ * The attempt does NOT settle. Nothing was established - that is the entire
+ * point of UNRESOLVED - and settling it would make later evidence unable to
+ * resolve it, which 0039 exists to prevent. The message records the ambiguity;
+ * the attempt records only that automatic reconciliation stopped.
+ */
+export const failExhaustedAmbiguous = (
+  db: Database.Database,
+  message: { id: string },
+  ref: AttemptRef,
+  fromStatus: "SEND_UNKNOWN" | "SENDING",
+  guard: WriteGuard = { supersession: "ANY", requireUnsuppressed: false },
+) => {
+  requireTransaction(db);
+  if (!carriedRefIsCurrent(db, message.id, ref)) return;
+  const clause = guardClause(guard);
+
+  if (ref.authority === "LEGACY") {
+    db.prepare(`UPDATE email_outbox
+      SET status = 'FAILED', delivery_outcome = 'UNRESOLVED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
+          last_error = ?, provider_error_code = ?, provider_error_message = ?
+      WHERE id = ? AND status = ?${clause}`).run(EXHAUSTED_ERROR, EXHAUSTED_CODE, EXHAUSTED_MESSAGE, message.id, fromStatus);
+    return;
+  }
+  const moved = db.prepare(`UPDATE email_outbox SET status = 'FAILED', delivery_outcome = 'UNRESOLVED'
+    WHERE id = ? AND status = ?${clause}`).run(message.id, fromStatus);
+  if (!moved.changes) return;
+  db.prepare(`UPDATE outbox_attempt
+    SET lease_owner = NULL, lease_expires_at = NULL, next_retry_at = NULL,
+        reconciliation_exhausted_at = COALESCE(reconciliation_exhausted_at, CURRENT_TIMESTAMP)
+    WHERE id = ? AND outcome IS NULL`).run(ref.attempt_id);
+};
+
+/** A send whose outcome could not be established, returning to the ambiguous state. */
+export const deferAmbiguousSend = (
+  db: Database.Database,
+  message: { id: string },
+  ref: AttemptRef,
+  retryAt: string | null,
+  guard: WriteGuard,
+) => {
+  requireTransaction(db);
+  if (!carriedRefIsCurrent(db, message.id, ref)) return;
+  const clause = guardClause(guard);
+
+  if (ref.authority === "LEGACY") {
+    db.prepare(`UPDATE email_outbox
+      SET status = 'SEND_UNKNOWN', lease_owner = NULL, lease_expires_at = NULL,
+          next_attempt_at = ?, last_error = ?, provider_error_code = NULL, provider_error_message = NULL
+      WHERE id = ? AND status = 'SENDING'${clause}`).run(retryAt, AMBIGUOUS, message.id);
+    return;
+  }
+  const moved = db.prepare(`UPDATE email_outbox SET status = 'SEND_UNKNOWN'
+    WHERE id = ? AND status = 'SENDING'${clause}`).run(message.id);
+  if (!moved.changes) return;
+  db.prepare(`UPDATE outbox_attempt
+    SET lease_owner = NULL, lease_expires_at = NULL, next_retry_at = ?, failure_code = ?, failure_detail = NULL
+    WHERE id = ? AND outcome IS NULL`).run(retryAt, AMBIGUOUS, ref.attempt_id);
+};
+
+/** The attempt a claim actually took, for carrying across the send() call. */
+export const claimedAttemptRef = (claimed: ClaimedAttempt): AttemptRef =>
+  claimed.authority === "ATTEMPT" ? { authority: "ATTEMPT", attempt_id: claimed.attempt_id } : { authority: "LEGACY" };
+
+/**
+ * Sends whose lease has expired, per authority.
+ *
+ * Another reader no trigger protects: under ATTEMPT the lease lives on the
+ * attempt, so scanning email_outbox.lease_expires_at would return nothing and
+ * crashed sends would never be recovered - silently, forever.
+ */
+export const staleLeasedSends = (db: Database.Database, timestamp: string, superseded: boolean) => {
+  const supersededClause = superseded ? "IS NOT NULL" : "IS NULL";
+  return attemptAuthorityIsActive(db)
+    ? db.prepare(`SELECT o.id, a.send_try_count AS attempts FROM email_outbox o
+        JOIN outbox_attempt a ON a.message_id = o.id AND a.outcome IS NULL
+        WHERE o.status = 'SENDING' AND o.suppressed_at IS NULL AND o.superseded_at ${supersededClause}
+          AND a.lease_expires_at < ?`).all(timestamp) as Array<{ id: string; attempts: number }>
+    : db.prepare(`SELECT id, attempts FROM email_outbox
+        WHERE status = 'SENDING' AND suppressed_at IS NULL AND superseded_at ${supersededClause}
+          AND lease_expires_at < ?`).all(timestamp) as Array<{ id: string; attempts: number }>;
+};

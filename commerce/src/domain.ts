@@ -12,7 +12,7 @@ import { findCityBySlug } from "../../lib/city-catalog";
 import { purchaseStatus, type PurchaseStatus } from "./purchase-status";
 import { parseUtcTimestamp } from "./utc-timestamp";
 import { assertNewOrdersOpen as assertGateOpen, emergencySalesPaused as gateEmergencyPaused, newOrdersBlocked as gateBlocked } from "./sales-gate";
-import { claimForDispatch, dispatchCandidates, providerLookupIdentity, recordProviderAcceptance, recordProviderRefusal } from "./outbox-attempt-store";
+import { claimForDispatch, deferAmbiguousObservation, deferAmbiguousSend, dispatchCandidates, failExhaustedAmbiguous, providerLookupIdentity, recordProviderAcceptance, recordProviderRefusal, claimedAttemptRef, resolveAttemptRef, sendTryCount, staleLeasedSends, type AttemptRef } from "./outbox-attempt-store";
 import { OutboxAuthorityError, emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations, type DispatchEpoch } from "./outbox-authority";
 
 type Row = Record<string, unknown>;
@@ -2399,18 +2399,26 @@ export class CommerceDomain {
       if (isUnknown && this.reconcileLegacyUnisenderHttp403(String(outbox.id))) continue;
       // A known provider job is always reconciled before another send. It is
       // never considered proof that the original request was not dispatched.
-      const lookupIdentity = withImmediateTransaction(this.db, () => providerLookupIdentity(this.db, outbox as { id: string; job_id: unknown; provider_idempotence_key: unknown }));
+      // Identity and try count are resolved ONCE, in one transaction, and
+      // carried across the external provider call. Rediscovering "the current
+      // attempt" afterwards would let evidence retrieved for one attempt be
+      // applied to another if authority or the attempt changed in between.
+      const { lookupIdentity, attemptRef, tryCount } = withImmediateTransaction(this.db, () => ({
+        lookupIdentity: providerLookupIdentity(this.db, outbox as { id: string; job_id: unknown; provider_idempotence_key: unknown }),
+        attemptRef: resolveAttemptRef(this.db, String(outbox.id)),
+        tryCount: sendTryCount(this.db, { id: String(outbox.id), attempts: outbox.attempts }),
+      }));
       if (isUnknown && lookupIdentity.jobId) {
         try {
           const observed = await this.emailProvider.lookup({ jobId: lookupIdentity.jobId, idempotencyKey: lookupIdentity.idempotencyKey });
-          if (observed.status === "UNKNOWN") this.deferUnknownEmailObservation(String(outbox.id), Number(outbox.attempts));
+          if (observed.status === "UNKNOWN") this.deferUnknownEmailObservation(String(outbox.id), tryCount, attemptRef);
           else this.applyEmailObservation(outbox.id as string, observed);
         }
-        catch { this.deferUnknownEmailObservation(String(outbox.id), Number(outbox.attempts)); }
+        catch { this.deferUnknownEmailObservation(String(outbox.id), tryCount, attemptRef); }
         continue;
       }
-      if (isUnknown && Number(outbox.attempts) >= EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS) {
-        this.failExhaustedUnknownEmail(String(outbox.id));
+      if (isUnknown && tryCount >= EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS) {
+        this.failExhaustedUnknownEmail(String(outbox.id), attemptRef);
         continue;
       }
       if (isUnknown) {
@@ -2465,7 +2473,11 @@ export class CommerceDomain {
           // A timeout/network loss after a request starts cannot prove the
           // provider did not accept it. Keep the stable idempotence key, but
           // make recovery finite and rate-limited.
-          this.deferOrFailUnknownEmail(String(outbox.id), Number(outbox.attempts) + 1);
+          // The ref for THIS provider call is the one the claim actually took.
+          // attemptRef was resolved before the lookup, and the claim may since
+          // have taken a successor - writing the failure against the
+          // predecessor would land on the wrong attempt.
+          this.deferOrFailUnknownEmail(String(outbox.id), claimed.send_try_count, claimedAttemptRef(claimed));
         }
       }
     }
@@ -2795,18 +2807,13 @@ export class CommerceDomain {
     return new Date(this.clock() + delay).toISOString();
   }
 
-  private deferUnknownEmailObservation(outboxId: string, attempts: number) {
-    this.db.prepare(`UPDATE email_outbox SET next_attempt_at = ?
-      WHERE id = ? AND status = 'SEND_UNKNOWN'`).run(this.unknownEmailRetryAt(Math.max(1, attempts)), outboxId);
+  private deferUnknownEmailObservation(outboxId: string, attempts: number, ref: AttemptRef) {
+    withImmediateTransaction(this.db, () =>
+      deferAmbiguousObservation(this.db, { id: outboxId }, ref, this.unknownEmailRetryAt(Math.max(1, attempts))));
   }
 
-  private failExhaustedUnknownEmail(outboxId: string) {
-    this.db.prepare(`UPDATE email_outbox
-      SET status = 'FAILED', delivery_outcome = 'UNRESOLVED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
-          last_error = 'UNISENDER_SEND_UNKNOWN_ATTEMPT_LIMIT_REACHED',
-          provider_error_code = 'SEND_UNKNOWN_ATTEMPT_LIMIT',
-          provider_error_message = 'Ambiguous email dispatch retry limit reached.'
-      WHERE id = ? AND status = 'SEND_UNKNOWN'`).run(outboxId);
+  private failExhaustedUnknownEmail(outboxId: string, ref: AttemptRef) {
+    withImmediateTransaction(this.db, () => failExhaustedAmbiguous(this.db, { id: outboxId }, ref, "SEND_UNKNOWN"));
   }
 
   /**
@@ -2828,21 +2835,14 @@ export class CommerceDomain {
         AND (? IS NULL OR id = ?)`).run(outboxId ?? null, outboxId ?? null).changes > 0;
   }
 
-  private deferOrFailUnknownEmail(outboxId: string, attempts: number) {
-    if (attempts >= EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS) {
-      this.db.prepare(`UPDATE email_outbox
-        SET status = 'FAILED', delivery_outcome = 'UNRESOLVED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
-            last_error = 'UNISENDER_SEND_UNKNOWN_ATTEMPT_LIMIT_REACHED',
-            provider_error_code = 'SEND_UNKNOWN_ATTEMPT_LIMIT',
-            provider_error_message = 'Ambiguous email dispatch retry limit reached.'
-        WHERE id = ? AND status = 'SENDING'`).run(outboxId);
-      return;
-    }
-    this.db.prepare(`UPDATE email_outbox
-      SET status = 'SEND_UNKNOWN', lease_owner = NULL, lease_expires_at = NULL,
-          next_attempt_at = ?, last_error = 'UNISENDER_TRANSPORT_AMBIGUOUS',
-          provider_error_code = NULL, provider_error_message = NULL
-      WHERE id = ? AND status = 'SENDING'`).run(this.unknownEmailRetryAt(attempts), outboxId);
+  private deferOrFailUnknownEmail(outboxId: string, attempts: number, ref: AttemptRef) {
+    withImmediateTransaction(this.db, () => {
+      if (attempts >= EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS) {
+        failExhaustedAmbiguous(this.db, { id: outboxId }, ref, "SENDING");
+        return;
+      }
+      deferAmbiguousSend(this.db, { id: outboxId }, ref, this.unknownEmailRetryAt(attempts), { supersession: "ANY", requireUnsuppressed: false });
+    });
   }
 
   /** Daily reconciliation records disagreement as review work; it never rewrites local history. */
@@ -3407,35 +3407,28 @@ export class CommerceDomain {
     // A superseded in-flight send must never be retried, but a crashed worker
     // cannot leave it claiming SENDING forever. Record the honest ambiguous
     // outcome and retain supersession as the permanent no-retry guard.
-    const staleSupersededOutboxes = many(this.db, "SELECT id FROM email_outbox WHERE status = 'SENDING' AND suppressed_at IS NULL AND superseded_at IS NOT NULL AND lease_expires_at < ?", timestamp);
-    for (const outbox of staleSupersededOutboxes) this.markSupersededStaleEmailUnknown(String(outbox.id));
-    const staleOutboxes = many(this.db, "SELECT id, attempts FROM email_outbox WHERE status = 'SENDING' AND suppressed_at IS NULL AND superseded_at IS NULL AND lease_expires_at < ?", timestamp);
-    for (const outbox of staleOutboxes) this.deferOrFailStaleEmail(String(outbox.id), Number(outbox.attempts));
-  }
-
-  private markSupersededStaleEmailUnknown(outboxId: string) {
-    this.db.prepare(`UPDATE email_outbox
-      SET status = 'SEND_UNKNOWN', lease_owner = NULL, lease_expires_at = NULL,
-          next_attempt_at = NULL, last_error = 'UNISENDER_TRANSPORT_AMBIGUOUS',
-          provider_error_code = NULL, provider_error_message = NULL
-      WHERE id = ? AND status = 'SENDING' AND suppressed_at IS NULL
-        AND superseded_at IS NOT NULL`).run(outboxId);
-  }
-
-  private deferOrFailStaleEmail(outboxId: string, attempts: number) {
-    if (attempts >= EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS) {
-      this.db.prepare(`UPDATE email_outbox
-        SET status = 'FAILED', delivery_outcome = 'UNRESOLVED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
-            last_error = 'UNISENDER_SEND_UNKNOWN_ATTEMPT_LIMIT_REACHED',
-            provider_error_code = 'SEND_UNKNOWN_ATTEMPT_LIMIT',
-            provider_error_message = 'Ambiguous email dispatch retry limit reached.'
-        WHERE id = ? AND status = 'SENDING' AND suppressed_at IS NULL`).run(outboxId);
-      return;
+    // Lease expiry is an attempt fact too: under ATTEMPT the message no longer
+    // carries a lease, so scanning email_outbox.lease_expires_at would find
+    // nothing and stale sends would never be recovered - a silent read defect
+    // with no trigger to catch it.
+    // Superseded stale sends: the scan chose them, and the write revalidates
+    // that category. A superseded row must never be rescheduled, so no retry
+    // time - supersession is the permanent no-retry guard.
+    for (const outbox of staleLeasedSends(this.db, timestamp, true)) {
+      withImmediateTransaction(this.db, () =>
+        deferAmbiguousSend(this.db, { id: String(outbox.id) }, resolveAttemptRef(this.db, String(outbox.id)), null,
+          { supersession: "REQUIRE_SUPERSEDED", requireUnsuppressed: true }));
     }
-    this.db.prepare(`UPDATE email_outbox
-      SET status = 'SEND_UNKNOWN', lease_owner = NULL, lease_expires_at = NULL,
-          next_attempt_at = ?, last_error = 'UNISENDER_TRANSPORT_AMBIGUOUS',
-          provider_error_code = NULL, provider_error_message = NULL
-      WHERE id = ? AND status = 'SENDING' AND suppressed_at IS NULL`).run(this.unknownEmailRetryAt(Math.max(1, attempts)), outboxId);
+    for (const outbox of staleLeasedSends(this.db, timestamp, false)) {
+      const id = String(outbox.id);
+      withImmediateTransaction(this.db, () => {
+        const ref = resolveAttemptRef(this.db, id);
+        const tries = sendTryCount(this.db, { id, attempts: outbox.attempts });
+        const guard = { supersession: "REQUIRE_UNSUPERSEDED" as const, requireUnsuppressed: true };
+        if (tries >= EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS) { failExhaustedAmbiguous(this.db, { id }, ref, "SENDING", guard); return; }
+        deferAmbiguousSend(this.db, { id }, ref, this.unknownEmailRetryAt(Math.max(1, tries)), guard);
+      });
+    }
   }
+
 }
