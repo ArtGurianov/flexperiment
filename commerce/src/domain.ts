@@ -12,6 +12,7 @@ import { findCityBySlug } from "../../lib/city-catalog";
 import { purchaseStatus, type PurchaseStatus } from "./purchase-status";
 import { parseUtcTimestamp } from "./utc-timestamp";
 import { assertNewOrdersOpen as assertGateOpen, emergencySalesPaused as gateEmergencyPaused, newOrdersBlocked as gateBlocked } from "./sales-gate";
+import { claimForDispatch } from "./outbox-attempt-store";
 import { OutboxAuthorityError, emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations, type DispatchEpoch } from "./outbox-authority";
 
 type Row = Record<string, unknown>;
@@ -2434,16 +2435,23 @@ export class CommerceDomain {
           this.skipObsoleteRefundConfirmationOutbox(String(outbox.id));
           return 0;
         }
-        return this.db.prepare(`UPDATE email_outbox SET status = 'SENDING', lease_owner = ?, lease_expires_at = datetime('now', '+120 seconds'), send_started_at = COALESCE(send_started_at, ?), provider_request_started_at = ?, next_attempt_at = NULL, attempts = attempts + 1
-          WHERE id = ? AND status IN ('PENDING', 'SEND_UNKNOWN')
-            AND superseded_at IS NULL
-            AND (status = 'PENDING' OR next_attempt_at IS NULL OR next_attempt_at <= ?)`)
-          .run(`worker-${process.pid}`, now(), now(), outbox.id, timestamp).changes;
+        // The selector is read inside this transaction by claimForDispatch,
+        // never hoisted: a provider callback can race the activation CAS.
+        return claimForDispatch(
+          this.db,
+          { id: String(outbox.id), provider_idempotence_key: String(outbox.provider_idempotence_key) },
+          `worker-${process.pid}`,
+          timestamp,
+        );
       });
       if (!claimed) continue;
       try {
         const payload = this.emailPayload(outbox);
-        const sent = await this.emailProvider.send({ recipientEmail: String(outbox.recipient_email), template: String(outbox.template), type: String(outbox.type), payload, idempotencyKey: String(outbox.provider_idempotence_key), outboxId: String(outbox.id) });
+        // The key comes from the claim, not from the pre-claim message snapshot.
+        // Under LEGACY they are the same value, so the snapshot would be
+        // accidentally correct for attempt #1 and wrong the moment a resend
+        // mints attempt #2 with its own key.
+        const sent = await this.emailProvider.send({ recipientEmail: String(outbox.recipient_email), template: String(outbox.template), type: String(outbox.type), payload, idempotencyKey: claimed.provider_idempotence_key, outboxId: String(outbox.id) });
         withImmediateTransaction(this.db, () => {
           const accepted = this.db.prepare(`UPDATE email_outbox
             SET status = 'ACCEPTED', job_id = ?, lease_owner = NULL, lease_expires_at = NULL,
