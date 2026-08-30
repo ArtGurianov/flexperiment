@@ -81,8 +81,34 @@ CREATE UNIQUE INDEX outbox_attempt_active_unique
 
 CREATE INDEX outbox_attempt_message_idx ON outbox_attempt(message_id, attempt_no);
 
+-- What this row IS never changes, settled or not.
+--
+-- The unique constraint proves a key is not used by another attempt. It does
+-- NOT prove this attempt still carries the key its provider request was made
+-- under, and that is the property the whole replay model rests on:
+--
+--   request sent with key-original, outcome still ambiguous
+--   a retry path rewrites the row to key-new
+--   the retry reaches the provider as a DIFFERENT logical request
+--   the recipient gets two emails
+--
+-- Separate from settled-immutability because it must hold during the window
+-- where the row is legitimately still changing - which is exactly the window in
+-- which an ambiguous send is being retried.
+CREATE TRIGGER outbox_attempt_identity_immutable_guard
+BEFORE UPDATE ON outbox_attempt
+WHEN NEW.id IS NOT OLD.id
+  OR NEW.message_id IS NOT OLD.message_id
+  OR NEW.attempt_no IS NOT OLD.attempt_no
+  OR NEW.provider_idempotence_key IS NOT OLD.provider_idempotence_key
+  OR NEW.requested_at IS NOT OLD.requested_at
+BEGIN
+  SELECT RAISE(ABORT, 'OUTBOX_ATTEMPT_IDENTITY_IMMUTABLE');
+END;
+
 -- A settled attempt is history and never changes. An unsettled one stays
--- mutable precisely so later evidence can settle it.
+-- mutable in its progress fields - lease, retry state, provider job id - which
+-- is what lets later evidence settle it.
 CREATE TRIGGER outbox_attempt_settled_immutable_guard
 BEFORE UPDATE ON outbox_attempt
 WHEN OLD.outcome IS NOT NULL

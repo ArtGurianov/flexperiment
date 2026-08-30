@@ -232,6 +232,65 @@ describe("0041 outbox attempt migration", () => {
       expect(() => insertAttempt(db, "a1", 1, "UNRESOLVED")).toThrow(/CHECK constraint failed/);
     });
 
+    describe("attempt identity is immutable from creation", () => {
+      // The unique constraint proves a key is unused by another attempt; it
+      // does not prove this attempt still carries the key its provider request
+      // was made under. Rewriting it mid-ambiguity turns a retry into a
+      // different logical request at the provider - a second email.
+      it.each([
+        ["provider_idempotence_key", "provider_idempotence_key = 'key-rewritten'"],
+        ["attempt_no", "attempt_no = 2"],
+
+        ["id", "id = 'a-renamed'"],
+        ["requested_at", "requested_at = '2030-01-01T00:00:00Z'"],
+      ])("refuses to change %s while the attempt is unsettled", (_field, assignment) => {
+        const { db } = withAttempt();
+        insertAttempt(db, "a1", 1, null);
+        expect(() => db.exec(`UPDATE outbox_attempt SET ${assignment} WHERE id = 'a1'`))
+          .toThrow(/OUTBOX_ATTEMPT_IDENTITY_IMMUTABLE/);
+      });
+
+      it("refuses to reparent the attempt to another message", () => {
+        // Separate from the table-driven cases because it needs a second real
+        // message: `IS NOT` compares values, so "changing" message_id to its
+        // own value is not a change at all.
+        const { db } = withAttempt();
+        db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template,
+          payload_snapshot, status, provider_idempotence_key, attempts)
+          VALUES ('m2', 'TEST', 'b@c.invalid', 'h2', 'tpl', '{}', 'PENDING', 'k2', 0)`).run();
+        insertAttempt(db, "a1", 1, null);
+        expect(() => db.exec("UPDATE outbox_attempt SET message_id = 'm2' WHERE id = 'a1'"))
+          .toThrow(/OUTBOX_ATTEMPT_IDENTITY_IMMUTABLE/);
+      });
+
+      it("still allows progress on an unsettled attempt", () => {
+        // The guard must not freeze the row it is protecting: retry state and
+        // lease movement are exactly what happens while a send is ambiguous.
+        const { db } = withAttempt();
+        insertAttempt(db, "a1", 1, null);
+        expect(() => db.exec(`UPDATE outbox_attempt SET send_try_count = send_try_count + 1,
+          lease_owner = 'w1', lease_expires_at = '2026-08-30T00:02:00Z',
+          next_retry_at = '2026-08-30T00:05:00Z', provider_job_id = 'j1',
+          started_at = '2026-08-30T00:00:00Z', reconciliation_exhausted_at = NULL
+          WHERE id = 'a1'`)).not.toThrow();
+      });
+
+      it("still allows the attempt to settle", () => {
+        const { db } = withAttempt();
+        insertAttempt(db, "a1", 1, null);
+        expect(() => db.exec("UPDATE outbox_attempt SET outcome = 'ACCEPTED', completed_at = '2026-08-30T00:01:00Z' WHERE id = 'a1'")).not.toThrow();
+      });
+
+      it("keeps the key immutable after settlement too", () => {
+        const { db } = withAttempt();
+        insertAttempt(db, "a1", 1, "ACCEPTED");
+        // Either guard may fire first - SQLite does not order same-event
+        // triggers - so this asserts the refusal, not which one refused.
+        expect(() => db.exec("UPDATE outbox_attempt SET provider_idempotence_key = 'key-rewritten' WHERE id = 'a1'"))
+          .toThrow(/OUTBOX_ATTEMPT_(IDENTITY|SETTLED)_IMMUTABLE/);
+      });
+    });
+
     it("lets an unsettled attempt be settled, once", () => {
       const { db } = withAttempt();
       insertAttempt(db, "a1", 1, null);
