@@ -874,6 +874,37 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
+  it("returns the owner conflict as 409 with its real code, not 500", async () => {
+    // Found in production during the 0040 live fence proof: the refusal was
+    // correct and reported as INTERNAL_ERROR, discarding the reason. Same shape
+    // as the curl --fail-with-body defect, one layer lower.
+    const previousToken = process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
+    process.env.COMMERCE_RELEASE_CONTROL_TOKEN = "release-control-test-token";
+    const { db, app } = appFixture();
+    try {
+      const headers = { Authorization: "Bearer release-control-test-token", "Content-Type": "application/json" };
+      const fence = await app.request("http://api.flexperiment.ru/v1/internal/release-control/outbox-dispatch/fence", {
+        method: "POST", headers,
+        body: JSON.stringify({ expected_revision: 1, reason: "epoch a fences", release_id: "epoch-a", generation: 1 }),
+      });
+      expect(fence.status).toBe(200);
+
+      const impostor = await app.request("http://api.flexperiment.ru/v1/internal/release-control/outbox-dispatch/unfence", {
+        method: "POST", headers,
+        body: JSON.stringify({ expected_revision: 2, reason: "epoch b unfences", release_id: "epoch-b", generation: 1 }),
+      });
+      expect(impostor.status).toBe(409);
+      expect(await impostor.json()).toEqual({ error: { code: "OUTBOX_DISPATCH_OWNER_CONFLICT" } });
+      // And the fence still holds.
+      expect(db.prepare("SELECT email_dispatch_paused FROM outbox_authority WHERE singleton = 1").get())
+        .toEqual({ email_dispatch_paused: 1 });
+    } finally {
+      db.close();
+      if (previousToken === undefined) delete process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
+      else process.env.COMMERCE_RELEASE_CONTROL_TOKEN = previousToken;
+    }
+  });
+
   it("exposes the emergency latch on internal release-control status without admin credentials", async () => {
     // The release controller must be able to see the operator's latch to refuse
     // completing into open sales, but must never be able to set it: an admin
