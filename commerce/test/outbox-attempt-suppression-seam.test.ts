@@ -4,6 +4,8 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { skipObsoletePendingMessage, supersedeQueuedMessage, suppressMessageDispatch } from "../src/outbox-attempt-store";
+import { CommerceDomain } from "../src/domain";
+import { MockProvider } from "../src/provider";
 
 /**
  * Seam 4 of 5: suppression and supersession.
@@ -104,12 +106,28 @@ describe("suppression seam", () => {
       expect((message(db) as { suppressed_at: string }).suppressed_at).toBe(TS);
     });
 
-    it("leaves a DELIVERED message and its attempt alone", () => {
+    it("cleans nothing when the typed message command does not apply", () => {
+      // The single-statement original guarded the message mutation and the
+      // legacy cleanup together with `WHERE id = ? AND type = ?`. Splitting
+      // them let the cleanup run against a message the command never matched.
+      const db = fixture({ authority: "ATTEMPT", status: "SENDING" });
+      const attemptBefore = attempt(db);
+      const messageBefore = message(db);
+
+      tx(db, () => suppressMessageDispatch(db, "m1", "OCCURRENCE_AVAILABLE", "WRONG_TYPE", TS));
+
+      expect(attempt(db)).toEqual(attemptBefore);
+      expect(message(db)).toEqual(messageBefore);
+    });
+
+    it("leaves a DELIVERED message's lifecycle and attempt alone, while still redacting", () => {
       const db = fixture({ authority: "ATTEMPT", status: "DELIVERED" });
       const attemptBefore = attempt(db);
       tx(db, () => suppressMessageDispatch(db, "m1", "CITY_INTEREST_AVAILABLE", "CITY_INTEREST_NO_LONGER_ACTIVE", TS));
       expect((message(db) as { status: string }).status).toBe("DELIVERED");
       expect(attempt(db)).toEqual(attemptBefore);
+      // PII is still removed: the lifecycle status is preserved, not the data.
+      expect((message(db) as { recipient_email: string }).recipient_email).toBe("");
     });
 
     it("is not dropped when the active attempt changed underneath it", () => {
@@ -173,5 +191,43 @@ describe("suppression seam", () => {
       expect(tx(db, () => skipObsoletePendingMessage(db, "m1"))).toBe(1);
       expect(attempt(db)).toMatchObject({ lease_owner: null, next_retry_at: null, outcome: null });
     });
+  });
+});
+
+/**
+ * Orchestration seam.
+ *
+ * This conversion was already inert once: the helpers were correct, the domain
+ * still ran the old inline SQL, and every helper test above stayed green. The
+ * only signal was an unused import. That is a human convention, so it is
+ * replaced here by executable proof.
+ */
+describe("the domain consumes the suppression helpers", () => {
+  it("suppresses an inactive notification through processEmailOutbox under ATTEMPT", async () => {
+    // No intent rows exist, so isActiveCityInterestNotification is false and
+    // the dispatch loop must suppress rather than send.
+    const db = fixture({ authority: "ATTEMPT", status: "PENDING" });
+    db.exec(`UPDATE outbox_attempt SET lease_owner = 'w1', next_retry_at = '2026-08-30T00:05:00Z' WHERE id = 'a1'`);
+
+    await new CommerceDomain(db, new MockProvider()).processEmailOutbox();
+
+    expect(message(db)).toMatchObject({ status: "SKIPPED", recipient_email: "" });
+    // Attempt scheduling cleared, attempt NOT settled, and no legacy write -
+    // which would have aborted on the 0040 freeze trigger.
+    expect(attempt(db)).toMatchObject({ outcome: null, lease_owner: null, next_retry_at: null });
+  });
+
+  it("leaves no inline legacy suppression SQL behind in the domain", () => {
+    // A structural backstop for the two conversions without a natural
+    // end-to-end path. It is not a substitute for the test above; it exists
+    // because the failure mode is a silent no-op replacement.
+    const domain = readFileSync("commerce/src/domain.ts", "utf8");
+    expect(domain).toContain("suppressMessageDispatch(this.db");
+    expect(domain).toContain("supersedeQueuedMessage(this.db");
+    expect(domain).toContain("skipObsoletePendingMessage(this.db");
+    expect(domain, "an inline legacy suppression UPDATE survived the conversion")
+      .not.toMatch(/last_error = CASE WHEN status = 'DELIVERED'/);
+    expect(domain, "an inline legacy supersession UPDATE survived the conversion")
+      .not.toMatch(/lease_owner = CASE WHEN status = 'PENDING'/);
   });
 });

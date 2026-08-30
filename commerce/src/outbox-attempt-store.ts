@@ -534,35 +534,48 @@ export const supersedeQueuedMessage = (
 /**
  * Consent is gone: stop future local dispatch and remove the local PII.
  *
- * DELIVERED is preserved untouched - it is a historical dispatch fact, and an
- * in-flight provider call cannot be recalled.
+ * DELIVERED keeps its lifecycle status and its attempt - it is a historical
+ * dispatch fact, and an in-flight provider call cannot be recalled - but its
+ * PII is still removed.
+ *
+ * `legacyReason` is exactly that: it exists to populate last_error under LEGACY,
+ * where that column is the only place available. It is NOT stored under
+ * ATTEMPT. Suppression is identified there by `type` plus `suppressed_at`, and
+ * writing the reason as the attempt's failure_code would record a consent
+ * action as something the provider did.
  */
 export const suppressMessageDispatch = (
   db: Database.Database,
   messageId: string,
   type: string,
-  reason: string,
+  legacyReason: string,
   timestamp: string,
-) => {
+): number => {
   requireTransaction(db);
-  const wasDelivered = Boolean(db.prepare("SELECT 1 FROM email_outbox WHERE id = ? AND status = 'DELIVERED'").get(messageId));
-  if (attemptAuthorityIsActive(db)) {
-    db.prepare(`UPDATE email_outbox
-      SET status = CASE WHEN status = 'DELIVERED' THEN status ELSE 'SKIPPED' END,
-          suppressed_at = CASE WHEN status = 'DELIVERED' THEN suppressed_at ELSE COALESCE(suppressed_at, ?) END,
-          recipient_email = '', recipient_email_hash = '', payload_snapshot = '{}'
-      WHERE id = ? AND type = ?`).run(timestamp, messageId, type);
-    // The reason lives on the message, not the attempt: suppression is a
-    // consent action, and recording it as a send failure_code would misclassify
-    // it as something the provider did.
-    if (!wasDelivered) clearActiveAttemptDispatch(db, messageId);
-    return;
-  }
-  db.prepare(`UPDATE email_outbox
-    SET status = CASE WHEN status = 'DELIVERED' THEN status ELSE 'SKIPPED' END,
-        lease_owner = NULL, lease_expires_at = NULL,
-        last_error = CASE WHEN status = 'DELIVERED' THEN last_error ELSE ? END,
-        suppressed_at = CASE WHEN status = 'DELIVERED' THEN suppressed_at ELSE COALESCE(suppressed_at, ?) END,
-        recipient_email = '', recipient_email_hash = '', payload_snapshot = '{}'
-    WHERE id = ? AND type = ?`).run(reason, timestamp, messageId, type);
+  // The typed command is the gate. The original single statement guarded the
+  // message mutation and the cleanup together with `WHERE id = ? AND type = ?`;
+  // splitting them let the cleanup run against a message the command had not
+  // matched at all.
+  const target = db.prepare("SELECT status FROM email_outbox WHERE id = ? AND type = ?").get(messageId, type) as
+    { status: string } | undefined;
+  if (!target) return 0;
+
+  const updated = attemptAuthorityIsActive(db)
+    ? db.prepare(`UPDATE email_outbox
+        SET status = CASE WHEN status = 'DELIVERED' THEN status ELSE 'SKIPPED' END,
+            suppressed_at = CASE WHEN status = 'DELIVERED' THEN suppressed_at ELSE COALESCE(suppressed_at, ?) END,
+            recipient_email = '', recipient_email_hash = '', payload_snapshot = '{}'
+        WHERE id = ? AND type = ?`).run(timestamp, messageId, type)
+    : db.prepare(`UPDATE email_outbox
+        SET status = CASE WHEN status = 'DELIVERED' THEN status ELSE 'SKIPPED' END,
+            lease_owner = NULL, lease_expires_at = NULL,
+            last_error = CASE WHEN status = 'DELIVERED' THEN last_error ELSE ? END,
+            suppressed_at = CASE WHEN status = 'DELIVERED' THEN suppressed_at ELSE COALESCE(suppressed_at, ?) END,
+            recipient_email = '', recipient_email_hash = '', payload_snapshot = '{}'
+        WHERE id = ? AND type = ?`).run(legacyReason, timestamp, messageId, type);
+
+  // Attempt cleanup is a CONSEQUENCE of a successful message command, never an
+  // independent act.
+  if (updated.changes && target.status !== "DELIVERED") clearActiveAttemptDispatch(db, messageId);
+  return updated.changes;
 };
