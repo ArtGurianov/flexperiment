@@ -461,3 +461,121 @@ export const staleLeasedSends = (db: Database.Database, timestamp: string, super
         WHERE status = 'SENDING' AND suppressed_at IS NULL AND superseded_at ${supersededClause}
           AND lease_expires_at < ?`).all(timestamp) as Array<{ id: string; attempts: number }>;
 };
+
+/**
+ * Seam 4: suppression and supersession.
+ *
+ * These are MESSAGE COMMANDS, and deliberately not attempt-bound transitions.
+ * Their decisions read consent intents, refund tokens and message status -
+ * never an attempt fact - and they originate from the world changing, not from
+ * anything a particular send did. So they carry no attempt ref: gating them on
+ * one would let a consent withdrawal be silently dropped because the attempt
+ * changed underneath it, which is the opposite of what suppression is for.
+ *
+ * What they must do is clean whichever attempt is currently active. The attempt
+ * is NOT settled: suppression establishes nothing about whether the provider
+ * accepted the send, and an in-flight call cannot be recalled, so later evidence
+ * must still be able to settle it.
+ */
+export const clearActiveAttemptDispatch = (db: Database.Database, messageId: string) => {
+  requireTransaction(db);
+  if (!attemptAuthorityIsActive(db)) return;
+  db.prepare(`UPDATE outbox_attempt
+    SET lease_owner = NULL, lease_expires_at = NULL, next_retry_at = NULL
+    WHERE message_id = ? AND outcome IS NULL`).run(messageId);
+};
+
+/** A stale PENDING snapshot must never relabel a newer provider outcome. */
+export const skipObsoletePendingMessage = (db: Database.Database, messageId: string): number => {
+  requireTransaction(db);
+  const skipped = attemptAuthorityIsActive(db)
+    ? db.prepare("UPDATE email_outbox SET status = 'SKIPPED' WHERE id = ? AND status = 'PENDING'").run(messageId)
+    : db.prepare("UPDATE email_outbox SET status = 'SKIPPED', lease_owner = NULL, lease_expires_at = NULL, last_error = NULL WHERE id = ? AND status = 'PENDING'").run(messageId);
+  if (skipped.changes) clearActiveAttemptDispatch(db, messageId);
+  return skipped.changes;
+};
+
+/**
+ * A newer revision makes a queued notice obsolete.
+ *
+ * PENDING has definitely not crossed the provider boundary, so it becomes
+ * SKIPPED and its scheduling is cleared. Every other state may already be a real
+ * delivery attempt: the status is retained so later provider evidence still
+ * applies, and the superseded marker is what prevents any future local send.
+ */
+export const supersedeQueuedMessage = (
+  db: Database.Database,
+  messageId: string,
+  timestamp: string,
+  reason: string,
+): number => {
+  requireTransaction(db);
+  const wasPending = Boolean(db.prepare("SELECT 1 FROM email_outbox WHERE id = ? AND status = 'PENDING'").get(messageId));
+  const updated = attemptAuthorityIsActive(db)
+    ? db.prepare(`UPDATE email_outbox
+        SET status = CASE WHEN status = 'PENDING' THEN 'SKIPPED' ELSE status END,
+            superseded_at = ?, superseded_reason = ?
+        WHERE id = ? AND status IN ('PENDING', 'SENDING', 'ACCEPTED', 'SEND_UNKNOWN')
+          AND superseded_at IS NULL`).run(timestamp, reason, messageId)
+    : db.prepare(`UPDATE email_outbox
+        SET status = CASE WHEN status = 'PENDING' THEN 'SKIPPED' ELSE status END,
+            superseded_at = ?, superseded_reason = ?,
+            lease_owner = CASE WHEN status = 'PENDING' THEN NULL ELSE lease_owner END,
+            lease_expires_at = CASE WHEN status = 'PENDING' THEN NULL ELSE lease_expires_at END,
+            next_attempt_at = CASE WHEN status = 'PENDING' THEN NULL ELSE next_attempt_at END
+        WHERE id = ? AND status IN ('PENDING', 'SENDING', 'ACCEPTED', 'SEND_UNKNOWN')
+          AND superseded_at IS NULL`).run(timestamp, reason, messageId);
+  // Only a PENDING row had its scheduling cleared under LEGACY, so the ATTEMPT
+  // branch mirrors that exactly rather than clearing a live in-flight lease.
+  if (updated.changes && wasPending) clearActiveAttemptDispatch(db, messageId);
+  return updated.changes;
+};
+
+/**
+ * Consent is gone: stop future local dispatch and remove the local PII.
+ *
+ * DELIVERED keeps its lifecycle status and its attempt - it is a historical
+ * dispatch fact, and an in-flight provider call cannot be recalled - but its
+ * PII is still removed.
+ *
+ * `legacyReason` is exactly that: it exists to populate last_error under LEGACY,
+ * where that column is the only place available. It is NOT stored under
+ * ATTEMPT. Suppression is identified there by `type` plus `suppressed_at`, and
+ * writing the reason as the attempt's failure_code would record a consent
+ * action as something the provider did.
+ */
+export const suppressMessageDispatch = (
+  db: Database.Database,
+  messageId: string,
+  type: string,
+  legacyReason: string,
+  timestamp: string,
+): number => {
+  requireTransaction(db);
+  // The typed command is the gate. The original single statement guarded the
+  // message mutation and the cleanup together with `WHERE id = ? AND type = ?`;
+  // splitting them let the cleanup run against a message the command had not
+  // matched at all.
+  const target = db.prepare("SELECT status FROM email_outbox WHERE id = ? AND type = ?").get(messageId, type) as
+    { status: string } | undefined;
+  if (!target) return 0;
+
+  const updated = attemptAuthorityIsActive(db)
+    ? db.prepare(`UPDATE email_outbox
+        SET status = CASE WHEN status = 'DELIVERED' THEN status ELSE 'SKIPPED' END,
+            suppressed_at = CASE WHEN status = 'DELIVERED' THEN suppressed_at ELSE COALESCE(suppressed_at, ?) END,
+            recipient_email = '', recipient_email_hash = '', payload_snapshot = '{}'
+        WHERE id = ? AND type = ?`).run(timestamp, messageId, type)
+    : db.prepare(`UPDATE email_outbox
+        SET status = CASE WHEN status = 'DELIVERED' THEN status ELSE 'SKIPPED' END,
+            lease_owner = NULL, lease_expires_at = NULL,
+            last_error = CASE WHEN status = 'DELIVERED' THEN last_error ELSE ? END,
+            suppressed_at = CASE WHEN status = 'DELIVERED' THEN suppressed_at ELSE COALESCE(suppressed_at, ?) END,
+            recipient_email = '', recipient_email_hash = '', payload_snapshot = '{}'
+        WHERE id = ? AND type = ?`).run(legacyReason, timestamp, messageId, type);
+
+  // Attempt cleanup is a CONSEQUENCE of a successful message command, never an
+  // independent act.
+  if (updated.changes && target.status !== "DELIVERED") clearActiveAttemptDispatch(db, messageId);
+  return updated.changes;
+};

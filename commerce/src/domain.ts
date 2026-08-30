@@ -12,7 +12,7 @@ import { findCityBySlug } from "../../lib/city-catalog";
 import { purchaseStatus, type PurchaseStatus } from "./purchase-status";
 import { parseUtcTimestamp } from "./utc-timestamp";
 import { assertNewOrdersOpen as assertGateOpen, emergencySalesPaused as gateEmergencyPaused, newOrdersBlocked as gateBlocked } from "./sales-gate";
-import { claimForDispatch, deferAmbiguousObservation, deferAmbiguousSend, dispatchCandidates, failExhaustedAmbiguous, providerLookupIdentity, recordProviderAcceptance, recordProviderRefusal, claimedAttemptRef, resolveAttemptRef, sendTryCount, staleLeasedSends, type AttemptRef } from "./outbox-attempt-store";
+import { claimForDispatch, deferAmbiguousObservation, deferAmbiguousSend, dispatchCandidates, failExhaustedAmbiguous, providerLookupIdentity, recordProviderAcceptance, recordProviderRefusal, claimedAttemptRef, resolveAttemptRef, skipObsoletePendingMessage, supersedeQueuedMessage, suppressMessageDispatch, sendTryCount, staleLeasedSends, type AttemptRef } from "./outbox-attempt-store";
 import { OutboxAuthorityError, emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations, type DispatchEpoch } from "./outbox-authority";
 
 type Row = Record<string, unknown>;
@@ -309,6 +309,19 @@ export class CommerceDomain {
     readonly emailProvider: EmailProvider = new UnconfiguredEmailProvider(),
     private readonly clock: () => number = Date.now,
   ) {}
+
+  /**
+   * Joins the caller's transaction via a nested savepoint, or opens one.
+   *
+   * Suppression and supersession are reached both from inside the claim
+   * transaction and from bare lifecycle sweeps, so neither "the caller has a
+   * transaction" nor "the caller does not" is an invariant. Same shape as
+   * enqueueEmail, for the same reason.
+   */
+  private atomically<T>(operation: () => T): T {
+    const run = this.db.transaction(operation);
+    return this.db.inTransaction ? run() : run.immediate();
+  }
 
   private releaseSalesGate() { return new ReleaseSalesGate(this.db); }
 
@@ -2891,7 +2904,7 @@ export class CommerceDomain {
   private skipObsoleteRefundConfirmationOutbox(outboxId: string) {
     // This is a strict compare-and-set. A worker with a stale PENDING snapshot
     // must never relabel a newer SEND_UNKNOWN provider outcome as SKIPPED.
-    return this.db.prepare("UPDATE email_outbox SET status = 'SKIPPED', lease_owner = NULL, lease_expires_at = NULL, last_error = NULL WHERE id = ? AND status = 'PENDING'").run(outboxId).changes;
+    return this.atomically(() => skipObsoletePendingMessage(this.db, outboxId));
   }
 
   /**
@@ -2912,14 +2925,8 @@ export class CommerceDomain {
       // other state may already represent a real delivery attempt, so retain
       // that status and accept later provider evidence, while the superseded
       // marker prevents any future local send/retry.
-      const updated = this.db.prepare(`UPDATE email_outbox
-        SET status = CASE WHEN status = 'PENDING' THEN 'SKIPPED' ELSE status END,
-            superseded_at = ?, superseded_reason = ?,
-            lease_owner = CASE WHEN status = 'PENDING' THEN NULL ELSE lease_owner END,
-            lease_expires_at = CASE WHEN status = 'PENDING' THEN NULL ELSE lease_expires_at END,
-            next_attempt_at = CASE WHEN status = 'PENDING' THEN NULL ELSE next_attempt_at END
-        WHERE id = ? AND status IN ('PENDING', 'SENDING', 'ACCEPTED', 'SEND_UNKNOWN')
-          AND superseded_at IS NULL`).run(timestamp, reason, notification.outbox_id);
+      const updated = { changes: this.atomically(() =>
+          supersedeQueuedMessage(this.db, String(notification.outbox_id), timestamp, reason)) };
       if (updated.changes) this.db.prepare(`UPDATE occurrence_update_notifications
         SET superseded_at = ?, superseded_reason = ? WHERE id = ? AND superseded_at IS NULL`)
         .run(timestamp, reason, notification.id);
@@ -3107,14 +3114,8 @@ export class CommerceDomain {
 
   /** Stops future local dispatch and removes the now-unneeded local PII. An in-flight provider call cannot be recalled. */
   private suppressCityInterestOutbox(outboxId: string) {
-    this.db.prepare(`UPDATE email_outbox
-      SET status = CASE WHEN status = 'DELIVERED' THEN status ELSE 'SKIPPED' END,
-          lease_owner = NULL,
-          lease_expires_at = NULL,
-          last_error = CASE WHEN status = 'DELIVERED' THEN last_error ELSE 'CITY_INTEREST_NO_LONGER_ACTIVE' END,
-          suppressed_at = CASE WHEN status = 'DELIVERED' THEN suppressed_at ELSE COALESCE(suppressed_at, ?) END,
-          recipient_email = '', recipient_email_hash = '', payload_snapshot = '{}'
-      WHERE id = ? AND type = 'CITY_INTEREST_AVAILABLE'`).run(now(), outboxId);
+    this.atomically(() =>
+      suppressMessageDispatch(this.db, outboxId, "CITY_INTEREST_AVAILABLE", "CITY_INTEREST_NO_LONGER_ACTIVE", now()));
   }
 
   private purgeCityInterestRequest(requestId: string) {
@@ -3192,11 +3193,8 @@ export class CommerceDomain {
   }
 
   private suppressOccurrenceNotificationOutbox(outboxId: string) {
-    this.db.prepare(`UPDATE email_outbox SET status = CASE WHEN status = 'DELIVERED' THEN status ELSE 'SKIPPED' END,
-      lease_owner = NULL, lease_expires_at = NULL, last_error = CASE WHEN status = 'DELIVERED' THEN last_error ELSE 'OCCURRENCE_NOTIFICATION_NO_LONGER_ACTIVE' END,
-      suppressed_at = CASE WHEN status = 'DELIVERED' THEN suppressed_at ELSE COALESCE(suppressed_at, ?) END,
-      recipient_email = '', recipient_email_hash = '', payload_snapshot = '{}'
-      WHERE id = ? AND type = 'OCCURRENCE_AVAILABLE'`).run(now(), outboxId);
+    this.atomically(() =>
+      suppressMessageDispatch(this.db, outboxId, "OCCURRENCE_AVAILABLE", "OCCURRENCE_NOTIFICATION_NO_LONGER_ACTIVE", now()));
     this.db.prepare("UPDATE occurrence_notification_intents SET superseded_at = COALESCE(superseded_at, ?) WHERE outbox_id = ?").run(now(), outboxId);
   }
 
