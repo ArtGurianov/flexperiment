@@ -7,7 +7,6 @@ import { canonicalLegalManifest, parseLegalManifest, type LegalManifest } from "
 import { parseUtcTimestamp } from "./utc-timestamp";
 import { assertAppliedMigrationPrefix, candidateExpectedMigration, isTerminalPhase, parsePostActivationEmailProviderDefectEvidence, parsePreActivationDefectEvidence, preActivationDefectClasses, reconcileHeadWithProjection, releaseStateHash, replayReleaseGenerationChain, runtimeReadinessActionableErrorClasses, type GenerationHead, type ReleasePhase, type RuntimeReadinessActionableErrorClass, type V2Event } from "./release-generation";
 import { evaluateCertificationEvidence } from "./certification-evidence";
-import { postActivationEmailProviderDefectEvidence } from "./certification-dispatch";
 import { pricePromo } from "./promo-pricing";
 
 export type ReleaseMode = "CONTROLLED_CUTOVER" | "ROLLING";
@@ -110,29 +109,6 @@ export const gen4PublicFrontendRecoveryBridge = {
   target_replay_sha256: "088bc22ca1aafe40b3c075998a94588275093b10e1646b7cefddc3be01bff6c6",
 } as const;
 
-/**
- * The one historical 0041 bridge. Its target is the separately reviewed gen2
- * runtime, never this maintenance artifact. Do not parameterize or reuse it.
- */
-export const gen1PostActivationEmailToGen2Bridge = {
-  release_id: "outbox-attempt-authority-v1:68f80a411b7f286928ef10826ed225228098d246",
-  from_generation: 1,
-  from_source_commit: "68f80a411b7f286928ef10826ed225228098d246",
-  from_phase: "CERTIFIED",
-  from_phase_sequence: 8,
-  to_generation: 2,
-  to_source_commit: "0ddc33d0fd0077fe0ba238ec75ae4090fc38ac34",
-  authority_revision: 7,
-  // The complete runtime closure the bridge executes to replay its future
-  // ledger. Every digest is from the literal Gen2 Git object, not this
-  // maintenance tree; a later edit to either tree fails the bridge closed.
-  target_replay_closure_sha256: {
-    "commerce/src/release-generation.ts": "83cd8156e4bdc86443cf1087cb4510ace0e1c6d1ee654ab6c541cad11c002ff1",
-    "commerce/src/crypto.ts": "11de258097549e6cab921ef0ac417e2021fe7ae895990512b21832bbebd81a26",
-    "commerce/src/release-expectation.ts": "444d1abc34ae344a5862269c2bacda62c6756d9449e7f3d1c6f95df9a5d0fb53",
-    "commerce/src/utc-timestamp.ts": "ee20327eaa7bf4f955a2a35434f325738bfb1eb6798c33ba06268587a8aa08dd",
-  },
-} as const;
 export type CandidateAcquireRequest = { head: GenerationHead };
 export type CandidateAdoptRequest = { head: GenerationHead; expected_generation: number; from_sha: string; expected_state_hash: string };
 export type CandidatePhaseRequest = { release_id: string; candidate_generation: number; expected_state_hash: string; from_phase: ReleasePhase; phase_sequence: number; to_phase: Exclude<ReleasePhase, "COMPLETE"> };
@@ -896,120 +872,6 @@ export class ReleaseSalesGate {
         expected_legal_manifest_sha256: persistedGate.expected_legal_manifest_sha256,
       })) throw new ReleaseControlError("GEN4_BRIDGE_FINAL_VALIDATION_FAILED");
       return { ...status(persistedGate), head: persistedHead, state_hash: releaseStateHash(persistedHead) };
-    });
-  }
-
-  /**
-   * Offline-only 0041 bridge. The old runtime cannot replay the first event,
-   * so this appends the defect and supersession together while every old
-   * reader/writer is stopped. It has no caller-selected target or evidence.
-   */
-  bridgeGen1PostActivationEmailDefectToGen2(input: { expected_state_hash: string }) {
-    return this.immediate(() => {
-      const bridge = gen1PostActivationEmailToGen2Bridge;
-      const gate = row(this.db); if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
-      const current = this.v2Head(bridge.release_id);
-      const authority = this.db.prepare(`SELECT attempt_authority, email_dispatch_paused,
-        dispatch_owner_release_id, dispatch_owner_generation, revision FROM outbox_authority WHERE singleton = 1`).get() as {
-          attempt_authority: string; email_dispatch_paused: number; dispatch_owner_release_id: string | null; dispatch_owner_generation: number | null; revision: number;
-        } | undefined;
-      const drain = this.db.prepare(`SELECT
-        (SELECT COUNT(*) FROM email_outbox WHERE status = 'SENDING') AS sending,
-        (SELECT COUNT(*) FROM email_outbox WHERE lease_owner IS NOT NULL) +
-        (SELECT COUNT(*) FROM outbox_attempt WHERE lease_owner IS NOT NULL) AS leased`).get() as { sending: number; leased: number };
-      const lastAuthorityEvent = this.db.prepare(`SELECT action, owner_release_id, owner_generation, revision
-        FROM outbox_authority_events ORDER BY revision DESC, rowid DESC LIMIT 1`).get() as {
-          action: string; owner_release_id: string | null; owner_generation: number | null; revision: number;
-        } | undefined;
-      const authorityValid = Boolean(authority
-        && authority.attempt_authority === "ATTEMPT" && authority.email_dispatch_paused === 1
-        && authority.dispatch_owner_release_id === bridge.release_id && authority.dispatch_owner_generation === null
-        && authority.revision === bridge.authority_revision
-        && drain.sending === 0 && drain.leased === 0
-        && lastAuthorityEvent?.action === "DISPATCH_FENCED"
-        && lastAuthorityEvent.owner_release_id === bridge.release_id && lastAuthorityEvent.owner_generation === null
-        && lastAuthorityEvent.revision === bridge.authority_revision);
-
-      const events = this.db.prepare("SELECT rowid AS seq, release_id, action, details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid ASC").all(bridge.release_id) as V2Event[];
-      const targetHead = {
-        release_id: bridge.release_id, candidate_generation: bridge.to_generation, source_commit: bridge.to_source_commit,
-        migration_inventory: current.migration_inventory, legal_baseline: current.legal_baseline,
-        release_family: current.release_family, checkout_contract_version: current.checkout_contract_version,
-        admin_contract_version: current.admin_contract_version, phase: "PAUSED" as const, phase_sequence: 0,
-      };
-      const expectedTarget = this.expectedForHead(targetHead);
-
-      // A committed bridge is reconciled solely from the append-only pair. It
-      // never re-reads mutable defect rows or consumes a second authority rev.
-      if (current.candidate_generation === bridge.to_generation && current.source_commit === bridge.to_source_commit
-        && current.phase === "PAUSED" && current.phase_sequence === 0 && !current.certification) {
-        const pair = events.slice(-2).map((entry) => {
-          try { return JSON.parse(entry.details_json) as Record<string, unknown>; } catch { return null; }
-        });
-        const defect = pair[0]; const supersede = pair[1];
-        if (!authorityValid || gate.owner_release_id !== bridge.release_id || gate.sales_paused !== 1
-          || reconcileHeadWithProjection(current, { owner_release_id: gate.owner_release_id, sales_paused: true,
-            expected_source_commit: gate.expected_source_commit, expected_migration: gate.expected_migration,
-            expected_legal_version: gate.expected_legal_version, expected_legal_manifest_sha256: gate.expected_legal_manifest_sha256 })
-          || defect?.kind !== "POST_ACTIVATION_EMAIL_PROVIDER_DEFECT"
-          || !parsePostActivationEmailProviderDefectEvidence(defect.post_activation_email_provider_defect, bridge.from_source_commit)
-          || supersede?.kind !== "CANDIDATE_SUPERSEDED" || supersede.from_generation !== bridge.from_generation
-          || supersede.from_sha !== bridge.from_source_commit) throw new ReleaseControlError("GEN1_TO_GEN2_BRIDGE_REPLAY_INVALID");
-        return { ...status(gate), head: current, state_hash: releaseStateHash(current), replayed: true };
-      }
-
-      if (!authorityValid || gate.owner_release_id !== bridge.release_id || gate.sales_paused !== 1
-        || current.release_id !== bridge.release_id || current.candidate_generation !== bridge.from_generation
-        || current.source_commit !== bridge.from_source_commit || current.phase !== bridge.from_phase
-        || current.phase_sequence !== bridge.from_phase_sequence || current.certification?.status !== "CONSUMED"
-        || releaseStateHash(current) !== input.expected_state_hash
-        || reconcileHeadWithProjection(current, { owner_release_id: gate.owner_release_id, sales_paused: true,
-          expected_source_commit: gate.expected_source_commit, expected_migration: gate.expected_migration,
-          expected_legal_version: gate.expected_legal_version, expected_legal_manifest_sha256: gate.expected_legal_manifest_sha256 })) {
-        throw new ReleaseControlError("GEN1_TO_GEN2_BRIDGE_PRECONDITION_FAILED");
-      }
-
-      const observed = postActivationEmailProviderDefectEvidence(this.db, bridge.release_id);
-      if (!observed.exact || !observed.order_id || !observed.unfenced_at || !observed.ticket_attempt?.attempt_id
-        || !observed.ticket_attempt.started_at) throw new ReleaseControlError("GEN1_TO_GEN2_BRIDGE_EVIDENCE_INVALID");
-      const recoveryHead = { ...current, phase: "RECOVERY_REQUIRED" as const, phase_sequence: current.phase_sequence + 1,
-        certification: { ...current.certification, status: "CONSUMED" as const } };
-      const post_activation_email_provider_defect = {
-        reason: "POST_ACTIVATION_EMAIL_PROVIDER_DEFECT" as const, order_id: observed.order_id,
-        outbox_id: observed.ticket_attempt.outbox_id, attempt_id: observed.ticket_attempt.attempt_id,
-        message_type: "TICKET" as const, message_status: "FAILED" as const,
-        message_delivery_outcome: "KNOWN_FAILED" as const, attempt_count: 1,
-        unfenced_at: observed.unfenced_at, started_at: observed.ticket_attempt.started_at,
-        outcome: "KNOWN_FAILED" as const, failure_code: "UNISENDER_HTTP_REJECTED" as const,
-        provider_error_code: "1588" as const, source_commit: bridge.from_source_commit,
-      };
-      const defectEvent = { seq: (events.at(-1)?.seq ?? 0) + 1, release_id: bridge.release_id, action: "PAUSED" as const,
-        details_json: JSON.stringify({ schema_version: 2, kind: "POST_ACTIVATION_EMAIL_PROVIDER_DEFECT", from_phase: current.phase, from_phase_sequence: current.phase_sequence, head: recoveryHead, post_activation_email_provider_defect }) };
-      const supersedeEvent = { seq: defectEvent.seq + 1, release_id: bridge.release_id, action: "PAUSED" as const,
-        details_json: JSON.stringify({ schema_version: 2, kind: "CANDIDATE_SUPERSEDED", from_generation: bridge.from_generation, from_sha: bridge.from_source_commit, head: targetHead }) };
-      const replay = replayReleaseGenerationChain([...events, defectEvent, supersedeEvent]);
-      if (replay.corrupt || releaseStateHash(replay.head ?? targetHead) !== releaseStateHash(targetHead)
-        || reconcileHeadWithProjection(targetHead, { owner_release_id: bridge.release_id, sales_paused: true,
-          expected_source_commit: expectedTarget.source_commit, expected_migration: expectedTarget.migration,
-          expected_legal_version: expectedTarget.legal_version, expected_legal_manifest_sha256: expectedTarget.legal_manifest_sha256 })) {
-        throw new ReleaseControlError("GEN1_TO_GEN2_BRIDGE_REPLAY_FAILED");
-      }
-      const updated = this.db.prepare(`UPDATE release_sales_gate SET expected_source_commit = ?, expected_migration = ?,
-        expected_legal_version = ?, expected_legal_manifest_sha256 = ?, updated_at = datetime('now')
-        WHERE singleton = 1 AND owner_release_id = ? AND sales_paused = 1 AND expected_source_commit = ?`).run(
-        expectedTarget.source_commit, expectedTarget.migration, expectedTarget.legal_version, expectedTarget.legal_manifest_sha256,
-        bridge.release_id, bridge.from_source_commit);
-      if (updated.changes !== 1) throw new ReleaseControlError("GEN1_TO_GEN2_BRIDGE_PRECONDITION_FAILED");
-      event(this.db, bridge.release_id, "PAUSED", JSON.parse(defectEvent.details_json));
-      event(this.db, bridge.release_id, "PAUSED", JSON.parse(supersedeEvent.details_json));
-      const persisted = this.v2Head(bridge.release_id); const persistedGate = row(this.db);
-      if (!persistedGate || releaseStateHash(persisted) !== releaseStateHash(targetHead)
-        || reconcileHeadWithProjection(persisted, { owner_release_id: persistedGate.owner_release_id, sales_paused: persistedGate.sales_paused === 1,
-          expected_source_commit: persistedGate.expected_source_commit, expected_migration: persistedGate.expected_migration,
-          expected_legal_version: persistedGate.expected_legal_version, expected_legal_manifest_sha256: persistedGate.expected_legal_manifest_sha256 })) {
-        throw new ReleaseControlError("GEN1_TO_GEN2_BRIDGE_FINAL_VALIDATION_FAILED");
-      }
-      return { ...status(persistedGate), head: persisted, state_hash: releaseStateHash(persisted), replayed: false };
     });
   }
 
