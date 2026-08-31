@@ -281,7 +281,7 @@ jobs:
           node --import tsx commerce/src/assert-epoch-a-runtime-promotion-ready.ts converged-status.json release.json converged-legal.json paused
           jq -e --arg source_sha "$EPOCH_A_R_MANIFEST_SHA256" '.runtime.source_legal_manifest_sha256 == $source_sha' converged-status.json >/dev/null || { echo "EPOCH_A_R_LEGAL_SOURCE_CONVERGENCE_MISMATCH" >&2; exit 1; }
           jq -e --argjson emergency "$EMERGENCY_BEFORE" '.emergency_sales_paused == $emergency and .outbox_authority.attempt_authority == "ATTEMPT" and .outbox_authority.email_dispatch_paused == false and .outbox_authority.dispatch_owner_release_id == null' converged-status.json >/dev/null || { echo "EPOCH_A_AUTHORITY_OR_EMERGENCY_CHANGED" >&2; exit 1; }
-          jq -e 'type == "array" and all(.[]; (.purchase_status == "AVAILABLE" or .purchase_status == "SOLD_OUT" or .purchase_status == "UNAVAILABLE"))' converged-tour.json >/dev/null || { echo "EPOCH_A_PURCHASE_STATUS_CONTRACT_INVALID" >&2; exit 1; }
+          jq -e '(.cities | type == "array") and all(.cities[]; (.purchase_status == "AVAILABLE" or .purchase_status == "SOLD_OUT" or .purchase_status == "UNAVAILABLE" or .purchase_status == "TEMPORARILY_PAUSED"))' converged-tour.json >/dev/null || { echo "EPOCH_A_PURCHASE_STATUS_CONTRACT_INVALID" >&2; exit 1; }
           echo "EPOCH_A_R_DORMANT_CERTIFIED=1" >> "$GITHUB_ENV"
 
       - name: Complete only after explicit GO and fresh dormant evidence

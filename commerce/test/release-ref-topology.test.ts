@@ -36,14 +36,17 @@ const describes = (ref: string) => git("log", "-1", "--format=%h %s", ref).stdou
 const isAncestor = (ancestor: string, descendant: string) =>
   git("merge-base", "--is-ancestor", ancestor, descendant).status === 0;
 
-// 0041 is the one reviewed exception to the normal integration topology. Its
-// immutable Gen2 runtime was intentionally squash-detached from main, but the
-// deployed source is still tightly identified: Gen2 has exactly Gen1 as parent.
-// This does not permit another detached production target.
+// 0041 and its Epoch A direct-child runtime are the two reviewed exceptions to
+// the normal integration topology. Both deployed sources remain tightly
+// identified by exact parentage. This does not permit another detached
+// production target.
 const GEN1_0041 = "68f80a411b7f286928ef10826ed225228098d246";
 const GEN2_0041 = "0ddc33d0fd0077fe0ba238ec75ae4090fc38ac34";
+const EPOCH_A_RUNTIME = "80e152259628719af20d363a76ed6b991d67482a";
 const isApproved0041DetachedRuntime = (sha: string) =>
   sha === GEN2_0041 && resolve(`${GEN2_0041}^`) === GEN1_0041;
+const isApprovedEpochADetachedRuntime = (sha: string) =>
+  sha === EPOCH_A_RUNTIME && resolve(`${EPOCH_A_RUNTIME}^`) === GEN2_0041;
 
 // Resolved SHAs, never branch names: a ref that has been repointed must not
 // pass because its name still looks familiar.
@@ -62,14 +65,16 @@ describe("durable release ref topology", () => {
     expect(judged.main).toMatch(/^[0-9a-f]{40}$/);
   });
 
-  it("keeps main over production except for the exact reviewed 0041 detached runtime", (ctx) => {
+  it("keeps main over production except for exact reviewed detached runtimes", (ctx) => {
     if (!judged) return ctx.skip();
     expect(
-      isAncestor(judged.productionDeploy, judged.main) || isApproved0041DetachedRuntime(judged.productionDeploy),
+      isAncestor(judged.productionDeploy, judged.main)
+      || isApproved0041DetachedRuntime(judged.productionDeploy)
+      || isApprovedEpochADetachedRuntime(judged.productionDeploy),
       `production-deploy is not an ancestor of main.\n`
       + `  production-deploy: ${describes("origin/production-deploy")}\n`
       + `  main:              ${describes("origin/main")}\n`
-      + `Only exact 0041 Gen2 may be detached from main.`,
+      + `Only exact 0041 Gen2 or exact Epoch A R may be detached from main.`,
     ).toBe(true);
   });
 
