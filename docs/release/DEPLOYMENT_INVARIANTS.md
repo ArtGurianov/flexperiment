@@ -11,6 +11,11 @@ classification and every next-action decision remain in the tested controller
 code and recovery runbooks. A helper must not emit a recommended action or a
 parallel controller state such as `RESUMING_POSTPUBLICATION_REPAIR`.
 
+For the next major production feature after terminal Epoch B, see
+[`CONTROLLED_RELEASE_BOUNDARY.md`](CONTROLLED_RELEASE_BOUNDARY.md). It fixes
+the policy that a completed release is immutable history and that a new
+feature designs its own independent boundary only when that feature exists.
+
 
 ## The dispatch fence is owned by an epoch, and must be released by it
 
