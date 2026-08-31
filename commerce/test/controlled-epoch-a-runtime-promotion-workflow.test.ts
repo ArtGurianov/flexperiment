@@ -114,6 +114,30 @@ describe("controlled Epoch A dormant runtime promotion", () => {
     expect(workflow).toContain("EPOCH_A_R_LEGAL_SOURCE_CONVERGENCE_MISMATCH");
   });
 
+  it("certifies the actual paused public-tour envelope without accepting an unknown purchase status", () => {
+    const command = at("jq -e '(.cities | type == \"array\")");
+    const filterEnd = workflow.indexOf("' converged-tour.json", command);
+    expect(filterEnd).toBeGreaterThan(command);
+    const filter = workflow.slice(command + "jq -e '".length, filterEnd);
+    const accepts = (payload: unknown) => {
+      try {
+        execFileSync("jq", ["-e", filter], {
+          input: JSON.stringify(payload),
+          stdio: "pipe",
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+
+    expect(accepts({ cities: [{ purchase_status: "TEMPORARILY_PAUSED" }] })).toBe(true);
+    expect(accepts([{ purchase_status: "TEMPORARILY_PAUSED" }])).toBe(false);
+    expect(accepts({ cities: [{ purchase_status: "UNRECOGNIZED" }] })).toBe(false);
+    expect(accepts({})).toBe(false);
+    expect(accepts({ cities: {} })).toBe(false);
+  });
+
   it("pauses before the CAS/deploy seam and never automatically reopens during prepare", () => {
     const acquire = at("Acquire owner and pause sales");
     const pause = at("Prove pause and independently unchanged emergency state");
