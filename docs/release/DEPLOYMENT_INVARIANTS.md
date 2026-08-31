@@ -259,6 +259,47 @@ are appended in one `BEGIN IMMEDIATE` transaction inside
 `bridgeGenerationFourToFive`, specifically so old gen4 code is never asked to
 replay an event kind it predates.
 
+## Offline reader/writer exclusion is an exceptional coexistence recovery
+
+**Offline exclusion is not normal deployment.** It is required whenever the
+currently deployed runtime cannot safely remain active after the durable
+transition. Backward replay compatibility is one reason, but not the only one:
+an old runtime may parse the new history correctly while its writer semantics,
+authority model, or other post-transition invariants still prohibit further
+reads or writes.
+
+The reusable invariant is:
+
+> Offline reader/writer exclusion is required whenever the current runtime
+> cannot safely coexist with the next durable state, because of replay
+> incompatibility or because authority or semantic invariants forbid its
+> continued reads or writes.
+
+Its converse matters equally: a normal rolling or controlled deployment is
+preferred only after proving that the old and new runtimes may coexist safely
+for the overlap. A compatible reader alone is insufficient; the old runtime
+must also have no prohibited writer behavior and no authority transition that
+makes its continued operation invalid.
+
+| Mode | Use when | Required sequence |
+| --- | --- | --- |
+| Normal deployment | Old and new runtimes can safely coexist for the overlap: durable replay, writer semantics, and authority rules all remain valid. | Use the normal rolling or controlled deployment protocol and prove convergence. |
+| Incompatible-runtime recovery | The current runtime would become unsafe after the durable transition. | Prove the exact old runtime and state; disable restart; stop and exclude every dependent reader/writer; atomically mutate offline; permanently forbid the old runtime; move the deployment pointer to the compatible runtime; deploy and prove convergence. |
+
+SSH and host control are reader/writer-exclusion mechanisms, not a default
+deployment transport. A Coolify webhook cannot prove exclusion. An
+incompatible-runtime recovery has a deliberate maintenance window from reader
+stop until compatible-runtime convergence; ordinary releases must not inherit
+that downtime by default.
+
+Preparation may reduce that window only when it is read-only with respect to
+production durable state. A prebuilt or pre-pulled image/artifact **MUST** be
+immutably bound to the exact authorized source SHA and image digest before the
+old runtime is excluded. Preparation **MUST NOT** start a compatible runtime
+against production storage, and it **MUST NOT** create source-identity drift
+between the prepared artifact, the deployment-pointer target, and the runtime
+proved after convergence.
+
 ## One-shot recovery bridges are non-reusable by construction
 
 A historical repair utility (`commerce/src/gen2-bootstrap-adopt.ts`,
