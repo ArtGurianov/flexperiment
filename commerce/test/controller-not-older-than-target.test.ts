@@ -33,7 +33,14 @@ const WORKFLOWS = ".github/workflows";
 const hardBoundRecoveryTarget = (source: string) =>
   /^\s+(EXPECTED_[A-Z_]+|DEPLOYMENT_TARGET|GEN2_RUNTIME_SHA):\s*"?[0-9a-f]{40}"?\s*$/m.test(source)
   || (source.includes("name: Controlled Epoch A dormant runtime promotion")
-    && /^\s+EPOCH_A_RUNTIME_SHA:\s*"?[0-9a-f]{40}"?\s*$/m.test(source));
+    && /^\s+EPOCH_A_RUNTIME_SHA:\s*"?[0-9a-f]{40}"?\s*$/m.test(source))
+  // Epoch B P is deliberately created only after legal publication supplies
+  // its durable timestamp. It cannot be a main ancestor or a hard-coded SHA;
+  // the controller must instead reconstruct the exact direct child of R.
+  || (source.includes("name: Controlled Epoch B notification activation")
+    && /^\s+EPOCH_A_RUNTIME_SHA:\s*"?[0-9a-f]{40}"?\s*$/m.test(source)
+    && source.includes("epochBPromotionArtifactReason")
+    && source.includes("createEpochBPromotionArtifact"));
 
 const DEPLOYING = readdirSync(WORKFLOWS)
   .filter((name) => name.endsWith(".yml"))
