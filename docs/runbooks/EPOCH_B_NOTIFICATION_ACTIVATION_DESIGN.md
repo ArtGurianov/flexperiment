@@ -25,19 +25,25 @@ contains the reviewed document identities and hashes but deliberately contains
 authority.
 
 The publication source path is literal controller policy, not a workflow input
-or a caller-selectable path. Any invocation of the existing publisher must set
-exactly:
+or a caller-selectable path. `COMMERCE_LEGAL_MANIFEST_PATH` is relevant only to
+the local `publish-legal-release.ts` CLI; an Epoch B production controller does
+not invoke that CLI and must not rely on its process environment to select a
+remote runtime file. For a local CLI invocation, the required value is:
 
 ```text
 COMMERCE_LEGAL_MANIFEST_PATH=commerce/legal/production-manifest.2026-08-28.1.draft.json
 ```
 
-This is required because `publish-legal-release.ts` otherwise calls
+The local CLI requires this because `publish-legal-release.ts` otherwise calls
 `loadCanonicalLegalRelease()` with its default path,
 `commerce/legal/production-manifest.json`, which is still the pre-B
-`2026-08-26.1` canonical manifest. Before publication the controller must parse
-the literal draft path, prove version `2026-08-28.1`, and prove canonical
-manifest SHA256
+`2026-08-26.1` canonical manifest. Production uses the authenticated
+`/legal-publish` runtime seam instead: R derives
+`commerce/legal/production-manifest.${input.expected.legal_version}.draft.json`
+from the same paused-owner request. The controller therefore binds
+`expected.legal_version` to `2026-08-28.1` before that request is sent. Before
+publication the controller must parse the literal draft path, prove version
+`2026-08-28.1`, and prove canonical manifest SHA256
 `fb879a80c48a50c41694d83118e5f8004a4fec5fbf36f954b15f4b678f4efe02`.
 
 The publisher CLI output is not authority for the publication timestamp and
@@ -153,43 +159,41 @@ must remain fail-closed at every seam:
 7. Reprove exact owner expectations, R runtime, migration inventory, pre-B
    legal state, notification dormancy, and the literal reviewed draft
    path/version/canonical hash immediately before publication.
-8. Publish legal `2026-08-28.1` exactly once through the existing controlled
-   `legal-publish` seam with the publication source hard-bound as literal
-   controller policy:
-
-   ```text
-   COMMERCE_LEGAL_MANIFEST_PATH=commerce/legal/production-manifest.2026-08-28.1.draft.json
-   ```
-
-   The path must not be a workflow input or derived from `main`. A replay is
+8. Update the same paused owner from R/pre-B expectations to R/B-publication
+   expectations: exact R source and migration inventory, but legal version
+   `2026-08-28.1` and the reviewed B canonical manifest/hash set.
+9. Publish legal `2026-08-28.1` exactly once through the existing controlled
+   `legal-publish` seam using that R/B-publication request. R derives the
+   literal reviewed B draft filename from `expected.legal_version`; neither a
+   workflow environment variable nor a mutable branch selects it. A replay is
    accepted only when the existing active release has the exact same version
    and canonical manifest hash.
-9. Ignore the publisher CLI for timestamp authority. Perform an authenticated
+10. Ignore the publisher CLI for timestamp authority. Perform an authenticated
    durable read-back after `legal-publish`; prove active version exactly
    `2026-08-28.1`, canonical manifest SHA256 exactly
    `fb879a80c48a50c41694d83118e5f8004a4fec5fbf36f954b15f4b678f4efe02`,
    exact reviewed document hashes, and a valid durable
    `effective_at` / `legal_publish_time`. That durable timestamp is the only
    timestamp allowed to construct P.
-10. Create or recover P as the deterministic single-parent child of R using
+11. Create or recover P as the deterministic single-parent child of R using
     that authenticated durable timestamp. Prove exact parent count, exact
     changed-path scope, canonical version `2026-08-28.1`, and the same canonical
     legal manifest hash.
-11. Update the same Epoch B owner's durable expectations from R to exact P;
-    never create a new owner around P.
-12. Reprove owner, exact active B legal version/hash/timestamp,
+12. Update the same Epoch B owner's durable expectations from R/B-publication
+    to exact P/B-active; never create a new owner around P.
+13. Reprove owner, exact active B legal version/hash/timestamp,
     outbox/emergency authority, and `production-deploy == R` immediately before
     the pointer mutation.
-13. Guarded CAS `production-deploy: R -> P` using expected-old and
+14. Guarded CAS `production-deploy: R -> P` using expected-old and
     force-with-lease semantics; no plain force.
-14. Enqueue exact P only after successful/reflected CAS.
-15. Bounded convergence proof for Commerce, worker, frontend, and Admin exact
+15. Enqueue exact P only after successful/reflected CAS.
+16. Bounded convergence proof for Commerce, worker, frontend, and Admin exact
     P; full migration inventory unchanged; legal/current/archive hashes exact.
-16. Prove `occurrence_notifications_available == true` and the public
+17. Prove `occurrence_notifications_available == true` and the public
     notification endpoint is now legally/runtime enabled.
-17. Prove no unrelated authority change: outbox remains `ATTEMPT`, dispatch is
+18. Prove no unrelated authority change: outbox remains `ATTEMPT`, dispatch is
     open/no owner, emergency unchanged.
-18. Finish **with the Epoch B release owner retained and sales paused**.
+19. Finish **with the Epoch B release owner retained and sales paused**.
 
 Successful `prepare` therefore means notification collection is active while
 new sales remain paused. It must emit a terminal activation marker such as:
@@ -283,8 +287,10 @@ least:
   SHA256 is exactly
   `fb879a80c48a50c41694d83118e5f8004a4fec5fbf36f954b15f4b678f4efe02`
   immediately before publication;
-- the publisher invocation explicitly sets
-  `COMMERCE_LEGAL_MANIFEST_PATH=commerce/legal/production-manifest.2026-08-28.1.draft.json`;
+- the production `legal-publish` request uses R/B-publication expectations with
+  exact `legal_version=2026-08-28.1`, and the runtime filename-selection
+  contract derives the literal reviewed B draft from that request rather than
+  from a workflow environment variable;
 - authenticated durable read-back after `legal-publish` re-proves the same
   version/canonical hash and is the sole source of the authoritative
   `effective_at` / `legal_publish_time` used to create P;
