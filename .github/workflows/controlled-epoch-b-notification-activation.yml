@@ -1,0 +1,358 @@
+name: Controlled Epoch B notification activation
+
+# Epoch B prepare is an explicit authorization to activate occurrence
+# notification PII collection. It intentionally retains the independent sales
+# pause; complete is a separately approved reopen boundary.
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Activate legal notification capability under a sales pause, or separately reopen sales.
+        required: true
+        type: choice
+        options: [prepare, complete]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  epoch-b:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
+    env:
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      PRODUCTION_DEPLOY_REF_TOKEN: ${{ secrets.PRODUCTION_DEPLOY_REF_TOKEN }}
+      COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+      COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+      PUBLIC_FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
+      ADMIN_RELEASE_URL: ${{ vars.ADMIN_RELEASE_URL }}
+      CONTROLLER_SHA: ${{ github.sha }}
+      INPUT_STAGE: ${{ inputs.stage }}
+      EPOCH_A_RUNTIME_SHA: 80e152259628719af20d363a76ed6b991d67482a
+      EPOCH_A_RUNTIME_TAG_REF: refs/tags/epoch-a-runtime-r-80e152259628
+      EPOCH_A_RUNTIME_TAG_OBJECT: 5b4a00791cd89c2773aebdcacde4b8dae5b95cb1
+      EPOCH_A_RELEASE_ID: epoch-a-dormant-notifications:80e152259628719af20d363a76ed6b991d67482a
+      EPOCH_A_PRE_B_LEGAL_VERSION: 2026-08-26.1
+      EPOCH_B_RELEASE_ID: epoch-b-notification-activation:80e152259628719af20d363a76ed6b991d67482a
+      EPOCH_B_LEGAL_VERSION: 2026-08-28.1
+      EPOCH_B_DRAFT_PATH: commerce/legal/production-manifest.2026-08-28.1.draft.json
+      EPOCH_B_MANIFEST_SHA256: fb879a80c48a50c41694d83118e5f8004a4fec5fbf36f954b15f4b678f4efe02
+      POLL_ATTEMPTS: "30"
+      POLL_SECONDS: "10"
+      POLL_CONNECT_TIMEOUT: "3"
+      POLL_MAX_TIME: "7"
+      INITIAL_READINESS_DELAY_SECONDS: "60"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind dedicated production-deploy credential
+        run: |
+          set -euo pipefail
+          [[ -n "$PRODUCTION_DEPLOY_REF_TOKEN" ]] || { echo "PRODUCTION_DEPLOY_REF_TOKEN_REQUIRED" >&2; exit 1; }
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git remote set-url origin "https://x-access-token:${PRODUCTION_DEPLOY_REF_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: Assert controller, exact R predecessor, and literal legal candidate
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "EPOCH_B_CONTROLLER_NOT_MAIN" >&2; exit 1; }
+          [[ "$INPUT_STAGE" == prepare || "$INPUT_STAGE" == complete ]] || { echo "EPOCH_B_STAGE_INVALID" >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main refs/heads/production-deploy:refs/remotes/origin/production-deploy "+$EPOCH_A_RUNTIME_TAG_REF:$EPOCH_A_RUNTIME_TAG_REF"
+          [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo "EPOCH_B_CONTROLLER_MAIN_MOVED" >&2; exit 1; }
+          [[ "$(git rev-parse "$EPOCH_A_RUNTIME_TAG_REF")" == "$EPOCH_A_RUNTIME_TAG_OBJECT" ]] || { echo "EPOCH_B_R_TAG_OBJECT_MISMATCH" >&2; exit 1; }
+          [[ "$(git rev-parse "$EPOCH_A_RUNTIME_TAG_REF^{}")" == "$EPOCH_A_RUNTIME_SHA" ]] || { echo "EPOCH_B_R_TAG_TARGET_MISMATCH" >&2; exit 1; }
+          [[ "$(git rev-list --parents -n 1 "$EPOCH_A_RUNTIME_SHA" | awk 'NF == 2 {print $2}')" == "0ddc33d0fd0077fe0ba238ec75ae4090fc38ac34" ]] || { echo "EPOCH_B_R_PARENT_MISMATCH" >&2; exit 1; }
+          [[ "$(git rev-list --parents -n 1 "$EPOCH_A_RUNTIME_SHA" | awk '{print NF}')" == 2 ]] || { echo "EPOCH_B_R_NOT_LINEAR" >&2; exit 1; }
+          ! git cat-file -e "$EPOCH_A_RUNTIME_SHA:.release/maintenance-only" 2>/dev/null || { echo "EPOCH_B_R_IS_MAINTENANCE_ONLY" >&2; exit 1; }
+          for url in "$PUBLIC_API_URL" "$PUBLIC_FRONTEND_URL" "$ADMIN_RELEASE_URL" "$COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL" "$COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL" "$COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL"; do [[ "$url" =~ ^https:// ]] || { echo "EPOCH_B_HTTPS_CONFIGURATION_REQUIRED" >&2; exit 1; }; done
+          [[ -n "$COMMERCE_RELEASE_CONTROL_TOKEN" && -n "$PRODUCTION_DEPLOY_REF_TOKEN" && -n "$COOLIFY_TOKEN" ]] || { echo "EPOCH_B_PRODUCTION_CREDENTIAL_REQUIRED" >&2; exit 1; }
+          git show "$EPOCH_A_RUNTIME_SHA:$EPOCH_B_DRAFT_PATH" > epoch-b-draft.json
+          jq -e --arg version "$EPOCH_B_LEGAL_VERSION" '.version == $version and .publish_time == "PENDING_AUTHORITATIVE_PUBLISH_TIMESTAMP"' epoch-b-draft.json >/dev/null || { echo "EPOCH_B_LITERAL_DRAFT_VERSION_INVALID" >&2; exit 1; }
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Prove literal draft through controller legal parser
+        run: |
+          set -euo pipefail
+          node --import tsx --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            import { parseEpochBLegalDraft } from "./commerce/src/epoch-b-notification-activation.ts";
+            parseEpochBLegalDraft(readFileSync("epoch-b-draft.json"));
+          ' || { echo "EPOCH_B_LITERAL_DRAFT_INVALID" >&2; exit 1; }
+
+      - name: Read durable authority and construct only exact requests
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > durable-before.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$EPOCH_A_RELEASE_ID" > epoch-a-completion.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$EPOCH_B_RELEASE_ID" > epoch-b-completion.json
+          api "$PUBLIC_API_URL/v1/public/legal-config" > legal-before.json
+          pointer="$(scripts/read-production-deploy-ref.sh)"
+          [[ "$pointer" == "$EPOCH_A_RUNTIME_SHA" || "$pointer" =~ ^[a-f0-9]{40}$ ]] || { echo "EPOCH_B_PRODUCTION_POINTER_INVALID" >&2; exit 1; }
+          jq -e --arg r "$EPOCH_A_RUNTIME_SHA" --arg release "$EPOCH_B_RELEASE_ID" '
+            (.owner_release_id == null or .owner_release_id == $release) and (.sales_paused | type == "boolean") and
+            (.runtime.source_commit == $r or (.runtime.source_commit | type == "string")) and
+            (.outbox_authority.attempt_authority == "ATTEMPT") and (.outbox_authority.email_dispatch_paused == false) and (.outbox_authority.dispatch_owner_release_id == null) and
+            (.emergency_sales_paused | type == "boolean")
+          ' durable-before.json >/dev/null || { echo "EPOCH_B_DURABLE_PRECONDITION_INVALID" >&2; exit 1; }
+          applied="$(node --import tsx -e '
+            import { readFileSync } from "node:fs"; import { canonicalMigrationInventory } from "./commerce/src/release-expectation.ts";
+            const versions = JSON.parse(readFileSync(process.argv[1], "utf8")).runtime?.migration_versions;
+            if (!Array.isArray(versions) || !versions.every((value) => typeof value === "string")) process.exit(2);
+            process.stdout.write(canonicalMigrationInventory(versions));
+          ' durable-before.json)" || { echo "EPOCH_B_MIGRATION_INVENTORY_INVALID" >&2; exit 1; }
+          expected="$(git ls-tree -r --name-only "$EPOCH_A_RUNTIME_SHA" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
+          [[ "$applied" == "$expected" ]] || { echo "EPOCH_B_DURABLE_MIGRATION_INVENTORY_MISMATCH" >&2; exit 1; }
+          git show "$EPOCH_A_RUNTIME_SHA:commerce/legal/production-manifest.json" > r-production-manifest.json
+          jq -e --arg v "$EPOCH_A_PRE_B_LEGAL_VERSION" '.version == $v' r-production-manifest.json >/dev/null || { echo "EPOCH_B_R_NOT_PRE_B_SOURCE" >&2; exit 1; }
+          r_manifest_hash="$(node --import tsx --input-type=module -e '
+            import { createHash } from "node:crypto"; import { readFileSync } from "node:fs"; import { canonicalLegalManifest, parseLegalManifest } from "./commerce/src/legal-manifest.ts";
+            process.stdout.write(createHash("sha256").update(canonicalLegalManifest(parseLegalManifest(JSON.parse(readFileSync("r-production-manifest.json", "utf8"))))).digest("hex"));
+          ')"
+          jq -e --arg r "$EPOCH_A_RUNTIME_SHA" --arg release "$EPOCH_A_RELEASE_ID" --arg migration "inventory-sha256:$(printf %s "$expected" | shasum -a 256 | awk '{print $1}')" --arg hash "$r_manifest_hash" --slurpfile manifest r-production-manifest.json '
+            {release_id: $release, mode: "CONTROLLED_CUTOVER", expected: {source_commit: $r, migration: $migration, legal_version: $manifest[0].version, legal_manifest_sha256: $hash, legal_hashes: ($manifest[0].documents | with_entries(.value = .value.sha256))}}
+          ' > epoch-a-request.json
+          jq -e --slurpfile request epoch-a-request.json '.complete == true and .expected == $request[0].expected' epoch-a-completion.json >/dev/null || { echo "EPOCH_B_EPOCH_A_COMPLETION_INVALID" >&2; exit 1; }
+          jq --arg release "$EPOCH_B_RELEASE_ID" '.release_id = $release' epoch-a-request.json > epoch-b-r-request.json
+          jq -e '.expected.legal_version == "2026-08-26.1" and (.expected.legal_hashes | type == "object")' epoch-b-r-request.json >/dev/null || { echo "EPOCH_B_R_EXPECTATIONS_INVALID" >&2; exit 1; }
+          jq -e --arg release "$EPOCH_B_RELEASE_ID" --arg r "$EPOCH_A_RUNTIME_SHA" --arg migration "$(jq -r '.expected.migration' epoch-b-r-request.json)" --arg version "$EPOCH_B_LEGAL_VERSION" --arg hash "$EPOCH_B_MANIFEST_SHA256" --slurpfile manifest epoch-b-draft.json '
+            {release_id: $release, mode: "CONTROLLED_CUTOVER", expected: {source_commit: $r, migration: $migration, legal_version: $version, legal_manifest_sha256: $hash, legal_hashes: ($manifest[0].documents | with_entries(.value = .value.sha256))}}
+          ' > epoch-b-legal-request.json
+          jq -e --arg version "$EPOCH_B_LEGAL_VERSION" --arg hash "$EPOCH_B_MANIFEST_SHA256" '.expected.source_commit == "80e152259628719af20d363a76ed6b991d67482a" and .expected.legal_version == $version and .expected.legal_manifest_sha256 == $hash' epoch-b-legal-request.json >/dev/null || { echo "EPOCH_B_LEGAL_B_EXPECTATIONS_INVALID" >&2; exit 1; }
+          echo "PRODUCTION_POINTER_BEFORE=$pointer" >> "$GITHUB_ENV"
+          echo "EMERGENCY_BEFORE=$(jq -r '.emergency_sales_paused' durable-before.json)" >> "$GITHUB_ENV"
+
+      - name: Reconstruct P only from durable active B timestamp when already published
+        run: |
+          set -euo pipefail
+          [[ "$(jq -r '.version' legal-before.json)" != "$EPOCH_B_LEGAL_VERSION" ]] && exit 0
+          effective_at="$(jq -er '.runtime.legal_publish_time' durable-before.json)"
+          jq -e --arg version "$EPOCH_B_LEGAL_VERSION" --arg hash "$EPOCH_B_MANIFEST_SHA256" '.runtime.legal_version == $version and .runtime.legal_manifest_sha256 == $hash and (.runtime.legal_publish_time | type == "string")' durable-before.json >/dev/null || { echo "EPOCH_B_PUBLISHED_DURABLE_STATUS_INVALID" >&2; exit 1; }
+          node --import tsx --input-type=module -e '
+            import { createHash } from "node:crypto"; import { readFileSync } from "node:fs"; import { canonicalLegalManifest, parseLegalManifest } from "./commerce/src/legal-manifest.ts";
+            const legal = JSON.parse(readFileSync("legal-before.json", "utf8"));
+            const hash = createHash("sha256").update(canonicalLegalManifest(parseLegalManifest(legal.manifest))).digest("hex");
+            if (legal.version !== process.env.EPOCH_B_LEGAL_VERSION || hash !== process.env.EPOCH_B_MANIFEST_SHA256) process.exit(2);
+          ' || { echo "EPOCH_B_PUBLISHED_LEGAL_RECONSTRUCTION_INVALID" >&2; exit 1; }
+          P_SHA="$(EFFECTIVE_AT="$effective_at" node --import tsx --input-type=module -e '
+            import { createEpochBPromotionArtifact, epochBPromotionArtifactReason } from "./commerce/src/epoch-b-notification-activation.ts";
+            const sha = createEpochBPromotionArtifact({ base: process.env.EPOCH_A_RUNTIME_SHA, effectiveAt: process.env.EFFECTIVE_AT });
+            const reason = epochBPromotionArtifactReason(sha, process.env.EFFECTIVE_AT); if (reason) throw new Error(reason); process.stdout.write(sha);
+          ')"
+          [[ "$P_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "EPOCH_B_PROMOTION_RECONSTRUCTION_INVALID" >&2; exit 1; }
+          git show "$P_SHA:commerce/legal/production-manifest.json" > p-production-manifest.json
+          jq -e --arg source "$P_SHA" --arg migration "$(jq -r '.expected.migration' epoch-b-r-request.json)" --slurpfile manifest p-production-manifest.json '
+            {release_id: "epoch-b-notification-activation:80e152259628719af20d363a76ed6b991d67482a", mode: "CONTROLLED_CUTOVER", expected: {source_commit: $source, migration: $migration, legal_version: $manifest[0].version, legal_manifest_sha256: "fb879a80c48a50c41694d83118e5f8004a4fec5fbf36f954b15f4b678f4efe02", legal_hashes: ($manifest[0].documents | with_entries(.value = .value.sha256))}}
+          ' > epoch-b-p-request.json
+          echo "EPOCH_B_PROMOTION_SHA=$P_SHA" >> "$GITHUB_ENV"
+          echo "EPOCH_B_LEGAL_PUBLISH_TIME=$effective_at" >> "$GITHUB_ENV"
+
+      - name: Reconcile only from durable Epoch B state
+        run: |
+          set -euo pipefail
+          node --import tsx --input-type=module -e '
+            import { existsSync, readFileSync } from "node:fs"; import { reconcileEpochB } from "./commerce/src/epoch-b-notification-activation.ts";
+            const json = (name) => JSON.parse(readFileSync(name, "utf8")); const legal = json("legal-before.json");
+            const status = json("durable-before.json");
+            process.stdout.write(JSON.stringify(reconcileEpochB({ stage: process.env.INPUT_STAGE, requestR: json("epoch-b-r-request.json"), requestLegalB: json("epoch-b-legal-request.json"), requestP: existsSync("epoch-b-p-request.json") ? json("epoch-b-p-request.json") : undefined, status, epochARequest: json("epoch-a-request.json"), epochACompletion: json("epoch-a-completion.json"), epochBCompletion: json("epoch-b-completion.json"), runtime: status.runtime, legal: { version: legal.version ?? null, occurrenceNotificationsAvailable: legal.occurrence_notifications_available ?? null }, pointer: process.env.PRODUCTION_POINTER_BEFORE })));
+          ' > reconciliation.json
+          action="$(jq -er '.action' reconciliation.json)"; [[ "$action" != BLOCKED ]] || { jq -c . reconciliation.json >&2; exit 1; }
+          echo "EPOCH_B_ACTION=$action" >> "$GITHUB_ENV"
+
+      - name: Reconfirm exact R and dormant notification authority before fresh acquire
+        if: env.EPOCH_B_ACTION == 'ACQUIRE_AND_PAUSE'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > fresh-acquire-status.json
+          api "$PUBLIC_API_URL/v1/public/legal-config" > fresh-acquire-legal.json
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$EPOCH_A_RUNTIME_SHA" ]] || { echo "EPOCH_B_FRESH_ACQUIRE_POINTER_NOT_R" >&2; exit 1; }
+          jq -e --slurpfile request epoch-b-r-request.json --argjson emergency "$EMERGENCY_BEFORE" '.sales_paused == false and .owner_release_id == null and .owner_mode == null and .runtime.source_commit == $request[0].expected.source_commit and .runtime.worker_source_commit == $request[0].expected.source_commit and .runtime.legal_version == $request[0].expected.legal_version and .runtime.legal_manifest_sha256 == $request[0].expected.legal_manifest_sha256 and .runtime.legal_hashes == $request[0].expected.legal_hashes and .runtime.current_legal_copies_match == true and .outbox_authority.attempt_authority == "ATTEMPT" and .outbox_authority.email_dispatch_paused == false and .outbox_authority.dispatch_owner_release_id == null and .emergency_sales_paused == $emergency' fresh-acquire-status.json >/dev/null || { echo "EPOCH_B_FRESH_ACQUIRE_DURABLE_AUTHORITY_MISMATCH" >&2; exit 1; }
+          jq -e --arg version "$EPOCH_A_PRE_B_LEGAL_VERSION" '.version == $version and .occurrence_notifications_available == false' fresh-acquire-legal.json >/dev/null || { echo "EPOCH_B_FRESH_ACQUIRE_LEGAL_DORMANCY_MISMATCH" >&2; exit 1; }
+
+      - name: Acquire Epoch B owner and pause sales before activation
+        if: env.EPOCH_B_ACTION == 'ACQUIRE_AND_PAUSE'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api -X POST --data-binary @epoch-b-r-request.json "$PUBLIC_API_URL/v1/internal/release-control/acquire" >/dev/null
+          api -X POST --data-binary @epoch-b-r-request.json "$PUBLIC_API_URL/v1/internal/release-control/pause" > paused.json
+          jq -e --arg release "$EPOCH_B_RELEASE_ID" '.sales_paused == true and .owner_release_id == $release' paused.json >/dev/null
+          echo "EPOCH_B_ACTION=BIND_LEGAL_B" >> "$GITHUB_ENV"
+
+      - name: Bind the paused R owner to exact legal-B publication expectations
+        if: env.INPUT_STAGE == 'prepare' && env.EPOCH_B_ACTION == 'BIND_LEGAL_B'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api -X POST --data-binary @epoch-b-legal-request.json "$PUBLIC_API_URL/v1/internal/release-control/expectations" > legal-b-expectations.json
+          jq -e --slurpfile request epoch-b-legal-request.json '.sales_paused and .owner_release_id == $request[0].release_id and .owner_mode == $request[0].mode and .expected == ($request[0].expected | del(.legal_hashes))' legal-b-expectations.json >/dev/null || { echo "EPOCH_B_LEGAL_B_EXPECTATIONS_UPDATE_FAILED" >&2; exit 1; }
+          echo "EPOCH_B_ACTION=PUBLISH_LEGAL_B" >> "$GITHUB_ENV"
+
+      - name: Prove same owner and pre-B authority before legal publication
+        if: env.INPUT_STAGE == 'prepare' && env.EPOCH_B_ACTION == 'PUBLISH_LEGAL_B'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > pre-publish-status.json
+          api "$PUBLIC_API_URL/v1/public/legal-config" > pre-publish-legal.json
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$EPOCH_A_RUNTIME_SHA" ]] || { echo "EPOCH_B_PRE_PUBLICATION_POINTER_NOT_R" >&2; exit 1; }
+          jq -e --slurpfile request epoch-b-legal-request.json --arg r "$EPOCH_A_RUNTIME_SHA" --argjson emergency "$EMERGENCY_BEFORE" '.sales_paused and .owner_release_id == $request[0].release_id and .owner_mode == $request[0].mode and .expected == ($request[0].expected | del(.legal_hashes)) and .runtime.source_commit == $r and .runtime.worker_source_commit == $r and .outbox_authority.attempt_authority == "ATTEMPT" and .outbox_authority.email_dispatch_paused == false and .outbox_authority.dispatch_owner_release_id == null and .emergency_sales_paused == $emergency' pre-publish-status.json >/dev/null || { echo "EPOCH_B_PRE_PUBLICATION_AUTHORITY_MISMATCH" >&2; exit 1; }
+          jq -e '.version == "2026-08-26.1" and .occurrence_notifications_available == false' pre-publish-legal.json >/dev/null || { echo "EPOCH_B_PRE_PUBLICATION_LEGAL_MISMATCH" >&2; exit 1; }
+
+      - name: Publish the literal reviewed legal B release under the paused owner
+        if: env.INPUT_STAGE == 'prepare' && env.EPOCH_B_ACTION == 'PUBLISH_LEGAL_B'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          # R derives the literal reviewed B draft from request.expected.legal_version.
+          api -X POST --data-binary @epoch-b-legal-request.json "$PUBLIC_API_URL/v1/internal/release-control/legal-publish" > legal-publish.json
+          jq -e --arg version "$EPOCH_B_LEGAL_VERSION" --arg hash "$EPOCH_B_MANIFEST_SHA256" '.version == $version and .manifestSha256 == $hash' legal-publish.json >/dev/null || { echo "EPOCH_B_LEGAL_PUBLISH_RESPONSE_INVALID" >&2; exit 1; }
+
+      - name: Read durable B legal authority and construct deterministic P
+        if: env.INPUT_STAGE == 'prepare' && env.EPOCH_B_ACTION == 'PUBLISH_LEGAL_B'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > durable-after-publish.json
+          api "$PUBLIC_API_URL/v1/public/legal-config" > legal-after-publish.json
+          effective_at="$(jq -er '.runtime.legal_publish_time' durable-after-publish.json)"
+          jq -e --arg version "$EPOCH_B_LEGAL_VERSION" --arg hash "$EPOCH_B_MANIFEST_SHA256" '.runtime.legal_version == $version and .runtime.legal_manifest_sha256 == $hash and (.runtime.legal_publish_time | type == "string") and .runtime.current_legal_copies_match == false' durable-after-publish.json >/dev/null || { echo "EPOCH_B_DURABLE_LEGAL_STATUS_INVALID" >&2; exit 1; }
+          jq -e --arg version "$EPOCH_B_LEGAL_VERSION" --arg hash "$EPOCH_B_MANIFEST_SHA256" '.version == $version and .occurrence_notifications_available == false and (.manifest.documents | type == "object") and ($hash | test("^[a-f0-9]{64}$"))' legal-after-publish.json >/dev/null || { echo "EPOCH_B_DURABLE_LEGAL_READBACK_INVALID" >&2; exit 1; }
+          node --import tsx --input-type=module -e '
+            import { createHash } from "node:crypto"; import { readFileSync } from "node:fs"; import { canonicalLegalManifest, parseLegalManifest } from "./commerce/src/legal-manifest.ts";
+            const legal = JSON.parse(readFileSync("legal-after-publish.json", "utf8"));
+            const hash = createHash("sha256").update(canonicalLegalManifest(parseLegalManifest(legal.manifest))).digest("hex");
+            if (hash !== process.env.EPOCH_B_MANIFEST_SHA256) process.exit(2);
+          ' || { echo "EPOCH_B_DURABLE_LEGAL_CANONICAL_HASH_MISMATCH" >&2; exit 1; }
+          P_SHA="$(EFFECTIVE_AT="$effective_at" node --import tsx --input-type=module -e '
+            import { createEpochBPromotionArtifact, epochBPromotionArtifactReason } from "./commerce/src/epoch-b-notification-activation.ts";
+            const sha = createEpochBPromotionArtifact({ base: process.env.EPOCH_A_RUNTIME_SHA, effectiveAt: process.env.EFFECTIVE_AT }); const reason = epochBPromotionArtifactReason(sha, process.env.EFFECTIVE_AT); if (reason) throw new Error(reason); process.stdout.write(sha);
+          ')"
+          git show "$P_SHA:commerce/legal/production-manifest.json" > p-production-manifest.json
+          jq -e --arg source "$P_SHA" --arg migration "$(jq -r '.expected.migration' epoch-b-r-request.json)" --slurpfile manifest p-production-manifest.json '
+            {release_id: "epoch-b-notification-activation:80e152259628719af20d363a76ed6b991d67482a", mode: "CONTROLLED_CUTOVER", expected: {source_commit: $source, migration: $migration, legal_version: $manifest[0].version, legal_manifest_sha256: "fb879a80c48a50c41694d83118e5f8004a4fec5fbf36f954b15f4b678f4efe02", legal_hashes: ($manifest[0].documents | with_entries(.value = .value.sha256))}}
+          ' > epoch-b-p-request.json
+          echo "EPOCH_B_PROMOTION_SHA=$P_SHA" >> "$GITHUB_ENV"
+          echo "EPOCH_B_LEGAL_PUBLISH_TIME=$effective_at" >> "$GITHUB_ENV"
+
+      - name: Prove existing published-B recovery authority before binding P
+        if: env.INPUT_STAGE == 'prepare' && env.EPOCH_B_ACTION == 'PROMOTE_PUBLISHED_LEGAL'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > published-recovery-status.json
+          api "$PUBLIC_API_URL/v1/public/legal-config" > published-recovery-legal.json
+          [[ -f epoch-b-p-request.json && -n "${EPOCH_B_PROMOTION_SHA:-}" && -n "${EPOCH_B_LEGAL_PUBLISH_TIME:-}" ]] || { echo "EPOCH_B_PUBLISHED_RECOVERY_P_MISSING" >&2; exit 1; }
+          node --import tsx --input-type=module -e '
+            import { epochBPromotionArtifactReason } from "./commerce/src/epoch-b-notification-activation.ts"; const reason = epochBPromotionArtifactReason(process.env.EPOCH_B_PROMOTION_SHA, process.env.EPOCH_B_LEGAL_PUBLISH_TIME); if (reason) throw new Error(reason);
+          '
+          jq -e --slurpfile request epoch-b-legal-request.json '.sales_paused and .owner_release_id == $request[0].release_id and .owner_mode == $request[0].mode and .expected == ($request[0].expected | del(.legal_hashes)) and .runtime.current_legal_copies_match == false' published-recovery-status.json >/dev/null || { echo "EPOCH_B_PUBLISHED_RECOVERY_OWNER_MISMATCH" >&2; exit 1; }
+          jq -e --arg version "$EPOCH_B_LEGAL_VERSION" '.version == $version and .occurrence_notifications_available == false' published-recovery-legal.json >/dev/null || { echo "EPOCH_B_PUBLISHED_RECOVERY_LEGAL_MISMATCH" >&2; exit 1; }
+
+      - name: Bind the existing owner to exact P expectations
+        if: env.INPUT_STAGE == 'prepare' && (env.EPOCH_B_ACTION == 'PUBLISH_LEGAL_B' || env.EPOCH_B_ACTION == 'PROMOTE_PUBLISHED_LEGAL')
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api -X POST --data-binary @epoch-b-p-request.json "$PUBLIC_API_URL/v1/internal/release-control/expectations" > p-expectations.json
+          jq -e --slurpfile request epoch-b-p-request.json '.sales_paused and .owner_release_id == $request[0].release_id and .expected == ($request[0].expected | del(.legal_hashes))' p-expectations.json >/dev/null || { echo "EPOCH_B_EXPECTATIONS_UPDATE_FAILED" >&2; exit 1; }
+          echo "EPOCH_B_ACTION=DEPLOY_OR_CONVERGE" >> "$GITHUB_ENV"
+
+      - name: Reprove active legal and exact P owner immediately before CAS
+        if: env.INPUT_STAGE == 'prepare' && env.EPOCH_B_ACTION == 'DEPLOY_OR_CONVERGE' && env.PRODUCTION_POINTER_BEFORE == env.EPOCH_A_RUNTIME_SHA
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          [[ -f epoch-b-p-request.json ]] || { echo "EPOCH_B_P_REQUEST_MISSING" >&2; exit 1; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > pre-cas-status.json
+          api "$PUBLIC_API_URL/v1/public/legal-config" > pre-cas-legal.json
+          pointer="$(scripts/read-production-deploy-ref.sh)"
+          [[ "$pointer" == "$EPOCH_A_RUNTIME_SHA" || "$pointer" == "$EPOCH_B_PROMOTION_SHA" ]] || { echo "EPOCH_B_PRE_CAS_POINTER_UNEXPECTED=$pointer" >&2; exit 1; }
+          node --import tsx --input-type=module -e '
+            import { epochBPromotionArtifactReason } from "./commerce/src/epoch-b-notification-activation.ts"; const reason = epochBPromotionArtifactReason(process.env.EPOCH_B_PROMOTION_SHA, process.env.EPOCH_B_LEGAL_PUBLISH_TIME); if (reason) throw new Error(reason);
+          '
+          jq -e --slurpfile request epoch-b-p-request.json --arg r "$EPOCH_A_RUNTIME_SHA" --arg publish "$EPOCH_B_LEGAL_PUBLISH_TIME" --argjson emergency "$EMERGENCY_BEFORE" '.sales_paused and .owner_release_id == $request[0].release_id and .owner_mode == $request[0].mode and .expected == ($request[0].expected | del(.legal_hashes)) and .runtime.source_commit == $r and .runtime.worker_source_commit == $r and .runtime.legal_version == $request[0].expected.legal_version and .runtime.legal_manifest_sha256 == $request[0].expected.legal_manifest_sha256 and .runtime.legal_publish_time == $publish and .runtime.current_legal_copies_match == false and .outbox_authority.attempt_authority == "ATTEMPT" and .outbox_authority.email_dispatch_paused == false and .outbox_authority.dispatch_owner_release_id == null and .emergency_sales_paused == $emergency' pre-cas-status.json >/dev/null || { echo "EPOCH_B_PRE_CAS_OWNER_AUTHORITY_MISMATCH" >&2; exit 1; }
+          jq -e --arg version "$EPOCH_B_LEGAL_VERSION" '.version == $version and .occurrence_notifications_available == false' pre-cas-legal.json >/dev/null || { echo "EPOCH_B_PRE_CAS_ACTIVE_LEGAL_MISMATCH" >&2; exit 1; }
+          echo "PRODUCTION_POINTER_PRE_CAS=$pointer" >> "$GITHUB_ENV"
+
+      - name: CAS production-deploy from exact R to exact P
+        if: env.INPUT_STAGE == 'prepare' && env.EPOCH_B_ACTION == 'DEPLOY_OR_CONVERGE' && env.PRODUCTION_POINTER_PRE_CAS == env.EPOCH_A_RUNTIME_SHA
+        run: |
+          set -euo pipefail
+          scripts/set-production-deploy-ref.sh "$EPOCH_B_PROMOTION_SHA" "$EPOCH_A_RUNTIME_SHA"
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$EPOCH_B_PROMOTION_SHA" ]] || { echo "EPOCH_B_PRODUCTION_POINTER_POSTCONDITION_FAILED" >&2; exit 1; }
+
+      - name: Enqueue exact P deployment only after pointer proof
+        if: env.INPUT_STAGE == 'prepare' && env.EPOCH_B_ACTION == 'DEPLOY_OR_CONVERGE'
+        run: |
+          set -euo pipefail
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$EPOCH_B_PROMOTION_SHA" ]] || { echo "EPOCH_B_DEPLOY_POINTER_NOT_P" >&2; exit 1; }
+          scripts/controlled-coolify-deploy.sh "$EPOCH_B_PROMOTION_SHA"
+          echo "EPOCH_B_COOLIFY_ENQUEUED=1" >> "$GITHUB_ENV"
+
+      - name: Prove active P convergence and notification activation under the pause
+        if: env.INPUT_STAGE == 'prepare' && (env.EPOCH_B_ACTION == 'DEPLOY_OR_CONVERGE' || env.EPOCH_B_ACTION == 'READY_TO_COMPLETE')
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          [[ "${EPOCH_B_COOLIFY_ENQUEUED:-0}" != 1 ]] || sleep "$INITIAL_READINESS_DELAY_SECONDS"
+          TARGET_SHA="$EPOCH_B_PROMOTION_SHA" CHECKOUT_CONTRACT_VERSION=sales-availability-v1 ADMIN_CONTRACT_VERSION=sales-availability-v1 scripts/controlled-production-readiness.sh epoch-b-p-request.json
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > converged-status.json
+          api "$PUBLIC_API_URL/v1/public/legal-config" > converged-legal.json
+          node --import tsx commerce/src/assert-epoch-b-notification-activation-ready.ts converged-status.json epoch-b-p-request.json converged-legal.json paused
+          jq -e --arg sha "$EPOCH_B_PROMOTION_SHA" --argjson emergency "$EMERGENCY_BEFORE" '.runtime.source_commit == $sha and .runtime.worker_source_commit == $sha and .emergency_sales_paused == $emergency and .outbox_authority.attempt_authority == "ATTEMPT" and .outbox_authority.email_dispatch_paused == false and .outbox_authority.dispatch_owner_release_id == null' converged-status.json >/dev/null || { echo "EPOCH_B_CONVERGENCE_AUTHORITY_MISMATCH" >&2; exit 1; }
+          # legal-config is the non-mutating public capability proof; no PII is registered by the controller.
+          jq -e --arg version "$EPOCH_B_LEGAL_VERSION" '.version == $version and .occurrence_notifications_available == true' converged-legal.json >/dev/null || { echo "EPOCH_B_PUBLIC_NOTIFICATION_CAPABILITY_NOT_ACTIVE" >&2; exit 1; }
+          echo "EPOCH_B_ACTIVATION_PREPARED=1" >> "$GITHUB_ENV"
+
+      - name: Complete only after explicit GO and fresh active-P evidence
+        if: env.INPUT_STAGE == 'complete' && env.EPOCH_B_ACTION == 'READY_TO_COMPLETE'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > complete-status.json
+          api "$PUBLIC_API_URL/v1/public/legal-config" > complete-legal.json
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$EPOCH_B_PROMOTION_SHA" ]] || { echo "EPOCH_B_COMPLETE_POINTER_NOT_P" >&2; exit 1; }
+          node --import tsx commerce/src/assert-epoch-b-notification-activation-ready.ts complete-status.json epoch-b-p-request.json complete-legal.json paused
+          api -X POST --data-binary @epoch-b-p-request.json "$PUBLIC_API_URL/v1/internal/release-control/reopen" > reopened.json
+          jq -e '.sales_paused == false and .owner_release_id == null and .owner_mode == null' reopened.json >/dev/null
+
+      - name: Prove terminal state or prepared activation hold
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > final-status.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$EPOCH_B_RELEASE_ID" > final-completion.json
+          api "$PUBLIC_API_URL/v1/public/legal-config" > final-legal.json
+          [[ -f epoch-b-p-request.json ]] || { echo "EPOCH_B_P_REQUEST_MISSING_FOR_TERMINAL_PROOF" >&2; exit 1; }
+          if [[ "$INPUT_STAGE" == complete ]]; then
+            node --import tsx commerce/src/assert-epoch-b-notification-activation-ready.ts final-status.json epoch-b-p-request.json final-legal.json open
+            jq -e --slurpfile request epoch-b-p-request.json '.complete == true and .expected == $request[0].expected' final-completion.json >/dev/null
+          else
+            node --import tsx commerce/src/assert-epoch-b-notification-activation-ready.ts final-status.json epoch-b-p-request.json final-legal.json paused
+            jq -e '.complete == false' final-completion.json >/dev/null
+          fi
+          jq -e '.outbox_authority.attempt_authority == "ATTEMPT" and .outbox_authority.email_dispatch_paused == false and .outbox_authority.dispatch_owner_release_id == null' final-status.json >/dev/null
