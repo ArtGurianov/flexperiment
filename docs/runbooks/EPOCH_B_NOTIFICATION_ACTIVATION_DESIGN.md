@@ -156,44 +156,48 @@ must remain fail-closed at every seam:
    immediately before acquisition.
 5. Acquire the Epoch B owner and pause sales.
 6. Prove checkout is paused and emergency/outbox authority are unchanged.
-7. Reprove exact owner expectations, R runtime, migration inventory, pre-B
-   legal state, notification dormancy, and the literal reviewed draft
-   path/version/canonical hash immediately before publication.
+7. Reprove the paused owner's exact R/pre-B expectations, R runtime, migration
+   inventory, pre-B legal state, notification dormancy, and the literal
+   reviewed draft path/version/canonical hash before changing publication
+   expectations.
 8. Update the same paused owner from R/pre-B expectations to R/B-publication
    expectations: exact R source and migration inventory, but legal version
    `2026-08-28.1` and the reviewed B canonical manifest/hash set.
-9. Publish legal `2026-08-28.1` exactly once through the existing controlled
+9. Reprove that the same paused owner now holds those exact R/B-publication
+   expectations while runtime remains exact R, active legal remains pre-B,
+   `production-deploy == R`, and outbox/emergency authority are unchanged.
+10. Publish legal `2026-08-28.1` exactly once through the existing controlled
    `legal-publish` seam using that R/B-publication request. R derives the
    literal reviewed B draft filename from `expected.legal_version`; neither a
    workflow environment variable nor a mutable branch selects it. A replay is
    accepted only when the existing active release has the exact same version
    and canonical manifest hash.
-10. Ignore the publisher CLI for timestamp authority. Perform an authenticated
+11. Ignore the publisher CLI for timestamp authority. Perform an authenticated
    durable read-back after `legal-publish`; prove active version exactly
    `2026-08-28.1`, canonical manifest SHA256 exactly
    `fb879a80c48a50c41694d83118e5f8004a4fec5fbf36f954b15f4b678f4efe02`,
    exact reviewed document hashes, and a valid durable
    `effective_at` / `legal_publish_time`. That durable timestamp is the only
    timestamp allowed to construct P.
-11. Create or recover P as the deterministic single-parent child of R using
+12. Create or recover P as the deterministic single-parent child of R using
     that authenticated durable timestamp. Prove exact parent count, exact
     changed-path scope, canonical version `2026-08-28.1`, and the same canonical
     legal manifest hash.
-12. Update the same Epoch B owner's durable expectations from R/B-publication
+13. Update the same Epoch B owner's durable expectations from R/B-publication
     to exact P/B-active; never create a new owner around P.
-13. Reprove owner, exact active B legal version/hash/timestamp,
+14. Reprove owner, exact active B legal version/hash/timestamp,
     outbox/emergency authority, and `production-deploy == R` immediately before
     the pointer mutation.
-14. Guarded CAS `production-deploy: R -> P` using expected-old and
+15. Guarded CAS `production-deploy: R -> P` using expected-old and
     force-with-lease semantics; no plain force.
-15. Enqueue exact P only after successful/reflected CAS.
-16. Bounded convergence proof for Commerce, worker, frontend, and Admin exact
+16. Enqueue exact P only after successful/reflected CAS.
+17. Bounded convergence proof for Commerce, worker, frontend, and Admin exact
     P; full migration inventory unchanged; legal/current/archive hashes exact.
-17. Prove `occurrence_notifications_available == true` and the public
+18. Prove `occurrence_notifications_available == true` and the public
     notification endpoint is now legally/runtime enabled.
-18. Prove no unrelated authority change: outbox remains `ATTEMPT`, dispatch is
+19. Prove no unrelated authority change: outbox remains `ATTEMPT`, dispatch is
     open/no owner, emergency unchanged.
-19. Finish **with the Epoch B release owner retained and sales paused**.
+20. Finish **with the Epoch B release owner retained and sales paused**.
 
 Successful `prepare` therefore means notification collection is active while
 new sales remain paused. It must emit a terminal activation marker such as:
