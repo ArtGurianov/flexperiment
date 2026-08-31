@@ -59,10 +59,13 @@ jobs:
             -H "Accept: application/vnd.github+json" \
             -H "Authorization: Bearer $GITHUB_TOKEN" \
             "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/rulesets/$EPOCH_A_RUNTIME_TAG_RULESET_ID" > r-tag-ruleset.json || blocked RUNTIME_TAG_PROTECTION_UNREADABLE
+          # GitHub omits bypass_actors from this ruleset response unless the
+          # caller can write the ruleset. Gate 1 records that privileged
+          # governance fact; this contents:read verifier proves the remaining
+          # observable binding while the tag object and peeled R stay pinned.
           jq -e --argjson id "$EPOCH_A_RUNTIME_TAG_RULESET_ID" --arg ref "$EPOCH_A_RUNTIME_TAG_REF" '
             .id == $id and .target == "tag" and .enforcement == "active" and
             .conditions.ref_name.include == [$ref] and .conditions.ref_name.exclude == [] and
-            .bypass_actors == [] and
             ([.rules[].type] | sort == ["deletion", "non_fast_forward"])
           ' r-tag-ruleset.json >/dev/null || blocked RUNTIME_TAG_PROTECTION_MISMATCH
           [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || blocked CONTROLLER_MAIN_MOVED
