@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { EPOCH_A_PRODUCTION_BASE_SHA, EPOCH_A_RUNTIME_SHA } from "../src/epoch-a-runtime-promotion";
+import { EPOCH_A_PRODUCTION_BASE_SHA, EPOCH_A_RUNTIME_SHA, EPOCH_A_RUNTIME_TAG_OBJECT, EPOCH_A_RUNTIME_TAG_REF } from "../src/epoch-a-runtime-promotion";
 
 const workflow = readFileSync(".github/workflows/controlled-epoch-a-runtime-promotion.yml", "utf8");
 const setter = readFileSync("scripts/set-production-deploy-ref.sh", "utf8");
@@ -22,10 +22,28 @@ describe("controlled Epoch A dormant runtime promotion", () => {
     expect(workflow).toContain("cancel-in-progress: false");
     expect(workflow).toContain(`EPOCH_A_RUNTIME_SHA: ${EPOCH_A_RUNTIME_SHA}`);
     expect(workflow).toContain(`EPOCH_A_PRODUCTION_BASE_SHA: ${EPOCH_A_PRODUCTION_BASE_SHA}`);
-    expect(workflow).toContain('[[ "$(git rev-parse origin/runtime-candidate)" == "$EPOCH_A_RUNTIME_SHA" ]]');
+    expect(workflow).toContain(`EPOCH_A_RUNTIME_TAG_REF: ${EPOCH_A_RUNTIME_TAG_REF}`);
+    expect(workflow).toContain(`EPOCH_A_RUNTIME_TAG_OBJECT: ${EPOCH_A_RUNTIME_TAG_OBJECT}`);
+    expect(workflow).toContain('[[ "$(git rev-parse "$EPOCH_A_RUNTIME_TAG_REF")" == "$EPOCH_A_RUNTIME_TAG_OBJECT" ]]');
+    expect(workflow).toContain('[[ "$(git rev-parse "$EPOCH_A_RUNTIME_TAG_REF^{}")" == "$EPOCH_A_RUNTIME_SHA" ]]');
     expect(workflow).toContain('[[ "$(git rev-list --parents -n 1 "$EPOCH_A_RUNTIME_SHA" | awk \'NF == 2 {print $2}\')" == "$EPOCH_A_PRODUCTION_BASE_SHA" ]]');
     expect(workflow).toContain("EPOCH_A_CONTROLLER_CONTAMINATES_R");
     expect(workflow).toContain(".release/maintenance-only");
+  });
+
+  it("uses runtime-candidate only to admit a fresh acquire, never same-owner recovery", () => {
+    const candidateChecks = workflow.match(/git fetch --no-tags origin refs\/heads\/runtime-candidate/g) ?? [];
+    expect(candidateChecks).toHaveLength(2);
+    expect(at("Prove fresh runtime-candidate declaration before acquire")).toBeLessThan(at("Reconfirm candidate immediately before acquire"));
+    expect(at("Reconfirm candidate immediately before acquire")).toBeLessThan(at("Acquire owner and pause sales"));
+    expect(workflow).toContain("EPOCH_A_FRESH_OWNER_POINTER_NOT_BASE");
+  });
+
+  it("never checks out or executes the candidate tree", () => {
+    expect(workflow).not.toContain("git worktree add");
+    expect(workflow).not.toContain("RUNTIME_ASSERT_DIR");
+    expect(workflow).not.toContain("Materialize exact R readiness parser");
+    expect(workflow).toContain("EPOCH_A_CONTROLLER_CAPABILITY_CLOSURE_MISMATCH");
   });
 
   it("keeps pre-B legal evidence and dormant capability as a separate compatibility proof", () => {
@@ -53,6 +71,19 @@ describe("controlled Epoch A dormant runtime promotion", () => {
     expect(convergence).toBeLessThan(complete);
     expect(workflow).toContain("env.INPUT_STAGE == 'complete' && env.EPOCH_A_ACTION == 'READY_TO_COMPLETE'");
     expect(workflow).not.toContain("/v1/admin/emergency-sales/");
+  });
+
+  it("takes a full fresh compatibility snapshot before spending the pointer CAS", () => {
+    const preCas = at("Reprove Epoch A compatibility authority immediately before CAS or R deployment");
+    const cas = at("CAS production-deploy from Gen2 to exact R");
+    expect(at("Prove pause and independently unchanged emergency state")).toBeLessThan(preCas);
+    expect(preCas).toBeLessThan(cas);
+    expect(workflow).toContain("EPOCH_A_PRE_CAS_DURABLE_AUTHORITY_MISMATCH");
+    expect(workflow).toContain("EPOCH_A_PRE_CAS_LEGAL_OR_DORMANCY_INVALID");
+    expect(workflow).toContain("EPOCH_A_PRE_DEPLOY_POINTER_UNEXPECTED");
+    expect(workflow).toContain("EPOCH_A_PRE_CAS_RUNTIME_NOT_BASE");
+    expect(workflow).toContain(".expected == ($request[0].expected | del(.legal_hashes))");
+    expect(workflow).toContain("env.PRODUCTION_POINTER_PRE_CAS == env.EPOCH_A_PRODUCTION_BASE_SHA");
   });
 
   it("uses an expected-old-pointer CAS and has no rollback or old 0041 path", () => {

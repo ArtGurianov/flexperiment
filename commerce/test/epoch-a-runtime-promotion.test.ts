@@ -36,6 +36,25 @@ describe("Epoch A runtime promotion", () => {
     expect(reconcileEpochA({ stage: "prepare", request, status: { sales_paused: true, owner_release_id: "another-owner", owner_mode: "CONTROLLED_CUTOVER", expected: request.expected, acquired_at: null, paused_at: null, reopened_at: null }, runtime, completion: incomplete, legal })).toEqual({ action: "BLOCKED", reason: "EPOCH_A_FOREIGN_RELEASE_OWNER" });
   });
 
+  it("refuses same-owner recovery when its durable expectations do not bind exact R", () => {
+    expect(reconcileEpochA({
+      stage: "prepare",
+      request,
+      status: {
+        sales_paused: true,
+        owner_release_id: request.release_id,
+        owner_mode: "CONTROLLED_CUTOVER",
+        expected: { ...request.expected, source_commit: "f".repeat(40) },
+        acquired_at: null,
+        paused_at: null,
+        reopened_at: null,
+      },
+      runtime,
+      completion: incomplete,
+      legal,
+    })).toEqual({ action: "BLOCKED", reason: "EPOCH_A_OWNER_EXPECTATIONS_MISMATCH" });
+  });
+
   it("treats future legal publication or an active notification capability as a blocking compatibility defect", () => {
     expect(epochADormantLegalEvidence({ runtime, publicLegalVersion: "2026-08-28.1", occurrenceNotificationsAvailable: false })).toBe("EPOCH_A_FUTURE_LEGAL_RELEASE_ACTIVE");
     expect(epochADormantLegalEvidence({ runtime, publicLegalVersion: EPOCH_A_PRE_B_LEGAL_VERSION, occurrenceNotificationsAvailable: true })).toBe("EPOCH_A_NOTIFICATION_CAPABILITY_NOT_DORMANT");

@@ -5,6 +5,12 @@ import { evaluateReopenGate, type ReleaseCompletion, type ReleaseControlRequest,
  * live on main and are deliberately not ancestors of this direct child.
  */
 export const EPOCH_A_RUNTIME_SHA = "80e152259628719af20d363a76ed6b991d67482a";
+/**
+ * The annotated tag object, rather than runtime-candidate, is the recovery
+ * reachability anchor for R after Epoch A acquires its durable owner.
+ */
+export const EPOCH_A_RUNTIME_TAG_REF = "refs/tags/epoch-a-runtime-r-80e152259628";
+export const EPOCH_A_RUNTIME_TAG_OBJECT = "5b4a00791cd89c2773aebdcacde4b8dae5b95cb1";
 export const EPOCH_A_PRODUCTION_BASE_SHA = "0ddc33d0fd0077fe0ba238ec75ae4090fc38ac34";
 export const EPOCH_A_RELEASE_ID = `epoch-a-dormant-notifications:${EPOCH_A_RUNTIME_SHA}`;
 export const EPOCH_A_PRE_B_LEGAL_VERSION = "2026-08-26.1";
@@ -25,6 +31,13 @@ const completionMatches = (completion: ReleaseCompletion, request: ReleaseContro
   && completion.expected.legal_hashes.PRIVACY_POLICY === request.expected.legal_hashes.PRIVACY_POLICY
   && completion.expected.legal_hashes.PD_CONSENT === request.expected.legal_hashes.PD_CONSENT
   && completion.expected.legal_hashes.CHECKOUT_DISCLOSURE === request.expected.legal_hashes.CHECKOUT_DISCLOSURE;
+
+const ownerExpectationsMatch = (status: ReleaseControlStatus, request: ReleaseControlRequest): boolean =>
+  status.expected !== null
+  && status.expected.source_commit === request.expected.source_commit
+  && status.expected.migration === request.expected.migration
+  && status.expected.legal_version === request.expected.legal_version
+  && status.expected.legal_manifest_sha256 === request.expected.legal_manifest_sha256;
 
 /**
  * Compatibility is not inferred from convergence. Epoch A first proves the
@@ -74,6 +87,7 @@ export const reconcileEpochA = (input: {
       ? { action: "ACQUIRE_AND_PAUSE" }
       : { action: "BLOCKED", reason: "EPOCH_A_COMPLETE_REQUIRES_PAUSED_OWNER" };
   if (!status.sales_paused || status.owner_mode !== request.mode) return { action: "BLOCKED", reason: "EPOCH_A_OWNER_PROJECTION_MISMATCH" };
+  if (!ownerExpectationsMatch(status, request)) return { action: "BLOCKED", reason: "EPOCH_A_OWNER_EXPECTATIONS_MISMATCH" };
   const readiness = epochARuntimeReady(request, runtime, legal);
   if (stage === "complete") return readiness ? { action: "BLOCKED", reason: readiness } : { action: "READY_TO_COMPLETE" };
   return readiness ? { action: "DEPLOY_OR_CONVERGE", reason: readiness } : { action: "READY_TO_COMPLETE" };

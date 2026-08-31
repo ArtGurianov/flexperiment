@@ -12,6 +12,8 @@ controller main at review        = fb4b65f746becf21f70ae75ebf4a1bf31dd9508c
 current production-deploy        = 0ddc33d0fd0077fe0ba238ec75ae4090fc38ac34
 R                               = 80e152259628719af20d363a76ed6b991d67482a
 R parent                        = 0ddc33d0fd0077fe0ba238ec75ae4090fc38ac34
+R immutable tag ref             = refs/tags/epoch-a-runtime-r-80e152259628
+R immutable tag object          = 5b4a00791cd89c2773aebdcacde4b8dae5b95cb1
 ```
 
 R is a direct, single-parent child of the deployed runtime. It contains only
@@ -22,6 +24,14 @@ The controller is integrated independently on `main`; it binds the literal R
 SHA and proves `R^ == production-deploy` instead of requiring R to be an
 ancestor of controller history. This is deliberate squash-governance topology,
 not an ancestry exception for an arbitrary target.
+
+The annotated R tag is a protected immutable recovery anchor. The controller
+requires both its exact tag-object ID and its peeled commit ID before it reads
+durable state. `runtime-candidate` is deliberately **not** that anchor: it is
+consulted only while a fresh no-owner `prepare` is about to acquire Epoch A,
+then immediately re-read before `acquire`. Once the owner exists, the durable
+owner and this tag bind recovery; the mutable proposal pointer may move without
+stranding a paused epoch.
 
 Epoch B must later create P as a direct child of this exact R. It may not use
 the Epoch-A controller SHA or `main` as its source identity.
@@ -86,9 +96,9 @@ literal controller policy, never workflow input.
 
 | Stage | Preconditions | Durable mutation | Success / replay |
 | --- | --- | --- | --- |
-| PREPARE preflight | main controller exact; `runtime-candidate == R`; `production-deploy == 0ddc…` or same-owner recovery at R; no foreign owner; full 0038 inventory; pre-B legal evidence; notification capability false | none | fresh proof only |
+| PREPARE preflight | main controller and immutable R tag exact; fresh/no-owner path also requires `runtime-candidate == R` and `production-deploy == 0ddc…`; same-owner recovery is anchored by durable owner + R tag; no foreign owner; full 0038 inventory; pre-B legal evidence; notification capability false | none | fresh proof only |
 | ACQUIRE / PAUSE | fresh candidate immediately before first mutation | `ReleaseSalesGate.acquire` then `pause`, each database transaction and event | same expectations replay; checkout returns `SALES_TEMPORARILY_PAUSED` |
-| POINTER / DEPLOY | matching paused owner, emergency unchanged in this run | guarded `production-deploy` CAS `0ddc… → R`, then Coolify enqueue | pointer already R is replay, never a path back to Gen2 |
+| POINTER / DEPLOY | matching paused owner, emergency unchanged in this run, plus a fresh authenticated proof before CAS or R recovery deployment of exact gate expectations, pre-B/current legal copies, dormant capability, ATTEMPT/open/no dispatch owner, full migration inventory, and pointer `0ddc…` or R; a new CAS additionally requires the old runtime still be Gen2 | guarded `production-deploy` CAS `0ddc… → R`, then Coolify enqueue | pointer already R is replay, never a path back to Gen2 |
 | CONVERGENCE | bounded polling after enqueue | none | Commerce and worker source R; frontend/admin R contracts; exact 0038 inventory; release replay clean; `ATTEMPT/open`; legal still pre-B and capability false |
 | PRODUCT CERTIFICATION | converged R while release pause is held | none | public `legal-config` reports false; authenticated evidence proves worker/gate/outbox; no PII, no synthetic notification row, payment, or refund is created |
 | COMPLETE | matching paused owner plus all fresh convergence/certification evidence | `ReleaseSalesGate.reopen` transaction and event | owner null, release pause open; emergency is not changed |
@@ -99,7 +109,9 @@ webhook only acknowledges enqueue; it is never certification.
 
 ## Compatibility evidence
 
-Before acquire and after R convergence the controller proves all of these:
+Before acquire, immediately before pointer CAS, and after R convergence the
+controller proves all of these (the pre-CAS snapshot also rebinds the exact
+durable owner expectations):
 
 ```text
 active durable legal version             = 2026-08-26.1
@@ -120,6 +132,7 @@ version stops the run before reopen.
 | Fresh durable observation | Classification | Only allowed next action |
 | --- | --- | --- |
 | no owner, open, production pointer Gen2 | not started | `prepare` after fresh preflight |
+| no owner, open, production pointer R | invalid adoption attempt | stop; never create a fresh owner around an already-moved pointer |
 | foreign owner or paused without owner | release conflict/corruption | stop; use that owner's runbook |
 | same owner, paused, pointer Gen2, runtime Gen2 | pre-deploy or CAS not applied | same-owner `prepare` |
 | same owner, paused, pointer R, runtime Gen2 | CAS applied, deployment absent/old | same-owner `prepare`; re-enqueue R only |
