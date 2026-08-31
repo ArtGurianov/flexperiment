@@ -94,13 +94,13 @@ jobs:
           chmod 0600 "$HOME/.ssh/0041-offline-bridge"
           printf '%s\n' "$OFFLINE_BRIDGE_SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
 
-      - name: Prove the durable offline bridge receipt with Gen1 still stopped
+      - name: Prove the durable offline bridge receipt from the pinned volume
         run: |
           set -euo pipefail
-          # This deliberately executes against stopped SQLite's Docker volume,
-          # not the Gen1 runtime API. The receipt reader proves both Commerce
-          # and worker are stopped and have restart policy disabled.
-          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -i "$HOME/.ssh/0041-offline-bridge" "$OFFLINE_BRIDGE_SSH_HOST" "COMMERCE_GEN1_TO_GEN2_BRIDGE_MAINTENANCE_ARTIFACT_SHA=$OFFLINE_BRIDGE_MAINTENANCE_ARTIFACT_SHA COMMERCE_GEN1_TO_GEN2_BRIDGE_NODE_BIN=$OFFLINE_BRIDGE_NODE_BIN bash -s" < scripts/read-0041-offline-bridge-receipt.sh
+          # The bridge's stopped Gen1 containers were later removed.  This
+          # one-shot reader binds a reviewed exact Docker volume, then proves
+          # no running container mounts it before opening SQLite read-only.
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -i "$HOME/.ssh/0041-offline-bridge" "$OFFLINE_BRIDGE_SSH_HOST" "COMMERCE_GEN1_TO_GEN2_BRIDGE_MAINTENANCE_ARTIFACT_SHA=$OFFLINE_BRIDGE_MAINTENANCE_ARTIFACT_SHA COMMERCE_GEN1_TO_GEN2_BRIDGE_NODE_BIN=$OFFLINE_BRIDGE_NODE_BIN bash -s" < scripts/read-0041-offline-bridge-receipt-from-pinned-volume.sh
 
       - name: CAS production-deploy to Gen2 before any webhook
         run: |

@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 const workflow = readFileSync(".github/workflows/controlled-0041-gen2-deploy-only-recovery.yml", "utf8");
 const offlineBridge = readFileSync("scripts/controlled-0041-offline-bridge.sh", "utf8");
 const receiptReader = readFileSync("scripts/read-0041-offline-bridge-receipt.sh", "utf8");
+const pinnedVolumeReceiptReader = readFileSync("scripts/read-0041-offline-bridge-receipt-from-pinned-volume.sh", "utf8");
 
 describe("0041 Gen2 deploy-only recovery workflow", () => {
   it("hard-binds GEN2 and offers no path to restart GEN1 or run the bridge", () => {
@@ -13,7 +14,7 @@ describe("0041 Gen2 deploy-only recovery workflow", () => {
     expect(workflow).not.toContain("replacement_sha:");
     expect(workflow).not.toContain("gen1-to-gen2-post-activation-email-bridge.ts");
     expect(workflow).toContain("GEN2_DEPLOY_OLD_RUNTIME_FORBIDDEN");
-    expect(workflow).toContain("scripts/read-0041-offline-bridge-receipt.sh");
+    expect(workflow).toContain("scripts/read-0041-offline-bridge-receipt-from-pinned-volume.sh");
   });
 
   it("binds the separately reviewed Gen2 runtime without requiring squash-controller ancestry", () => {
@@ -26,7 +27,7 @@ describe("0041 Gen2 deploy-only recovery workflow", () => {
 
   it("pins Node and validates every post-CAS dependency before receipt or CAS", () => {
     const substratePreflight = workflow.indexOf("Validate deployment and convergence substrate before CAS");
-    const receiptProof = workflow.indexOf("Prove the durable offline bridge receipt");
+    const receiptProof = workflow.indexOf("Prove the durable offline bridge receipt from the pinned volume");
     const pointerCas = workflow.indexOf("CAS production-deploy to Gen2 before any webhook");
     expect(workflow).toContain("OFFLINE_BRIDGE_NODE_BIN: /root/flexperiment-0041-tools/node");
     expect(workflow).toContain("COMMERCE_GEN1_TO_GEN2_BRIDGE_NODE_BIN=$OFFLINE_BRIDGE_NODE_BIN");
@@ -39,13 +40,35 @@ describe("0041 Gen2 deploy-only recovery workflow", () => {
       "PUBLIC_FRONTEND_URL", "ADMIN_RELEASE_URL",
     ]) expect(workflow).toContain(name);
     expect(workflow).toContain("require_https_url");
-    expect(receiptReader).toContain("COMMERCE_GEN1_TO_GEN2_BRIDGE_NODE_BIN");
-    const nodeValidation = receiptReader.indexOf("0041_OFFLINE_RECEIPT_NODE_BIN_INVALID");
-    const verifier = receiptReader.indexOf('"$node_bin" --import tsx commerce/src/assert-gen1-to-gen2-offline-bridge.ts');
+    expect(pinnedVolumeReceiptReader).toContain("COMMERCE_GEN1_TO_GEN2_BRIDGE_NODE_BIN");
+    const nodeValidation = pinnedVolumeReceiptReader.indexOf("0041_OFFLINE_PINNED_VOLUME_RECEIPT_NODE_BIN_INVALID");
+    const verifier = pinnedVolumeReceiptReader.indexOf('"$node_bin" --import tsx commerce/src/assert-gen1-to-gen2-offline-bridge.ts');
     expect(nodeValidation).toBeGreaterThanOrEqual(0);
-    expect(receiptReader).not.toContain("node --import tsx");
-    expect(receiptReader.indexOf('cd "$maintenance_worktree"')).toBeLessThan(verifier);
+    expect(pinnedVolumeReceiptReader).not.toContain("node --import tsx");
+    expect(pinnedVolumeReceiptReader.indexOf('cd "$maintenance_worktree"')).toBeLessThan(verifier);
     expect(nodeValidation).toBeLessThan(verifier);
+  });
+
+  it("re-anchors only the reviewed volume and refuses every live mount before SQLite", () => {
+    const volumeProof = pinnedVolumeReceiptReader.indexOf("docker volume inspect");
+    const liveMountProof = pinnedVolumeReceiptReader.indexOf("0041_OFFLINE_PINNED_VOLUME_LIVE_READER");
+    const verifier = pinnedVolumeReceiptReader.indexOf('"$node_bin" --import tsx commerce/src/assert-gen1-to-gen2-offline-bridge.ts');
+    expect(pinnedVolumeReceiptReader).toContain('readonly DATABASE_VOLUME_NAME="jmawd0cmudtiwtquptyvhm0l_commerce-data"');
+    expect(volumeProof).toBeGreaterThanOrEqual(0);
+    expect(pinnedVolumeReceiptReader).not.toContain("docker volume ls");
+    expect(pinnedVolumeReceiptReader).not.toContain("docker run");
+    expect(pinnedVolumeReceiptReader).not.toContain("docker start");
+    expect(pinnedVolumeReceiptReader).not.toContain("docker compose");
+    expect(liveMountProof).toBeGreaterThan(volumeProof);
+    expect(liveMountProof).toBeLessThan(verifier);
+    expect(pinnedVolumeReceiptReader).toContain('"$mounted_name" != "$DATABASE_VOLUME_NAME"');
+    expect(pinnedVolumeReceiptReader).toContain('"$mounted_source" != "$database_directory"');
+    expect(pinnedVolumeReceiptReader).toContain('"$database_directory/commerce.sqlite"');
+    expect(pinnedVolumeReceiptReader).toContain('"$database_directory/$RECEIPT_NAME"');
+    expect(pinnedVolumeReceiptReader).toContain('"$(stat -c \'%u:%a\' "$receipt")" == "0:600"');
+    expect(pinnedVolumeReceiptReader).toContain('"$(wc -l < "$receipt" | tr -d \' \')" == 10');
+    expect(pinnedVolumeReceiptReader).toContain('"1f76c0eb73958e89356ff830036b8ef1c8b49c5b $GEN2_RUNTIME_SHA"');
+    expect(pinnedVolumeReceiptReader).toContain("GEN1_TO_GEN2_BRIDGE_RECEIPT_STATE_HASH");
   });
 
   it("requires an executable stop and no-restart proof before the offline DB mutation", () => {
@@ -73,7 +96,7 @@ describe("0041 Gen2 deploy-only recovery workflow", () => {
   });
 
   it("reads the stopped-volume receipt before CAS and cannot webhook Gen1", () => {
-    const receiptProof = workflow.indexOf("Prove the durable offline bridge receipt");
+    const receiptProof = workflow.indexOf("Prove the durable offline bridge receipt from the pinned volume");
     const pointerCas = workflow.indexOf("CAS production-deploy to Gen2 before any webhook");
     const deploy = workflow.indexOf('scripts/controlled-coolify-deploy.sh "$GEN2_RUNTIME_SHA"');
     expect(receiptProof).toBeGreaterThanOrEqual(0);
