@@ -1,4 +1,7 @@
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { EPOCH_A_PRODUCTION_BASE_SHA, EPOCH_A_RUNTIME_SHA, EPOCH_A_RUNTIME_TAG_OBJECT, EPOCH_A_RUNTIME_TAG_REF } from "../src/epoch-a-runtime-promotion";
 import { canonicalMigrationInventory } from "../src/release-expectation";
@@ -30,6 +33,59 @@ describe("controlled Epoch A dormant runtime promotion", () => {
     expect(workflow).toContain('[[ "$(git rev-list --parents -n 1 "$EPOCH_A_RUNTIME_SHA" | awk \'NF == 2 {print $2}\')" == "$EPOCH_A_PRODUCTION_BASE_SHA" ]]');
     expect(workflow).toContain("EPOCH_A_CONTROLLER_CONTAMINATES_R");
     expect(workflow).toContain(".release/maintenance-only");
+  });
+
+  it("binds only the dedicated production-deploy credential before every controlled remote ref seam", () => {
+    const checkout = at("uses: actions/checkout@v4");
+    const binding = at("Bind dedicated production-deploy credential");
+    const firstRemoteRead = at("git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main");
+    const cas = at("CAS production-deploy from Gen2 to exact R");
+    const bindingEnd = workflow.indexOf("\n\n      - name:", binding);
+    expect(bindingEnd).toBeGreaterThan(binding);
+    const shell = workflow
+      .slice(workflow.indexOf("          set -euo pipefail", binding), bindingEnd)
+      .replaceAll(/^          /gm, "");
+
+    expect(checkout).toBeLessThan(binding);
+    expect(binding).toBeLessThan(firstRemoteRead);
+    expect(firstRemoteRead).toBeLessThan(cas);
+    expect(workflow).toContain("persist-credentials: false");
+    expect(shell).toContain('[[ -n "$PRODUCTION_DEPLOY_REF_TOKEN" ]]');
+    expect(shell).toContain("PRODUCTION_DEPLOY_REF_TOKEN_REQUIRED");
+    expect(shell).toContain("git config --local --unset-all http.https://github.com/.extraheader || true");
+    expect(shell).toContain('git remote set-url origin "https://x-access-token:${PRODUCTION_DEPLOY_REF_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"');
+    expect(shell).not.toContain("GITHUB_TOKEN");
+
+    const directory = mkdtempSync(join(tmpdir(), "flexperiment-epoch-a-deploy-credential-"));
+    try {
+      execFileSync("git", ["init", "--quiet"], { cwd: directory });
+      execFileSync("git", ["remote", "add", "origin", "https://github.com/placeholder/repository.git"], { cwd: directory });
+      expect(() => execFileSync("bash", ["-euo", "pipefail", "-c", shell], {
+        cwd: directory,
+        stdio: "pipe",
+        env: {
+          ...process.env,
+          GITHUB_REPOSITORY: "ArtGurianov/flexperiment",
+          PRODUCTION_DEPLOY_REF_TOKEN: "",
+        },
+      })).toThrow();
+      expect(execFileSync("git", ["remote", "get-url", "origin"], { cwd: directory, encoding: "utf8" }).trim()).toBe(
+        "https://github.com/placeholder/repository.git",
+      );
+      execFileSync("bash", ["-euo", "pipefail", "-c", shell], {
+        cwd: directory,
+        env: {
+          ...process.env,
+          GITHUB_REPOSITORY: "ArtGurianov/flexperiment",
+          PRODUCTION_DEPLOY_REF_TOKEN: "test-production-deploy-token",
+        },
+      });
+      expect(execFileSync("git", ["remote", "get-url", "origin"], { cwd: directory, encoding: "utf8" }).trim()).toBe(
+        "https://x-access-token:test-production-deploy-token@github.com/ArtGurianov/flexperiment.git",
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("uses runtime-candidate only to admit a fresh acquire, never same-owner recovery", () => {
