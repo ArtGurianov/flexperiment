@@ -55,6 +55,15 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # The CAS helper is deliberately transport-agnostic. Bind its dedicated
+      # credential here, before this controller's first remote Git read.
+      - name: Bind dedicated production-deploy credential
+        run: |
+          set -euo pipefail
+          [[ -n "$PRODUCTION_DEPLOY_REF_TOKEN" ]] || { echo "PRODUCTION_DEPLOY_REF_TOKEN_REQUIRED" >&2; exit 1; }
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git remote set-url origin "https://x-access-token:${PRODUCTION_DEPLOY_REF_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
       - name: Assert exact controller, R topology, and immutable boundaries
         run: |
           set -euo pipefail
