@@ -2,7 +2,9 @@
 set -euo pipefail
 
 expected_source_commit="${1:?Pass the expected 40-character source commit.}"
+expected_previous_source_commit="${2:-}"
 [[ "$expected_source_commit" =~ ^[a-f0-9]{40}$ ]] || { echo "Expected source commit must be a 40-character SHA." >&2; exit 2; }
+[[ -z "$expected_previous_source_commit" || "$expected_previous_source_commit" =~ ^[a-f0-9]{40}$ ]] || { echo "Expected previous source commit must be a 40-character SHA." >&2; exit 2; }
 remote_ref="refs/heads/production-deploy"
 
 # The calling controlled workflow authorizes the candidate before it pauses
@@ -29,6 +31,10 @@ fi
   echo "PRODUCTION_DEPLOY_REMOTE_POINTER_INVALID" >&2
   exit 1
 }
+if [[ -n "$expected_previous_source_commit" && "$observed_remote_sha" != "$expected_previous_source_commit" ]]; then
+  echo "PRODUCTION_DEPLOY_EXPECTED_PREVIOUS_POINTER_MISMATCH" >&2
+  exit 1
+fi
 git cat-file -e "$expected_source_commit^{commit}" || { echo "Deployment source commit is unavailable locally." >&2; exit 1; }
 
 # A maintenance/audit commit (a runtime candidate merged with one-shot bridge

@@ -1,0 +1,308 @@
+name: Controlled Epoch A dormant runtime promotion
+
+# Compatibility-specific lane. R is literal policy, never caller input; main
+# remains controller history and is deliberately not in R's ancestry.
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Prepare and certify dormant R under the release pause, or separately complete it.
+        required: true
+        type: choice
+        options: [prepare, complete]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  epoch-a:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
+    env:
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      PRODUCTION_DEPLOY_REF_TOKEN: ${{ secrets.PRODUCTION_DEPLOY_REF_TOKEN }}
+      COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+      COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+      PUBLIC_FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
+      ADMIN_RELEASE_URL: ${{ vars.ADMIN_RELEASE_URL }}
+      CONTROLLER_SHA: ${{ github.sha }}
+      INPUT_STAGE: ${{ inputs.stage }}
+      EPOCH_A_RUNTIME_SHA: 80e152259628719af20d363a76ed6b991d67482a
+      EPOCH_A_RUNTIME_TAG_REF: refs/tags/epoch-a-runtime-r-80e152259628
+      EPOCH_A_RUNTIME_TAG_OBJECT: 5b4a00791cd89c2773aebdcacde4b8dae5b95cb1
+      EPOCH_A_PRODUCTION_BASE_SHA: 0ddc33d0fd0077fe0ba238ec75ae4090fc38ac34
+      EPOCH_A_RELEASE_ID: epoch-a-dormant-notifications:80e152259628719af20d363a76ed6b991d67482a
+      EPOCH_A_PRE_B_LEGAL_VERSION: 2026-08-26.1
+      EPOCH_A_NOTIFICATION_LEGAL_VERSION: 2026-08-28.1
+      POLL_ATTEMPTS: "30"
+      POLL_SECONDS: "10"
+      POLL_CONNECT_TIMEOUT: "3"
+      POLL_MAX_TIME: "7"
+      INITIAL_READINESS_DELAY_SECONDS: "60"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Assert exact controller, R topology, and immutable boundaries
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "EPOCH_A_CONTROLLER_NOT_MAIN" >&2; exit 1; }
+          [[ "$INPUT_STAGE" == prepare || "$INPUT_STAGE" == complete ]] || { echo "EPOCH_A_STAGE_INVALID" >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main "+$EPOCH_A_RUNTIME_TAG_REF:$EPOCH_A_RUNTIME_TAG_REF"
+          [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo "EPOCH_A_CONTROLLER_MAIN_MOVED" >&2; exit 1; }
+          [[ "$(git rev-parse "$EPOCH_A_RUNTIME_TAG_REF")" == "$EPOCH_A_RUNTIME_TAG_OBJECT" ]] || { echo "EPOCH_A_RUNTIME_TAG_OBJECT_MISMATCH" >&2; exit 1; }
+          [[ "$(git rev-parse "$EPOCH_A_RUNTIME_TAG_REF^{}")" == "$EPOCH_A_RUNTIME_SHA" ]] || { echo "EPOCH_A_RUNTIME_TAG_TARGET_MISMATCH" >&2; exit 1; }
+          [[ "$(git rev-list --parents -n 1 "$EPOCH_A_RUNTIME_SHA" | awk 'NF == 2 {print $2}')" == "$EPOCH_A_PRODUCTION_BASE_SHA" ]] || { echo "EPOCH_A_R_PARENT_MISMATCH" >&2; exit 1; }
+          [[ "$(git rev-list --parents -n 1 "$EPOCH_A_RUNTIME_SHA" | awk '{print NF}')" == 2 ]] || { echo "EPOCH_A_R_NOT_LINEAR" >&2; exit 1; }
+          ! git merge-base --is-ancestor "$CONTROLLER_SHA" "$EPOCH_A_RUNTIME_SHA" || { echo "EPOCH_A_CONTROLLER_CONTAMINATES_R" >&2; exit 1; }
+          ! git cat-file -e "$EPOCH_A_RUNTIME_SHA:.release/maintenance-only" 2>/dev/null || { echo "EPOCH_A_R_IS_MAINTENANCE_ONLY" >&2; exit 1; }
+          for url in "$PUBLIC_API_URL" "$PUBLIC_FRONTEND_URL" "$ADMIN_RELEASE_URL" "$COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL" "$COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL" "$COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL"; do [[ "$url" =~ ^https:// ]] || { echo "EPOCH_A_HTTPS_CONFIGURATION_REQUIRED" >&2; exit 1; }; done
+          [[ -n "$COMMERCE_RELEASE_CONTROL_TOKEN" && -n "$PRODUCTION_DEPLOY_REF_TOKEN" && -n "$COOLIFY_TOKEN" ]] || { echo "EPOCH_A_PRODUCTION_CREDENTIAL_REQUIRED" >&2; exit 1; }
+          allowed_paths=$'commerce/src/domain.ts\ncommerce/src/occurrence-notification-capability.ts\ncommerce/test/domain.test.ts\ncommerce/test/occurrence-notification-capability.test.ts'
+          [[ "$(git diff --name-only "$EPOCH_A_PRODUCTION_BASE_SHA" "$EPOCH_A_RUNTIME_SHA" | sort)" == "$allowed_paths" ]] || { echo "EPOCH_A_R_CHANGED_SURFACE_UNEXPECTED" >&2; exit 1; }
+          git diff --quiet "$EPOCH_A_PRODUCTION_BASE_SHA" "$EPOCH_A_RUNTIME_SHA" -- commerce/migrations commerce/legal public/legal release-surface-contract.json || { echo "EPOCH_A_R_CROSSES_SCHEMA_LEGAL_OR_SURFACE_BOUNDARY" >&2; exit 1; }
+          git show "$EPOCH_A_RUNTIME_SHA:release-surface-contract.json" | jq -e '.checkout_contract_version == "sales-availability-v1" and .admin_contract_version == "sales-availability-v1"' >/dev/null
+          git show "$EPOCH_A_RUNTIME_SHA:commerce/legal/production-manifest.json" > r-production-manifest.json
+          jq -e --arg version "$EPOCH_A_PRE_B_LEGAL_VERSION" '.version == $version' r-production-manifest.json >/dev/null || { echo "EPOCH_A_R_NOT_PRE_B_LEGAL_SOURCE" >&2; exit 1; }
+          echo "EPOCH_A_R_MANIFEST_SHA256=$(shasum -a 256 r-production-manifest.json | awk '{print $1}')" >> "$GITHUB_ENV"
+          r_0038="$(git show "$EPOCH_A_RUNTIME_SHA:commerce/migrations/0038_occurrence_availability_notifications.sql" | shasum -a 256 | awk '{print $1}')"
+          base_0038="$(git show "$EPOCH_A_PRODUCTION_BASE_SHA:commerce/migrations/0038_occurrence_availability_notifications.sql" | shasum -a 256 | awk '{print $1}')"
+          [[ "$r_0038" == "$base_0038" ]] || { echo "EPOCH_A_MIGRATION_0038_HASH_CHANGED" >&2; exit 1; }
+          echo "EPOCH_A_0038_SHA256=$r_0038" >> "$GITHUB_ENV"
+
+          # Controller code, not candidate code, evaluates readiness. These
+          # two legal-capability dependencies are compared as Git objects so
+          # the controller cannot silently substitute different semantics.
+          for path in commerce/src/occurrence-notification-capability.ts commerce/src/legal-release.ts; do
+            r_hash="$(git show "$EPOCH_A_RUNTIME_SHA:$path" | shasum -a 256 | awk '{print $1}')"
+            controller_hash="$(git show "$CONTROLLER_SHA:$path" | shasum -a 256 | awk '{print $1}')"
+            [[ "$r_hash" == "$controller_hash" ]] || { echo "EPOCH_A_CONTROLLER_CAPABILITY_CLOSURE_MISMATCH=$path" >&2; exit 1; }
+          done
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Classify fresh durable state and build the exact request
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > durable-before.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$EPOCH_A_RELEASE_ID" > completion.json
+          api "$PUBLIC_API_URL/v1/public/legal-config" > legal-before.json
+          pointer="$(scripts/read-production-deploy-ref.sh)"
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_FRONTEND_URL/release.json" > frontend-before.json
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$ADMIN_RELEASE_URL" > admin-before.json
+          jq -e --arg base "$EPOCH_A_PRODUCTION_BASE_SHA" --arg r "$EPOCH_A_RUNTIME_SHA" --arg release "$EPOCH_A_RELEASE_ID" --arg legal "$EPOCH_A_PRE_B_LEGAL_VERSION" '
+            (.owner_release_id == null or .owner_release_id == $release) and (.sales_paused | type == "boolean") and
+            (.runtime.source_commit == $base or .runtime.source_commit == $r) and
+            (.runtime.migration_versions | type == "array" and index("0038_occurrence_availability_notifications.sql")) and
+            (.runtime.legal_version == $legal) and (.runtime.current_legal_copies_match == true) and
+            (.outbox_authority.attempt_authority == "ATTEMPT") and (.outbox_authority.email_dispatch_paused == false) and (.outbox_authority.dispatch_owner_release_id == null) and
+            (.emergency_sales_paused | type == "boolean")
+          ' durable-before.json >/dev/null || { echo "EPOCH_A_DURABLE_PRECONDITION_INVALID" >&2; exit 1; }
+          jq -e --arg legal "$EPOCH_A_PRE_B_LEGAL_VERSION" --arg future "$EPOCH_A_NOTIFICATION_LEGAL_VERSION" '.version == $legal and .version != $future and .occurrence_notifications_available == false' legal-before.json >/dev/null || { echo "EPOCH_A_PRE_B_LEGAL_OR_DORMANCY_INVALID" >&2; exit 1; }
+          jq -e --arg source_sha "$EPOCH_A_R_MANIFEST_SHA256" --slurpfile manifest r-production-manifest.json '
+            .runtime as $runtime | $manifest[0] as $manifest |
+            $runtime.source_legal_manifest_sha256 == $source_sha and
+            $runtime.legal_version == $manifest.version and
+            $runtime.legal_hashes == {PUBLIC_OFFER: $manifest.documents.PUBLIC_OFFER.sha256, PRIVACY_POLICY: $manifest.documents.PRIVACY_POLICY.sha256, PD_CONSENT: $manifest.documents.PD_CONSENT.sha256, CHECKOUT_DISCLOSURE: $manifest.documents.CHECKOUT_DISCLOSURE.sha256}
+          ' durable-before.json >/dev/null || { echo "EPOCH_A_R_LEGAL_SOURCE_BASELINE_MISMATCH" >&2; exit 1; }
+          if [[ "$pointer" == "$EPOCH_A_PRODUCTION_BASE_SHA" ]]; then
+            jq -e --arg sha "$EPOCH_A_PRODUCTION_BASE_SHA" '.runtime.source_commit == $sha and .runtime.worker_source_commit == $sha' durable-before.json >/dev/null || { echo "EPOCH_A_POINTER_RUNTIME_BASE_MISMATCH" >&2; exit 1; }
+            jq -e --arg sha "$EPOCH_A_PRODUCTION_BASE_SHA" '.source_commit == $sha and .checkout_contract_version == "sales-availability-v1"' frontend-before.json >/dev/null || { echo "EPOCH_A_FRONTEND_BASE_EVIDENCE_MISMATCH" >&2; exit 1; }
+            jq -e --arg sha "$EPOCH_A_PRODUCTION_BASE_SHA" '.source_commit == $sha and .admin_contract_version == "sales-availability-v1"' admin-before.json >/dev/null || { echo "EPOCH_A_ADMIN_BASE_EVIDENCE_MISMATCH" >&2; exit 1; }
+          fi
+          applied="$(node --import tsx -e '
+            import { readFileSync } from "node:fs";
+            import { canonicalMigrationInventory } from "./commerce/src/release-expectation.ts";
+            const versions = JSON.parse(readFileSync(process.argv[1], "utf8")).runtime?.migration_versions;
+            if (!Array.isArray(versions) || !versions.every((value) => typeof value === "string")) process.exit(2);
+            process.stdout.write(canonicalMigrationInventory(versions));
+          ' durable-before.json)" || { echo "EPOCH_A_MIGRATION_INVENTORY_INVALID" >&2; exit 1; }
+          expected="$(git ls-tree -r --name-only "$EPOCH_A_RUNTIME_SHA" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
+          [[ "$applied" == "$expected" ]] || { echo "EPOCH_A_DURABLE_MIGRATION_INVENTORY_MISMATCH" >&2; exit 1; }
+          jq -e --arg release "$EPOCH_A_RELEASE_ID" --arg source "$EPOCH_A_RUNTIME_SHA" --arg migration "inventory-sha256:$(printf %s "$expected" | shasum -a 256 | awk '{print $1}')" '
+            .runtime as $runtime | {release_id: $release, mode: "CONTROLLED_CUTOVER", expected: {source_commit: $source, migration: $migration, legal_version: $runtime.legal_version, legal_manifest_sha256: $runtime.legal_manifest_sha256, legal_hashes: $runtime.legal_hashes}}
+          ' durable-before.json > release.json
+          jq -e '.expected.legal_version == "2026-08-26.1" and (.expected.legal_hashes | type == "object")' release.json >/dev/null || { echo "EPOCH_A_LEGAL_BASELINE_INVALID" >&2; exit 1; }
+          [[ "$pointer" == "$EPOCH_A_PRODUCTION_BASE_SHA" || "$pointer" == "$EPOCH_A_RUNTIME_SHA" ]] || { echo "EPOCH_A_PRODUCTION_DEPLOY_POINTER_UNEXPECTED=$pointer" >&2; exit 1; }
+          [[ "$INPUT_STAGE" != complete || "$pointer" == "$EPOCH_A_RUNTIME_SHA" ]] || { echo "EPOCH_A_COMPLETE_POINTER_NOT_R" >&2; exit 1; }
+          if [[ "$(jq -r '.complete' completion.json)" == false && "$(jq -r '.owner_release_id // empty' durable-before.json)" == "" && "$pointer" != "$EPOCH_A_PRODUCTION_BASE_SHA" ]]; then
+            echo "EPOCH_A_FRESH_OWNER_POINTER_NOT_BASE=$pointer" >&2
+            exit 1
+          fi
+          echo "PRODUCTION_POINTER_BEFORE=$pointer" >> "$GITHUB_ENV"
+          echo "EMERGENCY_BEFORE=$(jq -r '.emergency_sales_paused' durable-before.json)" >> "$GITHUB_ENV"
+
+      - name: Reconcile only from durable state
+        run: |
+          set -euo pipefail
+          node --import tsx -e '
+            import { readFileSync } from "node:fs";
+            import { reconcileEpochA } from "./commerce/src/epoch-a-runtime-promotion.ts";
+            const status = JSON.parse(readFileSync("durable-before.json", "utf8")); const completion = JSON.parse(readFileSync("completion.json", "utf8")); const request = JSON.parse(readFileSync("release.json", "utf8")); const legal = JSON.parse(readFileSync("legal-before.json", "utf8"));
+            process.stdout.write(JSON.stringify(reconcileEpochA({ stage: process.env.INPUT_STAGE, request, status, runtime: status.runtime, completion, legal: { version: legal.version ?? null, occurrenceNotificationsAvailable: legal.occurrence_notifications_available ?? null } })));
+          ' > reconciliation.json
+          action="$(jq -er '.action' reconciliation.json)"; [[ "$action" != BLOCKED ]] || { jq -c . reconciliation.json >&2; exit 1; }
+          echo "EPOCH_A_ACTION=$action" >> "$GITHUB_ENV"
+
+      - name: Prove fresh runtime-candidate declaration before acquire
+        if: env.EPOCH_A_ACTION == 'ACQUIRE_AND_PAUSE'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin refs/heads/runtime-candidate:refs/remotes/origin/runtime-candidate
+          [[ "$(git rev-parse origin/runtime-candidate)" == "$EPOCH_A_RUNTIME_SHA" ]] || { echo "EPOCH_A_RUNTIME_CANDIDATE_NOT_R_FOR_FRESH_ACQUIRE" >&2; exit 1; }
+
+      - name: Reconfirm candidate immediately before acquire
+        if: env.EPOCH_A_ACTION == 'ACQUIRE_AND_PAUSE'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin refs/heads/runtime-candidate:refs/remotes/origin/runtime-candidate
+          [[ "$(git rev-parse origin/runtime-candidate)" == "$EPOCH_A_RUNTIME_SHA" ]] || { echo "EPOCH_A_RUNTIME_CANDIDATE_MOVED_BEFORE_ACQUIRE" >&2; exit 1; }
+
+      - name: Acquire owner and pause sales
+        if: env.EPOCH_A_ACTION == 'ACQUIRE_AND_PAUSE'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/acquire" >/dev/null
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/pause" > paused.json
+          jq -e --arg release "$EPOCH_A_RELEASE_ID" '.sales_paused and .owner_release_id == $release' paused.json >/dev/null
+          # Reconcile again from the just-committed durable projection. The
+          # first run may now progress to the guarded pointer/deploy seam;
+          # retries still start from a fresh durable read above.
+          echo "EPOCH_A_ACTION=DEPLOY_OR_CONVERGE" >> "$GITHUB_ENV"
+
+      - name: Prove pause and independently unchanged emergency state
+        if: env.EPOCH_A_ACTION != 'RELEASE_ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > paused-status.json
+          jq -e --arg release "$EPOCH_A_RELEASE_ID" --argjson emergency "$EMERGENCY_BEFORE" '.sales_paused and .owner_release_id == $release and .emergency_sales_paused == $emergency' paused-status.json >/dev/null || { echo "EPOCH_A_PAUSE_OR_EMERGENCY_CHANGED" >&2; exit 1; }
+          code="$(curl --silent --show-error --connect-timeout 10 --max-time 30 --output checkout-pause.json --write-out '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: epoch-a-pause-proof-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --data '{}' "$PUBLIC_API_URL/v1/public/checkouts")"
+          if [[ "$code" != 503 ]] || ! jq -e '.error.code == "SALES_TEMPORARILY_PAUSED"' checkout-pause.json >/dev/null; then
+            echo "EPOCH_A_CHECKOUT_PAUSE_NOT_PROVEN" >&2
+            exit 1
+          fi
+
+      - name: Reprove Epoch A compatibility authority immediately before CAS or R deployment
+        if: env.INPUT_STAGE == 'prepare' && env.EPOCH_A_ACTION != 'RELEASE_ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > pre-cas-status.json
+          api "$PUBLIC_API_URL/v1/public/legal-config" > pre-cas-legal.json
+          pointer="$(scripts/read-production-deploy-ref.sh)"
+          [[ "$pointer" == "$EPOCH_A_PRODUCTION_BASE_SHA" || "$pointer" == "$EPOCH_A_RUNTIME_SHA" ]] || { echo "EPOCH_A_PRE_DEPLOY_POINTER_UNEXPECTED=$pointer" >&2; exit 1; }
+          jq -e --slurpfile request release.json --arg release "$EPOCH_A_RELEASE_ID" --arg base "$EPOCH_A_PRODUCTION_BASE_SHA" --arg r "$EPOCH_A_RUNTIME_SHA" --arg source_sha "$EPOCH_A_R_MANIFEST_SHA256" --argjson emergency "$EMERGENCY_BEFORE" '
+            .sales_paused and .owner_release_id == $release and .owner_mode == $request[0].mode and
+            .expected == ($request[0].expected | del(.legal_hashes)) and
+            (.runtime.source_commit == $base or .runtime.source_commit == $r) and
+            (.runtime.worker_source_commit == $base or .runtime.worker_source_commit == $r) and
+            .runtime.legal_version == $request[0].expected.legal_version and
+            .runtime.legal_manifest_sha256 == $request[0].expected.legal_manifest_sha256 and
+            .runtime.legal_hashes == $request[0].expected.legal_hashes and
+            .runtime.source_legal_manifest_sha256 == $source_sha and
+            .runtime.current_legal_copies_match == true and
+            .outbox_authority.attempt_authority == "ATTEMPT" and
+            .outbox_authority.email_dispatch_paused == false and
+            .outbox_authority.dispatch_owner_release_id == null and
+            .emergency_sales_paused == $emergency
+          ' pre-cas-status.json >/dev/null || { echo "EPOCH_A_PRE_CAS_DURABLE_AUTHORITY_MISMATCH" >&2; exit 1; }
+          jq -e --arg legal "$EPOCH_A_PRE_B_LEGAL_VERSION" --arg future "$EPOCH_A_NOTIFICATION_LEGAL_VERSION" '.version == $legal and .version != $future and .occurrence_notifications_available == false' pre-cas-legal.json >/dev/null || { echo "EPOCH_A_PRE_CAS_LEGAL_OR_DORMANCY_INVALID" >&2; exit 1; }
+          applied="$(node --import tsx -e '
+            import { readFileSync } from "node:fs";
+            import { canonicalMigrationInventory } from "./commerce/src/release-expectation.ts";
+            const versions = JSON.parse(readFileSync(process.argv[1], "utf8")).runtime?.migration_versions;
+            if (!Array.isArray(versions) || !versions.every((value) => typeof value === "string")) process.exit(2);
+            process.stdout.write(canonicalMigrationInventory(versions));
+          ' pre-cas-status.json)" || { echo "EPOCH_A_PRE_CAS_MIGRATION_INVENTORY_INVALID" >&2; exit 1; }
+          expected="$(git ls-tree -r --name-only "$EPOCH_A_RUNTIME_SHA" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
+          [[ "$applied" == "$expected" ]] || { echo "EPOCH_A_PRE_CAS_MIGRATION_INVENTORY_MISMATCH" >&2; exit 1; }
+          if [[ "$pointer" == "$EPOCH_A_PRODUCTION_BASE_SHA" ]]; then
+            jq -e --arg base "$EPOCH_A_PRODUCTION_BASE_SHA" '.runtime.source_commit == $base and .runtime.worker_source_commit == $base' pre-cas-status.json >/dev/null || { echo "EPOCH_A_PRE_CAS_RUNTIME_NOT_BASE" >&2; exit 1; }
+          fi
+          echo "PRODUCTION_POINTER_PRE_CAS=$pointer" >> "$GITHUB_ENV"
+
+      - name: CAS production-deploy from Gen2 to exact R
+        if: env.INPUT_STAGE == 'prepare' && env.EPOCH_A_ACTION != 'RELEASE_ALREADY_COMPLETE' && env.PRODUCTION_POINTER_PRE_CAS == env.EPOCH_A_PRODUCTION_BASE_SHA
+        run: |
+          set -euo pipefail
+          scripts/set-production-deploy-ref.sh "$EPOCH_A_RUNTIME_SHA" "$EPOCH_A_PRODUCTION_BASE_SHA"
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$EPOCH_A_RUNTIME_SHA" ]] || { echo "EPOCH_A_PRODUCTION_POINTER_POSTCONDITION_FAILED" >&2; exit 1; }
+
+      - name: Enqueue exact R deployment
+        if: env.INPUT_STAGE == 'prepare' && env.EPOCH_A_ACTION == 'DEPLOY_OR_CONVERGE'
+        run: |
+          set -euo pipefail
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$EPOCH_A_RUNTIME_SHA" ]] || { echo "EPOCH_A_DEPLOY_POINTER_NOT_R" >&2; exit 1; }
+          scripts/controlled-coolify-deploy.sh "$EPOCH_A_RUNTIME_SHA"
+          echo "EPOCH_A_COOLIFY_ENQUEUED=1" >> "$GITHUB_ENV"
+
+      - name: Prove R convergence and dormant product evidence
+        if: env.INPUT_STAGE == 'prepare' && (env.EPOCH_A_ACTION == 'DEPLOY_OR_CONVERGE' || env.EPOCH_A_ACTION == 'READY_TO_COMPLETE')
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          [[ "${EPOCH_A_COOLIFY_ENQUEUED:-0}" != 1 ]] || sleep "$INITIAL_READINESS_DELAY_SECONDS"
+          TARGET_SHA="$EPOCH_A_RUNTIME_SHA" CHECKOUT_CONTRACT_VERSION=sales-availability-v1 ADMIN_CONTRACT_VERSION=sales-availability-v1 scripts/controlled-production-readiness.sh release.json
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > converged-status.json
+          api "$PUBLIC_API_URL/v1/public/legal-config" > converged-legal.json
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/v1/public/tour" > converged-tour.json
+          node --import tsx commerce/src/assert-epoch-a-runtime-promotion-ready.ts converged-status.json release.json converged-legal.json paused
+          jq -e --arg source_sha "$EPOCH_A_R_MANIFEST_SHA256" '.runtime.source_legal_manifest_sha256 == $source_sha' converged-status.json >/dev/null || { echo "EPOCH_A_R_LEGAL_SOURCE_CONVERGENCE_MISMATCH" >&2; exit 1; }
+          jq -e --argjson emergency "$EMERGENCY_BEFORE" '.emergency_sales_paused == $emergency and .outbox_authority.attempt_authority == "ATTEMPT" and .outbox_authority.email_dispatch_paused == false and .outbox_authority.dispatch_owner_release_id == null' converged-status.json >/dev/null || { echo "EPOCH_A_AUTHORITY_OR_EMERGENCY_CHANGED" >&2; exit 1; }
+          jq -e 'type == "array" and all(.[]; (.purchase_status == "AVAILABLE" or .purchase_status == "SOLD_OUT" or .purchase_status == "UNAVAILABLE"))' converged-tour.json >/dev/null || { echo "EPOCH_A_PURCHASE_STATUS_CONTRACT_INVALID" >&2; exit 1; }
+          echo "EPOCH_A_R_DORMANT_CERTIFIED=1" >> "$GITHUB_ENV"
+
+      - name: Complete only after explicit GO and fresh dormant evidence
+        if: env.INPUT_STAGE == 'complete' && env.EPOCH_A_ACTION == 'READY_TO_COMPLETE'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > complete-status.json
+          api "$PUBLIC_API_URL/v1/public/legal-config" > complete-legal.json
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_FRONTEND_URL/release.json" > complete-frontend.json
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$ADMIN_RELEASE_URL" > complete-admin.json
+          node --import tsx commerce/src/assert-epoch-a-runtime-promotion-ready.ts complete-status.json release.json complete-legal.json paused
+          jq -e --arg sha "$EPOCH_A_RUNTIME_SHA" '.source_commit == $sha and .checkout_contract_version == "sales-availability-v1"' complete-frontend.json >/dev/null || { echo "EPOCH_A_COMPLETE_FRONTEND_EVIDENCE_MISMATCH" >&2; exit 1; }
+          jq -e --arg sha "$EPOCH_A_RUNTIME_SHA" '.source_commit == $sha and .admin_contract_version == "sales-availability-v1"' complete-admin.json >/dev/null || { echo "EPOCH_A_COMPLETE_ADMIN_EVIDENCE_MISMATCH" >&2; exit 1; }
+          jq -e --argjson emergency "$EMERGENCY_BEFORE" '.emergency_sales_paused == $emergency and .outbox_authority.attempt_authority == "ATTEMPT" and .outbox_authority.email_dispatch_paused == false and .outbox_authority.dispatch_owner_release_id == null' complete-status.json >/dev/null || { echo "EPOCH_A_COMPLETE_AUTHORITY_OR_EMERGENCY_CHANGED" >&2; exit 1; }
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/reopen" > reopened.json
+          jq -e '.sales_paused == false and .owner_release_id == null and .owner_mode == null' reopened.json >/dev/null
+
+      - name: Prove terminal state or prepared hold
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > final-status.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$EPOCH_A_RELEASE_ID" > final-completion.json
+          api "$PUBLIC_API_URL/v1/public/legal-config" > final-legal.json
+          if [[ "$INPUT_STAGE" == complete ]]; then
+            node --import tsx commerce/src/assert-epoch-a-runtime-promotion-ready.ts final-status.json release.json final-legal.json open
+            jq -e --slurpfile request release.json '.complete and .expected == $request[0].expected' final-completion.json >/dev/null
+          else
+            node --import tsx commerce/src/assert-epoch-a-runtime-promotion-ready.ts final-status.json release.json final-legal.json paused
+            jq -e '.complete == false' final-completion.json >/dev/null
+          fi
+          jq -e '.outbox_authority.attempt_authority == "ATTEMPT" and .outbox_authority.email_dispatch_paused == false and .outbox_authority.dispatch_owner_release_id == null' final-status.json >/dev/null
