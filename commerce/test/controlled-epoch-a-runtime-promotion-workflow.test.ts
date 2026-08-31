@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { EPOCH_A_PRODUCTION_BASE_SHA, EPOCH_A_RUNTIME_SHA, EPOCH_A_RUNTIME_TAG_OBJECT, EPOCH_A_RUNTIME_TAG_REF } from "../src/epoch-a-runtime-promotion";
+import { canonicalMigrationInventory } from "../src/release-expectation";
 
 const workflow = readFileSync(".github/workflows/controlled-epoch-a-runtime-promotion.yml", "utf8");
 const setter = readFileSync("scripts/set-production-deploy-ref.sh", "utf8");
@@ -84,6 +85,17 @@ describe("controlled Epoch A dormant runtime promotion", () => {
     expect(workflow).toContain("EPOCH_A_PRE_CAS_RUNTIME_NOT_BASE");
     expect(workflow).toContain(".expected == ($request[0].expected | del(.legal_hashes))");
     expect(workflow).toContain("env.PRODUCTION_POINTER_PRE_CAS == env.EPOCH_A_PRODUCTION_BASE_SHA");
+  });
+
+  it("uses one executable LF inventory canonicalizer before and immediately before CAS", () => {
+    const names = ["0039_after.sql", "0038_before.sql", "0040_last.sql"];
+    const canonical = canonicalMigrationInventory(names);
+    const escapedDelimiter = [...names].sort().join("\\n");
+    expect(canonical).toBe("0038_before.sql\n0039_after.sql\n0040_last.sql");
+    expect(escapedDelimiter).toBe("0038_before.sql\\n0039_after.sql\\n0040_last.sql");
+    expect(escapedDelimiter).not.toBe(canonical);
+    expect(workflow.match(/canonicalMigrationInventory\(versions\)/g)).toHaveLength(2);
+    expect(workflow).not.toContain('join("\\\\n")');
   });
 
   it("uses an expected-old-pointer CAS and has no rollback or old 0041 path", () => {

@@ -25,13 +25,14 @@ SHA and proves `R^ == production-deploy` instead of requiring R to be an
 ancestor of controller history. This is deliberate squash-governance topology,
 not an ancestry exception for an arbitrary target.
 
-The annotated R tag is a protected immutable recovery anchor. The controller
-requires both its exact tag-object ID and its peeled commit ID before it reads
-durable state. `runtime-candidate` is deliberately **not** that anchor: it is
-consulted only while a fresh no-owner `prepare` is about to acquire Epoch A,
-then immediately re-read before `acquire`. Once the owner exists, the durable
-owner and this tag bind recovery; the mutable proposal pointer may move without
-stranding a paused epoch.
+The annotated R tag **must be protected before Epoch A execution**; it is the
+immutable recovery anchor. The controller requires both its exact tag-object ID
+and its peeled commit ID before it reads durable state, so an unreviewed
+retarget also fails closed. `runtime-candidate` is deliberately **not** that
+anchor: it is consulted only while a fresh no-owner `prepare` is about to
+acquire Epoch A, then immediately re-read before `acquire`. Once the owner
+exists, the durable owner and this tag bind recovery; the mutable proposal
+pointer may move without stranding a paused epoch.
 
 Epoch B must later create P as a direct child of this exact R. It may not use
 the Epoch-A controller SHA or `main` as its source identity.

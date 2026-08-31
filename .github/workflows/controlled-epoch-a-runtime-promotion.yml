@@ -130,7 +130,13 @@ jobs:
             jq -e --arg sha "$EPOCH_A_PRODUCTION_BASE_SHA" '.source_commit == $sha and .checkout_contract_version == "sales-availability-v1"' frontend-before.json >/dev/null || { echo "EPOCH_A_FRONTEND_BASE_EVIDENCE_MISMATCH" >&2; exit 1; }
             jq -e --arg sha "$EPOCH_A_PRODUCTION_BASE_SHA" '.source_commit == $sha and .admin_contract_version == "sales-availability-v1"' admin-before.json >/dev/null || { echo "EPOCH_A_ADMIN_BASE_EVIDENCE_MISMATCH" >&2; exit 1; }
           fi
-          applied="$(jq -er '.runtime.migration_versions | if type == "array" and all(.[]; type == "string") then sort | join("\n") else error("EPOCH_A_MIGRATION_INVENTORY_INVALID") end' durable-before.json)"
+          applied="$(node --import tsx -e '
+            import { readFileSync } from "node:fs";
+            import { canonicalMigrationInventory } from "./commerce/src/release-expectation.ts";
+            const versions = JSON.parse(readFileSync(process.argv[1], "utf8")).runtime?.migration_versions;
+            if (!Array.isArray(versions) || !versions.every((value) => typeof value === "string")) process.exit(2);
+            process.stdout.write(canonicalMigrationInventory(versions));
+          ' durable-before.json)" || { echo "EPOCH_A_MIGRATION_INVENTORY_INVALID" >&2; exit 1; }
           expected="$(git ls-tree -r --name-only "$EPOCH_A_RUNTIME_SHA" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
           [[ "$applied" == "$expected" ]] || { echo "EPOCH_A_DURABLE_MIGRATION_INVENTORY_MISMATCH" >&2; exit 1; }
           jq -e --arg release "$EPOCH_A_RELEASE_ID" --arg source "$EPOCH_A_RUNTIME_SHA" --arg migration "inventory-sha256:$(printf %s "$expected" | shasum -a 256 | awk '{print $1}')" '
@@ -223,7 +229,13 @@ jobs:
             .emergency_sales_paused == $emergency
           ' pre-cas-status.json >/dev/null || { echo "EPOCH_A_PRE_CAS_DURABLE_AUTHORITY_MISMATCH" >&2; exit 1; }
           jq -e --arg legal "$EPOCH_A_PRE_B_LEGAL_VERSION" --arg future "$EPOCH_A_NOTIFICATION_LEGAL_VERSION" '.version == $legal and .version != $future and .occurrence_notifications_available == false' pre-cas-legal.json >/dev/null || { echo "EPOCH_A_PRE_CAS_LEGAL_OR_DORMANCY_INVALID" >&2; exit 1; }
-          applied="$(jq -er '.runtime.migration_versions | if type == "array" and all(.[]; type == "string") then sort | join("\\n") else error("EPOCH_A_PRE_CAS_MIGRATION_INVENTORY_INVALID") end' pre-cas-status.json)"
+          applied="$(node --import tsx -e '
+            import { readFileSync } from "node:fs";
+            import { canonicalMigrationInventory } from "./commerce/src/release-expectation.ts";
+            const versions = JSON.parse(readFileSync(process.argv[1], "utf8")).runtime?.migration_versions;
+            if (!Array.isArray(versions) || !versions.every((value) => typeof value === "string")) process.exit(2);
+            process.stdout.write(canonicalMigrationInventory(versions));
+          ' pre-cas-status.json)" || { echo "EPOCH_A_PRE_CAS_MIGRATION_INVENTORY_INVALID" >&2; exit 1; }
           expected="$(git ls-tree -r --name-only "$EPOCH_A_RUNTIME_SHA" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
           [[ "$applied" == "$expected" ]] || { echo "EPOCH_A_PRE_CAS_MIGRATION_INVENTORY_MISMATCH" >&2; exit 1; }
           if [[ "$pointer" == "$EPOCH_A_PRODUCTION_BASE_SHA" ]]; then

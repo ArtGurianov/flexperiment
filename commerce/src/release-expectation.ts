@@ -44,12 +44,15 @@ export const isMigrationFilenameExpectation = (raw: unknown): boolean => parseRe
 export const isMigrationInventoryExpectation = (raw: unknown): boolean => parseReleaseExpectation(raw)?.kind === "MIGRATION_INVENTORY";
 
 /**
- * The only constructor. Sorted, joined with \n, no trailing newline - a shape
- * shared byte-for-byte with the shell and jq pipelines in the deploy
- * controller, pinned by test.
+ * The only inventory representation. Sorted, joined with \n, no trailing
+ * newline. Controller workflows call this helper instead of reimplementing
+ * the delimiter in shell or jq.
  */
+export const canonicalMigrationInventory = (versions: readonly string[]): string =>
+  [...versions].sort().join("\n");
+
 export const migrationInventoryExpectation = (versions: readonly string[]): string =>
-  `${INVENTORY_PREFIX}${createHash("sha256").update([...versions].sort().join("\n")).digest("hex")}`;
+  `${INVENTORY_PREFIX}${createHash("sha256").update(canonicalMigrationInventory(versions)).digest("hex")}`;
 
 /** Idempotent by construction: a canonical value re-canonicalizes to itself. */
 export const canonicalReleaseExpectation = (raw: unknown): string | undefined => parseReleaseExpectation(raw)?.value;
