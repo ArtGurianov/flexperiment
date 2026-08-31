@@ -136,13 +136,6 @@ const lastUnfenceAt = (db: Database.Database, releaseId: string): string | null 
   return row?.created_at ?? null;
 };
 
-const after = (value: string | null, boundary: string | null): boolean => {
-  if (!value || !boundary) return false;
-  const at = parseUtcTimestamp(value);
-  const from = parseUtcTimestamp(boundary);
-  return at !== null && from !== null && at >= from;
-};
-
 /** This recovery needs a strict ordering, not the inclusive completion proof. */
 const strictlyAfter = (value: string | null, boundary: string | null): boolean => {
   if (!value || !boundary) return false;
@@ -221,7 +214,7 @@ export const certificationDispatchEvidence = (db: Database.Database, releaseId: 
     message.attempt !== null && message.attempt.attempt_no === 1 && message.attempt.outcome === null
     && message.attempt.started_at === null && message.attempt.provider_request_started_at === null);
   const dispatched_after_unfence = live.length > 0
-    && live.some((message) => message.attempt?.outcome === "ACCEPTED" && after(message.attempt.started_at, unfencedAt))
+    && live.some((message) => message.attempt?.outcome === "ACCEPTED" && strictlyAfter(message.attempt.started_at, unfencedAt))
     // Nothing left behind: a partially dispatched backlog is not a proof.
     && live.every((message) => message.attempt !== null && message.attempt.started_at !== null);
 

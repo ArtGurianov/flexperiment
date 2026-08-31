@@ -1,9 +1,11 @@
-# 0041 offline Gen1-to-Gen2 bridge
+# HISTORICAL — DO NOT EXECUTE: 0041 offline Gen1-to-Gen2 bridge
 
-This is a one-shot recovery for the fixed 0041 release only. It is not a
-general deployment or replacement procedure. Until its separate production GO,
-do not run the host bridge, the Gen2 deploy-only workflow, `complete`, a
-certification retry, or a pre-activation classifier.
+The one permitted 0041 offline bridge and its Gen2 deploy-only recovery have
+completed. The deployed runtime and `production-deploy` are exact Gen2
+`0ddc33d0fd0077fe0ba238ec75ae4090fc38ac34`; Gen1 is permanently retired as a
+ledger reader. The former host bridge script is an explicit fail-closed stub
+and the deploy-only workflow no longer exists. This document remains an audit
+record, not an execution runbook.
 
 ## Fixed identities
 
@@ -21,7 +23,7 @@ The host runner requires the same SHA as
 worktree is clean and exact, and refuses any other tree before it disables a
 restart policy.
 
-## Fresh state-hash discipline
+## Historical state-hash discipline
 
 Immediately before offline exclusion, take one authenticated, read-only
 authoritative Gen1 candidate-head read and record its `state_hash`. Pass that
@@ -38,7 +40,7 @@ bridge event therefore records `from_phase_sequence = 8` and derives
 `RECOVERY_REQUIRED` at sequence 9; the immediately following supersession
 creates Gen2 `PAUSED` at sequence 0.
 
-## Execution and recovery boundary
+## Historical execution and recovery boundary
 
 The host runner discovers the exact Gen1 Commerce and worker containers from
 their Compose labels, source SHA, and shared SQLite volume. It disables both
@@ -59,3 +61,11 @@ Only after that proof may the deploy controller CAS `production-deploy` from
 Gen1 to exact Gen2 and invoke `controlled-coolify-deploy.sh` for Gen2. It never
 rolls the pointer back to Gen1. Runtime API calls are permitted only after the
 Gen2 deploy trigger, for the paused-state convergence proof.
+
+## What remains available before terminal COMPLETE
+
+The v1 receipt is immutable historical evidence. Its reader and the pinned
+volume re-anchor remain read-only forensic tooling until terminal `COMPLETE`.
+They must never be used to restart Gen1, replay the bridge, or deploy Gen2 a
+second time. The next controlled path is documented separately as
+[`0041_POST_BRIDGE_GEN2_EMAIL_RECOVERY.md`](0041_POST_BRIDGE_GEN2_EMAIL_RECOVERY.md).
