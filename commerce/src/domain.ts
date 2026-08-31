@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import { canonical, canonicalV2, decryptTicketCapability, emailHash, encryptTicketCapability, id, now, publicId, publicOrderNumber, sha256 } from "./crypto";
 import { EmailProviderRejectedError, EventDumpCreateRejectedError, isEmailDeliveryEvidenceProvider, type EmailProvider, type UnisenderDumpEvent, UNISENDER_EVENT_DUMP_EVENT_LIMIT, UnconfiguredEmailProvider } from "./email-provider";
 import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
-import { LegalReleasePublishError, loadCanonicalLegalRelease, publishLegalRelease, verifyCurrentLegalSourceHashes } from "./legal-release";
+import { LegalReleasePublishError, loadCanonicalLegalRelease, publishLegalRelease, verifyCurrentLegalSourceHashes, type CanonicalLegalRelease } from "./legal-release";
 import { providerErrorEvidence, type PaymentProvider } from "./provider";
 import { ReleaseControlError, ReleaseSalesGate, type CandidateAcquireRequest, type CandidateAdoptRequest, type CandidateAbortRequest, type CandidateCompleteRequest, type CandidateHeadSnapshot, type CandidatePhaseRequest, type CertificationEvidenceRequest, type CertificationLeaseRequest, type CertificationOrderContext, type CertificationRetryRequest, type PostActivationEmailProviderDefectRequest, type PreActivationDefectRequest, type ReleaseControlRequest, type RuntimeReadinessDefectRequest, releaseRuntimeEvidence } from "./release-control";
 import { checkoutRequestSchema, promoMergedSchema, type CheckoutRequest, type ParticipantAgeBand } from "./types";
@@ -10,6 +10,7 @@ import { PromoPricingError, pricePromo } from "./promo-pricing";
 import { basisPointsOf } from "./basis-points";
 import { findCityBySlug } from "../../lib/city-catalog";
 import { purchaseStatus, type PurchaseStatus } from "./purchase-status";
+import { occurrenceNotificationsCapabilityActive } from "./occurrence-notification-capability";
 import { parseUtcTimestamp } from "./utc-timestamp";
 import { assertNewOrdersOpen as assertGateOpen, emergencySalesPaused as gateEmergencyPaused, newOrdersBlocked as gateBlocked } from "./sales-gate";
 import { claimForDispatch, deferAmbiguousObservation, deferAmbiguousSend, dispatchCandidates, failExhaustedAmbiguous, providerLookupIdentity, recordProviderAcceptance, recordProviderRefusal, applyProviderObservation, claimedAttemptRef, reconcileHistoricalHttp403, resolveAttemptRef, skipObsoletePendingMessage, supersedeQueuedMessage, suppressMessageDispatch, sendTryCount, staleLeasedSends, type AttemptRef } from "./outbox-attempt-store";
@@ -641,10 +642,20 @@ export class CommerceDomain {
       if (release) activeVersion = String(release.version);
       return release ? legalManifest(JSON.parse(String(release.manifest_json))) : undefined;
     })();
-    if (!active || activeVersion !== "2026-08-28.1") return false;
-    try { verifyCurrentLegalSourceHashes(active); } catch { return false; }
-    return active.documents.PRIVACY_POLICY.sha256 === "642d11458733e8c1e5bfb28d0cde7f917a276dfcb3e32dc52adc34fac6326339"
-      && active.documents.PD_CONSENT.sha256 === "acdb8a31a846c1c697cfd977fb67f24e75d280ab72cb6fbce5bbf0146d4ba5b6";
+    if (!active) return false;
+    let runtimeRelease: CanonicalLegalRelease;
+    try {
+      // Do not honor the publication helper's environment override here: this
+      // is runtime evidence, so it must bind to the deployed canonical source.
+      runtimeRelease = loadCanonicalLegalRelease("commerce/legal/production-manifest.json");
+      verifyCurrentLegalSourceHashes(active);
+    } catch { return false; }
+    return occurrenceNotificationsCapabilityActive({
+      activeVersion,
+      activeManifest: active,
+      runtimeRelease,
+      currentLegalCopiesMatch: true,
+    });
   }
 
   salesControl() {
@@ -2485,9 +2496,14 @@ export class CommerceDomain {
     // ones - and no freeze trigger fires, because a stale READ writes nothing.
     const rows = dispatchCandidates(this.db, timestamp, 50) as Array<Record<string, unknown>>;
     for (const outbox of rows) {
+      const isUnknown = outbox.status === "SEND_UNKNOWN";
       if (outbox.type === "CITY_INTEREST_AVAILABLE" || outbox.type === "OCCURRENCE_AVAILABLE") {
         const active = withImmediateTransaction(this.db, () => {
           if (outbox.type === "CITY_INTEREST_AVAILABLE" ? this.isActiveCityInterestNotification(String(outbox.id)) : this.isActiveOccurrenceNotification(String(outbox.id))) return true;
+          // Provider acceptance may have been lost between the send and our
+          // local write. Never turn a SEND_UNKNOWN into a suppression before
+          // its existing provider identity has been reconciled.
+          if (isUnknown) return true;
           if (outbox.type === "CITY_INTEREST_AVAILABLE") this.suppressCityInterestOutbox(String(outbox.id));
           else this.suppressOccurrenceNotificationOutbox(String(outbox.id));
           return false;
@@ -2499,7 +2515,6 @@ export class CommerceDomain {
         // SKIPPED is terminal and deliberately not an email-provider failure.
         if (this.skipObsoleteRefundConfirmationOutbox(String(outbox.id))) continue;
       }
-      const isUnknown = outbox.status === "SEND_UNKNOWN";
       if (isUnknown && this.reconcileLegacyUnisenderHttp403(String(outbox.id))) continue;
       // A known provider job is always reconciled before another send. It is
       // never considered proof that the original request was not dispatched.

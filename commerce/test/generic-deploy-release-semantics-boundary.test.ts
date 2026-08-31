@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { genericProductionDeployBoundary, genericProductionDeployBoundaryError, releaseSemanticsPaths } from "../src/generic-production-deploy-boundary";
+import { genericProductionDeployBoundary, genericProductionDeployBoundaryError, releaseSemanticsCategories, releaseSemanticsPaths } from "../src/generic-production-deploy-boundary";
 
 /**
  * The boundary must answer "can this diff change how durable release state is
@@ -32,6 +32,13 @@ describe("generic deploy release-semantics boundary", () => {
     ["lease and freshness timestamp parsing", "commerce/src/utc-timestamp.ts"],
   ])("refuses a candidate that changes %s", (_label, path) => {
     expect(genericProductionDeployBoundary([path])).toBe("RELEASE_SEMANTICS");
+  });
+
+  it("classifies notification legal activation and its evidence reader as compatibility semantics", () => {
+    for (const path of ["commerce/src/occurrence-notification-capability.ts", "commerce/src/legal-release.ts"]) {
+      expect(genericProductionDeployBoundary([path])).toBe("RELEASE_SEMANTICS");
+      expect(releaseSemanticsCategories([path])).toEqual(["COMPATIBILITY"]);
+    }
   });
 
   it("admits a change to the boundary classifier itself", () => {

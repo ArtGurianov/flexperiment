@@ -48,9 +48,17 @@ describe("release API error surfacing", () => {
     const result = run(`
       set -uo pipefail
       export COMMERCE_RELEASE_CONTROL_TOKEN=t
-      BODY='{"error":{"code":"CERTIFICATION_CLEANUP_INCOMPLETE"}}'
-      printf 'HTTP/1.1 409 Conflict\\r\\nContent-Type: application/json\\r\\nContent-Length: %s\\r\\nConnection: close\\r\\n\\r\\n%s' "\${#BODY}" "$BODY" > /tmp/resp.$$
-      (printf '' | nc -l 127.0.0.1 8731 < /tmp/resp.$$ >/dev/null 2>&1 &) 
+      node -e '
+        const net = require("node:net");
+        const body = JSON.stringify({ error: { code: "CERTIFICATION_CLEANUP_INCOMPLETE" } });
+        const server = net.createServer((socket) => {
+          socket.once("data", () => {
+            socket.end("HTTP/1.1 409 Conflict\\r\\nContent-Type: application/json\\r\\nContent-Length: " + Buffer.byteLength(body) + "\\r\\nConnection: close\\r\\n\\r\\n" + body);
+            server.close();
+          });
+        });
+        server.listen(8731, "127.0.0.1");
+      ' &
       sleep 0.4
       source scripts/release/release-api.sh
       api http://127.0.0.1:8731/ > /dev/null

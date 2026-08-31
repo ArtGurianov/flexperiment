@@ -359,6 +359,59 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
+  it("keeps sold-out occurrences visible while cancellation, hidden visibility, and past time fail closed on public reads", async () => {
+    const { db, app } = appFixture();
+    const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
+    const headers = { Origin: "https://flexperiment.ru", "X-Forwarded-For": "127.0.0.34" };
+
+    db.prepare("UPDATE occurrences SET capacity = 0 WHERE id = ?").run(occurrenceId);
+    const soldOutTour = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers });
+    expect((await soldOutTour.json() as { cities: Array<{ id: string; purchase_status: string }> }).cities).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: occurrenceId, purchase_status: "SOLD_OUT" }),
+    ]));
+    const soldOutDetail = await app.request(`http://api.flexperiment.ru/v1/public/occurrences/${occurrenceId}`, { headers });
+    expect(await soldOutDetail.json()).toMatchObject({ id: occurrenceId, purchase_status: "SOLD_OUT" });
+
+    db.prepare("UPDATE occurrences SET fulfillment_status = 'CANCELLED', sales_status = 'CLOSED', cancelled_at = datetime('now') WHERE id = ?").run(occurrenceId);
+    const cancelledTour = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers });
+    expect((await cancelledTour.json() as { cities: unknown[] }).cities).toEqual([]);
+    const cancelledDetail = await app.request(`http://api.flexperiment.ru/v1/public/occurrences/${occurrenceId}`, { headers });
+    expect(await cancelledDetail.json()).toMatchObject({ id: occurrenceId, purchase_status: "UNAVAILABLE" });
+
+    db.prepare("UPDATE occurrences SET fulfillment_status = 'SCHEDULED', sales_status = 'CLOSED', visibility = 'HIDDEN', cancelled_at = NULL WHERE id = ?").run(occurrenceId);
+    expect((await app.request(`http://api.flexperiment.ru/v1/public/occurrences/${occurrenceId}`, { headers })).status).toBe(404);
+    db.close();
+  });
+
+  it("fails closed on occurrence-notification captcha and dormant capability before storing PII", async () => {
+    let captchaCalls = 0;
+    const { db, app } = appFixture({ verify: async () => { captchaCalls += 1; return "INVALID"; } });
+    const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
+    const request = () => app.request("http://api.flexperiment.ru/v1/public/occurrence-notifications", {
+      method: "POST",
+      headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.86" },
+      body: JSON.stringify({ email: "notify@example.test", occurrence_id: occurrenceId, pd_consent_accepted: true, captcha_token: "proof" }),
+    });
+    const captchaRejected = await request();
+    expect(captchaRejected.status).toBe(422);
+    expect(await captchaRejected.json()).toEqual({ error: { code: "CAPTCHA_INVALID" } });
+    expect(captchaCalls).toBe(1);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM occurrence_notification_requests").get()).toEqual({ count: 0 });
+    db.close();
+
+    const dormant = appFixture();
+    const dormantOccurrenceId = (dormant.db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
+    const unavailable = await dormant.app.request("http://api.flexperiment.ru/v1/public/occurrence-notifications", {
+      method: "POST",
+      headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.87" },
+      body: JSON.stringify({ email: "notify@example.test", occurrence_id: dormantOccurrenceId, pd_consent_accepted: true, captcha_token: "proof" }),
+    });
+    expect(unavailable.status).toBe(503);
+    expect(await unavailable.json()).toEqual({ error: { code: "NOTIFICATIONS_NOT_AVAILABLE" } });
+    expect(dormant.db.prepare("SELECT COUNT(*) AS count FROM occurrence_notification_requests").get()).toEqual({ count: 0 });
+    dormant.db.close();
+  });
+
   it("exposes only a TBD venue presentation, never an address", async () => {
     const { db, app } = appFixture();
     const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;

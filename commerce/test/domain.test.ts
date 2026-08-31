@@ -206,6 +206,58 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT id FROM occurrence_notification_requests WHERE id = ?").get(terminatedId)).toBeUndefined();
   });
 
+  it("suppresses a stale pending occurrence intent once and creates a new intent for the next availability transition", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    const email: EmailProvider = {
+      async send() { throw new Error("stale occurrence notification must not send"); },
+      async lookup() { return { status: "UNKNOWN" }; },
+    };
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email);
+    (domain as unknown as { occurrenceNotificationsAvailable: () => boolean }).occurrenceNotificationsAvailable = () => true;
+    setup.db.prepare("UPDATE occurrences SET capacity = 0 WHERE id = ?").run(setup.occurrenceId);
+    domain.registerOccurrenceNotification({ email: "availability@example.test", occurrence_id: setup.occurrenceId });
+
+    setup.db.prepare("UPDATE occurrences SET capacity = 1 WHERE id = ?").run(setup.occurrenceId);
+    expect(domain.processOccurrenceNotificationLifecycle()).toEqual({ deleted: 0, intents_created: 1 });
+    const first = setup.db.prepare(`SELECT intent.id AS intent_id, outbox.id AS outbox_id, outbox.status
+      FROM occurrence_notification_intents intent JOIN email_outbox outbox ON outbox.id = intent.outbox_id`).get() as { intent_id: string; outbox_id: string; status: string };
+    expect(first.status).toBe("PENDING");
+
+    setup.db.prepare("UPDATE occurrences SET capacity = 0 WHERE id = ?").run(setup.occurrenceId);
+    await domain.processEmailOutbox();
+    expect(setup.db.prepare("SELECT status, superseded_at FROM email_outbox WHERE id = ?").get(first.outbox_id)).toEqual({ status: "SKIPPED", superseded_at: null });
+    expect(setup.db.prepare("SELECT superseded_at FROM occurrence_notification_intents WHERE id = ?").get(first.intent_id)).toEqual({ superseded_at: expect.any(String) });
+
+    setup.db.prepare("UPDATE occurrences SET capacity = 1 WHERE id = ?").run(setup.occurrenceId);
+    expect(domain.processOccurrenceNotificationLifecycle()).toEqual({ deleted: 0, intents_created: 1 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrence_notification_intents").get()).toEqual({ count: 2 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM occurrence_notification_intents WHERE superseded_at IS NULL").get()).toEqual({ count: 1 });
+    expect(setup.db.prepare("SELECT COUNT(*) AS count FROM email_outbox WHERE type = 'OCCURRENCE_AVAILABLE'").get()).toEqual({ count: 2 });
+  });
+
+  it("reconciles SEND_UNKNOWN occurrence evidence before an eligibility loss can suppress it", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    let lookups = 0;
+    const email: EmailProvider = {
+      async send() { throw new Error("SEND_UNKNOWN must reconcile before any resend"); },
+      async lookup() { lookups += 1; return { status: "ACCEPTED", jobId: "already-accepted" }; },
+    };
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email);
+    (domain as unknown as { occurrenceNotificationsAvailable: () => boolean }).occurrenceNotificationsAvailable = () => true;
+    setup.db.prepare("UPDATE occurrences SET capacity = 0 WHERE id = ?").run(setup.occurrenceId);
+    domain.registerOccurrenceNotification({ email: "unknown@example.test", occurrence_id: setup.occurrenceId });
+    setup.db.prepare("UPDATE occurrences SET capacity = 1 WHERE id = ?").run(setup.occurrenceId);
+    domain.processOccurrenceNotificationLifecycle();
+    const outbox = setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'OCCURRENCE_AVAILABLE'").get() as { id: string };
+    setup.db.prepare("UPDATE email_outbox SET status = 'SEND_UNKNOWN', next_attempt_at = '2000-01-01T00:00:00.000Z' WHERE id = ?").run(outbox.id);
+    setup.db.prepare("UPDATE occurrences SET capacity = 0 WHERE id = ?").run(setup.occurrenceId);
+
+    await domain.processEmailOutbox();
+
+    expect(lookups).toBe(1);
+    expect(setup.db.prepare("SELECT status, superseded_at FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "ACCEPTED", superseded_at: null });
+  });
+
   it("keeps Phase 0 reopen available without 0031, 0034, or a worker sweep", () => {
     const baseRelease = controlledRelease();
     const phase0Release = { ...baseRelease, expected: { ...baseRelease.expected, migration: "0033_runtime_release_evidence.sql" } };
