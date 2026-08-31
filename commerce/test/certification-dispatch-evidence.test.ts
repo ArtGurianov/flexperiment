@@ -358,6 +358,15 @@ describe("certification dispatch evidence", () => {
     expect(certificationDispatchEvidence(db, RELEASE).dispatched_after_unfence).toBe(false);
   });
 
+  it("requires a send strictly later than the durable unfence boundary", () => {
+    const db = fixture();
+    certify(db);
+    unfenced(db, "2026-08-30 10:00:00.900");
+    message(db, "m1", { status: "ACCEPTED" },
+      { outcome: "ACCEPTED", started_at: "2026-08-30T10:00:00.900Z", completed_at: "2026-08-30T10:00:01.000Z" });
+    expect(certificationDispatchEvidence(db, RELEASE).dispatched_after_unfence).toBe(false);
+  });
+
   it("writes authority events with sub-second precision", () => {
     // The runtime, not the fixture: the column default is second-precision, so
     // the insert has to supply the time itself.

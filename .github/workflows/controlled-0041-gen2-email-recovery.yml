@@ -1,0 +1,235 @@
+name: Controlled 0041 post-bridge Gen2 email recovery
+
+# This is deliberately not a deployment workflow. The offline bridge and Gen2
+# deployment are spent; each remaining data-plane boundary needs operator GO.
+on:
+  workflow_dispatch:
+    inputs:
+      stage:
+        description: Prepare fresh Gen2 certification, certify, unfence/prove, contain an unsuccessful unfence, or complete after a separate GO.
+        required: true
+        type: choice
+        options: [prepare_certification, certify, unfence, contain_after_unfence_failure, complete]
+      certification_occurrence_id:
+        description: Fresh hidden 101-kopeck fixture UUID. Only for prepare_certification.
+        required: false
+        type: string
+      certification_promo_id:
+        description: Fresh active FIXED-1 fixture UUID. Only for prepare_certification.
+        required: false
+        type: string
+      certification_idempotency_key_hash:
+        description: SHA-256 of the fresh checkout key. Only for prepare_certification.
+        required: false
+        type: string
+      certification_lease_seconds:
+        description: Integer 180 through 300. Only for prepare_certification.
+        required: false
+        type: string
+      certification_order_id:
+        description: Consumed/refunded order UUID. Only for certify.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  recover_gen2_email:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 35
+    env:
+      CONTROLLER_SHA: ${{ github.sha }}
+      GEN1_RUNTIME_SHA: 68f80a411b7f286928ef10826ed225228098d246
+      GEN2_RUNTIME_SHA: 0ddc33d0fd0077fe0ba238ec75ae4090fc38ac34
+      RELEASE_ID: outbox-attempt-authority-v1:68f80a411b7f286928ef10826ed225228098d246
+      EXPECTED_GENERATION: '2'
+      INPUT_STAGE: ${{ inputs.stage }}
+      INPUT_CERTIFICATION_OCCURRENCE_ID: ${{ inputs.certification_occurrence_id || '' }}
+      INPUT_CERTIFICATION_PROMO_ID: ${{ inputs.certification_promo_id || '' }}
+      INPUT_CERTIFICATION_IDEMPOTENCY_KEY_HASH: ${{ inputs.certification_idempotency_key_hash || '' }}
+      INPUT_CERTIFICATION_LEASE_SECONDS: ${{ inputs.certification_lease_seconds || '' }}
+      INPUT_CERTIFICATION_ORDER_ID: ${{ inputs.certification_order_id || '' }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      POLL_ATTEMPTS: '24'
+      POLL_SECONDS: '5'
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Validate the post-bridge controller and inputs
+        run: |
+          set -euo pipefail
+          [[ "$INPUT_STAGE" =~ ^(prepare_certification|certify|unfence|contain_after_unfence_failure|complete)$ ]] || { echo "0041_GEN2_EMAIL_RECOVERY_STAGE_INVALID" >&2; exit 1; }
+          git fetch --no-tags origin "$GEN1_RUNTIME_SHA" "$GEN2_RUNTIME_SHA"
+          git cat-file -e "$GEN1_RUNTIME_SHA^{commit}"
+          git cat-file -e "$GEN2_RUNTIME_SHA^{commit}"
+          [[ "$(git rev-parse "$GEN2_RUNTIME_SHA^")" == "$GEN1_RUNTIME_SHA" ]] || { echo "0041_GEN2_EMAIL_RECOVERY_TOPOLOGY_INVALID" >&2; exit 1; }
+          ! git cat-file -e "$GEN2_RUNTIME_SHA:.release/maintenance-only" 2>/dev/null || { echo "0041_GEN2_EMAIL_RECOVERY_TARGET_MAINTENANCE_ONLY" >&2; exit 1; }
+          present=0
+          for value in "$INPUT_CERTIFICATION_OCCURRENCE_ID" "$INPUT_CERTIFICATION_PROMO_ID" "$INPUT_CERTIFICATION_IDEMPOTENCY_KEY_HASH" "$INPUT_CERTIFICATION_LEASE_SECONDS"; do [[ -n "$value" ]] && present=$((present + 1)); done
+          [[ "$present" == 0 || "$present" == 4 ]] || { echo "0041_GEN2_EMAIL_RECOVERY_CERTIFICATION_INPUTS_PARTIAL" >&2; exit 1; }
+          if [[ "$INPUT_STAGE" == prepare_certification ]]; then
+            [[ "$present" == 4 ]] || { echo "0041_GEN2_EMAIL_RECOVERY_CERTIFICATION_INPUTS_REQUIRED" >&2; exit 1; }
+            [[ "$INPUT_CERTIFICATION_OCCURRENCE_ID" =~ ^[0-9a-fA-F-]{36}$ && "$INPUT_CERTIFICATION_PROMO_ID" =~ ^[0-9a-fA-F-]{36}$ ]] || { echo "0041_GEN2_EMAIL_RECOVERY_CERTIFICATION_SCOPE_INVALID" >&2; exit 1; }
+            [[ "$INPUT_CERTIFICATION_IDEMPOTENCY_KEY_HASH" =~ ^[a-f0-9]{64}$ ]] || { echo "0041_GEN2_EMAIL_RECOVERY_CERTIFICATION_KEY_HASH_INVALID" >&2; exit 1; }
+            [[ "$INPUT_CERTIFICATION_LEASE_SECONDS" =~ ^(18[0-9]|19[0-9]|2[0-9]{2}|300)$ ]] || { echo "0041_GEN2_EMAIL_RECOVERY_CERTIFICATION_LEASE_INVALID" >&2; exit 1; }
+          else
+            [[ "$present" == 0 ]] || { echo "0041_GEN2_EMAIL_RECOVERY_CERTIFICATION_INPUTS_FORBIDDEN" >&2; exit 1; }
+          fi
+          if [[ "$INPUT_STAGE" == certify ]]; then
+            [[ "$INPUT_CERTIFICATION_ORDER_ID" =~ ^[0-9a-fA-F-]{36}$ ]] || { echo "0041_GEN2_EMAIL_RECOVERY_ORDER_ID_REQUIRED" >&2; exit 1; }
+          else
+            [[ -z "$INPUT_CERTIFICATION_ORDER_ID" ]] || { echo "0041_GEN2_EMAIL_RECOVERY_ORDER_ID_FORBIDDEN" >&2; exit 1; }
+          fi
+
+      - name: Prove exact deployed Gen2 and read durable control state
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$GEN2_RUNTIME_SHA" ]] || { echo "0041_GEN2_EMAIL_RECOVERY_PRODUCTION_DEPLOY_NOT_GEN2" >&2; exit 1; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/candidates/head/$RELEASE_ID" > head.json
+          if [[ "$INPUT_STAGE" == complete ]] && jq -e --arg release_id "$RELEASE_ID" --arg source "$GEN2_RUNTIME_SHA" --argjson generation "$EXPECTED_GENERATION" '.head.release_id == $release_id and .head.phase == "COMPLETE" and .head.candidate_generation == $generation and .head.source_commit == $source' head.json >/dev/null; then
+            jq -e '.sales_paused == false and .owner_release_id == null' status.json >/dev/null || { echo "0041_GEN2_EMAIL_RECOVERY_COMPLETE_REPLAY_INVALID" >&2; exit 1; }
+            echo "GEN2_EMAIL_RECOVERY_COMPLETE_REPLAY=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          jq -e --arg release_id "$RELEASE_ID" --arg source "$GEN2_RUNTIME_SHA" --argjson generation "$EXPECTED_GENERATION" '.schema_version == 2 and .head.release_id == $release_id and .head.candidate_generation == $generation and .head.source_commit == $source and (.state_hash | type == "string" and test("^[a-f0-9]{64}$"))' head.json >/dev/null || { echo "0041_GEN2_EMAIL_RECOVERY_HEAD_INVALID" >&2; exit 1; }
+          jq -e --arg release_id "$RELEASE_ID" --arg source "$GEN2_RUNTIME_SHA" '.sales_paused == true and .owner_release_id == $release_id and .runtime.source_commit == $source and .runtime.worker_source_commit == $source and .outbox_authority.attempt_authority == "ATTEMPT" and .outbox_authority.dispatch_owner_generation == null' status.json >/dev/null || { echo "0041_GEN2_EMAIL_RECOVERY_RUNTIME_OR_OWNER_INVALID" >&2; exit 1; }
+
+      - name: Prepare a fresh Gen2 certification lease while ATTEMPT remains fenced
+        if: env.INPUT_STAGE == 'prepare_certification'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          jq -e --arg release_id "$RELEASE_ID" '.emergency_sales_paused == false and .outbox_authority.email_dispatch_paused == true and .outbox_authority.dispatch_owner_release_id == $release_id and .outbox_authority.revision == 7' status.json >/dev/null || { echo "0041_GEN2_EMAIL_RECOVERY_PREPARE_FENCE_OR_EMERGENCY_INVALID" >&2; exit 1; }
+          phase="$(jq -er '.head.phase' head.json)"
+          sequence="$(jq -er '.head.phase_sequence' head.json)"
+          if [[ "$phase" == PAUSED && "$sequence" == 0 ]]; then
+            jq -n --slurpfile current head.json '{release_id: $current[0].head.release_id, candidate_generation: $current[0].head.candidate_generation, expected_state_hash: $current[0].state_hash, from_phase: "PAUSED", phase_sequence: 0, to_phase: "DEPLOYED_READ_ONLY"}' > phase.json
+            api -X POST --data-binary @phase.json "$PUBLIC_API_URL/v1/internal/release-control/candidates/phase" > deployed.json
+            jq -e '.head.phase == "DEPLOYED_READ_ONLY" and .head.phase_sequence == 1' deployed.json >/dev/null || { echo "0041_GEN2_EMAIL_RECOVERY_DEPLOYED_READ_ONLY_FAILED" >&2; exit 1; }
+            api "$PUBLIC_API_URL/v1/internal/release-control/candidates/head/$RELEASE_ID" > head.json
+            phase=DEPLOYED_READ_ONLY
+          fi
+          if [[ "$phase" == CERTIFICATION_ONLY ]]; then
+            jq -e --arg occurrence "$INPUT_CERTIFICATION_OCCURRENCE_ID" --arg promo "$INPUT_CERTIFICATION_PROMO_ID" --arg hash "$INPUT_CERTIFICATION_IDEMPOTENCY_KEY_HASH" '.head.certification.status == "ACTIVE" and .head.certification.occurrence_id == $occurrence and .head.certification.promo_id == $promo and .head.certification.expected_idempotency_key_hash == $hash' head.json >/dev/null || { echo "0041_GEN2_EMAIL_RECOVERY_LEASE_REPLAY_MISMATCH" >&2; exit 1; }
+            lease_state="$(node -e 'const t=Date.parse(process.argv[1]); if(!Number.isFinite(t))process.exit(2); process.stdout.write(t>Date.now()?"LIVE":"EXPIRED")' "$(jq -er '.head.certification.lease_expires_at' head.json)")" || { echo "0041_GEN2_EMAIL_RECOVERY_LEASE_EXPIRY_INVALID" >&2; exit 1; }
+            [[ "$lease_state" == LIVE ]] && { echo "GEN2_CERTIFICATION_LEASE_REPLAY=LIVE"; exit 0; }
+            jq -n --slurpfile current head.json '{release_id: $current[0].head.release_id, candidate_generation: $current[0].head.candidate_generation, expected_state_hash: $current[0].state_hash, from_phase: "CERTIFICATION_ONLY", phase_sequence: $current[0].head.phase_sequence, to_phase: "DEPLOYED_READ_ONLY"}' > reset.json
+            api -X POST --data-binary @reset.json "$PUBLIC_API_URL/v1/internal/release-control/candidates/phase" > reset.json.out
+            api "$PUBLIC_API_URL/v1/internal/release-control/candidates/head/$RELEASE_ID" > head.json
+            phase=DEPLOYED_READ_ONLY
+          fi
+          [[ "$phase" == DEPLOYED_READ_ONLY ]] || { echo "0041_GEN2_EMAIL_RECOVERY_PREPARE_PHASE_INVALID" >&2; exit 1; }
+          jq -n --slurpfile current head.json --arg occurrence "$INPUT_CERTIFICATION_OCCURRENCE_ID" --arg promo "$INPUT_CERTIFICATION_PROMO_ID" --arg key_hash "$INPUT_CERTIFICATION_IDEMPOTENCY_KEY_HASH" --argjson seconds "$INPUT_CERTIFICATION_LEASE_SECONDS" '{release_id: $current[0].head.release_id, candidate_generation: $current[0].head.candidate_generation, expected_state_hash: $current[0].state_hash, occurrence_id: $occurrence, promo_id: $promo, expected_idempotency_key_hash: $key_hash, lease_seconds: $seconds}' > activate-lease.json
+          api -X POST --data-binary @activate-lease.json "$PUBLIC_API_URL/v1/internal/release-control/candidates/certification/activate" > activated-lease.json
+          jq -e --arg source "$GEN2_RUNTIME_SHA" '.head.phase == "CERTIFICATION_ONLY" and .head.certification.status == "ACTIVE" and .head.source_commit == $source' activated-lease.json >/dev/null || { echo "0041_GEN2_EMAIL_RECOVERY_LEASE_ACTIVATION_FAILED" >&2; exit 1; }
+          echo "GEN2_CERTIFICATION_LEASE=$(jq -c '.lease | del(.expected_idempotency_key_hash)' activated-lease.json)"
+
+      - name: Record fresh Gen2 certification evidence and prove fenced queued mail
+        if: env.INPUT_STAGE == 'certify'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          jq -e --arg release_id "$RELEASE_ID" '.emergency_sales_paused == false and .outbox_authority.email_dispatch_paused == true and .outbox_authority.dispatch_owner_release_id == $release_id and .outbox_authority.revision == 7' status.json >/dev/null || { echo "0041_GEN2_EMAIL_RECOVERY_CERTIFY_FENCE_OR_EMERGENCY_INVALID" >&2; exit 1; }
+          if jq -e '.head.phase == "CERTIFIED" and .head.certification.status == "CONSUMED"' head.json >/dev/null; then
+            api "$PUBLIC_API_URL/v1/internal/release-control/certification-dispatch/$RELEASE_ID" > certification-replay.json
+            jq -e --arg order_id "$INPUT_CERTIFICATION_ORDER_ID" '.order_id == $order_id' certification-replay.json >/dev/null || { echo "0041_GEN2_EMAIL_RECOVERY_CERTIFY_REPLAY_MISMATCH" >&2; exit 1; }
+            echo "GEN2_CERTIFICATION_REPLAY=1"
+            exit 0
+          fi
+          jq -e '.head.phase == "CERTIFICATION_IN_FLIGHT" and .head.certification.status == "CONSUMED"' head.json >/dev/null || { echo "0041_GEN2_EMAIL_RECOVERY_CERTIFY_PHASE_INVALID" >&2; exit 1; }
+          jq -n --slurpfile current head.json --arg order_id "$INPUT_CERTIFICATION_ORDER_ID" '{release_id: $current[0].head.release_id, candidate_generation: $current[0].head.candidate_generation, expected_state_hash: $current[0].state_hash, order_id: $order_id}' > certify.json
+          api -X POST --data-binary @certify.json "$PUBLIC_API_URL/v1/internal/release-control/candidates/certification/certify" > certified.json
+          jq -e --arg source "$GEN2_RUNTIME_SHA" '.head.phase == "CERTIFIED" and .head.certification.status == "CONSUMED" and .head.source_commit == $source' certified.json >/dev/null || { echo "0041_GEN2_EMAIL_RECOVERY_CERTIFICATION_EVIDENCE_REJECTED" >&2; exit 1; }
+          for _ in $(seq 1 "$POLL_ATTEMPTS"); do
+            api "$PUBLIC_API_URL/v1/internal/release-control/certification-dispatch/$RELEASE_ID" > dispatch.json
+            api "$PUBLIC_API_URL/v1/internal/release-control/outbox-authority" > authority.json
+            if jq -e --arg order_id "$INPUT_CERTIFICATION_ORDER_ID" '.order_id == $order_id and .queued_unstarted == true and .target_defect == null and (.messages | length == 1 and .[0].type == "TICKET" and .[0].attempt.attempt_no == 1)' dispatch.json >/dev/null && jq -e '.attempt_authority == "ATTEMPT" and .email_dispatch_paused == true and (.attempts.defects | to_entries | map(.value == 0) | all)' authority.json >/dev/null; then
+              echo "GEN2_CERTIFICATION_QUEUED=$(jq -c '{order_id, messages}' dispatch.json)"
+              exit 0
+            fi
+            sleep "$POLL_SECONDS"
+          done
+          echo "0041_GEN2_EMAIL_RECOVERY_CERTIFICATION_DISPATCH_TARGET_INVALID" >&2
+          exit 1
+
+      - name: Unfence only a certified Gen2 order and prove accepted ATTEMPT dispatch
+        if: env.INPUT_STAGE == 'unfence'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          jq -e '.head.phase == "CERTIFIED" and .head.certification.status == "CONSUMED"' head.json >/dev/null || { echo "0041_GEN2_EMAIL_RECOVERY_UNFENCE_PHASE_INVALID" >&2; exit 1; }
+          if jq -e --arg release_id "$RELEASE_ID" '.emergency_sales_paused == false and .outbox_authority.email_dispatch_paused == true and .outbox_authority.dispatch_owner_release_id == $release_id and .outbox_authority.revision == 7 and .outbox_authority.dispatch.drained == true' status.json >/dev/null; then
+            api "$PUBLIC_API_URL/v1/internal/release-control/certification-dispatch/$RELEASE_ID" > pre-unfence-dispatch.json
+            jq -e '.queued_unstarted == true and .target_defect == null and (.messages | length == 1 and .[0].type == "TICKET" and .[0].attempt.attempt_no == 1)' pre-unfence-dispatch.json >/dev/null || { echo "0041_GEN2_EMAIL_RECOVERY_UNFENCE_TARGET_INVALID" >&2; exit 1; }
+            jq -n --arg release_id "$RELEASE_ID" '{expected_revision: 7, reason: "0041 Gen2 fixed-provider certification dispatch", release_id: $release_id, generation: null}' > unfence.json
+            api -X POST --data-binary @unfence.json "$PUBLIC_API_URL/v1/internal/release-control/outbox-dispatch/unfence" > unfenced.json
+            jq -e '.attempt_authority == "ATTEMPT" and .email_dispatch_paused == false and .dispatch_owner_release_id == null and .revision == 8' unfenced.json >/dev/null || { echo "0041_GEN2_EMAIL_RECOVERY_UNFENCE_CAS_FAILED" >&2; exit 1; }
+          else
+            jq -e '.emergency_sales_paused == false and .outbox_authority.email_dispatch_paused == false and .outbox_authority.dispatch_owner_release_id == null and .outbox_authority.revision == 8' status.json >/dev/null || { echo "0041_GEN2_EMAIL_RECOVERY_UNFENCE_FENCE_INVALID" >&2; exit 1; }
+            echo "GEN2_UNFENCE_REPLAY=1"
+          fi
+          for _ in $(seq 1 "$POLL_ATTEMPTS"); do
+            api "$PUBLIC_API_URL/v1/internal/release-control/certification-dispatch/$RELEASE_ID" > dispatch.json
+            api "$PUBLIC_API_URL/v1/internal/release-control/outbox-authority" > authority.json
+            if jq -e --arg release_id "$RELEASE_ID" '.release_id == $release_id and (.order_id | type == "string") and (.unfenced_at | type == "string") and .dispatched_after_unfence == true and (.messages | length == 1 and .[0].type == "TICKET" and .[0].attempt.attempt_no == 1 and .[0].attempt.outcome == "ACCEPTED" and (.[0].attempt.started_at | type == "string"))' dispatch.json >/dev/null && jq -e '.attempt_authority == "ATTEMPT" and .email_dispatch_paused == false and .revision == 8 and (.attempts.defects | to_entries | map(.value == 0) | all)' authority.json >/dev/null; then
+              echo "GEN2_ATTEMPT_DISPATCH_PROVEN=$(jq -c '{order_id, unfenced_at, messages}' dispatch.json)"
+              exit 0
+            fi
+            sleep "$POLL_SECONDS"
+          done
+          echo "0041_GEN2_EMAIL_RECOVERY_DISPATCH_NOT_ACCEPTED_AFTER_UNFENCE" >&2
+          echo "Run contain_after_unfence_failure; do not complete." >&2
+          exit 1
+
+      - name: Re-fence an unsuccessful Gen2 certification dispatch and prove drain
+        if: env.INPUT_STAGE == 'contain_after_unfence_failure'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          jq -e '.head.phase == "CERTIFIED" and .head.certification.status == "CONSUMED"' head.json >/dev/null || { echo "0041_GEN2_EMAIL_RECOVERY_CONTAINMENT_PHASE_INVALID" >&2; exit 1; }
+          if jq -e --arg release_id "$RELEASE_ID" '.outbox_authority.email_dispatch_paused == true and .outbox_authority.dispatch_owner_release_id == $release_id and .outbox_authority.revision == 9 and .outbox_authority.dispatch.drained == true and .outbox_authority.last_event.action == "DISPATCH_FENCED"' status.json >/dev/null; then
+            echo "GEN2_EMAIL_RECOVERY_CONTAINMENT_REPLAY=1"
+            exit 0
+          fi
+          jq -e '.emergency_sales_paused == false and .outbox_authority.email_dispatch_paused == false and .outbox_authority.dispatch_owner_release_id == null and .outbox_authority.revision == 8' status.json >/dev/null || { echo "0041_GEN2_EMAIL_RECOVERY_CONTAINMENT_AUTHORITY_INVALID" >&2; exit 1; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/certification-dispatch/$RELEASE_ID" > failed-dispatch.json
+          jq -e '.dispatched_after_unfence != true and (.messages | length == 1 and .[0].type == "TICKET" and .[0].attempt.attempt_no == 1)' failed-dispatch.json >/dev/null || { echo "0041_GEN2_EMAIL_RECOVERY_CONTAINMENT_SUCCESS_ALREADY_PROVEN" >&2; exit 1; }
+          jq -n --arg release_id "$RELEASE_ID" '{expected_revision: 8, reason: "0041 Gen2 certification dispatch containment after unsuccessful unfence", release_id: $release_id, generation: null}' > fence.json
+          api -X POST --data-binary @fence.json "$PUBLIC_API_URL/v1/internal/release-control/outbox-dispatch/fence" > fenced.json
+          jq -e --arg release_id "$RELEASE_ID" '.attempt_authority == "ATTEMPT" and .email_dispatch_paused == true and .dispatch_owner_release_id == $release_id and .dispatch_owner_generation == null and .revision == 9' fenced.json >/dev/null || { echo "0041_GEN2_EMAIL_RECOVERY_CONTAINMENT_FENCE_CAS_FAILED" >&2; exit 1; }
+          for _ in $(seq 1 "$POLL_ATTEMPTS"); do
+            api "$PUBLIC_API_URL/v1/internal/release-control/outbox-authority" > authority.json
+            if jq -e --arg release_id "$RELEASE_ID" '.attempt_authority == "ATTEMPT" and .email_dispatch_paused == true and .dispatch_owner_release_id == $release_id and .revision == 9 and .dispatch.drained == true and .last_event.action == "DISPATCH_FENCED"' authority.json >/dev/null; then
+              echo "GEN2_EMAIL_RECOVERY_CONTAINED=$(jq -c '{revision, dispatch, last_event}' authority.json)"
+              exit 0
+            fi
+            sleep "$POLL_SECONDS"
+          done
+          echo "0041_GEN2_EMAIL_RECOVERY_CONTAINMENT_DRAIN_NOT_PROVEN" >&2
+          exit 1
+
+      - name: Complete only after a separate GO, emergency latch, and durable dispatch proof
+        if: env.INPUT_STAGE == 'complete' && env.GEN2_EMAIL_RECOVERY_COMPLETE_REPLAY != '1'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          jq -e '.emergency_sales_paused == true and .outbox_authority.attempt_authority == "ATTEMPT" and .outbox_authority.email_dispatch_paused == false and .outbox_authority.dispatch_owner_release_id == null and .outbox_authority.revision == 8' status.json >/dev/null || { echo "0041_GEN2_EMAIL_RECOVERY_COMPLETE_GUARDS_INVALID" >&2; exit 1; }
+          jq -e '.head.phase == "CERTIFIED" and .head.certification.status == "CONSUMED"' head.json >/dev/null || { echo "0041_GEN2_EMAIL_RECOVERY_COMPLETE_PHASE_INVALID" >&2; exit 1; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/certification-dispatch/$RELEASE_ID" > complete-dispatch.json
+          jq -e --arg release_id "$RELEASE_ID" '.release_id == $release_id and (.order_id | type == "string") and (.unfenced_at | type == "string") and .dispatched_after_unfence == true and (.messages | length == 1 and .[0].type == "TICKET" and .[0].attempt.attempt_no == 1 and .[0].attempt.outcome == "ACCEPTED")' complete-dispatch.json >/dev/null || { echo "0041_GEN2_EMAIL_RECOVERY_COMPLETE_DISPATCH_PROOF_MISSING" >&2; exit 1; }
+          jq -n --slurpfile current head.json '{release_id: $current[0].head.release_id, candidate_generation: $current[0].head.candidate_generation, expected_state_hash: $current[0].state_hash}' > complete.json
+          api -X POST --data-binary @complete.json "$PUBLIC_API_URL/v1/internal/release-control/candidates/complete" > completed.json
+          jq -e '.sales_paused == false and .owner_release_id == null and .head.phase == "COMPLETE"' completed.json >/dev/null || { echo "0041_GEN2_EMAIL_RECOVERY_COMPLETE_FAILED" >&2; exit 1; }
