@@ -31,6 +31,8 @@ describe("Epoch A prepare preflight verifier", () => {
     expect(workflow).toContain("RUNTIME_CANDIDATE_NOT_R");
     expect(workflow).toContain("PRODUCTION_DEPLOY_NOT_GEN2");
     expect(workflow).toContain("RUNTIME_TAG_PROTECTION_MISMATCH");
+    expect(workflow).not.toContain(".bypass_actors == []");
+    expect(workflow).toContain("GitHub omits bypass_actors");
   });
 
   it("requires authenticated durable replay/projection, legal, authority, inventory, and Gen2 convergence evidence", () => {
