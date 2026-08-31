@@ -34,6 +34,32 @@ acquire Epoch A, then immediately re-read before `acquire`. Once the owner
 exists, the durable owner and this tag bind recovery; the mutable proposal
 pointer may move without stranding a paused epoch.
 
+## Read-only admission verifier
+
+Before any `stage=prepare`, dispatch
+`verify-epoch-a-prepare-preflight.yml` from current `main`. It is an advisory
+read-only verifier, not an Epoch A stage: its `production` environment approval
+only exposes the existing release-control credential for authenticated `GET`
+evidence. It receives neither deploy, ref-mutation, Coolify, legal-publication,
+nor emergency-control credentials and contains no mutating endpoint or Git
+path.
+
+It reports exactly one terminal marker:
+
+```text
+EPOCH_A_PREPARE_READY
+EPOCH_A_PREPARE_BLOCKED: <exact invariant>
+```
+
+`READY` proves a fresh no-owner/open Gen2 state, protected R tag and
+`runtime-candidate == R`, the exact `production-deploy == Gen2` pointer,
+authenticated release replay/projection, ATTEMPT/open authority, all 41 R
+migrations and their source hashes (including 0038), active pre-B legal
+evidence with the notification capability dormant, and Gen2 Commerce/worker,
+frontend, and Admin evidence. It records but never changes the emergency
+latch. A green advisory run is evidence for a separately authorized
+`stage=prepare`; it does not itself authorize or execute it.
+
 Epoch B must later create P as a direct child of this exact R. It may not use
 the Epoch-A controller SHA or `main` as its source identity.
 
