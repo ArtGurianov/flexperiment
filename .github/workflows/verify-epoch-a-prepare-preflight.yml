@@ -1,0 +1,180 @@
+name: Verify Epoch A prepare preflight
+
+# Advisory-only proof for the one future Epoch A acquisition. Approval of this
+# protected-environment job grants the existing authenticated read secret; it
+# does not authorize Epoch A or any durable mutation.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 20
+    env:
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+      PUBLIC_FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
+      ADMIN_RELEASE_URL: ${{ vars.ADMIN_RELEASE_URL }}
+      GITHUB_TOKEN: ${{ github.token }}
+      CONTROLLER_SHA: ${{ github.sha }}
+      EPOCH_A_RUNTIME_TAG_RULESET_ID: "21915288"
+      EPOCH_A_RUNTIME_SHA: 80e152259628719af20d363a76ed6b991d67482a
+      EPOCH_A_RUNTIME_TAG_REF: refs/tags/epoch-a-runtime-r-80e152259628
+      EPOCH_A_RUNTIME_TAG_OBJECT: 5b4a00791cd89c2773aebdcacde4b8dae5b95cb1
+      EPOCH_A_PRODUCTION_BASE_SHA: 0ddc33d0fd0077fe0ba238ec75ae4090fc38ac34
+      EPOCH_A_PRE_B_LEGAL_VERSION: 2026-08-26.1
+      EPOCH_A_NOTIFICATION_LEGAL_VERSION: 2026-08-28.1
+      EPOCH_A_MIGRATION_COUNT: "41"
+      EPOCH_A_0038_SHA256: 3b43fc4befb9765c4f00331a6f38c6cab5ca59cefbd09feaf3d6cac0b9a2bf40
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Assert exact advisory controller and immutable Epoch A identities
+        run: |
+          set -euo pipefail
+          blocked() { echo "EPOCH_A_PREPARE_BLOCKED: $1" >&2; exit 1; }
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || blocked CONTROLLER_NOT_MAIN
+          [[ -n "$COMMERCE_RELEASE_CONTROL_TOKEN" ]] || blocked RELEASE_CONTROL_TOKEN_UNAVAILABLE
+          for url in "$PUBLIC_API_URL" "$PUBLIC_FRONTEND_URL" "$ADMIN_RELEASE_URL"; do
+            [[ "$url" =~ ^https:// ]] || blocked HTTPS_CONFIGURATION_REQUIRED
+          done
+          git fetch --no-tags origin \
+            refs/heads/main:refs/remotes/origin/main \
+            refs/heads/runtime-candidate:refs/remotes/origin/runtime-candidate \
+            "+$EPOCH_A_RUNTIME_TAG_REF:$EPOCH_A_RUNTIME_TAG_REF" || blocked GIT_AUTHORITY_READ_FAILED
+          curl --fail-with-body --silent --show-error \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            "$GITHUB_API_URL/repos/$GITHUB_REPOSITORY/rulesets/$EPOCH_A_RUNTIME_TAG_RULESET_ID" > r-tag-ruleset.json || blocked RUNTIME_TAG_PROTECTION_UNREADABLE
+          jq -e --argjson id "$EPOCH_A_RUNTIME_TAG_RULESET_ID" --arg ref "$EPOCH_A_RUNTIME_TAG_REF" '
+            .id == $id and .target == "tag" and .enforcement == "active" and
+            .conditions.ref_name.include == [$ref] and .conditions.ref_name.exclude == [] and
+            .bypass_actors == [] and
+            ([.rules[].type] | sort == ["deletion", "non_fast_forward"])
+          ' r-tag-ruleset.json >/dev/null || blocked RUNTIME_TAG_PROTECTION_MISMATCH
+          [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || blocked CONTROLLER_MAIN_MOVED
+          [[ "$(git rev-parse "$EPOCH_A_RUNTIME_TAG_REF")" == "$EPOCH_A_RUNTIME_TAG_OBJECT" ]] || blocked RUNTIME_TAG_OBJECT_MISMATCH
+          [[ "$(git rev-parse "$EPOCH_A_RUNTIME_TAG_REF^{}")" == "$EPOCH_A_RUNTIME_SHA" ]] || blocked RUNTIME_TAG_TARGET_MISMATCH
+          [[ "$(git rev-list --parents -n 1 "$EPOCH_A_RUNTIME_SHA" | awk 'NF == 2 {print $2}')" == "$EPOCH_A_PRODUCTION_BASE_SHA" ]] || blocked RUNTIME_PARENT_MISMATCH
+          [[ "$(git rev-list --parents -n 1 "$EPOCH_A_RUNTIME_SHA" | awk '{print NF}')" == 2 ]] || blocked RUNTIME_NOT_LINEAR
+          ! git merge-base --is-ancestor "$CONTROLLER_SHA" "$EPOCH_A_RUNTIME_SHA" || blocked CONTROLLER_CONTAMINATES_RUNTIME
+          ! git cat-file -e "$EPOCH_A_RUNTIME_SHA:.release/maintenance-only" 2>/dev/null || blocked RUNTIME_IS_MAINTENANCE_ONLY
+          [[ "$(git rev-parse origin/runtime-candidate)" == "$EPOCH_A_RUNTIME_SHA" ]] || blocked RUNTIME_CANDIDATE_NOT_R
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$EPOCH_A_PRODUCTION_BASE_SHA" ]] || blocked PRODUCTION_DEPLOY_NOT_GEN2
+          allowed_paths=$'commerce/src/domain.ts\ncommerce/src/occurrence-notification-capability.ts\ncommerce/test/domain.test.ts\ncommerce/test/occurrence-notification-capability.test.ts'
+          [[ "$(git diff --name-only "$EPOCH_A_PRODUCTION_BASE_SHA" "$EPOCH_A_RUNTIME_SHA" | sort)" == "$allowed_paths" ]] || blocked RUNTIME_CHANGED_SURFACE_UNEXPECTED
+          git diff --quiet "$EPOCH_A_PRODUCTION_BASE_SHA" "$EPOCH_A_RUNTIME_SHA" -- commerce/migrations commerce/legal public/legal release-surface-contract.json || blocked RUNTIME_CROSSES_SCHEMA_LEGAL_OR_SURFACE_BOUNDARY
+          git show "$EPOCH_A_RUNTIME_SHA:commerce/legal/production-manifest.json" > r-production-manifest.json || blocked RUNTIME_MANIFEST_UNREADABLE
+          jq -e --arg version "$EPOCH_A_PRE_B_LEGAL_VERSION" '.version == $version' r-production-manifest.json >/dev/null || blocked RUNTIME_NOT_PRE_B_LEGAL_SOURCE
+          r_0038="$(git show "$EPOCH_A_RUNTIME_SHA:commerce/migrations/0038_occurrence_availability_notifications.sql" | shasum -a 256 | awk '{print $1}')" || blocked RUNTIME_0038_UNREADABLE
+          base_0038="$(git show "$EPOCH_A_PRODUCTION_BASE_SHA:commerce/migrations/0038_occurrence_availability_notifications.sql" | shasum -a 256 | awk '{print $1}')" || blocked GEN2_0038_UNREADABLE
+          [[ "$r_0038" == "$EPOCH_A_0038_SHA256" && "$base_0038" == "$EPOCH_A_0038_SHA256" ]] || blocked MIGRATION_0038_HASH_MISMATCH
+          for path in commerce/src/occurrence-notification-capability.ts commerce/src/legal-release.ts; do
+            [[ "$(git show "$EPOCH_A_RUNTIME_SHA:$path" | shasum -a 256 | awk '{print $1}')" == "$(git show "$CONTROLLER_SHA:$path" | shasum -a 256 | awk '{print $1}')" ]] || blocked CONTROLLER_CAPABILITY_CLOSURE_MISMATCH
+          done
+          expected="$(git ls-tree -r --name-only "$EPOCH_A_RUNTIME_SHA" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)" || blocked RUNTIME_MIGRATION_INVENTORY_UNREADABLE
+          [[ "$(printf '%s\n' "$expected" | awk 'NF {count += 1} END {print count + 0}')" == "$EPOCH_A_MIGRATION_COUNT" ]] || blocked RUNTIME_MIGRATION_INVENTORY_COUNT_MISMATCH
+          printf '%s' "$expected" > expected-migrations.txt
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Read authenticated durable and public Epoch A evidence
+        run: |
+          set -euo pipefail
+          blocked() { echo "EPOCH_A_PREPARE_BLOCKED: $1" >&2; exit 1; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json || blocked RELEASE_STATUS_READ_FAILED
+          # This reader replays all v2 histories and reconciles the resulting
+          # head against the release-gate projection before returning 200.
+          api "$PUBLIC_API_URL/v1/admin/release-control/candidates/head" > candidate-head.json || blocked RELEASE_REPLAY_OR_PROJECTION_INVALID
+          api "$PUBLIC_API_URL/v1/public/legal-config" > legal-config.json || blocked PUBLIC_LEGAL_READ_FAILED
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_FRONTEND_URL/release.json" > frontend-release.json || blocked FRONTEND_RELEASE_READ_FAILED
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$ADMIN_RELEASE_URL" > admin-release.json || blocked ADMIN_RELEASE_READ_FAILED
+
+      - name: Prove fresh no-owner Gen2 state is eligible only for later Epoch A prepare
+        run: |
+          set -euo pipefail
+          blocked() { echo "EPOCH_A_PREPARE_BLOCKED: $1" >&2; exit 1; }
+          applied="$(node --import tsx -e '
+            import { readFileSync } from "node:fs";
+            import { canonicalMigrationInventory } from "./commerce/src/release-expectation.ts";
+            const versions = JSON.parse(readFileSync(process.argv[1], "utf8")).runtime?.migration_versions;
+            if (!Array.isArray(versions) || !versions.every((value) => typeof value === "string")) process.exit(2);
+            process.stdout.write(canonicalMigrationInventory(versions));
+          ' status.json)" || blocked APPLIED_MIGRATION_INVENTORY_INVALID
+          expected="$(<expected-migrations.txt)"
+          [[ "$applied" == "$expected" ]] || blocked APPLIED_MIGRATION_INVENTORY_MISMATCH
+          expected_hashes="$(while IFS= read -r version || [[ -n "$version" ]]; do
+            hash="$(git show "$EPOCH_A_RUNTIME_SHA:commerce/migrations/$version" | shasum -a 256 | awk '{print $1}')" || exit 1
+            jq -n --arg version "$version" --arg hash "$hash" '{key: $version, value: $hash}'
+          done < expected-migrations.txt | jq -sc 'from_entries')" || blocked RUNTIME_MIGRATION_HASHES_UNREADABLE
+          jq -e --arg base "$EPOCH_A_PRODUCTION_BASE_SHA" --arg legal "$EPOCH_A_PRE_B_LEGAL_VERSION" --argjson hashes "$expected_hashes" --arg hash0038 "$EPOCH_A_0038_SHA256" '
+            .sales_paused == false and .owner_release_id == null and .owner_mode == null and
+            .runtime.source_commit == $base and .runtime.worker_source_commit == $base and
+            .runtime.migration_source_hashes == $hashes and
+            .runtime.migration_source_hashes["0038_occurrence_availability_notifications.sql"] == $hash0038 and
+            .runtime.legal_version == $legal and
+            .runtime.current_legal_copies_match == true and
+            .outbox_authority.attempt_authority == "ATTEMPT" and
+            .outbox_authority.email_dispatch_paused == false and
+            .outbox_authority.dispatch_owner_release_id == null and
+            (.emergency_sales_paused | type == "boolean")
+          ' status.json >/dev/null || blocked DURABLE_PREPARE_AUTHORITY_MISMATCH
+          jq -e --arg legal "$EPOCH_A_PRE_B_LEGAL_VERSION" --arg future "$EPOCH_A_NOTIFICATION_LEGAL_VERSION" '
+            .version == $legal and .version != $future and .occurrence_notifications_available == false
+          ' legal-config.json >/dev/null || blocked PRE_B_LEGAL_OR_DORMANCY_INVALID
+          read -r r_source_manifest_sha r_canonical_manifest_sha <<EOF
+          $(node --import tsx -e '
+            import { createHash } from "node:crypto";
+            import { readFileSync } from "node:fs";
+            import { canonicalLegalManifest, parseLegalManifest } from "./commerce/src/legal-manifest.ts";
+            const raw = readFileSync("r-production-manifest.json");
+            const canonical = canonicalLegalManifest(parseLegalManifest(JSON.parse(raw.toString("utf8"))));
+            process.stdout.write([createHash("sha256").update(raw).digest("hex"), createHash("sha256").update(canonical).digest("hex")].join(" "));
+          ')
+          EOF
+          jq -e --arg source_sha "$r_source_manifest_sha" --arg canonical_sha "$r_canonical_manifest_sha" --slurpfile manifest r-production-manifest.json '
+            .runtime as $runtime | $manifest[0] as $manifest |
+            $runtime.source_legal_manifest_sha256 == $source_sha and
+            $runtime.legal_manifest_sha256 == $canonical_sha and
+            $runtime.legal_hashes == {
+              PUBLIC_OFFER: $manifest.documents.PUBLIC_OFFER.sha256,
+              PRIVACY_POLICY: $manifest.documents.PRIVACY_POLICY.sha256,
+              PD_CONSENT: $manifest.documents.PD_CONSENT.sha256,
+              CHECKOUT_DISCLOSURE: $manifest.documents.CHECKOUT_DISCLOSURE.sha256
+            }
+          ' status.json >/dev/null || blocked CURRENT_LEGAL_EVIDENCE_MISMATCH
+          jq -e --arg source "$EPOCH_A_PRODUCTION_BASE_SHA" '
+            .schema_version == 2 and .head.source_commit == $source and .head.candidate_generation == 2 and
+            .head.phase == "COMPLETE" and .head.phase_sequence == 7 and
+            .head.certification.status == "CONSUMED" and
+            (.state_hash | type == "string" and test("^[a-f0-9]{64}$"))
+          ' candidate-head.json >/dev/null || blocked RELEASE_REPLAY_OR_PROJECTION_UNEXPECTED
+          jq -e --arg source "$EPOCH_A_PRODUCTION_BASE_SHA" '
+            .source_commit == $source and .checkout_contract_version == "sales-availability-v1"
+          ' frontend-release.json >/dev/null || blocked FRONTEND_GEN2_CONVERGENCE_MISMATCH
+          jq -e --arg source "$EPOCH_A_PRODUCTION_BASE_SHA" '
+            .source_commit == $source and .admin_contract_version == "sales-availability-v1"
+          ' admin-release.json >/dev/null || blocked ADMIN_GEN2_CONVERGENCE_MISMATCH
+          echo "EPOCH_A_PREPARE_EMERGENCY_SALES_PAUSED=$(jq -r '.emergency_sales_paused' status.json)" >> "$GITHUB_ENV"
+          echo "EPOCH_A_PREPARE_READY"
