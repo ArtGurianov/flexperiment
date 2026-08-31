@@ -79,6 +79,23 @@ describe("Dashboard", () => {
     expect(screen.getByText("OPEN").closest(".upcoming-card")).toContainElement(cityAndStatus);
   });
 
+  it("shows both pause authorities and keeps the emergency control reachable while a release owns sales", async () => {
+    global.fetch = mockFetchOnce({
+      ...baseResponse,
+      sales_control: {
+        effective_status: "PAUSED",
+        emergency: { sales_paused: true, revision: 8, paused_at: "2026-08-31T10:00:00.000Z", paused_reason: "Operator hold" },
+        release_paused: true,
+      },
+    });
+    const client = createTestQueryClient();
+    render(<Dashboard />, { wrapper: (props) => <QueryClientWrapper client={client}>{props.children}</QueryClientWrapper> });
+
+    expect(await screen.findByText(/Экстренная остановка включена/)).toBeInTheDocument();
+    expect(screen.getByText(/Пауза release-control также включена/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Снять экстренную остановку" })).toBeEnabled();
+  });
+
   it("shows the failure band and the last-success timestamp when a background refetch fails, never presenting the stale rows as current (A7)", async () => {
     const client = createTestQueryClient();
     let call = 0;
