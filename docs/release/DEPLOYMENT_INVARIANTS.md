@@ -259,6 +259,56 @@ are appended in one `BEGIN IMMEDIATE` transaction inside
 `bridgeGenerationFourToFive`, specifically so old gen4 code is never asked to
 replay an event kind it predates.
 
+## Offline reader exclusion is an exceptional compatibility recovery
+
+**Offline stop is not normal deployment.** It is required only when the next
+durable history is not backward-readable by the runtime that is currently
+deployed. In that case, the old runtime is not merely an older serving binary:
+after the mutation it is structurally unsafe as a database/ledger reader.
+
+The reusable invariant is:
+
+> Offline reader exclusion is required only when the next durable history is
+> not backward-readable by the currently deployed runtime.
+
+Its converse is equally important:
+
+> If the old runtime can safely read the new durable state, normal
+> rolling/controlled deployment should be preferred.
+
+Do not infer that every future release needs SSH access or an offline stop.
+SSH/host control exists here only because Docker and SQLite reader exclusion
+are host-level operations. A Coolify webhook is deployment transport; it is
+not reader-exclusion authority.
+
+### Normal deployment versus incompatible-reader recovery
+
+| Mode | Use when | Required sequence | Availability expectation |
+| --- | --- | --- | --- |
+| Normal deployment | The durable format is backward-readable, old and new runtimes can safely coexist, and no authority transition forbids the old reader. | Use the normal rolling or controlled deploy protocol and prove convergence. | Prefer minimal or zero downtime; the old runtime may remain available until the new one converges. |
+| Incompatible-reader recovery | A new event, schema, or durable state is unknown to the old runtime, so it becomes unsafe after the mutation. | Prove exact old runtime/state; disable restart; stop all DB/ledger readers; prove exclusion; atomically mutate offline; permanently forbid the old runtime; move the deployment pointer to the compatible runtime; deploy it; then prove convergence. | A deliberate maintenance window is required. |
+
+For an incompatible-reader recovery, downtime begins when the old readers stop
+and ends only when the compatible runtime has passed readiness. `docker update
+--restart=no` plus `docker stop` and the short SQLite `BEGIN IMMEDIATE`
+transaction are normally small overhead; build, deployment, startup, and
+readiness convergence dominate the maintenance window. These are qualitative
+expectations, not a time SLA.
+
+The window may be reduced without weakening the boundary: prepare or pull the
+compatible image before reader exclusion, but only through actions that do not
+touch durable production state. After old readers stop and the bridge commits,
+only the deployment-pointer CAS, launch of that prepared compatible runtime,
+and readiness proof should remain. Preparation must not start the compatible
+runtime against production SQLite, and no compatible process may read that DB
+in parallel with the old runtime unless the compatibility boundary explicitly
+allows it. Exact source, authority, and replay proofs remain mandatory.
+
+This is also the intended reusable release-control pattern for Refref, but not
+a default Refref deployment mechanism: use it there only for genuinely
+incompatible durable-authority migrations. Ordinary product releases remain
+rolling, blue/green, or otherwise controlled without unnecessary downtime.
+
 ## One-shot recovery bridges are non-reusable by construction
 
 A historical repair utility (`commerce/src/gen2-bootstrap-adopt.ts`,
