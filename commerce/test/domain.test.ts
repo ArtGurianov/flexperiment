@@ -206,6 +206,29 @@ describe("commerce domain", () => {
     expect(setup.db.prepare("SELECT id FROM occurrence_notification_requests WHERE id = ?").get(terminatedId)).toBeUndefined();
   });
 
+  it("reconciles SEND_UNKNOWN occurrence evidence before an eligibility loss can suppress it", async () => {
+    const setup = fixture(); databases.push(setup.db);
+    let lookups = 0;
+    const email: EmailProvider = {
+      async send() { throw new Error("SEND_UNKNOWN must reconcile before any resend"); },
+      async lookup() { lookups += 1; return { status: "ACCEPTED", jobId: "already-accepted" }; },
+    };
+    const domain = new CommerceDomain(setup.db, new MockProvider(), email);
+    (domain as unknown as { occurrenceNotificationsAvailable: () => boolean }).occurrenceNotificationsAvailable = () => true;
+    setup.db.prepare("UPDATE occurrences SET capacity = 0 WHERE id = ?").run(setup.occurrenceId);
+    domain.registerOccurrenceNotification({ email: "unknown@example.test", occurrence_id: setup.occurrenceId });
+    setup.db.prepare("UPDATE occurrences SET capacity = 1 WHERE id = ?").run(setup.occurrenceId);
+    domain.processOccurrenceNotificationLifecycle();
+    const outbox = setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'OCCURRENCE_AVAILABLE'").get() as { id: string };
+    setup.db.prepare("UPDATE email_outbox SET status = 'SEND_UNKNOWN', next_attempt_at = '2000-01-01T00:00:00.000Z' WHERE id = ?").run(outbox.id);
+    setup.db.prepare("UPDATE occurrences SET capacity = 0 WHERE id = ?").run(setup.occurrenceId);
+
+    await domain.processEmailOutbox();
+
+    expect(lookups).toBe(1);
+    expect(setup.db.prepare("SELECT status, superseded_at FROM email_outbox WHERE id = ?").get(outbox.id)).toEqual({ status: "ACCEPTED", superseded_at: null });
+  });
+
   it("keeps Phase 0 reopen available without 0031, 0034, or a worker sweep", () => {
     const baseRelease = controlledRelease();
     const phase0Release = { ...baseRelease, expected: { ...baseRelease.expected, migration: "0033_runtime_release_evidence.sql" } };
