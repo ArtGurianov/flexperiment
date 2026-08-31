@@ -1,4 +1,8 @@
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   EPOCH_B_CANONICAL_MANIFEST_SHA256,
@@ -108,5 +112,74 @@ describe("controlled Epoch B notification activation", () => {
     expect(workflow).not.toContain("runtime-candidate");
     expect(workflow).not.toContain("codex/epoch-b-");
     expect(policy).not.toContain("runtime-candidate");
+  });
+
+  it("builds every Epoch B request from an empty stdin", () => {
+    const constructors = [...workflow.matchAll(/^ {10}(jq -en[\s\S]*?\n {10}' > (epoch-[a-z-]+-request\.json))$/gm)];
+    expect(constructors.map((match) => match[2])).toEqual([
+      "epoch-a-request.json",
+      "epoch-b-legal-request.json",
+      "epoch-b-p-request.json",
+      "epoch-b-p-request.json",
+    ]);
+
+    const directory = mkdtempSync(join(tmpdir(), "epoch-b-request-builders-"));
+    const documentHashes = {
+      privacy_policy: "a".repeat(64),
+      pd_consent: "b".repeat(64),
+    };
+    const rManifestHash = "c".repeat(64);
+    const promotionSha = "d".repeat(40);
+    const migrationInput = "fixture";
+    const migration = `inventory-sha256:${createHash("sha256").update(migrationInput).digest("hex")}`;
+    const manifest = (version: string) => JSON.stringify({ version, documents: Object.fromEntries(Object.entries(documentHashes).map(([key, sha256]) => [key, { sha256 }])) });
+
+    try {
+      writeFileSync(join(directory, "r-production-manifest.json"), manifest("2026-08-26.1"));
+      writeFileSync(join(directory, "epoch-b-draft.json"), manifest("2026-08-28.1"));
+      writeFileSync(join(directory, "p-production-manifest.json"), manifest("2026-08-28.1"));
+      writeFileSync(join(directory, "epoch-b-r-request.json"), JSON.stringify({ expected: { migration } }));
+
+      const expectedRequests = [
+        { releaseId: `epoch-a-dormant-notifications:${EPOCH_B_RUNTIME_R}`, sourceCommit: EPOCH_B_RUNTIME_R, legalVersion: "2026-08-26.1", legalManifestSha256: rManifestHash },
+        { releaseId: EPOCH_B_RELEASE_ID, sourceCommit: EPOCH_B_RUNTIME_R, legalVersion: "2026-08-28.1", legalManifestSha256: EPOCH_B_CANONICAL_MANIFEST_SHA256 },
+        { releaseId: EPOCH_B_RELEASE_ID, sourceCommit: promotionSha, legalVersion: "2026-08-28.1", legalManifestSha256: EPOCH_B_CANONICAL_MANIFEST_SHA256 },
+        { releaseId: EPOCH_B_RELEASE_ID, sourceCommit: promotionSha, legalVersion: "2026-08-28.1", legalManifestSha256: EPOCH_B_CANONICAL_MANIFEST_SHA256 },
+      ];
+
+      constructors.forEach((match, index) => {
+        const command = match[1];
+        const output = match[2];
+        const result = spawnSync("bash", ["-euo", "pipefail", "-c", `${command} </dev/null`], {
+          cwd: directory,
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            EPOCH_A_RUNTIME_SHA: EPOCH_B_RUNTIME_R,
+            EPOCH_A_RELEASE_ID: `epoch-a-dormant-notifications:${EPOCH_B_RUNTIME_R}`,
+            EPOCH_B_RELEASE_ID,
+            EPOCH_B_LEGAL_VERSION: "2026-08-28.1",
+            EPOCH_B_MANIFEST_SHA256: EPOCH_B_CANONICAL_MANIFEST_SHA256,
+            P_SHA: promotionSha,
+            expected: migrationInput,
+            r_manifest_hash: rManifestHash,
+          },
+        });
+        expect(result.status, result.stderr).toBe(0);
+        expect(JSON.parse(readFileSync(join(directory, output), "utf8"))).toMatchObject({
+          release_id: expectedRequests[index].releaseId,
+          mode: "CONTROLLED_CUTOVER",
+          expected: {
+            source_commit: expectedRequests[index].sourceCommit,
+            migration,
+            legal_version: expectedRequests[index].legalVersion,
+            legal_manifest_sha256: expectedRequests[index].legalManifestSha256,
+            legal_hashes: documentHashes,
+          },
+        });
+      });
+    } finally {
+      rmSync(directory, { force: true, recursive: true });
+    }
   });
 });

@@ -130,13 +130,13 @@ jobs:
             import { createHash } from "node:crypto"; import { readFileSync } from "node:fs"; import { canonicalLegalManifest, parseLegalManifest } from "./commerce/src/legal-manifest.ts";
             process.stdout.write(createHash("sha256").update(canonicalLegalManifest(parseLegalManifest(JSON.parse(readFileSync("r-production-manifest.json", "utf8"))))).digest("hex"));
           ')"
-          jq -e --arg r "$EPOCH_A_RUNTIME_SHA" --arg release "$EPOCH_A_RELEASE_ID" --arg migration "inventory-sha256:$(printf %s "$expected" | shasum -a 256 | awk '{print $1}')" --arg hash "$r_manifest_hash" --slurpfile manifest r-production-manifest.json '
+          jq -en --arg r "$EPOCH_A_RUNTIME_SHA" --arg release "$EPOCH_A_RELEASE_ID" --arg migration "inventory-sha256:$(printf %s "$expected" | shasum -a 256 | awk '{print $1}')" --arg hash "$r_manifest_hash" --slurpfile manifest r-production-manifest.json '
             {release_id: $release, mode: "CONTROLLED_CUTOVER", expected: {source_commit: $r, migration: $migration, legal_version: $manifest[0].version, legal_manifest_sha256: $hash, legal_hashes: ($manifest[0].documents | with_entries(.value = .value.sha256))}}
           ' > epoch-a-request.json
           jq -e --slurpfile request epoch-a-request.json '.complete == true and .expected == $request[0].expected' epoch-a-completion.json >/dev/null || { echo "EPOCH_B_EPOCH_A_COMPLETION_INVALID" >&2; exit 1; }
           jq --arg release "$EPOCH_B_RELEASE_ID" '.release_id = $release' epoch-a-request.json > epoch-b-r-request.json
           jq -e '.expected.legal_version == "2026-08-26.1" and (.expected.legal_hashes | type == "object")' epoch-b-r-request.json >/dev/null || { echo "EPOCH_B_R_EXPECTATIONS_INVALID" >&2; exit 1; }
-          jq -e --arg release "$EPOCH_B_RELEASE_ID" --arg r "$EPOCH_A_RUNTIME_SHA" --arg migration "$(jq -r '.expected.migration' epoch-b-r-request.json)" --arg version "$EPOCH_B_LEGAL_VERSION" --arg hash "$EPOCH_B_MANIFEST_SHA256" --slurpfile manifest epoch-b-draft.json '
+          jq -en --arg release "$EPOCH_B_RELEASE_ID" --arg r "$EPOCH_A_RUNTIME_SHA" --arg migration "$(jq -r '.expected.migration' epoch-b-r-request.json)" --arg version "$EPOCH_B_LEGAL_VERSION" --arg hash "$EPOCH_B_MANIFEST_SHA256" --slurpfile manifest epoch-b-draft.json '
             {release_id: $release, mode: "CONTROLLED_CUTOVER", expected: {source_commit: $r, migration: $migration, legal_version: $version, legal_manifest_sha256: $hash, legal_hashes: ($manifest[0].documents | with_entries(.value = .value.sha256))}}
           ' > epoch-b-legal-request.json
           jq -e --arg version "$EPOCH_B_LEGAL_VERSION" --arg hash "$EPOCH_B_MANIFEST_SHA256" '.expected.source_commit == "80e152259628719af20d363a76ed6b991d67482a" and .expected.legal_version == $version and .expected.legal_manifest_sha256 == $hash' epoch-b-legal-request.json >/dev/null || { echo "EPOCH_B_LEGAL_B_EXPECTATIONS_INVALID" >&2; exit 1; }
@@ -162,7 +162,7 @@ jobs:
           ')"
           [[ "$P_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "EPOCH_B_PROMOTION_RECONSTRUCTION_INVALID" >&2; exit 1; }
           git show "$P_SHA:commerce/legal/production-manifest.json" > p-production-manifest.json
-          jq -e --arg source "$P_SHA" --arg migration "$(jq -r '.expected.migration' epoch-b-r-request.json)" --slurpfile manifest p-production-manifest.json '
+          jq -en --arg source "$P_SHA" --arg migration "$(jq -r '.expected.migration' epoch-b-r-request.json)" --slurpfile manifest p-production-manifest.json '
             {release_id: "epoch-b-notification-activation:80e152259628719af20d363a76ed6b991d67482a", mode: "CONTROLLED_CUTOVER", expected: {source_commit: $source, migration: $migration, legal_version: $manifest[0].version, legal_manifest_sha256: "fb879a80c48a50c41694d83118e5f8004a4fec5fbf36f954b15f4b678f4efe02", legal_hashes: ($manifest[0].documents | with_entries(.value = .value.sha256))}}
           ' > epoch-b-p-request.json
           echo "EPOCH_B_PROMOTION_SHA=$P_SHA" >> "$GITHUB_ENV"
@@ -251,7 +251,7 @@ jobs:
             const sha = createEpochBPromotionArtifact({ base: process.env.EPOCH_A_RUNTIME_SHA, effectiveAt: process.env.EFFECTIVE_AT }); const reason = epochBPromotionArtifactReason(sha, process.env.EFFECTIVE_AT); if (reason) throw new Error(reason); process.stdout.write(sha);
           ')"
           git show "$P_SHA:commerce/legal/production-manifest.json" > p-production-manifest.json
-          jq -e --arg source "$P_SHA" --arg migration "$(jq -r '.expected.migration' epoch-b-r-request.json)" --slurpfile manifest p-production-manifest.json '
+          jq -en --arg source "$P_SHA" --arg migration "$(jq -r '.expected.migration' epoch-b-r-request.json)" --slurpfile manifest p-production-manifest.json '
             {release_id: "epoch-b-notification-activation:80e152259628719af20d363a76ed6b991d67482a", mode: "CONTROLLED_CUTOVER", expected: {source_commit: $source, migration: $migration, legal_version: $manifest[0].version, legal_manifest_sha256: "fb879a80c48a50c41694d83118e5f8004a4fec5fbf36f954b15f4b678f4efe02", legal_hashes: ($manifest[0].documents | with_entries(.value = .value.sha256))}}
           ' > epoch-b-p-request.json
           echo "EPOCH_B_PROMOTION_SHA=$P_SHA" >> "$GITHUB_ENV"
