@@ -613,21 +613,29 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
     expect((db.prepare("PRAGMA index_list(occurrence_notification_requests)").all() as { name: string }[]).map(({ name }) => name)).toEqual(expect.arrayContaining([
       "occurrence_notification_requests_active_identity_unique", "occurrence_notification_requests_occurrence_idx",
     ]));
-    expect((db.prepare("PRAGMA index_list(occurrence_notification_intents)").all() as { name: string }[]).map(({ name }) => name)).toEqual(expect.arrayContaining([
+    const intentIndexes = db.prepare("PRAGMA index_list(occurrence_notification_intents)").all() as Array<{ name: string; unique: number; partial: number }>;
+    expect(intentIndexes.map(({ name }) => name)).toEqual(expect.arrayContaining([
       "occurrence_notification_intents_active_request_unique", "occurrence_notification_intents_outbox_idx",
     ]));
+    expect(intentIndexes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: "occurrence_notification_intents_active_request_unique", unique: 1, partial: 1 }),
+    ]));
 
-    const requestId = randomUUID(); const successorId = randomUUID(); const intentId = randomUUID();
+    const requestId = randomUUID(); const secondRequestId = randomUUID(); const successorId = randomUUID(); const intentId = randomUUID(); const secondOutboxId = randomUUID();
     db.prepare(`INSERT INTO occurrence_notification_requests(id, email_normalized, email_hash, occurrence_id, privacy_policy_version, privacy_policy_sha256, pd_consent_version, pd_consent_sha256, consent_accepted_at)
       VALUES (?, 'person@example.test', 'person-hash', ?, 'privacy-v1', ?, 'pd-v1', ?, '2030-01-01T00:00:00.000Z')`).run(requestId, occurrenceId, "a".repeat(64), "b".repeat(64));
     expect(() => db.prepare(`INSERT INTO occurrence_notification_requests(id, email_normalized, email_hash, occurrence_id, privacy_policy_version, privacy_policy_sha256, pd_consent_version, pd_consent_sha256, consent_accepted_at)
       VALUES (?, 'person@example.test', 'person-hash', ?, 'privacy-v1', ?, 'pd-v1', ?, '2030-01-01T00:00:00.000Z')`).run(randomUUID(), occurrenceId, "a".repeat(64), "b".repeat(64))).toThrow(/UNIQUE constraint failed/);
+    db.prepare(`INSERT INTO occurrence_notification_requests(id, email_normalized, email_hash, occurrence_id, privacy_policy_version, privacy_policy_sha256, pd_consent_version, pd_consent_sha256, consent_accepted_at)
+      VALUES (?, 'second@example.test', 'second-hash', ?, 'privacy-v1', ?, 'pd-v1', ?, '2030-01-01T00:00:00.000Z')`).run(secondRequestId, occurrenceId, "a".repeat(64), "b".repeat(64));
+    db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key)
+      VALUES (?, 'OCCURRENCE_AVAILABLE', 'second@example.test', 'second-hash', 'occurrence-available', '{}', 'notification-migration-second-outbox-key')`).run(secondOutboxId);
     db.prepare(`INSERT INTO occurrence_notification_intents(id, notification_request_id, outbox_id)
       VALUES (?, ?, ?)`).run(intentId, requestId, outboxId);
     expect(() => db.prepare(`INSERT INTO occurrence_notification_intents(id, notification_request_id, outbox_id)
-      VALUES (?, ?, ?)`).run(randomUUID(), requestId, randomUUID())).toThrow(/FOREIGN KEY constraint failed|UNIQUE constraint failed/);
+      VALUES (?, ?, ?)`).run(randomUUID(), requestId, secondOutboxId)).toThrow(/UNIQUE constraint failed: occurrence_notification_intents.notification_request_id/);
     expect(() => db.prepare(`INSERT INTO occurrence_notification_intents(id, notification_request_id, outbox_id)
-      VALUES (?, ?, ?)`).run(randomUUID(), randomUUID(), outboxId)).toThrow(/FOREIGN KEY constraint failed|UNIQUE constraint failed/);
+      VALUES (?, ?, ?)`).run(randomUUID(), secondRequestId, outboxId)).toThrow(/UNIQUE constraint failed: occurrence_notification_intents.outbox_id/);
 
     db.transaction(() => {
       db.prepare("UPDATE occurrence_notification_intents SET superseded_at = '2030-01-01T00:01:00.000Z' WHERE id = ?").run(intentId);
@@ -637,6 +645,7 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
     })();
     db.prepare("DELETE FROM occurrence_notification_requests WHERE id = ?").run(requestId);
     expect(db.prepare("SELECT id FROM occurrence_notification_intents WHERE id = ?").get(intentId)).toBeUndefined();
+    db.prepare("DELETE FROM occurrence_notification_requests WHERE id = ?").run(secondRequestId);
     db.prepare("DELETE FROM occurrence_notification_requests WHERE id = ?").run(successorId);
     expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
     db.close();

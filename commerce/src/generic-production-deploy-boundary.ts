@@ -92,6 +92,10 @@ export const controlPlanePaths: readonly string[] = [
  *   promo-pricing          the exact 101/1/100 kopeck arithmetic that
  *   basis-points           certification evidence asserts
  *   legal-manifest         the shape behind expected legal hashes
+ *   legal-release          active-release and current-copy evidence checks
+ *   occurrence-notification-capability
+ *                         the legal/runtime agreement authorizing
+ *                         notification PII collection
  *   utc-timestamp          lease expiry and worker freshness
  *
  * A converged runtime does not prove any of these correct - the old and new
@@ -109,6 +113,8 @@ export const compatibilitySemanticsPaths: readonly string[] = [
   "commerce/src/promo-pricing.ts",
   "commerce/src/basis-points.ts",
   "commerce/src/legal-manifest.ts",
+  "commerce/src/legal-release.ts",
+  "commerce/src/occurrence-notification-capability.ts",
   "commerce/src/utc-timestamp.ts",
 ];
 
