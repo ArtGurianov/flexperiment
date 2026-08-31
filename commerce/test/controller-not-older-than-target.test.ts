@@ -31,7 +31,9 @@ const WORKFLOWS = ".github/workflows";
 // not contain that runtime, so it is not a candidate for the generic
 // controller-reachability rule below.
 const hardBoundRecoveryTarget = (source: string) =>
-  /^\s+(EXPECTED_[A-Z_]+|DEPLOYMENT_TARGET|GEN2_RUNTIME_SHA):\s*"?[0-9a-f]{40}"?\s*$/m.test(source);
+  /^\s+(EXPECTED_[A-Z_]+|DEPLOYMENT_TARGET|GEN2_RUNTIME_SHA):\s*"?[0-9a-f]{40}"?\s*$/m.test(source)
+  || (source.includes("name: Controlled Epoch A dormant runtime promotion")
+    && /^\s+EPOCH_A_RUNTIME_SHA:\s*"?[0-9a-f]{40}"?\s*$/m.test(source));
 
 const DEPLOYING = readdirSync(WORKFLOWS)
   .filter((name) => name.endsWith(".yml"))
