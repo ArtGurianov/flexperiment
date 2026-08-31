@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { EPOCH_A_PRODUCTION_BASE_SHA, EPOCH_A_RUNTIME_SHA, EPOCH_A_RUNTIME_TAG_OBJECT, EPOCH_A_RUNTIME_TAG_REF } from "../src/epoch-a-runtime-promotion";
@@ -50,6 +51,23 @@ describe("Epoch A prepare preflight verifier", () => {
     expect(workflow).toContain("EPOCH_A_PREPARE_EMERGENCY_SALES_PAUSED");
     expect(workflow).toContain("EPOCH_A_PREPARE_READY");
     expect(workflow).toContain("EPOCH_A_PREPARE_BLOCKED:");
+  });
+
+  it("executes the legal manifest hash calculator as an explicit ESM eval", () => {
+    const calculator = `
+      import { createHash } from "node:crypto";
+      import { readFileSync } from "node:fs";
+      import { canonicalLegalManifest, parseLegalManifest } from "./commerce/src/legal-manifest.ts";
+      const raw = readFileSync("commerce/legal/production-manifest.json");
+      const canonical = canonicalLegalManifest(parseLegalManifest(JSON.parse(raw.toString("utf8"))));
+      process.stdout.write([createHash("sha256").update(raw).digest("hex"), createHash("sha256").update(canonical).digest("hex")].join(" "));
+    `;
+    const output = execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", calculator], { encoding: "utf8" }).trim();
+    expect(output).toMatch(/^[a-f0-9]{64} [a-f0-9]{64}$/);
+    expect(workflow).toContain("node --import tsx --input-type=module -e");
+    expect(workflow).toContain("LEGAL_MANIFEST_HASH_CALCULATION_FAILED");
+    expect(workflow).toContain("LEGAL_MANIFEST_HASH_CALCULATION_INVALID");
+    expect(workflow).not.toContain("read -r r_source_manifest_sha r_canonical_manifest_sha <<EOF");
   });
 
   it("has no durable mutation, deploy, or authority-changing path", () => {
