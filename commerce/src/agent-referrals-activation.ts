@@ -42,9 +42,54 @@ export const AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS = [
   "ad_channel_policy_channel_revision_unique",
   "ad_channel_policy_immutable_guard",
   "ad_channel_policy_delete_guard",
+  // PR4 (0044). Every table PR4 ships is named here - both the immutable
+  // evidence tables (with their UPDATE+DELETE guards) and the mutable
+  // authority tables (invite capabilities, OTP challenges, sessions,
+  // step-up grants, legal holds), because a base TABLE dropped entirely
+  // (e.g. DROP TABLE partner_sessions) is exactly as unsound as a guard
+  // dropped off an evidence table it once protected - and until this list
+  // named the base tables too, only the six evidence tables' guards were
+  // checked, so a dropped partner_sessions or step_up_grants would have
+  // passed this assertion silently. The partial-unique indexes enforcing
+  // "at most one live X per identity" are named alongside their tables for
+  // the same reason a dropped guard trigger is unsound: the structural
+  // invariant they carry is not implied by the bare table existing.
+  "partner_identities",
+  "partner_identity_events",
+  "partner_identity_events_immutable_guard",
+  "partner_identity_events_delete_guard",
+  "partner_invite_capabilities",
+  "partner_invite_capabilities_active_unique",
+  "partner_otp_challenges",
+  "partner_otp_challenges_active_unique",
+  "partner_sessions",
+  "step_up_grants",
+  "framework_issuances",
+  "framework_issuances_immutable_guard",
+  "framework_issuances_delete_guard",
+  "framework_acceptances",
+  "framework_acceptances_immutable_guard",
+  "framework_acceptances_delete_guard",
+  "ord_reporting_delegations",
+  "ord_reporting_delegations_immutable_guard",
+  "ord_reporting_delegations_delete_guard",
+  "payout_profile_revisions",
+  "payout_profile_revisions_immutable_guard",
+  "payout_profile_revisions_delete_guard",
+  "partner_identity_retention_policies",
+  "partner_identity_retention_policies_immutable_guard",
+  "partner_identity_retention_policies_delete_guard",
+  "partner_identity_legal_holds",
+  "partner_identity_legal_holds_active_unique",
+  "partner_identity_legal_holds_placement_immutable_guard",
+  "partner_identity_legal_holds_release_one_way_guard",
+  "partner_identity_legal_holds_delete_guard",
+  "partner_identity_destruction_events",
+  "partner_identity_destruction_events_immutable_guard",
+  "partner_identity_destruction_events_delete_guard",
 ] as const;
 
-const MIGRATION = "0043_agent_referrals_foundation.sql";
+const MIGRATIONS = ["0043_agent_referrals_foundation.sql", "0044_partner_identity.sql"] as const;
 
 export class AgentReferralsActivationError extends Error {
   constructor(readonly code: string, readonly status = 409, detail?: string) {
@@ -64,9 +109,12 @@ const missingSchemaObjects = (db: Database.Database): string[] => {
  * that cannot say which object is gone costs an operator a manual schema
  * diff, same rationale as outbox-activation.ts's assertSchemaPresent().
  */
+const missingMigrations = (db: Database.Database): string[] =>
+  MIGRATIONS.filter((migration) => !db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(migration));
+
 export const assertAgentReferralsFoundationSchemaPresent = (db: Database.Database): void => {
-  const applied = db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(MIGRATION);
-  if (!applied) throw new AgentReferralsActivationError("AGENT_REFERRALS_ACTIVATION_SCHEMA_MISSING", 409, MIGRATION);
+  const missingApplied = missingMigrations(db);
+  if (missingApplied.length) throw new AgentReferralsActivationError("AGENT_REFERRALS_ACTIVATION_SCHEMA_MISSING", 409, missingApplied.join(", "));
 
   const missing = missingSchemaObjects(db);
   if (missing.length) throw new AgentReferralsActivationError("AGENT_REFERRALS_ACTIVATION_SCHEMA_INCOMPLETE", 409, missing.join(", "));
@@ -79,8 +127,8 @@ export type AgentReferralsFoundationSchemaEvidence = {
 
 /** Read-only, non-throwing counterpart for a controller that wants evidence rather than an exception. */
 export const agentReferralsFoundationSchemaEvidence = (db: Database.Database): AgentReferralsFoundationSchemaEvidence => {
-  const applied = db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(MIGRATION);
-  if (!applied) return { present: false, missing: [MIGRATION] };
+  const missingApplied = missingMigrations(db);
+  if (missingApplied.length) return { present: false, missing: missingApplied };
   const missing = missingSchemaObjects(db);
   return { present: missing.length === 0, missing };
 };
