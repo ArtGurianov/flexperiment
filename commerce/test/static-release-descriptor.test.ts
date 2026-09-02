@@ -46,7 +46,16 @@ describe("static release descriptors", () => {
     const output = temporaryOutput("admin");
     writeAdminReleaseDescriptor({ sourceCommit, output });
 
-    expect(readDescriptor(output)).toEqual({ source_commit: sourceCommit, admin_contract_version: "sales-availability-v1" });
+    expect(readDescriptor(output)).toEqual({ source_commit: sourceCommit, admin_contract_version: "agent-referrals-v1" });
+  });
+
+  it("carries a partner_contract_version in the surface contract, ready for a future partner build surface", () => {
+    // No partner descriptor script or Dockerfile ships in PR1 (the partner
+    // portal itself is out of scope) - this only proves the contract field
+    // PR9/PR10 will consume already exists and is well-formed.
+    const contracts = JSON.parse(readFileSync("release-surface-contract.json", "utf8"));
+    expect(typeof contracts.partner_contract_version).toBe("string");
+    expect(contracts.partner_contract_version).toMatch(/^[a-z0-9][a-z0-9.-]{0,63}$/);
   });
 
   it("copies both static exports, including release.json, into their final nginx images", () => {

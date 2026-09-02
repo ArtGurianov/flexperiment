@@ -22,7 +22,10 @@ const ROOTS = [
   "commerce/src/release-generation.ts",
   "commerce/src/sales-gate.ts",
   "commerce/src/certification-evidence.ts",
-  "commerce/src/types.ts",
+  // The release request schema, extracted out of types.ts precisely so that
+  // file stops being a release-semantic root - see
+  // docs/release/DEPLOYMENT_INVARIANTS.md#known-imprecision-typests.
+  "commerce/src/release-control-schema.ts",
   // The deploy classifier is deliberately NOT a root: it is control plane, it
   // never runs in production, and control-plane-isolation.test.ts proves the
   // runtime cannot reach it.
@@ -108,5 +111,14 @@ describe("release-semantic closure", () => {
     // types.ts re-exports these as `export type`, erased before runtime.
     expect(closure()).not.toContain("lib/city-catalog.ts");
     expect(releaseSemanticsPaths).not.toContain("lib/city-catalog.ts");
+  });
+
+  it("no longer reaches commerce/src/types.ts now that the request schema is extracted", () => {
+    // This is the concrete regression this split exists to prevent: an
+    // ordinary DTO edit in types.ts (checkout, refund, city, agent, promo,
+    // settlement...) must not fall inside the release-semantic surface merely
+    // because it shares a file with the release request schema anymore.
+    expect(closure()).not.toContain("commerce/src/types.ts");
+    expect(releaseSemanticsPaths).not.toContain("commerce/src/types.ts");
   });
 });

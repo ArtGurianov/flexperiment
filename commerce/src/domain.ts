@@ -4,7 +4,7 @@ import { EmailProviderRejectedError, EventDumpCreateRejectedError, isEmailDelive
 import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import { LegalReleasePublishError, loadCanonicalLegalRelease, publishLegalRelease, verifyCurrentLegalSourceHashes, type CanonicalLegalRelease } from "./legal-release";
 import { providerErrorEvidence, type PaymentProvider } from "./provider";
-import { ReleaseControlError, ReleaseSalesGate, type CandidateAcquireRequest, type CandidateAdoptRequest, type CandidateAbortRequest, type CandidateCompleteRequest, type CandidateHeadSnapshot, type CandidatePhaseRequest, type CertificationEvidenceRequest, type CertificationLeaseRequest, type CertificationOrderContext, type CertificationRetryRequest, type PostActivationEmailProviderDefectRequest, type PreActivationDefectRequest, type ReleaseControlRequest, type RuntimeReadinessDefectRequest, releaseRuntimeEvidence } from "./release-control";
+import { ReleaseControlError, ReleaseSalesGate, type CandidateAcquireRequest, type CandidateAdoptRequest, type CandidateAbortRequest, type CandidateCompleteRequest, type CandidateHeadSnapshot, type CandidatePhaseRequest, type CertificationEvidenceRequest, type CertificationLeaseRequest, type CertificationOrderContext, type CertificationRetryRequest, type DormantReadinessReader, type PostActivationEmailProviderDefectRequest, type PreActivationDefectRequest, type ReleaseControlRequest, type RuntimeReadinessDefectRequest, releaseRuntimeEvidence } from "./release-control";
 import { checkoutRequestSchema, promoMergedSchema, type CheckoutRequest, type ParticipantAgeBand } from "./types";
 import { PromoPricingError, pricePromo } from "./promo-pricing";
 import { basisPointsOf } from "./basis-points";
@@ -594,6 +594,14 @@ export class CommerceDomain {
 
   reopenNewOrders(input: ReleaseControlRequest) {
     try { return this.releaseSalesGate().reopen(input, this.releaseRuntimeEvidence()); }
+    catch (error) {
+      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
+      throw error;
+    }
+  }
+
+  completeRolling(input: ReleaseControlRequest, dormantReady: DormantReadinessReader) {
+    try { return this.releaseSalesGate().completeRolling(input, dormantReady); }
     catch (error) {
       if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
       throw error;

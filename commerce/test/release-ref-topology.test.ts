@@ -1,6 +1,8 @@
+import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { epochBPromotionArtifactReason } from "../src/epoch-b-notification-activation";
+import { verifyAgentReferralsCandidateCertificate, type AgentReferralsCandidateCertificate } from "../src/agent-referrals-candidate";
 
 /**
  * Durable release refs must stay in a provable relationship. Both invariants
@@ -58,6 +60,30 @@ const isApprovedEpochBPromotionArtifact = (sha: string) => {
   }
 };
 
+/**
+ * §B-1 `RECONSTRUCTION_BOUND`: a detached production-deploy may also be
+ * accepted when a committed reconstruction certificate on protected main
+ * independently proves it - source_main_sha must itself be an ancestor of
+ * the currently observed main, and the certificate must reconstruct to the
+ * exact judged SHA (see commerce/src/agent-referrals-candidate.ts).
+ *
+ * PR1 ships no certificate: docs/release/agent-referrals-candidate-certificate.json
+ * does not exist until a real one lands in PR9/PR10, so this predicate is
+ * reusable machinery that never fires today - it is not a name-based skip or
+ * a new hard-coded SHA exemption, and it costs nothing while unused.
+ */
+const CANDIDATE_CERTIFICATE_PATH = "docs/release/agent-referrals-candidate-certificate.json";
+const isApprovedAgentReferralsCandidate = (sha: string, currentMain: string) => {
+  let raw: string;
+  try { raw = readFileSync(CANDIDATE_CERTIFICATE_PATH, "utf8"); }
+  catch { return false; }
+  let certificate: AgentReferralsCandidateCertificate;
+  try { certificate = JSON.parse(raw) as AgentReferralsCandidateCertificate; }
+  catch { return false; }
+  if (typeof certificate.main_sha !== "string" || !isAncestor(certificate.main_sha, currentMain)) return false;
+  return verifyAgentReferralsCandidateCertificate(certificate, sha) === undefined;
+};
+
 // Resolved SHAs, never branch names: a ref that has been repointed must not
 // pass because its name still looks familiar.
 const productionDeploy = resolve("origin/production-deploy");
@@ -81,11 +107,12 @@ describe("durable release ref topology", () => {
       isAncestor(judged.productionDeploy, judged.main)
       || isApproved0041DetachedRuntime(judged.productionDeploy)
       || isApprovedEpochADetachedRuntime(judged.productionDeploy)
-      || isApprovedEpochBPromotionArtifact(judged.productionDeploy),
+      || isApprovedEpochBPromotionArtifact(judged.productionDeploy)
+      || isApprovedAgentReferralsCandidate(judged.productionDeploy, judged.main),
       `production-deploy is not an ancestor of main.\n`
       + `  production-deploy: ${describes("origin/production-deploy")}\n`
       + `  main:              ${describes("origin/main")}\n`
-      + `Only exact 0041 Gen2, exact Epoch A R, or deterministic Epoch B P may be detached from main.`,
+      + `Only exact 0041 Gen2, exact Epoch A R, deterministic Epoch B P, or a valid Agent Referrals reconstruction certificate may be detached from main.`,
     ).toBe(true);
   });
 

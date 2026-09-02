@@ -10,7 +10,8 @@ import { clientIpRateLimitKey, rateLimit, trustedClientIp } from "./rate-limit";
 import { TochkaWebhookVerifier, webhookAmountKopecks } from "./tochka-webhook";
 import { verifyUnisenderWebhook } from "./unisender-webhook";
 import { type SmartCaptchaVerifier, UnconfiguredSmartCaptchaVerifier } from "./smartcaptcha";
-import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityInterestWithdrawalSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, emailAttentionAcknowledgeSchema, emergencySalesCommandSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrenceNotificationSchema, occurrencePatchSchema, outboxDispatchFenceSchema, postActivationEmailProviderDefectSchema, preActivationDefectSchema, promoPatchSchema, promoSchema, providerReferenceSchema, releaseControlSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
+import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityInterestWithdrawalSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, emailAttentionAcknowledgeSchema, emergencySalesCommandSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrenceNotificationSchema, occurrencePatchSchema, outboxDispatchFenceSchema, postActivationEmailProviderDefectSchema, preActivationDefectSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
+import { completeRollingSchema, releaseControlSchema } from "./release-control-schema";
 
 type AppBindings = { Variables: { adminId?: string; adminSessionId?: string } };
 const noStore = (headers: Headers) => headers.set("Cache-Control", "no-store");
@@ -562,6 +563,14 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     }).success,
   }));
   releaseControl.post("/reopen", async (c) => c.json(domain.reopenNewOrders(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
+  releaseControl.post("/complete-rolling", async (c) => {
+    const input = completeRollingSchema.parse(await jsonBody(c.req.raw));
+    // No DORMANT feature ships in PR1 for this predicate to check (Agent
+    // Referrals lands in PR3-PR9), so this wiring fails closed until a real
+    // feature-readiness reader replaces it - never treat "no feature yet" as
+    // "ready".
+    return c.json(domain.completeRolling(input, () => false));
+  });
   const releaseControlHead = new Hono();
   releaseControlHead.use("*", async (c, next) => {
     if (!verifyReleaseControlToken(c.req.header("Authorization"))) throw new DomainError("RELEASE_CONTROL_AUTH_REQUIRED", 401);

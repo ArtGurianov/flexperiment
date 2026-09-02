@@ -188,6 +188,16 @@ export type PostActivationEmailProviderDefectReader = () => {
  */
 export type CertificationDispatchTargetReader = () => string | null;
 
+/**
+ * Injected and evaluated INSIDE the completeRolling() transaction, exactly
+ * like CertificationDispatchTargetReader above. PR1 ships no feature whose
+ * dormant readiness this could check (Agent Referrals lands in PR3-PR9), so
+ * every real caller wires a reader until then - the primitive itself stays
+ * generic and reusable by any future ROLLING owner, never coupled to one
+ * feature's readiness table.
+ */
+export type DormantReadinessReader = () => boolean;
+
 /** Injected, so this module keeps no knowledge of the outbox tables. */
 export type OutboxAuthoritySnapshot = {
   attempt_authority: "LEGACY" | "ATTEMPT";
@@ -318,6 +328,10 @@ const sameExpectations = (gate: GateRow, request: ReleaseControlRequest) =>
   && gate.expected_migration === request.expected.migration
   && gate.expected_legal_version === request.expected.legal_version
   && gate.expected_legal_manifest_sha256 === request.expected.legal_manifest_sha256;
+
+const sameReleaseExpectations = (a: ReleaseExpectations | undefined, b: ReleaseExpectations) =>
+  a?.source_commit === b.source_commit && a?.migration === b.migration
+  && a?.legal_version === b.legal_version && a?.legal_manifest_sha256 === b.legal_manifest_sha256;
 
 /**
  * A non-v2 (legacy/generic) owner's coarse lifecycle is exactly
@@ -1440,6 +1454,60 @@ export class ReleaseSalesGate {
         WHERE singleton = 1 AND sales_paused = 1 AND owner_release_id = ?`).run(request.release_id);
       if (!changed.changes) throw new ReleaseControlError("RELEASE_CONTROL_OWNER_MISMATCH");
       event(this.db, request.release_id, "REOPENED", { expected: request.expected, evidence });
+      return this.status();
+    });
+    return transaction();
+  }
+
+  /**
+   * §B-1b. A ROLLING owner never pauses: acquire() already leaves
+   * sales_paused = 0, and completion must leave it exactly there throughout.
+   * reopen() is the wrong primitive here - it requires sales_paused = 1,
+   * which a ROLLING rollout never reaches on its normal path.
+   *
+   * Reuses the REOPENED action (the release_sales_gate_events CHECK
+   * constraint admits only ACQUIRED | PAUSED | REOPENED and PR1 ships no
+   * migration to widen it - 0042 belongs to PR2). The details payload is
+   * tagged kind: "ROLLING_COMPLETED" so it is never mistaken for an ordinary
+   * CONTROLLED_CUTOVER reopen by completion() or by the idempotent-retry
+   * check below. Once this event lands, owner_release_id is cleared in the
+   * same transaction, so reconcileLegacyOwnerWithProjection() never has to
+   * validate a completed ROLLING release as if it were still a current gate
+   * owner (it only inspects that state machine for a release that is still
+   * gate.owner_release_id) - the ACQUIRED -> REOPENED-with-no-PAUSED shape
+   * this leaves behind is exactly the same "must not still be the owner"
+   * shape reopen() already leaves for CONTROLLED_CUTOVER.
+   */
+  completeRolling(request: ReleaseControlRequest, dormantReady: DormantReadinessReader) {
+    const transaction = this.db.transaction(() => {
+      this.assertLegacyMutationAllowed();
+      if (request.mode !== "ROLLING") throw new ReleaseControlError("RELEASE_CONTROL_MODE_MISMATCH");
+      const gate = row(this.db);
+      if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
+      if (gate.owner_release_id === null) {
+        // Idempotent retry after a prior success already cleared ownership:
+        // accept only the exact same release, completed the same way, with
+        // exactly the pinned expectations it completed with - never a fresh
+        // completion attempt that merely reuses the release_id.
+        const last = this.db.prepare("SELECT action, details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid DESC LIMIT 1").get(request.release_id) as { action: string; details_json: string } | undefined;
+        if (last?.action === "REOPENED") {
+          try {
+            const details = JSON.parse(last.details_json) as { kind?: string; mode?: string; expected?: ReleaseExpectations };
+            if (details.kind === "ROLLING_COMPLETED" && details.mode === "ROLLING" && sameReleaseExpectations(details.expected, request.expected)) return this.status();
+          } catch { /* falls through to OWNER_MISMATCH */ }
+        }
+        throw new ReleaseControlError("RELEASE_CONTROL_OWNER_MISMATCH");
+      }
+      if (gate.owner_release_id !== request.release_id) throw new ReleaseControlError("RELEASE_CONTROL_OWNER_MISMATCH");
+      if (gate.owner_mode !== "ROLLING") throw new ReleaseControlError("RELEASE_CONTROL_MODE_MISMATCH");
+      if (gate.sales_paused !== 0) throw new ReleaseControlError("RELEASE_CONTROL_SALES_PAUSED");
+      if (gate.expected_source_commit !== request.expected.source_commit || gate.expected_migration !== request.expected.migration || gate.expected_legal_version !== request.expected.legal_version || gate.expected_legal_manifest_sha256 !== request.expected.legal_manifest_sha256) throw new ReleaseControlError("RELEASE_CONTROL_EXPECTATION_MISMATCH");
+      if (!dormantReady()) throw new ReleaseControlError("RELEASE_CONTROL_DORMANT_NOT_READY");
+      const changed = this.db.prepare(`UPDATE release_sales_gate SET owner_release_id = NULL, owner_mode = NULL,
+        reopened_at = datetime('now'), updated_at = datetime('now')
+        WHERE singleton = 1 AND sales_paused = 0 AND owner_release_id = ? AND owner_mode = 'ROLLING'`).run(request.release_id);
+      if (!changed.changes) throw new ReleaseControlError("RELEASE_CONTROL_OWNER_MISMATCH");
+      event(this.db, request.release_id, "REOPENED", { kind: "ROLLING_COMPLETED", mode: "ROLLING", expected: request.expected });
       return this.status();
     });
     return transaction();
