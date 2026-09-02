@@ -1,0 +1,85 @@
+import type Database from "better-sqlite3";
+import { id } from "./crypto";
+import { getEngagement, occurrenceFacts, transitionEngagementLifecycle, type EngagementRow } from "./agent-referrals-engagement";
+import type { AdminPrincipal } from "./agent-referrals-partner-identity";
+
+/**
+ * §B-7 CLOSED: terminates forward advertising authority. Closing revokes
+ * only THIS occurrence's promo authorization (handled by
+ * transitionEngagementLifecycle, shared with suspendEngagement); the
+ * partner's permanent promo stays globally ACTIVE. Closing does not wait
+ * on act, payment, NPD, VK/ERIR reporting or removal verification - those
+ * continue independently afterward.
+ *
+ * "Reward registry finalized" is a real §B-7 prerequisite this PR cannot
+ * compute for real: engagement_reward_registry_snapshot does not exist
+ * until 0046 (PR6). Rather than invent substitute authority (a fabricated
+ * table, a hardcoded true/false, or a numeric placeholder nothing
+ * enforces - exactly the shape PR4's retention-period review rejected),
+ * closeEngagement takes the resolver as a REQUIRED explicit dependency:
+ * `resolveRewardRegistryFinalization`. No caller anywhere in this shipped
+ * codebase can construct a real implementation of it yet (there is no
+ * engagement_reward_registry_snapshot to read), so nothing in production
+ * can call this function successfully today - that is the fail-closed
+ * property. Tests supply a deterministic fixture resolver directly, which
+ * proves every OTHER closure invariant (occurrence terminal, sales CLOSED,
+ * promo-authorization revocation, one-time closure evidence) is correct
+ * without inventing PR6's schema early. PR6 will supply the real resolver,
+ * reading the actual registry snapshot, as a plain function of this same
+ * shape - this module does not change when that happens.
+ */
+
+export type RewardRegistryFinalizationEvidence = { finalized: boolean; evidence_ref: string };
+export type ResolveRewardRegistryFinalization = (db: Database.Database, engagementId: string) => RewardRegistryFinalizationEvidence;
+
+export class EngagementClosureError extends Error {
+  constructor(readonly code: string, readonly status = 409, detail?: string) {
+    super(detail ? `${code}: ${detail}` : code);
+  }
+}
+
+export type CloseEngagementResult = { closure_event_id: string; replayed: boolean };
+
+export const closeEngagement = (
+  db: Database.Database,
+  admin: AdminPrincipal,
+  engagementId: string,
+  reason: string,
+  resolveRewardRegistryFinalization: ResolveRewardRegistryFinalization,
+): CloseEngagementResult => {
+  const run = db.transaction((): CloseEngagementResult => {
+    const existing = db.prepare("SELECT id FROM engagement_closure_events WHERE engagement_id = ?").get(engagementId) as { id: string } | undefined;
+    if (existing) return { closure_event_id: existing.id, replayed: true };
+
+    const engagement: EngagementRow | null = getEngagement(db, engagementId);
+    if (!engagement) throw new EngagementClosureError("AGENT_REFERRALS_ENGAGEMENT_NOT_FOUND", 404, engagementId);
+    if (engagement.lifecycle_state !== "ACTIVE" && engagement.lifecycle_state !== "SUSPENDED") {
+      throw new EngagementClosureError("AGENT_REFERRALS_ENGAGEMENT_ILLEGAL_TRANSITION", 409, `${engagement.lifecycle_state}->CLOSED`);
+    }
+
+    const occurrence = occurrenceFacts(db, engagement.occurrence_id)!;
+    if (occurrence.fulfillment_status === "SCHEDULED") throw new EngagementClosureError("AGENT_REFERRALS_CLOSURE_OCCURRENCE_NOT_TERMINAL", 409, occurrence.fulfillment_status);
+    if (occurrence.sales_status !== "CLOSED") throw new EngagementClosureError("AGENT_REFERRALS_CLOSURE_SALES_NOT_CLOSED", 409, occurrence.sales_status);
+
+    const revision = db.prepare("SELECT publication_end_at FROM engagement_revisions WHERE engagement_id = ? ORDER BY revision DESC LIMIT 1").get(engagementId) as { publication_end_at: string };
+    if (new Date(revision.publication_end_at).getTime() > Date.now()) throw new EngagementClosureError("AGENT_REFERRALS_CLOSURE_PUBLICATION_WINDOW_NOT_ENDED", 409);
+
+    const rewardEvidence = resolveRewardRegistryFinalization(db, engagementId);
+    if (!rewardEvidence.finalized) throw new EngagementClosureError("AGENT_REFERRALS_CLOSURE_REWARD_REGISTRY_FINALIZATION_UNAVAILABLE", 409);
+
+    transitionEngagementLifecycle(db, engagementId, "CLOSED", reason);
+
+    // rowid (insertion order), not created_at - CURRENT_TIMESTAMP is
+    // second-precision and a reactivation cycle can mint two authorizations
+    // for the same engagement within the same second.
+    const authorization = db.prepare("SELECT id FROM engagement_promo_authorizations WHERE engagement_id = ? ORDER BY rowid DESC LIMIT 1").get(engagementId) as { id: string };
+
+    const closureEventId = id();
+    db.prepare(`INSERT INTO engagement_closure_events(id, engagement_id, occurrence_id, revoked_promo_authorization_id, reward_registry_finalization_evidence_ref, reason, closed_by_admin_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(closureEventId, engagementId, occurrence.id, authorization.id, rewardEvidence.evidence_ref, reason, admin.admin_id);
+
+    return { closure_event_id: closureEventId, replayed: false };
+  });
+  return run.immediate();
+};

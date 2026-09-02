@@ -100,12 +100,6 @@ describe("0043 agent-referrals foundation migration", () => {
     ]);
   });
 
-  it("0043 itself introduces no migration beyond its own file (0044+ is PR4's own scope, checked in its own migration test file)", () => {
-    const all = readdirSync(MIGRATIONS).filter((n) => n.endsWith(".sql"));
-    const beyond0044 = all.filter((n) => n > "0044_partner_identity.sql");
-    expect(beyond0044).toEqual([]);
-  });
-
   it("creates no agent_referrals_pilot_policy table or any capacity-shaped table", () => {
     const db = at0042();
     migrateOnly0043(db);
