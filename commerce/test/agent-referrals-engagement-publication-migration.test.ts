@@ -69,8 +69,8 @@ const seedEngagement = (db: Database.Database, engagementId = "eng-1", partnerId
   db.prepare(`INSERT INTO engagements(id, partner_identity_id, occurrence_id, created_by_admin_id) VALUES (?, ?, ?, 'admin')`).run(engagementId, partnerId, occurrenceId);
 
 const seedEngagementRevision = (db: Database.Database, revisionId = "rev-1", engagementId = "eng-1", revision = 1) =>
-  db.prepare(`INSERT INTO engagement_revisions(id, engagement_id, revision, reward_type, reward_value, customer_discount_type, customer_discount_value, publication_start_at, publication_end_at, terms_json, content_hash, created_by_admin_id, reason)
-    VALUES (?, ?, ?, 'PERCENT', 1000, 'PERCENT', 1000, '2020-01-01T00:00:00.000Z', '2035-01-01T00:00:00.000Z', '{}', 'hash', 'admin', 'seed')`)
+  db.prepare(`INSERT INTO engagement_revisions(id, engagement_id, revision, occurrence_material_revision, reward_type, reward_value, customer_discount_type, customer_discount_value, publication_start_at, publication_end_at, terms_json, content_hash, created_by_admin_id, reason)
+    VALUES (?, ?, ?, 1, 'PERCENT', 1000, 'PERCENT', 1000, '2020-01-01T00:00:00.000Z', '2035-01-01T00:00:00.000Z', '{}', 'hash', 'admin', 'seed')`)
     .run(revisionId, engagementId, revision);
 
 describe("0045 engagement publication migration", () => {
@@ -220,8 +220,8 @@ describe("0045 engagement publication migration", () => {
       seedPartner(db);
       seedOccurrence(db);
       seedEngagement(db);
-      db.prepare(`INSERT INTO engagement_revisions(id, engagement_id, revision, reward_type, reward_value, customer_discount_type, customer_discount_value, publication_start_at, publication_end_at, terms_json, content_hash, created_by_admin_id, reason)
-        VALUES ('rev1', 'eng-1', 1, 'PERCENT', 1000, 'PERCENT', 1000, '2020-01-01T00:00:00.000Z', '2035-01-01T00:00:00.000Z', '{}', 'hash', 'admin', 'seed')`).run();
+      db.prepare(`INSERT INTO engagement_revisions(id, engagement_id, revision, occurrence_material_revision, reward_type, reward_value, customer_discount_type, customer_discount_value, publication_start_at, publication_end_at, terms_json, content_hash, created_by_admin_id, reason)
+        VALUES ('rev1', 'eng-1', 1, 1, 'PERCENT', 1000, 'PERCENT', 1000, '2020-01-01T00:00:00.000Z', '2035-01-01T00:00:00.000Z', '{}', 'hash', 'admin', 'seed')`).run();
       expect(() => db.exec("UPDATE engagement_revisions SET reward_value = 2000 WHERE id = 'rev1'")).toThrow(/ENGAGEMENT_REVISION_IMMUTABLE/);
       expect(() => db.exec("DELETE FROM engagement_revisions WHERE id = 'rev1'")).toThrow(/ENGAGEMENT_REVISION_IMMUTABLE/);
 
@@ -282,12 +282,12 @@ describe("0045 engagement publication migration", () => {
       seedPartner(db);
       seedOccurrence(db);
       seedEngagement(db);
-      expect(() => db.prepare(`INSERT INTO engagement_revisions(id, engagement_id, revision, reward_type, reward_value, customer_discount_type, customer_discount_value, publication_start_at, publication_end_at, terms_json, content_hash, created_by_admin_id, reason)
-        VALUES ('bad1', 'eng-1', 1, 'PERCENT', 1000, 'PERCENT', 0, '2020-01-01T00:00:00.000Z', '2035-01-01T00:00:00.000Z', '{}', 'hash', 'admin', 'seed')`).run()).toThrow(/CHECK constraint failed/);
-      expect(() => db.prepare(`INSERT INTO engagement_revisions(id, engagement_id, revision, reward_type, reward_value, customer_discount_type, customer_discount_value, publication_start_at, publication_end_at, terms_json, content_hash, created_by_admin_id, reason)
-        VALUES ('bad2', 'eng-1', 1, 'PERCENT', 1000, 'NONE', 1, '2020-01-01T00:00:00.000Z', '2035-01-01T00:00:00.000Z', '{}', 'hash', 'admin', 'seed')`).run()).toThrow(/CHECK constraint failed/);
-      expect(() => db.prepare(`INSERT INTO engagement_revisions(id, engagement_id, revision, reward_type, reward_value, customer_discount_type, customer_discount_value, publication_start_at, publication_end_at, terms_json, content_hash, created_by_admin_id, reason)
-        VALUES ('bad3', 'eng-1', 1, 'PERCENT', 1000, 'PERCENT', 1000, '2035-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z', '{}', 'hash', 'admin', 'seed')`).run()).toThrow(/CHECK constraint failed/);
+      expect(() => db.prepare(`INSERT INTO engagement_revisions(id, engagement_id, revision, occurrence_material_revision, reward_type, reward_value, customer_discount_type, customer_discount_value, publication_start_at, publication_end_at, terms_json, content_hash, created_by_admin_id, reason)
+        VALUES ('bad1', 'eng-1', 1, 1, 'PERCENT', 1000, 'PERCENT', 0, '2020-01-01T00:00:00.000Z', '2035-01-01T00:00:00.000Z', '{}', 'hash', 'admin', 'seed')`).run()).toThrow(/CHECK constraint failed/);
+      expect(() => db.prepare(`INSERT INTO engagement_revisions(id, engagement_id, revision, occurrence_material_revision, reward_type, reward_value, customer_discount_type, customer_discount_value, publication_start_at, publication_end_at, terms_json, content_hash, created_by_admin_id, reason)
+        VALUES ('bad2', 'eng-1', 1, 1, 'PERCENT', 1000, 'NONE', 1, '2020-01-01T00:00:00.000Z', '2035-01-01T00:00:00.000Z', '{}', 'hash', 'admin', 'seed')`).run()).toThrow(/CHECK constraint failed/);
+      expect(() => db.prepare(`INSERT INTO engagement_revisions(id, engagement_id, revision, occurrence_material_revision, reward_type, reward_value, customer_discount_type, customer_discount_value, publication_start_at, publication_end_at, terms_json, content_hash, created_by_admin_id, reason)
+        VALUES ('bad3', 'eng-1', 1, 1, 'PERCENT', 1000, 'PERCENT', 1000, '2035-01-01T00:00:00.000Z', '2020-01-01T00:00:00.000Z', '{}', 'hash', 'admin', 'seed')`).run()).toThrow(/CHECK constraint failed/);
     });
 
     it("engagement_distribution_revisions: revision 1 needs no correction_reason, revision > 1 requires one", () => {

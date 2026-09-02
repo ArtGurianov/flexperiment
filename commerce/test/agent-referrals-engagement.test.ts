@@ -11,7 +11,7 @@ import { activatePartner, getPartnerIdentity } from "../src/agent-referrals-onbo
 import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES } from "../src/agent-referrals-framework-delegation";
 import { mintStepUpGrant } from "../src/agent-referrals-step-up";
 import { acceptFrameworkAndDelegation } from "../src/agent-referrals-framework-acceptance";
-import { mintAudienceVerificationEvent } from "../src/agent-referrals-audience-verification";
+import { verifyAudience } from "../src/agent-referrals-audience-verification";
 import { createPartnerPromo } from "../src/agent-referrals-promo";
 import { mintEngagementStepUpGrant, EngagementStepUpError } from "../src/agent-referrals-engagement-step-up";
 import {
@@ -63,7 +63,7 @@ const readyPartner = (db: Database.Database) => {
 
   const cityId = randomUUID();
   db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, 'Новосибирск')").run(cityId, `novosibirsk-${cityId.slice(0, 8)}`);
-  mintAudienceVerificationEvent(db, admin, partnerIdentityId, cityId, "VERIFIED", "verified", "ev-1");
+  verifyAudience(db, admin, partnerIdentityId, cityId, "verified", "ev-1");
   const promo = createPartnerPromo(db, admin, { partner_id: agentId, code: `ART${agentId.slice(0, 4)}`, reason: "mint" });
 
   return { partner, agentId, partnerIdentityId, cityId, promo };
@@ -250,7 +250,7 @@ describe("audience revocation cascade (one authority transaction)", () => {
     const p1 = readyPartner(db);
     const otherCity = randomUUID();
     db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, 'tomsk', 'Томск')").run(otherCity);
-    mintAudienceVerificationEvent(db, admin, p1.partnerIdentityId, otherCity, "VERIFIED", "verified", "ev-2");
+    verifyAudience(db, admin, p1.partnerIdentityId, otherCity, "verified", "ev-2");
     const occTomsk = seedOccurrence(db, otherCity);
     const occNovosibirsk = seedOccurrence(db, p1.cityId);
     const engTomsk = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occTomsk);
@@ -266,7 +266,7 @@ describe("audience revocation cascade (one authority transaction)", () => {
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);
     const eng = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ);
-    mintAudienceVerificationEvent(db, admin, p1.partnerIdentityId, p1.cityId, "VERIFIED", "re-verified with updated evidence", "ev-3");
+    verifyAudience(db, admin, p1.partnerIdentityId, p1.cityId, "re-verified with updated evidence", "ev-3");
     expect(getEngagement(db, eng.engagementId)).toMatchObject({ lifecycle_state: "ACTIVE" });
   });
 });

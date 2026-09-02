@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { id } from "./crypto";
+import { promoCodeSchema } from "./types";
 import type { AdminPrincipal } from "./agent-referrals-partner-identity";
 
 /**
@@ -38,12 +39,17 @@ export type CreatePartnerPromoInput = { partner_id: string; code: string; reason
  * transaction outright rather than silently minting a second code.
  */
 export const createPartnerPromo = (db: Database.Database, admin: AdminPrincipal, input: CreatePartnerPromoInput): PartnerPromoRow => {
+  // Reuses the EXACT same grammar the legacy admin promo-creation surface
+  // enforces (types.ts's promoCodeSchema - trimmed, uppercased,
+  // ^[A-Z0-9_-]{2,64}$) rather than a second, slightly different
+  // validation of its own. Throws a ZodError on an invalid code, exactly
+  // as promoSchema.parse() does upstream of the legacy admin route.
+  const normalized = promoCodeSchema.parse(input.code);
   const run = db.transaction((): PartnerPromoRow => {
-    const normalized = input.code.trim().toUpperCase();
     const promoCodeId = id();
     db.prepare(`INSERT INTO promo_codes(id, agent_id, code, normalized_code, status, discount_type, discount_value)
       VALUES (?, ?, ?, ?, 'ACTIVE', 'NONE', 0)`)
-      .run(promoCodeId, input.partner_id, input.code.trim(), normalized);
+      .run(promoCodeId, input.partner_id, normalized, normalized);
     const partnerPromoId = id();
     db.prepare(`INSERT INTO partner_promos(id, promo_code_id, partner_id, created_by_admin_id) VALUES (?, ?, ?, ?)`)
       .run(partnerPromoId, promoCodeId, input.partner_id, admin.admin_id);

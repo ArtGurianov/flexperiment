@@ -80,10 +80,20 @@ CREATE INDEX engagements_occurrence_idx ON engagements(occurrence_id);
 -- structurally (promo-pricing.ts, consumed unmodified by application code
 -- at mint time) - defense in depth, same precedent as PR3's legal-profile
 -- matrix and PR4's payout-profile shape CHECK.
+-- occurrence_material_revision pins occurrences.material_revision as
+-- observed at mint time - occurrence date/time is itself a material fact
+-- (plan Phase 5), and this is what lets activateEngagement() refuse a
+-- revision minted against a since-changed schedule, forcing a fresh
+-- revision -> acceptance -> activation cycle instead of silently
+-- activating stale terms. See agent-referrals-engagement.ts and
+-- domain.ts's patchOccurrence() compatibility seam, which additionally
+-- suspends any already-ACTIVE engagement the moment occurrence material
+-- facts actually change.
 CREATE TABLE engagement_revisions (
   id TEXT PRIMARY KEY,
   engagement_id TEXT NOT NULL REFERENCES engagements(id),
   revision INTEGER NOT NULL,
+  occurrence_material_revision INTEGER NOT NULL,
   reward_type TEXT NOT NULL CHECK (reward_type IN ('PERCENT', 'FIXED')),
   reward_value INTEGER NOT NULL CHECK (reward_value >= 0),
   customer_discount_type TEXT NOT NULL CHECK (customer_discount_type IN ('NONE', 'PERCENT', 'FIXED')),
@@ -188,7 +198,7 @@ CREATE TABLE engagement_promo_authorizations (
   engagement_id TEXT NOT NULL REFERENCES engagements(id),
   engagement_revision_id TEXT NOT NULL REFERENCES engagement_revisions(id),
   supersedes_authorization_id TEXT REFERENCES engagement_promo_authorizations(id),
-  effective_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  effective_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
   revoked_at TEXT,
   revoked_reason TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -300,7 +310,7 @@ CREATE TABLE engagement_creative_authorizations (
   promo_authorization_id TEXT NOT NULL REFERENCES engagement_promo_authorizations(id),
   creative_revision_id TEXT NOT NULL REFERENCES engagement_creative_revisions(id),
   supersedes_authorization_id TEXT REFERENCES engagement_creative_authorizations(id),
-  effective_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  effective_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
   revoked_at TEXT,
   revoked_reason TEXT,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -370,16 +380,25 @@ CREATE TRIGGER engagement_distribution_revisions_delete_guard
 BEFORE DELETE ON engagement_distribution_revisions
 BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_DISTRIBUTION_REVISION_IMMUTABLE'); END;
 
+-- event_sequence is the durable canonical fold order for this regulatory
+-- evidence stream - allocated by the application inside the same
+-- IMMEDIATE transaction as the INSERT (never SQLite's own implicit
+-- rowid, a storage detail this table's readers must not depend on).
+-- occurred_at (millisecond strftime) remains evidence, but several events
+-- routinely land in the same millisecond (e.g. DECLARED then
+-- MARKED_REPORTABLE), so it is never the fold's sort key.
 CREATE TABLE engagement_distribution_events (
   id TEXT PRIMARY KEY,
   distribution_id TEXT NOT NULL REFERENCES engagement_distributions(id),
+  event_sequence INTEGER NOT NULL,
   event_kind TEXT NOT NULL CHECK (event_kind IN ('DECLARED', 'MARKED_REPORTABLE', 'REVIEW_REQUIRED', 'REVIEW_CLEARED', 'REMOVAL_REQUIRED', 'REMOVAL_CLAIMED', 'REMOVAL_CONFIRMED', 'OVERDUE_REMOVAL', 'REMOVAL_UNVERIFIED')),
   actor_realm TEXT NOT NULL CHECK (actor_realm IN ('ADMIN', 'PARTNER', 'SYSTEM')),
   evidence_ref TEXT,
   reason TEXT,
-  occurred_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
+  occurred_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+  UNIQUE (distribution_id, event_sequence)
 );
-CREATE INDEX engagement_distribution_events_distribution_idx ON engagement_distribution_events(distribution_id, occurred_at);
+CREATE INDEX engagement_distribution_events_distribution_idx ON engagement_distribution_events(distribution_id, event_sequence);
 CREATE TRIGGER engagement_distribution_events_immutable_guard
 BEFORE UPDATE ON engagement_distribution_events
 BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_DISTRIBUTION_EVENT_IMMUTABLE'); END;

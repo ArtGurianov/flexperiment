@@ -11,10 +11,10 @@ import { activatePartner, getPartnerIdentity } from "../src/agent-referrals-onbo
 import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES } from "../src/agent-referrals-framework-delegation";
 import { mintStepUpGrant } from "../src/agent-referrals-step-up";
 import { acceptFrameworkAndDelegation } from "../src/agent-referrals-framework-acceptance";
-import { mintAudienceVerificationEvent } from "../src/agent-referrals-audience-verification";
+import { verifyAudience } from "../src/agent-referrals-audience-verification";
 import { createPartnerPromo } from "../src/agent-referrals-promo";
 import { mintEngagementStepUpGrant } from "../src/agent-referrals-engagement-step-up";
-import { offerEngagement, acceptEngagement, activateEngagement, suspendEngagement, type EngagementRevisionTerms } from "../src/agent-referrals-engagement";
+import { offerEngagement, acceptEngagement, activateEngagement, suspendEngagement, mintEngagementRevision, type EngagementRevisionTerms } from "../src/agent-referrals-engagement";
 import { mintCreativeRevision, authorizeCreative } from "../src/agent-referrals-creative";
 import { revokeDelegationAsAdmin } from "../src/agent-referrals-delegation-revocation";
 import { assessCreativeReadyToPublish, CreativeReadinessError } from "../src/agent-referrals-creative-readiness";
@@ -52,7 +52,7 @@ const readyPartner = (db: Database.Database, citySlug = `novosibirsk-${randomUUI
   activatePartner(db, partnerIdentityId, getPartnerIdentity(db, partnerIdentityId)!.onboarding_revision, "ADMIN", "onboarding complete");
   const cityId = randomUUID();
   db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, 'City')").run(cityId, citySlug);
-  mintAudienceVerificationEvent(db, admin, partnerIdentityId, cityId, "VERIFIED", "verified", "ev-1");
+  verifyAudience(db, admin, partnerIdentityId, cityId, "verified", "ev-1");
   const promo = createPartnerPromo(db, admin, { partner_id: agentId, code: `ART${agentId.slice(0, 4)}`, reason: "mint" });
   return { partner, agentId, partnerIdentityId, cityId, citySlug, promo, delegationId: (db.prepare("SELECT id FROM ord_reporting_delegations WHERE partner_identity_id = ?").get(partnerIdentityId) as { id: string }).id };
 };
@@ -74,7 +74,7 @@ const activateAndAuthorizeCreative = (db: Database.Database, p1: ReturnType<type
   const grant = mintEngagementStepUpGrant(db, p1.partner, "ENGAGEMENT_ACCEPTANCE", { engagement_id: engagementId, engagement_revision_id: revisionId }).grant_id;
   acceptEngagement(db, p1.partner, engagementId, revisionId, grant);
   activateEngagement(db, admin, engagementId, revisionId);
-  const creative = mintCreativeRevision(db, admin, engagementId, p1.agentId, p1.promo.promo_code_id, {
+  const creative = mintCreativeRevision(db, admin, engagementId, {
     format_kind: "post", media_ref: null, copy_text: "Buy now", cta_text: "Click", mandatory_labeling_text: "Реклама", creative_target_url: targetUrl,
   });
   authorizeCreative(db, admin, engagementId, creative.id);
@@ -143,5 +143,24 @@ describe("CREATIVE_READY_TO_PUBLISH, local half (§B-5e)", () => {
   it("refuses for an unknown engagement id", () => {
     const db = fresh();
     expect(() => assessCreativeReadyToPublish(db, "nonexistent")).toThrow(/AGENT_REFERRALS_ENGAGEMENT_NOT_FOUND/);
+  });
+
+  it("a simple admin DRAFT (minted, never accepted or activated) does not break publication readiness for the still-live activated revision (Phase 5 review note 7)", () => {
+    const db = fresh();
+    const p1 = readyPartner(db);
+    const occ = seedOccurrence(db, p1.cityId);
+    const canonicalUrl = `https://flexperiment.ru/${p1.citySlug}?promo=${(db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string }).code}`;
+    const engagementId = activateAndAuthorizeCreative(db, p1, occ, canonicalUrl);
+
+    // Admin mints a draft R2 with a totally different (not-yet-open) publication window - never accepted, never activated.
+    mintEngagementRevision(db, admin, engagementId, { ...terms1, publication_start_at: "2040-01-01T00:00:00.000Z", publication_end_at: "2041-01-01T00:00:00.000Z" }, "draft for a future campaign");
+
+    // Readiness still resolves against the ACTIVATED revision (R1), not the draft - still fails closed on the provider half only, exactly as before the draft existed.
+    try {
+      assessCreativeReadyToPublish(db, engagementId);
+      throw new Error("expected a throw");
+    } catch (error) {
+      expect((error as CreativeReadinessError).code).toBe("PUBLICATION_PROVIDER_PREFLIGHT_UNAVAILABLE");
+    }
   });
 });

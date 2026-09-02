@@ -9,6 +9,7 @@ import { checkoutRequestSchema, promoMergedSchema, type CheckoutRequest, type Pa
 import { PromoPricingError, pricePromo } from "./promo-pricing";
 import { PartnerPromoPricingError, resolveCheckoutPromoTerms } from "./agent-referrals-partner-promo-pricing";
 import { isPromoPartnerOwned } from "./agent-referrals-promo";
+import { suspendEngagementsForOccurrenceMaterialChange } from "./agent-referrals-engagement";
 import { basisPointsOf } from "./basis-points";
 import { findCityBySlug } from "../../lib/city-catalog";
 import { purchaseStatus, type PurchaseStatus } from "./purchase-status";
@@ -1115,6 +1116,17 @@ export class CommerceDomain {
       const attributedAgentId = promoAgentId ?? (referralAgent?.id as string | undefined) ?? null;
       const currentPricing = promoTerms ? promoPrice(Number(occurrence.price_kopecks), promoTerms.discount_type, promoTerms.discount_value) : { discountKopecks: 0, finalAmountKopecks: Number(occurrence.price_kopecks) };
       if (currentPricing.discountKopecks !== Number(quote.discount_kopecks) || currentPricing.finalAmountKopecks !== Number(quote.final_amount_kopecks)) throw new DomainError("QUOTE_STALE", 409);
+      // Pricing/staleness are proven correct as far as PR5 goes, but ORDER
+      // COMMIT authority for a partner promo - attribution, reward creation -
+      // is Phase 6's own authority partition (§B-9's order-column list,
+      // reward_authority_kind), not yet implemented. Silently falling
+      // through to the legacy unpartitioned attributed_agent_id/reward path
+      // below would create real referral_rewards evidence Phase 6 has not
+      // yet defined the authority for, and the frozen model forbids a
+      // discount-without-attribution fallback for a partner promo (§B-9) -
+      // so this fails closed here, after eligibility/staleness are already
+      // proven, rather than degrading to either wrong shape.
+      if (promo && isPromoPartnerOwned(this.db, String(promo.id))) throw new DomainError("AGENT_REFERRALS_ATTRIBUTION_AUTHORITY_UNAVAILABLE", 503);
       const occupied = Number(one(this.db, "SELECT COUNT(*) AS occupied FROM bookings WHERE occurrence_id = ? AND status IN ('RESERVED', 'CONFIRMED')", occurrence.id)?.occupied ?? 0);
       if (occupied >= Number(occurrence.capacity)) throw new DomainError("SOLD_OUT", 409);
       const orderId = id(); const bookingId = id(); const paymentId = id(); const statusId = publicId();
@@ -1832,6 +1844,15 @@ export class CommerceDomain {
         this.db.prepare("INSERT INTO occurrence_revisions(id, occurrence_id, revision, reason, before_json, after_json, changed_by_admin_id) VALUES (?, ?, ?, ?, ?, ?, ?)")
           .run(revisionId, occurrenceId, after.material_revision, typeof input.audit_context === "string" ? input.audit_context : "", JSON.stringify(classification.before), JSON.stringify(classification.after), adminId);
         this.emitOccurrenceRevisionEffects(revisionId, before, after, classification);
+        // Agent Referrals compatibility seam: the same classification that
+        // just bumped occurrences.material_revision also invalidates any
+        // engagement_revisions minted against the old schedule. An
+        // already-ACTIVE engagement for this occurrence must not be left
+        // granting promo/publication authority under stale terms - suspend
+        // it now; only a fresh engagement revision (whose own
+        // occurrence_material_revision will pin the new state), accepted
+        // and activated again, can restore it.
+        suspendEngagementsForOccurrenceMaterialChange(this.db, occurrenceId, "OCCURRENCE_MATERIAL_REVISION_CHANGED");
       }
       this.recordAdminCommandAudit(adminId, "OCCURRENCE_EDITED", "occurrence", occurrenceId, typeof input.audit_context === "string" ? input.audit_context : undefined, idempotencyKey, payload);
       return after;

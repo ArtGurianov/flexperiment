@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { id } from "./crypto";
-import { getEngagement, occurrenceFacts, transitionEngagementLifecycle, type EngagementRow } from "./agent-referrals-engagement";
+import { getEngagement, lastActivatedEngagementRevision, occurrenceFacts, transitionEngagementLifecycle, type EngagementRow } from "./agent-referrals-engagement";
 import type { AdminPrincipal } from "./agent-referrals-partner-identity";
 
 /**
@@ -61,7 +61,12 @@ export const closeEngagement = (
     if (occurrence.fulfillment_status === "SCHEDULED") throw new EngagementClosureError("AGENT_REFERRALS_CLOSURE_OCCURRENCE_NOT_TERMINAL", 409, occurrence.fulfillment_status);
     if (occurrence.sales_status !== "CLOSED") throw new EngagementClosureError("AGENT_REFERRALS_CLOSURE_SALES_NOT_CLOSED", 409, occurrence.sales_status);
 
-    const revision = db.prepare("SELECT publication_end_at FROM engagement_revisions WHERE engagement_id = ? ORDER BY revision DESC LIMIT 1").get(engagementId) as { publication_end_at: string };
+    // The revision an admin most recently ACTIVATED governs this engagement's
+    // real publication window - never the latest AUTHORED (draft) one,
+    // which could carry an entirely different, not-yet-relevant window
+    // (Phase 5 review note 7).
+    const revision = lastActivatedEngagementRevision(db, engagementId);
+    if (!revision) throw new EngagementClosureError("AGENT_REFERRALS_ENGAGEMENT_NOT_FOUND", 404, engagementId);
     if (new Date(revision.publication_end_at).getTime() > Date.now()) throw new EngagementClosureError("AGENT_REFERRALS_CLOSURE_PUBLICATION_WINDOW_NOT_ENDED", 409);
 
     const rewardEvidence = resolveRewardRegistryFinalization(db, engagementId);

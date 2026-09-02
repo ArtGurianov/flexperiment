@@ -53,8 +53,8 @@ const seedEngagement = (db: Database.Database, agentId: string, occurrenceId: st
   const engagementId = randomUUID();
   db.prepare(`INSERT INTO engagements(id, partner_identity_id, occurrence_id, created_by_admin_id) VALUES (?, ?, ?, 'admin')`).run(engagementId, partnerId, occurrenceId);
   const revisionId = randomUUID();
-  db.prepare(`INSERT INTO engagement_revisions(id, engagement_id, revision, reward_type, reward_value, customer_discount_type, customer_discount_value, publication_start_at, publication_end_at, terms_json, content_hash, created_by_admin_id, reason)
-    VALUES (?, ?, 1, 'PERCENT', 1000, 'NONE', 0, '2020-01-01T00:00:00.000Z', '2035-01-01T00:00:00.000Z', '{}', 'h', 'admin', 'seed')`).run(revisionId, engagementId);
+  db.prepare(`INSERT INTO engagement_revisions(id, engagement_id, revision, occurrence_material_revision, reward_type, reward_value, customer_discount_type, customer_discount_value, publication_start_at, publication_end_at, terms_json, content_hash, created_by_admin_id, reason)
+    VALUES (?, ?, 1, 1, 'PERCENT', 1000, 'NONE', 0, '2020-01-01T00:00:00.000Z', '2035-01-01T00:00:00.000Z', '{}', 'h', 'admin', 'seed')`).run(revisionId, engagementId);
   return { engagementId, revisionId };
 };
 
@@ -66,6 +66,21 @@ describe("one permanent promo per partner (§B-9)", () => {
     const row = db.prepare("SELECT discount_type, discount_value, status FROM promo_codes WHERE id = ?").get(promo.promo_code_id);
     expect(row).toEqual({ discount_type: "NONE", discount_value: 0, status: "ACTIVE" });
     expect(isPromoPartnerOwned(db, promo.promo_code_id)).toBe(true);
+  });
+
+  it("reuses the legacy admin promo-code grammar - lowercase is normalized, and an invalid code is refused before any row is written", () => {
+    const db = fresh();
+    const agentId = seedAgent(db);
+    const promo = createPartnerPromo(db, admin, { partner_id: agentId, code: "art-lower", reason: "mint" });
+    const row = db.prepare("SELECT code, normalized_code FROM promo_codes WHERE id = ?").get(promo.promo_code_id);
+    expect(row).toEqual({ code: "ART-LOWER", normalized_code: "ART-LOWER" });
+
+    const agentId2 = seedAgent(db, randomUUID());
+    const before = db.prepare("SELECT COUNT(*) AS n FROM promo_codes").get() as { n: number };
+    expect(() => createPartnerPromo(db, admin, { partner_id: agentId2, code: "a", reason: "too short" })).toThrow(); // fails promoCodeSchema's ^[A-Z0-9_-]{2,64}$
+    expect(() => createPartnerPromo(db, admin, { partner_id: agentId2, code: "has a space", reason: "invalid chars" })).toThrow();
+    const after = db.prepare("SELECT COUNT(*) AS n FROM promo_codes").get() as { n: number };
+    expect(after.n).toBe(before.n); // no partial row from a rejected code
   });
 
   it("one partner cannot mint a second promo (UNIQUE(partner_id))", () => {

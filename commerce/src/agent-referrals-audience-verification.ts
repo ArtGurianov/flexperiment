@@ -91,13 +91,24 @@ export const mintAudienceVerificationEventInTransaction = (
   return currentAudienceVerification(db, partnerIdentityId, cityId)!;
 };
 
-export const mintAudienceVerificationEvent = (
+/**
+ * The ONLY top-level (own-transaction) production entry point this module
+ * exposes - and it can only ever assert VERIFIED. There is deliberately no
+ * standalone top-level REVOKED path: revoking is never merely an evidence
+ * append, it must also suspend any engagement whose ACTIVE authority
+ * depended on the verification being revoked, in the SAME transaction -
+ * see agent-referrals-engagement.ts's revokeAudienceVerificationForPartnerCity,
+ * the sole caller allowed to pass 'REVOKED' to the nestable primitive
+ * above. A bare "mint REVOKED" convenience wrapper here would let a caller
+ * revoke evidence while silently leaving an already-ACTIVE engagement's
+ * authority live - exactly the gap the cascade command exists to close.
+ */
+export const verifyAudience = (
   db: Database.Database,
   admin: AdminPrincipal,
   partnerIdentityId: string,
   cityId: string,
-  eventKind: AudienceVerificationEventKind,
   reason: string,
   evidenceRef: string,
 ): AudienceVerificationEventRow =>
-  db.transaction(() => mintAudienceVerificationEventInTransaction(db, admin, partnerIdentityId, cityId, eventKind, reason, evidenceRef)).immediate();
+  db.transaction(() => mintAudienceVerificationEventInTransaction(db, admin, partnerIdentityId, cityId, "VERIFIED", reason, evidenceRef)).immediate();

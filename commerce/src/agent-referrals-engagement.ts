@@ -50,6 +50,7 @@ export type EngagementRevisionRow = {
   id: string;
   engagement_id: string;
   revision: number;
+  occurrence_material_revision: number;
   reward_type: "PERCENT" | "FIXED";
   reward_value: number;
   customer_discount_type: "NONE" | "PERCENT" | "FIXED";
@@ -64,8 +65,9 @@ export type EngagementRevisionRow = {
   created_at: string;
 };
 
-const REVISION_COLUMNS = "id, engagement_id, revision, reward_type, reward_value, customer_discount_type, customer_discount_value, publication_start_at, publication_end_at, terms_json, content_hash, supersedes_revision_id, created_by_admin_id, reason, created_at";
+const REVISION_COLUMNS = "id, engagement_id, revision, occurrence_material_revision, reward_type, reward_value, customer_discount_type, customer_discount_value, publication_start_at, publication_end_at, terms_json, content_hash, supersedes_revision_id, created_by_admin_id, reason, created_at";
 
+/** The LATEST authored (minted) revision - a draft, never itself authority. Never use this to decide what an ACTIVE engagement currently grants; see lastActivatedEngagementRevision below. */
 export const currentEngagementRevision = (db: Database.Database, engagementId: string): EngagementRevisionRow | null =>
   (db.prepare(`SELECT ${REVISION_COLUMNS} FROM engagement_revisions WHERE engagement_id = ? ORDER BY revision DESC LIMIT 1`)
     .get(engagementId) as EngagementRevisionRow | undefined) ?? null;
@@ -73,10 +75,24 @@ export const currentEngagementRevision = (db: Database.Database, engagementId: s
 export const engagementRevisionById = (db: Database.Database, revisionId: string): EngagementRevisionRow | null =>
   (db.prepare(`SELECT ${REVISION_COLUMNS} FROM engagement_revisions WHERE id = ?`).get(revisionId) as EngagementRevisionRow | undefined) ?? null;
 
-export type OccurrenceFacts = { id: string; city_id: string; fulfillment_status: "SCHEDULED" | "COMPLETED" | "CANCELLED"; sales_status: "OPEN" | "PAUSED" | "CLOSED" };
+/**
+ * The revision an admin most recently activated - the authoritative
+ * "current forward authority" concept (Phase 5 review note 7), distinct
+ * from both "latest authored" (currentEngagementRevision, a draft with no
+ * authority of its own) and "accepted" (acceptance alone changes no
+ * authority either). Resolved from engagement_activation_events, which
+ * persists across suspension - so this stays correct even while the
+ * engagement's live promo authorization is currently revoked.
+ */
+export const lastActivatedEngagementRevision = (db: Database.Database, engagementId: string): EngagementRevisionRow | null => {
+  const event = db.prepare("SELECT engagement_revision_id FROM engagement_activation_events WHERE engagement_id = ? ORDER BY rowid DESC LIMIT 1").get(engagementId) as { engagement_revision_id: string } | undefined;
+  return event ? engagementRevisionById(db, event.engagement_revision_id) : null;
+};
+
+export type OccurrenceFacts = { id: string; city_id: string; fulfillment_status: "SCHEDULED" | "COMPLETED" | "CANCELLED"; sales_status: "OPEN" | "PAUSED" | "CLOSED"; material_revision: number };
 
 export const occurrenceFacts = (db: Database.Database, occurrenceId: string): OccurrenceFacts | null =>
-  (db.prepare("SELECT id, city_id, fulfillment_status, sales_status FROM occurrences WHERE id = ?").get(occurrenceId) as OccurrenceFacts | undefined) ?? null;
+  (db.prepare("SELECT id, city_id, fulfillment_status, sales_status, material_revision FROM occurrences WHERE id = ?").get(occurrenceId) as OccurrenceFacts | undefined) ?? null;
 
 export type EngagementRevisionTerms = {
   reward_type: "PERCENT" | "FIXED";
@@ -105,19 +121,20 @@ const validateRevisionTerms = (terms: EngagementRevisionTerms): void => {
 const insertEngagementRevisionInTransaction = (
   db: Database.Database,
   admin: AdminPrincipal,
-  engagementId: string,
+  engagement: EngagementRow,
   terms: EngagementRevisionTerms,
   reason: string,
 ): EngagementRevisionRow => {
   validateRevisionTerms(terms);
-  const current = currentEngagementRevision(db, engagementId);
+  const current = currentEngagementRevision(db, engagement.id);
+  const occurrence = occurrenceFacts(db, engagement.occurrence_id)!;
   const revisionId = id();
   const nextRevision = (current?.revision ?? 0) + 1;
-  db.prepare(`INSERT INTO engagement_revisions(id, engagement_id, revision, reward_type, reward_value, customer_discount_type, customer_discount_value, publication_start_at, publication_end_at, terms_json, content_hash, supersedes_revision_id, created_by_admin_id, reason)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(revisionId, engagementId, nextRevision, terms.reward_type, terms.reward_value, terms.customer_discount_type, terms.customer_discount_value,
+  db.prepare(`INSERT INTO engagement_revisions(id, engagement_id, revision, occurrence_material_revision, reward_type, reward_value, customer_discount_type, customer_discount_value, publication_start_at, publication_end_at, terms_json, content_hash, supersedes_revision_id, created_by_admin_id, reason)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(revisionId, engagement.id, nextRevision, occurrence.material_revision, terms.reward_type, terms.reward_value, terms.customer_discount_type, terms.customer_discount_value,
       terms.publication_start_at, terms.publication_end_at, JSON.stringify(terms.terms ?? {}), revisionContentHash(terms), current?.id ?? null, admin.admin_id, reason);
-  return currentEngagementRevision(db, engagementId)!;
+  return currentEngagementRevision(db, engagement.id)!;
 };
 
 export type OfferEngagementResult = { engagement_id: string; engagement_revision_id: string };
@@ -148,7 +165,7 @@ export const offerEngagement = (
     const engagementId = id();
     db.prepare(`INSERT INTO engagements(id, partner_identity_id, occurrence_id, lifecycle_state, created_by_admin_id) VALUES (?, ?, ?, 'OFFERED', ?)`)
       .run(engagementId, partnerIdentityId, occurrenceId, admin.admin_id);
-    const revision = insertEngagementRevisionInTransaction(db, admin, engagementId, terms, reason);
+    const revision = insertEngagementRevisionInTransaction(db, admin, getEngagement(db, engagementId)!, terms, reason);
     recordPartnerIdentityEvent(db, partnerIdentityId, "ENGAGEMENT_OFFERED", "ADMIN", { engagement_id: engagementId, engagement_revision_id: revision.id, occurrence_id: occurrenceId, reason });
     return { engagement_id: engagementId, engagement_revision_id: revision.id };
   });
@@ -161,7 +178,7 @@ export const mintEngagementRevision = (db: Database.Database, admin: AdminPrinci
     const engagement = getEngagement(db, engagementId);
     if (!engagement) throw new EngagementError("AGENT_REFERRALS_ENGAGEMENT_NOT_FOUND", 404, engagementId);
     if (engagement.lifecycle_state === "CLOSED") throw new EngagementError("AGENT_REFERRALS_ENGAGEMENT_CLOSED", 409, engagementId);
-    const revision = insertEngagementRevisionInTransaction(db, admin, engagementId, terms, reason);
+    const revision = insertEngagementRevisionInTransaction(db, admin, engagement, terms, reason);
     recordPartnerIdentityEvent(db, engagement.partner_identity_id, "ENGAGEMENT_REVISION_MINTED", "ADMIN", { engagement_id: engagementId, engagement_revision_id: revision.id, reason });
     return revision;
   });
@@ -243,8 +260,24 @@ export const activateEngagement = (db: Database.Database, admin: AdminPrincipal,
     if (!acceptance) throw new EngagementError("AGENT_REFERRALS_ACTIVATION_REVISION_NOT_ACCEPTED", 409, engagementRevisionId);
     if (new Date(revision.publication_end_at).getTime() <= Date.now()) throw new EngagementError("AGENT_REFERRALS_ACTIVATION_PUBLICATION_WINDOW_ENDED", 409);
 
+    // Forward-only authority: activating a revision OLDER than the one
+    // currently governing this engagement would silently roll back
+    // discount/reward terms to a superseded state (Phase 5 review note 7).
+    const lastActivated = lastActivatedEngagementRevision(db, engagementId);
+    if (lastActivated && revision.revision < lastActivated.revision) {
+      throw new EngagementError("AGENT_REFERRALS_ACTIVATION_CANNOT_ROLL_BACK_REVISION", 409, `${revision.revision}<${lastActivated.revision}`);
+    }
+
     const occurrence = occurrenceFacts(db, engagement.occurrence_id)!;
     if (occurrence.fulfillment_status !== "SCHEDULED") throw new EngagementError("AGENT_REFERRALS_ACTIVATION_OCCURRENCE_NOT_SCHEDULED", 409, occurrence.fulfillment_status);
+    // The revision's pinned occurrence_material_revision must still match
+    // the occurrence's CURRENT material_revision - occurrence date/time is
+    // itself material (Phase 5 review note 6); a schedule change since this
+    // revision was minted requires a fresh revision, not activating stale
+    // terms against it.
+    if (revision.occurrence_material_revision !== occurrence.material_revision) {
+      throw new EngagementError("AGENT_REFERRALS_ACTIVATION_OCCURRENCE_MATERIAL_REVISION_STALE", 409, `${revision.occurrence_material_revision}!=${occurrence.material_revision}`);
+    }
 
     const audience = currentAudienceVerification(db, engagement.partner_identity_id, occurrence.city_id);
     if (audience?.event_kind !== "VERIFIED") throw new EngagementError("AGENT_REFERRALS_ACTIVATION_AUDIENCE_NOT_VERIFIED", 409, occurrence.city_id);
@@ -300,6 +333,28 @@ const transitionEngagementLifecycleInTransaction = (db: Database.Database, engag
 export const suspendEngagement = (db: Database.Database, admin: AdminPrincipal, engagementId: string, reason: string): EngagementRow => {
   void admin;
   return db.transaction(() => transitionEngagementLifecycleInTransaction(db, engagementId, "SUSPENDED", reason)).immediate();
+};
+
+/**
+ * Compatibility seam for the legacy occurrence-patch path (domain.ts's
+ * patchOccurrence) - called only when that command's own classification
+ * already decided the change is material (the same signal that bumps
+ * occurrences.material_revision). Suspends every currently-ACTIVE
+ * engagement for this occurrence, across every partner, and revokes each
+ * one's promo authorization - closing the gap where a schedule change
+ * would otherwise leave a stale-terms engagement live (Phase 5 review
+ * note 6). Forcing a fresh engagement_revisions row (whose
+ * occurrence_material_revision will pin the new state) through
+ * acceptance and activation again is the only way back to ACTIVE - never
+ * automatic, never on the partner's behalf.
+ */
+export const suspendEngagementsForOccurrenceMaterialChange = (db: Database.Database, occurrenceId: string, reason: string): string[] => {
+  const run = db.transaction((): string[] => {
+    const affected = db.prepare("SELECT id FROM engagements WHERE occurrence_id = ? AND lifecycle_state = 'ACTIVE'").all(occurrenceId) as { id: string }[];
+    for (const row of affected) transitionEngagementLifecycleInTransaction(db, row.id, "SUSPENDED", reason);
+    return affected.map((row) => row.id);
+  });
+  return run.immediate();
 };
 
 export type RevokeAudienceCascadeResult = { verification_event_id: string; suspended_engagement_ids: string[] };

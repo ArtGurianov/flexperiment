@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { getPartnerIdentity } from "./agent-referrals-onboarding";
-import { getEngagement, currentEngagementRevision, occurrenceFacts } from "./agent-referrals-engagement";
+import { getEngagement, lastActivatedEngagementRevision, occurrenceFacts } from "./agent-referrals-engagement";
 import { isDelegationEffective } from "./agent-referrals-delegation-revocation";
 import { currentEngagementPromoAuthorizationForEngagement, partnerPromoByPartnerId } from "./agent-referrals-promo";
 import { currentCreativeAuthorization, creativeRevisionById } from "./agent-referrals-creative";
@@ -40,7 +40,11 @@ export const assessCreativeReadyToPublish = (db: Database.Database, engagementId
   if (engagement.lifecycle_state !== "ACTIVE") throw new CreativeReadinessError("AGENT_REFERRALS_READINESS_ENGAGEMENT_NOT_ACTIVE", 409, engagement.lifecycle_state);
   if (!isDelegationEffective(db, engagement.partner_identity_id)) throw new CreativeReadinessError("AGENT_REFERRALS_READINESS_DELEGATION_NOT_EFFECTIVE", 409);
 
-  const revision = currentEngagementRevision(db, engagementId)!;
+  // The revision an admin most recently ACTIVATED, never the latest
+  // AUTHORED (draft) one - a simple admin draft R2 must not break
+  // publication readiness for the still-live R1 (Phase 5 review note 7).
+  const revision = lastActivatedEngagementRevision(db, engagementId);
+  if (!revision) throw new CreativeReadinessError("AGENT_REFERRALS_READINESS_ENGAGEMENT_NOT_ACTIVE", 409, engagementId);
   const now = Date.now();
   if (now < new Date(revision.publication_start_at).getTime() || now > new Date(revision.publication_end_at).getTime()) {
     throw new CreativeReadinessError("AGENT_REFERRALS_READINESS_PUBLICATION_WINDOW_CLOSED", 409);

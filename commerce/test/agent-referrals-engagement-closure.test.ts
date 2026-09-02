@@ -11,7 +11,7 @@ import { activatePartner, getPartnerIdentity } from "../src/agent-referrals-onbo
 import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES } from "../src/agent-referrals-framework-delegation";
 import { mintStepUpGrant } from "../src/agent-referrals-step-up";
 import { acceptFrameworkAndDelegation } from "../src/agent-referrals-framework-acceptance";
-import { mintAudienceVerificationEvent } from "../src/agent-referrals-audience-verification";
+import { verifyAudience } from "../src/agent-referrals-audience-verification";
 import { createPartnerPromo } from "../src/agent-referrals-promo";
 import { mintEngagementStepUpGrant } from "../src/agent-referrals-engagement-step-up";
 import { offerEngagement, acceptEngagement, activateEngagement, getEngagement } from "../src/agent-referrals-engagement";
@@ -50,7 +50,7 @@ const readyPartner = (db: Database.Database) => {
   activatePartner(db, partnerIdentityId, getPartnerIdentity(db, partnerIdentityId)!.onboarding_revision, "ADMIN", "onboarding complete");
   const cityId = randomUUID();
   db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, 'City')").run(cityId, `city-${cityId.slice(0, 8)}`);
-  mintAudienceVerificationEvent(db, admin, partnerIdentityId, cityId, "VERIFIED", "verified", "ev-1");
+  verifyAudience(db, admin, partnerIdentityId, cityId, "verified", "ev-1");
   const promo = createPartnerPromo(db, admin, { partner_id: agentId, code: `ART${agentId.slice(0, 4)}`, reason: "mint" });
   return { partner, agentId, partnerIdentityId, cityId, promo };
 };

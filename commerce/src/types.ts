@@ -199,7 +199,7 @@ export const agentPatchSchema = z.object({
   default_reward_value: z.number().int().nonnegative().optional(),
   npd_status_checked_at: z.string().datetime().nullable().optional(),
 }).strict();
-const promoCodeSchema = z.string().trim().transform((value) => value.toUpperCase()).pipe(z.string().regex(/^[A-Z0-9_-]{2,64}$/));
+export const promoCodeSchema = z.string().trim().transform((value) => value.toUpperCase()).pipe(z.string().regex(/^[A-Z0-9_-]{2,64}$/));
 const promoMutableShape = {
   agent_id: z.string().uuid().nullable().optional(),
   status: z.enum(["ACTIVE", "DISABLED"]),

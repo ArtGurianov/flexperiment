@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import { canonicalV2, id, sha256 } from "./crypto";
 import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
 import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
-import { currentEngagementPromoAuthorizationForEngagement } from "./agent-referrals-promo";
+import { currentEngagementPromoAuthorizationForEngagement, partnerPromoByPartnerId } from "./agent-referrals-promo";
 import type { AdminPrincipal } from "./agent-referrals-partner-identity";
 
 /**
@@ -56,16 +56,31 @@ export const currentCreativeRevision = (db: Database.Database, engagementId: str
 export const creativeRevisionById = (db: Database.Database, revisionId: string): CreativeRevisionRow | null =>
   (db.prepare(`SELECT ${REVISION_COLUMNS} FROM engagement_creative_revisions WHERE id = ?`).get(revisionId) as CreativeRevisionRow | undefined) ?? null;
 
-/** Admin-only content authoring - not gated by SUSPENDED (preparing content is not itself new publication authority; authorizeCreative below is). */
-export const mintCreativeRevision = (db: Database.Database, admin: AdminPrincipal, engagementId: string, partnerId: string, promoCodeId: string, fields: CreativeMaterialFields): CreativeRevisionRow => {
+/**
+ * Admin-only content authoring - not gated by SUSPENDED (preparing content
+ * is not itself new publication authority; authorizeCreative below is).
+ *
+ * partner_id and promo_code_id are DERIVED from the engagement's own
+ * authority, never accepted as independent caller arguments - the earlier
+ * shape (both as free parameters) let a caller mint immutable creative
+ * evidence for engagement A binding promo B's code, an evidence-integrity
+ * defect no later check could safely paper over (Phase 5 review note 5).
+ */
+export const mintCreativeRevision = (db: Database.Database, admin: AdminPrincipal, engagementId: string, fields: CreativeMaterialFields): CreativeRevisionRow => {
   const run = db.transaction((): CreativeRevisionRow => {
+    const owner = db.prepare(`SELECT pi.agent_id AS agent_id FROM engagements e JOIN partner_identities pi ON pi.id = e.partner_identity_id WHERE e.id = ?`)
+      .get(engagementId) as { agent_id: string } | undefined;
+    if (!owner) throw new CreativeError("AGENT_REFERRALS_ENGAGEMENT_NOT_FOUND", 404, engagementId);
+    const partnerPromo = partnerPromoByPartnerId(db, owner.agent_id);
+    if (!partnerPromo) throw new CreativeError("AGENT_REFERRALS_CREATIVE_PARTNER_HAS_NO_PROMO", 409, engagementId);
+
     const current = currentCreativeRevision(db, engagementId);
     const revisionId = id();
     const nextRevision = (current?.revision ?? 0) + 1;
     db.prepare(`INSERT INTO engagement_creative_revisions(id, engagement_id, revision, partner_id, promo_code_id, format_kind, media_ref, copy_text, cta_text, mandatory_labeling_text, creative_target_url, creative_hash, supersedes_creative_revision_id, created_by_admin_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(revisionId, engagementId, nextRevision, partnerId, promoCodeId, fields.format_kind, fields.media_ref, fields.copy_text, fields.cta_text, fields.mandatory_labeling_text, fields.creative_target_url,
-        creativeHashOf(promoCodeId, fields), current?.id ?? null, admin.admin_id);
+      .run(revisionId, engagementId, nextRevision, owner.agent_id, partnerPromo.promo_code_id, fields.format_kind, fields.media_ref, fields.copy_text, fields.cta_text, fields.mandatory_labeling_text, fields.creative_target_url,
+        creativeHashOf(partnerPromo.promo_code_id, fields), current?.id ?? null, admin.admin_id);
     return currentCreativeRevision(db, engagementId)!;
   });
   return run.immediate();
@@ -112,6 +127,12 @@ export const authorizeCreative = (db: Database.Database, admin: AdminPrincipal, 
     if (!creative || creative.engagement_id !== engagementId) throw new CreativeError("AGENT_REFERRALS_CREATIVE_REVISION_NOT_FOUND", 404, creativeRevisionId);
     const current = currentCreativeRevision(db, engagementId)!;
     if (current.id !== creativeRevisionId) throw new CreativeError("AGENT_REFERRALS_CREATIVE_REVISION_SUPERSEDED", 409, creativeRevisionId);
+    // Defense in depth: mintCreativeRevision derives partner_id/promo_code_id
+    // from the engagement, so this can never actually fire through the
+    // public API - guards against a future caller bypassing that
+    // derivation (e.g. direct DB manipulation in a bug elsewhere).
+    if (creative.partner_id !== promoAuthorization.partner_id) throw new CreativeError("AGENT_REFERRALS_CREATIVE_PARTNER_MISMATCH", 409, creativeRevisionId);
+    if (creative.promo_code_id !== promoAuthorization.promo_code_id) throw new CreativeError("AGENT_REFERRALS_CREATIVE_PROMO_MISMATCH", 409, creativeRevisionId);
 
     const existingCurrent = currentCreativeAuthorization(db, engagementId);
     if (existingCurrent) {

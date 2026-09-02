@@ -11,10 +11,10 @@ import { activatePartner, getPartnerIdentity } from "../src/agent-referrals-onbo
 import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES } from "../src/agent-referrals-framework-delegation";
 import { mintStepUpGrant } from "../src/agent-referrals-step-up";
 import { acceptFrameworkAndDelegation } from "../src/agent-referrals-framework-acceptance";
-import { mintAudienceVerificationEvent } from "../src/agent-referrals-audience-verification";
+import { verifyAudience } from "../src/agent-referrals-audience-verification";
 import { createPartnerPromo } from "../src/agent-referrals-promo";
 import { mintEngagementStepUpGrant } from "../src/agent-referrals-engagement-step-up";
-import { offerEngagement, acceptEngagement, activateEngagement, type EngagementRevisionTerms } from "../src/agent-referrals-engagement";
+import { offerEngagement, acceptEngagement, activateEngagement, mintEngagementRevision, type EngagementRevisionTerms } from "../src/agent-referrals-engagement";
 import { mintCreativeRevision, authorizeCreative } from "../src/agent-referrals-creative";
 import { setAgentReferralsChannelPolicy } from "../src/agent-referrals-channel-policy";
 import {
@@ -25,6 +25,7 @@ import {
   distributionEvents,
   distributionProjection,
   distributionsForEngagement,
+  getDistribution,
   markOverdueRemoval,
   reportDistribution,
 } from "../src/agent-referrals-distribution";
@@ -62,7 +63,7 @@ const readyPartner = (db: Database.Database) => {
   activatePartner(db, partnerIdentityId, getPartnerIdentity(db, partnerIdentityId)!.onboarding_revision, "ADMIN", "onboarding complete");
   const cityId = randomUUID();
   db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, 'City')").run(cityId, `city-${cityId.slice(0, 8)}`);
-  mintAudienceVerificationEvent(db, admin, partnerIdentityId, cityId, "VERIFIED", "verified", "ev-1");
+  verifyAudience(db, admin, partnerIdentityId, cityId, "verified", "ev-1");
   const promo = createPartnerPromo(db, admin, { partner_id: agentId, code: `ART${agentId.slice(0, 4)}`, reason: "mint" });
   return { partner, agentId, partnerIdentityId, cityId, promo };
 };
@@ -86,11 +87,24 @@ const readyEngagementWithCreative = (db: Database.Database) => {
   const grant = mintEngagementStepUpGrant(db, p1.partner, "ENGAGEMENT_ACCEPTANCE", { engagement_id: engagementId, engagement_revision_id: revisionId }).grant_id;
   acceptEngagement(db, p1.partner, engagementId, revisionId, grant);
   activateEngagement(db, admin, engagementId, revisionId);
-  const creative = mintCreativeRevision(db, admin, engagementId, p1.agentId, p1.promo.promo_code_id, {
+  const creative = mintCreativeRevision(db, admin, engagementId, {
     format_kind: "post", media_ref: null, copy_text: "Buy now", cta_text: "Click", mandatory_labeling_text: "Реклама", creative_target_url: "https://flexperiment.ru/x?promo=ART",
   });
-  authorizeCreative(db, admin, engagementId, creative.id);
-  return { ...p1, engagementId };
+  const authorization = authorizeCreative(db, admin, engagementId, creative.id);
+  return { ...p1, engagementId, revisionId, creativeId: creative.id, authorizationId: authorization.id, occurrenceId: occ };
+};
+
+/** Mints, accepts and activates a second engagement revision (and a second creative authorized to it), superseding the first authorization. */
+const supersedeAuthority = (db: Database.Database, engaged: ReturnType<typeof readyEngagementWithCreative>, overrides: Partial<EngagementRevisionTerms> = {}) => {
+  const revision2 = mintEngagementRevision(db, admin, engaged.engagementId, { ...terms1, ...overrides }, "material change");
+  const grant2 = mintEngagementStepUpGrant(db, engaged.partner, "ENGAGEMENT_ACCEPTANCE", { engagement_id: engaged.engagementId, engagement_revision_id: revision2.id }).grant_id;
+  acceptEngagement(db, engaged.partner, engaged.engagementId, revision2.id, grant2);
+  activateEngagement(db, admin, engaged.engagementId, revision2.id);
+  const creative2 = mintCreativeRevision(db, admin, engaged.engagementId, {
+    format_kind: "post", media_ref: null, copy_text: "Buy now v2", cta_text: "Click", mandatory_labeling_text: "Реклама", creative_target_url: "https://flexperiment.ru/x?promo=ART",
+  });
+  authorizeCreative(db, admin, engaged.engagementId, creative2.id);
+  return { revisionId: revision2.id, creativeId: creative2.id };
 };
 
 const report = (db: Database.Database, partner: PartnerPrincipal, engagementId: string, overrides: Partial<Parameters<typeof reportDistribution>[3]> = {}) =>
@@ -230,5 +244,106 @@ describe("fault injection", () => {
     expect(after.n).toBe(before.n);
     const retry = report(db, p1.partner, p1.engagementId);
     expect(retry.distribution_id).toBeTruthy();
+  });
+});
+
+describe("partner ownership: a PARTNER may only write evidence for their own engagement/distribution", () => {
+  it("reportDistribution refuses a PARTNER reporting for another partner's engagement - zero rows written", () => {
+    const db = fresh();
+    const engaged = readyEngagementWithCreative(db);
+    const otherPartner = readyPartner(db);
+    const before = db.prepare("SELECT COUNT(*) AS n FROM engagement_distributions").get() as { n: number };
+    expect(() => report(db, otherPartner.partner, engaged.engagementId)).toThrow(DistributionError);
+    expect(() => report(db, otherPartner.partner, engaged.engagementId)).toThrow(/AGENT_REFERRALS_DISTRIBUTION_WRONG_PARTNER/);
+    const after = db.prepare("SELECT COUNT(*) AS n FROM engagement_distributions").get() as { n: number };
+    expect(after.n).toBe(before.n);
+  });
+
+  it("correctDistribution and claimRemoval refuse a PARTNER acting on another partner's distribution", () => {
+    const db = fresh();
+    const engaged = readyEngagementWithCreative(db);
+    const otherPartner = readyPartner(db);
+    const real = report(db, engaged.partner, engaged.engagementId);
+    expect(() => correctDistribution(db, otherPartner.partner, real.distribution_id,
+      { channel_key: "telegram", resource_kind: "channel", resource_identifier: "@x", distribution_resource_url: "https://t.me/x/2", published_at: "2030-09-10T00:00:00.000Z", ended_at: null, evidence_ref: "ev" },
+      "not mine to correct")).toThrow(/AGENT_REFERRALS_DISTRIBUTION_WRONG_PARTNER/);
+    expect(() => claimRemoval(db, otherPartner.partner, real.distribution_id, "ev")).toThrow(/AGENT_REFERRALS_DISTRIBUTION_WRONG_PARTNER/);
+    // The real owner still can.
+    expect(() => claimRemoval(db, engaged.partner, real.distribution_id, "ev")).not.toThrow();
+  });
+
+  it("admin remains permitted for both engagement-scoped and distribution-scoped writes, regardless of which partner owns them", () => {
+    const db = fresh();
+    const engaged = readyEngagementWithCreative(db);
+    const admin1 = reportDistribution(db, admin, engaged.engagementId, { channel_key: "telegram", resource_kind: "channel", resource_identifier: "@x", distribution_resource_url: "https://t.me/x/1", published_at: "2030-09-10T00:00:00.000Z", ended_at: null, evidence_ref: "ev" });
+    expect(() => confirmRemoval(db, admin, admin1.distribution_id, "ev")).not.toThrow();
+  });
+});
+
+describe("historical authority (§B-5c/§B-5d): a distribution pins the creative authority live at published_at, never whatever is current now", () => {
+  it("a late report of an old (Monday) publication still pins the OLD engagement/creative revision, even after Tuesday's material change made a new one current", () => {
+    const db = fresh();
+    const engaged = readyEngagementWithCreative(db);
+    const publishedDuringR1 = new Date().toISOString();
+    const superseded = supersedeAuthority(db, engaged, { customer_discount_value: 1500 });
+    const publishedDuringR2 = new Date().toISOString();
+
+    const lateReport = report(db, engaged.partner, engaged.engagementId, { published_at: publishedDuringR1 });
+    const oldDistribution = getDistribution(db, lateReport.distribution_id)!;
+    expect(oldDistribution.engagement_revision_id).toBe(engaged.revisionId);
+    expect(oldDistribution.creative_revision_id).toBe(engaged.creativeId);
+
+    const currentReport = report(db, engaged.partner, engaged.engagementId, { published_at: publishedDuringR2, resource_identifier: "@c2" });
+    const newDistribution = getDistribution(db, currentReport.distribution_id)!;
+    expect(newDistribution.engagement_revision_id).toBe(superseded.revisionId);
+    expect(newDistribution.creative_revision_id).toBe(superseded.creativeId);
+  });
+
+  it("refuses a report whose published_at predates any authorization ever effective for this engagement - no evidence to pin", () => {
+    const db = fresh();
+    const engaged = readyEngagementWithCreative(db);
+    expect(() => report(db, engaged.partner, engaged.engagementId, { published_at: "2000-01-01T00:00:00.000Z" })).toThrow(/AGENT_REFERRALS_DISTRIBUTION_NO_AUTHORIZATION_EFFECTIVE_AT_PUBLICATION/);
+  });
+
+  it("publishing after publication_end_at is classified REVIEW_REQUIRED + REMOVAL_REQUIRED even on an ALLOWED channel - a new distribution is prohibited past the window (§B-5d)", () => {
+    const db = fresh();
+    const engaged = readyEngagementWithCreative(db); // publication_end_at = 2035-01-01
+    const result = report(db, engaged.partner, engaged.engagementId, { published_at: "2036-06-01T00:00:00.000Z" });
+    expect(result.revision.channel_policy_status).toBe("ALLOWED"); // telegram is ALLOWED - the channel itself is not the problem
+    const projection = distributionProjection(db, result.distribution_id);
+    expect(projection.compliance_state).toBe("REVIEW_REQUIRED");
+    expect(projection.removal_state).toBe("REMOVAL_REQUIRED");
+  });
+
+  it("corrections re-classify against the DISTRIBUTION'S PINNED revision window, never re-resolving authority", () => {
+    const db = fresh();
+    const engaged = readyEngagementWithCreative(db);
+    const first = report(db, engaged.partner, engaged.engagementId, { published_at: "2030-09-10T00:00:00.000Z" });
+    expect(distributionProjection(db, first.distribution_id).compliance_state).toBe("MARKED_REPORTABLE");
+    // A correction moving published_at past the PINNED revision's window flips classification, without ever re-pinning identity.
+    const corrected = correctDistribution(db, engaged.partner, first.distribution_id,
+      { channel_key: "telegram", resource_kind: "channel", resource_identifier: "@art_channel", distribution_resource_url: "https://t.me/art_channel/1", published_at: "2036-06-01T00:00:00.000Z", ended_at: null, evidence_ref: "ev-corrected" },
+      "corrected the actual publish date");
+    expect(corrected.distribution_id).toBe(first.distribution_id);
+    const identity = getDistribution(db, first.distribution_id)!;
+    expect(identity.engagement_revision_id).toBe(engaged.revisionId); // identity never changes on correction
+    expect(distributionProjection(db, first.distribution_id).compliance_state).toBe("REVIEW_REQUIRED");
+    expect(distributionProjection(db, first.distribution_id).removal_state).toBe("REMOVAL_REQUIRED");
+  });
+});
+
+describe("event_sequence: explicit durable canonical fold order, not SQLite's implicit rowid", () => {
+  it("events for one distribution get an explicit monotonic 1..N event_sequence, matching insertion order", () => {
+    const db = fresh();
+    const engaged = readyEngagementWithCreative(db);
+    const d = report(db, engaged.partner, engaged.engagementId);
+    claimRemoval(db, engaged.partner, d.distribution_id, "ev-claim");
+    confirmRemoval(db, admin, d.distribution_id, "ev-confirm");
+    const events = distributionEvents(db, d.distribution_id);
+    expect(events.map((e) => e.event_sequence)).toEqual([1, 2, 3, 4]);
+    expect(events.map((e) => e.event_kind)).toEqual(["DECLARED", "MARKED_REPORTABLE", "REMOVAL_CLAIMED", "REMOVAL_CONFIRMED"]);
+    // Structural backstop: no two events for the same distribution can ever share a sequence number.
+    expect(() => db.prepare(`INSERT INTO engagement_distribution_events(id, distribution_id, event_sequence, event_kind, actor_realm) VALUES (?, ?, 1, 'DECLARED', 'SYSTEM')`).run(randomUUID(), d.distribution_id))
+      .toThrow(/UNIQUE constraint failed/);
   });
 });
