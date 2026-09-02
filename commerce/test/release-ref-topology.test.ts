@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { epochBPromotionArtifactReason } from "../src/epoch-b-notification-activation";
@@ -67,20 +66,30 @@ const isApprovedEpochBPromotionArtifact = (sha: string) => {
  * the currently observed main, and the certificate must reconstruct to the
  * exact judged SHA (see commerce/src/agent-referrals-candidate.ts).
  *
- * PR1 ships no certificate: docs/release/agent-referrals-candidate-certificate.json
- * does not exist until a real one lands in PR9/PR10, so this predicate is
- * reusable machinery that never fires today - it is not a name-based skip or
- * a new hard-coded SHA exemption, and it costs nothing while unused.
+ * Phase 10A's canonical location: `.release/controlled-candidates/
+ * agent-referrals-<BASE>/certificate.json`, committed to protected main (a
+ * control-plane artifact, not something Q itself carries) and read from
+ * main's own tree - never from the judged SHA's tree, which would be reading
+ * Q's claims about itself, exactly the circular proof this module refuses to
+ * perform. `<BASE>` is resolved fresh as the judged SHA's own parent
+ * (Q^ == BASE is the frozen invariant, never assumed) and cross-checked
+ * against the certificate's own base_sha field before anything else runs.
+ *
+ * PR1 ships no certificate, so this predicate is reusable machinery that
+ * never fires today - not a name-based skip or a new hard-coded SHA
+ * exemption, and it costs nothing while unused.
  */
-const CANDIDATE_CERTIFICATE_PATH = "docs/release/agent-referrals-candidate-certificate.json";
+const candidateCertificatePath = (base: string) => `.release/controlled-candidates/agent-referrals-${base}/certificate.json`;
 const isApprovedAgentReferralsCandidate = (sha: string, currentMain: string) => {
-  let raw: string;
-  try { raw = readFileSync(CANDIDATE_CERTIFICATE_PATH, "utf8"); }
-  catch { return false; }
+  const base = resolve(`${sha}^`);
+  if (!base) return false;
+  const result = git("show", `${currentMain}:${candidateCertificatePath(base)}`);
+  if (result.status !== 0) return false;
   let certificate: AgentReferralsCandidateCertificate;
-  try { certificate = JSON.parse(raw) as AgentReferralsCandidateCertificate; }
+  try { certificate = JSON.parse(result.stdout.toString()) as AgentReferralsCandidateCertificate; }
   catch { return false; }
-  if (typeof certificate.main_sha !== "string" || !isAncestor(certificate.main_sha, currentMain)) return false;
+  if (certificate.base_sha !== base) return false;
+  if (typeof certificate.source_main_sha !== "string" || !isAncestor(certificate.source_main_sha, currentMain)) return false;
   return verifyAgentReferralsCandidateCertificate(certificate, sha) === undefined;
 };
 

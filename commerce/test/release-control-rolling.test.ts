@@ -156,6 +156,21 @@ describe("HTTP: POST /v1/internal/release-control/complete-rolling", () => {
     });
   });
 
+  it("rejects an expectation mismatch limited to a single legal_hash - the gate row has no column for it, so only full-object comparison can catch this", async () => {
+    await withReleaseControlToken(async () => {
+      const { db, app } = appFixture();
+      try {
+        const releaseId = randomUUID();
+        const acquired = expected();
+        await acquireRolling(app, releaseId, acquired);
+        const tampered = expected({ legal_hashes: { ...acquired.legal_hashes, PD_CONSENT: "9".repeat(64) } });
+        const response = await app.request("http://api.flexperiment.ru/v1/internal/release-control/complete-rolling", { method: "POST", headers: releaseControlHeaders, body: JSON.stringify({ release_id: releaseId, mode: "ROLLING", expected: tampered }) });
+        expect(response.status).toBe(409);
+        expect(await response.json()).toEqual({ error: { code: "RELEASE_CONTROL_EXPECTATION_MISMATCH" } });
+      } finally { db.close(); }
+    });
+  });
+
   it("rejects on dormant-ready FAIL (PR1's fail-closed wiring: no feature exists yet)", async () => {
     await withReleaseControlToken(async () => {
       const { db, app } = appFixture();
@@ -246,6 +261,20 @@ describe("ReleaseSalesGate.completeRolling(): primitive, all predicates PASS", (
       gate.completeRolling(request(releaseId), () => true);
       expect(() => gate.completeRolling(request(releaseId, expected({ source_commit: "9".repeat(40) })), () => true))
         .toThrow(ReleaseControlError);
+    } finally { db.close(); }
+  });
+
+  it("a retry with a changed legal_hash is refused, not treated as idempotent", () => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    try {
+      const gate = new ReleaseSalesGate(db);
+      const releaseId = randomUUID();
+      const acquired = expected();
+      gate.acquire(request(releaseId, acquired));
+      gate.completeRolling(request(releaseId, acquired), () => true);
+      const tampered = expected({ legal_hashes: { ...acquired.legal_hashes, CHECKOUT_DISCLOSURE: "9".repeat(64) } });
+      expect(() => gate.completeRolling(request(releaseId, tampered), () => true)).toThrow(ReleaseControlError);
     } finally { db.close(); }
   });
 });

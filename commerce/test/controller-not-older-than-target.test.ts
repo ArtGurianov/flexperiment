@@ -110,26 +110,60 @@ describe("a controller is never older than what it deploys", () => {
  */
 type DeploymentTargetClass = "ANCESTRY_BOUND" | "RECONSTRUCTION_BOUND" | "HISTORICAL_HARD_BOUND";
 
-const RECONSTRUCTION_BOUND_ASSERTIONS: ReadonlyArray<{ readonly name: string; readonly pattern: RegExp }> = [
+/**
+ * The source-main ancestry assertion is deliberately ONE combined pattern,
+ * not two independent ones. An earlier version of this machinery checked
+ * "some SOURCE_MAIN_SHA is proven an ancestor" and "the certificate is read"
+ * as unrelated facts - which a workflow could satisfy with a decoy
+ * SOURCE_MAIN_SHA (a safe, real ancestor of main) while the certificate's own
+ * `source_main_sha` field, the value that actually authorizes every
+ * patch_path lookup, pointed at an unrelated, unproven commit. Binding the
+ * extraction to the exact certificate file closes that: SOURCE_MAIN_SHA can
+ * only ever be the certificate's own claimed value, so proving it an
+ * ancestor proves the certificate's real authority, not a decoy.
+ */
+const CERTIFICATE_FILE = "candidate-certificate.json";
+
+const removeLinesMatching = (pattern: RegExp) => (source: string): string =>
+  source.split("\n").filter((line) => !pattern.test(line)).join("\n");
+
+/**
+ * `pattern` is what a real workflow's source must positively contain;
+ * `removeLine` is how this suite's own removal tests delete just that
+ * assertion from a fixture. They are kept separate because the ancestry
+ * assertion's pattern deliberately spans two lines (see above) - a per-line
+ * `.test()` of that pattern would never match any single line, so its own
+ * `removeLine` instead targets the narrower extraction line alone. The
+ * dedicated describe block below additionally proves that removing the
+ * merge-base half, or decoupling the two from each other entirely, also
+ * breaks this check - so nothing about picking only one line here weakens
+ * the assertion as a whole.
+ */
+const RECONSTRUCTION_BOUND_ASSERTIONS: ReadonlyArray<{ readonly name: string; readonly pattern: RegExp; readonly removeLine: (source: string) => string }> = [
   {
-    name: "source-main ancestry assertion (SOURCE_MAIN_SHA ⊆ CONTROLLER)",
-    pattern: /git merge-base --is-ancestor "\$SOURCE_MAIN_SHA" "\$(GITHUB_SHA|CONTROLLER_SHA)"/,
+    name: "certificate read from the controller/main tree, at the canonical BASE-scoped path",
+    pattern: /git show "\$(GITHUB_SHA|CONTROLLER_SHA):\.release\/controlled-candidates\/agent-referrals-\$BASE_SHA\/certificate\.json" > candidate-certificate\.json/,
+    removeLine: removeLinesMatching(/git show "\$(GITHUB_SHA|CONTROLLER_SHA):\.release\/controlled-candidates\/agent-referrals-\$BASE_SHA\/certificate\.json" > candidate-certificate\.json/),
   },
   {
-    name: "certificate read from the controller/main tree",
-    pattern: /git show "\$(GITHUB_SHA|CONTROLLER_SHA):docs\/release\/agent-referrals-candidate-certificate\.json"/,
+    name: "source-main ancestry assertion, extracted from and bound to the exact certificate (SOURCE_MAIN_SHA ⊆ CONTROLLER)",
+    pattern: /SOURCE_MAIN_SHA="\$\(jq -er '\.source_main_sha' candidate-certificate\.json\)"[\s\S]*?git merge-base --is-ancestor "\$SOURCE_MAIN_SHA" "\$(GITHUB_SHA|CONTROLLER_SHA)"/,
+    removeLine: removeLinesMatching(/^SOURCE_MAIN_SHA="\$\(jq -er '\.source_main_sha' candidate-certificate\.json\)"$/),
   },
   {
     name: "BASE equality assertion",
     pattern: /jq -e --arg base "\$BASE_SHA" '\.base_sha == \$base'/,
+    removeLine: removeLinesMatching(/jq -e --arg base "\$BASE_SHA" '\.base_sha == \$base'/),
   },
   {
     name: "exact reconstruction invocation",
     pattern: /node --import tsx commerce\/src\/agent-referrals-candidate-verify\.ts/,
+    removeLine: removeLinesMatching(/node --import tsx commerce\/src\/agent-referrals-candidate-verify\.ts/),
   },
   {
     name: "RECONSTRUCTED_SHA == TARGET_SHA",
     pattern: /\[\[ "\$RECONSTRUCTED_SHA" == "\$TARGET_SHA" \]\]/,
+    removeLine: removeLinesMatching(/\[\[ "\$RECONSTRUCTED_SHA" == "\$TARGET_SHA" \]\]/),
   },
 ];
 
@@ -141,12 +175,31 @@ const isReconstructionBound = (source: string): boolean => missingReconstruction
 
 /** The exact shape a real controlled-agent-referrals-candidate.yml step must contain - every line load-bearing. */
 const reconstructionBoundFixture = () => [
+  'BASE_SHA="$(scripts/read-production-deploy-ref.sh)"',
+  `git show "$GITHUB_SHA:.release/controlled-candidates/agent-referrals-$BASE_SHA/certificate.json" > ${CERTIFICATE_FILE}`,
+  `SOURCE_MAIN_SHA="$(jq -er '.source_main_sha' ${CERTIFICATE_FILE})"`,
+  'git merge-base --is-ancestor "$SOURCE_MAIN_SHA" "$GITHUB_SHA" || { echo "SOURCE_MAIN_SHA_NOT_ANCESTOR" >&2; exit 1; }',
+  `jq -e --arg base "$BASE_SHA" '.base_sha == $base' ${CERTIFICATE_FILE} >/dev/null || { echo "CANDIDATE_BASE_MISMATCH" >&2; exit 1; }`,
+  `RECONSTRUCTED_SHA="$(node --import tsx commerce/src/agent-referrals-candidate-verify.ts ${CERTIFICATE_FILE})"`,
+  '[[ "$RECONSTRUCTED_SHA" == "$TARGET_SHA" ]] || { echo "CANDIDATE_RECONSTRUCTION_MISMATCH" >&2; exit 1; }',
+].join("\n");
+
+/**
+ * The exact adversarial shape this coupling exists to close: a decoy
+ * SOURCE_MAIN_SHA read from an unrelated input (here, a plain file) that is
+ * genuinely a safe ancestor of main, while the certificate - read separately
+ * - is never consulted for its own source_main_sha at all. Every other
+ * assertion (certificate read, BASE equality, reconstruction, final SHA
+ * equality) is present and correctly shaped; only the ancestry proof is
+ * decoupled from the certificate's own authority.
+ */
+const decoupledAncestryFixture = () => [
   'SOURCE_MAIN_SHA="$(cat source-main-sha.txt)"',
   'git merge-base --is-ancestor "$SOURCE_MAIN_SHA" "$GITHUB_SHA" || { echo "SOURCE_MAIN_SHA_NOT_ANCESTOR" >&2; exit 1; }',
-  'git show "$GITHUB_SHA:docs/release/agent-referrals-candidate-certificate.json" > candidate-certificate.json',
   'BASE_SHA="$(scripts/read-production-deploy-ref.sh)"',
-  "jq -e --arg base \"$BASE_SHA\" '.base_sha == $base' candidate-certificate.json >/dev/null || { echo \"CANDIDATE_BASE_MISMATCH\" >&2; exit 1; }",
-  'RECONSTRUCTED_SHA="$(node --import tsx commerce/src/agent-referrals-candidate-verify.ts candidate-certificate.json)"',
+  `git show "$GITHUB_SHA:.release/controlled-candidates/agent-referrals-$BASE_SHA/certificate.json" > ${CERTIFICATE_FILE}`,
+  `jq -e --arg base "$BASE_SHA" '.base_sha == $base' ${CERTIFICATE_FILE} >/dev/null || { echo "CANDIDATE_BASE_MISMATCH" >&2; exit 1; }`,
+  `RECONSTRUCTED_SHA="$(node --import tsx commerce/src/agent-referrals-candidate-verify.ts ${CERTIFICATE_FILE})"`,
   '[[ "$RECONSTRUCTED_SHA" == "$TARGET_SHA" ]] || { echo "CANDIDATE_RECONSTRUCTION_MISMATCH" >&2; exit 1; }',
 ].join("\n");
 
@@ -163,17 +216,38 @@ describe("RECONSTRUCTION_BOUND: positive proof obligation for a detached candida
     expect(isReconstructionBound(reconstructionBoundFixture())).toBe(true);
   });
 
-  it.each(RECONSTRUCTION_BOUND_ASSERTIONS.map(({ name, pattern }) => [name, pattern] as const))(
+  it.each(RECONSTRUCTION_BOUND_ASSERTIONS.map(({ name, removeLine }) => [name, removeLine] as const))(
     "breaks when the required assertion %s is deleted",
-    (name, pattern) => {
-      const withoutAssertion = reconstructionBoundFixture()
-        .split("\n")
-        .filter((line) => !pattern.test(line))
-        .join("\n");
+    (name, removeLine) => {
+      const withoutAssertion = removeLine(reconstructionBoundFixture());
       expect(missingReconstructionBoundAssertions(withoutAssertion)).toContain(name);
       expect(isReconstructionBound(withoutAssertion)).toBe(false);
     },
   );
+
+  describe("the ancestry assertion cannot be satisfied by decoupling extraction from the ancestry check", () => {
+    it("breaks when only the merge-base half is deleted (extraction survives, but nothing proves it)", () => {
+      const withoutMergeBase = reconstructionBoundFixture()
+        .split("\n")
+        .filter((line) => !/^git merge-base --is-ancestor "\$SOURCE_MAIN_SHA" "\$GITHUB_SHA"/.test(line))
+        .join("\n");
+      expect(isReconstructionBound(withoutMergeBase)).toBe(false);
+    });
+
+    it("REQUEST-CHANGES regression: a decoy SOURCE_MAIN_SHA read from an unrelated input, proven safe, while the certificate's own source_main_sha is never checked, must NOT qualify as RECONSTRUCTION_BOUND", () => {
+      // Every assertion the old (pre-fix) machinery checked independently is
+      // still present and individually well-formed in this fixture - the
+      // certificate is read, BASE equality holds, reconstruction runs, the
+      // final SHA is compared. Only the binding between the ancestry proof
+      // and the certificate's own authority is missing, exactly as it was
+      // before this fix.
+      expect(isReconstructionBound(decoupledAncestryFixture())).toBe(false);
+      // Confirm it fails for the specific coupling reason, not by accident of
+      // some unrelated assertion also being absent from this fixture.
+      const missing = missingReconstructionBoundAssertions(decoupledAncestryFixture());
+      expect(missing).toEqual(["source-main ancestry assertion, extracted from and bound to the exact certificate (SOURCE_MAIN_SHA ⊆ CONTROLLER)"]);
+    });
+  });
 
   it("does not admit a name-based skip or a new hard-coded exemption in place of the real proof", () => {
     // The literal failure shape the plan calls out: a workflow claiming to be

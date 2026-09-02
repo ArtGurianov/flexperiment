@@ -6,10 +6,11 @@ import { spawnSync } from "node:child_process";
 
 /**
  * Deterministic detached candidate reconstruction, per §B-1 of the Agent
- * Referrals plan (docs/release/AGENT_REFERRALS_BOUNDARY.md once PR9/PR10 add
- * it). This is reusable machinery only - PR1 ships no real certificate,
- * because Q's SHA depends on PR2-PR9's actual patches. See
- * commerce/test/agent-referrals-candidate.test.ts for synthetic fixtures
+ * Referrals plan and docs/release/AGENT_REFERRALS_BOUNDARY.md. This is
+ * reusable machinery only - PR1 ships no real certificate, because Q's SHA
+ * depends on PR2-PR9's actual patches; PR10 commits the real one to
+ * .release/controlled-candidates/agent-referrals-<BASE>/certificate.json.
+ * See commerce/test/agent-referrals-candidate.test.ts for synthetic fixtures
  * proving every property below.
  *
  * Reconstruction is patch-based, never whole-file overlay: `P` and `main`
@@ -37,7 +38,18 @@ export type CertifiedPathEntry =
   | { readonly path: string; readonly kind: "CREATE"; readonly mode: GitFileMode; readonly patch_path: string; readonly patch_git_blob_sha: string; readonly patch_sha256: string; readonly result_blob_sha: string }
   | { readonly path: string; readonly kind: "DELETE"; readonly base_blob_sha: string };
 
+/**
+ * Every field the plan's frozen envelope names, pinned as independently
+ * reviewable evidence rather than left implicit in the reconstruction code:
+ * `parent_sha` and `tree_sha` are cross-checked against what reconstruction
+ * actually derives (base_sha and the write-tree result), not merely trusted,
+ * and `encoding`/`extra_headers`/`signed` are pinned to their one frozen
+ * value and rejected otherwise - a certificate cannot silently ask for a
+ * signed commit or an unexpected encoding.
+ */
 export type CandidateCommitEnvelope = {
+  readonly parent_sha: string;
+  readonly tree_sha: string;
   readonly author_name: string;
   readonly author_email: string;
   readonly author_timestamp: number;
@@ -47,13 +59,24 @@ export type CandidateCommitEnvelope = {
   readonly committer_timestamp: number;
   readonly committer_timezone: string;
   readonly message: string;
+  readonly encoding: "none";
+  readonly extra_headers: "none";
+  readonly signed: false;
 };
 
 export type AgentReferralsCandidateCertificate = {
   /** The freshly observed production-deploy SHA at candidate build time. Q^ == base_sha. */
   readonly base_sha: string;
-  /** The exact protected-main commit whose tree every patch_path is read from. */
-  readonly main_sha: string;
+  /**
+   * The exact protected-main commit whose tree every patch_path is read
+   * from - and the ancestry root a controller must independently prove is
+   * reachable from its own checkout before trusting anything else here. See
+   * RECONSTRUCTION_BOUND in commerce/test/controller-not-older-than-target.test.ts:
+   * a workflow must extract this exact field from this exact certificate to
+   * feed its ancestry check, never take SOURCE_MAIN_SHA from an unrelated
+   * input that merely happens to look safe.
+   */
+  readonly source_main_sha: string;
   readonly paths: readonly CertifiedPathEntry[];
   readonly commit: CandidateCommitEnvelope;
 };
@@ -94,7 +117,7 @@ const blobShaAt = (commitish: string, path: string): string | undefined => {
 
 const validateCertificate = (certificate: AgentReferralsCandidateCertificate) => {
   if (!shaPattern.test(certificate.base_sha)) fail("AGENT_REFERRALS_CANDIDATE_BASE_SHA_INVALID");
-  if (!shaPattern.test(certificate.main_sha)) fail("AGENT_REFERRALS_CANDIDATE_MAIN_SHA_INVALID");
+  if (!shaPattern.test(certificate.source_main_sha)) fail("AGENT_REFERRALS_CANDIDATE_SOURCE_MAIN_SHA_INVALID");
   if (!certificate.paths.length) fail("AGENT_REFERRALS_CANDIDATE_EMPTY_MANIFEST");
   const seen = new Set<string>();
   for (const entry of certificate.paths) {
@@ -113,6 +136,11 @@ const validateCertificate = (certificate: AgentReferralsCandidateCertificate) =>
     if (entry.kind === "MODIFY" && !shaPattern.test(entry.base_blob_sha)) fail("AGENT_REFERRALS_CANDIDATE_BASE_BLOB_SHA_INVALID");
   }
   const envelope = certificate.commit;
+  if (!shaPattern.test(envelope.tree_sha)) fail("AGENT_REFERRALS_CANDIDATE_ENVELOPE_TREE_SHA_INVALID");
+  // parent_sha is pinned as independently reviewable evidence, but it must
+  // still agree with the certificate's own base_sha - there is exactly one
+  // BASE, and the envelope cannot silently name a different one.
+  if (envelope.parent_sha !== certificate.base_sha) fail("AGENT_REFERRALS_CANDIDATE_ENVELOPE_PARENT_SHA_MISMATCH");
   for (const field of [envelope.author_name, envelope.author_email, envelope.committer_name, envelope.committer_email, envelope.message] as const) {
     if (typeof field !== "string" || !field.length) fail("AGENT_REFERRALS_CANDIDATE_ENVELOPE_FIELD_INVALID");
   }
@@ -122,6 +150,11 @@ const validateCertificate = (certificate: AgentReferralsCandidateCertificate) =>
   for (const timezone of [envelope.author_timezone, envelope.committer_timezone]) {
     if (!timezonePattern.test(timezone)) fail("AGENT_REFERRALS_CANDIDATE_ENVELOPE_TIMEZONE_INVALID");
   }
+  // Frozen, single-value fields: a certificate cannot silently ask for a
+  // signed commit, extra headers, or a non-default encoding.
+  if ((envelope.encoding as string) !== "none") fail("AGENT_REFERRALS_CANDIDATE_ENVELOPE_ENCODING_INVALID");
+  if ((envelope.extra_headers as string) !== "none") fail("AGENT_REFERRALS_CANDIDATE_ENVELOPE_EXTRA_HEADERS_INVALID");
+  if ((envelope.signed as boolean) !== false) fail("AGENT_REFERRALS_CANDIDATE_ENVELOPE_SIGNED_INVALID");
 };
 
 /**
@@ -157,12 +190,12 @@ const applyPatch = (path: string, patchContent: Buffer, baseContent: Buffer | un
 /**
  * The reconstruction engine shared by the builder and the verifier below.
  * Every check here is independently re-derived from the certificate and the
- * two named commits (base_sha, main_sha) - nothing is trusted from a prior
- * run, and Q's own tree is never read.
+ * two named commits (base_sha, source_main_sha) - nothing is trusted from a
+ * prior run, and Q's own tree is never read.
  */
 export const reconstructAgentReferralsCandidateSha = (certificate: AgentReferralsCandidateCertificate): string => {
   validateCertificate(certificate);
-  const { base_sha: baseSha, main_sha: mainSha } = certificate;
+  const { base_sha: baseSha, source_main_sha: mainSha } = certificate;
 
   const indexDirectory = mkdtempSync(join(tmpdir(), "agent-referrals-candidate-index-"));
   const index = join(indexDirectory, "index");
@@ -187,7 +220,7 @@ export const reconstructAgentReferralsCandidateSha = (certificate: AgentReferral
       }
 
       // "certificate read from the controller/main tree": the blob at
-      // patch_path is resolved from main_sha's own tree, never from disk.
+      // patch_path is resolved from source_main_sha's own tree, never from disk.
       const observedPatchBlob = blobShaAt(mainSha, entry.patch_path);
       if (observedPatchBlob !== entry.patch_git_blob_sha) fail(`AGENT_REFERRALS_CANDIDATE_PATCH_BLOB_MISMATCH:${entry.path}`);
       const patchContent = git(["cat-file", "-p", entry.patch_git_blob_sha]);
@@ -212,6 +245,11 @@ export const reconstructAgentReferralsCandidateSha = (certificate: AgentReferral
     }
 
     const treeSha = gitIndexed(["write-tree"]);
+
+    // The envelope's own pinned tree_sha is independently reviewable
+    // evidence, not merely implied by the reconstruction steps above - cross
+    // -check it against what was actually derived.
+    if (treeSha !== certificate.commit.tree_sha) fail("AGENT_REFERRALS_CANDIDATE_TREE_SHA_MISMATCH");
 
     // "BASE..Q changed paths == certified manifest": no maintenance or
     // unexpected paths entered the reconstructed tree.

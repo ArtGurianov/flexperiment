@@ -329,9 +329,18 @@ const sameExpectations = (gate: GateRow, request: ReleaseControlRequest) =>
   && gate.expected_legal_version === request.expected.legal_version
   && gate.expected_legal_manifest_sha256 === request.expected.legal_manifest_sha256;
 
+/**
+ * Full equality over every pinned field, including all four legal_hashes.
+ * The release_sales_gate row carries no legal_hashes column at all (only
+ * expected_legal_manifest_sha256), so this is the only comparison that can
+ * ever notice a legal_hashes-only divergence - gate-column comparisons
+ * elsewhere in this file (sameExpectations, and completeRolling's own
+ * gate-column checks) were never able to see it.
+ */
 const sameReleaseExpectations = (a: ReleaseExpectations | undefined, b: ReleaseExpectations) =>
-  a?.source_commit === b.source_commit && a?.migration === b.migration
-  && a?.legal_version === b.legal_version && a?.legal_manifest_sha256 === b.legal_manifest_sha256;
+  Boolean(a) && a!.source_commit === b.source_commit && a!.migration === b.migration
+  && a!.legal_version === b.legal_version && a!.legal_manifest_sha256 === b.legal_manifest_sha256
+  && documentIds.every((id) => a!.legal_hashes?.[id] === b.legal_hashes[id]);
 
 /**
  * A non-v2 (legacy/generic) owner's coarse lifecycle is exactly
@@ -1501,7 +1510,21 @@ export class ReleaseSalesGate {
       if (gate.owner_release_id !== request.release_id) throw new ReleaseControlError("RELEASE_CONTROL_OWNER_MISMATCH");
       if (gate.owner_mode !== "ROLLING") throw new ReleaseControlError("RELEASE_CONTROL_MODE_MISMATCH");
       if (gate.sales_paused !== 0) throw new ReleaseControlError("RELEASE_CONTROL_SALES_PAUSED");
-      if (gate.expected_source_commit !== request.expected.source_commit || gate.expected_migration !== request.expected.migration || gate.expected_legal_version !== request.expected.legal_version || gate.expected_legal_manifest_sha256 !== request.expected.legal_manifest_sha256) throw new ReleaseControlError("RELEASE_CONTROL_EXPECTATION_MISMATCH");
+      // Full pinned-expectation equality, including all four legal_hashes.
+      // The gate row's own columns carry no legal_hashes column at all (only
+      // expected_legal_manifest_sha256), so the acquire-time ACQUIRED event -
+      // the one durable record that ever captured the complete expected
+      // object - is the only thing this can be checked against. This is also
+      // the direct enforcement of "ROLLING acquire happens once with the
+      // final Q expectations and expectations are never revised": if
+      // updateExpectations() ever ran against this owner (off the intended
+      // ROLLING path - it writes no event of its own), the acquired-time
+      // record and this request will disagree and completion is refused.
+      const acquired = this.db.prepare("SELECT details_json FROM release_sales_gate_events WHERE release_id = ? AND action = 'ACQUIRED' ORDER BY rowid ASC LIMIT 1").get(request.release_id) as { details_json: string } | undefined;
+      let pinned: ReleaseExpectations | undefined;
+      try { pinned = acquired ? (JSON.parse(acquired.details_json) as { expected?: ReleaseExpectations }).expected : undefined; }
+      catch { pinned = undefined; }
+      if (!sameReleaseExpectations(pinned, request.expected)) throw new ReleaseControlError("RELEASE_CONTROL_EXPECTATION_MISMATCH");
       if (!dormantReady()) throw new ReleaseControlError("RELEASE_CONTROL_DORMANT_NOT_READY");
       const changed = this.db.prepare(`UPDATE release_sales_gate SET owner_release_id = NULL, owner_mode = NULL,
         reopened_at = datetime('now'), updated_at = datetime('now')

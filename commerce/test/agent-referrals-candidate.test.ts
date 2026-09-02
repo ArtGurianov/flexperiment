@@ -85,7 +85,15 @@ const commitTree = (tree: string, parent: string | undefined, message: string): 
   return gitRun(args, undefined, fixtureCommitEnv());
 };
 
-const envelope = (overrides: Partial<AgentReferralsCandidateCertificate["commit"]> = {}) => ({
+/**
+ * parent_sha and tree_sha are certificate-specific (they depend on baseSha
+ * and the exact final tree), so they are required positional arguments
+ * rather than defaults - there is no safe generic default for either, and a
+ * wrong one should be a deliberate test choice, never an accident.
+ */
+const envelope = (parentSha: string, treeSha: string, overrides: Partial<Omit<AgentReferralsCandidateCertificate["commit"], "parent_sha" | "tree_sha">> = {}): AgentReferralsCandidateCertificate["commit"] => ({
+  parent_sha: parentSha,
+  tree_sha: treeSha,
   author_name: "Flexperiment Release Control",
   author_email: "release-control@flexperiment.ru",
   author_timestamp: 1_700_000_000,
@@ -95,6 +103,9 @@ const envelope = (overrides: Partial<AgentReferralsCandidateCertificate["commit"
   committer_timestamp: 1_700_000_000,
   committer_timezone: "+0000",
   message: "agent-referrals: synthetic candidate",
+  encoding: "none",
+  extra_headers: "none",
+  signed: false,
   ...overrides,
 });
 
@@ -123,8 +134,9 @@ function modifyScenario() {
     patch_git_blob_sha: patchBlob, patch_sha256: sha256(patchContent),
     result_blob_sha: resultBlob,
   };
-  const certificate: AgentReferralsCandidateCertificate = { base_sha: baseSha, main_sha: mainSha, paths: [entry], commit: envelope() };
-  return { baseSha, mainSha, baseBlob, patchBlob, patchContent, resultBlob, newContent, entry, certificate };
+  const treeSha = mktree([{ mode: "100644", sha: resultBlob, path: "readme.md" }]);
+  const certificate: AgentReferralsCandidateCertificate = { base_sha: baseSha, source_main_sha: mainSha, paths: [entry], commit: envelope(baseSha, treeSha) };
+  return { baseSha, mainSha, baseBlob, patchBlob, patchContent, resultBlob, newContent, treeSha, entry, certificate };
 }
 
 describe("reconstruction: determinism and correctness", () => {
@@ -184,10 +196,32 @@ describe("reconstruction: mutation detection", () => {
     expect(verifyAgentReferralsCandidateCertificate(corrupted, "1".repeat(40))).toMatch(/^AGENT_REFERRALS_CANDIDATE_RESULT_BLOB_MISMATCH/);
   });
 
+  it("rejects a wrong pinned tree_sha, even though every path-level proof is individually correct", () => {
+    const { certificate, baseSha } = modifyScenario();
+    const wrongTree = { ...certificate, commit: envelope(baseSha, "f".repeat(40)) };
+    expect(verifyAgentReferralsCandidateCertificate(wrongTree, "1".repeat(40))).toBe("AGENT_REFERRALS_CANDIDATE_TREE_SHA_MISMATCH");
+  });
+
+  it("rejects a parent_sha that disagrees with base_sha", () => {
+    const { certificate, treeSha } = modifyScenario();
+    const wrongParent = { ...certificate, commit: envelope("f".repeat(40), treeSha) };
+    expect(verifyAgentReferralsCandidateCertificate(wrongParent, "1".repeat(40))).toBe("AGENT_REFERRALS_CANDIDATE_ENVELOPE_PARENT_SHA_MISMATCH");
+  });
+
+  it.each([
+    ["encoding", { encoding: "gbk" }, "AGENT_REFERRALS_CANDIDATE_ENVELOPE_ENCODING_INVALID"],
+    ["extra_headers", { extra_headers: "gpgsig ..." }, "AGENT_REFERRALS_CANDIDATE_ENVELOPE_EXTRA_HEADERS_INVALID"],
+    ["signed", { signed: true }, "AGENT_REFERRALS_CANDIDATE_ENVELOPE_SIGNED_INVALID"],
+  ])("rejects a certificate that asks for a non-frozen %s", (_label, override, code) => {
+    const { certificate, baseSha, treeSha } = modifyScenario();
+    const cert = { ...certificate, commit: envelope(baseSha, treeSha, override as Partial<AgentReferralsCandidateCertificate["commit"]>) };
+    expect(verifyAgentReferralsCandidateCertificate(cert, "1".repeat(40))).toBe(code);
+  });
+
   it("a changed canonical commit-envelope field changes the reconstructed SHA and fails verification", () => {
-    const { certificate } = modifyScenario();
+    const { certificate, baseSha, treeSha } = modifyScenario();
     const original = buildAgentReferralsCandidateCommit(certificate);
-    const mutated = { ...certificate, commit: envelope({ message: "a different message" }) };
+    const mutated = { ...certificate, commit: envelope(baseSha, treeSha, { message: "a different message" }) };
     const withMutatedEnvelope = buildAgentReferralsCandidateCommit(mutated);
     expect(withMutatedEnvelope).not.toBe(original);
     expect(verifyAgentReferralsCandidateCertificate(certificate, withMutatedEnvelope)).toBe("AGENT_REFERRALS_CANDIDATE_SHA_MISMATCH");
@@ -200,9 +234,9 @@ describe("reconstruction: mutation detection", () => {
     ["committer_name", { committer_name: "Someone Else" }],
     ["committer_email", { committer_email: "someone@else.test" }],
   ])("changing envelope field %s changes the reconstructed SHA", (_label, override) => {
-    const { certificate } = modifyScenario();
+    const { certificate, baseSha, treeSha } = modifyScenario();
     const original = buildAgentReferralsCandidateCommit(certificate);
-    const mutated = buildAgentReferralsCandidateCommit({ ...certificate, commit: envelope(override) });
+    const mutated = buildAgentReferralsCandidateCommit({ ...certificate, commit: envelope(baseSha, treeSha, override) });
     expect(mutated).not.toBe(original);
   });
 
@@ -215,7 +249,7 @@ describe("reconstruction: mutation detection", () => {
     const bogus = { ...certificate, paths: [{ ...entry, patch_git_blob_sha: overlayBlob, patch_sha256: sha256(overlayContent), result_blob_sha: writeBlob(overlayContent) }] };
     // Rebuild main so the bogus blob is genuinely present at patch_path in main's tree.
     const mainSha = commitTree(mktree([{ mode: "100644", sha: overlayBlob, path: "patches/0001.patch" }]), undefined, "main-overlay");
-    const withOverlayMain = { ...bogus, main_sha: mainSha };
+    const withOverlayMain = { ...bogus, source_main_sha: mainSha };
     expect(() => reconstructAgentReferralsCandidateSha(withOverlayMain)).toThrow(AgentReferralsCandidateError);
     expect(verifyAgentReferralsCandidateCertificate(withOverlayMain, "1".repeat(40))).toMatch(/^AGENT_REFERRALS_CANDIDATE_PATCH_APPLY_FAILED/);
   });
@@ -224,9 +258,9 @@ describe("reconstruction: mutation detection", () => {
 describe("reconstruction: legal paths can never be certified", () => {
   const minimal = (path: string): AgentReferralsCandidateCertificate => ({
     base_sha: "a".repeat(40),
-    main_sha: "b".repeat(40),
+    source_main_sha: "b".repeat(40),
     paths: [{ path, kind: "DELETE", base_blob_sha: "c".repeat(40) }],
-    commit: envelope(),
+    commit: envelope("a".repeat(40), "d".repeat(40)),
   });
 
   it.each([
@@ -241,17 +275,19 @@ describe("reconstruction: legal paths can never be certified", () => {
 
 describe("reconstruction: CREATE and DELETE entries", () => {
   it("CREATE adds a new path with the patched content, absent from BASE", () => {
-    const { baseSha } = modifyScenario();
+    const { baseSha, baseBlob } = modifyScenario();
     const newFileContent = "brand new file\n";
     const patchContent = createPatch("notes.md", "@@ -0,0 +1,1 @@\n+brand new file\n");
     const patchBlob = writeBlob(patchContent);
     const mainSha = commitTree(mktree([{ mode: "100644", sha: patchBlob, path: "patches/0002.patch" }]), undefined, "main-create");
+    const resultBlob = writeBlob(newFileContent);
     const entry: CertifiedPathEntry = {
       path: "notes.md", kind: "CREATE", mode: "100644",
       patch_path: "patches/0002.patch", patch_git_blob_sha: patchBlob,
-      patch_sha256: sha256(patchContent), result_blob_sha: writeBlob(newFileContent),
+      patch_sha256: sha256(patchContent), result_blob_sha: resultBlob,
     };
-    const certificate: AgentReferralsCandidateCertificate = { base_sha: baseSha, main_sha: mainSha, paths: [entry], commit: envelope() };
+    const treeSha = mktree([{ mode: "100644", sha: baseBlob, path: "readme.md" }, { mode: "100644", sha: resultBlob, path: "notes.md" }]);
+    const certificate: AgentReferralsCandidateCertificate = { base_sha: baseSha, source_main_sha: mainSha, paths: [entry], commit: envelope(baseSha, treeSha) };
     const sha = buildAgentReferralsCandidateCommit(certificate);
     expect(gitRun(["cat-file", "-p", `${sha}:notes.md`])).toBe(newFileContent.trim());
     expect(spawnSync("git", ["cat-file", "-e", `${baseSha}:notes.md`]).status).not.toBe(0);
@@ -267,14 +303,15 @@ describe("reconstruction: CREATE and DELETE entries", () => {
       patch_path: "patches/0003.patch", patch_git_blob_sha: patchBlob,
       patch_sha256: sha256(patchContent), result_blob_sha: "0".repeat(40),
     };
-    const certificate: AgentReferralsCandidateCertificate = { base_sha: baseSha, main_sha: mainSha, paths: [entry], commit: envelope() };
+    const certificate: AgentReferralsCandidateCertificate = { base_sha: baseSha, source_main_sha: mainSha, paths: [entry], commit: envelope(baseSha, "1".repeat(40)) };
     expect(verifyAgentReferralsCandidateCertificate(certificate, "1".repeat(40))).toBe("AGENT_REFERRALS_CANDIDATE_CREATE_PATH_ALREADY_EXISTS_IN_BASE:readme.md");
   });
 
   it("DELETE removes the path from the reconstructed tree", () => {
     const { baseSha, baseBlob } = modifyScenario();
     const entry: CertifiedPathEntry = { path: "readme.md", kind: "DELETE", base_blob_sha: baseBlob };
-    const certificate: AgentReferralsCandidateCertificate = { base_sha: baseSha, main_sha: baseSha, paths: [entry], commit: envelope() };
+    const treeSha = mktree([]);
+    const certificate: AgentReferralsCandidateCertificate = { base_sha: baseSha, source_main_sha: baseSha, paths: [entry], commit: envelope(baseSha, treeSha) };
     const sha = buildAgentReferralsCandidateCommit(certificate);
     expect(spawnSync("git", ["cat-file", "-e", `${sha}:readme.md`]).status).not.toBe(0);
   });
@@ -285,17 +322,19 @@ describe("reconstruction: CREATE and DELETE entries", () => {
     const patchContent = createPatch("commerce/src/agent-referrals-foo.ts", "@@ -0,0 +1,1 @@\n+export const x = 1;\n");
     const patchBlob = writeBlob(patchContent);
     const mainSha = commitTree(mktree([{ mode: "100644", sha: patchBlob, path: "patches/0004.patch" }]), undefined, "main-nested");
+    const resultBlob = writeBlob("export const x = 1;\n");
     const entry: CertifiedPathEntry = {
       path: "commerce/src/agent-referrals-foo.ts", kind: "CREATE", mode: "100644",
       patch_path: "patches/0004.patch", patch_git_blob_sha: patchBlob,
-      patch_sha256: sha256(patchContent), result_blob_sha: writeBlob("export const x = 1;\n"),
+      patch_sha256: sha256(patchContent), result_blob_sha: resultBlob,
     };
-    const certificate: AgentReferralsCandidateCertificate = { base_sha: baseSha, main_sha: mainSha, paths: [entry], commit: envelope() };
+    const treeSha = mktree([{ mode: "100644", sha: resultBlob, path: "commerce/src/agent-referrals-foo.ts" }]);
+    const certificate: AgentReferralsCandidateCertificate = { base_sha: baseSha, source_main_sha: mainSha, paths: [entry], commit: envelope(baseSha, treeSha) };
     const sha = buildAgentReferralsCandidateCommit(certificate);
     expect(gitRun(["cat-file", "-p", `${sha}:commerce/src/agent-referrals-foo.ts`])).toBe("export const x = 1;");
   });
 
-  it("combines MODIFY, CREATE and DELETE in one certificate and produces exactly those three changed paths", () => {
+  it("combines MODIFY and CREATE in one certificate and produces exactly those two changed paths", () => {
     const { baseSha, baseBlob } = modifyScenario();
     const modifyPatchContent = modifyPatch("readme.md", "@@ -1,3 +1,3 @@\n a\n-b\n+CHANGED\n c\n");
     const modifyPatchBlob = writeBlob(modifyPatchContent);
@@ -305,11 +344,14 @@ describe("reconstruction: CREATE and DELETE entries", () => {
       { mode: "100644", sha: modifyPatchBlob, path: "patches/modify.patch" },
       { mode: "100644", sha: createPatchBlob, path: "patches/create.patch" },
     ]), undefined, "main-combined");
+    const modifiedBlob = writeBlob("a\nCHANGED\nc\n");
+    const createdBlob = writeBlob("hello\n");
     const paths: CertifiedPathEntry[] = [
-      { path: "readme.md", kind: "MODIFY", mode: "100644", base_blob_sha: baseBlob, patch_path: "patches/modify.patch", patch_git_blob_sha: modifyPatchBlob, patch_sha256: sha256(modifyPatchContent), result_blob_sha: writeBlob("a\nCHANGED\nc\n") },
-      { path: "notes.md", kind: "CREATE", mode: "100644", patch_path: "patches/create.patch", patch_git_blob_sha: createPatchBlob, patch_sha256: sha256(createPatchContent), result_blob_sha: writeBlob("hello\n") },
+      { path: "readme.md", kind: "MODIFY", mode: "100644", base_blob_sha: baseBlob, patch_path: "patches/modify.patch", patch_git_blob_sha: modifyPatchBlob, patch_sha256: sha256(modifyPatchContent), result_blob_sha: modifiedBlob },
+      { path: "notes.md", kind: "CREATE", mode: "100644", patch_path: "patches/create.patch", patch_git_blob_sha: createPatchBlob, patch_sha256: sha256(createPatchContent), result_blob_sha: createdBlob },
     ];
-    const certificate: AgentReferralsCandidateCertificate = { base_sha: baseSha, main_sha: mainSha, paths, commit: envelope() };
+    const treeSha = mktree([{ mode: "100644", sha: modifiedBlob, path: "readme.md" }, { mode: "100644", sha: createdBlob, path: "notes.md" }]);
+    const certificate: AgentReferralsCandidateCertificate = { base_sha: baseSha, source_main_sha: mainSha, paths, commit: envelope(baseSha, treeSha) };
     const sha = buildAgentReferralsCandidateCommit(certificate);
     const changed = gitRun(["diff", "--name-only", baseSha, sha]).split("\n").filter(Boolean).sort();
     expect(changed).toEqual(["notes.md", "readme.md"]);
@@ -333,22 +375,27 @@ describe("reconstruction: no unexpected paths enter the candidate", () => {
       patch_git_blob_sha: patchBlob, patch_sha256: sha256(patchContent),
       result_blob_sha: writeBlob(oldContent),
     };
-    const certificate: AgentReferralsCandidateCertificate = { base_sha: baseSha, main_sha: mainSha, paths: [entry], commit: envelope() };
+    // The reconstructed tree is byte-identical to BASE's own tree (nothing
+    // really changed), so the pinned tree_sha here is correct and the
+    // failure under test is specifically the changed-paths check below it,
+    // not a tree_sha mismatch.
+    const treeSha = mktree([{ mode: "100644", sha: baseBlob, path: "readme.md" }]);
+    const certificate: AgentReferralsCandidateCertificate = { base_sha: baseSha, source_main_sha: mainSha, paths: [entry], commit: envelope(baseSha, treeSha) };
     expect(verifyAgentReferralsCandidateCertificate(certificate, "1".repeat(40))).toBe("AGENT_REFERRALS_CANDIDATE_UNEXPECTED_CHANGED_PATHS");
   });
 });
 
 describe("certificate validation", () => {
-  const base: AgentReferralsCandidateCertificate = { base_sha: "a".repeat(40), main_sha: "b".repeat(40), paths: [], commit: envelope() };
+  const base: AgentReferralsCandidateCertificate = { base_sha: "a".repeat(40), source_main_sha: "b".repeat(40), paths: [], commit: envelope("a".repeat(40), "d".repeat(40)) };
 
   it("rejects an empty manifest", () => {
     expect(() => reconstructAgentReferralsCandidateSha(base)).toThrow(AgentReferralsCandidateError);
   });
 
-  it("rejects a malformed base_sha or main_sha", () => {
+  it("rejects a malformed base_sha or source_main_sha", () => {
     const withPaths = { ...base, paths: [{ path: "x", kind: "DELETE", base_blob_sha: "c".repeat(40) }] as CertifiedPathEntry[] };
     expect(verifyAgentReferralsCandidateCertificate({ ...withPaths, base_sha: "not-a-sha" }, "1".repeat(40))).toBe("AGENT_REFERRALS_CANDIDATE_BASE_SHA_INVALID");
-    expect(verifyAgentReferralsCandidateCertificate({ ...withPaths, main_sha: "not-a-sha" }, "1".repeat(40))).toBe("AGENT_REFERRALS_CANDIDATE_MAIN_SHA_INVALID");
+    expect(verifyAgentReferralsCandidateCertificate({ ...withPaths, source_main_sha: "not-a-sha" }, "1".repeat(40))).toBe("AGENT_REFERRALS_CANDIDATE_SOURCE_MAIN_SHA_INVALID");
   });
 
   it("rejects a duplicate path", () => {
@@ -370,8 +417,14 @@ describe("certificate validation", () => {
 
   it("rejects a malformed envelope timezone", () => {
     const entry: CertifiedPathEntry = { path: "x", kind: "DELETE", base_blob_sha: "c".repeat(40) };
-    const cert = { ...base, paths: [entry], commit: envelope({ author_timezone: "UTC" }) };
+    const cert = { ...base, paths: [entry], commit: envelope("a".repeat(40), "d".repeat(40), { author_timezone: "UTC" }) };
     expect(verifyAgentReferralsCandidateCertificate(cert, "1".repeat(40))).toBe("AGENT_REFERRALS_CANDIDATE_ENVELOPE_TIMEZONE_INVALID");
+  });
+
+  it("rejects a malformed envelope tree_sha", () => {
+    const entry: CertifiedPathEntry = { path: "x", kind: "DELETE", base_blob_sha: "c".repeat(40) };
+    const cert = { ...base, paths: [entry], commit: envelope("a".repeat(40), "not-a-sha") };
+    expect(verifyAgentReferralsCandidateCertificate(cert, "1".repeat(40))).toBe("AGENT_REFERRALS_CANDIDATE_ENVELOPE_TREE_SHA_INVALID");
   });
 
   it("rejects a malformed target SHA at the verify entry point", () => {
