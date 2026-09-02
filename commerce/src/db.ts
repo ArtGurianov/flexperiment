@@ -32,9 +32,12 @@ export function openReadOnlyDatabase(filename = process.env.COMMERCE_DATABASE_PA
  * migration that genuinely needs it (an in-place CHECK-constraint rebuild that
  * SQLite cannot do without recreating the table), and nothing else.
  *
- * Deliberately empty in PR1: the first entry (0042) cannot exist before the
- * migration file does. PR2 adds the migration and its registry entry in the
- * same reviewed commit, so both enter the release together.
+ * Deliberately empty in PR1: the first entry (0042) could not exist before
+ * the migration file did. PR2 adds `0042_agent_referrals_agents_rebuild.sql`
+ * - the `agents` table rebuild that widens `contractor_type` to admit
+ * `ORGANIZATION` - and this entry in the same reviewed commit, so both enter
+ * the release together. This is the only production entry; PR2 ships no
+ * second FK-off migration.
  *
  * `commerce/src/db.ts` is runtime-reachable from server.ts and is in no
  * boundary list of its own (see docs/release/DEPLOYMENT_INVARIANTS.md and
@@ -43,7 +46,9 @@ export function openReadOnlyDatabase(filename = process.env.COMMERCE_DATABASE_PA
  * entry never gives this file a new local import edge that would need its
  * own boundary classification.
  */
-export const FK_OFF_MIGRATIONS: ReadonlyArray<{ readonly filename: string; readonly sha256: string }> = [];
+export const FK_OFF_MIGRATIONS: ReadonlyArray<{ readonly filename: string; readonly sha256: string }> = [
+  { filename: "0042_agent_referrals_agents_rebuild.sql", sha256: "d9b5ecbf496993669201b45440ea5213ba0e52af778e2094d569f772adfee6ab" },
+];
 
 export const isFkOffMigration = (filename: string, sha256Hex: string): boolean =>
   FK_OFF_MIGRATIONS.some((entry) => entry.filename === filename && entry.sha256 === sha256Hex);

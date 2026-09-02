@@ -98,13 +98,35 @@ describe("migrate(): ordinary path", () => {
   });
 });
 
-describe("FK-off registry: empty in PR1", () => {
-  it("ships with zero entries", () => {
-    expect(FK_OFF_MIGRATIONS).toEqual([]);
+describe("FK-off registry: exactly one production entry after PR2", () => {
+  // PR1 shipped this empty. PR2 adds the agents-rebuild migration and this
+  // entry in the same reviewed commit - see commerce/src/db.ts and
+  // commerce/migrations/0042_agent_referrals_agents_rebuild.sql. This
+  // asserts PR2's own scope (one production member: 0042), not a ceiling on
+  // PR3+ ever adding another reviewed entry.
+  it("has exactly one entry", () => {
+    expect(FK_OFF_MIGRATIONS).toHaveLength(1);
   });
 
-  it("never treats any (filename, sha256) pair as special", () => {
+  it("is exactly the 0042 agents-rebuild tuple", () => {
+    expect(FK_OFF_MIGRATIONS).toEqual([
+      { filename: "0042_agent_referrals_agents_rebuild.sql", sha256: "d9b5ecbf496993669201b45440ea5213ba0e52af778e2094d569f772adfee6ab" },
+    ]);
+  });
+
+  it("treats the exact committed (filename, sha256) pair as privileged", () => {
+    expect(isFkOffMigration("0042_agent_referrals_agents_rebuild.sql", "d9b5ecbf496993669201b45440ea5213ba0e52af778e2094d569f772adfee6ab")).toBe(true);
+  });
+
+  it("refuses the 0042 filename paired with any other hash", () => {
     expect(isFkOffMigration("0042_agent_referrals_agents_rebuild.sql", "a".repeat(64))).toBe(false);
+  });
+
+  it("refuses the committed hash paired with any other filename", () => {
+    expect(isFkOffMigration("0042_renamed_copy.sql", "d9b5ecbf496993669201b45440ea5213ba0e52af778e2094d569f772adfee6ab")).toBe(false);
+  });
+
+  it("refuses an unrelated (filename, sha256) pair", () => {
     expect(isFkOffMigration("anything.sql", "b".repeat(64))).toBe(false);
   });
 
