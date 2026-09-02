@@ -138,6 +138,7 @@ describe("0044 partner identity migration", () => {
       // a dropped guard, per P1.2.
       const pr4Objects = [
         "partner_identities",
+        "partner_identity_events",
         "partner_identity_events_immutable_guard", "partner_identity_events_delete_guard",
         "partner_invite_capabilities", "partner_invite_capabilities_active_unique",
         "partner_otp_challenges", "partner_otp_challenges_active_unique",
@@ -185,7 +186,7 @@ describe("0044 partner identity migration", () => {
       expect(() => assertAgentReferralsFoundationSchemaPresent(db)).toThrow(new RegExp(guardName));
     });
 
-    it.each(["partner_sessions", "step_up_grants", "partner_invite_capabilities_active_unique", "partner_otp_challenges_active_unique", "partner_identity_legal_holds_active_unique"])(
+    it.each(["partner_identity_events", "partner_sessions", "step_up_grants", "partner_invite_capabilities_active_unique", "partner_otp_challenges_active_unique", "partner_identity_legal_holds_active_unique"])(
       "dropping the base object %s (a mutable-authority table or its structural index, not an evidence guard) also refuses",
       (objectName) => {
         const db = at0043();
@@ -216,8 +217,8 @@ describe("0044 partner identity migration", () => {
       expect(() => db.exec("UPDATE partner_identity_events SET event_kind = 'X' WHERE id = 'ev1'")).toThrow(/PARTNER_IDENTITY_EVENT_IMMUTABLE/);
       expect(() => db.exec("DELETE FROM partner_identity_events WHERE id = 'ev1'")).toThrow(/PARTNER_IDENTITY_EVENT_IMMUTABLE/);
 
-      db.prepare(`INSERT INTO partner_identity_retention_policies(id, revision, retention_period_days, reason) VALUES ('rp1', 99, 10, 'x')`).run();
-      expect(() => db.exec("UPDATE partner_identity_retention_policies SET retention_period_days = 5 WHERE id = 'rp1'")).toThrow(/PARTNER_IDENTITY_RETENTION_POLICY_IMMUTABLE/);
+      db.prepare(`INSERT INTO partner_identity_retention_policies(id, revision, reason) VALUES ('rp1', 99, 'x')`).run();
+      expect(() => db.exec("UPDATE partner_identity_retention_policies SET reason = 'y' WHERE id = 'rp1'")).toThrow(/PARTNER_IDENTITY_RETENTION_POLICY_IMMUTABLE/);
       expect(() => db.exec("DELETE FROM partner_identity_retention_policies WHERE id = 'rp1'")).toThrow(/PARTNER_IDENTITY_RETENTION_POLICY_IMMUTABLE/);
     });
 

@@ -55,6 +55,7 @@ export const AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS = [
   // the same reason a dropped guard trigger is unsound: the structural
   // invariant they carry is not implied by the bare table existing.
   "partner_identities",
+  "partner_identity_events",
   "partner_identity_events_immutable_guard",
   "partner_identity_events_delete_guard",
   "partner_invite_capabilities",

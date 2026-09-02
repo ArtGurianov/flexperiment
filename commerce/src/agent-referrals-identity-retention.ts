@@ -20,19 +20,28 @@ export class RetentionError extends Error {
   }
 }
 
-export type RetentionPolicyRow = { id: string; revision: number; retention_period_days: number; reason: string; supersedes_revision_id: string | null; created_at: string };
+/**
+ * Deliberately no `retention_period_days` (or any numeric field): the plan
+ * names no authoritative anchor a duration would run from, and PR4
+ * computes no eligibility from elapsed time. This is versioned evidence
+ * that a real, externally-approved policy revision exists - `reason`
+ * carries what that policy actually says (e.g. a citation) - not a
+ * scheduler input this code half-enforces. See the migration's comment on
+ * this table.
+ */
+export type RetentionPolicyRow = { id: string; revision: number; reason: string; supersedes_revision_id: string | null; created_at: string };
 
 export const currentRetentionPolicy = (db: Database.Database): RetentionPolicyRow | null =>
-  (db.prepare("SELECT id, revision, retention_period_days, reason, supersedes_revision_id, created_at FROM partner_identity_retention_policies ORDER BY revision DESC LIMIT 1").get() as RetentionPolicyRow | undefined) ?? null;
+  (db.prepare("SELECT id, revision, reason, supersedes_revision_id, created_at FROM partner_identity_retention_policies ORDER BY revision DESC LIMIT 1").get() as RetentionPolicyRow | undefined) ?? null;
 
-export const mintRetentionPolicyRevision = (db: Database.Database, admin: AdminPrincipal, retentionPeriodDays: number, reason: string): RetentionPolicyRow => {
+export const mintRetentionPolicyRevision = (db: Database.Database, admin: AdminPrincipal, reason: string): RetentionPolicyRow => {
   const run = db.transaction((): RetentionPolicyRow => {
     const current = currentRetentionPolicy(db);
     const policyId = id();
     const nextRevision = (current?.revision ?? 0) + 1;
-    db.prepare(`INSERT INTO partner_identity_retention_policies(id, revision, retention_period_days, reason, supersedes_revision_id)
-      VALUES (?, ?, ?, ?, ?)`)
-      .run(policyId, nextRevision, retentionPeriodDays, reason, current?.id ?? null);
+    db.prepare(`INSERT INTO partner_identity_retention_policies(id, revision, reason, supersedes_revision_id)
+      VALUES (?, ?, ?, ?)`)
+      .run(policyId, nextRevision, reason, current?.id ?? null);
     return currentRetentionPolicy(db)!;
   });
   return run.immediate();

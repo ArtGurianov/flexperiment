@@ -243,10 +243,19 @@ BEGIN SELECT RAISE(ABORT, 'PAYOUT_PROFILE_REVISION_IMMUTABLE'); END;
 -- hard-deletes partner_identities (which would break every FK evidence
 -- chain above) - it scrubs only the PII columns (email/email_hash) on that
 -- row under application authority and records what it destroyed here.
+-- Deliberately no numeric retention_period_days column: the frozen plan
+-- names no authoritative anchor a duration would run from (identity
+-- creation? relationship close? last payout?), and PR4 computes no
+-- eligibility from elapsed time at all. A numeric period this code does not
+-- enforce is exactly the invented-but-unenforced shape this table exists to
+-- avoid - it would read as a machine-enforced policy while being pure
+-- decoration. This table is versioned evidence that a real, externally-
+-- approved retention policy revision exists (`reason`, e.g. a citation of
+-- the governing document), not a scheduler input. A day-based clock can be
+-- added once a later PR defines the actual anchor.
 CREATE TABLE partner_identity_retention_policies (
   id TEXT PRIMARY KEY,
   revision INTEGER NOT NULL UNIQUE,
-  retention_period_days INTEGER NOT NULL CHECK (retention_period_days > 0),
   reason TEXT NOT NULL,
   supersedes_revision_id TEXT REFERENCES partner_identity_retention_policies(id),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -268,10 +277,19 @@ BEGIN SELECT RAISE(ABORT, 'PARTNER_IDENTITY_RETENTION_POLICY_IMMUTABLE'); END;
 -- retention.ts.
 
 -- Placement facts (partner_identity_id, reason, placed_by_admin_id,
--- placed_at) are immutable once written; only release_at/released_by_
+-- placed_at) are immutable once written; only released_at/released_by_
 -- admin_id/released_reason may ever change, and only the one-way NULL ->
 -- released transition - never DELETE, and never a rewrite of an
--- already-released hold's release metadata either.
+-- already-released hold's release metadata either. The CHECK below closes
+-- a forged PARTIAL release (e.g. a direct UPDATE setting only released_at,
+-- leaving released_by_admin_id/released_reason NULL): the release triplet
+-- must be all-NULL or all-populated together, never a mix - so the only
+-- shape any UPDATE can legally produce is the exact one
+-- releaseLegalHold() writes. A full-shaped forged release via raw SQL
+-- (all three set together, bypassing the application function) is not
+-- prevented at this layer - SQLite triggers cannot verify caller identity,
+-- only data shape - and is intentionally left to application/audit
+-- authority (the LEGAL_HOLD_RELEASED event releaseLegalHold() writes).
 CREATE TABLE partner_identity_legal_holds (
   id TEXT PRIMARY KEY,
   partner_identity_id TEXT NOT NULL REFERENCES partner_identities(id),
@@ -280,7 +298,11 @@ CREATE TABLE partner_identity_legal_holds (
   placed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   released_at TEXT,
   released_by_admin_id TEXT,
-  released_reason TEXT
+  released_reason TEXT,
+  CHECK (
+    (released_at IS NULL AND released_by_admin_id IS NULL AND released_reason IS NULL)
+    OR (released_at IS NOT NULL AND released_by_admin_id IS NOT NULL AND released_reason IS NOT NULL)
+  )
 );
 CREATE INDEX partner_identity_legal_holds_partner_idx ON partner_identity_legal_holds(partner_identity_id);
 CREATE UNIQUE INDEX partner_identity_legal_holds_active_unique

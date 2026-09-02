@@ -116,7 +116,7 @@ describe("partner session", () => {
       const login = await loggedInPartner(db);
       expect(resolvePartnerSession(db, login.raw_session_token)).toBeDefined();
 
-      mintRetentionPolicyRevision(db, admin, 365, "test policy");
+      mintRetentionPolicyRevision(db, admin, "test policy");
       destroyPartnerIdentity(db, admin, login.partner_identity_id, "destroyed for test");
 
       expect(resolvePartnerSession(db, login.raw_session_token)).toBeUndefined();
@@ -126,7 +126,7 @@ describe("partner session", () => {
       const db = fresh();
       activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
       const login = await loggedInPartner(db);
-      mintRetentionPolicyRevision(db, admin, 365, "test policy");
+      mintRetentionPolicyRevision(db, admin, "test policy");
       destroyPartnerIdentity(db, admin, login.partner_identity_id, "destroyed for test");
 
       // The identity row still exists (destruction scrubs PII, never

@@ -36,8 +36,8 @@ const seedPartner = (db: Database.Database): string => {
   return partnerIdentityId;
 };
 
-/** Retention duration is a real, externally-approved input this PR does not invent - see the migration's comment. Tests that need destruction to be possible mint one explicitly. */
-const withPolicy = (db: Database.Database, days = 365) => mintRetentionPolicyRevision(db, admin, days, "test policy");
+/** No numeric duration - PR4 stores no machine-enforced retention period at all, see the migration's comment. Tests that need destruction to be possible establish a policy revision explicitly. */
+const withPolicy = (db: Database.Database, reason = "test policy") => mintRetentionPolicyRevision(db, admin, reason);
 
 describe("identity retention / legal holds / destruction evidence", () => {
   it("ships with NO retention policy - no invented default duration", () => {
@@ -52,10 +52,21 @@ describe("identity retention / legal holds / destruction evidence", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM partner_identity_destruction_events").get()).toEqual({ n: 0 });
   });
 
-  it("mintRetentionPolicyRevision establishes a real, versioned policy", () => {
+  it("mintRetentionPolicyRevision establishes a real, versioned policy - evidence only, no numeric duration", () => {
     const db = fresh();
-    const policy = withPolicy(db, 730);
-    expect(policy).toMatchObject({ revision: 1, retention_period_days: 730 });
+    const policy = withPolicy(db, "cites external policy document v2");
+    expect(policy).toMatchObject({ revision: 1, reason: "cites external policy document v2" });
+    expect(policy).not.toHaveProperty("retention_period_days");
+  });
+
+  it("destruction never reads or requires a numeric period - eligibility is exactly [no hold] AND [a policy revision exists]", () => {
+    const db = fresh();
+    withPolicy(db);
+    const partnerIdentityId = seedPartner(db);
+    // A freshly-seeded identity, freshly-established policy - no elapsed
+    // time of any kind - is immediately eligible, because PR4 computes no
+    // time-based eligibility at all.
+    expect(() => destroyPartnerIdentity(db, admin, partnerIdentityId, "immediate")).not.toThrow();
   });
 
   describe("legal hold blocks destruction", () => {
@@ -139,6 +150,53 @@ describe("identity retention / legal holds / destruction evidence", () => {
         expect(row.released_at).toBeTruthy();
         expect(row.released_by_admin_id).toBe("admin-1");
         expect(row.released_reason).toBe("released");
+      });
+
+      describe("a forged PARTIAL release is structurally impossible - the release triplet is all-NULL or all-populated, never a mix", () => {
+        it("direct released_at-only is refused", () => {
+          const db = fresh();
+          const partnerIdentityId = seedPartner(db);
+          const hold = placeLegalHold(db, admin, partnerIdentityId, "reason");
+          expect(() => db.exec(`UPDATE partner_identity_legal_holds SET released_at = CURRENT_TIMESTAMP WHERE id = '${hold.hold_id}'`))
+            .toThrow(/CHECK constraint failed/);
+          expect(isUnderLegalHold(db, partnerIdentityId)).toBe(true);
+        });
+
+        it("direct released_by_admin_id-only is refused", () => {
+          const db = fresh();
+          const partnerIdentityId = seedPartner(db);
+          const hold = placeLegalHold(db, admin, partnerIdentityId, "reason");
+          expect(() => db.exec(`UPDATE partner_identity_legal_holds SET released_by_admin_id = 'forger' WHERE id = '${hold.hold_id}'`))
+            .toThrow(/CHECK constraint failed/);
+          expect(isUnderLegalHold(db, partnerIdentityId)).toBe(true);
+        });
+
+        it("direct released_reason-only is refused", () => {
+          const db = fresh();
+          const partnerIdentityId = seedPartner(db);
+          const hold = placeLegalHold(db, admin, partnerIdentityId, "reason");
+          expect(() => db.exec(`UPDATE partner_identity_legal_holds SET released_reason = 'forged' WHERE id = '${hold.hold_id}'`))
+            .toThrow(/CHECK constraint failed/);
+          expect(isUnderLegalHold(db, partnerIdentityId)).toBe(true);
+        });
+
+        it("a full-shaped forged release (all three set together, bypassing releaseLegalHold()) is a decided DB-layer limitation, not silently unnoticed: it succeeds at the row-shape level but writes no LEGAL_HOLD_RELEASED audit evidence - the audit trail, not the trigger, is what distinguishes it from a real release", () => {
+          const db = fresh();
+          const partnerIdentityId = seedPartner(db);
+          const hold = placeLegalHold(db, admin, partnerIdentityId, "reason");
+          const eventsBefore = db.prepare("SELECT COUNT(*) AS n FROM partner_identity_events WHERE event_kind = 'LEGAL_HOLD_RELEASED'").get();
+
+          expect(() => db.exec(`UPDATE partner_identity_legal_holds SET released_at = CURRENT_TIMESTAMP, released_by_admin_id = 'forger', released_reason = 'forged' WHERE id = '${hold.hold_id}'`))
+            .not.toThrow();
+
+          expect(isUnderLegalHold(db, partnerIdentityId)).toBe(false);
+          // No matching audit event was ever written for this forged write -
+          // releaseLegalHold() was never called.
+          expect(db.prepare("SELECT COUNT(*) AS n FROM partner_identity_events WHERE event_kind = 'LEGAL_HOLD_RELEASED'").get()).toEqual(eventsBefore);
+          // And the one-way guard still applies from here on: even the forger cannot re-release it.
+          expect(() => db.exec(`UPDATE partner_identity_legal_holds SET released_reason = 'again' WHERE id = '${hold.hold_id}'`))
+            .toThrow(/PARTNER_IDENTITY_LEGAL_HOLD_ALREADY_RELEASED/);
+        });
       });
     });
   });
