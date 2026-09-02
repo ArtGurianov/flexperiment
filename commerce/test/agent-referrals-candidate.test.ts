@@ -37,8 +37,8 @@ afterEach(() => {
 
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 
-const gitRun = (args: string[], input?: string): string => {
-  const result = spawnSync("git", args, { input });
+const gitRun = (args: string[], input?: string, env: NodeJS.ProcessEnv = process.env): string => {
+  const result = spawnSync("git", args, { input, env });
   if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${Buffer.from(result.stderr ?? []).toString("utf8")}`);
   return Buffer.from(result.stdout ?? []).toString("utf8").trim();
 };
@@ -67,11 +67,22 @@ const mktree = (entries: FlatEntry[]): string => {
   return gitRun(["mktree"], `${direct.join("\n")}\n`);
 };
 
+// Never rely on ambient git identity config: a CI runner has none configured,
+// unlike a developer machine, so commit-tree must carry its own explicit
+// author/committer identity exactly like the production module does. Read
+// fresh (never a module-level snapshot) so the per-test GIT_OBJECT_DIRECTORY
+// override from beforeEach is always included.
+const fixtureCommitEnv = (): NodeJS.ProcessEnv => ({
+  ...process.env,
+  GIT_AUTHOR_NAME: "Test Fixture", GIT_AUTHOR_EMAIL: "fixture@example.test",
+  GIT_COMMITTER_NAME: "Test Fixture", GIT_COMMITTER_EMAIL: "fixture@example.test",
+});
+
 const commitTree = (tree: string, parent: string | undefined, message: string): string => {
   const args = ["commit-tree", tree];
   if (parent) args.push("-p", parent);
   args.push("-m", message, "--no-gpg-sign");
-  return gitRun(args);
+  return gitRun(args, undefined, fixtureCommitEnv());
 };
 
 const envelope = (overrides: Partial<AgentReferralsCandidateCertificate["commit"]> = {}) => ({
