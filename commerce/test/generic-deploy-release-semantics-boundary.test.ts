@@ -24,7 +24,7 @@ describe("generic deploy release-semantics boundary", () => {
   });
 
   it.each([
-    ["the expectation DTO", "commerce/src/types.ts"],
+    ["the expectation DTO", "commerce/src/release-control-schema.ts"],
     ["gate enforcement", "commerce/src/sales-gate.ts"],
     ["canonical serialization behind every state and inventory hash", "commerce/src/crypto.ts"],
     ["state-machine replay", "commerce/src/release-generation.ts"],
@@ -65,6 +65,11 @@ describe("generic deploy release-semantics boundary", () => {
     ["an email provider change", ["commerce/src/email-provider.ts", "commerce/src/email-templates.ts"]],
     ["ordinary business logic", ["commerce/src/domain.ts", "commerce/src/api.ts"]],
     ["worker and tests", ["commerce/src/worker-sweep.ts", "commerce/test/domain.test.ts"]],
+    // The concrete regression the release-control-schema.ts extraction exists
+    // to fix: an ordinary DTO edit (checkout, refund, city, agent, promo,
+    // settlement...) must no longer trip RELEASE_SEMANTICS merely because it
+    // shares a file with the release request schema.
+    ["an ordinary DTO edit in types.ts", ["commerce/src/types.ts"]],
   ])("keeps %s eligible for the generic path", (_label, paths) => {
     expect(genericProductionDeployBoundary(paths)).toBeUndefined();
     expect(genericProductionDeployBoundaryError(paths)).toBeUndefined();

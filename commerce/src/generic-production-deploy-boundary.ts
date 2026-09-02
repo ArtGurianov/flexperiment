@@ -36,12 +36,11 @@ export const releaseControlSemanticsPaths: readonly string[] = [
   // The request schema: support the DTO rejects is not support, and widening
   // or narrowing it changes which expectations can exist at all.
   //
-  // Residual tension, deliberately accepted: this file carries every DTO, not
-  // only the release request, so a checkout contract change lands here too. It
-  // stays in this category because that is what makes the release expectation
-  // reachable at all; if the DTOs are ever split, the non-release half should
-  // leave the boundary entirely rather than move category.
-  "commerce/src/types.ts",
+  // Extracted from types.ts (which also carries the checkout, refund, city,
+  // agent, promo and settlement DTOs) so an ordinary schema edit there no
+  // longer trips RELEASE_SEMANTICS merely by proximity - see
+  // docs/release/DEPLOYMENT_INVARIANTS.md#known-imprecision-typests.
+  "commerce/src/release-control-schema.ts",
 ];
 
 /**
@@ -77,6 +76,13 @@ export const controlPlanePaths: readonly string[] = [
   "commerce/src/assert-candidate-runtime-ready.ts",
   "commerce/src/reconcile-generic-production-deploy.ts",
   "commerce/src/reconcile-cutover.ts",
+  // Agent Referrals candidate reconstruction: the certificate schema,
+  // builder and verifier a future controller runs from its own checkout to
+  // independently reconstruct Q before candidate publication and again
+  // before production CAS. It never runs in production - only the detached
+  // commit it proves does.
+  "commerce/src/agent-referrals-candidate.ts",
+  "docs/release/AGENT_REFERRALS_BOUNDARY.md",
 ];
 
 /**

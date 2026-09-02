@@ -1,4 +1,5 @@
 {
   "checkout_contract_version": "sales-availability-v1",
-  "admin_contract_version": "sales-availability-v1"
+  "admin_contract_version": "agent-referrals-v1",
+  "partner_contract_version": "agent-referrals-v1"
 }

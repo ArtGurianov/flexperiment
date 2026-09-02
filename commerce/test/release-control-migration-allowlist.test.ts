@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import { diagnosticCutoverMigrations, requiredMigrationsFor, ReleaseSalesGate } from "../src/release-control";
 import { releaseStateHash, type GenerationHead } from "../src/release-generation";
-import { releaseControlSchema } from "../src/types";
+import { releaseControlSchema } from "../src/release-control-schema";
 
 const databases: ReturnType<typeof openDatabase>[] = [];
 afterEach(() => { while (databases.length) databases.pop()?.close(); });

@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { epochBPromotionArtifactReason } from "../src/epoch-b-notification-activation";
+import { verifyAgentReferralsCandidateCertificate, type AgentReferralsCandidateCertificate } from "../src/agent-referrals-candidate";
 
 /**
  * Durable release refs must stay in a provable relationship. Both invariants
@@ -58,6 +59,40 @@ const isApprovedEpochBPromotionArtifact = (sha: string) => {
   }
 };
 
+/**
+ * §B-1 `RECONSTRUCTION_BOUND`: a detached production-deploy may also be
+ * accepted when a committed reconstruction certificate on protected main
+ * independently proves it - source_main_sha must itself be an ancestor of
+ * the currently observed main, and the certificate must reconstruct to the
+ * exact judged SHA (see commerce/src/agent-referrals-candidate.ts).
+ *
+ * Phase 10A's canonical location: `.release/controlled-candidates/
+ * agent-referrals-<BASE>/certificate.json`, committed to protected main (a
+ * control-plane artifact, not something Q itself carries) and read from
+ * main's own tree - never from the judged SHA's tree, which would be reading
+ * Q's claims about itself, exactly the circular proof this module refuses to
+ * perform. `<BASE>` is resolved fresh as the judged SHA's own parent
+ * (Q^ == BASE is the frozen invariant, never assumed) and cross-checked
+ * against the certificate's own base_sha field before anything else runs.
+ *
+ * PR1 ships no certificate, so this predicate is reusable machinery that
+ * never fires today - not a name-based skip or a new hard-coded SHA
+ * exemption, and it costs nothing while unused.
+ */
+const candidateCertificatePath = (base: string) => `.release/controlled-candidates/agent-referrals-${base}/certificate.json`;
+const isApprovedAgentReferralsCandidate = (sha: string, currentMain: string) => {
+  const base = resolve(`${sha}^`);
+  if (!base) return false;
+  const result = git("show", `${currentMain}:${candidateCertificatePath(base)}`);
+  if (result.status !== 0) return false;
+  let certificate: AgentReferralsCandidateCertificate;
+  try { certificate = JSON.parse(result.stdout.toString()) as AgentReferralsCandidateCertificate; }
+  catch { return false; }
+  if (certificate.base_sha !== base) return false;
+  if (typeof certificate.source_main_sha !== "string" || !isAncestor(certificate.source_main_sha, currentMain)) return false;
+  return verifyAgentReferralsCandidateCertificate(certificate, sha) === undefined;
+};
+
 // Resolved SHAs, never branch names: a ref that has been repointed must not
 // pass because its name still looks familiar.
 const productionDeploy = resolve("origin/production-deploy");
@@ -81,11 +116,12 @@ describe("durable release ref topology", () => {
       isAncestor(judged.productionDeploy, judged.main)
       || isApproved0041DetachedRuntime(judged.productionDeploy)
       || isApprovedEpochADetachedRuntime(judged.productionDeploy)
-      || isApprovedEpochBPromotionArtifact(judged.productionDeploy),
+      || isApprovedEpochBPromotionArtifact(judged.productionDeploy)
+      || isApprovedAgentReferralsCandidate(judged.productionDeploy, judged.main),
       `production-deploy is not an ancestor of main.\n`
       + `  production-deploy: ${describes("origin/production-deploy")}\n`
       + `  main:              ${describes("origin/main")}\n`
-      + `Only exact 0041 Gen2, exact Epoch A R, or deterministic Epoch B P may be detached from main.`,
+      + `Only exact 0041 Gen2, exact Epoch A R, deterministic Epoch B P, or a valid Agent Referrals reconstruction certificate may be detached from main.`,
     ).toBe(true);
   });
 
