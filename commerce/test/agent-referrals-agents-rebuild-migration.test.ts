@@ -311,10 +311,17 @@ describe("0042 agent-referrals agents rebuild migration", () => {
 
       const tamperedDir = mkdtempSync(join(tmpdir(), "agents-rebuild-tampered-"));
       const mutated = Buffer.from(M0042_BYTES);
-      // Flip one byte inside the leading comment - never touched by any
-      // executable statement - so a failure here is caused only by the
-      // hash mismatch, not by broken SQL.
-      mutated[0] = mutated[0] === "-".charCodeAt(0) ? "=".charCodeAt(0) : "-".charCodeAt(0);
+      // Flip one byte INSIDE the comment prose, never the leading `--`
+      // marker itself - mutating byte 0 (the first `-`) breaks the comment
+      // syntax outright, so the file fails to parse as SQL at all and the
+      // "rejected" assertion below would pass for the wrong reason (a syntax
+      // error, not the FK-enforced DROP TABLE failure this test exists to
+      // prove). The executable SQL below the comment block must stay valid
+      // and unchanged, or a syntax error would again mask the real property.
+      const marker = Buffer.from("The only FK-off migration");
+      const offset = mutated.indexOf(marker);
+      expect(offset).toBeGreaterThan(-1);
+      mutated[offset] = "t".charCodeAt(0); // "The" -> "the": still a valid SQL comment.
       writeFileSync(join(tamperedDir, MIGRATION_FILE), mutated);
       const mutatedSha256 = createHash("sha256").update(mutated).digest("hex");
       expect(mutatedSha256).not.toBe(M0042_SHA256);
