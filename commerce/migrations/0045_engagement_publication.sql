@@ -25,18 +25,30 @@
 -- revision) is what makes "exactly one writer wins" a structural property
 -- of the two-writer race: a second writer computing the same next revision
 -- number collides on this constraint rather than silently overwriting.
+--
+-- valid_until is required evidence on every VERIFIED event (never present
+-- on REVOKED) - a verification is authority only through an explicit,
+-- attested date, not indefinitely. activateEngagement additionally
+-- requires valid_until to cover the accepted revision's own
+-- publication_end_at, so an engagement's live authority can never outlast
+-- the audience evidence that justified it.
 CREATE TABLE partner_audience_verification_events (
   id TEXT PRIMARY KEY,
   partner_identity_id TEXT NOT NULL REFERENCES partner_identities(id),
   city_id TEXT NOT NULL REFERENCES cities(id),
   aggregate_revision INTEGER NOT NULL,
   event_kind TEXT NOT NULL CHECK (event_kind IN ('VERIFIED', 'REVOKED')),
+  valid_until TEXT,
   supersedes_event_id TEXT REFERENCES partner_audience_verification_events(id),
   evidence_ref TEXT NOT NULL,
   reason TEXT NOT NULL,
   placed_by_admin_id TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
-  UNIQUE (partner_identity_id, city_id, aggregate_revision)
+  UNIQUE (partner_identity_id, city_id, aggregate_revision),
+  CHECK (
+    (event_kind = 'VERIFIED' AND valid_until IS NOT NULL)
+    OR (event_kind = 'REVOKED' AND valid_until IS NULL)
+  )
 );
 CREATE INDEX partner_audience_verification_events_current_idx
   ON partner_audience_verification_events(partner_identity_id, city_id, aggregate_revision);
@@ -337,16 +349,27 @@ BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_CREATIVE_AUTHORIZATION_IMMUTABLE'); END;
 
 -- 11. Distribution identity, immutable reported-fact revisions and an
 -- append-only lifecycle event log (plan section B-5c). A reported
--- distribution is ALWAYS persisted, regardless of channel policy - policy
--- decides classification (folded from the event log), never whether
--- reality may be recorded. Corrections are new revisions with
--- supersedes_revision_id and a required correction_reason, never an UPDATE
--- over a filed fact.
+-- distribution is ALWAYS persisted, regardless of channel policy OR
+-- temporal authority - policy and authority together decide
+-- classification (folded from the event log), never whether reality may
+-- be recorded. Corrections are new revisions with supersedes_revision_id
+-- and a required correction_reason, never an UPDATE over a filed fact.
+--
+-- engagement_revision_id/creative_revision_id are pinned per REVISION,
+-- not on the stable distribution identity: each revision carries its own
+-- published_at, and a correction that moves published_at across an
+-- authority boundary (e.g. from a superseded creative's authorized
+-- interval into a newer one's) must re-resolve which authority actually
+-- covered that instant - pinning identity-wide would silently keep an
+-- earlier revision's now-wrong authority. Both are NULLABLE: a report
+-- whose published_at predates the FIRST creative authorization ever
+-- granted for this engagement has no candidate authority to pin at all -
+-- the fact is still persisted (REVIEW_REQUIRED), just with no fabricated
+-- authority reference. See resolveHistoricalCreativeAuthority in
+-- agent-referrals-distribution.ts.
 CREATE TABLE engagement_distributions (
   id TEXT PRIMARY KEY,
   engagement_id TEXT NOT NULL REFERENCES engagements(id),
-  engagement_revision_id TEXT NOT NULL REFERENCES engagement_revisions(id),
-  creative_revision_id TEXT NOT NULL REFERENCES engagement_creative_revisions(id),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX engagement_distributions_engagement_idx ON engagement_distributions(engagement_id);
@@ -356,6 +379,8 @@ CREATE TABLE engagement_distribution_revisions (
   distribution_id TEXT NOT NULL REFERENCES engagement_distributions(id),
   revision INTEGER NOT NULL,
   supersedes_revision_id TEXT REFERENCES engagement_distribution_revisions(id),
+  engagement_revision_id TEXT REFERENCES engagement_revisions(id),
+  creative_revision_id TEXT REFERENCES engagement_creative_revisions(id),
   channel_key TEXT NOT NULL,
   channel_policy_status TEXT NOT NULL CHECK (channel_policy_status IN ('ALLOWED', 'BLOCKED', 'REVIEW_REQUIRED')),
   channel_policy_revision INTEGER,
@@ -370,7 +395,8 @@ CREATE TABLE engagement_distribution_revisions (
   canonical_hash TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   UNIQUE (distribution_id, revision),
-  CHECK (revision = 1 OR correction_reason IS NOT NULL)
+  CHECK (revision = 1 OR correction_reason IS NOT NULL),
+  CHECK ((engagement_revision_id IS NULL) = (creative_revision_id IS NULL))
 );
 CREATE INDEX engagement_distribution_revisions_distribution_idx ON engagement_distribution_revisions(distribution_id, revision);
 CREATE TRIGGER engagement_distribution_revisions_immutable_guard

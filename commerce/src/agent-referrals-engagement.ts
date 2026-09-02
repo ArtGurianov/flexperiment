@@ -4,7 +4,7 @@ import { validatePromoTerms, PromoPricingError } from "./promo-pricing";
 import { getPartnerIdentity, recordPartnerIdentityEvent } from "./agent-referrals-onboarding";
 import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
 import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
-import { currentAudienceVerification, mintAudienceVerificationEventInTransaction } from "./agent-referrals-audience-verification";
+import { AudienceVerificationError, currentAudienceVerification, isAudienceVerifiedThrough, type AudienceVerificationEventRow } from "./agent-referrals-audience-verification";
 import { consumeEngagementStepUpGrantInTransaction } from "./agent-referrals-engagement-step-up";
 import { partnerPromoByPartnerId, mintEngagementPromoAuthorizationInTransaction, revokeEngagementPromoAuthorizationInTransaction } from "./agent-referrals-promo";
 import type { AdminPrincipal, PartnerPrincipal } from "./agent-referrals-partner-identity";
@@ -85,8 +85,17 @@ export const engagementRevisionById = (db: Database.Database, revisionId: string
  * engagement's live promo authorization is currently revoked.
  */
 export const lastActivatedEngagementRevision = (db: Database.Database, engagementId: string): EngagementRevisionRow | null => {
-  const event = db.prepare("SELECT engagement_revision_id FROM engagement_activation_events WHERE engagement_id = ? ORDER BY rowid DESC LIMIT 1").get(engagementId) as { engagement_revision_id: string } | undefined;
-  return event ? engagementRevisionById(db, event.engagement_revision_id) : null;
+  // MAX(engagement_revisions.revision) among ever-activated revisions - a
+  // real business key, not SQLite's insertion-order rowid. Correct because
+  // activation is forward-only (activateEngagement refuses to activate a
+  // revision older than the one currently governing the engagement), so
+  // "highest ever-activated revision number" and "most recently activated
+  // revision" always agree; re-activating the SAME revision again changes
+  // neither the max nor the answer.
+  const activatedRevisionIds = db.prepare("SELECT DISTINCT engagement_revision_id FROM engagement_activation_events WHERE engagement_id = ?").all(engagementId) as { engagement_revision_id: string }[];
+  if (!activatedRevisionIds.length) return null;
+  const revisions = activatedRevisionIds.map((row) => engagementRevisionById(db, row.engagement_revision_id)!);
+  return revisions.reduce((max, candidate) => (candidate.revision > max.revision ? candidate : max));
 };
 
 export type OccurrenceFacts = { id: string; city_id: string; fulfillment_status: "SCHEDULED" | "COMPLETED" | "CANCELLED"; sales_status: "OPEN" | "PAUSED" | "CLOSED"; material_revision: number };
@@ -281,6 +290,12 @@ export const activateEngagement = (db: Database.Database, admin: AdminPrincipal,
 
     const audience = currentAudienceVerification(db, engagement.partner_identity_id, occurrence.city_id);
     if (audience?.event_kind !== "VERIFIED") throw new EngagementError("AGENT_REFERRALS_ACTIVATION_AUDIENCE_NOT_VERIFIED", 409, occurrence.city_id);
+    // Verification is authority only through an explicit attested date - it
+    // must cover the accepted revision's own publication_end_at, so live
+    // authority can never outlast the audience evidence that justified it.
+    if (!isAudienceVerifiedThrough(db, engagement.partner_identity_id, occurrence.city_id, revision.publication_end_at)) {
+      throw new EngagementError("AGENT_REFERRALS_ACTIVATION_AUDIENCE_VERIFICATION_EXPIRES_BEFORE_PUBLICATION_END", 409, `${audience.valid_until}<${revision.publication_end_at}`);
+    }
 
     const frameworkAcceptance = db.prepare("SELECT id FROM framework_acceptances WHERE partner_identity_id = ?").get(engagement.partner_identity_id) as { id: string } | undefined;
     if (!frameworkAcceptance) throw new EngagementError("AGENT_REFERRALS_ACTIVATION_FRAMEWORK_NOT_ACCEPTED", 409);
@@ -368,6 +383,13 @@ export type RevokeAudienceCascadeResult = { verification_event_id: string; suspe
  * prior VERIFIED - e.g. updated evidence) does not run this cascade: the
  * partner is still verified throughout, so no already-satisfied activation
  * prerequisite has become false.
+ *
+ * This is the ONLY place in the entire codebase that writes a REVOKED
+ * audience-verification row - agent-referrals-audience-verification.ts
+ * exports no REVOKED-capable function at any visibility level (see that
+ * file's header), so the INSERT is written here directly, reading only
+ * the exported read-only currentAudienceVerification. There is
+ * structurally nowhere else a REVOKED row could be minted from.
  */
 export const revokeAudienceVerificationForPartnerCity = (
   db: Database.Database,
@@ -378,7 +400,15 @@ export const revokeAudienceVerificationForPartnerCity = (
   evidenceRef: string,
 ): RevokeAudienceCascadeResult => {
   const run = db.transaction((): RevokeAudienceCascadeResult => {
-    const event = mintAudienceVerificationEventInTransaction(db, admin, partnerIdentityId, cityId, "REVOKED", reason, evidenceRef);
+    const current = currentAudienceVerification(db, partnerIdentityId, cityId);
+    if (current?.event_kind !== "VERIFIED") throw new AudienceVerificationError("AGENT_REFERRALS_AUDIENCE_NOT_VERIFIED", 409, `${partnerIdentityId}:${cityId}`);
+    const eventId = id();
+    const nextRevision = current.aggregate_revision + 1;
+    db.prepare(`INSERT INTO partner_audience_verification_events(id, partner_identity_id, city_id, aggregate_revision, event_kind, valid_until, supersedes_event_id, evidence_ref, reason, placed_by_admin_id)
+      VALUES (?, ?, ?, ?, 'REVOKED', NULL, ?, ?, ?, ?)`)
+      .run(eventId, partnerIdentityId, cityId, nextRevision, current.id, evidenceRef, reason, admin.admin_id);
+    const event = db.prepare("SELECT id, aggregate_revision FROM partner_audience_verification_events WHERE id = ?").get(eventId) as AudienceVerificationEventRow;
+
     const affected = db.prepare(`SELECT e.id FROM engagements e JOIN occurrences o ON o.id = e.occurrence_id
       WHERE e.partner_identity_id = ? AND o.city_id = ? AND e.lifecycle_state = 'ACTIVE'`).all(partnerIdentityId, cityId) as { id: string }[];
     for (const row of affected) transitionEngagementLifecycleInTransaction(db, row.id, "SUSPENDED", `AUDIENCE_VERIFICATION_REVOKED:${reason}`);

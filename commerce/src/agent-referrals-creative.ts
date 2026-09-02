@@ -136,7 +136,7 @@ export const authorizeCreative = (db: Database.Database, admin: AdminPrincipal, 
 
     const existingCurrent = currentCreativeAuthorization(db, engagementId);
     if (existingCurrent) {
-      const changed = db.prepare(`UPDATE engagement_creative_authorizations SET revoked_at = CURRENT_TIMESTAMP, revoked_reason = 'SUPERSEDED_BY_NEW_AUTHORIZATION' WHERE id = ? AND revoked_at IS NULL`).run(existingCurrent.id);
+      const changed = db.prepare(`UPDATE engagement_creative_authorizations SET revoked_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), revoked_reason = 'SUPERSEDED_BY_NEW_AUTHORIZATION' WHERE id = ? AND revoked_at IS NULL`).run(existingCurrent.id);
       if (changed.changes !== 1) throw new CreativeError("AGENT_REFERRALS_CREATIVE_AUTHORIZATION_CONCURRENTLY_SUPERSEDED", 409, existingCurrent.id);
     }
 
@@ -152,7 +152,7 @@ export const authorizeCreative = (db: Database.Database, admin: AdminPrincipal, 
 export const revokeCreativeAuthorization = (db: Database.Database, admin: AdminPrincipal, authorizationId: string, reason: string): void => {
   void admin;
   const run = db.transaction(() => {
-    const changed = db.prepare(`UPDATE engagement_creative_authorizations SET revoked_at = CURRENT_TIMESTAMP, revoked_reason = ? WHERE id = ? AND revoked_at IS NULL`).run(reason, authorizationId);
+    const changed = db.prepare(`UPDATE engagement_creative_authorizations SET revoked_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), revoked_reason = ? WHERE id = ? AND revoked_at IS NULL`).run(reason, authorizationId);
     if (changed.changes !== 1) throw new CreativeError("AGENT_REFERRALS_CREATIVE_AUTHORIZATION_ALREADY_REVOKED", 409, authorizationId);
   });
   run.immediate();

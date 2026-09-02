@@ -14,7 +14,7 @@ import { acceptFrameworkAndDelegation } from "../src/agent-referrals-framework-a
 import { verifyAudience } from "../src/agent-referrals-audience-verification";
 import { createPartnerPromo } from "../src/agent-referrals-promo";
 import { mintEngagementStepUpGrant } from "../src/agent-referrals-engagement-step-up";
-import { offerEngagement, acceptEngagement, activateEngagement, mintEngagementRevision, type EngagementRevisionTerms } from "../src/agent-referrals-engagement";
+import { offerEngagement, acceptEngagement, activateEngagement, mintEngagementRevision, suspendEngagement, type EngagementRevisionTerms } from "../src/agent-referrals-engagement";
 import { mintCreativeRevision, authorizeCreative } from "../src/agent-referrals-creative";
 import { setAgentReferralsChannelPolicy } from "../src/agent-referrals-channel-policy";
 import {
@@ -25,7 +25,6 @@ import {
   distributionEvents,
   distributionProjection,
   distributionsForEngagement,
-  getDistribution,
   markOverdueRemoval,
   reportDistribution,
 } from "../src/agent-referrals-distribution";
@@ -63,7 +62,7 @@ const readyPartner = (db: Database.Database) => {
   activatePartner(db, partnerIdentityId, getPartnerIdentity(db, partnerIdentityId)!.onboarding_revision, "ADMIN", "onboarding complete");
   const cityId = randomUUID();
   db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, 'City')").run(cityId, `city-${cityId.slice(0, 8)}`);
-  verifyAudience(db, admin, partnerIdentityId, cityId, "verified", "ev-1");
+  verifyAudience(db, admin, partnerIdentityId, cityId, "2040-01-01T00:00:00.000Z", "verified", "ev-1");
   const promo = createPartnerPromo(db, admin, { partner_id: agentId, code: `ART${agentId.slice(0, 4)}`, reason: "mint" });
   return { partner, agentId, partnerIdentityId, cityId, promo };
 };
@@ -289,20 +288,27 @@ describe("historical authority (§B-5c/§B-5d): a distribution pins the creative
     const publishedDuringR2 = new Date().toISOString();
 
     const lateReport = report(db, engaged.partner, engaged.engagementId, { published_at: publishedDuringR1 });
-    const oldDistribution = getDistribution(db, lateReport.distribution_id)!;
-    expect(oldDistribution.engagement_revision_id).toBe(engaged.revisionId);
-    expect(oldDistribution.creative_revision_id).toBe(engaged.creativeId);
+    expect(lateReport.revision.engagement_revision_id).toBe(engaged.revisionId);
+    expect(lateReport.revision.creative_revision_id).toBe(engaged.creativeId);
+    expect(distributionProjection(db, lateReport.distribution_id).compliance_state).toBe("MARKED_REPORTABLE");
 
     const currentReport = report(db, engaged.partner, engaged.engagementId, { published_at: publishedDuringR2, resource_identifier: "@c2" });
-    const newDistribution = getDistribution(db, currentReport.distribution_id)!;
-    expect(newDistribution.engagement_revision_id).toBe(superseded.revisionId);
-    expect(newDistribution.creative_revision_id).toBe(superseded.creativeId);
+    expect(currentReport.revision.engagement_revision_id).toBe(superseded.revisionId);
+    expect(currentReport.revision.creative_revision_id).toBe(superseded.creativeId);
   });
 
-  it("refuses a report whose published_at predates any authorization ever effective for this engagement - no evidence to pin", () => {
+  it("a report whose published_at predates any authorization EVER effective for this engagement is still persisted, pinned to nothing (never fabricated), classified REVIEW_REQUIRED with no removal obligation", () => {
     const db = fresh();
     const engaged = readyEngagementWithCreative(db);
-    expect(() => report(db, engaged.partner, engaged.engagementId, { published_at: "2000-01-01T00:00:00.000Z" })).toThrow(/AGENT_REFERRALS_DISTRIBUTION_NO_AUTHORIZATION_EFFECTIVE_AT_PUBLICATION/);
+    const before = db.prepare("SELECT COUNT(*) AS n FROM engagement_distributions").get() as { n: number };
+    const result = report(db, engaged.partner, engaged.engagementId, { published_at: "2000-01-01T00:00:00.000Z" });
+    const after = db.prepare("SELECT COUNT(*) AS n FROM engagement_distributions").get() as { n: number };
+    expect(after.n).toBe(before.n + 1); // the fact was persisted, not rejected
+    expect(result.revision.engagement_revision_id).toBeNull();
+    expect(result.revision.creative_revision_id).toBeNull();
+    const projection = distributionProjection(db, result.distribution_id);
+    expect(projection.compliance_state).toBe("REVIEW_REQUIRED");
+    expect(projection.removal_state).toBeNull(); // nothing concrete on record to point a removal obligation at
   });
 
   it("publishing after publication_end_at is classified REVIEW_REQUIRED + REMOVAL_REQUIRED even on an ALLOWED channel - a new distribution is prohibited past the window (§B-5d)", () => {
@@ -310,25 +316,73 @@ describe("historical authority (§B-5c/§B-5d): a distribution pins the creative
     const engaged = readyEngagementWithCreative(db); // publication_end_at = 2035-01-01
     const result = report(db, engaged.partner, engaged.engagementId, { published_at: "2036-06-01T00:00:00.000Z" });
     expect(result.revision.channel_policy_status).toBe("ALLOWED"); // telegram is ALLOWED - the channel itself is not the problem
+    expect(result.revision.engagement_revision_id).toBe(engaged.revisionId); // still pinned - we know exactly which creative
     const projection = distributionProjection(db, result.distribution_id);
     expect(projection.compliance_state).toBe("REVIEW_REQUIRED");
     expect(projection.removal_state).toBe("REMOVAL_REQUIRED");
   });
 
-  it("corrections re-classify against the DISTRIBUTION'S PINNED revision window, never re-resolving authority", () => {
+  it("publishing before publication_start_at is classified REVIEW_REQUIRED + REMOVAL_REQUIRED too - not just the end bound", () => {
+    const db = fresh();
+    const p1 = readyPartner(db);
+    const occ = seedOccurrence(db, p1.cityId);
+    // publication_start_at is in the future relative to when the creative authorization actually becomes effective (now),
+    // so a publish reported between the two exercises the authority's OWN start bound, distinct from NO_AUTHORITY (the authorization does exist by then).
+    const futureTerms: EngagementRevisionTerms = { ...terms1, publication_start_at: "2030-01-01T00:00:00.000Z" };
+    const { engagement_id: engagementId, engagement_revision_id: revisionId } = offerEngagement(db, admin, p1.partnerIdentityId, occ, futureTerms, "offer");
+    const grant = mintEngagementStepUpGrant(db, p1.partner, "ENGAGEMENT_ACCEPTANCE", { engagement_id: engagementId, engagement_revision_id: revisionId }).grant_id;
+    acceptEngagement(db, p1.partner, engagementId, revisionId, grant);
+    activateEngagement(db, admin, engagementId, revisionId);
+    const creative = mintCreativeRevision(db, admin, engagementId, {
+      format_kind: "post", media_ref: null, copy_text: "Buy now", cta_text: "Click", mandatory_labeling_text: "Реклама", creative_target_url: "https://flexperiment.ru/x?promo=ART",
+    });
+    authorizeCreative(db, admin, engagementId, creative.id);
+
+    const result = reportDistribution(db, p1.partner, engagementId, {
+      channel_key: "telegram", resource_kind: "channel", resource_identifier: "@art_channel", distribution_resource_url: "https://t.me/art_channel/1",
+      published_at: "2029-06-01T00:00:00.000Z", ended_at: null, evidence_ref: "ev-1",
+    });
+    expect(result.revision.engagement_revision_id).toBe(revisionId); // authority is found and pinned, just invalid at that instant
+    const projection = distributionProjection(db, result.distribution_id);
+    expect(projection.compliance_state).toBe("REVIEW_REQUIRED");
+    expect(projection.removal_state).toBe("REMOVAL_REQUIRED");
+  });
+
+  it("a creative authorization left unrevoked while its underlying PROMO authorization was revoked (by suspension) does not falsely read as authorized - the promo authorization's own revocation is checked independently", () => {
     const db = fresh();
     const engaged = readyEngagementWithCreative(db);
-    const first = report(db, engaged.partner, engaged.engagementId, { published_at: "2030-09-10T00:00:00.000Z" });
-    expect(distributionProjection(db, first.distribution_id).compliance_state).toBe("MARKED_REPORTABLE");
-    // A correction moving published_at past the PINNED revision's window flips classification, without ever re-pinning identity.
+    // Suspend the engagement: revokes the PROMO authorization (engagement_promo_authorizations.revoked_at)
+    // but does NOT touch the creative authorization (engagement_creative_authorizations.revoked_at stays NULL) - the exact gap this check closes.
+    suspendEngagement(db, admin, engaged.engagementId, "manual pause");
+    const publishedAfterSuspension = new Date().toISOString();
+    const result = report(db, engaged.partner, engaged.engagementId, { published_at: publishedAfterSuspension });
+    expect(result.revision.engagement_revision_id).toBe(engaged.revisionId); // the creative authorization itself is still found and pinned
+    const projection = distributionProjection(db, result.distribution_id);
+    expect(projection.compliance_state).toBe("REVIEW_REQUIRED"); // but NOT falsely MARKED_REPORTABLE
+    expect(projection.removal_state).toBe("REMOVAL_REQUIRED");
+  });
+
+  it("a correction that moves published_at ACROSS an authority boundary re-resolves and re-pins - never silently retains the prior revision's now-wrong authority", () => {
+    const db = fresh();
+    const engaged = readyEngagementWithCreative(db);
+    const publishedDuringR1 = new Date().toISOString();
+    const superseded = supersedeAuthority(db, engaged, { customer_discount_value: 1500 });
+    const publishedDuringR2 = new Date().toISOString();
+
+    const first = report(db, engaged.partner, engaged.engagementId, { published_at: publishedDuringR1 });
+    expect(first.revision.engagement_revision_id).toBe(engaged.revisionId);
+
+    // Correct the SAME distribution's published_at into R2/C2's territory.
     const corrected = correctDistribution(db, engaged.partner, first.distribution_id,
-      { channel_key: "telegram", resource_kind: "channel", resource_identifier: "@art_channel", distribution_resource_url: "https://t.me/art_channel/1", published_at: "2036-06-01T00:00:00.000Z", ended_at: null, evidence_ref: "ev-corrected" },
+      { channel_key: "telegram", resource_kind: "channel", resource_identifier: "@art_channel", distribution_resource_url: "https://t.me/art_channel/1", published_at: publishedDuringR2, ended_at: null, evidence_ref: "ev-corrected" },
       "corrected the actual publish date");
     expect(corrected.distribution_id).toBe(first.distribution_id);
-    const identity = getDistribution(db, first.distribution_id)!;
-    expect(identity.engagement_revision_id).toBe(engaged.revisionId); // identity never changes on correction
-    expect(distributionProjection(db, first.distribution_id).compliance_state).toBe("REVIEW_REQUIRED");
-    expect(distributionProjection(db, first.distribution_id).removal_state).toBe("REMOVAL_REQUIRED");
+    expect(corrected.revision.engagement_revision_id).toBe(superseded.revisionId); // re-pinned to R2, not left on R1
+    expect(corrected.revision.creative_revision_id).toBe(superseded.creativeId);
+
+    // The ORIGINAL revision's own pin is untouched - immutable evidence, never rewritten.
+    const originalRevision = db.prepare("SELECT engagement_revision_id FROM engagement_distribution_revisions WHERE id = ?").get(first.revision.id) as { engagement_revision_id: string };
+    expect(originalRevision.engagement_revision_id).toBe(engaged.revisionId);
   });
 });
 

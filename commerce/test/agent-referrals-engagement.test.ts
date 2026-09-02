@@ -25,6 +25,7 @@ import {
   revokeAudienceVerificationForPartnerCity,
   getEngagement,
   currentEngagementRevision,
+  lastActivatedEngagementRevision,
   type EngagementRevisionTerms,
 } from "../src/agent-referrals-engagement";
 
@@ -63,7 +64,7 @@ const readyPartner = (db: Database.Database) => {
 
   const cityId = randomUUID();
   db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, 'Новосибирск')").run(cityId, `novosibirsk-${cityId.slice(0, 8)}`);
-  verifyAudience(db, admin, partnerIdentityId, cityId, "verified", "ev-1");
+  verifyAudience(db, admin, partnerIdentityId, cityId, "2040-01-01T00:00:00.000Z", "verified", "ev-1");
   const promo = createPartnerPromo(db, admin, { partner_id: agentId, code: `ART${agentId.slice(0, 4)}`, reason: "mint" });
 
   return { partner, agentId, partnerIdentityId, cityId, promo };
@@ -250,7 +251,7 @@ describe("audience revocation cascade (one authority transaction)", () => {
     const p1 = readyPartner(db);
     const otherCity = randomUUID();
     db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, 'tomsk', 'Томск')").run(otherCity);
-    verifyAudience(db, admin, p1.partnerIdentityId, otherCity, "verified", "ev-2");
+    verifyAudience(db, admin, p1.partnerIdentityId, otherCity, "2040-01-01T00:00:00.000Z", "verified", "ev-2");
     const occTomsk = seedOccurrence(db, otherCity);
     const occNovosibirsk = seedOccurrence(db, p1.cityId);
     const engTomsk = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occTomsk);
@@ -266,7 +267,7 @@ describe("audience revocation cascade (one authority transaction)", () => {
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);
     const eng = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ);
-    verifyAudience(db, admin, p1.partnerIdentityId, p1.cityId, "re-verified with updated evidence", "ev-3");
+    verifyAudience(db, admin, p1.partnerIdentityId, p1.cityId, "2040-01-01T00:00:00.000Z", "re-verified with updated evidence", "ev-3");
     expect(getEngagement(db, eng.engagementId)).toMatchObject({ lifecycle_state: "ACTIVE" });
   });
 });
@@ -314,5 +315,84 @@ describe("engagement error export", () => {
   it("throws EngagementError for a not-found engagement", () => {
     const db = fresh();
     expect(() => mintEngagementRevision(db, admin, "nonexistent", terms1, "x")).toThrow(EngagementError);
+  });
+});
+
+describe("audience verification must remain valid through the whole publication window (P0.3): VERIFIED alone is not enough, valid_until must reach publication_end_at", () => {
+  it("refuses activation when the verified window expires BEFORE the revision's publication_end_at", () => {
+    const db = fresh();
+    const p1 = readyPartner(db); // verified through 2040-01-01 by default
+    revokeAudienceVerificationForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "reset for test", "ev-reset");
+    verifyAudience(db, admin, p1.partnerIdentityId, p1.cityId, "2030-06-01T00:00:00.000Z", "narrower window", "ev-2");
+    const occ = seedOccurrence(db, p1.cityId);
+    // terms1.publication_end_at = 2035-01-01, which is AFTER the 2030-06-01 verified window - activation must refuse.
+    const { engagement_id: engagementId, engagement_revision_id: revisionId } = offerEngagement(db, admin, p1.partnerIdentityId, occ, terms1, "offer");
+    const grant = mintEngagementStepUpGrant(db, p1.partner, "ENGAGEMENT_ACCEPTANCE", { engagement_id: engagementId, engagement_revision_id: revisionId }).grant_id;
+    acceptEngagement(db, p1.partner, engagementId, revisionId, grant);
+    expect(() => activateEngagement(db, admin, engagementId, revisionId)).toThrow(/AGENT_REFERRALS_ACTIVATION_AUDIENCE_VERIFICATION_EXPIRES_BEFORE_PUBLICATION_END/);
+    expect(getEngagement(db, engagementId)!.lifecycle_state).toBe("ACCEPTED"); // no partial activation
+  });
+
+  it("activates when valid_until is exactly equal to publication_end_at - the boundary is inclusive", () => {
+    const db = fresh();
+    const p1 = readyPartner(db);
+    revokeAudienceVerificationForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "reset for test", "ev-reset");
+    const validUntil = "2030-06-01T00:00:00.000Z";
+    verifyAudience(db, admin, p1.partnerIdentityId, p1.cityId, validUntil, "exact-boundary window", "ev-2");
+    const occ = seedOccurrence(db, p1.cityId);
+    const boundaryTerms: EngagementRevisionTerms = { ...terms1, publication_end_at: validUntil };
+    const { engagement_id: engagementId, engagement_revision_id: revisionId } = offerEngagement(db, admin, p1.partnerIdentityId, occ, boundaryTerms, "offer");
+    const grant = mintEngagementStepUpGrant(db, p1.partner, "ENGAGEMENT_ACCEPTANCE", { engagement_id: engagementId, engagement_revision_id: revisionId }).grant_id;
+    acceptEngagement(db, p1.partner, engagementId, revisionId, grant);
+    expect(() => activateEngagement(db, admin, engagementId, revisionId)).not.toThrow();
+    expect(getEngagement(db, engagementId)!.lifecycle_state).toBe("ACTIVE");
+  });
+
+  it("a REPLACEMENT VERIFIED extending validity past publication_end_at unblocks a previously-refused activation", () => {
+    const db = fresh();
+    const p1 = readyPartner(db);
+    revokeAudienceVerificationForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "reset for test", "ev-reset");
+    verifyAudience(db, admin, p1.partnerIdentityId, p1.cityId, "2030-06-01T00:00:00.000Z", "narrower window", "ev-2");
+    const occ = seedOccurrence(db, p1.cityId);
+    const { engagement_id: engagementId, engagement_revision_id: revisionId } = offerEngagement(db, admin, p1.partnerIdentityId, occ, terms1, "offer");
+    const grant = mintEngagementStepUpGrant(db, p1.partner, "ENGAGEMENT_ACCEPTANCE", { engagement_id: engagementId, engagement_revision_id: revisionId }).grant_id;
+    acceptEngagement(db, p1.partner, engagementId, revisionId, grant);
+    expect(() => activateEngagement(db, admin, engagementId, revisionId)).toThrow(/AUDIENCE_VERIFICATION_EXPIRES_BEFORE_PUBLICATION_END/);
+
+    revokeAudienceVerificationForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "widen window", "ev-3");
+    verifyAudience(db, admin, p1.partnerIdentityId, p1.cityId, "2040-01-01T00:00:00.000Z", "wider window", "ev-4");
+    expect(() => activateEngagement(db, admin, engagementId, revisionId)).not.toThrow();
+    expect(getEngagement(db, engagementId)!.lifecycle_state).toBe("ACTIVE");
+  });
+});
+
+describe("lastActivatedEngagementRevision (P1.1): resolves by the maximum ACTIVATED revision number, never by rowid/insertion order", () => {
+  it("returns the highest-numbered activated revision even though it was authored, accepted and activated after the first", () => {
+    const db = fresh();
+    const p1 = readyPartner(db);
+    const occ = seedOccurrence(db, p1.cityId);
+    const { engagementId, revisionId: rev1 } = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ);
+    expect(lastActivatedEngagementRevision(db, engagementId)!.id).toBe(rev1);
+
+    const rev2 = mintEngagementRevision(db, admin, engagementId, { ...terms1, customer_discount_value: 1500 }, "material change");
+    const grant2 = mintEngagementStepUpGrant(db, p1.partner, "ENGAGEMENT_ACCEPTANCE", { engagement_id: engagementId, engagement_revision_id: rev2.id }).grant_id;
+    acceptEngagement(db, p1.partner, engagementId, rev2.id, grant2);
+    activateEngagement(db, admin, engagementId, rev2.id);
+
+    const last = lastActivatedEngagementRevision(db, engagementId)!;
+    expect(last.id).toBe(rev2.id);
+    expect(last.revision).toBe(2);
+  });
+
+  it("across suspend/reactivate (a second activation event for the SAME revision, per B-... reactivation), still resolves to that one revision - never double-counted, never regressing", () => {
+    const db = fresh();
+    const p1 = readyPartner(db);
+    const occ = seedOccurrence(db, p1.cityId);
+    const { engagementId, revisionId } = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ);
+    suspendEngagement(db, admin, engagementId, "pause");
+    reactivateEngagement(db, admin, engagementId, revisionId); // a SECOND activation event, same revision
+    const last = lastActivatedEngagementRevision(db, engagementId)!;
+    expect(last.id).toBe(revisionId);
+    expect(last.revision).toBe(1);
   });
 });

@@ -97,7 +97,7 @@ export const mintEngagementPromoAuthorizationInTransaction = (
 ): EngagementPromoAuthorizationRow => {
   const current = currentEngagementPromoAuthorization(db, input.promo_code_id, input.occurrence_id);
   if (current) {
-    const changed = db.prepare(`UPDATE engagement_promo_authorizations SET revoked_at = CURRENT_TIMESTAMP, revoked_reason = 'SUPERSEDED_BY_NEW_ACTIVATION' WHERE id = ? AND revoked_at IS NULL`).run(current.id);
+    const changed = db.prepare(`UPDATE engagement_promo_authorizations SET revoked_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), revoked_reason = 'SUPERSEDED_BY_NEW_ACTIVATION' WHERE id = ? AND revoked_at IS NULL`).run(current.id);
     if (changed.changes !== 1) throw new AgentReferralsPromoError("AGENT_REFERRALS_PROMO_AUTHORIZATION_CONCURRENTLY_SUPERSEDED", 409, current.id);
   }
   const authorizationId = id();
@@ -111,7 +111,7 @@ export const mintEngagementPromoAuthorizationInTransaction = (
 export const revokeEngagementPromoAuthorizationInTransaction = (db: Database.Database, engagementId: string, reason: string): EngagementPromoAuthorizationRow | null => {
   const current = currentEngagementPromoAuthorizationForEngagement(db, engagementId);
   if (!current) return null;
-  const changed = db.prepare(`UPDATE engagement_promo_authorizations SET revoked_at = CURRENT_TIMESTAMP, revoked_reason = ? WHERE id = ? AND revoked_at IS NULL`).run(reason, current.id);
+  const changed = db.prepare(`UPDATE engagement_promo_authorizations SET revoked_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), revoked_reason = ? WHERE id = ? AND revoked_at IS NULL`).run(reason, current.id);
   if (changed.changes !== 1) throw new AgentReferralsPromoError("AGENT_REFERRALS_PROMO_AUTHORIZATION_CONCURRENTLY_REVOKED", 409, current.id);
   return { ...current, revoked_at: new Date().toISOString(), revoked_reason: reason };
 };

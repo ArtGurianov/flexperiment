@@ -225,8 +225,8 @@ describe("0045 engagement publication migration", () => {
       expect(() => db.exec("UPDATE engagement_revisions SET reward_value = 2000 WHERE id = 'rev1'")).toThrow(/ENGAGEMENT_REVISION_IMMUTABLE/);
       expect(() => db.exec("DELETE FROM engagement_revisions WHERE id = 'rev1'")).toThrow(/ENGAGEMENT_REVISION_IMMUTABLE/);
 
-      db.prepare(`INSERT INTO partner_audience_verification_events(id, partner_identity_id, city_id, aggregate_revision, event_kind, evidence_ref, reason, placed_by_admin_id)
-        VALUES ('av1', 'partner-1', 'city-1', 1, 'VERIFIED', 'ev', 'r', 'admin')`).run();
+      db.prepare(`INSERT INTO partner_audience_verification_events(id, partner_identity_id, city_id, aggregate_revision, event_kind, valid_until, evidence_ref, reason, placed_by_admin_id)
+        VALUES ('av1', 'partner-1', 'city-1', 1, 'VERIFIED', '2040-01-01T00:00:00.000Z', 'ev', 'r', 'admin')`).run();
       expect(() => db.exec("UPDATE partner_audience_verification_events SET event_kind = 'REVOKED' WHERE id = 'av1'")).toThrow(/PARTNER_AUDIENCE_VERIFICATION_EVENT_IMMUTABLE/);
       expect(() => db.exec("DELETE FROM partner_audience_verification_events WHERE id = 'av1'")).toThrow(/PARTNER_AUDIENCE_VERIFICATION_EVENT_IMMUTABLE/);
     });
@@ -301,13 +301,13 @@ describe("0045 engagement publication migration", () => {
       db.prepare(`INSERT INTO promo_codes(id, agent_id, code, normalized_code, discount_type, discount_value) VALUES ('promo-x', 'agent-engagement-1', 'ART', 'ARTX', 'NONE', 0)`).run();
       db.prepare(`INSERT INTO engagement_creative_revisions(id, engagement_id, revision, partner_id, promo_code_id, format_kind, mandatory_labeling_text, creative_target_url, creative_hash, created_by_admin_id)
         VALUES ('cr1', 'eng-1', 1, 'agent-engagement-1', 'promo-x', 'post', 'label', 'https://flexperiment.ru/novosibirsk?promo=ART', 'chash', 'admin')`).run();
-      db.prepare(`INSERT INTO engagement_distributions(id, engagement_id, engagement_revision_id, creative_revision_id) VALUES ('dist1', 'eng-1', 'rev-1', 'cr1')`).run();
-      expect(() => db.prepare(`INSERT INTO engagement_distribution_revisions(id, distribution_id, revision, channel_key, channel_policy_status, resource_kind, resource_identifier, distribution_resource_url, published_at, reported_by, evidence_ref, canonical_hash)
-        VALUES ('drev1', 'dist1', 1, 'telegram', 'ALLOWED', 'channel', '@x', 'https://t.me/x/1', '2030-09-01T00:00:00.000Z', 'PARTNER', 'ev', 'h1')`).run()).not.toThrow();
-      expect(() => db.prepare(`INSERT INTO engagement_distribution_revisions(id, distribution_id, revision, channel_key, channel_policy_status, resource_kind, resource_identifier, distribution_resource_url, published_at, reported_by, evidence_ref, canonical_hash)
-        VALUES ('drev2', 'dist1', 2, 'telegram', 'ALLOWED', 'channel', '@x', 'https://t.me/x/1-corrected', '2030-09-01T00:00:00.000Z', 'PARTNER', 'ev', 'h2')`).run()).toThrow(/CHECK constraint failed/);
-      expect(() => db.prepare(`INSERT INTO engagement_distribution_revisions(id, distribution_id, revision, supersedes_revision_id, channel_key, channel_policy_status, resource_kind, resource_identifier, distribution_resource_url, published_at, reported_by, correction_reason, evidence_ref, canonical_hash)
-        VALUES ('drev3', 'dist1', 2, 'drev1', 'telegram', 'ALLOWED', 'channel', '@x', 'https://t.me/x/1-corrected', '2030-09-01T00:00:00.000Z', 'PARTNER', 'typo fix', 'ev', 'h3')`).run()).not.toThrow();
+      db.prepare(`INSERT INTO engagement_distributions(id, engagement_id) VALUES ('dist1', 'eng-1')`).run();
+      expect(() => db.prepare(`INSERT INTO engagement_distribution_revisions(id, distribution_id, revision, engagement_revision_id, creative_revision_id, channel_key, channel_policy_status, resource_kind, resource_identifier, distribution_resource_url, published_at, reported_by, evidence_ref, canonical_hash)
+        VALUES ('drev1', 'dist1', 1, 'rev-1', 'cr1', 'telegram', 'ALLOWED', 'channel', '@x', 'https://t.me/x/1', '2030-09-01T00:00:00.000Z', 'PARTNER', 'ev', 'h1')`).run()).not.toThrow();
+      expect(() => db.prepare(`INSERT INTO engagement_distribution_revisions(id, distribution_id, revision, engagement_revision_id, creative_revision_id, channel_key, channel_policy_status, resource_kind, resource_identifier, distribution_resource_url, published_at, reported_by, evidence_ref, canonical_hash)
+        VALUES ('drev2', 'dist1', 2, 'rev-1', 'cr1', 'telegram', 'ALLOWED', 'channel', '@x', 'https://t.me/x/1-corrected', '2030-09-01T00:00:00.000Z', 'PARTNER', 'ev', 'h2')`).run()).toThrow(/CHECK constraint failed/);
+      expect(() => db.prepare(`INSERT INTO engagement_distribution_revisions(id, distribution_id, revision, supersedes_revision_id, engagement_revision_id, creative_revision_id, channel_key, channel_policy_status, resource_kind, resource_identifier, distribution_resource_url, published_at, reported_by, correction_reason, evidence_ref, canonical_hash)
+        VALUES ('drev3', 'dist1', 2, 'drev1', 'rev-1', 'cr1', 'telegram', 'ALLOWED', 'channel', '@x', 'https://t.me/x/1-corrected', '2030-09-01T00:00:00.000Z', 'PARTNER', 'typo fix', 'ev', 'h3')`).run()).not.toThrow();
       expect(() => db.exec("UPDATE engagement_distribution_revisions SET distribution_resource_url = 'https://t.me/x/tampered' WHERE id = 'drev1'")).toThrow(/ENGAGEMENT_DISTRIBUTION_REVISION_IMMUTABLE/);
     });
 

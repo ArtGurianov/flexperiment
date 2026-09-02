@@ -14,9 +14,17 @@ import type { AdminPrincipal } from "./agent-referrals-partner-identity";
  * The cascade requirement ("revoking the CURRENT verification behind an
  * already-pinned ACTIVE engagement must, in the same transaction, suspend
  * that engagement and revoke its promo authorization") lives in
- * agent-referrals-engagement.ts instead, which imports the mint function
- * below - the reverse import would create a cycle (activateEngagement
- * needs to read current audience verification too).
+ * agent-referrals-engagement.ts instead.
+ *
+ * This module exports NO function capable of writing a REVOKED event, at
+ * any visibility level - not even a nestable "InTransaction" primitive.
+ * The only way anything in this codebase can revoke is
+ * agent-referrals-engagement.ts's revokeAudienceVerificationForPartnerCity,
+ * which writes the REVOKED row itself (reading only the exported,
+ * read-only currentAudienceVerification below) and cascades the
+ * engagement suspension in the identical transaction. That is a
+ * structural guarantee, not a naming convention: there is no shared
+ * "mint any event kind" function anywhere for a future caller to misuse.
  */
 
 export type AudienceVerificationEventKind = "VERIFIED" | "REVOKED";
@@ -33,6 +41,7 @@ export type AudienceVerificationEventRow = {
   city_id: string;
   aggregate_revision: number;
   event_kind: AudienceVerificationEventKind;
+  valid_until: string | null;
   supersedes_event_id: string | null;
   evidence_ref: string;
   reason: string;
@@ -40,22 +49,30 @@ export type AudienceVerificationEventRow = {
   created_at: string;
 };
 
+const EVENT_COLUMNS = "id, partner_identity_id, city_id, aggregate_revision, event_kind, valid_until, supersedes_event_id, evidence_ref, reason, placed_by_admin_id, created_at";
+
 /** Current authority is the row with MAX(aggregate_revision) for this pair - never MAX(created_at), and never a stored pointer. */
 export const currentAudienceVerification = (db: Database.Database, partnerIdentityId: string, cityId: string): AudienceVerificationEventRow | null =>
-  (db.prepare(`SELECT id, partner_identity_id, city_id, aggregate_revision, event_kind, supersedes_event_id, evidence_ref, reason, placed_by_admin_id, created_at
-    FROM partner_audience_verification_events WHERE partner_identity_id = ? AND city_id = ? ORDER BY aggregate_revision DESC LIMIT 1`)
+  (db.prepare(`SELECT ${EVENT_COLUMNS} FROM partner_audience_verification_events WHERE partner_identity_id = ? AND city_id = ? ORDER BY aggregate_revision DESC LIMIT 1`)
     .get(partnerIdentityId, cityId) as AudienceVerificationEventRow | undefined) ?? null;
+
+/** VERIFIED only, and only when validUntil actually covers untilAtLeast (e.g. the engagement revision's publication_end_at) - the read side of the "valid through publication end" invariant. */
+export const isAudienceVerifiedThrough = (db: Database.Database, partnerIdentityId: string, cityId: string, untilAtLeast: string): boolean => {
+  const current = currentAudienceVerification(db, partnerIdentityId, cityId);
+  if (current?.event_kind !== "VERIFIED" || !current.valid_until) return false;
+  const covers = db.prepare("SELECT (julianday(?) >= julianday(?)) AS covers").get(current.valid_until, untilAtLeast) as { covers: number };
+  return Boolean(covers.covers);
+};
 
 export const isAudienceVerified = (db: Database.Database, partnerIdentityId: string, cityId: string): boolean =>
   currentAudienceVerification(db, partnerIdentityId, cityId)?.event_kind === "VERIFIED";
 
 export const allAudienceVerificationEvents = (db: Database.Database, partnerIdentityId: string, cityId: string): AudienceVerificationEventRow[] =>
-  db.prepare(`SELECT id, partner_identity_id, city_id, aggregate_revision, event_kind, supersedes_event_id, evidence_ref, reason, placed_by_admin_id, created_at
-    FROM partner_audience_verification_events WHERE partner_identity_id = ? AND city_id = ? ORDER BY aggregate_revision ASC`)
+  db.prepare(`SELECT ${EVENT_COLUMNS} FROM partner_audience_verification_events WHERE partner_identity_id = ? AND city_id = ? ORDER BY aggregate_revision ASC`)
     .all(partnerIdentityId, cityId) as AudienceVerificationEventRow[];
 
 /**
- * Nestable: the caller's own IMMEDIATE transaction (activated by holding
+ * The nestable's caller's own IMMEDIATE transaction (activated by holding
  * the write lock before this reads anything) is what makes "exactly one
  * writer wins" a real property of the (partner, city) revision race - a
  * second writer's IMMEDIATE transaction blocks until the first commits,
@@ -65,50 +82,40 @@ export const allAudienceVerificationEvents = (db: Database.Database, partnerIden
  *
  * VERIFIED may be minted from ANY current state (fresh verification,
  * re-verification after updated evidence, or re-verification after a
- * prior revocation) - it is always "assert verified now". REVOKED may
- * only be minted when the current state is VERIFIED - there is nothing to
- * revoke otherwise.
+ * prior revocation) - it is always "assert verified now, valid through
+ * validUntil".
  */
-export const mintAudienceVerificationEventInTransaction = (
+const mintVerifiedInTransaction = (
   db: Database.Database,
   admin: AdminPrincipal,
   partnerIdentityId: string,
   cityId: string,
-  eventKind: AudienceVerificationEventKind,
+  validUntil: string,
   reason: string,
   evidenceRef: string,
 ): AudienceVerificationEventRow => {
   const current = currentAudienceVerification(db, partnerIdentityId, cityId);
-  if (eventKind === "REVOKED" && current?.event_kind !== "VERIFIED") {
-    throw new AudienceVerificationError("AGENT_REFERRALS_AUDIENCE_NOT_VERIFIED", 409, `${partnerIdentityId}:${cityId}`);
-  }
-
   const eventId = id();
   const nextRevision = (current?.aggregate_revision ?? 0) + 1;
-  db.prepare(`INSERT INTO partner_audience_verification_events(id, partner_identity_id, city_id, aggregate_revision, event_kind, supersedes_event_id, evidence_ref, reason, placed_by_admin_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(eventId, partnerIdentityId, cityId, nextRevision, eventKind, current?.id ?? null, evidenceRef, reason, admin.admin_id);
+  db.prepare(`INSERT INTO partner_audience_verification_events(id, partner_identity_id, city_id, aggregate_revision, event_kind, valid_until, supersedes_event_id, evidence_ref, reason, placed_by_admin_id)
+    VALUES (?, ?, ?, ?, 'VERIFIED', ?, ?, ?, ?, ?)`)
+    .run(eventId, partnerIdentityId, cityId, nextRevision, validUntil, current?.id ?? null, evidenceRef, reason, admin.admin_id);
   return currentAudienceVerification(db, partnerIdentityId, cityId)!;
 };
 
 /**
  * The ONLY top-level (own-transaction) production entry point this module
- * exposes - and it can only ever assert VERIFIED. There is deliberately no
- * standalone top-level REVOKED path: revoking is never merely an evidence
- * append, it must also suspend any engagement whose ACTIVE authority
- * depended on the verification being revoked, in the SAME transaction -
- * see agent-referrals-engagement.ts's revokeAudienceVerificationForPartnerCity,
- * the sole caller allowed to pass 'REVOKED' to the nestable primitive
- * above. A bare "mint REVOKED" convenience wrapper here would let a caller
- * revoke evidence while silently leaving an already-ACTIVE engagement's
- * authority live - exactly the gap the cascade command exists to close.
+ * exposes - and it can only ever assert VERIFIED (there is no eventKind
+ * parameter at all, structurally). See the file header for why REVOKED
+ * has no equivalent here.
  */
 export const verifyAudience = (
   db: Database.Database,
   admin: AdminPrincipal,
   partnerIdentityId: string,
   cityId: string,
+  validUntil: string,
   reason: string,
   evidenceRef: string,
 ): AudienceVerificationEventRow =>
-  db.transaction(() => mintAudienceVerificationEventInTransaction(db, admin, partnerIdentityId, cityId, "VERIFIED", reason, evidenceRef)).immediate();
+  db.transaction(() => mintVerifiedInTransaction(db, admin, partnerIdentityId, cityId, validUntil, reason, evidenceRef)).immediate();

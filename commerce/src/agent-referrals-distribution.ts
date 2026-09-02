@@ -8,10 +8,10 @@ import type { AdminPrincipal, PartnerPrincipal } from "./agent-referrals-partner
 /**
  * Minimum actual-distribution facts (plan section B-5c) plus the removal
  * lifecycle (B-5d). A reported distribution is ALWAYS persisted - policy
- * decides classification, never whether reality may be recorded. The
- * current projection is always derived (latest revision + folded event
- * log), never a stored mutable column that could drift from the events
- * that produced it.
+ * AND temporal authority together decide classification, never whether
+ * reality may be recorded. The current projection is always derived
+ * (latest revision + folded event log), never a stored mutable column
+ * that could drift from the events that produced it.
  */
 
 export class DistributionError extends Error {
@@ -60,24 +60,36 @@ export type DistributionRevisionRow = DistributionReportInput & {
   distribution_id: string;
   revision: number;
   supersedes_revision_id: string | null;
+  /**
+   * The (engagement_revision_id, creative_revision_id) pair that actually
+   * governed the engagement at THIS revision's own published_at - resolved
+   * independently for every revision (including corrections), never
+   * inherited from the distribution identity. Both null together when no
+   * creative authorization was ever effective by published_at (the fact
+   * predates the engagement's first-ever authorization) - a real, evidence-
+   * preserving outcome, never a fabricated pin.
+   */
+  engagement_revision_id: string | null;
+  creative_revision_id: string | null;
   channel_policy_status: ChannelPolicyStatus;
   channel_policy_revision: number | null;
   reported_by: "PARTNER" | "ADMIN";
   correction_reason: string | null;
+  evidence_ref: string;
   canonical_hash: string;
   created_at: string;
 };
 
-const REVISION_COLUMNS = "id, distribution_id, revision, supersedes_revision_id, channel_key, channel_policy_status, channel_policy_revision, resource_kind, resource_identifier, distribution_resource_url, published_at, ended_at, reported_by, correction_reason, evidence_ref, canonical_hash, created_at";
+const REVISION_COLUMNS = "id, distribution_id, revision, supersedes_revision_id, engagement_revision_id, creative_revision_id, channel_key, channel_policy_status, channel_policy_revision, resource_kind, resource_identifier, distribution_resource_url, published_at, ended_at, reported_by, correction_reason, evidence_ref, canonical_hash, created_at";
 
 export const currentDistributionRevision = (db: Database.Database, distributionId: string): DistributionRevisionRow | null =>
   (db.prepare(`SELECT ${REVISION_COLUMNS} FROM engagement_distribution_revisions WHERE distribution_id = ? ORDER BY revision DESC LIMIT 1`)
     .get(distributionId) as DistributionRevisionRow | undefined) ?? null;
 
-export type DistributionIdentityRow = { id: string; engagement_id: string; engagement_revision_id: string; creative_revision_id: string; created_at: string };
+export type DistributionIdentityRow = { id: string; engagement_id: string; created_at: string };
 
 export const getDistribution = (db: Database.Database, distributionId: string): DistributionIdentityRow | null =>
-  (db.prepare("SELECT id, engagement_id, engagement_revision_id, creative_revision_id, created_at FROM engagement_distributions WHERE id = ?").get(distributionId) as DistributionIdentityRow | undefined) ?? null;
+  (db.prepare("SELECT id, engagement_id, created_at FROM engagement_distributions WHERE id = ?").get(distributionId) as DistributionIdentityRow | undefined) ?? null;
 
 export const distributionsForEngagement = (db: Database.Database, engagementId: string): DistributionIdentityRow[] =>
   // rowid (insertion order), not created_at - CURRENT_TIMESTAMP is
@@ -85,7 +97,7 @@ export const distributionsForEngagement = (db: Database.Database, engagementId: 
   // same second. This is a listing convenience, not the regulatory event
   // stream (that is engagement_distribution_events, ordered by its own
   // explicit event_sequence below).
-  db.prepare("SELECT id, engagement_id, engagement_revision_id, creative_revision_id, created_at FROM engagement_distributions WHERE engagement_id = ? ORDER BY rowid ASC")
+  db.prepare("SELECT id, engagement_id, created_at FROM engagement_distributions WHERE engagement_id = ? ORDER BY rowid ASC")
     .all(engagementId) as DistributionIdentityRow[];
 
 export type DistributionEventRow = { id: string; distribution_id: string; event_sequence: number; event_kind: string; actor_realm: string; evidence_ref: string | null; reason: string | null; occurred_at: string };
@@ -124,25 +136,29 @@ const appendEvent = (db: Database.Database, distributionId: string, eventKind: s
     .run(id(), distributionId, next, eventKind, realm, evidenceRef, reason);
 };
 
+type TemporalAuthorityState = "AUTHORIZED" | "INVALID_AUTHORITY" | "NO_AUTHORITY";
+
 /**
- * DECLARED is always appended first. If the channel policy at published_at
- * is not ALLOWED, or the distribution was not temporally authorized (see
- * resolveHistoricalCreativeAuthority below - published after the
- * authorized window ended, or after the authorization was revoked),
- * REVIEW_REQUIRED is appended instead of MARKED_REPORTABLE - a policy
- * violation, of either kind, is never a reason to reject the record
- * (§B-5e), only to classify it. An unauthorized-in-time publication also
- * gets an immediate REMOVAL_REQUIRED: publishing after publication_end_at
- * is itself prohibited and creates a removal obligation (§B-5d).
+ * DECLARED is always appended first. ALLOWED-channel + AUTHORIZED is the
+ * only path to MARKED_REPORTABLE; every other combination is
+ * REVIEW_REQUIRED (a channel-policy violation, an authority-interval
+ * violation, or both, are never a reason to reject the record - §B-5e). A
+ * genuine "authority existed but was invalid at that instant"
+ * (INVALID_AUTHORITY - superseded, revoked, or outside the publication
+ * window) additionally gets an immediate REMOVAL_REQUIRED, since we know
+ * exactly which creative was distributed and it must come down. NO_AUTHORITY
+ * (no creative was ever authorized by published_at at all) gets no
+ * REMOVAL_REQUIRED - there is nothing concrete on record to point removal
+ * at, only a compliance fact to review.
  */
-const classifyAndAppend = (db: Database.Database, distributionId: string, channelKey: string, publishedAt: string, temporallyAuthorized: boolean, realm: "ADMIN" | "PARTNER" | "SYSTEM"): ChannelPolicyStatus => {
+const classifyAndAppend = (db: Database.Database, distributionId: string, channelKey: string, publishedAt: string, authorityState: TemporalAuthorityState, realm: "ADMIN" | "PARTNER" | "SYSTEM"): ChannelPolicyStatus => {
   const resolution = resolveAgentReferralsChannelPolicy(db, channelKey, publishedAt);
   appendEvent(db, distributionId, "DECLARED", realm, null, null);
-  if (resolution.status === "ALLOWED" && temporallyAuthorized) {
+  if (resolution.status === "ALLOWED" && authorityState === "AUTHORIZED") {
     appendEvent(db, distributionId, "MARKED_REPORTABLE", realm, null, null);
   } else {
     appendEvent(db, distributionId, "REVIEW_REQUIRED", realm, null, null);
-    if (!temporallyAuthorized) appendEvent(db, distributionId, "REMOVAL_REQUIRED", realm, null, "published outside the authorized creative window (superseded, revoked, or after publication_end_at)");
+    if (authorityState === "INVALID_AUTHORITY") appendEvent(db, distributionId, "REMOVAL_REQUIRED", realm, null, "published outside the authorized creative window (superseded, revoked, or outside the publication window)");
   }
   return resolution.status;
 };
@@ -151,73 +167,82 @@ const gate = (db: Database.Database, operationClass: AgentReferralsOperationClas
 
 const canonicalRevisionHash = (input: DistributionReportInput): string => sha256(canonicalV2(input as unknown as Record<string, unknown>));
 
-type HistoricalCreativeAuthority = { creative_revision_id: string; engagement_revision_id: string; authorized: boolean };
+type HistoricalCreativeAuthority = { creative_revision_id: string | null; engagement_revision_id: string | null; state: TemporalAuthorityState };
 
 /**
  * The creative authorization effectively governing the engagement AT
  * publishedAt - never "whatever is current now". A distribution reported
  * days after the fact must pin the authority that was actually live when
  * the ad was really published, not one a later admin/partner action has
- * since superseded (Phase 5 review note 4). julianday() compares both the
- * SQLite-shaped effective_at/revoked_at (CURRENT_TIMESTAMP) and the
- * caller-supplied ISO published_at correctly - a raw TEXT comparison would
- * reproduce the exact 'T' vs ' ' bug this codebase has already fixed
- * elsewhere. "Most recently effective at or before publishedAt" always
- * resolves to something as long as ANY authorization existed by then, even
- * one already revoked or past its own window by that point - `authorized`
- * distinguishes that case so classifyAndAppend can flag it, while the
- * distribution identity still pins the real (engagement_revision_id,
- * creative_revision_id) pair that was actually live or most recently live.
+ * since superseded (Phase 5 review note 4). NEVER THROWS - a fact with no
+ * resolvable authority is still real evidence (§B-5e); the caller always
+ * persists it, just with a null pin and NO_AUTHORITY classification.
+ *
+ * Checks, all via julianday() (never a raw TEXT comparison - the exact
+ * 'T' vs ' ' bug this codebase has already fixed elsewhere):
+ *   - the CREATIVE authorization was not yet revoked at publishedAt
+ *   - the PROMO authorization it was minted under was not yet revoked at
+ *     publishedAt either (a creative authorization is never auto-revoked
+ *     when its promo authorization is revoked by suspension/delegation
+ *     revocation - this closes that exact gap)
+ *   - publishedAt falls within [publication_start_at, publication_end_at]
+ *     of the governing engagement revision - BOTH bounds, not only the end
+ *
+ * "Most recently started by publishedAt" always resolves to a candidate as
+ * long as ANY creative authorization existed for this engagement by then,
+ * even one already invalid at that instant - `state` distinguishes
+ * AUTHORIZED from INVALID_AUTHORITY so classifyAndAppend can flag it,
+ * while the distribution revision still pins the real pair that was
+ * actually or most-recently governing. Only when NO authorization ever
+ * started by publishedAt does the pin stay null (NO_AUTHORITY).
  */
 const resolveHistoricalCreativeAuthority = (db: Database.Database, engagementId: string, publishedAt: string): HistoricalCreativeAuthority => {
   const row = db.prepare(`
     SELECT eca.creative_revision_id AS creative_revision_id, eca.engagement_revision_id AS engagement_revision_id,
-      (eca.revoked_at IS NOT NULL AND julianday(eca.revoked_at) <= julianday(?)) AS revoked_by_then,
+      (eca.revoked_at IS NOT NULL AND julianday(eca.revoked_at) <= julianday(?)) AS creative_revoked_by_then,
+      (epa.revoked_at IS NOT NULL AND julianday(epa.revoked_at) <= julianday(?)) AS promo_revoked_by_then,
+      (julianday(?) < julianday(er.publication_start_at)) AS before_window,
       (julianday(?) > julianday(er.publication_end_at)) AS past_window
     FROM engagement_creative_authorizations eca
     JOIN engagement_revisions er ON er.id = eca.engagement_revision_id
+    JOIN engagement_promo_authorizations epa ON epa.id = eca.promo_authorization_id
     WHERE eca.engagement_id = ? AND julianday(eca.effective_at) <= julianday(?)
     ORDER BY julianday(eca.effective_at) DESC LIMIT 1
-  `).get(publishedAt, publishedAt, engagementId, publishedAt) as { creative_revision_id: string; engagement_revision_id: string; revoked_by_then: number; past_window: number } | undefined;
-  if (!row) throw new DistributionError("AGENT_REFERRALS_DISTRIBUTION_NO_AUTHORIZATION_EFFECTIVE_AT_PUBLICATION", 409, publishedAt);
-  return { creative_revision_id: row.creative_revision_id, engagement_revision_id: row.engagement_revision_id, authorized: !row.revoked_by_then && !row.past_window };
-};
+  `).get(publishedAt, publishedAt, publishedAt, publishedAt, engagementId, publishedAt) as
+    { creative_revision_id: string; engagement_revision_id: string; creative_revoked_by_then: number; promo_revoked_by_then: number; before_window: number; past_window: number } | undefined;
 
-/** Whether the PINNED (identity-fixed) engagement revision's publication window still covered publishedAt - used by corrections, which never re-resolve authority (see correctDistribution). */
-const isWithinPublicationWindow = (db: Database.Database, engagementRevisionId: string, publishedAt: string): boolean => {
-  const row = db.prepare("SELECT (julianday(?) > julianday(publication_end_at)) AS past_window FROM engagement_revisions WHERE id = ?").get(publishedAt, engagementRevisionId) as { past_window: number };
-  return !row.past_window;
+  if (!row) return { creative_revision_id: null, engagement_revision_id: null, state: "NO_AUTHORITY" };
+  const invalid = row.creative_revoked_by_then || row.promo_revoked_by_then || row.before_window || row.past_window;
+  return { creative_revision_id: row.creative_revision_id, engagement_revision_id: row.engagement_revision_id, state: invalid ? "INVALID_AUTHORITY" : "AUTHORIZED" };
 };
 
 export type ReportDistributionResult = { distribution_id: string; revision: DistributionRevisionRow };
 
 /**
- * A NEW distribution. Resolves and binds to the exact (engagement_revision_id,
- * creative_revision_id) pair that governed the engagement AT published_at -
- * never "whatever is current now" (Phase 5 review note 4). The fact is
- * ALWAYS persisted; policy and temporal authority classify it, never reject
- * it (§B-5e's "a policy violation must never erase evidence"). Refuses only
- * if the caller is a PARTNER reporting for an engagement they do not own.
+ * A NEW distribution. Resolves and pins, on this specific revision, the
+ * exact (engagement_revision_id, creative_revision_id) pair that governed
+ * the engagement AT published_at - never "whatever is current now" (Phase
+ * 5 review note 4). The fact is ALWAYS persisted; policy and temporal
+ * authority classify it, never reject it (§B-5e). Refuses only if the
+ * caller is a PARTNER reporting for an engagement they do not own.
  */
 export const reportDistribution = (db: Database.Database, actor: DistributionActor, engagementId: string, input: DistributionReportInput): ReportDistributionResult => {
   const run = db.transaction((): ReportDistributionResult => {
     gate(db, "DISTRIBUTION_FACT_REPORTING");
     assertEngagementOwnership(db, engagementId, actor);
 
-    const authority = resolveHistoricalCreativeAuthority(db, engagementId, input.published_at);
-
     const distributionId = id();
-    db.prepare(`INSERT INTO engagement_distributions(id, engagement_id, engagement_revision_id, creative_revision_id) VALUES (?, ?, ?, ?)`)
-      .run(distributionId, engagementId, authority.engagement_revision_id, authority.creative_revision_id);
+    db.prepare(`INSERT INTO engagement_distributions(id, engagement_id) VALUES (?, ?)`).run(distributionId, engagementId);
 
+    const authority = resolveHistoricalCreativeAuthority(db, engagementId, input.published_at);
     const classification = resolveAgentReferralsChannelPolicy(db, input.channel_key, input.published_at);
     const revisionId = id();
-    db.prepare(`INSERT INTO engagement_distribution_revisions(id, distribution_id, revision, supersedes_revision_id, channel_key, channel_policy_status, channel_policy_revision, resource_kind, resource_identifier, distribution_resource_url, published_at, ended_at, reported_by, correction_reason, evidence_ref, canonical_hash)
-      VALUES (?, ?, 1, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`)
-      .run(revisionId, distributionId, input.channel_key, classification.status, classification.policy_revision, input.resource_kind, input.resource_identifier,
+    db.prepare(`INSERT INTO engagement_distribution_revisions(id, distribution_id, revision, supersedes_revision_id, engagement_revision_id, creative_revision_id, channel_key, channel_policy_status, channel_policy_revision, resource_kind, resource_identifier, distribution_resource_url, published_at, ended_at, reported_by, correction_reason, evidence_ref, canonical_hash)
+      VALUES (?, ?, 1, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`)
+      .run(revisionId, distributionId, authority.engagement_revision_id, authority.creative_revision_id, input.channel_key, classification.status, classification.policy_revision, input.resource_kind, input.resource_identifier,
         input.distribution_resource_url, input.published_at, input.ended_at, actorRealm(actor), input.evidence_ref, canonicalRevisionHash(input));
 
-    classifyAndAppend(db, distributionId, input.channel_key, input.published_at, authority.authorized, actorRealm(actor));
+    classifyAndAppend(db, distributionId, input.channel_key, input.published_at, authority.state, actorRealm(actor));
     return { distribution_id: distributionId, revision: currentDistributionRevision(db, distributionId)! };
   });
   return run.immediate();
@@ -226,11 +251,11 @@ export const reportDistribution = (db: Database.Database, actor: DistributionAct
 /**
  * A CORRECTION: a new revision with provenance, never an UPDATE over a
  * filed fact. Anything already submitted to the ORD keeps its original
- * revision's provenance. Never re-resolves creative authority - the
- * distribution's identity-pinned (engagement_revision_id,
- * creative_revision_id) is immutable once set; a correction only fixes
- * the REPORTED FACTS (channel/URL/timing details), re-classified against
- * that same pinned revision's publication window.
+ * revision's provenance. ALWAYS re-resolves authority against the
+ * CORRECTED published_at (Phase 5 review note 4's fourth bullet) - a
+ * correction that moves published_at across an authority boundary (e.g.
+ * from an old creative's authorized interval into a newer one's) must
+ * re-pin, never silently retain the prior revision's now-wrong authority.
  */
 export const correctDistribution = (db: Database.Database, actor: DistributionActor, distributionId: string, input: DistributionReportInput, correctionReason: string): ReportDistributionResult => {
   const run = db.transaction((): ReportDistributionResult => {
@@ -241,15 +266,15 @@ export const correctDistribution = (db: Database.Database, actor: DistributionAc
     if (!correctionReason.trim()) throw new DistributionError("AGENT_REFERRALS_DISTRIBUTION_CORRECTION_REASON_REQUIRED", 422);
     const identity = getDistribution(db, distributionId)!;
 
+    const authority = resolveHistoricalCreativeAuthority(db, identity.engagement_id, input.published_at);
     const classification = resolveAgentReferralsChannelPolicy(db, input.channel_key, input.published_at);
     const revisionId = id();
-    db.prepare(`INSERT INTO engagement_distribution_revisions(id, distribution_id, revision, supersedes_revision_id, channel_key, channel_policy_status, channel_policy_revision, resource_kind, resource_identifier, distribution_resource_url, published_at, ended_at, reported_by, correction_reason, evidence_ref, canonical_hash)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(revisionId, distributionId, current.revision + 1, current.id, input.channel_key, classification.status, classification.policy_revision, input.resource_kind,
+    db.prepare(`INSERT INTO engagement_distribution_revisions(id, distribution_id, revision, supersedes_revision_id, engagement_revision_id, creative_revision_id, channel_key, channel_policy_status, channel_policy_revision, resource_kind, resource_identifier, distribution_resource_url, published_at, ended_at, reported_by, correction_reason, evidence_ref, canonical_hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(revisionId, distributionId, current.revision + 1, current.id, authority.engagement_revision_id, authority.creative_revision_id, input.channel_key, classification.status, classification.policy_revision, input.resource_kind,
         input.resource_identifier, input.distribution_resource_url, input.published_at, input.ended_at, actorRealm(actor), correctionReason, input.evidence_ref, canonicalRevisionHash(input));
 
-    const stillWithinWindow = isWithinPublicationWindow(db, identity.engagement_revision_id, input.published_at);
-    classifyAndAppend(db, distributionId, input.channel_key, input.published_at, stillWithinWindow, actorRealm(actor));
+    classifyAndAppend(db, distributionId, input.channel_key, input.published_at, authority.state, actorRealm(actor));
     return { distribution_id: distributionId, revision: currentDistributionRevision(db, distributionId)! };
   });
   return run.immediate();
