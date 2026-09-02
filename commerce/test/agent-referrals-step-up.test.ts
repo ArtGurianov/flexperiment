@@ -55,7 +55,8 @@ describe("step-up grant", () => {
     const db = fresh();
     const partner = seedPartnerWithSession(db);
     const grant = mintStepUpGrant(db, partner, "FRAMEWORK_ACCEPTANCE", RESOURCE);
-    db.prepare("UPDATE step_up_grants SET expires_at = datetime('now', '-1 minute') WHERE id = ?").run(grant.grant_id);
+    // The exact ISO 8601 format production actually writes, not SQLite's own datetime('now') shape.
+    db.prepare("UPDATE step_up_grants SET expires_at = ? WHERE id = ?").run(new Date(Date.now() - 60_000).toISOString(), grant.grant_id);
     expect(() => consumeInOwnTransaction(db, partner, grant.grant_id, "FRAMEWORK_ACCEPTANCE", RESOURCE)).toThrow(StepUpError);
   });
 

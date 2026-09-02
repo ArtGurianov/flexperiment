@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -60,6 +60,32 @@ describe("partner provisioning", () => {
       expect(result.partner_identity_id).toBeTruthy();
       expect(result.raw_invite_token).toBeTruthy();
     });
+
+    /**
+     * The race this closes (an observed ACTIVE that a concurrent SUSPENDED
+     * commits before the observer's write actually lands) cannot be built
+     * as an executing test with better-sqlite3's synchronous API: there is
+     * no yield point between "read state" and "acquire the write lock" for
+     * another synchronous call on a different connection to land in -
+     * whatever a second connection does, it either fully completes before
+     * or fully completes after this function's one synchronous call, never
+     * mid-call. That is exactly why the fix has to be structural (the read
+     * happens after BEGIN IMMEDIATE, inside the same transaction as the
+     * writes it gates) rather than behavioral, and why the proof here is a
+     * source-position check, not a timing simulation - the same reasoning
+     * PR1's db-migrate.test.ts documents for its own analogous re-check.
+     */
+    it("structurally: the feature-state check is positioned inside the transaction, not before it", () => {
+      const source = readFileSync(join(process.cwd(), "commerce", "src", "agent-referrals-partner-identity.ts"), "utf8");
+      const fnStart = source.indexOf("export const provisionPartnerOwner");
+      const transactionStart = source.indexOf("db.transaction(", fnStart);
+      const assertCall = source.indexOf("assertAgentReferralsOperationPermitted(", fnStart);
+      expect(transactionStart).toBeGreaterThan(-1);
+      expect(assertCall).toBeGreaterThan(-1);
+      // The assertion must appear strictly AFTER db.transaction( opens the
+      // callback, i.e. it runs once the transaction is already active.
+      expect(assertCall).toBeGreaterThan(transactionStart);
+    });
   });
 
   describe("exactly one OWNER per partner", () => {
@@ -106,7 +132,8 @@ describe("partner provisioning", () => {
       const agentId = seedAgent(db);
       activated(db);
       const { raw_invite_token, partner_identity_id } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
-      db.prepare("UPDATE partner_invite_capabilities SET expires_at = datetime('now', '-1 minute') WHERE partner_identity_id = ?").run(partner_identity_id);
+      // The exact ISO 8601 format production actually writes, not SQLite's own datetime('now') shape.
+      db.prepare("UPDATE partner_invite_capabilities SET expires_at = ? WHERE partner_identity_id = ?").run(new Date(Date.now() - 60_000).toISOString(), partner_identity_id);
       expect(() => consumePartnerInvite(db, raw_invite_token)).toThrow(/AGENT_REFERRALS_INVITE_EXPIRED/);
     });
 

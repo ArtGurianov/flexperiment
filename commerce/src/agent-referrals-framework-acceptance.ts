@@ -1,6 +1,8 @@
 import type Database from "better-sqlite3";
 import { id } from "./crypto";
 import { getPartnerIdentity, recordPartnerIdentityEvent, transitionOnboardingStateInTransaction } from "./agent-referrals-onboarding";
+import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
+import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
 import { consumeStepUpGrantInTransaction } from "./agent-referrals-step-up";
 import type { PartnerPrincipal } from "./agent-referrals-partner-identity";
 
@@ -11,13 +13,22 @@ import type { PartnerPrincipal } from "./agent-referrals-partner-identity";
  * either all commit together or none does. No separate delegation-
  * acceptance screen/command exists anywhere in this module.
  *
- * Both exact template authorities are pinned by the caller - this function
- * never reads "current" framework/delegation revisions itself. That is
- * exactly what makes the UNIQUE(partner_identity_id,
- * framework_agreement_revision_id, delegation_template_revision_id)
- * constraint on framework_acceptances a correct idempotency key: identical
- * parameters on a retry hit the same row, and a genuinely different
- * revision is a different key entirely, never conflated with a replay.
+ * The caller-supplied pair must match framework_issuances exactly - the
+ * immutable pair an admin actually issued to this partner
+ * (issueFrameworkToPartner in agent-referrals-partner-identity.ts). Because
+ * PR4 supports exactly one issuance per partner ever, this is also what
+ * makes UNIQUE(partner_identity_id, framework_agreement_revision_id,
+ * delegation_template_revision_id) on framework_acceptances a correct
+ * idempotency key without a separate "changed revision" branch: there is
+ * only ever one legitimately-issued pair, so an identical retry hits the
+ * same row, and any other pair is caught by the issuance check before ever
+ * reaching that lookup.
+ *
+ * Global SUSPENDED/DORMANT blocks new framework acceptance (plan section
+ * B-8), checked inside this same transaction, after the idempotent-replay
+ * short-circuit - a replay is re-confirming evidence that already existed
+ * before suspension, not new authority, so it must not spuriously fail a
+ * legitimate retry racing a suspension.
  */
 
 export class FrameworkAcceptanceError extends Error {
@@ -43,8 +54,16 @@ export const acceptFrameworkAndDelegation = (
     const identity = getPartnerIdentity(db, partner.partner_identity_id);
     if (!identity) throw new FrameworkAcceptanceError("PARTNER_IDENTITY_NOT_FOUND", 404);
 
-    // Exact-parameter replay: same partner, same exact pair, already
-    // accepted - idempotent no-op, no new writes of any kind.
+    const issuance = db.prepare(`SELECT framework_agreement_revision_id, delegation_template_revision_id
+      FROM framework_issuances WHERE partner_identity_id = ?`).get(partner.partner_identity_id) as
+      { framework_agreement_revision_id: string; delegation_template_revision_id: string } | undefined;
+    if (!issuance || issuance.framework_agreement_revision_id !== frameworkAgreementRevisionId || issuance.delegation_template_revision_id !== delegationTemplateRevisionId) {
+      throw new FrameworkAcceptanceError("AGENT_REFERRALS_FRAMEWORK_ACCEPTANCE_MISMATCHED_ISSUANCE", 409);
+    }
+
+    // Exact-parameter replay: same partner, same exact (issued) pair,
+    // already accepted - idempotent no-op, no new writes, no suspension
+    // gate (this is not new authority).
     const existingAcceptance = db.prepare(`SELECT id FROM framework_acceptances
       WHERE partner_identity_id = ? AND framework_agreement_revision_id = ? AND delegation_template_revision_id = ?`)
       .get(partner.partner_identity_id, frameworkAgreementRevisionId, delegationTemplateRevisionId) as { id: string } | undefined;
@@ -53,12 +72,8 @@ export const acceptFrameworkAndDelegation = (
       return { framework_acceptance_id: existingAcceptance.id, ord_reporting_delegation_id: delegation.id, replayed: true };
     }
 
-    // A different revision while already FRAMEWORK_ACCEPTED is NOT an
-    // idempotent replay - refused outright, never silently treated as a
-    // fresh acceptance (onboarding only accepts once).
-    if (identity.onboarding_state === "FRAMEWORK_ACCEPTED" || identity.onboarding_state === "PARTNER_ACTIVE") {
-      throw new FrameworkAcceptanceError("AGENT_REFERRALS_FRAMEWORK_ACCEPTANCE_REVISION_CHANGED", 409);
-    }
+    assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "FRAMEWORK_ACCEPTANCE");
+
     if (identity.onboarding_state !== "FRAMEWORK_ISSUED") {
       throw new FrameworkAcceptanceError("AGENT_REFERRALS_FRAMEWORK_NOT_ISSUED", 409, identity.onboarding_state);
     }

@@ -55,9 +55,13 @@ export const consumeStepUpGrantInTransaction = (
   action: StepUpAction,
   resource: Record<string, unknown>,
 ): void => {
+  // expires_at is an ISO 8601 string ("...T...Z"); comparing it against
+  // CURRENT_TIMESTAMP's "... ..." shape as plain TEXT sorts 'T' after ' '
+  // and would read an already-expired grant as still valid until the UTC
+  // date rolls over. julianday() parses both onto the same numeric axis.
   const changed = db.prepare(`UPDATE step_up_grants SET consumed_at = CURRENT_TIMESTAMP
     WHERE id = ? AND partner_identity_id = ? AND partner_session_id = ? AND action = ? AND resource_hash = ?
-      AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP`)
+      AND consumed_at IS NULL AND julianday(expires_at) > julianday('now')`)
     .run(grantId, partner.partner_identity_id, partner.partner_session_id, action, resourceHashOf(resource));
   if (changed.changes !== 1) throw new StepUpError("AGENT_REFERRALS_STEP_UP_GRANT_INVALID", 403, grantId);
 };

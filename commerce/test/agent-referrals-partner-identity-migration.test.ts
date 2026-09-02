@@ -95,6 +95,7 @@ describe("0044 partner identity migration", () => {
     const introduced = tableNames(db).filter((name) => !before.has(name) && name !== "schema_migrations");
     expect(introduced.sort()).toEqual([
       "framework_acceptances",
+      "framework_issuances",
       "ord_reporting_delegations",
       "partner_identities",
       "partner_identity_destruction_events",
@@ -121,23 +122,42 @@ describe("0044 partner identity migration", () => {
     expect(partnerIdentityColumns.some((c) => /password|role/i.test(c))).toBe(false);
   });
 
-  it("seeds a retention policy, revision 1", () => {
+  it("seeds NO retention policy - the duration is a real externally-approved input this PR does not invent", () => {
     const db = at0043();
     migrate(db);
-    expect(db.prepare("SELECT revision, retention_period_days FROM partner_identity_retention_policies").all()).toEqual([{ revision: 1, retention_period_days: 1095 }]);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM partner_identity_retention_policies").get()).toEqual({ n: 0 });
   });
 
-  describe("PR3's required-schema-object list now also proves PR4's evidence guards", () => {
-    it("AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS includes all twelve new PR4 immutability guards", () => {
-      const pr4Guards = [
+  describe("PR3's required-schema-object list now also proves PR4's authority/evidence objects", () => {
+    it("AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS includes every PR4 base table, structural index and immutability guard", () => {
+      // Every table PR4 ships - both the six immutable evidence tables (with
+      // UPDATE+DELETE guards) and the mutable authority tables (invite
+      // capabilities, OTP challenges, sessions, step-up grants, legal
+      // holds) - plus the partial-unique indexes enforcing "at most one
+      // live X per identity". A dropped base table is exactly as unsound as
+      // a dropped guard, per P1.2.
+      const pr4Objects = [
+        "partner_identities",
         "partner_identity_events_immutable_guard", "partner_identity_events_delete_guard",
-        "framework_acceptances_immutable_guard", "framework_acceptances_delete_guard",
-        "ord_reporting_delegations_immutable_guard", "ord_reporting_delegations_delete_guard",
-        "payout_profile_revisions_immutable_guard", "payout_profile_revisions_delete_guard",
-        "partner_identity_retention_policies_immutable_guard", "partner_identity_retention_policies_delete_guard",
-        "partner_identity_destruction_events_immutable_guard", "partner_identity_destruction_events_delete_guard",
+        "partner_invite_capabilities", "partner_invite_capabilities_active_unique",
+        "partner_otp_challenges", "partner_otp_challenges_active_unique",
+        "partner_sessions",
+        "step_up_grants",
+        "framework_issuances", "framework_issuances_immutable_guard", "framework_issuances_delete_guard",
+        "framework_acceptances", "framework_acceptances_immutable_guard", "framework_acceptances_delete_guard",
+        "ord_reporting_delegations", "ord_reporting_delegations_immutable_guard", "ord_reporting_delegations_delete_guard",
+        "payout_profile_revisions", "payout_profile_revisions_immutable_guard", "payout_profile_revisions_delete_guard",
+        "partner_identity_retention_policies", "partner_identity_retention_policies_immutable_guard", "partner_identity_retention_policies_delete_guard",
+        "partner_identity_legal_holds", "partner_identity_legal_holds_active_unique",
+        "partner_identity_legal_holds_placement_immutable_guard", "partner_identity_legal_holds_release_one_way_guard", "partner_identity_legal_holds_delete_guard",
+        "partner_identity_destruction_events", "partner_identity_destruction_events_immutable_guard", "partner_identity_destruction_events_delete_guard",
       ];
-      for (const guard of pr4Guards) expect(AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS).toContain(guard);
+      for (const object of pr4Objects) expect(AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS, object).toContain(object);
+      // Exhaustive in both directions: nothing PR4 added is missing from
+      // this hand-written list either, so this test itself cannot silently
+      // drift from the real required-object list.
+      const pr3Objects = 16;
+      expect(AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS.length).toBe(pr3Objects + pr4Objects.length);
     });
 
     it("passes on a DB migrated through 0044", () => {
@@ -156,12 +176,25 @@ describe("0044 partner identity migration", () => {
       "partner_identity_events_immutable_guard", "framework_acceptances_delete_guard",
       "ord_reporting_delegations_immutable_guard", "payout_profile_revisions_delete_guard",
       "partner_identity_retention_policies_immutable_guard", "partner_identity_destruction_events_delete_guard",
+      "framework_issuances_immutable_guard", "framework_issuances_delete_guard",
+      "partner_identity_legal_holds_placement_immutable_guard", "partner_identity_legal_holds_release_one_way_guard",
     ])("dropping %s (proxy table remains) still refuses", (guardName) => {
       const db = at0043();
       migrate(db);
       db.exec(`DROP TRIGGER ${guardName}`);
       expect(() => assertAgentReferralsFoundationSchemaPresent(db)).toThrow(new RegExp(guardName));
     });
+
+    it.each(["partner_sessions", "step_up_grants", "partner_invite_capabilities_active_unique", "partner_otp_challenges_active_unique", "partner_identity_legal_holds_active_unique"])(
+      "dropping the base object %s (a mutable-authority table or its structural index, not an evidence guard) also refuses",
+      (objectName) => {
+        const db = at0043();
+        migrate(db);
+        const kind = (db.prepare("SELECT type FROM sqlite_master WHERE name = ?").get(objectName) as { type: string }).type;
+        db.exec(`DROP ${kind === "index" ? "INDEX" : "TABLE"} ${objectName}`);
+        expect(() => assertAgentReferralsFoundationSchemaPresent(db)).toThrow(new RegExp(objectName));
+      },
+    );
   });
 
   describe("structural constraints, proven against actual SQLite schema", () => {

@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
-import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { activateAgentReferrals, suspendAgentReferrals } from "../src/agent-referrals-feature-state";
 import { FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES, mintFrameworkAgreementRevision, mintDelegationTemplateRevision } from "../src/agent-referrals-framework-delegation";
 import { provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile, issueFrameworkToPartner, type AdminPrincipal, type PartnerPrincipal } from "../src/agent-referrals-partner-identity";
 import { getPartnerIdentity } from "../src/agent-referrals-onboarding";
@@ -38,14 +38,15 @@ const readyToAccept = (db: Database.Database) => {
   const { partner_identity_id } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
   submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD");
   verifyPartnerLegalProfile(db, admin, partner_identity_id, "verified");
-  issueFrameworkToPartner(db, admin, partner_identity_id, "issued");
+
+  const fw = mintFrameworkAgreementRevision(db, framework());
+  const dt = mintDelegationTemplateRevision(db, delegation());
+  issueFrameworkToPartner(db, admin, partner_identity_id, fw.id, dt.id, "issued");
 
   const sessionId = randomUUID();
   db.prepare(`INSERT INTO partner_sessions(id, partner_identity_id, token_hash, expires_at) VALUES (?, ?, ?, datetime('now', '+1 hour'))`).run(sessionId, partner_identity_id, randomUUID());
   const partner: PartnerPrincipal = { realm: "PARTNER", partner_identity_id, partner_session_id: sessionId };
 
-  const fw = mintFrameworkAgreementRevision(db, framework());
-  const dt = mintDelegationTemplateRevision(db, delegation());
   return { partner, fw, dt };
 };
 
@@ -106,7 +107,7 @@ describe("framework acceptance + effective ORD delegation: one atomic idempotent
       expect(db.prepare("SELECT consumed_at FROM step_up_grants WHERE id = ?").get(grant2)).toEqual({ consumed_at: null });
     });
 
-    it("a changed revision is NOT an idempotent replay - it is refused outright", () => {
+    it("accepting a revision pair that was never issued is refused outright, even one that is otherwise valid content (P0.4: admin issued F1/D1, partner cannot substitute F2/D1)", () => {
       const db = fresh();
       const { partner, fw, dt } = readyToAccept(db);
       const grant1 = grantFor(db, partner, fw.id, dt.id);
@@ -114,13 +115,14 @@ describe("framework acceptance + effective ORD delegation: one atomic idempotent
 
       const fw2 = mintFrameworkAgreementRevision(db, framework({ PARTNER_LEVY_OBLIGATION: "revised" }));
       const grant2 = grantFor(db, partner, fw2.id, dt.id);
-      expect(() => acceptFrameworkAndDelegation(db, partner, grant2, fw2.id, dt.id)).toThrow(/AGENT_REFERRALS_FRAMEWORK_ACCEPTANCE_REVISION_CHANGED/);
+      expect(() => acceptFrameworkAndDelegation(db, partner, grant2, fw2.id, dt.id)).toThrow(/AGENT_REFERRALS_FRAMEWORK_ACCEPTANCE_MISMATCHED_ISSUANCE/);
       expect(db.prepare("SELECT COUNT(*) AS n FROM framework_acceptances").get()).toEqual({ n: 1 });
+      expect(db.prepare("SELECT consumed_at FROM step_up_grants WHERE id = ?").get(grant2)).toEqual({ consumed_at: null });
     });
   });
 
   describe("state prerequisites", () => {
-    it("refuses when onboarding is not yet FRAMEWORK_ISSUED", () => {
+    it("refuses when nothing has ever been issued to this partner (no framework_issuances row at all)", () => {
       const db = fresh();
       activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
       const agentId = randomUUID();
@@ -133,7 +135,45 @@ describe("framework acceptance + effective ORD delegation: one atomic idempotent
       const fw = mintFrameworkAgreementRevision(db, framework());
       const dt = mintDelegationTemplateRevision(db, delegation());
       const grant = grantFor(db, partner, fw.id, dt.id);
-      expect(() => acceptFrameworkAndDelegation(db, partner, grant, fw.id, dt.id)).toThrow(/AGENT_REFERRALS_FRAMEWORK_NOT_ISSUED/);
+      expect(() => acceptFrameworkAndDelegation(db, partner, grant, fw.id, dt.id)).toThrow(/AGENT_REFERRALS_FRAMEWORK_ACCEPTANCE_MISMATCHED_ISSUANCE/);
+    });
+  });
+
+  describe("global SUSPENDED blocks framework acceptance (plan section B-8: framework acceptance is NEW_AUTHORITY)", () => {
+    it("succeeds under ACTIVE", () => {
+      const db = fresh();
+      const { partner, fw, dt } = readyToAccept(db);
+      const grant = grantFor(db, partner, fw.id, dt.id);
+      expect(() => acceptFrameworkAndDelegation(db, partner, grant, fw.id, dt.id)).not.toThrow();
+    });
+
+    it("refuses under SUSPENDED, with zero partial effect and the grant left unconsumed", () => {
+      const db = fresh();
+      const { partner, fw, dt } = readyToAccept(db);
+      const grant = grantFor(db, partner, fw.id, dt.id);
+      suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "emergency suspend" });
+
+      expect(() => acceptFrameworkAndDelegation(db, partner, grant, fw.id, dt.id)).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
+
+      expect(db.prepare("SELECT consumed_at FROM step_up_grants WHERE id = ?").get(grant)).toEqual({ consumed_at: null });
+      expect(db.prepare("SELECT COUNT(*) AS n FROM framework_acceptances").get()).toEqual({ n: 0 });
+      expect(db.prepare("SELECT COUNT(*) AS n FROM ord_reporting_delegations").get()).toEqual({ n: 0 });
+      expect(db.prepare("SELECT COUNT(*) AS n FROM partner_identity_events WHERE event_kind = 'FRAMEWORK_ACCEPTED'").get()).toEqual({ n: 0 });
+      expect(db.prepare("SELECT COUNT(*) AS n FROM email_outbox WHERE type = 'AGENT_REFERRALS_FRAMEWORK_CONFIRMATION'").get()).toEqual({ n: 0 });
+      expect(getPartnerIdentity(db, partner.partner_identity_id)!.onboarding_state).toBe("FRAMEWORK_ISSUED");
+    });
+
+    it("an idempotent replay of an already-accepted pair still succeeds under SUSPENDED - re-confirming existing evidence is not new authority", () => {
+      const db = fresh();
+      const { partner, fw, dt } = readyToAccept(db);
+      const grant1 = grantFor(db, partner, fw.id, dt.id);
+      const first = acceptFrameworkAndDelegation(db, partner, grant1, fw.id, dt.id);
+
+      suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "emergency suspend" });
+
+      const grant2 = grantFor(db, partner, fw.id, dt.id);
+      const replay = acceptFrameworkAndDelegation(db, partner, grant2, fw.id, dt.id);
+      expect(replay).toEqual({ ...first, replayed: true });
     });
   });
 

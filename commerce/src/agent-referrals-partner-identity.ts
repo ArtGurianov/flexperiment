@@ -34,9 +34,16 @@ const INVITE_TTL_MS = 7 * 24 * 60 * 60_000;
 export type ProvisionPartnerResult = { partner_identity_id: string; invite_id: string; raw_invite_token: string };
 
 export const provisionPartnerOwner = (db: Database.Database, admin: AdminPrincipal, agentId: string, email: string, reason: string): ProvisionPartnerResult => {
-  assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "NEW_PARTNER_PROVISIONING");
-
   const run = db.transaction((): ProvisionPartnerResult => {
+    // Read and asserted INSIDE the transaction, not before it: a read
+    // taken before BEGIN IMMEDIATE observes state that can change before
+    // this connection actually acquires the write lock. A contender that
+    // observed ACTIVE just before a SUSPENDED transition commits must
+    // re-read SUSPENDED once it is actually holding the lock, exactly the
+    // race the migration runner's own "re-check inside the transaction"
+    // pattern (commerce/src/db.ts) exists to close.
+    assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "NEW_PARTNER_PROVISIONING");
+
     const partnerIdentityId = id();
     db.prepare(`INSERT INTO partner_identities(id, agent_id, email, email_hash, created_by_admin_id) VALUES (?, ?, ?, ?, ?)`)
       .run(partnerIdentityId, agentId, email.trim().toLowerCase(), emailHash(email), admin.admin_id);
@@ -185,13 +192,34 @@ export const verifyPartnerLegalProfile = (db: Database.Database, admin: AdminPri
   return run.immediate();
 };
 
-/** Admin-only: no additional evidence beyond the transition itself - the authoritative pin of what was accepted lives in framework_acceptances. */
-export const issueFrameworkToPartner = (db: Database.Database, admin: AdminPrincipal, partnerIdentityId: string, reason: string): PartnerIdentityRow => {
+/**
+ * Admin-only: pins the EXACT pair of template revisions being issued into
+ * immutable framework_issuances, atomically with the onboarding transition.
+ * This pinned pair is the authority acceptFrameworkAndDelegation() checks
+ * against - without it, a partner could request step-up for and accept a
+ * different pair than the one an admin actually issued, since the
+ * onboarding state alone only gates WHEN acceptance may happen, never
+ * WHICH revisions it may be for.
+ */
+export const issueFrameworkToPartner = (
+  db: Database.Database,
+  admin: AdminPrincipal,
+  partnerIdentityId: string,
+  frameworkAgreementRevisionId: string,
+  delegationTemplateRevisionId: string,
+  reason: string,
+): PartnerIdentityRow => {
   const run = db.transaction((): PartnerIdentityRow => {
     const identity = getPartnerIdentity(db, partnerIdentityId);
     if (!identity) throw new PartnerIdentityError("PARTNER_IDENTITY_NOT_FOUND", 404);
+    const issuanceId = id();
+    db.prepare(`INSERT INTO framework_issuances(id, partner_identity_id, framework_agreement_revision_id, delegation_template_revision_id, issued_by_admin_id)
+      VALUES (?, ?, ?, ?, ?)`)
+      .run(issuanceId, partnerIdentityId, frameworkAgreementRevisionId, delegationTemplateRevisionId, admin.admin_id);
     transitionOnboardingStateInTransaction(db, partnerIdentityId, "FRAMEWORK_ISSUED", identity.onboarding_revision, "ADMIN", reason);
-    recordPartnerIdentityEvent(db, partnerIdentityId, "FRAMEWORK_ISSUED_TO_PARTNER", "ADMIN", { reason });
+    recordPartnerIdentityEvent(db, partnerIdentityId, "FRAMEWORK_ISSUED_TO_PARTNER", "ADMIN", {
+      issuance_id: issuanceId, framework_agreement_revision_id: frameworkAgreementRevisionId, delegation_template_revision_id: delegationTemplateRevisionId, reason,
+    });
     return getPartnerIdentity(db, partnerIdentityId)!;
   });
   return run.immediate();

@@ -42,24 +42,48 @@ export const AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS = [
   "ad_channel_policy_channel_revision_unique",
   "ad_channel_policy_immutable_guard",
   "ad_channel_policy_delete_guard",
-  // PR4 (0044): immutable-evidence guards. Each protects an evidence table
-  // this foundation's soundness depends on; a bare table with its guard
-  // dropped would silently accept a rewrite of filed identity/financial
-  // evidence, exactly the outbox-activation.ts counterexample this list
-  // exists to rule out. The mutable-state tables PR4 also ships (invite
-  // capabilities, OTP challenges, sessions, step-up grants, legal holds -
-  // all legitimately UPDATEd in the ordinary course of business) are
-  // deliberately NOT here; only append-only evidence belongs in this list.
+  // PR4 (0044). Every table PR4 ships is named here - both the immutable
+  // evidence tables (with their UPDATE+DELETE guards) and the mutable
+  // authority tables (invite capabilities, OTP challenges, sessions,
+  // step-up grants, legal holds), because a base TABLE dropped entirely
+  // (e.g. DROP TABLE partner_sessions) is exactly as unsound as a guard
+  // dropped off an evidence table it once protected - and until this list
+  // named the base tables too, only the six evidence tables' guards were
+  // checked, so a dropped partner_sessions or step_up_grants would have
+  // passed this assertion silently. The partial-unique indexes enforcing
+  // "at most one live X per identity" are named alongside their tables for
+  // the same reason a dropped guard trigger is unsound: the structural
+  // invariant they carry is not implied by the bare table existing.
+  "partner_identities",
   "partner_identity_events_immutable_guard",
   "partner_identity_events_delete_guard",
+  "partner_invite_capabilities",
+  "partner_invite_capabilities_active_unique",
+  "partner_otp_challenges",
+  "partner_otp_challenges_active_unique",
+  "partner_sessions",
+  "step_up_grants",
+  "framework_issuances",
+  "framework_issuances_immutable_guard",
+  "framework_issuances_delete_guard",
+  "framework_acceptances",
   "framework_acceptances_immutable_guard",
   "framework_acceptances_delete_guard",
+  "ord_reporting_delegations",
   "ord_reporting_delegations_immutable_guard",
   "ord_reporting_delegations_delete_guard",
+  "payout_profile_revisions",
   "payout_profile_revisions_immutable_guard",
   "payout_profile_revisions_delete_guard",
+  "partner_identity_retention_policies",
   "partner_identity_retention_policies_immutable_guard",
   "partner_identity_retention_policies_delete_guard",
+  "partner_identity_legal_holds",
+  "partner_identity_legal_holds_active_unique",
+  "partner_identity_legal_holds_placement_immutable_guard",
+  "partner_identity_legal_holds_release_one_way_guard",
+  "partner_identity_legal_holds_delete_guard",
+  "partner_identity_destruction_events",
   "partner_identity_destruction_events_immutable_guard",
   "partner_identity_destruction_events_delete_guard",
 ] as const;

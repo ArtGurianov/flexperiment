@@ -7,8 +7,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
 import { provisionPartnerOwner, type AdminPrincipal } from "../src/agent-referrals-partner-identity";
-import { issueAndDispatchOtpChallenge, loginWithOtp, type OtpSender } from "../src/agent-referrals-otp";
+import { issueAndDispatchOtpChallenge, loginWithOtp, OtpError, type OtpSender } from "../src/agent-referrals-otp";
 import { resolvePartnerSession, revokePartnerSession } from "../src/agent-referrals-partner-session";
+import { destroyPartnerIdentity, mintRetentionPolicyRevision } from "../src/agent-referrals-identity-retention";
+
+// Explicit test pepper - there is deliberately no source-level fallback.
+process.env.COMMERCE_AGENT_REFERRALS_OTP_PEPPER ??= "test-otp-pepper-for-agent-referrals-partner-session-test";
 
 const open: Database.Database[] = [];
 afterEach(() => { while (open.length) open.pop()!.close(); });
@@ -55,7 +59,8 @@ describe("partner session", () => {
     const db = fresh();
     activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
     const login = await loggedInPartner(db);
-    db.prepare("UPDATE partner_sessions SET expires_at = datetime('now', '-1 minute') WHERE id = ?").run(login.partner_session_id);
+    // The exact ISO 8601 format production actually writes, not SQLite's own datetime('now') shape.
+    db.prepare("UPDATE partner_sessions SET expires_at = ? WHERE id = ?").run(new Date(Date.now() - 60_000).toISOString(), login.partner_session_id);
     expect(resolvePartnerSession(db, login.raw_session_token)).toBeUndefined();
   });
 
@@ -102,5 +107,34 @@ describe("partner session", () => {
     expect(columns).not.toContain("token");
     const row = db.prepare("SELECT * FROM partner_sessions WHERE id = ?").get(login.partner_session_id) as Record<string, unknown>;
     for (const value of Object.values(row)) if (typeof value === "string") expect(value).not.toBe(login.raw_session_token);
+  });
+
+  describe("destroyed identity loses live authority immediately (P1.3)", () => {
+    it("an existing, unexpired, unrevoked session cannot be resolved once the identity is destroyed", async () => {
+      const db = fresh();
+      activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
+      const login = await loggedInPartner(db);
+      expect(resolvePartnerSession(db, login.raw_session_token)).toBeDefined();
+
+      mintRetentionPolicyRevision(db, admin, 365, "test policy");
+      destroyPartnerIdentity(db, admin, login.partner_identity_id, "destroyed for test");
+
+      expect(resolvePartnerSession(db, login.raw_session_token)).toBeUndefined();
+    });
+
+    it("a destroyed identity cannot receive a new OTP challenge either", async () => {
+      const db = fresh();
+      activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
+      const login = await loggedInPartner(db);
+      mintRetentionPolicyRevision(db, admin, 365, "test policy");
+      destroyPartnerIdentity(db, admin, login.partner_identity_id, "destroyed for test");
+
+      // The identity row still exists (destruction scrubs PII, never
+      // hard-deletes), so a naive mint would still "succeed" mechanically -
+      // this proves it is refused instead, closing the path a destroyed
+      // partner could otherwise use to re-authenticate.
+      const sender = capturingSender();
+      await expect(issueAndDispatchOtpChallenge(db, login.partner_identity_id, sender)).rejects.toThrow(OtpError);
+    });
   });
 });

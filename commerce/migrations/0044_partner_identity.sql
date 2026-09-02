@@ -133,13 +133,38 @@ CREATE TABLE step_up_grants (
 );
 CREATE INDEX step_up_grants_partner_idx ON step_up_grants(partner_identity_id);
 
+-- 6b. Framework issuance: the exact pair of template revisions an admin
+-- issued to this partner for review, pinned immutably at FRAMEWORK_ISSUED
+-- time. Acceptance below must match this exact pair - without it, a
+-- partner could request step-up for and accept a DIFFERENT pair than the
+-- one an admin actually intended to issue (e.g. an older, no-longer-
+-- current revision), which the onboarding-state check alone cannot catch
+-- since it only gates the STATE transition, never WHICH revisions. One
+-- issuance per partner - PR4 does not support re-issuing a different pair
+-- once issued.
+CREATE TABLE framework_issuances (
+  id TEXT PRIMARY KEY,
+  partner_identity_id TEXT NOT NULL UNIQUE REFERENCES partner_identities(id),
+  framework_agreement_revision_id TEXT NOT NULL REFERENCES framework_agreement_revisions(id),
+  delegation_template_revision_id TEXT NOT NULL REFERENCES delegation_template_revisions(id),
+  issued_by_admin_id TEXT NOT NULL,
+  issued_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TRIGGER framework_issuances_immutable_guard
+BEFORE UPDATE ON framework_issuances
+BEGIN SELECT RAISE(ABORT, 'FRAMEWORK_ISSUANCE_IMMUTABLE'); END;
+CREATE TRIGGER framework_issuances_delete_guard
+BEFORE DELETE ON framework_issuances
+BEGIN SELECT RAISE(ABORT, 'FRAMEWORK_ISSUANCE_IMMUTABLE'); END;
+
 -- 7. Framework acceptance: pins BOTH exact template authorities the partner
--- actually accepted, never "current" resolved later. UNIQUE on the full
--- (partner, framework revision, delegation revision) triple is what makes an
--- exact-parameter replay idempotently detectable; a different revision on a
--- second call is a distinct triple, never silently treated as the same
--- acceptance. step_up_grant_id UNIQUE ties this evidence to the exact grant
--- that authorized it, one grant, one acceptance.
+-- actually accepted, never "current" resolved later, and must match the
+-- issuance above exactly. UNIQUE on the full (partner, framework revision,
+-- delegation revision) triple is what makes an exact-parameter replay
+-- idempotently detectable; a different revision on a second call is a
+-- distinct triple, never silently treated as the same acceptance.
+-- step_up_grant_id UNIQUE ties this evidence to the exact grant that
+-- authorized it, one grant, one acceptance.
 CREATE TABLE framework_acceptances (
   id TEXT PRIMARY KEY,
   partner_identity_id TEXT NOT NULL REFERENCES partner_identities(id),
@@ -232,11 +257,21 @@ BEGIN SELECT RAISE(ABORT, 'PARTNER_IDENTITY_RETENTION_POLICY_IMMUTABLE'); END;
 CREATE TRIGGER partner_identity_retention_policies_delete_guard
 BEFORE DELETE ON partner_identity_retention_policies
 BEGIN SELECT RAISE(ABORT, 'PARTNER_IDENTITY_RETENTION_POLICY_IMMUTABLE'); END;
--- Seeded static configuration (Phase 9 readiness distinguishes it from a
--- business record), matching PR3's channel-policy seeding precedent.
-INSERT INTO partner_identity_retention_policies(id, revision, retention_period_days, reason)
-  VALUES (lower(hex(randomblob(16))), 1, 1095, 'Seeded at foundation: 3-year default identity retention floor (PR4).');
+-- Deliberately UNSEEDED: the plan specifies no retention period (no "3
+-- years", no specific floor at all) - only that policy/evidence exist
+-- (§B-14). Inventing a specific number here that destroyPartnerIdentity()
+-- then does not enforce would be worse than shipping no policy: a real
+-- retention period is an externally-approved legal input, not a value this
+-- PR is positioned to decide. Until an admin establishes one explicitly
+-- via mintRetentionPolicyRevision(), destruction fails closed
+-- (AGENT_REFERRALS_NO_RETENTION_POLICY) - see agent-referrals-identity-
+-- retention.ts.
 
+-- Placement facts (partner_identity_id, reason, placed_by_admin_id,
+-- placed_at) are immutable once written; only release_at/released_by_
+-- admin_id/released_reason may ever change, and only the one-way NULL ->
+-- released transition - never DELETE, and never a rewrite of an
+-- already-released hold's release metadata either.
 CREATE TABLE partner_identity_legal_holds (
   id TEXT PRIMARY KEY,
   partner_identity_id TEXT NOT NULL REFERENCES partner_identities(id),
@@ -250,6 +285,20 @@ CREATE TABLE partner_identity_legal_holds (
 CREATE INDEX partner_identity_legal_holds_partner_idx ON partner_identity_legal_holds(partner_identity_id);
 CREATE UNIQUE INDEX partner_identity_legal_holds_active_unique
   ON partner_identity_legal_holds(partner_identity_id) WHERE released_at IS NULL;
+CREATE TRIGGER partner_identity_legal_holds_placement_immutable_guard
+BEFORE UPDATE ON partner_identity_legal_holds
+WHEN NEW.partner_identity_id IS NOT OLD.partner_identity_id
+  OR NEW.reason IS NOT OLD.reason
+  OR NEW.placed_by_admin_id IS NOT OLD.placed_by_admin_id
+  OR NEW.placed_at IS NOT OLD.placed_at
+BEGIN SELECT RAISE(ABORT, 'PARTNER_IDENTITY_LEGAL_HOLD_PLACEMENT_IMMUTABLE'); END;
+CREATE TRIGGER partner_identity_legal_holds_release_one_way_guard
+BEFORE UPDATE ON partner_identity_legal_holds
+WHEN OLD.released_at IS NOT NULL
+BEGIN SELECT RAISE(ABORT, 'PARTNER_IDENTITY_LEGAL_HOLD_ALREADY_RELEASED'); END;
+CREATE TRIGGER partner_identity_legal_holds_delete_guard
+BEFORE DELETE ON partner_identity_legal_holds
+BEGIN SELECT RAISE(ABORT, 'PARTNER_IDENTITY_LEGAL_HOLD_IMMUTABLE'); END;
 
 CREATE TABLE partner_identity_destruction_events (
   id TEXT PRIMARY KEY,

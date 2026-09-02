@@ -1,13 +1,16 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
 import { provisionPartnerOwner, type AdminPrincipal } from "../src/agent-referrals-partner-identity";
-import { issueAndDispatchOtpChallenge, loginWithOtp, verifyOtpChallenge, type OtpSender } from "../src/agent-referrals-otp";
+import { effectiveOtpSendOutcome, getOtpChallenge, issueAndDispatchOtpChallenge, loginWithOtp, recoverOtpChallengeState, verifyOtpChallenge, type OtpSender } from "../src/agent-referrals-otp";
+
+// Explicit test pepper - there is deliberately no source-level fallback.
+process.env.COMMERCE_AGENT_REFERRALS_OTP_PEPPER ??= "test-otp-pepper-for-agent-referrals-otp-test";
 
 const open: Database.Database[] = [];
 afterEach(() => { while (open.length) open.pop()!.close(); });
@@ -126,6 +129,111 @@ describe("OTP challenge: unknown-outcome semantics", () => {
     expect(verifyOtpChallenge(db, dispatched.challenge_id, sender.lastCode!)).toEqual({ partner_identity_id: partnerIdentityId });
   });
 
+  describe("keyed verifier: HMAC-SHA256 with a mandatory, uncommitted pepper - not plain SHA-256", () => {
+    it("no configured pepper: dispatch fails outright, no live secret authority", async () => {
+      const db = fresh();
+      const partnerIdentityId = provisionedPartner(db);
+      const saved = process.env.COMMERCE_AGENT_REFERRALS_OTP_PEPPER;
+      delete process.env.COMMERCE_AGENT_REFERRALS_OTP_PEPPER;
+      try {
+        await expect(issueAndDispatchOtpChallenge(db, partnerIdentityId, capturingSender())).rejects.toThrow(/AGENT_REFERRALS_OTP_PEPPER_MISSING/);
+        expect(db.prepare("SELECT COUNT(*) AS n FROM partner_otp_challenges").get()).toEqual({ n: 0 });
+      } finally {
+        if (saved !== undefined) process.env.COMMERCE_AGENT_REFERRALS_OTP_PEPPER = saved;
+      }
+    });
+
+    it("the verifier is not recoverable as a plain SHA-256 of the code - it depends on the pepper and the challenge id", async () => {
+      const db = fresh();
+      const partnerIdentityId = provisionedPartner(db);
+      const sender = capturingSender();
+      const dispatched = await issueAndDispatchOtpChallenge(db, partnerIdentityId, sender);
+      const row = db.prepare("SELECT secret_hash FROM partner_otp_challenges WHERE id = ?").get(dispatched.challenge_id) as { secret_hash: string };
+      const plainSha256 = createHash("sha256").update(sender.lastCode!).digest("hex");
+      expect(row.secret_hash).not.toBe(plainSha256);
+    });
+
+    it("the same code hashes differently for two different challenges - the verifier is challenge-bound, not reusable across challenges", async () => {
+      const db = fresh();
+      const a = provisionedPartner(db);
+      const b = provisionedPartner(db);
+      const senderA = capturingSender();
+      const senderB = capturingSender();
+      // Two independent dispatches happen to land on the same six-digit
+      // code with low but real probability across a full suite run; assert
+      // on the hashes only, which must differ regardless.
+      const dispatchedA = await issueAndDispatchOtpChallenge(db, a, senderA);
+      const dispatchedB = await issueAndDispatchOtpChallenge(db, b, senderB);
+      const rowA = db.prepare("SELECT secret_hash FROM partner_otp_challenges WHERE id = ?").get(dispatchedA.challenge_id) as { secret_hash: string };
+      const rowB = db.prepare("SELECT secret_hash FROM partner_otp_challenges WHERE id = ?").get(dispatchedB.challenge_id) as { secret_hash: string };
+      expect(rowA.secret_hash).not.toBe(rowB.secret_hash);
+    });
+  });
+
+  describe("crash durability: send_attempted_at is committed before sender.send() is ever called", () => {
+    it("send_attempted_at is durable before the external call - proven by a sender that reads the DB mid-call", async () => {
+      const db = fresh();
+      const partnerIdentityId = provisionedPartner(db);
+      let attemptedAtWasSetBeforeSend = false;
+      const sender: OtpSender = {
+        async send(input) {
+          const row = getOtpChallenge(db, input.challengeId)!;
+          attemptedAtWasSetBeforeSend = Boolean(row.send_attempted_at);
+          return "ACCEPTED";
+        },
+      };
+      await issueAndDispatchOtpChallenge(db, partnerIdentityId, sender);
+      expect(attemptedAtWasSetBeforeSend).toBe(true);
+    });
+
+    it("a row left with send_attempted_at set but send_outcome NULL - exactly what a crash between that commit and the outcome write leaves - reads as UNKNOWN, never as 'never attempted'", async () => {
+      const db = fresh();
+      const partnerIdentityId = provisionedPartner(db);
+      const dispatched = await issueAndDispatchOtpChallenge(db, partnerIdentityId, capturingSender());
+      // Reconstructs the exact durable state a real process death in that
+      // gap would leave: send_attempted_at already committed, the outcome
+      // UPDATE never having run at all.
+      db.prepare("UPDATE partner_otp_challenges SET send_outcome = NULL WHERE id = ?").run(dispatched.challenge_id);
+
+      const row = getOtpChallenge(db, dispatched.challenge_id)!;
+      expect(row.send_attempted_at).toBeTruthy();
+      expect(row.send_outcome).toBeNull();
+      expect(effectiveOtpSendOutcome(row)).toBe("UNKNOWN");
+      expect(recoverOtpChallengeState(db, dispatched.challenge_id)).toBe("UNKNOWN");
+    });
+
+    it("recovery of an ambiguous (crashed) challenge is read-only: automatic recovery sends zero messages, the old challenge remains live and ambiguous, and only an explicit new dispatch call supersedes it", async () => {
+      const db = fresh();
+      const partnerIdentityId = provisionedPartner(db);
+      const dispatched = await issueAndDispatchOtpChallenge(db, partnerIdentityId, capturingSender());
+      db.prepare("UPDATE partner_otp_challenges SET send_outcome = NULL WHERE id = ?").run(dispatched.challenge_id);
+
+      // "Automatic recovery" here is exactly recoverOtpChallengeState() -
+      // read-only, calls no sender, mutates nothing. Zero messages sent,
+      // zero rows changed.
+      expect(recoverOtpChallengeState(db, dispatched.challenge_id)).toBe("UNKNOWN");
+      expect(db.prepare("SELECT COUNT(*) AS n FROM partner_otp_challenges WHERE partner_identity_id = ?").get(partnerIdentityId)).toEqual({ n: 1 });
+      expect(db.prepare("SELECT superseded_by_id, consumed_at FROM partner_otp_challenges WHERE id = ?").get(dispatched.challenge_id))
+        .toEqual({ superseded_by_id: null, consumed_at: null });
+
+      // Only an explicit, separate dispatch call (the deliberate "resend"
+      // action) supersedes it and mints a genuinely new secret.
+      const resendSender = capturingSender();
+      const resendDispatch = await issueAndDispatchOtpChallenge(db, partnerIdentityId, resendSender);
+      expect(resendDispatch.challenge_id).not.toBe(dispatched.challenge_id);
+      expect(db.prepare("SELECT superseded_by_id FROM partner_otp_challenges WHERE id = ?").get(dispatched.challenge_id))
+        .toEqual({ superseded_by_id: resendDispatch.challenge_id });
+    });
+
+    it("READY (never attempted) is distinct from UNKNOWN (attempted, outcome unresolved)", async () => {
+      const db = fresh();
+      const partnerIdentityId = provisionedPartner(db);
+      expect(effectiveOtpSendOutcome({ send_outcome: null, send_attempted_at: null })).toBe("READY");
+      const dispatched = await issueAndDispatchOtpChallenge(db, partnerIdentityId, capturingSender());
+      expect(effectiveOtpSendOutcome(getOtpChallenge(db, dispatched.challenge_id)!)).toBe("ACCEPTED");
+    });
+  });
+
   describe("explicit resend supersedes the old challenge", () => {
     it("mints a brand-new challenge id and a brand-new secret; the old code is refused, the new one works once", async () => {
       const db = fresh();
@@ -173,7 +281,10 @@ describe("OTP challenge: unknown-outcome semantics", () => {
       const partnerIdentityId = provisionedPartner(db);
       const sender = capturingSender();
       const dispatched = await issueAndDispatchOtpChallenge(db, partnerIdentityId, sender);
-      db.prepare("UPDATE partner_otp_challenges SET expires_at = datetime('now', '-1 minute') WHERE id = ?").run(dispatched.challenge_id);
+      // The exact ISO 8601 format production actually writes ("...T...Z"),
+      // not SQLite's own datetime('now') shape - a same-UTC-day expiry in
+      // the wrong format previously masked the julianday() fix's absence.
+      db.prepare("UPDATE partner_otp_challenges SET expires_at = ? WHERE id = ?").run(new Date(Date.now() - 60_000).toISOString(), dispatched.challenge_id);
       expect(() => verifyOtpChallenge(db, dispatched.challenge_id, sender.lastCode!)).toThrow(/AGENT_REFERRALS_OTP_EXPIRED/);
     });
 

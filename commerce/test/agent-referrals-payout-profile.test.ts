@@ -1,18 +1,40 @@
 import { mkdtempSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import { agentReferralsActivationEvidence } from "../src/agent-referrals-activation";
-import { decryptPayoutDestination, encryptPayoutDestination } from "../src/agent-referrals-payout-encryption";
+import { decryptPayoutDestination, encryptPayoutDestination, PayoutEncryptionError, pinPayoutEncryptionKeyId } from "../src/agent-referrals-payout-encryption";
 import { allPayoutProfileRevisions, currentPayoutProfile, revokePartnerPayoutDestination, setPartnerPayoutDestination } from "../src/agent-referrals-payout-profile";
 import { mintStepUpGrant } from "../src/agent-referrals-step-up";
 import type { PartnerPrincipal } from "../src/agent-referrals-partner-identity";
 
+/**
+ * Explicit test key, set here rather than relying on any source-level
+ * fallback - there is deliberately none. Both env vars are restored after
+ * every test so the "missing config" cases below can freely delete them.
+ */
+const TEST_KEY_ID = "test-payout-key-v1";
+const TEST_KEY_BASE64 = randomBytes(32).toString("base64");
+let savedKeyId: string | undefined;
+let savedKeyBase64: string | undefined;
+
+beforeEach(() => {
+  savedKeyId = process.env.COMMERCE_AGENT_REFERRALS_PAYOUT_KEY_ID;
+  savedKeyBase64 = process.env.COMMERCE_AGENT_REFERRALS_PAYOUT_KEY_BASE64;
+  process.env.COMMERCE_AGENT_REFERRALS_PAYOUT_KEY_ID = TEST_KEY_ID;
+  process.env.COMMERCE_AGENT_REFERRALS_PAYOUT_KEY_BASE64 = TEST_KEY_BASE64;
+});
+
 const open: Database.Database[] = [];
-afterEach(() => { while (open.length) open.pop()!.close(); });
+afterEach(() => {
+  while (open.length) open.pop()!.close();
+  if (savedKeyId === undefined) delete process.env.COMMERCE_AGENT_REFERRALS_PAYOUT_KEY_ID; else process.env.COMMERCE_AGENT_REFERRALS_PAYOUT_KEY_ID = savedKeyId;
+  if (savedKeyBase64 === undefined) delete process.env.COMMERCE_AGENT_REFERRALS_PAYOUT_KEY_BASE64; else process.env.COMMERCE_AGENT_REFERRALS_PAYOUT_KEY_BASE64 = savedKeyBase64;
+});
 
 const fresh = () => {
   const file = join(mkdtempSync(join(tmpdir(), "agent-referrals-payout-")), "commerce.sqlite");
@@ -70,6 +92,43 @@ describe("payout-profile revisions", () => {
       const db = fresh();
       const encrypted = encryptPayoutDestination(db, SENSITIVE_CARD);
       expect(() => decryptPayoutDestination("wrong-key-id", encrypted.ciphertext, encrypted.nonce)).toThrow(/AGENT_REFERRALS_PAYOUT_KEY_MISMATCH/);
+    });
+
+    describe("no committed development fallback - configuration is mandatory and fully validated before any manifest evidence is written", () => {
+      it("missing key id: encryption impossible, no manifest evidence", () => {
+        const db = fresh();
+        delete process.env.COMMERCE_AGENT_REFERRALS_PAYOUT_KEY_ID;
+        expect(() => encryptPayoutDestination(db, SENSITIVE_CARD)).toThrow(/AGENT_REFERRALS_PAYOUT_KEY_ID_MISSING/);
+        expect(agentReferralsActivationEvidence(db, "payout_profile_encryption_key_id")).toBeUndefined();
+      });
+
+      it("missing key bytes: encryption impossible, no manifest evidence", () => {
+        const db = fresh();
+        delete process.env.COMMERCE_AGENT_REFERRALS_PAYOUT_KEY_BASE64;
+        expect(() => encryptPayoutDestination(db, SENSITIVE_CARD)).toThrow(/AGENT_REFERRALS_PAYOUT_KEY_MISSING/);
+        expect(agentReferralsActivationEvidence(db, "payout_profile_encryption_key_id")).toBeUndefined();
+      });
+
+      it("wrong-length key bytes: encryption impossible, no manifest evidence", () => {
+        const db = fresh();
+        process.env.COMMERCE_AGENT_REFERRALS_PAYOUT_KEY_BASE64 = Buffer.from("too-short").toString("base64");
+        expect(() => encryptPayoutDestination(db, SENSITIVE_CARD)).toThrow(/AGENT_REFERRALS_PAYOUT_KEY_INVALID/);
+        expect(agentReferralsActivationEvidence(db, "payout_profile_encryption_key_id")).toBeUndefined();
+      });
+
+      it("invalid config never reaches pinPayoutEncryptionKeyId's pin step either", () => {
+        const db = fresh();
+        delete process.env.COMMERCE_AGENT_REFERRALS_PAYOUT_KEY_ID;
+        expect(() => pinPayoutEncryptionKeyId(db)).toThrow(PayoutEncryptionError);
+        expect(agentReferralsActivationEvidence(db, "payout_profile_encryption_key_id")).toBeUndefined();
+      });
+
+      it("a valid explicit 32-byte test key succeeds with real AES-256-GCM round-tripping", () => {
+        const db = fresh();
+        const encrypted = encryptPayoutDestination(db, SENSITIVE_CARD);
+        expect(encrypted.key_id).toBe(TEST_KEY_ID);
+        expect(decryptPayoutDestination(encrypted.key_id, encrypted.ciphertext, encrypted.nonce)).toBe(SENSITIVE_CARD);
+      });
     });
   });
 

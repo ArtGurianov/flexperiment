@@ -9,6 +9,7 @@ import {
   currentRetentionPolicy,
   destroyPartnerIdentity,
   isUnderLegalHold,
+  mintRetentionPolicyRevision,
   placeLegalHold,
   releaseLegalHold,
 } from "../src/agent-referrals-identity-retention";
@@ -35,15 +36,32 @@ const seedPartner = (db: Database.Database): string => {
   return partnerIdentityId;
 };
 
+/** Retention duration is a real, externally-approved input this PR does not invent - see the migration's comment. Tests that need destruction to be possible mint one explicitly. */
+const withPolicy = (db: Database.Database, days = 365) => mintRetentionPolicyRevision(db, admin, days, "test policy");
+
 describe("identity retention / legal holds / destruction evidence", () => {
-  it("a seeded retention policy is present at revision 1", () => {
+  it("ships with NO retention policy - no invented default duration", () => {
     const db = fresh();
-    expect(currentRetentionPolicy(db)).toMatchObject({ revision: 1 });
+    expect(currentRetentionPolicy(db)).toBeNull();
+  });
+
+  it("destruction fails closed with no established policy, even with no legal hold at all", () => {
+    const db = fresh();
+    const partnerIdentityId = seedPartner(db);
+    expect(() => destroyPartnerIdentity(db, admin, partnerIdentityId, "attempt")).toThrow(/AGENT_REFERRALS_NO_RETENTION_POLICY/);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM partner_identity_destruction_events").get()).toEqual({ n: 0 });
+  });
+
+  it("mintRetentionPolicyRevision establishes a real, versioned policy", () => {
+    const db = fresh();
+    const policy = withPolicy(db, 730);
+    expect(policy).toMatchObject({ revision: 1, retention_period_days: 730 });
   });
 
   describe("legal hold blocks destruction", () => {
     it("an active hold refuses destruction outright, no evidence produced", () => {
       const db = fresh();
+      withPolicy(db);
       const partnerIdentityId = seedPartner(db);
       placeLegalHold(db, admin, partnerIdentityId, "pending investigation");
       expect(isUnderLegalHold(db, partnerIdentityId)).toBe(true);
@@ -55,6 +73,7 @@ describe("identity retention / legal holds / destruction evidence", () => {
 
     it("releasing the hold makes the identity eligible again", () => {
       const db = fresh();
+      withPolicy(db);
       const partnerIdentityId = seedPartner(db);
       const hold = placeLegalHold(db, admin, partnerIdentityId, "hold");
       expect(() => destroyPartnerIdentity(db, admin, partnerIdentityId, "attempt")).toThrow();
@@ -80,13 +99,55 @@ describe("identity retention / legal holds / destruction evidence", () => {
       releaseLegalHold(db, admin, first.hold_id, "done");
       expect(() => placeLegalHold(db, admin, partnerIdentityId, "second, after release")).not.toThrow();
     });
+
+    describe("hold evidence is non-erasable and placement facts are immutable", () => {
+      it("DELETE on a hold row is refused, held or released", () => {
+        const db = fresh();
+        const partnerIdentityId = seedPartner(db);
+        const hold = placeLegalHold(db, admin, partnerIdentityId, "reason");
+        expect(() => db.exec(`DELETE FROM partner_identity_legal_holds WHERE id = '${hold.hold_id}'`)).toThrow(/PARTNER_IDENTITY_LEGAL_HOLD_IMMUTABLE/);
+        releaseLegalHold(db, admin, hold.hold_id, "released");
+        expect(() => db.exec(`DELETE FROM partner_identity_legal_holds WHERE id = '${hold.hold_id}'`)).toThrow(/PARTNER_IDENTITY_LEGAL_HOLD_IMMUTABLE/);
+      });
+
+      it("rewriting placement facts (reason, placed_by_admin_id, placed_at, partner_identity_id) is refused", () => {
+        const db = fresh();
+        const partnerIdentityId = seedPartner(db);
+        const hold = placeLegalHold(db, admin, partnerIdentityId, "original reason");
+        expect(() => db.exec(`UPDATE partner_identity_legal_holds SET reason = 'rewritten' WHERE id = '${hold.hold_id}'`))
+          .toThrow(/PARTNER_IDENTITY_LEGAL_HOLD_PLACEMENT_IMMUTABLE/);
+        expect(() => db.exec(`UPDATE partner_identity_legal_holds SET placed_by_admin_id = 'someone-else' WHERE id = '${hold.hold_id}'`))
+          .toThrow(/PARTNER_IDENTITY_LEGAL_HOLD_PLACEMENT_IMMUTABLE/);
+      });
+
+      it("release is one-way: an already-released hold's release metadata cannot be rewritten", () => {
+        const db = fresh();
+        const partnerIdentityId = seedPartner(db);
+        const hold = placeLegalHold(db, admin, partnerIdentityId, "reason");
+        releaseLegalHold(db, admin, hold.hold_id, "released");
+        expect(() => db.exec(`UPDATE partner_identity_legal_holds SET released_reason = 'rewritten' WHERE id = '${hold.hold_id}'`))
+          .toThrow(/PARTNER_IDENTITY_LEGAL_HOLD_ALREADY_RELEASED/);
+      });
+
+      it("the legitimate release UPDATE itself still succeeds (only released_at/released_by_admin_id/released_reason change, from NULL)", () => {
+        const db = fresh();
+        const partnerIdentityId = seedPartner(db);
+        const hold = placeLegalHold(db, admin, partnerIdentityId, "reason");
+        expect(() => releaseLegalHold(db, admin, hold.hold_id, "released")).not.toThrow();
+        const row = db.prepare("SELECT released_at, released_by_admin_id, released_reason FROM partner_identity_legal_holds WHERE id = ?").get(hold.hold_id) as
+          { released_at: string | null; released_by_admin_id: string | null; released_reason: string | null };
+        expect(row.released_at).toBeTruthy();
+        expect(row.released_by_admin_id).toBe("admin-1");
+        expect(row.released_reason).toBe("released");
+      });
+    });
   });
 
   describe("destruction evidence", () => {
     it("eligible destruction produces exact destruction/tombstone evidence and scrubs PII", () => {
       const db = fresh();
+      const policy = withPolicy(db);
       const partnerIdentityId = seedPartner(db);
-      const policy = currentRetentionPolicy(db)!;
       const result = destroyPartnerIdentity(db, admin, partnerIdentityId, "eligible for destruction");
       expect(result.replayed).toBe(false);
 
@@ -103,6 +164,7 @@ describe("identity retention / legal holds / destruction evidence", () => {
 
     it("destruction evidence is immutable - direct UPDATE/DELETE refused", () => {
       const db = fresh();
+      withPolicy(db);
       const partnerIdentityId = seedPartner(db);
       const result = destroyPartnerIdentity(db, admin, partnerIdentityId, "destroy");
       expect(() => db.exec(`UPDATE partner_identity_destruction_events SET requested_by_admin_id = 'other' WHERE id = '${result.destruction_event_id}'`))
@@ -113,6 +175,7 @@ describe("identity retention / legal holds / destruction evidence", () => {
 
     it("replay of a completed destruction is idempotent - same event, no duplicate destructive effect", () => {
       const db = fresh();
+      withPolicy(db);
       const partnerIdentityId = seedPartner(db);
       const first = destroyPartnerIdentity(db, admin, partnerIdentityId, "destroy");
       const identityAfterFirst = db.prepare("SELECT email, email_hash, destroyed_at FROM partner_identities WHERE id = ?").get(partnerIdentityId);
@@ -125,6 +188,7 @@ describe("identity retention / legal holds / destruction evidence", () => {
 
     it("historical evidence the model requires (framework acceptances, payout revisions) survives destruction untouched", () => {
       const db = fresh();
+      withPolicy(db);
       const partnerIdentityId = seedPartner(db);
       const sessionId = randomUUID();
       db.prepare(`INSERT INTO partner_sessions(id, partner_identity_id, token_hash, expires_at) VALUES (?, ?, ?, datetime('now', '+1 hour'))`).run(sessionId, partnerIdentityId, randomUUID());
@@ -141,6 +205,7 @@ describe("identity retention / legal holds / destruction evidence", () => {
 
     it("no silent hard-delete path bypasses this authority: destroyPartnerIdentity is the only writer of email/email_hash outside creation", () => {
       const db = fresh();
+      withPolicy(db);
       const partnerIdentityId = seedPartner(db);
       destroyPartnerIdentity(db, admin, partnerIdentityId, "destroy");
       expect(db.prepare("SELECT COUNT(*) AS n FROM partner_identities WHERE id = ?").get(partnerIdentityId)).toEqual({ n: 1 });
@@ -148,6 +213,7 @@ describe("identity retention / legal holds / destruction evidence", () => {
 
     it("fault injection: a poisoned destruction-event insert leaves the identity's PII unscrubbed (whole transaction rolls back)", () => {
       const db = fresh();
+      withPolicy(db);
       const partnerIdentityId = seedPartner(db);
       db.exec(`CREATE TRIGGER poison_destruction_event BEFORE INSERT ON partner_identity_destruction_events
         BEGIN SELECT RAISE(ABORT, 'INJECTED_DESTRUCTION_FAILURE'); END;`);

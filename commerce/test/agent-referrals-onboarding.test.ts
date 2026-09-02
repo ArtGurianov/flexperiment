@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
 import { currentPayoutProfile } from "../src/agent-referrals-payout-profile";
+import { DELEGATION_TEMPLATE_REQUIRED_CLAUSES, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, mintDelegationTemplateRevision, mintFrameworkAgreementRevision } from "../src/agent-referrals-framework-delegation";
 import {
   provisionPartnerOwner,
   submitPartnerLegalProfile,
@@ -46,7 +47,9 @@ const advanceToFrameworkAccepted = (db: Database.Database) => {
   const { partner_identity_id } = provision(db);
   submitPartnerLegalProfile(db, asPartner(partner_identity_id), "INDIVIDUAL", "NPD");
   verifyPartnerLegalProfile(db, admin, partner_identity_id, "verified");
-  issueFrameworkToPartner(db, admin, partner_identity_id, "issued");
+  const fw = mintFrameworkAgreementRevision(db, Object.fromEntries(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES.map((k) => [k, `${k} v1`])) as Record<(typeof FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES)[number], string>);
+  const dt = mintDelegationTemplateRevision(db, Object.fromEntries(DELEGATION_TEMPLATE_REQUIRED_CLAUSES.map((k) => [k, `${k} v1`])) as Record<(typeof DELEGATION_TEMPLATE_REQUIRED_CLAUSES)[number], string>);
+  issueFrameworkToPartner(db, admin, partner_identity_id, fw.id, dt.id, "issued");
   // Framework acceptance itself is covered by its own dedicated test file;
   // here we only need onboarding to reach FRAMEWORK_ACCEPTED, so advance the
   // state directly rather than duplicating the full atomic-command setup.
