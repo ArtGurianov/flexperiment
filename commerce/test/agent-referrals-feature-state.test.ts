@@ -25,6 +25,29 @@ const fresh = () => {
 };
 
 describe("agent-referrals feature state", () => {
+  describe("atomicity: the CAS UPDATE and the audit INSERT commit together or not at all", () => {
+    it("an INSERT failure after a successful UPDATE rolls back the whole transition", () => {
+      const db = fresh();
+      // Poisons only the audit INSERT, after the CAS UPDATE has already run
+      // inside the same transaction attempt - proves the two are not two
+      // independently-committing statements.
+      db.exec(`CREATE TRIGGER poison_feature_state_event_insert
+        BEFORE INSERT ON agent_referrals_feature_state_events
+        BEGIN SELECT RAISE(ABORT, 'INJECTED_AUDIT_FAILURE'); END;`);
+
+      expect(() => activateAgentReferrals(db, { expected_revision: 1, owner_id: "op-1", reason: "poisoned" }))
+        .toThrow(/INJECTED_AUDIT_FAILURE/);
+
+      db.exec("DROP TRIGGER poison_feature_state_event_insert");
+      expect(agentReferralsFeatureState(db)).toEqual({ state: "DORMANT", owner_id: null, revision: 1 });
+      expect(db.prepare("SELECT COUNT(*) AS n FROM agent_referrals_feature_state_events").get()).toEqual({ n: 0 });
+
+      // The connection is left usable afterward, not stuck mid-transaction.
+      expect(() => activateAgentReferrals(db, { expected_revision: 1, owner_id: "op-1", reason: "retry" })).not.toThrow();
+      expect(agentReferralsFeatureState(db)).toMatchObject({ state: "ACTIVE", revision: 2 });
+    });
+  });
+
   it("ships DORMANT, unowned, revision 1, on a fresh DB", () => {
     const db = fresh();
     expect(agentReferralsFeatureState(db)).toEqual({ state: "DORMANT", owner_id: null, revision: 1 });

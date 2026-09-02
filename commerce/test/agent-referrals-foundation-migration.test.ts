@@ -150,8 +150,12 @@ describe("0043 agent-referrals foundation migration", () => {
     it("enforces the legal-profile 4-allowed/2-rejected matrix via a real CHECK constraint", () => {
       const db = at0042();
       migrate(db);
-      db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
-        VALUES ('agent-matrix', 'matrix-agent', 'M', 'M Legal', 'm@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run();
+      // Revisions are immutable and undeletable (structurally, by trigger),
+      // so each case gets its own agent rather than reusing revision 1 on
+      // one agent - this test proves the CHECK, not the revision sequence.
+      const insertAgent = (agentId: string) => db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
+        VALUES (?, ?, 'M', 'M Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId, agentId, `${agentId}@example.test`);
+
       const allowed: Array<[string, string, string]> = [
         ["INDIVIDUAL", "NPD", "SELF_EMPLOYED"],
         ["INDIVIDUAL_ENTREPRENEUR", "NPD", "INDIVIDUAL_ENTREPRENEUR"],
@@ -159,18 +163,21 @@ describe("0043 agent-referrals foundation migration", () => {
         ["LEGAL_ENTITY", "OTHER", "ORGANIZATION"],
       ];
       for (const [legalForm, taxMode, projected] of allowed) {
+        const agentId = `agent-matrix-allowed-${legalForm}-${taxMode}`;
+        insertAgent(agentId);
         expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason)
-          VALUES (?, 'agent-matrix', 1, ?, ?, ?, 'structural-proof')`).run(`${legalForm}-${taxMode}`, legalForm, taxMode, projected),
+          VALUES (?, ?, 1, ?, ?, ?, 'structural-proof')`).run(`${legalForm}-${taxMode}`, agentId, legalForm, taxMode, projected),
           `${legalForm}+${taxMode}`).not.toThrow();
-        db.exec(`DELETE FROM agent_referrals_legal_profile_revisions WHERE id = '${legalForm}-${taxMode}'`);
       }
       const rejected: Array<[string, string, string]> = [
         ["INDIVIDUAL", "OTHER", "SELF_EMPLOYED"],
         ["LEGAL_ENTITY", "NPD", "ORGANIZATION"],
       ];
       for (const [legalForm, taxMode, projected] of rejected) {
+        const agentId = `agent-matrix-rejected-${legalForm}-${taxMode}`;
+        insertAgent(agentId);
         expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason)
-          VALUES (?, 'agent-matrix', 1, ?, ?, ?, 'structural-proof')`).run(`${legalForm}-${taxMode}`, legalForm, taxMode, projected),
+          VALUES (?, ?, 1, ?, ?, ?, 'structural-proof')`).run(`${legalForm}-${taxMode}`, agentId, legalForm, taxMode, projected),
           `${legalForm}+${taxMode}`).toThrow(/CHECK constraint failed/);
       }
     });
@@ -208,11 +215,46 @@ describe("0043 agent-referrals foundation migration", () => {
       expect(() => db.exec("UPDATE agent_referrals_legal_profile_revisions SET reason = 'x' WHERE id = 'r1'")).toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_REVISION_IMMUTABLE/);
     });
 
+    it("blocks direct DELETE on framework_agreement_revisions, delegation_template_revisions and agent_referrals_legal_profile_revisions - immutable must also mean undeletable", () => {
+      const db = at0042();
+      migrate(db);
+      db.prepare(`INSERT INTO framework_agreement_revisions(id, revision, content_json, content_hash) VALUES ('f1', 1, '{}', 'h')`).run();
+      db.prepare(`INSERT INTO delegation_template_revisions(id, revision, ord_reporting_mode, content_json, content_hash) VALUES ('d1', 1, 'FLEXPERIMENT_DELEGATED', '{}', 'h')`).run();
+      db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
+        VALUES ('agent-guard-2', 'guard-agent-2', 'G', 'G Legal', 'g2@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run();
+      db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason)
+        VALUES ('r1', 'agent-guard-2', 1, 'INDIVIDUAL', 'NPD', 'SELF_EMPLOYED', 'seed')`).run();
+
+      expect(() => db.exec("DELETE FROM framework_agreement_revisions WHERE id = 'f1'")).toThrow(/FRAMEWORK_AGREEMENT_REVISION_IMMUTABLE/);
+      expect(() => db.exec("DELETE FROM delegation_template_revisions WHERE id = 'd1'")).toThrow(/DELEGATION_TEMPLATE_REVISION_IMMUTABLE/);
+      expect(() => db.exec("DELETE FROM agent_referrals_legal_profile_revisions WHERE id = 'r1'")).toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_REVISION_IMMUTABLE/);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM framework_agreement_revisions").get()).toEqual({ n: 1 });
+      expect(db.prepare("SELECT COUNT(*) AS n FROM delegation_template_revisions").get()).toEqual({ n: 1 });
+      expect(db.prepare("SELECT COUNT(*) AS n FROM agent_referrals_legal_profile_revisions").get()).toEqual({ n: 1 });
+    });
+
     it("requires ord_reporting_mode = FLEXPERIMENT_DELEGATED on delegation_template_revisions", () => {
       const db = at0042();
       migrate(db);
       expect(() => db.prepare(`INSERT INTO delegation_template_revisions(id, revision, ord_reporting_mode, content_json, content_hash)
         VALUES ('bad', 1, 'SOMETHING_ELSE', '{}', 'h')`).run()).toThrow(/CHECK constraint failed/);
+    });
+
+    it("ad_channel_policy is append-only: direct UPDATE and DELETE on a historical row are both refused", () => {
+      const db = at0042();
+      migrate(db);
+      // One of the nine seeded rows, standing in for "a historical policy revision".
+      const seeded = db.prepare("SELECT id FROM ad_channel_policy WHERE channel_key = 'telegram' AND policy_revision = 1").get() as { id: string };
+
+      expect(() => db.exec(`UPDATE ad_channel_policy SET status = 'BLOCKED' WHERE id = '${seeded.id}'`)).toThrow(/AD_CHANNEL_POLICY_REVISION_IMMUTABLE/);
+      expect(() => db.exec(`DELETE FROM ad_channel_policy WHERE id = '${seeded.id}'`)).toThrow(/AD_CHANNEL_POLICY_REVISION_IMMUTABLE/);
+      expect(db.prepare("SELECT status FROM ad_channel_policy WHERE id = ?").get(seeded.id)).toEqual({ status: "ALLOWED" });
+
+      // A policy change is only ever a new INSERT.
+      db.prepare(`INSERT INTO ad_channel_policy(id, channel_key, policy_revision, status, effective_from, reason)
+        VALUES ('telegram-r2', 'telegram', 2, 'BLOCKED', '2026-01-01T00:00:00.000Z', 'later block')`).run();
+      expect(db.prepare("SELECT status FROM ad_channel_policy WHERE channel_key = 'telegram' AND policy_revision = 1").get()).toEqual({ status: "ALLOWED" });
+      expect(db.prepare("SELECT status FROM ad_channel_policy WHERE channel_key = 'telegram' AND policy_revision = 2").get()).toEqual({ status: "BLOCKED" });
     });
   });
 });

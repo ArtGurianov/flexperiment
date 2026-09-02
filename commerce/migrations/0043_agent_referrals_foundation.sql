@@ -76,9 +76,18 @@ CREATE TABLE agent_referrals_legal_profile_revisions (
 CREATE INDEX agent_referrals_legal_profile_revisions_agent_idx
   ON agent_referrals_legal_profile_revisions(agent_id, revision);
 
--- Historical evidence; a filed revision is never restated in place.
+-- Historical evidence; a filed revision is never restated in place, and
+-- "immutable" must not mean only "cannot be edited, may still be erased" -
+-- deleting the current (latest) revision would silently fall the current
+-- projection back to a stale one while agents.contractor_type still carries
+-- the deleted revision's value, so evidence and projection would disagree.
 CREATE TRIGGER agent_referrals_legal_profile_revisions_immutable_guard
 BEFORE UPDATE ON agent_referrals_legal_profile_revisions
+BEGIN
+  SELECT RAISE(ABORT, 'AGENT_REFERRALS_LEGAL_PROFILE_REVISION_IMMUTABLE');
+END;
+CREATE TRIGGER agent_referrals_legal_profile_revisions_delete_guard
+BEFORE DELETE ON agent_referrals_legal_profile_revisions
 BEGIN
   SELECT RAISE(ABORT, 'AGENT_REFERRALS_LEGAL_PROFILE_REVISION_IMMUTABLE');
 END;
@@ -102,6 +111,11 @@ BEFORE UPDATE ON framework_agreement_revisions
 BEGIN
   SELECT RAISE(ABORT, 'FRAMEWORK_AGREEMENT_REVISION_IMMUTABLE');
 END;
+CREATE TRIGGER framework_agreement_revisions_delete_guard
+BEFORE DELETE ON framework_agreement_revisions
+BEGIN
+  SELECT RAISE(ABORT, 'FRAMEWORK_AGREEMENT_REVISION_IMMUTABLE');
+END;
 
 CREATE TABLE delegation_template_revisions (
   id TEXT PRIMARY KEY,
@@ -114,6 +128,11 @@ CREATE TABLE delegation_template_revisions (
 );
 CREATE TRIGGER delegation_template_revisions_immutable_guard
 BEFORE UPDATE ON delegation_template_revisions
+BEGIN
+  SELECT RAISE(ABORT, 'DELEGATION_TEMPLATE_REVISION_IMMUTABLE');
+END;
+CREATE TRIGGER delegation_template_revisions_delete_guard
+BEFORE DELETE ON delegation_template_revisions
 BEGIN
   SELECT RAISE(ABORT, 'DELEGATION_TEMPLATE_REVISION_IMMUTABLE');
 END;
@@ -135,6 +154,24 @@ CREATE UNIQUE INDEX ad_channel_policy_channel_revision_unique
   ON ad_channel_policy(channel_key, policy_revision);
 CREATE INDEX ad_channel_policy_effective_idx
   ON ad_channel_policy(channel_key, effective_from);
+
+-- Append-only: a policy change is a new revision, never a rewrite of one
+-- already filed. The resolver classifies a historical instant (a
+-- distribution's published_at) against the policy effective AT THAT TIME -
+-- if a later policy edit could rewrite an earlier revision in place, that
+-- classification would silently change underneath evidence already relied
+-- upon, which is exactly the historical-lookup guarantee this table exists
+-- to give.
+CREATE TRIGGER ad_channel_policy_immutable_guard
+BEFORE UPDATE ON ad_channel_policy
+BEGIN
+  SELECT RAISE(ABORT, 'AD_CHANNEL_POLICY_REVISION_IMMUTABLE');
+END;
+CREATE TRIGGER ad_channel_policy_delete_guard
+BEFORE DELETE ON ad_channel_policy
+BEGIN
+  SELECT RAISE(ABORT, 'AD_CHANNEL_POLICY_REVISION_IMMUTABLE');
+END;
 
 -- Seeded static configuration, not a business record (Phase 9 readiness
 -- distinguishes them) - the nine currently-permitted platforms, revision 1,

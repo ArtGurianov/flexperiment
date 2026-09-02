@@ -31,12 +31,17 @@ export const AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS = [
   "agent_referrals_activation_manifest",
   "agent_referrals_legal_profile_revisions",
   "agent_referrals_legal_profile_revisions_immutable_guard",
+  "agent_referrals_legal_profile_revisions_delete_guard",
   "framework_agreement_revisions",
   "framework_agreement_revisions_immutable_guard",
+  "framework_agreement_revisions_delete_guard",
   "delegation_template_revisions",
   "delegation_template_revisions_immutable_guard",
+  "delegation_template_revisions_delete_guard",
   "ad_channel_policy",
   "ad_channel_policy_channel_revision_unique",
+  "ad_channel_policy_immutable_guard",
+  "ad_channel_policy_delete_guard",
 ] as const;
 
 const MIGRATION = "0043_agent_referrals_foundation.sql";
@@ -91,8 +96,41 @@ export const agentReferralsActivationEvidence = (db: Database.Database, key: str
   return row ? JSON.parse(row.value_json) : undefined;
 };
 
+/** Recursive sorted-key JSON, so semantically identical values compare equal regardless of key insertion order. */
+const canonicalJson = (value: unknown): string => {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+};
+
+export class AgentReferralsActivationEvidenceConflictError extends AgentReferralsActivationError {
+  constructor(readonly key: string) {
+    super("AGENT_REFERRALS_ACTIVATION_EVIDENCE_CONFLICT", 409, key);
+  }
+}
+
+/**
+ * Insert-only: pinned evidence (a payout-profile encryption key id, say) is
+ * never silently overwritten. Recording the exact same value again is an
+ * idempotent no-op; recording a different value for a key that already has
+ * one is refused - the plan's own language is "pinned in the activation
+ * manifest", not "the current value of". A future PR that genuinely needs
+ * rotation gets its own explicit version/supersession semantics rather than
+ * this store growing a generic overwrite.
+ */
 export const recordAgentReferralsActivationEvidence = (db: Database.Database, key: string, value: unknown): void => {
-  db.prepare(`INSERT INTO agent_referrals_activation_manifest(key, value_json, recorded_at) VALUES (?, ?, CURRENT_TIMESTAMP)
-    ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, recorded_at = excluded.recorded_at`)
-    .run(key, JSON.stringify(value));
+  const run = db.transaction(() => {
+    const existing = db.prepare("SELECT value_json FROM agent_referrals_activation_manifest WHERE key = ?").get(key) as
+      { value_json: string } | undefined;
+    if (existing) {
+      if (canonicalJson(JSON.parse(existing.value_json)) === canonicalJson(value)) return; // idempotent replay
+      throw new AgentReferralsActivationEvidenceConflictError(key);
+    }
+    db.prepare("INSERT INTO agent_referrals_activation_manifest(key, value_json, recorded_at) VALUES (?, ?, CURRENT_TIMESTAMP)")
+      .run(key, JSON.stringify(value));
+  });
+  run.immediate();
 };

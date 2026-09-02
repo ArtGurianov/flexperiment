@@ -65,7 +65,17 @@ export type AgentReferralsFeatureTransitionInput = {
   reason: string;
 };
 
-const transition = (
+/**
+ * The CAS UPDATE and the audit INSERT must commit together or not at all -
+ * a state mutation with no corresponding audit evidence, or an audit event
+ * for a revision a concurrent writer has already moved past, are both
+ * refused by the plan's contract. Callable from inside an already-open
+ * transaction (better-sqlite3 nests via SAVEPOINT, and `.immediate()` is
+ * simply inert on a nested call), which is what lets a future combined
+ * command run "assert readiness, then transition" as one atomic unit
+ * without this module knowing anything about that command.
+ */
+const transitionInTransaction = (
   db: Database.Database,
   to: AgentReferralsFeatureStateName,
   input: AgentReferralsFeatureTransitionInput,
@@ -98,6 +108,9 @@ const transition = (
     .run(id(), current.state, to, input.owner_id, input.reason, next.revision);
   return next;
 };
+
+const transition = (db: Database.Database, to: AgentReferralsFeatureStateName, input: AgentReferralsFeatureTransitionInput) =>
+  db.transaction(() => transitionInTransaction(db, to, input)).immediate();
 
 /**
  * DORMANT -> ACTIVE only. PR3 ships DORMANT and calls this from nowhere -
