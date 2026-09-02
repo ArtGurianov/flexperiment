@@ -1,0 +1,198 @@
+import type Database from "better-sqlite3";
+import { emailHash, id } from "./crypto";
+import { applyAgentReferralsLegalProfile, type LegalForm, type TaxMode } from "./agent-referrals-legal-profile";
+import { getPartnerIdentity, recordPartnerIdentityEvent, transitionOnboardingStateInTransaction, type PartnerIdentityRow } from "./agent-referrals-onboarding";
+import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
+import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
+import { generateOpaqueToken, hashOpaqueToken } from "./agent-referrals-partner-auth";
+
+/**
+ * Explicit authority types, never raw ids as a substitute for
+ * authentication. Every partner-realm command below takes one of these.
+ */
+export type AdminPrincipal = { readonly realm: "ADMIN"; readonly admin_id: string };
+export type PartnerPrincipal = { readonly realm: "PARTNER"; readonly partner_identity_id: string; readonly partner_session_id: string };
+
+export class PartnerIdentityError extends Error {
+  constructor(readonly code: string, readonly status = 409, detail?: string) {
+    super(detail ? `${code}: ${detail}` : code);
+  }
+}
+
+const INVITE_TTL_MS = 7 * 24 * 60 * 60_000;
+
+/**
+ * Admin-only provisioning, gated on the existing PR3 foundation authority:
+ * NEW_PARTNER_PROVISIONING is refused under global DORMANT/SUSPENDED. The
+ * "exactly one OWNER per partner" concurrency property comes structurally
+ * from `agents.id` -> `partner_identities.agent_id` UNIQUE: two concurrent
+ * provisioning attempts for the same agent serialize on SQLite's write lock,
+ * and the second INSERT hits the UNIQUE constraint and rolls back its own
+ * transaction whole - never leaving a partial invite row, because the
+ * identity insert and the invite mint are one transaction together.
+ */
+export type ProvisionPartnerResult = { partner_identity_id: string; invite_id: string; raw_invite_token: string };
+
+export const provisionPartnerOwner = (db: Database.Database, admin: AdminPrincipal, agentId: string, email: string, reason: string): ProvisionPartnerResult => {
+  assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "NEW_PARTNER_PROVISIONING");
+
+  const run = db.transaction((): ProvisionPartnerResult => {
+    const partnerIdentityId = id();
+    db.prepare(`INSERT INTO partner_identities(id, agent_id, email, email_hash, created_by_admin_id) VALUES (?, ?, ?, ?, ?)`)
+      .run(partnerIdentityId, agentId, email.trim().toLowerCase(), emailHash(email), admin.admin_id);
+
+    const rawToken = generateOpaqueToken();
+    const inviteId = id();
+    db.prepare(`INSERT INTO partner_invite_capabilities(id, partner_identity_id, purpose, verifier_hash, expires_at, created_by_admin_id)
+      VALUES (?, ?, 'ONBOARDING', ?, ?, ?)`)
+      .run(inviteId, partnerIdentityId, hashOpaqueToken(rawToken), new Date(Date.now() + INVITE_TTL_MS).toISOString(), admin.admin_id);
+
+    recordPartnerIdentityEvent(db, partnerIdentityId, "PARTNER_PROVISIONED", "ADMIN", { agent_id: agentId, reason });
+    recordPartnerIdentityEvent(db, partnerIdentityId, "INVITE_ISSUED", "ADMIN", { invite_id: inviteId });
+    // Never log or persist the raw token beyond this in-memory return value.
+    return { partner_identity_id: partnerIdentityId, invite_id: inviteId, raw_invite_token: rawToken };
+  });
+  return run.immediate();
+};
+
+/**
+ * Explicit reissue: supersedes the current live invite (if any) and mints a
+ * brand-new one. The partial unique index on partner_invite_capabilities
+ * guarantees at most one live invite exists at any instant regardless of
+ * what this function does, but superseding explicitly is what keeps the old
+ * token from silently continuing to work between the two writes.
+ */
+export const reissuePartnerInvite = (db: Database.Database, admin: AdminPrincipal, partnerIdentityId: string, reason: string): { invite_id: string; raw_invite_token: string } => {
+  const run = db.transaction(() => {
+    const current = db.prepare(`SELECT id FROM partner_invite_capabilities
+      WHERE partner_identity_id = ? AND consumed_at IS NULL AND revoked_at IS NULL AND superseded_by_id IS NULL`).get(partnerIdentityId) as { id: string } | undefined;
+
+    const rawToken = generateOpaqueToken();
+    const inviteId = id();
+
+    // The old row must stop matching the partial unique index's predicate
+    // (superseded_by_id IS NULL) BEFORE the new row is inserted, or the two
+    // would momentarily both be "active" and collide on it - but the old
+    // row's superseded_by_id has to reference the new row's id, which does
+    // not exist until the INSERT below runs. defer_foreign_keys pushes that
+    // FK's check to commit time (SQLite resets it automatically at the end
+    // of the transaction), which is what lets these two writes happen in
+    // the only order the unique index permits.
+    db.pragma("defer_foreign_keys = ON");
+    if (current) db.prepare(`UPDATE partner_invite_capabilities SET superseded_by_id = ? WHERE id = ?`).run(inviteId, current.id);
+
+    db.prepare(`INSERT INTO partner_invite_capabilities(id, partner_identity_id, purpose, verifier_hash, expires_at, created_by_admin_id)
+      VALUES (?, ?, 'ONBOARDING', ?, ?, ?)`)
+      .run(inviteId, partnerIdentityId, hashOpaqueToken(rawToken), new Date(Date.now() + INVITE_TTL_MS).toISOString(), admin.admin_id);
+
+    recordPartnerIdentityEvent(db, partnerIdentityId, "INVITE_REISSUED", "ADMIN", { invite_id: inviteId, superseded_invite_id: current?.id ?? null, reason });
+    return { invite_id: inviteId, raw_invite_token: rawToken };
+  });
+  return run.immediate();
+};
+
+export const revokePartnerInvite = (db: Database.Database, admin: AdminPrincipal, inviteId: string, reason: string): void => {
+  const run = db.transaction(() => {
+    const changed = db.prepare(`UPDATE partner_invite_capabilities SET revoked_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND consumed_at IS NULL AND revoked_at IS NULL`).run(inviteId);
+    if (changed.changes !== 1) throw new PartnerIdentityError("AGENT_REFERRALS_INVITE_NOT_REVOCABLE", 409, inviteId);
+    const row = db.prepare("SELECT partner_identity_id FROM partner_invite_capabilities WHERE id = ?").get(inviteId) as { partner_identity_id: string };
+    recordPartnerIdentityEvent(db, row.partner_identity_id, "INVITE_REVOKED", "ADMIN", { invite_id: inviteId, reason });
+  });
+  run.immediate();
+};
+
+/**
+ * Atomic consumption, re-checked inside its own transaction: a replay after
+ * a successful consume fails closed on the same CAS UPDATE that a genuine
+ * race would fail on. Never returns anything about WHY a token failed
+ * beyond a coarse code, and never re-derives or logs the raw token.
+ */
+export const consumePartnerInvite = (db: Database.Database, rawToken: string): { partner_identity_id: string; invite_id: string } => {
+  const verifierHash = hashOpaqueToken(rawToken);
+  const run = db.transaction(() => {
+    const invite = db.prepare(`SELECT id, partner_identity_id, expires_at, consumed_at, revoked_at, superseded_by_id
+      FROM partner_invite_capabilities WHERE verifier_hash = ?`).get(verifierHash) as
+      { id: string; partner_identity_id: string; expires_at: string; consumed_at: string | null; revoked_at: string | null; superseded_by_id: string | null } | undefined;
+    if (!invite) throw new PartnerIdentityError("AGENT_REFERRALS_INVITE_NOT_FOUND", 404);
+    if (invite.revoked_at) throw new PartnerIdentityError("AGENT_REFERRALS_INVITE_REVOKED", 409);
+    if (invite.superseded_by_id) throw new PartnerIdentityError("AGENT_REFERRALS_INVITE_SUPERSEDED", 409);
+    if (invite.consumed_at) throw new PartnerIdentityError("AGENT_REFERRALS_INVITE_ALREADY_CONSUMED", 409);
+    if (new Date(invite.expires_at).getTime() <= Date.now()) throw new PartnerIdentityError("AGENT_REFERRALS_INVITE_EXPIRED", 409);
+
+    const changed = db.prepare(`UPDATE partner_invite_capabilities SET consumed_at = CURRENT_TIMESTAMP WHERE id = ? AND consumed_at IS NULL`).run(invite.id);
+    if (changed.changes !== 1) throw new PartnerIdentityError("AGENT_REFERRALS_INVITE_ALREADY_CONSUMED", 409);
+
+    recordPartnerIdentityEvent(db, invite.partner_identity_id, "INVITE_CONSUMED", "PARTNER", { invite_id: invite.id });
+    return { partner_identity_id: invite.partner_identity_id, invite_id: invite.id };
+  });
+  return run.immediate();
+};
+
+/**
+ * Partner's mutable draft claim. Gated on onboarding_state: writable only
+ * while INVITED or PROFILE_SUBMITTED, locked the instant an admin verifies
+ * it - the partner cannot mutate a claim that already produced evidence.
+ * Transitions INVITED -> PROFILE_SUBMITTED on first submission; a later
+ * resubmission while already PROFILE_SUBMITTED updates the draft without
+ * consuming another onboarding transition.
+ */
+export const submitPartnerLegalProfile = (db: Database.Database, partner: PartnerPrincipal, legalForm: LegalForm, taxMode: TaxMode): PartnerIdentityRow => {
+  const run = db.transaction((): PartnerIdentityRow => {
+    const identity = getPartnerIdentity(db, partner.partner_identity_id);
+    if (!identity) throw new PartnerIdentityError("PARTNER_IDENTITY_NOT_FOUND", 404);
+    if (identity.onboarding_state !== "INVITED" && identity.onboarding_state !== "PROFILE_SUBMITTED") {
+      throw new PartnerIdentityError("AGENT_REFERRALS_LEGAL_PROFILE_SUBMISSION_LOCKED", 409, identity.onboarding_state);
+    }
+    db.prepare(`UPDATE partner_identities SET submitted_legal_form = ?, submitted_tax_mode = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .run(legalForm, taxMode, partner.partner_identity_id);
+    recordPartnerIdentityEvent(db, partner.partner_identity_id, "LEGAL_PROFILE_SUBMITTED", "PARTNER", { legal_form: legalForm, tax_mode: taxMode });
+    if (identity.onboarding_state === "INVITED") {
+      transitionOnboardingStateInTransaction(db, partner.partner_identity_id, "PROFILE_SUBMITTED", identity.onboarding_revision, "PARTNER", "legal profile submitted");
+    }
+    return getPartnerIdentity(db, partner.partner_identity_id)!;
+  });
+  return run.immediate();
+};
+
+/**
+ * Admin-only verification: partner cannot self-verify (there is no partner-
+ * callable path to this function at all - it takes an AdminPrincipal).
+ * Commits the PR3 legal-profile evidence (preserving the frozen 4/2 matrix
+ * and legacy contractor_type projection unchanged) and the onboarding
+ * transition to PROFILE_VERIFIED atomically with it.
+ */
+export const verifyPartnerLegalProfile = (db: Database.Database, admin: AdminPrincipal, partnerIdentityId: string, reason: string): PartnerIdentityRow => {
+  const run = db.transaction((): PartnerIdentityRow => {
+    const identity = getPartnerIdentity(db, partnerIdentityId);
+    if (!identity) throw new PartnerIdentityError("PARTNER_IDENTITY_NOT_FOUND", 404);
+    if (identity.onboarding_state !== "PROFILE_SUBMITTED") throw new PartnerIdentityError("AGENT_REFERRALS_LEGAL_PROFILE_NOT_SUBMITTED", 409, identity.onboarding_state);
+    if (!identity.submitted_legal_form || !identity.submitted_tax_mode) throw new PartnerIdentityError("AGENT_REFERRALS_LEGAL_PROFILE_NOT_SUBMITTED", 409);
+
+    const revisionResult = applyAgentReferralsLegalProfile(db, {
+      agent_id: identity.agent_id,
+      legal_form: identity.submitted_legal_form as LegalForm,
+      tax_mode: identity.submitted_tax_mode as TaxMode,
+      reason,
+    });
+
+    db.prepare(`UPDATE partner_identities SET legal_profile_revision_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .run(revisionResult.revision_id, partnerIdentityId);
+    recordPartnerIdentityEvent(db, partnerIdentityId, "LEGAL_PROFILE_VERIFIED", "ADMIN", { legal_profile_revision_id: revisionResult.revision_id, reason });
+    transitionOnboardingStateInTransaction(db, partnerIdentityId, "PROFILE_VERIFIED", identity.onboarding_revision, "ADMIN", reason);
+    return getPartnerIdentity(db, partnerIdentityId)!;
+  });
+  return run.immediate();
+};
+
+/** Admin-only: no additional evidence beyond the transition itself - the authoritative pin of what was accepted lives in framework_acceptances. */
+export const issueFrameworkToPartner = (db: Database.Database, admin: AdminPrincipal, partnerIdentityId: string, reason: string): PartnerIdentityRow => {
+  const run = db.transaction((): PartnerIdentityRow => {
+    const identity = getPartnerIdentity(db, partnerIdentityId);
+    if (!identity) throw new PartnerIdentityError("PARTNER_IDENTITY_NOT_FOUND", 404);
+    transitionOnboardingStateInTransaction(db, partnerIdentityId, "FRAMEWORK_ISSUED", identity.onboarding_revision, "ADMIN", reason);
+    recordPartnerIdentityEvent(db, partnerIdentityId, "FRAMEWORK_ISSUED_TO_PARTNER", "ADMIN", { reason });
+    return getPartnerIdentity(db, partnerIdentityId)!;
+  });
+  return run.immediate();
+};

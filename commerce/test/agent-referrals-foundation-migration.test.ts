@@ -48,6 +48,19 @@ const at0042 = () => {
 const tableNames = (db: Database.Database) =>
   (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as { name: string }[]).map((r) => r.name);
 
+/**
+ * Scoped to exactly 0043, regardless of what later migrations (0044+) exist
+ * in the real migrations directory - migrate()'s default directory applies
+ * everything it finds there, which is correct for migrate() itself but
+ * would make a test asking "what does 0043 introduce" drift the moment a
+ * later PR adds its own migration.
+ */
+const migrateOnly0043 = (db: Database.Database) => {
+  const dir = mkdtempSync(join(tmpdir(), "agent-referrals-only-0043-"));
+  copyFileSync(join(MIGRATIONS, MIGRATION_FILE), join(dir, MIGRATION_FILE));
+  migrate(db, dir);
+};
+
 describe("0043 agent-referrals foundation migration", () => {
   it("applies exactly once through the real migrate() runner, ordinarily (FK stays ON)", () => {
     const db = at0042();
@@ -87,15 +100,15 @@ describe("0043 agent-referrals foundation migration", () => {
     ]);
   });
 
-  it("ships no 0044+ migration file", () => {
+  it("0043 itself introduces no migration beyond its own file (0044+ is PR4's own scope, checked in its own migration test file)", () => {
     const all = readdirSync(MIGRATIONS).filter((n) => n.endsWith(".sql"));
-    const beyond = all.filter((n) => n > "0043_agent_referrals_foundation.sql");
-    expect(beyond).toEqual([]);
+    const beyond0044 = all.filter((n) => n > "0044_partner_identity.sql");
+    expect(beyond0044).toEqual([]);
   });
 
   it("creates no agent_referrals_pilot_policy table or any capacity-shaped table", () => {
     const db = at0042();
-    migrate(db);
+    migrateOnly0043(db);
     const names = tableNames(db);
     expect(names).not.toContain("agent_referrals_pilot_policy");
     expect(names.some((name) => /pilot|capacity|cap_/i.test(name))).toBe(false);
@@ -104,7 +117,7 @@ describe("0043 agent-referrals foundation migration", () => {
   it("creates exactly the expected new tables and no partner/engagement/promo/reward business tables", () => {
     const db = at0042();
     const before = new Set(tableNames(db));
-    migrate(db);
+    migrateOnly0043(db);
     const after = tableNames(db);
     const introduced = after.filter((name) => !before.has(name) && name !== "schema_migrations");
     expect(introduced.sort()).toEqual([

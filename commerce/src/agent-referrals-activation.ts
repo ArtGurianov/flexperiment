@@ -42,9 +42,29 @@ export const AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS = [
   "ad_channel_policy_channel_revision_unique",
   "ad_channel_policy_immutable_guard",
   "ad_channel_policy_delete_guard",
+  // PR4 (0044): immutable-evidence guards. Each protects an evidence table
+  // this foundation's soundness depends on; a bare table with its guard
+  // dropped would silently accept a rewrite of filed identity/financial
+  // evidence, exactly the outbox-activation.ts counterexample this list
+  // exists to rule out. The mutable-state tables PR4 also ships (invite
+  // capabilities, OTP challenges, sessions, step-up grants, legal holds -
+  // all legitimately UPDATEd in the ordinary course of business) are
+  // deliberately NOT here; only append-only evidence belongs in this list.
+  "partner_identity_events_immutable_guard",
+  "partner_identity_events_delete_guard",
+  "framework_acceptances_immutable_guard",
+  "framework_acceptances_delete_guard",
+  "ord_reporting_delegations_immutable_guard",
+  "ord_reporting_delegations_delete_guard",
+  "payout_profile_revisions_immutable_guard",
+  "payout_profile_revisions_delete_guard",
+  "partner_identity_retention_policies_immutable_guard",
+  "partner_identity_retention_policies_delete_guard",
+  "partner_identity_destruction_events_immutable_guard",
+  "partner_identity_destruction_events_delete_guard",
 ] as const;
 
-const MIGRATION = "0043_agent_referrals_foundation.sql";
+const MIGRATIONS = ["0043_agent_referrals_foundation.sql", "0044_partner_identity.sql"] as const;
 
 export class AgentReferralsActivationError extends Error {
   constructor(readonly code: string, readonly status = 409, detail?: string) {
@@ -64,9 +84,12 @@ const missingSchemaObjects = (db: Database.Database): string[] => {
  * that cannot say which object is gone costs an operator a manual schema
  * diff, same rationale as outbox-activation.ts's assertSchemaPresent().
  */
+const missingMigrations = (db: Database.Database): string[] =>
+  MIGRATIONS.filter((migration) => !db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(migration));
+
 export const assertAgentReferralsFoundationSchemaPresent = (db: Database.Database): void => {
-  const applied = db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(MIGRATION);
-  if (!applied) throw new AgentReferralsActivationError("AGENT_REFERRALS_ACTIVATION_SCHEMA_MISSING", 409, MIGRATION);
+  const missingApplied = missingMigrations(db);
+  if (missingApplied.length) throw new AgentReferralsActivationError("AGENT_REFERRALS_ACTIVATION_SCHEMA_MISSING", 409, missingApplied.join(", "));
 
   const missing = missingSchemaObjects(db);
   if (missing.length) throw new AgentReferralsActivationError("AGENT_REFERRALS_ACTIVATION_SCHEMA_INCOMPLETE", 409, missing.join(", "));
@@ -79,8 +102,8 @@ export type AgentReferralsFoundationSchemaEvidence = {
 
 /** Read-only, non-throwing counterpart for a controller that wants evidence rather than an exception. */
 export const agentReferralsFoundationSchemaEvidence = (db: Database.Database): AgentReferralsFoundationSchemaEvidence => {
-  const applied = db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(MIGRATION);
-  if (!applied) return { present: false, missing: [MIGRATION] };
+  const missingApplied = missingMigrations(db);
+  if (missingApplied.length) return { present: false, missing: missingApplied };
   const missing = missingSchemaObjects(db);
   return { present: missing.length === 0, missing };
 };
