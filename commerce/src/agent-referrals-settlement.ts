@@ -61,6 +61,21 @@ export const settlementForEffectiveSnapshot = (db: Database.Database, effectiveR
   (db.prepare(`SELECT ${SETTLEMENT_COLUMNS} FROM reward_settlements WHERE effective_reward_snapshot_id = ? AND settlement_flow = 'AGENT_REFERRALS'`)
     .get(effectiveRewardSnapshotId) as AgentReferralsSettlementRow | undefined) ?? null;
 
+/**
+ * The engagement's PAID settlement, found independent of which E it
+ * currently pins - once a settlement is paid (MADE -> PENDING_DOCUMENT or
+ * SETTLED), no replacement settlement is EVER minted for that engagement
+ * again (the pre-payment supersession branch below only ever fires while
+ * `!madeAttempt`), so at most one row can ever match. Matching by "pins
+ * the CURRENT E" instead would silently stop finding it after the FIRST
+ * post-payment correction, since a paid settlement keeps pinning its
+ * original E forever while later corrections advance the engagement's
+ * current E past it - exactly the P1.9a defect this query exists to avoid.
+ */
+export const paidSettlementForEngagement = (db: Database.Database, engagementId: string): AgentReferralsSettlementRow | null =>
+  (db.prepare(`SELECT ${SETTLEMENT_COLUMNS} FROM reward_settlements WHERE engagement_id = ? AND settlement_flow = 'AGENT_REFERRALS' AND status IN ('PENDING_DOCUMENT', 'SETTLED')`)
+    .get(engagementId) as AgentReferralsSettlementRow | undefined) ?? null;
+
 type SettlementContext = {
   effective: EffectiveRewardSnapshotRow;
   engagement: EngagementRow;
@@ -208,20 +223,33 @@ export type CorrectPartnerRewardResult =
 /**
  * §B-6 correction/supersession orchestration - the ONE atomic command that
  * runs PR6's correctEngagementEffectiveRewardSnapshot (unchanged) together
- * with whatever it implies for THIS engagement's current AGENT_REFERRALS
+ * with whatever it implies for THIS engagement's AGENT_REFERRALS
  * settlement, if any:
  *
  *   no settlement yet               -> correction only, nothing else to do
+ *   settlement already paid (MADE)  -> old payment/settlement stay
+ *                                       untouched; immutable recovery-
+ *                                       exposure evidence is recorded -
+ *                                       every time, for every correction
+ *                                       that lands after payment, found by
+ *                                       the settlement's PAID status, never
+ *                                       by which E it currently pins (a
+ *                                       paid settlement's own E is frozen
+ *                                       at whatever it was when it was
+ *                                       minted, while the engagement's
+ *                                       current E keeps advancing)
  *   settlement PREPARED, no payment -> old CANCELLED_BEFORE_PAYMENT
  *                                       (reason SUPERSEDED_BY_REWARD_CORRECTION),
  *                                       new settlement if E2 > 0, none if E2 = 0
- *   settlement already paid (MADE)  -> old payment/settlement stay
- *                                       untouched; only recovery-exposure
- *                                       evidence is computed
  *   payment IN_PROGRESS/PAYOUT_UNKNOWN
  *   (unsettled, not yet MADE)       -> refused outright: cancelling
  *                                       underneath a live attempt is never
- *                                       automatic
+ *                                       automatic (the migration's own
+ *                                       trigger on engagement_effective_
+ *                                       reward_snapshots is the real
+ *                                       structural backstop for this -
+ *                                       this check exists only to fail
+ *                                       with a clean error code first)
  */
 export const correctPartnerRewardWithSettlement = (
   db: Database.Database,
@@ -232,27 +260,27 @@ export const correctPartnerRewardWithSettlement = (
   const run = db.transaction((): CorrectPartnerRewardResult => {
     const before = currentEffectiveRewardSnapshot(db, engagementId);
     if (!before) throw new SettlementError("AGENT_REFERRALS_REWARD_REGISTRY_NOT_FINALIZED", 409, engagementId);
-    const existingSettlement = settlementForEffectiveSnapshot(db, before.id);
 
+    const paidSettlement = paidSettlementForEngagement(db, engagementId);
+    if (paidSettlement) {
+      const correction = correctEngagementEffectiveRewardSnapshot(db, admin, engagementId, reason);
+      const exposure = recoveryExposure(db, engagementId);
+      // §B-6: "immutable correction + recovery-exposure evidence" - a
+      // real, append-only row pinning the exact figures THIS correction
+      // produced, written on EVERY post-MADE correction (not only the
+      // first - UNIQUE(effective_reward_snapshot_id) on the table makes a
+      // second row for the same correction impossible, but each new
+      // correction mints its own distinct E and therefore its own row).
+      db.prepare(`INSERT INTO engagement_recovery_exposure_evidence(id, engagement_id, settlement_id, effective_reward_snapshot_id, paid_net_kopecks, exposure_kopecks)
+        VALUES (?, ?, ?, ?, ?, ?)`)
+        .run(id(), engagementId, paidSettlement.id, correction.effective_snapshot_id, exposure.paid_net_kopecks, exposure.exposure_kopecks);
+      return { correction, settlement_action: "RECOVERY_EXPOSURE", exposure };
+    }
+
+    const existingSettlement = settlementForEffectiveSnapshot(db, before.id);
     if (existingSettlement) {
-      const madeAttempt = db.prepare("SELECT 1 FROM payment_attempts WHERE settlement_id = ? AND status = 'MADE'").get(existingSettlement.id);
       const unsettledAttempt = db.prepare("SELECT 1 FROM payment_attempts WHERE settlement_id = ? AND status IN ('IN_PROGRESS', 'PAYOUT_UNKNOWN')").get(existingSettlement.id);
-      if (!madeAttempt && unsettledAttempt) {
-        throw new SettlementError("AGENT_REFERRALS_CORRECTION_BLOCKED_PAYMENT_IN_FLIGHT", 409, existingSettlement.id);
-      }
-      if (madeAttempt) {
-        const correction = correctEngagementEffectiveRewardSnapshot(db, admin, engagementId, reason);
-        const exposure = recoveryExposure(db, engagementId);
-        // §B-6: "immutable correction + recovery-exposure evidence" - a
-        // real, append-only row pinning the exact figures this correction
-        // produced, not merely a value recoveryExposure() can recompute
-        // later from live data (which would drift if settlement_recoveries
-        // grows before anyone reads it).
-        db.prepare(`INSERT INTO engagement_recovery_exposure_evidence(id, engagement_id, settlement_id, effective_reward_snapshot_id, paid_net_kopecks, exposure_kopecks)
-          VALUES (?, ?, ?, ?, ?, ?)`)
-          .run(id(), engagementId, existingSettlement.id, correction.effective_snapshot_id, exposure.paid_net_kopecks, exposure.exposure_kopecks);
-        return { correction, settlement_action: "RECOVERY_EXPOSURE", exposure };
-      }
+      if (unsettledAttempt) throw new SettlementError("AGENT_REFERRALS_CORRECTION_BLOCKED_PAYMENT_IN_FLIGHT", 409, existingSettlement.id);
 
       const correction = correctEngagementEffectiveRewardSnapshot(db, admin, engagementId, reason);
       const cancelled = db.prepare(`UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT', cancellation_reason = 'SUPERSEDED_BY_REWARD_CORRECTION', cancelled_before_payment_at = ?

@@ -224,6 +224,22 @@ const seedAttempt = (db: Database.Database, settlementId: string, authorizationI
   return v.id;
 };
 
+/** A genuine CORRECTION E, superseding the named predecessor E, at the engagement's new current sequence - the real evidence the P0.2 cancellation guard now requires to exist BEFORE a settlement may be cancelled. */
+const seedCorrectionEffective = (db: Database.Database, f: ReturnType<typeof seedFixture>, opts: { id?: string; supersedes?: string; sequence?: number; total?: number } = {}) => {
+  const { id = "eff-2", supersedes = "eff-1", sequence = 2, total = 3000 } = opts;
+  db.prepare(`INSERT INTO engagement_effective_reward_snapshots(id, engagement_id, engagement_revision_id, base_registry_snapshot_id, supersedes_effective_snapshot_id, sequence, kind, reward_total_kopecks, source_state_hash, reason, created_by_admin_id, canonical_hash)
+    VALUES (?, ?, ?, ?, ?, ?, 'CORRECTION', ?, ?, 'correction', 'admin', ?)`)
+    .run(id, f.engagementId, f.revisionId, f.registryId, supersedes, sequence, total, `h-${id}`, `ch-${id}`);
+  return id;
+};
+
+/** Cancels a PREPARED settlement the way correctPartnerRewardWithSettlement's own supersession branch does: mint the real correction E FIRST, then cancel - the exact order the P0.2 guard now requires. */
+const cancelForCorrection = (db: Database.Database, f: ReturnType<typeof seedFixture>, settlementId: string, correctionOpts: { id?: string; supersedes?: string; sequence?: number; total?: number } = {}) => {
+  const effId = seedCorrectionEffective(db, f, correctionOpts);
+  db.prepare("UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT', cancellation_reason = 'SUPERSEDED_BY_REWARD_CORRECTION' WHERE id = ?").run(settlementId);
+  return effId;
+};
+
 describe("0047 act/payment/settlement migration", () => {
   it("applies exactly once through the real migrate() runner, ordinarily (FK stays ON)", () => {
     const db = at0046();
@@ -284,6 +300,7 @@ describe("0047 act/payment/settlement migration", () => {
     const pr7Objects = [
       "reward_settlements_authority_tuple_consistency_guard", "reward_settlements_authority_columns_immutable_guard", "reward_settlements_effective_snapshot_unique",
       "reward_settlements_agent_referrals_status_transition_guard", "reward_settlements_agent_referrals_terminal_immutable_guard",
+      "engagement_effective_reward_snapshots_no_correction_during_live_payment_guard",
       "settlement_step_up_grants",
       "settlement_acts", "settlement_acts_relational_consistency_guard", "settlement_acts_fields_immutable_guard", "settlement_acts_presented_one_way_guard", "settlement_acts_delete_guard",
       "settlement_act_acceptances", "settlement_act_acceptances_relational_consistency_guard", "settlement_act_acceptances_immutable_guard", "settlement_act_acceptances_delete_guard",
@@ -499,11 +516,13 @@ describe("0047 act/payment/settlement migration", () => {
       seedSettlement(db, f);
       expect(() => db.prepare("UPDATE reward_settlements SET amount_kopecks = 1 WHERE id = 'settle-1'").run()).toThrow(/REWARD_SETTLEMENT_AUTHORITY_COLUMNS_IMMUTABLE/);
       expect(() => db.prepare("UPDATE reward_settlements SET engagement_id = 'eng-2' WHERE id = 'settle-1'").run()).toThrow(/REWARD_SETTLEMENT_AUTHORITY_COLUMNS_IMMUTABLE/);
-      // A LEGAL status transition (PREPARED -> CANCELLED_BEFORE_PAYMENT) is
-      // not blocked by the authority-columns guard - only the AGENT_
-      // REFERRALS FSM guard governs `status` itself (see the dedicated FSM
-      // describe block below for its own coverage).
-      expect(() => db.prepare("UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT', cancellation_reason = 'SUPERSEDED_BY_REWARD_CORRECTION' WHERE id = 'settle-1'").run()).not.toThrow();
+      // P1.3: contractor_type_snapshot is checked at INSERT but was missing from this guard's WHEN clause - raw-UPDATE-able post-insert.
+      expect(() => db.prepare("UPDATE reward_settlements SET contractor_type_snapshot = 'INDIVIDUAL_ENTREPRENEUR' WHERE id = 'settle-1'").run()).toThrow(/REWARD_SETTLEMENT_AUTHORITY_COLUMNS_IMMUTABLE/);
+      // A LEGAL status transition (PREPARED -> CANCELLED_BEFORE_PAYMENT,
+      // backed by a genuine correction) is not blocked by the authority-
+      // columns guard - only the AGENT_REFERRALS FSM guard governs
+      // `status` itself (see the dedicated FSM describe block below).
+      expect(() => cancelForCorrection(db, f, "settle-1")).not.toThrow();
     });
 
     describe("supersession lineage", () => {
@@ -512,9 +531,7 @@ describe("0047 act/payment/settlement migration", () => {
         migrate(db);
         const f = seedFixture(db);
         seedSettlement(db, f, { id: "settle-1", amount_kopecks: 9000 });
-        db.prepare("UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT', cancellation_reason = 'SUPERSEDED_BY_REWARD_CORRECTION' WHERE id = 'settle-1'").run();
-        db.prepare(`INSERT INTO engagement_effective_reward_snapshots(id, engagement_id, engagement_revision_id, base_registry_snapshot_id, supersedes_effective_snapshot_id, sequence, kind, reward_total_kopecks, source_state_hash, reason, created_by_admin_id, canonical_hash)
-          VALUES ('eff-2', ?, ?, ?, 'eff-1', 2, 'CORRECTION', 3000, 'h2', 'correction', 'admin', 'ch2')`).run(f.engagementId, f.revisionId, f.registryId);
+        cancelForCorrection(db, f, "settle-1");
         expect(() => seedSettlement(db, f, { id: "settle-2", amount_kopecks: 3000, effective_reward_snapshot_id: "eff-2", supersedes_settlement_id: "settle-1" })).not.toThrow();
       });
 
@@ -533,8 +550,8 @@ describe("0047 act/payment/settlement migration", () => {
         migrate(db);
         const f = seedFixture(db);
         seedSettlement(db, f, { id: "settle-1" });
-        db.prepare("UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT', cancellation_reason = 'SUPERSEDED_BY_REWARD_CORRECTION' WHERE id = 'settle-1'").run();
-        // eff-2 supersedes nothing (unrelated INITIAL-shaped row would violate other CHECKs); instead mint an unrelated engagement's own chain and try to attach it here.
+        cancelForCorrection(db, f, "settle-1"); // mints the REAL eff-2 for settle-1's own lineage, then cancels
+        // The attempted settle-2 below points at an UNRELATED engagement's own chain instead of the real eff-2 - proving wrong lineage specifically, not merely "no correction happened".
         seedAgent(db, "agent-2"); const lp2 = seedLegalProfileRevision(db, "agent-2", "lp-2", "NPD"); seedPartnerIdentity(db, "partner-2", "agent-2", lp2);
         seedPayoutProfileRevision(db, "partner-2", "pp-2", 1);
         seedOccurrence(db, "occ-2"); markOccurrenceTerminal(db, "occ-2", "COMPLETED");
@@ -550,10 +567,10 @@ describe("0047 act/payment/settlement migration", () => {
   });
 
   describe("reward_settlements: AGENT_REFERRALS-only status FSM (P0.2)", () => {
-    /** Reach CANCELLED_BEFORE_PAYMENT legitimately through the guard, no shortcuts. */
+    /** Reach CANCELLED_BEFORE_PAYMENT legitimately through the guard, no shortcuts - a real correction E is minted first. */
     const settleCancelled = (db: Database.Database, f: ReturnType<typeof seedFixture>) => {
       seedSettlement(db, f);
-      db.prepare("UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT', cancellation_reason = 'SUPERSEDED_BY_REWARD_CORRECTION' WHERE id = 'settle-1'").run();
+      cancelForCorrection(db, f, "settle-1");
     };
 
     it("PREPARED -> SETTLED without any MADE attempt is refused (OTHER tax mode)", () => {
@@ -629,6 +646,57 @@ describe("0047 act/payment/settlement migration", () => {
       expect(() => db.prepare("UPDATE reward_settlements SET cancellation_reason = 'SUPERSEDED_BY_REWARD_CORRECTION' WHERE id = 'settle-1'").run()).toThrow(/REWARD_SETTLEMENT_TRANSITION_ILLEGAL/);
     });
 
+    it("a fabricated CANCELLED_BEFORE_PAYMENT with a plausible reason string but no real correction is refused (P0.2)", () => {
+      const db = at0046(); migrate(db);
+      const f = seedFixture(db);
+      seedSettlement(db, f);
+      // No CORRECTION E exists at all - only the right-looking reason string.
+      expect(() => db.prepare("UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT', cancellation_reason = 'SUPERSEDED_BY_REWARD_CORRECTION' WHERE id = 'settle-1'").run())
+        .toThrow(/REWARD_SETTLEMENT_TRANSITION_ILLEGAL/);
+    });
+
+    it("cancellation is refused while a live (IN_PROGRESS) payment attempt exists, even with a genuine correction E on file (P0.2)", () => {
+      const db = at0046(); migrate(db);
+      const f = seedFixture(db, { taxMode: "OTHER" });
+      seedSettlement(db, f); seedAcceptedAct(db, f, "settle-1"); seedAuthorization(db, f, "settle-1", "act-1", { npd_status_check_id: null });
+      seedAttempt(db, "settle-1", "auth-1", { status: "IN_PROGRESS" });
+      // The P0.1 correction-side guard already refuses minting a CORRECTION while this attempt is live - drop it
+      // here so this test can isolate the CANCELLATION guard's OWN independent live-attempt check (defense in depth).
+      db.exec("DROP TRIGGER engagement_effective_reward_snapshots_no_correction_during_live_payment_guard");
+      seedCorrectionEffective(db, f);
+      expect(() => db.prepare("UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT', cancellation_reason = 'SUPERSEDED_BY_REWARD_CORRECTION' WHERE id = 'settle-1'").run())
+        .toThrow(/REWARD_SETTLEMENT_TRANSITION_ILLEGAL/);
+    });
+
+    it("cancellation is refused while payout is PAYOUT_UNKNOWN, even with a genuine correction E on file (P0.2)", () => {
+      const db = at0046(); migrate(db);
+      const f = seedFixture(db, { taxMode: "OTHER" });
+      seedSettlement(db, f); seedAcceptedAct(db, f, "settle-1"); seedAuthorization(db, f, "settle-1", "act-1", { npd_status_check_id: null });
+      seedAttempt(db, "settle-1", "auth-1", { status: "PAYOUT_UNKNOWN" });
+      db.exec("DROP TRIGGER engagement_effective_reward_snapshots_no_correction_during_live_payment_guard");
+      seedCorrectionEffective(db, f);
+      expect(() => db.prepare("UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT', cancellation_reason = 'SUPERSEDED_BY_REWARD_CORRECTION' WHERE id = 'settle-1'").run())
+        .toThrow(/REWARD_SETTLEMENT_TRANSITION_ILLEGAL/);
+    });
+
+    it("cancellation is refused once the settlement has a MADE attempt, even with a genuine correction E on file (P0.2)", () => {
+      const db = at0046(); migrate(db);
+      const f = seedFixture(db, { taxMode: "OTHER" });
+      seedSettlement(db, f); seedAcceptedAct(db, f, "settle-1"); seedAuthorization(db, f, "settle-1", "act-1", { npd_status_check_id: null });
+      seedAttempt(db, "settle-1", "auth-1", { status: "MADE" });
+      seedCorrectionEffective(db, f);
+      expect(() => db.prepare("UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT', cancellation_reason = 'SUPERSEDED_BY_REWARD_CORRECTION' WHERE id = 'settle-1'").run())
+        .toThrow(/REWARD_SETTLEMENT_TRANSITION_ILLEGAL/);
+    });
+
+    it("a prior CONFIRMED_NOT_MADE attempt does not block a legitimate cancellation backed by a real correction (P0.2)", () => {
+      const db = at0046(); migrate(db);
+      const f = seedFixture(db, { taxMode: "OTHER" });
+      seedSettlement(db, f); seedAcceptedAct(db, f, "settle-1"); seedAuthorization(db, f, "settle-1", "act-1", { npd_status_check_id: null });
+      seedAttempt(db, "settle-1", "auth-1", { status: "CONFIRMED_NOT_MADE" });
+      expect(() => cancelForCorrection(db, f, "settle-1")).not.toThrow();
+    });
+
     it("this FSM guard never fires for LEGACY (or historical-NULL) rows - legacy's own four-state machine is untouched", () => {
       const db = at0046(); migrate(db);
       seedAgent(db); seedOccurrence(db);
@@ -637,6 +705,41 @@ describe("0047 act/payment/settlement migration", () => {
       // The exact same "no evidence" transition that is illegal for AGENT_REFERRALS succeeds unconditionally for a LEGACY (NULL-flow) row.
       expect(() => db.prepare("UPDATE reward_settlements SET status = 'SETTLED' WHERE id = 'legacy-1'").run()).not.toThrow();
       expect(() => db.prepare("UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT' WHERE id = 'legacy-1'").run()).not.toThrow();
+    });
+  });
+
+  describe("engagement_effective_reward_snapshots: no CORRECTION during a live payment (P0.1)", () => {
+    it("a bare/direct CORRECTION insert is refused while an IN_PROGRESS payment attempt exists for the engagement", () => {
+      const db = at0046(); migrate(db);
+      const f = seedFixture(db, { taxMode: "OTHER" });
+      seedSettlement(db, f); seedAcceptedAct(db, f, "settle-1"); seedAuthorization(db, f, "settle-1", "act-1", { npd_status_check_id: null });
+      seedAttempt(db, "settle-1", "auth-1", { status: "IN_PROGRESS" });
+      expect(() => seedCorrectionEffective(db, f)).toThrow(/AGENT_REFERRALS_CORRECTION_BLOCKED_PAYMENT_IN_FLIGHT/);
+      expect((db.prepare("SELECT MAX(sequence) AS s FROM engagement_effective_reward_snapshots WHERE engagement_id = ?").get(f.engagementId) as { s: number }).s).toBe(1); // E was NOT advanced
+    });
+
+    it("a bare/direct CORRECTION insert is refused while payout is PAYOUT_UNKNOWN for the engagement", () => {
+      const db = at0046(); migrate(db);
+      const f = seedFixture(db, { taxMode: "OTHER" });
+      seedSettlement(db, f); seedAcceptedAct(db, f, "settle-1"); seedAuthorization(db, f, "settle-1", "act-1", { npd_status_check_id: null });
+      seedAttempt(db, "settle-1", "auth-1", { status: "PAYOUT_UNKNOWN" });
+      expect(() => seedCorrectionEffective(db, f)).toThrow(/AGENT_REFERRALS_CORRECTION_BLOCKED_PAYMENT_IN_FLIGHT/);
+      expect((db.prepare("SELECT MAX(sequence) AS s FROM engagement_effective_reward_snapshots WHERE engagement_id = ?").get(f.engagementId) as { s: number }).s).toBe(1);
+    });
+
+    it("a CORRECTION insert succeeds once the attempt has resolved to MADE (the settlement-aware recovery-exposure path remains legal)", () => {
+      const db = at0046(); migrate(db);
+      const f = seedFixture(db, { taxMode: "OTHER" });
+      seedSettlement(db, f); seedAcceptedAct(db, f, "settle-1"); seedAuthorization(db, f, "settle-1", "act-1", { npd_status_check_id: null });
+      seedAttempt(db, "settle-1", "auth-1", { status: "MADE" });
+      expect(() => seedCorrectionEffective(db, f)).not.toThrow();
+    });
+
+    it("a CORRECTION insert succeeds when the settlement has no payment attempt on file at all", () => {
+      const db = at0046(); migrate(db);
+      const f = seedFixture(db, { taxMode: "OTHER" });
+      seedSettlement(db, f);
+      expect(() => seedCorrectionEffective(db, f)).not.toThrow();
     });
   });
 
@@ -748,20 +851,18 @@ describe("0047 act/payment/settlement migration", () => {
     it("refuses when the settlement is not PREPARED (e.g. already CANCELLED_BEFORE_PAYMENT)", () => {
       const db = at0046(); migrate(db);
       const f = readyForAuth(db);
-      db.prepare("UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT', cancellation_reason = 'SUPERSEDED_BY_REWARD_CORRECTION' WHERE id = 'settle-1'").run();
+      cancelForCorrection(db, f, "settle-1");
       expect(() => seedAuthorization(db, f, "settle-1", "act-1")).toThrow(/PAYMENT_AUTHORIZATION_RELATIONAL_INCONSISTENT/);
     });
 
     it("refuses when a LATER settlement has already superseded this one, even if settle-1's own status were somehow still PREPARED", () => {
       const db = at0046(); migrate(db);
       const f = readyForAuth(db);
-      // Build a GENUINE supersession chain (the only way settlement_id-2 can legally point at settlement_id-1 at all), then flip settle-1's status
-      // back to PREPARED by temporarily dropping the terminal-immutability guard (the only way to reach this otherwise-unrepresentable state) -
-      // isolating this test to the payment_authorizations guard's OWN "not already superseded" clause, independent of settle-1's own status check
-      // proven separately above.
-      db.prepare("UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT', cancellation_reason = 'SUPERSEDED_BY_REWARD_CORRECTION' WHERE id = 'settle-1'").run();
-      db.prepare(`INSERT INTO engagement_effective_reward_snapshots(id, engagement_id, engagement_revision_id, base_registry_snapshot_id, supersedes_effective_snapshot_id, sequence, kind, reward_total_kopecks, source_state_hash, reason, created_by_admin_id, canonical_hash)
-        VALUES ('eff-2', ?, ?, ?, 'eff-1', 2, 'CORRECTION', 3000, 'h2', 'correction', 'admin', 'ch2')`).run(f.engagementId, f.revisionId, f.registryId);
+      // Build a GENUINE supersession chain (the only way settlement_id-2 can legally point at settlement_id-1 at all - mints the real eff-2 first,
+      // then cancels, per the P0.2 guard), then flip settle-1's status back to PREPARED by temporarily dropping the terminal-immutability guard
+      // (the only way to reach this otherwise-unrepresentable state) - isolating this test to the payment_authorizations guard's OWN "not already
+      // superseded" clause, independent of settle-1's own status check proven separately above.
+      cancelForCorrection(db, f, "settle-1");
       seedSettlement(db, f, { id: "settle-2", amount_kopecks: 3000, effective_reward_snapshot_id: "eff-2", supersedes_settlement_id: "settle-1" });
       db.exec("DROP TRIGGER reward_settlements_agent_referrals_terminal_immutable_guard");
       db.exec("DROP TRIGGER reward_settlements_agent_referrals_status_transition_guard");
@@ -866,6 +967,42 @@ describe("0047 act/payment/settlement migration", () => {
     it("amount disagreeing with its own authorization is refused", () => {
       const db = at0046(); migrate(db); readyForAttempt(db);
       expect(() => seedAttempt(db, "settle-1", "auth-1", { amount_kopecks: 1 })).toThrow(/PAYMENT_ATTEMPT_RELATIONAL_INCONSISTENT/);
+    });
+
+    it("a non-IN_PROGRESS row with an empty-string evidence_ref is refused - P1.5, '' passes IS NOT NULL but is not real evidence", () => {
+      const db = at0046(); migrate(db); readyForAttempt(db);
+      expect(() => db.prepare(`INSERT INTO payment_attempts(id, payment_authorization_id, settlement_id, status, amount_kopecks, made_at, evidence_ref)
+        VALUES ('a', 'auth-1', 'settle-1', 'MADE', 9000, CURRENT_TIMESTAMP, '')`).run()).toThrow(/CHECK constraint failed/);
+    });
+
+    it("an IN_PROGRESS row with any outcome timestamp already set is refused - P1.5 exact-shape CHECK", () => {
+      const db = at0046(); migrate(db); readyForAttempt(db);
+      expect(() => db.prepare(`INSERT INTO payment_attempts(id, payment_authorization_id, settlement_id, status, amount_kopecks, made_at)
+        VALUES ('a', 'auth-1', 'settle-1', 'IN_PROGRESS', 9000, CURRENT_TIMESTAMP)`).run()).toThrow(/CHECK constraint failed/);
+    });
+
+    it("a MADE row that also sets confirmed_not_made_at (contradictory outcome) is refused - P1.5 exact-shape CHECK", () => {
+      const db = at0046(); migrate(db); readyForAttempt(db);
+      expect(() => db.prepare(`INSERT INTO payment_attempts(id, payment_authorization_id, settlement_id, status, amount_kopecks, made_at, confirmed_not_made_at, evidence_ref)
+        VALUES ('a', 'auth-1', 'settle-1', 'MADE', 9000, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'ev')`).run()).toThrow(/CHECK constraint failed/);
+    });
+
+    it("a CONFIRMED_NOT_MADE row that also sets made_at (contradictory outcome) is refused - P1.5 exact-shape CHECK", () => {
+      const db = at0046(); migrate(db); readyForAttempt(db);
+      expect(() => db.prepare(`INSERT INTO payment_attempts(id, payment_authorization_id, settlement_id, status, amount_kopecks, made_at, confirmed_not_made_at, evidence_ref)
+        VALUES ('a', 'auth-1', 'settle-1', 'CONFIRMED_NOT_MADE', 9000, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'ev')`).run()).toThrow(/CHECK constraint failed/);
+    });
+
+    it("a PAYOUT_UNKNOWN row that also sets made_at (contradictory outcome) is refused - P1.5 exact-shape CHECK", () => {
+      const db = at0046(); migrate(db); readyForAttempt(db);
+      expect(() => db.prepare(`INSERT INTO payment_attempts(id, payment_authorization_id, settlement_id, status, amount_kopecks, made_at, payout_unknown_at, evidence_ref)
+        VALUES ('a', 'auth-1', 'settle-1', 'PAYOUT_UNKNOWN', 9000, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'ev')`).run()).toThrow(/CHECK constraint failed/);
+    });
+
+    it("well-formed rows for every terminal state's exact shape succeed, including MADE/CONFIRMED_NOT_MADE arriving via a prior PAYOUT_UNKNOWN stop", () => {
+      const db = at0046(); migrate(db); readyForAttempt(db);
+      expect(() => db.prepare(`INSERT INTO payment_attempts(id, payment_authorization_id, settlement_id, status, amount_kopecks, payout_unknown_at, made_at, evidence_ref)
+        VALUES ('a', 'auth-1', 'settle-1', 'MADE', 9000, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'reconciled ok')`).run()).not.toThrow();
     });
 
     it("at most one active (non-CONFIRMED_NOT_MADE) attempt per settlement - the partial UNIQUE index", () => {
@@ -982,11 +1119,9 @@ describe("0047 act/payment/settlement migration", () => {
       const db = at0046(); migrate(db);
       const f = seedFixture(db); // R/E1 = 9000
       seedSettlement(db, f); // settle-1, PREPARED, pins eff-1 (9000)
-      // The correction that drives E to zero, exactly as correctPartnerRewardWithSettlement's CANCELLED_ZERO branch performs it: cancel the
-      // now-stale settlement, THEN mint the new (zero) current E.
-      db.prepare("UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT', cancellation_reason = 'SUPERSEDED_BY_REWARD_CORRECTION' WHERE id = 'settle-1'").run();
-      db.prepare(`INSERT INTO engagement_effective_reward_snapshots(id, engagement_id, engagement_revision_id, base_registry_snapshot_id, supersedes_effective_snapshot_id, sequence, kind, reward_total_kopecks, source_state_hash, reason, created_by_admin_id, canonical_hash)
-        VALUES ('eff-2', ?, ?, ?, 'eff-1', 2, 'CORRECTION', 0, 'h2', 'correction', 'admin', 'ch2')`).run(f.engagementId, f.revisionId, f.registryId);
+      // The correction that drives E to zero, exactly as correctPartnerRewardWithSettlement's CANCELLED_ZERO branch performs it: mint the new
+      // (zero) current E FIRST, THEN cancel the now-stale settlement (the P0.2 guard requires this exact order).
+      cancelForCorrection(db, f, "settle-1", { total: 0 });
       expect(() => db.prepare(`INSERT INTO engagement_zero_reward_closures(id, engagement_id, engagement_revision_id, base_registry_snapshot_id, effective_reward_snapshot_id, reward_total_kopecks, closure_reason, occurrence_fulfillment_status, service_period_start_at, service_period_end_at, reporting_policy_version, command_id, canonical_hash, closed_by_admin_id)
         VALUES ('z1', ?, ?, ?, 'eff-2', 0, 'CORRECTED_TO_ZERO', 'COMPLETED', '2020-01-01T00:00:00.000Z', '2020-02-01T00:00:00.000Z', 1, 'cmd-1', 'ch', 'admin')`)
         .run(f.engagementId, f.revisionId, f.registryId)).not.toThrow();
@@ -1039,8 +1174,9 @@ describe("0047 act/payment/settlement migration", () => {
       const f = seedFixture(db, { taxMode: "OTHER" });
       seedSettlement(db, f); seedAcceptedAct(db, f, "settle-1"); seedAuthorization(db, f, "settle-1", "act-1", { npd_status_check_id: null });
       seedAttempt(db, "settle-1", "auth-1", { status: "MADE" });
+      const correctionId = seedCorrectionEffective(db, f);
       expect(() => db.prepare(`INSERT INTO engagement_recovery_exposure_evidence(id, engagement_id, settlement_id, effective_reward_snapshot_id, paid_net_kopecks, exposure_kopecks)
-        VALUES ('rec-1', ?, 'settle-1', ?, 9000, 4125)`).run(f.engagementId, f.effectiveId)).not.toThrow();
+        VALUES ('rec-1', ?, 'settle-1', ?, 9000, 4125)`).run(f.engagementId, correctionId)).not.toThrow();
     });
 
     it("refuses when the named settlement does not actually belong to the named engagement", () => {
@@ -1057,8 +1193,9 @@ describe("0047 act/payment/settlement migration", () => {
       const f = seedFixture(db, { taxMode: "OTHER" });
       seedSettlement(db, f); seedAcceptedAct(db, f, "settle-1"); seedAuthorization(db, f, "settle-1", "act-1", { npd_status_check_id: null });
       seedAttempt(db, "settle-1", "auth-1", { status: "MADE" });
+      const correctionId = seedCorrectionEffective(db, f);
       expect(() => db.prepare(`INSERT INTO engagement_recovery_exposure_evidence(id, engagement_id, settlement_id, effective_reward_snapshot_id, paid_net_kopecks, exposure_kopecks)
-        VALUES ('rec-1', ?, 'settle-1', ?, -1, 0)`).run(f.engagementId, f.effectiveId)).toThrow(/CHECK constraint failed/);
+        VALUES ('rec-1', ?, 'settle-1', ?, -1, 0)`).run(f.engagementId, correctionId)).toThrow(/CHECK constraint failed/);
     });
 
     it("is immutable and delete-protected", () => {
@@ -1066,10 +1203,43 @@ describe("0047 act/payment/settlement migration", () => {
       const f = seedFixture(db, { taxMode: "OTHER" });
       seedSettlement(db, f); seedAcceptedAct(db, f, "settle-1"); seedAuthorization(db, f, "settle-1", "act-1", { npd_status_check_id: null });
       seedAttempt(db, "settle-1", "auth-1", { status: "MADE" });
+      const correctionId = seedCorrectionEffective(db, f);
       db.prepare(`INSERT INTO engagement_recovery_exposure_evidence(id, engagement_id, settlement_id, effective_reward_snapshot_id, paid_net_kopecks, exposure_kopecks)
-        VALUES ('rec-1', ?, 'settle-1', ?, 9000, 4125)`).run(f.engagementId, f.effectiveId);
+        VALUES ('rec-1', ?, 'settle-1', ?, 9000, 4125)`).run(f.engagementId, correctionId);
       expect(() => db.prepare("UPDATE engagement_recovery_exposure_evidence SET exposure_kopecks = 0 WHERE id = 'rec-1'").run()).toThrow(/ENGAGEMENT_RECOVERY_EXPOSURE_EVIDENCE_IMMUTABLE/);
       expect(() => db.prepare("DELETE FROM engagement_recovery_exposure_evidence WHERE id = 'rec-1'").run()).toThrow(/ENGAGEMENT_RECOVERY_EXPOSURE_EVIDENCE_IMMUTABLE/);
+    });
+
+    it("refuses a second evidence row naming the same effective_reward_snapshot_id (P1.9b UNIQUE)", () => {
+      const db = at0046(); migrate(db);
+      const f = seedFixture(db, { taxMode: "OTHER" });
+      seedSettlement(db, f); seedAcceptedAct(db, f, "settle-1"); seedAuthorization(db, f, "settle-1", "act-1", { npd_status_check_id: null });
+      seedAttempt(db, "settle-1", "auth-1", { status: "MADE" });
+      const correctionId = seedCorrectionEffective(db, f);
+      db.prepare(`INSERT INTO engagement_recovery_exposure_evidence(id, engagement_id, settlement_id, effective_reward_snapshot_id, paid_net_kopecks, exposure_kopecks)
+        VALUES ('rec-1', ?, 'settle-1', ?, 9000, 4125)`).run(f.engagementId, correctionId);
+      expect(() => db.prepare(`INSERT INTO engagement_recovery_exposure_evidence(id, engagement_id, settlement_id, effective_reward_snapshot_id, paid_net_kopecks, exposure_kopecks)
+        VALUES ('rec-2', ?, 'settle-1', ?, 9000, 4125)`).run(f.engagementId, correctionId)).toThrow(/UNIQUE constraint failed/);
+    });
+
+    it("refuses when the named effective snapshot is not a genuine CORRECTION (P1.9b kind guard)", () => {
+      const db = at0046(); migrate(db);
+      const f = seedFixture(db, { taxMode: "OTHER" });
+      seedSettlement(db, f); seedAcceptedAct(db, f, "settle-1"); seedAuthorization(db, f, "settle-1", "act-1", { npd_status_check_id: null });
+      seedAttempt(db, "settle-1", "auth-1", { status: "MADE" });
+      // f.effectiveId is the INITIAL E, not a CORRECTION - must be refused even though it belongs to the same engagement.
+      expect(() => db.prepare(`INSERT INTO engagement_recovery_exposure_evidence(id, engagement_id, settlement_id, effective_reward_snapshot_id, paid_net_kopecks, exposure_kopecks)
+        VALUES ('rec-1', ?, 'settle-1', ?, 9000, 4125)`).run(f.engagementId, f.effectiveId)).toThrow(/ENGAGEMENT_RECOVERY_EXPOSURE_EVIDENCE_RELATIONAL_INCONSISTENT/);
+    });
+
+    it("refuses when the named settlement has no MADE payment attempt (P1.9b MADE-attempt guard)", () => {
+      const db = at0046(); migrate(db);
+      const f = seedFixture(db, { taxMode: "OTHER" });
+      seedSettlement(db, f); seedAcceptedAct(db, f, "settle-1"); seedAuthorization(db, f, "settle-1", "act-1", { npd_status_check_id: null });
+      // No payment_attempts row at all - the settlement was never actually paid.
+      const correctionId = seedCorrectionEffective(db, f);
+      expect(() => db.prepare(`INSERT INTO engagement_recovery_exposure_evidence(id, engagement_id, settlement_id, effective_reward_snapshot_id, paid_net_kopecks, exposure_kopecks)
+        VALUES ('rec-1', ?, 'settle-1', ?, 9000, 4125)`).run(f.engagementId, correctionId)).toThrow(/ENGAGEMENT_RECOVERY_EXPOSURE_EVIDENCE_RELATIONAL_INCONSISTENT/);
     });
   });
 });

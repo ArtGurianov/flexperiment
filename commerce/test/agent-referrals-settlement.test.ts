@@ -226,6 +226,40 @@ describe("correctPartnerRewardWithSettlement: §B-6 correction/supersession orch
     });
   });
 
+  it("a SECOND post-MADE correction produces a SECOND evidence row, pinning the new E each time, while S1 stays immutable throughout (P1.9a)", () => {
+    const { db, domain } = fresh(); track(db);
+    const { p1, engagementId, order, settlement } = setup(db, domain);
+    const act = acceptedAct(db, p1.partner, settlement);
+    const authorization = beginPayment(db, admin, settlement.id);
+    void act;
+    recordPaymentMade(db, admin, authorization.attempt.id, "manual-transfer-1");
+
+    db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 10000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
+      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+    const first = correctPartnerRewardWithSettlement(db, admin, engagementId, "first late refund");
+    expect(first.settlement_action).toBe("RECOVERY_EXPOSURE");
+    if (first.settlement_action !== "RECOVERY_EXPOSURE") throw new Error("unreachable");
+
+    // A second, later refund - the paid settlement S1's own pinned E never changes, only the engagement's current E advances again.
+    db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 5000, 'later', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
+      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+    const second = correctPartnerRewardWithSettlement(db, admin, engagementId, "second later refund");
+    expect(second.settlement_action).toBe("RECOVERY_EXPOSURE");
+    if (second.settlement_action !== "RECOVERY_EXPOSURE") throw new Error("unreachable");
+
+    const evidence = recoveryExposureEvidenceForEngagement(db, engagementId);
+    expect(evidence).toHaveLength(2);
+    expect(evidence[0].effective_reward_snapshot_id).toBe(first.correction.effective_snapshot_id);
+    expect(evidence[1].effective_reward_snapshot_id).toBe(second.correction.effective_snapshot_id);
+    expect(evidence[0].effective_reward_snapshot_id).not.toBe(evidence[1].effective_reward_snapshot_id);
+    expect(evidence[0].settlement_id).toBe(settlement.id);
+    expect(evidence[1].settlement_id).toBe(settlement.id);
+
+    // S1 itself never moved.
+    const paid = db.prepare("SELECT status, effective_reward_snapshot_id FROM reward_settlements WHERE id = ?").get(settlement.id);
+    expect(paid).toEqual({ status: "SETTLED", effective_reward_snapshot_id: settlement.effective_reward_snapshot_id });
+  });
+
   it("payment IN_PROGRESS (unsettled, not yet MADE): correction is refused outright, never cancels underneath a live attempt", () => {
     const { db, domain } = fresh(); track(db);
     const { p1, engagementId, order, settlement } = setup(db, domain);

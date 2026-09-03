@@ -54,8 +54,16 @@ describe("beginPayment: full recheck in one transaction", () => {
   });
 
   it("refuses when the settlement is not PREPARED", () => {
-    const { db, settlement } = readyForPayment();
-    db.prepare("UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT' WHERE id = ?").run(settlement.id);
+    const { db, settlement, engagementId } = readyForPayment();
+    // A genuine correction supersedes this settlement and cancels it - the P0.2 guard now refuses any
+    // fabricated CANCELLED_BEFORE_PAYMENT that isn't backed by a real correction, so drive this the real way
+    // via a late refund that actually changes the reward's source state hash.
+    const registry = db.prepare("SELECT source_order_ids_json FROM engagement_reward_registry_snapshot WHERE engagement_id = ?").get(engagementId) as { source_order_ids_json: string };
+    const orderId = (JSON.parse(registry.source_order_ids_json) as string[])[0];
+    const payment = db.prepare("SELECT id FROM payments WHERE order_id = ?").get(orderId) as { id: string };
+    db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 10000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
+      .run(randomUUID(), randomUUID(), orderId, payment.id, randomUUID());
+    correctPartnerRewardWithSettlement(db, admin, engagementId, "test cancellation");
     expect(() => beginPayment(db, admin, settlement.id)).toThrow(/AGENT_REFERRALS_PAYMENT_SETTLEMENT_NOT_PAYABLE/);
   });
 

@@ -172,6 +172,7 @@ export const AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS = [
   "reward_settlements_effective_snapshot_unique",
   "reward_settlements_agent_referrals_status_transition_guard",
   "reward_settlements_agent_referrals_terminal_immutable_guard",
+  "engagement_effective_reward_snapshots_no_correction_during_live_payment_guard",
   "settlement_step_up_grants",
   "settlement_acts",
   "settlement_acts_relational_consistency_guard",
