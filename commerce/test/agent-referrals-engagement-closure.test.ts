@@ -14,7 +14,7 @@ import { acceptFrameworkAndDelegation } from "../src/agent-referrals-framework-a
 import { verifyAudience } from "../src/agent-referrals-audience-verification";
 import { createPartnerPromo } from "../src/agent-referrals-promo";
 import { mintEngagementStepUpGrant } from "../src/agent-referrals-engagement-step-up";
-import { offerEngagement, acceptEngagement, activateEngagement, getEngagement } from "../src/agent-referrals-engagement";
+import { offerEngagement, acceptEngagement, activateEngagement, suspendEngagement, reactivateEngagement, getEngagement } from "../src/agent-referrals-engagement";
 import { closeEngagement, EngagementClosureError, type RewardRegistryFinalizationEvidence } from "../src/agent-referrals-engagement-closure";
 
 const open: Database.Database[] = [];
@@ -150,6 +150,24 @@ describe("engagement closure (§B-7): forward-authority-only, one-time, dependen
     const replay = closeEngagement(db, admin, engagementId, "closing again", resolver as unknown as () => RewardRegistryFinalizationEvidence);
     expect(replay).toEqual({ closure_event_id: first.closure_event_id, replayed: true });
     expect(resolver).not.toHaveBeenCalled();
+  });
+
+  it("resolves the authorization this engagement most recently minted (by sequence) even after a suspend/reactivate cycle re-minted a fresh one - never SQLite's storage order (Phase 5 holistic review, P1 finding 6)", async () => {
+    const db = fresh();
+    const { engagementId, occurrenceId } = activatedEngagement(db, new Date(Date.now() + 500).toISOString());
+    const firstAuthId = (db.prepare("SELECT id FROM engagement_promo_authorizations WHERE engagement_id = ?").get(engagementId) as { id: string }).id;
+
+    suspendEngagement(db, admin, engagementId, "pause");
+    const revisionId = (db.prepare("SELECT engagement_revision_id FROM engagement_activation_events WHERE engagement_id = ? LIMIT 1").get(engagementId) as { engagement_revision_id: string }).engagement_revision_id;
+    reactivateEngagement(db, admin, engagementId, revisionId);
+    const secondAuthId = (db.prepare("SELECT id FROM engagement_promo_authorizations WHERE engagement_id = ? AND revoked_at IS NULL").get(engagementId) as { id: string }).id;
+    expect(secondAuthId).not.toBe(firstAuthId);
+
+    completeOccurrence(db, occurrenceId);
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    const result = closeEngagement(db, admin, engagementId, "closing", finalized());
+    const closure = db.prepare("SELECT revoked_promo_authorization_id FROM engagement_closure_events WHERE id = ?").get(result.closure_event_id) as { revoked_promo_authorization_id: string };
+    expect(closure.revoked_promo_authorization_id).toBe(secondAuthId);
   });
 
   describe("fault injection: no partial closure evidence under failure", () => {

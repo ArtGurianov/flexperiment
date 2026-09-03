@@ -241,8 +241,8 @@ describe("0045 engagement publication migration", () => {
       seedEngagementRevision(db);
       db.prepare(`INSERT INTO promo_codes(id, agent_id, code, normalized_code, discount_type, discount_value) VALUES ('promo-1', 'agent-engagement-1', 'ART', 'ART', 'NONE', 0)`).run();
       db.prepare(`INSERT INTO partner_promos(id, promo_code_id, partner_id, created_by_admin_id) VALUES ('pp1', 'promo-1', 'agent-engagement-1', 'admin')`).run();
-      db.prepare(`INSERT INTO engagement_promo_authorizations(id, promo_code_id, partner_id, occurrence_id, engagement_id, engagement_revision_id)
-        VALUES ('auth1', 'promo-1', 'agent-engagement-1', 'occ-1', 'eng-1', 'rev-1')`).run();
+      db.prepare(`INSERT INTO engagement_promo_authorizations(id, promo_code_id, partner_id, occurrence_id, engagement_id, engagement_revision_id, sequence)
+        VALUES ('auth1', 'promo-1', 'agent-engagement-1', 'occ-1', 'eng-1', 'rev-1', 1)`).run();
 
       expect(() => db.exec("UPDATE engagement_promo_authorizations SET occurrence_id = 'occ-2' WHERE id = 'auth1'")).toThrow(/ENGAGEMENT_PROMO_AUTHORIZATION_PLACEMENT_IMMUTABLE/);
       expect(() => db.exec("DELETE FROM engagement_promo_authorizations WHERE id = 'auth1'")).toThrow(/ENGAGEMENT_PROMO_AUTHORIZATION_IMMUTABLE/);
@@ -251,11 +251,11 @@ describe("0045 engagement publication migration", () => {
       db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, venue_status, venue_name, venue_address)
         VALUES (?, 'city-1', 'FLEXPERIMENT 2', '2030-11-01T10:00:00.000Z', '2030-11-01T13:00:00.000Z', 'Asia/Novosibirsk', 100000, 5, 'PUBLISHED', 'CONFIRMED', 'Studio', 'Lenina 1')`).run(secondOccurrence);
       // A second CURRENT authorization for the SAME (promo, occurrence) pair is refused - the partial unique index.
-      expect(() => db.prepare(`INSERT INTO engagement_promo_authorizations(id, promo_code_id, partner_id, occurrence_id, engagement_id, engagement_revision_id)
-        VALUES ('auth2', 'promo-1', 'agent-engagement-1', 'occ-1', 'eng-1', 'rev-1')`).run()).toThrow(/UNIQUE constraint failed/);
+      expect(() => db.prepare(`INSERT INTO engagement_promo_authorizations(id, promo_code_id, partner_id, occurrence_id, engagement_id, engagement_revision_id, sequence)
+        VALUES ('auth2', 'promo-1', 'agent-engagement-1', 'occ-1', 'eng-1', 'rev-1', 2)`).run()).toThrow(/UNIQUE constraint failed/);
       // A DIFFERENT occurrence for the SAME promo is fine - no bare UNIQUE(promo_code_id) exists.
-      expect(() => db.prepare(`INSERT INTO engagement_promo_authorizations(id, promo_code_id, partner_id, occurrence_id, engagement_id, engagement_revision_id)
-        VALUES ('auth3', 'promo-1', 'agent-engagement-1', ?, 'eng-1', 'rev-1')`).run(secondOccurrence)).not.toThrow();
+      expect(() => db.prepare(`INSERT INTO engagement_promo_authorizations(id, promo_code_id, partner_id, occurrence_id, engagement_id, engagement_revision_id, sequence)
+        VALUES ('auth3', 'promo-1', 'agent-engagement-1', ?, 'eng-1', 'rev-1', 2)`).run(secondOccurrence)).not.toThrow();
 
       db.prepare("UPDATE engagement_promo_authorizations SET revoked_at = CURRENT_TIMESTAMP, revoked_reason = 'x' WHERE id = 'auth1'").run();
       expect(() => db.exec("UPDATE engagement_promo_authorizations SET revoked_reason = 'y' WHERE id = 'auth1'")).toThrow(/ENGAGEMENT_PROMO_AUTHORIZATION_ALREADY_REVOKED/);
@@ -342,8 +342,8 @@ describe("0045 engagement publication migration", () => {
       seedEngagement(db);
       seedEngagementRevision(db);
       db.prepare(`INSERT INTO promo_codes(id, agent_id, code, normalized_code, discount_type, discount_value) VALUES ('promo-c', 'agent-engagement-1', 'ART', 'ARTC', 'NONE', 0)`).run();
-      db.prepare(`INSERT INTO engagement_promo_authorizations(id, promo_code_id, partner_id, occurrence_id, engagement_id, engagement_revision_id, revoked_at, revoked_reason)
-        VALUES ('auth-c', 'promo-c', 'agent-engagement-1', 'occ-1', 'eng-1', 'rev-1', CURRENT_TIMESTAMP, 'closed')`).run();
+      db.prepare(`INSERT INTO engagement_promo_authorizations(id, promo_code_id, partner_id, occurrence_id, engagement_id, engagement_revision_id, sequence, revoked_at, revoked_reason)
+        VALUES ('auth-c', 'promo-c', 'agent-engagement-1', 'occ-1', 'eng-1', 'rev-1', 1, CURRENT_TIMESTAMP, 'closed')`).run();
       db.prepare(`INSERT INTO engagement_closure_events(id, engagement_id, occurrence_id, revoked_promo_authorization_id, reward_registry_finalization_evidence_ref, reason, closed_by_admin_id)
         VALUES ('close1', 'eng-1', 'occ-1', 'auth-c', 'ev', 'closing', 'admin')`).run();
       expect(() => db.prepare(`INSERT INTO engagement_closure_events(id, engagement_id, occurrence_id, revoked_promo_authorization_id, reward_registry_finalization_evidence_ref, reason, closed_by_admin_id)

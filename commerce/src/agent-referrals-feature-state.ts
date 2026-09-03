@@ -128,6 +128,28 @@ export const suspendAgentReferrals = (db: Database.Database, input: AgentReferra
 export const reactivateAgentReferrals = (db: Database.Database, input: AgentReferralsFeatureTransitionInput) =>
   transition(db, "ACTIVE", input);
 
+/**
+ * The global feature state AS OF a given instant - resolved from
+ * agent_referrals_feature_state_events, never the current live row. Used
+ * by distribution's historical-authority resolver (Phase 5 holistic
+ * review, P0 finding 1): a publication's `published_at` may fall inside a
+ * window where the feature was globally SUSPENDED at the time, even
+ * though the feature is ACTIVE again by the time the fact is reported or
+ * corrected - NEW_PUBLICATION_AUTHORITY must be judged against the state
+ * that actually held at that instant, not the state now. julianday() -
+ * never a raw TEXT comparison - matches every other historical-instant
+ * comparison in this schema. DORMANT never has an event (PR3 ships it as
+ * the unowned starting point with no event row), so "no event at or
+ * before atIso" correctly resolves to DORMANT.
+ */
+export const agentReferralsFeatureStateAt = (db: Database.Database, atIso: string): AgentReferralsFeatureStateName => {
+  const row = db.prepare(`SELECT to_state FROM agent_referrals_feature_state_events
+    WHERE julianday(created_at) <= julianday(?) ORDER BY julianday(created_at) DESC, revision DESC LIMIT 1`)
+    .get(atIso) as { to_state: string } | undefined;
+  if (!row) return "DORMANT";
+  return row.to_state === "ACTIVE" || row.to_state === "SUSPENDED" ? row.to_state : "DORMANT";
+};
+
 export const lastAgentReferralsFeatureStateEvent = (db: Database.Database) =>
   (db.prepare(`SELECT id, from_state, to_state, owner_id, reason, revision, created_at
     FROM agent_referrals_feature_state_events ORDER BY revision DESC, created_at DESC LIMIT 1`).get() as

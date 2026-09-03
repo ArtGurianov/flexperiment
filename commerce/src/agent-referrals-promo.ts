@@ -5,10 +5,26 @@ import type { AdminPrincipal } from "./agent-referrals-partner-identity";
 
 /**
  * One permanent promo per partner (plan section B-9), and per-occurrence
- * authority to use it. This module is a leaf: mintEngagementPromoAuthorization
- * takes every identifier it needs as explicit parameters, so it never
- * imports agent-referrals-engagement.ts - that module imports this one
- * instead (engagement activation is what mints/supersedes an authorization).
+ * authority to use it. This module is a leaf: it never imports
+ * agent-referrals-engagement.ts - that module imports this one instead.
+ *
+ * This module exports NO function capable of MINTING a new promo
+ * authorization, at any visibility level (Phase 5 holistic review, P0
+ * finding 3) - a promo authorization's mere existence IS authority (it is
+ * what activation snapshots and what CREATIVE_READY_TO_PUBLISH checks), so
+ * a bare, importable "mint" primitive would let a future module grant that
+ * authority without going through activateEngagement's full prerequisite
+ * chain (audience verified through publication end, delegation effective,
+ * framework accepted, occurrence scheduled, ...) - a comment saying
+ * "called only from activation" is not structural enforcement, exactly the
+ * standard already applied to audience verification's REVOKED surface.
+ * The mint (and its supersession-on-remint logic) is therefore written
+ * directly inside agent-referrals-engagement.ts's activateEngagement, the
+ * one privileged transaction that has already validated every
+ * prerequisite - reading only the read-only accessors this module exports
+ * below. revokeEngagementPromoAuthorizationInTransaction stays exported:
+ * revoking never grants unearned authority, so it is safe to share across
+ * every lifecycle-transition caller that needs to end an authorization.
  */
 
 export class AgentReferralsPromoError extends Error {
@@ -65,6 +81,7 @@ export type EngagementPromoAuthorizationRow = {
   occurrence_id: string;
   engagement_id: string;
   engagement_revision_id: string;
+  sequence: number;
   supersedes_authorization_id: string | null;
   effective_at: string;
   revoked_at: string | null;
@@ -72,7 +89,7 @@ export type EngagementPromoAuthorizationRow = {
   created_at: string;
 };
 
-const AUTHORIZATION_COLUMNS = "id, promo_code_id, partner_id, occurrence_id, engagement_id, engagement_revision_id, supersedes_authorization_id, effective_at, revoked_at, revoked_reason, created_at";
+const AUTHORIZATION_COLUMNS = "id, promo_code_id, partner_id, occurrence_id, engagement_id, engagement_revision_id, sequence, supersedes_authorization_id, effective_at, revoked_at, revoked_reason, created_at";
 
 /** The current (unrevoked) authorization for this exact (promo, occurrence) pair - structurally at most one, per the partial unique index. */
 export const currentEngagementPromoAuthorization = (db: Database.Database, promoCodeId: string, occurrenceId: string): EngagementPromoAuthorizationRow | null =>
@@ -82,30 +99,6 @@ export const currentEngagementPromoAuthorization = (db: Database.Database, promo
 export const currentEngagementPromoAuthorizationForEngagement = (db: Database.Database, engagementId: string): EngagementPromoAuthorizationRow | null =>
   (db.prepare(`SELECT ${AUTHORIZATION_COLUMNS} FROM engagement_promo_authorizations WHERE engagement_id = ? AND revoked_at IS NULL`)
     .get(engagementId) as EngagementPromoAuthorizationRow | undefined) ?? null;
-
-/**
- * Nestable: mints the next authorization for (promo, occurrence),
- * superseding whatever is currently live for that pair (if any) via the
- * revoke-then-insert ordering below. Called only from
- * agent-referrals-engagement.ts's activation path - never directly, since
- * activation is what validates every prerequisite this authorization
- * asserts implicitly by existing.
- */
-export const mintEngagementPromoAuthorizationInTransaction = (
-  db: Database.Database,
-  input: { promo_code_id: string; partner_id: string; occurrence_id: string; engagement_id: string; engagement_revision_id: string },
-): EngagementPromoAuthorizationRow => {
-  const current = currentEngagementPromoAuthorization(db, input.promo_code_id, input.occurrence_id);
-  if (current) {
-    const changed = db.prepare(`UPDATE engagement_promo_authorizations SET revoked_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), revoked_reason = 'SUPERSEDED_BY_NEW_ACTIVATION' WHERE id = ? AND revoked_at IS NULL`).run(current.id);
-    if (changed.changes !== 1) throw new AgentReferralsPromoError("AGENT_REFERRALS_PROMO_AUTHORIZATION_CONCURRENTLY_SUPERSEDED", 409, current.id);
-  }
-  const authorizationId = id();
-  db.prepare(`INSERT INTO engagement_promo_authorizations(id, promo_code_id, partner_id, occurrence_id, engagement_id, engagement_revision_id, supersedes_authorization_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(authorizationId, input.promo_code_id, input.partner_id, input.occurrence_id, input.engagement_id, input.engagement_revision_id, current?.id ?? null);
-  return currentEngagementPromoAuthorization(db, input.promo_code_id, input.occurrence_id)!;
-};
 
 /** Nestable: revokes the current authorization for an engagement, if one exists. A no-op (returns null) if none is currently live - suspending/closing an engagement that never activated must not throw. */
 export const revokeEngagementPromoAuthorizationInTransaction = (db: Database.Database, engagementId: string, reason: string): EngagementPromoAuthorizationRow | null => {

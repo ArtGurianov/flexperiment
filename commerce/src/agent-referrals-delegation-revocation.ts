@@ -3,7 +3,7 @@ import { id } from "./crypto";
 import { recordPartnerIdentityEvent } from "./agent-referrals-onboarding";
 import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
 import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
-import { transitionEngagementLifecycle } from "./agent-referrals-engagement";
+import { suspendEngagementLifecycle } from "./agent-referrals-engagement";
 import { consumeEngagementStepUpGrantInTransaction } from "./agent-referrals-engagement-step-up";
 import type { AdminPrincipal, PartnerPrincipal } from "./agent-referrals-partner-identity";
 
@@ -54,7 +54,7 @@ const revokeDelegationInTransaction = (
     .run(revocationId, delegationId, delegation.partner_identity_id, realm, adminId, reason);
 
   const affected = db.prepare("SELECT id FROM engagements WHERE partner_identity_id = ? AND lifecycle_state = 'ACTIVE'").all(delegation.partner_identity_id) as { id: string }[];
-  for (const row of affected) transitionEngagementLifecycle(db, row.id, "SUSPENDED", `DELEGATION_REVOKED:${reason}`);
+  for (const row of affected) suspendEngagementLifecycle(db, row.id, `DELEGATION_REVOKED:${reason}`);
 
   recordPartnerIdentityEvent(db, delegation.partner_identity_id, "DELEGATION_REVOKED", realm, { delegation_id: delegationId, revocation_id: revocationId, reason });
   return { revocation_id: revocationId, suspended_engagement_ids: affected.map((row) => row.id) };

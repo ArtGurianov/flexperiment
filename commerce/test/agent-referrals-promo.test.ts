@@ -5,14 +5,22 @@ import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
-import type { AdminPrincipal } from "../src/agent-referrals-partner-identity";
+import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile, issueFrameworkToPartner, type AdminPrincipal, type PartnerPrincipal } from "../src/agent-referrals-partner-identity";
+import { activatePartner, getPartnerIdentity } from "../src/agent-referrals-onboarding";
+import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES } from "../src/agent-referrals-framework-delegation";
+import { mintStepUpGrant } from "../src/agent-referrals-step-up";
+import { acceptFrameworkAndDelegation } from "../src/agent-referrals-framework-acceptance";
+import { verifyAudience } from "../src/agent-referrals-audience-verification";
+import { mintEngagementStepUpGrant } from "../src/agent-referrals-engagement-step-up";
+import { offerEngagement, acceptEngagement, activateEngagement, mintEngagementRevision, suspendEngagement, reactivateEngagement, type EngagementRevisionTerms } from "../src/agent-referrals-engagement";
+import * as promoModule from "../src/agent-referrals-promo";
 import {
   AgentReferralsPromoError,
   createPartnerPromo,
   currentEngagementPromoAuthorization,
   currentEngagementPromoAuthorizationForEngagement,
   isPromoPartnerOwned,
-  mintEngagementPromoAuthorizationInTransaction,
 } from "../src/agent-referrals-promo";
 
 const open: Database.Database[] = [];
@@ -33,29 +41,60 @@ const seedAgent = (db: Database.Database, agentId = randomUUID()) => {
   return agentId;
 };
 
-const seedOccurrence = (db: Database.Database) => {
+const clause = (arr: readonly string[]) => Object.fromEntries(arr.map((k) => [k, `${k} v1`])) as Record<string, string>;
+
+/**
+ * A partner at PARTNER_ACTIVE with its permanent promo and a verified
+ * city, through the real production onboarding path - the per-occurrence
+ * authorization tests below exercise mint/supersede/revoke ONLY through
+ * activateEngagement/suspendEngagement/reactivateEngagement, never a raw
+ * "mint" primitive (Phase 5 holistic review, P0 finding 3): promo.ts
+ * exports no function capable of minting a new authorization at any
+ * visibility level, since a bare mint primitive is itself unearned
+ * publication authority - see that module's own header.
+ */
+const readyPartner = (db: Database.Database) => {
+  activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
+  const agentId = randomUUID();
+  db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
+    VALUES (?, ?, 'Agent', 'Agent Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
+  submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD");
+  verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
+  const fw = mintFrameworkAgreementRevision(db, clause(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES));
+  const dt = mintDelegationTemplateRevision(db, clause(DELEGATION_TEMPLATE_REQUIRED_CLAUSES));
+  issueFrameworkToPartner(db, admin, partnerIdentityId, fw.id, dt.id, "issued");
+  const sessionId = randomUUID();
+  db.prepare(`INSERT INTO partner_sessions(id, partner_identity_id, token_hash, expires_at) VALUES (?, ?, ?, datetime('now', '+1 hour'))`).run(sessionId, partnerIdentityId, randomUUID());
+  const partner: PartnerPrincipal = { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: sessionId };
+  const grant = mintStepUpGrant(db, partner, "FRAMEWORK_ACCEPTANCE", { framework_agreement_revision_id: fw.id, delegation_template_revision_id: dt.id }).grant_id;
+  acceptFrameworkAndDelegation(db, partner, grant, fw.id, dt.id);
+  activatePartner(db, partnerIdentityId, getPartnerIdentity(db, partnerIdentityId)!.onboarding_revision, "ADMIN", "onboarding complete");
   const cityId = randomUUID();
-  db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, 'City')").run(cityId, `c-${cityId.slice(0, 8)}`);
+  db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, 'City')").run(cityId, `city-${cityId.slice(0, 8)}`);
+  verifyAudience(db, admin, partnerIdentityId, cityId, "2040-01-01T00:00:00.000Z", "verified", "ev-1");
+  const promo = createPartnerPromo(db, admin, { partner_id: agentId, code: `ART${agentId.slice(0, 4)}`, reason: "mint" });
+  return { partner, agentId, partnerIdentityId, cityId, promo };
+};
+
+const seedOccurrenceInCity = (db: Database.Database, cityId: string) => {
   const occurrenceId = randomUUID();
   db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, venue_status, venue_name, venue_address)
     VALUES (?, ?, 'X', '2030-10-01T10:00:00.000Z', '2030-10-01T13:00:00.000Z', 'Asia/Novosibirsk', 100000, 5, 'PUBLISHED', 'CONFIRMED', 'S', 'A')`).run(occurrenceId, cityId);
   return occurrenceId;
 };
 
-const partnerIdentityCache = new Map<string, string>();
-const seedEngagement = (db: Database.Database, agentId: string, occurrenceId: string) => {
-  let partnerId = partnerIdentityCache.get(agentId);
-  if (!partnerId) {
-    partnerId = randomUUID();
-    db.prepare(`INSERT INTO partner_identities(id, agent_id, email, email_hash, created_by_admin_id) VALUES (?, ?, 'a@example.test', 'h', 'admin')`).run(partnerId, agentId);
-    partnerIdentityCache.set(agentId, partnerId);
-  }
-  const engagementId = randomUUID();
-  db.prepare(`INSERT INTO engagements(id, partner_identity_id, occurrence_id, created_by_admin_id) VALUES (?, ?, ?, 'admin')`).run(engagementId, partnerId, occurrenceId);
-  const revisionId = randomUUID();
-  db.prepare(`INSERT INTO engagement_revisions(id, engagement_id, revision, occurrence_material_revision, reward_type, reward_value, customer_discount_type, customer_discount_value, publication_start_at, publication_end_at, terms_json, content_hash, created_by_admin_id, reason)
-    VALUES (?, ?, 1, 1, 'PERCENT', 1000, 'NONE', 0, '2020-01-01T00:00:00.000Z', '2035-01-01T00:00:00.000Z', '{}', 'h', 'admin', 'seed')`).run(revisionId, engagementId);
-  return { engagementId, revisionId };
+const terms1: EngagementRevisionTerms = {
+  reward_type: "PERCENT", reward_value: 1000, customer_discount_type: "PERCENT", customer_discount_value: 1000,
+  publication_start_at: "2020-01-01T00:00:00.000Z", publication_end_at: "2035-01-01T00:00:00.000Z", terms: {},
+};
+
+const offerAcceptActivate = (db: Database.Database, partner: PartnerPrincipal, partnerIdentityId: string, occurrenceId: string) => {
+  const { engagement_id: engagementId, engagement_revision_id: revisionId } = offerEngagement(db, admin, partnerIdentityId, occurrenceId, terms1, "offer");
+  const grant = mintEngagementStepUpGrant(db, partner, "ENGAGEMENT_ACCEPTANCE", { engagement_id: engagementId, engagement_revision_id: revisionId }).grant_id;
+  acceptEngagement(db, partner, engagementId, revisionId, grant);
+  const activation = activateEngagement(db, admin, engagementId, revisionId);
+  return { engagementId, revisionId, activation };
 };
 
 describe("one permanent promo per partner (§B-9)", () => {
@@ -99,59 +138,77 @@ describe("one permanent promo per partner (§B-9)", () => {
   });
 });
 
-describe("per-occurrence promo authorization: no bare UNIQUE(promo_code_id), at most one CURRENT per (promo, occurrence)", () => {
+describe("per-occurrence promo authorization: no bare UNIQUE(promo_code_id), at most one CURRENT per (promo, occurrence) - minted only via the real activateEngagement path, never a standalone mint primitive", () => {
   it("the SAME promo authorizes THREE different occurrences simultaneously - one partner advertising three cities holds one code", () => {
     const db = fresh();
-    const agentId = seedAgent(db);
-    const promo = createPartnerPromo(db, admin, { partner_id: agentId, code: "ART", reason: "mint" });
-    const occ1 = seedOccurrence(db); const occ2 = seedOccurrence(db); const occ3 = seedOccurrence(db);
-    const e1 = seedEngagement(db, agentId, occ1); const e2 = seedEngagement(db, agentId, occ2); const e3 = seedEngagement(db, agentId, occ3);
+    const p1 = readyPartner(db);
+    const occ1 = seedOccurrenceInCity(db, p1.cityId);
+    const occ2 = seedOccurrenceInCity(db, p1.cityId);
+    const occ3 = seedOccurrenceInCity(db, p1.cityId);
+    const e1 = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ1);
+    const e2 = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ2);
+    const e3 = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ3);
 
-    const a1 = mintEngagementPromoAuthorizationInTransaction(db, { promo_code_id: promo.promo_code_id, partner_id: agentId, occurrence_id: occ1, engagement_id: e1.engagementId, engagement_revision_id: e1.revisionId });
-    const a2 = mintEngagementPromoAuthorizationInTransaction(db, { promo_code_id: promo.promo_code_id, partner_id: agentId, occurrence_id: occ2, engagement_id: e2.engagementId, engagement_revision_id: e2.revisionId });
-    const a3 = mintEngagementPromoAuthorizationInTransaction(db, { promo_code_id: promo.promo_code_id, partner_id: agentId, occurrence_id: occ3, engagement_id: e3.engagementId, engagement_revision_id: e3.revisionId });
+    expect(currentEngagementPromoAuthorization(db, p1.promo.promo_code_id, occ1)!.id).toBe(e1.activation.promo_authorization_id);
+    expect(currentEngagementPromoAuthorization(db, p1.promo.promo_code_id, occ2)!.id).toBe(e2.activation.promo_authorization_id);
+    expect(currentEngagementPromoAuthorization(db, p1.promo.promo_code_id, occ3)!.id).toBe(e3.activation.promo_authorization_id);
 
-    expect(currentEngagementPromoAuthorization(db, promo.promo_code_id, occ1)!.id).toBe(a1.id);
-    expect(currentEngagementPromoAuthorization(db, promo.promo_code_id, occ2)!.id).toBe(a2.id);
-    expect(currentEngagementPromoAuthorization(db, promo.promo_code_id, occ3)!.id).toBe(a3.id);
-
-    // Suspending/revoking one occurrence's authorization must not touch the other two.
-    db.prepare("UPDATE engagement_promo_authorizations SET revoked_at = CURRENT_TIMESTAMP, revoked_reason = 'x' WHERE id = ?").run(a2.id);
-    expect(currentEngagementPromoAuthorization(db, promo.promo_code_id, occ1)).not.toBeNull();
-    expect(currentEngagementPromoAuthorization(db, promo.promo_code_id, occ2)).toBeNull();
-    expect(currentEngagementPromoAuthorization(db, promo.promo_code_id, occ3)).not.toBeNull();
+    // Suspending one occurrence's engagement must not touch the other two.
+    suspendEngagement(db, admin, e2.engagementId, "manual pause");
+    expect(currentEngagementPromoAuthorization(db, p1.promo.promo_code_id, occ1)).not.toBeNull();
+    expect(currentEngagementPromoAuthorization(db, p1.promo.promo_code_id, occ2)).toBeNull();
+    expect(currentEngagementPromoAuthorization(db, p1.promo.promo_code_id, occ3)).not.toBeNull();
   });
 
-  it("minting a new authorization for the SAME (promo, occurrence) supersedes the current one - history is never rewritten", () => {
+  it("activating a new material revision for the SAME engagement supersedes its own current authorization - history is never rewritten", () => {
     const db = fresh();
-    const agentId = seedAgent(db);
-    const promo = createPartnerPromo(db, admin, { partner_id: agentId, code: "ART", reason: "mint" });
-    const occ = seedOccurrence(db);
-    const e = seedEngagement(db, agentId, occ);
-    const a1 = mintEngagementPromoAuthorizationInTransaction(db, { promo_code_id: promo.promo_code_id, partner_id: agentId, occurrence_id: occ, engagement_id: e.engagementId, engagement_revision_id: e.revisionId });
-    const a2 = mintEngagementPromoAuthorizationInTransaction(db, { promo_code_id: promo.promo_code_id, partner_id: agentId, occurrence_id: occ, engagement_id: e.engagementId, engagement_revision_id: e.revisionId });
-    expect(a2.supersedes_authorization_id).toBe(a1.id);
-    const a1Row = db.prepare("SELECT revoked_at FROM engagement_promo_authorizations WHERE id = ?").get(a1.id) as { revoked_at: string | null };
+    const p1 = readyPartner(db);
+    const occ = seedOccurrenceInCity(db, p1.cityId);
+    const e = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ);
+    const a1Id = e.activation.promo_authorization_id;
+
+    const revision2 = mintEngagementRevision(db, admin, e.engagementId, { ...terms1, customer_discount_value: 1500 }, "material change");
+    const grant2 = mintEngagementStepUpGrant(db, p1.partner, "ENGAGEMENT_ACCEPTANCE", { engagement_id: e.engagementId, engagement_revision_id: revision2.id }).grant_id;
+    acceptEngagement(db, p1.partner, e.engagementId, revision2.id, grant2);
+    const activation2 = activateEngagement(db, admin, e.engagementId, revision2.id);
+
+    expect(activation2.promo_authorization_id).not.toBe(a1Id);
+    const a1Row = db.prepare("SELECT revoked_at FROM engagement_promo_authorizations WHERE id = ?").get(a1Id) as { revoked_at: string | null };
     expect(a1Row.revoked_at).not.toBeNull();
-    expect(currentEngagementPromoAuthorization(db, promo.promo_code_id, occ)!.id).toBe(a2.id);
-    expect(currentEngagementPromoAuthorizationForEngagement(db, e.engagementId)!.id).toBe(a2.id);
+    const a2Row = db.prepare("SELECT supersedes_authorization_id FROM engagement_promo_authorizations WHERE id = ?").get(activation2.promo_authorization_id) as { supersedes_authorization_id: string | null };
+    expect(a2Row.supersedes_authorization_id).toBe(a1Id);
+    expect(currentEngagementPromoAuthorization(db, p1.promo.promo_code_id, occ)!.id).toBe(activation2.promo_authorization_id);
+    expect(currentEngagementPromoAuthorizationForEngagement(db, e.engagementId)!.id).toBe(activation2.promo_authorization_id);
   });
 
-  it("mintEngagementPromoAuthorizationInTransaction rejects a concurrently-already-revoked current row rather than silently double-superseding", () => {
+  it("reactivating after a suspension (whose own revoke already cleared the current row) mints a fresh authorization, never a broken supersession of an already-dead row", () => {
     const db = fresh();
-    const agentId = seedAgent(db);
-    const promo = createPartnerPromo(db, admin, { partner_id: agentId, code: "ART", reason: "mint" });
-    const occ = seedOccurrence(db);
-    const e = seedEngagement(db, agentId, occ);
-    const a1 = mintEngagementPromoAuthorizationInTransaction(db, { promo_code_id: promo.promo_code_id, partner_id: agentId, occurrence_id: occ, engagement_id: e.engagementId, engagement_revision_id: e.revisionId });
-    db.prepare("UPDATE engagement_promo_authorizations SET revoked_at = CURRENT_TIMESTAMP, revoked_reason = 'raced away' WHERE id = ?").run(a1.id);
-    // currentEngagementPromoAuthorization now sees nothing live, so a fresh mint (not a supersession) proceeds cleanly.
-    expect(() => mintEngagementPromoAuthorizationInTransaction(db, { promo_code_id: promo.promo_code_id, partner_id: agentId, occurrence_id: occ, engagement_id: e.engagementId, engagement_revision_id: e.revisionId })).not.toThrow();
+    const p1 = readyPartner(db);
+    const occ = seedOccurrenceInCity(db, p1.cityId);
+    const e = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ);
+    const a1Id = e.activation.promo_authorization_id;
+
+    suspendEngagement(db, admin, e.engagementId, "pause");
+    expect(currentEngagementPromoAuthorization(db, p1.promo.promo_code_id, occ)).toBeNull(); // nothing live between suspend and reactivate
+
+    const reactivation = reactivateEngagement(db, admin, e.engagementId, e.revisionId);
+    expect(reactivation.promo_authorization_id).not.toBe(a1Id);
+    const freshRow = db.prepare("SELECT supersedes_authorization_id FROM engagement_promo_authorizations WHERE id = ?").get(reactivation.promo_authorization_id) as { supersedes_authorization_id: string | null };
+    expect(freshRow.supersedes_authorization_id).toBeNull(); // a1 was already revoked by suspend, not "superseded" by this fresh mint
+    expect(currentEngagementPromoAuthorization(db, p1.promo.promo_code_id, occ)!.id).toBe(reactivation.promo_authorization_id);
   });
 });
 
 describe("AgentReferralsPromoError export", () => {
   it("is thrown as the module's own error class", () => {
     expect(new AgentReferralsPromoError("X").code).toBe("X");
+  });
+});
+
+describe("structural authority bypass surface (Phase 5 holistic review, P0 finding 3): this module exports no function capable of MINTING a promo authorization", () => {
+  it("has no mint primitive at any visibility level - only read accessors and the revoke primitive", () => {
+    expect(promoModule).not.toHaveProperty("mintEngagementPromoAuthorization");
+    expect(promoModule).not.toHaveProperty("mintEngagementPromoAuthorizationInTransaction");
+    expect(promoModule).toHaveProperty("revokeEngagementPromoAuthorizationInTransaction"); // revoking never grants unearned authority - safe to keep shared
   });
 });

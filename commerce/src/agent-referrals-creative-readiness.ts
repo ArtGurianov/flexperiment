@@ -1,6 +1,8 @@
 import type Database from "better-sqlite3";
 import { getPartnerIdentity } from "./agent-referrals-onboarding";
 import { getEngagement, lastActivatedEngagementRevision, occurrenceFacts } from "./agent-referrals-engagement";
+import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
+import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
 import { isDelegationEffective } from "./agent-referrals-delegation-revocation";
 import { currentEngagementPromoAuthorizationForEngagement, partnerPromoByPartnerId } from "./agent-referrals-promo";
 import { currentCreativeAuthorization, creativeRevisionById } from "./agent-referrals-creative";
@@ -32,6 +34,14 @@ const canonicalFlexperimentTargetUrl = (citySlug: string, promoCode: string): st
 
 /** Always throws: a local defect code, or PUBLICATION_PROVIDER_PREFLIGHT_UNAVAILABLE once every local prerequisite is satisfied. Never returns "ready". */
 export const assessCreativeReadyToPublish = (db: Database.Database, engagementId: string): never => {
+  // Readiness IS an assertion of NEW_PUBLICATION_AUTHORITY (identical class
+  // to authorizeCreative's own gate) - global SUSPENDED must refuse it even
+  // when every per-engagement prerequisite below still holds (Phase 5
+  // holistic review, P0 finding 1): SUSPENDED blocks new publication
+  // authority while still permitting the reporting tail for publications
+  // that already exist.
+  assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "NEW_PUBLICATION_AUTHORITY");
+
   const engagement = getEngagement(db, engagementId);
   if (!engagement) throw new CreativeReadinessError("AGENT_REFERRALS_ENGAGEMENT_NOT_FOUND", 404, engagementId);
 

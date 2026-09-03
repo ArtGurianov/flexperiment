@@ -14,6 +14,7 @@ import { acceptFrameworkAndDelegation } from "../src/agent-referrals-framework-a
 import { verifyAudience } from "../src/agent-referrals-audience-verification";
 import { createPartnerPromo } from "../src/agent-referrals-promo";
 import { mintEngagementStepUpGrant, EngagementStepUpError } from "../src/agent-referrals-engagement-step-up";
+import * as engagementModule from "../src/agent-referrals-engagement";
 import {
   EngagementError,
   offerEngagement,
@@ -23,6 +24,7 @@ import {
   reactivateEngagement,
   suspendEngagement,
   revokeAudienceVerificationForPartnerCity,
+  verifyAudienceForPartnerCity,
   getEngagement,
   currentEngagementRevision,
   lastActivatedEngagementRevision,
@@ -394,5 +396,60 @@ describe("lastActivatedEngagementRevision (P1.1): resolves by the maximum ACTIVA
     const last = lastActivatedEngagementRevision(db, engagementId)!;
     expect(last.id).toBe(revisionId);
     expect(last.revision).toBe(1);
+  });
+});
+
+describe("re-verification cascade (Phase 5 holistic review, P0 finding 2): a replacement VERIFIED with a NARROWER valid_until must not leave an ACTIVE engagement with audience authority that no longer covers its own publication window", () => {
+  it("suspends an ACTIVE engagement (and revokes its promo authorization) when the replacement valid_until no longer reaches the engagement's publication_end_at", () => {
+    const db = fresh();
+    const p1 = readyPartner(db);
+    const occ = seedOccurrence(db, p1.cityId);
+    const eng = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ); // terms1.publication_end_at = 2035-01-01
+
+    const cascade = verifyAudienceForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "2030-06-01T00:00:00.000Z", "narrower re-verification", "ev-narrow");
+    expect(cascade.suspended_engagement_ids).toEqual([eng.engagementId]);
+    expect(getEngagement(db, eng.engagementId)).toMatchObject({ lifecycle_state: "SUSPENDED" });
+    const auth = db.prepare("SELECT revoked_at FROM engagement_promo_authorizations WHERE id = ?").get(eng.activation.promo_authorization_id) as { revoked_at: string | null };
+    expect(auth.revoked_at).not.toBeNull();
+  });
+
+  it("does not suspend when the replacement valid_until still covers (or exactly equals) the engagement's publication_end_at", () => {
+    const db = fresh();
+    const p1 = readyPartner(db);
+    const occ = seedOccurrence(db, p1.cityId);
+    const eng = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ);
+
+    const wider = verifyAudienceForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "2040-06-01T00:00:00.000Z", "wider re-verification", "ev-wide");
+    expect(wider.suspended_engagement_ids).toEqual([]);
+    expect(getEngagement(db, eng.engagementId)).toMatchObject({ lifecycle_state: "ACTIVE" });
+
+    const exact = verifyAudienceForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "2035-01-01T00:00:00.000Z", "exact-boundary re-verification", "ev-exact");
+    expect(exact.suspended_engagement_ids).toEqual([]);
+    expect(getEngagement(db, eng.engagementId)).toMatchObject({ lifecycle_state: "ACTIVE" });
+  });
+
+  it("a sibling engagement for the SAME partner in a DIFFERENT city is untouched by a narrowing re-verification in the first city", () => {
+    const db = fresh();
+    const p1 = readyPartner(db);
+    const otherCity = randomUUID();
+    db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, 'tomsk', 'Томск')").run(otherCity);
+    verifyAudience(db, admin, p1.partnerIdentityId, otherCity, "2040-01-01T00:00:00.000Z", "verified", "ev-2");
+    const occTomsk = seedOccurrence(db, otherCity);
+    const occNovosibirsk = seedOccurrence(db, p1.cityId);
+    const engTomsk = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occTomsk);
+    const engNovosibirsk = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occNovosibirsk);
+
+    verifyAudienceForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "2030-06-01T00:00:00.000Z", "narrower - Novosibirsk only", "ev-narrow");
+    expect(getEngagement(db, engNovosibirsk.engagementId)).toMatchObject({ lifecycle_state: "SUSPENDED" });
+    expect(getEngagement(db, engTomsk.engagementId)).toMatchObject({ lifecycle_state: "ACTIVE" });
+  });
+});
+
+describe("structural authority bypass surfaces (Phase 5 holistic review, P0 finding 3): no generic exported primitive can grant or transition authority outside its one privileged caller", () => {
+  it("this module exports no generic transitionEngagementLifecycle capable of targeting CLOSED - only a SUSPENDED-only primitive", () => {
+    expect(engagementModule).not.toHaveProperty("transitionEngagementLifecycle");
+    expect(engagementModule).toHaveProperty("suspendEngagementLifecycle");
+    // (db, engagementId, reason) - no "to" state parameter at all, structurally incapable of ever targeting CLOSED.
+    expect((engagementModule as unknown as { suspendEngagementLifecycle: (...a: unknown[]) => unknown }).suspendEngagementLifecycle.length).toBe(3);
   });
 });

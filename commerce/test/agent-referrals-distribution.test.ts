@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
-import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { activateAgentReferrals, suspendAgentReferrals, reactivateAgentReferrals } from "../src/agent-referrals-feature-state";
 import { provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile, issueFrameworkToPartner, type AdminPrincipal, type PartnerPrincipal } from "../src/agent-referrals-partner-identity";
 import { activatePartner, getPartnerIdentity } from "../src/agent-referrals-onboarding";
 import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES } from "../src/agent-referrals-framework-delegation";
@@ -26,7 +26,9 @@ import {
   distributionProjection,
   distributionsForEngagement,
   markOverdueRemoval,
+  markReviewCleared,
   reportDistribution,
+  requireRemoval,
 } from "../src/agent-referrals-distribution";
 
 const open: Database.Database[] = [];
@@ -190,6 +192,7 @@ describe("removal lifecycle: per distribution, never an aggregate shortcut (§B-
     const d2 = report(db, p1.partner, p1.engagementId, { resource_identifier: "@c2", distribution_resource_url: "https://t.me/c2/1" });
     const d3 = report(db, p1.partner, p1.engagementId, { resource_identifier: "@c3", distribution_resource_url: "https://t.me/c3/1" });
 
+    requireRemoval(db, admin, d1.distribution_id, "manual review flagged");
     confirmRemoval(db, admin, d1.distribution_id, "confirmed-evidence");
     expect(distributionProjection(db, d1.distribution_id).removal_state).toBe("REMOVAL_CONFIRMED");
     expect(distributionProjection(db, d2.distribution_id).removal_state).toBeNull();
@@ -212,6 +215,7 @@ describe("removal lifecycle: per distribution, never an aggregate shortcut (§B-
     const db = fresh();
     const p1 = readyEngagementWithCreative(db);
     const d = report(db, p1.partner, p1.engagementId);
+    requireRemoval(db, admin, d.distribution_id, "manual review flagged");
     markOverdueRemoval(db, admin, d.distribution_id, "still not removed");
     expect(distributionProjection(db, d.distribution_id).removal_state).toBe("OVERDUE_REMOVAL");
     confirmRemoval(db, admin, d.distribution_id, "finally confirmed");
@@ -275,14 +279,16 @@ describe("partner ownership: a PARTNER may only write evidence for their own eng
     const db = fresh();
     const engaged = readyEngagementWithCreative(db);
     const admin1 = reportDistribution(db, admin, engaged.engagementId, { channel_key: "telegram", resource_kind: "channel", resource_identifier: "@x", distribution_resource_url: "https://t.me/x/1", published_at: "2030-09-10T00:00:00.000Z", ended_at: null, evidence_ref: "ev" });
+    requireRemoval(db, admin, admin1.distribution_id, "manual review flagged");
     expect(() => confirmRemoval(db, admin, admin1.distribution_id, "ev")).not.toThrow();
   });
 });
 
 describe("historical authority (§B-5c/§B-5d): a distribution pins the creative authority live at published_at, never whatever is current now", () => {
-  it("a late report of an old (Monday) publication still pins the OLD engagement/creative revision, even after Tuesday's material change made a new one current", () => {
+  it("a late report of an old (Monday) publication still pins the OLD engagement/creative revision, even after Tuesday's material change made a new one current", async () => {
     const db = fresh();
     const engaged = readyEngagementWithCreative(db);
+    await new Promise((resolve) => setTimeout(resolve, 50)); // guarantee millisecond separation from the feature's own ACTIVE transition timestamp, minted during fixture setup
     const publishedDuringR1 = new Date().toISOString();
     const superseded = supersedeAuthority(db, engaged, { customer_discount_value: 1500 });
     const publishedDuringR2 = new Date().toISOString();
@@ -348,12 +354,13 @@ describe("historical authority (§B-5c/§B-5d): a distribution pins the creative
     expect(projection.removal_state).toBe("REMOVAL_REQUIRED");
   });
 
-  it("a creative authorization left unrevoked while its underlying PROMO authorization was revoked (by suspension) does not falsely read as authorized - the promo authorization's own revocation is checked independently", () => {
+  it("a creative authorization left unrevoked while its underlying PROMO authorization was revoked (by suspension) does not falsely read as authorized - the promo authorization's own revocation is checked independently", async () => {
     const db = fresh();
     const engaged = readyEngagementWithCreative(db);
     // Suspend the engagement: revokes the PROMO authorization (engagement_promo_authorizations.revoked_at)
     // but does NOT touch the creative authorization (engagement_creative_authorizations.revoked_at stays NULL) - the exact gap this check closes.
     suspendEngagement(db, admin, engaged.engagementId, "manual pause");
+    await new Promise((resolve) => setTimeout(resolve, 50)); // guarantee millisecond separation from the feature's own ACTIVE transition timestamp, minted during fixture setup
     const publishedAfterSuspension = new Date().toISOString();
     const result = report(db, engaged.partner, engaged.engagementId, { published_at: publishedAfterSuspension });
     expect(result.revision.engagement_revision_id).toBe(engaged.revisionId); // the creative authorization itself is still found and pinned
@@ -362,9 +369,30 @@ describe("historical authority (§B-5c/§B-5d): a distribution pins the creative
     expect(projection.removal_state).toBe("REMOVAL_REQUIRED");
   });
 
-  it("a correction that moves published_at ACROSS an authority boundary re-resolves and re-pins - never silently retains the prior revision's now-wrong authority", () => {
+  it("a publication reported with published_at inside a window where the feature was GLOBALLY SUSPENDED at that instant is INVALID_AUTHORITY, even though the feature is ACTIVE again by the time it is reported", async () => {
+    const db = fresh();
+    const engaged = readyEngagementWithCreative(db); // feature state revision 2 (ACTIVE)
+    suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "global pause" });
+    await new Promise((resolve) => setTimeout(resolve, 50)); // guarantee millisecond separation from the SUSPENDED transition's own timestamp
+    const publishedDuringSuspension = new Date().toISOString();
+    await new Promise((resolve) => setTimeout(resolve, 50)); // guarantee millisecond separation before the REACTIVATE transition's own timestamp
+    reactivateAgentReferrals(db, { expected_revision: 3, owner_id: "test-owner", reason: "resume" });
+
+    // The report itself is still permitted (DISTRIBUTION_FACT_REPORTING is a
+    // reporting-tail class, permitted even under SUSPENDED) - it is the
+    // AUTHORITY classification of a publication made globally SUSPENDED
+    // that must be INVALID, not the report call itself.
+    const result = report(db, engaged.partner, engaged.engagementId, { published_at: publishedDuringSuspension });
+    expect(result.revision.engagement_revision_id).toBe(engaged.revisionId); // the per-engagement authorization is still found and pinned
+    const projection = distributionProjection(db, result.distribution_id);
+    expect(projection.compliance_state).toBe("REVIEW_REQUIRED"); // never falsely MARKED_REPORTABLE
+    expect(projection.removal_state).toBe("REMOVAL_REQUIRED");
+  });
+
+  it("a correction that moves published_at ACROSS an authority boundary re-resolves and re-pins - never silently retains the prior revision's now-wrong authority", async () => {
     const db = fresh();
     const engaged = readyEngagementWithCreative(db);
+    await new Promise((resolve) => setTimeout(resolve, 50)); // guarantee millisecond separation from the feature's own ACTIVE transition timestamp, minted during fixture setup
     const publishedDuringR1 = new Date().toISOString();
     const superseded = supersedeAuthority(db, engaged, { customer_discount_value: 1500 });
     const publishedDuringR2 = new Date().toISOString();
@@ -383,6 +411,101 @@ describe("historical authority (§B-5c/§B-5d): a distribution pins the creative
     // The ORIGINAL revision's own pin is untouched - immutable evidence, never rewritten.
     const originalRevision = db.prepare("SELECT engagement_revision_id FROM engagement_distribution_revisions WHERE id = ?").get(first.revision.id) as { engagement_revision_id: string };
     expect(originalRevision.engagement_revision_id).toBe(engaged.revisionId);
+  });
+});
+
+describe("projection folds only the CURRENT revision's own events, never the whole distribution history (Phase 5 holistic review, P0 finding 4)", () => {
+  it("a correction that fixes an INVALID_AUTHORITY report into an AUTHORIZED one clears the stale REMOVAL_REQUIRED - it does not linger from the superseded revision", () => {
+    const db = fresh();
+    const engaged = readyEngagementWithCreative(db); // publication_start_at = 2020-01-01, publication_end_at = 2035-01-01
+    const first = report(db, engaged.partner, engaged.engagementId, { published_at: "2036-06-01T00:00:00.000Z" }); // past the window
+    expect(distributionProjection(db, first.distribution_id)).toMatchObject({ compliance_state: "REVIEW_REQUIRED", removal_state: "REMOVAL_REQUIRED" });
+
+    const corrected = correctDistribution(db, engaged.partner, first.distribution_id,
+      { channel_key: "telegram", resource_kind: "channel", resource_identifier: "@art_channel", distribution_resource_url: "https://t.me/art_channel/1", published_at: "2030-09-10T00:00:00.000Z", ended_at: null, evidence_ref: "ev-corrected" },
+      "corrected the actual publish date - it was really inside the window");
+    expect(corrected.revision.engagement_revision_id).toBe(engaged.revisionId);
+    const projection = distributionProjection(db, first.distribution_id);
+    expect(projection.compliance_state).toBe("MARKED_REPORTABLE");
+    expect(projection.removal_state).toBeNull(); // the stale REMOVAL_REQUIRED from the superseded revision is gone, not inherited
+  });
+
+  it("a correction after REMOVAL_CONFIRMED does not let the new revision silently inherit a confirmation that was actually about the PRIOR facts", () => {
+    const db = fresh();
+    const engaged = readyEngagementWithCreative(db);
+    const first = report(db, engaged.partner, engaged.engagementId);
+    expect(distributionProjection(db, first.distribution_id).compliance_state).toBe("MARKED_REPORTABLE");
+    requireRemoval(db, admin, first.distribution_id, "manual review flagged");
+    confirmRemoval(db, admin, first.distribution_id, "confirmed removed");
+    expect(distributionProjection(db, first.distribution_id).removal_state).toBe("REMOVAL_CONFIRMED");
+
+    // A correction changes the actual facts on record (a different URL) -
+    // the OLD confirmation was about the OLD facts, not these new ones.
+    const corrected = correctDistribution(db, engaged.partner, first.distribution_id,
+      { channel_key: "telegram", resource_kind: "channel", resource_identifier: "@art_channel_2", distribution_resource_url: "https://t.me/art_channel_2/1", published_at: "2030-09-10T00:00:00.000Z", ended_at: null, evidence_ref: "ev-corrected" },
+      "the actual channel handle was different");
+    expect(corrected.distribution_id).toBe(first.distribution_id);
+    // The new revision's own projection starts fresh - not REMOVAL_CONFIRMED for facts nobody has actually confirmed removed yet.
+    expect(distributionProjection(db, first.distribution_id).removal_state).toBeNull();
+    expect(distributionProjection(db, first.distribution_id).compliance_state).toBe("MARKED_REPORTABLE");
+    // The full event history - including the original CONFIRMED - is still preserved, never rewritten.
+    const kinds = distributionEvents(db, first.distribution_id).map((e) => e.event_kind);
+    expect(kinds).toEqual(["DECLARED", "MARKED_REPORTABLE", "REMOVAL_REQUIRED", "REMOVAL_CONFIRMED", "DECLARED", "MARKED_REPORTABLE"]);
+  });
+});
+
+describe("removal/compliance lifecycle transition matrix - fail-closed on illegal sequences (Phase 5 holistic review, P1 finding 5)", () => {
+  it("refuses REMOVAL_CONFIRMED with no REMOVAL_REQUIRED/CLAIMED/OVERDUE/UNVERIFIED ever recorded for the current revision", () => {
+    const db = fresh();
+    const engaged = readyEngagementWithCreative(db);
+    const d = report(db, engaged.partner, engaged.engagementId);
+    expect(() => confirmRemoval(db, admin, d.distribution_id, "ev")).toThrow(/AGENT_REFERRALS_DISTRIBUTION_REMOVAL_ILLEGAL_TRANSITION/);
+  });
+
+  it("refuses REMOVAL_CLAIMED after REMOVAL_CONFIRMED", () => {
+    const db = fresh();
+    const engaged = readyEngagementWithCreative(db);
+    const d = report(db, engaged.partner, engaged.engagementId);
+    requireRemoval(db, admin, d.distribution_id, "flagged");
+    confirmRemoval(db, admin, d.distribution_id, "confirmed");
+    expect(() => claimRemoval(db, engaged.partner, d.distribution_id, "late claim")).toThrow(/AGENT_REFERRALS_DISTRIBUTION_REMOVAL_ILLEGAL_TRANSITION/);
+  });
+
+  it("refuses a repeated REMOVAL_CONFIRMED", () => {
+    const db = fresh();
+    const engaged = readyEngagementWithCreative(db);
+    const d = report(db, engaged.partner, engaged.engagementId);
+    requireRemoval(db, admin, d.distribution_id, "flagged");
+    confirmRemoval(db, admin, d.distribution_id, "confirmed");
+    expect(() => confirmRemoval(db, admin, d.distribution_id, "confirmed again")).toThrow(/AGENT_REFERRALS_DISTRIBUTION_REMOVAL_ILLEGAL_TRANSITION/);
+  });
+
+  it("refuses OVERDUE_REMOVAL with nothing ever required for the current revision", () => {
+    const db = fresh();
+    const engaged = readyEngagementWithCreative(db);
+    const d = report(db, engaged.partner, engaged.engagementId);
+    expect(() => markOverdueRemoval(db, admin, d.distribution_id, "overdue")).toThrow(/AGENT_REFERRALS_DISTRIBUTION_REMOVAL_ILLEGAL_TRANSITION/);
+  });
+
+  it("a partner may proactively CLAIM removal with no prior admin REMOVAL_REQUIRED - a legitimate real sequence, not gated", () => {
+    const db = fresh();
+    const engaged = readyEngagementWithCreative(db);
+    const d = report(db, engaged.partner, engaged.engagementId);
+    expect(() => claimRemoval(db, engaged.partner, d.distribution_id, "proactive takedown")).not.toThrow();
+    expect(distributionProjection(db, d.distribution_id).removal_state).toBe("REMOVAL_CLAIMED");
+  });
+
+  it("REVIEW_CLEARED is legal only from REVIEW_REQUIRED - refused when the current compliance state is MARKED_REPORTABLE (nothing under review)", () => {
+    const db = fresh();
+    const engaged = readyEngagementWithCreative(db);
+    const compliant = report(db, engaged.partner, engaged.engagementId);
+    expect(distributionProjection(db, compliant.distribution_id).compliance_state).toBe("MARKED_REPORTABLE");
+    expect(() => markReviewCleared(db, admin, compliant.distribution_id, "clearing something never under review")).toThrow(/AGENT_REFERRALS_DISTRIBUTION_COMPLIANCE_ILLEGAL_TRANSITION/);
+
+    const flagged = report(db, engaged.partner, engaged.engagementId, { channel_key: "totally_unknown_platform", resource_identifier: "@other" });
+    expect(distributionProjection(db, flagged.distribution_id).compliance_state).toBe("REVIEW_REQUIRED");
+    expect(() => markReviewCleared(db, admin, flagged.distribution_id, "reviewed and cleared")).not.toThrow();
+    expect(distributionProjection(db, flagged.distribution_id).compliance_state).toBe("REVIEW_CLEARED");
   });
 });
 

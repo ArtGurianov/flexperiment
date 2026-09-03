@@ -4,9 +4,9 @@ import { validatePromoTerms, PromoPricingError } from "./promo-pricing";
 import { getPartnerIdentity, recordPartnerIdentityEvent } from "./agent-referrals-onboarding";
 import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
 import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
-import { AudienceVerificationError, currentAudienceVerification, isAudienceVerifiedThrough, type AudienceVerificationEventRow } from "./agent-referrals-audience-verification";
+import { AudienceVerificationError, currentAudienceVerification, isAudienceVerifiedThrough, verifyAudience, type AudienceVerificationEventRow } from "./agent-referrals-audience-verification";
 import { consumeEngagementStepUpGrantInTransaction } from "./agent-referrals-engagement-step-up";
-import { partnerPromoByPartnerId, mintEngagementPromoAuthorizationInTransaction, revokeEngagementPromoAuthorizationInTransaction } from "./agent-referrals-promo";
+import { partnerPromoByPartnerId, currentEngagementPromoAuthorization, revokeEngagementPromoAuthorizationInTransaction, type EngagementPromoAuthorizationRow } from "./agent-referrals-promo";
 import type { AdminPrincipal, PartnerPrincipal } from "./agent-referrals-partner-identity";
 
 /**
@@ -308,9 +308,25 @@ export const activateEngagement = (db: Database.Database, admin: AdminPrincipal,
     const partnerPromo = partnerPromoByPartnerId(db, partner.agent_id);
     if (!partnerPromo) throw new EngagementError("AGENT_REFERRALS_ACTIVATION_PARTNER_HAS_NO_PROMO", 409);
 
-    const authorization = mintEngagementPromoAuthorizationInTransaction(db, {
-      promo_code_id: partnerPromo.promo_code_id, partner_id: partner.agent_id, occurrence_id: occurrence.id, engagement_id: engagementId, engagement_revision_id: engagementRevisionId,
-    });
+    // Minting a promo authorization is the actual grant of publication
+    // authority - written here directly (never via a shared exported
+    // "mint" primitive; see agent-referrals-promo.ts's header) because
+    // activateEngagement is the ONLY transaction in this codebase that has
+    // already validated every §B prerequisite above. sequence (never
+    // rowid or a timestamp) is this engagement's own durable mint order -
+    // closeEngagement resolves "the authorization this engagement most
+    // recently minted" from it.
+    const currentAuthorization = currentEngagementPromoAuthorization(db, partnerPromo.promo_code_id, occurrence.id);
+    if (currentAuthorization) {
+      const superseded = db.prepare(`UPDATE engagement_promo_authorizations SET revoked_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), revoked_reason = 'SUPERSEDED_BY_NEW_ACTIVATION' WHERE id = ? AND revoked_at IS NULL`).run(currentAuthorization.id);
+      if (superseded.changes !== 1) throw new EngagementError("AGENT_REFERRALS_ACTIVATION_PROMO_AUTHORIZATION_CONCURRENTLY_SUPERSEDED", 409, currentAuthorization.id);
+    }
+    const nextSequence = (db.prepare("SELECT COALESCE(MAX(sequence), 0) AS m FROM engagement_promo_authorizations WHERE engagement_id = ?").get(engagementId) as { m: number }).m + 1;
+    const authorizationId = id();
+    db.prepare(`INSERT INTO engagement_promo_authorizations(id, promo_code_id, partner_id, occurrence_id, engagement_id, engagement_revision_id, sequence, supersedes_authorization_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(authorizationId, partnerPromo.promo_code_id, partner.agent_id, occurrence.id, engagementId, engagementRevisionId, nextSequence, currentAuthorization?.id ?? null);
+    const authorization = currentEngagementPromoAuthorization(db, partnerPromo.promo_code_id, occurrence.id)! as EngagementPromoAuthorizationRow;
 
     const activationEventId = id();
     db.prepare(`INSERT INTO engagement_activation_events(id, engagement_id, engagement_revision_id, audience_verification_event_id, legal_profile_revision_id, framework_acceptance_id, ord_reporting_delegation_id, promo_authorization_id, occurrence_id, activated_by_admin_id)
@@ -330,24 +346,37 @@ export const activateEngagement = (db: Database.Database, admin: AdminPrincipal,
 /** Alias, for callers making the "reactivate after suspension" intent explicit - identical mechanism to activateEngagement. */
 export const reactivateEngagement = activateEngagement;
 
-const transitionEngagementLifecycleInTransaction = (db: Database.Database, engagementId: string, to: "SUSPENDED" | "CLOSED", reason: string): EngagementRow => {
+/**
+ * SUSPENDED only, deliberately - the type signature itself makes this
+ * incapable of ever targeting CLOSED (Phase 5 holistic review, P0 finding
+ * 3). closeEngagement (agent-referrals-engagement-closure.ts) writes its
+ * own CLOSED CAS+revoke+audit inline instead of sharing this function,
+ * because §B-7 closure has real prerequisites (occurrence terminal, sales
+ * closed, publication window ended, reward-registry finalized) that a
+ * shared generic transition could otherwise be used to bypass - a comment
+ * saying "only called after those checks" is not structural enforcement.
+ * Suspension has no equivalent prerequisite chain (it is always a safe
+ * "pause"), so sharing this one narrow primitive across every legitimate
+ * suspend cascade (manual pause, audience-verification revocation/
+ * narrowing, occurrence material change, delegation revocation) is safe.
+ */
+const suspendEngagementLifecycleInTransaction = (db: Database.Database, engagementId: string, reason: string): EngagementRow => {
   const engagement = getEngagement(db, engagementId);
   if (!engagement) throw new EngagementError("AGENT_REFERRALS_ENGAGEMENT_NOT_FOUND", 404, engagementId);
-  const legalFrom: EngagementLifecycleState[] = to === "SUSPENDED" ? ["ACTIVE"] : ["ACTIVE", "SUSPENDED"];
-  if (!legalFrom.includes(engagement.lifecycle_state)) throw new EngagementError("AGENT_REFERRALS_ENGAGEMENT_ILLEGAL_TRANSITION", 409, `${engagement.lifecycle_state}->${to}`);
+  if (engagement.lifecycle_state !== "ACTIVE") throw new EngagementError("AGENT_REFERRALS_ENGAGEMENT_ILLEGAL_TRANSITION", 409, `${engagement.lifecycle_state}->SUSPENDED`);
 
-  const changed = db.prepare(`UPDATE engagements SET lifecycle_state = ?, lifecycle_revision = lifecycle_revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND lifecycle_revision = ?`)
-    .run(to, engagementId, engagement.lifecycle_revision);
+  const changed = db.prepare(`UPDATE engagements SET lifecycle_state = 'SUSPENDED', lifecycle_revision = lifecycle_revision + 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND lifecycle_revision = ?`)
+    .run(engagementId, engagement.lifecycle_revision);
   if (changed.changes !== 1) throw new EngagementError("AGENT_REFERRALS_ENGAGEMENT_REVISION_CONFLICT", 409, engagementId);
-  revokeEngagementPromoAuthorizationInTransaction(db, engagementId, `ENGAGEMENT_${to}:${reason}`);
-  recordPartnerIdentityEvent(db, engagement.partner_identity_id, `ENGAGEMENT_${to}`, "ADMIN", { engagement_id: engagementId, reason });
+  revokeEngagementPromoAuthorizationInTransaction(db, engagementId, `ENGAGEMENT_SUSPENDED:${reason}`);
+  recordPartnerIdentityEvent(db, engagement.partner_identity_id, "ENGAGEMENT_SUSPENDED", "ADMIN", { engagement_id: engagementId, reason });
   return getEngagement(db, engagementId)!;
 };
 
 /** Admin-only manual pause. Revokes the current promo authorization for that occurrence in the same transaction - suspending Tomsk must never touch Novosibirsk. */
 export const suspendEngagement = (db: Database.Database, admin: AdminPrincipal, engagementId: string, reason: string): EngagementRow => {
   void admin;
-  return db.transaction(() => transitionEngagementLifecycleInTransaction(db, engagementId, "SUSPENDED", reason)).immediate();
+  return db.transaction(() => suspendEngagementLifecycleInTransaction(db, engagementId, reason)).immediate();
 };
 
 /**
@@ -366,7 +395,7 @@ export const suspendEngagement = (db: Database.Database, admin: AdminPrincipal, 
 export const suspendEngagementsForOccurrenceMaterialChange = (db: Database.Database, occurrenceId: string, reason: string): string[] => {
   const run = db.transaction((): string[] => {
     const affected = db.prepare("SELECT id FROM engagements WHERE occurrence_id = ? AND lifecycle_state = 'ACTIVE'").all(occurrenceId) as { id: string }[];
-    for (const row of affected) transitionEngagementLifecycleInTransaction(db, row.id, "SUSPENDED", reason);
+    for (const row of affected) suspendEngagementLifecycleInTransaction(db, row.id, reason);
     return affected.map((row) => row.id);
   });
   return run.immediate();
@@ -411,11 +440,64 @@ export const revokeAudienceVerificationForPartnerCity = (
 
     const affected = db.prepare(`SELECT e.id FROM engagements e JOIN occurrences o ON o.id = e.occurrence_id
       WHERE e.partner_identity_id = ? AND o.city_id = ? AND e.lifecycle_state = 'ACTIVE'`).all(partnerIdentityId, cityId) as { id: string }[];
-    for (const row of affected) transitionEngagementLifecycleInTransaction(db, row.id, "SUSPENDED", `AUDIENCE_VERIFICATION_REVOKED:${reason}`);
+    for (const row of affected) suspendEngagementLifecycleInTransaction(db, row.id, `AUDIENCE_VERIFICATION_REVOKED:${reason}`);
     return { verification_event_id: event.id, suspended_engagement_ids: affected.map((row) => row.id) };
   });
   return run.immediate();
 };
 
-/** Exported for delegation-revocation and closure modules - the identical CAS+revoke+audit primitive suspend/close both need. */
-export const transitionEngagementLifecycle = transitionEngagementLifecycleInTransaction;
+export type VerifyAudienceCascadeResult = { verification_event_id: string; suspended_engagement_ids: string[] };
+
+/**
+ * Re-verification with cascade (Phase 5 holistic review, P0 finding 2): a
+ * REPLACEMENT VERIFIED does not, by itself, know whether its (possibly
+ * narrower) valid_until still covers every currently-ACTIVE engagement's
+ * publication_end_at for this (partner, city) - agent-referrals-
+ * audience-verification.ts is a deliberate leaf module with no engagement
+ * awareness (see its header), so verifyAudience alone cannot enforce that.
+ * This wrapper mints the replacement (nestable verifyAudience, which nests
+ * via SAVEPOINT under this function's own IMMEDIATE transaction) and then,
+ * in the SAME transaction, suspends every ACTIVE engagement in that
+ * (partner, city) whose governing (lastActivatedEngagementRevision)
+ * publication_end_at the new valid_until no longer reaches - closing the
+ * exact gap a narrower re-verification would otherwise leave open: an
+ * engagement staying ACTIVE with audience authority that no longer
+ * actually covers its own publication window. A WIDER (or equal)
+ * valid_until suspends nothing, since isAudienceVerifiedThrough still
+ * holds for every affected engagement afterward.
+ *
+ * Bare verifyAudience remains directly callable for verification that
+ * precedes any engagement existing at all (e.g. onboarding) - there is
+ * nothing to cascade to yet. Any caller re-verifying a (partner, city)
+ * that might already have ACTIVE engagements must use this function
+ * instead to preserve the "audience authority always covers the whole
+ * publication window" invariant.
+ */
+export const verifyAudienceForPartnerCity = (
+  db: Database.Database,
+  admin: AdminPrincipal,
+  partnerIdentityId: string,
+  cityId: string,
+  validUntil: string,
+  reason: string,
+  evidenceRef: string,
+): VerifyAudienceCascadeResult => {
+  const run = db.transaction((): VerifyAudienceCascadeResult => {
+    const event = verifyAudience(db, admin, partnerIdentityId, cityId, validUntil, reason, evidenceRef);
+    const active = db.prepare(`SELECT e.id FROM engagements e JOIN occurrences o ON o.id = e.occurrence_id
+      WHERE e.partner_identity_id = ? AND o.city_id = ? AND e.lifecycle_state = 'ACTIVE'`).all(partnerIdentityId, cityId) as { id: string }[];
+    const suspended: string[] = [];
+    for (const row of active) {
+      const revision = lastActivatedEngagementRevision(db, row.id);
+      if (revision && !isAudienceVerifiedThrough(db, partnerIdentityId, cityId, revision.publication_end_at)) {
+        suspendEngagementLifecycleInTransaction(db, row.id, `AUDIENCE_VERIFICATION_NO_LONGER_COVERS_PUBLICATION_END:${reason}`);
+        suspended.push(row.id);
+      }
+    }
+    return { verification_event_id: event.id, suspended_engagement_ids: suspended };
+  });
+  return run.immediate();
+};
+
+/** Exported for the delegation-revocation cascade - the narrow SUSPENDED-only primitive (never CLOSED-capable; see suspendEngagementLifecycleInTransaction's own header). */
+export const suspendEngagementLifecycle = suspendEngagementLifecycleInTransaction;

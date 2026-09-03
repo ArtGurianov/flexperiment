@@ -202,6 +202,13 @@ BEGIN SELECT RAISE(ABORT, 'PARTNER_PROMO_IMMUTABLE'); END;
 -- style. A new engagement revision mints a new authorization with
 -- supersedes_authorization_id pointing at the old one; history is never
 -- rewritten (immutable except the one-way revoked_at transition).
+-- sequence is this engagement's own durable mint order (1, 2, 3, ...) -
+-- never SQLite's implicit rowid, which callers must not rely on for
+-- regulatory evidence (the exact class of bug this schema has already
+-- fixed elsewhere: engagement_distribution_events.event_sequence).
+-- Closure resolves "the authorization this engagement most recently
+-- minted" (whether still live or already revoked by an earlier
+-- suspension) via MAX(sequence), never rowid or a timestamp comparison.
 CREATE TABLE engagement_promo_authorizations (
   id TEXT PRIMARY KEY,
   promo_code_id TEXT NOT NULL REFERENCES promo_codes(id),
@@ -209,11 +216,13 @@ CREATE TABLE engagement_promo_authorizations (
   occurrence_id TEXT NOT NULL REFERENCES occurrences(id),
   engagement_id TEXT NOT NULL REFERENCES engagements(id),
   engagement_revision_id TEXT NOT NULL REFERENCES engagement_revisions(id),
+  sequence INTEGER NOT NULL,
   supersedes_authorization_id TEXT REFERENCES engagement_promo_authorizations(id),
   effective_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
   revoked_at TEXT,
   revoked_reason TEXT,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(engagement_id, sequence)
 );
 CREATE INDEX engagement_promo_authorizations_engagement_idx ON engagement_promo_authorizations(engagement_id);
 CREATE UNIQUE INDEX engagement_promo_authorizations_current_unique
@@ -225,6 +234,7 @@ WHEN NEW.promo_code_id IS NOT OLD.promo_code_id
   OR NEW.occurrence_id IS NOT OLD.occurrence_id
   OR NEW.engagement_id IS NOT OLD.engagement_id
   OR NEW.engagement_revision_id IS NOT OLD.engagement_revision_id
+  OR NEW.sequence IS NOT OLD.sequence
   OR NEW.supersedes_authorization_id IS NOT OLD.supersedes_authorization_id
   OR NEW.effective_at IS NOT OLD.effective_at
 BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_PROMO_AUTHORIZATION_PLACEMENT_IMMUTABLE'); END;
