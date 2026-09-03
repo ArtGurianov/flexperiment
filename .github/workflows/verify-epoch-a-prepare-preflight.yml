@@ -146,16 +146,7 @@ jobs:
           jq -e --arg legal "$EPOCH_A_PRE_B_LEGAL_VERSION" --arg future "$EPOCH_A_NOTIFICATION_LEGAL_VERSION" '
             .version == $legal and .version != $future and .occurrence_notifications_available == false
           ' legal-config.json >/dev/null || blocked PRE_B_LEGAL_OR_DORMANCY_INVALID
-          legal_manifest_hashes="$(
-          node --import tsx --input-type=module -e '
-            import { createHash } from "node:crypto";
-            import { readFileSync } from "node:fs";
-            import { canonicalLegalManifest, parseLegalManifest } from "./commerce/src/legal-manifest.ts";
-            const raw = readFileSync("r-production-manifest.json");
-            const canonical = canonicalLegalManifest(parseLegalManifest(JSON.parse(raw.toString("utf8"))));
-            process.stdout.write([createHash("sha256").update(raw).digest("hex"), createHash("sha256").update(canonical).digest("hex")].join(" "));
-          ')
-          " || blocked LEGAL_MANIFEST_HASH_CALCULATION_FAILED
+          legal_manifest_hashes="$(node --import tsx commerce/src/calculate-legal-manifest-hashes.ts r-production-manifest.json)" || blocked LEGAL_MANIFEST_HASH_CALCULATION_FAILED
           read -r r_source_manifest_sha r_canonical_manifest_sha <<<"$legal_manifest_hashes"
           [[ "$r_source_manifest_sha" =~ ^[a-f0-9]{64}$ && "$r_canonical_manifest_sha" =~ ^[a-f0-9]{64}$ ]] || blocked LEGAL_MANIFEST_HASH_CALCULATION_INVALID
           jq -e --arg source_sha "$r_source_manifest_sha" --arg canonical_sha "$r_canonical_manifest_sha" --slurpfile manifest r-production-manifest.json '

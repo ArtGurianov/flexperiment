@@ -1,7 +1,12 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { EPOCH_A_PRODUCTION_BASE_SHA, EPOCH_A_RUNTIME_SHA, EPOCH_A_RUNTIME_TAG_OBJECT, EPOCH_A_RUNTIME_TAG_REF } from "../src/epoch-a-runtime-promotion";
+import { canonicalLegalManifest, parseLegalManifest } from "../src/legal-manifest";
+
+const PRODUCTION_MANIFEST_PATH = "commerce/legal/production-manifest.json";
+const CALCULATOR_PATH = "commerce/src/calculate-legal-manifest-hashes.ts";
 
 const workflow = readFileSync(".github/workflows/verify-epoch-a-prepare-preflight.yml", "utf8");
 
@@ -53,21 +58,28 @@ describe("Epoch A prepare preflight verifier", () => {
     expect(workflow).toContain("EPOCH_A_PREPARE_BLOCKED:");
   });
 
-  it("executes the legal manifest hash calculator as an explicit ESM eval", () => {
-    const calculator = `
-      import { createHash } from "node:crypto";
-      import { readFileSync } from "node:fs";
-      import { canonicalLegalManifest, parseLegalManifest } from "./commerce/src/legal-manifest.ts";
-      const raw = readFileSync("commerce/legal/production-manifest.json");
-      const canonical = canonicalLegalManifest(parseLegalManifest(JSON.parse(raw.toString("utf8"))));
-      process.stdout.write([createHash("sha256").update(raw).digest("hex"), createHash("sha256").update(canonical).digest("hex")].join(" "));
-    `;
-    const output = execFileSync(process.execPath, ["--import", "tsx", "--input-type=module", "-e", calculator], { encoding: "utf8" }).trim();
-    expect(output).toMatch(/^[a-f0-9]{64} [a-f0-9]{64}$/);
-    expect(workflow).toContain("node --import tsx --input-type=module -e");
-    expect(workflow).toContain("LEGAL_MANIFEST_HASH_CALCULATION_FAILED");
-    expect(workflow).toContain("LEGAL_MANIFEST_HASH_CALCULATION_INVALID");
-    expect(workflow).not.toContain("read -r r_source_manifest_sha r_canonical_manifest_sha <<EOF");
+  describe("legal manifest hash calculator: one checked-in executable, no inline ESM eval", () => {
+    it("executes the checked-in calculator against the production manifest and prints exactly a hash pair", () => {
+      const output = execFileSync(process.execPath, ["--import", "tsx", CALCULATOR_PATH, PRODUCTION_MANIFEST_PATH], { encoding: "utf8" });
+      expect(output).toMatch(/^[a-f0-9]{64} [a-f0-9]{64}\n$/);
+    });
+
+    it("the calculator's output values are exactly the real source and canonical hashes - checked independently, not merely by shape", () => {
+      const output = execFileSync(process.execPath, ["--import", "tsx", CALCULATOR_PATH, PRODUCTION_MANIFEST_PATH], { encoding: "utf8" }).trim();
+      const [sourceSha256, canonicalSha256] = output.split(" ");
+      const raw = readFileSync(PRODUCTION_MANIFEST_PATH);
+      const manifest = parseLegalManifest(JSON.parse(raw.toString("utf8")));
+      expect(sourceSha256).toBe(createHash("sha256").update(raw).digest("hex"));
+      expect(canonicalSha256).toBe(createHash("sha256").update(canonicalLegalManifest(manifest)).digest("hex"));
+    });
+
+    it("the production workflow calls the checked-in calculator, not the old fragile inline ESM eval", () => {
+      expect(workflow).toContain("node --import tsx commerce/src/calculate-legal-manifest-hashes.ts r-production-manifest.json");
+      expect(workflow).not.toContain("--input-type=module");
+      expect(workflow).not.toContain("./commerce/src/legal-manifest.ts");
+      expect(workflow).toContain("LEGAL_MANIFEST_HASH_CALCULATION_FAILED");
+      expect(workflow).toContain("LEGAL_MANIFEST_HASH_CALCULATION_INVALID");
+    });
   });
 
   it("has no durable mutation, deploy, or authority-changing path", () => {
