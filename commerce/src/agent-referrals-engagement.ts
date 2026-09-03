@@ -4,7 +4,7 @@ import { validatePromoTerms, PromoPricingError } from "./promo-pricing";
 import { getPartnerIdentity, recordPartnerIdentityEvent } from "./agent-referrals-onboarding";
 import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
 import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
-import { AudienceVerificationError, currentAudienceVerification, isAudienceVerifiedThrough, verifyAudience, type AudienceVerificationEventRow } from "./agent-referrals-audience-verification";
+import { AudienceVerificationError, currentAudienceVerification, isAudienceVerifiedThrough, type AudienceVerificationEventRow } from "./agent-referrals-audience-verification";
 import { consumeEngagementStepUpGrantInTransaction } from "./agent-referrals-engagement-step-up";
 import { partnerPromoByPartnerId, currentEngagementPromoAuthorization, revokeEngagementPromoAuthorizationInTransaction, type EngagementPromoAuthorizationRow } from "./agent-referrals-promo";
 import type { AdminPrincipal, PartnerPrincipal } from "./agent-referrals-partner-identity";
@@ -408,10 +408,11 @@ export type RevokeAudienceCascadeResult = { verification_event_id: string; suspe
  * authority transaction, suspends every currently-ACTIVE engagement for
  * that same (partner, city) pair and revokes its promo authorization -
  * "audience row changed, engagement later catches up" is exactly the gap
- * this closes. A REPLACEMENT verification (a fresh VERIFIED superseding a
- * prior VERIFIED - e.g. updated evidence) does not run this cascade: the
- * partner is still verified throughout, so no already-satisfied activation
- * prerequisite has become false.
+ * this closes. A REPLACEMENT VERIFIED (see verifyAudienceForPartnerCity
+ * below) runs its OWN, narrower cascade instead - it suspends an ACTIVE
+ * engagement only when the new valid_until no longer covers that
+ * engagement's own publication_end_at, never unconditionally on every
+ * replacement.
  *
  * This is the ONLY place in the entire codebase that writes a REVOKED
  * audience-verification row - agent-referrals-audience-verification.ts
@@ -449,29 +450,32 @@ export const revokeAudienceVerificationForPartnerCity = (
 export type VerifyAudienceCascadeResult = { verification_event_id: string; suspended_engagement_ids: string[] };
 
 /**
- * Re-verification with cascade (Phase 5 holistic review, P0 finding 2): a
- * REPLACEMENT VERIFIED does not, by itself, know whether its (possibly
+ * The ONLY place in the entire codebase that writes a VERIFIED
+ * audience-verification row (Phase 5 holistic review, final pass -
+ * closing the exact class of bypass already fixed for REVOKED, generic
+ * promo-authorization minting and the CLOSED transition, applied here
+ * too). agent-referrals-audience-verification.ts exports no
+ * VERIFIED-capable function at any visibility level any more - not even
+ * a nestable "InTransaction" primitive a future caller could wrap in its
+ * own transaction to skip the cascade below (see that file's header) - so
+ * the INSERT is written here directly, reading only the exported
+ * read-only currentAudienceVerification.
+ *
+ * A REPLACEMENT VERIFIED does not, by itself, know whether its (possibly
  * narrower) valid_until still covers every currently-ACTIVE engagement's
- * publication_end_at for this (partner, city) - agent-referrals-
- * audience-verification.ts is a deliberate leaf module with no engagement
- * awareness (see its header), so verifyAudience alone cannot enforce that.
- * This wrapper mints the replacement (nestable verifyAudience, which nests
- * via SAVEPOINT under this function's own IMMEDIATE transaction) and then,
- * in the SAME transaction, suspends every ACTIVE engagement in that
- * (partner, city) whose governing (lastActivatedEngagementRevision)
+ * publication_end_at for this (partner, city) - that is exactly why no
+ * bare mint may exist outside this function. In the SAME transaction as
+ * the INSERT, this suspends every ACTIVE engagement in that (partner,
+ * city) whose governing (lastActivatedEngagementRevision)
  * publication_end_at the new valid_until no longer reaches - closing the
  * exact gap a narrower re-verification would otherwise leave open: an
  * engagement staying ACTIVE with audience authority that no longer
  * actually covers its own publication window. A WIDER (or equal)
- * valid_until suspends nothing, since isAudienceVerifiedThrough still
- * holds for every affected engagement afterward.
- *
- * Bare verifyAudience remains directly callable for verification that
- * precedes any engagement existing at all (e.g. onboarding) - there is
- * nothing to cascade to yet. Any caller re-verifying a (partner, city)
- * that might already have ACTIVE engagements must use this function
- * instead to preserve the "audience authority always covers the whole
- * publication window" invariant.
+ * valid_until, or the very first verification for a (partner, city) with
+ * no engagement yet, suspends nothing - the cascade is a no-op search in
+ * both cases, which is why this same function safely serves BOTH initial
+ * verification (onboarding, before any engagement exists) and every
+ * later re-verification: there is no separate "bare initial-only" path.
  */
 export const verifyAudienceForPartnerCity = (
   db: Database.Database,
@@ -483,7 +487,14 @@ export const verifyAudienceForPartnerCity = (
   evidenceRef: string,
 ): VerifyAudienceCascadeResult => {
   const run = db.transaction((): VerifyAudienceCascadeResult => {
-    const event = verifyAudience(db, admin, partnerIdentityId, cityId, validUntil, reason, evidenceRef);
+    const current = currentAudienceVerification(db, partnerIdentityId, cityId);
+    const eventId = id();
+    const nextRevision = (current?.aggregate_revision ?? 0) + 1;
+    db.prepare(`INSERT INTO partner_audience_verification_events(id, partner_identity_id, city_id, aggregate_revision, event_kind, valid_until, supersedes_event_id, evidence_ref, reason, placed_by_admin_id)
+      VALUES (?, ?, ?, ?, 'VERIFIED', ?, ?, ?, ?, ?)`)
+      .run(eventId, partnerIdentityId, cityId, nextRevision, validUntil, current?.id ?? null, evidenceRef, reason, admin.admin_id);
+    const event = db.prepare("SELECT id, aggregate_revision FROM partner_audience_verification_events WHERE id = ?").get(eventId) as AudienceVerificationEventRow;
+
     const active = db.prepare(`SELECT e.id FROM engagements e JOIN occurrences o ON o.id = e.occurrence_id
       WHERE e.partner_identity_id = ? AND o.city_id = ? AND e.lifecycle_state = 'ACTIVE'`).all(partnerIdentityId, cityId) as { id: string }[];
     const suspended: string[] = [];

@@ -11,9 +11,8 @@ import {
   allAudienceVerificationEvents,
   currentAudienceVerification,
   isAudienceVerified,
-  verifyAudience,
 } from "../src/agent-referrals-audience-verification";
-import { revokeAudienceVerificationForPartnerCity } from "../src/agent-referrals-engagement";
+import { revokeAudienceVerificationForPartnerCity, verifyAudienceForPartnerCity } from "../src/agent-referrals-engagement";
 import type { AdminPrincipal } from "../src/agent-referrals-partner-identity";
 
 const open: Database.Database[] = [];
@@ -38,14 +37,28 @@ const seedPartnerAndCity = (db: Database.Database, partnerId = randomUUID(), cit
   return { partnerId, cityId };
 };
 
-/** Every test here uses the two REAL production entry points - verifyAudience (VERIFIED) and revokeAudienceVerificationForPartnerCity (REVOKED, from agent-referrals-engagement.ts) - never a low-level primitive, because none is exported. */
-const verify = (db: Database.Database, partnerId: string, cityId: string, reason: string, evidenceRef: string) =>
-  verifyAudience(db, admin, partnerId, cityId, FAR_FUTURE, reason, evidenceRef);
+/**
+ * Every test here uses the two REAL production entry points -
+ * verifyAudienceForPartnerCity (VERIFIED) and
+ * revokeAudienceVerificationForPartnerCity (REVOKED), both from
+ * agent-referrals-engagement.ts - never a low-level primitive, because
+ * agent-referrals-audience-verification.ts exports none, at any
+ * visibility level, for either event kind (Phase 5 holistic review,
+ * final pass). Both cascade functions return only
+ * `{ verification_event_id, suspended_engagement_ids }`, not the full
+ * event row, so these helpers fetch the row separately via the exported
+ * read-only currentAudienceVerification - exactly what production code
+ * would do too.
+ */
+const verify = (db: Database.Database, partnerId: string, cityId: string, reason: string, evidenceRef: string) => {
+  verifyAudienceForPartnerCity(db, admin, partnerId, cityId, FAR_FUTURE, reason, evidenceRef);
+  return currentAudienceVerification(db, partnerId, cityId)!;
+};
 const revoke = (db: Database.Database, partnerId: string, cityId: string, reason: string, evidenceRef: string) =>
   revokeAudienceVerificationForPartnerCity(db, admin, partnerId, cityId, reason, evidenceRef);
 
 describe("audience verification: append-only, VERIFIED | REVOKED, no SUPERSEDED state", () => {
-  it("verifyAudience (the sole top-level production entry point) mints VERIFIED as revision 1 with no supersedes_event_id", () => {
+  it("verifyAudienceForPartnerCity (the sole top-level production entry point for VERIFIED) mints VERIFIED as revision 1 with no supersedes_event_id", () => {
     const { db } = fresh();
     const { partnerId, cityId } = seedPartnerAndCity(db);
     const event = verify(db, partnerId, cityId, "initial check", "ev-1");
@@ -53,14 +66,15 @@ describe("audience verification: append-only, VERIFIED | REVOKED, no SUPERSEDED 
     expect(isAudienceVerified(db, partnerId, cityId)).toBe(true);
   });
 
-  it("there is no standalone public REVOKED path anywhere - neither module exports a generic mutation capable of writing REVOKED", () => {
+  it("there is no standalone public VERIFIED or REVOKED path anywhere - the leaf module exports no generic mutation capable of writing either event kind, at any visibility level", () => {
+    expect(audienceVerificationModule).not.toHaveProperty("verifyAudience");
+    expect(audienceVerificationModule).not.toHaveProperty("mintVerifiedInTransaction");
     expect(audienceVerificationModule).not.toHaveProperty("mintAudienceVerificationEvent");
     expect(audienceVerificationModule).not.toHaveProperty("mintAudienceVerificationEventInTransaction");
     expect(audienceVerificationModule).not.toHaveProperty("revokeAudience");
-    // verifyAudience itself has no eventKind parameter at all - structurally VERIFIED-only.
-    expect(verifyAudience.length).toBe(7); // (db, admin, partnerIdentityId, cityId, validUntil, reason, evidenceRef)
-    // The one REVOKED-capable function anywhere is engagement-scoped-cascade-only, never a bare event-kind mutation.
-    expect(revokeAudienceVerificationForPartnerCity.length).toBe(6); // (db, admin, partnerIdentityId, cityId, reason, evidenceRef) - no eventKind parameter either
+    // Neither top-level entry point (both in agent-referrals-engagement.ts) has an eventKind parameter at all - structurally VERIFIED-only / REVOKED-only.
+    expect(verifyAudienceForPartnerCity.length).toBe(7); // (db, admin, partnerIdentityId, cityId, validUntil, reason, evidenceRef)
+    expect(revokeAudienceVerificationForPartnerCity.length).toBe(6); // (db, admin, partnerIdentityId, cityId, reason, evidenceRef)
   });
 
   it("refuses REVOKED when there is nothing currently VERIFIED", () => {

@@ -11,7 +11,6 @@ import { activatePartner, getPartnerIdentity } from "../src/agent-referrals-onbo
 import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES } from "../src/agent-referrals-framework-delegation";
 import { mintStepUpGrant } from "../src/agent-referrals-step-up";
 import { acceptFrameworkAndDelegation } from "../src/agent-referrals-framework-acceptance";
-import { verifyAudience } from "../src/agent-referrals-audience-verification";
 import { createPartnerPromo } from "../src/agent-referrals-promo";
 import { mintEngagementStepUpGrant, EngagementStepUpError } from "../src/agent-referrals-engagement-step-up";
 import * as engagementModule from "../src/agent-referrals-engagement";
@@ -66,7 +65,7 @@ const readyPartner = (db: Database.Database) => {
 
   const cityId = randomUUID();
   db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, 'Новосибирск')").run(cityId, `novosibirsk-${cityId.slice(0, 8)}`);
-  verifyAudience(db, admin, partnerIdentityId, cityId, "2040-01-01T00:00:00.000Z", "verified", "ev-1");
+  verifyAudienceForPartnerCity(db, admin, partnerIdentityId, cityId, "2040-01-01T00:00:00.000Z", "verified", "ev-1");
   const promo = createPartnerPromo(db, admin, { partner_id: agentId, code: `ART${agentId.slice(0, 4)}`, reason: "mint" });
 
   return { partner, agentId, partnerIdentityId, cityId, promo };
@@ -253,7 +252,7 @@ describe("audience revocation cascade (one authority transaction)", () => {
     const p1 = readyPartner(db);
     const otherCity = randomUUID();
     db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, 'tomsk', 'Томск')").run(otherCity);
-    verifyAudience(db, admin, p1.partnerIdentityId, otherCity, "2040-01-01T00:00:00.000Z", "verified", "ev-2");
+    verifyAudienceForPartnerCity(db, admin, p1.partnerIdentityId, otherCity, "2040-01-01T00:00:00.000Z", "verified", "ev-2");
     const occTomsk = seedOccurrence(db, otherCity);
     const occNovosibirsk = seedOccurrence(db, p1.cityId);
     const engTomsk = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occTomsk);
@@ -269,7 +268,7 @@ describe("audience revocation cascade (one authority transaction)", () => {
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);
     const eng = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ);
-    verifyAudience(db, admin, p1.partnerIdentityId, p1.cityId, "2040-01-01T00:00:00.000Z", "re-verified with updated evidence", "ev-3");
+    verifyAudienceForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "2040-01-01T00:00:00.000Z", "re-verified with updated evidence", "ev-3");
     expect(getEngagement(db, eng.engagementId)).toMatchObject({ lifecycle_state: "ACTIVE" });
   });
 });
@@ -325,7 +324,7 @@ describe("audience verification must remain valid through the whole publication 
     const db = fresh();
     const p1 = readyPartner(db); // verified through 2040-01-01 by default
     revokeAudienceVerificationForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "reset for test", "ev-reset");
-    verifyAudience(db, admin, p1.partnerIdentityId, p1.cityId, "2030-06-01T00:00:00.000Z", "narrower window", "ev-2");
+    verifyAudienceForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "2030-06-01T00:00:00.000Z", "narrower window", "ev-2");
     const occ = seedOccurrence(db, p1.cityId);
     // terms1.publication_end_at = 2035-01-01, which is AFTER the 2030-06-01 verified window - activation must refuse.
     const { engagement_id: engagementId, engagement_revision_id: revisionId } = offerEngagement(db, admin, p1.partnerIdentityId, occ, terms1, "offer");
@@ -340,7 +339,7 @@ describe("audience verification must remain valid through the whole publication 
     const p1 = readyPartner(db);
     revokeAudienceVerificationForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "reset for test", "ev-reset");
     const validUntil = "2030-06-01T00:00:00.000Z";
-    verifyAudience(db, admin, p1.partnerIdentityId, p1.cityId, validUntil, "exact-boundary window", "ev-2");
+    verifyAudienceForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, validUntil, "exact-boundary window", "ev-2");
     const occ = seedOccurrence(db, p1.cityId);
     const boundaryTerms: EngagementRevisionTerms = { ...terms1, publication_end_at: validUntil };
     const { engagement_id: engagementId, engagement_revision_id: revisionId } = offerEngagement(db, admin, p1.partnerIdentityId, occ, boundaryTerms, "offer");
@@ -354,7 +353,7 @@ describe("audience verification must remain valid through the whole publication 
     const db = fresh();
     const p1 = readyPartner(db);
     revokeAudienceVerificationForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "reset for test", "ev-reset");
-    verifyAudience(db, admin, p1.partnerIdentityId, p1.cityId, "2030-06-01T00:00:00.000Z", "narrower window", "ev-2");
+    verifyAudienceForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "2030-06-01T00:00:00.000Z", "narrower window", "ev-2");
     const occ = seedOccurrence(db, p1.cityId);
     const { engagement_id: engagementId, engagement_revision_id: revisionId } = offerEngagement(db, admin, p1.partnerIdentityId, occ, terms1, "offer");
     const grant = mintEngagementStepUpGrant(db, p1.partner, "ENGAGEMENT_ACCEPTANCE", { engagement_id: engagementId, engagement_revision_id: revisionId }).grant_id;
@@ -362,7 +361,7 @@ describe("audience verification must remain valid through the whole publication 
     expect(() => activateEngagement(db, admin, engagementId, revisionId)).toThrow(/AUDIENCE_VERIFICATION_EXPIRES_BEFORE_PUBLICATION_END/);
 
     revokeAudienceVerificationForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "widen window", "ev-3");
-    verifyAudience(db, admin, p1.partnerIdentityId, p1.cityId, "2040-01-01T00:00:00.000Z", "wider window", "ev-4");
+    verifyAudienceForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "2040-01-01T00:00:00.000Z", "wider window", "ev-4");
     expect(() => activateEngagement(db, admin, engagementId, revisionId)).not.toThrow();
     expect(getEngagement(db, engagementId)!.lifecycle_state).toBe("ACTIVE");
   });
@@ -433,7 +432,7 @@ describe("re-verification cascade (Phase 5 holistic review, P0 finding 2): a rep
     const p1 = readyPartner(db);
     const otherCity = randomUUID();
     db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, 'tomsk', 'Томск')").run(otherCity);
-    verifyAudience(db, admin, p1.partnerIdentityId, otherCity, "2040-01-01T00:00:00.000Z", "verified", "ev-2");
+    verifyAudienceForPartnerCity(db, admin, p1.partnerIdentityId, otherCity, "2040-01-01T00:00:00.000Z", "verified", "ev-2");
     const occTomsk = seedOccurrence(db, otherCity);
     const occNovosibirsk = seedOccurrence(db, p1.cityId);
     const engTomsk = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occTomsk);

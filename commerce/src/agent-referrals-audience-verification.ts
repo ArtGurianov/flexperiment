@@ -1,6 +1,4 @@
 import type Database from "better-sqlite3";
-import { id } from "./crypto";
-import type { AdminPrincipal } from "./agent-referrals-partner-identity";
 
 /**
  * Append-only audience verification authority (plan section B-9's
@@ -11,20 +9,29 @@ import type { AdminPrincipal } from "./agent-referrals-partner-identity";
  * event_kind directly rather than from a mutable pointer.
  *
  * This module is deliberately a leaf: it knows nothing about engagements.
- * The cascade requirement ("revoking the CURRENT verification behind an
- * already-pinned ACTIVE engagement must, in the same transaction, suspend
- * that engagement and revoke its promo authorization") lives in
- * agent-referrals-engagement.ts instead.
+ * The cascade requirement ("a VERIFIED write that leaves an already-ACTIVE
+ * engagement's audience authority no longer covering its own publication
+ * window - whether by REVOKED or by a narrower replacement VERIFIED -
+ * must, in the same transaction, suspend that engagement and revoke its
+ * promo authorization") lives in agent-referrals-engagement.ts instead.
  *
- * This module exports NO function capable of writing a REVOKED event, at
- * any visibility level - not even a nestable "InTransaction" primitive.
- * The only way anything in this codebase can revoke is
- * agent-referrals-engagement.ts's revokeAudienceVerificationForPartnerCity,
- * which writes the REVOKED row itself (reading only the exported,
- * read-only currentAudienceVerification below) and cascades the
- * engagement suspension in the identical transaction. That is a
- * structural guarantee, not a naming convention: there is no shared
- * "mint any event kind" function anywhere for a future caller to misuse.
+ * This module exports NO function capable of writing EITHER a VERIFIED OR
+ * a REVOKED event, at any visibility level - not even a nestable
+ * "InTransaction" primitive (Phase 5 holistic review, final pass: the
+ * same standard already applied to REVOKED closes the identical bypass
+ * that was still open for VERIFIED - a directly-exported mint, even a
+ * cascade-aware wrapper's own doc comment saying "callers must use this
+ * instead", is application convention, not structural enforcement). The
+ * only way anything in this codebase can write EITHER event kind is
+ * agent-referrals-engagement.ts's verifyAudienceForPartnerCity (VERIFIED)
+ * and revokeAudienceVerificationForPartnerCity (REVOKED), which each
+ * write their own INSERT directly (reading only the exported, read-only
+ * currentAudienceVerification below) and cascade the engagement
+ * suspension in the identical transaction. That is a structural
+ * guarantee, not a naming convention: there is no shared "mint any event
+ * kind" function anywhere for a future caller to misuse, and no bare
+ * "mint VERIFIED" primitive a future caller could wrap in its own
+ * transaction to skip the cascade check.
  */
 
 export type AudienceVerificationEventKind = "VERIFIED" | "REVOKED";
@@ -70,52 +77,3 @@ export const isAudienceVerified = (db: Database.Database, partnerIdentityId: str
 export const allAudienceVerificationEvents = (db: Database.Database, partnerIdentityId: string, cityId: string): AudienceVerificationEventRow[] =>
   db.prepare(`SELECT ${EVENT_COLUMNS} FROM partner_audience_verification_events WHERE partner_identity_id = ? AND city_id = ? ORDER BY aggregate_revision ASC`)
     .all(partnerIdentityId, cityId) as AudienceVerificationEventRow[];
-
-/**
- * The nestable's caller's own IMMEDIATE transaction (activated by holding
- * the write lock before this reads anything) is what makes "exactly one
- * writer wins" a real property of the (partner, city) revision race - a
- * second writer's IMMEDIATE transaction blocks until the first commits,
- * then re-reads the now-current revision and mints the next one, never
- * colliding. UNIQUE(partner_identity_id, city_id, aggregate_revision) is
- * the structural backstop if that ordering is ever violated.
- *
- * VERIFIED may be minted from ANY current state (fresh verification,
- * re-verification after updated evidence, or re-verification after a
- * prior revocation) - it is always "assert verified now, valid through
- * validUntil".
- */
-const mintVerifiedInTransaction = (
-  db: Database.Database,
-  admin: AdminPrincipal,
-  partnerIdentityId: string,
-  cityId: string,
-  validUntil: string,
-  reason: string,
-  evidenceRef: string,
-): AudienceVerificationEventRow => {
-  const current = currentAudienceVerification(db, partnerIdentityId, cityId);
-  const eventId = id();
-  const nextRevision = (current?.aggregate_revision ?? 0) + 1;
-  db.prepare(`INSERT INTO partner_audience_verification_events(id, partner_identity_id, city_id, aggregate_revision, event_kind, valid_until, supersedes_event_id, evidence_ref, reason, placed_by_admin_id)
-    VALUES (?, ?, ?, ?, 'VERIFIED', ?, ?, ?, ?, ?)`)
-    .run(eventId, partnerIdentityId, cityId, nextRevision, validUntil, current?.id ?? null, evidenceRef, reason, admin.admin_id);
-  return currentAudienceVerification(db, partnerIdentityId, cityId)!;
-};
-
-/**
- * The ONLY top-level (own-transaction) production entry point this module
- * exposes - and it can only ever assert VERIFIED (there is no eventKind
- * parameter at all, structurally). See the file header for why REVOKED
- * has no equivalent here.
- */
-export const verifyAudience = (
-  db: Database.Database,
-  admin: AdminPrincipal,
-  partnerIdentityId: string,
-  cityId: string,
-  validUntil: string,
-  reason: string,
-  evidenceRef: string,
-): AudienceVerificationEventRow =>
-  db.transaction(() => mintVerifiedInTransaction(db, admin, partnerIdentityId, cityId, validUntil, reason, evidenceRef)).immediate();
