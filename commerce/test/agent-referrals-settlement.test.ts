@@ -247,13 +247,17 @@ describe("correctPartnerRewardWithSettlement: §B-6 correction/supersession orch
     expect(second.settlement_action).toBe("RECOVERY_EXPOSURE");
     if (second.settlement_action !== "RECOVERY_EXPOSURE") throw new Error("unreachable");
 
+    // created_at has only second-level resolution, so two evidence rows minted synchronously within the same
+    // test can tie on it - identify each row by its own pinned E rather than assuming array order.
     const evidence = recoveryExposureEvidenceForEngagement(db, engagementId);
     expect(evidence).toHaveLength(2);
-    expect(evidence[0].effective_reward_snapshot_id).toBe(first.correction.effective_snapshot_id);
-    expect(evidence[1].effective_reward_snapshot_id).toBe(second.correction.effective_snapshot_id);
-    expect(evidence[0].effective_reward_snapshot_id).not.toBe(evidence[1].effective_reward_snapshot_id);
-    expect(evidence[0].settlement_id).toBe(settlement.id);
-    expect(evidence[1].settlement_id).toBe(settlement.id);
+    const firstEvidence = evidence.find((e) => e.effective_reward_snapshot_id === first.correction.effective_snapshot_id);
+    const secondEvidence = evidence.find((e) => e.effective_reward_snapshot_id === second.correction.effective_snapshot_id);
+    expect(firstEvidence).toBeDefined();
+    expect(secondEvidence).toBeDefined();
+    expect(first.correction.effective_snapshot_id).not.toBe(second.correction.effective_snapshot_id);
+    expect(firstEvidence!.settlement_id).toBe(settlement.id);
+    expect(secondEvidence!.settlement_id).toBe(settlement.id);
 
     // S1 itself never moved.
     const paid = db.prepare("SELECT status, effective_reward_snapshot_id FROM reward_settlements WHERE id = ?").get(settlement.id);
