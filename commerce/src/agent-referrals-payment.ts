@@ -5,6 +5,7 @@ import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspen
 import { agentReferralsSettlementById } from "./agent-referrals-settlement";
 import { settlementActForSettlement, actAcceptanceForAct, actDisputeForAct } from "./agent-referrals-act";
 import { currentUsableNpdCheck } from "./agent-referrals-npd";
+import { currentEffectiveRewardSnapshot } from "./agent-referrals-reward-registry";
 import type { AdminPrincipal } from "./agent-referrals-partner-identity";
 
 /**
@@ -102,6 +103,18 @@ export const beginPayment = (db: Database.Database, admin: AdminPrincipal, settl
     if (settlement.status !== "PREPARED") throw new PaymentError("AGENT_REFERRALS_PAYMENT_SETTLEMENT_NOT_PAYABLE", 409, settlement.status);
     const superseded = db.prepare("SELECT 1 FROM reward_settlements WHERE supersedes_settlement_id = ?").get(settlementId);
     if (superseded) throw new PaymentError("AGENT_REFERRALS_PAYMENT_SETTLEMENT_SUPERSEDED", 409, settlementId);
+    // Fresh recheck that this settlement's pinned E is STILL the
+    // engagement's current one, right now - closes the seam where a
+    // reward correction ran through PR6's bare primitive directly
+    // (bypassing correctPartnerRewardWithSettlement, which would have
+    // cancelled this settlement) and left it PREPARED-but-stale. The
+    // migration's own payment_authorizations guard re-proves this
+    // identically and is the real structural backstop; this is the clean
+    // error code before ever reaching it.
+    const currentE = currentEffectiveRewardSnapshot(db, settlement.engagement_id);
+    if (!currentE || currentE.id !== settlement.effective_reward_snapshot_id) {
+      throw new PaymentError("AGENT_REFERRALS_PAYMENT_SETTLEMENT_STALE_EFFECTIVE_SNAPSHOT", 409, settlementId);
+    }
 
     const act = settlementActForSettlement(db, settlementId);
     if (!act || !act.presented_at) throw new PaymentError("AGENT_REFERRALS_PAYMENT_ACT_NOT_PRESENTED", 409, settlementId);
@@ -147,7 +160,17 @@ const projectSettlementFromMadeAttempt = (db: Database.Database, settlementId: s
 
 export type RecordAttemptOutcomeResult = { attempt: PaymentAttemptRow; replayed: boolean };
 
-/** Settle the attempt first, then project the settlement - never the other order (see module header). */
+/**
+ * Settle the attempt first, then project the settlement - never the
+ * other order (see module header). Reachable from IN_PROGRESS (a
+ * synchronous confirmation) OR from PAYOUT_UNKNOWN (later durable
+ * reconciliation evidence proving the payout DID complete) - never
+ * automatically, only via this explicit, evidence-bearing call. This is
+ * the resolve-in-the-other-direction counterpart to recordConfirmedNotMade:
+ * an unresolved payout must be resolvable by proof either way, never
+ * permanently stuck merely because the first evidence to arrive was
+ * ambiguous.
+ */
 export const recordPaymentMade = (db: Database.Database, admin: AdminPrincipal, attemptId: string, evidenceRef: string): RecordAttemptOutcomeResult => {
   void admin;
   const run = db.transaction((): RecordAttemptOutcomeResult => {
@@ -155,7 +178,7 @@ export const recordPaymentMade = (db: Database.Database, admin: AdminPrincipal, 
     const before = paymentAttemptById(db, attemptId);
     if (!before) throw new PaymentError("AGENT_REFERRALS_PAYMENT_ATTEMPT_NOT_FOUND", 404, attemptId);
     if (before.status === "MADE") return { attempt: before, replayed: true };
-    const changed = db.prepare("UPDATE payment_attempts SET status = 'MADE', made_at = ?, evidence_ref = ? WHERE id = ? AND status = 'IN_PROGRESS'").run(now(), evidenceRef, attemptId);
+    const changed = db.prepare("UPDATE payment_attempts SET status = 'MADE', made_at = ?, evidence_ref = ? WHERE id = ? AND status IN ('IN_PROGRESS', 'PAYOUT_UNKNOWN')").run(now(), evidenceRef, attemptId);
     if (!changed.changes) throw new PaymentError("AGENT_REFERRALS_PAYMENT_ATTEMPT_TRANSITION_ILLEGAL", 409, `${before.status}->MADE`);
     projectSettlementFromMadeAttempt(db, before.settlement_id);
     return { attempt: paymentAttemptById(db, attemptId)!, replayed: false };

@@ -1,7 +1,10 @@
+import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { generateSettlementAct, presentSettlementAct, acceptSettlementAct, disputeSettlementAct, settlementActById, actAcceptanceForAct, actDisputeForAct, SettlementActError } from "../src/agent-referrals-act";
 import { mintSettlementStepUpGrant } from "../src/agent-referrals-settlement-step-up";
+import { correctPartnerRewardWithSettlement } from "../src/agent-referrals-settlement";
+import { correctEngagementEffectiveRewardSnapshot } from "../src/agent-referrals-reward-registry";
 import {
   fresh, admin, readyPartner, seedOccurrence, nearTermTerms, offerAcceptActivate, purchaseAndPay, finalizedSettlement,
 } from "./support/agent-referrals-settlement-fixtures";
@@ -161,5 +164,71 @@ describe("act lifecycle: ACT_PREPARED -> ACT_PRESENTED -> ACT_ACCEPTED | DOCUMEN
   it("settlementActById returns null for an unknown id", () => {
     const { db } = fresh(); track(db);
     expect(settlementActById(db, "no-such-act")).toBeNull();
+  });
+});
+
+describe("act generation/presentation/acceptance rechecks the settlement is still viable (P1.8)", () => {
+  const preparedWithOrder = (db: Database.Database, domain: import("../src/domain").CommerceDomain) => {
+    const p1 = readyPartner(db, "OTHER");
+    const occ = seedOccurrence(db, p1.cityId, 100_000);
+    const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, nearTermTerms(1000, "PERCENT", 5000));
+    const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
+    const order = purchaseAndPay(db, domain, occ, code.code, `${Math.random()}@example.test`, `idem-${Math.random()}`);
+    const settlement = finalizedSettlement(db, domain, occ, engagementId);
+    return { p1, engagementId, order, settlement };
+  };
+
+  it("generateSettlementAct refuses once the settlement has been superseded (no longer PREPARED)", () => {
+    const { db, domain } = fresh(); track(db);
+    const { p1, engagementId, order, settlement } = preparedWithOrder(db, domain);
+    void p1;
+    db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
+      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+    correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund");
+    expect(db.prepare("SELECT status FROM reward_settlements WHERE id = ?").get(settlement.id)).toEqual({ status: "CANCELLED_BEFORE_PAYMENT" });
+    expect(() => generateSettlementAct(db, admin, settlement.id)).toThrow(/AGENT_REFERRALS_SETTLEMENT_ACT_SETTLEMENT_NOT_PREPARED/);
+  });
+
+  it("generateSettlementAct refuses when the settlement is stale (a direct PR6 correction bypassed the orchestrator, leaving it PREPARED but pointing at a superseded E)", () => {
+    const { db, domain } = fresh(); track(db);
+    const { engagementId, order, settlement } = preparedWithOrder(db, domain);
+    db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
+      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+    correctEngagementEffectiveRewardSnapshot(db, admin, engagementId, "direct correction, bypassing settlement orchestration");
+    expect(db.prepare("SELECT status FROM reward_settlements WHERE id = ?").get(settlement.id)).toEqual({ status: "PREPARED" }); // untouched by the bypass
+    expect(() => generateSettlementAct(db, admin, settlement.id)).toThrow(/AGENT_REFERRALS_SETTLEMENT_ACT_SETTLEMENT_STALE/);
+  });
+
+  it("presentSettlementAct refuses once the settlement has been superseded after the act was already generated", () => {
+    const { db, domain } = fresh(); track(db);
+    const { engagementId, order, settlement } = preparedWithOrder(db, domain);
+    const { act } = generateSettlementAct(db, admin, settlement.id);
+    db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
+      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+    correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund");
+    expect(() => presentSettlementAct(db, admin, act.id)).toThrow(/AGENT_REFERRALS_SETTLEMENT_ACT_SETTLEMENT_NOT_PREPARED/);
+  });
+
+  it("acceptSettlementAct refuses once the settlement has been superseded after the act was already presented", () => {
+    const { db, domain } = fresh(); track(db);
+    const { p1, engagementId, order, settlement } = preparedWithOrder(db, domain);
+    const { act } = generateSettlementAct(db, admin, settlement.id);
+    presentSettlementAct(db, admin, act.id);
+    const grant = mintSettlementStepUpGrant(db, p1.partner, "ACT_ACCEPTANCE", { act_id: act.id, amount_kopecks: act.amount_kopecks, engagement_revision_id: act.engagement_revision_id });
+    db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
+      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+    correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund");
+    expect(() => acceptSettlementAct(db, p1.partner, act.id, grant.grant_id)).toThrow(/AGENT_REFERRALS_SETTLEMENT_ACT_SETTLEMENT_NOT_PREPARED/);
+  });
+
+  it("disputeSettlementAct remains legal against an already-presented act even after the settlement is superseded - disputing historical evidence is never blocked", () => {
+    const { db, domain } = fresh(); track(db);
+    const { p1, engagementId, order, settlement } = preparedWithOrder(db, domain);
+    const { act } = generateSettlementAct(db, admin, settlement.id);
+    presentSettlementAct(db, admin, act.id);
+    db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
+      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+    correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund");
+    expect(() => disputeSettlementAct(db, p1.partner, act.id, "AMOUNT_INCORRECT")).not.toThrow();
   });
 });

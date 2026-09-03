@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentReferralsSuspensionPolicyError } from "../src/agent-referrals-suspension-policy";
 import { suspendAgentReferrals } from "../src/agent-referrals-feature-state";
 import { finalizeEngagementRewardRegistry, currentEffectiveRewardSnapshot } from "../src/agent-referrals-reward-registry";
-import { preparePartnerSettlement, correctPartnerRewardWithSettlement, recoveryExposure, SettlementError } from "../src/agent-referrals-settlement";
+import { preparePartnerSettlement, correctPartnerRewardWithSettlement, recoveryExposure, recoveryExposureEvidenceForEngagement, SettlementError } from "../src/agent-referrals-settlement";
 import { beginPayment, recordPaymentMade } from "../src/agent-referrals-payment";
 import { CommerceDomain } from "../src/domain";
 import {
@@ -64,9 +64,9 @@ describe("preparePartnerSettlement: F10, the amount is derived, never supplied",
     preparePartnerSettlement(db, admin, finalize.effective_snapshot_id);
     // A raw second attempt bypassing the application-level replay check entirely.
     expect(() => db.prepare(`INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id,
-        settlement_flow, engagement_id, engagement_revision_id, base_registry_snapshot_id, effective_reward_snapshot_id, partner_identity_id, payout_profile_revision_id, tax_mode_snapshot, legal_profile_revision_id_snapshot)
+        settlement_flow, engagement_id, engagement_revision_id, base_registry_snapshot_id, reward_registry_hash, effective_reward_snapshot_id, partner_identity_id, payout_profile_revision_id, tax_mode_snapshot, legal_profile_revision_id_snapshot)
       SELECT ?, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id,
-        settlement_flow, engagement_id, engagement_revision_id, base_registry_snapshot_id, effective_reward_snapshot_id, partner_identity_id, payout_profile_revision_id, tax_mode_snapshot, legal_profile_revision_id_snapshot
+        settlement_flow, engagement_id, engagement_revision_id, base_registry_snapshot_id, reward_registry_hash, effective_reward_snapshot_id, partner_identity_id, payout_profile_revision_id, tax_mode_snapshot, legal_profile_revision_id_snapshot
       FROM reward_settlements WHERE effective_reward_snapshot_id = ?`).run(randomUUID(), finalize.effective_snapshot_id)).toThrow(/UNIQUE constraint failed/);
   });
 
@@ -216,6 +216,14 @@ describe("correctPartnerRewardWithSettlement: §B-6 correction/supersession orch
     const paid = db.prepare("SELECT status FROM reward_settlements WHERE id = ?").get(settlement.id);
     expect(paid).toEqual({ status: "SETTLED" });
     expect(db.prepare("SELECT status FROM payment_attempts WHERE id = ?").get(authorization.attempt.id)).toEqual({ status: "MADE" });
+
+    // §B-6: "immutable correction + recovery-exposure evidence" - a real, append-only row, not merely a value recoveryExposure() could recompute later.
+    const evidence = recoveryExposureEvidenceForEngagement(db, engagementId);
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]).toMatchObject({
+      settlement_id: settlement.id, effective_reward_snapshot_id: result.correction.effective_snapshot_id,
+      paid_net_kopecks: result.exposure.paid_net_kopecks, exposure_kopecks: result.exposure.exposure_kopecks,
+    });
   });
 
   it("payment IN_PROGRESS (unsettled, not yet MADE): correction is refused outright, never cancels underneath a live attempt", () => {
@@ -275,7 +283,8 @@ describe("legacy settlement regression: genuinely unchanged behavior", () => {
 
     const settlement = domain.prepareSettlement({ agent_id: agentId, occurrence_id: occurrenceId, amount_kopecks: 5000, method: "bank_transfer" }, "idem-legacy-prepare-1", "admin-1");
     expect(settlement.status).toBe("PREPARED");
-    expect(settlement.settlement_flow).toBe("LEGACY");
+    // Nullable, no default (0047) - a legacy-flow row stays NULL forever, never backfilled to a literal 'LEGACY', mirroring 0046's reward_authority_kind.
+    expect(settlement.settlement_flow).toBeNull();
 
     domain.markSettlementPaymentMade(String(settlement.id), "I confirm the money was transferred", "idem-legacy-made-1");
     const afterMade = db.prepare("SELECT status FROM reward_settlements WHERE id = ?").get(settlement.id);

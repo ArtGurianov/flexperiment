@@ -84,6 +84,20 @@ export const closeEngagementZeroReward = (
     if (!effective) throw new ZeroRewardClosureError("AGENT_REFERRALS_REWARD_REGISTRY_NOT_FINALIZED", 409, engagementId);
     if (effective.reward_total_kopecks !== 0) throw new ZeroRewardClosureError("AGENT_REFERRALS_ZERO_CLOSURE_REWARD_NOT_ZERO", 409, String(effective.reward_total_kopecks));
 
+    // §B-6: zero closure means no effective settlement, no act, no
+    // payment. A settlement that was already PAID (MADE, possibly
+    // SETTLED) before a later correction drove E to zero is NOT this
+    // path - old payment/settlement stay untouched and the correction
+    // produces recovery-exposure evidence instead (see
+    // correctPartnerRewardWithSettlement). A settlement legitimately
+    // CANCELLED_BEFORE_PAYMENT by a pre-payment correction-to-zero is
+    // fine and does not block closure. The migration's own relational
+    // guard re-proves this identically; this is the clean-error-code
+    // early exit.
+    const liveSettlement = db.prepare(`SELECT id, status FROM reward_settlements WHERE engagement_id = ? AND settlement_flow = 'AGENT_REFERRALS' AND status != 'CANCELLED_BEFORE_PAYMENT'`)
+      .get(engagementId) as { id: string; status: string } | undefined;
+    if (liveSettlement) throw new ZeroRewardClosureError("AGENT_REFERRALS_ZERO_CLOSURE_SETTLEMENT_EXISTS", 409, `${liveSettlement.id}:${liveSettlement.status}`);
+
     const engagement = getEngagement(db, engagementId)!;
     const occurrence = occurrenceFacts(db, engagement.occurrence_id)!;
     const revision = engagementRevisionById(db, effective.engagement_revision_id)!;

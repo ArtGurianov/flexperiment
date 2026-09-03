@@ -170,6 +170,8 @@ export const AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS = [
   "reward_settlements_authority_tuple_consistency_guard",
   "reward_settlements_authority_columns_immutable_guard",
   "reward_settlements_effective_snapshot_unique",
+  "reward_settlements_agent_referrals_status_transition_guard",
+  "reward_settlements_agent_referrals_terminal_immutable_guard",
   "settlement_step_up_grants",
   "settlement_acts",
   "settlement_acts_relational_consistency_guard",
@@ -206,6 +208,10 @@ export const AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS = [
   "engagement_zero_reward_closures_relational_consistency_guard",
   "engagement_zero_reward_closures_immutable_guard",
   "engagement_zero_reward_closures_delete_guard",
+  "engagement_recovery_exposure_evidence",
+  "engagement_recovery_exposure_evidence_relational_consistency_guard",
+  "engagement_recovery_exposure_evidence_immutable_guard",
+  "engagement_recovery_exposure_evidence_delete_guard",
 ] as const;
 
 const MIGRATIONS = ["0043_agent_referrals_foundation.sql", "0044_partner_identity.sql", "0045_engagement_publication.sql", "0046_attribution_reward.sql", "0047_act_payment_settlement.sql"] as const;

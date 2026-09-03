@@ -7,8 +7,8 @@ import {
 } from "../src/agent-referrals-payment";
 import { recordNpdStatusCheck, currentUsableNpdCheck, NPD_STATUS_CHECK_FRESHNESS_MS } from "../src/agent-referrals-npd";
 import { closeEngagementZeroReward, zeroRewardClosureForEngagement, ZeroRewardClosureError } from "../src/agent-referrals-zero-reward-closure";
-import { finalizeEngagementRewardRegistry, closeEngagementWithRewardRegistry, resolveRewardRegistryFinalizationFromRegistry } from "../src/agent-referrals-reward-registry";
-import { preparePartnerSettlement, type AgentReferralsSettlementRow } from "../src/agent-referrals-settlement";
+import { finalizeEngagementRewardRegistry, closeEngagementWithRewardRegistry, resolveRewardRegistryFinalizationFromRegistry, correctEngagementEffectiveRewardSnapshot } from "../src/agent-referrals-reward-registry";
+import { preparePartnerSettlement, correctPartnerRewardWithSettlement, type AgentReferralsSettlementRow } from "../src/agent-referrals-settlement";
 import { generateSettlementAct, presentSettlementAct, acceptSettlementAct } from "../src/agent-referrals-act";
 import { mintSettlementStepUpGrant } from "../src/agent-referrals-settlement-step-up";
 import { revokePartnerPayoutDestination } from "../src/agent-referrals-payout-profile";
@@ -107,6 +107,16 @@ describe("beginPayment: full recheck in one transaction", () => {
     expect(currentUsableNpdCheck(db, partnerIdentityId)).not.toBeNull();
   });
 
+  it("an ACTIVE check that has since been superseded by a newer check (of any status) is no longer usable - P0.4 currentness, never rowid/timestamp-only ordering", () => {
+    const { db, partnerIdentityId } = readyForPayment("OTHER");
+    const oldCheck = recordNpdStatusCheck(db, admin, partnerIdentityId, "ACTIVE", "ev-old");
+    expect(currentUsableNpdCheck(db, partnerIdentityId)!.id).toBe(oldCheck.id);
+    const newCheck = recordNpdStatusCheck(db, admin, partnerIdentityId, "INACTIVE", "ev-new");
+    expect(newCheck.sequence).toBe(oldCheck.sequence + 1);
+    // The old ACTIVE check is no longer current, and the new current check is INACTIVE - either way, nothing is usable now.
+    expect(currentUsableNpdCheck(db, partnerIdentityId)).toBeNull();
+  });
+
   it("succeeds for OTHER tax mode with no NPD check at all", () => {
     const { db, settlement } = readyForPayment("OTHER");
     const result = beginPayment(db, admin, settlement.id);
@@ -130,6 +140,26 @@ describe("beginPayment: full recheck in one transaction", () => {
     const { db, settlement } = readyForPayment("OTHER");
     suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "emergency" });
     expect(() => beginPayment(db, admin, settlement.id)).not.toThrow();
+  });
+
+  it("refuses a settlement left stale by a DIRECT call to PR6's bare correctEngagementEffectiveRewardSnapshot (bypassing correctPartnerRewardWithSettlement) - P0.1", () => {
+    const { db, domain } = fresh(); track(db);
+    const p1 = readyPartner(db, "OTHER");
+    const occ = seedOccurrence(db, p1.cityId, 100_000);
+    const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, nearTermTerms(1000, "PERCENT", 5000));
+    const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
+    const order = purchaseAndPay(db, domain, occ, code.code, "stale-bypass@example.test", "idem-stale-bypass-0000001");
+    const settlement = finalizedSettlement(db, domain, occ, engagementId);
+    acceptedAct(db, p1.partner, settlement);
+
+    db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
+      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+    // The official orchestrator (correctPartnerRewardWithSettlement) would have cancelled `settlement` before minting the new E - this call
+    // deliberately bypasses it, reaching a state only possible via direct use of the raw PR6 primitive.
+    const correction = correctEngagementEffectiveRewardSnapshot(db, admin, engagementId, "direct correction, bypassing settlement orchestration");
+    expect(correction.reward_total_kopecks).toBeLessThan(settlement.amount_kopecks);
+    expect(db.prepare("SELECT status FROM reward_settlements WHERE id = ?").get(settlement.id)).toEqual({ status: "PREPARED" }); // untouched by the bypass
+    expect(() => beginPayment(db, admin, settlement.id)).toThrow(/AGENT_REFERRALS_PAYMENT_SETTLEMENT_STALE_EFFECTIVE_SNAPSHOT/);
   });
 });
 
@@ -164,6 +194,17 @@ describe("payment attempt state machine", () => {
     recordPayoutUnknown(db, admin, attempt.id, "no confirmation received");
     expect(db.prepare("SELECT status FROM reward_settlements WHERE id = ?").get(settlement.id)).toEqual({ status: "PREPARED" });
     expect(() => beginPayment(db, admin, settlement.id)).toThrow(/AGENT_REFERRALS_PAYMENT_ATTEMPT_ALREADY_ACTIVE/);
+  });
+
+  it("recordPaymentMade resolves PAYOUT_UNKNOWN to MADE given durable reconciliation evidence, and correctly projects the settlement - P0.5", () => {
+    const { db, settlement } = readyForPayment("OTHER");
+    const { attempt } = beginPayment(db, admin, settlement.id);
+    recordPayoutUnknown(db, admin, attempt.id, "no confirmation received");
+    const result = recordPaymentMade(db, admin, attempt.id, "bank statement confirms transfer completed");
+    expect(result.attempt.status).toBe("MADE");
+    expect(db.prepare("SELECT status FROM reward_settlements WHERE id = ?").get(settlement.id)).toEqual({ status: "SETTLED" });
+    // A subsequent BEGIN_PAYMENT for this settlement is refused (MADE occupies the active slot forever).
+    expect(() => beginPayment(db, admin, settlement.id)).toThrow();
   });
 
   it("recordConfirmedNotMade from PAYOUT_UNKNOWN frees the slot for a fresh authorization/attempt", () => {
@@ -339,6 +380,28 @@ describe("zero-reward closure", () => {
     expect(() => closeEngagementZeroReward(db, admin, engagementId, "OTHER_POLICY_ZERO", "cmd-1")).toThrow(ZeroRewardClosureError);
     try { closeEngagementZeroReward(db, admin, engagementId, "OTHER_POLICY_ZERO", "cmd-1"); }
     catch (error) { expect((error as ZeroRewardClosureError).code).toBe("AGENT_REFERRALS_ZERO_CLOSURE_REWARD_NOT_ZERO"); }
+  });
+
+  it("refuses when the engagement's settlement was already MADE/SETTLED before a later correction drove E to zero - P0.6, zero closure can never coexist with a paid settlement", () => {
+    const { db, domain } = fresh(); track(db);
+    const p1 = readyPartner(db, "OTHER");
+    const occ = seedOccurrence(db, p1.cityId, 100_000);
+    const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, nearTermTerms(1000, "PERCENT", 5000));
+    const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
+    const order = purchaseAndPay(db, domain, occ, code.code, "zeroafterpaid@example.test", "idem-zeroafterpaid-0000001");
+    const settlement = finalizedSettlement(db, domain, occ, engagementId);
+    acceptedAct(db, p1.partner, settlement);
+    const authorization = beginPayment(db, admin, settlement.id);
+    recordPaymentMade(db, admin, authorization.attempt.id, "manual-ref-1");
+    expect(db.prepare("SELECT status FROM reward_settlements WHERE id = ?").get(settlement.id)).toEqual({ status: "SETTLED" });
+
+    db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, ?, 'full', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
+      .run(randomUUID(), randomUUID(), order.id, order.payment_id, order.amount_kopecks, randomUUID());
+    const result = correctPartnerRewardWithSettlement(db, admin, engagementId, "fully refunded after payment");
+    expect(result.settlement_action).toBe("RECOVERY_EXPOSURE");
+    expect(result.correction.reward_total_kopecks).toBe(0);
+
+    expect(() => closeEngagementZeroReward(db, admin, engagementId, "CORRECTED_TO_ZERO", "cmd-1")).toThrow(/AGENT_REFERRALS_ZERO_CLOSURE_SETTLEMENT_EXISTS/);
   });
 
   it("closeEngagementWithRewardRegistry works normally alongside a zero-reward closure - closure is independent of engagement CLOSED", async () => {

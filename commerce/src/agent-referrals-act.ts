@@ -2,8 +2,9 @@ import type Database from "better-sqlite3";
 import { id, now } from "./crypto";
 import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
 import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
-import { agentReferralsSettlementById } from "./agent-referrals-settlement";
+import { agentReferralsSettlementById, type AgentReferralsSettlementRow } from "./agent-referrals-settlement";
 import { consumeSettlementStepUpGrantInTransaction } from "./agent-referrals-settlement-step-up";
+import { currentEffectiveRewardSnapshot } from "./agent-referrals-reward-registry";
 import type { AdminPrincipal, PartnerPrincipal } from "./agent-referrals-partner-identity";
 
 /**
@@ -42,6 +43,22 @@ export const settlementActById = (db: Database.Database, actId: string): Settlem
 export const settlementActForSettlement = (db: Database.Database, settlementId: string): SettlementActRow | null =>
   (db.prepare(`SELECT ${ACT_COLUMNS} FROM settlement_acts WHERE settlement_id = ?`).get(settlementId) as SettlementActRow | undefined) ?? null;
 
+/**
+ * Recheck that a settlement is still viable authority for NEW act
+ * evidence: still PREPARED (not yet superseded/cancelled or already paid
+ * onward) AND still pinned to its engagement's CURRENT effective reward
+ * snapshot (never stale - the same recheck preparePartnerSettlement and
+ * beginPayment each perform independently). Disputing an already-
+ * presented act is exempt from this - see disputeSettlementAct's own
+ * header - since that records a partner's objection to a document they
+ * were genuinely shown, never new financial authority.
+ */
+const assertSettlementActionable = (db: Database.Database, settlement: AgentReferralsSettlementRow): void => {
+  if (settlement.status !== "PREPARED") throw new SettlementActError("AGENT_REFERRALS_SETTLEMENT_ACT_SETTLEMENT_NOT_PREPARED", 409, settlement.id);
+  const current = currentEffectiveRewardSnapshot(db, settlement.engagement_id);
+  if (!current || current.id !== settlement.effective_reward_snapshot_id) throw new SettlementActError("AGENT_REFERRALS_SETTLEMENT_ACT_SETTLEMENT_STALE", 409, settlement.id);
+};
+
 export type GenerateActResult = { act: SettlementActRow; replayed: boolean };
 
 /** ACT_PREPARED. Idempotent by the migration's own UNIQUE(settlement_id) - a settlement can have at most one act, ever. */
@@ -52,6 +69,7 @@ export const generateSettlementAct = (db: Database.Database, admin: AdminPrincip
     if (existing) return { act: existing, replayed: true };
     const settlement = agentReferralsSettlementById(db, settlementId);
     if (!settlement) throw new SettlementActError("AGENT_REFERRALS_SETTLEMENT_NOT_FOUND", 404, settlementId);
+    assertSettlementActionable(db, settlement);
 
     const actId = id();
     db.prepare(`INSERT INTO settlement_acts(id, settlement_id, engagement_id, engagement_revision_id, effective_reward_snapshot_id, partner_identity_id, amount_kopecks, created_by_admin_id)
@@ -71,6 +89,9 @@ export const presentSettlementAct = (db: Database.Database, admin: AdminPrincipa
     const act = settlementActById(db, actId);
     if (!act) throw new SettlementActError("AGENT_REFERRALS_SETTLEMENT_ACT_NOT_FOUND", 404, actId);
     if (act.presented_at) return { act, replayed: true };
+    const settlement = agentReferralsSettlementById(db, act.settlement_id);
+    if (!settlement) throw new SettlementActError("AGENT_REFERRALS_SETTLEMENT_NOT_FOUND", 404, act.settlement_id);
+    assertSettlementActionable(db, settlement);
     db.prepare("UPDATE settlement_acts SET presented_at = ? WHERE id = ? AND presented_at IS NULL").run(now(), actId);
     return { act: settlementActById(db, actId)!, replayed: false };
   });
@@ -114,6 +135,9 @@ export const acceptSettlementAct = (
     if (!act) throw new SettlementActError("AGENT_REFERRALS_SETTLEMENT_ACT_NOT_FOUND", 404, actId);
     if (act.partner_identity_id !== partner.partner_identity_id) throw new SettlementActError("AGENT_REFERRALS_SETTLEMENT_ACT_WRONG_PARTNER", 403, actId);
     if (!act.presented_at) throw new SettlementActError("AGENT_REFERRALS_SETTLEMENT_ACT_NOT_PRESENTED", 409, actId);
+    const settlement = agentReferralsSettlementById(db, act.settlement_id);
+    if (!settlement) throw new SettlementActError("AGENT_REFERRALS_SETTLEMENT_NOT_FOUND", 404, act.settlement_id);
+    assertSettlementActionable(db, settlement);
 
     consumeSettlementStepUpGrantInTransaction(db, partner, stepUpGrantId, "ACT_ACCEPTANCE", { act_id: actId, amount_kopecks: act.amount_kopecks, engagement_revision_id: act.engagement_revision_id });
 

@@ -14,25 +14,31 @@
 -- consistency, column immutability) are triggers instead, exactly the 0046
 -- pattern.
 
--- 1. settlement_flow. Historical NULL cannot exist here (unlike 0046's
--- nullable referral_rewards.reward_authority_kind): NOT NULL DEFAULT
--- 'LEGACY' backfills every existing row to the true, not fabricated,
--- classification via ALTER TABLE's own default fill (no application
--- backfill logic runs), and every future legacy-path INSERT (the unchanged
--- prepareSettlement()) continues to omit this column and gets 'LEGACY' for
--- free - domain.ts's legacy INSERT statement needs no edit at all.
-ALTER TABLE reward_settlements ADD COLUMN settlement_flow TEXT NOT NULL DEFAULT 'LEGACY' CHECK (settlement_flow IN ('LEGACY', 'AGENT_REFERRALS'));
+-- 1. settlement_flow. Nullable, no default - historical NULL means LEGACY,
+-- exactly 0046's referral_rewards.reward_authority_kind pattern, never
+-- backfilled. The legacy INSERT (prepareSettlement(), unchanged) omits
+-- this column and gets NULL for free; every read site COALESCEs (or uses
+-- `IS NOT 'AGENT_REFERRALS'`) to treat NULL as LEGACY. AGENT_REFERRALS
+-- rows always set it explicitly, so a bare equality check against
+-- 'AGENT_REFERRALS' is always correct without a NULL-aware wrapper.
+ALTER TABLE reward_settlements ADD COLUMN settlement_flow TEXT CHECK (settlement_flow IN ('LEGACY', 'AGENT_REFERRALS'));
 
--- 2. Agent Referrals authority pins. All NULL for LEGACY; all-or-nothing
--- for AGENT_REFERRALS, proven relationally below - not merely non-NULL.
+-- 2. Agent Referrals authority pins. All NULL for LEGACY (and, since
+-- settlement_flow is itself nullable, for historical NULL rows too - the
+-- guard below treats NULL and 'LEGACY' identically); all-or-nothing for
+-- AGENT_REFERRALS, proven relationally below - not merely non-NULL.
 -- amount_kopecks (the pre-existing column) is proven equal to the pinned
 -- effective snapshot's own total in the same guard: this is the literal
 -- structural proof that F10's "amount is derived, never supplied" holds -
 -- raw SQL cannot insert an AGENT_REFERRALS row whose amount disagrees with
--- its own pinned E.
+-- its own pinned E. reward_registry_hash pins R's own source_state_hash
+-- (the plan's "reward_registry_hash", distinct from
+-- base_registry_snapshot_id, which pins only R's identity) so a settlement
+-- also commits to R's *content*, not merely which row it references.
 ALTER TABLE reward_settlements ADD COLUMN engagement_id TEXT REFERENCES engagements(id);
 ALTER TABLE reward_settlements ADD COLUMN engagement_revision_id TEXT REFERENCES engagement_revisions(id);
 ALTER TABLE reward_settlements ADD COLUMN base_registry_snapshot_id TEXT REFERENCES engagement_reward_registry_snapshot(id);
+ALTER TABLE reward_settlements ADD COLUMN reward_registry_hash TEXT;
 ALTER TABLE reward_settlements ADD COLUMN effective_reward_snapshot_id TEXT REFERENCES engagement_effective_reward_snapshots(id);
 ALTER TABLE reward_settlements ADD COLUMN partner_identity_id TEXT REFERENCES partner_identities(id);
 ALTER TABLE reward_settlements ADD COLUMN payout_profile_revision_id TEXT REFERENCES payout_profile_revisions(id);
@@ -50,12 +56,19 @@ ALTER TABLE reward_settlements ADD COLUMN legal_profile_revision_id_snapshot TEX
 ALTER TABLE reward_settlements ADD COLUMN supersedes_settlement_id TEXT REFERENCES reward_settlements(id);
 ALTER TABLE reward_settlements ADD COLUMN cancellation_reason TEXT CHECK (cancellation_reason IS NULL OR cancellation_reason = 'SUPERSEDED_BY_REWARD_CORRECTION');
 
--- No half-shaped authority row: LEGACY carries no AGENT_REFERRALS pin at
--- all; AGENT_REFERRALS carries every one of them, RELATIONALLY consistent
--- (not merely non-NULL):
+-- No half-shaped authority row: LEGACY (or historical NULL) carries no
+-- AGENT_REFERRALS pin at all; AGENT_REFERRALS carries every one of them,
+-- RELATIONALLY consistent (not merely non-NULL):
 --   amount_kopecks == the pinned effective snapshot's own reward_total_kopecks
 --     (F10 - the derived-not-supplied proof)
 --   the pinned E actually belongs to the pinned engagement/revision/R
+--   the pinned E is the CURRENT one for this engagement (MAX sequence) -
+--     closes the "stale E stays payable after a later correction" seam:
+--     a settlement can only ever be minted against the E that is current
+--     AT THE MOMENT of insert (payment_authorizations' own guard below
+--     re-proves this again, freshly, at BEGIN_PAYMENT time - inserting
+--     here does not exempt the money-moving step from re-checking)
+--   R's own reward_registry_hash actually matches R's current source_state_hash
 --   the engagement's occurrence is actually COMPLETED (§B-6 hard invariant
 --     on positive payout authority - CANCELLED-terminal engagements can
 --     never reach a positive E per PR6's own absorbing-zero correction
@@ -64,6 +77,12 @@ ALTER TABLE reward_settlements ADD COLUMN cancellation_reason TEXT CHECK (cancel
 --   partner_identity_id really owns agent_id, and really owns this exact
 --     engagement/occurrence (closes "settlement points at the wrong
 --     partner")
+--   legal_profile_revision_id_snapshot is really partner_identity's OWN
+--     current legal_profile_revision_id, really belongs to agent_id, and
+--     tax_mode_snapshot really equals that profile's own tax_mode - closes
+--     "a fabricated tax_mode_snapshot = OTHER bypasses the NPD payout gate"
+--   contractor_type_snapshot really equals agents.contractor_type for
+--     agent_id, the same recheck legacy's own INSERT already gets for free
 --   the payout profile really belongs to this partner and is the CURRENT
 --     usable (ACTIVE_DESTINATION, not REVOKED, not a superseded revision)
 --     one - the "payout profile still usable" recheck, at creation time
@@ -82,17 +101,18 @@ ALTER TABLE reward_settlements ADD COLUMN cancellation_reason TEXT CHECK (cancel
 CREATE TRIGGER reward_settlements_authority_tuple_consistency_guard
 BEFORE INSERT ON reward_settlements
 WHEN NOT (
-  (NEW.settlement_flow = 'LEGACY'
+  ((NEW.settlement_flow IS NULL OR NEW.settlement_flow = 'LEGACY')
     AND NEW.engagement_id IS NULL AND NEW.engagement_revision_id IS NULL
-    AND NEW.base_registry_snapshot_id IS NULL AND NEW.effective_reward_snapshot_id IS NULL
+    AND NEW.base_registry_snapshot_id IS NULL AND NEW.reward_registry_hash IS NULL AND NEW.effective_reward_snapshot_id IS NULL
     AND NEW.partner_identity_id IS NULL AND NEW.payout_profile_revision_id IS NULL
     AND NEW.tax_mode_snapshot IS NULL AND NEW.legal_profile_revision_id_snapshot IS NULL
     AND NEW.supersedes_settlement_id IS NULL AND NEW.cancellation_reason IS NULL)
   OR
   (NEW.settlement_flow = 'AGENT_REFERRALS'
     AND NEW.engagement_id IS NOT NULL AND NEW.engagement_revision_id IS NOT NULL
-    AND NEW.base_registry_snapshot_id IS NOT NULL AND NEW.effective_reward_snapshot_id IS NOT NULL
+    AND NEW.base_registry_snapshot_id IS NOT NULL AND NEW.reward_registry_hash IS NOT NULL AND NEW.effective_reward_snapshot_id IS NOT NULL
     AND NEW.partner_identity_id IS NOT NULL AND NEW.payout_profile_revision_id IS NOT NULL
+    AND NEW.tax_mode_snapshot IS NOT NULL AND NEW.legal_profile_revision_id_snapshot IS NOT NULL
     AND EXISTS (
       SELECT 1 FROM engagement_effective_reward_snapshots e
       WHERE e.id = NEW.effective_reward_snapshot_id
@@ -100,13 +120,22 @@ WHEN NOT (
         AND e.engagement_revision_id = NEW.engagement_revision_id
         AND e.base_registry_snapshot_id = NEW.base_registry_snapshot_id
         AND e.reward_total_kopecks = NEW.amount_kopecks
+        AND e.sequence = (SELECT MAX(sequence) FROM engagement_effective_reward_snapshots WHERE engagement_id = NEW.engagement_id)
     )
+    AND EXISTS (SELECT 1 FROM engagement_reward_registry_snapshot r WHERE r.id = NEW.base_registry_snapshot_id AND r.source_state_hash = NEW.reward_registry_hash)
     AND EXISTS (
       SELECT 1 FROM engagements en JOIN occurrences o ON o.id = en.occurrence_id
       WHERE en.id = NEW.engagement_id AND en.occurrence_id = NEW.occurrence_id AND o.fulfillment_status = 'COMPLETED'
     )
     AND EXISTS (SELECT 1 FROM partner_identities pi WHERE pi.id = NEW.partner_identity_id AND pi.agent_id = NEW.agent_id)
     AND EXISTS (SELECT 1 FROM engagements en2 WHERE en2.id = NEW.engagement_id AND en2.partner_identity_id = NEW.partner_identity_id)
+    AND EXISTS (
+      SELECT 1 FROM partner_identities pi2
+      JOIN agent_referrals_legal_profile_revisions lp ON lp.id = pi2.legal_profile_revision_id
+      WHERE pi2.id = NEW.partner_identity_id AND pi2.legal_profile_revision_id = NEW.legal_profile_revision_id_snapshot
+        AND lp.agent_id = NEW.agent_id AND lp.tax_mode = NEW.tax_mode_snapshot
+    )
+    AND NEW.contractor_type_snapshot = (SELECT contractor_type FROM agents WHERE id = NEW.agent_id)
     AND EXISTS (
       SELECT 1 FROM payout_profile_revisions ppr
       WHERE ppr.id = NEW.payout_profile_revision_id AND ppr.partner_identity_id = NEW.partner_identity_id AND ppr.kind = 'ACTIVE_DESTINATION'
@@ -139,19 +168,16 @@ CREATE UNIQUE INDEX reward_settlements_effective_snapshot_unique
 -- block the legacy status-machine UPDATEs
 -- (markSettlementPaymentMade/completeSettlementDocuments/
 -- cancelSettlementBeforePayment) or this PR's own new AGENT_REFERRALS
--- status transitions (PREPARED -> PENDING_DOCUMENT -> SETTLED, PREPARED ->
--- CANCELLED_BEFORE_PAYMENT), both of which legitimately UPDATE `status`
--- and its timestamp/document columns. cancellation_reason is deliberately
--- OMITTED here: it is written exactly once, in the same UPDATE that moves
--- status to CANCELLED_BEFORE_PAYMENT for supersession, and no further
--- UPDATE of any kind is legal against a CANCELLED_BEFORE_PAYMENT row in
--- either flow - so it needs no separate guard.
+-- status transitions, both of which legitimately UPDATE `status` and its
+-- timestamp/document columns - see the AGENT_REFERRALS-only FSM guards
+-- below, which own that surface.
 CREATE TRIGGER reward_settlements_authority_columns_immutable_guard
 BEFORE UPDATE ON reward_settlements
 WHEN NEW.settlement_flow IS NOT OLD.settlement_flow
   OR NEW.engagement_id IS NOT OLD.engagement_id
   OR NEW.engagement_revision_id IS NOT OLD.engagement_revision_id
   OR NEW.base_registry_snapshot_id IS NOT OLD.base_registry_snapshot_id
+  OR NEW.reward_registry_hash IS NOT OLD.reward_registry_hash
   OR NEW.effective_reward_snapshot_id IS NOT OLD.effective_reward_snapshot_id
   OR NEW.partner_identity_id IS NOT OLD.partner_identity_id
   OR NEW.payout_profile_revision_id IS NOT OLD.payout_profile_revision_id
@@ -162,6 +188,46 @@ WHEN NEW.settlement_flow IS NOT OLD.settlement_flow
   OR NEW.occurrence_id IS NOT OLD.occurrence_id
   OR NEW.amount_kopecks IS NOT OLD.amount_kopecks
 BEGIN SELECT RAISE(ABORT, 'REWARD_SETTLEMENT_AUTHORITY_COLUMNS_IMMUTABLE'); END;
+
+-- AGENT_REFERRALS-only status FSM. Legacy's own four-state machine is
+-- untouched (this trigger's WHEN gate excludes every LEGACY/historical-NULL
+-- row outright, so legacy UPDATEs never even evaluate the branch below).
+-- Every legal edge names the exact evidence that must already exist,
+-- proven inside the SAME transaction the projection UPDATE runs in
+-- ("settle the attempt first, then project the settlement" - see
+-- agent-referrals-payment.ts's header): raw SQL cannot move `status`
+-- without the underlying MADE attempt / NPD receipt actually being there,
+-- and cannot revive a terminal row (SETTLED, CANCELLED_BEFORE_PAYMENT) by
+-- any UPDATE at all - see the terminal-immutability guard directly below,
+-- which this depends on for the "no reviving CANCELLED_BEFORE_PAYMENT"
+-- half of the story.
+CREATE TRIGGER reward_settlements_agent_referrals_status_transition_guard
+BEFORE UPDATE ON reward_settlements
+WHEN NEW.settlement_flow = 'AGENT_REFERRALS'
+  AND (NEW.status IS NOT OLD.status OR NEW.cancellation_reason IS NOT OLD.cancellation_reason)
+  AND NOT (
+    OLD.status = 'PREPARED' AND OLD.cancellation_reason IS NULL AND (
+      (NEW.status = 'CANCELLED_BEFORE_PAYMENT' AND NEW.cancellation_reason = 'SUPERSEDED_BY_REWARD_CORRECTION')
+      OR (NEW.status = 'SETTLED' AND NEW.cancellation_reason IS NULL AND NEW.tax_mode_snapshot = 'OTHER'
+          AND EXISTS (SELECT 1 FROM payment_attempts pa WHERE pa.settlement_id = NEW.id AND pa.status = 'MADE'))
+      OR (NEW.status = 'PENDING_DOCUMENT' AND NEW.cancellation_reason IS NULL AND NEW.tax_mode_snapshot = 'NPD'
+          AND EXISTS (SELECT 1 FROM payment_attempts pa WHERE pa.settlement_id = NEW.id AND pa.status = 'MADE'))
+    )
+    OR (OLD.status = 'PENDING_DOCUMENT' AND NEW.status = 'SETTLED' AND NEW.cancellation_reason IS NULL
+        AND EXISTS (SELECT 1 FROM payment_attempts pa JOIN npd_receipts r ON r.payment_attempt_id = pa.id WHERE pa.settlement_id = NEW.id AND pa.status = 'MADE'))
+  )
+BEGIN SELECT RAISE(ABORT, 'REWARD_SETTLEMENT_TRANSITION_ILLEGAL'); END;
+
+-- Once SETTLED or CANCELLED_BEFORE_PAYMENT, an AGENT_REFERRALS row is
+-- history - no UPDATE of any kind, matching payment_attempts_terminal_
+-- immutable_guard exactly. This is what makes "revert CANCELLED_BEFORE_
+-- PAYMENT back to PREPARED via raw UPDATE" (the exact adversarial state
+-- the migration test suite previously had to construct to reach a
+-- DIFFERENT guard) unreachable by any statement at all.
+CREATE TRIGGER reward_settlements_agent_referrals_terminal_immutable_guard
+BEFORE UPDATE ON reward_settlements
+WHEN NEW.settlement_flow = 'AGENT_REFERRALS' AND OLD.status IN ('SETTLED', 'CANCELLED_BEFORE_PAYMENT')
+BEGIN SELECT RAISE(ABORT, 'REWARD_SETTLEMENT_TERMINAL_IMMUTABLE'); END;
 
 -- 3. Settlement-scoped step-up grants (Phase 7's own table, parallel to
 -- 0044's step_up_grants and 0045's engagement_step_up_grants - see 0045's
@@ -197,7 +263,12 @@ CREATE INDEX settlement_step_up_grants_partner_idx ON settlement_step_up_grants(
 -- row, minted fresh after correction/supersession) starts with NO act at
 -- all - it is structurally impossible for BEGIN_PAYMENT to ever find an
 -- old accepted act for a new settlement id, which is exactly "old accepted
--- act does not authorize a superseding settlement".
+-- act does not authorize a superseding settlement". Application code
+-- (agent-referrals-act.ts) additionally rechecks the settlement is still
+-- PREPARED and still current before generating/presenting/accepting a NEW
+-- act - a stale-but-not-yet-cancelled settlement (only reachable by
+-- bypassing the settlement-aware correction orchestrator) cannot mint
+-- fresh act evidence either.
 CREATE TABLE settlement_acts (
   id TEXT PRIMARY KEY,
   settlement_id TEXT NOT NULL UNIQUE REFERENCES reward_settlements(id),
@@ -282,7 +353,11 @@ BEGIN SELECT RAISE(ABORT, 'SETTLEMENT_ACT_ACCEPTANCE_IMMUTABLE'); END;
 -- DOCUMENT_DISPUTED: limited reason set, no ticketing/negotiation
 -- subsystem. Blocks payment authorization structurally (see
 -- payment_authorizations' own guard below, which requires an acceptance
--- AND requires no dispute).
+-- AND requires no dispute). Disputing an already-presented act remains
+-- legal regardless of what later happens to the settlement (e.g. it is
+-- superseded by a correction) - this is a partner's evidence of an
+-- objection to a document they were actually shown, and it is never
+-- retroactively erased.
 CREATE TABLE settlement_act_disputes (
   id TEXT PRIMARY KEY,
   act_id TEXT NOT NULL UNIQUE REFERENCES settlement_acts(id),
@@ -310,21 +385,27 @@ BEGIN SELECT RAISE(ABORT, 'SETTLEMENT_ACT_DISPUTE_IMMUTABLE'); END;
 -- and no freshness). Explicit injected/manual evidence boundary - no FNS
 -- adapter ships in this PR, so every row is written by an explicit
 -- recordNpdStatusCheck() call carrying its own evidence_ref, never
--- fabricated. Immutable, one fact per check, freshness is compared in
--- application code (agent-referrals-npd.ts) using julianday() arithmetic
--- against a named constant, matching how every other freshness window in
--- this codebase (e.g. STALE_PREPARED_SETTLEMENT_MS) is handled - never a
--- magic number baked into a trigger.
+-- fabricated. Immutable, one fact per check. `sequence` is an explicit,
+-- per-partner monotonic business counter - never rowid/created_at/id as
+-- ordering authority - so "the current check" is unambiguously MAX(sequence)
+-- for that partner, exactly the idiom already used for engagement_effective_
+-- reward_snapshots. Freshness (a real elapsed-time fact, not an ordering
+-- concern) is compared separately, in application code
+-- (agent-referrals-npd.ts) using julianday() arithmetic against a named
+-- constant AND structurally in payment_authorizations' own guard below -
+-- never a magic number floating free of the value it protects.
 CREATE TABLE npd_status_checks (
   id TEXT PRIMARY KEY,
   partner_identity_id TEXT NOT NULL REFERENCES partner_identities(id),
+  sequence INTEGER NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('ACTIVE', 'INACTIVE', 'UNKNOWN')),
   checked_at TEXT NOT NULL,
   evidence_ref TEXT NOT NULL,
   created_by_admin_id TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE (partner_identity_id, sequence)
 );
-CREATE INDEX npd_status_checks_partner_idx ON npd_status_checks(partner_identity_id, checked_at);
+CREATE INDEX npd_status_checks_partner_idx ON npd_status_checks(partner_identity_id, sequence);
 CREATE TRIGGER npd_status_checks_immutable_guard BEFORE UPDATE ON npd_status_checks BEGIN SELECT RAISE(ABORT, 'NPD_STATUS_CHECK_IMMUTABLE'); END;
 CREATE TRIGGER npd_status_checks_delete_guard BEFORE DELETE ON npd_status_checks BEGIN SELECT RAISE(ABORT, 'NPD_STATUS_CHECK_IMMUTABLE'); END;
 
@@ -335,12 +416,23 @@ CREATE TRIGGER npd_status_checks_delete_guard BEFORE DELETE ON npd_status_checks
 -- transaction (agent-referrals-payment.ts's beginPayment()), never by a
 -- mutable consumed_at flag application convention alone would have to be
 -- trusted to set. The relational guard below is the real re-check gate:
--- everything BEGIN_PAYMENT must re-verify (settlement still PREPARED and
--- not superseded, exact undisputed accepted act, payout profile still the
--- current usable revision, exact fresh ACTIVE NPD check when tax_mode is
--- NPD, no fabricated NPD authority required for OTHER) is proven exactly
--- once, structurally, at the moment the authorization itself is inserted -
--- raw SQL cannot construct one that skips any of it.
+-- everything BEGIN_PAYMENT must re-verify (settlement still PREPARED, not
+-- superseded, AND still pinned to the CURRENT effective snapshot for its
+-- engagement - closing the "a later correction advanced E while an old
+-- settlement stayed PREPARED" seam even when that correction bypassed the
+-- settlement-aware orchestrator entirely; exact undisputed accepted act;
+-- payout profile still the current usable revision; for NPD, the named
+-- check is ACTIVE, belongs to the partner, is the partner's CURRENT
+-- (highest-sequence) check - never a superseded ACTIVE reading a newer
+-- INACTIVE check has already overtaken - AND fresh within the
+-- freshness window; no fabricated NPD authority required for OTHER) is
+-- proven exactly once, structurally, at the moment the authorization
+-- itself is inserted - raw SQL cannot construct one that skips any of it.
+--
+-- The freshness literal (14400000 ms = 4 hours) mirrors
+-- NPD_STATUS_CHECK_FRESHNESS_MS in agent-referrals-npd.ts exactly - if
+-- that constant ever changes, this literal must change with it (proven by
+-- a dedicated behavioral test, not by cross-file string matching).
 CREATE TABLE payment_authorizations (
   id TEXT PRIMARY KEY,
   settlement_id TEXT NOT NULL REFERENCES reward_settlements(id),
@@ -362,9 +454,20 @@ WHEN NOT (
       AND rs.payout_profile_revision_id = NEW.payout_profile_revision_id
       AND rs.status = 'PREPARED'
       AND NOT EXISTS (SELECT 1 FROM reward_settlements later WHERE later.supersedes_settlement_id = rs.id)
+      AND rs.effective_reward_snapshot_id = (
+        SELECT id FROM engagement_effective_reward_snapshots
+        WHERE engagement_id = rs.engagement_id
+        ORDER BY sequence DESC LIMIT 1
+      )
       AND (
         (rs.tax_mode_snapshot = 'NPD' AND NEW.npd_status_check_id IS NOT NULL
-          AND EXISTS (SELECT 1 FROM npd_status_checks c WHERE c.id = NEW.npd_status_check_id AND c.status = 'ACTIVE' AND c.partner_identity_id = rs.partner_identity_id))
+          AND EXISTS (
+            SELECT 1 FROM npd_status_checks c
+            WHERE c.id = NEW.npd_status_check_id AND c.status = 'ACTIVE' AND c.partner_identity_id = rs.partner_identity_id
+              AND c.sequence = (SELECT MAX(sequence) FROM npd_status_checks WHERE partner_identity_id = rs.partner_identity_id)
+              AND (julianday('now') - julianday(c.checked_at)) * 86400000 <= 14400000
+              AND (julianday('now') - julianday(c.checked_at)) * 86400000 >= 0
+          ))
         OR (rs.tax_mode_snapshot = 'OTHER' AND NEW.npd_status_check_id IS NULL)
       )
   )
@@ -388,15 +491,17 @@ CREATE TRIGGER payment_authorizations_delete_guard BEFORE DELETE ON payment_auth
 -- CONFIRMED_NOT_MADE - mirroring outbox_attempt's outcome/settlement shape
 -- (0041) but with its own vocabulary, since the payout invariant differs:
 -- PAYOUT_UNKNOWN is a real state here (not folded into a message-level
--- ambiguity flag), reachable only from IN_PROGRESS, and CONFIRMED_NOT_MADE
--- is reachable from IN_PROGRESS (a synchronous, definitive failure) or
--- from PAYOUT_UNKNOWN (later reconciliation evidence) - never
--- automatically, never by a timeout. MADE is reachable ONLY from
--- IN_PROGRESS: there is no PAYOUT_UNKNOWN -> MADE edge, matching "a missing
--- answer is never read as ACTIVE" applied to payouts - an unresolved
--- payout is never later relabelled paid by this attempt's own lifecycle: a
--- genuinely-late discovery that money did leave is an out-of-band
--- reconciliation fact, outside this attempt's structural vocabulary.
+-- ambiguity flag), reachable only from IN_PROGRESS. From PAYOUT_UNKNOWN,
+-- durable reconciliation evidence may resolve the ambiguity in EITHER
+-- direction - MADE (proof the payout actually completed) or
+-- CONFIRMED_NOT_MADE (proof it did not) - never automatically, never by a
+-- timeout: both edges require an explicit application call carrying its
+-- own evidence_ref (recordPaymentMade / recordConfirmedNotMade in
+-- agent-referrals-payment.ts), and the table's own CHECK below requires a
+-- non-NULL evidence_ref for every non-IN_PROGRESS row, so a raw INSERT/
+-- UPDATE cannot manufacture a terminal-ish outcome with no evidence at
+-- all. MADE and CONFIRMED_NOT_MADE are each terminal once reached (no
+-- further UPDATE of any kind - see the terminal-immutability guard).
 --
 -- The partial unique index is the real "at most one unsettled attempt per
 -- settlement" backstop (not merely BEGIN IMMEDIATE): only once an attempt
@@ -417,9 +522,9 @@ CREATE TABLE payment_attempts (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   CHECK (
     (status = 'IN_PROGRESS')
-    OR (status = 'MADE' AND made_at IS NOT NULL)
-    OR (status = 'PAYOUT_UNKNOWN' AND payout_unknown_at IS NOT NULL)
-    OR (status = 'CONFIRMED_NOT_MADE' AND confirmed_not_made_at IS NOT NULL)
+    OR (status = 'MADE' AND made_at IS NOT NULL AND evidence_ref IS NOT NULL)
+    OR (status = 'PAYOUT_UNKNOWN' AND payout_unknown_at IS NOT NULL AND evidence_ref IS NOT NULL)
+    OR (status = 'CONFIRMED_NOT_MADE' AND confirmed_not_made_at IS NOT NULL AND evidence_ref IS NOT NULL)
   )
 );
 CREATE UNIQUE INDEX payment_attempts_active_unique
@@ -444,11 +549,19 @@ CREATE TRIGGER payment_attempts_terminal_immutable_guard
 BEFORE UPDATE ON payment_attempts
 WHEN OLD.status = 'MADE' OR OLD.status = 'CONFIRMED_NOT_MADE'
 BEGIN SELECT RAISE(ABORT, 'PAYMENT_ATTEMPT_TERMINAL_IMMUTABLE'); END;
+-- PAYOUT_UNKNOWN -> MADE: only reachable via an explicit reconciliation
+-- call carrying durable evidence (never a timeout - nothing elsewhere in
+-- this schema or in agent-referrals-payment.ts ever performs this edge
+-- automatically). This is the resolution-in-the-other-direction
+-- counterpart to PAYOUT_UNKNOWN -> CONFIRMED_NOT_MADE: an unresolved
+-- payout must be resolvable by proof in EITHER direction, never
+-- permanently stuck merely because the first evidence to arrive happened
+-- to be ambiguous.
 CREATE TRIGGER payment_attempts_transition_legality_guard
 BEFORE UPDATE ON payment_attempts
 WHEN NEW.status IS NOT OLD.status AND NOT (
   (OLD.status = 'IN_PROGRESS' AND NEW.status IN ('MADE', 'PAYOUT_UNKNOWN', 'CONFIRMED_NOT_MADE'))
-  OR (OLD.status = 'PAYOUT_UNKNOWN' AND NEW.status = 'CONFIRMED_NOT_MADE')
+  OR (OLD.status = 'PAYOUT_UNKNOWN' AND NEW.status IN ('MADE', 'CONFIRMED_NOT_MADE'))
 )
 BEGIN SELECT RAISE(ABORT, 'PAYMENT_ATTEMPT_TRANSITION_ILLEGAL'); END;
 CREATE TRIGGER payment_attempts_delete_guard
@@ -484,16 +597,24 @@ BEGIN SELECT RAISE(ABORT, 'NPD_RECEIPT_RELATIONAL_INCONSISTENT'); END;
 CREATE TRIGGER npd_receipts_immutable_guard BEFORE UPDATE ON npd_receipts BEGIN SELECT RAISE(ABORT, 'NPD_RECEIPT_IMMUTABLE'); END;
 CREATE TRIGGER npd_receipts_delete_guard BEFORE DELETE ON npd_receipts BEGIN SELECT RAISE(ABORT, 'NPD_RECEIPT_IMMUTABLE'); END;
 
--- 10. Zero-reward closure (§B-3/§B-6). Mutually exclusive with a
--- settlement by construction: reward_total_kopecks is CHECK'd = 0 here,
--- while reward_settlements/settlement_acts both CHECK amount_kopecks > 0
--- and the settlement authority-tuple guard proves amount_kopecks equals
--- the pinned E's own total - so a positive settlement referencing a
--- zero-total E, or a zero closure referencing a positive-total E, are both
--- structurally unrepresentable. UNIQUE(engagement_id): once an engagement's
--- E reaches zero it is an absorbing floor (PR6's own "no increase"
--- correction rule), so at most one zero closure per engagement is not
--- merely idempotent bookkeeping, it is the true cardinality.
+-- 10. Zero-reward closure (§B-3/§B-6). Mutually exclusive with a LIVE
+-- settlement: reward_total_kopecks is CHECK'd = 0 here, while
+-- reward_settlements/settlement_acts both CHECK amount_kopecks > 0 and the
+-- settlement authority-tuple guard proves amount_kopecks equals the
+-- pinned E's own total, so a positive settlement referencing a zero-total
+-- E is structurally unrepresentable - but a settlement that WAS positive
+-- and has since been paid (MADE, possibly SETTLED) can coexist with a
+-- LATER correction driving E to zero, per §B-6's own "old payment/
+-- settlement stay untouched, only recovery-exposure evidence is produced"
+-- rule. That is the recovery-exposure case, not zero-reward closure - the
+-- guard below refuses closure outright while any AGENT_REFERRALS
+-- settlement for this engagement is anything other than
+-- CANCELLED_BEFORE_PAYMENT (a settlement legitimately cancelled by a
+-- pre-payment correction-to-zero is fine; PREPARED/PENDING_DOCUMENT/
+-- SETTLED are not). UNIQUE(engagement_id): once an engagement's E reaches
+-- zero it is an absorbing floor (PR6's own "no increase" correction
+-- rule), so at most one zero closure per engagement is not merely
+-- idempotent bookkeeping, it is the true cardinality.
 CREATE TABLE engagement_zero_reward_closures (
   id TEXT PRIMARY KEY,
   engagement_id TEXT NOT NULL UNIQUE REFERENCES engagements(id),
@@ -521,7 +642,40 @@ WHEN NOT (
       AND e.reward_total_kopecks = 0
   )
   AND EXISTS (SELECT 1 FROM engagement_reward_registry_snapshot r WHERE r.id = NEW.base_registry_snapshot_id AND r.engagement_id = NEW.engagement_id)
+  AND NOT EXISTS (
+    SELECT 1 FROM reward_settlements rs
+    WHERE rs.engagement_id = NEW.engagement_id AND rs.settlement_flow = 'AGENT_REFERRALS' AND rs.status != 'CANCELLED_BEFORE_PAYMENT'
+  )
 )
 BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_ZERO_REWARD_CLOSURE_RELATIONAL_INCONSISTENT'); END;
 CREATE TRIGGER engagement_zero_reward_closures_immutable_guard BEFORE UPDATE ON engagement_zero_reward_closures BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_ZERO_REWARD_CLOSURE_IMMUTABLE'); END;
 CREATE TRIGGER engagement_zero_reward_closures_delete_guard BEFORE DELETE ON engagement_zero_reward_closures BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_ZERO_REWARD_CLOSURE_IMMUTABLE'); END;
+
+-- 11. Recovery-exposure evidence (§B-6: "immutable correction +
+-- recovery-exposure evidence"). Written once per correction that lands
+-- while a settlement is already paid (MADE) - append-only, one row per
+-- such correction, never a mutable running total. paid_net_kopecks and
+-- exposure_kopecks are the exact figures agent-referrals-settlement.ts's
+-- recoveryExposure() computed AT THAT MOMENT; `settlement_recoveries`
+-- (existing, unrelaxed) remains the authority for money ACTUALLY
+-- recovered afterward - this table is evidence of the exposure a
+-- correction created, not a ledger of its resolution.
+CREATE TABLE engagement_recovery_exposure_evidence (
+  id TEXT PRIMARY KEY,
+  engagement_id TEXT NOT NULL REFERENCES engagements(id),
+  settlement_id TEXT NOT NULL REFERENCES reward_settlements(id),
+  effective_reward_snapshot_id TEXT NOT NULL REFERENCES engagement_effective_reward_snapshots(id),
+  paid_net_kopecks INTEGER NOT NULL CHECK (paid_net_kopecks >= 0),
+  exposure_kopecks INTEGER NOT NULL CHECK (exposure_kopecks >= 0),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX engagement_recovery_exposure_evidence_engagement_idx ON engagement_recovery_exposure_evidence(engagement_id, created_at);
+CREATE TRIGGER engagement_recovery_exposure_evidence_relational_consistency_guard
+BEFORE INSERT ON engagement_recovery_exposure_evidence
+WHEN NOT (
+  EXISTS (SELECT 1 FROM reward_settlements rs WHERE rs.id = NEW.settlement_id AND rs.settlement_flow = 'AGENT_REFERRALS' AND rs.engagement_id = NEW.engagement_id)
+  AND EXISTS (SELECT 1 FROM engagement_effective_reward_snapshots e WHERE e.id = NEW.effective_reward_snapshot_id AND e.engagement_id = NEW.engagement_id)
+)
+BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_RECOVERY_EXPOSURE_EVIDENCE_RELATIONAL_INCONSISTENT'); END;
+CREATE TRIGGER engagement_recovery_exposure_evidence_immutable_guard BEFORE UPDATE ON engagement_recovery_exposure_evidence BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_RECOVERY_EXPOSURE_EVIDENCE_IMMUTABLE'); END;
+CREATE TRIGGER engagement_recovery_exposure_evidence_delete_guard BEFORE DELETE ON engagement_recovery_exposure_evidence BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_RECOVERY_EXPOSURE_EVIDENCE_IMMUTABLE'); END;
