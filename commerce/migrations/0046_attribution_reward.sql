@@ -177,15 +177,19 @@ CREATE TABLE engagement_reward_registry_snapshot (
   CHECK (terminal_status = 'COMPLETED' OR reward_total_kopecks = 0)
 );
 -- Relational consistency, not just non-NULL FKs: engagement_revision_id
--- must actually belong to engagement_id, and occurrence_id must be the
--- SAME occurrence engagement_id itself governs - closing the gap where a
--- formally-valid-but-fabricated R could pin a revision or occurrence
--- belonging to a different engagement entirely.
+-- must actually belong to engagement_id, occurrence_id must be the SAME
+-- occurrence engagement_id itself governs, and - closing the final
+-- boundary gap (holistic review round 2) - terminal_status must be the
+-- occurrence's OWN actual fulfillment_status at insert time, never a
+-- value R merely claims. Without this, the CANCELLED-positive-reward
+-- CHECK is trivially defeated by an R row that simply lies and says
+-- COMPLETED for a genuinely CANCELLED occurrence.
 CREATE TRIGGER engagement_reward_registry_snapshot_relational_consistency_guard
 BEFORE INSERT ON engagement_reward_registry_snapshot
 WHEN NOT (
   EXISTS (SELECT 1 FROM engagement_revisions r WHERE r.id = NEW.engagement_revision_id AND r.engagement_id = NEW.engagement_id)
   AND EXISTS (SELECT 1 FROM engagements e WHERE e.id = NEW.engagement_id AND e.occurrence_id = NEW.occurrence_id)
+  AND EXISTS (SELECT 1 FROM occurrences o WHERE o.id = NEW.occurrence_id AND o.fulfillment_status = NEW.terminal_status)
 )
 BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_REWARD_REGISTRY_SNAPSHOT_RELATIONAL_INCONSISTENT'); END;
 CREATE TRIGGER engagement_reward_registry_snapshot_immutable_guard
@@ -228,17 +232,24 @@ CREATE TABLE engagement_effective_reward_snapshots (
   CHECK ((sequence = 1) = (supersedes_effective_snapshot_id IS NULL))
 );
 CREATE INDEX engagement_effective_reward_snapshots_engagement_idx ON engagement_effective_reward_snapshots(engagement_id, sequence);
--- Relational consistency for the whole E chain, not just non-NULL FKs:
--- base_registry_snapshot_id must be R for THIS SAME engagement (never a
--- different engagement's registry - the exact corrupt shape a
--- fabricated-but-formally-valid row could otherwise construct),
--- engagement_revision_id must belong to this same engagement, every
--- CORRECTION's predecessor (named by supersedes_effective_snapshot_id)
--- must itself belong to the same engagement AND the same base registry
--- AND sit at exactly sequence-1 - so the chain can never fork, skip, or
--- re-base onto a different R - and (mirroring R's own CHECK) a CANCELLED
--- R's E can never carry a positive total either, closing the same §B-6
--- boundary for the whole correction lineage, not just the INITIAL row.
+-- Relational consistency for the whole E chain, not just non-NULL FKs -
+-- and (holistic review round 2) the exact §B-6 identity itself, not only
+-- "belongs to the same engagement":
+--   base_registry_snapshot_id must be R for THIS SAME engagement (never a
+--   different engagement's registry);
+--   a CANCELLED R's E can never carry a positive total (mirrors R's own
+--   CHECK, for the whole correction lineage, not just the INITIAL row);
+--   INITIAL (sequence 1) must be an EXACT mirror of its base R -
+--   engagement_revision_id, reward_total_kopecks and source_state_hash
+--   all equal R's own - "E1 = R" is the literal §B-6 identity, not merely
+--   "E1 references R";
+--   every CORRECTION's predecessor (named by supersedes_effective_
+--   snapshot_id) must belong to the same engagement AND the same base
+--   registry AND sit at exactly sequence-1 AND share the SAME
+--   engagement_revision_id (this application never re-bases a correction
+--   onto a different revision - there is no legitimate rebase) - so the
+--   chain can never fork, skip, drift its revision, or re-base onto a
+--   different R.
 CREATE TRIGGER engagement_effective_reward_snapshots_relational_consistency_guard
 BEFORE INSERT ON engagement_effective_reward_snapshots
 WHEN NOT (
@@ -246,6 +257,10 @@ WHEN NOT (
     SELECT 1 FROM engagement_reward_registry_snapshot r
     WHERE r.id = NEW.base_registry_snapshot_id AND r.engagement_id = NEW.engagement_id
       AND (r.terminal_status = 'COMPLETED' OR NEW.reward_total_kopecks = 0)
+      AND (
+        NEW.supersedes_effective_snapshot_id IS NOT NULL
+        OR (r.engagement_revision_id = NEW.engagement_revision_id AND r.reward_total_kopecks = NEW.reward_total_kopecks AND r.source_state_hash = NEW.source_state_hash)
+      )
   )
   AND EXISTS (SELECT 1 FROM engagement_revisions rev WHERE rev.id = NEW.engagement_revision_id AND rev.engagement_id = NEW.engagement_id)
   AND (
@@ -256,6 +271,7 @@ WHEN NOT (
         AND prev.engagement_id = NEW.engagement_id
         AND prev.base_registry_snapshot_id = NEW.base_registry_snapshot_id
         AND prev.sequence = NEW.sequence - 1
+        AND prev.engagement_revision_id = NEW.engagement_revision_id
     )
   )
 )

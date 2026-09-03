@@ -450,9 +450,14 @@ describe("correction lineage: E2 <= E1 is a valid correction, E2 > E1 is refused
     // supersedes pointer) still collides, proving the UNIQUE(engagement_id,
     // sequence) backstop specifically.
     expect(current.sequence).toBe(1);
+    // Must exactly mirror R (engagement_revision_id/reward_total_kopecks/
+    // source_state_hash) to pass the relational-consistency guard and
+    // actually reach the UNIQUE(engagement_id, sequence) backstop this
+    // test targets.
     expect(() => db.prepare(`INSERT INTO engagement_effective_reward_snapshots(id, engagement_id, engagement_revision_id, base_registry_snapshot_id, sequence, kind, reward_total_kopecks, source_state_hash, reason, created_by_admin_id, canonical_hash)
-      VALUES (?, ?, ?, ?, ?, 'INITIAL', 0, 'h', 'race', 'admin', 'chx')`)
-      .run(randomUUID(), engagementId, current.engagement_revision_id, current.base_registry_snapshot_id, current.sequence)).toThrow(/UNIQUE constraint failed/);
+      VALUES (?, ?, ?, ?, ?, 'INITIAL', ?, ?, 'race', 'admin', 'chx')`)
+      .run(randomUUID(), engagementId, current.engagement_revision_id, current.base_registry_snapshot_id, current.sequence, current.reward_total_kopecks, current.source_state_hash))
+      .toThrow(/UNIQUE constraint failed/);
   });
 });
 

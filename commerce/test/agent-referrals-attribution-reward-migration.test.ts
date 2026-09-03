@@ -395,12 +395,20 @@ describe("0046 attribution & reward migration", () => {
   });
 
   describe("reward registry (R) and effective snapshots (E): structural constraints", () => {
-    const seed = (db: Database.Database) => {
+    // R.terminal_status must equal the occurrence's OWN actual
+    // fulfillment_status (holistic review round 2) - seedOccurrence
+    // defaults to SCHEDULED, so every raw-SQL R fixture here explicitly
+    // drives the occurrence to whichever terminal status that R row claims.
+    const seed = (db: Database.Database, status: "COMPLETED" | "CANCELLED" = "COMPLETED") => {
       seedAgent(db);
       seedPartner(db);
       seedOccurrence(db);
       seedEngagement(db);
       seedEngagementRevision(db);
+      db.prepare(`UPDATE occurrences SET fulfillment_status = ?, sales_status = 'CLOSED',
+        completed_at = CASE WHEN ? = 'COMPLETED' THEN CURRENT_TIMESTAMP END,
+        cancelled_at = CASE WHEN ? = 'CANCELLED' THEN CURRENT_TIMESTAMP END
+        WHERE id = 'occ-1'`).run(status, status, status);
     };
 
     it("at most one registry ever per engagement", () => {
@@ -419,14 +427,20 @@ describe("0046 attribution & reward migration", () => {
       const db = at0045();
       migrate(db);
       seed(db);
+      // The CHECK constraint and the relational guard (terminal_status must
+      // equal the occurrence's own actual fulfillment_status) both
+      // independently reject 'SCHEDULED' - the occurrence is COMPLETED, so
+      // the relational guard fires first; a value invalid for CHECK can
+      // never equal a real occurrence's status anyway.
       expect(() => db.prepare(`INSERT INTO engagement_reward_registry_snapshot(id, engagement_id, engagement_revision_id, occurrence_id, terminal_status, reward_total_kopecks, formula_version, source_order_ids_json, source_state_hash, watermark, finalized_by_admin_id, reason)
-        VALUES ('r1', 'eng-1', 'rev-1', 'occ-1', 'SCHEDULED', 1000, 1, '[]', 'h', 'w', 'admin', 'x')`).run()).toThrow(/CHECK constraint failed/);
+        VALUES ('r1', 'eng-1', 'rev-1', 'occ-1', 'SCHEDULED', 1000, 1, '[]', 'h', 'w', 'admin', 'x')`).run())
+        .toThrow(/ENGAGEMENT_REWARD_REGISTRY_SNAPSHOT_RELATIONAL_INCONSISTENT|CHECK constraint failed/);
     });
 
     it("§B-6: a CANCELLED registry can never carry a positive reward_total_kopecks - structural CHECK, not just an application refusal", () => {
       const db = at0045();
       migrate(db);
-      seed(db);
+      seed(db, "CANCELLED");
       expect(() => db.prepare(`INSERT INTO engagement_reward_registry_snapshot(id, engagement_id, engagement_revision_id, occurrence_id, terminal_status, reward_total_kopecks, formula_version, source_order_ids_json, source_state_hash, watermark, finalized_by_admin_id, reason)
         VALUES ('r1', 'eng-1', 'rev-1', 'occ-1', 'CANCELLED', 1000, 1, '[]', 'h', 'w', 'admin', 'x')`).run()).toThrow(/CHECK constraint failed/);
       expect(() => db.prepare(`INSERT INTO engagement_reward_registry_snapshot(id, engagement_id, engagement_revision_id, occurrence_id, terminal_status, reward_total_kopecks, formula_version, source_order_ids_json, source_state_hash, watermark, finalized_by_admin_id, reason)
@@ -464,9 +478,13 @@ describe("0046 attribution & reward migration", () => {
 
       db.prepare(`INSERT INTO engagement_effective_reward_snapshots(id, engagement_id, engagement_revision_id, base_registry_snapshot_id, sequence, kind, reward_total_kopecks, source_state_hash, reason, created_by_admin_id, canonical_hash)
         VALUES ('e1', 'eng-1', 'rev-1', 'r1', 1, 'INITIAL', 1000, 'h', 'x', 'admin', 'ch1')`).run();
-      // A second CHECK-consistent row (another INITIAL, sequence 1, no supersedes pointer) for the SAME engagement still collides - proving the UNIQUE(engagement_id, sequence) backstop specifically, not merely the CHECK constraint.
+      // A second row that is ALSO an exact mirror of R (another INITIAL,
+      // sequence 1, no supersedes pointer, same total/hash as R) for the
+      // SAME engagement still collides - proving the UNIQUE(engagement_id,
+      // sequence) backstop specifically, not merely the CHECK constraint
+      // or the "E1 = R" relational guard.
       expect(() => db.prepare(`INSERT INTO engagement_effective_reward_snapshots(id, engagement_id, engagement_revision_id, base_registry_snapshot_id, sequence, kind, reward_total_kopecks, source_state_hash, reason, created_by_admin_id, canonical_hash)
-        VALUES ('e1b', 'eng-1', 'rev-1', 'r1', 1, 'INITIAL', 500, 'h', 'y', 'admin', 'ch1b')`).run()).toThrow(/UNIQUE constraint failed/);
+        VALUES ('e1b', 'eng-1', 'rev-1', 'r1', 1, 'INITIAL', 1000, 'h', 'y', 'admin', 'ch1b')`).run()).toThrow(/UNIQUE constraint failed/);
 
       db.prepare(`INSERT INTO engagement_effective_reward_snapshots(id, engagement_id, engagement_revision_id, base_registry_snapshot_id, supersedes_effective_snapshot_id, sequence, kind, reward_total_kopecks, source_state_hash, reason, created_by_admin_id, canonical_hash)
         VALUES ('e2', 'eng-1', 'rev-1', 'r1', 'e1', 2, 'CORRECTION', 500, 'h', 'y', 'admin', 'ch2')`).run();
@@ -476,7 +494,7 @@ describe("0046 attribution & reward migration", () => {
 
     describe("relational consistency for the E chain (holistic review, P0 finding 5)", () => {
       const seedTwoEngagementsEachWithR = (db: Database.Database) => {
-        seed(db); // eng-1, rev-1, occ-1
+        seed(db); // eng-1, rev-1, occ-1 (COMPLETED)
         db.prepare(`INSERT INTO engagement_reward_registry_snapshot(id, engagement_id, engagement_revision_id, occurrence_id, terminal_status, reward_total_kopecks, formula_version, source_order_ids_json, source_state_hash, watermark, finalized_by_admin_id, reason)
           VALUES ('r1', 'eng-1', 'rev-1', 'occ-1', 'COMPLETED', 1000, 1, '[]', 'h', 'w', 'admin', 'x')`).run();
         seedAgent(db, "agent-2");
@@ -484,6 +502,7 @@ describe("0046 attribution & reward migration", () => {
         seedOccurrence(db, "occ-2");
         seedEngagement(db, "eng-2", "partner-2", "occ-2");
         seedEngagementRevision(db, "rev-2", "eng-2");
+        db.prepare("UPDATE occurrences SET fulfillment_status = 'COMPLETED', sales_status = 'CLOSED', completed_at = CURRENT_TIMESTAMP WHERE id = 'occ-2'").run();
         db.prepare(`INSERT INTO engagement_reward_registry_snapshot(id, engagement_id, engagement_revision_id, occurrence_id, terminal_status, reward_total_kopecks, formula_version, source_order_ids_json, source_state_hash, watermark, finalized_by_admin_id, reason)
           VALUES ('r2', 'eng-2', 'rev-2', 'occ-2', 'COMPLETED', 2000, 1, '[]', 'h2', 'w', 'admin', 'y')`).run();
       };
@@ -523,10 +542,28 @@ describe("0046 attribution & reward migration", () => {
           .toThrow(/ENGAGEMENT_EFFECTIVE_REWARD_SNAPSHOT_RELATIONAL_INCONSISTENT/);
       });
 
-      it("mirrors R's own CANCELLED-positive-reward CHECK: an E row on a CANCELLED registry can never carry a positive total", () => {
+      it("a CORRECTION changing engagement_revision_id to a DIFFERENT, real revision of the same engagement is refused - this application never rebases a correction onto a different revision", () => {
         const db = at0045();
         migrate(db);
         seed(db);
+        seedEngagementRevision(db, "rev-2", "eng-1", 2); // a second, real revision of the SAME engagement
+        db.prepare(`INSERT INTO engagement_reward_registry_snapshot(id, engagement_id, engagement_revision_id, occurrence_id, terminal_status, reward_total_kopecks, formula_version, source_order_ids_json, source_state_hash, watermark, finalized_by_admin_id, reason)
+          VALUES ('r1', 'eng-1', 'rev-1', 'occ-1', 'COMPLETED', 1000, 1, '[]', 'h', 'w', 'admin', 'x')`).run();
+        db.prepare(`INSERT INTO engagement_effective_reward_snapshots(id, engagement_id, engagement_revision_id, base_registry_snapshot_id, sequence, kind, reward_total_kopecks, source_state_hash, reason, created_by_admin_id, canonical_hash)
+          VALUES ('e1', 'eng-1', 'rev-1', 'r1', 1, 'INITIAL', 1000, 'h', 'x', 'admin', 'ch1')`).run();
+        expect(() => db.prepare(`INSERT INTO engagement_effective_reward_snapshots(id, engagement_id, engagement_revision_id, base_registry_snapshot_id, supersedes_effective_snapshot_id, sequence, kind, reward_total_kopecks, source_state_hash, reason, created_by_admin_id, canonical_hash)
+          VALUES ('e2-rebased', 'eng-1', 'rev-2', 'r1', 'e1', 2, 'CORRECTION', 500, 'h2', 'y', 'admin', 'ch2')`).run())
+          .toThrow(/ENGAGEMENT_EFFECTIVE_REWARD_SNAPSHOT_RELATIONAL_INCONSISTENT/);
+        // The same correction, keeping the predecessor's own revision, succeeds.
+        expect(() => db.prepare(`INSERT INTO engagement_effective_reward_snapshots(id, engagement_id, engagement_revision_id, base_registry_snapshot_id, supersedes_effective_snapshot_id, sequence, kind, reward_total_kopecks, source_state_hash, reason, created_by_admin_id, canonical_hash)
+          VALUES ('e2-ok', 'eng-1', 'rev-1', 'r1', 'e1', 2, 'CORRECTION', 500, 'h2', 'y', 'admin', 'ch2')`).run())
+          .not.toThrow();
+      });
+
+      it("mirrors R's own CANCELLED-positive-reward CHECK: an E row on a CANCELLED registry can never carry a positive total", () => {
+        const db = at0045();
+        migrate(db);
+        seed(db, "CANCELLED");
         db.prepare(`INSERT INTO engagement_reward_registry_snapshot(id, engagement_id, engagement_revision_id, occurrence_id, terminal_status, reward_total_kopecks, formula_version, source_order_ids_json, source_state_hash, watermark, finalized_by_admin_id, reason)
           VALUES ('r1', 'eng-1', 'rev-1', 'occ-1', 'CANCELLED', 0, 1, '[]', 'h', 'w', 'admin', 'x')`).run();
         expect(() => db.prepare(`INSERT INTO engagement_effective_reward_snapshots(id, engagement_id, engagement_revision_id, base_registry_snapshot_id, sequence, kind, reward_total_kopecks, source_state_hash, reason, created_by_admin_id, canonical_hash)
