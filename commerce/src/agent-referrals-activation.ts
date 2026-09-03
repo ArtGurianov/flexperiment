@@ -163,9 +163,59 @@ export const AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS = [
   "engagement_effective_reward_snapshots_relational_consistency_guard",
   "engagement_effective_reward_snapshots_immutable_guard",
   "engagement_effective_reward_snapshots_delete_guard",
+  // PR7 (0047). reward_settlements predates Agent Referrals (like `orders`
+  // in PR6) and is not itself named here - only the new triggers/index it
+  // gained are. Every other object PR7 ships is named alongside its own
+  // guards, for the identical reason PR4-PR6's own lists are.
+  "reward_settlements_authority_tuple_consistency_guard",
+  "reward_settlements_authority_columns_immutable_guard",
+  "reward_settlements_effective_snapshot_unique",
+  "reward_settlements_agent_referrals_status_transition_guard",
+  "reward_settlements_agent_referrals_terminal_immutable_guard",
+  "engagement_effective_reward_snapshots_no_correction_during_live_payment_guard",
+  "settlement_step_up_grants",
+  "settlement_acts",
+  "settlement_acts_relational_consistency_guard",
+  "settlement_acts_fields_immutable_guard",
+  "settlement_acts_presented_one_way_guard",
+  "settlement_acts_delete_guard",
+  "settlement_act_acceptances",
+  "settlement_act_acceptances_relational_consistency_guard",
+  "settlement_act_acceptances_immutable_guard",
+  "settlement_act_acceptances_delete_guard",
+  "settlement_act_disputes",
+  "settlement_act_disputes_relational_consistency_guard",
+  "settlement_act_disputes_immutable_guard",
+  "settlement_act_disputes_delete_guard",
+  "npd_status_checks",
+  "npd_status_checks_immutable_guard",
+  "npd_status_checks_delete_guard",
+  "payment_authorizations",
+  "payment_authorizations_relational_consistency_guard",
+  "payment_authorizations_immutable_guard",
+  "payment_authorizations_delete_guard",
+  "payment_attempts",
+  "payment_attempts_active_unique",
+  "payment_attempts_relational_consistency_guard",
+  "payment_attempts_identity_immutable_guard",
+  "payment_attempts_terminal_immutable_guard",
+  "payment_attempts_transition_legality_guard",
+  "payment_attempts_delete_guard",
+  "npd_receipts",
+  "npd_receipts_relational_consistency_guard",
+  "npd_receipts_immutable_guard",
+  "npd_receipts_delete_guard",
+  "engagement_zero_reward_closures",
+  "engagement_zero_reward_closures_relational_consistency_guard",
+  "engagement_zero_reward_closures_immutable_guard",
+  "engagement_zero_reward_closures_delete_guard",
+  "engagement_recovery_exposure_evidence",
+  "engagement_recovery_exposure_evidence_relational_consistency_guard",
+  "engagement_recovery_exposure_evidence_immutable_guard",
+  "engagement_recovery_exposure_evidence_delete_guard",
 ] as const;
 
-const MIGRATIONS = ["0043_agent_referrals_foundation.sql", "0044_partner_identity.sql", "0045_engagement_publication.sql", "0046_attribution_reward.sql"] as const;
+const MIGRATIONS = ["0043_agent_referrals_foundation.sql", "0044_partner_identity.sql", "0045_engagement_publication.sql", "0046_attribution_reward.sql", "0047_act_payment_settlement.sql"] as const;
 
 export class AgentReferralsActivationError extends Error {
   constructor(readonly code: string, readonly status = 409, detail?: string) {

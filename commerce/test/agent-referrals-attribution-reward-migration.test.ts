@@ -138,15 +138,19 @@ describe("0046 attribution & reward migration", () => {
     ]);
   });
 
-  it("ships no 0047+ migration file", () => {
-    const all = readdirSync(MIGRATIONS).filter((n) => n.endsWith(".sql"));
-    expect(all.filter((n) => n > MIGRATION_FILE)).toEqual([]);
-  });
-
-  it("0046 introduces exactly the two new tables, no PR7 act/settlement/payment/provider table, and adds no new base table to `orders` or `referral_rewards`", () => {
+  // PR7 landed 0047_act_payment_settlement.sql - see
+  // agent-referrals-act-payment-settlement-migration.test.ts for that
+  // file's own "no 0048+" boundary. This file's own claim is scoped to
+  // exactly what 0046 itself introduces, proven below by applying 0046's
+  // bytes directly rather than through the general migrate() runner
+  // (which would also apply 0047+ from this same 0045 baseline) - the
+  // identical technique this file's own header comment already used for
+  // 0045 vs 0046.
+  it("0046 alone (applied directly, not through migrate()) introduces exactly the two new tables, no PR7 act/settlement/payment/provider table, and adds no new base table to `orders` or `referral_rewards`", () => {
     const db = at0045();
     const before = new Set(tableNames(db));
-    migrate(db);
+    db.exec(readFileSync(join(MIGRATIONS, MIGRATION_FILE), "utf8"));
+    db.prepare("INSERT INTO schema_migrations(version) VALUES (?)").run(MIGRATION_FILE);
     const introduced = tableNames(db).filter((name) => !before.has(name) && name !== "schema_migrations");
     expect(introduced.sort()).toEqual(["engagement_effective_reward_snapshots", "engagement_reward_registry_snapshot"]);
     for (const forbidden of [
@@ -174,11 +178,17 @@ describe("0046 attribution & reward migration", () => {
       "engagement_effective_reward_snapshots_immutable_guard", "engagement_effective_reward_snapshots_delete_guard",
     ];
 
-    it("AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS includes every PR6 object, exhaustively, as the list's exact suffix", () => {
+    it("AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS includes every PR6 object, exhaustively, as a prefix slice", () => {
       for (const object of pr6Objects) expect(AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS, object).toContain(object);
+      // Exhaustive for the PR3-PR6 PREFIX specifically, not the array's
+      // total length - scoped to a prefix slice precisely so a later PR
+      // appending its own objects (PR7's own suffix is proved the identical
+      // way, in agent-referrals-act-payment-settlement-migration.test.ts)
+      // does not need to touch this assertion at all - the exact
+      // precedent already set between PR5 and PR6.
       const pr3through5Objects = 92; // 16 (PR3) + 33 (PR4) + 43 (PR5), each proven exhaustive by its own migration test.
-      const suffix = [...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS].slice(pr3through5Objects);
-      expect(suffix).toEqual(pr6Objects);
+      const prefix = [...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS].slice(0, pr3through5Objects + pr6Objects.length).sort();
+      expect(prefix).toEqual([...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS.slice(0, pr3through5Objects), ...pr6Objects].sort());
     });
 
     it("passes on a DB migrated through 0046", () => {
