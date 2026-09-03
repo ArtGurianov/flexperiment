@@ -1,0 +1,380 @@
+import type Database from "better-sqlite3";
+import { canonicalV2, id, sha256 } from "./crypto";
+import { agentReferralsFeatureState, agentReferralsFeatureStateAt } from "./agent-referrals-feature-state";
+import { assertAgentReferralsOperationPermitted, isAgentReferralsOperationPermitted, type AgentReferralsOperationClass } from "./agent-referrals-suspension-policy";
+import { resolveAgentReferralsChannelPolicy, type ChannelPolicyStatus } from "./agent-referrals-channel-policy";
+import type { AdminPrincipal, PartnerPrincipal } from "./agent-referrals-partner-identity";
+
+/**
+ * Minimum actual-distribution facts (plan section B-5c) plus the removal
+ * lifecycle (B-5d). A reported distribution is ALWAYS persisted - policy
+ * AND temporal authority together decide classification, never whether
+ * reality may be recorded. The current projection is always derived
+ * (latest revision + folded event log), never a stored mutable column
+ * that could drift from the events that produced it.
+ */
+
+export class DistributionError extends Error {
+  constructor(readonly code: string, readonly status = 409, detail?: string) {
+    super(detail ? `${code}: ${detail}` : code);
+  }
+}
+
+export type DistributionActor = PartnerPrincipal | AdminPrincipal;
+const actorRealm = (actor: DistributionActor): "ADMIN" | "PARTNER" => actor.realm;
+
+/**
+ * A PARTNER actor may only write evidence for an engagement/distribution
+ * their own partner_identity_id owns - never another partner's. Admin is
+ * always permitted (compliance/correction authority). Every partner-facing
+ * write path below calls exactly one of these before touching any row.
+ */
+const assertEngagementOwnership = (db: Database.Database, engagementId: string, actor: DistributionActor): void => {
+  if (actor.realm !== "PARTNER") return;
+  const engagement = db.prepare("SELECT partner_identity_id FROM engagements WHERE id = ?").get(engagementId) as { partner_identity_id: string } | undefined;
+  if (!engagement) throw new DistributionError("AGENT_REFERRALS_ENGAGEMENT_NOT_FOUND", 404, engagementId);
+  if (engagement.partner_identity_id !== actor.partner_identity_id) throw new DistributionError("AGENT_REFERRALS_DISTRIBUTION_WRONG_PARTNER", 403, engagementId);
+};
+
+const assertDistributionOwnership = (db: Database.Database, distributionId: string, actor: DistributionActor): void => {
+  if (actor.realm !== "PARTNER") return;
+  const row = db.prepare(`SELECT e.partner_identity_id AS partner_identity_id FROM engagement_distributions d JOIN engagements e ON e.id = d.engagement_id WHERE d.id = ?`).get(distributionId) as { partner_identity_id: string } | undefined;
+  if (!row) throw new DistributionError("AGENT_REFERRALS_DISTRIBUTION_NOT_FOUND", 404, distributionId);
+  if (row.partner_identity_id !== actor.partner_identity_id) throw new DistributionError("AGENT_REFERRALS_DISTRIBUTION_WRONG_PARTNER", 403, distributionId);
+};
+
+export type ResourceKind = "channel" | "page" | "profile" | "site" | "stream";
+
+export type DistributionReportInput = {
+  channel_key: string;
+  resource_kind: ResourceKind;
+  resource_identifier: string;
+  distribution_resource_url: string;
+  published_at: string;
+  ended_at: string | null;
+  evidence_ref: string;
+};
+
+export type DistributionRevisionRow = DistributionReportInput & {
+  id: string;
+  distribution_id: string;
+  revision: number;
+  supersedes_revision_id: string | null;
+  /**
+   * The (engagement_revision_id, creative_revision_id) pair that actually
+   * governed the engagement at THIS revision's own published_at - resolved
+   * independently for every revision (including corrections), never
+   * inherited from the distribution identity. Both null together when no
+   * creative authorization was ever effective by published_at (the fact
+   * predates the engagement's first-ever authorization) - a real, evidence-
+   * preserving outcome, never a fabricated pin.
+   */
+  engagement_revision_id: string | null;
+  creative_revision_id: string | null;
+  channel_policy_status: ChannelPolicyStatus;
+  channel_policy_revision: number | null;
+  reported_by: "PARTNER" | "ADMIN";
+  correction_reason: string | null;
+  evidence_ref: string;
+  canonical_hash: string;
+  created_at: string;
+};
+
+const REVISION_COLUMNS = "id, distribution_id, revision, supersedes_revision_id, engagement_revision_id, creative_revision_id, channel_key, channel_policy_status, channel_policy_revision, resource_kind, resource_identifier, distribution_resource_url, published_at, ended_at, reported_by, correction_reason, evidence_ref, canonical_hash, created_at";
+
+export const currentDistributionRevision = (db: Database.Database, distributionId: string): DistributionRevisionRow | null =>
+  (db.prepare(`SELECT ${REVISION_COLUMNS} FROM engagement_distribution_revisions WHERE distribution_id = ? ORDER BY revision DESC LIMIT 1`)
+    .get(distributionId) as DistributionRevisionRow | undefined) ?? null;
+
+export type DistributionIdentityRow = { id: string; engagement_id: string; created_at: string };
+
+export const getDistribution = (db: Database.Database, distributionId: string): DistributionIdentityRow | null =>
+  (db.prepare("SELECT id, engagement_id, created_at FROM engagement_distributions WHERE id = ?").get(distributionId) as DistributionIdentityRow | undefined) ?? null;
+
+export const distributionsForEngagement = (db: Database.Database, engagementId: string): DistributionIdentityRow[] =>
+  // rowid (insertion order), not created_at - CURRENT_TIMESTAMP is
+  // second-precision and several distributions can be reported within the
+  // same second. This is a listing convenience, not the regulatory event
+  // stream (that is engagement_distribution_events, ordered by its own
+  // explicit event_sequence below).
+  db.prepare("SELECT id, engagement_id, created_at FROM engagement_distributions WHERE engagement_id = ? ORDER BY rowid ASC")
+    .all(engagementId) as DistributionIdentityRow[];
+
+export type DistributionEventRow = { id: string; distribution_id: string; event_sequence: number; event_kind: string; actor_realm: string; evidence_ref: string | null; reason: string | null; occurred_at: string };
+
+export const distributionEvents = (db: Database.Database, distributionId: string): DistributionEventRow[] =>
+  db.prepare("SELECT id, distribution_id, event_sequence, event_kind, actor_realm, evidence_ref, reason, occurred_at FROM engagement_distribution_events WHERE distribution_id = ? ORDER BY event_sequence ASC")
+    .all(distributionId) as DistributionEventRow[];
+
+const REMOVAL_KINDS = new Set(["REMOVAL_REQUIRED", "REMOVAL_CLAIMED", "REMOVAL_CONFIRMED", "OVERDUE_REMOVAL", "REMOVAL_UNVERIFIED"]);
+const COMPLIANCE_KINDS = new Set(["MARKED_REPORTABLE", "REVIEW_REQUIRED", "REVIEW_CLEARED"]);
+
+export type DistributionProjection = {
+  current_revision: DistributionRevisionRow;
+  compliance_state: string | null;
+  removal_state: string | null;
+};
+
+/**
+ * Folded from the event log, never a stored mutable column (B-5c/B-5d) -
+ * and folded only from the CURRENT REVISION's own events, never the
+ * distribution's entire history (Phase 5 holistic review, P0 finding 4).
+ * classifyAndAppend always appends exactly one DECLARED event first, for
+ * every reportDistribution AND every correctDistribution call - DECLARED
+ * is never appended anywhere else - so the latest DECLARED event is
+ * exactly the current revision's own boundary. Folding the whole history
+ * instead would let a correction that fixes an INVALID_AUTHORITY report
+ * into an AUTHORIZED one still show a stale REMOVAL_REQUIRED from the
+ * revision it replaced, or let a correction to a REMOVAL_CONFIRMED
+ * distribution's facts silently inherit a confirmation that was actually
+ * about the PRIOR (pre-correction) facts.
+ */
+export const distributionProjection = (db: Database.Database, distributionId: string): DistributionProjection => {
+  const current = currentDistributionRevision(db, distributionId);
+  if (!current) throw new DistributionError("AGENT_REFERRALS_DISTRIBUTION_NOT_FOUND", 404, distributionId);
+  const events = distributionEvents(db, distributionId);
+  const boundary = events.map((event) => event.event_kind).lastIndexOf("DECLARED");
+  const currentRevisionEvents = boundary === -1 ? events : events.slice(boundary);
+  const lastOf = (kinds: Set<string>) => [...currentRevisionEvents].reverse().find((event) => kinds.has(event.event_kind))?.event_kind ?? null;
+  return { current_revision: current, compliance_state: lastOf(COMPLIANCE_KINDS), removal_state: lastOf(REMOVAL_KINDS) };
+};
+
+/**
+ * event_sequence is this regulatory evidence stream's own durable fold
+ * order, allocated inside the caller's IMMEDIATE transaction - never
+ * SQLite's implicit rowid, a storage detail this table's readers (and any
+ * future DB maintenance/rebuild) must not be relied upon to preserve.
+ */
+const appendEvent = (db: Database.Database, distributionId: string, eventKind: string, realm: "ADMIN" | "PARTNER" | "SYSTEM", evidenceRef: string | null, reason: string | null): void => {
+  const next = (db.prepare("SELECT COALESCE(MAX(event_sequence), 0) AS m FROM engagement_distribution_events WHERE distribution_id = ?").get(distributionId) as { m: number }).m + 1;
+  db.prepare(`INSERT INTO engagement_distribution_events(id, distribution_id, event_sequence, event_kind, actor_realm, evidence_ref, reason) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    .run(id(), distributionId, next, eventKind, realm, evidenceRef, reason);
+};
+
+type TemporalAuthorityState = "AUTHORIZED" | "INVALID_AUTHORITY" | "NO_AUTHORITY";
+
+/**
+ * DECLARED is always appended first. ALLOWED-channel + AUTHORIZED is the
+ * only path to MARKED_REPORTABLE; every other combination is
+ * REVIEW_REQUIRED (a channel-policy violation, an authority-interval
+ * violation, or both, are never a reason to reject the record - §B-5e). A
+ * genuine "authority existed but was invalid at that instant"
+ * (INVALID_AUTHORITY - superseded, revoked, or outside the publication
+ * window) additionally gets an immediate REMOVAL_REQUIRED, since we know
+ * exactly which creative was distributed and it must come down. NO_AUTHORITY
+ * (no creative was ever authorized by published_at at all) gets no
+ * REMOVAL_REQUIRED - there is nothing concrete on record to point removal
+ * at, only a compliance fact to review.
+ */
+const classifyAndAppend = (db: Database.Database, distributionId: string, channelKey: string, publishedAt: string, authorityState: TemporalAuthorityState, realm: "ADMIN" | "PARTNER" | "SYSTEM"): ChannelPolicyStatus => {
+  const resolution = resolveAgentReferralsChannelPolicy(db, channelKey, publishedAt);
+  appendEvent(db, distributionId, "DECLARED", realm, null, null);
+  if (resolution.status === "ALLOWED" && authorityState === "AUTHORIZED") {
+    appendEvent(db, distributionId, "MARKED_REPORTABLE", realm, null, null);
+  } else {
+    appendEvent(db, distributionId, "REVIEW_REQUIRED", realm, null, null);
+    if (authorityState === "INVALID_AUTHORITY") appendEvent(db, distributionId, "REMOVAL_REQUIRED", realm, null, "published outside the authorized creative window (superseded, revoked, or outside the publication window)");
+  }
+  return resolution.status;
+};
+
+const gate = (db: Database.Database, operationClass: AgentReferralsOperationClass) => assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, operationClass);
+
+const canonicalRevisionHash = (input: DistributionReportInput): string => sha256(canonicalV2(input as unknown as Record<string, unknown>));
+
+type HistoricalCreativeAuthority = { creative_revision_id: string | null; engagement_revision_id: string | null; state: TemporalAuthorityState };
+
+/**
+ * The creative authorization effectively governing the engagement AT
+ * publishedAt - never "whatever is current now". A distribution reported
+ * days after the fact must pin the authority that was actually live when
+ * the ad was really published, not one a later admin/partner action has
+ * since superseded (Phase 5 review note 4). NEVER THROWS - a fact with no
+ * resolvable authority is still real evidence (§B-5e); the caller always
+ * persists it, just with a null pin and NO_AUTHORITY classification.
+ *
+ * Checks, all via julianday() (never a raw TEXT comparison - the exact
+ * 'T' vs ' ' bug this codebase has already fixed elsewhere):
+ *   - the CREATIVE authorization was not yet revoked at publishedAt
+ *   - the PROMO authorization it was minted under was not yet revoked at
+ *     publishedAt either (a creative authorization is never auto-revoked
+ *     when its promo authorization is revoked by suspension/delegation
+ *     revocation - this closes that exact gap)
+ *   - publishedAt falls within [publication_start_at, publication_end_at]
+ *     of the governing engagement revision - BOTH bounds, not only the end
+ *   - the GLOBAL Agent Referrals feature state, AS OF publishedAt (never
+ *     as of now), permitted NEW_PUBLICATION_AUTHORITY - a per-engagement
+ *     authorization existing is not enough if the whole feature was
+ *     globally SUSPENDED/DORMANT at that instant (Phase 5 holistic
+ *     review, P0 finding 1)
+ *
+ * "Most recently started by publishedAt" always resolves to a candidate as
+ * long as ANY creative authorization existed for this engagement by then,
+ * even one already invalid at that instant - `state` distinguishes
+ * AUTHORIZED from INVALID_AUTHORITY so classifyAndAppend can flag it,
+ * while the distribution revision still pins the real pair that was
+ * actually or most-recently governing. Only when NO authorization ever
+ * started by publishedAt does the pin stay null (NO_AUTHORITY).
+ */
+const resolveHistoricalCreativeAuthority = (db: Database.Database, engagementId: string, publishedAt: string): HistoricalCreativeAuthority => {
+  const row = db.prepare(`
+    SELECT eca.creative_revision_id AS creative_revision_id, eca.engagement_revision_id AS engagement_revision_id,
+      (eca.revoked_at IS NOT NULL AND julianday(eca.revoked_at) <= julianday(?)) AS creative_revoked_by_then,
+      (epa.revoked_at IS NOT NULL AND julianday(epa.revoked_at) <= julianday(?)) AS promo_revoked_by_then,
+      (julianday(?) < julianday(er.publication_start_at)) AS before_window,
+      (julianday(?) > julianday(er.publication_end_at)) AS past_window
+    FROM engagement_creative_authorizations eca
+    JOIN engagement_revisions er ON er.id = eca.engagement_revision_id
+    JOIN engagement_promo_authorizations epa ON epa.id = eca.promo_authorization_id
+    WHERE eca.engagement_id = ? AND julianday(eca.effective_at) <= julianday(?)
+    ORDER BY julianday(eca.effective_at) DESC LIMIT 1
+  `).get(publishedAt, publishedAt, publishedAt, publishedAt, engagementId, publishedAt) as
+    { creative_revision_id: string; engagement_revision_id: string; creative_revoked_by_then: number; promo_revoked_by_then: number; before_window: number; past_window: number } | undefined;
+
+  if (!row) return { creative_revision_id: null, engagement_revision_id: null, state: "NO_AUTHORITY" };
+  const invalid = row.creative_revoked_by_then || row.promo_revoked_by_then || row.before_window || row.past_window;
+  if (invalid) return { creative_revision_id: row.creative_revision_id, engagement_revision_id: row.engagement_revision_id, state: "INVALID_AUTHORITY" };
+
+  // A per-engagement authorization existing and unrevoked at publishedAt is
+  // not enough on its own: NEW_PUBLICATION_AUTHORITY is also gated by the
+  // GLOBAL feature state, and that state must be judged AS OF publishedAt,
+  // never as of now (Phase 5 holistic review, P0 finding 1). SUSPENDED
+  // still permits DISTRIBUTION_FACT_REPORTING (the reporting tail) - a
+  // partner may always report a fact - but it does not retroactively
+  // authorize what was, at that instant, a NEW publication: a publish made
+  // while the feature was globally SUSPENDED is real, concrete evidence
+  // (we know exactly which creative it was), so it is INVALID_AUTHORITY,
+  // not NO_AUTHORITY - there is something to point a removal obligation
+  // at.
+  const globalState = agentReferralsFeatureStateAt(db, publishedAt);
+  if (!isAgentReferralsOperationPermitted(globalState, "NEW_PUBLICATION_AUTHORITY")) {
+    return { creative_revision_id: row.creative_revision_id, engagement_revision_id: row.engagement_revision_id, state: "INVALID_AUTHORITY" };
+  }
+  return { creative_revision_id: row.creative_revision_id, engagement_revision_id: row.engagement_revision_id, state: "AUTHORIZED" };
+};
+
+export type ReportDistributionResult = { distribution_id: string; revision: DistributionRevisionRow };
+
+/**
+ * A NEW distribution. Resolves and pins, on this specific revision, the
+ * exact (engagement_revision_id, creative_revision_id) pair that governed
+ * the engagement AT published_at - never "whatever is current now" (Phase
+ * 5 review note 4). The fact is ALWAYS persisted; policy and temporal
+ * authority classify it, never reject it (§B-5e). Refuses only if the
+ * caller is a PARTNER reporting for an engagement they do not own.
+ */
+export const reportDistribution = (db: Database.Database, actor: DistributionActor, engagementId: string, input: DistributionReportInput): ReportDistributionResult => {
+  const run = db.transaction((): ReportDistributionResult => {
+    gate(db, "DISTRIBUTION_FACT_REPORTING");
+    assertEngagementOwnership(db, engagementId, actor);
+
+    const distributionId = id();
+    db.prepare(`INSERT INTO engagement_distributions(id, engagement_id) VALUES (?, ?)`).run(distributionId, engagementId);
+
+    const authority = resolveHistoricalCreativeAuthority(db, engagementId, input.published_at);
+    const classification = resolveAgentReferralsChannelPolicy(db, input.channel_key, input.published_at);
+    const revisionId = id();
+    db.prepare(`INSERT INTO engagement_distribution_revisions(id, distribution_id, revision, supersedes_revision_id, engagement_revision_id, creative_revision_id, channel_key, channel_policy_status, channel_policy_revision, resource_kind, resource_identifier, distribution_resource_url, published_at, ended_at, reported_by, correction_reason, evidence_ref, canonical_hash)
+      VALUES (?, ?, 1, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`)
+      .run(revisionId, distributionId, authority.engagement_revision_id, authority.creative_revision_id, input.channel_key, classification.status, classification.policy_revision, input.resource_kind, input.resource_identifier,
+        input.distribution_resource_url, input.published_at, input.ended_at, actorRealm(actor), input.evidence_ref, canonicalRevisionHash(input));
+
+    classifyAndAppend(db, distributionId, input.channel_key, input.published_at, authority.state, actorRealm(actor));
+    return { distribution_id: distributionId, revision: currentDistributionRevision(db, distributionId)! };
+  });
+  return run.immediate();
+};
+
+/**
+ * A CORRECTION: a new revision with provenance, never an UPDATE over a
+ * filed fact. Anything already submitted to the ORD keeps its original
+ * revision's provenance. ALWAYS re-resolves authority against the
+ * CORRECTED published_at (Phase 5 review note 4's fourth bullet) - a
+ * correction that moves published_at across an authority boundary (e.g.
+ * from an old creative's authorized interval into a newer one's) must
+ * re-pin, never silently retain the prior revision's now-wrong authority.
+ */
+export const correctDistribution = (db: Database.Database, actor: DistributionActor, distributionId: string, input: DistributionReportInput, correctionReason: string): ReportDistributionResult => {
+  const run = db.transaction((): ReportDistributionResult => {
+    gate(db, "DISTRIBUTION_FACT_REPORTING");
+    assertDistributionOwnership(db, distributionId, actor);
+    const current = currentDistributionRevision(db, distributionId);
+    if (!current) throw new DistributionError("AGENT_REFERRALS_DISTRIBUTION_NOT_FOUND", 404, distributionId);
+    if (!correctionReason.trim()) throw new DistributionError("AGENT_REFERRALS_DISTRIBUTION_CORRECTION_REASON_REQUIRED", 422);
+    const identity = getDistribution(db, distributionId)!;
+
+    const authority = resolveHistoricalCreativeAuthority(db, identity.engagement_id, input.published_at);
+    const classification = resolveAgentReferralsChannelPolicy(db, input.channel_key, input.published_at);
+    const revisionId = id();
+    db.prepare(`INSERT INTO engagement_distribution_revisions(id, distribution_id, revision, supersedes_revision_id, engagement_revision_id, creative_revision_id, channel_key, channel_policy_status, channel_policy_revision, resource_kind, resource_identifier, distribution_resource_url, published_at, ended_at, reported_by, correction_reason, evidence_ref, canonical_hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(revisionId, distributionId, current.revision + 1, current.id, authority.engagement_revision_id, authority.creative_revision_id, input.channel_key, classification.status, classification.policy_revision, input.resource_kind,
+        input.resource_identifier, input.distribution_resource_url, input.published_at, input.ended_at, actorRealm(actor), correctionReason, input.evidence_ref, canonicalRevisionHash(input));
+
+    classifyAndAppend(db, distributionId, input.channel_key, input.published_at, authority.state, actorRealm(actor));
+    return { distribution_id: distributionId, revision: currentDistributionRevision(db, distributionId)! };
+  });
+  return run.immediate();
+};
+
+/**
+ * Explicit legal-predecessor matrices for the removal and (admin-writable
+ * half of the) compliance lifecycles (Phase 5 holistic review, P1 finding
+ * 5) - append-only events with no prior validation let REMOVAL_CONFIRMED
+ * fire with no REMOVAL_REQUIRED/CLAIMED ever recorded, REMOVAL_CLAIMED
+ * fire again after REMOVAL_CONFIRMED, or REMOVAL_CONFIRMED repeat. `null`
+ * in a set means "legal when nothing has been recorded yet for the
+ * current revision" - a partner proactively claiming a take-down with no
+ * prior admin REMOVAL_REQUIRED is a legitimate, real sequence (a partner
+ * may always report reality), so REMOVAL_CLAIMED admits `null`; every
+ * other target here does not, since confirming/marking overdue/marking
+ * unverified something that was never even claimed or required makes no
+ * evidentiary sense. Validated against distributionProjection's own
+ * windowed fold (the CURRENT revision's state only - see its own header),
+ * so a correction that resets the window also resets what is legal next,
+ * exactly as intended.
+ */
+const REMOVAL_LEGAL_FROM: Readonly<Record<string, ReadonlySet<string | null>>> = {
+  REMOVAL_REQUIRED: new Set<string | null>([null, "REMOVAL_CLAIMED", "OVERDUE_REMOVAL", "REMOVAL_UNVERIFIED"]),
+  REMOVAL_CLAIMED: new Set<string | null>([null, "REMOVAL_REQUIRED", "OVERDUE_REMOVAL", "REMOVAL_UNVERIFIED"]),
+  REMOVAL_CONFIRMED: new Set<string | null>(["REMOVAL_REQUIRED", "REMOVAL_CLAIMED", "OVERDUE_REMOVAL", "REMOVAL_UNVERIFIED"]),
+  OVERDUE_REMOVAL: new Set<string | null>(["REMOVAL_REQUIRED", "REMOVAL_CLAIMED", "REMOVAL_UNVERIFIED"]),
+  REMOVAL_UNVERIFIED: new Set<string | null>(["REMOVAL_CLAIMED", "OVERDUE_REMOVAL"]),
+};
+const COMPLIANCE_LEGAL_FROM: Readonly<Record<string, ReadonlySet<string | null>>> = {
+  REVIEW_CLEARED: new Set<string | null>(["REVIEW_REQUIRED"]),
+};
+
+const appendLifecycleEvent = (db: Database.Database, actor: DistributionActor, distributionId: string, eventKind: string, operationClass: AgentReferralsOperationClass, evidenceRef: string | null, reason: string | null): void => {
+  const run = db.transaction(() => {
+    gate(db, operationClass);
+    assertDistributionOwnership(db, distributionId, actor);
+    const projection = distributionProjection(db, distributionId); // throws AGENT_REFERRALS_DISTRIBUTION_NOT_FOUND if the distribution does not exist
+    const legalRemovalFrom = REMOVAL_LEGAL_FROM[eventKind];
+    if (legalRemovalFrom && !legalRemovalFrom.has(projection.removal_state)) {
+      throw new DistributionError("AGENT_REFERRALS_DISTRIBUTION_REMOVAL_ILLEGAL_TRANSITION", 409, `${projection.removal_state}->${eventKind}`);
+    }
+    const legalComplianceFrom = COMPLIANCE_LEGAL_FROM[eventKind];
+    if (legalComplianceFrom && !legalComplianceFrom.has(projection.compliance_state)) {
+      throw new DistributionError("AGENT_REFERRALS_DISTRIBUTION_COMPLIANCE_ILLEGAL_TRANSITION", 409, `${projection.compliance_state}->${eventKind}`);
+    }
+    appendEvent(db, distributionId, eventKind, actorRealm(actor), evidenceRef, reason);
+  });
+  run.immediate();
+};
+
+/** Admin/system: marks a distribution's window closed and removal owed. */
+export const requireRemoval = (db: Database.Database, admin: AdminPrincipal, distributionId: string, reason: string): void =>
+  appendLifecycleEvent(db, admin, distributionId, "REMOVAL_REQUIRED", "REMOVAL_VERIFICATION", null, reason);
+/** Partner: claims the content was taken down. Refused for a distribution owned by a different partner. */
+export const claimRemoval = (db: Database.Database, partner: PartnerPrincipal, distributionId: string, evidenceRef: string): void =>
+  appendLifecycleEvent(db, partner, distributionId, "REMOVAL_CLAIMED", "PUBLICATION_REMOVAL", evidenceRef, null);
+/** Admin: independently confirms removal - the per-distribution authority §B-5d requires, never an aggregate shortcut. */
+export const confirmRemoval = (db: Database.Database, admin: AdminPrincipal, distributionId: string, evidenceRef: string): void =>
+  appendLifecycleEvent(db, admin, distributionId, "REMOVAL_CONFIRMED", "PUBLICATION_REMOVAL", evidenceRef, null);
+export const markOverdueRemoval = (db: Database.Database, admin: AdminPrincipal, distributionId: string, reason: string): void =>
+  appendLifecycleEvent(db, admin, distributionId, "OVERDUE_REMOVAL", "REMOVAL_VERIFICATION", null, reason);
+export const markRemovalUnverified = (db: Database.Database, admin: AdminPrincipal, distributionId: string, reason: string): void =>
+  appendLifecycleEvent(db, admin, distributionId, "REMOVAL_UNVERIFIED", "REMOVAL_VERIFICATION", null, reason);
+export const markReviewCleared = (db: Database.Database, admin: AdminPrincipal, distributionId: string, reason: string): void =>
+  appendLifecycleEvent(db, admin, distributionId, "REVIEW_CLEARED", "REMOVAL_VERIFICATION", null, reason);

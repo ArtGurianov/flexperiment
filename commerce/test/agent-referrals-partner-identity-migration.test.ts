@@ -83,15 +83,18 @@ describe("0044 partner identity migration", () => {
     ]);
   });
 
-  it("ships no 0045+ migration file", () => {
-    const all = readdirSync(MIGRATIONS).filter((n) => n.endsWith(".sql"));
-    expect(all.filter((n) => n > MIGRATION_FILE)).toEqual([]);
-  });
-
-  it("creates exactly the expected new tables - no PR5 engagement/publication/promo/creative tables", () => {
+  // PR5 landed 0045_engagement_publication.sql - see
+  // agent-referrals-engagement-publication-migration.test.ts for that
+  // file's own boundary ("no 0046+") and table-introduction proof. This
+  // file's own claim is scoped to exactly what 0044 itself introduces,
+  // proven below by applying 0044's bytes directly rather than through the
+  // general migrate() runner (which would also apply 0045+ from this same
+  // 0043 baseline).
+  it("0044 alone (applied directly, not through migrate()) introduces exactly the expected new tables - no PR5 engagement/publication/promo/creative tables", () => {
     const db = at0043();
     const before = new Set(tableNames(db));
-    migrate(db);
+    db.exec(readFileSync(join(MIGRATIONS, MIGRATION_FILE), "utf8"));
+    db.prepare("INSERT INTO schema_migrations(version) VALUES (?)").run(MIGRATION_FILE);
     const introduced = tableNames(db).filter((name) => !before.has(name) && name !== "schema_migrations");
     expect(introduced.sort()).toEqual([
       "framework_acceptances",
@@ -154,11 +157,16 @@ describe("0044 partner identity migration", () => {
         "partner_identity_destruction_events", "partner_identity_destruction_events_immutable_guard", "partner_identity_destruction_events_delete_guard",
       ];
       for (const object of pr4Objects) expect(AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS, object).toContain(object);
-      // Exhaustive in both directions: nothing PR4 added is missing from
-      // this hand-written list either, so this test itself cannot silently
-      // drift from the real required-object list.
+      // Exhaustive for the PR3+PR4 PREFIX specifically: nothing PR4 added is
+      // missing from this hand-written list, and nothing extra sneaked into
+      // that prefix either. Scoped to a prefix slice (not the array's total
+      // length) precisely so a later PR appending its own objects -
+      // agent-referrals-engagement-publication-migration.test.ts proves the
+      // PR5 suffix the identical way - does not need to touch this
+      // assertion at all.
       const pr3Objects = 16;
-      expect(AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS.length).toBe(pr3Objects + pr4Objects.length);
+      const prefix = [...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS].slice(0, pr3Objects + pr4Objects.length).sort();
+      expect(prefix).toEqual([...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS.slice(0, pr3Objects), ...pr4Objects].sort());
     });
 
     it("passes on a DB migrated through 0044", () => {

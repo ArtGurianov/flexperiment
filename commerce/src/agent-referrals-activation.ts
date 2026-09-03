@@ -87,9 +87,62 @@ export const AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS = [
   "partner_identity_destruction_events",
   "partner_identity_destruction_events_immutable_guard",
   "partner_identity_destruction_events_delete_guard",
+  // PR5 (0045). Every base table PR5 ships, named alongside its guards
+  // exactly like PR4's list above - a dropped base table is exactly as
+  // unsound as a dropped guard. engagements and engagement_step_up_grants
+  // carry no immutable-evidence guards (they are mutable-authority tables,
+  // like partner_sessions/step_up_grants in PR4); engagement_distributions
+  // is a bare identity table with no guards of its own (its revisions and
+  // events carry the immutability). The partial unique indexes enforcing
+  // "at most one current X" are named alongside their tables for the same
+  // reason PR4's active-unique indexes are: the structural invariant they
+  // carry is not implied by the bare table existing.
+  "partner_audience_verification_events",
+  "partner_audience_verification_events_immutable_guard",
+  "partner_audience_verification_events_delete_guard",
+  "engagements",
+  "engagement_revisions",
+  "engagement_revisions_immutable_guard",
+  "engagement_revisions_delete_guard",
+  "engagement_step_up_grants",
+  "engagement_acceptances",
+  "engagement_acceptances_immutable_guard",
+  "engagement_acceptances_delete_guard",
+  "partner_promos",
+  "partner_promos_immutable_guard",
+  "partner_promos_delete_guard",
+  "engagement_promo_authorizations",
+  "engagement_promo_authorizations_current_unique",
+  "engagement_promo_authorizations_placement_immutable_guard",
+  "engagement_promo_authorizations_revoke_one_way_guard",
+  "engagement_promo_authorizations_delete_guard",
+  "engagement_activation_events",
+  "engagement_activation_events_immutable_guard",
+  "engagement_activation_events_delete_guard",
+  "engagement_creative_revisions",
+  "engagement_creative_revisions_immutable_guard",
+  "engagement_creative_revisions_delete_guard",
+  "engagement_creative_authorizations",
+  "engagement_creative_authorizations_current_unique",
+  "engagement_creative_authorizations_placement_immutable_guard",
+  "engagement_creative_authorizations_revoke_one_way_guard",
+  "engagement_creative_authorizations_delete_guard",
+  "engagement_distributions",
+  "engagement_distribution_revisions",
+  "engagement_distribution_revisions_immutable_guard",
+  "engagement_distribution_revisions_delete_guard",
+  "engagement_distribution_events",
+  "engagement_distribution_events_immutable_guard",
+  "engagement_distribution_events_delete_guard",
+  "ord_reporting_delegation_revocations",
+  "ord_reporting_delegation_revocations_immutable_guard",
+  "ord_reporting_delegation_revocations_delete_guard",
+  "engagement_closure_events",
+  "engagement_closure_events_immutable_guard",
+  "engagement_closure_events_delete_guard",
 ] as const;
 
-const MIGRATIONS = ["0043_agent_referrals_foundation.sql", "0044_partner_identity.sql"] as const;
+const MIGRATIONS = ["0043_agent_referrals_foundation.sql", "0044_partner_identity.sql", "0045_engagement_publication.sql"] as const;
 
 export class AgentReferralsActivationError extends Error {
   constructor(readonly code: string, readonly status = 409, detail?: string) {

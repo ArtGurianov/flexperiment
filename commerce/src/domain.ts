@@ -7,6 +7,9 @@ import { providerErrorEvidence, type PaymentProvider } from "./provider";
 import { ReleaseControlError, ReleaseSalesGate, type CandidateAcquireRequest, type CandidateAdoptRequest, type CandidateAbortRequest, type CandidateCompleteRequest, type CandidateHeadSnapshot, type CandidatePhaseRequest, type CertificationEvidenceRequest, type CertificationLeaseRequest, type CertificationOrderContext, type CertificationRetryRequest, type DormantReadinessReader, type PostActivationEmailProviderDefectRequest, type PreActivationDefectRequest, type ReleaseControlRequest, type RuntimeReadinessDefectRequest, releaseRuntimeEvidence } from "./release-control";
 import { checkoutRequestSchema, promoMergedSchema, type CheckoutRequest, type ParticipantAgeBand } from "./types";
 import { PromoPricingError, pricePromo } from "./promo-pricing";
+import { PartnerPromoPricingError, resolveCheckoutPromoTerms } from "./agent-referrals-partner-promo-pricing";
+import { isPromoPartnerOwned } from "./agent-referrals-promo";
+import { suspendEngagementsForOccurrenceMaterialChange } from "./agent-referrals-engagement";
 import { basisPointsOf } from "./basis-points";
 import { findCityBySlug } from "../../lib/city-catalog";
 import { purchaseStatus, type PurchaseStatus } from "./purchase-status";
@@ -56,6 +59,13 @@ const promoPrice = (price: number, type: unknown, value: unknown) => {
   try { return pricePromo(price, type, value); }
   catch (error) {
     if (error instanceof PromoPricingError) throw new DomainError(error.code, error.code === "PROMO_ZERO_PRICE_NOT_ALLOWED" ? 409 : 422);
+    throw error;
+  }
+};
+const resolvePromoTerms = (db: Database.Database, promo: { id: string; discount_type: string; discount_value: number }, occurrenceId: string, notEligibleCode: string) => {
+  try { return resolveCheckoutPromoTerms(db, promo, occurrenceId, notEligibleCode); }
+  catch (error) {
+    if (error instanceof PartnerPromoPricingError) throw new DomainError(error.code, error.status);
     throw error;
   }
 };
@@ -1031,7 +1041,13 @@ export class CommerceDomain {
       const attributedAgentId: string | null = promoAgentId ?? (referralAgent?.id as string | undefined) ?? null;
       const referralSlug = referralAgent?.slug as string | undefined;
       const price = Number(occurrence.price_kopecks);
-      const pricing = promo ? promoPrice(price, promo.discount_type, promo.discount_value) : { discountKopecks: 0, finalAmountKopecks: price };
+      // A PARTNER-owned promo's own discount_type/value are frozen NONE/0
+      // placeholders (§B-9) - the real customer-facing terms live on the
+      // engagement revision currently authorized for this occurrence.
+      // resolveCheckoutPromoTerms is a pure pass-through for every other
+      // promo, so this is zero behavior change outside Agent Referrals.
+      const promoTerms = promo ? resolvePromoTerms(this.db, { id: String(promo.id), discount_type: String(promo.discount_type), discount_value: Number(promo.discount_value) }, String(occurrence.id), "PROMO_NOT_ELIGIBLE") : null;
+      const pricing = promoTerms ? promoPrice(price, promoTerms.discount_type, promoTerms.discount_value) : { discountKopecks: 0, finalAmountKopecks: price };
       const quoteId = id();
       const disclosure = occurrence.venue_status === "CONFIRMED"
         ? `${occurrence.venue_name}: ${occurrence.venue_address}`
@@ -1039,8 +1055,8 @@ export class CommerceDomain {
       const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
       this.db.prepare(`INSERT INTO quotes(id, occurrence_id, material_revision, legal_release_id, promo_id, attributed_agent_id, price_kopecks, discount_kopecks, final_amount_kopecks, venue_disclosure, expires_at, referral_slug, promo_code_snapshot, discount_type_snapshot, discount_value_snapshot, promo_agent_id_snapshot)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(quoteId, occurrence.id, occurrence.material_revision, release.id, promo?.id ?? null, attributedAgentId, price, pricing.discountKopecks, pricing.finalAmountKopecks, disclosure, expiresAt, referralSlug ?? null, promo?.code ?? null, promo?.discount_type ?? null, promo?.discount_value ?? null, promoAgentId);
-      return { quote_id: quoteId, occurrence_id: occurrence.id, material_revision: occurrence.material_revision, availability, price_kopecks: price, discount_kopecks: pricing.discountKopecks, final_amount_kopecks: pricing.finalAmountKopecks, promo: promo ? { id: promo.id, code: promo.code, discount_type: promo.discount_type, discount_value: promo.discount_value, discount_kopecks: pricing.discountKopecks } : null, currency: "RUB", venue_disclosure: disclosure, legal_release: { id: release.id, version: release.version, manifest }, expires_at: expiresAt };
+        .run(quoteId, occurrence.id, occurrence.material_revision, release.id, promo?.id ?? null, attributedAgentId, price, pricing.discountKopecks, pricing.finalAmountKopecks, disclosure, expiresAt, referralSlug ?? null, promo?.code ?? null, promoTerms?.discount_type ?? null, promoTerms?.discount_value ?? null, promoAgentId);
+      return { quote_id: quoteId, occurrence_id: occurrence.id, material_revision: occurrence.material_revision, availability, price_kopecks: price, discount_kopecks: pricing.discountKopecks, final_amount_kopecks: pricing.finalAmountKopecks, promo: promo ? { id: promo.id, code: promo.code, discount_type: promoTerms!.discount_type, discount_value: promoTerms!.discount_value, discount_kopecks: pricing.discountKopecks } : null, currency: "RUB", venue_disclosure: disclosure, legal_release: { id: release.id, version: release.version, manifest }, expires_at: expiresAt };
     });
   }
 
@@ -1078,10 +1094,17 @@ export class CommerceDomain {
       if (!release || release.id !== quote.legal_release_id) throw new DomainError("LEGAL_VERSION_CHANGED", 409);
       const manifest = legalManifest(JSON.parse(String(release.manifest_json)));
       let promo: Row | undefined;
+      let promoTerms: { discount_type: string; discount_value: number } | null = null;
       if (quote.promo_id) {
         promo = one(this.db, `SELECT p.*, a.enabled AS agent_enabled FROM promo_codes p LEFT JOIN agents a ON a.id = p.agent_id WHERE p.id = ?`, quote.promo_id);
         if (!promo || !isPromoEligible(promo)) throw new DomainError("PROMO_NO_LONGER_ELIGIBLE", 409);
-        if (promo.discount_type !== quote.discount_type_snapshot || Number(promo.discount_value) !== Number(quote.discount_value_snapshot) || (promo.agent_id ?? null) !== (quote.promo_agent_id_snapshot ?? null)) throw new DomainError("QUOTE_STALE", 409);
+        // For a PARTNER promo, compare the ENGAGEMENT REVISION's current
+        // pricing facts, not the promo row's frozen placeholders - and only
+        // the terms, never an authorization id (A4-6, §B-9): an internal
+        // authorization supersession alone (reward formula changed, discount
+        // unchanged) must never read as a stale quote.
+        promoTerms = resolvePromoTerms(this.db, { id: String(promo.id), discount_type: String(promo.discount_type), discount_value: Number(promo.discount_value) }, String(occurrence.id), "PROMO_NO_LONGER_ELIGIBLE");
+        if (promoTerms.discount_type !== quote.discount_type_snapshot || Number(promoTerms.discount_value) !== Number(quote.discount_value_snapshot) || (promo.agent_id ?? null) !== (quote.promo_agent_id_snapshot ?? null)) throw new DomainError("QUOTE_STALE", 409);
       }
       if (!certificationLease && (occurrence.sales_status !== "OPEN" || occurrence.fulfillment_status !== "SCHEDULED")) throw new DomainError("SALES_NOT_OPEN", 409);
       if (certificationLease && occurrence.fulfillment_status !== "SCHEDULED") throw new DomainError("SALES_NOT_OPEN", 409);
@@ -1091,8 +1114,19 @@ export class CommerceDomain {
       const promoAgentId = promo?.agent_id as string | null ?? null;
       const referralAgent = activeAgentBySlug(this.db, quote.referral_slug as string | undefined);
       const attributedAgentId = promoAgentId ?? (referralAgent?.id as string | undefined) ?? null;
-      const currentPricing = promo ? promoPrice(Number(occurrence.price_kopecks), promo.discount_type, promo.discount_value) : { discountKopecks: 0, finalAmountKopecks: Number(occurrence.price_kopecks) };
+      const currentPricing = promoTerms ? promoPrice(Number(occurrence.price_kopecks), promoTerms.discount_type, promoTerms.discount_value) : { discountKopecks: 0, finalAmountKopecks: Number(occurrence.price_kopecks) };
       if (currentPricing.discountKopecks !== Number(quote.discount_kopecks) || currentPricing.finalAmountKopecks !== Number(quote.final_amount_kopecks)) throw new DomainError("QUOTE_STALE", 409);
+      // Pricing/staleness are proven correct as far as PR5 goes, but ORDER
+      // COMMIT authority for a partner promo - attribution, reward creation -
+      // is Phase 6's own authority partition (§B-9's order-column list,
+      // reward_authority_kind), not yet implemented. Silently falling
+      // through to the legacy unpartitioned attributed_agent_id/reward path
+      // below would create real referral_rewards evidence Phase 6 has not
+      // yet defined the authority for, and the frozen model forbids a
+      // discount-without-attribution fallback for a partner promo (§B-9) -
+      // so this fails closed here, after eligibility/staleness are already
+      // proven, rather than degrading to either wrong shape.
+      if (promo && isPromoPartnerOwned(this.db, String(promo.id))) throw new DomainError("AGENT_REFERRALS_ATTRIBUTION_AUTHORITY_UNAVAILABLE", 503);
       const occupied = Number(one(this.db, "SELECT COUNT(*) AS occupied FROM bookings WHERE occurrence_id = ? AND status IN ('RESERVED', 'CONFIRMED')", occurrence.id)?.occupied ?? 0);
       if (occupied >= Number(occurrence.capacity)) throw new DomainError("SOLD_OUT", 409);
       const orderId = id(); const bookingId = id(); const paymentId = id(); const statusId = publicId();
@@ -1810,6 +1844,15 @@ export class CommerceDomain {
         this.db.prepare("INSERT INTO occurrence_revisions(id, occurrence_id, revision, reason, before_json, after_json, changed_by_admin_id) VALUES (?, ?, ?, ?, ?, ?, ?)")
           .run(revisionId, occurrenceId, after.material_revision, typeof input.audit_context === "string" ? input.audit_context : "", JSON.stringify(classification.before), JSON.stringify(classification.after), adminId);
         this.emitOccurrenceRevisionEffects(revisionId, before, after, classification);
+        // Agent Referrals compatibility seam: the same classification that
+        // just bumped occurrences.material_revision also invalidates any
+        // engagement_revisions minted against the old schedule. An
+        // already-ACTIVE engagement for this occurrence must not be left
+        // granting promo/publication authority under stale terms - suspend
+        // it now; only a fresh engagement revision (whose own
+        // occurrence_material_revision will pin the new state), accepted
+        // and activated again, can restore it.
+        suspendEngagementsForOccurrenceMaterialChange(this.db, occurrenceId, "OCCURRENCE_MATERIAL_REVISION_CHANGED");
       }
       this.recordAdminCommandAudit(adminId, "OCCURRENCE_EDITED", "occurrence", occurrenceId, typeof input.audit_context === "string" ? input.audit_context : undefined, idempotencyKey, payload);
       return after;
@@ -1974,6 +2017,15 @@ export class CommerceDomain {
     return this.withAdminCommandV2("promo.patch", idempotencyKey, adminId, promoId, patch, auditContext, "PROMO_EDITED", "promo", () => {
       const existing = one(this.db, "SELECT * FROM promo_codes WHERE id = ?", promoId);
       if (!existing) throw new DomainError("PROMO_NOT_FOUND", 404);
+      // A partner-owned promo (agent-referrals-promo.ts's partner_promos) is
+      // the partner's permanent identity, not legacy commercial authority
+      // (§B-9) - the legacy admin surface may still toggle its global
+      // availability, but agent_id/discount_type/discount_value are frozen
+      // and must never be repointed or repriced through this endpoint.
+      if (isPromoPartnerOwned(this.db, promoId)) {
+        const disallowed = (["agent_id", "discount_type", "discount_value"] as const).filter((field) => patch[field] !== undefined);
+        if (disallowed.length) throw new DomainError("PROMO_OWNED_BY_PARTNER", 409, disallowed.join(","));
+      }
       promoMergedSchema.parse({
         agent_id: patch.agent_id === undefined ? existing.agent_id : patch.agent_id,
         status: patch.status === undefined ? existing.status : patch.status,
