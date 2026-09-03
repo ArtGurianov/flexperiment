@@ -140,9 +140,32 @@ export const AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS = [
   "engagement_closure_events",
   "engagement_closure_events_immutable_guard",
   "engagement_closure_events_delete_guard",
+  // PR6 (0046). The order-authority-tuple triggers on the pre-existing
+  // `orders` table are named alongside the two new registry/effective
+  // tables, for the same reason PR4/PR5's own guards are: a dropped
+  // trigger is exactly as unsound as a dropped base table, and `orders`
+  // itself already appears nowhere in this list (it predates Agent
+  // Referrals and is not itself an Agent-Referrals-owned object), so only
+  // the new triggers it gained are named here, not the table. Likewise
+  // `referral_rewards` gains two guards without itself being named (it
+  // predates Agent Referrals too). Every relational-consistency guard
+  // (holistic review, Phase 6) is named alongside its table's existing
+  // guards for the identical reason.
+  "orders_authority_tuple_consistency_guard",
+  "orders_authority_columns_immutable_guard",
+  "referral_rewards_authority_kind_matches_order_guard",
+  "referral_rewards_authority_kind_immutable_guard",
+  "engagement_reward_registry_snapshot",
+  "engagement_reward_registry_snapshot_relational_consistency_guard",
+  "engagement_reward_registry_snapshot_immutable_guard",
+  "engagement_reward_registry_snapshot_delete_guard",
+  "engagement_effective_reward_snapshots",
+  "engagement_effective_reward_snapshots_relational_consistency_guard",
+  "engagement_effective_reward_snapshots_immutable_guard",
+  "engagement_effective_reward_snapshots_delete_guard",
 ] as const;
 
-const MIGRATIONS = ["0043_agent_referrals_foundation.sql", "0044_partner_identity.sql", "0045_engagement_publication.sql"] as const;
+const MIGRATIONS = ["0043_agent_referrals_foundation.sql", "0044_partner_identity.sql", "0045_engagement_publication.sql", "0046_attribution_reward.sql"] as const;
 
 export class AgentReferralsActivationError extends Error {
   constructor(readonly code: string, readonly status = 409, detail?: string) {

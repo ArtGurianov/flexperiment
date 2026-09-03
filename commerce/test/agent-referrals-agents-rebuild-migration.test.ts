@@ -236,16 +236,27 @@ describe("0042 agent-referrals agents rebuild migration", () => {
       // quotes.attributed_agent_id, quotes.promo_agent_id_snapshot
       expect(() => db.prepare("UPDATE quotes SET attributed_agent_id = ? WHERE id = ?").run(bogus, quoteId)).toThrow(/FOREIGN KEY constraint failed/);
       expect(() => db.prepare("UPDATE quotes SET promo_agent_id_snapshot = ? WHERE id = ?").run(bogus, quoteId)).toThrow(/FOREIGN KEY constraint failed/);
-      // orders.attributed_agent_id, orders.promo_agent_id_snapshot
-      expect(() => db.prepare("UPDATE orders SET attributed_agent_id = ? WHERE id = ?").run(bogus, orderId)).toThrow(/FOREIGN KEY constraint failed/);
+      // orders.promo_agent_id_snapshot
       expect(() => db.prepare("UPDATE orders SET promo_agent_id_snapshot = ? WHERE id = ?").run(bogus, orderId)).toThrow(/FOREIGN KEY constraint failed/);
+      // orders.attributed_agent_id - PR6 (0046) made this column immutable
+      // after insert (it is now one of the reward-authority fields the
+      // registry reads), so an UPDATE no longer reaches the FK check at
+      // all; the FK itself is proven still enforced via INSERT instead,
+      // which orders_authority_tuple_consistency_guard does not otherwise
+      // constrain for a LEGACY row.
+      expect(() => db.prepare(`INSERT INTO orders(id, public_status_id, public_order_number, occurrence_id, customer_name, customer_email, customer_email_hash, amount_kopecks, occurrence_material_revision, venue_disclosure_snapshot, checkout_legal_release_id, legal_snapshot_json, eligibility_confirmed_at, attributed_agent_id)
+        VALUES (?, 'agents-rebuild-status-bogus-agent', 'FX-AGENTSREBUILDBOGUS', ?, 'Buyer', 'bogus@example.test', 'hashbogus', 90, 1, 'Studio: Lenina 1', ?, '{}', datetime('now'), ?)`)
+        .run(randomUUID(), occurrenceId, legalReleaseId, bogus)).toThrow(/FOREIGN KEY constraint failed/);
       // referral_rewards.agent_id - a second, distinct order, since order_id is UNIQUE on referral_rewards
       // and the seeded order already owns one.
       const secondOrderId = randomUUID();
       db.prepare(`INSERT INTO orders(id, public_status_id, public_order_number, occurrence_id, customer_name, customer_email, customer_email_hash, amount_kopecks, occurrence_material_revision, venue_disclosure_snapshot, checkout_legal_release_id, legal_snapshot_json, eligibility_confirmed_at)
         VALUES (?, 'agents-rebuild-status-2', 'FX-AGENTSREBUILD00002', ?, 'Buyer 2', 'buyer2@example.test', 'hash2', 90, 1, 'Studio: Lenina 1', ?, '{}', datetime('now'))`)
         .run(secondOrderId, occurrenceId, legalReleaseId);
-      expect(() => db.prepare("INSERT INTO referral_rewards(id, order_id, agent_id, occurrence_id, amount_kopecks) VALUES (?, ?, ?, ?, 1)")
+      // reward_authority_kind = 'LEGACY' matches secondOrderId's own default
+      // (PR6/0046's referral_rewards_authority_kind_matches_order_guard),
+      // so this reaches the FK check on agent_id rather than that guard.
+      expect(() => db.prepare("INSERT INTO referral_rewards(id, order_id, agent_id, occurrence_id, amount_kopecks, reward_authority_kind) VALUES (?, ?, ?, ?, 1, 'LEGACY')")
         .run(randomUUID(), secondOrderId, bogus, occurrenceId)).toThrow(/FOREIGN KEY constraint failed/);
       // reward_adjustments.agent_id
       expect(() => db.prepare("INSERT INTO reward_adjustments(id, order_id, agent_id, amount_kopecks, reason) VALUES (?, ?, ?, 1, 'r')")

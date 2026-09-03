@@ -12,8 +12,13 @@ import { AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS, assertAgentReferralsFoundation
  * engagement identity/revision/acceptance/activation, permanent promo +
  * per-occurrence authorizations, creative content + authorization,
  * distribution facts + removal lifecycle, delegation revocation,
- * engagement closure. Ordinary migration - not FK-off, and it adds no
- * 0046+.
+ * engagement closure. Ordinary migration - not FK-off.
+ *
+ * PR6 landed 0046_attribution_reward.sql - see
+ * agent-referrals-attribution-reward-migration.test.ts for that file's own
+ * boundary ("no 0047+") and table-introduction proof, following the exact
+ * precedent this file itself set over agent-referrals-partner-identity-
+ * migration.test.ts when PR5 landed.
  */
 
 const MIGRATIONS = join(process.cwd(), "commerce", "migrations");
@@ -103,15 +108,17 @@ describe("0045 engagement publication migration", () => {
     ]);
   });
 
-  it("ships no 0046+ migration file", () => {
-    const all = readdirSync(MIGRATIONS).filter((n) => n.endsWith(".sql"));
-    expect(all.filter((n) => n > MIGRATION_FILE)).toEqual([]);
-  });
-
-  it("0045 alone introduces exactly the expected new tables - no PR6 order/reward/settlement table", () => {
+  // PR6 landed 0046_attribution_reward.sql - see
+  // agent-referrals-attribution-reward-migration.test.ts for that file's
+  // own "no 0047+" boundary. This file's own claim is scoped to exactly
+  // what 0045 itself introduces, proven below by applying 0045's bytes
+  // directly rather than through the general migrate() runner (which would
+  // also apply 0046+ from this same 0044 baseline).
+  it("0045 alone (applied directly, not through migrate()) introduces exactly the expected new tables - no PR6 order/reward/settlement table", () => {
     const db = at0044();
     const before = new Set(tableNames(db));
-    migrate(db);
+    db.exec(readFileSync(join(MIGRATIONS, MIGRATION_FILE), "utf8"));
+    db.prepare("INSERT INTO schema_migrations(version) VALUES (?)").run(MIGRATION_FILE);
     const introduced = tableNames(db).filter((name) => !before.has(name) && name !== "schema_migrations");
     expect(introduced.sort()).toEqual([
       "engagement_acceptances",
@@ -168,9 +175,15 @@ describe("0045 engagement publication migration", () => {
 
     it("AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS includes every PR5 base table, structural index and immutability guard, exhaustively", () => {
       for (const object of pr5Objects) expect(AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS, object).toContain(object);
+      // Exhaustive for the PR3+PR4+PR5 PREFIX specifically, not the array's
+      // total length - scoped to a prefix slice precisely so a later PR
+      // appending its own objects (PR6's own suffix is proved the identical
+      // way, in agent-referrals-attribution-reward-migration.test.ts) does
+      // not need to touch this assertion at all - the exact precedent this
+      // file's own prefix-slice pattern already set when PR5 itself landed.
       const pr3Plus4Objects = 49; // 16 (PR3) + 33 (PR4), proven exhaustive by that PR's own migration test.
-      const suffix = [...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS].slice(pr3Plus4Objects).sort();
-      expect(suffix).toEqual([...pr5Objects].sort());
+      const prefix = [...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS].slice(0, pr3Plus4Objects + pr5Objects.length).sort();
+      expect(prefix).toEqual([...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS.slice(0, pr3Plus4Objects), ...pr5Objects].sort());
     });
 
     it("passes on a DB migrated through 0045", () => {

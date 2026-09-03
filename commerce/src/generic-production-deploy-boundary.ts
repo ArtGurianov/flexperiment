@@ -118,6 +118,11 @@ export const compatibilitySemanticsPaths: readonly string[] = [
   "commerce/src/certification-dispatch.ts",
   "commerce/src/promo-pricing.ts",
   "commerce/src/basis-points.ts",
+  // The one reward-arithmetic authority shared by legacy CommerceDomain and
+  // the Agent Referrals reward registry (Phase 6) - what a durable
+  // referral_rewards/reward-registry amount means, exactly the same
+  // category as basis-points.ts and promo-pricing.ts beside it.
+  "commerce/src/reward-calculation.ts",
   "commerce/src/legal-manifest.ts",
   "commerce/src/legal-release.ts",
   "commerce/src/occurrence-notification-capability.ts",

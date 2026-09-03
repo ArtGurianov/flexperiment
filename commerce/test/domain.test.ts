@@ -1467,11 +1467,15 @@ describe("commerce domain", () => {
     const agentId = randomUUID();
     setup.db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, enabled, default_reward_type, default_reward_value, npd_status_checked_at)
       VALUES (?, 'cancelled-promoter', 'Promoter', 'Promoter Legal', 'promoter@example.test', 'SELF_EMPLOYED', '123456789012', 'C-2', 1, 'PERCENT', 1000, datetime('now'))`).run(agentId);
-    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId });
+    // Attribution is pinned at checkout time (immutable thereafter as of
+    // PR6/0046 - orders.attributed_agent_id/reward_type_snapshot/
+    // reward_value_snapshot can no longer be attached retroactively via
+    // UPDATE), so this uses the real legacy referral-slug path instead of
+    // a post-hoc UPDATE.
+    const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "cancelled-promoter" });
     const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000022", "https://flexperiment.ru");
     const payment = setup.db.prepare("SELECT p.id, p.order_id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; order_id: string };
     setup.domain.markPaymentPaid(payment.id, 100000, "provider-payment");
-    setup.db.prepare("UPDATE orders SET attributed_agent_id = ?, reward_type_snapshot = 'PERCENT', reward_value_snapshot = 1000 WHERE id = ?").run(agentId, payment.order_id);
     const sessionId = randomUUID(); const capability = "r".repeat(32);
     setup.db.prepare("INSERT INTO admin_sessions(id, admin_id, expires_at) VALUES (?, 'admin', datetime('now', '+1 hour'))").run(sessionId);
     setup.domain.createAdminReauth({ adminId: "admin", sessionId, purpose: "CANCEL_OCCURRENCE", resourceId: setup.occurrenceId, capability });

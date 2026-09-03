@@ -10,7 +10,8 @@ import { PromoPricingError, pricePromo } from "./promo-pricing";
 import { PartnerPromoPricingError, resolveCheckoutPromoTerms } from "./agent-referrals-partner-promo-pricing";
 import { isPromoPartnerOwned } from "./agent-referrals-promo";
 import { suspendEngagementsForOccurrenceMaterialChange } from "./agent-referrals-engagement";
-import { basisPointsOf } from "./basis-points";
+import { AgentReferralsAttributionError, resolveOrderAttribution, ATTRIBUTION_RULE_VERSION } from "./agent-referrals-attribution";
+import { rewardForOrder as computeRewardForOrder } from "./reward-calculation";
 import { findCityBySlug } from "../../lib/city-catalog";
 import { purchaseStatus, type PurchaseStatus } from "./purchase-status";
 import { occurrenceNotificationsCapabilityActive } from "./occurrence-notification-capability";
@@ -66,6 +67,13 @@ const resolvePromoTerms = (db: Database.Database, promo: { id: string; discount_
   try { return resolveCheckoutPromoTerms(db, promo, occurrenceId, notEligibleCode); }
   catch (error) {
     if (error instanceof PartnerPromoPricingError) throw new DomainError(error.code, error.status);
+    throw error;
+  }
+};
+const resolveAttribution = (db: Database.Database, promo: { id: string; agent_id: string | null } | undefined, occurrenceId: string, legacyReferralAgentId: string | null) => {
+  try { return resolveOrderAttribution(db, promo, occurrenceId, legacyReferralAgentId); }
+  catch (error) {
+    if (error instanceof AgentReferralsAttributionError) throw new DomainError(error.code, error.status);
     throw error;
   }
 };
@@ -1113,20 +1121,15 @@ export class CommerceDomain {
       // after context creation without entering a new order.
       const promoAgentId = promo?.agent_id as string | null ?? null;
       const referralAgent = activeAgentBySlug(this.db, quote.referral_slug as string | undefined);
-      const attributedAgentId = promoAgentId ?? (referralAgent?.id as string | undefined) ?? null;
       const currentPricing = promoTerms ? promoPrice(Number(occurrence.price_kopecks), promoTerms.discount_type, promoTerms.discount_value) : { discountKopecks: 0, finalAmountKopecks: Number(occurrence.price_kopecks) };
       if (currentPricing.discountKopecks !== Number(quote.discount_kopecks) || currentPricing.finalAmountKopecks !== Number(quote.final_amount_kopecks)) throw new DomainError("QUOTE_STALE", 409);
-      // Pricing/staleness are proven correct as far as PR5 goes, but ORDER
-      // COMMIT authority for a partner promo - attribution, reward creation -
-      // is Phase 6's own authority partition (§B-9's order-column list,
-      // reward_authority_kind), not yet implemented. Silently falling
-      // through to the legacy unpartitioned attributed_agent_id/reward path
-      // below would create real referral_rewards evidence Phase 6 has not
-      // yet defined the authority for, and the frozen model forbids a
-      // discount-without-attribution fallback for a partner promo (§B-9) -
-      // so this fails closed here, after eligibility/staleness are already
-      // proven, rather than degrading to either wrong shape.
-      if (promo && isPromoPartnerOwned(this.db, String(promo.id))) throw new DomainError("AGENT_REFERRALS_ATTRIBUTION_AUTHORITY_UNAVAILABLE", 503);
+      // §B-9: the one canonical attribution resolution contract, re-run
+      // fresh inside this transaction. A partner-owned promo never falls
+      // through to legacy referral-slug or direct attribution, and never
+      // grants a discount without attribution - it either resolves a live
+      // (promo, occurrence) authorization on an ACTIVE engagement, pinning
+      // the exact accepted revision, or refuses outright.
+      const attribution = resolveAttribution(this.db, promo ? { id: String(promo.id), agent_id: promoAgentId } : undefined, String(occurrence.id), (referralAgent?.id as string | undefined) ?? null);
       const occupied = Number(one(this.db, "SELECT COUNT(*) AS occupied FROM bookings WHERE occurrence_id = ? AND status IN ('RESERVED', 'CONFIRMED')", occurrence.id)?.occupied ?? 0);
       if (occupied >= Number(occurrence.capacity)) throw new DomainError("SOLD_OUT", 409);
       const orderId = id(); const bookingId = id(); const paymentId = id(); const statusId = publicId();
@@ -1134,17 +1137,24 @@ export class CommerceDomain {
       // The unique index is the authority; the lookup keeps the astronomically
       // unlikely random collision from surfacing as a customer-visible 500.
       while (one(this.db, "SELECT id FROM orders WHERE public_order_number = ?", orderNumber)) orderNumber = publicOrderNumber();
-      const agent = attributedAgentId ? one(this.db, "SELECT default_reward_type, default_reward_value FROM agents WHERE id = ? AND enabled = 1", attributedAgentId) : undefined;
       const timestamp = now();
       const workshopDate = new Intl.DateTimeFormat("ru-RU", { timeZone: String(occurrence.timezone), day: "numeric", month: "long", year: "numeric" }).format(new Date(String(occurrence.starts_at)));
       const fiscalPurpose = "Оплата участия в мастер-классе ФЛЭКСПЕРИМЕНТ";
       const fiscalItemName = `Участие в мастер-классе ФЛЭКСПЕРИМЕНТ — ${String(occurrence.city_title)}, ${workshopDate}`;
-      this.db.prepare(`INSERT INTO orders(id, public_status_id, public_order_number, occurrence_id, customer_name, customer_email, customer_email_hash, amount_kopecks, occurrence_material_revision, venue_disclosure_snapshot, checkout_legal_release_id, legal_snapshot_json, eligibility_confirmed_at, attributed_agent_id, reward_type_snapshot, reward_value_snapshot, promo_code_snapshot, discount_type_snapshot, discount_value_snapshot, promo_id_snapshot, promo_agent_id_snapshot, price_kopecks_snapshot, discount_kopecks_snapshot, fiscal_purpose_snapshot, fiscal_item_name_snapshot, public_offer_version, public_offer_sha256, public_offer_accepted_at, privacy_policy_version, privacy_policy_sha256, privacy_policy_presented_at, pd_consent_version, pd_consent_sha256, pd_consent_accepted_at, checkout_disclosure_version, checkout_disclosure_sha256, customer_adult_confirmed_at, customer_acceptance_ip, customer_acceptance_user_agent, participant_name, participant_age_band, participant_date_of_birth, participant_age_at_occurrence, participant_is_minor, participant_requires_adult_accompaniment, participant_is_customer, minor_legal_representative_confirmed_at, minor_legal_representative_confirmation_text, under_14_accompaniment_confirmed_at, under_14_accompaniment_confirmation_text)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      this.db.prepare(`INSERT INTO orders(id, public_status_id, public_order_number, occurrence_id, customer_name, customer_email, customer_email_hash, amount_kopecks, occurrence_material_revision, venue_disclosure_snapshot, checkout_legal_release_id, legal_snapshot_json, eligibility_confirmed_at, attributed_agent_id, reward_type_snapshot, reward_value_snapshot, promo_code_snapshot, discount_type_snapshot, discount_value_snapshot, promo_id_snapshot, promo_agent_id_snapshot, price_kopecks_snapshot, discount_kopecks_snapshot, fiscal_purpose_snapshot, fiscal_item_name_snapshot, public_offer_version, public_offer_sha256, public_offer_accepted_at, privacy_policy_version, privacy_policy_sha256, privacy_policy_presented_at, pd_consent_version, pd_consent_sha256, pd_consent_accepted_at, checkout_disclosure_version, checkout_disclosure_sha256, customer_adult_confirmed_at, customer_acceptance_ip, customer_acceptance_user_agent, participant_name, participant_age_band, participant_date_of_birth, participant_age_at_occurrence, participant_is_minor, participant_requires_adult_accompaniment, participant_is_customer, minor_legal_representative_confirmed_at, minor_legal_representative_confirmation_text, under_14_accompaniment_confirmed_at, under_14_accompaniment_confirmation_text, reward_authority_kind, explicit_promo_id, resolved_partner_id, resolved_engagement_id, resolved_engagement_revision_id, resolved_promo_authorization_id, attribution_rule_version, resolution_reason)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         // SQLite baseline made this historical column NOT NULL. New anonymous
         // orders retain only an empty legacy value; no name is collected or
         // presented as order evidence.
-        .run(orderId, statusId, orderNumber, occurrence.id, "", checkoutInput.customer_email.trim().toLowerCase(), emailHash(checkoutInput.customer_email), quote.final_amount_kopecks, quote.material_revision, quote.venue_disclosure, quote.legal_release_id, JSON.stringify(manifest), "DEPRECATED_NOT_EVIDENCE", attributedAgentId, agent?.default_reward_type ?? null, agent?.default_reward_value ?? null, quote.promo_code_snapshot ?? null, quote.discount_type_snapshot ?? null, quote.discount_value_snapshot ?? null, quote.promo_id ?? null, quote.promo_agent_id_snapshot ?? null, quote.price_kopecks, quote.discount_kopecks, fiscalPurpose, fiscalItemName, manifest.documents.PUBLIC_OFFER.version, manifest.documents.PUBLIC_OFFER.sha256, timestamp, manifest.documents.PRIVACY_POLICY.version, manifest.documents.PRIVACY_POLICY.sha256, timestamp, manifest.documents.PD_CONSENT.version, manifest.documents.PD_CONSENT.sha256, timestamp, manifest.documents.CHECKOUT_DISCLOSURE.version, manifest.documents.CHECKOUT_DISCLOSURE.sha256, timestamp, acceptance.ip ?? null, acceptance.userAgent?.slice(0, 1_000) ?? null, null, participantAgeBand, null, null, Number(participantIsMinor), Number(participantRequiresAdultAccompaniment), null, participantIsMinor ? timestamp : null, participantIsMinor ? "Я являюсь совершеннолетним законным представителем несовершеннолетнего участника, для которого оформляю этот заказ." : null, null, null);
+        //
+        // reward_type_snapshot/reward_value_snapshot come from `attribution`
+        // (the engagement revision's own terms for ENGAGEMENT_SCOPED, the
+        // agent's default_reward_* for LEGACY) - never a second, independent
+        // agents.default_reward_* lookup keyed on attributed_agent_id, which
+        // would silently mix an ENGAGEMENT_SCOPED order's pinned engagement
+        // revision with a stale/unrelated agent-level default.
+        .run(orderId, statusId, orderNumber, occurrence.id, "", checkoutInput.customer_email.trim().toLowerCase(), emailHash(checkoutInput.customer_email), quote.final_amount_kopecks, quote.material_revision, quote.venue_disclosure, quote.legal_release_id, JSON.stringify(manifest), "DEPRECATED_NOT_EVIDENCE", attribution.attributed_agent_id, attribution.reward_type, attribution.reward_value, quote.promo_code_snapshot ?? null, quote.discount_type_snapshot ?? null, quote.discount_value_snapshot ?? null, quote.promo_id ?? null, quote.promo_agent_id_snapshot ?? null, quote.price_kopecks, quote.discount_kopecks, fiscalPurpose, fiscalItemName, manifest.documents.PUBLIC_OFFER.version, manifest.documents.PUBLIC_OFFER.sha256, timestamp, manifest.documents.PRIVACY_POLICY.version, manifest.documents.PRIVACY_POLICY.sha256, timestamp, manifest.documents.PD_CONSENT.version, manifest.documents.PD_CONSENT.sha256, timestamp, manifest.documents.CHECKOUT_DISCLOSURE.version, manifest.documents.CHECKOUT_DISCLOSURE.sha256, timestamp, acceptance.ip ?? null, acceptance.userAgent?.slice(0, 1_000) ?? null, null, participantAgeBand, null, null, Number(participantIsMinor), Number(participantRequiresAdultAccompaniment), null, participantIsMinor ? timestamp : null, participantIsMinor ? "Я являюсь совершеннолетним законным представителем несовершеннолетнего участника, для которого оформляю этот заказ." : null, null, null,
+          attribution.reward_authority_kind, attribution.explicit_promo_id, attribution.resolved_partner_id, attribution.resolved_engagement_id, attribution.resolved_engagement_revision_id, attribution.resolved_promo_authorization_id, ATTRIBUTION_RULE_VERSION, attribution.resolution_reason);
       this.db.prepare("INSERT INTO bookings(id, order_id, occurrence_id, status) VALUES (?, ?, ?, 'RESERVED')").run(bookingId, orderId, occurrence.id);
       this.db.prepare(`INSERT INTO payments(id, order_id, state, status, provider_idempotency_key, creation_started_at) VALUES (?, ?, 'CREATING', 'PENDING', ?, ?)`)
         .run(paymentId, orderId, publicId(), timestamp);
@@ -2047,10 +2057,9 @@ export class CommerceDomain {
     return one(this.db, "SELECT * FROM promo_codes WHERE id = ?", promoId)!;
   }
 
+  /** Delegates to the shared reward-calculation.ts formula - see that module for why it was extracted verbatim. */
   private rewardForOrder(order: Row, netCaptured: number) {
-    if (netCaptured <= 0 || !order.attributed_agent_id || !order.reward_type_snapshot) return 0;
-    if (order.reward_type_snapshot === "PERCENT") return basisPointsOf(netCaptured, Number(order.reward_value_snapshot ?? 0));
-    return Math.min(netCaptured, Number(order.reward_value_snapshot ?? 0));
+    return computeRewardForOrder({ attributed_agent_id: order.attributed_agent_id as string | null, reward_type_snapshot: order.reward_type_snapshot as "PERCENT" | "FIXED" | null, reward_value_snapshot: order.reward_value_snapshot as number | null }, netCaptured);
   }
 
   /**
@@ -2066,9 +2075,9 @@ export class CommerceDomain {
       WHERE o.id = ?`, orderId);
     if (!order?.attributed_agent_id || !order.reward_type_snapshot || Number(order.captured_amount_kopecks) <= 0) return;
     const base = this.rewardForOrder(order, Number(order.captured_amount_kopecks));
-    this.db.prepare(`INSERT OR IGNORE INTO referral_rewards(id, order_id, agent_id, occurrence_id, amount_kopecks)
-      VALUES (?, ?, ?, ?, ?)`)
-      .run(id(), order.id, order.attributed_agent_id, order.occurrence_id, base);
+    this.db.prepare(`INSERT OR IGNORE INTO referral_rewards(id, order_id, agent_id, occurrence_id, amount_kopecks, reward_authority_kind)
+      VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(id(), order.id, order.attributed_agent_id, order.occurrence_id, base, order.reward_authority_kind ?? "LEGACY");
     const net = Math.max(0, Number(order.captured_amount_kopecks) - Number(order.refunded_amount_kopecks));
     const expected = order.booking_status === "CONFIRMED" ? this.rewardForOrder(order, net) : 0;
     const accounted = Number(one(this.db, `SELECT rr.amount_kopecks + COALESCE((SELECT SUM(ra.amount_kopecks) FROM reward_adjustments ra WHERE ra.order_id = rr.order_id), 0) AS amount
