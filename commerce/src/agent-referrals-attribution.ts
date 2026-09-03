@@ -1,0 +1,144 @@
+import type Database from "better-sqlite3";
+import { isPromoPartnerOwned, currentEngagementPromoAuthorization, partnerPromoByPartnerId } from "./agent-referrals-promo";
+import { getEngagement, engagementRevisionById } from "./agent-referrals-engagement";
+import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
+import { assertAgentReferralsOperationPermitted, AgentReferralsSuspensionPolicyError } from "./agent-referrals-suspension-policy";
+
+/**
+ * The ONE canonical checkout-time attribution resolution contract (§B-9's
+ * six-step chain: promo -> global status -> partner -> occurrence ->
+ * current authorization -> ACTIVE engagement on its accepted revision),
+ * called from inside the checkout IMMEDIATE transaction only - never at
+ * quote time, which stays deliberately non-authoritative (A4-6; PR5's
+ * resolveCheckoutPromoTerms already covers quote-time pricing and is
+ * untouched here). A partner-owned promo NEVER falls through to the
+ * legacy referral-slug or direct path - it simply has no legacy meaning -
+ * and an invalid/unavailable partner promo never degrades to a
+ * discount-without-attribution order; the caller in domain.ts is expected
+ * to have already refused PROMO_NOT_FOUND / PROMO_NOT_ELIGIBLE /
+ * PROMO_NO_LONGER_ELIGIBLE and QUOTE_STALE before this ever runs.
+ *
+ * This is a read-only resolver: it mutates nothing, so it needs no
+ * transaction of its own and is safe to call from anywhere already inside
+ * one. New authority logic lives here (and in
+ * agent-referrals-reward-registry.ts), not in domain.ts, which stays thin
+ * wiring (plan A4-8).
+ */
+
+export class AgentReferralsAttributionError extends Error {
+  constructor(readonly code: string, readonly status = 409, detail?: string) {
+    super(detail ? `${code}: ${detail}` : code);
+  }
+}
+
+export const ATTRIBUTION_RULE_VERSION = 1;
+
+export type LegacyOrderAttribution = {
+  reward_authority_kind: "LEGACY";
+  attributed_agent_id: string | null;
+  explicit_promo_id: string | null;
+  resolved_partner_id: null;
+  resolved_engagement_id: null;
+  resolved_engagement_revision_id: null;
+  resolved_promo_authorization_id: null;
+  reward_type: "PERCENT" | "FIXED" | null;
+  reward_value: number | null;
+  resolution_reason: "LEGACY_PROMO" | "LEGACY_REFERRAL_SLUG" | "DIRECT";
+};
+
+export type EngagementScopedOrderAttribution = {
+  reward_authority_kind: "ENGAGEMENT_SCOPED";
+  attributed_agent_id: string;
+  explicit_promo_id: string;
+  resolved_partner_id: string;
+  resolved_engagement_id: string;
+  resolved_engagement_revision_id: string;
+  resolved_promo_authorization_id: string;
+  reward_type: "PERCENT" | "FIXED";
+  reward_value: number;
+  resolution_reason: "EXPLICIT_PARTNER_PROMO";
+};
+
+export type OrderAttribution = LegacyOrderAttribution | EngagementScopedOrderAttribution;
+
+const legacyDefaultReward = (db: Database.Database, agentId: string | null): { reward_type: "PERCENT" | "FIXED" | null; reward_value: number | null } => {
+  if (!agentId) return { reward_type: null, reward_value: null };
+  const agent = db.prepare("SELECT default_reward_type, default_reward_value FROM agents WHERE id = ? AND enabled = 1").get(agentId) as
+    { default_reward_type: "PERCENT" | "FIXED"; default_reward_value: number } | undefined;
+  return { reward_type: agent?.default_reward_type ?? null, reward_value: agent?.default_reward_value ?? null };
+};
+
+/**
+ * `assertAgentReferralsOperationPermitted` is consulted ONLY on the
+ * partner-owned-promo branch: the legacy referral-slug / discount-only
+ * promo / direct paths predate Agent Referrals entirely and must keep
+ * working byte-for-byte regardless of the Agent Referrals feature state
+ * (including while it is still DORMANT) - §B-8 suspension blocks "new
+ * [Agent Referrals] attribution", never legacy attribution.
+ */
+export const resolveOrderAttribution = (
+  db: Database.Database,
+  promo: { id: string; agent_id: string | null } | undefined,
+  occurrenceId: string,
+  legacyReferralAgentId: string | null,
+): OrderAttribution => {
+  if (promo && isPromoPartnerOwned(db, promo.id)) {
+    try {
+      assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "NEW_ATTRIBUTION");
+    } catch (error) {
+      if (error instanceof AgentReferralsSuspensionPolicyError) throw new AgentReferralsAttributionError(error.code, error.status);
+      throw error;
+    }
+    const authorization = currentEngagementPromoAuthorization(db, promo.id, occurrenceId);
+    const engagement = authorization ? getEngagement(db, authorization.engagement_id) : null;
+    const revision = authorization ? engagementRevisionById(db, authorization.engagement_revision_id) : null;
+    // Structurally, a live (unrevoked) authorization should always imply an
+    // ACTIVE engagement (every suspend/close transition revokes it in the
+    // same transaction it changes lifecycle_state) - this re-check is
+    // defense in depth, not the primary mechanism, and is exactly what
+    // catches "authorization superseded between quote and checkout" (the
+    // OLD authorization is gone, a NEW one now exists) as well as
+    // "engagement suspended/closed between quote and checkout" (no live
+    // authorization at all).
+    if (!authorization || !engagement || engagement.lifecycle_state !== "ACTIVE" || !revision) {
+      throw new AgentReferralsAttributionError("AGENT_REFERRALS_ATTRIBUTION_AUTHORITY_UNAVAILABLE", 409, promo.id);
+    }
+    return {
+      reward_authority_kind: "ENGAGEMENT_SCOPED",
+      attributed_agent_id: authorization.partner_id,
+      explicit_promo_id: promo.id,
+      resolved_partner_id: authorization.partner_id,
+      resolved_engagement_id: engagement.id,
+      resolved_engagement_revision_id: revision.id,
+      resolved_promo_authorization_id: authorization.id,
+      reward_type: revision.reward_type,
+      reward_value: revision.reward_value,
+      resolution_reason: "EXPLICIT_PARTNER_PROMO",
+    };
+  }
+
+  // A partner-owned agent must never receive Agent Referrals conversion
+  // through the legacy path (a legacy promo whose agent_id happens to be a
+  // partner, or the legacy fx_ref/activeAgentBySlug() referral-slug marker
+  // resolving to one) - that authority exists ONLY through an explicit
+  // partner promo, resolved above. Rather than silently grant it under
+  // LEGACY authority, this simply drops the would-be agent id: no
+  // attribution occurs via that source at all (never a fallback to a
+  // discount-only reading of it either - a partner promo is never
+  // discount-only).
+  const rawLegacyAgentId = (promo?.agent_id ?? null) ?? legacyReferralAgentId;
+  const legacyAgentId = rawLegacyAgentId && !partnerPromoByPartnerId(db, rawLegacyAgentId) ? rawLegacyAgentId : null;
+  const reward = legacyDefaultReward(db, legacyAgentId);
+  return {
+    reward_authority_kind: "LEGACY",
+    attributed_agent_id: legacyAgentId,
+    explicit_promo_id: promo?.id ?? null,
+    resolved_partner_id: null,
+    resolved_engagement_id: null,
+    resolved_engagement_revision_id: null,
+    resolved_promo_authorization_id: null,
+    reward_type: reward.reward_type,
+    reward_value: reward.reward_value,
+    resolution_reason: promo ? "LEGACY_PROMO" : legacyReferralAgentId ? "LEGACY_REFERRAL_SLUG" : "DIRECT",
+  };
+};

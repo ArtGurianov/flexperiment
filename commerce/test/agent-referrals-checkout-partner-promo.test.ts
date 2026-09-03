@@ -15,7 +15,8 @@ import { mintStepUpGrant } from "../src/agent-referrals-step-up";
 import { acceptFrameworkAndDelegation } from "../src/agent-referrals-framework-acceptance";
 import { createPartnerPromo } from "../src/agent-referrals-promo";
 import { mintEngagementStepUpGrant } from "../src/agent-referrals-engagement-step-up";
-import { offerEngagement, verifyAudienceForPartnerCity, acceptEngagement, activateEngagement, mintEngagementRevision, getEngagement, EngagementError, type EngagementRevisionTerms } from "../src/agent-referrals-engagement";
+import { offerEngagement, verifyAudienceForPartnerCity, acceptEngagement, activateEngagement, mintEngagementRevision, getEngagement, suspendEngagement, EngagementError, type EngagementRevisionTerms } from "../src/agent-referrals-engagement";
+import { suspendAgentReferrals } from "../src/agent-referrals-feature-state";
 
 const open: Database.Database[] = [];
 afterEach(() => { while (open.length) open.pop()!.close(); });
@@ -91,42 +92,51 @@ const reviseAcceptActivate = (db: Database.Database, partner: PartnerPrincipal, 
 const checkoutInput = (quoteId: string, email: string) =>
   ({ quote_id: quoteId, customer_email: email, customer_adult_confirmed: true as const, participant_age_band: "ADULT", offer_accepted: true as const, pd_consent_accepted: true as const });
 
-describe("checkout with a partner-owned promo: pricing and QUOTE_STALE resolve against the engagement revision, never the frozen promo row", () => {
-  it("QUOTE_STALE regression matrix: reward-only change is NOT stale (fails closed on attribution instead), discount change IS stale", () => {
+const orderAuthorityRow = (db: Database.Database, orderId: string) =>
+  db.prepare(`SELECT reward_authority_kind, explicit_promo_id, resolved_partner_id, resolved_engagement_id, resolved_engagement_revision_id, resolved_promo_authorization_id, attribution_rule_version, resolution_reason, attributed_agent_id, reward_type_snapshot, reward_value_snapshot
+    FROM orders WHERE id = ?`).get(orderId) as Record<string, unknown>;
+
+const latestOrder = (db: Database.Database) => (db.prepare("SELECT id FROM orders ORDER BY created_at DESC, rowid DESC LIMIT 1").get() as { id: string }).id;
+
+describe("checkout with a partner-owned promo: real §B-9 attribution now resolves and pins the order authority tuple (the PR5 temporary refusal is gone)", () => {
+  it("QUOTE_STALE regression matrix: reward-only change succeeds and pins the NEW authorization/revision; discount change IS stale", () => {
     const { db, domain } = fresh();
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);
     const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
-    const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, 1000); // R1: 10%
+    const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, 1000); // R1: 10% discount, PERCENT 10% reward
 
-    // A PARTNER promo cannot yet commit an order at all (Phase 6's
-    // attribution/reward authority does not exist in PR5) - but pricing and
-    // staleness detection must both still be correct, proven by the DISTINCT
-    // refusal codes below.
     const quote1 = domain.checkoutContext({ occurrenceId: occ, promoCode: code.code });
     expect(quote1.discount_kopecks).toBe(10_000);
-    try {
-      domain.checkout(checkoutInput(quote1.quote_id, "c1@example.test"), "idem-0000000000000001");
-      throw new Error("expected a refusal");
-    } catch (error) {
-      expect((error as DomainError).code).toBe("AGENT_REFERRALS_ATTRIBUTION_AUTHORITY_UNAVAILABLE");
-    }
+    domain.checkout(checkoutInput(quote1.quote_id, "c1@example.test"), "idem-0000000000000001");
+    const order1Id = latestOrder(db);
+    const auth1 = db.prepare("SELECT id FROM engagement_promo_authorizations WHERE engagement_id = ? AND revoked_at IS NULL").get(engagementId) as { id: string };
+    const rev1 = db.prepare("SELECT id FROM engagement_revisions WHERE engagement_id = ? AND revision = 1").get(engagementId) as { id: string };
+    expect(orderAuthorityRow(db, order1Id)).toMatchObject({
+      reward_authority_kind: "ENGAGEMENT_SCOPED", explicit_promo_id: p1.promo.promo_code_id, resolved_partner_id: p1.agentId,
+      resolved_engagement_id: engagementId, resolved_engagement_revision_id: rev1.id, resolved_promo_authorization_id: auth1.id,
+      attribution_rule_version: 1, resolution_reason: "EXPLICIT_PARTNER_PROMO", attributed_agent_id: p1.agentId,
+      reward_type_snapshot: "PERCENT", reward_value_snapshot: 1000,
+    });
 
     // R1 -> R2: reward formula changes, discount stays 10% - a purely internal
-    // authorization supersession must NOT read as a stale quote. It still
-    // fails closed on attribution (not staleness) - proving the STALE check
-    // ran first and passed.
+    // authorization supersession must NOT read as a stale quote. Checkout
+    // re-resolves fresh: the OLD authorization is gone (superseded), a NEW
+    // one now exists, and the order succeeds, pinning the NEW authorization
+    // and revision - never the one the quote was taken against.
     const quote2 = domain.checkoutContext({ occurrenceId: occ, promoCode: code.code });
-    reviseAcceptActivate(db, p1.partner, engagementId, { ...baseTerms(1000), reward_type: "FIXED", reward_value: 5_000 }, "reward formula change");
-    try {
-      domain.checkout(checkoutInput(quote2.quote_id, "c2@example.test"), "idem-0000000000000002");
-      throw new Error("expected a refusal");
-    } catch (error) {
-      expect((error as DomainError).code).toBe("AGENT_REFERRALS_ATTRIBUTION_AUTHORITY_UNAVAILABLE");
-    }
+    const revision2 = reviseAcceptActivate(db, p1.partner, engagementId, { ...baseTerms(1000), reward_type: "FIXED", reward_value: 5_000 }, "reward formula change");
+    domain.checkout(checkoutInput(quote2.quote_id, "c2@example.test"), "idem-0000000000000002");
+    const order2Id = latestOrder(db);
+    expect(order2Id).not.toBe(order1Id);
+    const auth2 = db.prepare("SELECT id FROM engagement_promo_authorizations WHERE engagement_id = ? AND revoked_at IS NULL").get(engagementId) as { id: string };
+    expect(auth2.id).not.toBe(auth1.id); // the authorization was genuinely superseded
+    expect(orderAuthorityRow(db, order2Id)).toMatchObject({
+      reward_authority_kind: "ENGAGEMENT_SCOPED", resolved_engagement_revision_id: revision2.id, resolved_promo_authorization_id: auth2.id,
+      reward_type_snapshot: "FIXED", reward_value_snapshot: 5_000,
+    });
 
-    // R2 -> R3: discount actually changes to 15% - now it IS stale, and that
-    // check fires BEFORE the attribution refusal.
+    // R2 -> R3: discount actually changes to 15% - now it IS stale.
     const quote3 = domain.checkoutContext({ occurrenceId: occ, promoCode: code.code });
     reviseAcceptActivate(db, p1.partner, engagementId, baseTerms(1500), "discount change");
     expect(() => domain.checkout(checkoutInput(quote3.quote_id, "c3@example.test"), "idem-0000000000000003")).toThrow(DomainError);
@@ -137,7 +147,7 @@ describe("checkout with a partner-owned promo: pricing and QUOTE_STALE resolve a
     }
   });
 
-  it("a promo with no current authorization for the purchased occurrence is refused, not silently downgraded to a discount-only promo", () => {
+  it("a promo with no current authorization for the purchased occurrence is refused at quote time, not silently downgraded to a discount-only promo", () => {
     const { db, domain } = fresh();
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId); // no engagement ever activated for this occurrence
@@ -150,13 +160,13 @@ describe("checkout with a partner-owned promo: pricing and QUOTE_STALE resolve a
     }
   });
 
-  it("multiple occurrences at once: quote-time pricing is independently correct for each occurrence, and neither commits an order (pre-PR6 attribution fail-closed)", () => {
+  it("multiple occurrences at once: each order independently pins its OWN engagement/revision/authorization - never cross-contaminated", () => {
     const { db, domain } = fresh();
     const p1 = readyPartner(db);
     const occA = seedOccurrence(db, p1.cityId);
     const occB = seedOccurrence(db, p1.cityId);
-    offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occA, 1000);
-    offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occB, 2000);
+    const engagementA = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occA, 1000);
+    const engagementB = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occB, 2000);
     const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
 
     const quoteA = domain.checkoutContext({ occurrenceId: occA, promoCode: code.code });
@@ -164,28 +174,172 @@ describe("checkout with a partner-owned promo: pricing and QUOTE_STALE resolve a
     expect(quoteA.discount_kopecks).toBe(10_000);
     expect(quoteB.discount_kopecks).toBe(20_000);
 
-    for (const [quoteId, email] of [[quoteA.quote_id, "a@example.test"], [quoteB.quote_id, "b@example.test"]] as const) {
-      try {
-        domain.checkout(checkoutInput(quoteId, email), `idem-multi-${email}-0000001`);
-        throw new Error("expected a refusal");
-      } catch (error) {
-        expect((error as DomainError).code).toBe("AGENT_REFERRALS_ATTRIBUTION_AUTHORITY_UNAVAILABLE");
-      }
-    }
+    domain.checkout(checkoutInput(quoteA.quote_id, "a@example.test"), "idem-multi-a-0000001");
+    const orderAId = latestOrder(db);
+    domain.checkout(checkoutInput(quoteB.quote_id, "b@example.test"), "idem-multi-b-0000001");
+    const orderBId = latestOrder(db);
+
+    expect(orderAuthorityRow(db, orderAId)).toMatchObject({ resolved_engagement_id: engagementA });
+    expect(orderAuthorityRow(db, orderBId)).toMatchObject({ resolved_engagement_id: engagementB });
   });
 
-  it("the attribution refusal leaves no partial order/booking/payment/reward evidence - true fail-closed, not a partial commit", () => {
+  it("no partial order/booking/payment/reward evidence when the engagement is suspended between quote and checkout - pricing itself already fails closed (PROMO_NO_LONGER_ELIGIBLE) once the authorization is revoked", () => {
+    const { db, domain } = fresh();
+    const p1 = readyPartner(db);
+    const occ = seedOccurrence(db, p1.cityId);
+    const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, 1000);
+    const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
+    const quote = domain.checkoutContext({ occurrenceId: occ, promoCode: code.code });
+
+    suspendEngagement(db, admin, engagementId, "manual pause between quote and checkout"); // revokes the live promo authorization in the same transaction
+
+    expect(() => domain.checkout(checkoutInput(quote.quote_id, "nopartial@example.test"), "idem-nopartial-0000001")).toThrow(/PROMO_NO_LONGER_ELIGIBLE/);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM orders").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM bookings").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM payments").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM referral_rewards").get()).toEqual({ n: 0 });
+  });
+
+  it("defense in depth: even if a live authorization somehow pointed at a non-ACTIVE engagement (an invariant this codebase's suspend/close transitions always maintain - reachable here only by direct SQL, never through any real command), attribution refuses outright rather than trusting the authorization row alone", () => {
+    const { db, domain } = fresh();
+    const p1 = readyPartner(db);
+    const occ = seedOccurrence(db, p1.cityId);
+    const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, 1000);
+    const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
+    const quote = domain.checkoutContext({ occurrenceId: occ, promoCode: code.code });
+
+    // Force the otherwise-unreachable state directly: engagement flipped to
+    // SUSPENDED WITHOUT going through suspendEngagement (so its
+    // authorization stays live/unrevoked) - the exact "authorization
+    // exists, engagement is not ACTIVE" shape §B-9 requires refusing.
+    db.prepare("UPDATE engagements SET lifecycle_state = 'SUSPENDED' WHERE id = ?").run(engagementId);
+
+    expect(() => domain.checkout(checkoutInput(quote.quote_id, "defense-in-depth@example.test"), "idem-defense-0000001")).toThrow(/AGENT_REFERRALS_ATTRIBUTION_AUTHORITY_UNAVAILABLE/);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM orders").get()).toEqual({ n: 0 });
+  });
+
+  it("global Agent Referrals SUSPENDED blocks NEW attribution for a partner promo, even though the underlying engagement is still ACTIVE and its authorization is still live", () => {
     const { db, domain } = fresh();
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);
     offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, 1000);
     const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
     const quote = domain.checkoutContext({ occurrenceId: occ, promoCode: code.code });
-    expect(() => domain.checkout(checkoutInput(quote.quote_id, "nopartial@example.test"), "idem-nopartial-0000001")).toThrow(/AGENT_REFERRALS_ATTRIBUTION_AUTHORITY_UNAVAILABLE/);
+
+    suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "emergency" }); // readyPartner's own activateAgentReferrals already bumped the seeded revision 1 -> 2
+
+    expect(() => domain.checkout(checkoutInput(quote.quote_id, "suspended@example.test"), "idem-global-suspend-0000001")).toThrow(DomainError);
+    try {
+      domain.checkout(checkoutInput(quote.quote_id, "suspended@example.test"), "idem-global-suspend-0000001b");
+    } catch (error) {
+      expect((error as DomainError).code).toBe("AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY");
+    }
     expect(db.prepare("SELECT COUNT(*) AS n FROM orders").get()).toEqual({ n: 0 });
-    expect(db.prepare("SELECT COUNT(*) AS n FROM bookings").get()).toEqual({ n: 0 });
-    expect(db.prepare("SELECT COUNT(*) AS n FROM payments").get()).toEqual({ n: 0 });
-    expect(db.prepare("SELECT COUNT(*) AS n FROM referral_rewards").get()).toEqual({ n: 0 });
+  });
+});
+
+describe("legacy isolation: the legacy fx_ref/discount-only/direct paths are unaffected, and a partner-owned agent can never receive attribution through them", () => {
+  const seedLegacyAgent = (db: Database.Database, slug: string, defaultRewardValue = 500) => {
+    const agentId = randomUUID();
+    db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
+      VALUES (?, ?, 'Legacy', 'Legacy Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-9', 'PERCENT', ?)`).run(agentId, slug, `${slug}@example.test`, defaultRewardValue);
+    return agentId;
+  };
+
+  it("genuine legacy fx_ref referral-slug attribution is unaffected: attributed_agent_id/reward_type/value come from agents.default_reward_*, reward_authority_kind is LEGACY", () => {
+    const { db, domain } = fresh();
+    const occurrenceId = seedOccurrence(db, (() => { const c = randomUUID(); db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, 'City')").run(c, `city-${c.slice(0, 8)}`); return c; })());
+    const legacyAgentId = seedLegacyAgent(db, "legacy-referral", 700);
+    const quote = domain.checkoutContext({ occurrenceId, referralSlug: "legacy-referral" });
+    domain.checkout(checkoutInput(quote.quote_id, "legacy-ref@example.test"), "idem-legacy-ref-0000001");
+    const orderId = latestOrder(db);
+    expect(orderAuthorityRow(db, orderId)).toMatchObject({
+      reward_authority_kind: "LEGACY", attributed_agent_id: legacyAgentId, reward_type_snapshot: "PERCENT", reward_value_snapshot: 700,
+      resolved_partner_id: null, resolved_engagement_id: null, resolution_reason: "LEGACY_REFERRAL_SLUG",
+    });
+  });
+
+  it("legacy promo with an agent attached is unaffected: still LEGACY authority, reward from the agent's own default", () => {
+    const { db, domain } = fresh();
+    const occurrenceId = seedOccurrence(db, (() => { const c = randomUUID(); db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, 'City')").run(c, `city-${c.slice(0, 8)}`); return c; })());
+    const legacyAgentId = seedLegacyAgent(db, "legacy-promo-agent", 800);
+    domain.createPromoCommand({ code: "LEGACYPROMO", agent_id: legacyAgentId, status: "ACTIVE", discount_type: "PERCENT", discount_value: 500 }, "idem-create-legacy-promo", "admin-1");
+    const quote = domain.checkoutContext({ occurrenceId, promoCode: "LEGACYPROMO" });
+    domain.checkout(checkoutInput(quote.quote_id, "legacy-promo@example.test"), "idem-legacy-promo-0000001");
+    const orderId = latestOrder(db);
+    expect(orderAuthorityRow(db, orderId)).toMatchObject({ reward_authority_kind: "LEGACY", attributed_agent_id: legacyAgentId, reward_type_snapshot: "PERCENT", reward_value_snapshot: 800, resolution_reason: "LEGACY_PROMO" });
+  });
+
+  it("legacy discount-only promo (no agent at all) is unaffected: no attribution, discount still applies", () => {
+    const { db, domain } = fresh();
+    const occurrenceId = seedOccurrence(db, (() => { const c = randomUUID(); db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, 'City')").run(c, `city-${c.slice(0, 8)}`); return c; })());
+    domain.createPromoCommand({ code: "DISCOUNTONLY", status: "ACTIVE", discount_type: "PERCENT", discount_value: 500 }, "idem-create-discount-only", "admin-1");
+    const quote = domain.checkoutContext({ occurrenceId, promoCode: "DISCOUNTONLY" });
+    expect(quote.discount_kopecks).toBe(5_000);
+    domain.checkout(checkoutInput(quote.quote_id, "discount-only@example.test"), "idem-discount-only-0000001");
+    const orderId = latestOrder(db);
+    expect(orderAuthorityRow(db, orderId)).toMatchObject({ reward_authority_kind: "LEGACY", attributed_agent_id: null, resolution_reason: "LEGACY_PROMO" });
+  });
+
+  it("direct (no promo, no referral slug) is unaffected: LEGACY/DIRECT, no attribution", () => {
+    const { db, domain } = fresh();
+    const occurrenceId = seedOccurrence(db, (() => { const c = randomUUID(); db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, 'City')").run(c, `city-${c.slice(0, 8)}`); return c; })());
+    const quote = domain.checkoutContext({ occurrenceId });
+    domain.checkout(checkoutInput(quote.quote_id, "direct@example.test"), "idem-direct-0000001");
+    const orderId = latestOrder(db);
+    expect(orderAuthorityRow(db, orderId)).toMatchObject({ reward_authority_kind: "LEGACY", attributed_agent_id: null, resolution_reason: "DIRECT" });
+  });
+
+  it("an invalid explicit legacy promo code keeps its existing fail-closed behavior (PROMO_NOT_FOUND)", () => {
+    const { db, domain } = fresh();
+    const occurrenceId = seedOccurrence(db, (() => { const c = randomUUID(); db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, 'City')").run(c, `city-${c.slice(0, 8)}`); return c; })());
+    expect(() => domain.checkoutContext({ occurrenceId, promoCode: "NOSUCHCODE" })).toThrow(DomainError);
+    try {
+      domain.checkoutContext({ occurrenceId, promoCode: "NOSUCHCODE" });
+    } catch (error) {
+      expect((error as DomainError).code).toBe("PROMO_NOT_FOUND");
+    }
+  });
+
+  it("a partner promo is never treated as discount-only: with no live authorization, checkout resolves nothing (no discount, no attribution) rather than granting the discount alone", () => {
+    const { db, domain } = fresh();
+    const p1 = readyPartner(db);
+    const occ = seedOccurrence(db, p1.cityId); // never engaged
+    const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
+    try {
+      domain.checkoutContext({ occurrenceId: occ, promoCode: code.code });
+      throw new Error("expected a refusal");
+    } catch (error) {
+      expect((error as DomainError).code).toBe("PROMO_NOT_ELIGIBLE"); // never a discount-only success
+    }
+  });
+
+  it("a partner-owned agent's own legacy slug never grants LEGACY attribution to themselves - the slug is matched (resolution_reason still names it) but yields no attributed agent at all, exactly as if it had matched nothing", () => {
+    const { db, domain } = fresh();
+    const p1 = readyPartner(db);
+    const occ = seedOccurrence(db, p1.cityId);
+    // The partner's own underlying `agents` row still has a `slug` (it predates and coexists with Agent Referrals identity) - using it as a legacy referralSlug must never grant attribution through activeAgentBySlug().
+    const partnerSlug = (db.prepare("SELECT slug FROM agents WHERE id = ?").get(p1.agentId) as { slug: string }).slug;
+    const quote = domain.checkoutContext({ occurrenceId: occ, referralSlug: partnerSlug });
+    domain.checkout(checkoutInput(quote.quote_id, "partner-via-slug@example.test"), "idem-partner-slug-0000001");
+    const orderId = latestOrder(db);
+    expect(orderAuthorityRow(db, orderId)).toMatchObject({ reward_authority_kind: "LEGACY", attributed_agent_id: null, resolved_partner_id: null, resolved_engagement_id: null, resolution_reason: "LEGACY_REFERRAL_SLUG" });
+  });
+
+  it("an explicit partner promo always wins as the sole authority and never degrades to legacy referral-slug attribution when it is itself unavailable", () => {
+    const { db, domain } = fresh();
+    const p1 = readyPartner(db);
+    const occ = seedOccurrence(db, p1.cityId); // no engagement - promo is not eligible
+    seedLegacyAgent(db, "some-other-legacy-agent", 600);
+    const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
+    // Even carrying a VALID legacy referralSlug alongside the (currently ineligible) partner promo, the explicit promo governs the refusal outright - no silent fallback to the legacy slug's agent.
+    try {
+      domain.checkoutContext({ occurrenceId: occ, promoCode: code.code, referralSlug: "some-other-legacy-agent" });
+      throw new Error("expected a refusal");
+    } catch (error) {
+      expect((error as DomainError).code).toBe("PROMO_NOT_ELIGIBLE");
+    }
+    expect(db.prepare("SELECT COUNT(*) AS n FROM orders").get()).toEqual({ n: 0 });
   });
 });
 
