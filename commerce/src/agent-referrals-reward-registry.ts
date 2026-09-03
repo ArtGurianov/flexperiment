@@ -19,16 +19,16 @@ import type { AdminPrincipal } from "./agent-referrals-partner-identity";
  * that reads `R.reward_total_kopecks` off the registry row itself, and
  * only to seed `E1`.
  *
- * Positive payout requires a COMPLETED occurrence (§B-6); this module does
- * not enforce that directly - the reward TOTAL computed here is naturally
- * zero for a CANCELLED occurrence, because CANCELLED finalization's own
- * gates below (refund obligations resolved, no open review) can only pass
- * once every attributed order's net captured amount has actually been
- * driven to (or toward) zero by the ordinary refund path - and PR7's own
- * gates additionally block any settlement/act/payment from a CANCELLED
- * registry regardless of what this module computes. No separate
- * "CANCELLED -> force zero" special case exists in the formula itself,
- * which stays the single shared reward-calculation.ts implementation.
+ * Positive payout requires a COMPLETED occurrence (§B-6) - enforced twice
+ * over, not left to chance: the migration's own CHECK
+ * (`terminal_status = 'COMPLETED' OR reward_total_kopecks = 0`) is the
+ * real structural backstop, and finalizeEngagementRewardRegistry below
+ * additionally refuses outright (rather than letting the CHECK surface a
+ * raw SQLite error) if a CANCELLED occurrence's computed total is ever
+ * nonzero. The reward formula itself has no separate "CANCELLED -> force
+ * zero" branch - it stays the single shared reward-calculation.ts
+ * implementation - so a nonzero CANCELLED total is refused, never
+ * silently clamped.
  */
 
 export class RewardRegistryError extends Error {
@@ -124,6 +124,11 @@ export const currentEffectiveRewardSnapshot = (db: Database.Database, engagement
   (db.prepare(`SELECT ${EFFECTIVE_COLUMNS} FROM engagement_effective_reward_snapshots WHERE engagement_id = ? ORDER BY sequence DESC LIMIT 1`)
     .get(engagementId) as EffectiveRewardSnapshotRow | undefined) ?? null;
 
+/** The original INITIAL snapshot (sequence 1) - distinct from currentEffectiveRewardSnapshot, which may have moved on to a later CORRECTION. Finalization's own idempotent replay must return this one, never "whatever is current". */
+const initialEffectiveRewardSnapshot = (db: Database.Database, engagementId: string): EffectiveRewardSnapshotRow | null =>
+  (db.prepare(`SELECT ${EFFECTIVE_COLUMNS} FROM engagement_effective_reward_snapshots WHERE engagement_id = ? AND sequence = 1`)
+    .get(engagementId) as EffectiveRewardSnapshotRow | undefined) ?? null;
+
 export type RewardRegistrySnapshotRow = {
   id: string;
   engagement_id: string;
@@ -146,11 +151,15 @@ export const rewardRegistrySnapshot = (db: Database.Database, engagementId: stri
 
 /**
  * Idempotent: replaying with the same engagement_id after a prior
- * successful finalization returns the existing R/E1 pair rather than
- * minting a second registry or a second INITIAL snapshot - the
- * UNIQUE(engagement_id) on engagement_reward_registry_snapshot is the real
- * structural backstop a raw concurrent duplicate insert still hits, not
- * merely this existence check.
+ * successful finalization returns the ORIGINAL R/E1 pair - not
+ * "whatever E is current now" (a later correction may have superseded
+ * E1; finalization's own replay must still answer for the exact command
+ * it was, not for the engagement's present-day payable authority - use
+ * currentEffectiveRewardSnapshot for that) - rather than minting a second
+ * registry or a second INITIAL snapshot. The UNIQUE(engagement_id) on
+ * engagement_reward_registry_snapshot is the real structural backstop a
+ * raw concurrent duplicate insert still hits, not merely this existence
+ * check.
  */
 export const finalizeEngagementRewardRegistry = (
   db: Database.Database,
@@ -161,8 +170,8 @@ export const finalizeEngagementRewardRegistry = (
   const run = db.transaction((): FinalizeRewardRegistryResult => {
     const existing = rewardRegistrySnapshot(db, engagementId);
     if (existing) {
-      const effective = currentEffectiveRewardSnapshot(db, engagementId)!;
-      return { registry_snapshot_id: existing.id, effective_snapshot_id: effective.id, reward_total_kopecks: effective.reward_total_kopecks, replayed: true };
+      const initial = initialEffectiveRewardSnapshot(db, engagementId)!;
+      return { registry_snapshot_id: existing.id, effective_snapshot_id: initial.id, reward_total_kopecks: existing.reward_total_kopecks, replayed: true };
     }
 
     // MATURATION_RECOVERY_REPORTING_TAIL: permitted while globally
@@ -183,7 +192,18 @@ export const finalizeEngagementRewardRegistry = (
     assertOrdersReconciled(db, orders);
 
     const rewardTotal = computeRewardTotal(orders);
+    // §B-6: a CANCELLED occurrence may finalize, but can never produce
+    // positive payable authority. The migration's own CHECK is the real
+    // structural backstop; this refuses with a clear code before ever
+    // attempting the insert, rather than surfacing a raw CHECK failure.
+    if (occurrence.fulfillment_status === "CANCELLED" && rewardTotal !== 0) {
+      throw new RewardRegistryError("AGENT_REFERRALS_REWARD_REGISTRY_CANCELLED_POSITIVE_REWARD_REFUSED", 409, String(rewardTotal));
+    }
     const hash = stateHash(orders);
+    // The instant every reconciliation gate above was proven true, inside
+    // this same transaction - evidence that finalization happened against
+    // a fully-resolved fact set, not an independent completeness oracle
+    // beyond what assertOrdersReconciled just checked.
     const watermark = new Date().toISOString();
     const orderIds = orders.map((order) => order.id).sort();
 
@@ -207,9 +227,14 @@ export type CorrectRewardResult = { effective_snapshot_id: string; reward_total_
 
 /**
  * Recomputes strictly over R's own pinned source_order_ids_json (never a
- * fresh query that could admit an order R never considered). A decrease
- * or equal total mints a new CORRECTION row; an increase is refused
- * outright - never an automatic top-up (§B-6).
+ * fresh query that could admit an order R never considered), re-running
+ * the identical reconciliation gate finalization itself ran - a
+ * reward-changing fact is only ever authoritative once every included
+ * order's payment/refund/obligation/review state is resolved, exactly as
+ * strict for a correction as for the first finalization. A decrease or
+ * equal total (by actual state, not merely by coincidental total - see
+ * the no-op refusal below) mints a new CORRECTION row; an increase is
+ * refused outright - never an automatic top-up (§B-6).
  */
 export const correctEngagementEffectiveRewardSnapshot = (
   db: Database.Database,
@@ -222,20 +247,55 @@ export const correctEngagementEffectiveRewardSnapshot = (
 
     const registry = rewardRegistrySnapshot(db, engagementId);
     if (!registry) throw new RewardRegistryError("AGENT_REFERRALS_REWARD_REGISTRY_NOT_FINALIZED", 409, engagementId);
+    // A correction must be computed under the exact formula version R was
+    // finalized under - a future formula_version bump (v2) must not
+    // silently re-price an older registry's evidence via whatever
+    // rewardForOrder() happens to compute today.
+    if (registry.formula_version !== REWARD_FORMULA_VERSION) {
+      throw new RewardRegistryError("AGENT_REFERRALS_REWARD_REGISTRY_FORMULA_VERSION_UNSUPPORTED", 409, String(registry.formula_version));
+    }
     const current = currentEffectiveRewardSnapshot(db, engagementId)!;
 
     const sourceOrderIds = JSON.parse(registry.source_order_ids_json) as string[];
     const orders = ordersByIds(db, sourceOrderIds);
+    // Every order R pinned must still resolve - a source order silently
+    // missing (impossible in this schema today, since orders are never
+    // deleted, but defense in depth against ever misreading a shrunk set
+    // as "reward decreased") is refused rather than quietly computed
+    // against a smaller set than R actually considered.
+    if (orders.length !== sourceOrderIds.length) {
+      throw new RewardRegistryError("AGENT_REFERRALS_REWARD_REGISTRY_SOURCE_ORDER_MISSING", 409, `${orders.length}!=${sourceOrderIds.length}`);
+    }
+    assertOrdersReconciled(db, orders);
+
     const newTotal = computeRewardTotal(orders);
     const hash = stateHash(orders);
 
+    // The state hash, not the total, is the real "did anything actually
+    // change" signal: it covers exactly the facts the total is a pure
+    // function of, so an unchanged hash means an unchanged total by
+    // construction, and correction lineage exists to record a NEW
+    // authoritative fact, not to mint an evidentially-empty replay.
+    if (hash === current.source_state_hash) {
+      throw new RewardRegistryError("AGENT_REFERRALS_REWARD_CORRECTION_NO_CHANGE", 409, hash);
+    }
+    // A correction can never itself resurrect §B-6's CANCELLED-positive-
+    // reward refusal: a CANCELLED registry's E1 was already forced to 0
+    // (finalizeEngagementRewardRegistry + the migration's own CHECK), and
+    // "no increase over current" above already forbids any correction
+    // from exceeding 0 once the chain starts there - so no separate check
+    // is needed here, only structurally proven by the invariant above.
     if (newTotal > current.reward_total_kopecks) {
       throw new RewardRegistryError("AGENT_REFERRALS_REWARD_CORRECTION_INCREASE_REVIEW_REQUIRED", 409, `${current.reward_total_kopecks}->${newTotal}`);
     }
 
     const nextSequence = current.sequence + 1;
     const effectiveId = id();
-    const canonicalHash = sha256(canonicalV2({ registry_id: registry.id, kind: "CORRECTION", sequence: nextSequence, reward_total_kopecks: newTotal }));
+    const canonicalHash = sha256(canonicalV2({
+      registry_id: registry.id, kind: "CORRECTION", sequence: nextSequence, reward_total_kopecks: newTotal,
+      source_state_hash: hash, supersedes_effective_snapshot_id: current.id,
+      engagement_id: engagementId, engagement_revision_id: current.engagement_revision_id, reason,
+    }));
     db.prepare(`INSERT INTO engagement_effective_reward_snapshots(id, engagement_id, engagement_revision_id, base_registry_snapshot_id, supersedes_effective_snapshot_id, sequence, kind, reward_total_kopecks, source_state_hash, reason, created_by_admin_id, canonical_hash)
       VALUES (?, ?, ?, ?, ?, ?, 'CORRECTION', ?, ?, ?, ?, ?)`)
       .run(effectiveId, engagementId, current.engagement_revision_id, registry.id, current.id, nextSequence, newTotal, hash, reason, admin.admin_id, canonicalHash);

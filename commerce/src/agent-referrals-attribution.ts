@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
-import { isPromoPartnerOwned, currentEngagementPromoAuthorization, partnerPromoByPartnerId } from "./agent-referrals-promo";
+import { isPromoPartnerOwned, currentEngagementPromoAuthorization } from "./agent-referrals-promo";
 import { getEngagement, engagementRevisionById } from "./agent-referrals-engagement";
+import { getPartnerIdentityByAgentId } from "./agent-referrals-onboarding";
 import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
 import { assertAgentReferralsOperationPermitted, AgentReferralsSuspensionPolicyError } from "./agent-referrals-suspension-policy";
 
@@ -126,8 +127,17 @@ export const resolveOrderAttribution = (
   // attribution occurs via that source at all (never a fallback to a
   // discount-only reading of it either - a partner promo is never
   // discount-only).
+  //
+  // "Partner" is decided by partner_identities.agent_id (PR4's structural
+  // identity, UNIQUE per agent) - never by whether a permanent promo has
+  // been minted yet (holistic review, P0 finding 1). A partner_identity
+  // can legitimately exist before createPartnerPromo ever runs (mid
+  // onboarding, or an admin simply hasn't minted the promo yet), and
+  // during that whole window the agent is already, truly, a partner: the
+  // legacy path must refuse them from day one, not only once their promo
+  // exists.
   const rawLegacyAgentId = (promo?.agent_id ?? null) ?? legacyReferralAgentId;
-  const legacyAgentId = rawLegacyAgentId && !partnerPromoByPartnerId(db, rawLegacyAgentId) ? rawLegacyAgentId : null;
+  const legacyAgentId = rawLegacyAgentId && !getPartnerIdentityByAgentId(db, rawLegacyAgentId) ? rawLegacyAgentId : null;
   const reward = legacyDefaultReward(db, legacyAgentId);
   return {
     reward_authority_kind: "LEGACY",

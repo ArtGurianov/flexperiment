@@ -146,13 +146,21 @@ export const AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS = [
   // trigger is exactly as unsound as a dropped base table, and `orders`
   // itself already appears nowhere in this list (it predates Agent
   // Referrals and is not itself an Agent-Referrals-owned object), so only
-  // the two new triggers it gained are named here, not the table.
+  // the new triggers it gained are named here, not the table. Likewise
+  // `referral_rewards` gains two guards without itself being named (it
+  // predates Agent Referrals too). Every relational-consistency guard
+  // (holistic review, Phase 6) is named alongside its table's existing
+  // guards for the identical reason.
   "orders_authority_tuple_consistency_guard",
   "orders_authority_columns_immutable_guard",
+  "referral_rewards_authority_kind_matches_order_guard",
+  "referral_rewards_authority_kind_immutable_guard",
   "engagement_reward_registry_snapshot",
+  "engagement_reward_registry_snapshot_relational_consistency_guard",
   "engagement_reward_registry_snapshot_immutable_guard",
   "engagement_reward_registry_snapshot_delete_guard",
   "engagement_effective_reward_snapshots",
+  "engagement_effective_reward_snapshots_relational_consistency_guard",
   "engagement_effective_reward_snapshots_immutable_guard",
   "engagement_effective_reward_snapshots_delete_guard",
 ] as const;

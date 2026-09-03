@@ -157,6 +157,31 @@ describe("reward registry: finalization writes R + E1 atomically", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM engagement_effective_reward_snapshots WHERE engagement_id = ?").get(engagementId)).toEqual({ n: 1 });
   });
 
+  it("idempotent replay AFTER a correction still returns the ORIGINAL E1, not the engagement's current (corrected) payable authority", () => {
+    const { db, domain } = fresh();
+    const p1 = readyPartner(db);
+    const occ = seedOccurrence(db, p1.cityId);
+    const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, nearTermTerms(1000));
+    const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
+    const order = purchaseAndPay(db, domain, occ, code.code, "replayaftercorrect@example.test", "idem-replayaftercorrect-0000001");
+    closeAndComplete(db, domain, occ);
+
+    const first = finalizeEngagementRewardRegistry(db, admin, engagementId, "x");
+    db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
+      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+    const correction = correctEngagementEffectiveRewardSnapshot(db, admin, engagementId, "late refund");
+    expect(correction.reward_total_kopecks).toBeLessThan(first.reward_total_kopecks);
+
+    const replay = finalizeEngagementRewardRegistry(db, admin, engagementId, "x");
+    expect(replay.replayed).toBe(true);
+    expect(replay.effective_snapshot_id).toBe(first.effective_snapshot_id); // the ORIGINAL E1, not the correction's E2
+    expect(replay.reward_total_kopecks).toBe(first.reward_total_kopecks); // R's own total, unaffected by the correction
+
+    // The engagement's actual current payable authority is still the correction, unaffected by the replay.
+    expect(currentEffectiveRewardSnapshot(db, engagementId)!.id).toBe(correction.effective_snapshot_id);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM engagement_effective_reward_snapshots WHERE engagement_id = ?").get(engagementId)).toEqual({ n: 2 }); // replay minted nothing new
+  });
+
   it("a raw concurrent duplicate finalization attempt hits the UNIQUE(engagement_id) backstop, not merely SQLite's write serialization", () => {
     const { db, domain } = fresh();
     const p1 = readyPartner(db);
@@ -172,36 +197,31 @@ describe("reward registry: finalization writes R + E1 atomically", () => {
       .run(randomUUID(), engagementId, engagementId, occ)).toThrow(/UNIQUE constraint failed/);
   });
 
-  it("fault at the E insert rolls back the R insert too - the pair is atomic, proven by forcing the second insert to collide", () => {
+  it("fault at the E insert rolls back the R insert too - the pair is atomic, proven with a poison trigger that forces the second insert to fail without corrupting any real data", () => {
     const { db, domain } = fresh();
     const p1 = readyPartner(db);
-
-    // A first, unrelated engagement, finalized normally - purely to obtain a
-    // real, FK-valid engagement_reward_registry_snapshot.id to point the
-    // adversarial row below at.
-    const occA = seedOccurrence(db, p1.cityId);
-    const engagementA = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occA, nearTermTerms(1000));
+    const occ = seedOccurrence(db, p1.cityId);
+    const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, nearTermTerms(1000));
     const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
-    purchaseAndPay(db, domain, occA, code.code, "buyerA@example.test", "idem-fault-a-0000001");
-    closeAndComplete(db, domain, occA);
-    const otherRegistryId = finalizeEngagementRewardRegistry(db, admin, engagementA, "unrelated").registry_snapshot_id;
+    purchaseAndPay(db, domain, occ, code.code, "buyer@example.test", "idem-fault-0000001");
+    closeAndComplete(db, domain, occ);
 
-    // The actual engagement under test.
-    const occB = seedOccurrence(db, p1.cityId);
-    const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occB, nearTermTerms(1000));
-    purchaseAndPay(db, domain, occB, code.code, "buyerB@example.test", "idem-fault-b-0000001");
-    closeAndComplete(db, domain, occB);
-    const revisionId = (db.prepare("SELECT id FROM engagement_revisions WHERE engagement_id = ?").get(engagementId) as { id: string }).id;
-
-    // Pre-occupy sequence=1 for engagementId so finalize's own INITIAL
-    // insert collides on UNIQUE(engagement_id, sequence) AFTER the R insert
-    // has already happened inside the same transaction - proving a fault
-    // between the two inserts leaves NEITHER row behind, not just the second.
-    db.prepare(`INSERT INTO engagement_effective_reward_snapshots(id, engagement_id, engagement_revision_id, base_registry_snapshot_id, sequence, kind, reward_total_kopecks, source_state_hash, reason, created_by_admin_id, canonical_hash)
-      VALUES ('pre-existing-e1', ?, ?, ?, 1, 'INITIAL', 0, 'h', 'x', 'admin', 'ch')`).run(engagementId, revisionId, otherRegistryId);
-
-    expect(() => finalizeEngagementRewardRegistry(db, admin, engagementId, "should roll back")).toThrow();
+    // A poison trigger: unconditionally refuses the second insert
+    // (engagement_effective_reward_snapshots) after the first
+    // (engagement_reward_registry_snapshot) has already succeeded inside
+    // the same transaction - a schema-valid fault-injection mechanism
+    // that corrupts no real data, unlike seeding a cross-engagement
+    // adversarial row (which the new relational-consistency guard now
+    // refuses outright anyway).
+    db.exec(`CREATE TRIGGER test_poison_effective_insert BEFORE INSERT ON engagement_effective_reward_snapshots
+      BEGIN SELECT RAISE(ABORT, 'INJECTED_TEST_FAULT'); END;`);
+    try {
+      expect(() => finalizeEngagementRewardRegistry(db, admin, engagementId, "should roll back")).toThrow(/INJECTED_TEST_FAULT/);
+    } finally {
+      db.exec("DROP TRIGGER test_poison_effective_insert");
+    }
     expect(rewardRegistrySnapshot(db, engagementId)).toBeNull();
+    expect(db.prepare("SELECT COUNT(*) AS n FROM engagement_reward_registry_snapshot").get()).toEqual({ n: 0 });
   });
 });
 
@@ -252,6 +272,25 @@ describe("reward registry: reconciliation gates", () => {
     const result = finalizeEngagementRewardRegistry(db, admin, engagementId, "x");
     expect(result.reward_total_kopecks).toBe(0); // booking CANCELLED contributes 0 regardless of any residual net-captured math
     expect(rewardRegistrySnapshot(db, engagementId)!.terminal_status).toBe("CANCELLED");
+  });
+
+  it("§B-6: a CANCELLED occurrence whose booking is (unrealistically, only reachable by direct SQL) left CONFIRMED with a positive net capture is refused outright, never silently clamped to zero", () => {
+    const { db, domain } = fresh();
+    const p1 = readyPartner(db);
+    const occ = seedOccurrence(db, p1.cityId);
+    const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, nearTermTerms(1000));
+    const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
+    purchaseAndPay(db, domain, occ, code.code, "cancelled-nonzero@example.test", "idem-cancelled-nonzero-0000001");
+
+    // The real cancelOccurrence command always cancels every RESERVED/
+    // CONFIRMED booking in the same transaction it cancels the occurrence
+    // - this deliberately reproduces the state that invariant exists to
+    // prevent, to prove the registry itself also refuses it, not just the
+    // legacy admin command.
+    db.prepare("UPDATE occurrences SET fulfillment_status = 'CANCELLED', sales_status = 'CLOSED', cancelled_at = CURRENT_TIMESTAMP, cancellation_reason = 'test' WHERE id = ?").run(occ);
+
+    expect(() => finalizeEngagementRewardRegistry(db, admin, engagementId, "x")).toThrow(/AGENT_REFERRALS_REWARD_REGISTRY_CANCELLED_POSITIVE_REWARD_REFUSED/);
+    expect(rewardRegistrySnapshot(db, engagementId)).toBeNull();
   });
 });
 
@@ -310,7 +349,7 @@ describe("correction lineage: E2 <= E1 is a valid correction, E2 > E1 is refused
     expect(current).toMatchObject({ kind: "CORRECTION", sequence: 2, reward_total_kopecks: correction.reward_total_kopecks, base_registry_snapshot_id: registryBefore.id });
   });
 
-  it("an equal recomputation (no actual change) is a valid no-op-value correction - E2 <= E1 admits equality", () => {
+  it("a no-op recomputation (nothing actually changed - same source_state_hash) is refused with AGENT_REFERRALS_REWARD_CORRECTION_NO_CHANGE, never minted as an evidentially-empty CORRECTION row", () => {
     const { db, domain } = fresh();
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);
@@ -319,7 +358,8 @@ describe("correction lineage: E2 <= E1 is a valid correction, E2 > E1 is refused
     purchaseAndPay(db, domain, occ, code.code, "correction2@example.test", "idem-correction2-0000001");
     closeAndComplete(db, domain, occ);
     finalizeEngagementRewardRegistry(db, admin, engagementId, "x");
-    expect(() => correctEngagementEffectiveRewardSnapshot(db, admin, engagementId, "nothing changed")).not.toThrow();
+    expect(() => correctEngagementEffectiveRewardSnapshot(db, admin, engagementId, "nothing changed")).toThrow(/AGENT_REFERRALS_REWARD_CORRECTION_NO_CHANGE/);
+    expect(currentEffectiveRewardSnapshot(db, engagementId)!.sequence).toBe(1); // no CORRECTION row minted
   });
 
   it("an increase is refused with REWARD_CORRECTION_INCREASE_REVIEW_REQUIRED - never an automatic top-up", () => {
@@ -342,6 +382,56 @@ describe("correction lineage: E2 <= E1 is a valid correction, E2 > E1 is refused
     const current = currentEffectiveRewardSnapshot(db, engagementId)!;
     expect(current.sequence).toBe(1);
     expect(current.reward_total_kopecks).toBe(initial.reward_total_kopecks); // unchanged - no top-up occurred
+  });
+
+  it("a correction is refused while the pinned orders are back in an unresolved state - the same reconciliation gate finalization itself ran, not skipped for corrections", () => {
+    const { db, domain } = fresh();
+    const p1 = readyPartner(db);
+    const occ = seedOccurrence(db, p1.cityId);
+    const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, nearTermTerms(1000));
+    const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
+    const order = purchaseAndPay(db, domain, occ, code.code, "ambiguous@example.test", "idem-ambiguous-0000001");
+    closeAndComplete(db, domain, occ);
+    finalizeEngagementRewardRegistry(db, admin, engagementId, "x");
+
+    // A late refund submission left ambiguous (SUBMIT_UNKNOWN) - a real
+    // reachable payment-provider outcome elsewhere in this codebase, not a
+    // contrived state.
+    db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash) VALUES (?, ?, ?, ?, 1000, 'late', 'ADMIN_COMPENSATION', 'SUBMIT_UNKNOWN', ?, 'h')")
+      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+    expect(() => correctEngagementEffectiveRewardSnapshot(db, admin, engagementId, "should be refused")).toThrow(/AGENT_REFERRALS_REWARD_REGISTRY_UNRESOLVED_REFUND_STATE/);
+    expect(currentEffectiveRewardSnapshot(db, engagementId)!.sequence).toBe(1); // no correction minted while ambiguous
+
+    db.prepare("DELETE FROM refunds WHERE status = 'SUBMIT_UNKNOWN'").run();
+
+    // A still-open refund obligation similarly refuses.
+    db.prepare("INSERT INTO refund_obligations(id, payment_id, initial_source, target_refunded_amount_kopecks, status) VALUES (?, ?, 'CUSTOMER_CANCELLATION_PARTIAL', 1000, 'OPEN')").run(randomUUID(), order.payment_id);
+    expect(() => correctEngagementEffectiveRewardSnapshot(db, admin, engagementId, "still refused")).toThrow(/AGENT_REFERRALS_REWARD_REGISTRY_REFUND_OBLIGATION_OPEN/);
+    expect(currentEffectiveRewardSnapshot(db, engagementId)!.sequence).toBe(1);
+
+    // Once resolved, a genuine correction (a real, reconciled refund reducing net captured) succeeds.
+    db.prepare("UPDATE refund_obligations SET status = 'FULFILLED', fulfilled_at = CURRENT_TIMESTAMP WHERE payment_id = ?").run(order.payment_id);
+    db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 1000, 'resolved', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
+      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+    const correction = correctEngagementEffectiveRewardSnapshot(db, admin, engagementId, "resolved, now correcting");
+    expect(correction.sequence).toBe(2);
+  });
+
+  it("a correction is refused when the registry's own formula_version is not the one this module currently supports", () => {
+    const { db, domain } = fresh();
+    const p1 = readyPartner(db);
+    const occ = seedOccurrence(db, p1.cityId);
+    const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, nearTermTerms(1000));
+    const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
+    purchaseAndPay(db, domain, occ, code.code, "oldformula@example.test", "idem-oldformula-0000001");
+    closeAndComplete(db, domain, occ);
+    finalizeEngagementRewardRegistry(db, admin, engagementId, "x");
+    // Simulate a hypothetical future formula v2 by mutating R's own pinned
+    // version directly (immutability guard would refuse this in
+    // production; direct SQL is the only way to reach this state in a test).
+    db.exec(`DROP TRIGGER engagement_reward_registry_snapshot_immutable_guard`);
+    db.prepare("UPDATE engagement_reward_registry_snapshot SET formula_version = 2 WHERE engagement_id = ?").run(engagementId);
+    expect(() => correctEngagementEffectiveRewardSnapshot(db, admin, engagementId, "should be refused")).toThrow(/AGENT_REFERRALS_REWARD_REGISTRY_FORMULA_VERSION_UNSUPPORTED/);
   });
 
   it("a raw concurrent duplicate correction attempt hits the UNIQUE(engagement_id, sequence) backstop", () => {

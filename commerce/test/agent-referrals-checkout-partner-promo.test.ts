@@ -246,6 +246,35 @@ describe("legacy isolation: the legacy fx_ref/discount-only/direct paths are una
     return agentId;
   };
 
+  it("a partner_identity that exists but has NO permanent promo yet is already suppressed from legacy attribution - partner ownership is decided by partner_identities.agent_id, never by whether createPartnerPromo has run (holistic review, P0 finding 1)", () => {
+    const { db, domain } = fresh();
+    activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
+    const cityId = randomUUID();
+    db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, 'City')").run(cityId, `city-${cityId.slice(0, 8)}`);
+    const occurrenceId = seedOccurrence(db, cityId);
+
+    const agentId = randomUUID();
+    const slug = `mid-onboarding-${agentId.slice(0, 8)}`;
+    db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
+      VALUES (?, ?, 'Agent', 'Agent Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 900)`).run(agentId, slug, `${slug}@example.test`);
+    // A real partner_identity, admin-provisioned - but onboarding stops
+    // here: no legal profile, no framework acceptance, and critically no
+    // createPartnerPromo call, so partnerPromoByPartnerId(agentId) is null
+    // even though this agent is already, truly, a partner.
+    provisionPartnerOwner(db, admin, agentId, "mid-onboarding@example.test", "test");
+
+    // Via legacy referral slug:
+    const quoteBySlug = domain.checkoutContext({ occurrenceId, referralSlug: slug });
+    domain.checkout(checkoutInput(quoteBySlug.quote_id, "via-slug@example.test"), "idem-mid-onboarding-slug-0000001");
+    expect(orderAuthorityRow(db, latestOrder(db))).toMatchObject({ reward_authority_kind: "LEGACY", attributed_agent_id: null });
+
+    // Via a legacy (non-partner) promo whose agent_id happens to point at the same mid-onboarding partner:
+    domain.createPromoCommand({ code: "MIDONBOARD", agent_id: agentId, status: "ACTIVE", discount_type: "PERCENT", discount_value: 500 }, "idem-mid-onboarding-promo-create", "admin-1");
+    const quoteByPromo = domain.checkoutContext({ occurrenceId, promoCode: "MIDONBOARD" });
+    domain.checkout(checkoutInput(quoteByPromo.quote_id, "via-promo@example.test"), "idem-mid-onboarding-promo-0000001");
+    expect(orderAuthorityRow(db, latestOrder(db))).toMatchObject({ reward_authority_kind: "LEGACY", attributed_agent_id: null });
+  });
+
   it("genuine legacy fx_ref referral-slug attribution is unaffected: attributed_agent_id/reward_type/value come from agents.default_reward_*, reward_authority_kind is LEGACY", () => {
     const { db, domain } = fresh();
     const occurrenceId = seedOccurrence(db, (() => { const c = randomUUID(); db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, 'City')").run(c, `city-${c.slice(0, 8)}`); return c; })());
