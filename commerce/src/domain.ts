@@ -2089,23 +2089,35 @@ export class CommerceDomain {
       .run(id(), order.id, order.attributed_agent_id, expected - accounted, order.booking_status === "CONFIRMED" ? "NET_CAPTURED_CHANGED" : "BOOKING_CANCELLED", semanticKey);
   }
 
+  // F9: every source is partitioned by its own authority discriminator -
+  // referral_rewards.reward_authority_kind (historical NULL reads LEGACY,
+  // per 0046 - never backfilled), reward_adjustments via its order's own
+  // orders.reward_authority_kind (0046, NOT NULL, no join-time COALESCE
+  // needed), and reward_settlements/settlement_recoveries via
+  // reward_settlements.settlement_flow (0047, NOT NULL DEFAULT 'LEGACY').
+  // Before this filter, an Agent Referrals settlement/reward row fed
+  // straight into `allocated`, which fed `blocked` and
+  // `available_to_settle` - so an unpartitioned Agent Referrals settlement
+  // did not merely misreport, it disabled legacy settlement for that
+  // agent/occurrence pair entirely. Every branch below now reads only its
+  // own flow's evidence.
   rewardBalance(agentId: string, occurrenceId: string) {
     const agent = one(this.db, "SELECT * FROM agents WHERE id = ?", agentId);
     if (!agent) throw new DomainError("AGENT_NOT_FOUND", 404);
     const occurrence = one(this.db, "SELECT fulfillment_status FROM occurrences WHERE id = ?", occurrenceId);
     if (!occurrence) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
     const earned = Number(one(this.db, `SELECT COALESCE(SUM(amount_kopecks), 0) AS amount
-      FROM referral_rewards WHERE agent_id = ? AND occurrence_id = ?`, agentId, occurrenceId)?.amount ?? 0)
+      FROM referral_rewards WHERE agent_id = ? AND occurrence_id = ? AND COALESCE(reward_authority_kind, 'LEGACY') = 'LEGACY'`, agentId, occurrenceId)?.amount ?? 0)
       + Number(one(this.db, `SELECT COALESCE(SUM(ra.amount_kopecks), 0) AS amount
         FROM reward_adjustments ra JOIN orders o ON o.id = ra.order_id
-        WHERE ra.agent_id = ? AND o.occurrence_id = ?`, agentId, occurrenceId)?.amount ?? 0);
+        WHERE ra.agent_id = ? AND o.occurrence_id = ? AND o.reward_authority_kind = 'LEGACY'`, agentId, occurrenceId)?.amount ?? 0);
     const mature = occurrence.fulfillment_status === "COMPLETED" ? earned : 0;
     const settlement = one(this.db, `SELECT
       COALESCE(SUM(CASE WHEN status = 'PREPARED' THEN amount_kopecks ELSE 0 END), 0) AS prepared,
       COALESCE(SUM(CASE WHEN status = 'PENDING_DOCUMENT' THEN amount_kopecks ELSE 0 END), 0) AS pending,
       COALESCE(SUM(CASE WHEN status = 'SETTLED' THEN amount_kopecks ELSE 0 END), 0) AS settled
-      FROM reward_settlements WHERE agent_id = ? AND occurrence_id = ?`, agentId, occurrenceId)!;
-    const recovered = Number(one(this.db, `SELECT COALESCE(SUM(sr.amount_recovered_kopecks), 0) AS amount FROM settlement_recoveries sr JOIN reward_settlements rs ON rs.id = sr.settlement_id WHERE rs.agent_id = ? AND rs.occurrence_id = ?`, agentId, occurrenceId)?.amount ?? 0);
+      FROM reward_settlements WHERE agent_id = ? AND occurrence_id = ? AND settlement_flow = 'LEGACY'`, agentId, occurrenceId)!;
+    const recovered = Number(one(this.db, `SELECT COALESCE(SUM(sr.amount_recovered_kopecks), 0) AS amount FROM settlement_recoveries sr JOIN reward_settlements rs ON rs.id = sr.settlement_id WHERE rs.agent_id = ? AND rs.occurrence_id = ? AND rs.settlement_flow = 'LEGACY'`, agentId, occurrenceId)?.amount ?? 0);
     const allocated = Number(settlement.prepared) + Number(settlement.pending) + Number(settlement.settled);
     const unallocatedMatured = Math.max(0, mature - allocated + recovered);
     const blocked = agent.npd_status_checked_at ? 0 : unallocatedMatured;
@@ -2140,7 +2152,14 @@ export class CommerceDomain {
   markSettlementPaymentMade(settlementId: string, confirmationText: string, idempotencyKey: string, reason = "") {
     if (confirmationText !== "I confirm the money was transferred") throw new DomainError("CONFIRMATION_REQUIRED", 422);
     return this.settlementTransition("PAYMENT_MADE", settlementId, { confirmation_text: confirmationText, reason }, idempotencyKey, () => {
-      const changed = this.db.prepare("UPDATE reward_settlements SET status = 'PENDING_DOCUMENT', payment_made_at = ? WHERE id = ? AND status = 'PREPARED'").run(now(), settlementId);
+      // settlement_flow = 'LEGACY' is defense in depth, not a behavior
+      // change: legacy prepareSettlement() only ever mints LEGACY-flow
+      // rows (0047's own NOT NULL DEFAULT), so this filter is a no-op for
+      // every settlement this command could already reach - it exists so
+      // this legacy admin route can never be pointed at an Agent
+      // Referrals-authority settlement, even by a future caller passing an
+      // id it should not have.
+      const changed = this.db.prepare("UPDATE reward_settlements SET status = 'PENDING_DOCUMENT', payment_made_at = ? WHERE id = ? AND status = 'PREPARED' AND settlement_flow = 'LEGACY'").run(now(), settlementId);
       if (!changed.changes) throw new DomainError("SETTLEMENT_TRANSITION_FORBIDDEN", 409);
       return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
     });
@@ -2148,7 +2167,7 @@ export class CommerceDomain {
 
   completeSettlementDocuments(settlementId: string, input: { document_reference: string; npd_status_effective_on?: string }, idempotencyKey: string) {
     return this.settlementTransition("DOCUMENTS_COMPLETE", settlementId, input, idempotencyKey, () => {
-      const changed = this.db.prepare("UPDATE reward_settlements SET status = 'SETTLED', document_confirmed = 1, document_reference = ?, document_confirmed_at = ?, settled_at = ?, npd_status_effective_on = ? WHERE id = ? AND status = 'PENDING_DOCUMENT'").run(input.document_reference, now(), now(), input.npd_status_effective_on ?? null, settlementId);
+      const changed = this.db.prepare("UPDATE reward_settlements SET status = 'SETTLED', document_confirmed = 1, document_reference = ?, document_confirmed_at = ?, settled_at = ?, npd_status_effective_on = ? WHERE id = ? AND status = 'PENDING_DOCUMENT' AND settlement_flow = 'LEGACY'").run(input.document_reference, now(), now(), input.npd_status_effective_on ?? null, settlementId);
       if (!changed.changes) throw new DomainError("SETTLEMENT_TRANSITION_FORBIDDEN", 409);
       return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
     });
@@ -2157,7 +2176,7 @@ export class CommerceDomain {
   cancelSettlementBeforePayment(settlementId: string, input: { confirmation_text: string; reason: string }, idempotencyKey: string) {
     if (input.confirmation_text !== `NOT PAID ${settlementId}`) throw new DomainError("CONFIRMATION_REQUIRED", 422);
     return this.settlementTransition("CANCEL_BEFORE_PAYMENT", settlementId, input, idempotencyKey, () => {
-      const changed = this.db.prepare("UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT', cancelled_before_payment_at = ?, note = ? WHERE id = ? AND status = 'PREPARED'").run(now(), input.reason, settlementId);
+      const changed = this.db.prepare("UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT', cancelled_before_payment_at = ?, note = ? WHERE id = ? AND status = 'PREPARED' AND settlement_flow = 'LEGACY'").run(now(), input.reason, settlementId);
       if (!changed.changes) throw new DomainError("SETTLEMENT_TRANSITION_FORBIDDEN", 409);
       return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
     });
