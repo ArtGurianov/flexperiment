@@ -282,6 +282,30 @@ describe("agent-referrals feature state", () => {
         .run(first.revision + 2)).toThrow(/AGENT_REFERRALS_FEATURE_STATE_EVENT_LINEAGE_INCONSISTENT/);
     });
 
+    it("round-2 P0: a forged event that chains validly onto the real predecessor (correct from_state/to_state/revision lineage) but was never matched by an actual singleton transition is refused - proves the previously demonstrated 'phantom transition' bypass is now impossible", () => {
+      const db = fresh();
+      activateAgentReferrals(db, { expected_revision: 1, owner_id: "op-1", reason: "go live" });   // revision 2, singleton now ACTIVE/2
+      suspendAgentReferrals(db, { expected_revision: 2, owner_id: "op-1", reason: "incident" });     // revision 3, singleton now SUSPENDED/3
+      const suspendEvent = lastAgentReferralsFeatureStateEvent(db) as { revision: number };
+      expect(agentReferralsFeatureState(db)).toEqual({ state: "SUSPENDED", owner_id: "op-1", revision: 3 });
+
+      // A forged revision-4 SUSPENDED->ACTIVE event: legal edge, chains onto
+      // the real revision-3 event's to_state (SUSPENDED) - passes every
+      // chain-internal check - but the singleton itself was never actually
+      // transitioned to revision 4 / ACTIVE.
+      let forgeryThrew = false;
+      try {
+        db.prepare(`INSERT INTO agent_referrals_feature_state_events(id, from_state, to_state, owner_id, reason, revision, created_at) VALUES ('forged', 'SUSPENDED', 'ACTIVE', 'attacker', 'forged', ?, '2026-06-01 00:00:00.000')`)
+          .run(suspendEvent.revision + 1);
+      } catch (e) {
+        forgeryThrew = true;
+        expect((e as Error).message).toMatch(/AGENT_REFERRALS_FEATURE_STATE_EVENT_LINEAGE_INCONSISTENT/);
+      }
+      expect(forgeryThrew).toBe(true);
+      expect(agentReferralsFeatureState(db)).toEqual({ state: "SUSPENDED", owner_id: "op-1", revision: 3 });
+      expect(agentReferralsFeatureStateAt(db, "2026-06-01 00:00:00.000")).not.toBe("ACTIVE");
+    });
+
     it("legitimate application-driven transitions are entirely unaffected by the new guards", () => {
       const db = fresh();
       activateAgentReferrals(db, { expected_revision: 1, owner_id: "op-1", reason: "go live" });

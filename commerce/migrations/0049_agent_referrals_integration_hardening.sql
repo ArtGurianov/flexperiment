@@ -25,9 +25,24 @@
 -- from_state = DORMANT (the one genesis case - DORMANT never gets its own
 -- event row, see agent-referrals-feature-state.ts), or a prior event exists
 -- whose own revision is exactly one less and whose to_state exactly equals
--- this event's from_state. A gap, a duplicate, a rewritten predecessor, or a
--- transition that does not chain onto the row actually before it are all
--- refused.
+-- this event's from_state.
+--
+-- Round-2: chain-internal self-consistency alone is NOT sufficient (proven
+-- exploitable: a forged event whose (from_state, to_state, revision) chains
+-- validly onto the real predecessor - e.g. a fabricated revision-4
+-- SUSPENDED->ACTIVE event immediately after a real revision-3 ACTIVE-
+-- >SUSPENDED event - was still admissible even though the singleton itself
+-- was never actually touched, silently forging a historical ACTIVE window
+-- that never happened). The event must ALSO exactly match the singleton's
+-- own CURRENT revision and resulting state. The application always updates
+-- the singleton via CAS and inserts its event in the same immediate
+-- transaction, using the singleton's own post-CAS revision/state - so this
+-- holds for every legitimate transition, and it closes the gap
+-- structurally: the one moment NEW.revision can equal the singleton's live
+-- revision is the instant that revision's own real transition is being
+-- recorded; UNIQUE(revision) above means that slot can never be filled
+-- twice, so neither a disconnected phantom event nor a backdated replay of
+-- an already-recorded transition can ever be inserted.
 CREATE TRIGGER agent_referrals_feature_state_events_immutable_guard
 BEFORE UPDATE ON agent_referrals_feature_state_events
 BEGIN SELECT RAISE(ABORT, 'AGENT_REFERRALS_FEATURE_STATE_EVENT_IMMUTABLE'); END;
@@ -52,6 +67,10 @@ WHEN NOT (
       SELECT 1 FROM agent_referrals_feature_state_events prev
       WHERE prev.revision = NEW.revision - 1 AND prev.to_state = NEW.from_state
     )
+  )
+  AND EXISTS (
+    SELECT 1 FROM agent_referrals_feature_state s
+    WHERE s.singleton = 1 AND s.revision = NEW.revision AND s.state = NEW.to_state
   )
 )
 BEGIN SELECT RAISE(ABORT, 'AGENT_REFERRALS_FEATURE_STATE_EVENT_LINEAGE_INCONSISTENT'); END;

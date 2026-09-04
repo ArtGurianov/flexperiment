@@ -16,6 +16,7 @@ import { mintEngagementStepUpGrant } from "../src/agent-referrals-engagement-ste
 import { offerEngagement, verifyAudienceForPartnerCity, acceptEngagement, activateEngagement, mintEngagementRevision, type EngagementRevisionTerms } from "../src/agent-referrals-engagement";
 import { suspendAgentReferrals } from "../src/agent-referrals-feature-state";
 import { CreativeError, authorizeCreative, creativeHashOf, currentCreativeAuthorization, currentCreativeRevision, mintCreativeRevision, revokeCreativeAuthorization, type CreativeMaterialFields } from "../src/agent-referrals-creative";
+import { mintRetentionPolicyRevision, destroyPartnerIdentity } from "../src/agent-referrals-identity-retention";
 
 const open: Database.Database[] = [];
 afterEach(() => { while (open.length) open.pop()!.close(); });
@@ -190,6 +191,20 @@ describe("creative authorization: canonical, at most one current, requires an AC
     const creative = mintCreativeRevision(db, admin, engagementId, fields());
     suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "emergency" });
     expect(() => authorizeCreative(db, admin, engagementId, creative.id)).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
+  });
+
+  it("integration-hardening round-2 #5b: refuses once the owning partner identity is destroyed, even though the engagement is already ACTIVE and the creative content already minted (authorizeCreative is itself NEW_PUBLICATION_AUTHORITY, and readiness cannot protect it since authorization must exist BEFORE readiness ever runs)", () => {
+    const db = fresh();
+    const p1 = readyPartner(db);
+    const occ = seedOccurrence(db, p1.cityId);
+    const engagementId = activatedEngagement(db, p1.partner, p1.partnerIdentityId, occ);
+    const creative = mintCreativeRevision(db, admin, engagementId, fields());
+
+    mintRetentionPolicyRevision(db, admin, "test policy");
+    destroyPartnerIdentity(db, admin, p1.partnerIdentityId, "erasure request");
+    expect(getPartnerIdentity(db, p1.partnerIdentityId)!.onboarding_state).toBe("PARTNER_ACTIVE");
+
+    expect(() => authorizeCreative(db, admin, engagementId, creative.id)).toThrow(/AGENT_REFERRALS_CREATIVE_PARTNER_IDENTITY_DESTROYED/);
   });
 
   it("explicit revocation works and refuses a second revocation of the same authorization", () => {

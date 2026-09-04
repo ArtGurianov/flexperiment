@@ -199,7 +199,7 @@ describe("fileOrdDistributionPeriodReport: ordinary CALENDAR_MONTH reporting", (
       expect(isOrdReportingTailComplete(db, distributionId, "2027-06-01T00:00:00.000Z")).toBe(true);
     });
 
-    it("PROVIDER_SPECIAL_PERIOD is unaffected by referenceInstantIso - it still asks only whether every EXISTING filed period is complete (VK's own period shape is not independently derivable)", () => {
+    it("integration-hardening round-2 #4b: PROVIDER_SPECIAL_PERIOD fails closed unconditionally - even a fully filed and submitted period never reports the tail complete, since the true VK-defined obligation set cannot be independently derived", () => {
       const { db, distributionId } = setupWithDistribution("long_video", "2026-09-20T00:00:00.000Z");
       recordAgentReferralsActivationEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY, true);
       const submitted = fileOrdDistributionPeriodReport(db, admin, {
@@ -207,8 +207,15 @@ describe("fileOrdDistributionPeriodReport: ordinary CALENDAR_MONTH reporting", (
         submission: { vk_operation_external_id: "vk-op-1", erir_code: "erir-1", submission_evidence_ref: "ev-submit" },
       });
       expect(submitted.submission_state).toBe("SUBMITTED");
-      expect(isOrdReportingTailComplete(db, distributionId, WITHIN_SEPTEMBER)).toBe(true);
-      expect(isOrdReportingTailComplete(db, distributionId, "2030-01-01T00:00:00.000Z")).toBe(true);
+      expect(isOrdReportingTailComplete(db, distributionId, WITHIN_SEPTEMBER)).toBe(false);
+      expect(isOrdReportingTailComplete(db, distributionId, "2030-01-01T00:00:00.000Z")).toBe(false);
+    });
+
+    it("integration-hardening round-2 P1: an invalid referenceInstantIso throws rather than silently reporting the tail complete", () => {
+      const { db, distributionId } = setupWithDistribution("post", "2026-09-20T00:00:00.000Z");
+      // Nothing has ever been filed for this distribution - the old bug
+      // returned true here regardless.
+      expect(() => isOrdReportingTailComplete(db, distributionId, "not-a-real-instant")).toThrow(/AGENT_REFERRALS_ORD_REPORTING_REFERENCE_INSTANT_INVALID/);
     });
   });
 });
@@ -432,7 +439,7 @@ describe("PROVIDER_SPECIAL_PERIOD fail-closed (L5)", () => {
     })).not.toThrow();
   });
 
-  it("round-4 P0.3: late VK submission + ERIR reconciliation succeeds for a confirmed PROVIDER_SPECIAL_PERIOD ZERO_REWARD_STATISTICS report, reaching a complete reporting tail", async () => {
+  it("round-4 P0.3: late VK submission + ERIR reconciliation succeeds for a confirmed PROVIDER_SPECIAL_PERIOD ZERO_REWARD_STATISTICS report (tail-complete stays false - integration-hardening round-2 #4b)", async () => {
     const { db, domain, occ, engagementId, distributionId } = setupWithDistribution("long_video", "2026-09-20T00:00:00.000Z");
     recordAgentReferralsActivationEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY, true);
     await wait(300);
@@ -453,7 +460,11 @@ describe("PROVIDER_SPECIAL_PERIOD fail-closed (L5)", () => {
     expect(r2.supersedes_report_id).toBe(r1.id);
     expect(r2.statistics_reason).toBe("ZERO_REWARD_STATISTICS");
     expect(r2.submission_state).toBe("SUBMITTED");
-    expect(isOrdReportingTailComplete(db, distributionId, WITHIN_SEPTEMBER)).toBe(true);
+    // Integration-hardening round-2 #4b: PROVIDER_SPECIAL_PERIOD now fails
+    // closed unconditionally - a fully filed, submitted, and reconciled
+    // report is still not proof the FULL VK-defined obligation set is
+    // covered, which this codebase cannot independently derive.
+    expect(isOrdReportingTailComplete(db, distributionId, WITHIN_SEPTEMBER)).toBe(false);
   });
 
   it("round-4 P0.3: late VK submission + ERIR reconciliation succeeds for a confirmed PROVIDER_SPECIAL_PERIOD CONTINUING_STATISTICS report", async () => {
@@ -472,7 +483,8 @@ describe("PROVIDER_SPECIAL_PERIOD fail-closed (L5)", () => {
     const reconciled = recordOrdDistributionPeriodReportReconciliation(db, admin, distributionId, "special-2026-10", "vk-op-2", "erir-2", "ev-reconcile");
     expect(reconciled.statistics_reason).toBe("CONTINUING_STATISTICS");
     expect(reconciled.submission_state).toBe("SUBMITTED");
-    expect(isOrdReportingTailComplete(db, distributionId, WITHIN_SEPTEMBER)).toBe(true);
+    // Integration-hardening round-2 #4b: see the identical note above.
+    expect(isOrdReportingTailComplete(db, distributionId, WITHIN_SEPTEMBER)).toBe(false);
   });
 });
 

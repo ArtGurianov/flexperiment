@@ -108,10 +108,25 @@ const formatKindForDistributionRevision = (revision: DistributionRevisionRow, db
  * different, deterministic answer driven only by its arguments, never by
  * when the check happens to run.
  */
+/**
+ * Round-2: a malformed referenceInstantIso (or, defensively, a malformed
+ * stored published_at/ended_at) must never silently produce an empty
+ * obligation set - proven exploitable: a non-ISO reference instant made
+ * startKey/endKey's split("-").map(Number) parts NaN, the while loop below
+ * never ran, calendarMonthObligationSet returned [], and
+ * [].every(isPeriodComplete) is vacuously true - a distribution with ZERO
+ * reports ever filed reported its tail complete. This function is the
+ * explicit, sole boundary that must fail closed instead.
+ */
+const YEAR_MONTH_KEY = /^\d{4}-(0[1-9]|1[0-2])$/;
+
 const calendarMonthObligationSet = (publishedAt: string, endedAt: string | null, referenceInstantIso: string): string[] => {
   const startKey = calendarMonthKey(publishedAt);
   const horizonIso = endedAt !== null && endedAt < referenceInstantIso ? endedAt : referenceInstantIso;
   const endKey = calendarMonthKey(horizonIso);
+  if (!YEAR_MONTH_KEY.test(startKey) || !YEAR_MONTH_KEY.test(endKey)) {
+    throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_REFERENCE_INSTANT_INVALID", 422, referenceInstantIso);
+  }
   if (endKey < startKey) return [startKey];
   const [startYear, startMonth] = startKey.split("-").map(Number);
   const [endYear, endMonth] = endKey.split("-").map(Number);
@@ -142,10 +157,13 @@ const calendarMonthObligationSet = (publishedAt: string, endedAt: string | null,
  * PROVIDER_SPECIAL_PERIOD has no such independent derivation available: VK
  * defines the exact period-key shape/count for a special-period program,
  * and this codebase never fetches that (no provider network client - see
- * this module's own header). The strongest honest guarantee here remains
- * the prior one - every period actually filed is itself complete, and at
- * least one has been filed - never a fabricated obligation count this code
- * cannot actually know.
+ * this module's own header). Round-2: "we cannot prove the obligation set"
+ * is not license to answer true - the prior weaker guarantee ("every period
+ * actually filed is itself complete") is exactly the same defect shape as
+ * the original CALENDAR_MONTH one (a report that was simply never filed at
+ * all is invisible to it), so this now fails closed unconditionally for
+ * PROVIDER_SPECIAL_PERIOD: never reports the tail complete, since this
+ * codebase structurally cannot know that it is.
  */
 export const isOrdReportingTailComplete = (db: Database.Database, distributionId: string, referenceInstantIso: string): boolean => {
   const distributionRevision = currentDistributionRevision(db, distributionId);
@@ -153,19 +171,14 @@ export const isOrdReportingTailComplete = (db: Database.Database, distributionId
   const formatKind = formatKindForDistributionRevision(distributionRevision, db);
   const reportingBasis = resolveOrdReportingBasis(db, formatKind, distributionRevision.published_at);
 
+  if (reportingBasis !== "CALENDAR_MONTH") return false;
+
   const isPeriodComplete = (periodKey: string): boolean => {
     const current = currentOrdDistributionPeriodReport(db, distributionId, periodKey);
     return !!current && current.review_required === 0 && current.submission_state === "SUBMITTED";
   };
-
-  if (reportingBasis === "CALENDAR_MONTH") {
-    const obligations = calendarMonthObligationSet(distributionRevision.published_at, distributionRevision.ended_at, referenceInstantIso);
-    return obligations.every(isPeriodComplete);
-  }
-
-  const periods = db.prepare("SELECT DISTINCT reporting_period_key FROM ord_distribution_period_reports WHERE distribution_id = ?").all(distributionId) as { reporting_period_key: string }[];
-  if (periods.length === 0) return false;
-  return periods.every((p) => isPeriodComplete(p.reporting_period_key));
+  const obligations = calendarMonthObligationSet(distributionRevision.published_at, distributionRevision.ended_at, referenceInstantIso);
+  return obligations.every(isPeriodComplete);
 };
 
 /** distribution_revision_id, validated to belong to distributionId - used only to re-pin a PREDECESSOR's own revision (P0.4), never to silently re-derive "current". */

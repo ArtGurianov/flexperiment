@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { isPromoPartnerOwned, currentEngagementPromoAuthorization } from "./agent-referrals-promo";
 import { getEngagement, engagementRevisionById } from "./agent-referrals-engagement";
-import { getPartnerIdentityByAgentId } from "./agent-referrals-onboarding";
+import { getPartnerIdentity, getPartnerIdentityByAgentId } from "./agent-referrals-onboarding";
 import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
 import { assertAgentReferralsOperationPermitted, AgentReferralsSuspensionPolicyError } from "./agent-referrals-suspension-policy";
 
@@ -103,6 +103,17 @@ export const resolveOrderAttribution = (
     // authorization at all).
     if (!authorization || !engagement || engagement.lifecycle_state !== "ACTIVE" || !revision) {
       throw new AgentReferralsAttributionError("AGENT_REFERRALS_ATTRIBUTION_AUTHORITY_UNAVAILABLE", 409, promo.id);
+    }
+    // Integration-hardening round-2 #5b: a destroyed identity's engagement
+    // can still legitimately be ACTIVE with a live promo authorization
+    // (destruction never revokes existing commercial authority chains), so
+    // this must independently refuse new checkout attribution rather than
+    // rely on onboarding_state, exactly like offerEngagement/
+    // activateEngagement/authorizeCreative already do for their own new-
+    // authority surfaces.
+    const owningIdentity = getPartnerIdentity(db, engagement.partner_identity_id);
+    if (owningIdentity?.destroyed_at) {
+      throw new AgentReferralsAttributionError("AGENT_REFERRALS_ATTRIBUTION_PARTNER_IDENTITY_DESTROYED", 409, promo.id);
     }
     return {
       reward_authority_kind: "ENGAGEMENT_SCOPED",
