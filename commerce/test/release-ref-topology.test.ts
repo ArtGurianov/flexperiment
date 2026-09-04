@@ -170,11 +170,20 @@ describe("RECONSTRUCTION_BOUND: isApprovedAgentReferralsCandidate binds to the e
   });
 
   const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
-  const gitRun = (args: string[], input?: string): string => {
-    const result = spawnSync("git", args, { input });
+  const gitRun = (args: string[], input?: string, env?: NodeJS.ProcessEnv): string => {
+    const result = spawnSync("git", args, { input, env });
     if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${Buffer.from(result.stderr ?? []).toString("utf8")}`);
     return Buffer.from(result.stdout ?? []).toString("utf8").trim();
   };
+  // Never rely on ambient git identity config: a CI runner has none
+  // configured, unlike a developer machine - commit-tree must carry its own
+  // explicit author/committer identity exactly like
+  // commerce/test/agent-referrals-candidate.test.ts's own fixtureCommitEnv().
+  const fixtureCommitEnv = (): NodeJS.ProcessEnv => ({
+    ...process.env,
+    GIT_AUTHOR_NAME: "Test Fixture", GIT_AUTHOR_EMAIL: "fixture@example.test",
+    GIT_COMMITTER_NAME: "Test Fixture", GIT_COMMITTER_EMAIL: "fixture@example.test",
+  });
   const writeBlob = (content: string): string => gitRun(["hash-object", "-w", "--stdin"], content);
   type FlatEntry = { mode: string; sha: string; path: string };
   const mktree = (entries: FlatEntry[]): string => {
@@ -197,7 +206,7 @@ describe("RECONSTRUCTION_BOUND: isApprovedAgentReferralsCandidate binds to the e
     const args = ["commit-tree", tree];
     if (parent) args.push("-p", parent);
     args.push("-m", message, "--no-gpg-sign");
-    return gitRun(args, undefined);
+    return gitRun(args, undefined, fixtureCommitEnv());
   };
 
   /**
