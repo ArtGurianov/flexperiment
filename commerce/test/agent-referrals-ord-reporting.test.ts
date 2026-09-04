@@ -24,6 +24,14 @@ const distributionFor = (db: Database.Database, engagementId: string, publishedA
   return distribution_id;
 };
 
+// Reference instants for isOrdReportingTailComplete's now-required, explicit
+// referenceInstantIso parameter (integration-hardening #4) - a fixed instant
+// within setupWithDistribution's default September publish month, and one a
+// month later, so a test can deterministically choose whether October is
+// yet owed.
+const WITHIN_SEPTEMBER = "2026-09-25T00:00:00.000Z";
+const WITHIN_OCTOBER = "2026-10-25T00:00:00.000Z";
+
 const setupWithDistribution = (formatKind: "post" | "long_video" = "post", publishedAt = "2026-09-20T00:00:00.000Z") => {
   const { db, domain } = fresh();
   open.push(db);
@@ -103,11 +111,11 @@ describe("fileOrdDistributionPeriodReport: ordinary CALENDAR_MONTH reporting", (
     const { db, distributionId } = setupWithDistribution();
     const unavailable = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev" });
     expect(unavailable.review_required).toBe(1);
-    expect(isOrdReportingTailComplete(db, distributionId)).toBe(false);
+    expect(isOrdReportingTailComplete(db, distributionId, WITHIN_SEPTEMBER)).toBe(false);
     const actual = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev2", correction_reason: "data arrived" });
     expect(actual.review_required).toBe(0);
     // round-3 P0.2: review_required = 0 alone is not tail-complete - VK submission + ERIR reconciliation are still owed.
-    expect(isOrdReportingTailComplete(db, distributionId)).toBe(false);
+    expect(isOrdReportingTailComplete(db, distributionId, WITHIN_SEPTEMBER)).toBe(false);
   });
 
   it("round-3 P0.2: isOrdReportingTailComplete becomes true only once the current report is ACTUALLY submitted (review_required=0 is necessary but not sufficient)", () => {
@@ -117,19 +125,98 @@ describe("fileOrdDistributionPeriodReport: ordinary CALENDAR_MONTH reporting", (
       submission: { vk_operation_external_id: "vk-op-1", erir_code: "erir-1", submission_evidence_ref: "ev-submit" },
     });
     expect(submitted.submission_state).toBe("SUBMITTED");
-    expect(isOrdReportingTailComplete(db, distributionId)).toBe(true);
+    expect(isOrdReportingTailComplete(db, distributionId, WITHIN_SEPTEMBER)).toBe(true);
   });
 
   it("isOrdReportingTailComplete is false when no report has ever been filed", () => {
     const { db, distributionId } = setupWithDistribution();
-    expect(isOrdReportingTailComplete(db, distributionId)).toBe(false);
+    expect(isOrdReportingTailComplete(db, distributionId, WITHIN_SEPTEMBER)).toBe(false);
   });
 
   it("isOrdReportingTailComplete is false while ANY period for the distribution still carries an UNAVAILABLE current report", () => {
     const { db, distributionId } = setupWithDistribution();
     fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev" });
     fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-10", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev2" });
-    expect(isOrdReportingTailComplete(db, distributionId)).toBe(false);
+    expect(isOrdReportingTailComplete(db, distributionId, WITHIN_OCTOBER)).toBe(false);
+  });
+
+  describe("integration-hardening #4: the authoritative CALENDAR_MONTH obligation set, not merely 'every EXISTING report row is complete'", () => {
+    it("proves the previously demonstrated bypass is now impossible: a live September-published distribution with ONLY September filed+submitted, October never touched at all, is false once the reference instant reaches October", () => {
+      const { db, distributionId } = setupWithDistribution("post", "2026-09-20T00:00:00.000Z");
+      const submitted = fileOrdDistributionPeriodReport(db, admin, {
+        distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
+        submission: { vk_operation_external_id: "vk-op-1", erir_code: "erir-1", submission_evidence_ref: "ev-submit" },
+      });
+      expect(submitted.submission_state).toBe("SUBMITTED");
+      expect(ordDistributionPeriodReportsForDistribution(db, distributionId).map((r) => r.reporting_period_key)).toEqual(["2026-09"]);
+
+      // As of September, October is not yet owed - true is correct.
+      expect(isOrdReportingTailComplete(db, distributionId, WITHIN_SEPTEMBER)).toBe(true);
+      // As of October, a live (ended_at IS NULL) distribution now owes an October report it has never filed - the exact counterexample that previously returned true unconditionally.
+      expect(isOrdReportingTailComplete(db, distributionId, WITHIN_OCTOBER)).toBe(false);
+    });
+
+    it("no obligations exist yet: false even before the distribution's own published month has ended", () => {
+      const { db, distributionId } = setupWithDistribution("post", "2026-09-20T00:00:00.000Z");
+      expect(isOrdReportingTailComplete(db, distributionId, "2026-09-21T00:00:00.000Z")).toBe(false);
+    });
+
+    it("multiple owed periods, all complete: true", () => {
+      const { db, distributionId } = setupWithDistribution("post", "2026-09-20T00:00:00.000Z");
+      for (const period of ["2026-09", "2026-10", "2026-11"]) {
+        fileOrdDistributionPeriodReport(db, admin, {
+          distribution_id: distributionId, reporting_period_key: period, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 1 } }, evidence_ref: `ev-${period}`,
+          submission: { vk_operation_external_id: `vk-${period}`, erir_code: `erir-${period}`, submission_evidence_ref: `ev-submit-${period}` },
+        });
+      }
+      expect(isOrdReportingTailComplete(db, distributionId, "2026-11-15T00:00:00.000Z")).toBe(true);
+    });
+
+    it("multiple owed periods, one incomplete (submitted but never reconciled is not the failure here - simply never filed): false", () => {
+      const { db, distributionId } = setupWithDistribution("post", "2026-09-20T00:00:00.000Z");
+      for (const period of ["2026-09", "2026-11"]) {
+        fileOrdDistributionPeriodReport(db, admin, {
+          distribution_id: distributionId, reporting_period_key: period, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 1 } }, evidence_ref: `ev-${period}`,
+          submission: { vk_operation_external_id: `vk-${period}`, erir_code: `erir-${period}`, submission_evidence_ref: `ev-submit-${period}` },
+        });
+      }
+      // October (in between the two filed periods) was skipped entirely.
+      expect(isOrdReportingTailComplete(db, distributionId, "2026-11-15T00:00:00.000Z")).toBe(false);
+    });
+
+    it("a distribution ended in a past month owes nothing past its own ended_at, regardless of how far referenceInstantIso advances", () => {
+      const { db, distributionId } = setupWithDistribution("post", "2026-09-20T00:00:00.000Z");
+      correctDistribution(db, admin, distributionId, {
+        channel_key: "telegram", resource_kind: "channel", resource_identifier: "@example_channel", distribution_resource_url: "https://t.me/example_channel/1",
+        published_at: "2026-09-20T00:00:00.000Z", ended_at: "2026-09-25T00:00:00.000Z", evidence_ref: "ev-distribution-1",
+      }, "distribution concluded");
+      const submitted = fileOrdDistributionPeriodReport(db, admin, {
+        distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
+        submission: { vk_operation_external_id: "vk-op-1", erir_code: "erir-1", submission_evidence_ref: "ev-submit" },
+      });
+      expect(submitted.submission_state).toBe("SUBMITTED");
+      // Far in the future - a live distribution would owe many more months, but this one ended in September.
+      expect(isOrdReportingTailComplete(db, distributionId, "2027-06-01T00:00:00.000Z")).toBe(true);
+    });
+
+    it("integration-hardening round-2 #4b: PROVIDER_SPECIAL_PERIOD fails closed unconditionally - even a fully filed and submitted period never reports the tail complete, since the true VK-defined obligation set cannot be independently derived", () => {
+      const { db, distributionId } = setupWithDistribution("long_video", "2026-09-20T00:00:00.000Z");
+      recordAgentReferralsActivationEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY, true);
+      const submitted = fileOrdDistributionPeriodReport(db, admin, {
+        distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev",
+        submission: { vk_operation_external_id: "vk-op-1", erir_code: "erir-1", submission_evidence_ref: "ev-submit" },
+      });
+      expect(submitted.submission_state).toBe("SUBMITTED");
+      expect(isOrdReportingTailComplete(db, distributionId, WITHIN_SEPTEMBER)).toBe(false);
+      expect(isOrdReportingTailComplete(db, distributionId, "2030-01-01T00:00:00.000Z")).toBe(false);
+    });
+
+    it("integration-hardening round-2 P1: an invalid referenceInstantIso throws rather than silently reporting the tail complete", () => {
+      const { db, distributionId } = setupWithDistribution("post", "2026-09-20T00:00:00.000Z");
+      // Nothing has ever been filed for this distribution - the old bug
+      // returned true here regardless.
+      expect(() => isOrdReportingTailComplete(db, distributionId, "not-a-real-instant")).toThrow(/AGENT_REFERRALS_ORD_REPORTING_REFERENCE_INSTANT_INVALID/);
+    });
   });
 });
 
@@ -352,7 +439,7 @@ describe("PROVIDER_SPECIAL_PERIOD fail-closed (L5)", () => {
     })).not.toThrow();
   });
 
-  it("round-4 P0.3: late VK submission + ERIR reconciliation succeeds for a confirmed PROVIDER_SPECIAL_PERIOD ZERO_REWARD_STATISTICS report, reaching a complete reporting tail", async () => {
+  it("round-4 P0.3: late VK submission + ERIR reconciliation succeeds for a confirmed PROVIDER_SPECIAL_PERIOD ZERO_REWARD_STATISTICS report (tail-complete stays false - integration-hardening round-2 #4b)", async () => {
     const { db, domain, occ, engagementId, distributionId } = setupWithDistribution("long_video", "2026-09-20T00:00:00.000Z");
     recordAgentReferralsActivationEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY, true);
     await wait(300);
@@ -365,7 +452,7 @@ describe("PROVIDER_SPECIAL_PERIOD fail-closed (L5)", () => {
       distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 0 } }, evidence_ref: "ev",
       statistics_reason: "ZERO_REWARD_STATISTICS", special_period_is_service_period: true,
     });
-    expect(isOrdReportingTailComplete(db, distributionId)).toBe(false); // not yet submitted
+    expect(isOrdReportingTailComplete(db, distributionId, WITHIN_SEPTEMBER)).toBe(false); // not yet submitted
 
     // recordOrdDistributionPeriodReportReconciliation supplies NO special_period_is_service_period of its own - it must re-derive it from r1's own already-validated statistics_reason.
     const r2 = recordOrdDistributionPeriodReportReconciliation(db, admin, distributionId, "special-2026-09", "vk-op-1", "erir-1", "ev-reconcile");
@@ -373,7 +460,11 @@ describe("PROVIDER_SPECIAL_PERIOD fail-closed (L5)", () => {
     expect(r2.supersedes_report_id).toBe(r1.id);
     expect(r2.statistics_reason).toBe("ZERO_REWARD_STATISTICS");
     expect(r2.submission_state).toBe("SUBMITTED");
-    expect(isOrdReportingTailComplete(db, distributionId)).toBe(true);
+    // Integration-hardening round-2 #4b: PROVIDER_SPECIAL_PERIOD now fails
+    // closed unconditionally - a fully filed, submitted, and reconciled
+    // report is still not proof the FULL VK-defined obligation set is
+    // covered, which this codebase cannot independently derive.
+    expect(isOrdReportingTailComplete(db, distributionId, WITHIN_SEPTEMBER)).toBe(false);
   });
 
   it("round-4 P0.3: late VK submission + ERIR reconciliation succeeds for a confirmed PROVIDER_SPECIAL_PERIOD CONTINUING_STATISTICS report", async () => {
@@ -392,7 +483,8 @@ describe("PROVIDER_SPECIAL_PERIOD fail-closed (L5)", () => {
     const reconciled = recordOrdDistributionPeriodReportReconciliation(db, admin, distributionId, "special-2026-10", "vk-op-2", "erir-2", "ev-reconcile");
     expect(reconciled.statistics_reason).toBe("CONTINUING_STATISTICS");
     expect(reconciled.submission_state).toBe("SUBMITTED");
-    expect(isOrdReportingTailComplete(db, distributionId)).toBe(true);
+    // Integration-hardening round-2 #4b: see the identical note above.
+    expect(isOrdReportingTailComplete(db, distributionId, WITHIN_SEPTEMBER)).toBe(false);
   });
 });
 

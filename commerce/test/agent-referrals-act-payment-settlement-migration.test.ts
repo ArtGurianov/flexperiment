@@ -458,7 +458,14 @@ describe("0047 act/payment/settlement migration", () => {
     it("a mismatched contractor_type_snapshot (disagreeing with agents.contractor_type) is refused", () => {
       const db = at0046(); migrate(db);
       const f = seedFixture(db, { taxMode: "NPD" }); // agent's real contractor_type is SELF_EMPLOYED
-      expect(() => seedSettlement(db, f, { contractor_type_snapshot: "INDIVIDUAL_ENTREPRENEUR" })).toThrow(/REWARD_SETTLEMENT_AUTHORITY_TUPLE_INCONSISTENT/);
+      // 0049 added an independent guard (reward_settlements_contractor_type_
+      // projection_guard) proving the same field against the pinned legal
+      // profile's own projection - this fabricated row now disagrees with
+      // BOTH agents.contractor_type (0047's own guard) and the legal
+      // profile's projection (0049's), so either may fire first; the
+      // invariant under test is only that the row is refused either way.
+      expect(() => seedSettlement(db, f, { contractor_type_snapshot: "INDIVIDUAL_ENTREPRENEUR" }))
+        .toThrow(/REWARD_SETTLEMENT_AUTHORITY_TUPLE_INCONSISTENT|AGENT_REFERRALS_SETTLEMENT_CONTRACTOR_TYPE_PROJECTION_MISMATCH/);
     });
 
     it("a settlement whose engagement_id belongs to a different partner_identity than the one pinned is refused", () => {

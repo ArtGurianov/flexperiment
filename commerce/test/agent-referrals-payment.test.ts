@@ -14,6 +14,7 @@ import { mintSettlementStepUpGrant } from "../src/agent-referrals-settlement-ste
 import { revokePartnerPayoutDestination } from "../src/agent-referrals-payout-profile";
 import { mintStepUpGrant } from "../src/agent-referrals-step-up";
 import { suspendAgentReferrals } from "../src/agent-referrals-feature-state";
+import { AgentReferralsSuspensionPolicyError } from "../src/agent-referrals-suspension-policy";
 import { CommerceDomain } from "../src/domain";
 import { MockProvider } from "../src/provider";
 import type { PartnerPrincipal, AdminPrincipal } from "../src/agent-referrals-partner-identity";
@@ -448,6 +449,25 @@ describe("global CLOSED / SUSPENDED semantics", () => {
     offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, nearTermTerms(1000, "PERCENT", 5000));
     suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "emergency" });
     expect(() => preparePartnerSettlement(db, admin, "no-such-snapshot")).toThrow();
+  });
+});
+
+describe("integration-hardening #6: recordNpdStatusCheck is routed through the central suspension-policy gate (NPD_STATUS_PROCESSING = MATURATION_RECOVERY_REPORTING_TAIL)", () => {
+  it("DORMANT refuses outright, matching every other operation class in the central matrix", () => {
+    const { db } = fresh(); track(db);
+    expect(() => recordNpdStatusCheck(db, admin, randomUUID(), "ACTIVE", "manual-fns-check")).toThrow(AgentReferralsSuspensionPolicyError);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM npd_status_checks").get()).toEqual({ n: 0 });
+  });
+
+  it("SUSPENDED still permits it - a maturation/recovery/reporting-tail operation for obligations that arose before suspension", () => {
+    const { db, partnerIdentityId } = readyForPayment("NPD");
+    suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "emergency" });
+    expect(() => recordNpdStatusCheck(db, admin, partnerIdentityId, "ACTIVE", "manual-fns-check-2")).not.toThrow();
+  });
+
+  it("ACTIVE permits it (the ordinary case every other test in this file already exercises via activeNpdCheck/readyForPayment)", () => {
+    const { db, partnerIdentityId } = readyForPayment("NPD");
+    expect(() => recordNpdStatusCheck(db, admin, partnerIdentityId, "INACTIVE", "manual-fns-check-3")).not.toThrow();
   });
 });
 

@@ -255,9 +255,21 @@ export const AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS = [
   "ord_paid_invoice_payloads_authority_immutable_guard",
   "ord_paid_invoice_payloads_observed_id_immutable_guard",
   "ord_paid_invoice_payloads_delete_guard",
+  // 0049 integration hardening. No new base table - these are guards added
+  // to tables 0043/0047 already shipped, named here for the identical
+  // reason every other guard in this list is named: a dropped trigger is
+  // exactly as unsound as a dropped table.
+  "agent_referrals_feature_state_events_immutable_guard",
+  "agent_referrals_feature_state_events_delete_guard",
+  "agent_referrals_feature_state_events_revision_unique",
+  "agent_referrals_feature_state_events_lineage_guard",
+  "agent_referrals_activation_manifest_immutable_guard",
+  "agent_referrals_activation_manifest_delete_guard",
+  "agents_contractor_type_projection_guard",
+  "reward_settlements_contractor_type_projection_guard",
 ] as const;
 
-const MIGRATIONS = ["0043_agent_referrals_foundation.sql", "0044_partner_identity.sql", "0045_engagement_publication.sql", "0046_attribution_reward.sql", "0047_act_payment_settlement.sql", "0048_ord_reporting.sql"] as const;
+const MIGRATIONS = ["0043_agent_referrals_foundation.sql", "0044_partner_identity.sql", "0045_engagement_publication.sql", "0046_attribution_reward.sql", "0047_act_payment_settlement.sql", "0048_ord_reporting.sql", "0049_agent_referrals_integration_hardening.sql"] as const;
 
 export class AgentReferralsActivationError extends Error {
   constructor(readonly code: string, readonly status = 409, detail?: string) {

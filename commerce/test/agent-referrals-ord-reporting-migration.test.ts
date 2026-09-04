@@ -77,15 +77,19 @@ describe("0048 ord_reporting migration", () => {
     ]);
   });
 
-  it("ships no 0049+ migration file", () => {
-    const all = readdirSync(MIGRATIONS).filter((n) => n.endsWith(".sql"));
-    expect(all.filter((n) => n > MIGRATION_FILE)).toEqual([]);
-  });
-
-  it("introduces exactly six new tables, no levy/income-recognition/contribution/RKN/UIN table, no generic multi-provider abstraction table", () => {
+  // Integration hardening (0049) landed 0049_agent_referrals_integration_
+  // hardening.sql - see agent-referrals-integration-hardening-migration.
+  // test.ts for that file's own "no 0050+" boundary. This file's own claim
+  // is scoped to exactly what 0048 itself introduces, proven below by
+  // applying 0048's bytes directly rather than through the general
+  // migrate() runner (which would also apply 0049+ from this same 0047
+  // baseline) - the identical technique agent-referrals-act-payment-
+  // settlement-migration.test.ts already used for 0047 vs 0048.
+  it("0048 (applied directly, not through migrate()) introduces exactly six new tables, no levy/income-recognition/contribution/RKN/UIN table, no generic multi-provider abstraction table", () => {
     const db = at0047();
     const before = new Set(tableNames(db));
-    migrate(db);
+    db.exec(readFileSync(join(MIGRATIONS, MIGRATION_FILE), "utf8"));
+    db.prepare("INSERT INTO schema_migrations(version) VALUES (?)").run(MIGRATION_FILE);
     const introduced = tableNames(db).filter((name) => !before.has(name) && name !== "schema_migrations");
     expect(introduced.sort()).toEqual([
       "ord_creative_registrations", "ord_distribution_period_reports", "ord_paid_invoice_payloads", "ord_provider_operations", "ord_provider_profile_revisions", "ord_reporting_period_policy",
@@ -116,11 +120,16 @@ describe("0048 ord_reporting migration", () => {
       "ord_paid_invoice_payloads_authority_immutable_guard", "ord_paid_invoice_payloads_observed_id_immutable_guard", "ord_paid_invoice_payloads_delete_guard",
     ];
 
-    it("AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS includes every PR8 object, exhaustively, as the list's exact suffix", () => {
+    it("AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS includes every PR8 object, exhaustively, as a prefix slice", () => {
       for (const object of pr8Objects) expect(AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS, object).toContain(object);
-      const pr3through7Objects = AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS.length - pr8Objects.length;
-      const suffix = [...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS].slice(pr3through7Objects);
-      expect(suffix).toEqual(pr8Objects);
+      // 0049 (integration hardening) appends its own objects after PR8's -
+      // see agent-referrals-integration-hardening-migration.test.ts for that
+      // suffix's own exhaustiveness proof, the identical technique PR6/PR7
+      // established. Scoped to a prefix slice precisely so 0049 landing does
+      // not need to touch this assertion at all.
+      const pr3through7Objects = 104 + 46; // 104 (PR3-6, proven exhaustive by its own migration test) + 46 (PR7, proven exhaustive by agent-referrals-act-payment-settlement-migration.test.ts).
+      const prefix = [...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS].slice(0, pr3through7Objects + pr8Objects.length);
+      expect(prefix).toEqual([...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS.slice(0, pr3through7Objects), ...pr8Objects]);
     });
 
     it("passes on a DB migrated through 0048", () => {

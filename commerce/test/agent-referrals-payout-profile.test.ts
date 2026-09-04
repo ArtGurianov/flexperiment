@@ -79,13 +79,14 @@ describe("payout-profile revisions", () => {
       expect(agentReferralsActivationEvidence(db, "payout_profile_encryption_key_id")).toBe(first.key_id);
     });
 
-    it("fails closed if a different key id is already pinned in the manifest (PR3's insert-only semantics, not weakened)", () => {
+    it("fails closed if a different key id is already pinned in the manifest (PR3's insert-only semantics, not weakened; 0049 makes the manifest structurally insert-only too, so this now pins the differing fact via INSERT rather than an UPDATE the table no longer accepts)", () => {
       const db = fresh();
-      encryptPayoutDestination(db, "card-a"); // pins the real configured key id
-      // Simulate a manifest that already carries a DIFFERENT key id, as if
-      // rotated out from under this deployment.
-      db.prepare("UPDATE agent_referrals_activation_manifest SET value_json = ? WHERE key = 'payout_profile_encryption_key_id'").run(JSON.stringify("some-other-key-id"));
-      expect(() => encryptPayoutDestination(db, "card-b")).toThrow(/AGENT_REFERRALS_ACTIVATION_EVIDENCE_CONFLICT/);
+      // Simulate a manifest that already carries a DIFFERENT key id than the
+      // one currently configured, as if rotated out from under this
+      // deployment - planted before any real evidence is ever pinned, since
+      // the table accepts no UPDATE at all once a row exists.
+      db.prepare("INSERT INTO agent_referrals_activation_manifest(key, value_json) VALUES ('payout_profile_encryption_key_id', ?)").run(JSON.stringify("some-other-key-id"));
+      expect(() => encryptPayoutDestination(db, "card-a")).toThrow(/AGENT_REFERRALS_ACTIVATION_EVIDENCE_CONFLICT/);
     });
 
     it("decrypt refuses a mismatched key id", () => {

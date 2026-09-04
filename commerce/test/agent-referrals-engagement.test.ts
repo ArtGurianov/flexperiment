@@ -13,6 +13,7 @@ import { mintStepUpGrant } from "../src/agent-referrals-step-up";
 import { acceptFrameworkAndDelegation } from "../src/agent-referrals-framework-acceptance";
 import { createPartnerPromo } from "../src/agent-referrals-promo";
 import { mintEngagementStepUpGrant, EngagementStepUpError } from "../src/agent-referrals-engagement-step-up";
+import { mintRetentionPolicyRevision, destroyPartnerIdentity } from "../src/agent-referrals-identity-retention";
 import * as engagementModule from "../src/agent-referrals-engagement";
 import {
   EngagementError,
@@ -441,6 +442,44 @@ describe("re-verification cascade (Phase 5 holistic review, P0 finding 2): a rep
     verifyAudienceForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "2030-06-01T00:00:00.000Z", "narrower - Novosibirsk only", "ev-narrow");
     expect(getEngagement(db, engNovosibirsk.engagementId)).toMatchObject({ lifecycle_state: "SUSPENDED" });
     expect(getEngagement(db, engTomsk.engagementId)).toMatchObject({ lifecycle_state: "ACTIVE" });
+  });
+});
+
+describe("integration-hardening #5: a destroyed identity cannot receive NEW commercial authority, even though onboarding_state still reads PARTNER_ACTIVE", () => {
+  it("proves the previously demonstrated gap: PARTNER_ACTIVE + destroyed_at != NULL refuses offerEngagement", () => {
+    const db = fresh();
+    const p1 = readyPartner(db);
+    const occurrenceId = seedOccurrence(db, p1.cityId);
+    mintRetentionPolicyRevision(db, admin, "test policy");
+    destroyPartnerIdentity(db, admin, p1.partnerIdentityId, "erasure request");
+
+    const identity = getPartnerIdentity(db, p1.partnerIdentityId)!;
+    expect(identity.onboarding_state).toBe("PARTNER_ACTIVE");
+    expect(identity.destroyed_at).not.toBeNull();
+
+    expect(() => offerEngagement(db, admin, p1.partnerIdentityId, occurrenceId, terms1, "offer after destruction"))
+      .toThrow(/AGENT_REFERRALS_PARTNER_IDENTITY_DESTROYED/);
+  });
+
+  it("refuses activateEngagement for an already-accepted engagement once its partner identity is destroyed mid-flight", () => {
+    const db = fresh();
+    const p1 = readyPartner(db);
+    const occurrenceId = seedOccurrence(db, p1.cityId);
+    const { engagement_id: engagementId, engagement_revision_id: revisionId } = offerEngagement(db, admin, p1.partnerIdentityId, occurrenceId, terms1, "offer");
+    const grant = mintEngagementStepUpGrant(db, p1.partner, "ENGAGEMENT_ACCEPTANCE", { engagement_id: engagementId, engagement_revision_id: revisionId }).grant_id;
+    acceptEngagement(db, p1.partner, engagementId, revisionId, grant);
+
+    mintRetentionPolicyRevision(db, admin, "test policy");
+    destroyPartnerIdentity(db, admin, p1.partnerIdentityId, "erasure request");
+
+    expect(() => activateEngagement(db, admin, engagementId, revisionId)).toThrow(/AGENT_REFERRALS_PARTNER_IDENTITY_DESTROYED/);
+  });
+
+  it("does not disturb a normal, non-destroyed partner's ability to offer and activate an engagement", () => {
+    const db = fresh();
+    const p1 = readyPartner(db);
+    const occurrenceId = seedOccurrence(db, p1.cityId);
+    expect(() => offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occurrenceId)).not.toThrow();
   });
 });
 

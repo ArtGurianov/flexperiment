@@ -163,6 +163,13 @@ export const offerEngagement = (
     const partner = getPartnerIdentity(db, partnerIdentityId);
     if (!partner) throw new EngagementError("PARTNER_IDENTITY_NOT_FOUND", 404, partnerIdentityId);
     if (partner.onboarding_state !== "PARTNER_ACTIVE") throw new EngagementError("AGENT_REFERRALS_PARTNER_NOT_ACTIVE", 409, partner.onboarding_state);
+    // Integration-hardening #5: destroyPartnerIdentityPersonalData() scrubs
+    // PII and sets destroyed_at without transitioning onboarding_state away
+    // from PARTNER_ACTIVE (existing settlement/reporting/removal tails must
+    // keep resolving that identity) - so onboarding_state alone is no
+    // longer sufficient proof this identity may receive NEW commercial
+    // authority. destroyed_at is the terminal signal for that.
+    if (partner.destroyed_at !== null) throw new EngagementError("AGENT_REFERRALS_PARTNER_IDENTITY_DESTROYED", 409, partnerIdentityId);
 
     const occurrence = occurrenceFacts(db, occurrenceId);
     if (!occurrence) throw new EngagementError("OCCURRENCE_NOT_FOUND", 404, occurrenceId);
@@ -261,6 +268,13 @@ export const activateEngagement = (db: Database.Database, admin: AdminPrincipal,
 
     const partner = getPartnerIdentity(db, engagement.partner_identity_id)!;
     if (partner.onboarding_state !== "PARTNER_ACTIVE") throw new EngagementError("AGENT_REFERRALS_PARTNER_NOT_ACTIVE", 409, partner.onboarding_state);
+    // Integration-hardening #5: destroyPartnerIdentityPersonalData() scrubs
+    // PII and sets destroyed_at without transitioning onboarding_state away
+    // from PARTNER_ACTIVE (existing settlement/reporting/removal tails must
+    // keep resolving that identity) - so onboarding_state alone is no
+    // longer sufficient proof this identity may receive NEW commercial
+    // authority. destroyed_at is the terminal signal for that.
+    if (partner.destroyed_at !== null) throw new EngagementError("AGENT_REFERRALS_PARTNER_IDENTITY_DESTROYED", 409, partner.id);
     if (!partner.legal_profile_revision_id) throw new EngagementError("AGENT_REFERRALS_ACTIVATION_LEGAL_PROFILE_MISSING", 409);
 
     const revision = engagementRevisionById(db, engagementRevisionId);

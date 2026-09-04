@@ -61,6 +61,11 @@ export const assessCreativeReadyToPublish = (db: Database.Database, engagementId
 
   const partner = getPartnerIdentity(db, engagement.partner_identity_id)!;
   if (partner.onboarding_state !== "PARTNER_ACTIVE") throw new CreativeReadinessError("AGENT_REFERRALS_READINESS_PARTNER_NOT_ACTIVE", 409, partner.onboarding_state);
+  // Integration-hardening #5: see agent-referrals-engagement.ts's identical
+  // guard - a destroyed identity's onboarding_state can still read
+  // PARTNER_ACTIVE, so publication readiness must reject destroyed_at
+  // independently rather than trusting onboarding_state alone.
+  if (partner.destroyed_at !== null) throw new CreativeReadinessError("AGENT_REFERRALS_READINESS_PARTNER_IDENTITY_DESTROYED", 409, partner.id);
   if (engagement.lifecycle_state !== "ACTIVE") throw new CreativeReadinessError("AGENT_REFERRALS_READINESS_ENGAGEMENT_NOT_ACTIVE", 409, engagement.lifecycle_state);
   if (!isDelegationEffective(db, engagement.partner_identity_id)) throw new CreativeReadinessError("AGENT_REFERRALS_READINESS_DELEGATION_NOT_EFFECTIVE", 409);
 

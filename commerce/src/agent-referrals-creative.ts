@@ -120,6 +120,17 @@ export const authorizeCreative = (db: Database.Database, admin: AdminPrincipal, 
   const run = db.transaction((): CreativeAuthorizationRow => {
     assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "NEW_PUBLICATION_AUTHORITY");
 
+    // Integration-hardening round-2 #5b: authorizeCreative is itself
+    // NEW_PUBLICATION_AUTHORITY and does not go through offerEngagement/
+    // activateEngagement's own destroyed_at check (an engagement can
+    // already be ACTIVE, with a live promo authorization, before its owning
+    // identity is later destroyed) - so this must independently refuse a
+    // destroyed identity rather than rely on readiness (assessCreative
+    // ReadyToPublish), which only runs AFTER authorization already exists.
+    const owningIdentity = db.prepare(`SELECT pi.destroyed_at AS destroyed_at FROM engagements e JOIN partner_identities pi ON pi.id = e.partner_identity_id WHERE e.id = ?`)
+      .get(engagementId) as { destroyed_at: string | null } | undefined;
+    if (owningIdentity?.destroyed_at) throw new CreativeError("AGENT_REFERRALS_CREATIVE_PARTNER_IDENTITY_DESTROYED", 409, engagementId);
+
     const promoAuthorization = currentEngagementPromoAuthorizationForEngagement(db, engagementId);
     if (!promoAuthorization) throw new CreativeError("AGENT_REFERRALS_CREATIVE_AUTHORIZATION_REQUIRES_ACTIVE_ENGAGEMENT", 409, engagementId);
 
