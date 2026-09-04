@@ -1,0 +1,55 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { PageTitle } from "../ui/PageTitle";
+import { Overview } from "./Overview";
+import { Partners } from "./Partners";
+import { Engagements } from "./Engagements";
+import { ChannelPolicy } from "./ChannelPolicy";
+
+type Tab = "overview" | "partners" | "engagements" | "channel-policy";
+const TABS: { id: Tab; label: string }[] = [
+  { id: "overview", label: "Обзор" },
+  { id: "partners", label: "Партнёры" },
+  { id: "engagements", label: "Кампании" },
+  { id: "channel-policy", label: "Политика каналов" },
+];
+
+/**
+ * Agent Referrals operator console (Phase 9 round-2 fix, finding #3): a
+ * compact surface inside the existing admin app - never a separate
+ * interface - covering the independent blocker axes (partner onboarding
+ * progression, engagement lifecycle), distribution facts intake/correction,
+ * removal verification, and correction/recovery review the original Phase 9
+ * plan requires an operator console for. Query-param driven (?tab=...&id=...)
+ * exactly like the rest of this app's list/detail panels, since this is a
+ * fully static export (no dynamic [id] routes).
+ */
+export function AgentReferrals() {
+  const [tab, setTab] = useState<Tab>(() => (typeof window === "undefined" ? "overview" : (new URLSearchParams(window.location.search).get("tab") as Tab) || "overview"));
+  const [selectedId, setSelectedId] = useState<string | null>(() => (typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("id")));
+
+  useEffect(() => {
+    const search = new URLSearchParams();
+    search.set("tab", tab);
+    if (selectedId) search.set("id", selectedId);
+    window.history.replaceState(null, "", `/agent-referrals?${search.toString()}`);
+  }, [tab, selectedId]);
+
+  const changeTab = (next: Tab) => { setTab(next); setSelectedId(null); };
+
+  return (
+    <>
+      <PageTitle eyebrow="AGENT REFERRALS" title="Операторская консоль" text="Онбординг партнёров, кампании, размещения, вознаграждения и очередь проверки." />
+      <nav className="tabs">
+        {TABS.map((item) => (
+          <button key={item.id} className={item.id === tab ? "nav-active" : ""} onClick={() => changeTab(item.id)}>{item.label}</button>
+        ))}
+      </nav>
+      {tab === "overview" && <Overview />}
+      {tab === "partners" && <Partners selected={selectedId} onSelect={setSelectedId} />}
+      {tab === "engagements" && <Engagements selected={selectedId} onSelect={setSelectedId} />}
+      {tab === "channel-policy" && <ChannelPolicy />}
+    </>
+  );
+}

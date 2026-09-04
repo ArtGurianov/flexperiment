@@ -5,6 +5,7 @@ import { MockProvider } from "../src/provider";
 import { generateOpaqueToken, hashOpaqueToken } from "../src/agent-referrals-partner-auth";
 import { provisionPartnerOwner } from "../src/agent-referrals-partner-identity";
 import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { mintCreativeRevision, authorizeCreative } from "../src/agent-referrals-creative";
 import type { OtpSender } from "../src/agent-referrals-otp";
 import {
   fresh, admin, readyPartner, seedOccurrence, nearTermTerms, offerAcceptActivate, purchaseAndPay, finalizedSettlement, acceptedAct,
@@ -145,6 +146,10 @@ describe("/v1/partner/*: horizontal isolation and §B-11 projection allowlist", 
     purchaseAndPay(db, domain, occ1, code1.code, "customer-one@example.test", `idem-${randomUUID()}`);
     const settlement1 = finalizedSettlement(db, domain, occ1, engagementId1);
     acceptedAct(db, p1.partner, settlement1);
+    const creative1 = mintCreativeRevision(db, admin, engagementId1, {
+      format_kind: "post", media_ref: "media-ref-1", copy_text: "copy", cta_text: "cta", mandatory_labeling_text: "Реклама. ART", creative_target_url: "https://flexperiment.ru/city?promo=ART",
+    });
+    authorizeCreative(db, admin, engagementId1, creative1.id);
 
     const p2 = readyPartner(db, "OTHER");
     const occ2 = seedOccurrence(db, p2.cityId, 100_000);
@@ -257,5 +262,33 @@ describe("/v1/partner/*: horizontal isolation and §B-11 projection allowlist", 
     const body = await response.json() as { engagement: { id: string }; act: { presented_at: string | null } | null };
     expect(body.engagement.id).toBe(engagementId1);
     expect(body.act?.presented_at).toBeTruthy();
+  });
+
+  it("§B-11: every nested object in the engagement detail response is an explicit minimal DTO - no internal id (step_up_grant_id, supersedes_*_id, created_by_admin_id, promo_authorization_id, ...) leaks through, even though none of them is customer PII", async () => {
+    const { db, domain, app } = appFixture();
+    const { p1, engagementId1 } = twoPartnersWithEngagements(db, domain);
+    const cookieA = httpSessionCookie(db, p1.partnerIdentityId);
+    const response = await app.request(`http://partner.flexperiment.ru/v1/partner/engagements/${engagementId1}`, { headers: { Origin: PARTNER_ORIGIN, Cookie: cookieA } });
+    expect(response.status).toBe(200);
+    const body = await response.json() as Record<string, unknown>;
+
+    expect(Object.keys(body.latest_revision as object).sort()).toEqual(
+      ["created_at", "customer_discount_type", "customer_discount_value", "id", "publication_end_at", "publication_start_at", "reward_type", "reward_value", "revision", "terms"].sort(),
+    );
+    expect(Object.keys(body.creative as object).sort()).toEqual(
+      ["copy_text", "cta_text", "created_at", "creative_target_url", "format_kind", "id", "mandatory_labeling_text", "media_ref", "revision"].sort(),
+    );
+    expect(Object.keys(body.creative_authorization as object).sort()).toEqual(["effective_at", "revoked_at", "revoked_reason"].sort());
+    expect(Object.keys(body.act as object).sort()).toEqual(["amount_kopecks", "engagement_revision_id", "id", "presented_at"].sort());
+    expect(Object.keys(body.act_acceptance as object).sort()).toEqual(["accepted_amount_kopecks", "accepted_engagement_revision_id", "created_at"].sort());
+
+    const raw = JSON.stringify(body);
+    // step_up_grant_id, promo_authorization_id, created_by_admin_id and every
+    // *_hash column are internal FK/authorship/integrity plumbing - never
+    // partner-facing, even inside a nested object that also carries
+    // legitimate partner-visible fields.
+    for (const forbiddenKey of ["step_up_grant_id", "promo_authorization_id", "created_by_admin_id", "creative_hash", "content_hash", "canonical_hash", "supersedes_revision_id", "supersedes_creative_revision_id", "supersedes_authorization_id", "occurrence_material_revision"]) {
+      expect(raw).not.toContain(forbiddenKey);
+    }
   });
 });

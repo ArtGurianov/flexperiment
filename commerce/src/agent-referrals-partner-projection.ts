@@ -147,7 +147,67 @@ export const partnerEngagementSummaries = (db: Database.Database, partnerIdentit
     occurrence: occurrenceSummary(db, engagement.occurrence_id),
   }));
 
-/** §B-11: "own creative revisions and ERID information" + "own engagements" detail + "own publication and reporting obligations" + "own acts, payment status, dispute status". One ownership-checked read for an entire engagement's portal page. */
+type PartnerRevisionDto = {
+  id: string; revision: number; reward_type: string; reward_value: number;
+  customer_discount_type: string; customer_discount_value: number;
+  publication_start_at: string; publication_end_at: string; terms: unknown; created_at: string;
+};
+
+/** Explicit allowlist over EngagementRevisionRow - drops engagement_id, occurrence_material_revision, content_hash, supersedes_revision_id, created_by_admin_id and the admin's own free-text `reason` (internal plumbing/authorship, not partner-facing per §B-11). */
+const partnerRevisionDto = (revision: ReturnType<typeof currentEngagementRevision>): PartnerRevisionDto | null =>
+  revision ? {
+    id: revision.id, revision: revision.revision, reward_type: revision.reward_type, reward_value: revision.reward_value,
+    customer_discount_type: revision.customer_discount_type, customer_discount_value: revision.customer_discount_value,
+    publication_start_at: revision.publication_start_at, publication_end_at: revision.publication_end_at,
+    terms: JSON.parse(revision.terms_json) as unknown, created_at: revision.created_at,
+  } : null;
+
+type PartnerCreativeDto = {
+  id: string; revision: number; format_kind: string; media_ref: string | null; copy_text: string | null;
+  cta_text: string | null; mandatory_labeling_text: string; creative_target_url: string; created_at: string;
+};
+
+/** Explicit allowlist over CreativeRevisionRow - drops engagement_id, partner_id, promo_code_id, creative_hash, supersedes_creative_revision_id, created_by_admin_id. */
+const partnerCreativeDto = (creative: ReturnType<typeof currentCreativeRevision>): PartnerCreativeDto | null =>
+  creative ? {
+    id: creative.id, revision: creative.revision, format_kind: creative.format_kind, media_ref: creative.media_ref,
+    copy_text: creative.copy_text, cta_text: creative.cta_text, mandatory_labeling_text: creative.mandatory_labeling_text,
+    creative_target_url: creative.creative_target_url, created_at: creative.created_at,
+  } : null;
+
+type PartnerCreativeAuthorizationDto = { effective_at: string; revoked_at: string | null; revoked_reason: string | null };
+
+/** Explicit allowlist over CreativeAuthorizationRow - drops id, engagement_id, engagement_revision_id, promo_authorization_id, creative_revision_id, supersedes_authorization_id (internal FK chain the partner has no use for - `creative` above already names the current content). */
+const partnerCreativeAuthorizationDto = (authorization: ReturnType<typeof currentCreativeAuthorization>): PartnerCreativeAuthorizationDto | null =>
+  authorization ? { effective_at: authorization.effective_at, revoked_at: authorization.revoked_at, revoked_reason: authorization.revoked_reason } : null;
+
+type PartnerDistributionRevisionDto = {
+  revision: number; channel_key: string; channel_policy_status: string; resource_kind: string; resource_identifier: string;
+  distribution_resource_url: string; published_at: string; ended_at: string | null; reported_by: string;
+  correction_reason: string | null; evidence_ref: string; created_at: string;
+};
+
+/** Explicit allowlist over DistributionRevisionRow - drops id, distribution_id (redundant with the parent object), supersedes_revision_id, engagement_revision_id, creative_revision_id, channel_policy_revision, canonical_hash. */
+const partnerDistributionRevisionDto = (revision: { revision: number; channel_key: string; channel_policy_status: string; resource_kind: string; resource_identifier: string; distribution_resource_url: string; published_at: string; ended_at: string | null; reported_by: string; correction_reason: string | null; evidence_ref: string; created_at: string }): PartnerDistributionRevisionDto => ({
+  revision: revision.revision, channel_key: revision.channel_key, channel_policy_status: revision.channel_policy_status,
+  resource_kind: revision.resource_kind, resource_identifier: revision.resource_identifier, distribution_resource_url: revision.distribution_resource_url,
+  published_at: revision.published_at, ended_at: revision.ended_at, reported_by: revision.reported_by,
+  correction_reason: revision.correction_reason, evidence_ref: revision.evidence_ref, created_at: revision.created_at,
+});
+
+type PartnerActAcceptanceDto = { accepted_amount_kopecks: number; accepted_engagement_revision_id: string; created_at: string };
+
+/** Explicit allowlist over ActAcceptanceRow - drops id, act_id (redundant with the parent `act` object), partner_identity_id and, deliberately, step_up_grant_id (a spent authorization credential, never re-served). */
+const partnerActAcceptanceDto = (acceptance: ReturnType<typeof actAcceptanceForAct>): PartnerActAcceptanceDto | null =>
+  acceptance ? { accepted_amount_kopecks: acceptance.accepted_amount_kopecks, accepted_engagement_revision_id: acceptance.accepted_engagement_revision_id, created_at: acceptance.created_at } : null;
+
+type PartnerActDisputeDto = { reason: string; detail: string | null; created_at: string };
+
+/** Explicit allowlist over ActDisputeRow - drops id, act_id, partner_identity_id. */
+const partnerActDisputeDto = (dispute: ReturnType<typeof actDisputeForAct>): PartnerActDisputeDto | null =>
+  dispute ? { reason: dispute.reason, detail: dispute.detail, created_at: dispute.created_at } : null;
+
+/** §B-11: "own creative revisions and ERID information" + "own engagements" detail + "own publication and reporting obligations" + "own acts, payment status, dispute status". One ownership-checked read for an entire engagement's portal page. Every nested object is an explicit allowlist DTO (see the partner*Dto helpers above) - never a raw domain row, even one that carries no customer PII, because internal ids (step_up_grant_id, supersedes_*_id, created_by_admin_id, ...) are not partner-facing either. */
 export const partnerEngagementDetail = (db: Database.Database, partnerIdentityId: string, engagementId: string) => {
   const engagement = ownedEngagement(db, partnerIdentityId, engagementId);
   const occurrence = occurrenceSummary(db, engagement.occurrence_id);
@@ -167,7 +227,7 @@ export const partnerEngagementDetail = (db: Database.Database, partnerIdentityId
     const reports = ordDistributionPeriodReportsForDistribution(db, distribution.id);
     return {
       distribution_id: distribution.id,
-      current_revision: projection.current_revision,
+      current_revision: partnerDistributionRevisionDto(projection.current_revision),
       compliance_state: projection.compliance_state,
       removal_state: projection.removal_state,
       reporting_periods: reports.map((report) => ({
@@ -193,11 +253,11 @@ export const partnerEngagementDetail = (db: Database.Database, partnerIdentityId
   return {
     engagement: { id: engagement.id, lifecycle_state: engagement.lifecycle_state, created_at: engagement.created_at },
     occurrence,
-    latest_revision: latestRevision,
+    latest_revision: partnerRevisionDto(latestRevision),
     latest_revision_accepted: latestAccepted,
-    active_revision: activeRevision,
-    creative,
-    creative_authorization: creativeAuthorization,
+    active_revision: partnerRevisionDto(activeRevision),
+    creative: partnerCreativeDto(creative),
+    creative_authorization: partnerCreativeAuthorizationDto(creativeAuthorization),
     erid: ordRegistration?.local_state === "CONFIRMED" ? ordRegistration.erid : null,
     distributions,
     reward: {
@@ -212,10 +272,12 @@ export const partnerEngagementDetail = (db: Database.Database, partnerIdentityId
     // server-side ({ act_id, amount_kopecks, engagement_revision_id }) -
     // see agent-referrals-act.ts's own consumeSettlementStepUpGrantInTransaction
     // call. Omitting either field would make it impossible for the client
-    // to ever mint a grant that validates.
+    // to ever mint a grant that validates. This is the act's own primary
+    // key plus the two fields a legitimate step-up MUST echo back, not an
+    // omission from the allowlist discipline above.
     act: act ? { id: act.id, amount_kopecks: act.amount_kopecks, engagement_revision_id: act.engagement_revision_id, presented_at: act.presented_at } : null,
-    act_acceptance: actAcceptance,
-    act_dispute: actDispute,
+    act_acceptance: partnerActAcceptanceDto(actAcceptance),
+    act_dispute: partnerActDisputeDto(actDispute),
     payment_attempts: paymentAttempts,
     npd_status: npdStatus ? { status: npdStatus.status, checked_at: npdStatus.checked_at } : null,
   };

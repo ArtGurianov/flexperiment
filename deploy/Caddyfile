@@ -13,6 +13,16 @@ flexperiment.ru {
   file_server
 }
 
+# admin.flexperiment.ru and partner.flexperiment.ru both terminate at the
+# SAME frontend container (Dockerfile.admin's nginx image, service name
+# "admin" - never "commerce" directly, and never two separate services).
+# deploy/admin.nginx.conf's own server_name blocks are the actual host-based
+# routing boundary between the two realms (admin vs partner pages, and each
+# realm's own /v1/* proxy target inside that nginx) - see that file's
+# header. Routing either host straight to "commerce" here would bypass that
+# entire boundary, serving raw Commerce JSON instead of the frontend for
+# every non-API request. deploy/test-caddyfile-topology.sh asserts both
+# blocks below stay pointed at "admin", never "commerce".
 admin.flexperiment.ru {
   header {
     X-Content-Type-Options "nosniff"
@@ -20,16 +30,12 @@ admin.flexperiment.ru {
     X-Frame-Options "DENY"
     Strict-Transport-Security "max-age=31536000; includeSubDomains"
   }
-  reverse_proxy commerce:3001
+  reverse_proxy admin:80
 }
 
-# Phase 9: partner.flexperiment.ru is served by the SAME frontend
-# container as admin.flexperiment.ru (deploy/admin.nginx.conf's own
-# server_name blocks are the actual host-based routing boundary between
-# the two realms - see that file's header) - never a separate deployable
-# app/container. Mirrors the admin block above exactly; a future change to
-# how this reference topology reaches the frontend container must update
-# both blocks together.
+# Mirrors the admin block above exactly - same frontend container, same
+# port. A future change to how this reference topology reaches that
+# container must update both blocks together.
 partner.flexperiment.ru {
   header {
     X-Content-Type-Options "nosniff"
@@ -37,5 +43,5 @@ partner.flexperiment.ru {
     X-Frame-Options "DENY"
     Strict-Transport-Security "max-age=31536000; includeSubDomains"
   }
-  reverse_proxy commerce:3001
+  reverse_proxy admin:80
 }
