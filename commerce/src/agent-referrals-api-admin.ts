@@ -1,0 +1,471 @@
+import { Hono } from "hono";
+import type Database from "better-sqlite3";
+import { DomainError } from "./domain";
+import type { AdminPrincipal } from "./agent-referrals-partner-identity";
+import { provisionPartnerOwner, reissuePartnerInvite, revokePartnerInvite, verifyPartnerLegalProfile, issueFrameworkToPartner } from "./agent-referrals-partner-identity";
+import { getPartnerIdentity, activatePartner } from "./agent-referrals-onboarding";
+import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, currentFrameworkAgreementRevision, currentDelegationTemplateRevision, type FrameworkAgreementClauseKey, type DelegationTemplateClauseKey } from "./agent-referrals-framework-delegation";
+import { agentReferralsFeatureState, suspendAgentReferrals, reactivateAgentReferrals } from "./agent-referrals-feature-state";
+import { setAgentReferralsChannelPolicy, resolveAgentReferralsChannelPolicyNow, type ChannelPolicyStatus } from "./agent-referrals-channel-policy";
+import { verifyAudienceForPartnerCity, revokeAudienceVerificationForPartnerCity } from "./agent-referrals-engagement";
+import { createPartnerPromo } from "./agent-referrals-promo";
+import { revokeDelegationAsAdmin } from "./agent-referrals-delegation-revocation";
+import { currentRetentionPolicy, mintRetentionPolicyRevision, placeLegalHold, releaseLegalHold, destroyPartnerIdentity } from "./agent-referrals-identity-retention";
+import { recordNpdStatusCheck, type NpdCheckStatus } from "./agent-referrals-npd";
+import {
+  offerEngagement, mintEngagementRevision, activateEngagement, suspendEngagement, getEngagement, engagementsForPartner,
+  currentEngagementRevision, lastActivatedEngagementRevision, type EngagementRevisionTerms,
+} from "./agent-referrals-engagement";
+import { closeEngagementWithRewardRegistry } from "./agent-referrals-reward-registry";
+import { mintCreativeRevision, authorizeCreative, revokeCreativeAuthorization, currentCreativeRevision, currentCreativeAuthorization, type CreativeMaterialFields } from "./agent-referrals-creative";
+import { assessCreativeReadyToPublish } from "./agent-referrals-creative-readiness";
+import {
+  distributionsForEngagement, distributionProjection, reportDistribution, correctDistribution, requireRemoval, confirmRemoval, markOverdueRemoval,
+  markRemovalUnverified, markReviewCleared, type ResourceKind,
+} from "./agent-referrals-distribution";
+import { mintOrdProviderProfile, currentOrdProviderProfile, type OrdProviderProfileKind } from "./agent-referrals-ord-provider-profile";
+import {
+  openOrdProviderOperation, recordOrdProviderOperationSubmitted, confirmOrdProviderOperation, recordOrdProviderOperationErirReconciliation, lockOrdProviderOperation,
+} from "./agent-referrals-ord-provider-operation";
+import {
+  registerOrdCreative, recordOrdCreativeRegistrationSubmitted, confirmOrdCreativeRegistration, correctOrdCreativeRegistration, recordOrdCreativeErirReconciliation,
+  lockOrdCreativeRegistration, ordCreativeRegistrationHistory,
+} from "./agent-referrals-ord-creative-registration";
+import { fileOrdDistributionPeriodReport, recordOrdDistributionPeriodReportReconciliation, isOrdReportingTailComplete, ordDistributionPeriodReportsForDistribution, type ReportStatistics } from "./agent-referrals-ord-reporting";
+import { mintOrdPaidInvoicePayload, recordOrdPaidInvoiceSubmission, recordOrdPaidInvoiceReconciliation, ordPaidInvoicePayloadForAct } from "./agent-referrals-ord-paid-invoice";
+import { finalizeEngagementRewardRegistry, currentEffectiveRewardSnapshot, rewardRegistrySnapshot } from "./agent-referrals-reward-registry";
+import { closeEngagementZeroReward, type ZeroRewardClosureReason } from "./agent-referrals-zero-reward-closure";
+import { preparePartnerSettlement, agentReferralsSettlementById, recoveryExposure, correctPartnerRewardWithSettlement } from "./agent-referrals-settlement";
+import { generateSettlementAct, presentSettlementAct, settlementActForSettlement, actAcceptanceForAct, actDisputeForAct } from "./agent-referrals-act";
+import {
+  beginPayment, recordPaymentMade, recordPayoutUnknown, recordConfirmedNotMade, recordNpdReceipt, paymentAttemptsForSettlement, paymentAttemptById,
+} from "./agent-referrals-payment";
+
+/**
+ * `/v1/admin/agent-referrals/*` - mounted INSIDE api.ts's already-
+ * authenticated `admin` Hono sub-app (`admin.route("/agent-referrals",
+ * createAgentReferralsAdminRouter(sqlite))`), so it inherits the exact same
+ * `fx_admin_session` cookie check, admin-origin check and rate limiting
+ * every other `/v1/admin/*` route already goes through - there is no
+ * separate admin auth model here (amendment §7/§9: shared frontend
+ * container, but Commerce itself remains the one security boundary, and
+ * ADMIN stays ADMIN).
+ *
+ * This file is thin HTTP wiring only: every business rule (ownership,
+ * suspension-policy gating, replay/idempotency, evidence shape) is already
+ * enforced inside the agent-referrals-*.ts command it calls. Nothing here
+ * re-implements or loosens any of it.
+ */
+
+type AdminAppBindings = { Variables: { adminId?: string; adminSessionId?: string } };
+
+const jsonBody = async (request: Request) => {
+  try { return await request.json(); } catch { throw new DomainError("INVALID_JSON", 400); }
+};
+const asRecord = (value: unknown): Record<string, unknown> => (value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {});
+const requireString = (body: Record<string, unknown>, field: string): string => {
+  const value = body[field];
+  if (typeof value !== "string" || !value.trim()) throw new DomainError("AGENT_REFERRALS_ADMIN_FIELD_REQUIRED", 422, field);
+  return value;
+};
+const optionalString = (body: Record<string, unknown>, field: string): string | undefined => {
+  const value = body[field];
+  return typeof value === "string" ? value : undefined;
+};
+const requireNumber = (body: Record<string, unknown>, field: string): number => {
+  const value = body[field];
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new DomainError("AGENT_REFERRALS_ADMIN_FIELD_REQUIRED", 422, field);
+  return value;
+};
+
+export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
+  const app = new Hono<AdminAppBindings>();
+  const adminOf = (c: { var: { adminId?: string } }): AdminPrincipal => ({ realm: "ADMIN", admin_id: c.var.adminId! });
+
+  // ---- Global feature state ------------------------------------------------
+  app.get("/feature-state", (c) => c.json(agentReferralsFeatureState(sqlite)));
+  app.post("/feature-state/suspend", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(suspendAgentReferrals(sqlite, { expected_revision: requireNumber(body, "expected_revision"), owner_id: c.var.adminId!, reason: requireString(body, "reason") }));
+  });
+  app.post("/feature-state/reactivate", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(reactivateAgentReferrals(sqlite, { expected_revision: requireNumber(body, "expected_revision"), owner_id: c.var.adminId!, reason: requireString(body, "reason") }));
+  });
+
+  // ---- Partner identity / onboarding --------------------------------------
+  app.get("/partners", (c) => c.json({
+    partners: sqlite.prepare(`SELECT pi.id, pi.agent_id, a.slug, a.display_name, pi.onboarding_state, pi.destroyed_at, pi.created_at
+      FROM partner_identities pi JOIN agents a ON a.id = pi.agent_id ORDER BY pi.created_at DESC`).all(),
+  }));
+  app.get("/partners/:id", (c) => {
+    const identity = getPartnerIdentity(sqlite, c.req.param("id"));
+    if (!identity) throw new DomainError("PARTNER_IDENTITY_NOT_FOUND", 404);
+    return c.json({
+      identity,
+      engagements: engagementsForPartner(sqlite, identity.id),
+      invites: sqlite.prepare(`SELECT id, purpose, expires_at, consumed_at, revoked_at, superseded_by_id, created_at FROM partner_invite_capabilities WHERE partner_identity_id = ? ORDER BY created_at DESC`).all(identity.id),
+      audience_verifications: sqlite.prepare(`SELECT v.id, v.city_id, c.title AS city_title, v.event_kind, v.valid_until, v.aggregate_revision, v.created_at
+        FROM partner_audience_verification_events v JOIN cities c ON c.id = v.city_id WHERE v.partner_identity_id = ? ORDER BY v.aggregate_revision DESC`).all(identity.id),
+      legal_holds: sqlite.prepare(`SELECT id, reason, placed_at, released_at FROM partner_identity_legal_holds WHERE partner_identity_id = ? ORDER BY placed_at DESC`).all(identity.id),
+    });
+  });
+  app.post("/partners", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(provisionPartnerOwner(sqlite, adminOf(c), requireString(body, "agent_id"), requireString(body, "email"), requireString(body, "reason")), 201);
+  });
+  app.post("/partners/:id/invite/reissue", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(reissuePartnerInvite(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason")));
+  });
+  app.post("/invites/:id/revoke", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    revokePartnerInvite(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"));
+    return c.json({ ok: true });
+  });
+  app.post("/partners/:id/legal-profile/verify", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(verifyPartnerLegalProfile(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason")));
+  });
+  app.post("/partners/:id/framework/issue", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(issueFrameworkToPartner(sqlite, adminOf(c), c.req.param("id"), requireString(body, "framework_agreement_revision_id"), requireString(body, "delegation_template_revision_id"), requireString(body, "reason")));
+  });
+  app.post("/partners/:id/activate", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(activatePartner(sqlite, c.req.param("id"), requireNumber(body, "expected_revision"), "ADMIN", requireString(body, "reason")));
+  });
+  app.post("/partners/:id/promo", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    const identity = getPartnerIdentity(sqlite, c.req.param("id"));
+    if (!identity) throw new DomainError("PARTNER_IDENTITY_NOT_FOUND", 404);
+    return c.json(createPartnerPromo(sqlite, adminOf(c), { partner_id: identity.agent_id, code: requireString(body, "code"), reason: requireString(body, "reason") }), 201);
+  });
+  app.post("/partners/:id/audience/:cityId/verify", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(verifyAudienceForPartnerCity(sqlite, adminOf(c), c.req.param("id"), c.req.param("cityId"), requireString(body, "valid_until"), requireString(body, "reason"), requireString(body, "evidence_ref")));
+  });
+  app.post("/partners/:id/audience/:cityId/revoke", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(revokeAudienceVerificationForPartnerCity(sqlite, adminOf(c), c.req.param("id"), c.req.param("cityId"), requireString(body, "reason"), requireString(body, "evidence_ref")));
+  });
+  app.post("/delegations/:id/revoke", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(revokeDelegationAsAdmin(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason")));
+  });
+  app.post("/partners/:id/npd-status", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(recordNpdStatusCheck(sqlite, adminOf(c), c.req.param("id"), requireString(body, "status") as NpdCheckStatus, requireString(body, "evidence_ref")), 201);
+  });
+
+  // ---- Retention / legal holds / destruction ------------------------------
+  app.get("/retention-policy", (c) => c.json(currentRetentionPolicy(sqlite)));
+  app.post("/retention-policy", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(mintRetentionPolicyRevision(sqlite, adminOf(c), requireString(body, "reason")), 201);
+  });
+  app.post("/partners/:id/legal-hold", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(placeLegalHold(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason")), 201);
+  });
+  app.post("/legal-holds/:id/release", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    releaseLegalHold(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"));
+    return c.json({ ok: true });
+  });
+  app.post("/partners/:id/destroy", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(destroyPartnerIdentity(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason")));
+  });
+
+  // ---- Framework / delegation content -------------------------------------
+  app.get("/framework-agreement-revisions/current", (c) => c.json(currentFrameworkAgreementRevision(sqlite)));
+  app.post("/framework-agreement-revisions", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(mintFrameworkAgreementRevision(sqlite, asRecord(body.clauses) as Record<FrameworkAgreementClauseKey, string>), 201);
+  });
+  app.get("/delegation-template-revisions/current", (c) => c.json(currentDelegationTemplateRevision(sqlite)));
+  app.post("/delegation-template-revisions", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(mintDelegationTemplateRevision(sqlite, asRecord(body.clauses) as Record<DelegationTemplateClauseKey, string>), 201);
+  });
+
+  // ---- Channel policy -------------------------------------------------------
+  app.get("/channel-policy/:key", (c) => c.json(resolveAgentReferralsChannelPolicyNow(sqlite, c.req.param("key"))));
+  app.post("/channel-policy", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(setAgentReferralsChannelPolicy(sqlite, {
+      channel_key: requireString(body, "channel_key"), status: requireString(body, "status") as ChannelPolicyStatus,
+      effective_from: requireString(body, "effective_from"), reason: requireString(body, "reason"),
+    }), 201);
+  });
+
+  // ---- Engagements ----------------------------------------------------------
+  const revisionTerms = (body: Record<string, unknown>): EngagementRevisionTerms => ({
+    reward_type: requireString(body, "reward_type") as "PERCENT" | "FIXED",
+    reward_value: requireNumber(body, "reward_value"),
+    customer_discount_type: requireString(body, "customer_discount_type") as "NONE" | "PERCENT" | "FIXED",
+    customer_discount_value: requireNumber(body, "customer_discount_value"),
+    publication_start_at: requireString(body, "publication_start_at"),
+    publication_end_at: requireString(body, "publication_end_at"),
+    terms: body.terms ?? {},
+  });
+
+  app.get("/engagements", (c) => {
+    const partnerIdentityId = c.req.query("partner_identity_id");
+    const rows = partnerIdentityId ? engagementsForPartner(sqlite, partnerIdentityId)
+      : sqlite.prepare(`SELECT id, partner_identity_id, occurrence_id, lifecycle_state, lifecycle_revision, created_by_admin_id, created_at, updated_at FROM engagements ORDER BY created_at DESC LIMIT 200`).all();
+    return c.json({ engagements: rows });
+  });
+  app.get("/engagements/:id", (c) => {
+    const engagement = getEngagement(sqlite, c.req.param("id"));
+    if (!engagement) throw new DomainError("AGENT_REFERRALS_ENGAGEMENT_NOT_FOUND", 404);
+    const engagementId = engagement.id;
+    const creative = currentCreativeRevision(sqlite, engagementId);
+    const effective = currentEffectiveRewardSnapshot(sqlite, engagementId);
+    const settlement = effective ? sqlite.prepare(`SELECT id, status, amount_kopecks FROM reward_settlements WHERE effective_reward_snapshot_id = ? AND settlement_flow = 'AGENT_REFERRALS'`).get(effective.id) : null;
+    return c.json({
+      engagement,
+      latest_revision: currentEngagementRevision(sqlite, engagementId),
+      active_revision: lastActivatedEngagementRevision(sqlite, engagementId),
+      creative,
+      creative_authorization: currentCreativeAuthorization(sqlite, engagementId),
+      distributions: distributionsForEngagement(sqlite, engagementId).map((d) => distributionProjection(sqlite, d.id)),
+      reward_registry: rewardRegistrySnapshot(sqlite, engagementId),
+      effective_reward_snapshot: effective,
+      settlement,
+    });
+  });
+  app.post("/engagements", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(offerEngagement(sqlite, adminOf(c), requireString(body, "partner_identity_id"), requireString(body, "occurrence_id"), revisionTerms(body), requireString(body, "reason")), 201);
+  });
+  app.post("/engagements/:id/revisions", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(mintEngagementRevision(sqlite, adminOf(c), c.req.param("id"), revisionTerms(body), requireString(body, "reason")), 201);
+  });
+  app.post("/engagements/:id/activate", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(activateEngagement(sqlite, adminOf(c), c.req.param("id"), requireString(body, "engagement_revision_id")));
+  });
+  app.post("/engagements/:id/suspend", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(suspendEngagement(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason")));
+  });
+  app.post("/engagements/:id/close", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(closeEngagementWithRewardRegistry(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason")));
+  });
+  app.get("/engagements/:id/readiness", (c) => c.json(assessCreativeReadyToPublish(sqlite, c.req.param("id"))));
+
+  // ---- Creative ---------------------------------------------------------------
+  app.post("/engagements/:id/creative", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    const fields: CreativeMaterialFields = {
+      format_kind: requireString(body, "format_kind") as CreativeMaterialFields["format_kind"],
+      media_ref: optionalString(body, "media_ref") ?? null,
+      copy_text: optionalString(body, "copy_text") ?? null,
+      cta_text: optionalString(body, "cta_text") ?? null,
+      mandatory_labeling_text: requireString(body, "mandatory_labeling_text"),
+      creative_target_url: requireString(body, "creative_target_url"),
+    };
+    return c.json(mintCreativeRevision(sqlite, adminOf(c), c.req.param("id"), fields), 201);
+  });
+  app.post("/engagements/:id/creative/:revisionId/authorize", (c) => c.json(authorizeCreative(sqlite, adminOf(c), c.req.param("id"), c.req.param("revisionId"))));
+  app.post("/creative-authorizations/:id/revoke", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    revokeCreativeAuthorization(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"));
+    return c.json({ ok: true });
+  });
+
+  // ---- Distributions ------------------------------------------------------------
+  app.post("/engagements/:id/distributions", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(reportDistribution(sqlite, adminOf(c), c.req.param("id"), {
+      channel_key: requireString(body, "channel_key"), resource_kind: requireString(body, "resource_kind") as ResourceKind,
+      resource_identifier: requireString(body, "resource_identifier"), distribution_resource_url: requireString(body, "distribution_resource_url"),
+      published_at: requireString(body, "published_at"), ended_at: optionalString(body, "ended_at") ?? null, evidence_ref: requireString(body, "evidence_ref"),
+    }), 201);
+  });
+  app.post("/distributions/:id/correct", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(correctDistribution(sqlite, adminOf(c), c.req.param("id"), {
+      channel_key: requireString(body, "channel_key"), resource_kind: requireString(body, "resource_kind") as ResourceKind,
+      resource_identifier: requireString(body, "resource_identifier"), distribution_resource_url: requireString(body, "distribution_resource_url"),
+      published_at: requireString(body, "published_at"), ended_at: optionalString(body, "ended_at") ?? null, evidence_ref: requireString(body, "evidence_ref"),
+    }, requireString(body, "correction_reason")));
+  });
+  app.post("/distributions/:id/require-removal", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    requireRemoval(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"));
+    return c.json({ ok: true });
+  });
+  app.post("/distributions/:id/confirm-removal", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    confirmRemoval(sqlite, adminOf(c), c.req.param("id"), requireString(body, "evidence_ref"));
+    return c.json({ ok: true });
+  });
+  app.post("/distributions/:id/mark-overdue", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    markOverdueRemoval(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"));
+    return c.json({ ok: true });
+  });
+  app.post("/distributions/:id/mark-unverified", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    markRemovalUnverified(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"));
+    return c.json({ ok: true });
+  });
+  app.post("/distributions/:id/review-cleared", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    markReviewCleared(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"));
+    return c.json({ ok: true });
+  });
+  app.get("/distributions/:id/reporting-tail", (c) => {
+    const referenceInstantIso = c.req.query("reference_instant") ?? new Date().toISOString();
+    return c.json({
+      complete: isOrdReportingTailComplete(sqlite, c.req.param("id"), referenceInstantIso),
+      reports: ordDistributionPeriodReportsForDistribution(sqlite, c.req.param("id")),
+    });
+  });
+
+  // ---- ORD provider profile / operation -----------------------------------------
+  app.get("/ord/provider-profile/:kind", (c) => c.json(currentOrdProviderProfile(sqlite, c.req.param("kind") as OrdProviderProfileKind)));
+  app.post("/ord/provider-profile", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(mintOrdProviderProfile(sqlite, c.var.adminId!, requireString(body, "kind") as OrdProviderProfileKind, asRecord(body.content), requireString(body, "reason")), 201);
+  });
+  app.post("/ord/provider-operation", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(openOrdProviderOperation(sqlite, c.var.adminId!, requireString(body, "kind") as OrdProviderProfileKind), 201);
+  });
+  app.post("/ord/provider-operation/:id/submitted", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(recordOrdProviderOperationSubmitted(sqlite, c.req.param("id"), requireString(body, "vk_external_id"), requireString(body, "evidence_ref")));
+  });
+  app.post("/ord/provider-operation/:id/confirm", (c) => c.json(confirmOrdProviderOperation(sqlite, c.req.param("id"))));
+  app.post("/ord/provider-operation/:id/erir", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(recordOrdProviderOperationErirReconciliation(sqlite, c.req.param("id"), requireString(body, "erir_code"), requireString(body, "evidence_ref")));
+  });
+  app.post("/ord/provider-operation/:id/lock", (c) => c.json(lockOrdProviderOperation(sqlite, c.req.param("id"))));
+
+  // ---- ORD creative registration ---------------------------------------------------
+  app.post("/creative-revisions/:id/register", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(registerOrdCreative(sqlite, adminOf(c), c.req.param("id"), optionalString(body, "provider_counterparty_profile_id"), optionalString(body, "provider_contract_profile_id")), 201);
+  });
+  app.get("/creative-revisions/:id/registrations", (c) => c.json({ registrations: ordCreativeRegistrationHistory(sqlite, c.req.param("id")) }));
+  app.post("/ord/creative-registrations/:id/submitted", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(recordOrdCreativeRegistrationSubmitted(sqlite, c.req.param("id"), requireString(body, "vk_external_id"), requireString(body, "evidence_ref")));
+  });
+  app.post("/ord/creative-registrations/:id/confirm", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(confirmOrdCreativeRegistration(sqlite, c.req.param("id"), requireString(body, "vk_object_id"), requireString(body, "erid"), requireString(body, "evidence_ref")));
+  });
+  app.post("/ord/creative-registrations/:id/correct", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(correctOrdCreativeRegistration(sqlite, adminOf(c), c.req.param("id"), {
+      vk_object_id: requireString(body, "vk_object_id"), erid: requireString(body, "erid"), evidence_ref: requireString(body, "evidence_ref"), reason: requireString(body, "reason"),
+      provider_counterparty_profile_id: optionalString(body, "provider_counterparty_profile_id"), provider_contract_profile_id: optionalString(body, "provider_contract_profile_id"),
+    }));
+  });
+  app.post("/ord/creative-registrations/:id/erir", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(recordOrdCreativeErirReconciliation(sqlite, c.req.param("id"), requireString(body, "erir_code"), requireString(body, "evidence_ref")));
+  });
+  app.post("/ord/creative-registrations/:id/lock", (c) => c.json(lockOrdCreativeRegistration(sqlite, c.req.param("id"))));
+
+  // ---- ORD distribution period reporting --------------------------------------------
+  app.post("/distributions/:id/reports", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    const statisticsInput = asRecord(body.statistics);
+    const statistics: ReportStatistics = statisticsInput.statistics_state === "ACTUAL"
+      ? { statistics_state: "ACTUAL", statistics_json: asRecord(statisticsInput.statistics_json) }
+      : { statistics_state: "REPORTING_DATA_UNAVAILABLE" };
+    return c.json(fileOrdDistributionPeriodReport(sqlite, adminOf(c), {
+      distribution_id: c.req.param("id"), reporting_period_key: requireString(body, "reporting_period_key"), statistics, evidence_ref: requireString(body, "evidence_ref"),
+      correction_reason: optionalString(body, "correction_reason"), statistics_reason: optionalString(body, "statistics_reason") as "ZERO_REWARD_STATISTICS" | "CONTINUING_STATISTICS" | undefined,
+      special_period_is_service_period: typeof body.special_period_is_service_period === "boolean" ? body.special_period_is_service_period : undefined,
+      submission: body.submission ? { vk_operation_external_id: requireString(asRecord(body.submission), "vk_operation_external_id"), erir_code: requireString(asRecord(body.submission), "erir_code"), submission_evidence_ref: requireString(asRecord(body.submission), "submission_evidence_ref") } : undefined,
+    }), 201);
+  });
+  app.post("/distributions/:id/reports/:periodKey/reconciliation", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(recordOrdDistributionPeriodReportReconciliation(sqlite, adminOf(c), c.req.param("id"), c.req.param("periodKey"), requireString(body, "vk_operation_external_id"), requireString(body, "erir_code"), requireString(body, "submission_evidence_ref")));
+  });
+
+  // ---- Reward registry / zero-reward closure -----------------------------------------
+  app.post("/engagements/:id/reward-registry/finalize", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(finalizeEngagementRewardRegistry(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason")), 201);
+  });
+  app.post("/engagements/:id/reward-registry/correct", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(correctPartnerRewardWithSettlement(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason")));
+  });
+  app.get("/engagements/:id/recovery-exposure", (c) => c.json(recoveryExposure(sqlite, c.req.param("id"))));
+  app.post("/engagements/:id/zero-reward-closure", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(closeEngagementZeroReward(sqlite, adminOf(c), c.req.param("id"), requireString(body, "closure_reason") as ZeroRewardClosureReason, requireString(body, "command_id")), 201);
+  });
+
+  // ---- Settlement / act / payment -----------------------------------------------------
+  app.post("/settlements", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(preparePartnerSettlement(sqlite, adminOf(c), requireString(body, "effective_reward_snapshot_id")), 201);
+  });
+  app.get("/settlements/:id", (c) => {
+    const settlement = agentReferralsSettlementById(sqlite, c.req.param("id"));
+    if (!settlement) throw new DomainError("AGENT_REFERRALS_SETTLEMENT_NOT_FOUND", 404);
+    const act = settlementActForSettlement(sqlite, settlement.id);
+    return c.json({
+      settlement, act,
+      act_acceptance: act ? actAcceptanceForAct(sqlite, act.id) : null,
+      act_dispute: act ? actDisputeForAct(sqlite, act.id) : null,
+      payment_attempts: paymentAttemptsForSettlement(sqlite, settlement.id),
+      paid_invoice: act ? ordPaidInvoicePayloadForAct(sqlite, act.id) : null,
+    });
+  });
+  app.post("/settlements/:id/act", (c) => c.json(generateSettlementAct(sqlite, adminOf(c), c.req.param("id")), 201));
+  app.post("/acts/:id/present", (c) => c.json(presentSettlementAct(sqlite, adminOf(c), c.req.param("id"))));
+  app.post("/paid-invoices", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(mintOrdPaidInvoicePayload(sqlite, adminOf(c), requireString(body, "act_id"), optionalString(body, "provider_contract_profile_id")), 201);
+  });
+  app.post("/paid-invoices/:id/submission", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(recordOrdPaidInvoiceSubmission(sqlite, c.req.param("id"), requireString(body, "vk_operation_external_id"), requireString(body, "evidence_ref")));
+  });
+  app.post("/paid-invoices/:id/reconciliation", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(recordOrdPaidInvoiceReconciliation(sqlite, c.req.param("id"), requireString(body, "erir_code")));
+  });
+  app.post("/payments/begin", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(beginPayment(sqlite, adminOf(c), requireString(body, "settlement_id")), 201);
+  });
+  app.post("/payment-attempts/:id/made", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(recordPaymentMade(sqlite, adminOf(c), c.req.param("id"), requireString(body, "evidence_ref")));
+  });
+  app.post("/payment-attempts/:id/payout-unknown", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(recordPayoutUnknown(sqlite, adminOf(c), c.req.param("id"), requireString(body, "evidence_ref")));
+  });
+  app.post("/payment-attempts/:id/confirmed-not-made", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(recordConfirmedNotMade(sqlite, adminOf(c), c.req.param("id"), requireString(body, "evidence_ref")));
+  });
+  app.get("/payment-attempts/:id", (c) => {
+    const attempt = paymentAttemptById(sqlite, c.req.param("id"));
+    if (!attempt) throw new DomainError("AGENT_REFERRALS_PAYMENT_ATTEMPT_NOT_FOUND", 404);
+    return c.json(attempt);
+  });
+  app.post("/payment-attempts/:id/npd-receipt", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(recordNpdReceipt(sqlite, adminOf(c), c.req.param("id"), requireString(body, "receipt_reference"), requireString(body, "evidence_ref")), 201);
+  });
+
+  return app;
+}

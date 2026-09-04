@@ -98,12 +98,22 @@ describe("partner authorization: the plan's may/may-not matrix", () => {
         .not.toThrow(); // admin authority genuinely can verify ANY identity - the point is a partner has no path to this function at all, proven structurally above.
     });
 
-    it("activate the global feature - activateAgentReferrals takes no partner-reachable authority parameter, and is never imported by any HTTP route", () => {
+    it("activate the global feature - activateAgentReferrals (DORMANT->ACTIVE) takes no partner-reachable authority parameter and is never imported by any HTTP-reachable module, in Phase 9 or any earlier phase", () => {
       const source = readFileSync(join(process.cwd(), "commerce", "src", "agent-referrals-feature-state.ts"), "utf8");
       expect(source).toMatch(/owner_id: string/); // opaque operator id, not a PartnerPrincipal
       expect(source).not.toContain("PartnerPrincipal");
-      const apiSource = readFileSync(join(process.cwd(), "commerce", "src", "api.ts"), "utf8");
-      expect(apiSource).not.toContain("agent-referrals-feature-state");
+      // Phase 9 wires suspendAgentReferrals/reactivateAgentReferrals (and a
+      // read of the current state) to /v1/admin/agent-referrals/feature-state
+      // as an operational safety valve - deliberately NOT activateAgentReferrals
+      // itself: DORMANT -> ACTIVE stays reachable only through the separate,
+      // readiness-gated production cutover (Phase 10B), never through this or
+      // any other ad hoc admin action. Checked by literal name (not module
+      // name, which the admin surface now legitimately imports) against every
+      // file an HTTP request can reach.
+      for (const file of ["api.ts", "agent-referrals-api-admin.ts", "agent-referrals-api-partner.ts"]) {
+        const fileSource = readFileSync(join(process.cwd(), "commerce", "src", file), "utf8");
+        expect(fileSource).not.toMatch(/\bactivateAgentReferrals\b/);
+      }
     });
 
     it("provision another partner - provisionPartnerOwner takes only AdminPrincipal", () => {
@@ -111,11 +121,17 @@ describe("partner authorization: the plan's may/may-not matrix", () => {
       expect(source).toMatch(/export const provisionPartnerOwner = \(db: Database\.Database, admin: AdminPrincipal/);
     });
 
-    it("mutate channel policy - setAgentReferralsChannelPolicy takes no partner-reachable authority parameter and is never imported by any HTTP route", () => {
+    it("mutate channel policy - setAgentReferralsChannelPolicy takes no partner-reachable authority parameter, and the PARTNER HTTP surface never imports it (only the admin surface may)", () => {
       const source = readFileSync(join(process.cwd(), "commerce", "src", "agent-referrals-channel-policy.ts"), "utf8");
       expect(source).not.toContain("PartnerPrincipal");
-      const apiSource = readFileSync(join(process.cwd(), "commerce", "src", "api.ts"), "utf8");
-      expect(apiSource).not.toContain("agent-referrals-channel-policy");
+      // Phase 9 wires channel-policy read/write to /v1/admin/agent-referrals/*
+      // (an ordinary admin operational action) - this asserts only that the
+      // PARTNER-realm router never reaches it, which is the actual invariant
+      // the plan (§B-2: partner may not "approve a channel") requires.
+      const partnerApiSource = readFileSync(join(process.cwd(), "commerce", "src", "agent-referrals-api-partner.ts"), "utf8");
+      expect(partnerApiSource).not.toContain("agent-referrals-channel-policy");
+      const adminApiSource = readFileSync(join(process.cwd(), "commerce", "src", "agent-referrals-api-admin.ts"), "utf8");
+      expect(adminApiSource).toContain("agent-referrals-channel-policy");
     });
 
     it("manufacture acceptance as admin - acceptFrameworkAndDelegation takes only PartnerPrincipal, admin has no path to it", () => {
@@ -131,16 +147,42 @@ describe("partner authorization: the plan's may/may-not matrix", () => {
     });
   });
 
-  describe("PR4 has no UI dependency: no runtime HTTP route imports any PR4 module", () => {
-    it("api.ts does not import any agent-referrals partner-identity module", () => {
+  describe("Phase 9: the partner HTTP surface is wired, but only through its own file, on its own realm boundary", () => {
+    it("api.ts mounts the partner router at /v1/partner (never /v1/admin) and the admin router inside admin's own authenticated sub-app (never directly on app)", () => {
       const apiSource = readFileSync(join(process.cwd(), "commerce", "src", "api.ts"), "utf8");
-      for (const moduleName of [
-        "agent-referrals-partner-identity", "agent-referrals-otp", "agent-referrals-partner-session",
-        "agent-referrals-step-up", "agent-referrals-onboarding", "agent-referrals-framework-acceptance",
-        "agent-referrals-payout-profile", "agent-referrals-payout-encryption", "agent-referrals-identity-retention",
-        "agent-referrals-partner-auth",
-      ]) {
-        expect(apiSource).not.toContain(moduleName);
+      expect(apiSource).toMatch(/app\.route\("\/v1\/partner",\s*createAgentReferralsPartnerRouter\(/);
+      expect(apiSource).toMatch(/admin\.route\("\/agent-referrals",\s*createAgentReferralsAdminRouter\(/);
+      // Never mounted directly on `app` under /v1/admin/agent-referrals as a
+      // literal path string - that would bypass admin's own session/origin
+      // middleware chain, exactly the shared-frontend/shared-backend
+      // regression the amendment's §9 warns against.
+      expect(apiSource).not.toMatch(/app\.route\("\/v1\/admin\/agent-referrals"/);
+    });
+
+    it("the partner router (agent-referrals-api-partner.ts) never IMPORTS an admin-only provisioning/activation function", () => {
+      const importLines = readFileSync(join(process.cwd(), "commerce", "src", "agent-referrals-api-partner.ts"), "utf8")
+        .split("\n").filter((line) => line.trimStart().startsWith("import ")).join("\n");
+      // recordNpdReceipt is deliberately named in this file's own prose
+      // (explaining why the partner route does NOT call the real admin
+      // command - see /npd-receipts/submit's header comment above), so this
+      // checks only the import lines, never the whole file text.
+      for (const adminOnly of ["provisionPartnerOwner", "verifyPartnerLegalProfile", "issueFrameworkToPartner", "activatePartner", "destroyPartnerIdentity", "activateAgentReferrals", "recordNpdReceipt"]) {
+        expect(importLines).not.toMatch(new RegExp(`\\b${adminOnly}\\b`));
+      }
+    });
+
+    it("the admin router (agent-referrals-api-admin.ts) never IMPORTS a partner-session-authenticated command", () => {
+      const importLines = readFileSync(join(process.cwd(), "commerce", "src", "agent-referrals-api-admin.ts"), "utf8")
+        .split("\n").filter((line) => line.trimStart().startsWith("import ")).join("\n");
+      // acceptEngagement/acceptSettlementAct/setPartnerPayoutDestination etc.
+      // each take only a PartnerPrincipal - TypeScript itself refuses an
+      // AdminPrincipal there, so this is a structural guarantee already, not
+      // merely a naming convention. Asserted here as a source-level canary so
+      // a future refactor that widened one of those signatures to accept
+      // AdminPrincipal would also have to touch this file to pass compilation
+      // - and this test would then need a human to look at why.
+      for (const partnerOnly of ["acceptEngagement", "acceptSettlementAct", "setPartnerPayoutDestination", "acceptFrameworkAndDelegation"]) {
+        expect(importLines).not.toMatch(new RegExp(`\\b${partnerOnly}\\b`));
       }
     });
   });
