@@ -5,9 +5,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestQueryClient, QueryClientWrapper } from "../../lib/test-query-client";
 import { Engagements } from "./Engagements";
 
-function EngagementsHarness() {
+function EngagementsHarness({ focusDistributionId, focusReporting }: { focusDistributionId?: string | null; focusReporting?: boolean } = {}) {
   const [selected, setSelected] = useState<string | null>("e1");
-  return <Engagements selected={selected} onSelect={setSelected} />;
+  return <Engagements selected={selected} onSelect={setSelected} focusDistributionId={focusDistributionId} focusReporting={focusReporting} />;
 }
 
 const distributionRow = (removalState: string | null) => ({
@@ -192,6 +192,190 @@ describe("Engagements (Agent Referrals admin console): distribution removal veri
     expect(reconciliationCalls[0].body).toEqual({
       vk_operation_external_id: "vk-op-1", erir_code: "erir-1", submission_evidence_ref: "submission-evidence",
     });
+  });
+
+  it.each([
+    { reportingBasis: "CALENDAR_MONTH" as const, reason: "ZERO_REWARD_STATISTICS" as const, expectSpecialPeriod: undefined },
+    { reportingBasis: "CALENDAR_MONTH" as const, reason: "CONTINUING_STATISTICS" as const, expectSpecialPeriod: undefined },
+    { reportingBasis: "PROVIDER_SPECIAL_PERIOD" as const, reason: "ZERO_REWARD_STATISTICS" as const, expectSpecialPeriod: true },
+    { reportingBasis: "PROVIDER_SPECIAL_PERIOD" as const, reason: "CONTINUING_STATISTICS" as const, expectSpecialPeriod: false },
+  ])(
+    "round-4 fix: filing a $reason report on $reportingBasis sends the exact statistics_reason/special_period_is_service_period shape the domain requires (never omitted for non-ORDINARY PROVIDER_SPECIAL_PERIOD, never sent for CALENDAR_MONTH)",
+    async ({ reportingBasis, reason, expectSpecialPeriod }) => {
+      const reportCalls: Array<{ body: Record<string, unknown> }> = [];
+      global.fetch = vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/agent-referrals/engagements/e1")) {
+          return {
+            ok: true, status: 200, json: async () => ({
+              engagement: { id: "e1", lifecycle_state: "ACTIVE", created_at: "now" },
+              latest_revision: null, creative: null,
+              distributions: [{ ...distributionRow(null), reporting_periods: [{ reporting_period_key: "2026-08", reporting_basis: reportingBasis, revision: 1, statistics_state: "ACTUAL", submission_state: "NOT_SUBMITTED" }] }],
+              reward_registry: null, effective_reward_snapshot: null, settlement: null,
+              act: null, act_acceptance: null, act_dispute: null, payment_attempts: [],
+            }),
+          } as Response;
+        }
+        if (url.endsWith("/agent-referrals/distributions/d1/reports") && init?.method === "POST") {
+          reportCalls.push({ body: JSON.parse(String(init.body)) });
+          return { ok: true, status: 201, json: async () => ({ id: "r2" }) } as Response;
+        }
+        throw new Error(`unhandled fetch: ${url}`);
+      });
+      const user = userEvent.setup();
+      const client = createTestQueryClient();
+      render(<EngagementsHarness />, { wrapper: (props) => <QueryClientWrapper client={client}>{props.children}</QueryClientWrapper> });
+
+      await user.click(await screen.findByRole("button", { name: "Отчётность" }));
+      const filingForm = (await screen.findByText("Подать отчёт за период")).closest("form") as HTMLElement;
+      // The panel derives its default "Основание периода" from the distribution's own existing reports
+      // (all seeded here on the same PROVIDER_SPECIAL_PERIOD/CALENDAR_MONTH basis), so it never needs to
+      // be changed by hand for this test.
+      await user.type(within(filingForm).getByLabelText("Период (например 2026-09)"), "2026-09");
+      await user.type(within(filingForm).getByLabelText("Данные (JSON)"), "{{}");
+      await user.selectOptions(within(filingForm).getByLabelText("Причина статистики"), reason);
+      await user.type(within(filingForm).getByLabelText("Ссылка на подтверждение"), "ord-report-evidence");
+      await user.click(within(filingForm).getByRole("button", { name: "Подать отчёт" }));
+      await waitFor(() => expect(reportCalls).toHaveLength(1));
+      expect(reportCalls[0].body).toMatchObject({
+        reporting_period_key: "2026-09", statistics_reason: reason, evidence_ref: "ord-report-evidence",
+      });
+      expect(reportCalls[0].body.special_period_is_service_period).toBe(expectSpecialPeriod);
+    },
+  );
+
+  it("round-4 fix: filing an ORDINARY report never sends statistics_reason or special_period_is_service_period, even on a PROVIDER_SPECIAL_PERIOD distribution", async () => {
+    const reportCalls: Array<{ body: Record<string, unknown> }> = [];
+    global.fetch = vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/agent-referrals/engagements/e1")) {
+        return {
+          ok: true, status: 200, json: async () => ({
+            engagement: { id: "e1", lifecycle_state: "ACTIVE", created_at: "now" },
+            latest_revision: null, creative: null,
+            distributions: [{ ...distributionRow(null), reporting_periods: [{ reporting_period_key: "2026-08", reporting_basis: "PROVIDER_SPECIAL_PERIOD", revision: 1, statistics_state: "ACTUAL", submission_state: "NOT_SUBMITTED" }] }],
+            reward_registry: null, effective_reward_snapshot: null, settlement: null,
+            act: null, act_acceptance: null, act_dispute: null, payment_attempts: [],
+          }),
+        } as Response;
+      }
+      if (url.endsWith("/agent-referrals/distributions/d1/reports") && init?.method === "POST") {
+        reportCalls.push({ body: JSON.parse(String(init.body)) });
+        return { ok: true, status: 201, json: async () => ({ id: "r2" }) } as Response;
+      }
+      throw new Error(`unhandled fetch: ${url}`);
+    });
+    const user = userEvent.setup();
+    const client = createTestQueryClient();
+    render(<EngagementsHarness />, { wrapper: (props) => <QueryClientWrapper client={client}>{props.children}</QueryClientWrapper> });
+
+    await user.click(await screen.findByRole("button", { name: "Отчётность" }));
+    const filingForm = (await screen.findByText("Подать отчёт за период")).closest("form") as HTMLElement;
+    expect(within(filingForm).queryByLabelText("Основание периода")).not.toBeInTheDocument();
+    await user.type(within(filingForm).getByLabelText("Период (например 2026-09)"), "2026-09");
+    await user.type(within(filingForm).getByLabelText("Данные (JSON)"), "{{}");
+    await user.type(within(filingForm).getByLabelText("Ссылка на подтверждение"), "ord-report-evidence");
+    await user.click(within(filingForm).getByRole("button", { name: "Подать отчёт" }));
+    await waitFor(() => expect(reportCalls).toHaveLength(1));
+    expect(reportCalls[0].body).not.toHaveProperty("statistics_reason");
+    expect(reportCalls[0].body).not.toHaveProperty("special_period_is_service_period");
+  });
+
+  it("round-4 fix: an invalid statistics JSON payload surfaces a validation message instead of throwing, and does not submit", async () => {
+    const reportCalls: Array<{ body: Record<string, unknown> }> = [];
+    global.fetch = vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/agent-referrals/engagements/e1")) {
+        return {
+          ok: true, status: 200, json: async () => ({
+            engagement: { id: "e1", lifecycle_state: "ACTIVE", created_at: "now" },
+            latest_revision: null, creative: null, distributions: [distributionRow(null)],
+            reward_registry: null, effective_reward_snapshot: null, settlement: null,
+            act: null, act_acceptance: null, act_dispute: null, payment_attempts: [],
+          }),
+        } as Response;
+      }
+      if (url.endsWith("/agent-referrals/distributions/d1/reports") && init?.method === "POST") {
+        reportCalls.push({ body: JSON.parse(String(init.body)) });
+        return { ok: true, status: 201, json: async () => ({ id: "r2" }) } as Response;
+      }
+      throw new Error(`unhandled fetch: ${url}`);
+    });
+    const user = userEvent.setup();
+    const client = createTestQueryClient();
+    render(<EngagementsHarness />, { wrapper: (props) => <QueryClientWrapper client={client}>{props.children}</QueryClientWrapper> });
+
+    await user.click(await screen.findByRole("button", { name: "Отчётность" }));
+    const filingForm = (await screen.findByText("Подать отчёт за период")).closest("form") as HTMLElement;
+    await user.type(within(filingForm).getByLabelText("Период (например 2026-09)"), "2026-09");
+    await user.type(within(filingForm).getByLabelText("Данные (JSON)"), "not json");
+    await user.type(within(filingForm).getByLabelText("Ссылка на подтверждение"), "ord-report-evidence");
+    await user.click(within(filingForm).getByRole("button", { name: "Подать отчёт" }));
+    await screen.findByText("Некорректный JSON");
+    expect(reportCalls).toHaveLength(0);
+  });
+
+  it("round-4 fix: a distribution's own review-queue focus highlights exactly that row (data-focused) among several distributions on the same engagement, not just the engagement itself", async () => {
+    global.fetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/agent-referrals/engagements/e1")) {
+        return {
+          ok: true, status: 200, json: async () => ({
+            engagement: { id: "e1", lifecycle_state: "ACTIVE", created_at: "now" },
+            latest_revision: null, creative: null,
+            distributions: [
+              { ...distributionRow(null), distribution_id: "d1" },
+              { ...distributionRow("OVERDUE_REMOVAL"), distribution_id: "d2" },
+            ],
+            reward_registry: null, effective_reward_snapshot: null, settlement: null,
+            act: null, act_acceptance: null, act_dispute: null, payment_attempts: [],
+          }),
+        } as Response;
+      }
+      throw new Error(`unhandled fetch: ${url}`);
+    });
+    const client = createTestQueryClient();
+    render(<EngagementsHarness focusDistributionId="d2" focusReporting={false} />, { wrapper: (props) => <QueryClientWrapper client={client}>{props.children}</QueryClientWrapper> });
+
+    // d2 (OVERDUE_REMOVAL) is the only row with a confirm-removal form; d1 (no removal event) is not.
+    const d2Row = (await screen.findByPlaceholderText("Ссылка на подтверждение снятия")).closest("tr") as HTMLElement;
+    expect(d2Row.getAttribute("data-focused")).toBe("true");
+    expect(d2Row.className).toContain("row-expanded");
+
+    const focusedRows = document.querySelectorAll('tr[data-focused="true"]');
+    expect(focusedRows).toHaveLength(1);
+    expect(focusedRows[0]).toBe(d2Row);
+
+    const allRows = screen.getAllByRole("row");
+    const d1Row = allRows.find((row) => row !== d2Row && row.querySelector("td"));
+    expect(d1Row?.getAttribute("data-focused")).not.toBe("true");
+  });
+
+  it("round-4 fix: focusReporting auto-opens the exact focused distribution's reporting panel, not another distribution's", async () => {
+    global.fetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/agent-referrals/engagements/e1")) {
+        return {
+          ok: true, status: 200, json: async () => ({
+            engagement: { id: "e1", lifecycle_state: "ACTIVE", created_at: "now" },
+            latest_revision: null, creative: null,
+            distributions: [
+              { ...distributionRow(null), distribution_id: "d1", reporting_periods: [{ reporting_period_key: "2026-01", reporting_basis: "CALENDAR_MONTH", revision: 1, statistics_state: "ACTUAL", submission_state: "NOT_SUBMITTED" }] },
+              { ...distributionRow(null), distribution_id: "d2", reporting_periods: [{ reporting_period_key: "2026-07", reporting_basis: "CALENDAR_MONTH", revision: 1, statistics_state: "ACTUAL", submission_state: "NOT_SUBMITTED" }] },
+            ],
+            reward_registry: null, effective_reward_snapshot: null, settlement: null,
+            act: null, act_acceptance: null, act_dispute: null, payment_attempts: [],
+          }),
+        } as Response;
+      }
+      throw new Error(`unhandled fetch: ${url}`);
+    });
+    const client = createTestQueryClient();
+    render(<EngagementsHarness focusDistributionId="d2" focusReporting={true} />, { wrapper: (props) => <QueryClientWrapper client={client}>{props.children}</QueryClientWrapper> });
+
+    // d2's own reporting period (2026-07), not d1's (2026-01), must be the one shown pre-expanded.
+    await screen.findByText("2026-07");
+    expect(screen.queryByText("2026-01")).not.toBeInTheDocument();
   });
 
   it.each(["OVERDUE_REMOVAL", "REMOVAL_UNVERIFIED"])(

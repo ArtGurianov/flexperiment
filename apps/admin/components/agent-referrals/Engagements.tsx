@@ -11,8 +11,12 @@ import { Notice } from "../ui/Notice";
 import { Panel } from "../ui/Panel";
 import { Badge } from "../ui/Badge";
 
-export function Engagements({ selected, onSelect }: { selected: string | null; onSelect: (id: string | null) => void }) {
-  return selected ? <EngagementDetail engagementId={selected} onBack={() => onSelect(null)} /> : <EngagementList onSelect={onSelect} />;
+export function Engagements({ selected, onSelect, focusDistributionId, focusReporting }: {
+  selected: string | null; onSelect: (id: string | null) => void; focusDistributionId?: string | null; focusReporting?: boolean;
+}) {
+  return selected
+    ? <EngagementDetail engagementId={selected} onBack={() => onSelect(null)} focusDistributionId={focusDistributionId ?? null} focusReporting={focusReporting ?? false} />
+    : <EngagementList onSelect={onSelect} />;
 }
 
 function EngagementList({ onSelect }: { onSelect: (id: string) => void }) {
@@ -81,7 +85,9 @@ function EngagementList({ onSelect }: { onSelect: (id: string) => void }) {
   );
 }
 
-function EngagementDetail({ engagementId, onBack }: { engagementId: string; onBack: () => void }) {
+function EngagementDetail({ engagementId, onBack, focusDistributionId, focusReporting }: {
+  engagementId: string; onBack: () => void; focusDistributionId: string | null; focusReporting: boolean;
+}) {
   const queryClient = useQueryClient();
   const detail = useQuery({ queryKey: ["agent-referrals", "engagement", engagementId], queryFn: () => api<Row>(`/agent-referrals/engagements/${engagementId}`) });
   const [error, setError] = useState<string | null>(null);
@@ -135,7 +141,7 @@ function EngagementDetail({ engagementId, onBack }: { engagementId: string; onBa
       </Panel>
 
       <CreativeSection engagementId={engagementId} creative={creative} onDone={refresh} />
-      <DistributionsSection engagementId={engagementId} distributions={distributions} onDone={refresh} />
+      <DistributionsSection engagementId={engagementId} distributions={distributions} onDone={refresh} focusDistributionId={focusDistributionId} focusReporting={focusReporting} />
       <RewardSection engagementId={engagementId} effective={effective} settlement={settlement} onDone={refresh} />
       {settlement && <ActPaymentSection settlement={settlement} act={act} actAcceptance={actAcceptance} actDispute={actDispute} paymentAttempts={paymentAttempts} onDone={refresh} />}
     </>
@@ -242,11 +248,16 @@ function OrdErirForm({ onSubmit, busy }: { onSubmit: (v: { erir_code: string; ev
   );
 }
 
-function DistributionsSection({ engagementId, distributions, onDone }: { engagementId: string; distributions: Row[]; onDone: () => void }) {
+function DistributionsSection({ engagementId, distributions, onDone, focusDistributionId, focusReporting }: {
+  engagementId: string; distributions: Row[]; onDone: () => void; focusDistributionId: string | null; focusReporting: boolean;
+}) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [correcting, setCorrecting] = useState<string | null>(null);
-  const [reporting, setReporting] = useState<string | null>(null);
+  // Round-4 fix: a review-queue item names one specific distribution, not merely the engagement - land
+  // directly in that distribution's reporting panel when the queue item that brought us here was the
+  // reporting-tail category, instead of leaving the operator to find it by hand among several rows.
+  const [reporting, setReporting] = useState<string | null>(() => (focusReporting && focusDistributionId ? focusDistributionId : null));
 
   const run = async (path: string, body: Record<string, unknown>) => {
     setBusy(true); setError(null);
@@ -264,8 +275,9 @@ function DistributionsSection({ engagementId, distributions, onDone }: { engagem
           {distributions.map((row) => {
             const revision = row.current_revision as Row;
             const distributionId = String(row.distribution_id);
+            const focused = focusDistributionId === distributionId;
             return (
-              <tr key={distributionId}>
+              <tr key={distributionId} className={focused ? "row-expanded" : undefined} data-focused={focused ? "true" : undefined}>
                 <td>{String(revision.channel_key)}</td>
                 <td>{String(revision.distribution_resource_url)}</td>
                 <td><Badge>{String(row.compliance_state ?? "—")}</Badge></td>
@@ -343,22 +355,49 @@ function DistributionReportingPanel({ reportingPeriods, busy, onFile, onReconcil
           </tbody>
         </table>
       )}
-      <ReportFilingForm busy={busy} onSubmit={onFile} />
+      <ReportFilingForm busy={busy} onSubmit={onFile} defaultReportingBasis={reportingPeriods.at(-1)?.reporting_basis === "PROVIDER_SPECIAL_PERIOD" ? "PROVIDER_SPECIAL_PERIOD" : "CALENDAR_MONTH"} />
       <ReportReconciliationForm busy={busy} onSubmit={onReconcile} />
     </div>
   );
 }
 
-function ReportFilingForm({ busy, onSubmit }: { busy: boolean; onSubmit: (values: Record<string, unknown>) => void }) {
-  const { register, handleSubmit, watch } = useForm<{ reporting_period_key: string; statistics_state: "ACTUAL" | "REPORTING_DATA_UNAVAILABLE"; statistics_json: string; evidence_ref: string; correction_reason: string }>({
-    defaultValues: { statistics_state: "ACTUAL" },
+function ReportFilingForm({ busy, onSubmit, defaultReportingBasis }: { busy: boolean; onSubmit: (values: Record<string, unknown>) => void; defaultReportingBasis: "CALENDAR_MONTH" | "PROVIDER_SPECIAL_PERIOD" }) {
+  const { register, handleSubmit, watch, setError, formState: { errors } } = useForm<{
+    reporting_period_key: string; statistics_state: "ACTUAL" | "REPORTING_DATA_UNAVAILABLE"; statistics_json: string; evidence_ref: string; correction_reason: string;
+    statistics_reason: "ORDINARY" | "ZERO_REWARD_STATISTICS" | "CONTINUING_STATISTICS"; reporting_basis: "CALENDAR_MONTH" | "PROVIDER_SPECIAL_PERIOD";
+  }>({
+    defaultValues: { statistics_state: "ACTUAL", statistics_reason: "ORDINARY", reporting_basis: defaultReportingBasis },
   });
   const statisticsState = watch("statistics_state");
+  const statisticsReason = watch("statistics_reason");
+  const reportingBasis = watch("reporting_basis");
   const submit = handleSubmit((values) => {
+    let statisticsJson: Record<string, unknown> = {};
+    if (values.statistics_state === "ACTUAL") {
+      try {
+        statisticsJson = JSON.parse(values.statistics_json || "{}") as Record<string, unknown>;
+      } catch {
+        setError("statistics_json", { message: "Некорректный JSON" });
+        return;
+      }
+    }
     const statistics = values.statistics_state === "ACTUAL"
-      ? { statistics_state: "ACTUAL" as const, statistics_json: JSON.parse(values.statistics_json || "{}") as Record<string, unknown> }
+      ? { statistics_state: "ACTUAL" as const, statistics_json: statisticsJson }
       : { statistics_state: "REPORTING_DATA_UNAVAILABLE" as const };
-    onSubmit({ reporting_period_key: values.reporting_period_key, statistics, evidence_ref: values.evidence_ref, correction_reason: values.correction_reason || undefined });
+    // The domain never accepts special_period_is_service_period for CALENDAR_MONTH (fails closed as
+    // SPECIAL_PERIOD_ORDER_NOT_APPLICABLE) and always requires it for PROVIDER_SPECIAL_PERIOD + a
+    // non-ORDINARY reason - and its own logic pins the value 1:1 to the reason (ZERO_REWARD_STATISTICS is
+    // always the closure's own original service period; CONTINUING_STATISTICS is always a later one), so
+    // there is no separate operator choice to collect here beyond reason + basis.
+    const specialPeriodIsServicePeriod = values.statistics_reason !== "ORDINARY" && values.reporting_basis === "PROVIDER_SPECIAL_PERIOD"
+      ? values.statistics_reason === "ZERO_REWARD_STATISTICS"
+      : undefined;
+    onSubmit({
+      reporting_period_key: values.reporting_period_key, statistics, evidence_ref: values.evidence_ref,
+      correction_reason: values.correction_reason || undefined,
+      statistics_reason: values.statistics_reason === "ORDINARY" ? undefined : values.statistics_reason,
+      special_period_is_service_period: specialPeriodIsServicePeriod,
+    });
   });
   return (
     <form className="form" onSubmit={submit}>
@@ -367,7 +406,33 @@ function ReportFilingForm({ busy, onSubmit }: { busy: boolean; onSubmit: (values
       <label>Статистика
         <select {...register("statistics_state")}><option value="ACTUAL">Известна</option><option value="REPORTING_DATA_UNAVAILABLE">Недоступна - никогда не подставлять 0</option></select>
       </label>
-      {statisticsState === "ACTUAL" && <label>Данные (JSON) <textarea {...register("statistics_json")} placeholder="{}" /></label>}
+      {statisticsState === "ACTUAL" && (
+        <label>Данные (JSON) <textarea {...register("statistics_json")} placeholder="{}" />
+          {errors.statistics_json && <p className="notice notice-error">{errors.statistics_json.message}</p>}
+        </label>
+      )}
+      <label>Причина статистики
+        <select {...register("statistics_reason")}>
+          <option value="ORDINARY">Обычная</option>
+          <option value="ZERO_REWARD_STATISTICS">Нулевое вознаграждение (собственный сервисный период закрытия)</option>
+          <option value="CONTINUING_STATISTICS">Продолжающаяся статистика (более поздний период)</option>
+        </select>
+      </label>
+      {statisticsReason !== "ORDINARY" && (
+        <label>Основание периода
+          <select {...register("reporting_basis")}>
+            <option value="CALENDAR_MONTH">Календарный месяц</option>
+            <option value="PROVIDER_SPECIAL_PERIOD">Особый период провайдера (ВК, требует подтверждённого L5)</option>
+          </select>
+        </label>
+      )}
+      {statisticsReason !== "ORDINARY" && reportingBasis === "PROVIDER_SPECIAL_PERIOD" && (
+        <p>
+          {statisticsReason === "ZERO_REWARD_STATISTICS"
+            ? "Будет передано как собственный сервисный период закрытия (special_period_is_service_period = true)."
+            : "Будет передано как более поздний период (special_period_is_service_period = false)."}
+        </p>
+      )}
       <label>Ссылка на подтверждение <input {...register("evidence_ref", { required: true })} /></label>
       <label>Причина коррекции (при повторной подаче за тот же период) <input {...register("correction_reason")} /></label>
       <button className="primary" disabled={busy}>{busy ? "…" : "Подать отчёт"}</button>

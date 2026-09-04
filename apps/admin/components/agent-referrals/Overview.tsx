@@ -23,16 +23,31 @@ const REVIEW_QUEUE_LABELS: Record<string, string> = {
   partners_framework_not_issued: "Партнёры: договор не выдан",
 };
 
-/** Resolves a review-queue item to the (tab, id) an operator lands on to actually resolve it. Every category's items carry enough context for this - see agent-referrals-review-queue.ts's own item shapes. */
-const navigationTarget = (categoryKey: string, item: Row): { tab: "partners" | "engagements"; id: string; label: string } | null => {
-  if ("engagement_id" in item) return { tab: "engagements", id: String(item.engagement_id), label: String(item.distribution_id ?? item.act_id ?? item.engagement_id) };
+/**
+ * Resolves a review-queue item to the (tab, id) an operator lands on to actually resolve it. Every
+ * category's items carry enough context for this - see agent-referrals-review-queue.ts's own item shapes.
+ * Round-4 fix: distribution-scoped categories also carry their own distribution_id through as `focus`, so
+ * the destination screen can highlight the exact flagged row instead of just landing on the engagement -
+ * an engagement can have several distributions, and a bare engagement_id link previously lost which one
+ * was actually flagged. distributions_reporting_tail_incomplete additionally asks the destination to
+ * auto-open that distribution's reporting panel, since that is the one queue category whose resolution
+ * path is otherwise hidden behind an extra click.
+ */
+const navigationTarget = (categoryKey: string, item: Row): { tab: "partners" | "engagements"; id: string; label: string; focus?: string; focusReporting?: boolean } | null => {
+  if ("engagement_id" in item) {
+    const focus = typeof item.distribution_id === "string" ? item.distribution_id : undefined;
+    return {
+      tab: "engagements", id: String(item.engagement_id), label: String(item.distribution_id ?? item.act_id ?? item.engagement_id),
+      focus, focusReporting: focus !== undefined && categoryKey === "distributions_reporting_tail_incomplete",
+    };
+  }
   if (categoryKey === "npd_reconciliation_needed") return { tab: "partners", id: String(item.partner_identity_id), label: String(item.settlement_id) };
   if ("partner_identity_id" in item) return { tab: "partners", id: String(item.partner_identity_id), label: String(item.partner_identity_id) };
   return null;
 };
 
 /** §11 operator review reminders (Phase 9 round-2/3 fix): the same live-derived read the worker logs a summary of every cycle - true totals, a bounded navigable item page per category. */
-export function Overview({ onNavigate }: { onNavigate: (tab: "partners" | "engagements", id: string) => void }) {
+export function Overview({ onNavigate }: { onNavigate: (tab: "partners" | "engagements", id: string, focus?: string, focusReporting?: boolean) => void }) {
   const featureState = useQuery({ queryKey: ["agent-referrals", "feature-state"], queryFn: () => api<Row>("/agent-referrals/feature-state") });
   const reviewQueue = useQuery({ queryKey: ["agent-referrals", "review-queue"], queryFn: () => api<ReviewQueue>("/agent-referrals/review-queue") });
   const queryClient = useQueryClient();
@@ -92,7 +107,7 @@ export function Overview({ onNavigate }: { onNavigate: (tab: "partners" | "engag
                             const target = navigationTarget(key, item);
                             return (
                               <li key={index}>
-                                {target ? <button onClick={() => onNavigate(target.tab, target.id)}>Открыть {target.label}</button> : JSON.stringify(item)}
+                                {target ? <button onClick={() => onNavigate(target.tab, target.id, target.focus, target.focusReporting)}>Открыть {target.label}</button> : JSON.stringify(item)}
                               </li>
                             );
                           })}
