@@ -3,7 +3,7 @@ import { lastActivatedEngagementRevision } from "./agent-referrals-engagement";
 import { distributionsForEngagement, distributionProjection, requireRemoval, markOverdueRemoval, DistributionError } from "./agent-referrals-distribution";
 import { recoverStuckPaymentAttempts } from "./agent-referrals-payment";
 import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
-import { agentReferralsReviewQueue, agentReferralsReviewQueueCounts, type AgentReferralsReviewQueueCounts } from "./agent-referrals-review-queue";
+import { agentReferralsReviewQueue, agentReferralsReviewQueueTotals, type AgentReferralsReviewQueueTotals } from "./agent-referrals-review-queue";
 import type { AdminPrincipal } from "./agent-referrals-partner-identity";
 
 /**
@@ -48,17 +48,18 @@ export type AgentReferralsWorkerSweepResult = {
   removal_overdue_marked: number;
   payment_attempts_recovered: number;
   /**
-   * §11 operator review reminders: computed fresh every cycle from
-   * agent-referrals-review-queue.ts's live derived read - the same
-   * function the admin UI's review-queue tab calls, so this count can
-   * never silently drift from what an operator sees on screen. Logged by
-   * the caller (worker.ts) when nonzero; never written to a stored queue
-   * table.
+   * §11 operator review reminders: the TRUE, never-capped total per
+   * category, computed fresh every cycle from agent-referrals-review-
+   * queue.ts's live derived read - the same function the admin UI's
+   * overview tab calls for the bounded, navigable item view, so this total
+   * can never silently drift from (or understate) what an operator sees on
+   * screen. Logged by the caller (worker.ts) when nonzero; never written to
+   * a stored queue table.
    */
-  review_queue_counts: AgentReferralsReviewQueueCounts;
+  review_queue_totals: AgentReferralsReviewQueueTotals;
 };
 
-const ZERO_REVIEW_QUEUE_COUNTS: AgentReferralsReviewQueueCounts = {
+const ZERO_REVIEW_QUEUE_TOTALS: AgentReferralsReviewQueueTotals = {
   distributions_review_required: 0, distributions_removal_overdue: 0, distributions_reporting_tail_incomplete: 0,
   acts_awaiting_presentation: 0, payment_attempts_payout_unknown: 0, npd_reconciliation_needed: 0,
   partners_profile_pending_verification: 0, partners_framework_not_issued: 0,
@@ -137,12 +138,12 @@ const sweepRemovalOverdue = (db: Database.Database, atMs: number): number => {
  */
 export const runAgentReferralsWorkerSweep = (db: Database.Database, atMs = Date.now()): AgentReferralsWorkerSweepResult => {
   if (agentReferralsFeatureState(db).state === "DORMANT") {
-    return { removal_required_marked: 0, removal_overdue_marked: 0, payment_attempts_recovered: 0, review_queue_counts: ZERO_REVIEW_QUEUE_COUNTS };
+    return { removal_required_marked: 0, removal_overdue_marked: 0, payment_attempts_recovered: 0, review_queue_totals: ZERO_REVIEW_QUEUE_TOTALS };
   }
   return {
     removal_required_marked: sweepRemovalRequired(db, atMs),
     removal_overdue_marked: sweepRemovalOverdue(db, atMs),
     payment_attempts_recovered: recoverStuckPaymentAttempts(db, PAYMENT_ATTEMPT_STALE_MS, atMs),
-    review_queue_counts: agentReferralsReviewQueueCounts(agentReferralsReviewQueue(db, new Date(atMs).toISOString())),
+    review_queue_totals: agentReferralsReviewQueueTotals(agentReferralsReviewQueue(db, new Date(atMs).toISOString())),
   };
 };

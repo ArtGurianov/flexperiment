@@ -4,19 +4,29 @@ import { isOrdReportingTailComplete, OrdReportingError } from "./agent-referrals
 import { currentUsableNpdCheck } from "./agent-referrals-npd";
 
 /**
- * Phase 9 amendment round-2 fix (finding #4): the operator review surface
- * the original Phase 9 plan calls "reporting-tail queues, missing-evidence
- * sweeps, NPD reconciliation, operator review reminders". Every item here is
- * a LIVE derived read, never a second stored queue table that could drift
- * from the evidence it summarizes - the same "current is always derived"
- * convention this codebase already applies to every other projection
- * (distributionProjection, currentEffectiveRewardSnapshot, ...). The worker
- * (agent-referrals-worker-sweep.ts) calls this same function every cycle
- * and logs the totals, so the reminder is genuinely produced on a
- * deadline-driven cadence even though nothing is written to disk; the admin
- * UI (`/agent-referrals` review queue tab) calls it again on every load for
- * the interactive, item-level view. Both read the identical live facts, so
- * they can never disagree.
+ * Phase 9 amendment round-2 fix (finding #4), tightened again in round 3
+ * (finding #4: totals must never be silently truncated, item ordering must
+ * be deterministic, and every item must carry enough context to navigate to
+ * it - not just a bare id an operator has no way to act on): the operator
+ * review surface the original Phase 9 plan calls "reporting-tail queues,
+ * missing-evidence sweeps, NPD reconciliation, operator review reminders".
+ *
+ * Every item here is a LIVE derived read, never a second stored queue table
+ * that could drift from the evidence it summarizes - the same "current is
+ * always derived" convention this codebase already applies to every other
+ * projection (distributionProjection, currentEffectiveRewardSnapshot, ...).
+ * The worker (agent-referrals-worker-sweep.ts) calls this same function
+ * every cycle and logs the true totals; the admin UI (`/agent-referrals`
+ * overview tab) calls it again on every load for the interactive,
+ * item-level, navigable view. Both read the identical live facts, so they
+ * can never disagree.
+ *
+ * `total` is always the exhaustive count (never capped); `items` is a
+ * bounded, DETERMINISTICALLY ORDERED page of it (oldest/lowest-id first,
+ * per category - see each query's own ORDER BY); `truncated` says whether
+ * `items` is a strict subset of `total`. A caller that only reads `total`
+ * (the worker's own log line) can never be misled into thinking the true
+ * count is at most MAX_ITEMS_PER_CATEGORY.
  *
  * No VK network call of any kind. No new commercial/provider authority -
  * every field here is read-only.
@@ -24,32 +34,42 @@ import { currentUsableNpdCheck } from "./agent-referrals-npd";
 
 const MAX_ITEMS_PER_CATEGORY = 50;
 
+type ReviewQueueCategory<T> = { total: number; items: T[]; truncated: boolean };
+const paginate = <T>(all: T[]): ReviewQueueCategory<T> => ({ total: all.length, items: all.slice(0, MAX_ITEMS_PER_CATEGORY), truncated: all.length > MAX_ITEMS_PER_CATEGORY });
+
+export type DistributionReviewItem = { distribution_id: string; engagement_id: string };
+export type ActReviewItem = { act_id: string; engagement_id: string; settlement_id: string };
+export type PaymentAttemptReviewItem = { payment_attempt_id: string; settlement_id: string; engagement_id: string };
+export type NpdReconciliationItem = { settlement_id: string; partner_identity_id: string };
+export type PartnerReviewItem = { partner_identity_id: string };
+
 export type AgentReferralsReviewQueue = {
-  distributions_review_required: string[];
-  distributions_removal_overdue: string[];
-  distributions_reporting_tail_incomplete: string[];
-  acts_awaiting_presentation: string[];
-  payment_attempts_payout_unknown: string[];
-  npd_reconciliation_needed: string[];
-  partners_profile_pending_verification: string[];
-  partners_framework_not_issued: string[];
+  distributions_review_required: ReviewQueueCategory<DistributionReviewItem>;
+  distributions_removal_overdue: ReviewQueueCategory<DistributionReviewItem>;
+  distributions_reporting_tail_incomplete: ReviewQueueCategory<DistributionReviewItem>;
+  acts_awaiting_presentation: ReviewQueueCategory<ActReviewItem>;
+  payment_attempts_payout_unknown: ReviewQueueCategory<PaymentAttemptReviewItem>;
+  npd_reconciliation_needed: ReviewQueueCategory<NpdReconciliationItem>;
+  partners_profile_pending_verification: ReviewQueueCategory<PartnerReviewItem>;
+  partners_framework_not_issued: ReviewQueueCategory<PartnerReviewItem>;
 };
 
-export type AgentReferralsReviewQueueCounts = { [K in keyof AgentReferralsReviewQueue]: number };
+export type AgentReferralsReviewQueueTotals = { [K in keyof AgentReferralsReviewQueue]: number };
 
-const allDistributionIds = (db: Database.Database): string[] =>
-  (db.prepare("SELECT id, engagement_id FROM engagement_distributions").all() as { id: string; engagement_id: string }[]).map((row) => row.id);
+/** Every distribution with its owning engagement_id, oldest-reported first (rowid - see distributionsForEngagement's own identical rationale in agent-referrals-distribution.ts). Never a bare id list a caller has nothing to navigate to. */
+const allDistributions = (db: Database.Database): DistributionReviewItem[] =>
+  (db.prepare("SELECT id AS distribution_id, engagement_id FROM engagement_distributions ORDER BY rowid ASC").all() as DistributionReviewItem[]);
 
 /** Every distribution whose CURRENT revision's compliance state is REVIEW_REQUIRED (a channel-policy violation or an authority-interval violation at the moment it was reported/corrected). */
-const distributionsReviewRequired = (db: Database.Database): string[] =>
-  allDistributionIds(db).filter((id) => distributionProjection(db, id).compliance_state === "REVIEW_REQUIRED").slice(0, MAX_ITEMS_PER_CATEGORY);
+const distributionsReviewRequired = (db: Database.Database): DistributionReviewItem[] =>
+  allDistributions(db).filter((row) => distributionProjection(db, row.distribution_id).compliance_state === "REVIEW_REQUIRED");
 
 /** Every distribution whose removal state has reached OVERDUE_REMOVAL or REMOVAL_UNVERIFIED - the worker's own sweep already produces OVERDUE_REMOVAL; REMOVAL_UNVERIFIED is an explicit admin classification (markRemovalUnverified). */
-const distributionsRemovalOverdue = (db: Database.Database): string[] =>
-  allDistributionIds(db).filter((id) => {
-    const state = distributionProjection(db, id).removal_state;
+const distributionsRemovalOverdue = (db: Database.Database): DistributionReviewItem[] =>
+  allDistributions(db).filter((row) => {
+    const state = distributionProjection(db, row.distribution_id).removal_state;
     return state === "OVERDUE_REMOVAL" || state === "REMOVAL_UNVERIFIED";
-  }).slice(0, MAX_ITEMS_PER_CATEGORY);
+  });
 
 /**
  * Every distribution whose reporting tail is not yet complete as of `atIso`
@@ -63,28 +83,32 @@ const distributionsRemovalOverdue = (db: Database.Database): string[] =>
  * distributions_review_required, whose compliance_state classification
  * covers exactly this case.
  */
-const distributionsReportingTailIncomplete = (db: Database.Database, atIso: string): string[] =>
-  allDistributionIds(db).filter((id) => {
-    try { return !isOrdReportingTailComplete(db, id, atIso); }
+const distributionsReportingTailIncomplete = (db: Database.Database, atIso: string): DistributionReviewItem[] =>
+  allDistributions(db).filter((row) => {
+    try { return !isOrdReportingTailComplete(db, row.distribution_id, atIso); }
     catch (error) { if (error instanceof OrdReportingError) return false; throw error; }
-  }).slice(0, MAX_ITEMS_PER_CATEGORY);
+  });
 
-/** Acts generated (ACT_PREPARED) but not yet presented to the partner - nothing else can proceed (acceptance, payment) until this happens. */
-const actsAwaitingPresentation = (db: Database.Database): string[] =>
-  (db.prepare("SELECT id FROM settlement_acts WHERE presented_at IS NULL LIMIT ?").all(MAX_ITEMS_PER_CATEGORY) as { id: string }[]).map((row) => row.id);
+/** Acts generated (ACT_PREPARED) but not yet presented to the partner, oldest first - nothing else can proceed (acceptance, payment) until this happens. */
+const actsAwaitingPresentation = (db: Database.Database): ActReviewItem[] =>
+  db.prepare("SELECT id AS act_id, engagement_id, settlement_id FROM settlement_acts WHERE presented_at IS NULL ORDER BY created_at ASC, id ASC").all() as ActReviewItem[];
 
-/** Payment attempts left PAYOUT_UNKNOWN - never auto-retried; resolved only by durable provider evidence (recordPaymentMade or recordConfirmedNotMade). */
-const paymentAttemptsPayoutUnknown = (db: Database.Database): string[] =>
-  (db.prepare("SELECT id FROM payment_attempts WHERE status = 'PAYOUT_UNKNOWN' LIMIT ?").all(MAX_ITEMS_PER_CATEGORY) as { id: string }[]).map((row) => row.id);
+/** Payment attempts left PAYOUT_UNKNOWN, oldest first - never auto-retried; resolved only by durable provider evidence (recordPaymentMade or recordConfirmedNotMade). Joined to reward_settlements for engagement_id so the admin UI can navigate straight to the owning campaign. */
+const paymentAttemptsPayoutUnknown = (db: Database.Database): PaymentAttemptReviewItem[] =>
+  db.prepare(`SELECT pa.id AS payment_attempt_id, pa.settlement_id AS settlement_id, rs.engagement_id AS engagement_id
+    FROM payment_attempts pa JOIN reward_settlements rs ON rs.id = pa.settlement_id
+    WHERE pa.status = 'PAYOUT_UNKNOWN' ORDER BY pa.started_at ASC, pa.id ASC`).all() as PaymentAttemptReviewItem[];
 
 /**
  * Settlements under NPD whose act is accepted and undisputed - genuinely
- * payable - but with no fresh, usable NPD status check on file right now,
- * so beginPayment() would refuse. Surfaced so an operator can run a fresh
- * FNS check (recordNpdStatusCheck) before the partner notices a stalled
- * payout.
+ * payable - but with no fresh, usable NPD status check on file AS OF
+ * `atIso`, so beginPayment() would refuse. Takes the reference instant
+ * explicitly and threads it into currentUsableNpdCheck rather than letting
+ * that function default to the real wall clock - the same "never read
+ * Date.now() inside a function that also takes atMs/atIso at its own call
+ * site" discipline as every other time-dependent oracle in this sweep.
  */
-const npdReconciliationNeeded = (db: Database.Database): string[] => {
+const npdReconciliationNeeded = (db: Database.Database, atIso: string): NpdReconciliationItem[] => {
   const candidates = db.prepare(`
     SELECT rs.id AS settlement_id, rs.partner_identity_id AS partner_identity_id
     FROM reward_settlements rs
@@ -93,27 +117,28 @@ const npdReconciliationNeeded = (db: Database.Database): string[] => {
     LEFT JOIN settlement_act_disputes dis ON dis.act_id = act.id
     WHERE rs.settlement_flow = 'AGENT_REFERRALS' AND rs.status = 'PREPARED' AND rs.tax_mode_snapshot = 'NPD'
       AND act.presented_at IS NOT NULL AND dis.id IS NULL
-    LIMIT ?
-  `).all(MAX_ITEMS_PER_CATEGORY * 4) as { settlement_id: string; partner_identity_id: string }[];
-  return candidates.filter((row) => !currentUsableNpdCheck(db, row.partner_identity_id)).map((row) => row.settlement_id).slice(0, MAX_ITEMS_PER_CATEGORY);
+    ORDER BY rs.prepared_at ASC, rs.id ASC
+  `).all() as NpdReconciliationItem[];
+  return candidates.filter((row) => !currentUsableNpdCheck(db, row.partner_identity_id, atIso));
 };
 
-const partnersProfilePendingVerification = (db: Database.Database): string[] =>
-  (db.prepare("SELECT id FROM partner_identities WHERE onboarding_state = 'PROFILE_SUBMITTED' AND destroyed_at IS NULL LIMIT ?").all(MAX_ITEMS_PER_CATEGORY) as { id: string }[]).map((row) => row.id);
+const partnersProfilePendingVerification = (db: Database.Database): PartnerReviewItem[] =>
+  db.prepare("SELECT id AS partner_identity_id FROM partner_identities WHERE onboarding_state = 'PROFILE_SUBMITTED' AND destroyed_at IS NULL ORDER BY created_at ASC, id ASC").all() as PartnerReviewItem[];
 
-const partnersFrameworkNotIssued = (db: Database.Database): string[] =>
-  (db.prepare("SELECT id FROM partner_identities WHERE onboarding_state = 'PROFILE_VERIFIED' AND destroyed_at IS NULL LIMIT ?").all(MAX_ITEMS_PER_CATEGORY) as { id: string }[]).map((row) => row.id);
+const partnersFrameworkNotIssued = (db: Database.Database): PartnerReviewItem[] =>
+  db.prepare("SELECT id AS partner_identity_id FROM partner_identities WHERE onboarding_state = 'PROFILE_VERIFIED' AND destroyed_at IS NULL ORDER BY created_at ASC, id ASC").all() as PartnerReviewItem[];
 
 export const agentReferralsReviewQueue = (db: Database.Database, atIso: string): AgentReferralsReviewQueue => ({
-  distributions_review_required: distributionsReviewRequired(db),
-  distributions_removal_overdue: distributionsRemovalOverdue(db),
-  distributions_reporting_tail_incomplete: distributionsReportingTailIncomplete(db, atIso),
-  acts_awaiting_presentation: actsAwaitingPresentation(db),
-  payment_attempts_payout_unknown: paymentAttemptsPayoutUnknown(db),
-  npd_reconciliation_needed: npdReconciliationNeeded(db),
-  partners_profile_pending_verification: partnersProfilePendingVerification(db),
-  partners_framework_not_issued: partnersFrameworkNotIssued(db),
+  distributions_review_required: paginate(distributionsReviewRequired(db)),
+  distributions_removal_overdue: paginate(distributionsRemovalOverdue(db)),
+  distributions_reporting_tail_incomplete: paginate(distributionsReportingTailIncomplete(db, atIso)),
+  acts_awaiting_presentation: paginate(actsAwaitingPresentation(db)),
+  payment_attempts_payout_unknown: paginate(paymentAttemptsPayoutUnknown(db)),
+  npd_reconciliation_needed: paginate(npdReconciliationNeeded(db, atIso)),
+  partners_profile_pending_verification: paginate(partnersProfilePendingVerification(db)),
+  partners_framework_not_issued: paginate(partnersFrameworkNotIssued(db)),
 });
 
-export const agentReferralsReviewQueueCounts = (queue: AgentReferralsReviewQueue): AgentReferralsReviewQueueCounts =>
-  Object.fromEntries(Object.entries(queue).map(([key, value]) => [key, value.length])) as AgentReferralsReviewQueueCounts;
+/** The true (never-capped) count per category - what the worker logs every cycle. */
+export const agentReferralsReviewQueueTotals = (queue: AgentReferralsReviewQueue): AgentReferralsReviewQueueTotals =>
+  Object.fromEntries(Object.entries(queue).map(([key, value]) => [key, value.total])) as AgentReferralsReviewQueueTotals;

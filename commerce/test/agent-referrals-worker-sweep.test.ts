@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { runAgentReferralsWorkerSweep, REMOVAL_OVERDUE_GRACE_MS } from "../src/agent-referrals-worker-sweep";
 import { reportDistribution, distributionProjection, claimRemoval, confirmRemoval } from "../src/agent-referrals-distribution";
 import { beginPayment } from "../src/agent-referrals-payment";
+import { recordNpdStatusCheck, NPD_STATUS_CHECK_FRESHNESS_MS } from "../src/agent-referrals-npd";
 import {
   fresh, admin, readyPartner, seedOccurrence, nearTermTerms, offerAcceptActivate, purchaseAndPay, finalizedSettlement, acceptedAct,
 } from "./support/agent-referrals-settlement-fixtures";
@@ -46,7 +47,7 @@ describe("Agent Referrals worker sweep (Phase 9 §11): deterministic, idempotent
     expect(() => runAgentReferralsWorkerSweep(db)).not.toThrow();
     expect(runAgentReferralsWorkerSweep(db)).toEqual({
       removal_required_marked: 0, removal_overdue_marked: 0, payment_attempts_recovered: 0,
-      review_queue_counts: {
+      review_queue_totals: {
         distributions_review_required: 0, distributions_removal_overdue: 0, distributions_reporting_tail_incomplete: 0,
         acts_awaiting_presentation: 0, payment_attempts_payout_unknown: 0, npd_reconciliation_needed: 0,
         partners_profile_pending_verification: 0, partners_framework_not_issued: 0,
@@ -130,6 +131,37 @@ describe("Agent Referrals worker sweep (Phase 9 §11): deterministic, idempotent
     const swept = runAgentReferralsWorkerSweep(db, publicationEndAtMs + 1);
     expect(swept.removal_overdue_marked).toBe(0);
     expect(distributionProjection(db, distributionId).removal_state).toBe("REMOVAL_CONFIRMED");
+  });
+
+  it("review_queue_totals.npd_reconciliation_needed is a pure function of the supplied atMs, not the real wall clock - round-3 fix for the exact counterexample the review named", () => {
+    const { db, domain } = fresh();
+    track(db);
+    const p1 = readyPartner(db, "NPD");
+    const occ = seedOccurrence(db, p1.cityId, 100_000);
+    const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, nearTermTerms(1000, "PERCENT", 5000));
+    const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
+    purchaseAndPay(db, domain, occ, code.code, "customer@example.test", `idem-${randomUUID()}`);
+    const settlement = finalizedSettlement(db, domain, occ, engagementId);
+    acceptedAct(db, p1.partner, settlement);
+    // Recorded "now" (real wall clock) - fresh by the real clock for the
+    // entire lifetime of this test.
+    recordNpdStatusCheck(db, admin, p1.partnerIdentityId, "ACTIVE", "manual-fns-check-1");
+
+    // If npdReconciliationNeeded() (agent-referrals-review-queue.ts) read
+    // Date.now()/the real clock instead of the supplied atMs, this check
+    // would still read as fresh (age ~0 against real "now") and the
+    // settlement would NOT appear here. Supplying an atMs already past the
+    // freshness window proves the review queue actually decides staleness
+    // against the instant IT WAS ASKED ABOUT, not the instant it happened
+    // to run.
+    const pastFreshness = Date.now() + NPD_STATUS_CHECK_FRESHNESS_MS + 60_000;
+    const stale = runAgentReferralsWorkerSweep(db, pastFreshness);
+    expect(stale.review_queue_totals.npd_reconciliation_needed).toBe(1);
+
+    // Same real moment, an atMs still within the freshness window relative
+    // to when the check was recorded: must NOT flag it.
+    const withinFreshness = runAgentReferralsWorkerSweep(db, Date.now());
+    expect(withinFreshness.review_queue_totals.npd_reconciliation_needed).toBe(0);
   });
 
   it("recovers a stuck IN_PROGRESS payment attempt to PAYOUT_UNKNOWN after the staleness window, and is idempotent on replay", () => {

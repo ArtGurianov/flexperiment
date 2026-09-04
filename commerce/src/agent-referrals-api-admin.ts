@@ -230,7 +230,14 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
     const engagementId = engagement.id;
     const creative = currentCreativeRevision(sqlite, engagementId);
     const effective = currentEffectiveRewardSnapshot(sqlite, engagementId);
-    const settlement = effective ? sqlite.prepare(`SELECT id, status, amount_kopecks FROM reward_settlements WHERE effective_reward_snapshot_id = ? AND settlement_flow = 'AGENT_REFERRALS'`).get(effective.id) : null;
+    const settlement = effective
+      ? sqlite.prepare(`SELECT id, status, amount_kopecks FROM reward_settlements WHERE effective_reward_snapshot_id = ? AND settlement_flow = 'AGENT_REFERRALS'`).get(effective.id) as { id: string; status: string; amount_kopecks: number } | undefined
+      : undefined;
+    // Round-3 fix: the operator console's act/payment/ORD-invoice steps need
+    // this in the same read as everything else - previously only exposed
+    // via the separate /settlements/:id route, which the engagement detail
+    // page had no way to reach without a second round trip.
+    const act = settlement ? settlementActForSettlement(sqlite, settlement.id) : null;
     return c.json({
       engagement,
       latest_revision: currentEngagementRevision(sqlite, engagementId),
@@ -240,7 +247,12 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
       distributions: distributionsForEngagement(sqlite, engagementId).map((d) => distributionProjection(sqlite, d.id)),
       reward_registry: rewardRegistrySnapshot(sqlite, engagementId),
       effective_reward_snapshot: effective,
-      settlement,
+      settlement: settlement ?? null,
+      act,
+      act_acceptance: act ? actAcceptanceForAct(sqlite, act.id) : null,
+      act_dispute: act ? actDisputeForAct(sqlite, act.id) : null,
+      payment_attempts: settlement ? paymentAttemptsForSettlement(sqlite, settlement.id) : [],
+      paid_invoice: act ? ordPaidInvoicePayloadForAct(sqlite, act.id) : null,
     });
   });
   app.post("/engagements", async (c) => {

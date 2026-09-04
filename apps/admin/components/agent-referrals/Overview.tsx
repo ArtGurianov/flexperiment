@@ -1,13 +1,16 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { api, AdminApiError } from "../../lib/api";
 import type { Row } from "../../lib/page";
 import { Loading } from "../ui/Loading";
 import { Notice } from "../ui/Notice";
 import { Panel } from "../ui/Panel";
 import { Badge } from "../ui/Badge";
+
+type QueueCategory = { total: number; items: Row[]; truncated: boolean };
+type ReviewQueue = Record<string, QueueCategory>;
 
 const REVIEW_QUEUE_LABELS: Record<string, string> = {
   distributions_review_required: "Размещения, требующие проверки канала",
@@ -20,13 +23,22 @@ const REVIEW_QUEUE_LABELS: Record<string, string> = {
   partners_framework_not_issued: "Партнёры: договор не выдан",
 };
 
-/** §11 operator review reminders (Phase 9 round-2 fix): the same live-derived read the worker logs a summary of every cycle. */
-export function Overview() {
+/** Resolves a review-queue item to the (tab, id) an operator lands on to actually resolve it. Every category's items carry enough context for this - see agent-referrals-review-queue.ts's own item shapes. */
+const navigationTarget = (categoryKey: string, item: Row): { tab: "partners" | "engagements"; id: string; label: string } | null => {
+  if ("engagement_id" in item) return { tab: "engagements", id: String(item.engagement_id), label: String(item.distribution_id ?? item.act_id ?? item.engagement_id) };
+  if (categoryKey === "npd_reconciliation_needed") return { tab: "partners", id: String(item.partner_identity_id), label: String(item.settlement_id) };
+  if ("partner_identity_id" in item) return { tab: "partners", id: String(item.partner_identity_id), label: String(item.partner_identity_id) };
+  return null;
+};
+
+/** §11 operator review reminders (Phase 9 round-2/3 fix): the same live-derived read the worker logs a summary of every cycle - true totals, a bounded navigable item page per category. */
+export function Overview({ onNavigate }: { onNavigate: (tab: "partners" | "engagements", id: string) => void }) {
   const featureState = useQuery({ queryKey: ["agent-referrals", "feature-state"], queryFn: () => api<Row>("/agent-referrals/feature-state") });
-  const reviewQueue = useQuery({ queryKey: ["agent-referrals", "review-queue"], queryFn: () => api<Record<string, string[]>>("/agent-referrals/review-queue") });
+  const reviewQueue = useQuery({ queryKey: ["agent-referrals", "review-queue"], queryFn: () => api<ReviewQueue>("/agent-referrals/review-queue") });
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [expanded, setExpanded] = useState<string | null>(null);
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: ["agent-referrals", "feature-state"] });
 
@@ -63,13 +75,33 @@ export function Overview() {
       <Panel title="Очередь проверки оператора">
         {reviewQueue.isLoading ? <Loading /> : reviewQueue.isError ? <Notice error={(reviewQueue.error as AdminApiError).code} /> : (
           <table>
-            <thead><tr><th>Категория</th><th>Количество</th></tr></thead>
+            <thead><tr><th>Категория</th><th>Всего</th><th /></tr></thead>
             <tbody>
-              {Object.entries(reviewQueue.data!).map(([key, ids]) => (
-                <tr key={key}>
-                  <td>{REVIEW_QUEUE_LABELS[key] ?? key}</td>
-                  <td><Badge>{ids.length}</Badge></td>
-                </tr>
+              {Object.entries(reviewQueue.data!).map(([key, category]) => (
+                <Fragment key={key}>
+                  <tr>
+                    <td>{REVIEW_QUEUE_LABELS[key] ?? key}</td>
+                    <td><Badge>{category.total}</Badge></td>
+                    <td>{category.total > 0 && <button onClick={() => setExpanded(expanded === key ? null : key)}>{expanded === key ? "Скрыть" : "Показать"}</button>}</td>
+                  </tr>
+                  {expanded === key && category.total > 0 && (
+                    <tr>
+                      <td colSpan={3}>
+                        <ul>
+                          {category.items.map((item, index) => {
+                            const target = navigationTarget(key, item);
+                            return (
+                              <li key={index}>
+                                {target ? <button onClick={() => onNavigate(target.tab, target.id)}>Открыть {target.label}</button> : JSON.stringify(item)}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                        {category.truncated && <p>Показаны первые {category.items.length} из {category.total} записей.</p>}
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
               ))}
             </tbody>
           </table>
