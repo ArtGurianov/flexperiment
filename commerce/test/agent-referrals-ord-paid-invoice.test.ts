@@ -7,7 +7,7 @@ import { seedOrdProviderProfiles } from "./support/agent-referrals-ord-fixtures"
 import { generateSettlementAct, presentSettlementAct } from "../src/agent-referrals-act";
 import { mintStepUpGrant } from "../src/agent-referrals-step-up";
 import { setPartnerPayoutDestination, currentPayoutProfile } from "../src/agent-referrals-payout-profile";
-import { mintOrdPaidInvoicePayload, recordOrdPaidInvoiceReconciliation, ordPaidInvoicePayloadForAct, OrdPaidInvoiceError } from "../src/agent-referrals-ord-paid-invoice";
+import { mintOrdPaidInvoicePayload, recordOrdPaidInvoiceSubmission, recordOrdPaidInvoiceReconciliation, ordPaidInvoicePayloadForAct, OrdPaidInvoiceError } from "../src/agent-referrals-ord-paid-invoice";
 
 const open: Database.Database[] = [];
 afterEach(() => { while (open.length) open.pop()!.close(); });
@@ -82,21 +82,71 @@ describe("mintOrdPaidInvoicePayload: VKPaidInvoicePayload", () => {
   });
 });
 
-describe("recordOrdPaidInvoiceReconciliation", () => {
-  it("records submission + erir evidence and locks the payload", () => {
+describe("recordOrdPaidInvoiceSubmission / recordOrdPaidInvoiceReconciliation (round-2 P0.6: two-step, evidenced lifecycle)", () => {
+  it("submit -> reconcile: the full manual lifecycle, evidence required at each step", () => {
     const { db, act } = readyAcceptedAct();
     const { payload } = mintOrdPaidInvoicePayload(db, admin, act.id);
-    const locked = recordOrdPaidInvoiceReconciliation(db, payload.id, "vk-op-1", "erir-1");
+    const submitted = recordOrdPaidInvoiceSubmission(db, payload.id, "vk-op-1", "ev-submit");
+    expect(submitted.submission_state).toBe("SUBMITTED");
+    expect(submitted.lock_state).toBe("MUTABLE");
+    const locked = recordOrdPaidInvoiceReconciliation(db, payload.id, "erir-1");
     expect(locked.lock_state).toBe("EXTERNALLY_LOCKED");
     expect(locked.erir_code).toBe("erir-1");
+  });
+
+  it("reconciliation refuses before a real submission (P0.6: a reconciled fact cannot exist without durably-evidenced submission underneath it)", () => {
+    const { db, act } = readyAcceptedAct();
+    const { payload } = mintOrdPaidInvoicePayload(db, admin, act.id);
+    expect(() => recordOrdPaidInvoiceReconciliation(db, payload.id, "erir-1")).toThrow(/AGENT_REFERRALS_ORD_PAID_INVOICE_PAYLOAD_NOT_SUBMITTED/);
   });
 
   it("once locked, no further mutation of any kind is legal", () => {
     const { db, act } = readyAcceptedAct();
     const { payload } = mintOrdPaidInvoicePayload(db, admin, act.id);
-    recordOrdPaidInvoiceReconciliation(db, payload.id, "vk-op-1", "erir-1");
-    expect(() => recordOrdPaidInvoiceReconciliation(db, payload.id, "vk-op-2", "erir-2")).toThrow(/AGENT_REFERRALS_ORD_PAID_INVOICE_PAYLOAD_LOCKED/);
+    recordOrdPaidInvoiceSubmission(db, payload.id, "vk-op-1", "ev-submit");
+    recordOrdPaidInvoiceReconciliation(db, payload.id, "erir-1");
     expect(() => db.prepare("UPDATE ord_paid_invoice_payloads SET erir_code = 'x' WHERE id = ?").run(payload.id)).toThrow(/ORD_PAID_INVOICE_PAYLOAD_TERMINAL_IMMUTABLE/);
+  });
+
+  it("round-2 P1.3: an idempotent retry of reconciliation (same erir_code) after lock returns the payload unchanged", () => {
+    const { db, act } = readyAcceptedAct();
+    const { payload } = mintOrdPaidInvoicePayload(db, admin, act.id);
+    recordOrdPaidInvoiceSubmission(db, payload.id, "vk-op-1", "ev-submit");
+    const locked = recordOrdPaidInvoiceReconciliation(db, payload.id, "erir-1");
+    const retry = recordOrdPaidInvoiceReconciliation(db, payload.id, "erir-1");
+    expect(retry.id).toBe(locked.id);
+    expect(retry.erir_code).toBe("erir-1");
+  });
+
+  it("a GENUINELY different erir_code against an already-locked payload is a real conflict, never silently accepted", () => {
+    const { db, act } = readyAcceptedAct();
+    const { payload } = mintOrdPaidInvoicePayload(db, admin, act.id);
+    recordOrdPaidInvoiceSubmission(db, payload.id, "vk-op-1", "ev-submit");
+    recordOrdPaidInvoiceReconciliation(db, payload.id, "erir-1");
+    expect(() => recordOrdPaidInvoiceReconciliation(db, payload.id, "erir-DIFFERENT")).toThrow(/AGENT_REFERRALS_ORD_PAID_INVOICE_PAYLOAD_RECONCILIATION_CONFLICT/);
+  });
+
+  it("an idempotent retry of submission (same vk id/evidence) is a no-op; a genuinely different one is a conflict", () => {
+    const { db, act } = readyAcceptedAct();
+    const { payload } = mintOrdPaidInvoicePayload(db, admin, act.id);
+    const first = recordOrdPaidInvoiceSubmission(db, payload.id, "vk-op-1", "ev-submit");
+    const retry = recordOrdPaidInvoiceSubmission(db, payload.id, "vk-op-1", "ev-submit");
+    expect(retry.id).toBe(first.id);
+    expect(() => recordOrdPaidInvoiceSubmission(db, payload.id, "vk-op-DIFFERENT", "ev-different")).toThrow(/AGENT_REFERRALS_ORD_PAID_INVOICE_PAYLOAD_SUBMISSION_CONFLICT/);
+  });
+});
+
+describe("round-2 P0.6: exact submission/lock CHECK shape", () => {
+  it("MUTABLE + SUBMITTED requires vk_operation_external_id AND a non-empty evidence_ref together", () => {
+    const { db, act } = readyAcceptedAct();
+    const { payload } = mintOrdPaidInvoicePayload(db, admin, act.id);
+    expect(() => db.prepare("UPDATE ord_paid_invoice_payloads SET submission_state = 'SUBMITTED' WHERE id = ?").run(payload.id)).toThrow(/CHECK constraint failed/);
+  });
+
+  it("EXTERNALLY_LOCKED requires vk_operation_external_id AND erir_code AND a non-empty evidence_ref together - erir_code alone is insufficient (P0.6's exact counterexample)", () => {
+    const { db, act } = readyAcceptedAct();
+    const { payload } = mintOrdPaidInvoicePayload(db, admin, act.id);
+    expect(() => db.prepare("UPDATE ord_paid_invoice_payloads SET lock_state = 'EXTERNALLY_LOCKED', erir_code = 'erir-fabricated' WHERE id = ?").run(payload.id)).toThrow(/CHECK constraint failed/);
   });
 });
 

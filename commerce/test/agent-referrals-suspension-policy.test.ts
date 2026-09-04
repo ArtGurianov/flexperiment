@@ -21,6 +21,7 @@ const NEW_AUTHORITY_CLASSES: AgentReferralsOperationClass[] = [
   "NEW_PUBLICATION_AUTHORITY",
   "NEW_ATTRIBUTION",
   "ORD_CREATIVE_REGISTRATION",
+  "ORD_PROVIDER_OPERATION",
 ];
 
 const MATURATION_CLASSES: AgentReferralsOperationClass[] = [

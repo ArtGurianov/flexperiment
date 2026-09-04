@@ -57,21 +57,23 @@ export type OrdDistributionPeriodReportRow = {
   supersedes_report_id: string | null;
   statistics_state: "ACTUAL" | "REPORTING_DATA_UNAVAILABLE";
   statistics_json: string | null;
+  review_required: 0 | 1;
   statistics_reason: "ORDINARY" | "ZERO_REWARD_STATISTICS" | "CONTINUING_STATISTICS";
   zero_reward_closure_id: string | null;
   operation_key: string;
+  evidence_ref: string;
   submission_state: "NOT_SUBMITTED" | "SUBMITTED" | "SUBMIT_FAILED";
   vk_operation_external_id: string | null;
   erir_code: string | null;
-  evidence_ref: string | null;
+  submission_evidence_ref: string | null;
   correction_reason: string | null;
   canonical_hash: string;
   created_by_admin_id: string;
   created_at: string;
 };
 
-const COLUMNS = `id, distribution_id, distribution_revision_id, reporting_basis, reporting_period_key, revision, supersedes_report_id, statistics_state, statistics_json,
-  statistics_reason, zero_reward_closure_id, operation_key, submission_state, vk_operation_external_id, erir_code, evidence_ref, correction_reason, canonical_hash, created_by_admin_id, created_at`;
+const COLUMNS = `id, distribution_id, distribution_revision_id, reporting_basis, reporting_period_key, revision, supersedes_report_id, statistics_state, statistics_json, review_required,
+  statistics_reason, zero_reward_closure_id, operation_key, evidence_ref, submission_state, vk_operation_external_id, erir_code, submission_evidence_ref, correction_reason, canonical_hash, created_by_admin_id, created_at`;
 
 /** The current (highest-revision) report for an exact (distribution, period) - never rowid or created_at. */
 export const currentOrdDistributionPeriodReport = (db: Database.Database, distributionId: string, reportingPeriodKey: string): OrdDistributionPeriodReportRow | null =>
@@ -81,16 +83,32 @@ export const currentOrdDistributionPeriodReport = (db: Database.Database, distri
 export const ordDistributionPeriodReportsForDistribution = (db: Database.Database, distributionId: string): OrdDistributionPeriodReportRow[] =>
   db.prepare(`SELECT ${COLUMNS} FROM ord_distribution_period_reports WHERE distribution_id = ? ORDER BY reporting_period_key ASC, revision ASC`).all(distributionId) as OrdDistributionPeriodReportRow[];
 
+/** Mechanical reporting-tail-complete check (P0.6): true only when every CURRENT report for this distribution has review_required = 0. An UNAVAILABLE report makes this false by construction, never by caller convention. */
+export const isOrdReportingTailComplete = (db: Database.Database, distributionId: string): boolean => {
+  const periods = db.prepare("SELECT DISTINCT reporting_period_key FROM ord_distribution_period_reports WHERE distribution_id = ?").all(distributionId) as { reporting_period_key: string }[];
+  if (periods.length === 0) return false;
+  return periods.every((p) => currentOrdDistributionPeriodReport(db, distributionId, p.reporting_period_key)!.review_required === 0);
+};
+
 /** A real, current zero-reward closure for the exact engagement this distribution belongs to - or null. */
 const currentZeroRewardClosureForDistribution = (db: Database.Database, distributionId: string): { id: string; service_period_start_at: string; service_period_end_at: string } | null =>
   (db.prepare(`SELECT z.id AS id, z.service_period_start_at AS service_period_start_at, z.service_period_end_at AS service_period_end_at
     FROM engagement_zero_reward_closures z JOIN engagement_distributions d ON d.engagement_id = z.engagement_id WHERE d.id = ?`)
     .get(distributionId) as { id: string; service_period_start_at: string; service_period_end_at: string } | undefined) ?? null;
 
-const formatKindForDistributionRevision = (db: Database.Database, revision: DistributionRevisionRow): CreativeFormatKind => {
+const formatKindForDistributionRevision = (revision: DistributionRevisionRow, db: Database.Database): CreativeFormatKind => {
   if (!revision.creative_revision_id) throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_FORMAT_UNRESOLVED", 409, revision.id);
   const row = db.prepare("SELECT format_kind FROM engagement_creative_revisions WHERE id = ?").get(revision.creative_revision_id) as { format_kind: CreativeFormatKind };
   return row.format_kind;
+};
+
+/** distribution_revision_id, validated to belong to distributionId - used only to re-pin a PREDECESSOR's own revision (P0.4), never to silently re-derive "current". */
+const distributionRevisionByIdForDistribution = (db: Database.Database, distributionId: string, distributionRevisionId: string): DistributionRevisionRow => {
+  const row = db.prepare(`SELECT id, distribution_id, revision, supersedes_revision_id, engagement_revision_id, creative_revision_id, channel_key, channel_policy_status, channel_policy_revision,
+      resource_kind, resource_identifier, distribution_resource_url, published_at, ended_at, reported_by, correction_reason, evidence_ref, canonical_hash, created_at
+    FROM engagement_distribution_revisions WHERE id = ? AND distribution_id = ?`).get(distributionRevisionId, distributionId) as DistributionRevisionRow | undefined;
+  if (!row) throw new OrdReportingError("AGENT_REFERRALS_DISTRIBUTION_REVISION_NOT_FOUND", 404, distributionRevisionId);
+  return row;
 };
 
 export type ActualStatistics = { statistics_state: "ACTUAL"; statistics_json: Record<string, unknown> };
@@ -113,30 +131,123 @@ export type FileDistributionPeriodReportInput = {
    * (see recordOrdDistributionPeriodReportReconciliation), never by
    * mutating this one.
    */
-  submission?: { vk_operation_external_id: string; erir_code: string };
+  submission?: { vk_operation_external_id: string; erir_code: string; submission_evidence_ref: string };
 };
 
 const canonicalReportHash = (input: {
   distribution_id: string; distribution_revision_id: string; reporting_basis: ReportingBasis; reporting_period_key: string; revision: number; statistics_state: string; statistics_json: string | null; statistics_reason: string;
 }): string => sha256(canonicalV2(input as unknown as Record<string, unknown>));
 
+/** Internal: shared insert path used by both fileOrdDistributionPeriodReport (resolves "current" distribution facts) and the reconciliation helper (pins the PREDECESSOR's own facts explicitly - P0.4). */
+const insertReport = (
+  db: Database.Database,
+  admin: AdminPrincipal,
+  input: FileDistributionPeriodReportInput,
+  distributionRevision: DistributionRevisionRow,
+  reportingBasis: ReportingBasis,
+): OrdDistributionPeriodReportRow => {
+  const statisticsReason = input.statistics_reason ?? "ORDINARY";
+  let zeroRewardClosureId: string | null = null;
+  if (statisticsReason !== "ORDINARY") {
+    // P0.5: PROVIDER_SPECIAL_PERIOD's own reporting_period_key shape/order
+    // is L5 PENDING_EXTERNAL_CONFIRMATION - comparing it against a
+    // calendar-month slice (or against itself lexicographically) would
+    // silently assume a shape nobody has confirmed. Zero/continuing
+    // classification is therefore refused entirely on this basis until
+    // that representation is confirmed, never approximated with a
+    // calendar-shaped fallback.
+    if (reportingBasis === "PROVIDER_SPECIAL_PERIOD") {
+      throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_ZERO_REWARD_SPECIAL_PERIOD_UNSUPPORTED", 409, reportingBasis);
+    }
+    const closure = currentZeroRewardClosureForDistribution(db, input.distribution_id);
+    if (!closure) throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_ZERO_REWARD_CLOSURE_MISSING", 409, input.distribution_id);
+    zeroRewardClosureId = closure.id;
+    // ZERO_REWARD_STATISTICS is the ONE report for the closure's own
+    // original contractual service month; CONTINUING_STATISTICS is any
+    // later period the distribution remains accessible. Both require the
+    // closure to be real (checked above); this additionally proves the
+    // caller named the right reason for the period they are filing.
+    const servicePeriodMonth = calendarMonthKey(closure.service_period_start_at);
+    const isServiceMonth = input.reporting_period_key === servicePeriodMonth;
+    if (statisticsReason === "ZERO_REWARD_STATISTICS" && !isServiceMonth) {
+      throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_ZERO_REWARD_PERIOD_MISMATCH", 409, `${input.reporting_period_key}!=${servicePeriodMonth}`);
+    }
+    if (statisticsReason === "CONTINUING_STATISTICS" && input.reporting_period_key <= servicePeriodMonth) {
+      throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_CONTINUING_STATISTICS_NOT_LATER", 409, `${input.reporting_period_key}<=${servicePeriodMonth}`);
+    }
+  }
+
+  const statisticsJson = input.statistics.statistics_state === "ACTUAL" ? JSON.stringify(input.statistics.statistics_json) : null;
+  const submissionState = input.submission ? "SUBMITTED" : "NOT_SUBMITTED";
+
+  // P1.3 exact-replay detection: compares the CANDIDATE's own content
+  // fields directly against the CURRENT report's stored fields - never via
+  // operation_key equality (operation_key identifies a ROW, and a genuine
+  // correction revision can legitimately carry identical statistics to its
+  // predecessor, e.g. reconciliation evidence arriving for an unchanged
+  // fact - a content-only key would collide with that row on the UNIQUE
+  // constraint). Nothing changed only when BOTH the statistics content AND
+  // whatever submission evidence is being supplied are already exactly on
+  // file.
+  const current = currentOrdDistributionPeriodReport(db, input.distribution_id, input.reporting_period_key);
+  const statisticsAlreadyOnFile = !!current
+    && current.reporting_basis === reportingBasis && current.statistics_state === input.statistics.statistics_state
+    && current.statistics_json === statisticsJson && current.statistics_reason === statisticsReason && current.zero_reward_closure_id === zeroRewardClosureId;
+  const submissionAlreadyOnFile = !input.submission || (
+    current?.submission_state === "SUBMITTED"
+    && current.vk_operation_external_id === input.submission.vk_operation_external_id
+    && current.erir_code === input.submission.erir_code
+    && current.submission_evidence_ref === input.submission.submission_evidence_ref
+  );
+  if (statisticsAlreadyOnFile && submissionAlreadyOnFile) return current!; // exact semantic replay - idempotent, no new row
+
+  const nextRevision = (current?.revision ?? 0) + 1;
+  if (nextRevision > 1 && !input.correction_reason?.trim()) throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_CORRECTION_REASON_REQUIRED", 422);
+
+  const canonicalHash = canonicalReportHash({
+    distribution_id: input.distribution_id, distribution_revision_id: distributionRevision.id, reporting_basis: reportingBasis, reporting_period_key: input.reporting_period_key,
+    revision: nextRevision, statistics_state: input.statistics.statistics_state, statistics_json: statisticsJson, statistics_reason: statisticsReason,
+  });
+  const operationKey = ordDistributionPeriodReportOperationKey({
+    distribution_id: input.distribution_id, reporting_period_key: input.reporting_period_key, revision: nextRevision, reporting_basis: reportingBasis,
+    statistics_state: input.statistics.statistics_state, statistics_json: statisticsJson, statistics_reason: statisticsReason, zero_reward_closure_id: zeroRewardClosureId,
+    submission_state: submissionState, vk_operation_external_id: input.submission?.vk_operation_external_id ?? null, erir_code: input.submission?.erir_code ?? null,
+  });
+
+  const reportId = id();
+  db.prepare(`INSERT INTO ord_distribution_period_reports(id, distribution_id, distribution_revision_id, reporting_basis, reporting_period_key, revision, supersedes_report_id,
+      statistics_state, statistics_json, statistics_reason, zero_reward_closure_id, operation_key, evidence_ref, submission_state, vk_operation_external_id, erir_code, submission_evidence_ref, correction_reason, canonical_hash, created_by_admin_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(reportId, input.distribution_id, distributionRevision.id, reportingBasis, input.reporting_period_key, nextRevision, current?.id ?? null,
+      input.statistics.statistics_state, statisticsJson, statisticsReason, zeroRewardClosureId, operationKey, input.evidence_ref, submissionState,
+      input.submission?.vk_operation_external_id ?? null, input.submission?.erir_code ?? null, input.submission?.submission_evidence_ref ?? null, input.correction_reason ?? null, canonicalHash, admin.admin_id);
+  return currentOrdDistributionPeriodReport(db, input.distribution_id, input.reporting_period_key)!;
+};
+
 /**
  * Files the NEXT revision for an exact (distribution, reporting_period_key)
  * - revision 1 if none exists yet, else current.revision + 1 with
- * `supersedes_report_id` pinned to the exact predecessor. `statistics`
- * structurally forbids ever pairing REPORTING_DATA_UNAVAILABLE with a
- * fabricated payload - the type itself has no statistics_json field in that
- * branch. `statistics_reason` defaults to ORDINARY; ZERO_REWARD_STATISTICS/
+ * `supersedes_report_id` pinned to the exact predecessor - UNLESS the
+ * filing is an exact semantic replay of the current revision, in which
+ * case it is returned unchanged (P1.3). `statistics` structurally forbids
+ * ever pairing REPORTING_DATA_UNAVAILABLE with a fabricated payload - the
+ * type itself has no statistics_json field in that branch.
+ * `statistics_reason` defaults to ORDINARY; ZERO_REWARD_STATISTICS/
  * CONTINUING_STATISTICS additionally require a genuine current zero-reward
  * closure for this distribution's own engagement (never a fabricated
- * pretext), resolved here and re-proven independently by the migration's
- * own relational guard.
+ * pretext) and a CALENDAR_MONTH reporting basis (P0.5) - never a
+ * PROVIDER_SPECIAL_PERIOD one, whose exact period-key shape is still
+ * unconfirmed.
  *
  * PROVIDER_SPECIAL_PERIOD ACTUAL reporting fails closed
  * (AGENT_REFERRALS_ORD_REPORTING_SPECIAL_PERIOD_UNCONFIRMED) until L5's VK
  * representation is confirmed via the activation manifest -
  * REPORTING_DATA_UNAVAILABLE is always legal regardless, since it asserts
- * nothing about VK's field mapping.
+ * nothing about VK's field mapping. This always resolves against the
+ * distribution's CURRENT facts - a report reconciled against a since-
+ * corrected distribution revision must go through
+ * recordOrdDistributionPeriodReportReconciliation instead, which pins the
+ * predecessor's own revision explicitly (P0.4).
  */
 export const fileOrdDistributionPeriodReport = (db: Database.Database, admin: AdminPrincipal, input: FileDistributionPeriodReportInput): OrdDistributionPeriodReportRow => {
   const run = db.transaction((): OrdDistributionPeriodReportRow => {
@@ -146,57 +257,14 @@ export const fileOrdDistributionPeriodReport = (db: Database.Database, admin: Ad
     const distributionRevision = currentDistributionRevision(db, input.distribution_id);
     if (!distributionRevision) throw new OrdReportingError("AGENT_REFERRALS_DISTRIBUTION_NOT_FOUND", 404, input.distribution_id);
 
-    const formatKind = formatKindForDistributionRevision(db, distributionRevision);
+    const formatKind = formatKindForDistributionRevision(distributionRevision, db);
     const reportingBasis = resolveOrdReportingBasis(db, formatKind, distributionRevision.published_at);
     if (reportingBasis === "PROVIDER_SPECIAL_PERIOD" && input.statistics.statistics_state === "ACTUAL") {
       if (agentReferralsActivationEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY) !== true) {
         throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_SPECIAL_PERIOD_UNCONFIRMED", 409, formatKind);
       }
     }
-
-    const statisticsReason = input.statistics_reason ?? "ORDINARY";
-    let zeroRewardClosureId: string | null = null;
-    if (statisticsReason !== "ORDINARY") {
-      const closure = currentZeroRewardClosureForDistribution(db, input.distribution_id);
-      if (!closure) throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_ZERO_REWARD_CLOSURE_MISSING", 409, input.distribution_id);
-      zeroRewardClosureId = closure.id;
-      // ZERO_REWARD_STATISTICS is the ONE report for the closure's own
-      // original contractual service month; CONTINUING_STATISTICS is any
-      // later period the distribution remains accessible. Both require the
-      // closure to be real (checked above); this additionally proves the
-      // caller named the right reason for the period they are filing.
-      const servicePeriodMonth = closure.service_period_start_at.slice(0, 7);
-      const isServiceMonth = input.reporting_period_key === servicePeriodMonth;
-      if (statisticsReason === "ZERO_REWARD_STATISTICS" && !isServiceMonth) {
-        throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_ZERO_REWARD_PERIOD_MISMATCH", 409, `${input.reporting_period_key}!=${servicePeriodMonth}`);
-      }
-      if (statisticsReason === "CONTINUING_STATISTICS" && input.reporting_period_key <= servicePeriodMonth) {
-        throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_CONTINUING_STATISTICS_NOT_LATER", 409, `${input.reporting_period_key}<=${servicePeriodMonth}`);
-      }
-    }
-
-    const current = currentOrdDistributionPeriodReport(db, input.distribution_id, input.reporting_period_key);
-    const nextRevision = (current?.revision ?? 0) + 1;
-    if (nextRevision > 1 && !input.correction_reason?.trim()) throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_CORRECTION_REASON_REQUIRED", 422);
-
-    const statisticsJson = input.statistics.statistics_state === "ACTUAL" ? JSON.stringify(input.statistics.statistics_json) : null;
-    const operationKey = ordDistributionPeriodReportOperationKey({
-      distribution_id: input.distribution_id, reporting_period_key: input.reporting_period_key, revision: nextRevision, reporting_basis: reportingBasis, statistics_reason: statisticsReason, zero_reward_closure_id: zeroRewardClosureId,
-    });
-    const canonicalHash = canonicalReportHash({
-      distribution_id: input.distribution_id, distribution_revision_id: distributionRevision.id, reporting_basis: reportingBasis, reporting_period_key: input.reporting_period_key,
-      revision: nextRevision, statistics_state: input.statistics.statistics_state, statistics_json: statisticsJson, statistics_reason: statisticsReason,
-    });
-
-    const reportId = id();
-    const submissionState = input.submission ? "SUBMITTED" : "NOT_SUBMITTED";
-    db.prepare(`INSERT INTO ord_distribution_period_reports(id, distribution_id, distribution_revision_id, reporting_basis, reporting_period_key, revision, supersedes_report_id,
-        statistics_state, statistics_json, statistics_reason, zero_reward_closure_id, operation_key, submission_state, vk_operation_external_id, erir_code, evidence_ref, correction_reason, canonical_hash, created_by_admin_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(reportId, input.distribution_id, distributionRevision.id, reportingBasis, input.reporting_period_key, nextRevision, current?.id ?? null,
-        input.statistics.statistics_state, statisticsJson, statisticsReason, zeroRewardClosureId, operationKey, submissionState,
-        input.submission?.vk_operation_external_id ?? null, input.submission?.erir_code ?? null, input.evidence_ref, input.correction_reason ?? null, canonicalHash, admin.admin_id);
-    return currentOrdDistributionPeriodReport(db, input.distribution_id, input.reporting_period_key)!;
+    return insertReport(db, admin, input, distributionRevision, reportingBasis);
   });
   return run.immediate();
 };
@@ -204,8 +272,13 @@ export const fileOrdDistributionPeriodReport = (db: Database.Database, admin: Ad
 /**
  * Records manual VK submission + ERIR reconciliation for an
  * ALREADY-FILED report by filing the NEXT correction revision carrying the
- * identical statistics but new reconciliation evidence - filed facts are
- * never UPDATEd, even to attach this.
+ * PREDECESSOR's own exact distribution_revision_id and reporting_basis
+ * (P0.4 fix) - never re-resolving "current" distribution facts, which
+ * would silently re-describe an old, already-filed report as if it had
+ * always been about a distribution fact corrected AFTER the report was
+ * filed. If the distribution's facts have genuinely been corrected since,
+ * that is a SEPARATE, explicit report correction against the new facts -
+ * never an implicit side effect of reconciling evidence for the old one.
  */
 export const recordOrdDistributionPeriodReportReconciliation = (
   db: Database.Database,
@@ -214,19 +287,25 @@ export const recordOrdDistributionPeriodReportReconciliation = (
   reportingPeriodKey: string,
   vkOperationExternalId: string,
   erirCode: string,
-  evidenceRef: string,
+  submissionEvidenceRef: string,
 ): OrdDistributionPeriodReportRow => {
   const run = db.transaction((): OrdDistributionPeriodReportRow => {
+    gate(db);
     const current = currentOrdDistributionPeriodReport(db, distributionId, reportingPeriodKey);
     if (!current) throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_REPORT_NOT_FOUND", 404, `${distributionId}:${reportingPeriodKey}`);
+    const pinnedRevision = distributionRevisionByIdForDistribution(db, distributionId, current.distribution_revision_id);
     const statistics: ReportStatistics = current.statistics_state === "ACTUAL"
       ? { statistics_state: "ACTUAL", statistics_json: JSON.parse(current.statistics_json!) }
       : { statistics_state: "REPORTING_DATA_UNAVAILABLE" };
-    return fileOrdDistributionPeriodReport(db, admin, {
-      distribution_id: distributionId, reporting_period_key: reportingPeriodKey, statistics, evidence_ref: evidenceRef,
-      correction_reason: "ERIR reconciliation received", statistics_reason: current.statistics_reason === "ORDINARY" ? undefined : current.statistics_reason,
-      submission: { vk_operation_external_id: vkOperationExternalId, erir_code: erirCode },
-    });
+    return insertReport(
+      db, admin,
+      {
+        distribution_id: distributionId, reporting_period_key: reportingPeriodKey, statistics, evidence_ref: current.evidence_ref,
+        correction_reason: "ERIR reconciliation received", statistics_reason: current.statistics_reason === "ORDINARY" ? undefined : current.statistics_reason,
+        submission: { vk_operation_external_id: vkOperationExternalId, erir_code: erirCode, submission_evidence_ref: submissionEvidenceRef },
+      },
+      pinnedRevision, current.reporting_basis,
+    );
   });
   return run.immediate();
 };

@@ -194,7 +194,7 @@ describe("CREATIVE_READY_TO_PUBLISH, provider half (PR8 completes B-5e)", () => 
     return { p1, engagementId, creativeRevisionId, canonicalUrl };
   };
 
-  it("refuses when a registration exists but has not reached EXTERNALLY_LOCKED (no ERID yet)", () => {
+  it("refuses when a registration exists but local_state has not reached CONFIRMED (no ERID yet)", () => {
     const db = fresh();
     mintOrdProviderProfile(db, "admin", "COUNTERPARTY", { legal_name: "Flexperiment" }, "seed");
     mintOrdProviderProfile(db, "admin", "CONTRACT", { ref: "C-1" }, "seed");
@@ -210,6 +210,7 @@ describe("CREATIVE_READY_TO_PUBLISH, provider half (PR8 completes B-5e)", () => 
     mintOrdProviderProfile(db, "admin", "CONTRACT", { ref: "C-1" }, "seed");
     const { engagementId, creativeRevisionId } = readyEngagementAndCreative(db);
     const { registration } = registerOrdCreative(db, admin, creativeRevisionId);
+    recordOrdCreativeRegistrationSubmitted(db, registration.id, "vk-ext-1", "ev-submit");
     const evidence = confirmOrdCreativeRegistration(db, registration.id, "vk-obj-1", "erid-1", "ev");
     const result = assessCreativeReadyToPublish(db, engagementId);
     expect(result).toEqual({ engagement_id: engagementId, creative_revision_id: creativeRevisionId, ord_registration_id: evidence.id, erid: "erid-1" });

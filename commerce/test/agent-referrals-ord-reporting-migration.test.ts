@@ -82,15 +82,15 @@ describe("0048 ord_reporting migration", () => {
     expect(all.filter((n) => n > MIGRATION_FILE)).toEqual([]);
   });
 
-  it("introduces exactly five new tables, no levy/income-recognition/contribution/RKN/UIN table, no generic OrdProvider abstraction table", () => {
+  it("introduces exactly six new tables, no levy/income-recognition/contribution/RKN/UIN table, no generic multi-provider abstraction table", () => {
     const db = at0047();
     const before = new Set(tableNames(db));
     migrate(db);
     const introduced = tableNames(db).filter((name) => !before.has(name) && name !== "schema_migrations");
     expect(introduced.sort()).toEqual([
-      "ord_creative_registrations", "ord_distribution_period_reports", "ord_paid_invoice_payloads", "ord_provider_profile_revisions", "ord_reporting_period_policy",
+      "ord_creative_registrations", "ord_distribution_period_reports", "ord_paid_invoice_payloads", "ord_provider_operations", "ord_provider_profile_revisions", "ord_reporting_period_policy",
     ]);
-    const forbidden = /income_recognition_rules|advertising_income_snapshot|contribution_snapshot|levy_quarter|rkn_payment|_uin\b|levy_receipt|levy_debt|withholding_state|ord_operations\b|ord_provider\b$/i;
+    const forbidden = /income_recognition_rules|advertising_income_snapshot|contribution_snapshot|levy_quarter|rkn_payment|_uin\b|levy_receipt|levy_debt|withholding_state|ord_provider\b$/i;
     for (const name of introduced) expect(name).not.toMatch(forbidden);
   });
 
@@ -103,13 +103,15 @@ describe("0048 ord_reporting migration", () => {
 
   describe("PR3-PR7's required-schema-object list now also proves PR8's authority/evidence objects", () => {
     const pr8Objects = [
-      "ord_provider_profile_revisions", "ord_provider_profile_revisions_immutable_guard", "ord_provider_profile_revisions_delete_guard",
+      "ord_provider_profile_revisions", "ord_provider_profile_revisions_immutable_guard", "ord_provider_profile_revisions_delete_guard", "ord_provider_profile_revisions_lineage_guard",
       "ord_reporting_period_policy", "ord_reporting_period_policy_immutable_guard", "ord_reporting_period_policy_delete_guard",
+      "ord_provider_operations", "ord_provider_operations_relational_consistency_guard", "ord_provider_operations_terminal_immutable_guard",
+      "ord_provider_operations_correction_only_guard", "ord_provider_operations_authority_immutable_guard", "ord_provider_operations_observed_id_immutable_guard", "ord_provider_operations_delete_guard",
       "ord_creative_registrations", "ord_creative_registrations_relational_consistency_guard", "ord_creative_registrations_terminal_immutable_guard",
-      "ord_creative_registrations_authority_immutable_guard", "ord_creative_registrations_observed_ids_immutable_guard", "ord_creative_registrations_delete_guard",
+      "ord_creative_registrations_correction_only_guard", "ord_creative_registrations_authority_immutable_guard", "ord_creative_registrations_observed_ids_immutable_guard", "ord_creative_registrations_delete_guard",
       "ord_distribution_period_reports", "ord_distribution_period_reports_relational_consistency_guard", "ord_distribution_period_reports_immutable_guard", "ord_distribution_period_reports_delete_guard",
       "ord_paid_invoice_payloads", "ord_paid_invoice_payloads_relational_consistency_guard", "ord_paid_invoice_payloads_terminal_immutable_guard",
-      "ord_paid_invoice_payloads_authority_immutable_guard", "ord_paid_invoice_payloads_delete_guard",
+      "ord_paid_invoice_payloads_authority_immutable_guard", "ord_paid_invoice_payloads_observed_id_immutable_guard", "ord_paid_invoice_payloads_delete_guard",
     ];
 
     it("AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS includes every PR8 object, exhaustively, as the list's exact suffix", () => {
@@ -180,7 +182,7 @@ describe("ord_reporting_period_policy: seeded configuration", () => {
 
 describe("network-absence boundary proof: no provider network client anywhere in PR8's own runtime modules", () => {
   const pr8Modules = [
-    "agent-referrals-ord-operation-key.ts", "agent-referrals-ord-provider-profile.ts", "agent-referrals-ord-creative-registration.ts",
+    "agent-referrals-ord-operation-key.ts", "agent-referrals-ord-provider-profile.ts", "agent-referrals-ord-provider-operation.ts", "agent-referrals-ord-creative-registration.ts",
     "agent-referrals-ord-reporting.ts", "agent-referrals-ord-paid-invoice.ts",
   ];
   const bannedPatterns = [/\bfetch\s*\(/, /\baxios\b/, /\bhttps?\.request\b/, /\bXMLHttpRequest\b/, /\bnode-fetch\b/, /\bundici\b/, /\bwebsocket\b/i, /\bWebSocket\b/, /VK_API_/, /VK_PRODUCTION/];
@@ -220,7 +222,7 @@ describe("levy-absence boundary proof: no resurrected internal levy subsystem", 
 
   it("no PR8 source module contains a banned levy identifier", () => {
     const pr8Modules = [
-      "agent-referrals-ord-operation-key.ts", "agent-referrals-ord-provider-profile.ts", "agent-referrals-ord-creative-registration.ts",
+      "agent-referrals-ord-operation-key.ts", "agent-referrals-ord-provider-profile.ts", "agent-referrals-ord-provider-operation.ts", "agent-referrals-ord-creative-registration.ts",
       "agent-referrals-ord-reporting.ts", "agent-referrals-ord-paid-invoice.ts",
     ];
     const banned = ["income_recognition_rules", "advertising_income_snapshot", "contribution_snapshot", "levy_quarter", "LEVY_ESTIMATE_UNAVAILABLE", "rkn_payment_reconciliation", "partner_levy_receipt", "levy_debt", "withholding_state"];

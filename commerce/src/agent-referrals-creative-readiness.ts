@@ -6,7 +6,7 @@ import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspen
 import { isDelegationEffective } from "./agent-referrals-delegation-revocation";
 import { currentEngagementPromoAuthorizationForEngagement, partnerPromoByPartnerId } from "./agent-referrals-promo";
 import { currentCreativeAuthorization, creativeRevisionById } from "./agent-referrals-creative";
-import { ordCreativeRegistrationForCreativeRevision } from "./agent-referrals-ord-creative-registration";
+import { currentOrdCreativeRegistrationForCreativeRevision } from "./agent-referrals-ord-creative-registration";
 
 /**
  * CREATIVE_READY_TO_PUBLISH (plan section B-5e), now complete end to end.
@@ -24,10 +24,12 @@ import { ordCreativeRegistrationForCreativeRevision } from "./agent-referrals-or
  * format.
  *
  * The provider half (PR8, 0048) proves the frozen registration/ERID facts:
- * a registration exists for the CURRENT creative revision, it has reached
- * EXTERNALLY_LOCKED (erid present is a direct consequence of that lock -
- * the migration's own CHECK constraint on ord_creative_registrations makes
- * "locked but no erid" structurally impossible), and its own pinned
+ * the CURRENT (active) registration for the CURRENT creative revision has
+ * reached local_state = CONFIRMED (erid present, AND a real VK submission
+ * actually happened - vk_submission_state = SUBMITTED with non-empty
+ * evidence - are direct consequences of CONFIRMED under the migration's own
+ * exact-shape CHECK, round-2 P0.3 fix: "confirmed with an ERID but VK was
+ * never actually told" is no longer representable), and its own pinned
  * registered_creative_target_url still agrees with the creative's real
  * target url (defense in depth against a future bug that could otherwise
  * let the two silently diverge). The failure is no longer "provider tables
@@ -87,13 +89,13 @@ export const assessCreativeReadyToPublish = (db: Database.Database, engagementId
   const expectedUrl = canonicalFlexperimentTargetUrl(city.slug, promoCode.code);
   if (creative.creative_target_url !== expectedUrl) throw new CreativeReadinessError("AGENT_REFERRALS_READINESS_CREATIVE_TARGET_URL_MISMATCH", 409, `${creative.creative_target_url} != ${expectedUrl}`);
 
-  // Provider half (PR8): the CURRENT creative revision must have a
-  // registration that has actually reached EXTERNALLY_LOCKED. A DRAFT or
-  // SUBMITTED-but-unconfirmed registration is not readiness - VK has not
-  // yet told us the ERID.
-  const registration = ordCreativeRegistrationForCreativeRevision(db, creative.id);
+  // Provider half (PR8): the CURRENT (active) registration for the CURRENT
+  // creative revision must have actually reached local_state = CONFIRMED.
+  // A DRAFT or SUBMITTED-but-unconfirmed registration is not readiness -
+  // VK has not yet told us the ERID.
+  const registration = currentOrdCreativeRegistrationForCreativeRevision(db, creative.id);
   if (!registration) throw new CreativeReadinessError("AGENT_REFERRALS_READINESS_ORD_REGISTRATION_MISSING", 409, creative.id);
-  if (registration.lock_state !== "EXTERNALLY_LOCKED" || !registration.erid) throw new CreativeReadinessError("AGENT_REFERRALS_READINESS_ORD_ERID_MISSING", 409, registration.id);
+  if (registration.local_state !== "CONFIRMED" || !registration.erid) throw new CreativeReadinessError("AGENT_REFERRALS_READINESS_ORD_ERID_MISSING", 409, registration.id);
   if (registration.registered_creative_target_url !== expectedUrl) {
     throw new CreativeReadinessError("AGENT_REFERRALS_READINESS_ORD_REGISTERED_TARGET_URL_MISMATCH", 409, `${registration.registered_creative_target_url} != ${expectedUrl}`);
   }

@@ -219,12 +219,27 @@ export const AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS = [
   "ord_provider_profile_revisions",
   "ord_provider_profile_revisions_immutable_guard",
   "ord_provider_profile_revisions_delete_guard",
+  "ord_provider_profile_revisions_lineage_guard",
   "ord_reporting_period_policy",
   "ord_reporting_period_policy_immutable_guard",
   "ord_reporting_period_policy_delete_guard",
+  // Round-2 P0.1 fix: provider-operation authority for counterparty/
+  // platform/contract/media - a durable manual operation record, distinct
+  // from the immutable profile CONTENT above.
+  "ord_provider_operations",
+  "ord_provider_operations_relational_consistency_guard",
+  "ord_provider_operations_terminal_immutable_guard",
+  "ord_provider_operations_correction_only_guard",
+  "ord_provider_operations_authority_immutable_guard",
+  "ord_provider_operations_observed_id_immutable_guard",
+  "ord_provider_operations_delete_guard",
+  // Round-2 P0.2/P0.3 fix: ord_creative_registrations is now a revision
+  // chain (creative_revision_id, revision) with a CORRECTION_ONLY lock
+  // state between MUTABLE and EXTERNALLY_LOCKED.
   "ord_creative_registrations",
   "ord_creative_registrations_relational_consistency_guard",
   "ord_creative_registrations_terminal_immutable_guard",
+  "ord_creative_registrations_correction_only_guard",
   "ord_creative_registrations_authority_immutable_guard",
   "ord_creative_registrations_observed_ids_immutable_guard",
   "ord_creative_registrations_delete_guard",
@@ -236,6 +251,7 @@ export const AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS = [
   "ord_paid_invoice_payloads_relational_consistency_guard",
   "ord_paid_invoice_payloads_terminal_immutable_guard",
   "ord_paid_invoice_payloads_authority_immutable_guard",
+  "ord_paid_invoice_payloads_observed_id_immutable_guard",
   "ord_paid_invoice_payloads_delete_guard",
 ] as const;
 

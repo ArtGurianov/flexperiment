@@ -41,6 +41,7 @@ export type OrdPaidInvoicePayloadRow = {
   submission_state: "NOT_SUBMITTED" | "SUBMITTED" | "SUBMIT_FAILED";
   vk_operation_external_id: string | null;
   erir_code: string | null;
+  evidence_ref: string | null;
   lock_state: "MUTABLE" | "EXTERNALLY_LOCKED";
   canonical_hash: string;
   created_by_admin_id: string;
@@ -48,7 +49,7 @@ export type OrdPaidInvoicePayloadRow = {
 };
 
 const COLUMNS = `id, act_id, settlement_id, engagement_id, partner_identity_id, accepted_amount_kopecks, accepted_engagement_revision_id, tax_mode_snapshot,
-  legal_profile_revision_id_snapshot, contractor_type_snapshot, provider_contract_profile_id, operation_key, submission_state, vk_operation_external_id, erir_code, lock_state, canonical_hash, created_by_admin_id, created_at`;
+  legal_profile_revision_id_snapshot, contractor_type_snapshot, provider_contract_profile_id, operation_key, submission_state, vk_operation_external_id, erir_code, evidence_ref, lock_state, canonical_hash, created_by_admin_id, created_at`;
 
 export const ordPaidInvoicePayloadById = (db: Database.Database, payloadId: string): OrdPaidInvoicePayloadRow | null =>
   (db.prepare(`SELECT ${COLUMNS} FROM ord_paid_invoice_payloads WHERE id = ?`).get(payloadId) as OrdPaidInvoicePayloadRow | undefined) ?? null;
@@ -96,11 +97,13 @@ export const mintOrdPaidInvoicePayload = (
 
     const operationKey = ordPaidInvoicePayloadOperationKey({
       act_id: actId, settlement_id: settlement.id, accepted_amount_kopecks: acceptance.accepted_amount_kopecks, accepted_engagement_revision_id: acceptance.accepted_engagement_revision_id,
+      provider_contract_profile_id: contract.id,
     });
     const canonicalHash = sha256(canonicalV2({
       act_id: actId, settlement_id: settlement.id, engagement_id: act.engagement_id, partner_identity_id: act.partner_identity_id,
       accepted_amount_kopecks: acceptance.accepted_amount_kopecks, accepted_engagement_revision_id: acceptance.accepted_engagement_revision_id,
       tax_mode_snapshot: settlement.tax_mode_snapshot, legal_profile_revision_id_snapshot: settlement.legal_profile_revision_id_snapshot, contractor_type_snapshot: contractorType,
+      provider_contract_profile_id: contract.id,
     } as Record<string, unknown>));
 
     const payloadId = id();
@@ -114,15 +117,44 @@ export const mintOrdPaidInvoicePayload = (
   return run.immediate();
 };
 
-/** Records manual VK submission + ERIR reconciliation and locks the payload - the terminal, never-again-mutable fact. */
-export const recordOrdPaidInvoiceReconciliation = (db: Database.Database, payloadId: string, vkOperationExternalId: string, erirCode: string): OrdPaidInvoicePayloadRow => {
+/** Records manual VK submission - durable evidence an operator observed by hand. Legal only while MUTABLE and not yet submitted. */
+export const recordOrdPaidInvoiceSubmission = (db: Database.Database, payloadId: string, vkOperationExternalId: string, evidenceRef: string): OrdPaidInvoicePayloadRow => {
   const run = db.transaction((): OrdPaidInvoicePayloadRow => {
     gate(db);
     const payload = ordPaidInvoicePayloadById(db, payloadId);
     if (!payload) throw new OrdPaidInvoiceError("AGENT_REFERRALS_ORD_PAID_INVOICE_PAYLOAD_NOT_FOUND", 404, payloadId);
-    if (payload.lock_state === "EXTERNALLY_LOCKED") throw new OrdPaidInvoiceError("AGENT_REFERRALS_ORD_PAID_INVOICE_PAYLOAD_LOCKED", 409, payloadId);
-    const changed = db.prepare(`UPDATE ord_paid_invoice_payloads SET submission_state = 'SUBMITTED', vk_operation_external_id = ?, erir_code = ?, lock_state = 'EXTERNALLY_LOCKED'
-      WHERE id = ? AND lock_state = 'MUTABLE'`).run(vkOperationExternalId, erirCode, payloadId);
+    if (payload.lock_state !== "MUTABLE") throw new OrdPaidInvoiceError("AGENT_REFERRALS_ORD_PAID_INVOICE_PAYLOAD_LOCKED", 409, payloadId);
+    if (payload.submission_state === "SUBMITTED") {
+      if (payload.vk_operation_external_id === vkOperationExternalId && payload.evidence_ref === evidenceRef) return payload; // idempotent replay
+      throw new OrdPaidInvoiceError("AGENT_REFERRALS_ORD_PAID_INVOICE_PAYLOAD_SUBMISSION_CONFLICT", 409, payloadId);
+    }
+    db.prepare(`UPDATE ord_paid_invoice_payloads SET submission_state = 'SUBMITTED', vk_operation_external_id = ?, evidence_ref = ? WHERE id = ? AND lock_state = 'MUTABLE'`)
+      .run(vkOperationExternalId, evidenceRef, payloadId);
+    return ordPaidInvoicePayloadById(db, payloadId)!;
+  });
+  return run.immediate();
+};
+
+/**
+ * Records ERIR reconciliation and locks the payload - the terminal,
+ * never-again-mutable fact. Requires a prior real submission (P0.6: a
+ * reconciled fact can never claim to exist without a durably-evidenced
+ * submission underneath it). Idempotent replay: calling again with the
+ * SAME erir_code after the payload is already locked returns it unchanged
+ * (P1.3) - only a genuinely DIFFERENT erir_code against an already-locked
+ * payload is a real conflict.
+ */
+export const recordOrdPaidInvoiceReconciliation = (db: Database.Database, payloadId: string, erirCode: string): OrdPaidInvoicePayloadRow => {
+  const run = db.transaction((): OrdPaidInvoicePayloadRow => {
+    gate(db);
+    const payload = ordPaidInvoicePayloadById(db, payloadId);
+    if (!payload) throw new OrdPaidInvoiceError("AGENT_REFERRALS_ORD_PAID_INVOICE_PAYLOAD_NOT_FOUND", 404, payloadId);
+    if (payload.lock_state === "EXTERNALLY_LOCKED") {
+      if (payload.erir_code === erirCode) return payload; // idempotent replay
+      throw new OrdPaidInvoiceError("AGENT_REFERRALS_ORD_PAID_INVOICE_PAYLOAD_RECONCILIATION_CONFLICT", 409, payloadId);
+    }
+    if (payload.submission_state !== "SUBMITTED") throw new OrdPaidInvoiceError("AGENT_REFERRALS_ORD_PAID_INVOICE_PAYLOAD_NOT_SUBMITTED", 409, payloadId);
+    const changed = db.prepare(`UPDATE ord_paid_invoice_payloads SET erir_code = ?, lock_state = 'EXTERNALLY_LOCKED' WHERE id = ? AND lock_state = 'MUTABLE'`).run(erirCode, payloadId);
     if (changed.changes !== 1) throw new OrdPaidInvoiceError("AGENT_REFERRALS_ORD_PAID_INVOICE_PAYLOAD_CONCURRENT_CONFLICT", 409, payloadId);
     return ordPaidInvoicePayloadById(db, payloadId)!;
   });

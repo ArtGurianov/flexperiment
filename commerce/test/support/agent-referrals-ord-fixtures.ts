@@ -3,7 +3,7 @@ import type Database from "better-sqlite3";
 import { mintCreativeRevision, authorizeCreative, type CreativeFormatKind } from "../../src/agent-referrals-creative";
 import { reportDistribution } from "../../src/agent-referrals-distribution";
 import { mintOrdProviderProfile } from "../../src/agent-referrals-ord-provider-profile";
-import { registerOrdCreative, confirmOrdCreativeRegistration } from "../../src/agent-referrals-ord-creative-registration";
+import { registerOrdCreative, recordOrdCreativeRegistrationSubmitted, confirmOrdCreativeRegistration } from "../../src/agent-referrals-ord-creative-registration";
 import { admin, type PartnerPrincipal } from "./agent-referrals-settlement-fixtures";
 
 /**
@@ -40,9 +40,10 @@ export const readyCreative = (
   return { engagementId, creativeRevisionId: creative.id };
 };
 
-/** Registers AND fully locks (ERID-bearing) a creative revision's ORD registration - the state CREATIVE_READY_TO_PUBLISH's provider half requires. */
-export const lockedRegistration = (db: Database.Database, creativeRevisionId: string) => {
+/** Registers, submits, AND confirms (ERID-bearing, CORRECTION_ONLY) a creative revision's ORD registration - the state CREATIVE_READY_TO_PUBLISH's provider half requires. */
+export const confirmedRegistration = (db: Database.Database, creativeRevisionId: string) => {
   const { registration } = registerOrdCreative(db, admin, creativeRevisionId);
+  recordOrdCreativeRegistrationSubmitted(db, registration.id, `vk-ext-${randomUUID().slice(0, 8)}`, "manual VK submission");
   return confirmOrdCreativeRegistration(db, registration.id, `vk-obj-${randomUUID().slice(0, 8)}`, `erid-${randomUUID().slice(0, 8)}`, "manual VK confirmation");
 };
 

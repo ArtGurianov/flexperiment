@@ -1,6 +1,5 @@
 import type Database from "better-sqlite3";
-import { createHash } from "node:crypto";
-import { id } from "./crypto";
+import { canonicalV2, id, sha256 } from "./crypto";
 
 /**
  * Immutable VK ORD provider profile families (plan Phase 8): COUNTERPARTY,
@@ -45,8 +44,14 @@ export const currentOrdProviderProfile = (db: Database.Database, kind: OrdProvid
 export const ordProviderProfileById = (db: Database.Database, revisionId: string): OrdProviderProfileRevision | null =>
   (db.prepare(`SELECT ${COLUMNS} FROM ord_provider_profile_revisions WHERE id = ?`).get(revisionId) as OrdProviderProfileRevision | undefined) ?? null;
 
-const canonicalContentHash = (content: Record<string, unknown>): string =>
-  createHash("sha256").update(JSON.stringify(content, Object.keys(content).sort())).digest("hex");
+/**
+ * A real RECURSIVE canonical encoding (crypto.ts's canonicalV2, the same
+ * primitive creative_hash/canonical_hash use throughout this schema) -
+ * never a shallow JSON.stringify(value, sortedTopLevelKeys) array replacer,
+ * which sorts only the TOP-LEVEL keys and therefore can silently omit a
+ * nested-only semantic change from the hash (P1.2).
+ */
+const canonicalContentHash = (content: Record<string, unknown>): string => sha256(canonicalV2(content));
 
 /** Mints the next revision for an exact profile_kind. Forward-only: supersedes the current revision, never edits it. */
 export const mintOrdProviderProfile = (
