@@ -37,6 +37,17 @@ export const ordCreativeRegistrationOperationKey = (input: {
   provider_contract_profile_id: string;
 }): string => sha256(canonicalV2({ op: "ORD_CREATIVE_REGISTRATION", ...input }));
 
+/**
+ * Round-3 P1.2: NEVER includes submission_state/vk_operation_external_id/
+ * erir_code - those are provider-OBSERVED evidence, not pinned local
+ * authority, and this module's own contract (see header) is that they must
+ * never gate or vary any operation_key. `distribution_id` +
+ * `reporting_period_key` + `revision` alone already guarantee this key is
+ * globally unique per row (the table's own UNIQUE constraint proves it);
+ * no observed field is needed for that, and reconciliation evidence
+ * arriving later for the SAME revision must never change what this row's
+ * own key already was.
+ */
 export const ordDistributionPeriodReportOperationKey = (input: {
   distribution_id: string;
   reporting_period_key: string;
@@ -46,9 +57,6 @@ export const ordDistributionPeriodReportOperationKey = (input: {
   statistics_json: string | null;
   statistics_reason: string;
   zero_reward_closure_id: string | null;
-  submission_state: string;
-  vk_operation_external_id: string | null;
-  erir_code: string | null;
 }): string => sha256(canonicalV2({ op: "ORD_DISTRIBUTION_PERIOD_REPORT", ...input }));
 
 export const ordPaidInvoicePayloadOperationKey = (input: {

@@ -83,11 +83,24 @@ export const currentOrdDistributionPeriodReport = (db: Database.Database, distri
 export const ordDistributionPeriodReportsForDistribution = (db: Database.Database, distributionId: string): OrdDistributionPeriodReportRow[] =>
   db.prepare(`SELECT ${COLUMNS} FROM ord_distribution_period_reports WHERE distribution_id = ? ORDER BY reporting_period_key ASC, revision ASC`).all(distributionId) as OrdDistributionPeriodReportRow[];
 
-/** Mechanical reporting-tail-complete check (P0.6): true only when every CURRENT report for this distribution has review_required = 0. An UNAVAILABLE report makes this false by construction, never by caller convention. */
+/**
+ * Mechanical reporting-tail-complete check (P0.6, tightened round-3 P0.2):
+ * true only when every CURRENT report for this distribution has BOTH
+ * review_required = 0 (statistics resolved, never fabricated) AND
+ * submission_state = 'SUBMITTED' (which the table's own CHECK makes
+ * inseparable from a real vk_operation_external_id/erir_code/
+ * submission_evidence_ref). review_required = 0 alone only means "we have
+ * statistics" - the frozen flow is statistics -> manual VK submission ->
+ * ERIR reconciliation -> tail complete, and an ACTUAL report that was never
+ * actually submitted to VK must not report the tail as done.
+ */
 export const isOrdReportingTailComplete = (db: Database.Database, distributionId: string): boolean => {
   const periods = db.prepare("SELECT DISTINCT reporting_period_key FROM ord_distribution_period_reports WHERE distribution_id = ?").all(distributionId) as { reporting_period_key: string }[];
   if (periods.length === 0) return false;
-  return periods.every((p) => currentOrdDistributionPeriodReport(db, distributionId, p.reporting_period_key)!.review_required === 0);
+  return periods.every((p) => {
+    const current = currentOrdDistributionPeriodReport(db, distributionId, p.reporting_period_key)!;
+    return current.review_required === 0 && current.submission_state === "SUBMITTED";
+  });
 };
 
 /** A real, current zero-reward closure for the exact engagement this distribution belongs to - or null. */
@@ -124,6 +137,22 @@ export type FileDistributionPeriodReportInput = {
   correction_reason?: string;
   statistics_reason?: "ZERO_REWARD_STATISTICS" | "CONTINUING_STATISTICS";
   /**
+   * Required (only) when statistics_reason is ZERO_REWARD_STATISTICS or
+   * CONTINUING_STATISTICS AND the resolved reporting_basis is
+   * PROVIDER_SPECIAL_PERIOD (round-3 P0.3). The exact SHAPE and ORDER of a
+   * special-period reporting_period_key is L5 PENDING_EXTERNAL_
+   * CONFIRMATION, so this code can never safely compare two such keys
+   * (lexicographically or otherwise) to derive "is this the closure's own
+   * original service period, or a later one". Once confirmed
+   * (ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY), the caller - who has
+   * actually confirmed VK's real representation - asserts this directly:
+   * true names the closure's own original contractual service period,
+   * false names a later period the distribution remains accessible in.
+   * This is never used (and must be omitted) for CALENDAR_MONTH, whose
+   * ordinary lexicographic YYYY-MM comparison is confirmed in shape by law.
+   */
+  special_period_is_service_period?: boolean;
+  /**
    * Manual VK submission + ERIR reconciliation evidence, when already on
    * hand at filing time. The report row is fully immutable from INSERT
    * (never UPDATEd, even to attach this) - so evidence that arrives LATER
@@ -149,31 +178,47 @@ const insertReport = (
   const statisticsReason = input.statistics_reason ?? "ORDINARY";
   let zeroRewardClosureId: string | null = null;
   if (statisticsReason !== "ORDINARY") {
-    // P0.5: PROVIDER_SPECIAL_PERIOD's own reporting_period_key shape/order
-    // is L5 PENDING_EXTERNAL_CONFIRMATION - comparing it against a
-    // calendar-month slice (or against itself lexicographically) would
-    // silently assume a shape nobody has confirmed. Zero/continuing
-    // classification is therefore refused entirely on this basis until
-    // that representation is confirmed, never approximated with a
-    // calendar-shaped fallback.
-    if (reportingBasis === "PROVIDER_SPECIAL_PERIOD") {
-      throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_ZERO_REWARD_SPECIAL_PERIOD_UNSUPPORTED", 409, reportingBasis);
-    }
     const closure = currentZeroRewardClosureForDistribution(db, input.distribution_id);
     if (!closure) throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_ZERO_REWARD_CLOSURE_MISSING", 409, input.distribution_id);
     zeroRewardClosureId = closure.id;
-    // ZERO_REWARD_STATISTICS is the ONE report for the closure's own
-    // original contractual service month; CONTINUING_STATISTICS is any
-    // later period the distribution remains accessible. Both require the
-    // closure to be real (checked above); this additionally proves the
-    // caller named the right reason for the period they are filing.
-    const servicePeriodMonth = calendarMonthKey(closure.service_period_start_at);
-    const isServiceMonth = input.reporting_period_key === servicePeriodMonth;
-    if (statisticsReason === "ZERO_REWARD_STATISTICS" && !isServiceMonth) {
-      throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_ZERO_REWARD_PERIOD_MISMATCH", 409, `${input.reporting_period_key}!=${servicePeriodMonth}`);
-    }
-    if (statisticsReason === "CONTINUING_STATISTICS" && input.reporting_period_key <= servicePeriodMonth) {
-      throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_CONTINUING_STATISTICS_NOT_LATER", 409, `${input.reporting_period_key}<=${servicePeriodMonth}`);
+
+    if (reportingBasis === "PROVIDER_SPECIAL_PERIOD") {
+      // Round-3 P0.3: before L5 is confirmed, the period key's own
+      // shape/order is unknown, so classification fails closed exactly
+      // like ACTUAL reporting already does. Once confirmed, the caller -
+      // who has actually confirmed VK's real representation - asserts the
+      // ordering directly via special_period_is_service_period, never a
+      // calendar-shaped string comparison this code cannot safely make.
+      if (agentReferralsActivationEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY) !== true) {
+        throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_ZERO_REWARD_SPECIAL_PERIOD_UNCONFIRMED", 409, reportingBasis);
+      }
+      if (input.special_period_is_service_period === undefined) {
+        throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_SPECIAL_PERIOD_ORDER_REQUIRED", 422, statisticsReason);
+      }
+      if (statisticsReason === "ZERO_REWARD_STATISTICS" && input.special_period_is_service_period !== true) {
+        throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_ZERO_REWARD_PERIOD_MISMATCH", 409, reportingBasis);
+      }
+      if (statisticsReason === "CONTINUING_STATISTICS" && input.special_period_is_service_period !== false) {
+        throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_CONTINUING_STATISTICS_NOT_LATER", 409, reportingBasis);
+      }
+    } else {
+      if (input.special_period_is_service_period !== undefined) {
+        throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_SPECIAL_PERIOD_ORDER_NOT_APPLICABLE", 422, reportingBasis);
+      }
+      // ZERO_REWARD_STATISTICS is the ONE report for the closure's own
+      // original contractual service month; CONTINUING_STATISTICS is any
+      // later period the distribution remains accessible. CALENDAR_MONTH's
+      // lexicographic YYYY-MM ordering is confirmed in shape by law (L5),
+      // so a direct string comparison is sound here (unlike PROVIDER_
+      // SPECIAL_PERIOD above).
+      const servicePeriodMonth = calendarMonthKey(closure.service_period_start_at);
+      const isServiceMonth = input.reporting_period_key === servicePeriodMonth;
+      if (statisticsReason === "ZERO_REWARD_STATISTICS" && !isServiceMonth) {
+        throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_ZERO_REWARD_PERIOD_MISMATCH", 409, `${input.reporting_period_key}!=${servicePeriodMonth}`);
+      }
+      if (statisticsReason === "CONTINUING_STATISTICS" && input.reporting_period_key <= servicePeriodMonth) {
+        throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_CONTINUING_STATISTICS_NOT_LATER", 409, `${input.reporting_period_key}<=${servicePeriodMonth}`);
+      }
     }
   }
 
@@ -186,11 +231,15 @@ const insertReport = (
   // correction revision can legitimately carry identical statistics to its
   // predecessor, e.g. reconciliation evidence arriving for an unchanged
   // fact - a content-only key would collide with that row on the UNIQUE
-  // constraint). Nothing changed only when BOTH the statistics content AND
-  // whatever submission evidence is being supplied are already exactly on
-  // file.
+  // constraint). Nothing changed only when the statistics content, the
+  // PINNED DISTRIBUTION REVISION (round-3 P0.1: a distribution fact
+  // correction with byte-identical statistics is still a real correction,
+  // never a replay - omitting this let D1 -> D2 silently vanish whenever an
+  // operator happened to re-file the same numbers), AND whatever submission
+  // evidence is being supplied are all already exactly on file.
   const current = currentOrdDistributionPeriodReport(db, input.distribution_id, input.reporting_period_key);
   const statisticsAlreadyOnFile = !!current
+    && current.distribution_revision_id === distributionRevision.id
     && current.reporting_basis === reportingBasis && current.statistics_state === input.statistics.statistics_state
     && current.statistics_json === statisticsJson && current.statistics_reason === statisticsReason && current.zero_reward_closure_id === zeroRewardClosureId;
   const submissionAlreadyOnFile = !input.submission || (
@@ -211,7 +260,6 @@ const insertReport = (
   const operationKey = ordDistributionPeriodReportOperationKey({
     distribution_id: input.distribution_id, reporting_period_key: input.reporting_period_key, revision: nextRevision, reporting_basis: reportingBasis,
     statistics_state: input.statistics.statistics_state, statistics_json: statisticsJson, statistics_reason: statisticsReason, zero_reward_closure_id: zeroRewardClosureId,
-    submission_state: submissionState, vk_operation_external_id: input.submission?.vk_operation_external_id ?? null, erir_code: input.submission?.erir_code ?? null,
   });
 
   const reportId = id();

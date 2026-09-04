@@ -148,6 +148,34 @@ describe("round-2 P0.6: exact submission/lock CHECK shape", () => {
     const { payload } = mintOrdPaidInvoicePayload(db, admin, act.id);
     expect(() => db.prepare("UPDATE ord_paid_invoice_payloads SET lock_state = 'EXTERNALLY_LOCKED', erir_code = 'erir-fabricated' WHERE id = ?").run(payload.id)).toThrow(/CHECK constraint failed/);
   });
+
+  it("round-3 P1.1: NOT_SUBMITTED forbids a populated vk_operation_external_id/erir_code, even while MUTABLE (the previous loose branch's exact fabricable state)", () => {
+    const { db, act } = readyAcceptedAct();
+    const { payload } = mintOrdPaidInvoicePayload(db, admin, act.id);
+    expect(() => db.prepare("UPDATE ord_paid_invoice_payloads SET vk_operation_external_id = 'vk-op-fabricated' WHERE id = ?").run(payload.id)).toThrow(/CHECK constraint failed/);
+  });
+
+  it("round-3 P1.1: SUBMIT_FAILED forbids a populated vk_operation_external_id/erir_code", () => {
+    const { db, act } = readyAcceptedAct();
+    const { payload } = mintOrdPaidInvoicePayload(db, admin, act.id);
+    expect(() => db.prepare("UPDATE ord_paid_invoice_payloads SET submission_state = 'SUBMIT_FAILED', vk_operation_external_id = 'vk-op-fabricated' WHERE id = ?").run(payload.id)).toThrow(/CHECK constraint failed/);
+  });
+
+  it("round-3 P1.1: MUTABLE + SUBMITTED forbids a populated erir_code - reconciliation can only ever arrive together with the terminal lock", () => {
+    const { db, act } = readyAcceptedAct();
+    const { payload } = mintOrdPaidInvoicePayload(db, admin, act.id);
+    expect(() => db.prepare("UPDATE ord_paid_invoice_payloads SET submission_state = 'SUBMITTED', vk_operation_external_id = 'vk-op-1', evidence_ref = 'ev', erir_code = 'erir-fabricated' WHERE id = ?").run(payload.id))
+      .toThrow(/CHECK constraint failed/);
+  });
+
+  it("round-3 P1.1: the four legal exact shapes (NOT_SUBMITTED, SUBMIT_FAILED, MUTABLE+SUBMITTED, EXTERNALLY_LOCKED) are each individually satisfiable", () => {
+    const { db, act } = readyAcceptedAct();
+    const { payload } = mintOrdPaidInvoicePayload(db, admin, act.id);
+    expect(payload.submission_state).toBe("NOT_SUBMITTED"); // shape 1, already on file
+    expect(() => db.prepare("UPDATE ord_paid_invoice_payloads SET submission_state = 'SUBMIT_FAILED' WHERE id = ?").run(payload.id)).not.toThrow(); // shape 2
+    expect(() => db.prepare("UPDATE ord_paid_invoice_payloads SET submission_state = 'SUBMITTED', vk_operation_external_id = 'vk-op-1', evidence_ref = 'ev' WHERE id = ?").run(payload.id)).not.toThrow(); // shape 3
+    expect(() => db.prepare("UPDATE ord_paid_invoice_payloads SET lock_state = 'EXTERNALLY_LOCKED', erir_code = 'erir-1' WHERE id = ?").run(payload.id)).not.toThrow(); // shape 4
+  });
 });
 
 describe("cross-authority structural backstops (raw SQL)", () => {

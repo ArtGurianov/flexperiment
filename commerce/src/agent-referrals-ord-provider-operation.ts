@@ -36,6 +36,7 @@ export type OrdProviderOperationRow = {
   vk_submission_state: "NOT_SUBMITTED" | "SUBMITTED" | "SUBMIT_FAILED";
   vk_external_id: string | null;
   erir_code: string | null;
+  erir_evidence_ref: string | null;
   evidence_ref: string | null;
   lock_state: "MUTABLE" | "CORRECTION_ONLY" | "EXTERNALLY_LOCKED";
   correction_reason: string | null;
@@ -44,7 +45,7 @@ export type OrdProviderOperationRow = {
 };
 
 const COLUMNS = `id, operation_kind, revision, supersedes_operation_id, provider_profile_revision_id, operation_key, local_state, vk_submission_state,
-  vk_external_id, erir_code, evidence_ref, lock_state, correction_reason, created_by_admin_id, created_at`;
+  vk_external_id, erir_code, erir_evidence_ref, evidence_ref, lock_state, correction_reason, created_by_admin_id, created_at`;
 
 /** "Current" is always MAX(revision) for the exact kind. */
 export const currentOrdProviderOperation = (db: Database.Database, kind: OrdProviderProfileKind): OrdProviderOperationRow | null =>
@@ -111,26 +112,47 @@ export const confirmOrdProviderOperation = (db: Database.Database, operationId: 
   return run.immediate();
 };
 
-/** Records the separate Roskomnadzor/ERIR reconciliation code - independent of submission state, legal any time before EXTERNALLY_LOCKED. */
-export const recordOrdProviderOperationErirReconciliation = (db: Database.Database, operationId: string, erirCode: string): OrdProviderOperationRow => {
+/**
+ * Records the separate Roskomnadzor/ERIR reconciliation code - independent
+ * of submission state, legal any time a real submission is on file (never
+ * on a still-DRAFT operation) and before EXTERNALLY_LOCKED. Requires a
+ * real durable evidence_ref (round-3 P0.4). NULL -> a value is the first
+ * ERIR fact; the SAME (code, evidence) again is an idempotent replay; a
+ * DIFFERENT code is a real conflict - the observed-id guard makes any raw
+ * historical rewrite structurally impossible, so a genuine correction must
+ * go through openOrdProviderOperation (a new revision) instead.
+ */
+export const recordOrdProviderOperationErirReconciliation = (db: Database.Database, operationId: string, erirCode: string, evidenceRef: string): OrdProviderOperationRow => {
   const run = db.transaction((): OrdProviderOperationRow => {
     gate(db);
     const operation = ordProviderOperationById(db, operationId);
     if (!operation) throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_NOT_FOUND", 404, operationId);
     if (operation.lock_state === "EXTERNALLY_LOCKED") throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_LOCKED", 409, operationId);
-    db.prepare("UPDATE ord_provider_operations SET erir_code = ? WHERE id = ?").run(erirCode, operationId);
+    if (operation.local_state === "DRAFT") throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_NOT_SUBMITTED", 409, operationId);
+    if (operation.erir_code !== null) {
+      if (operation.erir_code === erirCode && operation.erir_evidence_ref === evidenceRef) return operation; // idempotent replay
+      throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_ERIR_CONFLICT", 409, operationId);
+    }
+    db.prepare("UPDATE ord_provider_operations SET erir_code = ?, erir_evidence_ref = ? WHERE id = ?").run(erirCode, evidenceRef, operationId);
     return ordProviderOperationById(db, operationId)!;
   });
   return run.immediate();
 };
 
-/** Terminal: no further revision of this operation chain will ever be minted. Explicit admin action, never implied by CONFIRMED alone. */
+/**
+ * Terminal: no further revision of this operation chain will ever be
+ * minted. Explicit admin action, never implied by CONFIRMED alone. Only
+ * the CURRENT (MAX(revision)) operation for the kind may ever be locked
+ * (round-3 P1.4) - the migration's own guard backs this structurally too.
+ */
 export const lockOrdProviderOperation = (db: Database.Database, operationId: string): OrdProviderOperationRow => {
   const run = db.transaction((): OrdProviderOperationRow => {
     gate(db);
     const operation = ordProviderOperationById(db, operationId);
     if (!operation) throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_NOT_FOUND", 404, operationId);
     if (operation.lock_state !== "CORRECTION_ONLY") throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_NOT_CORRECTABLE", 409, operationId);
+    const latest = currentOrdProviderOperation(db, operation.operation_kind)!;
+    if (latest.id !== operation.id) throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_STALE", 409, operationId);
     db.prepare("UPDATE ord_provider_operations SET lock_state = 'EXTERNALLY_LOCKED' WHERE id = ? AND lock_state = 'CORRECTION_ONLY'").run(operationId);
     return ordProviderOperationById(db, operationId)!;
   });

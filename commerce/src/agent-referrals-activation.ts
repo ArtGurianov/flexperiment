@@ -232,6 +232,7 @@ export const AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS = [
   "ord_provider_operations_correction_only_guard",
   "ord_provider_operations_authority_immutable_guard",
   "ord_provider_operations_observed_id_immutable_guard",
+  "ord_provider_operations_lock_requires_current_guard",
   "ord_provider_operations_delete_guard",
   // Round-2 P0.2/P0.3 fix: ord_creative_registrations is now a revision
   // chain (creative_revision_id, revision) with a CORRECTION_ONLY lock
@@ -242,6 +243,7 @@ export const AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS = [
   "ord_creative_registrations_correction_only_guard",
   "ord_creative_registrations_authority_immutable_guard",
   "ord_creative_registrations_observed_ids_immutable_guard",
+  "ord_creative_registrations_lock_requires_current_guard",
   "ord_creative_registrations_delete_guard",
   "ord_distribution_period_reports",
   "ord_distribution_period_reports_relational_consistency_guard",

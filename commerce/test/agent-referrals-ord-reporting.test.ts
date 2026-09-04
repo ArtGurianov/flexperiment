@@ -106,6 +106,17 @@ describe("fileOrdDistributionPeriodReport: ordinary CALENDAR_MONTH reporting", (
     expect(isOrdReportingTailComplete(db, distributionId)).toBe(false);
     const actual = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev2", correction_reason: "data arrived" });
     expect(actual.review_required).toBe(0);
+    // round-3 P0.2: review_required = 0 alone is not tail-complete - VK submission + ERIR reconciliation are still owed.
+    expect(isOrdReportingTailComplete(db, distributionId)).toBe(false);
+  });
+
+  it("round-3 P0.2: isOrdReportingTailComplete becomes true only once the current report is ACTUALLY submitted (review_required=0 is necessary but not sufficient)", () => {
+    const { db, distributionId } = setupWithDistribution();
+    const submitted = fileOrdDistributionPeriodReport(db, admin, {
+      distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
+      submission: { vk_operation_external_id: "vk-op-1", erir_code: "erir-1", submission_evidence_ref: "ev-submit" },
+    });
+    expect(submitted.submission_state).toBe("SUBMITTED");
     expect(isOrdReportingTailComplete(db, distributionId)).toBe(true);
   });
 
@@ -185,6 +196,29 @@ describe("round-2 P1.3: exact-replay idempotency for ordinary filings", () => {
 });
 
 describe("correction lineage: revision 1 -> 2 -> 3", () => {
+  it("round-3 P0.1: a distribution fact correction (D1 -> D2) with BYTE-IDENTICAL statistics is still a real correction, never swallowed by replay detection", () => {
+    const { db, distributionId } = setupWithDistribution();
+    const r1 = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" });
+    const d1RevisionId = r1.distribution_revision_id;
+
+    const admin1 = { realm: "ADMIN" as const, admin_id: "admin-1" };
+    correctDistribution(db, admin1, distributionId, {
+      channel_key: "telegram", resource_kind: "channel", resource_identifier: "@corrected_channel", distribution_resource_url: "https://t.me/corrected_channel/1",
+      published_at: "2026-09-20T00:00:00.000Z", ended_at: null, evidence_ref: "ev-correction",
+    }, "wrong resource identifier");
+    const d2RevisionId = (db.prepare("SELECT id FROM engagement_distribution_revisions WHERE distribution_id = ? ORDER BY revision DESC LIMIT 1").get(distributionId) as { id: string }).id;
+    expect(d2RevisionId).not.toBe(d1RevisionId);
+
+    // Re-filing with the SAME statistics=10 as R1, but the distribution is now D2 - must mint R2 pinning D2, never be treated as a replay of R1.
+    const r2 = fileOrdDistributionPeriodReport(db, admin, {
+      distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev2", correction_reason: "distribution facts corrected",
+    });
+    expect(r2.id).not.toBe(r1.id);
+    expect(r2.revision).toBe(2);
+    expect(r2.distribution_revision_id).toBe(d2RevisionId);
+    expect(ordDistributionPeriodReportsForDistribution(db, distributionId)).toHaveLength(2);
+  });
+
   it("a second filing without a correction_reason is refused; with one, mints revision 2 with exact predecessor lineage", () => {
     const { db, distributionId } = setupWithDistribution();
     const r1 = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" });
@@ -262,26 +296,62 @@ describe("PROVIDER_SPECIAL_PERIOD fail-closed (L5)", () => {
     expect(report.reporting_basis).toBe("PROVIDER_SPECIAL_PERIOD");
   });
 
-  it("round-2 P0.5: ZERO_REWARD_STATISTICS/CONTINUING_STATISTICS on a PROVIDER_SPECIAL_PERIOD distribution are refused entirely - never approximated with a calendar-month comparison", async () => {
+  it("round-3 P0.3: ZERO_REWARD_STATISTICS/CONTINUING_STATISTICS on PROVIDER_SPECIAL_PERIOD fail closed BEFORE confirmation - never a calendar-shaped fallback", async () => {
     const { db, domain, occ, engagementId, distributionId } = setupWithDistribution("long_video", "2026-09-20T00:00:00.000Z");
-    // Confirming L5 for ACTUAL reporting must not also silently confirm a calendar-shaped ordering for zero/continuing classification.
+    await wait(300);
+    closeAndComplete(db, domain, occ);
+    finalizeEngagementRewardRegistry(db, admin, engagementId, "no purchases");
+    const { closeEngagementZeroReward } = await import("../src/agent-referrals-zero-reward-closure");
+    closeEngagementZeroReward(db, admin, engagementId, "NO_ELIGIBLE_CONVERSIONS", randomUUID());
+    // ACTUAL statistics on an unconfirmed PROVIDER_SPECIAL_PERIOD basis already fails closed regardless of reason (the pre-existing L5 gate);
+    // REPORTING_DATA_UNAVAILABLE with a zero-reward reason is what actually exercises the zero-reward-specific unconfirmed gate.
+    expect(() => fileOrdDistributionPeriodReport(db, admin, {
+      distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 0 } }, evidence_ref: "ev", statistics_reason: "ZERO_REWARD_STATISTICS",
+    })).toThrow(/AGENT_REFERRALS_ORD_REPORTING_SPECIAL_PERIOD_UNCONFIRMED/);
+    expect(() => fileOrdDistributionPeriodReport(db, admin, {
+      distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev", statistics_reason: "ZERO_REWARD_STATISTICS",
+    })).toThrow(/AGENT_REFERRALS_ORD_REPORTING_ZERO_REWARD_SPECIAL_PERIOD_UNCONFIRMED/);
+  });
+
+  it("round-3 P0.3: once confirmed, ZERO_REWARD_STATISTICS/CONTINUING_STATISTICS work via the caller's own explicit special_period_is_service_period assertion - never a string comparison of the unconfirmed period-key shape", async () => {
+    const { db, domain, occ, engagementId, distributionId } = setupWithDistribution("long_video", "2026-09-20T00:00:00.000Z");
     recordAgentReferralsActivationEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY, true);
     await wait(300);
     closeAndComplete(db, domain, occ);
     finalizeEngagementRewardRegistry(db, admin, engagementId, "no purchases");
     const { closeEngagementZeroReward } = await import("../src/agent-referrals-zero-reward-closure");
     closeEngagementZeroReward(db, admin, engagementId, "NO_ELIGIBLE_CONVERSIONS", randomUUID());
+
+    const zero = fileOrdDistributionPeriodReport(db, admin, {
+      distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 0 } }, evidence_ref: "ev",
+      statistics_reason: "ZERO_REWARD_STATISTICS", special_period_is_service_period: true,
+    });
+    expect(zero.statistics_reason).toBe("ZERO_REWARD_STATISTICS");
+
+    const continuing = fileOrdDistributionPeriodReport(db, admin, {
+      distribution_id: distributionId, reporting_period_key: "special-2026-10", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 2 } }, evidence_ref: "ev",
+      statistics_reason: "CONTINUING_STATISTICS", special_period_is_service_period: false,
+    });
+    expect(continuing.statistics_reason).toBe("CONTINUING_STATISTICS");
+
+    // The flag must actually match the claimed reason - a mismatched assertion is refused, never silently accepted.
     expect(() => fileOrdDistributionPeriodReport(db, admin, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 0 } }, evidence_ref: "ev", statistics_reason: "ZERO_REWARD_STATISTICS",
-    })).toThrow(/AGENT_REFERRALS_ORD_REPORTING_ZERO_REWARD_SPECIAL_PERIOD_UNSUPPORTED/);
+      distribution_id: distributionId, reporting_period_key: "special-2026-11", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 1 } }, evidence_ref: "ev",
+      statistics_reason: "CONTINUING_STATISTICS", special_period_is_service_period: true,
+    })).toThrow(/AGENT_REFERRALS_ORD_REPORTING_CONTINUING_STATISTICS_NOT_LATER/);
+
+    // The flag is required once confirmed - omitting it is refused, never silently defaulted.
     expect(() => fileOrdDistributionPeriodReport(db, admin, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-10", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 2 } }, evidence_ref: "ev", statistics_reason: "CONTINUING_STATISTICS",
-    })).toThrow(/AGENT_REFERRALS_ORD_REPORTING_ZERO_REWARD_SPECIAL_PERIOD_UNSUPPORTED/);
-    // Ordinary (non-zero-reward) ACTUAL reporting on the same basis is unaffected.
+      distribution_id: distributionId, reporting_period_key: "special-2026-12", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 1 } }, evidence_ref: "ev",
+      statistics_reason: "CONTINUING_STATISTICS",
+    })).toThrow(/AGENT_REFERRALS_ORD_REPORTING_SPECIAL_PERIOD_ORDER_REQUIRED/);
+
+    // Ordinary (non-zero-reward) ACTUAL reporting on the same basis is unaffected and never takes the flag.
     expect(() => fileOrdDistributionPeriodReport(db, admin, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: "special-2027-01", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev",
     })).not.toThrow();
   });
+
 });
 
 describe("ZERO_REWARD_STATISTICS vs CONTINUING_STATISTICS (plan §B-3)", () => {
@@ -326,6 +396,14 @@ describe("ZERO_REWARD_STATISTICS vs CONTINUING_STATISTICS (plan §B-3)", () => {
     });
     expect(report.statistics_reason).toBe("ZERO_REWARD_STATISTICS");
     expect(report.zero_reward_closure_id).not.toBeNull();
+  });
+
+  it("round-3 P0.3: special_period_is_service_period is refused when supplied for a CALENDAR_MONTH filing - it is meaningless there", async () => {
+    const { db, distributionId, serviceMonth } = await zeroRewardClosedWithDistribution();
+    expect(() => fileOrdDistributionPeriodReport(db, admin, {
+      distribution_id: distributionId, reporting_period_key: serviceMonth, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 0 } }, evidence_ref: "ev",
+      statistics_reason: "ZERO_REWARD_STATISTICS", special_period_is_service_period: true,
+    })).toThrow(/AGENT_REFERRALS_ORD_REPORTING_SPECIAL_PERIOD_ORDER_NOT_APPLICABLE/);
   });
 
   it("ZERO_REWARD_STATISTICS for a DIFFERENT period than the service month is refused", async () => {

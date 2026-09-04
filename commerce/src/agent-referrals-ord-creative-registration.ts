@@ -52,6 +52,7 @@ export type OrdCreativeRegistrationRow = {
   vk_object_id: string | null;
   erid: string | null;
   erir_code: string | null;
+  erir_evidence_ref: string | null;
   evidence_ref: string | null;
   lock_state: "MUTABLE" | "CORRECTION_ONLY" | "EXTERNALLY_LOCKED";
   correction_reason: string | null;
@@ -60,7 +61,7 @@ export type OrdCreativeRegistrationRow = {
 };
 
 const COLUMNS = `id, creative_revision_id, engagement_id, revision, supersedes_registration_id, operation_key, provider_counterparty_profile_id, provider_contract_profile_id,
-  registered_creative_target_url, local_state, vk_submission_state, vk_external_id, vk_object_id, erid, erir_code, evidence_ref, lock_state, correction_reason, created_by_admin_id, created_at`;
+  registered_creative_target_url, local_state, vk_submission_state, vk_external_id, vk_object_id, erid, erir_code, erir_evidence_ref, evidence_ref, lock_state, correction_reason, created_by_admin_id, created_at`;
 
 export const ordCreativeRegistrationById = (db: Database.Database, registrationId: string): OrdCreativeRegistrationRow | null =>
   (db.prepare(`SELECT ${COLUMNS} FROM ord_creative_registrations WHERE id = ?`).get(registrationId) as OrdCreativeRegistrationRow | undefined) ?? null;
@@ -164,8 +165,20 @@ export const confirmOrdCreativeRegistration = (db: Database.Database, registrati
  * CHAIN: this is for a registration-level error only, the creative content
  * (C1) is unchanged (round-2 P0.2 fix). Requires the corrected facts to be
  * supplied directly (already known) rather than starting over at DRAFT.
+ *
+ * Resolves the CURRENT provider profiles at correction time (round-3 P1.3)
+ * - never copies the predecessor's own (possibly by-now-superseded)
+ * profile pins forward. The relational guard requires every registration
+ * revision, corrections included, to pin a real CURRENT profile at its own
+ * insert time; a predecessor's profile can legitimately have been
+ * superseded in the time since it was filed, so reusing it here would
+ * make every correction after a profile revision bump structurally
+ * impossible - exactly the contradiction this fixes.
  */
-export type CorrectOrdCreativeRegistrationInput = { vk_object_id: string; erid: string; evidence_ref: string; reason: string };
+export type CorrectOrdCreativeRegistrationInput = {
+  vk_object_id: string; erid: string; evidence_ref: string; reason: string;
+  provider_counterparty_profile_id?: string; provider_contract_profile_id?: string;
+};
 
 export const correctOrdCreativeRegistration = (db: Database.Database, admin: AdminPrincipal, registrationId: string, input: CorrectOrdCreativeRegistrationInput): OrdCreativeRegistrationRow => {
   const run = db.transaction((): OrdCreativeRegistrationRow => {
@@ -176,42 +189,72 @@ export const correctOrdCreativeRegistration = (db: Database.Database, admin: Adm
     const latest = currentOrdCreativeRegistrationForCreativeRevision(db, current.creative_revision_id)!;
     if (latest.id !== current.id) throw new OrdCreativeRegistrationError("AGENT_REFERRALS_ORD_CREATIVE_REGISTRATION_STALE", 409, registrationId);
 
+    const counterparty = input.provider_counterparty_profile_id ? { id: input.provider_counterparty_profile_id } : currentOrdProviderProfile(db, "COUNTERPARTY");
+    if (!counterparty) throw new OrdCreativeRegistrationError("AGENT_REFERRALS_ORD_PROVIDER_COUNTERPARTY_PROFILE_MISSING", 409);
+    const contract = input.provider_contract_profile_id ? { id: input.provider_contract_profile_id } : currentOrdProviderProfile(db, "CONTRACT");
+    if (!contract) throw new OrdCreativeRegistrationError("AGENT_REFERRALS_ORD_PROVIDER_CONTRACT_PROFILE_MISSING", 409);
+
     const nextRegistrationId = id();
     const nextRevision = current.revision + 1;
     const operationKey = ordCreativeRegistrationOperationKey({
-      creative_revision_id: current.creative_revision_id, revision: nextRevision, provider_counterparty_profile_id: current.provider_counterparty_profile_id, provider_contract_profile_id: current.provider_contract_profile_id,
+      creative_revision_id: current.creative_revision_id, revision: nextRevision, provider_counterparty_profile_id: counterparty.id, provider_contract_profile_id: contract.id,
     });
     db.prepare(`INSERT INTO ord_creative_registrations(
         id, creative_revision_id, engagement_id, revision, supersedes_registration_id, operation_key, provider_counterparty_profile_id, provider_contract_profile_id, registered_creative_target_url,
         local_state, vk_submission_state, vk_external_id, vk_object_id, erid, evidence_ref, lock_state, correction_reason, created_by_admin_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'CONFIRMED', 'SUBMITTED', ?, ?, ?, ?, 'CORRECTION_ONLY', ?, ?)`)
-      .run(nextRegistrationId, current.creative_revision_id, current.engagement_id, nextRevision, current.id, operationKey, current.provider_counterparty_profile_id, current.provider_contract_profile_id,
+      .run(nextRegistrationId, current.creative_revision_id, current.engagement_id, nextRevision, current.id, operationKey, counterparty.id, contract.id,
         current.registered_creative_target_url, current.vk_external_id, input.vk_object_id, input.erid, input.evidence_ref, input.reason, admin.admin_id);
     return ordCreativeRegistrationById(db, nextRegistrationId)!;
   });
   return run.immediate();
 };
 
-/** Records the separate Roskomnadzor/ERIR reconciliation code - never inferred merely from ERID existing. Legal at any time before EXTERNALLY_LOCKED, independent of vk_submission_state. */
-export const recordOrdCreativeErirReconciliation = (db: Database.Database, registrationId: string, erirCode: string): OrdCreativeRegistrationRow => {
+/**
+ * Records the separate Roskomnadzor/ERIR reconciliation code - never
+ * inferred merely from ERID existing. Requires a real durable evidence_ref
+ * (round-3 P0.4) and a real prior submission on file (DRAFT can never
+ * carry a reconciliation fact - the migration's own CHECK backs this too).
+ * NULL -> a value is the first ERIR fact; the SAME (code, evidence) again
+ * is an idempotent replay; a DIFFERENT code against an already-recorded one
+ * is a real conflict - the observed-id guard makes any raw historical
+ * rewrite structurally impossible, so a genuine correction must go through
+ * correctOrdCreativeRegistration (a new revision) instead of this function.
+ */
+export const recordOrdCreativeErirReconciliation = (db: Database.Database, registrationId: string, erirCode: string, evidenceRef: string): OrdCreativeRegistrationRow => {
   const run = db.transaction((): OrdCreativeRegistrationRow => {
     gate(db);
     const registration = ordCreativeRegistrationById(db, registrationId);
     if (!registration) throw new OrdCreativeRegistrationError("AGENT_REFERRALS_ORD_CREATIVE_REGISTRATION_NOT_FOUND", 404, registrationId);
     if (registration.lock_state === "EXTERNALLY_LOCKED") throw new OrdCreativeRegistrationError("AGENT_REFERRALS_ORD_CREATIVE_REGISTRATION_LOCKED", 409, registrationId);
-    db.prepare("UPDATE ord_creative_registrations SET erir_code = ? WHERE id = ?").run(erirCode, registrationId);
+    if (registration.local_state === "DRAFT") throw new OrdCreativeRegistrationError("AGENT_REFERRALS_ORD_CREATIVE_REGISTRATION_NOT_SUBMITTED", 409, registrationId);
+    if (registration.erir_code !== null) {
+      if (registration.erir_code === erirCode && registration.erir_evidence_ref === evidenceRef) return registration; // idempotent replay
+      throw new OrdCreativeRegistrationError("AGENT_REFERRALS_ORD_CREATIVE_REGISTRATION_ERIR_CONFLICT", 409, registrationId);
+    }
+    db.prepare("UPDATE ord_creative_registrations SET erir_code = ?, erir_evidence_ref = ? WHERE id = ?").run(erirCode, evidenceRef, registrationId);
     return ordCreativeRegistrationById(db, registrationId)!;
   });
   return run.immediate();
 };
 
-/** Terminal: no further revision of THIS registration chain will ever be minted. Explicit admin action, never implied by CONFIRMED alone. */
+/**
+ * Terminal: no further revision of THIS registration chain will ever be
+ * minted. Explicit admin action, never implied by CONFIRMED alone. Only
+ * the CURRENT (MAX(revision)) registration in the chain may ever be locked
+ * (round-3 P1.4) - locking a stale revision would leave a newer
+ * CORRECTION_ONLY revision still able to advance, so the chain would not
+ * actually be terminal; the migration's own guard backs this structurally
+ * too.
+ */
 export const lockOrdCreativeRegistration = (db: Database.Database, registrationId: string): OrdCreativeRegistrationRow => {
   const run = db.transaction((): OrdCreativeRegistrationRow => {
     gate(db);
     const registration = ordCreativeRegistrationById(db, registrationId);
     if (!registration) throw new OrdCreativeRegistrationError("AGENT_REFERRALS_ORD_CREATIVE_REGISTRATION_NOT_FOUND", 404, registrationId);
     if (registration.lock_state !== "CORRECTION_ONLY") throw new OrdCreativeRegistrationError("AGENT_REFERRALS_ORD_CREATIVE_REGISTRATION_NOT_CORRECTABLE", 409, registrationId);
+    const latest = currentOrdCreativeRegistrationForCreativeRevision(db, registration.creative_revision_id)!;
+    if (latest.id !== registration.id) throw new OrdCreativeRegistrationError("AGENT_REFERRALS_ORD_CREATIVE_REGISTRATION_STALE", 409, registrationId);
     db.prepare("UPDATE ord_creative_registrations SET lock_state = 'EXTERNALLY_LOCKED' WHERE id = ? AND lock_state = 'CORRECTION_ONLY'").run(registrationId);
     return ordCreativeRegistrationById(db, registrationId)!;
   });

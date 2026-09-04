@@ -182,6 +182,20 @@ describe("correctOrdCreativeRegistration: forward-only registration-level correc
     expect(currentOrdCreativeRegistrationForCreativeRevision(db, creativeRevisionId)!.id).toBe(reg2.id);
   });
 
+  it("round-3 P1.3: succeeds after the provider CONTRACT profile has been superseded - resolves the CURRENT profile at correction time, never the predecessor's stale pin", () => {
+    const { db, creativeRevisionId } = setup();
+    const reg1 = confirmedRegistration(db, creativeRevisionId);
+    const oldContract = reg1.provider_contract_profile_id;
+    const newContract = mintOrdProviderProfile(db, "admin", "CONTRACT", { ref: "C-2" }, "contract renewed");
+    expect(newContract.id).not.toBe(oldContract);
+
+    const reg2 = correctOrdCreativeRegistration(db, admin, reg1.id, { vk_object_id: "vk-obj-corrected", erid: "erid-corrected", evidence_ref: "correction evidence", reason: "ERID transcription error" });
+    expect(reg2.provider_contract_profile_id).toBe(newContract.id);
+    expect(reg2.provider_contract_profile_id).not.toBe(oldContract);
+    // reg1's own (now-historical) pin is untouched.
+    expect(reg1.provider_contract_profile_id).toBe(oldContract);
+  });
+
   it("refuses to correct a still-MUTABLE (never confirmed) registration - ordinary edits go through the submit/confirm functions instead", () => {
     const { db, creativeRevisionId } = setup();
     const { registration } = registerOrdCreative(db, admin, creativeRevisionId);
@@ -228,12 +242,39 @@ describe("correctOrdCreativeRegistration: forward-only registration-level correc
 });
 
 describe("recordOrdCreativeErirReconciliation / lockOrdCreativeRegistration", () => {
-  it("erir_code is independent of vk_submission_state/erid and legal any time before EXTERNALLY_LOCKED", () => {
+  it("round-3 P0.4: refuses to record ERIR on a still-DRAFT registration (no submission on file yet)", () => {
     const { db, creativeRevisionId } = setup();
     const { registration } = registerOrdCreative(db, admin, creativeRevisionId);
-    const withErir = recordOrdCreativeErirReconciliation(db, registration.id, "erir-early");
-    expect(withErir.erir_code).toBe("erir-early");
-    expect(withErir.local_state).toBe("DRAFT"); // unaffected
+    expect(() => recordOrdCreativeErirReconciliation(db, registration.id, "erir-early", "ev")).toThrow(/AGENT_REFERRALS_ORD_CREATIVE_REGISTRATION_NOT_SUBMITTED/);
+  });
+
+  it("round-3 P0.4: requires durable evidence, is independent of erid/vk_object_id, and legal any time before EXTERNALLY_LOCKED once submitted", () => {
+    const { db, creativeRevisionId } = setup();
+    const { registration } = registerOrdCreative(db, admin, creativeRevisionId);
+    recordOrdCreativeRegistrationSubmitted(db, registration.id, "vk-ext-1", "ev-submit");
+    const withErir = recordOrdCreativeErirReconciliation(db, registration.id, "erir-1", "ev-erir");
+    expect(withErir.erir_code).toBe("erir-1");
+    expect(withErir.erir_evidence_ref).toBe("ev-erir");
+    expect(withErir.local_state).toBe("SUBMITTED"); // unaffected
+  });
+
+  it("round-3 P0.4: an idempotent retry (same code + evidence) is a no-op; a GENUINELY different code is a real conflict, never a silent rewrite", () => {
+    const { db, creativeRevisionId } = setup();
+    const { registration } = registerOrdCreative(db, admin, creativeRevisionId);
+    recordOrdCreativeRegistrationSubmitted(db, registration.id, "vk-ext-1", "ev-submit");
+    const first = recordOrdCreativeErirReconciliation(db, registration.id, "erir-1", "ev-erir");
+    const retry = recordOrdCreativeErirReconciliation(db, registration.id, "erir-1", "ev-erir");
+    expect(retry.id).toBe(first.id);
+    expect(() => recordOrdCreativeErirReconciliation(db, registration.id, "erir-DIFFERENT", "ev-erir-2")).toThrow(/AGENT_REFERRALS_ORD_CREATIVE_REGISTRATION_ERIR_CONFLICT/);
+  });
+
+  it("round-3 P0.4: a raw historical rewrite of erir_code is structurally impossible, even pre-lock", () => {
+    const { db, creativeRevisionId } = setup();
+    const { registration } = registerOrdCreative(db, admin, creativeRevisionId);
+    recordOrdCreativeRegistrationSubmitted(db, registration.id, "vk-ext-1", "ev-submit");
+    recordOrdCreativeErirReconciliation(db, registration.id, "erir-1", "ev-erir");
+    expect(() => db.prepare("UPDATE ord_creative_registrations SET erir_code = 'erir-REWRITTEN' WHERE id = ?").run(registration.id))
+      .toThrow(/ORD_CREATIVE_REGISTRATION_OBSERVED_ID_IMMUTABLE/);
   });
 
   it("lockOrdCreativeRegistration reaches the terminal EXTERNALLY_LOCKED state - only reachable from CORRECTION_ONLY", () => {
@@ -251,11 +292,28 @@ describe("recordOrdCreativeErirReconciliation / lockOrdCreativeRegistration", ()
     expect(() => lockOrdCreativeRegistration(db, registration.id)).toThrow(/AGENT_REFERRALS_ORD_CREATIVE_REGISTRATION_NOT_CORRECTABLE/);
   });
 
+  it("round-3 P1.4: refuses to lock a STALE (already-superseded) revision - only the CURRENT one may ever be locked", () => {
+    const { db, creativeRevisionId } = setup();
+    const reg1 = confirmedRegistration(db, creativeRevisionId);
+    const reg2 = correctOrdCreativeRegistration(db, admin, reg1.id, { vk_object_id: "vk-obj-2", erid: "erid-2", evidence_ref: "ev2", reason: "correction" });
+    expect(() => lockOrdCreativeRegistration(db, reg1.id)).toThrow(/AGENT_REFERRALS_ORD_CREATIVE_REGISTRATION_STALE/);
+    // The current one (reg2) can still be locked normally.
+    expect(() => lockOrdCreativeRegistration(db, reg2.id)).not.toThrow();
+  });
+
+  it("round-3 P1.4: a raw SQL attempt to lock a stale revision is refused at the DB level too", () => {
+    const { db, creativeRevisionId } = setup();
+    const reg1 = confirmedRegistration(db, creativeRevisionId);
+    correctOrdCreativeRegistration(db, admin, reg1.id, { vk_object_id: "vk-obj-2", erid: "erid-2", evidence_ref: "ev2", reason: "correction" });
+    expect(() => db.prepare("UPDATE ord_creative_registrations SET lock_state = 'EXTERNALLY_LOCKED' WHERE id = ?").run(reg1.id))
+      .toThrow(/ORD_CREATIVE_REGISTRATION_LOCK_REQUIRES_CURRENT/);
+  });
+
   it("once EXTERNALLY_LOCKED, no UPDATE of any kind is legal, including recording erir_code", () => {
     const { db, creativeRevisionId } = setup();
     const confirmed = confirmedRegistration(db, creativeRevisionId);
     const locked = lockOrdCreativeRegistration(db, confirmed.id);
-    expect(() => recordOrdCreativeErirReconciliation(db, locked.id, "erir-1")).toThrow(/AGENT_REFERRALS_ORD_CREATIVE_REGISTRATION_LOCKED/);
+    expect(() => recordOrdCreativeErirReconciliation(db, locked.id, "erir-1", "ev")).toThrow(/AGENT_REFERRALS_ORD_CREATIVE_REGISTRATION_LOCKED/);
     expect(() => db.prepare("UPDATE ord_creative_registrations SET erir_code = 'x' WHERE id = ?").run(locked.id)).toThrow(/ORD_CREATIVE_REGISTRATION_TERMINAL_IMMUTABLE/);
   });
 });

@@ -162,6 +162,7 @@ CREATE TABLE ord_provider_operations (
   vk_submission_state TEXT NOT NULL DEFAULT 'NOT_SUBMITTED' CHECK (vk_submission_state IN ('NOT_SUBMITTED', 'SUBMITTED', 'SUBMIT_FAILED')),
   vk_external_id TEXT,
   erir_code TEXT,
+  erir_evidence_ref TEXT,
   evidence_ref TEXT,
   lock_state TEXT NOT NULL DEFAULT 'MUTABLE' CHECK (lock_state IN ('MUTABLE', 'CORRECTION_ONLY', 'EXTERNALLY_LOCKED')),
   correction_reason TEXT,
@@ -179,7 +180,16 @@ CREATE TABLE ord_provider_operations (
     (local_state = 'DRAFT' AND vk_submission_state IN ('NOT_SUBMITTED', 'SUBMIT_FAILED') AND vk_external_id IS NULL AND evidence_ref IS NULL AND lock_state = 'MUTABLE')
     OR (local_state = 'SUBMITTED' AND vk_submission_state = 'SUBMITTED' AND vk_external_id IS NOT NULL AND evidence_ref IS NOT NULL AND trim(evidence_ref) != '' AND lock_state = 'MUTABLE')
     OR (local_state = 'CONFIRMED' AND vk_submission_state = 'SUBMITTED' AND vk_external_id IS NOT NULL AND evidence_ref IS NOT NULL AND trim(evidence_ref) != '' AND lock_state IN ('CORRECTION_ONLY', 'EXTERNALLY_LOCKED'))
-  )
+  ),
+  -- ERIR reconciliation evidence (round-3 P0.4): independent of local/VK
+  -- submission state, but never representable without its OWN durable
+  -- provenance - a code with no evidence is exactly as unproven as a
+  -- nullable external id merely existing.
+  CHECK ((erir_code IS NULL) = (erir_evidence_ref IS NULL)) ,
+  CHECK (erir_evidence_ref IS NULL OR trim(erir_evidence_ref) != ''),
+  -- ERIR can only ever be recorded once a real submission is on file - DRAFT
+  -- (never yet told VK anything) can never carry a reconciliation fact.
+  CHECK (local_state != 'DRAFT' OR erir_code IS NULL)
 );
 CREATE INDEX ord_provider_operations_kind_idx ON ord_provider_operations(operation_kind, revision);
 
@@ -212,9 +222,11 @@ BEGIN SELECT RAISE(ABORT, 'ORD_PROVIDER_OPERATION_TERMINAL_IMMUTABLE'); END;
 
 -- CORRECTION_ONLY: the row's own facts are frozen - the ONLY legal UPDATE
 -- from here is the one-way transition to EXTERNALLY_LOCKED with every
--- other column held identical (erir_code excepted - the independent
--- Roskomnadzor reconciliation fact may still land while CORRECTION_ONLY,
--- since it is not part of what "correction" corrects).
+-- other column held identical (erir_code/erir_evidence_ref excepted - the
+-- independent Roskomnadzor reconciliation fact may still land while
+-- CORRECTION_ONLY, since it is not part of what "correction" corrects -
+-- but once set, the separate observed-id guard below makes it immutable
+-- too, round-3 P0.4).
 CREATE TRIGGER ord_provider_operations_correction_only_guard
 BEFORE UPDATE ON ord_provider_operations
 WHEN OLD.lock_state = 'CORRECTION_ONLY' AND (
@@ -230,12 +242,30 @@ WHEN NEW.operation_kind IS NOT OLD.operation_kind OR NEW.revision IS NOT OLD.rev
   OR NEW.provider_profile_revision_id IS NOT OLD.provider_profile_revision_id OR NEW.operation_key IS NOT OLD.operation_key OR NEW.created_by_admin_id IS NOT OLD.created_by_admin_id
 BEGIN SELECT RAISE(ABORT, 'ORD_PROVIDER_OPERATION_AUTHORITY_COLUMNS_IMMUTABLE'); END;
 
--- A provider-observed id, once set, can never be overwritten to a
--- DIFFERENT value (a same-value rewrite is an idempotent no-op).
+-- A provider-observed id (vk_external_id) or ERIR fact (erir_code, with its
+-- own evidence), once set, can never be overwritten to a DIFFERENT value -
+-- round-3 P0.4: a raw historical rewrite from ERIR code A to code B is no
+-- longer possible; a genuine correction requires a new revision instead. A
+-- same-value rewrite is an idempotent no-op the trigger does not need to
+-- special-case.
 CREATE TRIGGER ord_provider_operations_observed_id_immutable_guard
 BEFORE UPDATE ON ord_provider_operations
-WHEN OLD.vk_external_id IS NOT NULL AND NEW.vk_external_id IS NOT OLD.vk_external_id
+WHEN (OLD.vk_external_id IS NOT NULL AND NEW.vk_external_id IS NOT OLD.vk_external_id)
+  OR (OLD.erir_code IS NOT NULL AND NEW.erir_code IS NOT OLD.erir_code)
 BEGIN SELECT RAISE(ABORT, 'ORD_PROVIDER_OPERATION_OBSERVED_ID_IMMUTABLE'); END;
+
+-- round-3 P1.4: EXTERNALLY_LOCKED is meant to be a chain-terminal fact - no
+-- further revision will ever be minted. Locking a STALE (already-
+-- superseded) revision would leave a newer CORRECTION_ONLY revision able
+-- to keep advancing, so "terminal" would not actually be true for the
+-- chain. Only the CURRENT (no strictly-higher revision yet exists) row may
+-- ever be locked.
+CREATE TRIGGER ord_provider_operations_lock_requires_current_guard
+BEFORE UPDATE ON ord_provider_operations
+WHEN NEW.lock_state = 'EXTERNALLY_LOCKED' AND OLD.lock_state != 'EXTERNALLY_LOCKED' AND EXISTS (
+  SELECT 1 FROM ord_provider_operations newer WHERE newer.operation_kind = OLD.operation_kind AND newer.revision > OLD.revision
+)
+BEGIN SELECT RAISE(ABORT, 'ORD_PROVIDER_OPERATION_LOCK_REQUIRES_CURRENT'); END;
 
 CREATE TRIGGER ord_provider_operations_delete_guard
 BEFORE DELETE ON ord_provider_operations
@@ -276,6 +306,7 @@ CREATE TABLE ord_creative_registrations (
   vk_object_id TEXT,
   erid TEXT,
   erir_code TEXT,
+  erir_evidence_ref TEXT,
   evidence_ref TEXT,
   lock_state TEXT NOT NULL DEFAULT 'MUTABLE' CHECK (lock_state IN ('MUTABLE', 'CORRECTION_ONLY', 'EXTERNALLY_LOCKED')),
   correction_reason TEXT,
@@ -293,7 +324,13 @@ CREATE TABLE ord_creative_registrations (
     (local_state = 'DRAFT' AND vk_submission_state IN ('NOT_SUBMITTED', 'SUBMIT_FAILED') AND vk_external_id IS NULL AND vk_object_id IS NULL AND erid IS NULL AND evidence_ref IS NULL AND lock_state = 'MUTABLE')
     OR (local_state = 'SUBMITTED' AND vk_submission_state = 'SUBMITTED' AND vk_external_id IS NOT NULL AND vk_object_id IS NULL AND erid IS NULL AND evidence_ref IS NOT NULL AND trim(evidence_ref) != '' AND lock_state = 'MUTABLE')
     OR (local_state = 'CONFIRMED' AND vk_submission_state = 'SUBMITTED' AND vk_external_id IS NOT NULL AND vk_object_id IS NOT NULL AND erid IS NOT NULL AND evidence_ref IS NOT NULL AND trim(evidence_ref) != '' AND lock_state IN ('CORRECTION_ONLY', 'EXTERNALLY_LOCKED'))
-  )
+  ),
+  -- ERIR reconciliation evidence (round-3 P0.4) - never representable
+  -- without its own durable provenance, and never before a real submission
+  -- is on file (DRAFT can never carry a reconciliation fact).
+  CHECK ((erir_code IS NULL) = (erir_evidence_ref IS NULL)),
+  CHECK (erir_evidence_ref IS NULL OR trim(erir_evidence_ref) != ''),
+  CHECK (local_state != 'DRAFT' OR erir_code IS NULL)
 );
 CREATE INDEX ord_creative_registrations_engagement_idx ON ord_creative_registrations(engagement_id);
 
@@ -349,17 +386,32 @@ WHEN NEW.creative_revision_id IS NOT OLD.creative_revision_id
   OR NEW.created_by_admin_id IS NOT OLD.created_by_admin_id
 BEGIN SELECT RAISE(ABORT, 'ORD_CREATIVE_REGISTRATION_AUTHORITY_COLUMNS_IMMUTABLE'); END;
 
--- A provider-observed identity (vk_external_id / vk_object_id / erid), once
--- set, can never be overwritten to a DIFFERENT value - "provider external
--- id rewritten after lock" and, more generally, ever, even pre-lock. A
--- same-value rewrite is an idempotent no-op the trigger does not need to
--- special-case (NEW IS NOT OLD is false when equal).
+-- A provider-observed identity (vk_external_id / vk_object_id / erid) or an
+-- ERIR fact (erir_code), once set, can never be overwritten to a DIFFERENT
+-- value - "provider external id rewritten after lock" and, more generally,
+-- ever, even pre-lock (round-3 P0.4 extends this to erir_code: a raw
+-- historical rewrite from ERIR code A to code B is no longer possible - a
+-- genuine correction requires a new revision instead). A same-value
+-- rewrite is an idempotent no-op the trigger does not need to special-case
+-- (NEW IS NOT OLD is false when equal).
 CREATE TRIGGER ord_creative_registrations_observed_ids_immutable_guard
 BEFORE UPDATE ON ord_creative_registrations
 WHEN (OLD.vk_external_id IS NOT NULL AND NEW.vk_external_id IS NOT OLD.vk_external_id)
   OR (OLD.vk_object_id IS NOT NULL AND NEW.vk_object_id IS NOT OLD.vk_object_id)
   OR (OLD.erid IS NOT NULL AND NEW.erid IS NOT OLD.erid)
+  OR (OLD.erir_code IS NOT NULL AND NEW.erir_code IS NOT OLD.erir_code)
 BEGIN SELECT RAISE(ABORT, 'ORD_CREATIVE_REGISTRATION_OBSERVED_ID_IMMUTABLE'); END;
+
+-- round-3 P1.4: only the CURRENT (no strictly-higher revision yet exists)
+-- registration for a creative_revision_id may ever be locked - locking a
+-- stale revision would leave a newer CORRECTION_ONLY revision still able
+-- to advance, breaking "EXTERNALLY_LOCKED is chain-terminal".
+CREATE TRIGGER ord_creative_registrations_lock_requires_current_guard
+BEFORE UPDATE ON ord_creative_registrations
+WHEN NEW.lock_state = 'EXTERNALLY_LOCKED' AND OLD.lock_state != 'EXTERNALLY_LOCKED' AND EXISTS (
+  SELECT 1 FROM ord_creative_registrations newer WHERE newer.creative_revision_id = OLD.creative_revision_id AND newer.revision > OLD.revision
+)
+BEGIN SELECT RAISE(ABORT, 'ORD_CREATIVE_REGISTRATION_LOCK_REQUIRES_CURRENT'); END;
 
 CREATE TRIGGER ord_creative_registrations_delete_guard
 BEFORE DELETE ON ord_creative_registrations
@@ -539,8 +591,15 @@ CREATE TABLE ord_paid_invoice_payloads (
   canonical_hash TEXT NOT NULL,
   created_by_admin_id TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  -- Round-3 P1.1: four MUTUALLY EXCLUSIVE exact shapes, one per real state -
+  -- not a loose "MUTABLE admits anything but SUBMITTED-without-evidence"
+  -- branch, which still let raw SQL fabricate e.g. NOT_SUBMITTED with a
+  -- populated vk_operation_external_id/erir_code, or SUBMIT_FAILED with
+  -- external ids attached.
   CHECK (
-    (lock_state = 'MUTABLE' AND (submission_state != 'SUBMITTED' OR (vk_operation_external_id IS NOT NULL AND evidence_ref IS NOT NULL AND trim(evidence_ref) != '')))
+    (lock_state = 'MUTABLE' AND submission_state = 'NOT_SUBMITTED' AND vk_operation_external_id IS NULL AND erir_code IS NULL AND evidence_ref IS NULL)
+    OR (lock_state = 'MUTABLE' AND submission_state = 'SUBMIT_FAILED' AND vk_operation_external_id IS NULL AND erir_code IS NULL AND evidence_ref IS NULL)
+    OR (lock_state = 'MUTABLE' AND submission_state = 'SUBMITTED' AND vk_operation_external_id IS NOT NULL AND erir_code IS NULL AND evidence_ref IS NOT NULL AND trim(evidence_ref) != '')
     OR (lock_state = 'EXTERNALLY_LOCKED' AND submission_state = 'SUBMITTED' AND vk_operation_external_id IS NOT NULL AND erir_code IS NOT NULL AND evidence_ref IS NOT NULL AND trim(evidence_ref) != '')
   )
 );

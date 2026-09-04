@@ -163,7 +163,7 @@ describe("submit -> confirm -> CORRECTION_ONLY -> correction -> lock", () => {
     recordOrdProviderOperationSubmitted(db, operation.id, "vk-ext-1", "ev");
     confirmOrdProviderOperation(db, operation.id);
     const locked = lockOrdProviderOperation(db, operation.id);
-    expect(() => recordOrdProviderOperationErirReconciliation(db, locked.id, "erir-1")).toThrow(/AGENT_REFERRALS_ORD_PROVIDER_OPERATION_LOCKED/);
+    expect(() => recordOrdProviderOperationErirReconciliation(db, locked.id, "erir-1", "ev-erir")).toThrow(/AGENT_REFERRALS_ORD_PROVIDER_OPERATION_LOCKED/);
     expect(() => db.prepare("UPDATE ord_provider_operations SET erir_code = 'x' WHERE id = ?").run(locked.id)).toThrow(/ORD_PROVIDER_OPERATION_TERMINAL_IMMUTABLE/);
   });
 
@@ -172,6 +172,58 @@ describe("submit -> confirm -> CORRECTION_ONLY -> correction -> lock", () => {
     mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed");
     const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY");
     expect(() => lockOrdProviderOperation(db, operation.id)).toThrow(/AGENT_REFERRALS_ORD_PROVIDER_OPERATION_NOT_CORRECTABLE/);
+  });
+
+  it("round-3 P0.4: refuses to record ERIR on a still-DRAFT operation", () => {
+    const db = fresh();
+    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed");
+    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY");
+    expect(() => recordOrdProviderOperationErirReconciliation(db, operation.id, "erir-1", "ev")).toThrow(/AGENT_REFERRALS_ORD_PROVIDER_OPERATION_NOT_SUBMITTED/);
+  });
+
+  it("round-3 P0.4: an idempotent retry (same code + evidence) is a no-op; a GENUINELY different code is a real conflict", () => {
+    const db = fresh();
+    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed");
+    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY");
+    recordOrdProviderOperationSubmitted(db, operation.id, "vk-ext-1", "ev");
+    const first = recordOrdProviderOperationErirReconciliation(db, operation.id, "erir-1", "ev-erir");
+    const retry = recordOrdProviderOperationErirReconciliation(db, operation.id, "erir-1", "ev-erir");
+    expect(retry.id).toBe(first.id);
+    expect(() => recordOrdProviderOperationErirReconciliation(db, operation.id, "erir-DIFFERENT", "ev-erir-2")).toThrow(/AGENT_REFERRALS_ORD_PROVIDER_OPERATION_ERIR_CONFLICT/);
+  });
+
+  it("round-3 P0.4: a raw historical rewrite of erir_code is structurally impossible, even pre-lock", () => {
+    const db = fresh();
+    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed");
+    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY");
+    recordOrdProviderOperationSubmitted(db, operation.id, "vk-ext-1", "ev");
+    recordOrdProviderOperationErirReconciliation(db, operation.id, "erir-1", "ev-erir");
+    expect(() => db.prepare("UPDATE ord_provider_operations SET erir_code = 'erir-REWRITTEN' WHERE id = ?").run(operation.id))
+      .toThrow(/ORD_PROVIDER_OPERATION_OBSERVED_ID_IMMUTABLE/);
+  });
+
+  it("round-3 P1.4: refuses to lock a STALE (already-superseded) revision - only the CURRENT one may ever be locked", () => {
+    const db = fresh();
+    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed");
+    const { operation: op1 } = openOrdProviderOperation(db, admin, "COUNTERPARTY");
+    recordOrdProviderOperationSubmitted(db, op1.id, "vk-ext-1", "ev");
+    confirmOrdProviderOperation(db, op1.id);
+    const { operation: op2 } = openOrdProviderOperation(db, admin, "COUNTERPARTY"); // reopen -> revision 2
+    expect(() => lockOrdProviderOperation(db, op1.id)).toThrow(/AGENT_REFERRALS_ORD_PROVIDER_OPERATION_STALE/);
+    recordOrdProviderOperationSubmitted(db, op2.id, "vk-ext-2", "ev2");
+    confirmOrdProviderOperation(db, op2.id);
+    expect(() => lockOrdProviderOperation(db, op2.id)).not.toThrow();
+  });
+
+  it("round-3 P1.4: a raw SQL attempt to lock a stale revision is refused at the DB level too", () => {
+    const db = fresh();
+    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed");
+    const { operation: op1 } = openOrdProviderOperation(db, admin, "COUNTERPARTY");
+    recordOrdProviderOperationSubmitted(db, op1.id, "vk-ext-1", "ev");
+    confirmOrdProviderOperation(db, op1.id);
+    openOrdProviderOperation(db, admin, "COUNTERPARTY"); // reopen -> revision 2 exists now
+    expect(() => db.prepare("UPDATE ord_provider_operations SET lock_state = 'EXTERNALLY_LOCKED' WHERE id = ?").run(op1.id))
+      .toThrow(/ORD_PROVIDER_OPERATION_LOCK_REQUIRES_CURRENT/);
   });
 });
 
