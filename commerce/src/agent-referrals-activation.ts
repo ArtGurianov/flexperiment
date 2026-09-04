@@ -213,9 +213,33 @@ export const AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS = [
   "engagement_recovery_exposure_evidence_relational_consistency_guard",
   "engagement_recovery_exposure_evidence_immutable_guard",
   "engagement_recovery_exposure_evidence_delete_guard",
+  // PR8 (0048). Every object PR8 ships is named here, matching PR4-PR7's
+  // own lists - a dropped base table is exactly as unsound as a dropped
+  // guard, so both are named.
+  "ord_provider_profile_revisions",
+  "ord_provider_profile_revisions_immutable_guard",
+  "ord_provider_profile_revisions_delete_guard",
+  "ord_reporting_period_policy",
+  "ord_reporting_period_policy_immutable_guard",
+  "ord_reporting_period_policy_delete_guard",
+  "ord_creative_registrations",
+  "ord_creative_registrations_relational_consistency_guard",
+  "ord_creative_registrations_terminal_immutable_guard",
+  "ord_creative_registrations_authority_immutable_guard",
+  "ord_creative_registrations_observed_ids_immutable_guard",
+  "ord_creative_registrations_delete_guard",
+  "ord_distribution_period_reports",
+  "ord_distribution_period_reports_relational_consistency_guard",
+  "ord_distribution_period_reports_immutable_guard",
+  "ord_distribution_period_reports_delete_guard",
+  "ord_paid_invoice_payloads",
+  "ord_paid_invoice_payloads_relational_consistency_guard",
+  "ord_paid_invoice_payloads_terminal_immutable_guard",
+  "ord_paid_invoice_payloads_authority_immutable_guard",
+  "ord_paid_invoice_payloads_delete_guard",
 ] as const;
 
-const MIGRATIONS = ["0043_agent_referrals_foundation.sql", "0044_partner_identity.sql", "0045_engagement_publication.sql", "0046_attribution_reward.sql", "0047_act_payment_settlement.sql"] as const;
+const MIGRATIONS = ["0043_agent_referrals_foundation.sql", "0044_partner_identity.sql", "0045_engagement_publication.sql", "0046_attribution_reward.sql", "0047_act_payment_settlement.sql", "0048_ord_reporting.sql"] as const;
 
 export class AgentReferralsActivationError extends Error {
   constructor(readonly code: string, readonly status = 409, detail?: string) {

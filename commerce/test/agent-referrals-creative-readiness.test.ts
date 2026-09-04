@@ -17,6 +17,8 @@ import { offerEngagement, verifyAudienceForPartnerCity, acceptEngagement, activa
 import { mintCreativeRevision, authorizeCreative } from "../src/agent-referrals-creative";
 import { revokeDelegationAsAdmin } from "../src/agent-referrals-delegation-revocation";
 import { assessCreativeReadyToPublish, CreativeReadinessError } from "../src/agent-referrals-creative-readiness";
+import { mintOrdProviderProfile } from "../src/agent-referrals-ord-provider-profile";
+import { registerOrdCreative, confirmOrdCreativeRegistration, recordOrdCreativeRegistrationSubmitted } from "../src/agent-referrals-ord-creative-registration";
 
 const open: Database.Database[] = [];
 afterEach(() => { while (open.length) open.pop()!.close(); });
@@ -85,7 +87,7 @@ describe("CREATIVE_READY_TO_PUBLISH, local half (§B-5e)", () => {
     expect(assessCreativeReadyToPublish.length).toBe(2); // (db, engagementId) - no third parameter of any kind
   });
 
-  it("fails closed with PUBLICATION_PROVIDER_PREFLIGHT_UNAVAILABLE once every local prerequisite holds - it never reports success", () => {
+  it("fails closed with a named provider defect once every local prerequisite holds and no registration exists - it never reports success (PR8 completes this half: no longer a blanket 'unavailable')", () => {
     const db = fresh();
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);
@@ -95,8 +97,8 @@ describe("CREATIVE_READY_TO_PUBLISH, local half (§B-5e)", () => {
     try {
       assessCreativeReadyToPublish(db, engagementId);
     } catch (error) {
-      expect((error as CreativeReadinessError).code).toBe("PUBLICATION_PROVIDER_PREFLIGHT_UNAVAILABLE");
-      expect((error as CreativeReadinessError).status).toBe(503);
+      expect((error as CreativeReadinessError).code).toBe("AGENT_REFERRALS_READINESS_ORD_REGISTRATION_MISSING");
+      expect((error as CreativeReadinessError).status).toBe(409);
     }
   });
 
@@ -177,7 +179,43 @@ describe("CREATIVE_READY_TO_PUBLISH, local half (§B-5e)", () => {
       assessCreativeReadyToPublish(db, engagementId);
       throw new Error("expected a throw");
     } catch (error) {
-      expect((error as CreativeReadinessError).code).toBe("PUBLICATION_PROVIDER_PREFLIGHT_UNAVAILABLE");
+      expect((error as CreativeReadinessError).code).toBe("AGENT_REFERRALS_READINESS_ORD_REGISTRATION_MISSING");
     }
+  });
+});
+
+describe("CREATIVE_READY_TO_PUBLISH, provider half (PR8 completes B-5e)", () => {
+  const readyEngagementAndCreative = (db: Database.Database) => {
+    const p1 = readyPartner(db);
+    const occ = seedOccurrence(db, p1.cityId);
+    const canonicalUrl = `https://flexperiment.ru/${p1.citySlug}?promo=${(db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string }).code}`;
+    const engagementId = activateAndAuthorizeCreative(db, p1, occ, canonicalUrl);
+    const creativeRevisionId = (db.prepare("SELECT creative_revision_id FROM engagement_creative_authorizations WHERE engagement_id = ? AND revoked_at IS NULL").get(engagementId) as { creative_revision_id: string }).creative_revision_id;
+    return { p1, engagementId, creativeRevisionId, canonicalUrl };
+  };
+
+  it("refuses when a registration exists but has not reached EXTERNALLY_LOCKED (no ERID yet)", () => {
+    const db = fresh();
+    mintOrdProviderProfile(db, "admin", "COUNTERPARTY", { legal_name: "Flexperiment" }, "seed");
+    mintOrdProviderProfile(db, "admin", "CONTRACT", { ref: "C-1" }, "seed");
+    const { engagementId, creativeRevisionId } = readyEngagementAndCreative(db);
+    const { registration } = registerOrdCreative(db, admin, creativeRevisionId);
+    recordOrdCreativeRegistrationSubmitted(db, registration.id, "vk-ext-1", "ev");
+    expect(() => assessCreativeReadyToPublish(db, engagementId)).toThrow(/AGENT_REFERRALS_READINESS_ORD_ERID_MISSING/);
+  });
+
+  it("succeeds once local AND provider facts both hold - never needs a channel_id, distribution_resource_url, or any capacity check", () => {
+    const db = fresh();
+    mintOrdProviderProfile(db, "admin", "COUNTERPARTY", { legal_name: "Flexperiment" }, "seed");
+    mintOrdProviderProfile(db, "admin", "CONTRACT", { ref: "C-1" }, "seed");
+    const { engagementId, creativeRevisionId } = readyEngagementAndCreative(db);
+    const { registration } = registerOrdCreative(db, admin, creativeRevisionId);
+    const evidence = confirmOrdCreativeRegistration(db, registration.id, "vk-obj-1", "erid-1", "ev");
+    const result = assessCreativeReadyToPublish(db, engagementId);
+    expect(result).toEqual({ engagement_id: engagementId, creative_revision_id: creativeRevisionId, ord_registration_id: evidence.id, erid: "erid-1" });
+  });
+
+  it("assessCreativeReadyToPublish's own signature has no channel_id/distribution_resource_url parameter anywhere - re-confirms the provider half adds none either", () => {
+    expect(assessCreativeReadyToPublish.length).toBe(2);
   });
 });
