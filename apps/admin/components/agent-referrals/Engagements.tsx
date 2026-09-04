@@ -257,7 +257,13 @@ function DistributionsSection({ engagementId, distributions, onDone, focusDistri
   // Round-4 fix: a review-queue item names one specific distribution, not merely the engagement - land
   // directly in that distribution's reporting panel when the queue item that brought us here was the
   // reporting-tail category, instead of leaving the operator to find it by hand among several rows.
-  const [reporting, setReporting] = useState<string | null>(() => (focusReporting && focusDistributionId ? focusDistributionId : null));
+  // Round-5 fix: fail closed on a focus that doesn't actually belong to THIS engagement's distributions -
+  // a stale focus left over from a different engagement (defense in depth alongside AgentReferrals.tsx's
+  // own reset-on-manual-navigation fix), or a hand-constructed/mismatched URL, must never pre-select a
+  // distribution_id here, since that id becomes the literal mutation target for the reporting/reconciliation
+  // POSTs below - it must never be one this engagement's own projection didn't actually return.
+  const focusedDistributionExists = focusDistributionId !== null && distributions.some((row) => String(row.distribution_id) === focusDistributionId);
+  const [reporting, setReporting] = useState<string | null>(() => (focusReporting && focusedDistributionExists ? focusDistributionId : null));
 
   const run = async (path: string, body: Record<string, unknown>) => {
     setBusy(true); setError(null);

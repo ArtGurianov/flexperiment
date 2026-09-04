@@ -50,6 +50,12 @@ export function AgentReferrals() {
   const navigate = (nextTab: "partners" | "engagements", id: string, focus?: string, reportingFocus?: boolean) => {
     setTab(nextTab); setSelectedId(id); setFocusId(focus ?? null); setFocusReporting(reportingFocus ?? false);
   };
+  // Round-5 fix: manual selection (opening a different record from a list, or navigating back to one)
+  // must clear a stale queue-derived focus - otherwise a focus/focusReporting pair minted for one
+  // engagement's distribution stays set after the operator manually opens a DIFFERENT engagement, and
+  // DistributionsSection would (without its own defensive check) auto-open an ORD reporting form whose
+  // mutation target is a distribution that doesn't even belong to the currently open engagement.
+  const selectRecord = (id: string | null) => { setSelectedId(id); setFocusId(null); setFocusReporting(false); };
 
   return (
     <>
@@ -60,8 +66,8 @@ export function AgentReferrals() {
         ))}
       </nav>
       {tab === "overview" && <Overview onNavigate={navigate} />}
-      {tab === "partners" && <Partners selected={selectedId} onSelect={setSelectedId} />}
-      {tab === "engagements" && <Engagements selected={selectedId} onSelect={setSelectedId} focusDistributionId={focusId} focusReporting={focusReporting} />}
+      {tab === "partners" && <Partners selected={selectedId} onSelect={selectRecord} />}
+      {tab === "engagements" && <Engagements selected={selectedId} onSelect={selectRecord} focusDistributionId={focusId} focusReporting={focusReporting} />}
       {tab === "channel-policy" && <ChannelPolicy />}
     </>
   );

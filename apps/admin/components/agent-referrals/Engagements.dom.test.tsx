@@ -378,6 +378,35 @@ describe("Engagements (Agent Referrals admin console): distribution removal veri
     expect(screen.queryByText("2026-01")).not.toBeInTheDocument();
   });
 
+  it("round-5 fix: a focusDistributionId that does not belong to this engagement (stale from a different engagement, or a hand-constructed URL) never pre-selects a reporting mutation target - fails closed instead", async () => {
+    global.fetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/agent-referrals/engagements/e1")) {
+        return {
+          ok: true, status: 200, json: async () => ({
+            engagement: { id: "e1", lifecycle_state: "ACTIVE", created_at: "now" },
+            latest_revision: null, creative: null,
+            distributions: [{ ...distributionRow(null), distribution_id: "d1", reporting_periods: [{ reporting_period_key: "2026-01", reporting_basis: "CALENDAR_MONTH", revision: 1, statistics_state: "ACTUAL", submission_state: "NOT_SUBMITTED" }] }],
+            reward_registry: null, effective_reward_snapshot: null, settlement: null,
+            act: null, act_acceptance: null, act_dispute: null, payment_attempts: [],
+          }),
+        } as Response;
+      }
+      throw new Error(`unhandled fetch: ${url}`);
+    });
+    const client = createTestQueryClient();
+    // "d-from-another-engagement" does not exist among e1's own distributions - simulates a stale focus
+    // left over from a different engagement, or a hand-constructed ?id=e1&focus=...&focusReporting=1 URL.
+    render(<EngagementsHarness focusDistributionId="d-from-another-engagement" focusReporting={true} />, { wrapper: (props) => <QueryClientWrapper client={client}>{props.children}</QueryClientWrapper> });
+
+    // d1 is the only real distribution here - its reporting panel must stay closed, and no row is
+    // highlighted, since the focus target does not belong to this engagement's own projection.
+    await screen.findByRole("button", { name: "Отчётность" });
+    expect(screen.queryByRole("button", { name: "Скрыть отчётность" })).not.toBeInTheDocument();
+    expect(screen.queryByText("2026-01")).not.toBeInTheDocument();
+    expect(document.querySelector('tr[data-focused="true"]')).toBeNull();
+  });
+
   it.each(["OVERDUE_REMOVAL", "REMOVAL_UNVERIFIED"])(
     "round-3 fix: REMOVAL_CONFIRMED is reachable from %s, not only REMOVAL_CLAIMED/REMOVAL_REQUIRED - the domain's own REMOVAL_LEGAL_FROM permits it from all four non-terminal states",
     async (removalState) => {
