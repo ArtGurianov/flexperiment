@@ -15,6 +15,8 @@ import { completeRollingSchema, releaseControlSchema } from "./release-control-s
 import { createAgentReferralsPartnerRouter } from "./agent-referrals-api-partner";
 import { createAgentReferralsAdminRouter } from "./agent-referrals-api-admin";
 import { UnconfiguredOtpSender, type OtpSender } from "./agent-referrals-otp";
+import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
+import { agentReferralsBusinessFactEvidence } from "./agent-referrals-business-facts";
 
 type AppBindings = { Variables: { adminId?: string; adminSessionId?: string } };
 const noStore = (headers: Headers) => headers.set("Cache-Control", "no-store");
@@ -579,12 +581,22 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   releaseControl.post("/reopen", async (c) => c.json(domain.reopenNewOrders(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
   releaseControl.post("/complete-rolling", async (c) => {
     const input = completeRollingSchema.parse(await jsonBody(c.req.raw));
-    // No DORMANT feature ships in PR1 for this predicate to check (Agent
-    // Referrals lands in PR3-PR9), so this wiring fails closed until a real
-    // feature-readiness reader replaces it - never treat "no feature yet" as
-    // "ready".
-    return c.json(domain.completeRolling(input, () => false));
+    // Agent Referrals (PR3-PR9) is the only ROLLING candidate that exists,
+    // so its own feature-state singleton is the real readiness reader this
+    // predicate was always meant to become - see the historical note this
+    // replaced: "No DORMANT feature ships in PR1 for this predicate to
+    // check ... fails closed until a real feature-readiness reader replaces
+    // it". A future second ROLLING feature would need this predicate to
+    // become release_id-aware; nothing here forecloses that, it simply is
+    // not needed while Agent Referrals is the only caller.
+    return c.json(domain.completeRolling(input, () => agentReferralsFeatureState(sqlite).state === "DORMANT"));
   });
+  // Phase 10B production-controller preconditions, bearer-token gated like
+  // every other /v1/internal/release-control/* route - never the admin-
+  // session-gated surface, so a CI controller can read them without a
+  // browser session. Read-only: neither route mutates anything.
+  releaseControl.get("/agent-referrals/feature-state", (c) => c.json(agentReferralsFeatureState(sqlite)));
+  releaseControl.get("/agent-referrals/business-facts", (c) => c.json(agentReferralsBusinessFactEvidence(sqlite)));
   const releaseControlHead = new Hono();
   releaseControlHead.use("*", async (c, next) => {
     if (!verifyReleaseControlToken(c.req.header("Authorization"))) throw new DomainError("RELEASE_CONTROL_AUTH_REQUIRED", 401);

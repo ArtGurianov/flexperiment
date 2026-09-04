@@ -134,15 +134,67 @@ documentation, `.release/**` artifact, `public/legal/**`, or
 independently rebuilds Q, compares `BASE..Q` with that complete manifest, and
 proves every migration blob equals the protected-main source blob.
 
+## Phase 10B control plane (dormant)
+
+PR10 delivers the machinery Phase 10B execution needs, so that after PR10
+merges, Phase 10B is execution-only rather than something still to be built.
+Both workflows are **manual-only** (`workflow_dispatch` only — no `push`,
+`schedule`, or other automatic trigger) and gated by the `production`
+environment's required-reviewer approval, per
+`docs/release/DEPLOYMENT_INVARIANTS.md`. Merely merging PR10 executes
+neither. See `commerce/test/controlled-agent-referrals-candidate-workflow.test.ts`
+and `commerce/test/controlled-agent-referrals-workflow.test.ts` for the
+structural proofs that every assertion below is really present in each real
+file, and `commerce/test/controller-not-older-than-target.test.ts` for the
+shared `RECONSTRUCTION_BOUND` proof both are held to.
+
+- **`.github/workflows/controlled-agent-referrals-candidate.yml`** —
+  publication only, never deployment authority. Reconstructs the exact
+  certified Q from this controller's own tree (never Q's own tree — that
+  would be the circular proof `commerce/src/agent-referrals-candidate.ts`
+  refuses to perform), then pushes that exact commit to a fresh,
+  immutable, generation-numbered ref:
+  `refs/heads/runtime/agent-referrals/<generation>`. It never moves
+  `runtime-candidate` or `production-deploy`, never deploys anything, and
+  never applies a migration.
+- **`.github/workflows/controlled-agent-referrals.yml`** — the dedicated
+  production controller for the detached candidate. Uses `ROLLING` release
+  semantics (`commerce/src/release-control.ts`), never the generic
+  `CONTROLLED_CUTOVER` `controlled-production-deploy.yml` lane, which
+  structurally refuses any candidate touching `commerce/migrations/**` and
+  so cannot deploy Q at all. Before any consequential action it proves:
+  the observed `production-deploy` equals the expected BASE; the
+  certificate reconstructs Q from this same controller's tree; the
+  published runtime ref and the independent `runtime-candidate` ref (moved
+  only by the existing, separate `controlled-runtime-candidate-promotion.yml`
+  lane — never by this workflow) both resolve exactly to that same Q. It
+  then acquires `ROLLING` ownership (never pausing sales — the domain's own
+  `acquire()` cannot pause), CASes `production-deploy` from BASE to Q,
+  deploys Q, proves exact runtime/worker/migration-schema state (0042-0049
+  included, by per-file blob hash), proves
+  `agent_referrals_feature_state == DORMANT` and zero Agent Referrals
+  production business facts via the two new bearer-token-gated read routes
+  (`GET /v1/internal/release-control/agent-referrals/feature-state` and
+  `.../business-facts`, `commerce/src/agent-referrals-business-facts.ts`),
+  calls `completeRolling()`, and proves terminal completion. **DORMANT is
+  the terminal state this run leaves the feature in — it never activates
+  Agent Referrals.**
+
+`api.ts`'s `/complete-rolling` route now wires its dormant-readiness
+predicate to Agent Referrals' own feature-state singleton (previously a
+PR1-era `() => false` placeholder, since no real ROLLING candidate existed
+yet to check) — see `commerce/test/release-control-rolling.test.ts` for the
+PASS/FAIL proof against the real feature-state table.
+
 ## Recovery matrix
 
 Not yet applicable. Nothing in this feature has deployed, so there is no
-recovery scenario to document yet. The full matrix — including why
-`completeRolling()` is unavailable before schema convergence and why a
+recovery scenario to document yet. The full matrix — including why a
 post-migration rollback requires a DB restore — lives in the plan's Phase
 10B / recovery-matrix section and will be transcribed here once the feature
 reaches DORMANT delivery.
 
 ## Terminal record
 
-None. This feature has not been built, deployed, or activated.
+None. This feature has not been built, deployed, or activated. The two
+workflows above exist and are ready; neither has ever been run.

@@ -5,6 +5,7 @@ import { migrate, openDatabase } from "../src/db";
 import { MockProvider } from "../src/provider";
 import { CommerceDomain } from "../src/domain";
 import { ReleaseControlError, ReleaseSalesGate, type ReleaseControlRequest } from "../src/release-control";
+import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
 
 /**
  * §B-1b / Phase 1: ROLLING is reachable over HTTP end-to-end, and
@@ -12,13 +13,17 @@ import { ReleaseControlError, ReleaseSalesGate, type ReleaseControlRequest } fro
  * reopen(), which requires sales_paused = 1 and a ROLLING rollout never
  * pauses on its normal path.
  *
- * No Agent Referrals feature ships in PR1 for the dormant-ready predicate to
- * check, so the HTTP route (api.ts) wires a fail-closed reader. The "all
- * predicates PASS" scenario is therefore proven against the PR1 primitives
- * directly (ReleaseSalesGate.completeRolling / CommerceDomain.completeRolling)
- * with a synthetic reader, exactly the scope the plan asks PR1 to cover; every
- * reject scenario, including dormant-ready FAIL, is proven through the real
- * HTTP route since api.ts's wiring already fails closed.
+ * PR10 wires the dormant-ready predicate to Agent Referrals' own
+ * feature-state singleton (api.ts's `/complete-rolling` route) - Agent
+ * Referrals (PR3-PR9) is the only real ROLLING candidate, so its own DORMANT
+ * state is the genuine readiness signal this predicate was always meant to
+ * become; see the historical PR1 comment this replaced, quoted in
+ * commerce/src/api.ts. The "all predicates PASS with a synthetic reader"
+ * scenario stays proven against the primitives directly
+ * (ReleaseSalesGate.completeRolling / CommerceDomain.completeRolling), since
+ * that reader is a generic parameter unrelated to which feature backs it;
+ * the dormant-ready PASS/FAIL scenarios themselves are proven through the
+ * real HTTP route, against the real Agent Referrals feature-state table.
  */
 
 process.env.COMMERCE_SESSION_SECRET = "test-session-secret";
@@ -171,10 +176,25 @@ describe("HTTP: POST /v1/internal/release-control/complete-rolling", () => {
     });
   });
 
-  it("rejects on dormant-ready FAIL (PR1's fail-closed wiring: no feature exists yet)", async () => {
+  it("succeeds on dormant-ready PASS: Agent Referrals is DORMANT by default on a freshly migrated database", async () => {
     await withReleaseControlToken(async () => {
       const { db, app } = appFixture();
       try {
+        const releaseId = randomUUID();
+        await acquireRolling(app, releaseId);
+        const response = await app.request("http://api.flexperiment.ru/v1/internal/release-control/complete-rolling", { method: "POST", headers: releaseControlHeaders, body: JSON.stringify({ release_id: releaseId, mode: "ROLLING", expected: expected() }) });
+        expect(response.status).toBe(200);
+        const body = await response.json() as { owner_release_id: string | null };
+        expect(body.owner_release_id).toBeNull();
+      } finally { db.close(); }
+    });
+  });
+
+  it("rejects on dormant-ready FAIL: Agent Referrals is not DORMANT (already activated)", async () => {
+    await withReleaseControlToken(async () => {
+      const { db, app } = appFixture();
+      try {
+        activateAgentReferrals(db, { expected_revision: 1, owner_id: "activation-owner", reason: "test" });
         const releaseId = randomUUID();
         await acquireRolling(app, releaseId);
         const response = await app.request("http://api.flexperiment.ru/v1/internal/release-control/complete-rolling", { method: "POST", headers: releaseControlHeaders, body: JSON.stringify({ release_id: releaseId, mode: "ROLLING", expected: expected() }) });
@@ -199,6 +219,41 @@ describe("HTTP: POST /v1/internal/release-control/complete-rolling", () => {
         const adminCookie = login.headers.get("Set-Cookie");
         const asAdmin = await app.request("http://api.flexperiment.ru/v1/internal/release-control/complete-rolling", { method: "POST", headers: { "Content-Type": "application/json", Cookie: adminCookie ?? "" }, body: JSON.stringify({ release_id: releaseId, mode: "ROLLING", expected: expected() }) });
         expect(asAdmin.status).toBe(401);
+      } finally { db.close(); }
+    });
+  });
+});
+
+describe("HTTP: GET /v1/internal/release-control/agent-referrals/feature-state and .../business-facts", () => {
+  it("feature-state reports DORMANT on a freshly migrated database, and business-facts reports all_zero", async () => {
+    await withReleaseControlToken(async () => {
+      const { db, app } = appFixture();
+      try {
+        const featureState = await app.request("http://api.flexperiment.ru/v1/internal/release-control/agent-referrals/feature-state", { headers: releaseControlHeaders });
+        expect(featureState.status).toBe(200);
+        expect(await featureState.json()).toEqual({ state: "DORMANT", owner_id: null, revision: 1 });
+
+        const businessFacts = await app.request("http://api.flexperiment.ru/v1/internal/release-control/agent-referrals/business-facts", { headers: releaseControlHeaders });
+        expect(businessFacts.status).toBe(200);
+        const body = await businessFacts.json() as { all_zero: boolean; tables: Record<string, number> };
+        expect(body.all_zero).toBe(true);
+        expect(body.tables).not.toHaveProperty("agent_referrals_feature_state");
+      } finally { db.close(); }
+    });
+  });
+
+  it("feature-state reflects activation, and both routes require the bearer token like every other release-control route", async () => {
+    await withReleaseControlToken(async () => {
+      const { db, app } = appFixture();
+      try {
+        activateAgentReferrals(db, { expected_revision: 1, owner_id: "activation-owner", reason: "test" });
+        const featureState = await app.request("http://api.flexperiment.ru/v1/internal/release-control/agent-referrals/feature-state", { headers: releaseControlHeaders });
+        expect((await featureState.json() as { state: string }).state).toBe("ACTIVE");
+
+        const noAuthFeatureState = await app.request("http://api.flexperiment.ru/v1/internal/release-control/agent-referrals/feature-state");
+        expect(noAuthFeatureState.status).toBe(401);
+        const noAuthBusinessFacts = await app.request("http://api.flexperiment.ru/v1/internal/release-control/agent-referrals/business-facts");
+        expect(noAuthBusinessFacts.status).toBe(401);
       } finally { db.close(); }
     });
   });
