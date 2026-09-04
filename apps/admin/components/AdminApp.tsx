@@ -18,6 +18,7 @@ import { OperationalIncidents } from "./incidents/Incidents";
 import { Audit } from "./audit/Audit";
 import { Agents } from "./agents/Agents";
 import { PromoCodes } from "./promo-codes/PromoCodes";
+import { AgentReferrals } from "./agent-referrals/AgentReferrals";
 
 export function AdminApp({ page }: { page: Page }) {
   const router = useRouter();
@@ -49,6 +50,7 @@ export function AdminApp({ page }: { page: Page }) {
     : page === "incidents" ? <Suspense fallback={<Loading />}><OperationalIncidents /></Suspense>
     : page === "agents" ? <Agents />
     : page === "promo-codes" ? <PromoCodes />
+    : page === "agent-referrals" ? <AgentReferrals />
     : <Audit />;
 
   return <Shell page={page} onLogout={logout}>{view}</Shell>;

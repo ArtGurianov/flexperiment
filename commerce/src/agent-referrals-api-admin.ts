@@ -40,6 +40,7 @@ import { generateSettlementAct, presentSettlementAct, settlementActForSettlement
 import {
   beginPayment, recordPaymentMade, recordPayoutUnknown, recordConfirmedNotMade, recordNpdReceipt, paymentAttemptsForSettlement, paymentAttemptById,
 } from "./agent-referrals-payment";
+import { agentReferralsReviewQueue } from "./agent-referrals-review-queue";
 
 /**
  * `/v1/admin/agent-referrals/*` - mounted INSIDE api.ts's already-
@@ -91,6 +92,12 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   app.post("/feature-state/reactivate", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
     return c.json(reactivateAgentReferrals(sqlite, { expected_revision: requireNumber(body, "expected_revision"), owner_id: c.var.adminId!, reason: requireString(body, "reason") }));
+  });
+
+  /** §11 operator review reminders (round-2 fix): the same live-derived read the worker logs a summary of every cycle - see agent-referrals-review-queue.ts's own header. */
+  app.get("/review-queue", (c) => {
+    const referenceInstantIso = c.req.query("reference_instant") ?? new Date().toISOString();
+    return c.json(agentReferralsReviewQueue(sqlite, referenceInstantIso));
   });
 
   // ---- Partner identity / onboarding --------------------------------------
