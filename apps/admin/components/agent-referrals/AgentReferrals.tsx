@@ -37,6 +37,9 @@ export function AgentReferrals() {
   }, [tab, selectedId]);
 
   const changeTab = (next: Tab) => { setTab(next); setSelectedId(null); };
+  // Overview's review-queue items link straight to the flagged record - the
+  // Phase 9 round-3 fix for "an operator sees a count but nothing to act on".
+  const navigate = (nextTab: "partners" | "engagements", id: string) => { setTab(nextTab); setSelectedId(id); };
 
   return (
     <>
@@ -46,7 +49,7 @@ export function AgentReferrals() {
           <button key={item.id} className={item.id === tab ? "nav-active" : ""} onClick={() => changeTab(item.id)}>{item.label}</button>
         ))}
       </nav>
-      {tab === "overview" && <Overview />}
+      {tab === "overview" && <Overview onNavigate={navigate} />}
       {tab === "partners" && <Partners selected={selectedId} onSelect={setSelectedId} />}
       {tab === "engagements" && <Engagements selected={selectedId} onSelect={setSelectedId} />}
       {tab === "channel-policy" && <ChannelPolicy />}

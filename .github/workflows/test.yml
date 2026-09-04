@@ -45,5 +45,7 @@ jobs:
       - run: pnpm test
       - name: Real-Nginx frontend static-export routing contract
         run: pnpm frontend:test:nginx
-      - name: Real-Nginx admin dynamic-upstream config
+      - name: Real-Nginx admin/partner shared-frontend host routing config
         run: pnpm admin:test:nginx
+      - name: Reference Caddy deployment topology
+        run: pnpm deploy:test:caddyfile

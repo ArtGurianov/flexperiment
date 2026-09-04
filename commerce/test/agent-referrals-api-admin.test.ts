@@ -2,7 +2,7 @@ import { randomUUID, scryptSync } from "node:crypto";
 import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { MockProvider } from "../src/provider";
-import { fresh, readyPartner, seedOccurrence, nearTermTerms } from "./support/agent-referrals-settlement-fixtures";
+import { fresh, readyPartner, seedOccurrence, nearTermTerms, offerAcceptActivate, purchaseAndPay, finalizedSettlement, acceptedAct } from "./support/agent-referrals-settlement-fixtures";
 
 process.env.COMMERCE_SESSION_SECRET ??= "test-session-secret-agent-referrals-admin-api";
 process.env.COMMERCE_ADMIN_PASSWORD_SCRYPT ??= `salt:${scryptSync("correct horse", "salt", 64).toString("base64url")}`;
@@ -105,5 +105,26 @@ describe("/v1/admin/agent-referrals/*: authentication boundary", () => {
     expect(detail.status).toBe(200);
     const detailBody = await detail.json();
     expect(detailBody.engagement.lifecycle_state).toBe("OFFERED");
+  });
+
+  it("round-3 fix: the engagement detail response includes the act/payment chain (act, act_acceptance, act_dispute, payment_attempts, paid_invoice) - previously only reachable via a second /settlements/:id round trip", async () => {
+    const { db, domain, app } = appFixture();
+    const p1 = readyPartner(db, "OTHER");
+    const occ = seedOccurrence(db, p1.cityId, 100_000);
+    const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, nearTermTerms(1000, "PERCENT", 5000));
+    const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
+    purchaseAndPay(db, domain, occ, code.code, "customer@example.test", `idem-${randomUUID()}`);
+    const settlement = finalizedSettlement(db, domain, occ, engagementId);
+    const act = acceptedAct(db, p1.partner, settlement);
+
+    const cookie = await adminCookie(app);
+    const detail = await app.request(`http://admin.flexperiment.ru/v1/admin/agent-referrals/engagements/${engagementId}`, { headers: { Origin: ADMIN_ORIGIN, Cookie: cookie } });
+    expect(detail.status).toBe(200);
+    const body = await detail.json();
+    expect(body.act.id).toBe(act.id);
+    expect(body.act_acceptance.accepted_amount_kopecks).toBe(act.amount_kopecks);
+    expect(body.act_dispute).toBeNull();
+    expect(body.payment_attempts).toEqual([]);
+    expect(body.paid_invoice).toBeNull();
   });
 });
