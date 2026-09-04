@@ -24,6 +24,8 @@ export type AgentReferralsOperationClass =
   | "ENGAGEMENT_ACTIVATION"
   | "NEW_PUBLICATION_AUTHORITY"
   | "NEW_ATTRIBUTION"
+  | "ORD_CREATIVE_REGISTRATION"
+  | "ORD_PROVIDER_OPERATION"
   // MATURATION / RECOVERY / REPORTING_TAIL - permitted under SUSPENDED.
   | "PORTAL_ACCESS_AND_EVIDENCE_EXPORT"
   | "DISTRIBUTION_FACT_REPORTING"
@@ -60,6 +62,20 @@ export const AGENT_REFERRALS_OPERATION_POLICY: Readonly<Record<AgentReferralsOpe
   ENGAGEMENT_ACTIVATION: "NEW_AUTHORITY",
   NEW_PUBLICATION_AUTHORITY: "NEW_AUTHORITY",
   NEW_ATTRIBUTION: "NEW_AUTHORITY",
+  // Registering (or completing an already-started registration of) a
+  // creative with the ORD provider is still minting authority that does not
+  // yet exist as a filed fact - the same class as authorizeCreative itself.
+  // SUSPENDED must not let an in-progress registration silently complete
+  // into a locked, ERID-bearing fact (plan Phase 8 / §B-4: "the first real
+  // VK/ERIR business fact stays prohibited before global ACTIVE").
+  ORD_CREATIVE_REGISTRATION: "NEW_AUTHORITY",
+  // Registering/maintaining Flexperiment's OWN counterparty/platform/
+  // contract/media entity with VK ORD is a prerequisite for any future
+  // creative registration or reporting - the same "authority that does not
+  // yet exist as a filed fact" class as ORD_CREATIVE_REGISTRATION, kept as
+  // its own class for semantic clarity (this is Flexperiment's own provider
+  // registration, not a per-creative one).
+  ORD_PROVIDER_OPERATION: "NEW_AUTHORITY",
 
   PORTAL_ACCESS_AND_EVIDENCE_EXPORT: "MATURATION_RECOVERY_REPORTING_TAIL",
   DISTRIBUTION_FACT_REPORTING: "MATURATION_RECOVERY_REPORTING_TAIL",
