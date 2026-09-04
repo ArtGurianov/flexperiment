@@ -13,6 +13,18 @@ import { createHash, randomBytes } from "node:crypto";
 
 export const PARTNER_SESSION_TTL_MS = 12 * 60 * 60_000;
 const PARTNER_SESSION_COOKIE_NAME = "fx_partner_session";
+const partnerOrigin = process.env.COMMERCE_PARTNER_ORIGIN ?? "https://partner.flexperiment.ru";
+
+/**
+ * Mirrors auth.ts's assertAdminOrigin exactly, for the SEPARATE partner
+ * realm/hostname (Phase 9 shared-frontend topology). admin.flexperiment.ru
+ * and partner.flexperiment.ru are different browser origins even though
+ * both are served by the same frontend container, so an admin-origin
+ * browser request can never satisfy this check and vice versa - the origin
+ * check is independent of, and in addition to, the session cookie's own
+ * host-only scope.
+ */
+export const assertPartnerOrigin = (origin: string | undefined) => !origin || origin === partnerOrigin;
 
 export const generateOpaqueToken = () => randomBytes(32).toString("base64url");
 export const hashOpaqueToken = (token: string) => createHash("sha256").update(token).digest("hex");

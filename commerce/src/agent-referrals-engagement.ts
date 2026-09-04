@@ -46,6 +46,11 @@ export const engagementByPartnerAndOccurrence = (db: Database.Database, partnerI
   (db.prepare(`SELECT id, partner_identity_id, occurrence_id, lifecycle_state, lifecycle_revision, created_by_admin_id, created_at, updated_at
     FROM engagements WHERE partner_identity_id = ? AND occurrence_id = ?`).get(partnerIdentityId, occurrenceId) as EngagementRow | undefined) ?? null;
 
+/** Every engagement owned by a partner, newest first - the partner portal's own engagement list (Phase 9). Read-only; grants no authority. */
+export const engagementsForPartner = (db: Database.Database, partnerIdentityId: string): EngagementRow[] =>
+  db.prepare(`SELECT id, partner_identity_id, occurrence_id, lifecycle_state, lifecycle_revision, created_by_admin_id, created_at, updated_at
+    FROM engagements WHERE partner_identity_id = ? ORDER BY created_at DESC, id DESC`).all(partnerIdentityId) as EngagementRow[];
+
 export type EngagementRevisionRow = {
   id: string;
   engagement_id: string;

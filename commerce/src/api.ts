@@ -12,6 +12,9 @@ import { verifyUnisenderWebhook } from "./unisender-webhook";
 import { type SmartCaptchaVerifier, UnconfiguredSmartCaptchaVerifier } from "./smartcaptcha";
 import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityInterestWithdrawalSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, emailAttentionAcknowledgeSchema, emergencySalesCommandSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrenceNotificationSchema, occurrencePatchSchema, outboxDispatchFenceSchema, postActivationEmailProviderDefectSchema, preActivationDefectSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
 import { completeRollingSchema, releaseControlSchema } from "./release-control-schema";
+import { createAgentReferralsPartnerRouter } from "./agent-referrals-api-partner";
+import { createAgentReferralsAdminRouter } from "./agent-referrals-api-admin";
+import { UnconfiguredOtpSender, type OtpSender } from "./agent-referrals-otp";
 
 type AppBindings = { Variables: { adminId?: string; adminSessionId?: string } };
 const noStore = (headers: Headers) => headers.set("Cache-Control", "no-store");
@@ -27,7 +30,7 @@ const jsonBody = async (request: Request) => {
   try { return await request.json(); } catch { throw new DomainError("INVALID_JSON", 400); }
 };
 
-export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvider: EmailProvider = new UnconfiguredEmailProvider(), smartCaptcha: SmartCaptchaVerifier = new UnconfiguredSmartCaptchaVerifier()) {
+export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvider: EmailProvider = new UnconfiguredEmailProvider(), smartCaptcha: SmartCaptchaVerifier = new UnconfiguredSmartCaptchaVerifier(), otpSender: OtpSender = new UnconfiguredOtpSender()) {
   const app = new Hono<AppBindings>();
   const domain = new CommerceDomain(sqlite, provider, emailProvider);
   const tochkaVerifier = provider instanceof TochkaProvider ? new TochkaWebhookVerifier() : undefined;
@@ -46,6 +49,17 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     if (error instanceof DomainError) {
       if (error.code === "RATE_LIMITED") c.header("Retry-After", error.message);
       return c.json({ error: { code: error.code } }, error.status as 400);
+    }
+    // Every agent-referrals-*.ts module defines its own narrow Error
+    // subclass (EngagementError, CreativeError, SettlementError, ...)
+    // rather than importing DomainError - domain.ts stays ordinary work,
+    // which is what keeps the generic-production-deploy boundary narrow
+    // (see AGENT_REFERRALS_PLAN.md, A4-8). All of them share DomainError's
+    // exact shape (`code: string`, `status: number`) by convention, so one
+    // duck-typed branch handles every one of them uniformly instead of
+    // importing and enumerating each class here.
+    if (error instanceof Error && "code" in error && typeof (error as { code: unknown }).code === "string" && "status" in error && typeof (error as { status: unknown }).status === "number") {
+      return c.json({ error: { code: (error as { code: string }).code } }, (error as { status: number }).status as 400);
     }
     console.error("commerce request failed", error instanceof Error ? error.message : "unknown error");
     return c.json({ error: { code: "INTERNAL_ERROR" } }, 500);
@@ -581,6 +595,17 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   releaseControlHead.get("/candidates/head", (c) => c.json(domain.promoCandidateHead()));
   app.route("/v1/internal/release-control", releaseControl);
   app.route("/v1/admin/release-control", releaseControlHead);
+  // Mounted on `admin` (not `app`) so it inherits admin's own
+  // fx_admin_session + admin-origin + rate-limit middleware exactly like
+  // every other /v1/admin/* route - see agent-referrals-api-admin.ts's own
+  // header. A logically separate surface from /v1/partner/* below, never a
+  // shared handler with conditional field projection.
+  admin.route("/agent-referrals", createAgentReferralsAdminRouter(sqlite));
   app.route("/v1/admin", admin);
+  // A structurally separate API surface from /v1/admin/* - its own origin
+  // check (partner.flexperiment.ru, never admin.flexperiment.ru) and its
+  // own session realm (fx_partner_session, never fx_admin_session). See
+  // agent-referrals-api-partner.ts's own header.
+  app.route("/v1/partner", createAgentReferralsPartnerRouter(sqlite, otpSender));
   return app;
 }

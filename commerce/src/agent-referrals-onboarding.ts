@@ -53,6 +53,19 @@ export const getPartnerIdentityByAgentId = (db: Database.Database, agentId: stri
   (db.prepare(`SELECT id, agent_id, email, email_hash, onboarding_state, onboarding_revision, submitted_legal_form, submitted_tax_mode, legal_profile_revision_id, destroyed_at
     FROM partner_identities WHERE agent_id = ?`).get(agentId) as PartnerIdentityRow | undefined) ?? null;
 
+/**
+ * Login-by-email lookup (Phase 9): a returning partner re-authenticates by
+ * email rather than by a one-time invite token (which is single-use and
+ * already spent after onboarding). email_hash is unindexed by design at
+ * this table's pilot scale - a full scan of a small identity table is not a
+ * timing oracle worth an index for. Never used to answer "does this email
+ * exist" directly; the caller (login-request flow) must return an identical
+ * response whether or not a row is found.
+ */
+export const getPartnerIdentityByEmailHash = (db: Database.Database, emailHash: string): PartnerIdentityRow | null =>
+  (db.prepare(`SELECT id, agent_id, email, email_hash, onboarding_state, onboarding_revision, submitted_legal_form, submitted_tax_mode, legal_profile_revision_id, destroyed_at
+    FROM partner_identities WHERE email_hash = ? AND destroyed_at IS NULL`).get(emailHash) as PartnerIdentityRow | undefined) ?? null;
+
 export const recordPartnerIdentityEvent = (
   db: Database.Database,
   partnerIdentityId: string,
