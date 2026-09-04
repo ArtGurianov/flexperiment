@@ -246,6 +246,7 @@ function DistributionsSection({ engagementId, distributions, onDone }: { engagem
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [correcting, setCorrecting] = useState<string | null>(null);
+  const [reporting, setReporting] = useState<string | null>(null);
 
   const run = async (path: string, body: Record<string, unknown>) => {
     setBusy(true); setError(null);
@@ -273,10 +274,14 @@ function DistributionsSection({ engagementId, distributions, onDone }: { engagem
                   <button disabled={busy} onClick={() => setCorrecting(correcting === distributionId ? null : distributionId)}>
                     {correcting === distributionId ? "Отменить коррекцию" : "Скорректировать"}
                   </button>
+                  <button disabled={busy} onClick={() => setReporting(reporting === distributionId ? null : distributionId)}>
+                    {reporting === distributionId ? "Скрыть отчётность" : "Отчётность"}
+                  </button>
                   {row.removal_state === null && (
                     <button disabled={busy} onClick={() => void run(`/agent-referrals/distributions/${distributionId}/require-removal`, { reason: "publication window ended" })}>Требовать снятия</button>
                   )}
-                  {(row.removal_state === "REMOVAL_CLAIMED" || row.removal_state === "REMOVAL_REQUIRED") && (
+                  {/* REMOVAL_CONFIRMED is legal from all four non-terminal removal states (agent-referrals-distribution.ts's own REMOVAL_LEGAL_FROM) - the confirmation form must be reachable from every one of them, not only the first two, or OVERDUE_REMOVAL/REMOVAL_UNVERIFIED become a dead end with no way back to REMOVAL_CONFIRMED. */}
+                  {(row.removal_state === "REMOVAL_CLAIMED" || row.removal_state === "REMOVAL_REQUIRED" || row.removal_state === "OVERDUE_REMOVAL" || row.removal_state === "REMOVAL_UNVERIFIED") && (
                     <ConfirmRemovalForm distributionId={distributionId} busy={busy} onSubmit={(evidenceRef) => run(`/agent-referrals/distributions/${distributionId}/confirm-removal`, { evidence_ref: evidenceRef })} />
                   )}
                   {(row.removal_state === "REMOVAL_CLAIMED" || row.removal_state === "OVERDUE_REMOVAL") && (
@@ -300,9 +305,88 @@ function DistributionsSection({ engagementId, distributions, onDone }: { engagem
           onSubmit={(values) => run(`/agent-referrals/distributions/${correcting}/correct`, values)}
         />
       )}
+      {reporting && (
+        <DistributionReportingPanel
+          reportingPeriods={(distributions.find((row) => String(row.distribution_id) === reporting)?.reporting_periods as Row[]) ?? []}
+          busy={busy}
+          onFile={(values) => run(`/agent-referrals/distributions/${reporting}/reports`, values)}
+          onReconcile={(periodKey, values) => run(`/agent-referrals/distributions/${reporting}/reports/${periodKey}/reconciliation`, values)}
+        />
+      )}
       <DistributionFactForm title="Сообщить о новом размещении" busy={busy} onSubmit={(values) => run(`/agent-referrals/engagements/${engagementId}/distributions`, values)} />
       <Notice error={error} />
     </Panel>
+  );
+}
+
+function DistributionReportingPanel({ reportingPeriods, busy, onFile, onReconcile }: {
+  reportingPeriods: Row[]; busy: boolean;
+  onFile: (values: Record<string, unknown>) => void;
+  onReconcile: (periodKey: string, values: { vk_operation_external_id: string; erir_code: string; submission_evidence_ref: string }) => void;
+}) {
+  return (
+    <div className="form">
+      <h3>Отчётность по размещению (ОРД)</h3>
+      {reportingPeriods.length > 0 && (
+        <table>
+          <thead><tr><th>Период</th><th>Основание</th><th>Ревизия</th><th>Статистика</th><th>Отправка</th></tr></thead>
+          <tbody>
+            {reportingPeriods.map((period) => (
+              <tr key={`${String(period.reporting_period_key)}-${String(period.revision)}`}>
+                <td>{String(period.reporting_period_key)}</td>
+                <td>{String(period.reporting_basis)}</td>
+                <td>{String(period.revision)}</td>
+                <td><Badge>{String(period.statistics_state)}</Badge></td>
+                <td><Badge>{String(period.submission_state)}</Badge></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <ReportFilingForm busy={busy} onSubmit={onFile} />
+      <ReportReconciliationForm busy={busy} onSubmit={onReconcile} />
+    </div>
+  );
+}
+
+function ReportFilingForm({ busy, onSubmit }: { busy: boolean; onSubmit: (values: Record<string, unknown>) => void }) {
+  const { register, handleSubmit, watch } = useForm<{ reporting_period_key: string; statistics_state: "ACTUAL" | "REPORTING_DATA_UNAVAILABLE"; statistics_json: string; evidence_ref: string; correction_reason: string }>({
+    defaultValues: { statistics_state: "ACTUAL" },
+  });
+  const statisticsState = watch("statistics_state");
+  const submit = handleSubmit((values) => {
+    const statistics = values.statistics_state === "ACTUAL"
+      ? { statistics_state: "ACTUAL" as const, statistics_json: JSON.parse(values.statistics_json || "{}") as Record<string, unknown> }
+      : { statistics_state: "REPORTING_DATA_UNAVAILABLE" as const };
+    onSubmit({ reporting_period_key: values.reporting_period_key, statistics, evidence_ref: values.evidence_ref, correction_reason: values.correction_reason || undefined });
+  });
+  return (
+    <form className="form" onSubmit={submit}>
+      <h4>Подать отчёт за период</h4>
+      <label>Период (например 2026-09) <input {...register("reporting_period_key", { required: true })} /></label>
+      <label>Статистика
+        <select {...register("statistics_state")}><option value="ACTUAL">Известна</option><option value="REPORTING_DATA_UNAVAILABLE">Недоступна - никогда не подставлять 0</option></select>
+      </label>
+      {statisticsState === "ACTUAL" && <label>Данные (JSON) <textarea {...register("statistics_json")} placeholder="{}" /></label>}
+      <label>Ссылка на подтверждение <input {...register("evidence_ref", { required: true })} /></label>
+      <label>Причина коррекции (при повторной подаче за тот же период) <input {...register("correction_reason")} /></label>
+      <button className="primary" disabled={busy}>{busy ? "…" : "Подать отчёт"}</button>
+    </form>
+  );
+}
+
+function ReportReconciliationForm({ busy, onSubmit }: { busy: boolean; onSubmit: (periodKey: string, values: { vk_operation_external_id: string; erir_code: string; submission_evidence_ref: string }) => void }) {
+  const { register, handleSubmit } = useForm<{ reporting_period_key: string; vk_operation_external_id: string; erir_code: string; submission_evidence_ref: string }>();
+  const submit = handleSubmit((values) => onSubmit(values.reporting_period_key, { vk_operation_external_id: values.vk_operation_external_id, erir_code: values.erir_code, submission_evidence_ref: values.submission_evidence_ref }));
+  return (
+    <form className="form" onSubmit={submit}>
+      <h4>Сверка ЕРИР по периоду</h4>
+      <label>Период <input {...register("reporting_period_key", { required: true })} /></label>
+      <label>Внешний ID операции VK <input {...register("vk_operation_external_id", { required: true })} /></label>
+      <label>Код ЕРИР <input {...register("erir_code", { required: true })} /></label>
+      <label>Ссылка на подтверждение отправки <input {...register("submission_evidence_ref", { required: true })} /></label>
+      <button className="primary" disabled={busy}>{busy ? "…" : "Зафиксировать сверку"}</button>
+    </form>
   );
 }
 
@@ -318,16 +402,16 @@ function ConfirmRemovalForm({ busy, onSubmit }: { distributionId: string; busy: 
 
 function DistributionFactForm({ title, initial, requireCorrectionReason, busy, onSubmit }: {
   title: string; initial?: Row; requireCorrectionReason?: boolean; busy: boolean;
-  onSubmit: (values: { channel_key: string; resource_kind: string; resource_identifier: string; distribution_resource_url: string; published_at: string; evidence_ref: string; correction_reason?: string }) => void;
+  onSubmit: (values: { channel_key: string; resource_kind: string; resource_identifier: string; distribution_resource_url: string; published_at: string; ended_at: string | null; evidence_ref: string; correction_reason?: string }) => void;
 }) {
-  const { register, handleSubmit } = useForm<{ channel_key: string; resource_kind: string; resource_identifier: string; distribution_resource_url: string; published_at: string; evidence_ref: string; correction_reason: string }>({
+  const { register, handleSubmit } = useForm<{ channel_key: string; resource_kind: string; resource_identifier: string; distribution_resource_url: string; published_at: string; ended_at: string; evidence_ref: string; correction_reason: string }>({
     defaultValues: {
       channel_key: initial ? String(initial.channel_key) : "", resource_kind: initial ? String(initial.resource_kind) : "channel",
       resource_identifier: initial ? String(initial.resource_identifier) : "", distribution_resource_url: initial ? String(initial.distribution_resource_url) : "",
-      published_at: initial ? toLocalInput(initial.published_at) : "",
+      published_at: initial ? toLocalInput(initial.published_at) : "", ended_at: initial?.ended_at ? toLocalInput(initial.ended_at) : "",
     },
   });
-  const submit = handleSubmit((values) => onSubmit({ ...values, published_at: new Date(values.published_at).toISOString() }));
+  const submit = handleSubmit((values) => onSubmit({ ...values, published_at: new Date(values.published_at).toISOString(), ended_at: values.ended_at ? new Date(values.ended_at).toISOString() : null }));
   return (
     <form className="form" onSubmit={submit}>
       <h3>{title}</h3>
@@ -338,6 +422,7 @@ function DistributionFactForm({ title, initial, requireCorrectionReason, busy, o
       <label>Идентификатор ресурса <input {...register("resource_identifier", { required: true })} /></label>
       <label>Ссылка на публикацию <input {...register("distribution_resource_url", { required: true })} /></label>
       <label>Дата публикации <input type="datetime-local" {...register("published_at", { required: true })} /></label>
+      <label>Дата окончания (если уже известна) <input type="datetime-local" {...register("ended_at")} /></label>
       <label>Ссылка на подтверждение <input {...register("evidence_ref", { required: true })} /></label>
       {requireCorrectionReason && <label>Причина коррекции <input {...register("correction_reason", { required: true })} /></label>}
       <button className="primary" disabled={busy}>{busy ? "…" : "Отправить"}</button>
@@ -386,7 +471,11 @@ function ActPaymentSection({ settlement, act, actAcceptance, actDispute, payment
 }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const activeAttempt = paymentAttempts.find((attempt) => attempt.status === "IN_PROGRESS" || attempt.status === "PAYOUT_UNKNOWN") ?? null;
+  // The domain's own notion of an "active" attempt (agent-referrals-payment.ts) is any attempt whose
+  // status is NOT CONFIRMED_NOT_MADE - that includes MADE, not only IN_PROGRESS/PAYOUT_UNKNOWN. A MADE
+  // attempt on an NPD settlement still needs a receipt before the settlement reaches SETTLED, so dropping
+  // it here would strand the operator with no way to finish a real in-flight NPD settlement.
+  const activeAttempt = paymentAttempts.find((attempt) => attempt.status !== "CONFIRMED_NOT_MADE") ?? null;
 
   const run = async (path: string, body: Record<string, unknown> = {}) => {
     setBusy(true); setError(null);
@@ -407,16 +496,30 @@ function ActPaymentSection({ settlement, act, actAcceptance, actDispute, payment
           {!act.presented_at && <button disabled={busy} onClick={() => void run(`/agent-referrals/acts/${act.id}/present`)}>{busy ? "…" : "Предъявить акт партнёру"}</button>}
           {actAcceptance && <p>Принят партнёром {String(actAcceptance.created_at)}.</p>}
           {actDispute && <p>Оспорен партнёром: {String(actDispute.reason)}.</p>}
-          {actAcceptance && !activeAttempt && (
+          {/* Begin Payment must be gated on the settlement's own status, not merely the absence of an
+              active attempt in the old (IN_PROGRESS/PAYOUT_UNKNOWN-only) sense - the backend independently
+              re-checks settlement.status === 'PREPARED' and refuses otherwise, so !activeAttempt alone is
+              wrong once an NPD attempt reaches MADE/PENDING_DOCUMENT (settlement.status has already moved
+              on there, so the settlement.status check alone already excludes it). The settlement stays
+              PREPARED for the whole IN_PROGRESS/PAYOUT_UNKNOWN window though (beginPayment never touches
+              settlement.status), so !activeAttempt is still required there - the backend's own
+              payment_attempts_active_unique constraint would refuse a second concurrent begin, but the UI
+              should not invite that click in the first place. */}
+          {actAcceptance && settlement.status === "PREPARED" && !activeAttempt && (
             <button disabled={busy} onClick={() => void run("/agent-referrals/payments/begin", { settlement_id: settlement.id })}>{busy ? "…" : "Начать выплату (требует принятого акта и, для НПД, свежей проверки)"}</button>
           )}
         </>
       )}
       {activeAttempt && (
-        <PaymentAttemptForm attempt={activeAttempt} busy={busy}
+        <PaymentAttemptForm
+          attempt={activeAttempt}
+          settlementStatus={String(settlement.status)}
+          taxModeSnapshot={settlement.tax_mode_snapshot ? String(settlement.tax_mode_snapshot) : null}
+          busy={busy}
           onMade={(evidenceRef) => run(`/agent-referrals/payment-attempts/${activeAttempt.id}/made`, { evidence_ref: evidenceRef })}
           onPayoutUnknown={(evidenceRef) => run(`/agent-referrals/payment-attempts/${activeAttempt.id}/payout-unknown`, { evidence_ref: evidenceRef })}
           onConfirmedNotMade={(evidenceRef) => run(`/agent-referrals/payment-attempts/${activeAttempt.id}/confirmed-not-made`, { evidence_ref: evidenceRef })}
+          onNpdReceipt={(receiptReference, evidenceRef) => run(`/agent-referrals/payment-attempts/${activeAttempt.id}/npd-receipt`, { receipt_reference: receiptReference, evidence_ref: evidenceRef })}
         />
       )}
       <Notice error={error} />
@@ -424,16 +527,40 @@ function ActPaymentSection({ settlement, act, actAcceptance, actDispute, payment
   );
 }
 
-function PaymentAttemptForm({ attempt, busy, onMade, onPayoutUnknown, onConfirmedNotMade }: {
-  attempt: Row; busy: boolean; onMade: (evidenceRef: string) => void; onPayoutUnknown: (evidenceRef: string) => void; onConfirmedNotMade: (evidenceRef: string) => void;
+function PaymentAttemptForm({ attempt, settlementStatus, taxModeSnapshot, busy, onMade, onPayoutUnknown, onConfirmedNotMade, onNpdReceipt }: {
+  attempt: Row; settlementStatus: string; taxModeSnapshot: string | null; busy: boolean;
+  onMade: (evidenceRef: string) => void; onPayoutUnknown: (evidenceRef: string) => void; onConfirmedNotMade: (evidenceRef: string) => void;
+  onNpdReceipt: (receiptReference: string, evidenceRef: string) => void;
 }) {
   const { register, handleSubmit, getValues } = useForm<{ evidence_ref: string }>();
+  const npdReceiptForm = useForm<{ receipt_reference: string; evidence_ref: string }>();
+  const status = String(attempt.status);
+
+  if (status === "MADE" && settlementStatus === "SETTLED") {
+    return (
+      <div className="form">
+        <p>Попытка выплаты: <Badge>MADE</Badge> · расчёт <Badge>SETTLED</Badge>. Выплата завершена.</p>
+      </div>
+    );
+  }
+
+  if (status === "MADE" && taxModeSnapshot === "NPD" && settlementStatus === "PENDING_DOCUMENT") {
+    return (
+      <form className="form" onSubmit={npdReceiptForm.handleSubmit((values) => onNpdReceipt(values.receipt_reference, values.evidence_ref))}>
+        <p>Попытка выплаты: <Badge>MADE</Badge> · расчёт ожидает чек НПД <Badge>PENDING_DOCUMENT</Badge>.</p>
+        <label>Номер чека НПД <input {...npdReceiptForm.register("receipt_reference", { required: true })} /></label>
+        <label>Ссылка на подтверждение <input {...npdReceiptForm.register("evidence_ref", { required: true })} /></label>
+        <button className="primary" disabled={busy}>{busy ? "…" : "Записать чек НПД"}</button>
+      </form>
+    );
+  }
+
   return (
     <div className="form">
-      <p>Попытка выплаты: <Badge>{String(attempt.status)}</Badge></p>
+      <p>Попытка выплаты: <Badge>{status}</Badge></p>
       <label>Ссылка на подтверждение <input {...register("evidence_ref", { required: true })} /></label>
       <button disabled={busy} onClick={handleSubmit(() => onMade(getValues("evidence_ref")))}>{busy ? "…" : "Выплата совершена"}</button>
-      {attempt.status === "IN_PROGRESS" && (
+      {status === "IN_PROGRESS" && (
         <button disabled={busy} onClick={handleSubmit(() => onPayoutUnknown(getValues("evidence_ref")))}>{busy ? "…" : "Статус неизвестен"}</button>
       )}
       <button disabled={busy} onClick={handleSubmit(() => onConfirmedNotMade(getValues("evidence_ref")))}>{busy ? "…" : "Подтверждено: выплата не совершена"}</button>

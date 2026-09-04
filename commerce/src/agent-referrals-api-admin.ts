@@ -231,20 +231,26 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
     const creative = currentCreativeRevision(sqlite, engagementId);
     const effective = currentEffectiveRewardSnapshot(sqlite, engagementId);
     const settlement = effective
-      ? sqlite.prepare(`SELECT id, status, amount_kopecks FROM reward_settlements WHERE effective_reward_snapshot_id = ? AND settlement_flow = 'AGENT_REFERRALS'`).get(effective.id) as { id: string; status: string; amount_kopecks: number } | undefined
+      ? sqlite.prepare(`SELECT id, status, amount_kopecks, tax_mode_snapshot FROM reward_settlements WHERE effective_reward_snapshot_id = ? AND settlement_flow = 'AGENT_REFERRALS'`).get(effective.id) as { id: string; status: string; amount_kopecks: number; tax_mode_snapshot: "NPD" | "OTHER" } | undefined
       : undefined;
     // Round-3 fix: the operator console's act/payment/ORD-invoice steps need
     // this in the same read as everything else - previously only exposed
     // via the separate /settlements/:id route, which the engagement detail
     // page had no way to reach without a second round trip.
     const act = settlement ? settlementActForSettlement(sqlite, settlement.id) : null;
+    // Round-4 fix: the operator console's distribution-period reporting
+    // form needs to see what is already filed for each distribution -
+    // previously only the partner projection carried this enrichment.
     return c.json({
       engagement,
       latest_revision: currentEngagementRevision(sqlite, engagementId),
       active_revision: lastActivatedEngagementRevision(sqlite, engagementId),
       creative,
       creative_authorization: currentCreativeAuthorization(sqlite, engagementId),
-      distributions: distributionsForEngagement(sqlite, engagementId).map((d) => distributionProjection(sqlite, d.id)),
+      distributions: distributionsForEngagement(sqlite, engagementId).map((d) => ({
+        ...distributionProjection(sqlite, d.id),
+        reporting_periods: ordDistributionPeriodReportsForDistribution(sqlite, d.id),
+      })),
       reward_registry: rewardRegistrySnapshot(sqlite, engagementId),
       effective_reward_snapshot: effective,
       settlement: settlement ?? null,
