@@ -1,0 +1,85 @@
+diff --git new/commerce/src/agent-referrals-audience-verification.ts new/commerce/src/agent-referrals-audience-verification.ts
+new file mode 100644
+index 0000000..c4c0392
+--- /dev/null
++++ new/commerce/src/agent-referrals-audience-verification.ts
+@@ -0,0 +1,79 @@
++import type Database from "better-sqlite3";
++
++/**
++ * Append-only audience verification authority (plan section B-9's
++ * prerequisite, spec'd in Phase 5): VERIFIED | REVOKED, monotonic
++ * aggregate revision per (partner, city). There is no SUPERSEDED state - a
++ * replacement VERIFIED is simply the next revision, and "current" is
++ * always the row with MAX(aggregate_revision) for that pair, read from
++ * event_kind directly rather than from a mutable pointer.
++ *
++ * This module is deliberately a leaf: it knows nothing about engagements.
++ * The cascade requirement ("a VERIFIED write that leaves an already-ACTIVE
++ * engagement's audience authority no longer covering its own publication
++ * window - whether by REVOKED or by a narrower replacement VERIFIED -
++ * must, in the same transaction, suspend that engagement and revoke its
++ * promo authorization") lives in agent-referrals-engagement.ts instead.
++ *
++ * This module exports NO function capable of writing EITHER a VERIFIED OR
++ * a REVOKED event, at any visibility level - not even a nestable
++ * "InTransaction" primitive (Phase 5 holistic review, final pass: the
++ * same standard already applied to REVOKED closes the identical bypass
++ * that was still open for VERIFIED - a directly-exported mint, even a
++ * cascade-aware wrapper's own doc comment saying "callers must use this
++ * instead", is application convention, not structural enforcement). The
++ * only way anything in this codebase can write EITHER event kind is
++ * agent-referrals-engagement.ts's verifyAudienceForPartnerCity (VERIFIED)
++ * and revokeAudienceVerificationForPartnerCity (REVOKED), which each
++ * write their own INSERT directly (reading only the exported, read-only
++ * currentAudienceVerification below) and cascade the engagement
++ * suspension in the identical transaction. That is a structural
++ * guarantee, not a naming convention: there is no shared "mint any event
++ * kind" function anywhere for a future caller to misuse, and no bare
++ * "mint VERIFIED" primitive a future caller could wrap in its own
++ * transaction to skip the cascade check.
++ */
++
++export type AudienceVerificationEventKind = "VERIFIED" | "REVOKED";
++
++export class AudienceVerificationError extends Error {
++  constructor(readonly code: string, readonly status = 409, detail?: string) {
++    super(detail ? `${code}: ${detail}` : code);
++  }
++}
++
++export type AudienceVerificationEventRow = {
++  id: string;
++  partner_identity_id: string;
++  city_id: string;
++  aggregate_revision: number;
++  event_kind: AudienceVerificationEventKind;
++  valid_until: string | null;
++  supersedes_event_id: string | null;
++  evidence_ref: string;
++  reason: string;
++  placed_by_admin_id: string;
++  created_at: string;
++};
++
++const EVENT_COLUMNS = "id, partner_identity_id, city_id, aggregate_revision, event_kind, valid_until, supersedes_event_id, evidence_ref, reason, placed_by_admin_id, created_at";
++
++/** Current authority is the row with MAX(aggregate_revision) for this pair - never MAX(created_at), and never a stored pointer. */
++export const currentAudienceVerification = (db: Database.Database, partnerIdentityId: string, cityId: string): AudienceVerificationEventRow | null =>
++  (db.prepare(`SELECT ${EVENT_COLUMNS} FROM partner_audience_verification_events WHERE partner_identity_id = ? AND city_id = ? ORDER BY aggregate_revision DESC LIMIT 1`)
++    .get(partnerIdentityId, cityId) as AudienceVerificationEventRow | undefined) ?? null;
++
++/** VERIFIED only, and only when validUntil actually covers untilAtLeast (e.g. the engagement revision's publication_end_at) - the read side of the "valid through publication end" invariant. */
++export const isAudienceVerifiedThrough = (db: Database.Database, partnerIdentityId: string, cityId: string, untilAtLeast: string): boolean => {
++  const current = currentAudienceVerification(db, partnerIdentityId, cityId);
++  if (current?.event_kind !== "VERIFIED" || !current.valid_until) return false;
++  const covers = db.prepare("SELECT (julianday(?) >= julianday(?)) AS covers").get(current.valid_until, untilAtLeast) as { covers: number };
++  return Boolean(covers.covers);
++};
++
++export const isAudienceVerified = (db: Database.Database, partnerIdentityId: string, cityId: string): boolean =>
++  currentAudienceVerification(db, partnerIdentityId, cityId)?.event_kind === "VERIFIED";
++
++export const allAudienceVerificationEvents = (db: Database.Database, partnerIdentityId: string, cityId: string): AudienceVerificationEventRow[] =>
++  db.prepare(`SELECT ${EVENT_COLUMNS} FROM partner_audience_verification_events WHERE partner_identity_id = ? AND city_id = ? ORDER BY aggregate_revision ASC`)
++    .all(partnerIdentityId, cityId) as AudienceVerificationEventRow[];

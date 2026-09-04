@@ -1,0 +1,134 @@
+diff --git new/commerce/src/agent-referrals-onboarding.ts new/commerce/src/agent-referrals-onboarding.ts
+new file mode 100644
+index 0000000..905c069
+--- /dev/null
++++ new/commerce/src/agent-referrals-onboarding.ts
+@@ -0,0 +1,128 @@
++import type Database from "better-sqlite3";
++import { id } from "./crypto";
++
++/**
++ * Partner onboarding state authority: INVITED -> PROFILE_SUBMITTED ->
++ * PROFILE_VERIFIED -> FRAMEWORK_ISSUED -> FRAMEWORK_ACCEPTED ->
++ * PARTNER_ACTIVE. Same CAS + append-only-audit shape as
++ * agent-referrals-feature-state.ts, scoped per partner_identities row
++ * instead of a global singleton - each partner has its own revision
++ * counter, so partners advance independently and concurrently by
++ * construction (a CAS on one row can never contend with a CAS on another).
++ *
++ * No edge skips a state, and DORMANT-style "no path back" applies here too:
++ * the edge map has no entry that returns to an earlier state.
++ */
++
++export type OnboardingState = "INVITED" | "PROFILE_SUBMITTED" | "PROFILE_VERIFIED" | "FRAMEWORK_ISSUED" | "FRAMEWORK_ACCEPTED" | "PARTNER_ACTIVE";
++export type PartnerActorRealm = "ADMIN" | "PARTNER" | "SYSTEM";
++
++const LEGAL_EDGES: Record<OnboardingState, ReadonlySet<OnboardingState>> = {
++  INVITED: new Set(["PROFILE_SUBMITTED"]),
++  PROFILE_SUBMITTED: new Set(["PROFILE_VERIFIED"]),
++  PROFILE_VERIFIED: new Set(["FRAMEWORK_ISSUED"]),
++  FRAMEWORK_ISSUED: new Set(["FRAMEWORK_ACCEPTED"]),
++  FRAMEWORK_ACCEPTED: new Set(["PARTNER_ACTIVE"]),
++  PARTNER_ACTIVE: new Set([]),
++};
++
++export class OnboardingError extends Error {
++  constructor(readonly code: string, readonly status = 409, detail?: string) {
++    super(detail ? `${code}: ${detail}` : code);
++  }
++}
++
++export type PartnerIdentityRow = {
++  id: string;
++  agent_id: string;
++  email: string;
++  email_hash: string;
++  onboarding_state: OnboardingState;
++  onboarding_revision: number;
++  submitted_legal_form: string | null;
++  submitted_tax_mode: string | null;
++  legal_profile_revision_id: string | null;
++  destroyed_at: string | null;
++};
++
++export const getPartnerIdentity = (db: Database.Database, partnerIdentityId: string): PartnerIdentityRow | null =>
++  (db.prepare(`SELECT id, agent_id, email, email_hash, onboarding_state, onboarding_revision, submitted_legal_form, submitted_tax_mode, legal_profile_revision_id, destroyed_at
++    FROM partner_identities WHERE id = ?`).get(partnerIdentityId) as PartnerIdentityRow | undefined) ?? null;
++
++export const getPartnerIdentityByAgentId = (db: Database.Database, agentId: string): PartnerIdentityRow | null =>
++  (db.prepare(`SELECT id, agent_id, email, email_hash, onboarding_state, onboarding_revision, submitted_legal_form, submitted_tax_mode, legal_profile_revision_id, destroyed_at
++    FROM partner_identities WHERE agent_id = ?`).get(agentId) as PartnerIdentityRow | undefined) ?? null;
++
++/**
++ * Login-by-email lookup (Phase 9): a returning partner re-authenticates by
++ * email rather than by a one-time invite token (which is single-use and
++ * already spent after onboarding). email_hash is unindexed by design at
++ * this table's pilot scale - a full scan of a small identity table is not a
++ * timing oracle worth an index for. Never used to answer "does this email
++ * exist" directly; the caller (login-request flow) must return an identical
++ * response whether or not a row is found.
++ */
++export const getPartnerIdentityByEmailHash = (db: Database.Database, emailHash: string): PartnerIdentityRow | null =>
++  (db.prepare(`SELECT id, agent_id, email, email_hash, onboarding_state, onboarding_revision, submitted_legal_form, submitted_tax_mode, legal_profile_revision_id, destroyed_at
++    FROM partner_identities WHERE email_hash = ? AND destroyed_at IS NULL`).get(emailHash) as PartnerIdentityRow | undefined) ?? null;
++
++export const recordPartnerIdentityEvent = (
++  db: Database.Database,
++  partnerIdentityId: string,
++  eventKind: string,
++  actorRealm: PartnerActorRealm,
++  details: unknown,
++): void => {
++  db.prepare(`INSERT INTO partner_identity_events(id, partner_identity_id, event_kind, actor_realm, details_json, created_at)
++    VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now'))`)
++    .run(id(), partnerIdentityId, eventKind, actorRealm, JSON.stringify(details));
++};
++
++/**
++ * Nestable: callable from inside an already-open transaction (better-sqlite3
++ * nests via SAVEPOINT), which is what lets submitLegalProfile / verify /
++ * framework-acceptance perform "assert state, then transition" as one
++ * atomic unit together with their own evidence writes.
++ */
++export const transitionOnboardingStateInTransaction = (
++  db: Database.Database,
++  partnerIdentityId: string,
++  to: OnboardingState,
++  expectedRevision: number,
++  actorRealm: PartnerActorRealm,
++  reason: string,
++): PartnerIdentityRow => {
++  const current = getPartnerIdentity(db, partnerIdentityId);
++  if (!current) throw new OnboardingError("PARTNER_IDENTITY_NOT_FOUND", 404, partnerIdentityId);
++  if (!LEGAL_EDGES[current.onboarding_state].has(to)) {
++    throw new OnboardingError("AGENT_REFERRALS_ONBOARDING_ILLEGAL_TRANSITION", 409, `${current.onboarding_state}->${to}`);
++  }
++
++  const changed = db.prepare(`UPDATE partner_identities
++    SET onboarding_state = ?, onboarding_revision = onboarding_revision + 1, updated_at = CURRENT_TIMESTAMP
++    WHERE id = ? AND onboarding_revision = ?`)
++    .run(to, partnerIdentityId, expectedRevision);
++  if (changed.changes !== 1) throw new OnboardingError("AGENT_REFERRALS_ONBOARDING_REVISION_CONFLICT", 409);
++
++  recordPartnerIdentityEvent(db, partnerIdentityId, "ONBOARDING_STATE_TRANSITIONED", actorRealm, { from_state: current.onboarding_state, to_state: to, reason });
++  return getPartnerIdentity(db, partnerIdentityId)!;
++};
++
++export const transitionOnboardingState = (
++  db: Database.Database,
++  partnerIdentityId: string,
++  to: OnboardingState,
++  expectedRevision: number,
++  actorRealm: PartnerActorRealm,
++  reason: string,
++): PartnerIdentityRow =>
++  db.transaction(() => transitionOnboardingStateInTransaction(db, partnerIdentityId, to, expectedRevision, actorRealm, reason)).immediate();
++
++/**
++ * FRAMEWORK_ACCEPTED -> PARTNER_ACTIVE. No further prerequisite - payout
++ * profile is explicitly optional throughout onboarding (required only at
++ * settlement PREPARED, PR7's concern, not PR4's). The plan names no
++ * additional gate for this edge.
++ */
++export const activatePartner = (db: Database.Database, partnerIdentityId: string, expectedRevision: number, actorRealm: PartnerActorRealm, reason: string): PartnerIdentityRow =>
++  transitionOnboardingState(db, partnerIdentityId, "PARTNER_ACTIVE", expectedRevision, actorRealm, reason);

@@ -1,0 +1,27 @@
+diff --git new/commerce/src/agent-referrals-login.ts new/commerce/src/agent-referrals-login.ts
+new file mode 100644
+index 0000000..9c0ab97
+--- /dev/null
++++ new/commerce/src/agent-referrals-login.ts
+@@ -0,0 +1,21 @@
++import type Database from "better-sqlite3";
++import { emailHash } from "./crypto";
++import { getPartnerIdentityByEmailHash } from "./agent-referrals-onboarding";
++import { issueAndDispatchOtpChallenge, type OtpSender } from "./agent-referrals-otp";
++
++/**
++ * Returning-partner login (Phase 9): the admin-minted invite is single-use
++ * (consumePartnerInvite) and exists only to bootstrap the FIRST session, so
++ * a partner whose session has expired needs a second way back in. This
++ * mirrors /v1/public/refunds/request's own anti-enumeration shape exactly
++ * (commerce/src/api.ts) - the caller always returns an identical response
++ * whether or not the email resolves to a live, non-destroyed identity, so
++ * this endpoint can never be used to test which emails are provisioned
++ * partners. No password, no public registration: this only ever resumes an
++ * identity an admin already provisioned, never creates one.
++ */
++export const requestPartnerLoginByEmail = async (db: Database.Database, email: string, sender: OtpSender): Promise<void> => {
++  const identity = getPartnerIdentityByEmailHash(db, emailHash(email));
++  if (!identity) return;
++  await issueAndDispatchOtpChallenge(db, identity.id, sender);
++};

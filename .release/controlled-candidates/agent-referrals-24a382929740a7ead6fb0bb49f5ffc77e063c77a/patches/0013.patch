@@ -1,0 +1,133 @@
+diff --git new/apps/admin/components/agent-referrals/Overview.tsx new/apps/admin/components/agent-referrals/Overview.tsx
+new file mode 100644
+index 0000000..7052bae
+--- /dev/null
++++ new/apps/admin/components/agent-referrals/Overview.tsx
+@@ -0,0 +1,127 @@
++"use client";
++
++import { useQuery, useQueryClient } from "@tanstack/react-query";
++import { Fragment, useState } from "react";
++import { api, AdminApiError } from "../../lib/api";
++import type { Row } from "../../lib/page";
++import { Loading } from "../ui/Loading";
++import { Notice } from "../ui/Notice";
++import { Panel } from "../ui/Panel";
++import { Badge } from "../ui/Badge";
++
++type QueueCategory = { total: number; items: Row[]; truncated: boolean };
++type ReviewQueue = Record<string, QueueCategory>;
++
++const REVIEW_QUEUE_LABELS: Record<string, string> = {
++  distributions_review_required: "Размещения, требующие проверки канала",
++  distributions_removal_overdue: "Просроченное/неподтверждённое снятие",
++  distributions_reporting_tail_incomplete: "Незавершённая ОРД-отчётность",
++  acts_awaiting_presentation: "Акты, ожидающие предъявления",
++  payment_attempts_payout_unknown: "Выплаты с неизвестным статусом",
++  npd_reconciliation_needed: "Требуется свежая проверка НПД",
++  partners_profile_pending_verification: "Партнёры: профиль ожидает проверки",
++  partners_framework_not_issued: "Партнёры: договор не выдан",
++};
++
++/**
++ * Resolves a review-queue item to the (tab, id) an operator lands on to actually resolve it. Every
++ * category's items carry enough context for this - see agent-referrals-review-queue.ts's own item shapes.
++ * Round-4 fix: distribution-scoped categories also carry their own distribution_id through as `focus`, so
++ * the destination screen can highlight the exact flagged row instead of just landing on the engagement -
++ * an engagement can have several distributions, and a bare engagement_id link previously lost which one
++ * was actually flagged. distributions_reporting_tail_incomplete additionally asks the destination to
++ * auto-open that distribution's reporting panel, since that is the one queue category whose resolution
++ * path is otherwise hidden behind an extra click.
++ */
++const navigationTarget = (categoryKey: string, item: Row): { tab: "partners" | "engagements"; id: string; label: string; focus?: string; focusReporting?: boolean } | null => {
++  if ("engagement_id" in item) {
++    const focus = typeof item.distribution_id === "string" ? item.distribution_id : undefined;
++    return {
++      tab: "engagements", id: String(item.engagement_id), label: String(item.distribution_id ?? item.act_id ?? item.engagement_id),
++      focus, focusReporting: focus !== undefined && categoryKey === "distributions_reporting_tail_incomplete",
++    };
++  }
++  if (categoryKey === "npd_reconciliation_needed") return { tab: "partners", id: String(item.partner_identity_id), label: String(item.settlement_id) };
++  if ("partner_identity_id" in item) return { tab: "partners", id: String(item.partner_identity_id), label: String(item.partner_identity_id) };
++  return null;
++};
++
++/** §11 operator review reminders (Phase 9 round-2/3 fix): the same live-derived read the worker logs a summary of every cycle - true totals, a bounded navigable item page per category. */
++export function Overview({ onNavigate }: { onNavigate: (tab: "partners" | "engagements", id: string, focus?: string, focusReporting?: boolean) => void }) {
++  const featureState = useQuery({ queryKey: ["agent-referrals", "feature-state"], queryFn: () => api<Row>("/agent-referrals/feature-state") });
++  const reviewQueue = useQuery({ queryKey: ["agent-referrals", "review-queue"], queryFn: () => api<ReviewQueue>("/agent-referrals/review-queue") });
++  const queryClient = useQueryClient();
++  const [error, setError] = useState<string | null>(null);
++  const [busy, setBusy] = useState(false);
++  const [expanded, setExpanded] = useState<string | null>(null);
++
++  const refresh = () => queryClient.invalidateQueries({ queryKey: ["agent-referrals", "feature-state"] });
++
++  const transition = async (action: "suspend" | "reactivate") => {
++    if (!featureState.data) return;
++    setBusy(true); setError(null);
++    try {
++      await api(`/agent-referrals/feature-state/${action}`, {
++        method: "POST", headers: { "Content-Type": "application/json" },
++        body: JSON.stringify({ expected_revision: featureState.data.revision, reason: `admin console: ${action}` }),
++      });
++      refresh();
++    } catch (failure) {
++      setError((failure as AdminApiError).code);
++    } finally {
++      setBusy(false);
++    }
++  };
++
++  return (
++    <>
++      <Panel title="Состояние функции">
++        {featureState.isLoading ? <Loading /> : featureState.isError ? <Notice error={(featureState.error as AdminApiError).code} /> : (
++          <>
++            <p>Статус: <Badge>{String(featureState.data!.state)}</Badge></p>
++            {featureState.data!.state === "ACTIVE" && <button disabled={busy} onClick={() => void transition("suspend")}>{busy ? "…" : "Приостановить (SUSPENDED)"}</button>}
++            {featureState.data!.state === "SUSPENDED" && <button disabled={busy} onClick={() => void transition("reactivate")}>{busy ? "…" : "Возобновить (ACTIVE)"}</button>}
++            {featureState.data!.state === "DORMANT" && <p>Активация выполняется только через контролируемый релизный процесс (Phase 10B), не из этой консоли.</p>}
++            <Notice error={error} />
++          </>
++        )}
++      </Panel>
++
++      <Panel title="Очередь проверки оператора">
++        {reviewQueue.isLoading ? <Loading /> : reviewQueue.isError ? <Notice error={(reviewQueue.error as AdminApiError).code} /> : (
++          <table>
++            <thead><tr><th>Категория</th><th>Всего</th><th /></tr></thead>
++            <tbody>
++              {Object.entries(reviewQueue.data!).map(([key, category]) => (
++                <Fragment key={key}>
++                  <tr>
++                    <td>{REVIEW_QUEUE_LABELS[key] ?? key}</td>
++                    <td><Badge>{category.total}</Badge></td>
++                    <td>{category.total > 0 && <button onClick={() => setExpanded(expanded === key ? null : key)}>{expanded === key ? "Скрыть" : "Показать"}</button>}</td>
++                  </tr>
++                  {expanded === key && category.total > 0 && (
++                    <tr>
++                      <td colSpan={3}>
++                        <ul>
++                          {category.items.map((item, index) => {
++                            const target = navigationTarget(key, item);
++                            return (
++                              <li key={index}>
++                                {target ? <button onClick={() => onNavigate(target.tab, target.id, target.focus, target.focusReporting)}>Открыть {target.label}</button> : JSON.stringify(item)}
++                              </li>
++                            );
++                          })}
++                        </ul>
++                        {category.truncated && <p>Показаны первые {category.items.length} из {category.total} записей.</p>}
++                      </td>
++                    </tr>
++                  )}
++                </Fragment>
++              ))}
++            </tbody>
++          </table>
++        )}
++      </Panel>
++    </>
++  );
++}

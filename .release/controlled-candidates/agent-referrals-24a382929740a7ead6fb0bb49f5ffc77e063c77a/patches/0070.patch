@@ -1,0 +1,101 @@
+diff --git new/commerce/src/agent-referrals-payout-profile.ts new/commerce/src/agent-referrals-payout-profile.ts
+new file mode 100644
+index 0000000..092d2fb
+--- /dev/null
++++ new/commerce/src/agent-referrals-payout-profile.ts
+@@ -0,0 +1,95 @@
++import type Database from "better-sqlite3";
++import { id } from "./crypto";
++import { encryptPayoutDestination } from "./agent-referrals-payout-encryption";
++import { recordPartnerIdentityEvent } from "./agent-referrals-onboarding";
++import { consumeStepUpGrantInTransaction } from "./agent-referrals-step-up";
++import type { PartnerPrincipal } from "./agent-referrals-partner-identity";
++
++/**
++ * Immutable payout-profile revisions. "Current" is always
++ * MAX(revision) WHERE partner_identity_id = ? - no stored pointer, so it
++ * can never point at nonexistent or superseded evidence, same as PR3's
++ * legal-profile pattern. A REVOKED-kind revision closes the profile with no
++ * destination fields at all, never by mutating an ACTIVE_DESTINATION row in
++ * place. Payout profile stays optional throughout onboarding - nothing here
++ * gates any onboarding transition.
++ */
++
++export type PayoutDestinationKind = "BANK_CARD" | "BANK_ACCOUNT";
++
++/** Redacted: never selects key_id, ciphertext or nonce. */
++export type PayoutProfileReadModel = {
++  id: string;
++  partner_identity_id: string;
++  revision: number;
++  kind: "ACTIVE_DESTINATION" | "REVOKED";
++  destination_kind: PayoutDestinationKind | null;
++  destination_last4: string | null;
++  supersedes_revision_id: string | null;
++  created_at: string;
++};
++
++const REDACTED_COLUMNS = "id, partner_identity_id, revision, kind, destination_kind, destination_last4, supersedes_revision_id, created_at";
++
++export const currentPayoutProfile = (db: Database.Database, partnerIdentityId: string): PayoutProfileReadModel | null =>
++  (db.prepare(`SELECT ${REDACTED_COLUMNS} FROM payout_profile_revisions WHERE partner_identity_id = ? ORDER BY revision DESC LIMIT 1`)
++    .get(partnerIdentityId) as PayoutProfileReadModel | undefined) ?? null;
++
++export const allPayoutProfileRevisions = (db: Database.Database, partnerIdentityId: string): PayoutProfileReadModel[] =>
++  db.prepare(`SELECT ${REDACTED_COLUMNS} FROM payout_profile_revisions WHERE partner_identity_id = ? ORDER BY revision ASC`)
++    .all(partnerIdentityId) as PayoutProfileReadModel[];
++
++export type SetPayoutDestinationInput = {
++  step_up_grant_id: string;
++  destination_kind: PayoutDestinationKind;
++  destination_plaintext: string;
++  destination_last4: string;
++};
++
++/**
++ * Create or supersede - only the partner's own financial step-up authority
++ * can call this (it takes a PartnerPrincipal, never an AdminPrincipal, so
++ * an admin cannot silently replace a partner's payout destination even in
++ * principle). The grant is bound to `supersedes_revision_id`, so a grant
++ * minted for "supersede current revision X" cannot be replayed after a
++ * concurrent write has already advanced past X.
++ */
++export const setPartnerPayoutDestination = (db: Database.Database, partner: PartnerPrincipal, input: SetPayoutDestinationInput): PayoutProfileReadModel => {
++  const run = db.transaction((): PayoutProfileReadModel => {
++    const current = db.prepare("SELECT id, revision FROM payout_profile_revisions WHERE partner_identity_id = ? ORDER BY revision DESC LIMIT 1")
++      .get(partner.partner_identity_id) as { id: string; revision: number } | undefined;
++
++    consumeStepUpGrantInTransaction(db, partner, input.step_up_grant_id, "PAYOUT_PROFILE_SUPERSESSION", { supersedes_revision_id: current?.id ?? null });
++
++    const encrypted = encryptPayoutDestination(db, input.destination_plaintext);
++    const revisionId = id();
++    const nextRevision = (current?.revision ?? 0) + 1;
++    db.prepare(`INSERT INTO payout_profile_revisions(id, partner_identity_id, revision, kind, key_id, ciphertext, nonce, destination_kind, destination_last4, supersedes_revision_id, step_up_grant_id)
++      VALUES (?, ?, ?, 'ACTIVE_DESTINATION', ?, ?, ?, ?, ?, ?, ?)`)
++      .run(revisionId, partner.partner_identity_id, nextRevision, encrypted.key_id, encrypted.ciphertext, encrypted.nonce, input.destination_kind, input.destination_last4, current?.id ?? null, input.step_up_grant_id);
++
++    recordPartnerIdentityEvent(db, partner.partner_identity_id, "PAYOUT_PROFILE_REVISION_CREATED", "PARTNER", { revision_id: revisionId, revision: nextRevision, kind: "ACTIVE_DESTINATION" });
++    return currentPayoutProfile(db, partner.partner_identity_id)!;
++  });
++  return run.immediate();
++};
++
++/** Revoke: closes the profile with a REVOKED-kind revision - no destination fields, no mutation of any prior row. */
++export const revokePartnerPayoutDestination = (db: Database.Database, partner: PartnerPrincipal, stepUpGrantId: string): PayoutProfileReadModel => {
++  const run = db.transaction((): PayoutProfileReadModel => {
++    const current = db.prepare("SELECT id, revision FROM payout_profile_revisions WHERE partner_identity_id = ? ORDER BY revision DESC LIMIT 1")
++      .get(partner.partner_identity_id) as { id: string; revision: number } | undefined;
++
++    consumeStepUpGrantInTransaction(db, partner, stepUpGrantId, "PAYOUT_PROFILE_SUPERSESSION", { supersedes_revision_id: current?.id ?? null });
++
++    const revisionId = id();
++    const nextRevision = (current?.revision ?? 0) + 1;
++    db.prepare(`INSERT INTO payout_profile_revisions(id, partner_identity_id, revision, kind, supersedes_revision_id, step_up_grant_id)
++      VALUES (?, ?, ?, 'REVOKED', ?, ?)`)
++      .run(revisionId, partner.partner_identity_id, nextRevision, current?.id ?? null, stepUpGrantId);
++
++    recordPartnerIdentityEvent(db, partner.partner_identity_id, "PAYOUT_PROFILE_REVISION_CREATED", "PARTNER", { revision_id: revisionId, revision: nextRevision, kind: "REVOKED" });
++    return currentPayoutProfile(db, partner.partner_identity_id)!;
++  });
++  return run.immediate();
++};

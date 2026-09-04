@@ -1,0 +1,110 @@
+diff --git old/deploy/admin.nginx.conf new/deploy/admin.nginx.conf
+index 71805a7..83c1b7f 100644
+--- old/deploy/admin.nginx.conf
++++ new/deploy/admin.nginx.conf
+@@ -1,6 +1,17 @@
++# Single frontend image/container (apps/admin's Next static export) serves
++# TWO public hostnames - admin.flexperiment.ru and partner.flexperiment.ru -
++# per the Phase 9 shared-frontend topology amendment. Host is the routing
++# boundary: each `server` block below only serves its own realm's paths and
++# API prefix, and returns a plain 404 for the other realm's paths rather
++# than falling through to a shared "/" handler. This is defense in depth,
++# not the real security boundary - Commerce (agent-referrals-api-admin.ts /
++# agent-referrals-api-partner.ts) enforces realm separation independently of
++# whatever this file does, so a bug here can misroute a static page but can
++# never grant one realm's session cookie authority over the other's API.
++
+ server {
+     listen 80;
+-    server_name _;
++    server_name admin.flexperiment.ru;
+     root /usr/share/nginx/html;
+     index index.html;
+ 
+@@ -30,7 +41,86 @@ server {
+         return 200 '{"ok":true}';
+     }
+ 
++    # Fail closed: the partner surface must never be reachable from the
++    # admin host, even though both are built into the same static export
++    # tree and would otherwise resolve here via location / below.
++    location ^~ /partner/ {
++        return 404;
++    }
++    location = /partner {
++        return 404;
++    }
++
+     location / {
+         try_files $uri $uri/ $uri/index.html =404;
+     }
+ }
++
++server {
++    listen 80;
++    server_name partner.flexperiment.ru;
++    root /usr/share/nginx/html;
++    index index.html;
++
++    add_header X-Content-Type-Options "nosniff" always;
++    add_header X-Frame-Options "DENY" always;
++    add_header Referrer-Policy "no-referrer" always;
++
++    resolver 127.0.0.11 valid=5s ipv6=off;
++    resolver_timeout 5s;
++    set $commerce_upstream commerce:3001;
++
++    location /v1/partner/ {
++        proxy_pass http://$commerce_upstream;
++        proxy_http_version 1.1;
++        proxy_set_header Host $host;
++        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
++        proxy_set_header X-Forwarded-Proto $scheme;
++        proxy_set_header X-Real-IP $remote_addr;
++        proxy_pass_request_headers on;
++    }
++
++    location = /healthz {
++        default_type application/json;
++        return 200 '{"ok":true}';
++    }
++
++    # Static assets are one shared Next build (hashed, content-addressed,
++    # carry no per-realm authority) - both hosts may serve them.
++    location /_next/ {
++        try_files $uri =404;
++    }
++    location = /favicon.ico {
++        try_files $uri =404;
++    }
++
++    location = / {
++        return 301 /partner/;
++    }
++    location = /partner {
++        return 301 /partner/;
++    }
++    # Fail closed: only the /partner/* subtree is reachable from this host,
++    # even though the admin pages live in the same static export tree one
++    # path segment away.
++    location ^~ /partner/ {
++        try_files $uri $uri/ $uri/index.html =404;
++    }
++    location / {
++        return 404;
++    }
++}
++
++# Any other Host header (including none) never resolves to either realm.
++server {
++    listen 80 default_server;
++    server_name _;
++
++    location = /healthz {
++        default_type application/json;
++        return 200 '{"ok":true}';
++    }
++    location / {
++        return 404;
++    }
++}

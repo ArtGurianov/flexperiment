@@ -1,0 +1,42 @@
+diff --git old/commerce/src/api.ts new/commerce/src/api.ts
+index 81a4040..a73f8a3 100644
+--- old/commerce/src/api.ts
++++ new/commerce/src/api.ts
+@@ -10,6 +10,9 @@ import { clientIpRateLimitKey, rateLimit, trustedClientIp } from "./rate-limit";
+ import { TochkaWebhookVerifier, webhookAmountKopecks } from "./tochka-webhook";
+ import { verifyUnisenderWebhook } from "./unisender-webhook";
+ import { type SmartCaptchaVerifier, UnconfiguredSmartCaptchaVerifier } from "./smartcaptcha";
++import { createAgentReferralsPartnerRouter } from "./agent-referrals-api-partner";
++import { createAgentReferralsAdminRouter } from "./agent-referrals-api-admin";
++import { UnconfiguredOtpSender, type OtpSender } from "./agent-referrals-otp";
+ import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityInterestWithdrawalSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, emailAttentionAcknowledgeSchema, emergencySalesCommandSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrenceNotificationSchema, occurrencePatchSchema, outboxDispatchFenceSchema, preActivationDefectSchema, promoPatchSchema, promoSchema, providerReferenceSchema, releaseControlSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
+ 
+ type AppBindings = { Variables: { adminId?: string; adminSessionId?: string } };
+@@ -26,7 +29,7 @@ const jsonBody = async (request: Request) => {
+   try { return await request.json(); } catch { throw new DomainError("INVALID_JSON", 400); }
+ };
+ 
+-export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvider: EmailProvider = new UnconfiguredEmailProvider(), smartCaptcha: SmartCaptchaVerifier = new UnconfiguredSmartCaptchaVerifier()) {
++export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvider: EmailProvider = new UnconfiguredEmailProvider(), smartCaptcha: SmartCaptchaVerifier = new UnconfiguredSmartCaptchaVerifier(), otpSender: OtpSender = new UnconfiguredOtpSender()) {
+   const app = new Hono<AppBindings>();
+   const domain = new CommerceDomain(sqlite, provider, emailProvider);
+   const tochkaVerifier = provider instanceof TochkaProvider ? new TochkaWebhookVerifier() : undefined;
+@@ -46,6 +49,9 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
+       if (error.code === "RATE_LIMITED") c.header("Retry-After", error.message);
+       return c.json({ error: { code: error.code } }, error.status as 400);
+     }
++    if (error instanceof Error && "code" in error && typeof (error as { code: unknown }).code === "string" && "status" in error && typeof (error as { status: unknown }).status === "number") {
++      return c.json({ error: { code: (error as { code: string }).code } }, (error as { status: number }).status as 400);
++    }
+     console.error("commerce request failed", error instanceof Error ? error.message : "unknown error");
+     return c.json({ error: { code: "INTERNAL_ERROR" } }, 500);
+   });
+@@ -569,6 +575,8 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
+   releaseControlHead.get("/candidates/head", (c) => c.json(domain.promoCandidateHead()));
+   app.route("/v1/internal/release-control", releaseControl);
+   app.route("/v1/admin/release-control", releaseControlHead);
++  admin.route("/agent-referrals", createAgentReferralsAdminRouter(sqlite));
+   app.route("/v1/admin", admin);
++  app.route("/v1/partner", createAgentReferralsPartnerRouter(sqlite, otpSender));
+   return app;
+ }

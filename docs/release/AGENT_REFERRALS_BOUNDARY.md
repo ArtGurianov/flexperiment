@@ -32,7 +32,7 @@ copied out of `main`'s tree. Every certified path pins:
 ```text
 path
 base_blob_sha
-patch_path            committed control-plane artifact on main
+patch_path            committed control-plane artifact in the controller tree
 patch_git_blob_sha     binds the proof to the protected-main tree
 patch_sha256
 result_blob_sha
@@ -54,10 +54,16 @@ extra_headers = "none"   rejected if anything else
 signed = false            rejected if anything else
 ```
 
-The certificate also pins `source_main_sha`: the exact protected-main commit
-whose tree every `patch_path` is read from, and the root a controller must
-prove `main`-ancestry for before trusting anything else in the certificate —
-see `RECONSTRUCTION_BOUND` below.
+The certificate also pins `source_main_sha`: the exact protected-main source
+commit a controller must prove is in its ancestry before trusting anything
+else in the certificate. Phase 10A sets `patch_source: "controller_tree"`:
+every patch is read from the named controller commit's Git tree, supplied by
+the controller at verification time, rather than `source_main_sha`. This is
+intentional: the frozen source predates PR10's artifacts, and recording a PR
+commit SHA would break under this repository's rebase-only merge policy.
+Patch bytes remain bound by both `patch_git_blob_sha` and `patch_sha256`; the
+controller tree is trusted only after the certificate itself has been read
+from that same tree. See `RECONSTRUCTION_BOUND` below.
 
 See the module docstring in `commerce/src/agent-referrals-candidate.ts` for
 the exact contract and `commerce/test/agent-referrals-candidate.test.ts` for
@@ -92,7 +98,7 @@ git show "$CONTROLLER_SHA:.release/controlled-candidates/agent-referrals-$BASE_S
 SOURCE_MAIN_SHA="$(jq -er '.source_main_sha' candidate-certificate.json)"
 git merge-base --is-ancestor "$SOURCE_MAIN_SHA" "$CONTROLLER_SHA"
 jq -e --arg base "$BASE_SHA" '.base_sha == $base' candidate-certificate.json
-RECONSTRUCTED_SHA="$(node --import tsx commerce/src/agent-referrals-candidate-verify.ts candidate-certificate.json)"
+RECONSTRUCTED_SHA="$(node --import tsx commerce/src/agent-referrals-candidate-verify.ts candidate-certificate.json "$CONTROLLER_SHA")"
 [[ "$RECONSTRUCTED_SHA" == "$TARGET_SHA" ]]
 ```
 
@@ -107,13 +113,26 @@ artifact PR10 commits, not something `Q` itself carries — reading it from
 `Q`'s own tree would be exactly the circular proof this machinery refuses to
 perform). Patches live alongside it under `patches/`.
 
+Phase 10A materializes the actual artifact at
+`.release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/certificate.json`:
+
+```text
+BASE             24a382929740a7ead6fb0bb49f5ffc77e063c77a
+SOURCE_MAIN_SHA  08f21d2293fcc1d908b2cfe23c0b64d8c4ef7e9f
+TARGET_Q         eeb7d09973ea59e5c3b959a6db94ab552e1221c9
+Q tree           6f2c84cb6e0e8a84a09a73238d3aa02491e1ee71
+```
+
 ## Changed-path allowlist
 
-Not yet defined. PR1 ships the reconstruction and topology machinery only —
-no certificate exists yet, because `Q`'s SHA depends on PR2–PR9's actual
-patches (the certificate is a post-implementation release artifact, Phase
-10A of the plan). The real allowlist is committed here, alongside the real
-certificate at the location above, once PR10 exists.
+The canonical, exact allowlist is the 88 sorted `paths[]` entries in the
+committed Phase 10A certificate above. They are limited to Agent Referrals
+Commerce runtime (including exact immutable migrations `0042` through `0049`),
+admin/partner UI, and the two production routing configs. No test, workflow,
+documentation, `.release/**` artifact, `public/legal/**`, or
+`commerce/legal/**` path is reconstructed into Q. The materialization test
+independently rebuilds Q, compares `BASE..Q` with that complete manifest, and
+proves every migration blob equals the protected-main source blob.
 
 ## Recovery matrix
 

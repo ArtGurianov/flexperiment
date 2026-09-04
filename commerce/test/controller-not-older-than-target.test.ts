@@ -161,6 +161,11 @@ const RECONSTRUCTION_BOUND_ASSERTIONS: ReadonlyArray<{ readonly name: string; re
     removeLine: removeLinesMatching(/node --import tsx commerce\/src\/agent-referrals-candidate-verify\.ts/),
   },
   {
+    name: "real patches are resolved from the same trusted controller tree that supplied the certificate",
+    pattern: /node --import tsx commerce\/src\/agent-referrals-candidate-verify\.ts\s+\S+\s+"\$(GITHUB_SHA|CONTROLLER_SHA)"/,
+    removeLine: removeLinesMatching(/node --import tsx commerce\/src\/agent-referrals-candidate-verify\.ts/),
+  },
+  {
     name: "RECONSTRUCTED_SHA == TARGET_SHA",
     pattern: /\[\[ "\$RECONSTRUCTED_SHA" == "\$TARGET_SHA" \]\]/,
     removeLine: removeLinesMatching(/\[\[ "\$RECONSTRUCTED_SHA" == "\$TARGET_SHA" \]\]/),
@@ -180,7 +185,7 @@ const reconstructionBoundFixture = () => [
   `SOURCE_MAIN_SHA="$(jq -er '.source_main_sha' ${CERTIFICATE_FILE})"`,
   'git merge-base --is-ancestor "$SOURCE_MAIN_SHA" "$GITHUB_SHA" || { echo "SOURCE_MAIN_SHA_NOT_ANCESTOR" >&2; exit 1; }',
   `jq -e --arg base "$BASE_SHA" '.base_sha == $base' ${CERTIFICATE_FILE} >/dev/null || { echo "CANDIDATE_BASE_MISMATCH" >&2; exit 1; }`,
-  `RECONSTRUCTED_SHA="$(node --import tsx commerce/src/agent-referrals-candidate-verify.ts ${CERTIFICATE_FILE})"`,
+  `RECONSTRUCTED_SHA="$(node --import tsx commerce/src/agent-referrals-candidate-verify.ts ${CERTIFICATE_FILE} "$GITHUB_SHA")"`,
   '[[ "$RECONSTRUCTED_SHA" == "$TARGET_SHA" ]] || { echo "CANDIDATE_RECONSTRUCTION_MISMATCH" >&2; exit 1; }',
 ].join("\n");
 
@@ -199,7 +204,7 @@ const decoupledAncestryFixture = () => [
   'BASE_SHA="$(scripts/read-production-deploy-ref.sh)"',
   `git show "$GITHUB_SHA:.release/controlled-candidates/agent-referrals-$BASE_SHA/certificate.json" > ${CERTIFICATE_FILE}`,
   `jq -e --arg base "$BASE_SHA" '.base_sha == $base' ${CERTIFICATE_FILE} >/dev/null || { echo "CANDIDATE_BASE_MISMATCH" >&2; exit 1; }`,
-  `RECONSTRUCTED_SHA="$(node --import tsx commerce/src/agent-referrals-candidate-verify.ts ${CERTIFICATE_FILE})"`,
+  `RECONSTRUCTED_SHA="$(node --import tsx commerce/src/agent-referrals-candidate-verify.ts ${CERTIFICATE_FILE} "$GITHUB_SHA")"`,
   '[[ "$RECONSTRUCTED_SHA" == "$TARGET_SHA" ]] || { echo "CANDIDATE_RECONSTRUCTION_MISMATCH" >&2; exit 1; }',
 ].join("\n");
 
