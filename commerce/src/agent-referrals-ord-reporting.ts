@@ -83,26 +83,6 @@ export const currentOrdDistributionPeriodReport = (db: Database.Database, distri
 export const ordDistributionPeriodReportsForDistribution = (db: Database.Database, distributionId: string): OrdDistributionPeriodReportRow[] =>
   db.prepare(`SELECT ${COLUMNS} FROM ord_distribution_period_reports WHERE distribution_id = ? ORDER BY reporting_period_key ASC, revision ASC`).all(distributionId) as OrdDistributionPeriodReportRow[];
 
-/**
- * Mechanical reporting-tail-complete check (P0.6, tightened round-3 P0.2):
- * true only when every CURRENT report for this distribution has BOTH
- * review_required = 0 (statistics resolved, never fabricated) AND
- * submission_state = 'SUBMITTED' (which the table's own CHECK makes
- * inseparable from a real vk_operation_external_id/erir_code/
- * submission_evidence_ref). review_required = 0 alone only means "we have
- * statistics" - the frozen flow is statistics -> manual VK submission ->
- * ERIR reconciliation -> tail complete, and an ACTUAL report that was never
- * actually submitted to VK must not report the tail as done.
- */
-export const isOrdReportingTailComplete = (db: Database.Database, distributionId: string): boolean => {
-  const periods = db.prepare("SELECT DISTINCT reporting_period_key FROM ord_distribution_period_reports WHERE distribution_id = ?").all(distributionId) as { reporting_period_key: string }[];
-  if (periods.length === 0) return false;
-  return periods.every((p) => {
-    const current = currentOrdDistributionPeriodReport(db, distributionId, p.reporting_period_key)!;
-    return current.review_required === 0 && current.submission_state === "SUBMITTED";
-  });
-};
-
 /** A real, current zero-reward closure for the exact engagement this distribution belongs to - or null. */
 const currentZeroRewardClosureForDistribution = (db: Database.Database, distributionId: string): { id: string; service_period_start_at: string; service_period_end_at: string } | null =>
   (db.prepare(`SELECT z.id AS id, z.service_period_start_at AS service_period_start_at, z.service_period_end_at AS service_period_end_at
@@ -113,6 +93,79 @@ const formatKindForDistributionRevision = (revision: DistributionRevisionRow, db
   if (!revision.creative_revision_id) throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_FORMAT_UNRESOLVED", 409, revision.id);
   const row = db.prepare("SELECT format_kind FROM engagement_creative_revisions WHERE id = ?").get(revision.creative_revision_id) as { format_kind: CreativeFormatKind };
   return row.format_kind;
+};
+
+/**
+ * The authoritative CALENDAR_MONTH obligation set: one reporting_period_key
+ * per calendar month from the distribution's own published_at through
+ * min(ended_at, referenceInstantIso), inclusive. A live distribution
+ * (ended_at IS NULL) keeps accruing a new obligation every month it remains
+ * unclosed - that is the entire reason fileOrdDistributionPeriodReport takes
+ * a period_key per call rather than once per distribution - so the horizon
+ * must be capped by an explicit, caller-supplied reference instant rather
+ * than this function reading the wall clock itself (integration-hardening
+ * #4): the same distribution, checked twice a month apart, must give a
+ * different, deterministic answer driven only by its arguments, never by
+ * when the check happens to run.
+ */
+const calendarMonthObligationSet = (publishedAt: string, endedAt: string | null, referenceInstantIso: string): string[] => {
+  const startKey = calendarMonthKey(publishedAt);
+  const horizonIso = endedAt !== null && endedAt < referenceInstantIso ? endedAt : referenceInstantIso;
+  const endKey = calendarMonthKey(horizonIso);
+  if (endKey < startKey) return [startKey];
+  const [startYear, startMonth] = startKey.split("-").map(Number);
+  const [endYear, endMonth] = endKey.split("-").map(Number);
+  const months: string[] = [];
+  let year = startYear;
+  let month = startMonth;
+  while (year < endYear || (year === endYear && month <= endMonth)) {
+    months.push(`${year}-${String(month).padStart(2, "0")}`);
+    month += 1;
+    if (month > 12) { month = 1; year += 1; }
+  }
+  return months;
+};
+
+/**
+ * Reporting-tail-complete (P0.6/round-3 P0.2, re-derived integration-
+ * hardening #4): for CALENDAR_MONTH, true only when EVERY period in the
+ * authoritative obligation set above - not merely every period that
+ * happens to already have a report row - has a CURRENT report with both
+ * review_required = 0 (statistics resolved, never fabricated) and
+ * submission_state = 'SUBMITTED'. The prior version asked only "are all
+ * EXISTING report rows complete", which was trivially true whenever a
+ * genuinely owed period had simply never been filed - proven: a live
+ * September-published distribution with only September filed+submitted and
+ * October never touched at all returned true. This version returns false
+ * for that exact case once referenceInstantIso reaches October.
+ *
+ * PROVIDER_SPECIAL_PERIOD has no such independent derivation available: VK
+ * defines the exact period-key shape/count for a special-period program,
+ * and this codebase never fetches that (no provider network client - see
+ * this module's own header). The strongest honest guarantee here remains
+ * the prior one - every period actually filed is itself complete, and at
+ * least one has been filed - never a fabricated obligation count this code
+ * cannot actually know.
+ */
+export const isOrdReportingTailComplete = (db: Database.Database, distributionId: string, referenceInstantIso: string): boolean => {
+  const distributionRevision = currentDistributionRevision(db, distributionId);
+  if (!distributionRevision) return false;
+  const formatKind = formatKindForDistributionRevision(distributionRevision, db);
+  const reportingBasis = resolveOrdReportingBasis(db, formatKind, distributionRevision.published_at);
+
+  const isPeriodComplete = (periodKey: string): boolean => {
+    const current = currentOrdDistributionPeriodReport(db, distributionId, periodKey);
+    return !!current && current.review_required === 0 && current.submission_state === "SUBMITTED";
+  };
+
+  if (reportingBasis === "CALENDAR_MONTH") {
+    const obligations = calendarMonthObligationSet(distributionRevision.published_at, distributionRevision.ended_at, referenceInstantIso);
+    return obligations.every(isPeriodComplete);
+  }
+
+  const periods = db.prepare("SELECT DISTINCT reporting_period_key FROM ord_distribution_period_reports WHERE distribution_id = ?").all(distributionId) as { reporting_period_key: string }[];
+  if (periods.length === 0) return false;
+  return periods.every((p) => isPeriodComplete(p.reporting_period_key));
 };
 
 /** distribution_revision_id, validated to belong to distributionId - used only to re-pin a PREDECESSOR's own revision (P0.4), never to silently re-derive "current". */

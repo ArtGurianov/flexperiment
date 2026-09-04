@@ -10,6 +10,7 @@ import { PromoPricingError, pricePromo } from "./promo-pricing";
 import { PartnerPromoPricingError, resolveCheckoutPromoTerms } from "./agent-referrals-partner-promo-pricing";
 import { isPromoPartnerOwned } from "./agent-referrals-promo";
 import { suspendEngagementsForOccurrenceMaterialChange } from "./agent-referrals-engagement";
+import { currentAgentReferralsLegalProfile } from "./agent-referrals-legal-profile";
 import { AgentReferralsAttributionError, resolveOrderAttribution, ATTRIBUTION_RULE_VERSION } from "./agent-referrals-attribution";
 import { rewardForOrder as computeRewardForOrder } from "./reward-calculation";
 import { findCityBySlug } from "../../lib/city-catalog";
@@ -1969,6 +1970,18 @@ export class CommerceDomain {
   patchAgent(agentId: string, input: Record<string, unknown>) {
     const existing = one(this.db, "SELECT * FROM agents WHERE id = ?", agentId);
     if (!existing) throw new DomainError("AGENT_NOT_FOUND", 404);
+    // Integration-hardening #3: an agent governed by an Agent Referrals
+    // legal profile has its contractor_type projected from that immutable
+    // chain (agent-referrals-legal-profile.ts) - the legacy PATCH path must
+    // not be able to rewrite it to a DIFFERENT value out from under that
+    // projection (the DB carries the same guard structurally; this is the
+    // named, catchable app-level refusal).
+    if (input.contractor_type !== undefined) {
+      const legalProfile = currentAgentReferralsLegalProfile(this.db, agentId);
+      if (legalProfile && input.contractor_type !== legalProfile.projected_contractor_type) {
+        throw new DomainError("AGENT_REFERRALS_CONTRACTOR_TYPE_PROJECTION_LOCKED", 409);
+      }
+    }
     const allowed = ["display_name", "legal_name", "email", "contractor_type", "inn", "contract_reference", "enabled", "default_reward_type", "default_reward_value", "npd_status_checked_at"];
     const fields = allowed.filter((field) => input[field] !== undefined);
     if (!fields.length) return existing;

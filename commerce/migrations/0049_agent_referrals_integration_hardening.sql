@@ -1,0 +1,133 @@
+-- Phase 1-8 integration-hardening: six structural gaps found by a cross-
+-- phase audit of the merged PR1-PR8 base (567b65cc4ebc82ab1bf9bfdc04c06a6ba
+-- 55e32ab), each verified with an executable counterexample before being
+-- closed here. Strictly corrective - no new product capability, no
+-- activation, no provider network calls, no Phase-9 functionality. Ordinary
+-- migration, not FK-off (only 0042 carries that status). Does not touch a
+-- single byte of 0042-0048.
+
+-- 1. agent_referrals_feature_state_events was historical authority
+-- (agentReferralsFeatureStateAt resolves published/suspension decisions
+-- against it) but had no structural protection at all: no UPDATE guard, no
+-- DELETE guard, no UNIQUE(revision), no closed-domain check on from_state/
+-- to_state, no lineage enforcement. Proven exploitable: a raw UPDATE on a
+-- SUSPENDED event flipped agentReferralsFeatureStateAt()'s result for that
+-- historical instant to ACTIVE; DELETE did the same; a forged INSERT with
+-- garbage enum values succeeded outright.
+--
+-- append-only is necessary but not sufficient - a syntactically valid but
+-- impossible transition/revision inserted out of band would still forge
+-- history, so this is not solved with UNIQUE(revision) plus immutable rows
+-- alone. The lineage guard below additionally proves every inserted event
+-- is the legitimate next link of the actual chain: its own (from_state,
+-- to_state) pair is one of the three legal edges the application's own
+-- LEGAL_EDGES map allows, and either the table is currently empty and
+-- from_state = DORMANT (the one genesis case - DORMANT never gets its own
+-- event row, see agent-referrals-feature-state.ts), or a prior event exists
+-- whose own revision is exactly one less and whose to_state exactly equals
+-- this event's from_state. A gap, a duplicate, a rewritten predecessor, or a
+-- transition that does not chain onto the row actually before it are all
+-- refused.
+CREATE TRIGGER agent_referrals_feature_state_events_immutable_guard
+BEFORE UPDATE ON agent_referrals_feature_state_events
+BEGIN SELECT RAISE(ABORT, 'AGENT_REFERRALS_FEATURE_STATE_EVENT_IMMUTABLE'); END;
+CREATE TRIGGER agent_referrals_feature_state_events_delete_guard
+BEFORE DELETE ON agent_referrals_feature_state_events
+BEGIN SELECT RAISE(ABORT, 'AGENT_REFERRALS_FEATURE_STATE_EVENT_IMMUTABLE'); END;
+CREATE UNIQUE INDEX agent_referrals_feature_state_events_revision_unique
+  ON agent_referrals_feature_state_events(revision);
+CREATE TRIGGER agent_referrals_feature_state_events_lineage_guard
+BEFORE INSERT ON agent_referrals_feature_state_events
+WHEN NOT (
+  NEW.from_state IN ('DORMANT', 'ACTIVE', 'SUSPENDED')
+  AND NEW.to_state IN ('ACTIVE', 'SUSPENDED')
+  AND (
+    (NEW.from_state = 'DORMANT' AND NEW.to_state = 'ACTIVE')
+    OR (NEW.from_state = 'ACTIVE' AND NEW.to_state = 'SUSPENDED')
+    OR (NEW.from_state = 'SUSPENDED' AND NEW.to_state = 'ACTIVE')
+  )
+  AND (
+    (NOT EXISTS (SELECT 1 FROM agent_referrals_feature_state_events) AND NEW.from_state = 'DORMANT')
+    OR EXISTS (
+      SELECT 1 FROM agent_referrals_feature_state_events prev
+      WHERE prev.revision = NEW.revision - 1 AND prev.to_state = NEW.from_state
+    )
+  )
+)
+BEGIN SELECT RAISE(ABORT, 'AGENT_REFERRALS_FEATURE_STATE_EVENT_LINEAGE_INCONSISTENT'); END;
+
+-- 2. agent_referrals_activation_manifest is treated as pinned, write-once
+-- evidence by recordAgentReferralsActivationEvidence (same value replays
+-- idempotently, a different value is refused) but the table itself carried
+-- no backstop - a raw UPDATE silently rewrote a pinned value (proven: a
+-- confirmed ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED = true flipped to false
+-- with no error). The application's own write-once semantics never issue an
+-- UPDATE (idempotent replay is a no-op, conflict throws before writing), so
+-- this guard changes no legitimate behavior.
+CREATE TRIGGER agent_referrals_activation_manifest_immutable_guard
+BEFORE UPDATE ON agent_referrals_activation_manifest
+BEGIN SELECT RAISE(ABORT, 'AGENT_REFERRALS_ACTIVATION_MANIFEST_IMMUTABLE'); END;
+CREATE TRIGGER agent_referrals_activation_manifest_delete_guard
+BEFORE DELETE ON agent_referrals_activation_manifest
+BEGIN SELECT RAISE(ABORT, 'AGENT_REFERRALS_ACTIVATION_MANIFEST_IMMUTABLE'); END;
+
+-- 3. agents.contractor_type is the projection target of the immutable
+-- agent_referrals_legal_profile_revisions chain (applyAgentReferralsLegal
+-- Profile's own UPDATE, 0043 comment section 3), but the pre-existing
+-- LEGACY agent PATCH path (domain.ts patchAgent) could rewrite the same
+-- column to any of its own SELF_EMPLOYED/INDIVIDUAL_ENTREPRENEUR universe
+-- with no awareness a governed legal profile exists - proven: verifying a
+-- LEGAL_ENTITY/ORGANIZATION partner then legacy-PATCHing contractor_type to
+-- SELF_EMPLOYED left agents.contractor_type contradicting the pinned legal
+-- profile, and 0047's own settlement guard (line ~138: NEW.contractor_type_
+-- snapshot = agents.contractor_type) only ever compared against that same
+-- mutable column, never against the legal profile's own
+-- projected_contractor_type.
+--
+-- This closes both ends. First, agents.contractor_type itself may only ever
+-- change to the value the agent's CURRENT legal profile revision actually
+-- projects, once such a revision exists - the legitimate writer
+-- (applyAgentReferralsLegalProfile) always sets exactly that value, so nothing
+-- about its own behavior changes; only a legacy PATCH attempting a
+-- DIFFERENT value for a governed agent is refused.
+CREATE TRIGGER agents_contractor_type_projection_guard
+BEFORE UPDATE OF contractor_type ON agents
+WHEN NEW.contractor_type IS NOT OLD.contractor_type
+  AND EXISTS (SELECT 1 FROM agent_referrals_legal_profile_revisions WHERE agent_id = NEW.id)
+  AND NEW.contractor_type IS NOT (
+    SELECT projected_contractor_type FROM agent_referrals_legal_profile_revisions
+    WHERE agent_id = NEW.id ORDER BY revision DESC LIMIT 1
+  )
+BEGIN SELECT RAISE(ABORT, 'AGENT_REFERRALS_CONTRACTOR_TYPE_PROJECTION_LOCKED'); END;
+
+-- Second, settlement independently proves its own contractor_type_snapshot
+-- against the PINNED legal_profile_revision_id_snapshot's own projection -
+-- not merely against the (now-guarded, but still one extra hop away) live
+-- agents.contractor_type 0047 already checks. Combined with the guard
+-- above, a settlement's contractor_type_snapshot, agents.contractor_type,
+-- and the pinned legal profile's projected_contractor_type are now
+-- structurally forced to agree three ways: 0047's own guard already proves
+-- snapshot = agents.contractor_type; this guard proves snapshot = pinned
+-- legal profile projection; the guard above proves agents.contractor_type
+-- can never itself diverge from that same projection once governed.
+-- Only fires once legal_profile_revision_id_snapshot is actually present -
+-- a half-shaped row missing it entirely is already refused by 0047's own
+-- reward_settlements_authority_tuple_consistency_guard (a different, more
+-- specific defect than "the pinned profile disagrees"), and that trigger
+-- must remain the one that names it.
+CREATE TRIGGER reward_settlements_contractor_type_projection_guard
+BEFORE INSERT ON reward_settlements
+WHEN NEW.settlement_flow = 'AGENT_REFERRALS'
+  AND NEW.legal_profile_revision_id_snapshot IS NOT NULL
+  AND NEW.contractor_type_snapshot IS NOT (
+    SELECT projected_contractor_type FROM agent_referrals_legal_profile_revisions
+    WHERE id = NEW.legal_profile_revision_id_snapshot
+  )
+BEGIN SELECT RAISE(ABORT, 'AGENT_REFERRALS_SETTLEMENT_CONTRACTOR_TYPE_PROJECTION_MISMATCH'); END;
+
+-- 4, 5, 6 are pure application-code fixes (agent-referrals-ord-reporting.ts,
+-- agent-referrals-engagement.ts, agent-referrals-creative-readiness.ts,
+-- agent-referrals-npd.ts) - no schema object accompanies them. See those
+-- modules' own comments for the obligation-set derivation (#4), the
+-- destroyed-identity new-authority refusal (#5), and the routed suspension
+-- gate (#6).

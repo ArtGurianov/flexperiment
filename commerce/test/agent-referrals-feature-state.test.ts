@@ -7,6 +7,7 @@ import { migrate, openDatabase } from "../src/db";
 import {
   activateAgentReferrals,
   agentReferralsFeatureState,
+  agentReferralsFeatureStateAt,
   AgentReferralsFeatureError,
   lastAgentReferralsFeatureStateEvent,
   reactivateAgentReferrals,
@@ -220,6 +221,74 @@ describe("agent-referrals feature state", () => {
       for (const table of writeTargets) {
         expect(table).toMatch(/^agent_referrals_feature_state(_events)?$/);
       }
+    });
+  });
+
+  describe("integration-hardening #1: agent_referrals_feature_state_events is structurally append-only, forge-proof history", () => {
+    it("proves the previously demonstrated bypass is now impossible: a raw UPDATE on a SUSPENDED event no longer flips historical authority to ACTIVE", () => {
+      const db = fresh();
+      activateAgentReferrals(db, { expected_revision: 1, owner_id: "op-1", reason: "go live" });
+      suspendAgentReferrals(db, { expected_revision: 2, owner_id: "op-1", reason: "incident" });
+      const suspendEvent = lastAgentReferralsFeatureStateEvent(db) as { revision: number; created_at: string };
+      expect(agentReferralsFeatureStateAt(db, suspendEvent.created_at)).toBe("SUSPENDED");
+
+      expect(() => db.prepare("UPDATE agent_referrals_feature_state_events SET to_state = 'ACTIVE' WHERE revision = ?").run(suspendEvent.revision))
+        .toThrow(/AGENT_REFERRALS_FEATURE_STATE_EVENT_IMMUTABLE/);
+      expect(agentReferralsFeatureStateAt(db, suspendEvent.created_at)).toBe("SUSPENDED");
+    });
+
+    it("a raw DELETE of the SUSPENDED event is refused, and historical authority is unchanged", () => {
+      const db = fresh();
+      activateAgentReferrals(db, { expected_revision: 1, owner_id: "op-1", reason: "go live" });
+      suspendAgentReferrals(db, { expected_revision: 2, owner_id: "op-1", reason: "incident" });
+      const suspendEvent = lastAgentReferralsFeatureStateEvent(db) as { revision: number; created_at: string };
+
+      expect(() => db.prepare("DELETE FROM agent_referrals_feature_state_events WHERE revision = ?").run(suspendEvent.revision))
+        .toThrow(/AGENT_REFERRALS_FEATURE_STATE_EVENT_IMMUTABLE/);
+      expect(agentReferralsFeatureStateAt(db, suspendEvent.created_at)).toBe("SUSPENDED");
+    });
+
+    it("UNIQUE(revision) refuses a raw duplicate-revision INSERT that is otherwise lineage-valid", () => {
+      const db = fresh();
+      activateAgentReferrals(db, { expected_revision: 1, owner_id: "op-1", reason: "go live" });
+      suspendAgentReferrals(db, { expected_revision: 2, owner_id: "op-1", reason: "incident" });
+      const suspendEvent = lastAgentReferralsFeatureStateEvent(db) as { revision: number };
+      // Same (from_state, to_state) edge as the real event at this revision,
+      // and it chains onto the real predecessor's to_state - lineage-valid
+      // on its own; only the duplicate revision number is wrong.
+      expect(() => db.prepare(`INSERT INTO agent_referrals_feature_state_events(id, from_state, to_state, owner_id, reason, revision) VALUES ('forged', 'ACTIVE', 'SUSPENDED', 'nobody', 'forged', ?)`)
+        .run(suspendEvent.revision)).toThrow(/UNIQUE constraint failed/);
+    });
+
+    it("a forged INSERT with an out-of-domain from_state/to_state is refused", () => {
+      const db = fresh();
+      expect(() => db.prepare(`INSERT INTO agent_referrals_feature_state_events(id, from_state, to_state, owner_id, reason, revision) VALUES ('forged', 'BOGUS', 'ALSO_BOGUS', 'nobody', 'forged', 999)`).run())
+        .toThrow(/AGENT_REFERRALS_FEATURE_STATE_EVENT_LINEAGE_INCONSISTENT/);
+    });
+
+    it("a forged INSERT that is not the genesis event but claims from_state = DORMANT anyway is refused (does not chain onto the actual last event)", () => {
+      const db = fresh();
+      activateAgentReferrals(db, { expected_revision: 1, owner_id: "op-1", reason: "go live" });
+      const first = lastAgentReferralsFeatureStateEvent(db) as { revision: number };
+      expect(() => db.prepare(`INSERT INTO agent_referrals_feature_state_events(id, from_state, to_state, owner_id, reason, revision) VALUES ('forged', 'DORMANT', 'ACTIVE', 'nobody', 'forged', ?)`)
+        .run(first.revision + 1)).toThrow(/AGENT_REFERRALS_FEATURE_STATE_EVENT_LINEAGE_INCONSISTENT/);
+    });
+
+    it("a forged INSERT skipping a revision (gap in the chain) is refused", () => {
+      const db = fresh();
+      activateAgentReferrals(db, { expected_revision: 1, owner_id: "op-1", reason: "go live" });
+      const first = lastAgentReferralsFeatureStateEvent(db) as { revision: number };
+      expect(() => db.prepare(`INSERT INTO agent_referrals_feature_state_events(id, from_state, to_state, owner_id, reason, revision) VALUES ('forged', 'ACTIVE', 'SUSPENDED', 'nobody', 'forged', ?)`)
+        .run(first.revision + 2)).toThrow(/AGENT_REFERRALS_FEATURE_STATE_EVENT_LINEAGE_INCONSISTENT/);
+    });
+
+    it("legitimate application-driven transitions are entirely unaffected by the new guards", () => {
+      const db = fresh();
+      activateAgentReferrals(db, { expected_revision: 1, owner_id: "op-1", reason: "go live" });
+      suspendAgentReferrals(db, { expected_revision: 2, owner_id: "op-1", reason: "incident" });
+      reactivateAgentReferrals(db, { expected_revision: 3, owner_id: "op-1", reason: "resolved" });
+      expect(agentReferralsFeatureState(db)).toEqual({ state: "ACTIVE", owner_id: "op-1", revision: 4 });
+      expect(featureStateEventCount(db)).toBe(3);
     });
   });
 });

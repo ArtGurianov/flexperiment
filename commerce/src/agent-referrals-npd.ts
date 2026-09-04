@@ -1,6 +1,16 @@
 import type Database from "better-sqlite3";
 import { id } from "./crypto";
+import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
+import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
 import type { AdminPrincipal } from "./agent-referrals-partner-identity";
+
+// Integration-hardening #6: NPD_STATUS_PROCESSING is already classified in
+// AGENT_REFERRALS_OPERATION_POLICY (MATURATION_RECOVERY_REPORTING_TAIL -
+// permitted under SUSPENDED, blocked under DORMANT), but recordNpdStatusCheck
+// never called the gate that classification exists to enforce - matching
+// every other authority writer in this codebase (see e.g. ord-reporting.ts's
+// own `gate`), rather than re-deciding the policy locally.
+const gate = (db: Database.Database) => assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "NPD_STATUS_PROCESSING");
 
 /**
  * §B-6/Phase 7 NPD payout authority - never `agents.npd_status_checked_at`
@@ -74,6 +84,7 @@ export const recordNpdStatusCheck = (
   checkedAtIso = new Date().toISOString(),
 ): NpdStatusCheckRow => {
   const run = db.transaction((): NpdStatusCheckRow => {
+    gate(db);
     const current = db.prepare("SELECT MAX(sequence) AS sequence FROM npd_status_checks WHERE partner_identity_id = ?").get(partnerIdentityId) as { sequence: number | null };
     const nextSequence = (current.sequence ?? 0) + 1;
     const checkId = id();

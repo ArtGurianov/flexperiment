@@ -18,6 +18,7 @@ import { mintCreativeRevision, authorizeCreative } from "../src/agent-referrals-
 import { revokeDelegationAsAdmin } from "../src/agent-referrals-delegation-revocation";
 import { assessCreativeReadyToPublish, CreativeReadinessError } from "../src/agent-referrals-creative-readiness";
 import { mintOrdProviderProfile } from "../src/agent-referrals-ord-provider-profile";
+import { mintRetentionPolicyRevision, destroyPartnerIdentity } from "../src/agent-referrals-identity-retention";
 import { registerOrdCreative, confirmOrdCreativeRegistration, recordOrdCreativeRegistrationSubmitted } from "../src/agent-referrals-ord-creative-registration";
 
 const open: Database.Database[] = [];
@@ -145,6 +146,22 @@ describe("CREATIVE_READY_TO_PUBLISH, local half (§B-5e)", () => {
     const db = fresh();
     activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
     expect(() => assessCreativeReadyToPublish(db, "nonexistent")).toThrow(/AGENT_REFERRALS_ENGAGEMENT_NOT_FOUND/);
+  });
+
+  describe("integration-hardening #5: a destroyed identity's PARTNER_ACTIVE onboarding_state is not enough - publication readiness must reject destroyed_at independently", () => {
+    it("refuses once the partner identity is destroyed, even though every other prerequisite still holds and onboarding_state still reads PARTNER_ACTIVE", () => {
+      const db = fresh();
+      const p1 = readyPartner(db);
+      const occ = seedOccurrence(db, p1.cityId);
+      const canonicalUrl = `https://flexperiment.ru/${p1.citySlug}?promo=${(db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string }).code}`;
+      const engagementId = activateAndAuthorizeCreative(db, p1, occ, canonicalUrl);
+
+      mintRetentionPolicyRevision(db, admin, "test policy");
+      destroyPartnerIdentity(db, admin, p1.partnerIdentityId, "erasure request");
+      expect(getPartnerIdentity(db, p1.partnerIdentityId)!.onboarding_state).toBe("PARTNER_ACTIVE");
+
+      expect(() => assessCreativeReadyToPublish(db, engagementId)).toThrow(/AGENT_REFERRALS_READINESS_PARTNER_IDENTITY_DESTROYED/);
+    });
   });
 
   describe("global SUSPENDED blocks readiness entirely (Phase 5 holistic review, P0 finding 1) - it is itself an assertion of NEW_PUBLICATION_AUTHORITY", () => {

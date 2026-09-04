@@ -154,5 +154,30 @@ describe("agent-referrals activation-manifest / schema-evidence machinery", () =
       const db = fresh();
       expect(db.prepare("SELECT COUNT(*) AS n FROM agent_referrals_activation_manifest").get()).toEqual({ n: 0 });
     });
+
+    describe("integration-hardening #2: structurally immutable once recorded", () => {
+      it("a raw UPDATE cannot rewrite a pinned value (proven exploitable before this guard existed: it silently flipped true to false)", () => {
+        const db = fresh();
+        recordAgentReferralsActivationEvidence(db, "ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED", true);
+        expect(() => db.prepare("UPDATE agent_referrals_activation_manifest SET value_json = 'false' WHERE key = ?").run("ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED"))
+          .toThrow(/AGENT_REFERRALS_ACTIVATION_MANIFEST_IMMUTABLE/);
+        expect(agentReferralsActivationEvidence(db, "ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED")).toBe(true);
+      });
+
+      it("a raw DELETE cannot remove a pinned value", () => {
+        const db = fresh();
+        recordAgentReferralsActivationEvidence(db, "example_key", "K1");
+        expect(() => db.prepare("DELETE FROM agent_referrals_activation_manifest WHERE key = ?").run("example_key"))
+          .toThrow(/AGENT_REFERRALS_ACTIVATION_MANIFEST_IMMUTABLE/);
+        expect(agentReferralsActivationEvidence(db, "example_key")).toBe("K1");
+      });
+
+      it("the app's own idempotent-replay-and-conflict behavior is unchanged by the new guard", () => {
+        const db = fresh();
+        recordAgentReferralsActivationEvidence(db, "example_key", "K1");
+        expect(() => recordAgentReferralsActivationEvidence(db, "example_key", "K1")).not.toThrow();
+        expect(() => recordAgentReferralsActivationEvidence(db, "example_key", "K2")).toThrow("AGENT_REFERRALS_ACTIVATION_EVIDENCE_CONFLICT");
+      });
+    });
   });
 });
