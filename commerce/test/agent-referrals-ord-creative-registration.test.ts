@@ -277,6 +277,15 @@ describe("recordOrdCreativeErirReconciliation / lockOrdCreativeRegistration", ()
       .toThrow(/ORD_CREATIVE_REGISTRATION_OBSERVED_ID_IMMUTABLE/);
   });
 
+  it("round-4 P1: a raw rewrite of erir_evidence_ref ALONE (erir_code left unchanged) is structurally impossible too - the (code, evidence) pair is immutable together", () => {
+    const { db, creativeRevisionId } = setup();
+    const { registration } = registerOrdCreative(db, admin, creativeRevisionId);
+    recordOrdCreativeRegistrationSubmitted(db, registration.id, "vk-ext-1", "ev-submit");
+    recordOrdCreativeErirReconciliation(db, registration.id, "erir-1", "ev-erir");
+    expect(() => db.prepare("UPDATE ord_creative_registrations SET erir_evidence_ref = 'ev-erir-REWRITTEN' WHERE id = ?").run(registration.id))
+      .toThrow(/ORD_CREATIVE_REGISTRATION_OBSERVED_ID_IMMUTABLE/);
+  });
+
   it("lockOrdCreativeRegistration reaches the terminal EXTERNALLY_LOCKED state - only reachable from CORRECTION_ONLY", () => {
     const { db, creativeRevisionId } = setup();
     const confirmed = confirmedRegistration(db, creativeRevisionId);

@@ -345,11 +345,24 @@ export const recordOrdDistributionPeriodReportReconciliation = (
     const statistics: ReportStatistics = current.statistics_state === "ACTUAL"
       ? { statistics_state: "ACTUAL", statistics_json: JSON.parse(current.statistics_json!) }
       : { statistics_state: "REPORTING_DATA_UNAVAILABLE" };
+    // Round-4 P0.3: the CURRENT row already passed insertReport's own
+    // special_period_is_service_period validation once, at its own filing
+    // time - re-deriving the identical assertion from its already-pinned
+    // statistics_reason (never re-asking the caller, who has no new
+    // ordering fact to supply for a reconciliation) is what lets a
+    // PROVIDER_SPECIAL_PERIOD zero/continuing report ever reach VK
+    // submission + ERIR reconciliation at all. Omitting this reintroduced
+    // exactly the P0.3 dead-end this round closes: a valid confirmed
+    // special-period report could never complete its reporting tail.
+    const specialPeriodIsServicePeriod = current.reporting_basis === "PROVIDER_SPECIAL_PERIOD" && current.statistics_reason !== "ORDINARY"
+      ? current.statistics_reason === "ZERO_REWARD_STATISTICS"
+      : undefined;
     return insertReport(
       db, admin,
       {
         distribution_id: distributionId, reporting_period_key: reportingPeriodKey, statistics, evidence_ref: current.evidence_ref,
         correction_reason: "ERIR reconciliation received", statistics_reason: current.statistics_reason === "ORDINARY" ? undefined : current.statistics_reason,
+        special_period_is_service_period: specialPeriodIsServicePeriod,
         submission: { vk_operation_external_id: vkOperationExternalId, erir_code: erirCode, submission_evidence_ref: submissionEvidenceRef },
       },
       pinnedRevision, current.reporting_basis,

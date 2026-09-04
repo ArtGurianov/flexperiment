@@ -202,6 +202,16 @@ describe("submit -> confirm -> CORRECTION_ONLY -> correction -> lock", () => {
       .toThrow(/ORD_PROVIDER_OPERATION_OBSERVED_ID_IMMUTABLE/);
   });
 
+  it("round-4 P1: a raw rewrite of erir_evidence_ref ALONE (erir_code left unchanged) is structurally impossible too - the (code, evidence) pair is immutable together", () => {
+    const db = fresh();
+    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed");
+    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY");
+    recordOrdProviderOperationSubmitted(db, operation.id, "vk-ext-1", "ev");
+    recordOrdProviderOperationErirReconciliation(db, operation.id, "erir-1", "ev-erir");
+    expect(() => db.prepare("UPDATE ord_provider_operations SET erir_evidence_ref = 'ev-erir-REWRITTEN' WHERE id = ?").run(operation.id))
+      .toThrow(/ORD_PROVIDER_OPERATION_OBSERVED_ID_IMMUTABLE/);
+  });
+
   it("round-3 P1.4: refuses to lock a STALE (already-superseded) revision - only the CURRENT one may ever be locked", () => {
     const db = fresh();
     mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed");

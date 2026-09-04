@@ -248,10 +248,18 @@ BEGIN SELECT RAISE(ABORT, 'ORD_PROVIDER_OPERATION_AUTHORITY_COLUMNS_IMMUTABLE');
 -- longer possible; a genuine correction requires a new revision instead. A
 -- same-value rewrite is an idempotent no-op the trigger does not need to
 -- special-case.
+-- Round-4 P1: erir_evidence_ref is part of the SAME immutable ERIR fact as
+-- erir_code (the application's own (code, evidence) pair contract) - the
+-- CORRECTION_ONLY guard deliberately still lets it move from NULL to a
+-- value (recording reconciliation evidence is not "correcting" the row),
+-- but once set it must be exactly as immutable as erir_code itself, or a
+-- raw UPDATE could rewrite the regulatory provenance out from under an
+-- unchanged erir_code.
 CREATE TRIGGER ord_provider_operations_observed_id_immutable_guard
 BEFORE UPDATE ON ord_provider_operations
 WHEN (OLD.vk_external_id IS NOT NULL AND NEW.vk_external_id IS NOT OLD.vk_external_id)
   OR (OLD.erir_code IS NOT NULL AND NEW.erir_code IS NOT OLD.erir_code)
+  OR (OLD.erir_evidence_ref IS NOT NULL AND NEW.erir_evidence_ref IS NOT OLD.erir_evidence_ref)
 BEGIN SELECT RAISE(ABORT, 'ORD_PROVIDER_OPERATION_OBSERVED_ID_IMMUTABLE'); END;
 
 -- round-3 P1.4: EXTERNALLY_LOCKED is meant to be a chain-terminal fact - no
@@ -394,12 +402,15 @@ BEGIN SELECT RAISE(ABORT, 'ORD_CREATIVE_REGISTRATION_AUTHORITY_COLUMNS_IMMUTABLE
 -- genuine correction requires a new revision instead). A same-value
 -- rewrite is an idempotent no-op the trigger does not need to special-case
 -- (NEW IS NOT OLD is false when equal).
+-- Round-4 P1: erir_evidence_ref extended into this guard too - same
+-- rationale as ord_provider_operations' own guard above.
 CREATE TRIGGER ord_creative_registrations_observed_ids_immutable_guard
 BEFORE UPDATE ON ord_creative_registrations
 WHEN (OLD.vk_external_id IS NOT NULL AND NEW.vk_external_id IS NOT OLD.vk_external_id)
   OR (OLD.vk_object_id IS NOT NULL AND NEW.vk_object_id IS NOT OLD.vk_object_id)
   OR (OLD.erid IS NOT NULL AND NEW.erid IS NOT OLD.erid)
   OR (OLD.erir_code IS NOT NULL AND NEW.erir_code IS NOT OLD.erir_code)
+  OR (OLD.erir_evidence_ref IS NOT NULL AND NEW.erir_evidence_ref IS NOT OLD.erir_evidence_ref)
 BEGIN SELECT RAISE(ABORT, 'ORD_CREATIVE_REGISTRATION_OBSERVED_ID_IMMUTABLE'); END;
 
 -- round-3 P1.4: only the CURRENT (no strictly-higher revision yet exists)

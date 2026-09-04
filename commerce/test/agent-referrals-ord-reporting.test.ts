@@ -352,6 +352,48 @@ describe("PROVIDER_SPECIAL_PERIOD fail-closed (L5)", () => {
     })).not.toThrow();
   });
 
+  it("round-4 P0.3: late VK submission + ERIR reconciliation succeeds for a confirmed PROVIDER_SPECIAL_PERIOD ZERO_REWARD_STATISTICS report, reaching a complete reporting tail", async () => {
+    const { db, domain, occ, engagementId, distributionId } = setupWithDistribution("long_video", "2026-09-20T00:00:00.000Z");
+    recordAgentReferralsActivationEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY, true);
+    await wait(300);
+    closeAndComplete(db, domain, occ);
+    finalizeEngagementRewardRegistry(db, admin, engagementId, "no purchases");
+    const { closeEngagementZeroReward } = await import("../src/agent-referrals-zero-reward-closure");
+    closeEngagementZeroReward(db, admin, engagementId, "NO_ELIGIBLE_CONVERSIONS", randomUUID());
+
+    const r1 = fileOrdDistributionPeriodReport(db, admin, {
+      distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 0 } }, evidence_ref: "ev",
+      statistics_reason: "ZERO_REWARD_STATISTICS", special_period_is_service_period: true,
+    });
+    expect(isOrdReportingTailComplete(db, distributionId)).toBe(false); // not yet submitted
+
+    // recordOrdDistributionPeriodReportReconciliation supplies NO special_period_is_service_period of its own - it must re-derive it from r1's own already-validated statistics_reason.
+    const r2 = recordOrdDistributionPeriodReportReconciliation(db, admin, distributionId, "special-2026-09", "vk-op-1", "erir-1", "ev-reconcile");
+    expect(r2.revision).toBe(2);
+    expect(r2.supersedes_report_id).toBe(r1.id);
+    expect(r2.statistics_reason).toBe("ZERO_REWARD_STATISTICS");
+    expect(r2.submission_state).toBe("SUBMITTED");
+    expect(isOrdReportingTailComplete(db, distributionId)).toBe(true);
+  });
+
+  it("round-4 P0.3: late VK submission + ERIR reconciliation succeeds for a confirmed PROVIDER_SPECIAL_PERIOD CONTINUING_STATISTICS report", async () => {
+    const { db, domain, occ, engagementId, distributionId } = setupWithDistribution("long_video", "2026-09-20T00:00:00.000Z");
+    recordAgentReferralsActivationEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY, true);
+    await wait(300);
+    closeAndComplete(db, domain, occ);
+    finalizeEngagementRewardRegistry(db, admin, engagementId, "no purchases");
+    const { closeEngagementZeroReward } = await import("../src/agent-referrals-zero-reward-closure");
+    closeEngagementZeroReward(db, admin, engagementId, "NO_ELIGIBLE_CONVERSIONS", randomUUID());
+
+    fileOrdDistributionPeriodReport(db, admin, {
+      distribution_id: distributionId, reporting_period_key: "special-2026-10", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 3 } }, evidence_ref: "ev",
+      statistics_reason: "CONTINUING_STATISTICS", special_period_is_service_period: false,
+    });
+    const reconciled = recordOrdDistributionPeriodReportReconciliation(db, admin, distributionId, "special-2026-10", "vk-op-2", "erir-2", "ev-reconcile");
+    expect(reconciled.statistics_reason).toBe("CONTINUING_STATISTICS");
+    expect(reconciled.submission_state).toBe("SUBMITTED");
+    expect(isOrdReportingTailComplete(db, distributionId)).toBe(true);
+  });
 });
 
 describe("ZERO_REWARD_STATISTICS vs CONTINUING_STATISTICS (plan §B-3)", () => {
