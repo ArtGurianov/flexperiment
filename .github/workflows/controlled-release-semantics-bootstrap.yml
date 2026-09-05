@@ -179,6 +179,31 @@ jobs:
             echo "CANDIDATE_MANIFEST_PATH=$candidate_manifest_path"
           } >> "$GITHUB_ENV"
 
+      # P1 fix: reconstructing B2 correctly is not sufficient authority to
+      # deploy it - this proves the publication -> promotion chain the
+      # dedicated publication workflow and the existing, unmodified
+      # controlled-runtime-candidate-promotion.yml lane exist to establish
+      # was actually followed, not merely assumed. Unconditional - recovery
+      # mode does not skip this: an already-in-progress release must still
+      # prove runtime-candidate and the published ref agree with the exact
+      # candidate being resumed, never fall back to trusting reconstruction
+      # alone.
+      - name: Prove B2 was actually published and promoted to runtime-candidate
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            refs/heads/runtime-candidate:refs/remotes/origin/runtime-candidate \
+            '+refs/heads/runtime/release-semantics-bootstrap/*:refs/remotes/origin/runtime/release-semantics-bootstrap/*'
+          actual_runtime_candidate="$(git rev-parse origin/runtime-candidate)"
+          [[ "$actual_runtime_candidate" == "$TARGET_SHA" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_RUNTIME_CANDIDATE_NOT_B2=$actual_runtime_candidate" >&2; exit 1; }
+          published_ref="$(git for-each-ref --format='%(refname:short) %(objectname)' 'refs/remotes/origin/runtime/release-semantics-bootstrap/*' | awk -v sha="$TARGET_SHA" '$2 == sha { print $1; found = 1 } END { exit !found }')" || { echo "RELEASE_SEMANTICS_BOOTSTRAP_NOT_PUBLISHED" >&2; exit 1; }
+          [[ -n "$published_ref" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_NOT_PUBLISHED" >&2; exit 1; }
+          # Read the exact same ref back a second time, independent of the
+          # for-each-ref listing above, so publication is proven by two
+          # separate reads agreeing, not by a single listing's own output.
+          republished="$(git ls-remote --exit-code origin "refs/heads/${published_ref#origin/}" | awk '{print $1}')"
+          [[ "$republished" == "$TARGET_SHA" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_PUBLISHED_REF_READBACK_MISMATCH=$republished" >&2; exit 1; }
+
       - name: Assert B2 topology against the frozen bootstrap BASE
         # The RECONSTRUCTION_BOUND proof above already establishes B2^ ==
         # BASE_SHA; this independently proves the same descendant/
@@ -391,9 +416,32 @@ jobs:
           current_production_deploy_sha="$(scripts/read-production-deploy-ref.sh)"
           [[ "$current_production_deploy_sha" == "$PRODUCTION_DEPLOY_SHA" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_PRODUCTION_DEPLOY_MOVED_SINCE_PREFLIGHT" >&2; exit 1; }
 
-      - name: Set guarded production deployment ref
+      # P2 fix (formerly P1 #2): freshness-since-preflight alone does not
+      # guard against a wrong predecessor that was already wrong AT
+      # preflight time, and set-production-deploy-ref.sh silently accepts
+      # whatever is currently there as the implicit previous value when
+      # called with only one argument. This fail-closed asserts the observed
+      # pointer is exactly one of the two sanctioned values before ever
+      # calling that script, and always supplies the explicit expected-
+      # previous argument so the script's own CAS can never silently adopt a
+      # wrong predecessor.
+      - name: Set guarded production deployment ref with an explicit expected-previous pointer
         if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'
-        run: scripts/set-production-deploy-ref.sh "$TARGET_SHA"
+        run: |
+          set -euo pipefail
+          current_production_deploy_sha="$(scripts/read-production-deploy-ref.sh)"
+          if [[ "$current_production_deploy_sha" == "$TARGET_SHA" ]]; then
+            # Sanctioned post-CAS recovery: production-deploy already
+            # advanced to B2 in a prior, interrupted run of this same
+            # release. A distinct no-op reconciliation path - this never
+            # falls through to a second live CAS.
+            echo "RELEASE_SEMANTICS_BOOTSTRAP_CAS_ALREADY_APPLIED"
+          elif [[ "$current_production_deploy_sha" == "$BASE_SHA" ]]; then
+            scripts/set-production-deploy-ref.sh "$TARGET_SHA" "$BASE_SHA"
+          else
+            echo "RELEASE_SEMANTICS_BOOTSTRAP_PRODUCTION_DEPLOY_UNEXPECTED_PREDECESSOR=$current_production_deploy_sha" >&2
+            exit 1
+          fi
 
       - name: Deploy exact production candidate
         if: env.DEPLOY_ACTION == 'DEPLOY'

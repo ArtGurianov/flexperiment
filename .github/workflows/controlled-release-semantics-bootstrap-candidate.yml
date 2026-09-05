@@ -28,7 +28,7 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: flexperiment-production-controlled-cutover
@@ -43,11 +43,25 @@ jobs:
       CONTROLLER_SHA: ${{ github.sha }}
       INPUT_GENERATION: ${{ inputs.generation }}
       TARGET_SHA: ${{ inputs.expected_target_sha }}
+      RELEASE_SEMANTICS_BOOTSTRAP_REF_TOKEN: ${{ secrets.RELEASE_SEMANTICS_BOOTSTRAP_REF_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
+          persist-credentials: false
+
+      # Least-authority publication credential, matching the pattern
+      # controlled-runtime-candidate-promotion.yml already uses: the default
+      # checkout token is never persisted or used for the push below, and
+      # this dedicated, publication-scoped credential is bound explicitly
+      # instead of relying on the repo-wide write-scoped GITHUB_TOKEN.
+      - name: Bind dedicated candidate-ref credential
+        run: |
+          set -euo pipefail
+          [[ -n "$RELEASE_SEMANTICS_BOOTSTRAP_REF_TOKEN" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_REF_TOKEN_REQUIRED" >&2; exit 1; }
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git remote set-url origin "https://x-access-token:${RELEASE_SEMANTICS_BOOTSTRAP_REF_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
 
       - name: Assert this controller is exact, current main
         # main is trusted controller code; a workflow_dispatch can be run
