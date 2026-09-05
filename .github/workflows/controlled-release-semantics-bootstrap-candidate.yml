@@ -15,11 +15,24 @@ name: Controlled release-semantics bootstrap candidate publication
 # independently read it back as a normal Git ref. It never moves
 # runtime-candidate or production-deploy, never deploys anything, and never
 # applies a migration.
+#
+# The publication ref is FLAT: refs/heads/runtime/release-semantics-bootstrap-<generation>,
+# never the legacy nested namespace this replaces (see
+# docs/release/RELEASE_SEMANTICS_BOOTSTRAP.md for the incident).
+# controlled-runtime-candidate-promotion.yml discovers a candidate's
+# publishing branch with `git for-each-ref --contains ...
+# 'refs/remotes/origin/runtime/*'`, and that single-`*` glob never crosses a
+# `/` - it only matches one path segment under runtime/, exactly like this
+# repo's other real runtime/* branches (runtime/abort-transition,
+# runtime/bugfixes-7-r7, ...). See
+# commerce/test/release-semantics-bootstrap-promotion-compatibility.test.ts
+# for the real-Git proof, and docs/release/RELEASE_SEMANTICS_BOOTSTRAP.md for
+# the incident this fixes.
 on:
   workflow_dispatch:
     inputs:
       generation:
-        description: Immutable generation label for refs/heads/runtime/release-semantics-bootstrap/<generation>. Must not already be published to a different SHA.
+        description: Immutable generation label for refs/heads/runtime/release-semantics-bootstrap-<generation>. Must not already be published to a different SHA.
         required: true
         type: string
       expected_target_sha:
@@ -152,7 +165,11 @@ jobs:
       - name: Publish exact B2 to its generation-numbered runtime ref (declaration only, never runtime-candidate or production-deploy)
         run: |
           set -euo pipefail
-          publish_ref="refs/heads/runtime/release-semantics-bootstrap/${INPUT_GENERATION}"
+          # Flat, single-segment ref - never nested - so
+          # controlled-runtime-candidate-promotion.yml's own
+          # `--contains ... 'refs/remotes/origin/runtime/*'` glob (which does
+          # not cross `/`) can discover it.
+          publish_ref="refs/heads/runtime/release-semantics-bootstrap-${INPUT_GENERATION}"
           existing="$(git ls-remote origin "$publish_ref" | awk '{print $1}')"
           if [[ -n "$existing" ]]; then
             # Idempotent replay only: the exact same B2 re-published under the

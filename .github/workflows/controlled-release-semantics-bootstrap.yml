@@ -189,14 +189,23 @@ jobs:
       # candidate being resumed, never fall back to trusting reconstruction
       # alone.
       - name: Prove B2 was actually published and promoted to runtime-candidate
+        # Canonical publication namespace is FLAT:
+        # refs/heads/runtime/release-semantics-bootstrap-<generation> - never
+        # the legacy nested namespace this replaces, which
+        # controlled-runtime-candidate-promotion.yml's own
+        # single-segment `--contains ... 'refs/remotes/origin/runtime/*'`
+        # glob cannot discover (see
+        # docs/release/RELEASE_SEMANTICS_BOOTSTRAP.md for the incident this
+        # fixes). The old nested ref is retained as immutable provenance but
+        # is not accepted here.
         run: |
           set -euo pipefail
           git fetch --no-tags origin \
             refs/heads/runtime-candidate:refs/remotes/origin/runtime-candidate \
-            '+refs/heads/runtime/release-semantics-bootstrap/*:refs/remotes/origin/runtime/release-semantics-bootstrap/*'
+            '+refs/heads/runtime/release-semantics-bootstrap-*:refs/remotes/origin/runtime/release-semantics-bootstrap-*'
           actual_runtime_candidate="$(git rev-parse origin/runtime-candidate)"
           [[ "$actual_runtime_candidate" == "$TARGET_SHA" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_RUNTIME_CANDIDATE_NOT_B2=$actual_runtime_candidate" >&2; exit 1; }
-          published_ref="$(git for-each-ref --format='%(refname:short) %(objectname)' 'refs/remotes/origin/runtime/release-semantics-bootstrap/*' | awk -v sha="$TARGET_SHA" '$2 == sha { print $1; found = 1 } END { exit !found }')" || { echo "RELEASE_SEMANTICS_BOOTSTRAP_NOT_PUBLISHED" >&2; exit 1; }
+          published_ref="$(git for-each-ref --format='%(refname:short) %(objectname)' 'refs/remotes/origin/runtime/release-semantics-bootstrap-*' | awk -v sha="$TARGET_SHA" '$2 == sha { print $1; found = 1 } END { exit !found }')" || { echo "RELEASE_SEMANTICS_BOOTSTRAP_NOT_PUBLISHED" >&2; exit 1; }
           [[ -n "$published_ref" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_NOT_PUBLISHED" >&2; exit 1; }
           # Read the exact same ref back a second time, independent of the
           # for-each-ref listing above, so publication is proven by two

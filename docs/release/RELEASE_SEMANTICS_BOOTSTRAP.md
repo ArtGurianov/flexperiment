@@ -97,15 +97,19 @@ executes neither.
 - **`.github/workflows/controlled-release-semantics-bootstrap-candidate.yml`**
   - publication only. Reconstructs the exact certified `B2` from this
   controller's own tree, then pushes that exact commit to a fresh,
-  generation-numbered ref: `refs/heads/runtime/release-semantics-bootstrap/<generation>`.
-  It never moves `runtime-candidate` or `production-deploy`, never deploys
-  anything, and never applies a migration.
+  generation-numbered ref: `refs/heads/runtime/release-semantics-bootstrap-<generation>`
+  (**flat**, a single path segment - see "Incident: nested publication ref"
+  below for why this is load-bearing, not stylistic). It never moves
+  `runtime-candidate` or `production-deploy`, never deploys anything, and
+  never applies a migration.
 - **`.github/workflows/controlled-runtime-candidate-promotion.yml`** - the
   existing, generic, **unmodified** promotion lane. Its own topology
   requirement (target published under `refs/heads/runtime/*`, and a
   descendant of the current `production-deploy`) is satisfied by `B2` without
   any change to that workflow: `B2^ == P == production-deploy` at bootstrap
-  time.
+  time. Its candidate-branch discovery (`git for-each-ref --contains ...
+  'refs/remotes/origin/runtime/*'`) uses a single-`*` glob that never crosses
+  a `/` - the publication ref above must stay flat for this lane to find it.
 - **`.github/workflows/controlled-release-semantics-bootstrap.yml`** - the
   dedicated production controller. Reuses the exact same `CONTROLLED_CUTOVER`
   pause/CAS/deploy/reopen machinery `controlled-release-semantics-cutover.yml`
@@ -124,10 +128,57 @@ new release whose `BASE` silently became `B2`. The controller reuses the
 existing generic reconciliation classifier (`commerce/src/reconcile-generic-production-deploy.ts`)
 against durable state rather than hand-rolling a weaker recovery model.
 
+## Incident: nested publication ref (resolved)
+
+The bootstrap's first production execution attempt published `B2` to a
+**nested** ref, `refs/heads/runtime/release-semantics-bootstrap/bootstrap-1`
+(two path segments under `runtime/`). Phase 1 (publication) succeeded exactly
+as designed - the ref resolved to exact `B2`, and `production-deploy`/
+`runtime-candidate` were correctly left untouched.
+
+Phase 2 (`controlled-runtime-candidate-promotion.yml`, run `33969206791`)
+then failed, before any CAS or other mutation, with
+`RUNTIME_CANDIDATE_TARGET_NOT_PUBLISHED_RUNTIME_BRANCH`. Root cause: that
+lane's own candidate-branch discovery,
+
+```bash
+git for-each-ref --format='%(refname:short)' --contains "$INPUT_TARGET_SHA" 'refs/remotes/origin/runtime/*'
+```
+
+uses a single-`*` glob that matches exactly one path segment - it does not
+cross a `/`. Every other real `runtime/*` branch in this repository
+(`runtime/abort-transition`, `runtime/bugfixes-7-r7`,
+`runtime/epoch-a-dormant-notifications`, ...) is a single flat segment; the
+bootstrap's nested shape was the one exception, and the unmodified,
+already-reviewed promotion lane correctly never accepted it. No authority ref
+(`production-deploy`, `runtime-candidate`) moved as a result of this failure.
+
+**Fix**: the publication namespace is now canonically **flat**,
+`refs/heads/runtime/release-semantics-bootstrap-<generation>` (a hyphen, not
+a `/`, before the generation label). `controlled-runtime-candidate-promotion.yml`
+itself was not touched - the shared lane's admission stays exactly as strict
+as before for every other candidate; only the bootstrap's own publisher and
+production controller changed to speak the namespace that lane can already
+discover.
+`commerce/test/release-semantics-bootstrap-promotion-compatibility.test.ts`
+proves this against real Git (the exact discovery command, not a text
+assertion): the flat shape is found, the legacy nested shape is not, and the
+two coexist without conflict.
+
+The legacy nested ref, `refs/heads/runtime/release-semantics-bootstrap/bootstrap-1`,
+is retained untouched as immutable provenance of that first publication - it
+is not deleted, moved, or renamed - but it is no longer canonical and is not
+accepted by the updated production controller. A fresh publication under the
+flat namespace (a new generation label) is required before Phase 2 can be
+retried.
+
 ## Terminal record
 
-None. `B2` has not been published, deployed, or activated. The workflows
-above exist and are ready; neither has ever been run.
+None. `B2` has not been deployed or activated, and `production-deploy` /
+`runtime-candidate` remain untouched. This bootstrap is **not yet terminal**:
+publication (Phase 1) has succeeded once, under the now-superseded nested
+namespace; promotion (Phase 2) and the production controller (subsequent
+phases) have not yet succeeded under the corrected flat namespace.
 
 ## Relationship to Agent Referrals
 
