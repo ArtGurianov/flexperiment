@@ -1,0 +1,492 @@
+name: Controlled release-semantics bootstrap
+
+# Dedicated, manual-only production controller for the one-time P -> B2
+# release-semantics bootstrap (see docs/release/RELEASE_SEMANTICS_BOOTSTRAP.md).
+# Its entire purpose is to make the domain-level ROLLING release-control
+# capability - already implemented and tested in commerce/src/release-control.ts
+# - reachable through the HTTP/Zod wire boundary in production, by deploying
+# the certified detached candidate B2 (release-control-schema.ts CREATE,
+# api.ts MODIFY only; release-control.ts itself is byte-identical to BASE).
+#
+# This is mechanically the same CONTROLLED_CUTOVER machinery as
+# controlled-release-semantics-cutover.yml (same pause, same guarded CAS, same
+# convergence proof, same concurrency group) with exactly one structural
+# difference: B2 is a detached commit, not an ordinary descendant of main, so
+# it cannot satisfy that lane's `TARGET_SHA ancestor-of CONTROLLER_SHA` check.
+# This controller replaces that one check with a full RECONSTRUCTION_BOUND
+# certificate proof - the same shape
+# commerce/test/controller-not-older-than-target.test.ts already holds every
+# other detached-candidate lane to - and changes nothing else.
+# controlled-release-semantics-cutover.yml itself is NOT modified: its
+# ordinary ancestor-of-controller admission remains exactly as strict as
+# before for every other release-semantics change.
+#
+# This lane never uses ROLLING semantics itself: publishing the bootstrap
+# capability is an ordinary CONTROLLED_CUTOVER (pause, deploy, reopen). Only a
+# feature that actually needs ROLLING acquires with mode=ROLLING, and no such
+# feature is deployed by this workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: Manual recovery only - exact paused same-owner deployment SHA to recover. Leave empty for an ordinary deploy of the certified B2.
+        required: false
+        type: string
+      expected_candidate_sha:
+        description: Defensive check for an ordinary (non-recovery) deploy - must equal the exact certified B2 this run reconstructs, or the run refuses.
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
+    env:
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+      COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL }}
+      PUBLIC_FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+      ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
+      # This controller's own commit. It MUST NEVER be used as the deployment
+      # candidate, source_commit, Coolify target, or release acquire target -
+      # see "main is never an implicit deploy target" in
+      # docs/release/DEPLOYMENT_INVARIANTS.md.
+      CONTROLLER_SHA: ${{ github.sha }}
+      INPUT_TARGET_SHA: ${{ inputs.target_sha || '' }}
+      INPUT_EXPECTED_CANDIDATE_SHA: ${{ inputs.expected_candidate_sha }}
+      POLL_ATTEMPTS: "30"
+      POLL_SECONDS: "10"
+      POLL_CONNECT_TIMEOUT: "3"
+      POLL_MAX_TIME: "7"
+      INITIAL_READINESS_DELAY_SECONDS: "60"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Assert this controller is exact, current main
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_CONTROLLER_NOT_MAIN" >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_CONTROLLER_MAIN_MOVED" >&2; exit 1; }
+          [[ -n "$INPUT_TARGET_SHA" || -n "$INPUT_EXPECTED_CANDIDATE_SHA" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_EXPECTED_CANDIDATE_SHA_REQUIRED" >&2; exit 1; }
+
+      - name: Read current production-deploy pointer
+        run: |
+          set -euo pipefail
+          production_deploy_sha="$(scripts/read-production-deploy-ref.sh)"
+          git fetch --no-tags origin "$production_deploy_sha"
+          echo "PRODUCTION_DEPLOY_SHA=$production_deploy_sha" >> "$GITHUB_ENV"
+
+      # RECONSTRUCTION_BOUND: read the frozen bootstrap certificate from this
+      # controller's own tree (BASE = the frozen bootstrap identity P, never
+      # today's possibly-already-mutated production-deploy pointer - see
+      # "Recovery semantics" below and docs/release/DEPLOYMENT_INVARIANTS.md
+      # for why BASE_SHA and OBSERVED_PRODUCTION_DEPLOY_SHA must never
+      # be conflated), prove SOURCE_MAIN_SHA is this controller's own
+      # ancestor, and reconstruct B2 from this same controller's tree as the
+      # trusted patch source.
+      - name: Read the frozen bootstrap certificate and reconstruct B2
+        run: |
+          set -euo pipefail
+          BASE_SHA="24a382929740a7ead6fb0bb49f5ffc77e063c77a"
+          git show "$GITHUB_SHA:.release/controlled-candidates/release-semantics-bootstrap-$BASE_SHA/certificate.json" > candidate-certificate.json
+          jq -e --arg base "$BASE_SHA" '.base_sha == $base' candidate-certificate.json >/dev/null || { echo "RELEASE_SEMANTICS_BOOTSTRAP_CERTIFICATE_BASE_MISMATCH" >&2; exit 1; }
+          jq -e '.patch_source == "controller_tree"' candidate-certificate.json >/dev/null || { echo "RELEASE_SEMANTICS_BOOTSTRAP_CERTIFICATE_PATCH_SOURCE_INVALID" >&2; exit 1; }
+          SOURCE_MAIN_SHA="$(jq -er '.source_main_sha' candidate-certificate.json)"
+          git merge-base --is-ancestor "$SOURCE_MAIN_SHA" "$GITHUB_SHA" || { echo "RELEASE_SEMANTICS_BOOTSTRAP_SOURCE_MAIN_SHA_NOT_ANCESTOR" >&2; exit 1; }
+
+          RECONSTRUCTED_SHA="$(node --import tsx commerce/src/controlled-candidate-verify.ts candidate-certificate.json "$GITHUB_SHA")"
+          [[ "$RECONSTRUCTED_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_RECONSTRUCTION_FAILED" >&2; exit 1; }
+          [[ "$(git rev-parse "${RECONSTRUCTED_SHA}^")" == "$BASE_SHA" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_PARENT_NOT_BASE" >&2; exit 1; }
+
+          jq -r '.paths[].path' candidate-certificate.json | sort > certified-manifest.txt
+          git diff --name-only "$BASE_SHA" "$RECONSTRUCTED_SHA" | sort > actual-changed-paths.txt
+          diff certified-manifest.txt actual-changed-paths.txt || { echo "RELEASE_SEMANTICS_BOOTSTRAP_MANIFEST_MISMATCH" >&2; exit 1; }
+          printf 'commerce/src/api.ts\ncommerce/src/release-control-schema.ts\n' | sort > expected-bootstrap-manifest.txt
+          diff expected-bootstrap-manifest.txt certified-manifest.txt || { echo "RELEASE_SEMANTICS_BOOTSTRAP_MANIFEST_NOT_MINIMAL" >&2; exit 1; }
+          ! grep -qE '^(public/legal/|commerce/legal/|commerce/migrations/)' certified-manifest.txt || { echo "RELEASE_SEMANTICS_BOOTSTRAP_MANIFEST_FORBIDDEN_PATH" >&2; exit 1; }
+          [[ "$(git rev-parse "${BASE_SHA}:commerce/src/release-control.ts")" == "$(git rev-parse "${RECONSTRUCTED_SHA}:commerce/src/release-control.ts")" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_RELEASE_CONTROL_CHANGED" >&2; exit 1; }
+
+          git diff --name-only -z "$BASE_SHA" "$RECONSTRUCTED_SHA" > bootstrap-boundary-paths.bin
+
+          {
+            echo "BASE_SHA=$BASE_SHA"
+            echo "SOURCE_MAIN_SHA=$SOURCE_MAIN_SHA"
+            echo "RECONSTRUCTED_SHA=$RECONSTRUCTED_SHA"
+          } >> "$GITHUB_ENV"
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Re-run the release-semantics boundary classifier against the exact certified diff
+        run: pnpm commerce:release-semantics-cutover:assert-boundary bootstrap-boundary-paths.bin
+
+      - name: Resolve deployment target and recovery mode
+        # Distinct identities, never conflated (see "Recovery semantics" in
+        # docs/release/RELEASE_SEMANTICS_BOOTSTRAP.md): BASE_SHA (P,
+        # pinned above) is this release's one true BASE for the whole run,
+        # OBSERVED_PRODUCTION_DEPLOY_SHA is whatever the live pointer reads as
+        # right now (P before CAS, B2 after), and TARGET_SHA is always the
+        # certified RECONSTRUCTED_SHA - never an arbitrary operator-supplied
+        # SHA, even in recovery mode.
+        run: |
+          set -euo pipefail
+          if [[ -n "$INPUT_TARGET_SHA" ]]; then
+            TARGET_SHA="${INPUT_TARGET_SHA,,}"
+            recovery_mode=1
+          else
+            [[ -n "$INPUT_EXPECTED_CANDIDATE_SHA" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_EXPECTED_CANDIDATE_SHA_REQUIRED" >&2; exit 1; }
+            TARGET_SHA="${INPUT_EXPECTED_CANDIDATE_SHA,,}"
+            recovery_mode=0
+          fi
+          # TARGET_SHA is always the operator-confirmed candidate; it must
+          # equal the certificate's own independently reconstructed B2, never
+          # merely be assumed to. Recovery mode does not relax this - a
+          # manual recovery can only ever resume the one certified B2, never
+          # an arbitrary operator-supplied SHA.
+          [[ "$RECONSTRUCTED_SHA" == "$TARGET_SHA" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_RECONSTRUCTION_MISMATCH=$RECONSTRUCTED_SHA" >&2; exit 1; }
+          target_sha="$TARGET_SHA"
+          candidate_contract_path="$RUNNER_TEMP/bootstrap-deploy-release-surface-contract.json"
+          candidate_manifest_path="$RUNNER_TEMP/bootstrap-deploy-production-manifest.json"
+          git show "$target_sha:release-surface-contract.json" > "$candidate_contract_path"
+          git show "$target_sha:commerce/legal/production-manifest.json" > "$candidate_manifest_path"
+          {
+            echo "TARGET_SHA=$target_sha"
+            echo "RELEASE_ID=release-semantics-bootstrap-$target_sha"
+            echo "RECOVERY_MODE=$recovery_mode"
+            echo "CANDIDATE_CONTRACT_PATH=$candidate_contract_path"
+            echo "CANDIDATE_MANIFEST_PATH=$candidate_manifest_path"
+          } >> "$GITHUB_ENV"
+
+      # P1 fix: reconstructing B2 correctly is not sufficient authority to
+      # deploy it - this proves the publication -> promotion chain the
+      # dedicated publication workflow and the existing, unmodified
+      # controlled-runtime-candidate-promotion.yml lane exist to establish
+      # was actually followed, not merely assumed. Unconditional - recovery
+      # mode does not skip this: an already-in-progress release must still
+      # prove runtime-candidate and the published ref agree with the exact
+      # candidate being resumed, never fall back to trusting reconstruction
+      # alone.
+      - name: Prove B2 was actually published and promoted to runtime-candidate
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            refs/heads/runtime-candidate:refs/remotes/origin/runtime-candidate \
+            '+refs/heads/runtime/release-semantics-bootstrap/*:refs/remotes/origin/runtime/release-semantics-bootstrap/*'
+          actual_runtime_candidate="$(git rev-parse origin/runtime-candidate)"
+          [[ "$actual_runtime_candidate" == "$TARGET_SHA" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_RUNTIME_CANDIDATE_NOT_B2=$actual_runtime_candidate" >&2; exit 1; }
+          published_ref="$(git for-each-ref --format='%(refname:short) %(objectname)' 'refs/remotes/origin/runtime/release-semantics-bootstrap/*' | awk -v sha="$TARGET_SHA" '$2 == sha { print $1; found = 1 } END { exit !found }')" || { echo "RELEASE_SEMANTICS_BOOTSTRAP_NOT_PUBLISHED" >&2; exit 1; }
+          [[ -n "$published_ref" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_NOT_PUBLISHED" >&2; exit 1; }
+          # Read the exact same ref back a second time, independent of the
+          # for-each-ref listing above, so publication is proven by two
+          # separate reads agreeing, not by a single listing's own output.
+          republished="$(git ls-remote --exit-code origin "refs/heads/${published_ref#origin/}" | awk '{print $1}')"
+          [[ "$republished" == "$TARGET_SHA" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_PUBLISHED_REF_READBACK_MISMATCH=$republished" >&2; exit 1; }
+
+      - name: Assert B2 topology against the frozen bootstrap BASE
+        # The RECONSTRUCTION_BOUND proof above already establishes B2^ ==
+        # BASE_SHA; this independently proves the same descendant/
+        # linear/no-maintenance-commit shape every other candidate lane is
+        # held to, using the shared, unmodified topology script - never a
+        # bespoke bootstrap-only relaxation of it.
+        run: |
+          set -euo pipefail
+          scripts/inspect-runtime-candidate-topology.sh --production-deploy "$BASE_SHA" --candidate "$TARGET_SHA" > topology.json
+          jq -e '.candidate_is_descendant_of_production_deploy == true' topology.json >/dev/null || { echo "RELEASE_SEMANTICS_BOOTSTRAP_NOT_DESCENDANT_OF_BASE" >&2; exit 1; }
+          jq -e '(.maintenance_commits_in_range | length) == 0' topology.json >/dev/null || { jq -c '.maintenance_commits_in_range' topology.json >&2; echo "RELEASE_SEMANTICS_BOOTSTRAP_CONTAINS_MAINTENANCE_COMMIT" >&2; exit 1; }
+          jq -e '(.merge_commits_in_range | length) == 0' topology.json >/dev/null || { jq -c '.merge_commits_in_range' topology.json >&2; echo "RELEASE_SEMANTICS_BOOTSTRAP_NOT_LINEAR" >&2; exit 1; }
+
+      - name: Materialize exact runtime readiness parser
+        run: |
+          set -euo pipefail
+          RUNTIME_ASSERT_DIR="$RUNNER_TEMP/bootstrap-runtime-readiness"
+          git worktree add --detach "$RUNTIME_ASSERT_DIR" "$TARGET_SHA"
+          [[ "$(git -C "$RUNTIME_ASSERT_DIR" rev-parse HEAD)" == "$TARGET_SHA" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_RUNTIME_ASSERT_WORKTREE_WRONG_SHA" >&2; exit 1; }
+          (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile --ignore-scripts)
+          echo "RUNTIME_ASSERT_DIR=$RUNTIME_ASSERT_DIR" >> "$GITHUB_ENV"
+
+      - name: Preflight immutable bootstrap-deploy boundaries
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_ID" == "release-semantics-bootstrap-$TARGET_SHA" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_INVALID_RELEASE_ID" >&2; exit 1; }
+          checkout_contract_version="$(jq -er '.checkout_contract_version | select(type == "string" and test("^[a-z0-9][a-z0-9.-]{0,63}$"))' "$CANDIDATE_CONTRACT_PATH")" || { echo "RELEASE_SEMANTICS_BOOTSTRAP_CHECKOUT_CONTRACT_VERSION_INVALID" >&2; exit 1; }
+          admin_contract_version="$(jq -er '.admin_contract_version | select(type == "string" and test("^[a-z0-9][a-z0-9.-]{0,63}$"))' "$CANDIDATE_CONTRACT_PATH")" || { echo "RELEASE_SEMANTICS_BOOTSTRAP_ADMIN_CONTRACT_VERSION_INVALID" >&2; exit 1; }
+          echo "CHECKOUT_CONTRACT_VERSION=$checkout_contract_version" >> "$GITHUB_ENV"
+          echo "ADMIN_CONTRACT_VERSION=$admin_contract_version" >> "$GITHUB_ENV"
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          validate_json() {
+            local file="$1" label="$2" bytes
+            if ! jq -e 'type == "object"' "$file" >/dev/null 2>&1; then
+              echo "${label}_INVALID_JSON" >&2
+              bytes="$(wc -c < "$file")"
+              echo "${label}_BYTES=$bytes" >&2
+              printf '%s_PREFIX_HEX=' "$label" >&2
+              LC_ALL=C od -An -tx1 -N64 "$file" | tr -d ' \n' >&2
+              echo >&2
+              exit 1
+            fi
+            echo "${label}_JSON=PASS"
+          }
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > durable-before.json
+          validate_json durable-before.json DURABLE_BEFORE
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
+          validate_json completion.json COMPLETION
+          owner="$(jq -r '.owner_release_id // empty' durable-before.json)"
+          if [[ "$RECOVERY_MODE" == 1 ]]; then
+            if ! jq -e --arg release_id "$RELEASE_ID" --arg source_commit "$TARGET_SHA" '
+              .sales_paused == true and
+              .owner_release_id == $release_id and
+              .owner_mode == "CONTROLLED_CUTOVER" and
+              .expected.source_commit == $source_commit
+            ' durable-before.json >/dev/null || ! jq -e '.complete == false' completion.json >/dev/null; then
+              echo "RELEASE_SEMANTICS_BOOTSTRAP_MANUAL_RECOVERY_STATE_INVALID" >&2
+              exit 1
+            fi
+          fi
+          if ! jq -e '.complete' completion.json >/dev/null; then
+            [[ -z "$owner" || "$owner" == "$RELEASE_ID" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_BLOCKED_BY_RELEASE_OWNER=$owner" >&2; exit 1; }
+          fi
+          production_source="$(jq -er '.runtime.source_commit' durable-before.json)"
+          [[ "$production_source" =~ ^[a-f0-9]{40}$ ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_PRODUCTION_SOURCE_UNAVAILABLE" >&2; exit 1; }
+          git cat-file -e "$production_source^{commit}" || { echo "RELEASE_SEMANTICS_BOOTSTRAP_PRODUCTION_SOURCE_NOT_IN_REPOSITORY" >&2; exit 1; }
+          # A rerun after a partial CAS must still be understood as a
+          # same-release recovery, never as a new release whose BASE suddenly
+          # became B2 - re-verified explicitly here rather than only assumed.
+          [[ "$production_source" == "$BASE_SHA" || "$production_source" == "$TARGET_SHA" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_PRODUCTION_SOURCE_UNEXPECTED" >&2; exit 1; }
+          migration_inventory="$(jq -er '
+            .runtime.migration_versions |
+            if type == "array" and length > 0 and all(.[]; type == "string") then sort | join("\n")
+            else error("RELEASE_SEMANTICS_BOOTSTRAP_PRODUCTION_BASELINE_INVALID")
+            end
+          ' durable-before.json)"
+          source_migration_inventory="$(git ls-tree -r --name-only "$BASE_SHA" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
+          [[ -n "$source_migration_inventory" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_PRODUCTION_MIGRATION_INVENTORY_EMPTY" >&2; exit 1; }
+          [[ "$migration_inventory" == "$source_migration_inventory" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_PRODUCTION_MIGRATION_INVENTORY_MISMATCH" >&2; exit 1; }
+          migration_inventory_sha256="$(printf %s "$migration_inventory" | shasum -a 256 | awk '{ print $1 }')"
+          durable_migration="$(jq -er '.expected.migration | select(type == "string" and (test("^[0-9]{4}_.+\\.sql$") or test("^inventory-sha256:[a-f0-9]{64}$")))' durable-before.json)"
+          [[ -n "$durable_migration" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_PRODUCTION_MIGRATION_EXPECTATION_INVALID" >&2; exit 1; }
+          expected_migration="inventory-sha256:$migration_inventory_sha256"
+          jq -e --arg release_id "$RELEASE_ID" --arg source_commit "$TARGET_SHA" --arg migration "$expected_migration" '
+            .runtime as $runtime |
+            if
+              ($runtime.legal_version | type == "string") and
+              ($runtime.legal_manifest_sha256 | type == "string") and
+              ($runtime.legal_hashes | type == "object") and
+              ($runtime.current_legal_copies_match == true)
+            then {
+              release_id: $release_id,
+              mode: "CONTROLLED_CUTOVER",
+              expected: {
+                source_commit: $source_commit,
+                migration: $migration,
+                legal_version: $runtime.legal_version,
+                legal_manifest_sha256: $runtime.legal_manifest_sha256,
+                legal_hashes: $runtime.legal_hashes
+              }
+            }
+            else error("RELEASE_SEMANTICS_BOOTSTRAP_PRODUCTION_BASELINE_INVALID")
+            end
+          ' durable-before.json > release.json
+          validate_json release.json RELEASE_REQUEST
+          validate_json "$CANDIDATE_MANIFEST_PATH" CANDIDATE_LEGAL_MANIFEST
+          manifest_source_sha="$(shasum -a 256 "$CANDIDATE_MANIFEST_PATH" | awk '{ print $1 }')"
+          manifest_publish_time="$(jq -er '.publish_time' "$CANDIDATE_MANIFEST_PATH")"
+          jq -e --slurpfile request release.json --arg source_sha "$manifest_source_sha" --arg publish_time "$manifest_publish_time" '
+            .runtime as $runtime | $request[0].expected as $expected |
+            $runtime.legal_version == $expected.legal_version and
+            $runtime.legal_manifest_sha256 == $expected.legal_manifest_sha256 and
+            $runtime.legal_hashes == $expected.legal_hashes and
+            $runtime.current_legal_copies_match == true and
+            $runtime.source_legal_manifest_sha256 == $source_sha and
+            $runtime.source_legal_publish_time == $publish_time
+          ' durable-before.json >/dev/null || { echo "RELEASE_SEMANTICS_BOOTSTRAP_LEGAL_RUNTIME_BASELINE_MISMATCH" >&2; exit 1; }
+          jq -e --slurpfile request release.json '
+            . as $candidate | $request[0].expected as $expected |
+            $candidate.version == $expected.legal_version and
+            {
+              PUBLIC_OFFER: $candidate.documents.PUBLIC_OFFER.sha256,
+              PRIVACY_POLICY: $candidate.documents.PRIVACY_POLICY.sha256,
+              PD_CONSENT: $candidate.documents.PD_CONSENT.sha256,
+              CHECKOUT_DISCLOSURE: $candidate.documents.CHECKOUT_DISCLOSURE.sha256
+            } == $expected.legal_hashes
+          ' "$CANDIDATE_MANIFEST_PATH" >/dev/null || { echo "RELEASE_SEMANTICS_BOOTSTRAP_LEGAL_CANONICAL_MANIFEST_MISMATCH" >&2; exit 1; }
+          if ! jq -e '.complete' completion.json >/dev/null; then
+            if [[ "$owner" == "$RELEASE_ID" ]]; then
+              jq -e --slurpfile request release.json '.expected == ($request[0].expected | del(.legal_hashes))' durable-before.json >/dev/null || { echo "RELEASE_SEMANTICS_BOOTSTRAP_OWNER_EXPECTATIONS_MISMATCH" >&2; exit 1; }
+            fi
+          fi
+          if ! jq -e '.complete' completion.json >/dev/null && \
+            [[ "$owner" == "$RELEASE_ID" ]] && \
+            jq -e --arg source "$TARGET_SHA" '
+              .sales_paused == true and
+              .owner_mode == "CONTROLLED_CUTOVER" and
+              .expected.source_commit == $source
+            ' durable-before.json >/dev/null; then
+            echo 'REUSING_PAUSED_OWNER=1' >> "$GITHUB_ENV"
+          else
+            echo 'REUSING_PAUSED_OWNER=0' >> "$GITHUB_ENV"
+          fi
+          (cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/reconcile-generic-production-deploy.ts "$GITHUB_WORKSPACE/durable-before.json" "$GITHUB_WORKSPACE/completion.json" "$GITHUB_WORKSPACE/release.json") > reconciliation.json
+          validate_json reconciliation.json RECONCILIATION
+          action="$(jq -er '.action' reconciliation.json)"
+          [[ "$action" != "BLOCKED" ]] || { jq -c . reconciliation.json >&2; exit 1; }
+          echo "DEPLOY_ACTION=$action" >> "$GITHUB_ENV"
+
+      - name: Verify an already completed deployment
+        if: env.DEPLOY_ACTION == 'RELEASE_ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
+          (cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$GITHUB_WORKSPACE/status.json" "$GITHUB_WORKSPACE/release.json" open)
+          jq -e --slurpfile request release.json '.complete and .expected == $request[0].expected' completion.json >/dev/null
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_FRONTEND_URL/release.json" > frontend.json
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$ADMIN_RELEASE_URL" > admin.json
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/v1/public/legal-config" > legal.json
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/healthz" | jq -e '.ok' >/dev/null
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/readyz" | jq -e '.ok' >/dev/null
+          jq -e --arg sha "$TARGET_SHA" --arg contract "$CHECKOUT_CONTRACT_VERSION" '.source_commit == $sha and .checkout_contract_version == $contract' frontend.json >/dev/null
+          jq -e --arg sha "$TARGET_SHA" --arg contract "$ADMIN_CONTRACT_VERSION" '.source_commit == $sha and .admin_contract_version == $contract' admin.json >/dev/null
+          jq -e --slurpfile request release.json '
+            (.version == $request[0].expected.legal_version) and
+            ({
+              PUBLIC_OFFER: .manifest.documents.PUBLIC_OFFER.sha256,
+              PRIVACY_POLICY: .manifest.documents.PRIVACY_POLICY.sha256,
+              PD_CONSENT: .manifest.documents.PD_CONSENT.sha256,
+              CHECKOUT_DISCLOSURE: .manifest.documents.CHECKOUT_DISCLOSURE.sha256
+            } == $request[0].expected.legal_hashes)
+          ' legal.json >/dev/null
+
+      - name: Acquire owner and pause registrations
+        if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE' && env.REUSING_PAUSED_OWNER != '1'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/acquire" > /dev/null
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/pause" > paused.json
+          jq -e '.sales_paused and .owner_release_id == env.RELEASE_ID' paused.json >/dev/null
+
+      - name: Prove public checkout pause before deployment
+        if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          pause_status="$(curl --silent --show-error --connect-timeout 10 --max-time 30 --output paused-checkout.json --write-out '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: pause-proof-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --data '{}' "$PUBLIC_API_URL/v1/public/checkouts")"
+          [[ "$pause_status" == "503" ]] || { cat paused-checkout.json >&2; exit 1; }
+          jq -e '.error.code == "SALES_TEMPORARILY_PAUSED"' paused-checkout.json >/dev/null
+
+      - name: Reconcile paused deployment
+        if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
+          (cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/reconcile-generic-production-deploy.ts "$GITHUB_WORKSPACE/status.json" "$GITHUB_WORKSPACE/completion.json" "$GITHUB_WORKSPACE/release.json") > reconciliation.json
+          jq -e 'type == "object"' reconciliation.json >/dev/null || { echo "RELEASE_SEMANTICS_BOOTSTRAP_RECONCILIATION_INVALID_JSON" >&2; exit 1; }
+          action="$(jq -er '.action' reconciliation.json)"
+          [[ "$action" == "DEPLOY" || "$action" == "VERIFY_AND_REOPEN" ]] || { jq -c . reconciliation.json >&2; exit 1; }
+          echo "DEPLOY_ACTION=$action" >> "$GITHUB_ENV"
+
+      - name: Reconfirm production-deploy has not moved since preflight
+        if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          current_production_deploy_sha="$(scripts/read-production-deploy-ref.sh)"
+          [[ "$current_production_deploy_sha" == "$PRODUCTION_DEPLOY_SHA" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_PRODUCTION_DEPLOY_MOVED_SINCE_PREFLIGHT" >&2; exit 1; }
+
+      # P2 fix (formerly P1 #2): freshness-since-preflight alone does not
+      # guard against a wrong predecessor that was already wrong AT
+      # preflight time, and set-production-deploy-ref.sh silently accepts
+      # whatever is currently there as the implicit previous value when
+      # called with only one argument. This fail-closed asserts the observed
+      # pointer is exactly one of the two sanctioned values before ever
+      # calling that script, and always supplies the explicit expected-
+      # previous argument so the script's own CAS can never silently adopt a
+      # wrong predecessor.
+      - name: Set guarded production deployment ref with an explicit expected-previous pointer
+        if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          current_production_deploy_sha="$(scripts/read-production-deploy-ref.sh)"
+          if [[ "$current_production_deploy_sha" == "$TARGET_SHA" ]]; then
+            # Sanctioned post-CAS recovery: production-deploy already
+            # advanced to B2 in a prior, interrupted run of this same
+            # release. A distinct no-op reconciliation path - this never
+            # falls through to a second live CAS.
+            echo "RELEASE_SEMANTICS_BOOTSTRAP_CAS_ALREADY_APPLIED"
+          elif [[ "$current_production_deploy_sha" == "$BASE_SHA" ]]; then
+            scripts/set-production-deploy-ref.sh "$TARGET_SHA" "$BASE_SHA"
+          else
+            echo "RELEASE_SEMANTICS_BOOTSTRAP_PRODUCTION_DEPLOY_UNEXPECTED_PREDECESSOR=$current_production_deploy_sha" >&2
+            exit 1
+          fi
+
+      - name: Deploy exact production candidate
+        if: env.DEPLOY_ACTION == 'DEPLOY'
+        run: |
+          set -euo pipefail
+          scripts/controlled-coolify-deploy.sh "$TARGET_SHA"
+          echo 'COOLIFY_DEPLOY_DISPATCHED=1' >> "$GITHUB_ENV"
+
+      - name: Prove all surfaces and guarded reopen
+        if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'
+        timeout-minutes: 12
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          if [[ "${COOLIFY_DEPLOY_DISPATCHED:-0}" == "1" ]]; then
+            [[ "$INITIAL_READINESS_DELAY_SECONDS" =~ ^[0-9]+$ ]] || { echo "INITIAL_READINESS_DELAY_CONFIGURATION_INVALID" >&2; exit 1; }
+            echo "Allowing Coolify deployments to start for ${INITIAL_READINESS_DELAY_SECONDS}s..."
+            sleep "$INITIAL_READINESS_DELAY_SECONDS"
+          fi
+          RUNTIME_ASSERT_DIR="$RUNTIME_ASSERT_DIR" scripts/controlled-production-readiness.sh release.json
+          api -X POST -H 'Content-Type: application/json' --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/reopen" > reopened.json
+          jq -e '.sales_paused == false and .owner_release_id == null and .owner_mode == null' reopened.json >/dev/null
+
+      - name: Verify post-reopen completion and all production surfaces
+        if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
+          (cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$GITHUB_WORKSPACE/status.json" "$GITHUB_WORKSPACE/release.json" open)
+          jq -e --slurpfile request release.json '.complete and .expected == $request[0].expected' completion.json >/dev/null
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_FRONTEND_URL/release.json" > frontend.json
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$ADMIN_RELEASE_URL" > admin.json
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/v1/public/legal-config" > legal.json
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/healthz" | jq -e '.ok' >/dev/null
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/readyz" | jq -e '.ok' >/dev/null
+          jq -e --arg sha "$TARGET_SHA" --arg contract "$CHECKOUT_CONTRACT_VERSION" '.source_commit == $sha and .checkout_contract_version == $contract' frontend.json >/dev/null
+          jq -e --arg sha "$TARGET_SHA" --arg contract "$ADMIN_CONTRACT_VERSION" '.source_commit == $sha and .admin_contract_version == $contract' admin.json >/dev/null
+          jq -e --slurpfile request release.json '
+            (.version == $request[0].expected.legal_version) and
+            ({
+              PUBLIC_OFFER: .manifest.documents.PUBLIC_OFFER.sha256,
+              PRIVACY_POLICY: .manifest.documents.PRIVACY_POLICY.sha256,
+              PD_CONSENT: .manifest.documents.PD_CONSENT.sha256,
+              CHECKOUT_DISCLOSURE: .manifest.documents.CHECKOUT_DISCLOSURE.sha256
+            } == $request[0].expected.legal_hashes)
+          ' legal.json >/dev/null

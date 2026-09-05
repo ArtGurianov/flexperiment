@@ -1,0 +1,42 @@
+{
+  "base_sha": "24a382929740a7ead6fb0bb49f5ffc77e063c77a",
+  "source_main_sha": "08f21d2293fcc1d908b2cfe23c0b64d8c4ef7e9f",
+  "patch_source": "controller_tree",
+  "paths": [
+    {
+      "path": "commerce/src/release-control-schema.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/release-semantics-bootstrap-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0001.patch",
+      "patch_git_blob_sha": "5a76c58cf70590587abce328c22c3ca34f8f961c",
+      "patch_sha256": "315d7cc46223233073603a164b6b0a3c60cfd000f1104e341202116c8501820d",
+      "result_blob_sha": "f642efc4cff5de5595d72a3bc6da5962f9ca5ac9"
+    },
+    {
+      "path": "commerce/src/api.ts",
+      "kind": "MODIFY",
+      "mode": "100644",
+      "base_blob_sha": "81a4040d0a9419c246d0713d32f44ce668705abf",
+      "patch_path": ".release/controlled-candidates/release-semantics-bootstrap-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0002.patch",
+      "patch_git_blob_sha": "68a0a5d401b0bd4b05f842c1e8e7abb925dbbf3a",
+      "patch_sha256": "a9ef6cd1d090393221556d20fbdd4eba553bd373e2bacbbbe1e011e712c9cbf0",
+      "result_blob_sha": "557ddfc2e8a87739f208b559d001ebf6669773b3"
+    }
+  ],
+  "commit": {
+    "parent_sha": "24a382929740a7ead6fb0bb49f5ffc77e063c77a",
+    "tree_sha": "5d1f623d142f18b4e07c421ac092dac0103c452a",
+    "author_name": "Flexperiment Release Control",
+    "author_email": "release-control@flexperiment.ru",
+    "author_timestamp": 1788652800,
+    "author_timezone": "+0000",
+    "committer_name": "Flexperiment Release Control",
+    "committer_email": "release-control@flexperiment.ru",
+    "committer_timestamp": 1788652800,
+    "committer_timezone": "+0000",
+    "message": "release-semantics: generic ROLLING bootstrap capability (P -> B2)",
+    "encoding": "none",
+    "extra_headers": "none",
+    "signed": false
+  }
+}

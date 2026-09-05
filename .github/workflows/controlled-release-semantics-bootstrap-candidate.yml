@@ -1,0 +1,188 @@
+name: Controlled release-semantics bootstrap candidate publication
+
+# Manual-only, deliberately dormant: merely merging this PR must execute
+# nothing. No push trigger, no schedule, no automatic release trigger - see
+# docs/release/RELEASE_SEMANTICS_BOOTSTRAP.md.
+#
+# This is publication, not deployment authority: it reconstructs the exact
+# certified bootstrap candidate B2 (per commerce/src/controlled-candidate.ts
+# and the RECONSTRUCTION_BOUND contract
+# commerce/test/controller-not-older-than-target.test.ts already enforces for
+# this shape) and pushes that exact commit to a fresh, generation-numbered
+# detached runtime ref, so the existing, unmodified
+# controlled-runtime-candidate-promotion.yml and a dedicated production
+# controller (controlled-release-semantics-bootstrap.yml) can each
+# independently read it back as a normal Git ref. It never moves
+# runtime-candidate or production-deploy, never deploys anything, and never
+# applies a migration.
+on:
+  workflow_dispatch:
+    inputs:
+      generation:
+        description: Immutable generation label for refs/heads/runtime/release-semantics-bootstrap/<generation>. Must not already be published to a different SHA.
+        required: true
+        type: string
+      expected_target_sha:
+        description: The operator-confirmed exact B2 this run must reconstruct (see docs/release/RELEASE_SEMANTICS_BOOTSTRAP.md) - a defensive double-check, never the source of truth reconstruction itself trusts.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  publish-candidate:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    env:
+      CONTROLLER_SHA: ${{ github.sha }}
+      INPUT_GENERATION: ${{ inputs.generation }}
+      TARGET_SHA: ${{ inputs.expected_target_sha }}
+      RELEASE_SEMANTICS_BOOTSTRAP_REF_TOKEN: ${{ secrets.RELEASE_SEMANTICS_BOOTSTRAP_REF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      # Least-authority publication credential, matching the pattern
+      # controlled-runtime-candidate-promotion.yml already uses: the default
+      # checkout token is never persisted or used for the push below, and
+      # this dedicated, publication-scoped credential is bound explicitly
+      # instead of relying on the repo-wide write-scoped GITHUB_TOKEN.
+      - name: Bind dedicated candidate-ref credential
+        run: |
+          set -euo pipefail
+          [[ -n "$RELEASE_SEMANTICS_BOOTSTRAP_REF_TOKEN" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_REF_TOKEN_REQUIRED" >&2; exit 1; }
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git remote set-url origin "https://x-access-token:${RELEASE_SEMANTICS_BOOTSTRAP_REF_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: Assert this controller is exact, current main
+        # main is trusted controller code; a workflow_dispatch can be run
+        # from any ref, so this must be proven explicitly - the same
+        # assertion every other controlled-*.yml opens with.
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_CANDIDATE_CONTROLLER_NOT_MAIN" >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_CANDIDATE_CONTROLLER_MAIN_MOVED" >&2; exit 1; }
+
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          [[ "$INPUT_GENERATION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_CANDIDATE_GENERATION_INVALID" >&2; exit 1; }
+          [[ "$TARGET_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_CANDIDATE_EXPECTED_TARGET_SHA_INVALID" >&2; exit 1; }
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # RECONSTRUCTION_BOUND, exactly as
+      # docs/release/RELEASE_SEMANTICS_BOOTSTRAP.md and
+      # commerce/test/controller-not-older-than-target.test.ts require: the
+      # certificate is read from THIS controller's own tree (never B2's -
+      # that would be the circular proof commerce/src/controlled-candidate.ts
+      # refuses to perform), BASE is observed fresh from the live
+      # production-deploy pointer, SOURCE_MAIN_SHA is extracted from that
+      # exact certificate and proven an ancestor of this same controller, and
+      # patches are resolved from this same controller SHA
+      # (trusted_patch_source_sha), never a separate or decoupled input.
+      - name: Observe BASE and read the certificate from this controller's own tree
+        run: |
+          set -euo pipefail
+          BASE_SHA="$(scripts/read-production-deploy-ref.sh)"
+          git show "$GITHUB_SHA:.release/controlled-candidates/release-semantics-bootstrap-$BASE_SHA/certificate.json" > candidate-certificate.json
+          jq -e --arg base "$BASE_SHA" '.base_sha == $base' candidate-certificate.json >/dev/null || { echo "RELEASE_SEMANTICS_BOOTSTRAP_CANDIDATE_BASE_MISMATCH" >&2; exit 1; }
+          jq -e '.patch_source == "controller_tree"' candidate-certificate.json >/dev/null || { echo "RELEASE_SEMANTICS_BOOTSTRAP_CANDIDATE_PATCH_SOURCE_INVALID" >&2; exit 1; }
+          echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
+
+      - name: Prove SOURCE_MAIN_SHA is an ancestor of this exact controller
+        run: |
+          set -euo pipefail
+          SOURCE_MAIN_SHA="$(jq -er '.source_main_sha' candidate-certificate.json)"
+          git merge-base --is-ancestor "$SOURCE_MAIN_SHA" "$GITHUB_SHA" || { echo "SOURCE_MAIN_SHA_NOT_ANCESTOR" >&2; exit 1; }
+          echo "SOURCE_MAIN_SHA=$SOURCE_MAIN_SHA" >> "$GITHUB_ENV"
+
+      - name: Reconstruct B2 and prove it against the operator-confirmed target
+        run: |
+          set -euo pipefail
+          RECONSTRUCTED_SHA="$(node --import tsx commerce/src/controlled-candidate-verify.ts candidate-certificate.json "$GITHUB_SHA")"
+          [[ "$RECONSTRUCTED_SHA" == "$TARGET_SHA" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_CANDIDATE_RECONSTRUCTION_MISMATCH=$RECONSTRUCTED_SHA" >&2; exit 1; }
+          # B2^ == BASE (== P): the frozen invariant, re-proven directly
+          # rather than only trusted from the certificate's own internal
+          # parent_sha check.
+          [[ "$(git rev-parse "${RECONSTRUCTED_SHA}^")" == "$BASE_SHA" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_CANDIDATE_PARENT_NOT_BASE" >&2; exit 1; }
+          # The certified path manifest and legal-path exclusions are already
+          # proven inside reconstructControlledCandidateSha itself (a
+          # changed-path mismatch or a public/legal|commerce/legal path
+          # throws and fails this step before reaching here) - re-derive the
+          # manifest comparison explicitly too, as visible, independent
+          # evidence in this run's own logs rather than only an opaque exit
+          # code from the script above. Also positively pin the bootstrap's
+          # own exact two-path scope so a future certificate edit cannot
+          # silently widen what this lane is willing to publish.
+          jq -r '.paths[].path' candidate-certificate.json | sort > certified-manifest.txt
+          git diff --name-only "$BASE_SHA" "$RECONSTRUCTED_SHA" | sort > actual-changed-paths.txt
+          diff certified-manifest.txt actual-changed-paths.txt || { echo "RELEASE_SEMANTICS_BOOTSTRAP_CANDIDATE_MANIFEST_MISMATCH" >&2; exit 1; }
+          ! grep -qE '^(public/legal/|commerce/legal/)' certified-manifest.txt || { echo "RELEASE_SEMANTICS_BOOTSTRAP_CANDIDATE_LEGAL_PATH_PRESENT" >&2; exit 1; }
+          printf 'commerce/src/api.ts\ncommerce/src/release-control-schema.ts\n' | sort > expected-bootstrap-manifest.txt
+          diff expected-bootstrap-manifest.txt certified-manifest.txt || { echo "RELEASE_SEMANTICS_BOOTSTRAP_CANDIDATE_MANIFEST_NOT_MINIMAL" >&2; exit 1; }
+          # release-control.ts must remain byte-identical to BASE: the
+          # bootstrap adds no domain-level change, only wire reachability.
+          [[ "$(git rev-parse "${BASE_SHA}:commerce/src/release-control.ts")" == "$(git rev-parse "${RECONSTRUCTED_SHA}:commerce/src/release-control.ts")" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_CANDIDATE_RELEASE_CONTROL_CHANGED" >&2; exit 1; }
+          echo "RECONSTRUCTED_SHA=$RECONSTRUCTED_SHA" >> "$GITHUB_ENV"
+
+      - name: Re-run the release-semantics boundary classifier against the exact certified diff
+        run: |
+          set -euo pipefail
+          git diff --name-only -z "$BASE_SHA" "$RECONSTRUCTED_SHA" > bootstrap-boundary-paths.bin
+          pnpm commerce:release-semantics-cutover:assert-boundary bootstrap-boundary-paths.bin
+
+      - name: Publish exact B2 to its generation-numbered runtime ref (declaration only, never runtime-candidate or production-deploy)
+        run: |
+          set -euo pipefail
+          publish_ref="refs/heads/runtime/release-semantics-bootstrap/${INPUT_GENERATION}"
+          existing="$(git ls-remote origin "$publish_ref" | awk '{print $1}')"
+          if [[ -n "$existing" ]]; then
+            # Idempotent replay only: the exact same B2 re-published under the
+            # same generation is a no-op, never a silent overwrite. A
+            # different SHA under an already-used generation is refused -
+            # generations are immutable once published.
+            [[ "$existing" == "$RECONSTRUCTED_SHA" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_CANDIDATE_GENERATION_ALREADY_PUBLISHED_DIFFERENT_SHA=$existing" >&2; exit 1; }
+            echo "RELEASE_SEMANTICS_BOOTSTRAP_CANDIDATE_GENERATION_ALREADY_PUBLISHED_SAME_SHA"
+          else
+            # --force-with-lease with an empty expected value requires the ref
+            # to not currently exist - the same CAS-safety idiom every other
+            # controlled-*.yml push uses, just for "must not exist" instead of
+            # "must equal this prior SHA".
+            git push --force-with-lease="${publish_ref}:" origin "${RECONSTRUCTED_SHA}:${publish_ref}"
+          fi
+          echo "PUBLISH_REF=$publish_ref" >> "$GITHUB_ENV"
+
+      - name: Read the remote ref back and prove it resolves exactly to B2
+        run: |
+          set -euo pipefail
+          published="$(git ls-remote --exit-code origin "$PUBLISH_REF" | awk '{print $1}')" || { echo "RELEASE_SEMANTICS_BOOTSTRAP_CANDIDATE_PUBLISH_READBACK_UNAVAILABLE" >&2; exit 1; }
+          [[ "$published" == "$RECONSTRUCTED_SHA" ]] || { echo "RELEASE_SEMANTICS_BOOTSTRAP_CANDIDATE_PUBLISH_READBACK_MISMATCH=$published" >&2; exit 1; }
+          {
+            echo "## Release-semantics bootstrap candidate publication"
+            echo "- Controller SHA: $CONTROLLER_SHA"
+            echo "- BASE: $BASE_SHA"
+            echo "- SOURCE_MAIN_SHA: $SOURCE_MAIN_SHA"
+            echo "- Reconstructed B2: $RECONSTRUCTED_SHA"
+            echo "- Published ref: $PUBLISH_REF"
+            echo "- Read-back: PASS (resolves exactly to B2)"
+            echo "- runtime-candidate: untouched by this run"
+            echo "- production-deploy: untouched by this run"
+          } >> "$GITHUB_STEP_SUMMARY"
