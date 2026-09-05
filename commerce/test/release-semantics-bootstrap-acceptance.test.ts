@@ -1,9 +1,10 @@
 import { randomUUID, scryptSync } from "node:crypto";
-import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { reconstructControlledCandidateSha, type ControlledCandidateCertificate } from "../src/controlled-candidate";
 
 /**
  * P1 #3(a): the real acceptance contract for the release-semantics
@@ -16,16 +17,44 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
  * this test suite) and dynamically imports each one's own api.ts/db.ts,
  * proving the wire-level behavior directly through real HTTP requests
  * against a real in-memory database - never by grepping source text.
+ *
+ * B2 is never assumed to already exist as a git object: unlike P (a real
+ * historical commit reachable once production-deploy is fetched), B2 only
+ * ever existed as a detached, unpublished commit built once in one
+ * developer's local object database - a fresh CI checkout has no such
+ * object. This suite reconstructs it itself, the same way any real
+ * controller would, from the committed certificate.
  */
 
 const P_SHA = "24a382929740a7ead6fb0bb49f5ffc77e063c77a";
 const B2_SHA = "f540b997d6d31a22293909ded7ce464c3f51732f";
+const CERTIFICATE_PATH = `.release/controlled-candidates/release-semantics-bootstrap-${P_SHA}/certificate.json`;
 
 process.env.COMMERCE_SESSION_SECRET ??= "test-session-secret";
 process.env.COMMERCE_ADMIN_PASSWORD_SCRYPT ??= `salt:${scryptSync("correct horse", "salt", 64).toString("base64url")}`;
 process.env.COMMERCE_RELEASE_CONTROL_TOKEN ??= "release-control-test-token";
 
 const releaseControlHeaders = { Authorization: "Bearer release-control-test-token", "Content-Type": "application/json" };
+
+function gitRev(...args: string[]): string {
+  const result = spawnSync("git", args, { encoding: "utf8" });
+  if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
+  return result.stdout.trim();
+}
+
+/**
+ * Reconstructs B2 into THIS repository's own object database (a plain
+ * `git commit-tree` write, exactly like reconstructControlledCandidateSha
+ * always does) so a subsequent `git worktree add <B2 sha>` has a real object
+ * to check out - never relying on it already being present.
+ */
+function ensureB2Reconstructed(): string {
+  const controllerSha = gitRev("rev-parse", "HEAD");
+  const certificate = JSON.parse(readFileSync(resolve(CERTIFICATE_PATH), "utf8")) as ControlledCandidateCertificate;
+  const reconstructed = reconstructControlledCandidateSha(certificate, { trusted_patch_source_sha: controllerSha });
+  if (reconstructed !== B2_SHA) throw new Error(`reconstructed B2 (${reconstructed}) does not match the pinned B2_SHA (${B2_SHA})`);
+  return reconstructed;
+}
 
 function materializeWorktree(sha: string): string {
   const dir = mkdtempSync(join(tmpdir(), `bootstrap-acceptance-${sha.slice(0, 8)}-`));
@@ -69,6 +98,7 @@ describe("release-semantics bootstrap: real wire-level acceptance contract", () 
 
   beforeAll(() => {
     pDir = materializeWorktree(P_SHA);
+    ensureB2Reconstructed();
     b2Dir = materializeWorktree(B2_SHA);
   }, 60_000);
 
