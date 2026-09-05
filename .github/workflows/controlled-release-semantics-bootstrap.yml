@@ -92,6 +92,23 @@ jobs:
           git fetch --no-tags origin "$production_deploy_sha"
           echo "PRODUCTION_DEPLOY_SHA=$production_deploy_sha" >> "$GITHUB_ENV"
 
+      # Dependencies must be installed before the first step that needs them.
+      # The very next step runs `node --import tsx
+      # commerce/src/controlled-candidate-verify.ts` - tsx is only available
+      # once this install has run. This block used to sit after that step
+      # (harmless on a machine with pre-existing node_modules, but
+      # ERR_MODULE_NOT_FOUND on a fresh runner with none - see
+      # docs/release/RELEASE_SEMANTICS_BOOTSTRAP.md for the incident, run
+      # 33971946073, this fixes).
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
       # RECONSTRUCTION_BOUND: read the frozen bootstrap certificate from this
       # controller's own tree (BASE = the frozen bootstrap identity P, never
       # today's possibly-already-mutated production-deploy pointer - see
@@ -129,15 +146,6 @@ jobs:
             echo "SOURCE_MAIN_SHA=$SOURCE_MAIN_SHA"
             echo "RECONSTRUCTED_SHA=$RECONSTRUCTED_SHA"
           } >> "$GITHUB_ENV"
-
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.29.3
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
 
       - name: Re-run the release-semantics boundary classifier against the exact certified diff
         run: pnpm commerce:release-semantics-cutover:assert-boundary bootstrap-boundary-paths.bin

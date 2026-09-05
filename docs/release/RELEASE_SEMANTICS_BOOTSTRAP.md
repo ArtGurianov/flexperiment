@@ -168,17 +168,60 @@ two coexist without conflict.
 The legacy nested ref, `refs/heads/runtime/release-semantics-bootstrap/bootstrap-1`,
 is retained untouched as immutable provenance of that first publication - it
 is not deleted, moved, or renamed - but it is no longer canonical and is not
-accepted by the updated production controller. A fresh publication under the
-flat namespace (a new generation label) is required before Phase 2 can be
-retried.
+accepted by the updated production controller.
+
+A fresh publication under the flat namespace,
+`refs/heads/runtime/release-semantics-bootstrap-2`, was subsequently run and
+succeeded, resolving to exact `B2`. `controlled-runtime-candidate-promotion.yml`
+was then run against it and also succeeded: `runtime-candidate` was promoted
+to exact `B2`, with `production-deploy` correctly left untouched at `P`.
+
+## Incident: dependency install ordered after its first use (resolved)
+
+With publication and promotion both complete, the dedicated production
+controller (`controlled-release-semantics-bootstrap.yml`, run `33971946073`)
+was dispatched for the first time against real production. The run passed
+the `production` environment's required-reviewer approval gate and began
+executing, then failed four steps in, at "Read the frozen bootstrap
+certificate and reconstruct B2":
+
+```text
+Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'tsx' imported from /home/runner/work/flexperiment/flexperiment/
+```
+
+Root cause: that step invokes `node --import tsx commerce/src/controlled-candidate-verify.ts ...`,
+but the `pnpm/action-setup` / `actions/setup-node` / `pnpm install --frozen-lockfile`
+block that installs `tsx` was positioned *after* it in the workflow file - a
+step-ordering defect, not a semantic one. It never surfaced in any prior
+review or CI run because every environment that exercised this file before
+production (local development worktrees, this repository's own `Test`
+workflow) already had `node_modules` present from an unrelated install step,
+which masked the missing ordering dependency. A fresh GitHub-hosted runner
+for this workflow's own job has none.
+
+This failed before acquire, pause, or any CAS - `production-deploy` remained
+exactly `P` and `runtime-candidate` remained exactly `B2` (unchanged from the
+successful promotion above); no production consequence occurred.
+
+**Fix**: the dependency-install block now runs immediately after the cheap,
+dependency-free controller/main-identity and production-deploy-pointer
+checks, and before the certificate-reconstruction step that needs `tsx` -
+strictly earlier than every other command in this file that depends on
+installed packages. No other step in the file was found to depend on
+installed packages before that same install block.
+`commerce/test/controlled-release-semantics-bootstrap-workflow.test.ts` now
+asserts this ordering directly against the real workflow text and fails if
+install is ever moved back below reconstruction.
 
 ## Terminal record
 
-None. `B2` has not been deployed or activated, and `production-deploy` /
-`runtime-candidate` remain untouched. This bootstrap is **not yet terminal**:
-publication (Phase 1) has succeeded once, under the now-superseded nested
-namespace; promotion (Phase 2) and the production controller (subsequent
-phases) have not yet succeeded under the corrected flat namespace.
+None. `B2` has not been deployed or activated. `production-deploy` remains
+`P`; `runtime-candidate` remains `B2` (promoted, not yet deployed). This
+bootstrap is **not yet terminal**: publication (Phase 1, under the corrected
+flat namespace) and promotion (Phase 2) have both succeeded; the production
+controller (Phase 3/4) has not yet succeeded, having failed once on the
+dependency-ordering defect above, now fixed and awaiting its own execution
+attempt.
 
 ## Relationship to Agent Referrals
 
