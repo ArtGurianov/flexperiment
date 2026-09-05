@@ -1,5 +1,11 @@
 import type Database from "better-sqlite3";
-import { AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS } from "./agent-referrals-activation";
+import { AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS, agentReferralsFoundationSchemaEvidence } from "./agent-referrals-activation";
+
+export class AgentReferralsBusinessFactsSchemaIncompleteError extends Error {
+  constructor(readonly missing: readonly string[]) {
+    super(`AGENT_REFERRALS_BUSINESS_FACTS_SCHEMA_INCOMPLETE: ${missing.join(", ")}`);
+  }
+}
 
 /**
  * Phase 10B production controller precondition: "no Agent Referrals
@@ -16,6 +22,18 @@ import { AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS } from "./agent-referrals-activ
  * index name mixed into that same list - ties this module to the same
  * single source of truth rather than risking silent drift from a second,
  * independently hand-typed enumeration.
+ *
+ * Round-7 fix: schema completeness is proven FIRST and fails closed
+ * (AgentReferralsBusinessFactsSchemaIncompleteError), never derived by
+ * filtering AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS down to whatever
+ * `sqlite_master` happens to contain. The earlier version did exactly that
+ * silent filtering, so a missing expected table simply vanished from the
+ * result instead of failing, and `agentReferralsBusinessFactEvidence` could
+ * report `all_zero: true` against a broken schema - directly contradicting
+ * its own fail-closed doc comment. This reuses
+ * agentReferralsFoundationSchemaEvidence() (agent-referrals-activation.ts),
+ * the same already-reviewed presence check the activation-readiness path
+ * uses, rather than a second, independently written completeness check.
  *
  * `agents` (0042) is deliberately excluded by construction, not by an
  * explicit exclusion list: it is a pre-existing table (shared with the
@@ -47,6 +65,8 @@ import { AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS } from "./agent-referrals-activ
 const MIGRATION_SEEDED_TABLES: readonly string[] = ["agent_referrals_feature_state", "ad_channel_policy", "ord_reporting_period_policy"];
 
 export const agentReferralsBusinessFactTables = (db: Database.Database): readonly string[] => {
+  const schema = agentReferralsFoundationSchemaEvidence(db);
+  if (!schema.present) throw new AgentReferralsBusinessFactsSchemaIncompleteError(schema.missing);
   const placeholders = AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS.map(() => "?").join(", ");
   const rows = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${placeholders})`)
     .all(...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS) as Array<{ name: string }>;
@@ -58,7 +78,7 @@ export type AgentReferralsBusinessFactEvidence = {
   readonly all_zero: boolean;
 };
 
-/** Fails closed: a table this module expects but the schema does not have (a migration gap) counts as non-zero/unproven, never silently skipped. */
+/** Fails closed via agentReferralsBusinessFactTables(): throws AgentReferralsBusinessFactsSchemaIncompleteError rather than silently omitting a missing table from the count. */
 export const agentReferralsBusinessFactEvidence = (db: Database.Database): AgentReferralsBusinessFactEvidence => {
   const tables = agentReferralsBusinessFactTables(db);
   const counts: Record<string, number> = {};

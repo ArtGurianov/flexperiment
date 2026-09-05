@@ -723,9 +723,9 @@
       "mode": "100644",
       "base_blob_sha": "81a4040d0a9419c246d0713d32f44ce668705abf",
       "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0080.patch",
-      "patch_git_blob_sha": "9426f7c70b3e84e55c566eb839042f4013e33d28",
-      "patch_sha256": "0b527cd9c40e2d4b760cea5ca5f95cdc16d7e260bc7044743ca3fd3401979575",
-      "result_blob_sha": "a73f8a32bea27c95f1d40400b7d7e1f6868e911f"
+      "patch_git_blob_sha": "dc33f663f03778e5bd340d8c7778a5c5dbd8de12",
+      "patch_sha256": "d54a34a8d898203b7f1feeb2317eeffd7d88d0431d8cede7367ef6d12b936f7d",
+      "result_blob_sha": "919c8bbb9edaa5a7e6e1e5e475d0fb5f8bd52925"
     },
     {
       "path": "commerce/src/db.ts",
@@ -743,9 +743,9 @@
       "mode": "100644",
       "base_blob_sha": "0b96d0752823186d86885d1388bc6b8f4370273d",
       "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0082.patch",
-      "patch_git_blob_sha": "19932c7729ddcf6a7dc40718393bf99a80bf75de",
-      "patch_sha256": "7ff4019e3c23265e02d6974950ff23c437404f3b78269d06a22ab8bacd2c57f7",
-      "result_blob_sha": "a63d8ec82b72b32cd829323c65291cbc37bc2fce"
+      "patch_git_blob_sha": "30f86098ed36c224a59f39141d4b61e7e7f90549",
+      "patch_sha256": "843bc26097c5c5826f947c5e60a7f61ae01300d52bd434c1f670fd1d697428a7",
+      "result_blob_sha": "73795dae681c3477cf8512c2078219ed75c82ebb"
     },
     {
       "path": "commerce/src/reward-calculation.ts",
@@ -805,11 +805,48 @@
       "patch_git_blob_sha": "062401c812bcd329fd49c552403d9eedc9caceb0",
       "patch_sha256": "0e614059083198b5f30a0388914de696bb76dab95acaade8327e0b47bf0625ab",
       "result_blob_sha": "83c1b7f2df16cb55d5d594991da6152cefe5b8f7"
+    },
+    {
+      "path": "commerce/src/release-control.ts",
+      "kind": "MODIFY",
+      "mode": "100644",
+      "base_blob_sha": "d3e5501fd95d9b2cec8ee1859c813774fe349ae5",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0089.patch",
+      "patch_git_blob_sha": "be12dcb572c7913a229a2b2a2db5f7b23d16176a",
+      "patch_sha256": "b40728827c8e53d06b19aa68d92ed198990cb9bd9320caa37718e6e896fb0403",
+      "result_blob_sha": "dad8509eaa362401d19d754b81595b5d6f04c212"
+    },
+    {
+      "path": "commerce/src/release-control-schema.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0090.patch",
+      "patch_git_blob_sha": "55a4a8b09a76038dc58a3bab9720dacbed7f7a38",
+      "patch_sha256": "0633909fcd215e9e080ce45fc22d35bd75f2c538422801670309ec52bb278a0d",
+      "result_blob_sha": "f642efc4cff5de5595d72a3bc6da5962f9ca5ac9"
+    },
+    {
+      "path": "commerce/src/agent-referrals-business-facts.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0091.patch",
+      "patch_git_blob_sha": "d45fd1461ba413b88f0537b2f0bc4f50ba9c7a7b",
+      "patch_sha256": "c5e5f82596523a753bb8e97fdc9cb262625ae3d2d1c0403529d9ff85b6ed19b6",
+      "result_blob_sha": "7554e414b96e18e2c59d5deb59cfd6dc8d09d59d"
+    },
+    {
+      "path": "commerce/src/agent-referrals-dormant-readiness.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0092.patch",
+      "patch_git_blob_sha": "87cabe171f459d95ac08b4c909b80ede932f89fb",
+      "patch_sha256": "dcef4c212e27a4dc5317400452be3dd6a1de0f6f106a9565f4e0cbe3887f8b73",
+      "result_blob_sha": "0e6a78c4bd048658091f374df30e465adbe5e0d4"
     }
   ],
   "commit": {
     "parent_sha": "24a382929740a7ead6fb0bb49f5ffc77e063c77a",
-    "tree_sha": "6f2c84cb6e0e8a84a09a73238d3aa02491e1ee71",
+    "tree_sha": "127624bc90e11f5a89107c085d0c62315b4f287a",
     "author_name": "Flexperiment Release Control",
     "author_email": "release-control@flexperiment.ru",
     "author_timestamp": 1788518400,
@@ -818,7 +855,7 @@
     "committer_email": "release-control@flexperiment.ru",
     "committer_timestamp": 1788518400,
     "committer_timezone": "+0000",
-    "message": "agent-referrals: Phase 10A candidate",
+    "message": "agent-referrals: Phase 10A/10B candidate (round-7 dormant-readiness extension)",
     "encoding": "none",
     "extra_headers": "none",
     "signed": false

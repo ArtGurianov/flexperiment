@@ -53,14 +53,30 @@ const ASSERTIONS: ReadonlyArray<{ readonly name: string; readonly pattern: RegEx
     removeLine: removeLinesMatching(/for migration in 0042_agent_referrals_agents_rebuild\.sql/),
   },
   {
+    // DORMANT and zero-business-facts are proven together by one
+    // consolidated, fail-closed evidence call
+    // (agent-referrals-dormant-readiness.ts) - the same evidence
+    // /complete-rolling's own domain-level predicate is fail-closed
+    // against, so the workflow's own check can never disagree with what
+    // completion itself enforces.
     name: "DORMANT proof",
-    pattern: /agent-referrals\/feature-state" > feature-state-after\.json[\s\S]*?jq -e '\.state == "DORMANT"' feature-state-after\.json/,
-    removeLine: removeLinesMatching(/jq -e '\.state == "DORMANT"' feature-state-after\.json/),
+    pattern: /agent-referrals\/dormant-readiness" > dormant-readiness-after\.json[\s\S]*?jq -e '\.ready == true' dormant-readiness-after\.json/,
+    removeLine: removeLinesMatching(/jq -e '\.ready == true' dormant-readiness-after\.json/),
   },
   {
     name: "zero Agent Referrals production-business-facts proof",
-    pattern: /agent-referrals\/business-facts" > business-facts-after\.json[\s\S]*?jq -e '\.all_zero == true' business-facts-after\.json/,
-    removeLine: removeLinesMatching(/jq -e '\.all_zero == true' business-facts-after\.json/),
+    pattern: /agent-referrals\/dormant-readiness" > dormant-readiness-after\.json[\s\S]*?jq -e '\.ready == true' dormant-readiness-after\.json/,
+    removeLine: removeLinesMatching(/agent-referrals\/dormant-readiness" > dormant-readiness-after\.json/),
+  },
+  {
+    name: "predecessor completion gate (Epoch B)",
+    pattern: /release-control\/completion\/\$EPOCH_B_RELEASE_ID" > epoch-b-completion\.json[\s\S]*?jq -e --arg base "\$BASE_SHA" '\.complete == true and \.expected\.source_commit == \$base' epoch-b-completion\.json/,
+    removeLine: removeLinesMatching(/jq -e --arg base "\$BASE_SHA" '\.complete == true and \.expected\.source_commit == \$base' epoch-b-completion\.json/),
+  },
+  {
+    name: "recovery/resumability classification",
+    pattern: /RECONCILE_ACTION=\$action/,
+    removeLine: removeLinesMatching(/echo "RECONCILE_ACTION=\$action" >> "\$GITHUB_ENV"/),
   },
   {
     name: "production-deploy CAS BASE -> Q",
@@ -147,9 +163,12 @@ describe("controlled-agent-referrals.yml: rejects obvious weakening patterns", (
     expect(REAL_SOURCE).not.toMatch(/^\s*git push\b/m);
   });
 
-  it("never activates Agent Referrals - DORMANT is asserted at every checkpoint (before acquire, after deploy, at terminal completion) and is the only state this workflow ever asserts equality against", () => {
-    const stateAssertions = [...REAL_SOURCE.matchAll(/\.state == "([A-Z]+)"/g)].map((m) => m[1]);
-    expect(stateAssertions.length).toBeGreaterThanOrEqual(3);
+  it("never activates Agent Referrals - DORMANT/ready is asserted at every checkpoint (before acquire, after deploy, at terminal completion/replay) and is the only feature-state equality this workflow ever asserts", () => {
+    const stateAssertions = [...REAL_SOURCE.matchAll(/\.(?:feature_state|state) == "([A-Z]+)"/g)].map((m) => m[1]);
+    expect(stateAssertions.length).toBeGreaterThanOrEqual(2); // terminal replay + terminal completion
     for (const state of stateAssertions) expect(state).toBe("DORMANT");
+    const readyAssertions = [...REAL_SOURCE.matchAll(/\.ready == (true|false)/g)].map((m) => m[1]);
+    expect(readyAssertions.length).toBeGreaterThanOrEqual(2); // before-CAS + after-deploy dormant-readiness checks
+    for (const ready of readyAssertions) expect(ready).toBe("true");
   });
 });

@@ -1,0 +1,63 @@
+import type Database from "better-sqlite3";
+import { agentReferralsFeatureState, type AgentReferralsFeatureStateName } from "./agent-referrals-feature-state";
+import { agentReferralsFoundationSchemaEvidence } from "./agent-referrals-activation";
+import { agentReferralsBusinessFactEvidence, type AgentReferralsBusinessFactEvidence } from "./agent-referrals-business-facts";
+
+/**
+ * Round-7 fix: the single fail-closed authority for "Agent Referrals is
+ * genuinely dormant" - feature state, full required schema present, and
+ * zero business facts, evaluated together in one place rather than left to
+ * whichever caller (a workflow's separate GET calls, say) happens to check
+ * all three in the right order first. `commerce/src/api.ts`'s
+ * `/complete-rolling` route wires its DormantReadinessReader directly to
+ * `agentReferralsDormantReady` below, so completion itself refuses even if
+ * some other caller only checked feature_state - the server, not caller
+ * discipline, is what fails closed.
+ *
+ * Schema completeness is checked before business facts are counted (never
+ * the other way around): agentReferralsBusinessFactEvidence() already
+ * throws on an incomplete schema, but this module treats that as ordinary,
+ * expected "not ready" evidence - never an uncaught exception a workflow
+ * has to separately handle.
+ */
+export type AgentReferralsDormantReadinessEvidence = {
+  readonly ready: boolean;
+  readonly feature_state: AgentReferralsFeatureStateName;
+  readonly schema_present: boolean;
+  readonly schema_missing: readonly string[];
+  readonly business_facts_all_zero: boolean | null;
+  readonly business_facts_tables: Readonly<Record<string, number>> | null;
+  readonly reasons: readonly string[];
+};
+
+export const agentReferralsDormantReadinessEvidence = (db: Database.Database): AgentReferralsDormantReadinessEvidence => {
+  const reasons: string[] = [];
+
+  const featureState = agentReferralsFeatureState(db);
+  if (featureState.state !== "DORMANT") reasons.push(`FEATURE_STATE_NOT_DORMANT:${featureState.state}`);
+
+  const schema = agentReferralsFoundationSchemaEvidence(db);
+  if (!schema.present) reasons.push(`SCHEMA_INCOMPLETE:${schema.missing.join(",")}`);
+
+  let businessFacts: AgentReferralsBusinessFactEvidence | null = null;
+  if (schema.present) {
+    // Safe: business-fact table derivation re-checks schema presence
+    // itself and would throw otherwise, but this branch only ever calls it
+    // once presence is already confirmed here.
+    businessFacts = agentReferralsBusinessFactEvidence(db);
+    if (!businessFacts.all_zero) reasons.push("BUSINESS_FACTS_PRESENT");
+  }
+
+  return {
+    ready: reasons.length === 0,
+    feature_state: featureState.state,
+    schema_present: schema.present,
+    schema_missing: schema.missing,
+    business_facts_all_zero: businessFacts ? businessFacts.all_zero : null,
+    business_facts_tables: businessFacts ? businessFacts.tables : null,
+    reasons,
+  };
+};
+
+/** The exact shape `DormantReadinessReader` (release-control.ts) expects: `() => boolean`. */
+export const agentReferralsDormantReady = (db: Database.Database): boolean => agentReferralsDormantReadinessEvidence(db).ready;

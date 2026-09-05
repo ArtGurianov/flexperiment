@@ -9,7 +9,7 @@ import {
 
 const BASE_SHA = "24a382929740a7ead6fb0bb49f5ffc77e063c77a";
 const SOURCE_MAIN_SHA = "08f21d2293fcc1d908b2cfe23c0b64d8c4ef7e9f";
-const TARGET_Q = "eeb7d09973ea59e5c3b959a6db94ab552e1221c9";
+const TARGET_Q = "4fcb20d1aee98c9b6892846ec0bc40666f586870";
 const CERTIFICATE_PATH = `.release/controlled-candidates/agent-referrals-${BASE_SHA}/certificate.json`;
 const MIGRATIONS = [
   "0042_agent_referrals_agents_rebuild.sql",
@@ -41,7 +41,11 @@ describe("Phase 10A committed Agent Referrals materialization", () => {
 
     const changedPaths = git("diff", "--name-only", BASE_SHA, TARGET_Q).split("\n").filter(Boolean).sort();
     expect(changedPaths).toEqual(certificate.paths.map((entry) => entry.path).sort());
-    expect(changedPaths).toHaveLength(88);
+    // Round-7: 88 original Phase 10A paths + 6 dormant-readiness delta paths
+    // (api.ts/domain.ts re-patched, release-control.ts newly modified,
+    // release-control-schema.ts/agent-referrals-business-facts.ts/
+    // agent-referrals-dormant-readiness.ts newly created) = 92.
+    expect(changedPaths).toHaveLength(92);
     expect(changedPaths.some((path) => path.startsWith("public/legal/") || path.startsWith("commerce/legal/"))).toBe(false);
     expect(spawnSync("git", ["cat-file", "-e", `${TARGET_Q}:${CERTIFICATE_PATH}`]).status).not.toBe(0);
 

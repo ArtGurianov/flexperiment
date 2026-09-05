@@ -1,9 +1,13 @@
 diff --git old/commerce/src/domain.ts new/commerce/src/domain.ts
-index 0b96d07..a63d8ec 100644
+index 0b96d07..73795da 100644
 --- old/commerce/src/domain.ts
 +++ new/commerce/src/domain.ts
-@@ -7,7 +7,12 @@ import { providerErrorEvidence, type PaymentProvider } from "./provider";
- import { ReleaseControlError, ReleaseSalesGate, type CandidateAcquireRequest, type CandidateAdoptRequest, type CandidateAbortRequest, type CandidateCompleteRequest, type CandidateHeadSnapshot, type CandidatePhaseRequest, type CertificationEvidenceRequest, type CertificationLeaseRequest, type CertificationOrderContext, type CertificationRetryRequest, type PreActivationDefectRequest, type ReleaseControlRequest, type RuntimeReadinessDefectRequest, releaseRuntimeEvidence } from "./release-control";
+@@ -4,10 +4,15 @@ import { EmailProviderRejectedError, EventDumpCreateRejectedError, isEmailDelive
+ import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
+ import { LegalReleasePublishError, loadCanonicalLegalRelease, publishLegalRelease, verifyCurrentLegalSourceHashes, type CanonicalLegalRelease } from "./legal-release";
+ import { providerErrorEvidence, type PaymentProvider } from "./provider";
+-import { ReleaseControlError, ReleaseSalesGate, type CandidateAcquireRequest, type CandidateAdoptRequest, type CandidateAbortRequest, type CandidateCompleteRequest, type CandidateHeadSnapshot, type CandidatePhaseRequest, type CertificationEvidenceRequest, type CertificationLeaseRequest, type CertificationOrderContext, type CertificationRetryRequest, type PreActivationDefectRequest, type ReleaseControlRequest, type RuntimeReadinessDefectRequest, releaseRuntimeEvidence } from "./release-control";
++import { ReleaseControlError, ReleaseSalesGate, type CandidateAcquireRequest, type CandidateAdoptRequest, type CandidateAbortRequest, type CandidateCompleteRequest, type CandidateHeadSnapshot, type CandidatePhaseRequest, type CertificationEvidenceRequest, type CertificationLeaseRequest, type CertificationOrderContext, type CertificationRetryRequest, type DormantReadinessReader, type PreActivationDefectRequest, type ReleaseControlRequest, type RuntimeReadinessDefectRequest, releaseRuntimeEvidence } from "./release-control";
  import { checkoutRequestSchema, promoMergedSchema, type CheckoutRequest, type ParticipantAgeBand } from "./types";
  import { PromoPricingError, pricePromo } from "./promo-pricing";
 -import { basisPointsOf } from "./basis-points";
@@ -37,7 +41,22 @@ index 0b96d07..a63d8ec 100644
  const isMinorAgeBand = (ageBand: ParticipantAgeBand) => ageBand !== "ADULT";
  const requiresAccompanimentForAgeBand = (ageBand: ParticipantAgeBand) => ageBand === "MINOR_UNDER_14";
  const checkoutRequestHashV2 = (input: CheckoutRequest) => `v2:${sha256(canonicalV2(input))}`;
-@@ -1007,7 +1026,13 @@ export class CommerceDomain {
+@@ -584,6 +603,14 @@ export class CommerceDomain {
+     }
+   }
+ 
++  completeRolling(input: ReleaseControlRequest, dormantReady: DormantReadinessReader) {
++    try { return this.releaseSalesGate().completeRolling(input, dormantReady); }
++    catch (error) {
++      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
++      throw error;
++    }
++  }
++
+   private publicOccurrences(where: string, options: { catalogue: boolean }, ...params: unknown[]) {
+     const newOrdersBlocked = this.newOrdersBlocked();
+     const nowMs = this.clock();
+@@ -1007,7 +1034,13 @@ export class CommerceDomain {
        const attributedAgentId: string | null = promoAgentId ?? (referralAgent?.id as string | undefined) ?? null;
        const referralSlug = referralAgent?.slug as string | undefined;
        const price = Number(occurrence.price_kopecks);
@@ -52,7 +71,7 @@ index 0b96d07..a63d8ec 100644
        const quoteId = id();
        const disclosure = occurrence.venue_status === "CONFIRMED"
          ? `${occurrence.venue_name}: ${occurrence.venue_address}`
-@@ -1015,8 +1040,8 @@ export class CommerceDomain {
+@@ -1015,8 +1048,8 @@ export class CommerceDomain {
        const expiresAt = new Date(Date.now() + 10 * 60_000).toISOString();
        this.db.prepare(`INSERT INTO quotes(id, occurrence_id, material_revision, legal_release_id, promo_id, attributed_agent_id, price_kopecks, discount_kopecks, final_amount_kopecks, venue_disclosure, expires_at, referral_slug, promo_code_snapshot, discount_type_snapshot, discount_value_snapshot, promo_agent_id_snapshot)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -63,7 +82,7 @@ index 0b96d07..a63d8ec 100644
      });
    }
  
-@@ -1054,10 +1079,17 @@ export class CommerceDomain {
+@@ -1054,10 +1087,17 @@ export class CommerceDomain {
        if (!release || release.id !== quote.legal_release_id) throw new DomainError("LEGAL_VERSION_CHANGED", 409);
        const manifest = legalManifest(JSON.parse(String(release.manifest_json)));
        let promo: Row | undefined;
@@ -82,7 +101,7 @@ index 0b96d07..a63d8ec 100644
        }
        if (!certificationLease && (occurrence.sales_status !== "OPEN" || occurrence.fulfillment_status !== "SCHEDULED")) throw new DomainError("SALES_NOT_OPEN", 409);
        if (certificationLease && occurrence.fulfillment_status !== "SCHEDULED") throw new DomainError("SALES_NOT_OPEN", 409);
-@@ -1066,9 +1098,15 @@ export class CommerceDomain {
+@@ -1066,9 +1106,15 @@ export class CommerceDomain {
        // after context creation without entering a new order.
        const promoAgentId = promo?.agent_id as string | null ?? null;
        const referralAgent = activeAgentBySlug(this.db, quote.referral_slug as string | undefined);
@@ -100,7 +119,7 @@ index 0b96d07..a63d8ec 100644
        const occupied = Number(one(this.db, "SELECT COUNT(*) AS occupied FROM bookings WHERE occurrence_id = ? AND status IN ('RESERVED', 'CONFIRMED')", occurrence.id)?.occupied ?? 0);
        if (occupied >= Number(occurrence.capacity)) throw new DomainError("SOLD_OUT", 409);
        const orderId = id(); const bookingId = id(); const paymentId = id(); const statusId = publicId();
-@@ -1076,17 +1114,24 @@ export class CommerceDomain {
+@@ -1076,17 +1122,24 @@ export class CommerceDomain {
        // The unique index is the authority; the lookup keeps the astronomically
        // unlikely random collision from surfacing as a customer-visible 500.
        while (one(this.db, "SELECT id FROM orders WHERE public_order_number = ?", orderNumber)) orderNumber = publicOrderNumber();
@@ -129,7 +148,7 @@ index 0b96d07..a63d8ec 100644
        this.db.prepare("INSERT INTO bookings(id, order_id, occurrence_id, status) VALUES (?, ?, ?, 'RESERVED')").run(bookingId, orderId, occurrence.id);
        this.db.prepare(`INSERT INTO payments(id, order_id, state, status, provider_idempotency_key, creation_started_at) VALUES (?, ?, 'CREATING', 'PENDING', ?, ?)`)
          .run(paymentId, orderId, publicId(), timestamp);
-@@ -1786,6 +1831,15 @@ export class CommerceDomain {
+@@ -1786,6 +1839,15 @@ export class CommerceDomain {
          this.db.prepare("INSERT INTO occurrence_revisions(id, occurrence_id, revision, reason, before_json, after_json, changed_by_admin_id) VALUES (?, ?, ?, ?, ?, ?, ?)")
            .run(revisionId, occurrenceId, after.material_revision, typeof input.audit_context === "string" ? input.audit_context : "", JSON.stringify(classification.before), JSON.stringify(classification.after), adminId);
          this.emitOccurrenceRevisionEffects(revisionId, before, after, classification);
@@ -145,7 +164,7 @@ index 0b96d07..a63d8ec 100644
        }
        this.recordAdminCommandAudit(adminId, "OCCURRENCE_EDITED", "occurrence", occurrenceId, typeof input.audit_context === "string" ? input.audit_context : undefined, idempotencyKey, payload);
        return after;
-@@ -1892,6 +1946,18 @@ export class CommerceDomain {
+@@ -1892,6 +1954,18 @@ export class CommerceDomain {
    patchAgent(agentId: string, input: Record<string, unknown>) {
      const existing = one(this.db, "SELECT * FROM agents WHERE id = ?", agentId);
      if (!existing) throw new DomainError("AGENT_NOT_FOUND", 404);
@@ -164,7 +183,7 @@ index 0b96d07..a63d8ec 100644
      const allowed = ["display_name", "legal_name", "email", "contractor_type", "inn", "contract_reference", "enabled", "default_reward_type", "default_reward_value", "npd_status_checked_at"];
      const fields = allowed.filter((field) => input[field] !== undefined);
      if (!fields.length) return existing;
-@@ -1950,6 +2016,15 @@ export class CommerceDomain {
+@@ -1950,6 +2024,15 @@ export class CommerceDomain {
      return this.withAdminCommandV2("promo.patch", idempotencyKey, adminId, promoId, patch, auditContext, "PROMO_EDITED", "promo", () => {
        const existing = one(this.db, "SELECT * FROM promo_codes WHERE id = ?", promoId);
        if (!existing) throw new DomainError("PROMO_NOT_FOUND", 404);
@@ -180,7 +199,7 @@ index 0b96d07..a63d8ec 100644
        promoMergedSchema.parse({
          agent_id: patch.agent_id === undefined ? existing.agent_id : patch.agent_id,
          status: patch.status === undefined ? existing.status : patch.status,
-@@ -1971,10 +2046,9 @@ export class CommerceDomain {
+@@ -1971,10 +2054,9 @@ export class CommerceDomain {
      return one(this.db, "SELECT * FROM promo_codes WHERE id = ?", promoId)!;
    }
  
@@ -193,7 +212,7 @@ index 0b96d07..a63d8ec 100644
    }
  
    /**
-@@ -1990,9 +2064,9 @@ export class CommerceDomain {
+@@ -1990,9 +2072,9 @@ export class CommerceDomain {
        WHERE o.id = ?`, orderId);
      if (!order?.attributed_agent_id || !order.reward_type_snapshot || Number(order.captured_amount_kopecks) <= 0) return;
      const base = this.rewardForOrder(order, Number(order.captured_amount_kopecks));
@@ -206,7 +225,7 @@ index 0b96d07..a63d8ec 100644
      const net = Math.max(0, Number(order.captured_amount_kopecks) - Number(order.refunded_amount_kopecks));
      const expected = order.booking_status === "CONFIRMED" ? this.rewardForOrder(order, net) : 0;
      const accounted = Number(one(this.db, `SELECT rr.amount_kopecks + COALESCE((SELECT SUM(ra.amount_kopecks) FROM reward_adjustments ra WHERE ra.order_id = rr.order_id), 0) AS amount
-@@ -2004,23 +2078,38 @@ export class CommerceDomain {
+@@ -2004,23 +2086,38 @@ export class CommerceDomain {
        .run(id(), order.id, order.attributed_agent_id, expected - accounted, order.booking_status === "CONFIRMED" ? "NET_CAPTURED_CHANGED" : "BOOKING_CANCELLED", semanticKey);
    }
  
@@ -249,7 +268,7 @@ index 0b96d07..a63d8ec 100644
      const allocated = Number(settlement.prepared) + Number(settlement.pending) + Number(settlement.settled);
      const unallocatedMatured = Math.max(0, mature - allocated + recovered);
      const blocked = agent.npd_status_checked_at ? 0 : unallocatedMatured;
-@@ -2055,7 +2144,15 @@ export class CommerceDomain {
+@@ -2055,7 +2152,15 @@ export class CommerceDomain {
    markSettlementPaymentMade(settlementId: string, confirmationText: string, idempotencyKey: string, reason = "") {
      if (confirmationText !== "I confirm the money was transferred") throw new DomainError("CONFIRMATION_REQUIRED", 422);
      return this.settlementTransition("PAYMENT_MADE", settlementId, { confirmation_text: confirmationText, reason }, idempotencyKey, () => {
@@ -266,7 +285,7 @@ index 0b96d07..a63d8ec 100644
        if (!changed.changes) throw new DomainError("SETTLEMENT_TRANSITION_FORBIDDEN", 409);
        return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
      });
-@@ -2063,7 +2160,7 @@ export class CommerceDomain {
+@@ -2063,7 +2168,7 @@ export class CommerceDomain {
  
    completeSettlementDocuments(settlementId: string, input: { document_reference: string; npd_status_effective_on?: string }, idempotencyKey: string) {
      return this.settlementTransition("DOCUMENTS_COMPLETE", settlementId, input, idempotencyKey, () => {
@@ -275,7 +294,7 @@ index 0b96d07..a63d8ec 100644
        if (!changed.changes) throw new DomainError("SETTLEMENT_TRANSITION_FORBIDDEN", 409);
        return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
      });
-@@ -2072,7 +2169,7 @@ export class CommerceDomain {
+@@ -2072,7 +2177,7 @@ export class CommerceDomain {
    cancelSettlementBeforePayment(settlementId: string, input: { confirmation_text: string; reason: string }, idempotencyKey: string) {
      if (input.confirmation_text !== `NOT PAID ${settlementId}`) throw new DomainError("CONFIRMATION_REQUIRED", 422);
      return this.settlementTransition("CANCEL_BEFORE_PAYMENT", settlementId, input, idempotencyKey, () => {

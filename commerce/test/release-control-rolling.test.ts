@@ -224,36 +224,33 @@ describe("HTTP: POST /v1/internal/release-control/complete-rolling", () => {
   });
 });
 
-describe("HTTP: GET /v1/internal/release-control/agent-referrals/feature-state and .../business-facts", () => {
-  it("feature-state reports DORMANT on a freshly migrated database, and business-facts reports all_zero", async () => {
+describe("HTTP: GET /v1/internal/release-control/agent-referrals/dormant-readiness", () => {
+  it("reports ready:true on a freshly migrated database, with all_zero business facts and no feature-state singleton in the table breakdown", async () => {
     await withReleaseControlToken(async () => {
       const { db, app } = appFixture();
       try {
-        const featureState = await app.request("http://api.flexperiment.ru/v1/internal/release-control/agent-referrals/feature-state", { headers: releaseControlHeaders });
-        expect(featureState.status).toBe(200);
-        expect(await featureState.json()).toEqual({ state: "DORMANT", owner_id: null, revision: 1 });
-
-        const businessFacts = await app.request("http://api.flexperiment.ru/v1/internal/release-control/agent-referrals/business-facts", { headers: releaseControlHeaders });
-        expect(businessFacts.status).toBe(200);
-        const body = await businessFacts.json() as { all_zero: boolean; tables: Record<string, number> };
-        expect(body.all_zero).toBe(true);
-        expect(body.tables).not.toHaveProperty("agent_referrals_feature_state");
+        const response = await app.request("http://api.flexperiment.ru/v1/internal/release-control/agent-referrals/dormant-readiness", { headers: releaseControlHeaders });
+        expect(response.status).toBe(200);
+        const body = await response.json() as { ready: boolean; feature_state: string; schema_present: boolean; business_facts_all_zero: boolean | null; business_facts_tables: Record<string, number> | null; reasons: string[] };
+        expect(body).toMatchObject({ ready: true, feature_state: "DORMANT", schema_present: true, business_facts_all_zero: true, reasons: [] });
+        expect(body.business_facts_tables).not.toHaveProperty("agent_referrals_feature_state");
       } finally { db.close(); }
     });
   });
 
-  it("feature-state reflects activation, and both routes require the bearer token like every other release-control route", async () => {
+  it("reports ready:false once activated, names the reason, and requires the bearer token like every other release-control route", async () => {
     await withReleaseControlToken(async () => {
       const { db, app } = appFixture();
       try {
         activateAgentReferrals(db, { expected_revision: 1, owner_id: "activation-owner", reason: "test" });
-        const featureState = await app.request("http://api.flexperiment.ru/v1/internal/release-control/agent-referrals/feature-state", { headers: releaseControlHeaders });
-        expect((await featureState.json() as { state: string }).state).toBe("ACTIVE");
+        const response = await app.request("http://api.flexperiment.ru/v1/internal/release-control/agent-referrals/dormant-readiness", { headers: releaseControlHeaders });
+        const body = await response.json() as { ready: boolean; feature_state: string; reasons: string[] };
+        expect(body.ready).toBe(false);
+        expect(body.feature_state).toBe("ACTIVE");
+        expect(body.reasons).toContain("FEATURE_STATE_NOT_DORMANT:ACTIVE");
 
-        const noAuthFeatureState = await app.request("http://api.flexperiment.ru/v1/internal/release-control/agent-referrals/feature-state");
-        expect(noAuthFeatureState.status).toBe(401);
-        const noAuthBusinessFacts = await app.request("http://api.flexperiment.ru/v1/internal/release-control/agent-referrals/business-facts");
-        expect(noAuthBusinessFacts.status).toBe(401);
+        const noAuth = await app.request("http://api.flexperiment.ru/v1/internal/release-control/agent-referrals/dormant-readiness");
+        expect(noAuth.status).toBe(401);
       } finally { db.close(); }
     });
   });

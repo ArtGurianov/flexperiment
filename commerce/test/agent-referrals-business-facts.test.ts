@@ -5,7 +5,7 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import { AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS } from "../src/agent-referrals-activation";
-import { agentReferralsBusinessFactEvidence, agentReferralsBusinessFactTables } from "../src/agent-referrals-business-facts";
+import { AgentReferralsBusinessFactsSchemaIncompleteError, agentReferralsBusinessFactEvidence, agentReferralsBusinessFactTables } from "../src/agent-referrals-business-facts";
 
 const open: Database.Database[] = [];
 afterEach(() => { while (open.length) open.pop()!.close(); });
@@ -129,5 +129,21 @@ describe("agentReferralsBusinessFactEvidence", () => {
     const evidence = agentReferralsBusinessFactEvidence(db);
     expect(evidence.all_zero).toBe(false);
     expect(evidence.tables.ord_provider_profile_revisions).toBe(1);
+  });
+
+  it("round-7 fix: fails closed (throws) rather than reporting all_zero:true when a required table is missing from the schema", () => {
+    const db = fresh();
+    // Simulate a migration gap / schema corruption: a table this module
+    // expects to exist is gone. Before the fix, this silently vanished from
+    // the derived table set and all_zero would have stayed true.
+    db.exec("DROP TABLE engagements");
+    expect(() => agentReferralsBusinessFactEvidence(db)).toThrow(AgentReferralsBusinessFactsSchemaIncompleteError);
+    try {
+      agentReferralsBusinessFactEvidence(db);
+      expect.unreachable();
+    } catch (error) {
+      expect(error).toBeInstanceOf(AgentReferralsBusinessFactsSchemaIncompleteError);
+      expect((error as AgentReferralsBusinessFactsSchemaIncompleteError).missing).toContain("engagements");
+    }
   });
 });

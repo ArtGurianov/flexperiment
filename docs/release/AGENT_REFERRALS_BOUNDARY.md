@@ -119,20 +119,47 @@ Phase 10A materializes the actual artifact at
 ```text
 BASE             24a382929740a7ead6fb0bb49f5ffc77e063c77a
 SOURCE_MAIN_SHA  08f21d2293fcc1d908b2cfe23c0b64d8c4ef7e9f
-TARGET_Q         eeb7d09973ea59e5c3b959a6db94ab552e1221c9
-Q tree           6f2c84cb6e0e8a84a09a73238d3aa02491e1ee71
+TARGET_Q         4fcb20d1aee98c9b6892846ec0bc40666f586870
+Q tree           127624bc90e11f5a89107c085d0c62315b4f287a
 ```
+
+Round-7 (PR10 remediation) regenerated `TARGET_Q`/`Q tree` from the original
+88-path materialization: the frozen candidate did not yet include a
+genuinely functional ROLLING production-controller surface (no
+`completeRolling()` domain method, no `/complete-rolling` HTTP route, no
+`mode: "ROLLING"` schema support at all - Q's own `release-control.ts` and
+`api.ts` were byte-identical to `BASE`'s in that respect), so the Phase 10B
+production controller could never have succeeded even if run. Freeze
+discipline is not a reason to ship a candidate that cannot execute its own
+frozen contract: the prior `TARGET_Q` is superseded, not preserved, and this
+is the new immutable candidate. Six paths changed relative to the original
+materialization - `commerce/src/api.ts` and `commerce/src/domain.ts`
+re-patched (both already `MODIFY` in the original manifest), plus four
+genuinely new certified paths: `commerce/src/release-control.ts` (`MODIFY` -
+adds `DormantReadinessReader`, `sameReleaseExpectations`, and
+`completeRolling()`, extracted verbatim from protected main's own
+already-reviewed, already-tested implementation - never newly authored logic
+smuggled into the certificate), `commerce/src/release-control-schema.ts`
+(`CREATE` - the already-existing, already-tested schema file main long ago
+extracted from `types.ts`, adopted as-is), and the two new round-7 modules
+`commerce/src/agent-referrals-business-facts.ts` /
+`commerce/src/agent-referrals-dormant-readiness.ts` (`CREATE`).
+`commerce/src/types.ts`'s own certified patch is untouched - its now-dead
+inline `releaseControlSchema` export is simply unused, never imported by the
+re-patched `api.ts`.
 
 ## Changed-path allowlist
 
-The canonical, exact allowlist is the 88 sorted `paths[]` entries in the
-committed Phase 10A certificate above. They are limited to Agent Referrals
-Commerce runtime (including exact immutable migrations `0042` through `0049`),
-admin/partner UI, and the two production routing configs. No test, workflow,
-documentation, `.release/**` artifact, `public/legal/**`, or
-`commerce/legal/**` path is reconstructed into Q. The materialization test
-independently rebuilds Q, compares `BASE..Q` with that complete manifest, and
-proves every migration blob equals the protected-main source blob.
+The canonical, exact allowlist is the 92 sorted `paths[]` entries in the
+committed Phase 10A/10B certificate above. They are limited to Agent
+Referrals Commerce runtime (including exact immutable migrations `0042`
+through `0049`), admin/partner UI, the two production routing configs, and -
+as of round 7 - the minimal ROLLING release-control surface Phase 10B's own
+production controller genuinely requires. No test, workflow, documentation,
+`.release/**` artifact, `public/legal/**`, or `commerce/legal/**` path is
+reconstructed into Q. The materialization test independently rebuilds Q,
+compares `BASE..Q` with that complete manifest, and proves every migration
+blob equals the protected-main source blob.
 
 ## Phase 10B control plane (dormant)
 
