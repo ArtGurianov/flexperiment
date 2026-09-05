@@ -57,8 +57,8 @@ const ASSERTIONS: ReadonlyArray<{ readonly name: string; readonly pattern: RegEx
     removeLine: removeLinesMatching(/\[\[ "\$actual_runtime_candidate" == "\$TARGET_SHA" \]\]/),
   },
   {
-    name: "B2 published under runtime/bootstrap ref (fresh read)",
-    pattern: /'refs\/remotes\/origin\/runtime\/release-semantics-bootstrap\/\*'[\s\S]*?RELEASE_SEMANTICS_BOOTSTRAP_NOT_PUBLISHED/,
+    name: "B2 published under runtime/bootstrap ref (fresh read, flat namespace)",
+    pattern: /'refs\/remotes\/origin\/runtime\/release-semantics-bootstrap-\*'[\s\S]*?RELEASE_SEMANTICS_BOOTSTRAP_NOT_PUBLISHED/,
     removeLine: removeLinesMatching(/published_ref="\$\(git for-each-ref/),
   },
   {
@@ -161,6 +161,14 @@ describe("controlled-release-semantics-bootstrap.yml: manual-only, dormant trigg
 });
 
 describe("controlled-release-semantics-bootstrap.yml: rejects obvious weakening patterns", () => {
+  it("never uses the legacy nested publication namespace anywhere - only the flat refs/heads/runtime/release-semantics-bootstrap-<generation> shape controlled-runtime-candidate-promotion.yml can actually discover", () => {
+    // Certificate paths (.release/controlled-candidates/release-semantics-bootstrap-<BASE>/...)
+    // are an unrelated namespace and are not what this guards against - this
+    // checks specifically for the nested RUNTIME REF shape that broke
+    // production execution (run 33969206791).
+    expect(REAL_SOURCE).not.toContain("runtime/release-semantics-bootstrap/");
+  });
+
   it("does not skip the controller-is-current-main assertion", () => {
     expect(REAL_SOURCE).toContain('[[ "$GITHUB_REF" == "refs/heads/main" ]]');
     expect(REAL_SOURCE).toContain("git rev-parse origin/main");
@@ -189,7 +197,7 @@ describe("controlled-release-semantics-bootstrap.yml: rejects obvious weakening 
   });
 
   it("never reads runtime-candidate or the published bootstrap ref from a cached/stale value - both reads are preceded by a fresh git fetch in the same step", () => {
-    expect(REAL_SOURCE).toMatch(/git fetch --no-tags origin \\\s*\n\s*refs\/heads\/runtime-candidate:refs\/remotes\/origin\/runtime-candidate \\\s*\n\s*'\+refs\/heads\/runtime\/release-semantics-bootstrap\/\*:refs\/remotes\/origin\/runtime\/release-semantics-bootstrap\/\*'/);
+    expect(REAL_SOURCE).toMatch(/git fetch --no-tags origin \\\s*\n\s*refs\/heads\/runtime-candidate:refs\/remotes\/origin\/runtime-candidate \\\s*\n\s*'\+refs\/heads\/runtime\/release-semantics-bootstrap-\*:refs\/remotes\/origin\/runtime\/release-semantics-bootstrap-\*'/);
   });
 
   it("does not skip runtime-candidate authority - deployment is never gated on reconstruction alone", () => {

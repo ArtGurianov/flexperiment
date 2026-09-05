@@ -77,9 +77,16 @@ const ASSERTIONS: ReadonlyArray<{ readonly name: string; readonly pattern: RegEx
     removeLine: removeLinesMatching(/pnpm commerce:release-semantics-cutover:assert-boundary bootstrap-boundary-paths\.bin/),
   },
   {
-    name: "runtime/bootstrap ref publication",
-    pattern: /publish_ref="refs\/heads\/runtime\/release-semantics-bootstrap\/\$\{INPUT_GENERATION\}"/,
-    removeLine: removeLinesMatching(/publish_ref="refs\/heads\/runtime\/release-semantics-bootstrap\/\$\{INPUT_GENERATION\}"/),
+    // FLAT, single-segment ref - never the legacy nested
+    // refs/heads/runtime/release-semantics-bootstrap/<generation> shape,
+    // which controlled-runtime-candidate-promotion.yml's own single-`*`
+    // glob cannot discover across a `/`. See
+    // commerce/test/release-semantics-bootstrap-promotion-compatibility.test.ts
+    // for the real-Git proof and docs/release/RELEASE_SEMANTICS_BOOTSTRAP.md
+    // for the incident this fixes.
+    name: "runtime/bootstrap ref publication (flat namespace)",
+    pattern: /publish_ref="refs\/heads\/runtime\/release-semantics-bootstrap-\$\{INPUT_GENERATION\}"/,
+    removeLine: removeLinesMatching(/publish_ref="refs\/heads\/runtime\/release-semantics-bootstrap-\$\{INPUT_GENERATION\}"/),
   },
   {
     name: "remote read-back",
@@ -142,6 +149,14 @@ describe("controlled-release-semantics-bootstrap-candidate.yml: manual-only, dor
 });
 
 describe("controlled-release-semantics-bootstrap-candidate.yml: rejects obvious weakening patterns", () => {
+  it("never uses the legacy nested publication namespace anywhere - only the flat refs/heads/runtime/release-semantics-bootstrap-<generation> shape controlled-runtime-candidate-promotion.yml can actually discover", () => {
+    // Certificate paths (.release/controlled-candidates/release-semantics-bootstrap-<BASE>/...)
+    // are an unrelated namespace and are not what this guards against - this
+    // checks specifically for the nested RUNTIME REF shape that broke
+    // production execution (run 33969206791).
+    expect(REAL_SOURCE).not.toContain("runtime/release-semantics-bootstrap/");
+  });
+
   it("does not hard-code a detached-B2 exemption - TARGET_SHA comes only from the operator-supplied workflow_dispatch input, never a literal SHA in the file", () => {
     expect(REAL_SOURCE).not.toMatch(/^\s+(TARGET_SHA|RECONSTRUCTED_SHA|EXPECTED_[A-Z_]+):\s*"?[0-9a-f]{40}"?\s*$/m);
   });
