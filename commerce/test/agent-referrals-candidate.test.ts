@@ -139,6 +139,31 @@ function modifyScenario() {
   return { baseSha, mainSha, baseBlob, patchBlob, patchContent, resultBlob, newContent, treeSha, entry, certificate };
 }
 
+describe("reconstruction: rebase-safe controller patch source", () => {
+  it("uses committed controller-tree patches without pinning a rebase-unstable PR commit SHA", () => {
+    const { baseSha, patchBlob, entry, treeSha } = modifyScenario();
+    const sourceMain = commitTree(mktree([]), undefined, "frozen protected main");
+    const controllerTree = mktree([{ mode: "100644", sha: patchBlob, path: "patches/0001.patch" }]);
+    // Same committed patch bytes, distinct commit identities: the shape GitHub
+    // creates when it rebase-merges a reviewed PR into protected main.
+    const beforeRebase = commitTree(controllerTree, sourceMain, "controller before rebase");
+    const afterRebase = commitTree(controllerTree, sourceMain, "controller after rebase");
+    const certificate: AgentReferralsCandidateCertificate = {
+      base_sha: baseSha,
+      source_main_sha: sourceMain,
+      patch_source: "controller_tree",
+      paths: [entry],
+      commit: envelope(baseSha, treeSha),
+    };
+
+    const before = reconstructAgentReferralsCandidateSha(certificate, { trusted_patch_source_sha: beforeRebase });
+    const after = reconstructAgentReferralsCandidateSha(certificate, { trusted_patch_source_sha: afterRebase });
+    expect(after).toBe(before);
+    expect(verifyAgentReferralsCandidateCertificate(certificate, after, { trusted_patch_source_sha: afterRebase })).toBeUndefined();
+    expect(verifyAgentReferralsCandidateCertificate(certificate, after)).toBe("AGENT_REFERRALS_CANDIDATE_TRUSTED_PATCH_SOURCE_REQUIRED");
+  });
+});
+
 describe("reconstruction: determinism and correctness", () => {
   it("two independent builds from one certificate produce the exact same reconstructed commit SHA", () => {
     const { certificate } = modifyScenario();

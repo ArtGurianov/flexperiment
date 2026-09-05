@@ -42,71 +42,34 @@ const hardBoundRecoveryTarget = (source: string) =>
     && source.includes("epochBPromotionArtifactReason")
     && source.includes("createEpochBPromotionArtifact"));
 
-const DEPLOYING = readdirSync(WORKFLOWS)
-  .filter((name) => name.endsWith(".yml"))
-  .map((name) => ({ name, source: readFileSync(`${WORKFLOWS}/${name}`, "utf8") }))
-  .filter(({ source }) => source.includes("set-production-deploy-ref.sh"))
-  .filter(({ source }) => !hardBoundRecoveryTarget(source));
-
-describe("a controller is never older than what it deploys", () => {
-  it("finds the lanes that advance production", () => {
-    expect(DEPLOYING.map(({ name }) => name)).not.toHaveLength(0);
-  });
-
-  it.each(DEPLOYING.map(({ name, source }) => [name, source] as const))(
-    "%s proves the target is reachable from the controller",
-    (_name, source) => {
-      const checks = source
-        .split("\n")
-        .map((line) => line.trim())
-        .filter((line) => /^git merge-base --is-ancestor "\$(TARGET_SHA|target_sha|CANDIDATE_SOURCE_COMMIT|GEN2_RUNTIME_SHA)" "\$(CONTROLLER_SHA|MAIN_SHA)"/.test(line));
-
-      expect(checks, "nothing proves the controller covers the target it deploys").not.toHaveLength(0);
-      for (const line of checks) expect(line, `does not fail the run:\n  ${line}`).toMatch(/exit 1/);
-    },
-  );
-
-  it.each(
-    readdirSync(WORKFLOWS)
-      .filter((name) => name.endsWith(".yml"))
-      .map((name) => [name, readFileSync(`${WORKFLOWS}/${name}`, "utf8")] as const)
-      .filter(([, source]) => source.includes("set-production-deploy-ref.sh")),
-  )("%s never derives its deployment target from the controller checkout", (name, source) => {
-    // age-band did exactly this and is the historical shape the invariant
-    // forbids; it is a spent epoch, so it is named rather than silently passed.
-    const derives = /TARGET_SHA="\$\(git rev-parse HEAD\)"/.test(source);
-    if (name === "controlled-age-band-cutover.yml") {
-      expect(derives, "age-band no longer derives its target; drop this exemption").toBe(true);
-      return;
-    }
-    expect(derives, "deployment target is derived from the controller commit").toBe(false);
-  });
-});
-
 /**
  * §B-1 / Phase 1: a deployment target is classified into exactly one of
  * three lanes:
  *
- *   ANCESTRY_BOUND        the existing rule above (merge-base --is-ancestor)
- *   RECONSTRUCTION_BOUND  a positive proof obligation, asserted below
+ *   ANCESTRY_BOUND        the DEPLOYING rule below (merge-base --is-ancestor)
+ *   RECONSTRUCTION_BOUND  a positive proof obligation, asserted in its own
+ *                         describe block further down
  *   HISTORICAL_HARD_BOUND the existing legacy exemptions, frozen
  *
  * RECONSTRUCTION_BOUND exists for the Agent Referrals candidate Q, whose SHA
  * is deliberately NOT required to be a main ancestor (see
  * commerce/src/agent-referrals-candidate.ts and the plan's §B-1). Unlike
  * hardBoundRecoveryTarget above, admission here is a POSITIVE proof: the
- * workflow source must contain all five required assertions, and deleting
+ * workflow source must contain all six required assertions, and deleting
  * any single one must break this test. This is deliberately not another
  * hardBoundRecoveryTarget-style skip and not a name-based exemption -
  * `if (workflow.includes("agent-referrals")) skip` is exactly the failure
  * shape this machinery exists to close off.
  *
- * No real workflow claims this class in PR1 - the actual
- * controlled-agent-referrals-candidate.yml lands in a later PR, once Q's SHA
- * exists to reconstruct. This suite proves the classifier's teeth today
- * against a synthetic fixture built to the same contract a real workflow
- * must satisfy, so CI already fails the day someone deletes one of these
- * assertions from the real thing.
+ * Defined here, above DEPLOYING, because DEPLOYING itself must exclude
+ * RECONSTRUCTION_BOUND workflows from the ANCESTRY_BOUND-specific
+ * "TARGET_SHA is an ancestor of the controller" check immediately below -
+ * that property is the opposite of what RECONSTRUCTION_BOUND proves, so a
+ * RECONSTRUCTION_BOUND workflow must never be required to satisfy it.
+ *
+ * PR10 lands the real controller, controlled-agent-referrals.yml, which
+ * genuinely claims this class - see the dedicated describe block below for
+ * that proof against the real file, not only a synthetic fixture.
  */
 type DeploymentTargetClass = "ANCESTRY_BOUND" | "RECONSTRUCTION_BOUND" | "HISTORICAL_HARD_BOUND";
 
@@ -161,6 +124,11 @@ const RECONSTRUCTION_BOUND_ASSERTIONS: ReadonlyArray<{ readonly name: string; re
     removeLine: removeLinesMatching(/node --import tsx commerce\/src\/agent-referrals-candidate-verify\.ts/),
   },
   {
+    name: "real patches are resolved from the same trusted controller tree that supplied the certificate",
+    pattern: /node --import tsx commerce\/src\/agent-referrals-candidate-verify\.ts\s+\S+\s+"\$(GITHUB_SHA|CONTROLLER_SHA)"/,
+    removeLine: removeLinesMatching(/node --import tsx commerce\/src\/agent-referrals-candidate-verify\.ts/),
+  },
+  {
     name: "RECONSTRUCTED_SHA == TARGET_SHA",
     pattern: /\[\[ "\$RECONSTRUCTED_SHA" == "\$TARGET_SHA" \]\]/,
     removeLine: removeLinesMatching(/\[\[ "\$RECONSTRUCTED_SHA" == "\$TARGET_SHA" \]\]/),
@@ -173,6 +141,48 @@ const missingReconstructionBoundAssertions = (source: string): string[] =>
 
 const isReconstructionBound = (source: string): boolean => missingReconstructionBoundAssertions(source).length === 0;
 
+const DEPLOYING = readdirSync(WORKFLOWS)
+  .filter((name) => name.endsWith(".yml"))
+  .map((name) => ({ name, source: readFileSync(`${WORKFLOWS}/${name}`, "utf8") }))
+  .filter(({ source }) => source.includes("set-production-deploy-ref.sh"))
+  .filter(({ source }) => !hardBoundRecoveryTarget(source))
+  .filter(({ source }) => !isReconstructionBound(source));
+
+describe("a controller is never older than what it deploys", () => {
+  it("finds the lanes that advance production", () => {
+    expect(DEPLOYING.map(({ name }) => name)).not.toHaveLength(0);
+  });
+
+  it.each(DEPLOYING.map(({ name, source }) => [name, source] as const))(
+    "%s proves the target is reachable from the controller",
+    (_name, source) => {
+      const checks = source
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => /^git merge-base --is-ancestor "\$(TARGET_SHA|target_sha|CANDIDATE_SOURCE_COMMIT|GEN2_RUNTIME_SHA)" "\$(CONTROLLER_SHA|MAIN_SHA)"/.test(line));
+
+      expect(checks, "nothing proves the controller covers the target it deploys").not.toHaveLength(0);
+      for (const line of checks) expect(line, `does not fail the run:\n  ${line}`).toMatch(/exit 1/);
+    },
+  );
+
+  it.each(
+    readdirSync(WORKFLOWS)
+      .filter((name) => name.endsWith(".yml"))
+      .map((name) => [name, readFileSync(`${WORKFLOWS}/${name}`, "utf8")] as const)
+      .filter(([, source]) => source.includes("set-production-deploy-ref.sh")),
+  )("%s never derives its deployment target from the controller checkout", (name, source) => {
+    // age-band did exactly this and is the historical shape the invariant
+    // forbids; it is a spent epoch, so it is named rather than silently passed.
+    const derives = /TARGET_SHA="\$\(git rev-parse HEAD\)"/.test(source);
+    if (name === "controlled-age-band-cutover.yml") {
+      expect(derives, "age-band no longer derives its target; drop this exemption").toBe(true);
+      return;
+    }
+    expect(derives, "deployment target is derived from the controller commit").toBe(false);
+  });
+});
+
 /** The exact shape a real controlled-agent-referrals-candidate.yml step must contain - every line load-bearing. */
 const reconstructionBoundFixture = () => [
   'BASE_SHA="$(scripts/read-production-deploy-ref.sh)"',
@@ -180,7 +190,7 @@ const reconstructionBoundFixture = () => [
   `SOURCE_MAIN_SHA="$(jq -er '.source_main_sha' ${CERTIFICATE_FILE})"`,
   'git merge-base --is-ancestor "$SOURCE_MAIN_SHA" "$GITHUB_SHA" || { echo "SOURCE_MAIN_SHA_NOT_ANCESTOR" >&2; exit 1; }',
   `jq -e --arg base "$BASE_SHA" '.base_sha == $base' ${CERTIFICATE_FILE} >/dev/null || { echo "CANDIDATE_BASE_MISMATCH" >&2; exit 1; }`,
-  `RECONSTRUCTED_SHA="$(node --import tsx commerce/src/agent-referrals-candidate-verify.ts ${CERTIFICATE_FILE})"`,
+  `RECONSTRUCTED_SHA="$(node --import tsx commerce/src/agent-referrals-candidate-verify.ts ${CERTIFICATE_FILE} "$GITHUB_SHA")"`,
   '[[ "$RECONSTRUCTED_SHA" == "$TARGET_SHA" ]] || { echo "CANDIDATE_RECONSTRUCTION_MISMATCH" >&2; exit 1; }',
 ].join("\n");
 
@@ -199,16 +209,37 @@ const decoupledAncestryFixture = () => [
   'BASE_SHA="$(scripts/read-production-deploy-ref.sh)"',
   `git show "$GITHUB_SHA:.release/controlled-candidates/agent-referrals-$BASE_SHA/certificate.json" > ${CERTIFICATE_FILE}`,
   `jq -e --arg base "$BASE_SHA" '.base_sha == $base' ${CERTIFICATE_FILE} >/dev/null || { echo "CANDIDATE_BASE_MISMATCH" >&2; exit 1; }`,
-  `RECONSTRUCTED_SHA="$(node --import tsx commerce/src/agent-referrals-candidate-verify.ts ${CERTIFICATE_FILE})"`,
+  `RECONSTRUCTED_SHA="$(node --import tsx commerce/src/agent-referrals-candidate-verify.ts ${CERTIFICATE_FILE} "$GITHUB_SHA")"`,
   '[[ "$RECONSTRUCTED_SHA" == "$TARGET_SHA" ]] || { echo "CANDIDATE_RECONSTRUCTION_MISMATCH" >&2; exit 1; }',
 ].join("\n");
 
 describe("RECONSTRUCTION_BOUND: positive proof obligation for a detached candidate", () => {
-  it("classifies zero real workflows today (the real controller lands with the real certificate, in a later PR)", () => {
+  /**
+   * PR10 lands the real reconstruction machinery in exactly two real
+   * workflows: controlled-agent-referrals.yml (the ROLLING production
+   * controller, which additionally CASes production-deploy to Q via
+   * set-production-deploy-ref.sh) and controlled-agent-referrals-candidate.yml
+   * (publication only - reconstructs and independently verifies Q too, since
+   * that is exactly what publishing the right commit requires, but never
+   * calls set-production-deploy-ref.sh and so is excluded from DEPLOYING and
+   * the ANCESTRY_BOUND-specific check above). isReconstructionBound() alone
+   * cannot and does not distinguish "reconstructs Q" from "reconstructs AND
+   * deploys Q" - that is DEPLOYING's job, proven in the describe block below
+   * ("deployment target classification is exhaustive and mutually
+   * exclusive"), which is where the deploying-vs-publishing distinction
+   * actually matters and is actually enforced.
+   *
+   * This is deliberately a POSITIVE, named exception - exactly these two
+   * real workflows, by exact filename - never a broad "any workflow whose
+   * name mentions agent-referrals" allowance, which is precisely the
+   * name-based-skip failure shape this machinery exists to close off.
+   */
+  it("classifies exactly the two real Agent Referrals workflows today", () => {
     const workflows = readdirSync(WORKFLOWS)
       .filter((name) => name.endsWith(".yml"))
-      .map((name) => readFileSync(`${WORKFLOWS}/${name}`, "utf8"));
-    expect(workflows.filter(isReconstructionBound)).toHaveLength(0);
+      .map((name) => ({ name, source: readFileSync(`${WORKFLOWS}/${name}`, "utf8") }));
+    const classified = workflows.filter(({ source }) => isReconstructionBound(source));
+    expect(classified.map(({ name }) => name).sort()).toEqual(["controlled-agent-referrals-candidate.yml", "controlled-agent-referrals.yml"]);
   });
 
   it("accepts a fixture containing all five required assertions", () => {
@@ -269,9 +300,11 @@ describe("deployment target classification is exhaustive and mutually exclusive"
       .filter(({ source }) => source.includes("set-production-deploy-ref.sh"))) {
       const targetClass = classify(source, name);
       expect(["ANCESTRY_BOUND", "RECONSTRUCTION_BOUND", "HISTORICAL_HARD_BOUND"]).toContain(targetClass);
-      // Today, every real workflow is either ancestry- or historical-hard-bound;
-      // RECONSTRUCTION_BOUND is proven above against a synthetic fixture only.
-      expect(targetClass).not.toBe("RECONSTRUCTION_BOUND");
+      // PR10: controlled-agent-referrals.yml is the one real, named
+      // RECONSTRUCTION_BOUND exception - every other real workflow that
+      // advances production-deploy remains ancestry- or historical-hard-bound.
+      if (name === "controlled-agent-referrals.yml") expect(targetClass).toBe("RECONSTRUCTION_BOUND");
+      else expect(targetClass).not.toBe("RECONSTRUCTION_BOUND");
     }
   });
 });

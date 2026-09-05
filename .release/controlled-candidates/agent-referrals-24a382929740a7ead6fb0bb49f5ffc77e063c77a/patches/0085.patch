@@ -1,0 +1,21 @@
+diff --git old/commerce/src/worker-cycle.ts new/commerce/src/worker-cycle.ts
+index f913740..6d3c0ec 100644
+--- old/commerce/src/worker-cycle.ts
++++ new/commerce/src/worker-cycle.ts
+@@ -1,6 +1,7 @@
+ import type { CommerceDomain } from "./domain";
+ import { recordSuccessfulWorkerSweep } from "./runtime-release-evidence";
+ import { runWorkerSweep, type WorkerSweepDomain } from "./worker-sweep";
++import { runAgentReferralsWorkerSweep } from "./agent-referrals-worker-sweep";
+ import type Database from "better-sqlite3";
+ 
+ type WorkerCycleDomain = WorkerSweepDomain & Pick<CommerceDomain, "collectProviderDrift">;
+@@ -17,6 +18,7 @@ export const runWorkerCycle = async (input: {
+ }) => {
+   const cityInterest = await runWorkerSweep(input.domain);
+   if (input.collectProviderDrift) await input.domain.collectProviderDrift();
++  const agentReferrals = runAgentReferralsWorkerSweep(input.db);
+   recordSuccessfulWorkerSweep(input.db, input.sourceCommit);
+-  return cityInterest;
++  return { ...cityInterest, agent_referrals: agentReferrals };
+ };

@@ -1,0 +1,863 @@
+{
+  "base_sha": "24a382929740a7ead6fb0bb49f5ffc77e063c77a",
+  "source_main_sha": "08f21d2293fcc1d908b2cfe23c0b64d8c4ef7e9f",
+  "patch_source": "controller_tree",
+  "paths": [
+    {
+      "path": "apps/admin/app/agent-referrals/page.tsx",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0001.patch",
+      "patch_git_blob_sha": "afadc139d4e7a30f1539c0b1e9fec2581c0a14b9",
+      "patch_sha256": "6cec9ef260a5cfaf77cc48b96ffd9acad2d4c78df1abd6fbf9b0ddb471406217",
+      "result_blob_sha": "117a4293f36461ac5786ed206dd723e850e66413"
+    },
+    {
+      "path": "apps/admin/app/partner/agreement/page.tsx",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0002.patch",
+      "patch_git_blob_sha": "7709aceb247bb3a3558d2380e6a8179714e8696a",
+      "patch_sha256": "e9e97fb4a01128150831d77f5c5cf65170f12e70b5f5841c2bb25ef897f95279",
+      "result_blob_sha": "98bcd07ecc1e559ad2d881f6ef49810869b02fb6"
+    },
+    {
+      "path": "apps/admin/app/partner/engagements/page.tsx",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0003.patch",
+      "patch_git_blob_sha": "faf84cfcad16f0ffa31e612fd7bab9e990f869ec",
+      "patch_sha256": "b80fdc41cf7f96dcc374cea0642c86ee658113d06213adc62474e12095509a8c",
+      "result_blob_sha": "37f80584ae3c2ab173152a6186158507d23c5a66"
+    },
+    {
+      "path": "apps/admin/app/partner/layout.tsx",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0004.patch",
+      "patch_git_blob_sha": "de34dd92cd6426402e38e192354b20484ebfc501",
+      "patch_sha256": "f1bfb174fea4e04dbd27394e98b39d4bd69be9c8db14b8a5b56de61e31c20bc9",
+      "result_blob_sha": "ee67b3234d94a781c61df212c6490b478178d4c7"
+    },
+    {
+      "path": "apps/admin/app/partner/login/page.tsx",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0005.patch",
+      "patch_git_blob_sha": "35096d49c80725ec8148b37dc30c7465ce3a3d20",
+      "patch_sha256": "d4be7b4d2614449a4611a956f5bca9b65c66841c8fe8b8f6caab0580b0befd4a",
+      "result_blob_sha": "8b762f0bd1de1fba845a229de3e036195c9ac655"
+    },
+    {
+      "path": "apps/admin/app/partner/page.tsx",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0006.patch",
+      "patch_git_blob_sha": "1212e6be40cd5595b622b94b360e1c4ecf5a456b",
+      "patch_sha256": "b858aac56d9b162d419b55f2d221f62a058b56858715fa692cff55e68cb977bc",
+      "result_blob_sha": "eafa3b332374e77675c68eb7d9cc78d417a71fe6"
+    },
+    {
+      "path": "apps/admin/app/partner/payout/page.tsx",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0007.patch",
+      "patch_git_blob_sha": "a128b3322dcef06d94d068c6714f2a72da3f5db5",
+      "patch_sha256": "f476546cbdadc0cde5f718a3c97b8a5b0c2d966904ee6d618d6fbbc3d9f69f6d",
+      "result_blob_sha": "6d968e0adfcd752b884896c394f46bea2c61dfac"
+    },
+    {
+      "path": "apps/admin/app/partner/profile/page.tsx",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0008.patch",
+      "patch_git_blob_sha": "c46bf922456cd648fa93b07fd78de1493038b5b1",
+      "patch_sha256": "753fc96b29712b1f5eb9638f89e5a5cb23a2929a90656b5c8e7148760995a140",
+      "result_blob_sha": "4db164bf672b528930b5851615e13c27890eaad5"
+    },
+    {
+      "path": "apps/admin/components/AdminApp.tsx",
+      "kind": "MODIFY",
+      "mode": "100644",
+      "base_blob_sha": "ae5fd3961e9f862dcaf2ee67e1a7b3bc663d87d0",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0009.patch",
+      "patch_git_blob_sha": "b619828d3b623fd89a8f0c031bda37c57212794a",
+      "patch_sha256": "b4a437342f3b4348d7b87d70047aef3480802d2aeb4af2ef3e9a85213034c675",
+      "result_blob_sha": "51e026254e0a953157fa305ce501119bb81aeeda"
+    },
+    {
+      "path": "apps/admin/components/agent-referrals/AgentReferrals.tsx",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0010.patch",
+      "patch_git_blob_sha": "03249ba5182a00691e3c49ece73221a3c9694da3",
+      "patch_sha256": "0d6a167d36a6359714fcb9bf0d25cd092f7c42b228a00d792edb047179d192f6",
+      "result_blob_sha": "78b1f784d0bbcf8315845b2f2b123db6185c6bfa"
+    },
+    {
+      "path": "apps/admin/components/agent-referrals/ChannelPolicy.tsx",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0011.patch",
+      "patch_git_blob_sha": "b38d4af3adb19b4495794462b780a9c53cd3381c",
+      "patch_sha256": "6d131aca61cb73d3dddd1d13db284bce730154e79b105d2e66a952d2aced0e88",
+      "result_blob_sha": "65ad801b618f49def6a6f655ea835cc4ee592edf"
+    },
+    {
+      "path": "apps/admin/components/agent-referrals/Engagements.tsx",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0012.patch",
+      "patch_git_blob_sha": "f9b05d5f1a9603a9f7afd0cea04ba0b97d275e3e",
+      "patch_sha256": "87d3bc8c072cb0ba9e8a94f9e45fb3ce36fe967e64f74e83f03d82d3fd1b9491",
+      "result_blob_sha": "6d869abe2d9e4d87e3701fbc6e6b378ee07dff5a"
+    },
+    {
+      "path": "apps/admin/components/agent-referrals/Overview.tsx",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0013.patch",
+      "patch_git_blob_sha": "156c6ed7a77a28920fec81b33dc7e10d7c65be02",
+      "patch_sha256": "2a64d740ae086112273c53ff05749497d677b03ed45962dde92e5fbd34b57534",
+      "result_blob_sha": "7052baec8e568eb7dd9ebe9fb556d3d205c7f4e1"
+    },
+    {
+      "path": "apps/admin/components/agent-referrals/Partners.tsx",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0014.patch",
+      "patch_git_blob_sha": "375eee84d3595ee4baf53e2d5b5b7c9a19b15894",
+      "patch_sha256": "e15ae1eeca786bd57497ecbed41caae9d1cbeb295a8613adf73ae4ccdc48740d",
+      "result_blob_sha": "86a8fad53c1ef0002d3654b3863d06bbb0de86ad"
+    },
+    {
+      "path": "apps/admin/components/partner/Agreement.tsx",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0015.patch",
+      "patch_git_blob_sha": "1447307071aa32aaac882b196a04823a6ec8f2fd",
+      "patch_sha256": "f65490133db96f997556913760c279c249583942e773d27fa2a7a9aa9614958d",
+      "result_blob_sha": "7d37c3930a6533086c26d118203b0c891a980b41"
+    },
+    {
+      "path": "apps/admin/components/partner/Engagements.tsx",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0016.patch",
+      "patch_git_blob_sha": "f18f4d8793078c8c282c60f53fef58e816521e02",
+      "patch_sha256": "fd866923ec69b46957170e78db32550a8d3833d511cd0e55c1a693a87f838283",
+      "result_blob_sha": "d8e9d2f922a33972f0fc03b5f460703123beb186"
+    },
+    {
+      "path": "apps/admin/components/partner/PartnerApp.tsx",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0017.patch",
+      "patch_git_blob_sha": "b804450f5f7c71f89224cc9bec422c2be0cbcfb7",
+      "patch_sha256": "219b74199d2eb83dd85eeb988e539609192a107bbc94917aae23ede2d84a1160",
+      "result_blob_sha": "67ad53e2958e687ac559e658c0189619f4fb61c8"
+    },
+    {
+      "path": "apps/admin/components/partner/PartnerLogin.tsx",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0018.patch",
+      "patch_git_blob_sha": "6e78b249f559942119f2440d4067c755eeb1c0f7",
+      "patch_sha256": "74ac58256c16ab2d705ee0c1a412dc4c37954012ef55f7dbbe3c1478b13234e3",
+      "result_blob_sha": "1100091208f2edc0148905d66f50739308ddbc65"
+    },
+    {
+      "path": "apps/admin/components/partner/PartnerShell.tsx",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0019.patch",
+      "patch_git_blob_sha": "1720ba9939b3da2954534f0dd5af0ca2a373c503",
+      "patch_sha256": "30214856e349fe05e9f022ae225fd31393ed7fa37a5de8c712a092514dd9b7f6",
+      "result_blob_sha": "3ecee80ef3a23dd493981445d38663125c994444"
+    },
+    {
+      "path": "apps/admin/components/partner/Payout.tsx",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0020.patch",
+      "patch_git_blob_sha": "5040fd4a6eadd6215fb388ddba10a4c2b6ae966b",
+      "patch_sha256": "7a6a0b5cd5dca828f9ceb28be25a8cc44731803089f3ebc23298c928510afd4e",
+      "result_blob_sha": "d496c8f49a90067a6e61396403380e34fbbd5353"
+    },
+    {
+      "path": "apps/admin/components/partner/Profile.tsx",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0021.patch",
+      "patch_git_blob_sha": "cfebf2b70596a7ff4631bec9d1d463b523e093f1",
+      "patch_sha256": "1667acc080a71d8291c87b0baf77cefe89280825ebb97730ca7c55df8f8e6afa",
+      "result_blob_sha": "690072aa209106f96b60866d409baa9fe05fc9c3"
+    },
+    {
+      "path": "apps/admin/components/ui/Shell.tsx",
+      "kind": "MODIFY",
+      "mode": "100644",
+      "base_blob_sha": "0e0a2660ef5c81842ed95eb0ba7564481c599af4",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0022.patch",
+      "patch_git_blob_sha": "0c69495659afc45e617169ddbe13f79b253ff786",
+      "patch_sha256": "fac8a7145c97da3b53089229bf0484d48b79197fe40bd4648103e89e08b30513",
+      "result_blob_sha": "b8f7e0fdf35f6f28b559a3932f1edf611d21030d"
+    },
+    {
+      "path": "apps/admin/lib/page.ts",
+      "kind": "MODIFY",
+      "mode": "100644",
+      "base_blob_sha": "21fe4985e1f21654a0eb5c2e2f26b0d46cbc932b",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0023.patch",
+      "patch_git_blob_sha": "8cbf8bb94427188e600605875e064c7f19af4af4",
+      "patch_sha256": "68932a08897430738250c1e01119306718a447d74eb76bced2081b010dceece4",
+      "result_blob_sha": "488db94bc14f82eb16e8e7665ce4e1bf905f56d5"
+    },
+    {
+      "path": "apps/admin/lib/partner-api.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0024.patch",
+      "patch_git_blob_sha": "e33aeac81288049c1d43f644125018543da98b8e",
+      "patch_sha256": "ebc66984eaf9ff7450f4cf328cfcfc8a97580b58b099d7239d3208601f83e32e",
+      "result_blob_sha": "b1384d148220b99c2fe45aa847912f3a6411f8cf"
+    },
+    {
+      "path": "apps/admin/lib/partner-page.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0025.patch",
+      "patch_git_blob_sha": "065d59ae9e67b5e913bc26f6b6bac665a0e1b1d7",
+      "patch_sha256": "ba606c25bbb78d9d84b39ab3f51d15a8694a083a0fe59e7e79e91656a61ab74a",
+      "result_blob_sha": "e9d51e23488b5cc79f984f4f4f5e3463897a0189"
+    },
+    {
+      "path": "commerce/migrations/0042_agent_referrals_agents_rebuild.sql",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0026.patch",
+      "patch_git_blob_sha": "e19e0b526ba47ced135fd1a89f09b92977b8ef4e",
+      "patch_sha256": "2e7b8869a12fa121ab3efee346b9560ebdbca1bb0ad98f877a7c680a05dcd311",
+      "result_blob_sha": "75b3dc7d88dd72a00da5acbd1b0c27562c2f1670"
+    },
+    {
+      "path": "commerce/migrations/0043_agent_referrals_foundation.sql",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0027.patch",
+      "patch_git_blob_sha": "cfc7694551badbdc84678c4bdc62b19472595520",
+      "patch_sha256": "8c221748daa049bced9209509b04c9292a86fe9261d8a0d887c509a157435bf7",
+      "result_blob_sha": "badfcc64f8484e550773f6169a27a2d5888b19c2"
+    },
+    {
+      "path": "commerce/migrations/0044_partner_identity.sql",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0028.patch",
+      "patch_git_blob_sha": "7360671b59e470d2f6837a7dad7bd960ce04edd6",
+      "patch_sha256": "ab8d00b8bb0dd20ac41527f692594db668bf0b9de96efe82ae8a74506921e5ca",
+      "result_blob_sha": "051d1025438de22fc2c6b268c8839ee8539a1adc"
+    },
+    {
+      "path": "commerce/migrations/0045_engagement_publication.sql",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0029.patch",
+      "patch_git_blob_sha": "6ac4e782cf5b3a27ac99a3c41cf0b5539f424f6e",
+      "patch_sha256": "c227adf9c5bbd348277a6ad2b244a58b9f607d2a552b52b2b64da2722444f1be",
+      "result_blob_sha": "176a99c1a9b098a8c3a1b4501685fd2040860900"
+    },
+    {
+      "path": "commerce/migrations/0046_attribution_reward.sql",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0030.patch",
+      "patch_git_blob_sha": "b89025b4c887da6a7b9471fbc9249cc178e71f37",
+      "patch_sha256": "a38787ce4ba3981b83cfc474c47ab9be694b110c8b78884a9659e901b65a839f",
+      "result_blob_sha": "bcf8243cd83abdaa89d3041f540045a91247c28b"
+    },
+    {
+      "path": "commerce/migrations/0047_act_payment_settlement.sql",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0031.patch",
+      "patch_git_blob_sha": "4f5fadab05733a6bca8e6bcb0b5cab3ccf466877",
+      "patch_sha256": "060de9206c6fb30dabfdb6ab9aea8d743e880e203311a799aeb39c6f8a58bd49",
+      "result_blob_sha": "3020bf9b3c532c398d4b7d5be7d6690714de64bf"
+    },
+    {
+      "path": "commerce/migrations/0048_ord_reporting.sql",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0032.patch",
+      "patch_git_blob_sha": "c744b1a59cdd45fe2691b58af2a91143e92b8c01",
+      "patch_sha256": "484c05b2f07b2432aa11476d74c49ffe88f9044708819b6119fb63ba6ea0e8df",
+      "result_blob_sha": "bcc878d32a42e6e3ddb9ef309b3aac3c20beca79"
+    },
+    {
+      "path": "commerce/migrations/0049_agent_referrals_integration_hardening.sql",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0033.patch",
+      "patch_git_blob_sha": "b0f6fda404adffa963217c6e637a337772caa7f7",
+      "patch_sha256": "748a95bb4a94e83d3ca214761197ec4e0c0d9685547b5b13af399a83124e19a7",
+      "result_blob_sha": "1010bbb416a6067d43841201c1e1354cc5a129f1"
+    },
+    {
+      "path": "commerce/src/agent-referrals-act.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0034.patch",
+      "patch_git_blob_sha": "0c4d2fa489c659adb446970266f23c22c64e7cdd",
+      "patch_sha256": "16c17cc0223d895a1689cf6298b3016eec0c8872456535a54dbd3313a77d6a83",
+      "result_blob_sha": "852b5f5641cc1d6e59b0e06ea74c4fa32c96803a"
+    },
+    {
+      "path": "commerce/src/agent-referrals-activation.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0035.patch",
+      "patch_git_blob_sha": "84e6f3eb1af550b1a5f3f5759d06cd9246b78fa9",
+      "patch_sha256": "d6d065abdaba44033da3f464b2cdc6a328c77277ae03d9f91158b3733bca2f7c",
+      "result_blob_sha": "5f4cb67b10afd74c57e27e1614efd17d1468d71b"
+    },
+    {
+      "path": "commerce/src/agent-referrals-api-admin.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0036.patch",
+      "patch_git_blob_sha": "1771c580b677fffd3edf4c85d49eeb570e6ebbd0",
+      "patch_sha256": "b55af541663e11b45285dd96fd0545713f4a75943092dec8270b24b6e028f4c8",
+      "result_blob_sha": "925012b530f778e0db2356ef76464b8cfa8552c6"
+    },
+    {
+      "path": "commerce/src/agent-referrals-api-partner.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0037.patch",
+      "patch_git_blob_sha": "9d404c0e152f590c8687a02ba258579d7933681e",
+      "patch_sha256": "bb22a53de06db2d6499f07d9fdd4f243d0bc39aeba1ada020514023687190897",
+      "result_blob_sha": "9336250f09022249820024ab1ef11fb1870e7127"
+    },
+    {
+      "path": "commerce/src/agent-referrals-attribution.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0038.patch",
+      "patch_git_blob_sha": "e7995c3449fdc0411ca455eced3cd90fe20eed50",
+      "patch_sha256": "496befb400e2526ef809b35e21c818a74cd6f3bf75617d2bf2142e03235afd0a",
+      "result_blob_sha": "b8187f9bdf1d132927f8de5274c90586c18db9d0"
+    },
+    {
+      "path": "commerce/src/agent-referrals-audience-verification.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0039.patch",
+      "patch_git_blob_sha": "93fe899ccd59e30d205e28f94c5faa3072999f36",
+      "patch_sha256": "d3ea513f87951add8a67008ed369c852878b74780147440deed12971a0f0093a",
+      "result_blob_sha": "c4c0392d1baf2dae339173c085fbba89592a4ce5"
+    },
+    {
+      "path": "commerce/src/agent-referrals-channel-policy.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0040.patch",
+      "patch_git_blob_sha": "354893c4615e14d3661572edb2c7e0b8ff8236a6",
+      "patch_sha256": "c8e15dbd8fd6449e12191c5c695bf7b3b1d1bc47f891ed6337f07c80dac01e44",
+      "result_blob_sha": "be98169f0ebd731c2582feb0f25b1cdb4349cac3"
+    },
+    {
+      "path": "commerce/src/agent-referrals-creative-readiness.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0041.patch",
+      "patch_git_blob_sha": "293f5f40e7bac07af9d844692c486db88899fa4c",
+      "patch_sha256": "10c8dd49de4ee7f1953919bb2c6711c39d7fab2a976cd701819f5fcbb3f60883",
+      "result_blob_sha": "d35cb7037ce1c258117b6d724df58a0cc19f03fe"
+    },
+    {
+      "path": "commerce/src/agent-referrals-creative.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0042.patch",
+      "patch_git_blob_sha": "9e331db4276efd8ffbd927b979638d8ce347accd",
+      "patch_sha256": "2ca89e9e3ca7d5202b5df66cb477dead239f4d7468d0eb0e024d64b0b67875d2",
+      "result_blob_sha": "7243f6f8cecb72b4aa4e16dc242cca0bbdf0198f"
+    },
+    {
+      "path": "commerce/src/agent-referrals-delegation-revocation.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0043.patch",
+      "patch_git_blob_sha": "4aa65a98b63641238f0f1b5e44411cc14a707044",
+      "patch_sha256": "61eb2a927bae7a8f52332ccd8f0533e87e257778bf54f7049bb23cb24be52838",
+      "result_blob_sha": "005c201ecd3d1ad67390a2c716239308476f67c3"
+    },
+    {
+      "path": "commerce/src/agent-referrals-distribution.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0044.patch",
+      "patch_git_blob_sha": "70cde85305d9c2b34a3c7604ebba21f14e6f5b38",
+      "patch_sha256": "000797a60b5bb78480170cfcb54947ae35fd3c5024debcb58eaa630e61e9bafc",
+      "result_blob_sha": "ca589e977c03ce6d377fe2ab44ae63a51eb7ec48"
+    },
+    {
+      "path": "commerce/src/agent-referrals-engagement-closure.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0045.patch",
+      "patch_git_blob_sha": "1843ca6fbc7c1f1406125af7d5765b8580ef435c",
+      "patch_sha256": "55fbde10c87473e94073d4a3be0373e21db31b6bb1ddef855922cd617b0a21b2",
+      "result_blob_sha": "27db57c658a29e4dc5ab9dc51d2c1d3770390133"
+    },
+    {
+      "path": "commerce/src/agent-referrals-engagement-step-up.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0046.patch",
+      "patch_git_blob_sha": "b9db40426de12f20150dd91cebc374ffb07df19f",
+      "patch_sha256": "84b7395d12b4d8b6b0d246fba6ae4c9bd651f69c72bd8d544e4165f5b786ddde",
+      "result_blob_sha": "e481f6e88baab5a9154f64d14bde7672a2ae4c9e"
+    },
+    {
+      "path": "commerce/src/agent-referrals-engagement.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0047.patch",
+      "patch_git_blob_sha": "d1997042de5b6bcf0f32661877ea6ea98b04312b",
+      "patch_sha256": "b2349a7f4b2daa2f82bac67be22ddd7823578ded9762c21881c6be3c55f18983",
+      "result_blob_sha": "be577eb4752f24bedc1846b7d26e99acbda842d2"
+    },
+    {
+      "path": "commerce/src/agent-referrals-feature-state.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0048.patch",
+      "patch_git_blob_sha": "6d95c54d68a1476cdd64868845a7cb8281b5e8fd",
+      "patch_sha256": "f00a538a7acb3ea1844ef1864bf5461de370b573d9693e0ab0224ea3aea08992",
+      "result_blob_sha": "fe805b3e32bb2273cd4b8d80849af3902d4c547d"
+    },
+    {
+      "path": "commerce/src/agent-referrals-framework-acceptance.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0049.patch",
+      "patch_git_blob_sha": "40852a094fb14783deabf13140a62654e39e00fb",
+      "patch_sha256": "4155f7cae0c815074f30928b2b2199c07088f557478fabb6abcd3a3b7c057d4c",
+      "result_blob_sha": "68bf92ded1e5ec30f1a0735d7eb83153ed230706"
+    },
+    {
+      "path": "commerce/src/agent-referrals-framework-delegation.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0050.patch",
+      "patch_git_blob_sha": "d1f1efc099050108f016d83ba64aadb443b177a4",
+      "patch_sha256": "80892716474b89b2615e51fa424a10e22e916e7f364248c5de846ae57eb9fa5d",
+      "result_blob_sha": "e7902a3bb4afcd925007664046406a9c57cfc38a"
+    },
+    {
+      "path": "commerce/src/agent-referrals-identity-retention.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0051.patch",
+      "patch_git_blob_sha": "6c7f35c24ba2ed4e3c777653ffb5cc508747cee5",
+      "patch_sha256": "b1a0e9c06740f0f1070fa994d1a513f596030c2ed2c2bf3f0144cdae6aa08872",
+      "result_blob_sha": "3fd6b8b95537eb6f6d63c0591e4ac8656b512a97"
+    },
+    {
+      "path": "commerce/src/agent-referrals-legal-profile.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0052.patch",
+      "patch_git_blob_sha": "3cb4bea8d69d5e628a142c7c64b552b961402d04",
+      "patch_sha256": "4f0a399d2485919355aa117e057ab53bcb429594a7e791a6e75547328c26f2a6",
+      "result_blob_sha": "9ea276a33b11a4756bc7d8a36ae305be3d42d940"
+    },
+    {
+      "path": "commerce/src/agent-referrals-login.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0053.patch",
+      "patch_git_blob_sha": "0432bd04a94bfcaeb0e42d39402f79617259624d",
+      "patch_sha256": "f9567d15f54417fa3a3d3c7c62fa6b5cd35a770417faffa1479a2e1f97e2a407",
+      "result_blob_sha": "9c0ab974d445dec0c0777fb80f1b8959c300ad4c"
+    },
+    {
+      "path": "commerce/src/agent-referrals-npd.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0054.patch",
+      "patch_git_blob_sha": "4c85a8e7d87b04b342ba340792d65dc66d85c4cb",
+      "patch_sha256": "f2abf8c86807c05cfd6f0ae1cf048860da33be1787ef716a92dab0d31ca4be9f",
+      "result_blob_sha": "78b2a408fc9b4110b5131e5aaefb2a1203072646"
+    },
+    {
+      "path": "commerce/src/agent-referrals-onboarding.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0055.patch",
+      "patch_git_blob_sha": "85c0c7ea9531a4be26751aa4bcd471e7a87dded0",
+      "patch_sha256": "d80d9c2c7bb340a9ecca68accb9e929d55511ce9eb9d458cd99c03654182e26a",
+      "result_blob_sha": "905c0694b0ef1e36c1987d9984baedeb723c7638"
+    },
+    {
+      "path": "commerce/src/agent-referrals-ord-creative-registration.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0056.patch",
+      "patch_git_blob_sha": "bdce7723a23253077fefbaa550cb3bd2f7a44ae0",
+      "patch_sha256": "12e794e4d443ed1dbe4e44266791f2ab7ce9947edfff975e98daa9c5d504a070",
+      "result_blob_sha": "af360928b70acc5b3673af07306a59bb002402bf"
+    },
+    {
+      "path": "commerce/src/agent-referrals-ord-operation-key.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0057.patch",
+      "patch_git_blob_sha": "f6344dcb0a30bcb9e87c6b09ba21123e7b9f1ee3",
+      "patch_sha256": "01230f2ff9887728151c6d5b2ae72b7be72ae8a68f55538ac8540323ff70f678",
+      "result_blob_sha": "7d9dca263da3729078d1617082dca1b80b1ddc6c"
+    },
+    {
+      "path": "commerce/src/agent-referrals-ord-paid-invoice.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0058.patch",
+      "patch_git_blob_sha": "50f603e9b2351be1e00f5c8c36990be0abb58b56",
+      "patch_sha256": "33a9c8fa0500eaa11ad79effdfe1438f39df9959c3c1f22a9262e75b372a6b5c",
+      "result_blob_sha": "9c48a3849b38345b55d2dee722b0409b8e53e5fa"
+    },
+    {
+      "path": "commerce/src/agent-referrals-ord-provider-operation.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0059.patch",
+      "patch_git_blob_sha": "3801a7e9d3aa5cda6cebcb4fa981eec9945d7ec5",
+      "patch_sha256": "db555273a0b5856b50431abc20fd53f8a61e686a9eb2eabfdb609e016fcbd015",
+      "result_blob_sha": "70e183e26fdabd38096de650bc322a05c9a7b856"
+    },
+    {
+      "path": "commerce/src/agent-referrals-ord-provider-profile.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0060.patch",
+      "patch_git_blob_sha": "2ccd61a94d5d8f0143114c36170237bf68f1df4f",
+      "patch_sha256": "a668e8d0d96dfac2e7c9d389490cf74ab348a12b26873d51706fc6ec05e3a72a",
+      "result_blob_sha": "02478dc123b6fd7e80a7e4e8faaf2a5c345a1b68"
+    },
+    {
+      "path": "commerce/src/agent-referrals-ord-reporting.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0061.patch",
+      "patch_git_blob_sha": "172b9a40074eed87a3703c35580921367398738a",
+      "patch_sha256": "1a0fa7d17e7ff1060f1bafbd837d7a9fb05160f355936ffe2a840808e1dcb309",
+      "result_blob_sha": "1997334b286a93abb86568816d4c27ee35132cf1"
+    },
+    {
+      "path": "commerce/src/agent-referrals-otp.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0062.patch",
+      "patch_git_blob_sha": "eae2a7ea3fb0dc97e9a821543f78641e7a1a0eaf",
+      "patch_sha256": "891a144502315a108f6c04b8ab13cad63a3711093fb8988588e6e3b55b8f5508",
+      "result_blob_sha": "c8afe9ac19b800866b81a6bdb8dd9adbcac7bb2a"
+    },
+    {
+      "path": "commerce/src/agent-referrals-partner-auth.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0063.patch",
+      "patch_git_blob_sha": "3e8969bc5977fb3c64b30745bb4ac9b4575ab3fc",
+      "patch_sha256": "43d52338b08c8bbe3db44b71591fa66ebf1caeb322ca2dc549e3ed144574ec00",
+      "result_blob_sha": "4ffcd2f90fa627ada597baacab23c05005eef7e4"
+    },
+    {
+      "path": "commerce/src/agent-referrals-partner-identity.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0064.patch",
+      "patch_git_blob_sha": "6d75a53103404fc59531f3375c23bfed02c91fd6",
+      "patch_sha256": "99ca50d1477392515da6a21815db1c53ff7a30e07b3d519a3ed2f209954b7e23",
+      "result_blob_sha": "37bf853c7b3713dbbf0fb9ee4691761dbb057092"
+    },
+    {
+      "path": "commerce/src/agent-referrals-partner-projection.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0065.patch",
+      "patch_git_blob_sha": "f3871a8ffbc903451d1b5acf8c74be8459534015",
+      "patch_sha256": "bf18478ac3125fa210883266d62189b63d3bd09a71e3878c9c1ec293bf72ae0f",
+      "result_blob_sha": "7b0e18b975621689175f7d26f20cd8235e969063"
+    },
+    {
+      "path": "commerce/src/agent-referrals-partner-promo-pricing.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0066.patch",
+      "patch_git_blob_sha": "6c853101ee78d77ab54f365db8408ea81dec7ab3",
+      "patch_sha256": "3ba7f850ba8a313d5c01a68da4af724a59f74cc04664d169f37058930890b41a",
+      "result_blob_sha": "389a02e0be02ca637dda0de6b4d79f24b8d94eaa"
+    },
+    {
+      "path": "commerce/src/agent-referrals-partner-session.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0067.patch",
+      "patch_git_blob_sha": "8e071f5e313991549c497cc7954fb740e435b3c3",
+      "patch_sha256": "56ca7163e0dbcd1b22f7a03c98d94cfa1a22cc0c39cc9ce3c476d8b5a93589ae",
+      "result_blob_sha": "ad71a9476a5f75d7e5bcb54efb2cf533490dd636"
+    },
+    {
+      "path": "commerce/src/agent-referrals-payment.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0068.patch",
+      "patch_git_blob_sha": "28fdca3724fb34e15fc7a39d7bd32e72f28f1a62",
+      "patch_sha256": "e0aee61e24205e19c45d738f1ecdfa8cbf324506914240b8df2667956358c804",
+      "result_blob_sha": "7b3c15cd77bc0c76dfdb96b05c5bf797ed09f0b1"
+    },
+    {
+      "path": "commerce/src/agent-referrals-payout-encryption.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0069.patch",
+      "patch_git_blob_sha": "df3063381ea7bb5a0d18a4d6d660ba78c62a9f86",
+      "patch_sha256": "852c75bb84f221f616cab2477e42e92d93c58034f1e921afbc2b827f2c6d7c2c",
+      "result_blob_sha": "27da8514070e786892091e3028f9513116c7b985"
+    },
+    {
+      "path": "commerce/src/agent-referrals-payout-profile.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0070.patch",
+      "patch_git_blob_sha": "8cf9c0df62aacbf8adadefa56ba93f6025a2952e",
+      "patch_sha256": "24899f1bb2eeddd0682a5c204e38f7b1d38d82e14446f1dc66a90cf33a37aa82",
+      "result_blob_sha": "092d2fbab51e3774f8bf2485031c6666c1a94a90"
+    },
+    {
+      "path": "commerce/src/agent-referrals-promo.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0071.patch",
+      "patch_git_blob_sha": "85981c0eccf21efde35919552b2e03c217d9637d",
+      "patch_sha256": "873378d25e1af892fd686bb4e4737b34c72ff479340fa819ec753aee1887e460",
+      "result_blob_sha": "894df9fdf9653bb484e622d2a237e2fb78817ae7"
+    },
+    {
+      "path": "commerce/src/agent-referrals-review-queue.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0072.patch",
+      "patch_git_blob_sha": "a9624ee44e94619c1f894bcb19954451d2e8e675",
+      "patch_sha256": "f2d2faf9d616645a730b358bbcfa39452591626746cfa22ad449526b79c32b47",
+      "result_blob_sha": "496ca3a47e0d9cfaad0f79b49c9f3d17c0a2e6e5"
+    },
+    {
+      "path": "commerce/src/agent-referrals-reward-registry.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0073.patch",
+      "patch_git_blob_sha": "d3e5ef8b1657a5e5a041ba79365024bb5ae56b24",
+      "patch_sha256": "17329913902a809ec4769b0e4dbd314af123a20df814d636cc9270ce32c38007",
+      "result_blob_sha": "15c8c6bf337e236870acd1792c300c6dd01643cd"
+    },
+    {
+      "path": "commerce/src/agent-referrals-settlement-step-up.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0074.patch",
+      "patch_git_blob_sha": "5b20e309d88988c5ba917e011d1c55a8d88b6642",
+      "patch_sha256": "4b6cbea7ebead90d710a3d5ddd589c06b81aced8c4ed4837f3c07e8bc976c347",
+      "result_blob_sha": "4f00b677d703279eb2b131d7657fe5ceee48cb47"
+    },
+    {
+      "path": "commerce/src/agent-referrals-settlement.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0075.patch",
+      "patch_git_blob_sha": "b1bc67bed7efaf419fb7158445e285dd46680f99",
+      "patch_sha256": "18f2dfd40dcf4f3987d5653d9255ec6c746132e6600edb70b35a0a2bbbe033ca",
+      "result_blob_sha": "d46192d5bb9e7fd6fcad74a16538536ae486e979"
+    },
+    {
+      "path": "commerce/src/agent-referrals-step-up.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0076.patch",
+      "patch_git_blob_sha": "525e72814ab822cc8dc6e1b4404c1c088bb5cb45",
+      "patch_sha256": "469e911b4efc61f2313adc4da8915a2d1be14f929d38980f02fddd633b196c5b",
+      "result_blob_sha": "5edcd862f6000243ab57fff549b2b6d212107f69"
+    },
+    {
+      "path": "commerce/src/agent-referrals-suspension-policy.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0077.patch",
+      "patch_git_blob_sha": "842ac02d2a3411695d609cf312455f266d56cdda",
+      "patch_sha256": "6e9a047baf6be6d12d85fb4bd81da55bcae2b086b6f8f1ecd6f287f232eeb19c",
+      "result_blob_sha": "5f6ba56585102b9ccea5775ec3d3d7bdf8f41cde"
+    },
+    {
+      "path": "commerce/src/agent-referrals-worker-sweep.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0078.patch",
+      "patch_git_blob_sha": "aaebd25bfda6eb4f9e7995410765bb03436905af",
+      "patch_sha256": "43bc0ad1b4c0a90c7e060c4a03ae6703357c74351a3e02e0e021eba32ec16a21",
+      "result_blob_sha": "a4390175c67cc7b743adfb53874657a8a630a169"
+    },
+    {
+      "path": "commerce/src/agent-referrals-zero-reward-closure.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0079.patch",
+      "patch_git_blob_sha": "81e2e2a50c07f31f60a20ecdafd5c49e5ec9e199",
+      "patch_sha256": "a864ecb686988fa139054c8970c0c57cee5fb5c99f6197e746db7f0b230c3e08",
+      "result_blob_sha": "35bb5a1c179f5147b223692202ca0c473740e432"
+    },
+    {
+      "path": "commerce/src/api.ts",
+      "kind": "MODIFY",
+      "mode": "100644",
+      "base_blob_sha": "81a4040d0a9419c246d0713d32f44ce668705abf",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0080.patch",
+      "patch_git_blob_sha": "dc33f663f03778e5bd340d8c7778a5c5dbd8de12",
+      "patch_sha256": "d54a34a8d898203b7f1feeb2317eeffd7d88d0431d8cede7367ef6d12b936f7d",
+      "result_blob_sha": "919c8bbb9edaa5a7e6e1e5e475d0fb5f8bd52925"
+    },
+    {
+      "path": "commerce/src/db.ts",
+      "kind": "MODIFY",
+      "mode": "100644",
+      "base_blob_sha": "7cf5840196be0d6db36e7b52198bdd706ef388d9",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0081.patch",
+      "patch_git_blob_sha": "842e47a69132b0100bb834cb0f5ded0213a91ee3",
+      "patch_sha256": "568bf063aa6586afc250da4addec20601d288d37f2e034b98d7cc076de488145",
+      "result_blob_sha": "a0678cedf9720caea49c35703fd1b2147f8e5463"
+    },
+    {
+      "path": "commerce/src/domain.ts",
+      "kind": "MODIFY",
+      "mode": "100644",
+      "base_blob_sha": "0b96d0752823186d86885d1388bc6b8f4370273d",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0082.patch",
+      "patch_git_blob_sha": "30f86098ed36c224a59f39141d4b61e7e7f90549",
+      "patch_sha256": "843bc26097c5c5826f947c5e60a7f61ae01300d52bd434c1f670fd1d697428a7",
+      "result_blob_sha": "73795dae681c3477cf8512c2078219ed75c82ebb"
+    },
+    {
+      "path": "commerce/src/reward-calculation.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0083.patch",
+      "patch_git_blob_sha": "e7b7820cb6810f37a139b8f8908d916c85cbd86a",
+      "patch_sha256": "dd336db4c904a1a5fccc66d6392e23fc6a1d4461536cd11ffb943a29b512dc47",
+      "result_blob_sha": "e5139fc809be0569eab82b6c605a89a9268e7d98"
+    },
+    {
+      "path": "commerce/src/types.ts",
+      "kind": "MODIFY",
+      "mode": "100644",
+      "base_blob_sha": "f8b20060f0ed7e56937ee4bfddab10e68e22f9c0",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0084.patch",
+      "patch_git_blob_sha": "316d1d0c934ca3f1eb88f76ee3a7e2a38c2b96ef",
+      "patch_sha256": "aba3ddbf1cbfa3b7739a816cc32d9da1054ffcbe2f8bf54d90cf5b7fa4be53c6",
+      "result_blob_sha": "bd38a9509e05df63cb70714763129a0115c2e011"
+    },
+    {
+      "path": "commerce/src/worker-cycle.ts",
+      "kind": "MODIFY",
+      "mode": "100644",
+      "base_blob_sha": "f9137405a3713923b73c41dbfbd460f3e6c3262d",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0085.patch",
+      "patch_git_blob_sha": "290648cbb7fa836f9ce553ceae326d9a7143ae91",
+      "patch_sha256": "a6b7a956f16c7fbec10e3b55d807adcadc0b28f19c13f61ccfa5fdb7af7f2e1f",
+      "result_blob_sha": "6d3c0ecd2139789663eb03ae64500d1b548dd2bc"
+    },
+    {
+      "path": "commerce/src/worker.ts",
+      "kind": "MODIFY",
+      "mode": "100644",
+      "base_blob_sha": "fbabd73d4fd207722e0dc23c6562791b5a502def",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0086.patch",
+      "patch_git_blob_sha": "d5e7fa8b6fdb1c3f007d5465d0186d87d6f00fb6",
+      "patch_sha256": "40df22d318cfcd8730398dc3c359c4a90d506dc0222bdd049080c0e010553e5b",
+      "result_blob_sha": "3f9bd63cf5f1f217bf41c4fd5461d97eea7b13f6"
+    },
+    {
+      "path": "deploy/Caddyfile",
+      "kind": "MODIFY",
+      "mode": "100644",
+      "base_blob_sha": "fc365712b65f6add53ee2eddfb38168ea78687d7",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0087.patch",
+      "patch_git_blob_sha": "aef1349b84c119b618a3fdc8a629e3ad65e1df79",
+      "patch_sha256": "13992455b93423780e1f164b9915c3d0915f3d2186eee6e6b3ef578920aa9596",
+      "result_blob_sha": "fb059b5f30df9404163d9d5671d87d2abb0cf321"
+    },
+    {
+      "path": "deploy/admin.nginx.conf",
+      "kind": "MODIFY",
+      "mode": "100644",
+      "base_blob_sha": "71805a72fa4c9570bbb20d4a950543356bf37aa5",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0088.patch",
+      "patch_git_blob_sha": "062401c812bcd329fd49c552403d9eedc9caceb0",
+      "patch_sha256": "0e614059083198b5f30a0388914de696bb76dab95acaade8327e0b47bf0625ab",
+      "result_blob_sha": "83c1b7f2df16cb55d5d594991da6152cefe5b8f7"
+    },
+    {
+      "path": "commerce/src/release-control.ts",
+      "kind": "MODIFY",
+      "mode": "100644",
+      "base_blob_sha": "d3e5501fd95d9b2cec8ee1859c813774fe349ae5",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0089.patch",
+      "patch_git_blob_sha": "be12dcb572c7913a229a2b2a2db5f7b23d16176a",
+      "patch_sha256": "b40728827c8e53d06b19aa68d92ed198990cb9bd9320caa37718e6e896fb0403",
+      "result_blob_sha": "dad8509eaa362401d19d754b81595b5d6f04c212"
+    },
+    {
+      "path": "commerce/src/release-control-schema.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0090.patch",
+      "patch_git_blob_sha": "55a4a8b09a76038dc58a3bab9720dacbed7f7a38",
+      "patch_sha256": "0633909fcd215e9e080ce45fc22d35bd75f2c538422801670309ec52bb278a0d",
+      "result_blob_sha": "f642efc4cff5de5595d72a3bc6da5962f9ca5ac9"
+    },
+    {
+      "path": "commerce/src/agent-referrals-business-facts.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0091.patch",
+      "patch_git_blob_sha": "d45fd1461ba413b88f0537b2f0bc4f50ba9c7a7b",
+      "patch_sha256": "c5e5f82596523a753bb8e97fdc9cb262625ae3d2d1c0403529d9ff85b6ed19b6",
+      "result_blob_sha": "7554e414b96e18e2c59d5deb59cfd6dc8d09d59d"
+    },
+    {
+      "path": "commerce/src/agent-referrals-dormant-readiness.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-24a382929740a7ead6fb0bb49f5ffc77e063c77a/patches/0092.patch",
+      "patch_git_blob_sha": "87cabe171f459d95ac08b4c909b80ede932f89fb",
+      "patch_sha256": "dcef4c212e27a4dc5317400452be3dd6a1de0f6f106a9565f4e0cbe3887f8b73",
+      "result_blob_sha": "0e6a78c4bd048658091f374df30e465adbe5e0d4"
+    }
+  ],
+  "commit": {
+    "parent_sha": "24a382929740a7ead6fb0bb49f5ffc77e063c77a",
+    "tree_sha": "127624bc90e11f5a89107c085d0c62315b4f287a",
+    "author_name": "Flexperiment Release Control",
+    "author_email": "release-control@flexperiment.ru",
+    "author_timestamp": 1788518400,
+    "author_timezone": "+0000",
+    "committer_name": "Flexperiment Release Control",
+    "committer_email": "release-control@flexperiment.ru",
+    "committer_timestamp": 1788518400,
+    "committer_timezone": "+0000",
+    "message": "agent-referrals: Phase 10A/10B candidate (round-7 dormant-readiness extension)",
+    "encoding": "none",
+    "extra_headers": "none",
+    "signed": false
+  }
+}

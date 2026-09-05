@@ -77,8 +77,24 @@ export type AgentReferralsCandidateCertificate = {
    * input that merely happens to look safe.
    */
   readonly source_main_sha: string;
+  /**
+   * `controller_tree` is the Phase 10A form: patches are read from the
+   * protected controller tree that supplied this certificate, not from the
+   * frozen source-main tree (which necessarily predates PR10's artifacts).
+   * The caller must supply that controller SHA explicitly; it is deliberately
+   * not recorded here because a PR commit SHA is rewritten on rebase merge.
+   *
+   * Omission preserves the PR1 synthetic-fixture format, where patches lived
+   * in source_main_sha. Real certificates must use `controller_tree`.
+   */
+  readonly patch_source?: "source_main_tree" | "controller_tree";
   readonly paths: readonly CertifiedPathEntry[];
   readonly commit: CandidateCommitEnvelope;
+};
+
+export type AgentReferralsCandidateReconstructionOptions = {
+  /** The reviewed controller/PR commit whose tree contains real patch files. */
+  readonly trusted_patch_source_sha?: string;
 };
 
 export class AgentReferralsCandidateError extends Error {
@@ -118,6 +134,9 @@ const blobShaAt = (commitish: string, path: string): string | undefined => {
 const validateCertificate = (certificate: AgentReferralsCandidateCertificate) => {
   if (!shaPattern.test(certificate.base_sha)) fail("AGENT_REFERRALS_CANDIDATE_BASE_SHA_INVALID");
   if (!shaPattern.test(certificate.source_main_sha)) fail("AGENT_REFERRALS_CANDIDATE_SOURCE_MAIN_SHA_INVALID");
+  if (certificate.patch_source !== undefined && certificate.patch_source !== "source_main_tree" && certificate.patch_source !== "controller_tree") {
+    fail("AGENT_REFERRALS_CANDIDATE_PATCH_SOURCE_INVALID");
+  }
   if (!certificate.paths.length) fail("AGENT_REFERRALS_CANDIDATE_EMPTY_MANIFEST");
   const seen = new Set<string>();
   for (const entry of certificate.paths) {
@@ -193,9 +212,25 @@ const applyPatch = (path: string, patchContent: Buffer, baseContent: Buffer | un
  * two named commits (base_sha, source_main_sha) - nothing is trusted from a
  * prior run, and Q's own tree is never read.
  */
-export const reconstructAgentReferralsCandidateSha = (certificate: AgentReferralsCandidateCertificate): string => {
+export const reconstructAgentReferralsCandidateSha = (
+  certificate: AgentReferralsCandidateCertificate,
+  options: AgentReferralsCandidateReconstructionOptions = {},
+): string => {
   validateCertificate(certificate);
   const { base_sha: baseSha, source_main_sha: mainSha } = certificate;
+  // A PR10 patch cannot live in source_main_sha: that SHA is deliberately
+  // frozen before PR10 so it stays valid after GitHub rebase-merges the PR.
+  // Resolve real patches from the separately supplied trusted controller tree
+  // instead. The release workflow structurally binds this argument to its own
+  // checkout SHA and proves mainSha is its ancestor before invoking us.
+  let patchSourceSha: string;
+  if (certificate.patch_source === "controller_tree") {
+    const trustedPatchSourceSha = options.trusted_patch_source_sha ?? "";
+    if (!shaPattern.test(trustedPatchSourceSha)) fail("AGENT_REFERRALS_CANDIDATE_TRUSTED_PATCH_SOURCE_REQUIRED");
+    patchSourceSha = trustedPatchSourceSha;
+  } else {
+    patchSourceSha = mainSha;
+  }
 
   const indexDirectory = mkdtempSync(join(tmpdir(), "agent-referrals-candidate-index-"));
   const index = join(indexDirectory, "index");
@@ -219,9 +254,11 @@ export const reconstructAgentReferralsCandidateSha = (certificate: AgentReferral
         continue;
       }
 
-      // "certificate read from the controller/main tree": the blob at
-      // patch_path is resolved from source_main_sha's own tree, never from disk.
-      const observedPatchBlob = blobShaAt(mainSha, entry.patch_path);
+      // Patches are always resolved from a named Git tree, never from disk.
+      // For PR10 that tree is the reviewed controller commit supplied above;
+      // the certificate's independent source_main_sha remains the frozen
+      // protected-main provenance root, not a self-referential artifact SHA.
+      const observedPatchBlob = blobShaAt(patchSourceSha, entry.patch_path);
       if (observedPatchBlob !== entry.patch_git_blob_sha) fail(`AGENT_REFERRALS_CANDIDATE_PATCH_BLOB_MISMATCH:${entry.path}`);
       const patchContent = git(["cat-file", "-p", entry.patch_git_blob_sha]);
       if (sha256(patchContent) !== entry.patch_sha256) fail(`AGENT_REFERRALS_CANDIDATE_PATCH_SHA256_MISMATCH:${entry.path}`);
@@ -286,10 +323,14 @@ export const buildAgentReferralsCandidateCommit = reconstructAgentReferralsCandi
  * rather than trusting a prior builder run's output; the only new work here is
  * the final equality assertion.
  */
-export const verifyAgentReferralsCandidateCertificate = (certificate: AgentReferralsCandidateCertificate, targetSha: string): string | undefined => {
+export const verifyAgentReferralsCandidateCertificate = (
+  certificate: AgentReferralsCandidateCertificate,
+  targetSha: string,
+  options: AgentReferralsCandidateReconstructionOptions = {},
+): string | undefined => {
   if (!shaPattern.test(targetSha)) return "AGENT_REFERRALS_CANDIDATE_TARGET_SHA_INVALID";
   try {
-    const reconstructed = reconstructAgentReferralsCandidateSha(certificate);
+    const reconstructed = reconstructAgentReferralsCandidateSha(certificate, options);
     if (reconstructed !== targetSha) return "AGENT_REFERRALS_CANDIDATE_SHA_MISMATCH";
     return undefined;
   } catch (error) {

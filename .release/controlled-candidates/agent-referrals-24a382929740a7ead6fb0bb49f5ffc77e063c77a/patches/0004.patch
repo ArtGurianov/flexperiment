@@ -1,0 +1,17 @@
+diff --git new/apps/admin/app/partner/layout.tsx new/apps/admin/app/partner/layout.tsx
+new file mode 100644
+index 0000000..ee67b32
+--- /dev/null
++++ new/apps/admin/app/partner/layout.tsx
+@@ -0,0 +1,11 @@
++import type { Metadata } from "next";
++import type { ReactNode } from "react";
++
++export const metadata: Metadata = {
++  title: "FLEXPERIMENT / partner portal",
++  robots: { index: false, follow: false },
++};
++
++export default function PartnerLayout({ children }: Readonly<{ children: ReactNode }>) {
++  return children;
++}

@@ -1,0 +1,11 @@
+diff --git new/apps/admin/app/partner/payout/page.tsx new/apps/admin/app/partner/payout/page.tsx
+new file mode 100644
+index 0000000..6d968e0
+--- /dev/null
++++ new/apps/admin/app/partner/payout/page.tsx
+@@ -0,0 +1,5 @@
++import { PartnerApp } from "../../../components/partner/PartnerApp";
++
++export default function PartnerPayoutPage() {
++  return <PartnerApp page="payout" />;
++}

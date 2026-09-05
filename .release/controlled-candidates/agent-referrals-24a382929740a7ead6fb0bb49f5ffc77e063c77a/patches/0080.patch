@@ -1,0 +1,78 @@
+diff --git old/commerce/src/api.ts new/commerce/src/api.ts
+index 81a4040..919c8bb 100644
+--- old/commerce/src/api.ts
++++ new/commerce/src/api.ts
+@@ -10,7 +10,12 @@ import { clientIpRateLimitKey, rateLimit, trustedClientIp } from "./rate-limit";
+ import { TochkaWebhookVerifier, webhookAmountKopecks } from "./tochka-webhook";
+ import { verifyUnisenderWebhook } from "./unisender-webhook";
+ import { type SmartCaptchaVerifier, UnconfiguredSmartCaptchaVerifier } from "./smartcaptcha";
+-import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityInterestWithdrawalSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, emailAttentionAcknowledgeSchema, emergencySalesCommandSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrenceNotificationSchema, occurrencePatchSchema, outboxDispatchFenceSchema, preActivationDefectSchema, promoPatchSchema, promoSchema, providerReferenceSchema, releaseControlSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
++import { createAgentReferralsPartnerRouter } from "./agent-referrals-api-partner";
++import { createAgentReferralsAdminRouter } from "./agent-referrals-api-admin";
++import { UnconfiguredOtpSender, type OtpSender } from "./agent-referrals-otp";
++import { agentReferralsDormantReady, agentReferralsDormantReadinessEvidence } from "./agent-referrals-dormant-readiness";
++import { completeRollingSchema, releaseControlSchema } from "./release-control-schema";
++import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityInterestWithdrawalSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, emailAttentionAcknowledgeSchema, emergencySalesCommandSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrenceNotificationSchema, occurrencePatchSchema, outboxDispatchFenceSchema, preActivationDefectSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
+ 
+ type AppBindings = { Variables: { adminId?: string; adminSessionId?: string } };
+ const noStore = (headers: Headers) => headers.set("Cache-Control", "no-store");
+@@ -26,7 +31,7 @@ const jsonBody = async (request: Request) => {
+   try { return await request.json(); } catch { throw new DomainError("INVALID_JSON", 400); }
+ };
+ 
+-export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvider: EmailProvider = new UnconfiguredEmailProvider(), smartCaptcha: SmartCaptchaVerifier = new UnconfiguredSmartCaptchaVerifier()) {
++export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvider: EmailProvider = new UnconfiguredEmailProvider(), smartCaptcha: SmartCaptchaVerifier = new UnconfiguredSmartCaptchaVerifier(), otpSender: OtpSender = new UnconfiguredOtpSender()) {
+   const app = new Hono<AppBindings>();
+   const domain = new CommerceDomain(sqlite, provider, emailProvider);
+   const tochkaVerifier = provider instanceof TochkaProvider ? new TochkaWebhookVerifier() : undefined;
+@@ -46,6 +51,9 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
+       if (error.code === "RATE_LIMITED") c.header("Retry-After", error.message);
+       return c.json({ error: { code: error.code } }, error.status as 400);
+     }
++    if (error instanceof Error && "code" in error && typeof (error as { code: unknown }).code === "string" && "status" in error && typeof (error as { status: unknown }).status === "number") {
++      return c.json({ error: { code: (error as { code: string }).code } }, (error as { status: number }).status as 400);
++    }
+     console.error("commerce request failed", error instanceof Error ? error.message : "unknown error");
+     return c.json({ error: { code: "INTERNAL_ERROR" } }, 500);
+   });
+@@ -559,6 +567,31 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
+     }).success,
+   }));
+   releaseControl.post("/reopen", async (c) => c.json(domain.reopenNewOrders(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
++  releaseControl.post("/complete-rolling", async (c) => {
++    const input = completeRollingSchema.parse(await jsonBody(c.req.raw));
++    // Agent Referrals (PR3-PR9) is the only ROLLING candidate that exists,
++    // so its own dormant-readiness evidence (feature state + full required
++    // schema present + zero business facts, all evaluated together - see
++    // agent-referrals-dormant-readiness.ts) is the real readiness reader
++    // this predicate was always meant to become - see the historical note
++    // this replaced: "No DORMANT feature ships in PR1 for this predicate to
++    // check ... fails closed until a real feature-readiness reader replaces
++    // it". This is the fail-closed authority itself, not merely a reflection
++    // of whatever a calling workflow separately checked beforehand - any
++    // caller of this route gets the same refusal a partially-checked
++    // workflow would. A future second ROLLING feature would need this
++    // predicate to become release_id-aware; nothing here forecloses that,
++    // it simply is not needed while Agent Referrals is the only caller.
++    return c.json(domain.completeRolling(input, () => agentReferralsDormantReady(sqlite)));
++  });
++  // Phase 10B production-controller precondition, bearer-token gated like
++  // every other /v1/internal/release-control/* route - never the admin-
++  // session-gated surface, so a CI controller can read it without a browser
++  // session. Read-only: this route mutates nothing. Exposes the exact same
++  // evidence /complete-rolling's own predicate is fail-closed against, so a
++  // controller's own preflight/postflight checks can never disagree with
++  // what completion itself will actually enforce.
++  releaseControl.get("/agent-referrals/dormant-readiness", (c) => c.json(agentReferralsDormantReadinessEvidence(sqlite)));
+   const releaseControlHead = new Hono();
+   releaseControlHead.use("*", async (c, next) => {
+     if (!verifyReleaseControlToken(c.req.header("Authorization"))) throw new DomainError("RELEASE_CONTROL_AUTH_REQUIRED", 401);
+@@ -569,6 +602,8 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
+   releaseControlHead.get("/candidates/head", (c) => c.json(domain.promoCandidateHead()));
+   app.route("/v1/internal/release-control", releaseControl);
+   app.route("/v1/admin/release-control", releaseControlHead);
++  admin.route("/agent-referrals", createAgentReferralsAdminRouter(sqlite));
+   app.route("/v1/admin", admin);
++  app.route("/v1/partner", createAgentReferralsPartnerRouter(sqlite, otpSender));
+   return app;
+ }

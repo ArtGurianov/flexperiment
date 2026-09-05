@@ -1,0 +1,195 @@
+diff --git new/commerce/migrations/0043_agent_referrals_foundation.sql new/commerce/migrations/0043_agent_referrals_foundation.sql
+new file mode 100644
+index 0000000..badfcc6
+--- /dev/null
++++ new/commerce/migrations/0043_agent_referrals_foundation.sql
+@@ -0,0 +1,189 @@
++-- Agent Referrals foundation: feature-state authority, activation-manifest
++-- evidence, immutable legal-profile revisions with legacy contractor_type
++-- projection, immutable framework/delegation content revisions, versioned
++-- channel policy. Ordinary migration - not FK-off. No business tables for
++-- partner identity, engagement, promo authorization, creative, distribution,
++-- reward or settlement: those belong to PR4 onward.
++
++-- 1. Feature-state singleton: DORMANT -> ACTIVE <-> SUSPENDED, never back to
++-- DORMANT. Ships DORMANT; nothing here activates on application - only
++-- commerce/src/agent-referrals-feature-state.ts can transition it, and PR3
++-- calls that from nowhere.
++CREATE TABLE agent_referrals_feature_state (
++  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
++  state TEXT NOT NULL DEFAULT 'DORMANT' CHECK (state IN ('DORMANT', 'ACTIVE', 'SUSPENDED')),
++  owner_id TEXT,
++  revision INTEGER NOT NULL DEFAULT 1,
++  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
++);
++INSERT INTO agent_referrals_feature_state(singleton, state, owner_id, revision) VALUES (1, 'DORMANT', NULL, 1);
++
++CREATE TABLE agent_referrals_feature_state_events (
++  id TEXT PRIMARY KEY,
++  from_state TEXT NOT NULL,
++  to_state TEXT NOT NULL,
++  owner_id TEXT NOT NULL,
++  reason TEXT NOT NULL,
++  revision INTEGER NOT NULL,
++  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
++);
++CREATE INDEX agent_referrals_feature_state_events_revision_idx
++  ON agent_referrals_feature_state_events(revision);
++
++-- 2. Activation manifest: system-wide evidence only, no capacity of any kind.
++-- An open key/evidence store rather than fixed named columns, because most
++-- of its evidence (the payout-profile encryption key id, the ORD provider
++-- profile id, ...) is pinned by PR4/PR8, not PR3 - a fixed-column table
++-- would force this migration to guess at their shape. PR3 records nothing
++-- into it; it exists so later PRs have somewhere durable to pin evidence,
++-- and so the required-schema-object checker in
++-- commerce/src/agent-referrals-activation.ts has a real table to assert.
++CREATE TABLE agent_referrals_activation_manifest (
++  key TEXT PRIMARY KEY,
++  value_json TEXT NOT NULL,
++  recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
++);
++
++-- 3. Immutable legal-profile revisions, projecting to legacy
++-- agents.contractor_type (PR2's widened CHECK). The combination CHECK below
++-- is the exact 4-allowed/2-rejected matrix, enforced structurally - not only
++-- by the application function in agent-referrals-legal-profile.ts - so a
++-- bypass of that function still cannot write a rejected combination or an
++-- inconsistent projection.
++--
++-- "Current" is deliberately not a stored pointer: it is always
++-- `MAX(revision) WHERE agent_id = ?`, which by construction can never name a
++-- nonexistent or superseded row, because revisions are immutable and
++-- monotonically inserted. A separate current-pointer table would be one more
++-- place for that property to drift.
++CREATE TABLE agent_referrals_legal_profile_revisions (
++  id TEXT PRIMARY KEY,
++  agent_id TEXT NOT NULL REFERENCES agents(id),
++  revision INTEGER NOT NULL,
++  legal_form TEXT NOT NULL CHECK (legal_form IN ('INDIVIDUAL', 'INDIVIDUAL_ENTREPRENEUR', 'LEGAL_ENTITY')),
++  tax_mode TEXT NOT NULL CHECK (tax_mode IN ('NPD', 'OTHER')),
++  projected_contractor_type TEXT NOT NULL CHECK (projected_contractor_type IN ('SELF_EMPLOYED', 'INDIVIDUAL_ENTREPRENEUR', 'ORGANIZATION')),
++  supersedes_revision_id TEXT REFERENCES agent_referrals_legal_profile_revisions(id),
++  reason TEXT NOT NULL,
++  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
++  UNIQUE (agent_id, revision),
++  CHECK (
++    (legal_form = 'INDIVIDUAL' AND tax_mode = 'NPD' AND projected_contractor_type = 'SELF_EMPLOYED')
++    OR (legal_form = 'INDIVIDUAL_ENTREPRENEUR' AND tax_mode IN ('NPD', 'OTHER') AND projected_contractor_type = 'INDIVIDUAL_ENTREPRENEUR')
++    OR (legal_form = 'LEGAL_ENTITY' AND tax_mode = 'OTHER' AND projected_contractor_type = 'ORGANIZATION')
++  )
++);
++CREATE INDEX agent_referrals_legal_profile_revisions_agent_idx
++  ON agent_referrals_legal_profile_revisions(agent_id, revision);
++
++-- Historical evidence; a filed revision is never restated in place, and
++-- "immutable" must not mean only "cannot be edited, may still be erased" -
++-- deleting the current (latest) revision would silently fall the current
++-- projection back to a stale one while agents.contractor_type still carries
++-- the deleted revision's value, so evidence and projection would disagree.
++CREATE TRIGGER agent_referrals_legal_profile_revisions_immutable_guard
++BEFORE UPDATE ON agent_referrals_legal_profile_revisions
++BEGIN
++  SELECT RAISE(ABORT, 'AGENT_REFERRALS_LEGAL_PROFILE_REVISION_IMMUTABLE');
++END;
++CREATE TRIGGER agent_referrals_legal_profile_revisions_delete_guard
++BEFORE DELETE ON agent_referrals_legal_profile_revisions
++BEGIN
++  SELECT RAISE(ABORT, 'AGENT_REFERRALS_LEGAL_PROFILE_REVISION_IMMUTABLE');
++END;
++
++-- 4. Immutable framework/delegation content revisions. Deliberately NOT in
++-- legalDocumentIds (legal-manifest.ts) and no checkout legal-release side
++-- effect: these are Agent Referrals partner-facing evidence, not the public
++-- checkout legal bundle. Not partner-scoped in PR3 - these are the reviewed
++-- template text partners will accept in PR4's framework-acceptance command;
++-- no partner_identities table exists yet to bind an acceptance to.
++CREATE TABLE framework_agreement_revisions (
++  id TEXT PRIMARY KEY,
++  revision INTEGER NOT NULL UNIQUE,
++  content_json TEXT NOT NULL,
++  content_hash TEXT NOT NULL,
++  supersedes_revision_id TEXT REFERENCES framework_agreement_revisions(id),
++  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
++);
++CREATE TRIGGER framework_agreement_revisions_immutable_guard
++BEFORE UPDATE ON framework_agreement_revisions
++BEGIN
++  SELECT RAISE(ABORT, 'FRAMEWORK_AGREEMENT_REVISION_IMMUTABLE');
++END;
++CREATE TRIGGER framework_agreement_revisions_delete_guard
++BEFORE DELETE ON framework_agreement_revisions
++BEGIN
++  SELECT RAISE(ABORT, 'FRAMEWORK_AGREEMENT_REVISION_IMMUTABLE');
++END;
++
++CREATE TABLE delegation_template_revisions (
++  id TEXT PRIMARY KEY,
++  revision INTEGER NOT NULL UNIQUE,
++  ord_reporting_mode TEXT NOT NULL CHECK (ord_reporting_mode = 'FLEXPERIMENT_DELEGATED'),
++  content_json TEXT NOT NULL,
++  content_hash TEXT NOT NULL,
++  supersedes_revision_id TEXT REFERENCES delegation_template_revisions(id),
++  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
++);
++CREATE TRIGGER delegation_template_revisions_immutable_guard
++BEFORE UPDATE ON delegation_template_revisions
++BEGIN
++  SELECT RAISE(ABORT, 'DELEGATION_TEMPLATE_REVISION_IMMUTABLE');
++END;
++CREATE TRIGGER delegation_template_revisions_delete_guard
++BEFORE DELETE ON delegation_template_revisions
++BEGIN
++  SELECT RAISE(ABORT, 'DELEGATION_TEMPLATE_REVISION_IMMUTABLE');
++END;
++
++-- 5. Versioned channel policy, keyed by exact open channel_key text. The
++-- catch-all-can-never-be-ALLOWED invariant is enforced structurally, not
++-- only by the admin-review writer in agent-referrals-channel-policy.ts.
++CREATE TABLE ad_channel_policy (
++  id TEXT PRIMARY KEY,
++  channel_key TEXT NOT NULL,
++  policy_revision INTEGER NOT NULL,
++  status TEXT NOT NULL CHECK (status IN ('ALLOWED', 'BLOCKED', 'REVIEW_REQUIRED')),
++  effective_from TEXT NOT NULL,
++  reason TEXT NOT NULL,
++  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
++  CHECK (NOT (channel_key IN ('other', 'other_internet_platform', 'unknown', '*') AND status = 'ALLOWED'))
++);
++CREATE UNIQUE INDEX ad_channel_policy_channel_revision_unique
++  ON ad_channel_policy(channel_key, policy_revision);
++CREATE INDEX ad_channel_policy_effective_idx
++  ON ad_channel_policy(channel_key, effective_from);
++
++-- Append-only: a policy change is a new revision, never a rewrite of one
++-- already filed. The resolver classifies a historical instant (a
++-- distribution's published_at) against the policy effective AT THAT TIME -
++-- if a later policy edit could rewrite an earlier revision in place, that
++-- classification would silently change underneath evidence already relied
++-- upon, which is exactly the historical-lookup guarantee this table exists
++-- to give.
++CREATE TRIGGER ad_channel_policy_immutable_guard
++BEFORE UPDATE ON ad_channel_policy
++BEGIN
++  SELECT RAISE(ABORT, 'AD_CHANNEL_POLICY_REVISION_IMMUTABLE');
++END;
++CREATE TRIGGER ad_channel_policy_delete_guard
++BEFORE DELETE ON ad_channel_policy
++BEGIN
++  SELECT RAISE(ABORT, 'AD_CHANNEL_POLICY_REVISION_IMMUTABLE');
++END;
++
++-- Seeded static configuration, not a business record (Phase 9 readiness
++-- distinguishes them) - the nine currently-permitted platforms, revision 1,
++-- effective from a fixed epoch so historical-effective-time lookups in tests
++-- are deterministic regardless of when this migration actually runs.
++INSERT INTO ad_channel_policy(id, channel_key, policy_revision, status, effective_from, reason) VALUES
++  (lower(hex(randomblob(16))), 'telegram', 1, 'ALLOWED', '2020-01-01T00:00:00.000Z', 'Seeded at foundation: contractually permitted channel (PR3).'),
++  (lower(hex(randomblob(16))), 'vk', 1, 'ALLOWED', '2020-01-01T00:00:00.000Z', 'Seeded at foundation: contractually permitted channel (PR3).'),
++  (lower(hex(randomblob(16))), 'vk_video', 1, 'ALLOWED', '2020-01-01T00:00:00.000Z', 'Seeded at foundation: contractually permitted channel (PR3).'),
++  (lower(hex(randomblob(16))), 'vk_clips', 1, 'ALLOWED', '2020-01-01T00:00:00.000Z', 'Seeded at foundation: contractually permitted channel (PR3).'),
++  (lower(hex(randomblob(16))), 'youtube', 1, 'ALLOWED', '2020-01-01T00:00:00.000Z', 'Seeded at foundation: contractually permitted channel (PR3).'),
++  (lower(hex(randomblob(16))), 'rutube', 1, 'ALLOWED', '2020-01-01T00:00:00.000Z', 'Seeded at foundation: contractually permitted channel (PR3).'),
++  (lower(hex(randomblob(16))), 'tiktok', 1, 'ALLOWED', '2020-01-01T00:00:00.000Z', 'Seeded at foundation: contractually permitted channel (PR3).'),
++  (lower(hex(randomblob(16))), 'likee', 1, 'ALLOWED', '2020-01-01T00:00:00.000Z', 'Seeded at foundation: contractually permitted channel (PR3).'),
++  (lower(hex(randomblob(16))), 'twitch', 1, 'ALLOWED', '2020-01-01T00:00:00.000Z', 'Seeded at foundation: contractually permitted channel (PR3).');

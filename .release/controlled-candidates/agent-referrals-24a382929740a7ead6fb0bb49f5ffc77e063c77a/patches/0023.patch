@@ -1,0 +1,11 @@
+diff --git old/apps/admin/lib/page.ts new/apps/admin/lib/page.ts
+index 21fe498..488db94 100644
+--- old/apps/admin/lib/page.ts
++++ new/apps/admin/lib/page.ts
+@@ -1,5 +1,5 @@
+ export type Page =
+   | "dashboard" | "login" | "cities" | "occurrences" | "orders" | "refunds"
+-  | "settlements" | "email-attention" | "incidents" | "audit" | "agents" | "promo-codes";
++  | "settlements" | "email-attention" | "incidents" | "audit" | "agents" | "promo-codes" | "agent-referrals";
+ 
+ export type Row = Record<string, unknown>;

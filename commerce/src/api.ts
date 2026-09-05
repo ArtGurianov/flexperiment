@@ -15,6 +15,7 @@ import { completeRollingSchema, releaseControlSchema } from "./release-control-s
 import { createAgentReferralsPartnerRouter } from "./agent-referrals-api-partner";
 import { createAgentReferralsAdminRouter } from "./agent-referrals-api-admin";
 import { UnconfiguredOtpSender, type OtpSender } from "./agent-referrals-otp";
+import { agentReferralsDormantReady, agentReferralsDormantReadinessEvidence } from "./agent-referrals-dormant-readiness";
 
 type AppBindings = { Variables: { adminId?: string; adminSessionId?: string } };
 const noStore = (headers: Headers) => headers.set("Cache-Control", "no-store");
@@ -579,12 +580,29 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   releaseControl.post("/reopen", async (c) => c.json(domain.reopenNewOrders(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
   releaseControl.post("/complete-rolling", async (c) => {
     const input = completeRollingSchema.parse(await jsonBody(c.req.raw));
-    // No DORMANT feature ships in PR1 for this predicate to check (Agent
-    // Referrals lands in PR3-PR9), so this wiring fails closed until a real
-    // feature-readiness reader replaces it - never treat "no feature yet" as
-    // "ready".
-    return c.json(domain.completeRolling(input, () => false));
+    // Agent Referrals (PR3-PR9) is the only ROLLING candidate that exists,
+    // so its own dormant-readiness evidence (feature state + full required
+    // schema present + zero business facts, all evaluated together - see
+    // agent-referrals-dormant-readiness.ts) is the real readiness reader
+    // this predicate was always meant to become - see the historical note
+    // this replaced: "No DORMANT feature ships in PR1 for this predicate to
+    // check ... fails closed until a real feature-readiness reader replaces
+    // it". This is the fail-closed authority itself, not merely a reflection
+    // of whatever a calling workflow separately checked beforehand - any
+    // caller of this route gets the same refusal a partially-checked
+    // workflow would. A future second ROLLING feature would need this
+    // predicate to become release_id-aware; nothing here forecloses that,
+    // it simply is not needed while Agent Referrals is the only caller.
+    return c.json(domain.completeRolling(input, () => agentReferralsDormantReady(sqlite)));
   });
+  // Phase 10B production-controller precondition, bearer-token gated like
+  // every other /v1/internal/release-control/* route - never the admin-
+  // session-gated surface, so a CI controller can read it without a browser
+  // session. Read-only: this route mutates nothing. Exposes the exact same
+  // evidence /complete-rolling's own predicate is fail-closed against, so a
+  // controller's own preflight/postflight checks can never disagree with
+  // what completion itself will actually enforce.
+  releaseControl.get("/agent-referrals/dormant-readiness", (c) => c.json(agentReferralsDormantReadinessEvidence(sqlite)));
   const releaseControlHead = new Hono();
   releaseControlHead.use("*", async (c, next) => {
     if (!verifyReleaseControlToken(c.req.header("Authorization"))) throw new DomainError("RELEASE_CONTROL_AUTH_REQUIRED", 401);
