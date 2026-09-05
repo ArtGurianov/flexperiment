@@ -228,3 +228,48 @@ describe("controlled-release-semantics-bootstrap.yml: rejects obvious weakening 
     expect(REAL_SOURCE).not.toContain("commerce:production-deploy:assert-boundary");
   });
 });
+
+/**
+ * Incident (run 33971946073): `node --import tsx
+ * commerce/src/controlled-candidate-verify.ts` ran before
+ * `pnpm install --frozen-lockfile` had ever installed `tsx`, so a fresh
+ * runner with no pre-existing node_modules failed immediately with
+ * ERR_MODULE_NOT_FOUND - before acquire, pause, or any CAS. Nothing was
+ * mutated (production-deploy stayed P, runtime-candidate stayed B2), but
+ * this is a real ordering defect a source-presence check alone cannot
+ * catch. See docs/release/RELEASE_SEMANTICS_BOOTSTRAP.md for the full
+ * incident.
+ */
+describe("controlled-release-semantics-bootstrap.yml: dependencies are installed before their first use", () => {
+  const indexOfOnce = (needle: string): number => {
+    const index = REAL_SOURCE.indexOf(needle);
+    expect(index, `expected to find exactly one occurrence of: ${needle}`).toBeGreaterThan(-1);
+    expect(REAL_SOURCE.indexOf(needle, index + 1), `expected exactly one occurrence, found a second: ${needle}`).toBe(-1);
+    return index;
+  };
+
+  it("pnpm/action-setup < actions/setup-node < pnpm install < the first step that needs tsx (certificate reconstruction)", () => {
+    const pnpmActionSetup = indexOfOnce("uses: pnpm/action-setup@v4");
+    const setupNode = indexOfOnce("uses: actions/setup-node@v4");
+    const pnpmInstall = indexOfOnce("run: pnpm install --frozen-lockfile");
+    const reconstructionStep = indexOfOnce("name: Read the frozen bootstrap certificate and reconstruct B2");
+    const tsxInvocation = indexOfOnce("node --import tsx commerce/src/controlled-candidate-verify.ts");
+
+    expect(pnpmActionSetup, "pnpm/action-setup must precede actions/setup-node").toBeLessThan(setupNode);
+    expect(setupNode, "actions/setup-node must precede pnpm install").toBeLessThan(pnpmInstall);
+    expect(pnpmInstall, "pnpm install must precede the reconstruction step").toBeLessThan(reconstructionStep);
+    expect(reconstructionStep, "the reconstruction step's own name must precede its tsx invocation").toBeLessThan(tsxInvocation);
+  });
+
+  it("the reconstruction step still invokes the real verifier - this suite fails if that call is ever removed rather than merely reordered", () => {
+    expect(REAL_SOURCE).toContain("node --import tsx commerce/src/controlled-candidate-verify.ts");
+  });
+
+  it("fails if dependency installation is moved back below the reconstruction step", () => {
+    // A direct regression of the exact incident shape: install occurring
+    // strictly after the step that needs it.
+    const reconstructionStep = REAL_SOURCE.indexOf("name: Read the frozen bootstrap certificate and reconstruct B2");
+    const pnpmInstall = REAL_SOURCE.indexOf("run: pnpm install --frozen-lockfile");
+    expect(pnpmInstall).toBeLessThan(reconstructionStep);
+  });
+});
