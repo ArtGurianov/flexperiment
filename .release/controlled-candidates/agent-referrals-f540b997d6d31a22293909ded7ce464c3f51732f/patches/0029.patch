@@ -1,0 +1,505 @@
+diff --git new/commerce/migrations/0045_engagement_publication.sql new/commerce/migrations/0045_engagement_publication.sql
+new file mode 100644
+index 0000000..176a99c
+--- /dev/null
++++ new/commerce/migrations/0045_engagement_publication.sql
+@@ -0,0 +1,499 @@
++-- Agent Referrals engagement & publication: append-only audience
++-- verification, engagement identity/revision/acceptance/activation,
++-- permanent per-partner promo + per-occurrence promo authorizations,
++-- immutable creative content + authorizations, distribution facts +
++-- removal lifecycle, delegation revocation (forward-only, layered on top
++-- of 0044's ord_reporting_delegations without editing it), and engagement
++-- closure evidence. Ordinary migration - not FK-off. No PR6 order
++-- attribution columns, no reward/settlement/payment tables, no ORD/ERID
++-- provider tables.
++--
++-- 0044's step_up_grants.action CHECK is a frozen CHECK constraint on an
++-- already-shipped table with inbound FKs from framework_acceptances and
++-- payout_profile_revisions; SQLite cannot widen a CHECK in place, and this
++-- migration is explicitly barred from FK-off status (only 0042 has it).
++-- Rather than rebuild 0044's table, this migration ships its own sibling
++-- step-up-grant table, engagement_step_up_grants, scoped to the two new
++-- material partner actions Phase 5 introduces. Same shape, same CAS
++-- consumption contract, entirely separate storage - 0044 is untouched.
++
++-- 1. Audience verification: append-only, VERIFIED | REVOKED, monotonic
++-- aggregate revision per (partner, city). No SUPERSEDED state - a
++-- replacement VERIFIED is simply the next revision; "current" is always
++-- the row with MAX(aggregate_revision) for that (partner, city) pair, read
++-- from event_kind, never from a mutable pointer. UNIQUE(partner, city,
++-- revision) is what makes "exactly one writer wins" a structural property
++-- of the two-writer race: a second writer computing the same next revision
++-- number collides on this constraint rather than silently overwriting.
++--
++-- valid_until is required evidence on every VERIFIED event (never present
++-- on REVOKED) - a verification is authority only through an explicit,
++-- attested date, not indefinitely. activateEngagement additionally
++-- requires valid_until to cover the accepted revision's own
++-- publication_end_at, so an engagement's live authority can never outlast
++-- the audience evidence that justified it.
++CREATE TABLE partner_audience_verification_events (
++  id TEXT PRIMARY KEY,
++  partner_identity_id TEXT NOT NULL REFERENCES partner_identities(id),
++  city_id TEXT NOT NULL REFERENCES cities(id),
++  aggregate_revision INTEGER NOT NULL,
++  event_kind TEXT NOT NULL CHECK (event_kind IN ('VERIFIED', 'REVOKED')),
++  valid_until TEXT,
++  supersedes_event_id TEXT REFERENCES partner_audience_verification_events(id),
++  evidence_ref TEXT NOT NULL,
++  reason TEXT NOT NULL,
++  placed_by_admin_id TEXT NOT NULL,
++  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
++  UNIQUE (partner_identity_id, city_id, aggregate_revision),
++  CHECK (
++    (event_kind = 'VERIFIED' AND valid_until IS NOT NULL)
++    OR (event_kind = 'REVOKED' AND valid_until IS NULL)
++  )
++);
++CREATE INDEX partner_audience_verification_events_current_idx
++  ON partner_audience_verification_events(partner_identity_id, city_id, aggregate_revision);
++CREATE TRIGGER partner_audience_verification_events_immutable_guard
++BEFORE UPDATE ON partner_audience_verification_events
++BEGIN SELECT RAISE(ABORT, 'PARTNER_AUDIENCE_VERIFICATION_EVENT_IMMUTABLE'); END;
++CREATE TRIGGER partner_audience_verification_events_delete_guard
++BEFORE DELETE ON partner_audience_verification_events
++BEGIN SELECT RAISE(ABORT, 'PARTNER_AUDIENCE_VERIFICATION_EVENT_IMMUTABLE'); END;
++
++-- 2. Engagement identity: stable, mutable only via the CAS lifecycle
++-- projection below. Deliberately NOT the commercial/legal content (that is
++-- engagement_revisions) and NOT partner acceptance (engagement_acceptances)
++-- and NOT the activation snapshot (engagement_activation_events) - four
++-- separate authorities per plan section B (Phase 5 review note 2), never
++-- folded together. UNIQUE(partner, occurrence) is a deliberate design
++-- choice: at most one engagement relationship per partner per occurrence,
++-- matching every §B-9 example (one engagement per partner per city).
++CREATE TABLE engagements (
++  id TEXT PRIMARY KEY,
++  partner_identity_id TEXT NOT NULL REFERENCES partner_identities(id),
++  occurrence_id TEXT NOT NULL REFERENCES occurrences(id),
++  lifecycle_state TEXT NOT NULL DEFAULT 'OFFERED' CHECK (lifecycle_state IN ('OFFERED', 'ACCEPTED', 'ACTIVE', 'SUSPENDED', 'CLOSED')),
++  lifecycle_revision INTEGER NOT NULL DEFAULT 1,
++  created_by_admin_id TEXT NOT NULL,
++  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
++  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
++  UNIQUE (partner_identity_id, occurrence_id)
++);
++CREATE INDEX engagements_partner_idx ON engagements(partner_identity_id);
++CREATE INDEX engagements_occurrence_idx ON engagements(occurrence_id);
++
++-- 3. Immutable commercial/legal engagement revisions. A material change
++-- (reward formula, customer discount, occurrence date/time, publication
++-- period, commercial terms, advertising/creative obligations, legal
++-- bundle, other contractual terms) is always a NEW revision, never an
++-- UPDATE - and minting one does not itself grant any authority: it is not
++-- automatically accepted (engagement_acceptances is a separate partner-only
++-- authority) and does not itself change engagements.lifecycle_state. The
++-- combined CHECK on customer_discount_* mirrors validatePromoTerms()
++-- structurally (promo-pricing.ts, consumed unmodified by application code
++-- at mint time) - defense in depth, same precedent as PR3's legal-profile
++-- matrix and PR4's payout-profile shape CHECK.
++-- occurrence_material_revision pins occurrences.material_revision as
++-- observed at mint time - occurrence date/time is itself a material fact
++-- (plan Phase 5), and this is what lets activateEngagement() refuse a
++-- revision minted against a since-changed schedule, forcing a fresh
++-- revision -> acceptance -> activation cycle instead of silently
++-- activating stale terms. See agent-referrals-engagement.ts and
++-- domain.ts's patchOccurrence() compatibility seam, which additionally
++-- suspends any already-ACTIVE engagement the moment occurrence material
++-- facts actually change.
++CREATE TABLE engagement_revisions (
++  id TEXT PRIMARY KEY,
++  engagement_id TEXT NOT NULL REFERENCES engagements(id),
++  revision INTEGER NOT NULL,
++  occurrence_material_revision INTEGER NOT NULL,
++  reward_type TEXT NOT NULL CHECK (reward_type IN ('PERCENT', 'FIXED')),
++  reward_value INTEGER NOT NULL CHECK (reward_value >= 0),
++  customer_discount_type TEXT NOT NULL CHECK (customer_discount_type IN ('NONE', 'PERCENT', 'FIXED')),
++  customer_discount_value INTEGER NOT NULL CHECK (customer_discount_value >= 0),
++  publication_start_at TEXT NOT NULL,
++  publication_end_at TEXT NOT NULL,
++  terms_json TEXT NOT NULL,
++  content_hash TEXT NOT NULL,
++  supersedes_revision_id TEXT REFERENCES engagement_revisions(id),
++  created_by_admin_id TEXT NOT NULL,
++  reason TEXT NOT NULL,
++  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
++  UNIQUE (engagement_id, revision),
++  CHECK (publication_end_at > publication_start_at),
++  CHECK (
++    (customer_discount_type = 'NONE' AND customer_discount_value = 0)
++    OR (customer_discount_type = 'PERCENT' AND customer_discount_value BETWEEN 1 AND 9999)
++    OR (customer_discount_type = 'FIXED' AND customer_discount_value > 0)
++  )
++);
++CREATE INDEX engagement_revisions_engagement_idx ON engagement_revisions(engagement_id, revision);
++CREATE TRIGGER engagement_revisions_immutable_guard
++BEFORE UPDATE ON engagement_revisions
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_REVISION_IMMUTABLE'); END;
++CREATE TRIGGER engagement_revisions_delete_guard
++BEFORE DELETE ON engagement_revisions
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_REVISION_IMMUTABLE'); END;
++
++-- 4. Phase 5's own step-up-grant table - see the file header. Two material
++-- partner actions: accepting an exact engagement revision, and revoking
++-- one's own reporting delegation.
++CREATE TABLE engagement_step_up_grants (
++  id TEXT PRIMARY KEY,
++  partner_session_id TEXT NOT NULL REFERENCES partner_sessions(id),
++  partner_identity_id TEXT NOT NULL REFERENCES partner_identities(id),
++  action TEXT NOT NULL CHECK (action IN ('ENGAGEMENT_ACCEPTANCE', 'DELEGATION_REVOCATION')),
++  resource_json TEXT NOT NULL,
++  resource_hash TEXT NOT NULL,
++  expires_at TEXT NOT NULL,
++  consumed_at TEXT,
++  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
++);
++CREATE INDEX engagement_step_up_grants_partner_idx ON engagement_step_up_grants(partner_identity_id);
++
++-- 5. Partner acceptance of an exact engagement revision - partner-only
++-- authority (admin cannot accept on a partner's behalf: every command that
++-- writes this table takes a PartnerPrincipal, never an AdminPrincipal).
++-- UNIQUE(engagement_id, engagement_revision_id) makes an exact-parameter
++-- replay idempotently detectable, matching framework_acceptances.
++CREATE TABLE engagement_acceptances (
++  id TEXT PRIMARY KEY,
++  engagement_id TEXT NOT NULL REFERENCES engagements(id),
++  engagement_revision_id TEXT NOT NULL REFERENCES engagement_revisions(id),
++  step_up_grant_id TEXT NOT NULL UNIQUE REFERENCES engagement_step_up_grants(id),
++  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
++  UNIQUE (engagement_id, engagement_revision_id)
++);
++CREATE TRIGGER engagement_acceptances_immutable_guard
++BEFORE UPDATE ON engagement_acceptances
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_ACCEPTANCE_IMMUTABLE'); END;
++CREATE TRIGGER engagement_acceptances_delete_guard
++BEFORE DELETE ON engagement_acceptances
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_ACCEPTANCE_IMMUTABLE'); END;
++
++-- 6. One permanent promo per partner (plan section B-9). Both columns
++-- UNIQUE: UNIQUE(promo_code_id) alone gives "one promo -> one partner";
++-- the frozen rule is the reverse too, "one partner -> one promo", so an
++-- admin transaction can never mint a second code for the same partner.
++-- partner_id references agents(id) directly (not partner_identities), the
++-- same identity promo_codes.agent_id and checkout already key against -
++-- this is the join that lets legacy checkout code work against a partner
++-- promo without knowing partner identity exists at all.
++CREATE TABLE partner_promos (
++  id TEXT PRIMARY KEY,
++  promo_code_id TEXT NOT NULL UNIQUE REFERENCES promo_codes(id),
++  partner_id TEXT NOT NULL UNIQUE REFERENCES agents(id),
++  created_by_admin_id TEXT NOT NULL,
++  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
++);
++CREATE TRIGGER partner_promos_immutable_guard
++BEFORE UPDATE ON partner_promos
++BEGIN SELECT RAISE(ABORT, 'PARTNER_PROMO_IMMUTABLE'); END;
++CREATE TRIGGER partner_promos_delete_guard
++BEFORE DELETE ON partner_promos
++BEGIN SELECT RAISE(ABORT, 'PARTNER_PROMO_IMMUTABLE'); END;
++
++-- 7. Per-occurrence authority to use the permanent promo. promo_code_id
++-- carries NO bare UNIQUE - that was the exact defect this schema fixes
++-- (§B-9): it would break the promo the first time a material change minted
++-- a new engagement revision, and force one partner advertising three
++-- cities to hold three codes. The partial unique index below is the real
++-- structural invariant: at most one CURRENT (unrevoked) authorization per
++-- (promo_code_id, occurrence_id), in the outbox_attempt_active_unique
++-- style. A new engagement revision mints a new authorization with
++-- supersedes_authorization_id pointing at the old one; history is never
++-- rewritten (immutable except the one-way revoked_at transition).
++-- sequence is this engagement's own durable mint order (1, 2, 3, ...) -
++-- never SQLite's implicit rowid, which callers must not rely on for
++-- regulatory evidence (the exact class of bug this schema has already
++-- fixed elsewhere: engagement_distribution_events.event_sequence).
++-- Closure resolves "the authorization this engagement most recently
++-- minted" (whether still live or already revoked by an earlier
++-- suspension) via MAX(sequence), never rowid or a timestamp comparison.
++CREATE TABLE engagement_promo_authorizations (
++  id TEXT PRIMARY KEY,
++  promo_code_id TEXT NOT NULL REFERENCES promo_codes(id),
++  partner_id TEXT NOT NULL REFERENCES agents(id),
++  occurrence_id TEXT NOT NULL REFERENCES occurrences(id),
++  engagement_id TEXT NOT NULL REFERENCES engagements(id),
++  engagement_revision_id TEXT NOT NULL REFERENCES engagement_revisions(id),
++  sequence INTEGER NOT NULL,
++  supersedes_authorization_id TEXT REFERENCES engagement_promo_authorizations(id),
++  effective_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
++  revoked_at TEXT,
++  revoked_reason TEXT,
++  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
++  UNIQUE(engagement_id, sequence)
++);
++CREATE INDEX engagement_promo_authorizations_engagement_idx ON engagement_promo_authorizations(engagement_id);
++CREATE UNIQUE INDEX engagement_promo_authorizations_current_unique
++  ON engagement_promo_authorizations(promo_code_id, occurrence_id) WHERE revoked_at IS NULL;
++CREATE TRIGGER engagement_promo_authorizations_placement_immutable_guard
++BEFORE UPDATE ON engagement_promo_authorizations
++WHEN NEW.promo_code_id IS NOT OLD.promo_code_id
++  OR NEW.partner_id IS NOT OLD.partner_id
++  OR NEW.occurrence_id IS NOT OLD.occurrence_id
++  OR NEW.engagement_id IS NOT OLD.engagement_id
++  OR NEW.engagement_revision_id IS NOT OLD.engagement_revision_id
++  OR NEW.sequence IS NOT OLD.sequence
++  OR NEW.supersedes_authorization_id IS NOT OLD.supersedes_authorization_id
++  OR NEW.effective_at IS NOT OLD.effective_at
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_PROMO_AUTHORIZATION_PLACEMENT_IMMUTABLE'); END;
++CREATE TRIGGER engagement_promo_authorizations_revoke_one_way_guard
++BEFORE UPDATE ON engagement_promo_authorizations
++WHEN OLD.revoked_at IS NOT NULL
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_PROMO_AUTHORIZATION_ALREADY_REVOKED'); END;
++CREATE TRIGGER engagement_promo_authorizations_delete_guard
++BEFORE DELETE ON engagement_promo_authorizations
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_PROMO_AUTHORIZATION_IMMUTABLE'); END;
++
++-- 8. Activation evidence: the ONE privileged transaction that validates and
++-- pins every prerequisite (global ACTIVE, partner PARTNER_ACTIVE, legal
++-- profile, framework acceptance, effective delegation, current audience
++-- verification for the occurrence's city, an engagement revision the
++-- partner actually accepted, an open publication window, the occurrence)
++-- as one immutable snapshot row. Repeatable: re-activating onto a newer
++-- accepted revision while already ACTIVE inserts another row here (see
++-- agent-referrals-engagement.ts) - it is evidence of "activation happened
++-- again, onto revision N", never a rewrite of the first activation.
++CREATE TABLE engagement_activation_events (
++  id TEXT PRIMARY KEY,
++  engagement_id TEXT NOT NULL REFERENCES engagements(id),
++  engagement_revision_id TEXT NOT NULL REFERENCES engagement_revisions(id),
++  audience_verification_event_id TEXT NOT NULL REFERENCES partner_audience_verification_events(id),
++  legal_profile_revision_id TEXT NOT NULL REFERENCES agent_referrals_legal_profile_revisions(id),
++  framework_acceptance_id TEXT NOT NULL REFERENCES framework_acceptances(id),
++  ord_reporting_delegation_id TEXT NOT NULL REFERENCES ord_reporting_delegations(id),
++  promo_authorization_id TEXT NOT NULL REFERENCES engagement_promo_authorizations(id),
++  occurrence_id TEXT NOT NULL REFERENCES occurrences(id),
++  activated_by_admin_id TEXT NOT NULL,
++  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
++);
++CREATE INDEX engagement_activation_events_engagement_idx ON engagement_activation_events(engagement_id, created_at);
++CREATE TRIGGER engagement_activation_events_immutable_guard
++BEFORE UPDATE ON engagement_activation_events
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_ACTIVATION_EVENT_IMMUTABLE'); END;
++CREATE TRIGGER engagement_activation_events_delete_guard
++BEFORE DELETE ON engagement_activation_events
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_ACTIVATION_EVENT_IMMUTABLE'); END;
++
++-- 9. Immutable creative CONTENT only (plan section B-5). Deliberately
++-- carries no engagement_revision_id or promo_authorization_id of its own -
++-- that pinning lives one table over, in engagement_creative_authorizations
++-- - so a reward-formula-only engagement revision change never forces a new
++-- creative_hash, a new ORD registration or a new ERID. creative_hash is
++-- computed by application code (crypto.ts's canonicalV2 + sha256) over
++-- every material field; this table does not recompute or verify it itself.
++-- `revision` (not created_at ordering) is what "current" resolves against
++-- - matching every other revision-chain table in this schema
++-- (engagement_revisions, payout_profile_revisions,
++-- engagement_distribution_revisions, ...). created_at is CURRENT_TIMESTAMP
++-- (second precision); two revisions minted within the same wall-clock
++-- second would otherwise make "current" ambiguous.
++CREATE TABLE engagement_creative_revisions (
++  id TEXT PRIMARY KEY,
++  engagement_id TEXT NOT NULL REFERENCES engagements(id),
++  revision INTEGER NOT NULL,
++  partner_id TEXT NOT NULL REFERENCES agents(id),
++  promo_code_id TEXT NOT NULL REFERENCES promo_codes(id),
++  format_kind TEXT NOT NULL CHECK (format_kind IN ('post', 'story', 'short_video', 'long_video', 'stream', 'audio', 'text', 'graphic', 'text_graphic', 'native_authored')),
++  media_ref TEXT,
++  copy_text TEXT,
++  cta_text TEXT,
++  mandatory_labeling_text TEXT NOT NULL,
++  creative_target_url TEXT NOT NULL,
++  creative_hash TEXT NOT NULL,
++  supersedes_creative_revision_id TEXT REFERENCES engagement_creative_revisions(id),
++  created_by_admin_id TEXT NOT NULL,
++  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
++  UNIQUE (engagement_id, revision)
++);
++CREATE INDEX engagement_creative_revisions_engagement_idx ON engagement_creative_revisions(engagement_id);
++CREATE TRIGGER engagement_creative_revisions_immutable_guard
++BEFORE UPDATE ON engagement_creative_revisions
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_CREATIVE_REVISION_IMMUTABLE'); END;
++CREATE TRIGGER engagement_creative_revisions_delete_guard
++BEFORE DELETE ON engagement_creative_revisions
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_CREATIVE_REVISION_IMMUTABLE'); END;
++
++-- 10. Which creative content revision may be used, under which engagement
++-- revision and promo authorization. "Canonical" (plan section B-5e) is
++-- read as: at most one CURRENT (unrevoked) authorization per engagement -
++-- enforced structurally below, not merely by convention, so
++-- CREATIVE_READY_TO_PUBLISH can resolve an unambiguous single row. A
++-- superseded creative revision may not back new authorized publication
++-- (enforced in application code: authorizing always targets the CURRENT
++-- creative revision); distributions already reported under a now-revoked
++-- authorization stay valid evidence (engagement_distributions pins its own
++-- creative_revision_id independently and is never rewritten).
++CREATE TABLE engagement_creative_authorizations (
++  id TEXT PRIMARY KEY,
++  engagement_id TEXT NOT NULL REFERENCES engagements(id),
++  engagement_revision_id TEXT NOT NULL REFERENCES engagement_revisions(id),
++  promo_authorization_id TEXT NOT NULL REFERENCES engagement_promo_authorizations(id),
++  creative_revision_id TEXT NOT NULL REFERENCES engagement_creative_revisions(id),
++  supersedes_authorization_id TEXT REFERENCES engagement_creative_authorizations(id),
++  effective_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
++  revoked_at TEXT,
++  revoked_reason TEXT,
++  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
++);
++CREATE INDEX engagement_creative_authorizations_engagement_idx ON engagement_creative_authorizations(engagement_id);
++CREATE UNIQUE INDEX engagement_creative_authorizations_current_unique
++  ON engagement_creative_authorizations(engagement_id) WHERE revoked_at IS NULL;
++CREATE TRIGGER engagement_creative_authorizations_placement_immutable_guard
++BEFORE UPDATE ON engagement_creative_authorizations
++WHEN NEW.engagement_id IS NOT OLD.engagement_id
++  OR NEW.engagement_revision_id IS NOT OLD.engagement_revision_id
++  OR NEW.promo_authorization_id IS NOT OLD.promo_authorization_id
++  OR NEW.creative_revision_id IS NOT OLD.creative_revision_id
++  OR NEW.supersedes_authorization_id IS NOT OLD.supersedes_authorization_id
++  OR NEW.effective_at IS NOT OLD.effective_at
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_CREATIVE_AUTHORIZATION_PLACEMENT_IMMUTABLE'); END;
++CREATE TRIGGER engagement_creative_authorizations_revoke_one_way_guard
++BEFORE UPDATE ON engagement_creative_authorizations
++WHEN OLD.revoked_at IS NOT NULL
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_CREATIVE_AUTHORIZATION_ALREADY_REVOKED'); END;
++CREATE TRIGGER engagement_creative_authorizations_delete_guard
++BEFORE DELETE ON engagement_creative_authorizations
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_CREATIVE_AUTHORIZATION_IMMUTABLE'); END;
++
++-- 11. Distribution identity, immutable reported-fact revisions and an
++-- append-only lifecycle event log (plan section B-5c). A reported
++-- distribution is ALWAYS persisted, regardless of channel policy OR
++-- temporal authority - policy and authority together decide
++-- classification (folded from the event log), never whether reality may
++-- be recorded. Corrections are new revisions with supersedes_revision_id
++-- and a required correction_reason, never an UPDATE over a filed fact.
++--
++-- engagement_revision_id/creative_revision_id are pinned per REVISION,
++-- not on the stable distribution identity: each revision carries its own
++-- published_at, and a correction that moves published_at across an
++-- authority boundary (e.g. from a superseded creative's authorized
++-- interval into a newer one's) must re-resolve which authority actually
++-- covered that instant - pinning identity-wide would silently keep an
++-- earlier revision's now-wrong authority. Both are NULLABLE: a report
++-- whose published_at predates the FIRST creative authorization ever
++-- granted for this engagement has no candidate authority to pin at all -
++-- the fact is still persisted (REVIEW_REQUIRED), just with no fabricated
++-- authority reference. See resolveHistoricalCreativeAuthority in
++-- agent-referrals-distribution.ts.
++CREATE TABLE engagement_distributions (
++  id TEXT PRIMARY KEY,
++  engagement_id TEXT NOT NULL REFERENCES engagements(id),
++  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
++);
++CREATE INDEX engagement_distributions_engagement_idx ON engagement_distributions(engagement_id);
++
++CREATE TABLE engagement_distribution_revisions (
++  id TEXT PRIMARY KEY,
++  distribution_id TEXT NOT NULL REFERENCES engagement_distributions(id),
++  revision INTEGER NOT NULL,
++  supersedes_revision_id TEXT REFERENCES engagement_distribution_revisions(id),
++  engagement_revision_id TEXT REFERENCES engagement_revisions(id),
++  creative_revision_id TEXT REFERENCES engagement_creative_revisions(id),
++  channel_key TEXT NOT NULL,
++  channel_policy_status TEXT NOT NULL CHECK (channel_policy_status IN ('ALLOWED', 'BLOCKED', 'REVIEW_REQUIRED')),
++  channel_policy_revision INTEGER,
++  resource_kind TEXT NOT NULL CHECK (resource_kind IN ('channel', 'page', 'profile', 'site', 'stream')),
++  resource_identifier TEXT NOT NULL,
++  distribution_resource_url TEXT NOT NULL,
++  published_at TEXT NOT NULL,
++  ended_at TEXT,
++  reported_by TEXT NOT NULL CHECK (reported_by IN ('PARTNER', 'ADMIN')),
++  correction_reason TEXT,
++  evidence_ref TEXT NOT NULL,
++  canonical_hash TEXT NOT NULL,
++  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
++  UNIQUE (distribution_id, revision),
++  CHECK (revision = 1 OR correction_reason IS NOT NULL),
++  CHECK ((engagement_revision_id IS NULL) = (creative_revision_id IS NULL))
++);
++CREATE INDEX engagement_distribution_revisions_distribution_idx ON engagement_distribution_revisions(distribution_id, revision);
++CREATE TRIGGER engagement_distribution_revisions_immutable_guard
++BEFORE UPDATE ON engagement_distribution_revisions
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_DISTRIBUTION_REVISION_IMMUTABLE'); END;
++CREATE TRIGGER engagement_distribution_revisions_delete_guard
++BEFORE DELETE ON engagement_distribution_revisions
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_DISTRIBUTION_REVISION_IMMUTABLE'); END;
++
++-- event_sequence is the durable canonical fold order for this regulatory
++-- evidence stream - allocated by the application inside the same
++-- IMMEDIATE transaction as the INSERT (never SQLite's own implicit
++-- rowid, a storage detail this table's readers must not depend on).
++-- occurred_at (millisecond strftime) remains evidence, but several events
++-- routinely land in the same millisecond (e.g. DECLARED then
++-- MARKED_REPORTABLE), so it is never the fold's sort key.
++CREATE TABLE engagement_distribution_events (
++  id TEXT PRIMARY KEY,
++  distribution_id TEXT NOT NULL REFERENCES engagement_distributions(id),
++  event_sequence INTEGER NOT NULL,
++  event_kind TEXT NOT NULL CHECK (event_kind IN ('DECLARED', 'MARKED_REPORTABLE', 'REVIEW_REQUIRED', 'REVIEW_CLEARED', 'REMOVAL_REQUIRED', 'REMOVAL_CLAIMED', 'REMOVAL_CONFIRMED', 'OVERDUE_REMOVAL', 'REMOVAL_UNVERIFIED')),
++  actor_realm TEXT NOT NULL CHECK (actor_realm IN ('ADMIN', 'PARTNER', 'SYSTEM')),
++  evidence_ref TEXT,
++  reason TEXT,
++  occurred_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
++  UNIQUE (distribution_id, event_sequence)
++);
++CREATE INDEX engagement_distribution_events_distribution_idx ON engagement_distribution_events(distribution_id, event_sequence);
++CREATE TRIGGER engagement_distribution_events_immutable_guard
++BEFORE UPDATE ON engagement_distribution_events
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_DISTRIBUTION_EVENT_IMMUTABLE'); END;
++CREATE TRIGGER engagement_distribution_events_delete_guard
++BEFORE DELETE ON engagement_distribution_events
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_DISTRIBUTION_EVENT_IMMUTABLE'); END;
++
++-- 12. Delegation revocation, layered forward-only on top of 0044's
++-- ord_reporting_delegations without editing that migration. UNIQUE on
++-- ord_reporting_delegation_id makes revocation a one-time, irreversible
++-- fact: "effective" is simply "a delegation row exists AND no revocation
++-- row references it" - no mutable status column to drift from that. Either
++-- realm may revoke (plan section B-2: partner "may... revoke delegated
++-- authority"; an admin may also revoke for compliance), recorded by
++-- revoked_by_realm.
++CREATE TABLE ord_reporting_delegation_revocations (
++  id TEXT PRIMARY KEY,
++  ord_reporting_delegation_id TEXT NOT NULL UNIQUE REFERENCES ord_reporting_delegations(id),
++  partner_identity_id TEXT NOT NULL REFERENCES partner_identities(id),
++  revoked_by_realm TEXT NOT NULL CHECK (revoked_by_realm IN ('ADMIN', 'PARTNER')),
++  revoked_by_admin_id TEXT,
++  reason TEXT NOT NULL,
++  revoked_for_new_activity_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
++  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
++  CHECK (
++    (revoked_by_realm = 'ADMIN' AND revoked_by_admin_id IS NOT NULL)
++    OR (revoked_by_realm = 'PARTNER' AND revoked_by_admin_id IS NULL)
++  )
++);
++CREATE TRIGGER ord_reporting_delegation_revocations_immutable_guard
++BEFORE UPDATE ON ord_reporting_delegation_revocations
++BEGIN SELECT RAISE(ABORT, 'ORD_REPORTING_DELEGATION_REVOCATION_IMMUTABLE'); END;
++CREATE TRIGGER ord_reporting_delegation_revocations_delete_guard
++BEFORE DELETE ON ord_reporting_delegation_revocations
++BEGIN SELECT RAISE(ABORT, 'ORD_REPORTING_DELEGATION_REVOCATION_IMMUTABLE'); END;
++
++-- 13. Engagement closure evidence (plan section B-7). UNIQUE on
++-- engagement_id: an engagement closes at most once, ever - CLOSED has no
++-- outgoing edge. reward_registry_finalization_evidence_ref is the
++-- dependency-seam pin: PR5 ships no engagement_reward_registry_snapshot
++-- table (that is 0046's), so this column records whatever opaque evidence
++-- reference the caller-supplied resolver produced, never a foreign key
++-- into a table that does not exist yet. See closeEngagement() in
++-- agent-referrals-engagement-closure.ts for why the resolver itself is a
++-- required caller-supplied function, not a value this migration or PR5
++-- application code can compute for real.
++CREATE TABLE engagement_closure_events (
++  id TEXT PRIMARY KEY,
++  engagement_id TEXT NOT NULL UNIQUE REFERENCES engagements(id),
++  occurrence_id TEXT NOT NULL REFERENCES occurrences(id),
++  revoked_promo_authorization_id TEXT NOT NULL REFERENCES engagement_promo_authorizations(id),
++  reward_registry_finalization_evidence_ref TEXT NOT NULL,
++  reason TEXT NOT NULL,
++  closed_by_admin_id TEXT NOT NULL,
++  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
++);
++CREATE TRIGGER engagement_closure_events_immutable_guard
++BEFORE UPDATE ON engagement_closure_events
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_CLOSURE_EVENT_IMMUTABLE'); END;
++CREATE TRIGGER engagement_closure_events_delete_guard
++BEFORE DELETE ON engagement_closure_events
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_CLOSURE_EVENT_IMMUTABLE'); END;

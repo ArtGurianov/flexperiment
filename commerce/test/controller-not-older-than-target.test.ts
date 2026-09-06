@@ -225,13 +225,15 @@ const decoupledAncestryFixture = () => [
 describe("RECONSTRUCTION_BOUND: positive proof obligation for a detached candidate", () => {
   /**
    * The release-semantics bootstrap (docs/release/RELEASE_SEMANTICS_BOOTSTRAP.md)
-   * lands the machinery's second real consumer, in exactly two real
-   * workflows: controlled-release-semantics-bootstrap.yml (the production
-   * controller, which additionally CASes production-deploy to B2 via
-   * set-production-deploy-ref.sh) and
-   * controlled-release-semantics-bootstrap-candidate.yml (publication only -
-   * reconstructs and independently verifies B2 too, since that is exactly
-   * what publishing the right commit requires, but never calls
+   * landed the machinery's second real consumer: controlled-release-semantics-bootstrap.yml
+   * (the production controller, which additionally CASes production-deploy
+   * to B2 via set-production-deploy-ref.sh) and
+   * controlled-release-semantics-bootstrap-candidate.yml (publication only).
+   * Agent Referrals' rematerialized Q2 candidate (Q2^ == B2, PR #61's old
+   * Q^ == P is permanently obsolete) is the third: controlled-agent-referrals.yml
+   * (the ROLLING production controller, which CASes production-deploy B2 ->
+   * Q2) and controlled-agent-referrals-candidate.yml (publication only -
+   * reconstructs and independently verifies Q2, but never calls
    * set-production-deploy-ref.sh and so is excluded from DEPLOYING and the
    * ANCESTRY_BOUND-specific check above). isReconstructionBound() alone
    * cannot and does not distinguish "reconstructs the candidate" from
@@ -240,10 +242,11 @@ describe("RECONSTRUCTION_BOUND: positive proof obligation for a detached candida
    * and mutually exclusive"), which is where the deploying-vs-publishing
    * distinction actually matters and is actually enforced.
    *
-   * This is deliberately a POSITIVE, named exception - exactly these two
+   * This is deliberately a POSITIVE, named exception - exactly these four
    * real workflows, by exact filename - never a broad "any workflow whose
-   * name mentions release-semantics-bootstrap" allowance, which is precisely
-   * the name-based-skip failure shape this machinery exists to close off.
+   * name mentions release-semantics-bootstrap or agent-referrals" allowance,
+   * which is precisely the name-based-skip failure shape this machinery
+   * exists to close off.
    */
   it("classifies exactly the known reconstruction-bound workflows today", () => {
     const workflows = readdirSync(WORKFLOWS)
@@ -251,6 +254,8 @@ describe("RECONSTRUCTION_BOUND: positive proof obligation for a detached candida
       .map((name) => ({ name, source: readFileSync(`${WORKFLOWS}/${name}`, "utf8") }));
     const classified = workflows.filter(({ source }) => isReconstructionBound(source));
     expect(classified.map(({ name }) => name).sort()).toEqual([
+      "controlled-agent-referrals-candidate.yml",
+      "controlled-agent-referrals.yml",
       "controlled-release-semantics-bootstrap-candidate.yml",
       "controlled-release-semantics-bootstrap.yml",
     ]);
@@ -314,11 +319,12 @@ describe("deployment target classification is exhaustive and mutually exclusive"
       .filter(({ source }) => source.includes("set-production-deploy-ref.sh"))) {
       const targetClass = classify(source, name);
       expect(["ANCESTRY_BOUND", "RECONSTRUCTION_BOUND", "HISTORICAL_HARD_BOUND"]).toContain(targetClass);
-      // controlled-release-semantics-bootstrap.yml is the one real, named
-      // RECONSTRUCTION_BOUND exception today - every other real workflow
+      // controlled-release-semantics-bootstrap.yml and
+      // controlled-agent-referrals.yml are the two real, named
+      // RECONSTRUCTION_BOUND exceptions today - every other real workflow
       // that advances production-deploy remains ancestry- or
       // historical-hard-bound.
-      if (name === "controlled-release-semantics-bootstrap.yml") expect(targetClass).toBe("RECONSTRUCTION_BOUND");
+      if (name === "controlled-release-semantics-bootstrap.yml" || name === "controlled-agent-referrals.yml") expect(targetClass).toBe("RECONSTRUCTION_BOUND");
       else expect(targetClass).not.toBe("RECONSTRUCTION_BOUND");
     }
   });

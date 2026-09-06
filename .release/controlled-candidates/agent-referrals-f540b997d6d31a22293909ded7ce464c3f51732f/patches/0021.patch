@@ -1,0 +1,102 @@
+diff --git new/apps/admin/components/partner/Profile.tsx new/apps/admin/components/partner/Profile.tsx
+new file mode 100644
+index 0000000..690072a
+--- /dev/null
++++ new/apps/admin/components/partner/Profile.tsx
+@@ -0,0 +1,96 @@
++"use client";
++
++import { useQuery, useQueryClient } from "@tanstack/react-query";
++import { useState } from "react";
++import { useForm } from "react-hook-form";
++import { partnerApi, PartnerApiError } from "../../lib/partner-api";
++import type { Row } from "../../lib/partner-page";
++import { Loading } from "../ui/Loading";
++import { Notice } from "../ui/Notice";
++import { PageTitle } from "../ui/PageTitle";
++import { Badge } from "../ui/Badge";
++
++const ONBOARDING_LABELS: Record<string, string> = {
++  INVITED: "Приглашён", PROFILE_SUBMITTED: "Профиль отправлен", PROFILE_VERIFIED: "Профиль проверен",
++  FRAMEWORK_ISSUED: "Договор выдан", FRAMEWORK_ACCEPTED: "Договор принят", PARTNER_ACTIVE: "Активен",
++};
++
++export function Profile() {
++  const queryClient = useQueryClient();
++  const profile = useQuery({ queryKey: ["partner", "me"], queryFn: () => partnerApi<Row>("/me") });
++  const [error, setError] = useState<string | null>(null);
++  const [busy, setBusy] = useState(false);
++  const { register, handleSubmit } = useForm<{ legal_form: string; tax_mode: string }>({ defaultValues: { legal_form: "INDIVIDUAL", tax_mode: "NPD" } });
++
++  const submitLegalProfile = handleSubmit(async (values) => {
++    setBusy(true); setError(null);
++    try {
++      await partnerApi("/legal-profile", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(values) });
++      await queryClient.invalidateQueries({ queryKey: ["partner", "me"] });
++    } catch (failure) {
++      setError((failure as PartnerApiError).code);
++    } finally {
++      setBusy(false);
++    }
++  });
++
++  if (profile.isLoading) return <Loading />;
++  if (profile.isError) return <Notice error={(profile.error as PartnerApiError).code} />;
++  const data = profile.data!;
++  const onboardingState = String(data.onboarding_state ?? "");
++  const canSubmit = onboardingState === "INVITED" || onboardingState === "PROFILE_SUBMITTED";
++  const legalProfile = data.legal_profile as Row | null;
++  const payoutProfile = data.payout_profile as Row | null;
++
++  return (
++    <>
++      <PageTitle eyebrow="ПРОФИЛЬ" title="Ваш профиль партнёра" text="Статус онбординга, юридический статус и промокод." />
++      <section className="card">
++        <p>Email: <strong>{String(data.email ?? "")}</strong></p>
++        <p>Статус: <Badge>{ONBOARDING_LABELS[onboardingState] ?? onboardingState}</Badge></p>
++        <p>Промокод: <strong>{data.promo_code ? String(data.promo_code) : "не выдан"}</strong></p>
++        <p>Делегирование ОРД: <Badge>{data.delegation_effective ? "действует" : "не действует"}</Badge></p>
++      </section>
++
++      {legalProfile && (
++        <section className="card">
++          <h2>Подтверждённый юридический статус</h2>
++          <p>Форма: {String(legalProfile.legal_form)} · Налоговый режим: {String(legalProfile.tax_mode)}</p>
++          <p>Тип контрагента: {String(legalProfile.projected_contractor_type)}</p>
++        </section>
++      )}
++
++      {payoutProfile && (
++        <section className="card">
++          <h2>Реквизиты для выплат</h2>
++          <p>{payoutProfile.kind === "ACTIVE_DESTINATION" ? `${payoutProfile.destination_kind} •••• ${payoutProfile.destination_last4}` : "отозваны"}</p>
++        </section>
++      )}
++
++      {canSubmit && (
++        <section className="card">
++          <h2>Юридическая форма</h2>
++          <form onSubmit={submitLegalProfile}>
++            <label>
++              Форма
++              <select {...register("legal_form")}>
++                <option value="INDIVIDUAL">Физическое лицо</option>
++                <option value="INDIVIDUAL_ENTREPRENEUR">ИП</option>
++                <option value="LEGAL_ENTITY">Юридическое лицо</option>
++              </select>
++            </label>
++            <label>
++              Налоговый режим
++              <select {...register("tax_mode")}>
++                <option value="NPD">НПД (самозанятый)</option>
++                <option value="OTHER">Другой</option>
++              </select>
++            </label>
++            <Notice error={error} />
++            <button className="primary" disabled={busy}>{busy ? "Отправляем…" : "Отправить на проверку"}</button>
++          </form>
++        </section>
++      )}
++    </>
++  );
++}

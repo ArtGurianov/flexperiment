@@ -1,0 +1,64 @@
+diff --git new/commerce/src/agent-referrals-engagement-step-up.ts new/commerce/src/agent-referrals-engagement-step-up.ts
+new file mode 100644
+index 0000000..e481f6e
+--- /dev/null
++++ new/commerce/src/agent-referrals-engagement-step-up.ts
+@@ -0,0 +1,58 @@
++import type Database from "better-sqlite3";
++import { canonicalV2, id, sha256 } from "./crypto";
++import { recordPartnerIdentityEvent } from "./agent-referrals-onboarding";
++import type { PartnerPrincipal } from "./agent-referrals-partner-identity";
++
++/**
++ * Phase 5's own step-up-grant table (engagement_step_up_grants), parallel
++ * to PR4's step_up_grants but entirely separate storage - see the 0045
++ * migration's file header for why 0044's table could not simply admit new
++ * action values. Same contract: the grant pins the exact action AND the
++ * exact resource/revision it authorizes, consumed atomically with the
++ * protected mutation via CAS, no separate bearer secret (authority comes
++ * from the caller also presenting the exact partner_session_id that
++ * requested the grant).
++ */
++
++export type EngagementStepUpAction = "ENGAGEMENT_ACCEPTANCE" | "DELEGATION_REVOCATION";
++const STEP_UP_TTL_MS = 5 * 60_000;
++
++export class EngagementStepUpError extends Error {
++  constructor(readonly code: string, readonly status = 403, detail?: string) {
++    super(detail ? `${code}: ${detail}` : code);
++  }
++}
++
++const resourceHashOf = (resource: Record<string, unknown>): string => sha256(canonicalV2(resource));
++
++export const mintEngagementStepUpGrant = (
++  db: Database.Database,
++  partner: PartnerPrincipal,
++  action: EngagementStepUpAction,
++  resource: Record<string, unknown>,
++): { grant_id: string } => {
++  const run = db.transaction(() => {
++    const grantId = id();
++    db.prepare(`INSERT INTO engagement_step_up_grants(id, partner_session_id, partner_identity_id, action, resource_json, resource_hash, expires_at)
++      VALUES (?, ?, ?, ?, ?, ?, ?)`)
++      .run(grantId, partner.partner_session_id, partner.partner_identity_id, action, JSON.stringify(resource), resourceHashOf(resource), new Date(Date.now() + STEP_UP_TTL_MS).toISOString());
++    recordPartnerIdentityEvent(db, partner.partner_identity_id, "ENGAGEMENT_STEP_UP_GRANT_ISSUED", "PARTNER", { grant_id: grantId, action });
++    return { grant_id: grantId };
++  });
++  return run.immediate();
++};
++
++/** Nestable - see agent-referrals-step-up.ts's consumeStepUpGrantInTransaction for the identical rationale. */
++export const consumeEngagementStepUpGrantInTransaction = (
++  db: Database.Database,
++  partner: PartnerPrincipal,
++  grantId: string,
++  action: EngagementStepUpAction,
++  resource: Record<string, unknown>,
++): void => {
++  const changed = db.prepare(`UPDATE engagement_step_up_grants SET consumed_at = CURRENT_TIMESTAMP
++    WHERE id = ? AND partner_identity_id = ? AND partner_session_id = ? AND action = ? AND resource_hash = ?
++      AND consumed_at IS NULL AND julianday(expires_at) > julianday('now')`)
++    .run(grantId, partner.partner_identity_id, partner.partner_session_id, action, resourceHashOf(resource));
++  if (changed.changes !== 1) throw new EngagementStepUpError("AGENT_REFERRALS_ENGAGEMENT_STEP_UP_GRANT_INVALID", 403, grantId);
++};

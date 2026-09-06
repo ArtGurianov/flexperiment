@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { describe, expect, it } from "vitest";
 import { epochBPromotionArtifactReason } from "../src/epoch-b-notification-activation";
 import { verifyAgentReferralsCandidateCertificate, type AgentReferralsCandidateCertificate } from "../src/agent-referrals-candidate";
+import { verifyControlledCandidateCertificate, type ControlledCandidateCertificate } from "../src/controlled-candidate";
 
 /**
  * Durable release refs must stay in a provable relationship. Both invariants
@@ -93,6 +94,36 @@ const isApprovedAgentReferralsCandidate = (sha: string, currentMain: string) => 
   return verifyAgentReferralsCandidateCertificate(certificate, sha) === undefined;
 };
 
+/**
+ * The same `RECONSTRUCTION_BOUND` shape as `isApprovedAgentReferralsCandidate`
+ * above, generalized to the shared `controlled-candidate.ts` reconstruction
+ * core (docs/release/RELEASE_SEMANTICS_BOOTSTRAP.md) - now the real,
+ * currently-judged case: `production-deploy` is `B2`
+ * (`f540b997d6d31a22293909ded7ce464c3f51732f`), the release-semantics
+ * bootstrap's own certified candidate, following its real production
+ * execution (terminal run `33973254486`). Checked across every namespace a
+ * real `controlled-candidate.ts` consumer uses today - a positive
+ * enumeration, never a wildcard; a third consumer means adding its exact
+ * namespace slug here, not loosening the check.
+ */
+const CONTROLLED_CANDIDATE_NAMESPACES = ["release-semantics-bootstrap", "agent-referrals"] as const;
+const controlledCandidateCertificatePath = (namespace: string, base: string) => `.release/controlled-candidates/${namespace}-${base}/certificate.json`;
+const isApprovedControlledCandidate = (sha: string, currentMain: string) => {
+  const base = resolve(`${sha}^`);
+  if (!base) return false;
+  for (const namespace of CONTROLLED_CANDIDATE_NAMESPACES) {
+    const result = git("show", `${currentMain}:${controlledCandidateCertificatePath(namespace, base)}`);
+    if (result.status !== 0) continue;
+    let certificate: ControlledCandidateCertificate;
+    try { certificate = JSON.parse(result.stdout.toString()) as ControlledCandidateCertificate; }
+    catch { continue; }
+    if (certificate.base_sha !== base) continue;
+    if (typeof certificate.source_main_sha !== "string" || !isAncestor(certificate.source_main_sha, currentMain)) continue;
+    if (verifyControlledCandidateCertificate(certificate, sha, { trusted_patch_source_sha: currentMain }) === undefined) return true;
+  }
+  return false;
+};
+
 // Resolved SHAs, never branch names: a ref that has been repointed must not
 // pass because its name still looks familiar.
 const productionDeploy = resolve("origin/production-deploy");
@@ -117,11 +148,12 @@ describe("durable release ref topology", () => {
       || isApproved0041DetachedRuntime(judged.productionDeploy)
       || isApprovedEpochADetachedRuntime(judged.productionDeploy)
       || isApprovedEpochBPromotionArtifact(judged.productionDeploy)
-      || isApprovedAgentReferralsCandidate(judged.productionDeploy, judged.main),
+      || isApprovedAgentReferralsCandidate(judged.productionDeploy, judged.main)
+      || isApprovedControlledCandidate(judged.productionDeploy, judged.main),
       `production-deploy is not an ancestor of main.\n`
       + `  production-deploy: ${describes("origin/production-deploy")}\n`
       + `  main:              ${describes("origin/main")}\n`
-      + `Only exact 0041 Gen2, exact Epoch A R, deterministic Epoch B P, or a valid Agent Referrals reconstruction certificate may be detached from main.`,
+      + `Only exact 0041 Gen2, exact Epoch A R, deterministic Epoch B P, a valid Agent Referrals reconstruction certificate, or a valid controlled-candidate.ts reconstruction certificate (release-semantics-bootstrap or agent-referrals namespace) may be detached from main.`,
     ).toBe(true);
   });
 

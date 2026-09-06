@@ -1,0 +1,11 @@
+diff --git new/apps/admin/app/agent-referrals/page.tsx new/apps/admin/app/agent-referrals/page.tsx
+new file mode 100644
+index 0000000..117a429
+--- /dev/null
++++ new/apps/admin/app/agent-referrals/page.tsx
+@@ -0,0 +1,5 @@
++import { AdminApp } from "../../components/AdminApp";
++
++export default function AgentReferralsPage() {
++  return <AdminApp page="agent-referrals" />;
++}

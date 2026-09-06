@@ -1,0 +1,52 @@
+diff --git new/commerce/src/agent-referrals-partner-promo-pricing.ts new/commerce/src/agent-referrals-partner-promo-pricing.ts
+new file mode 100644
+index 0000000..389a02e
+--- /dev/null
++++ new/commerce/src/agent-referrals-partner-promo-pricing.ts
+@@ -0,0 +1,46 @@
++import type Database from "better-sqlite3";
++import { isPromoPartnerOwned, currentEngagementPromoAuthorization } from "./agent-referrals-promo";
++
++/**
++ * The minimal QUOTE_STALE compatibility seam plan section B-9 requires for
++ * Phase 5: for a PARTNER-owned promo, promo_codes.discount_type/value are
++ * frozen NONE/0 placeholders (never pricing authority - the customer
++ * discount lives in the accepted engagement revision). Checkout must
++ * therefore price and detect staleness against the ENGAGEMENT REVISION's
++ * terms, not the frozen promo row. For a legacy/non-partner promo this is
++ * a pure pass-through - zero behavior change, and this module never
++ * touches attribution, order authority columns or reward computation
++ * (PR6/§B-9's Phase 6 concern).
++ */
++
++export class PartnerPromoPricingError extends Error {
++  constructor(readonly code: string, readonly status = 409) {
++    super(code);
++  }
++}
++
++export type ResolvedPromoTerms = { discount_type: "NONE" | "PERCENT" | "FIXED"; discount_value: number };
++
++/**
++ * `notEligibleCode` lets the two existing call sites keep their own
++ * distinct, already-established codes (PROMO_NOT_ELIGIBLE at quote time,
++ * PROMO_NO_LONGER_ELIGIBLE at checkout) rather than this module inventing
++ * a third. Never resolves or snapshots an authorization id - quotes are
++ * deliberately not eligibility authority (A4-6), and eligibility is
++ * re-resolved fresh at every call.
++ */
++export const resolveCheckoutPromoTerms = (
++  db: Database.Database,
++  promo: { id: string; discount_type: string; discount_value: number },
++  occurrenceId: string,
++  notEligibleCode: string,
++): ResolvedPromoTerms => {
++  if (!isPromoPartnerOwned(db, promo.id)) {
++    return { discount_type: promo.discount_type as ResolvedPromoTerms["discount_type"], discount_value: Number(promo.discount_value) };
++  }
++  const authorization = currentEngagementPromoAuthorization(db, promo.id, occurrenceId);
++  if (!authorization) throw new PartnerPromoPricingError(notEligibleCode, 409);
++  const revision = db.prepare("SELECT customer_discount_type, customer_discount_value FROM engagement_revisions WHERE id = ?")
++    .get(authorization.engagement_revision_id) as { customer_discount_type: string; customer_discount_value: number };
++  return { discount_type: revision.customer_discount_type as ResolvedPromoTerms["discount_type"], discount_value: Number(revision.customer_discount_value) };
++};
