@@ -8,7 +8,7 @@ import { reconstructControlledCandidateSha, type ControlledCandidateCertificate 
 
 const Q2 = "2dc1a55a070a7e9e9ebcd52f46dff8d171da223e";
 const Q3 = "f317c836635bfe3a86735ecda6a050c51d4dc924";
-const Q4 = "5085eaf541391a6986ff524b1febe4eb20af6cba";
+const Q4 = "f399a998d348c2ad261c59012435d77f0637bdb6";
 const OLD_Q2_RELEASE = "agent-referrals-f540b997d6d31a22293909ded7ce464c3f51732f";
 const CERTIFICATE_PATH = `.release/controlled-candidates/agent-referrals-activation-${Q3}/certificate.json`;
 
@@ -32,6 +32,8 @@ type Q4Modules = {
   expectation: typeof import("../src/release-expectation");
   gate: { ReleaseSalesGate: new (db: unknown) => Q4Gate };
   feature: typeof import("../src/agent-referrals-feature-state");
+  activation: { activateAgentReferralsIfReady: (...args: unknown[]) => unknown };
+  otp: { UnisenderOtpSender: new (config: { apiKey: string; fromEmail: string; fromName: string; replyToEmail: string }, request: typeof fetch) => { send(input: { recipientEmail: string; code: string; challengeId: string }): Promise<string>; deliveryCapability(): { configured: boolean; provider_id: string | null } } };
 };
 
 /** Detached Q4-only methods must never be statically coupled to Q3/controller declarations. */
@@ -95,6 +97,8 @@ describe("Q4 activation capability: atomic DORMANT to ACTIVE authority", () => {
       expectation: await import(join(root, "commerce/src/release-expectation.ts")),
       gate: await import(join(root, "commerce/src/release-control.ts")),
       feature: await import(join(root, "commerce/src/agent-referrals-feature-state.ts")),
+      activation: await import(join(root, "commerce/src/agent-referrals-activation-readiness.ts")),
+      otp: await import(join(root, "commerce/src/agent-referrals-otp.ts")),
     };
   }, 60_000);
 
@@ -105,7 +109,7 @@ describe("Q4 activation capability: atomic DORMANT to ACTIVE authority", () => {
   beforeEach(() => { previousCwd = process.cwd(); process.chdir(root); process.env.SOURCE_COMMIT = Q4; });
   afterEach(() => { process.chdir(previousCwd); delete process.env.SOURCE_COMMIT; });
 
-  function fresh() {
+  function fresh(otpConfigured = true) {
     const sqlite = modules.db.openDatabase(":memory:");
     modules.db.migrate(sqlite, join(root, "commerce/migrations"));
     const legal = legalManifest(root, "q4-test");
@@ -130,7 +134,13 @@ describe("Q4 activation capability: atomic DORMANT to ACTIVE authority", () => {
     const terminal_release_id = `agent-referrals-q4-dormant-${Q4}`;
     gate.acquire({ release_id: terminal_release_id, mode: "ROLLING", expected });
     gate.completeRolling({ release_id: terminal_release_id, mode: "ROLLING", expected }, () => true);
-    const app = modules.api.createApp(sqlite, new modules.provider.MockProvider());
+    const otpSender = {
+      async send() { return "ACCEPTED" as const; },
+      deliveryCapability: () => ({ configured: true, provider_id: "unisender-go" as const }),
+    };
+    const app = otpConfigured
+      ? modules.api.createApp(sqlite, new modules.provider.MockProvider(), undefined, undefined, otpSender)
+      : modules.api.createApp(sqlite, new modules.provider.MockProvider());
     const request = {
       activation_id: `agent-referrals-activation-${Q4}`,
       terminal_release_id,
@@ -155,6 +165,38 @@ describe("Q4 activation capability: atomic DORMANT to ACTIVE authority", () => {
       expect(await response.json()).toMatchObject({ feature_state: { state: "ACTIVE", owner_id: request.activation_id, revision: request.expected_feature_revision + 1 }, replayed: false });
       expect(eventCount(sqlite)).toBe(1);
       expect(manifestCount(sqlite)).toBe(1);
+    } finally { sqlite.close(); }
+  });
+
+  it("refuses activation when the live app is still wired to UnconfiguredOtpSender", async () => {
+    const { sqlite, app, request } = fresh(false);
+    try {
+      const response = await activate(app, request);
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: { code: "AGENT_REFERRALS_ACTIVATION_OTP_DELIVERY_UNAVAILABLE" } });
+      expect(modules.feature.agentReferralsFeatureState(sqlite)).toMatchObject({ state: "DORMANT", owner_id: null });
+      expect(eventCount(sqlite)).toBe(0);
+      expect(manifestCount(sqlite)).toBe(0);
+    } finally { sqlite.close(); }
+  });
+
+  it("reads runtime evidence only after BEGIN IMMEDIATE and ships a usable configured OTP sender", async () => {
+    const { sqlite, request } = fresh();
+    try {
+      const gate = new modules.gate.ReleaseSalesGate(sqlite);
+      let readerRanInsideTransaction = false;
+      expect(() => modules.activation.activateAgentReferralsIfReady(
+        sqlite,
+        () => { readerRanInsideTransaction = sqlite.inTransaction; return {} as never; },
+        gate,
+        () => ({ configured: true, provider_id: "unisender-go" }),
+        request,
+      )).toThrow();
+      expect(readerRanInsideTransaction).toBe(true);
+
+      const sender = new modules.otp.UnisenderOtpSender({ apiKey: "key", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "reply@example.test" }, async () => Response.json({ status: "success", job_id: "job" }));
+      expect(sender.deliveryCapability()).toEqual({ configured: true, provider_id: "unisender-go" });
+      await expect(sender.send({ recipientEmail: "partner@example.test", code: "123456", challengeId: "challenge" })).resolves.toBe("ACCEPTED");
     } finally { sqlite.close(); }
   });
 
@@ -206,6 +248,7 @@ describe("Q4 activation capability: atomic DORMANT to ACTIVE authority", () => {
   it("has no Q3 bootstrap dependency or executable activation workflow", () => {
     expect(git("show", `${Q3}:commerce/src/api.ts`)).not.toContain("/agent-referrals/activate");
     expect(git("show", `${Q3}:commerce/src/agent-referrals-feature-state.ts`)).toContain("deliberately not wired to any HTTP route");
+    expect(git("show", `${Q4}:commerce/src/server.ts`)).toContain("otpSenderFromEnvironment");
     const controllerDiff = git("diff", "--name-only", "040d8dbdb93af5a33cb5bdd33a1215890796215d", controllerSha);
     expect(controllerDiff).not.toContain(".github/workflows/controlled-agent-referrals-activation.yml");
     expect(controllerDiff.split("\n").some((path) => path.startsWith(".github/workflows/"))).toBe(false);

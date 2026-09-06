@@ -1,21 +1,30 @@
 diff --git a/commerce/src/domain.ts b/commerce/src/domain.ts
-index 443376a..c1fe41c 100644
+index 443376a..dc5c23b 100644
 --- a/commerce/src/domain.ts
 +++ b/commerce/src/domain.ts
-@@ -22,6 +22,7 @@ import { claimForDispatch, deferAmbiguousObservation, deferAmbiguousSend, dispat
+@@ -22,6 +22,8 @@ import { claimForDispatch, deferAmbiguousObservation, deferAmbiguousSend, dispat
  import { ACTIVATION_REFUSAL_CODES, activateAttemptAuthority as runAttemptAuthorityActivation, activationEvidence } from "./outbox-activation";
  import { certificationDispatchEvidence } from "./certification-dispatch";
  import { OutboxAuthorityError, emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, lastAuthorityEvent, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations, type DispatchEpoch } from "./outbox-authority";
 +import { activateAgentReferralsIfReady, type AgentReferralsActivationRequest } from "./agent-referrals-activation-readiness";
++import type { OtpDeliveryCapability } from "./agent-referrals-otp";
  
  type Row = Record<string, unknown>;
  const one = <T extends Row>(db: Database.Database, sql: string, ...params: unknown[]) => db.prepare(sql).get(...params) as T | undefined;
-@@ -474,6 +475,13 @@ export class CommerceDomain {
+@@ -330,6 +332,7 @@ export class CommerceDomain {
+     readonly provider: PaymentProvider,
+     readonly emailProvider: EmailProvider = new UnconfiguredEmailProvider(),
+     private readonly clock: () => number = Date.now,
++    private readonly otpDelivery: OtpDeliveryCapability = { configured: false, provider_id: null },
+   ) {}
+ 
+   /**
+@@ -474,6 +477,13 @@ export class CommerceDomain {
    releaseControlStatus() { return this.releaseSalesGate().status(); }
    releaseControlCompletion(releaseId: string) { return this.releaseSalesGate().completion(releaseId); }
    releaseControlResolution(releaseId: string) { return this.releaseSalesGate().resolution(releaseId); }
 +  activateAgentReferralsIfReady(input: AgentReferralsActivationRequest) {
-+    try { return activateAgentReferralsIfReady(this.db, this.releaseRuntimeEvidence(), this.releaseSalesGate(), input); }
++    try { return activateAgentReferralsIfReady(this.db, () => this.releaseRuntimeEvidence(), this.releaseSalesGate(), () => this.otpDelivery, input); }
 +    catch (error) {
 +      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
 +      throw error;

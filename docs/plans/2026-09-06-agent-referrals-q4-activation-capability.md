@@ -23,7 +23,8 @@ The request has a deterministic activation owner
 predecessor `agent-referrals-q4-dormant-<Q4-source>`.  The command executes a
 single `BEGIN IMMEDIATE` transaction that:
 
-1. checks the exact DORMANT release predicate (schema, zero facts, exact
+1. opens `BEGIN IMMEDIATE` and only then reads the exact DORMANT release
+   predicate (schema, zero facts, exact
    runtime and worker revision, migrations, legal copies, surface contract,
    and legacy health);
 2. proves the sales gate is open and unowned, Q4's DORMANT terminal release
@@ -41,15 +42,17 @@ non-replay revision fails closed.
 
 The only activation key is `agent-referrals-activation-v1`.  It contains the
 protocol version, activation/terminal identities, target source, migration and
-legal identifiers, and a SHA-256 fingerprint of
+legal identifiers, the configured `unisender-go` OTP delivery identity, and a SHA-256 fingerprint of
 `COMMERCE_AGENT_REFERRALS_OTP_PEPPER`.  The pepper is never stored or
 returned.  The server derives all fields; callers cannot choose keys or
 values.  Insert-only semantics make an exact replay safe and a changed value
 a refusal.
 
-This is intentionally not a generic configuration registry.  The current
-runtime has no inspectable OTP delivery-provider configuration contract; its
-actual secret prerequisite is the OTP pepper, which Q4 proves by fingerprint.
+This is intentionally not a generic configuration registry. Q4 wires the
+production server through `otpSenderFromEnvironment()`: only an explicit
+`COMMERCE_AGENT_REFERRALS_OTP_PROVIDER=unisender-go` plus valid transactional
+provider configuration yields a configured sender. The command refuses the
+default `UnconfiguredOtpSender`, so a pepper alone can never authorize ACTIVE.
 The later activation workflow must still perform external reachability and
 deployment/ref binding checks, because Git ref state and external hosts are
 not facts the SQLite runtime can authoritatively read.

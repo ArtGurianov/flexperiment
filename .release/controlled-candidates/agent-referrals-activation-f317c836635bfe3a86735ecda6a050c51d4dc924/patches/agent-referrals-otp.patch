@@ -1,0 +1,69 @@
+diff --git a/commerce/src/agent-referrals-otp.ts b/commerce/src/agent-referrals-otp.ts
+index c8afe9a..363f815 100644
+--- a/commerce/src/agent-referrals-otp.ts
++++ b/commerce/src/agent-referrals-otp.ts
+@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
+ import { id } from "./crypto";
+ import { recordPartnerIdentityEvent } from "./agent-referrals-onboarding";
+ import { generateOpaqueToken, hashOpaqueToken, PARTNER_SESSION_TTL_MS } from "./agent-referrals-partner-auth";
++import { unisenderGoConfigFromEnvironment, type UnisenderGoConfig } from "./provider-config";
+ 
+ /**
+  * OTP challenge with exact unknown-outcome semantics, mirroring the outbox
+@@ -59,12 +60,56 @@ const hashesMatch = (a: string, b: string) => a.length === b.length && timingSaf
+  */
+ export interface OtpSender {
+   send(input: { recipientEmail: string; code: string; challengeId: string }): Promise<"ACCEPTED" | "KNOWN_FAILED">;
++  deliveryCapability(): OtpDeliveryCapability;
+ }
+ 
++export type OtpDeliveryCapability = { readonly configured: boolean; readonly provider_id: "unisender-go" | null };
++
+ export class UnconfiguredOtpSender implements OtpSender {
+   async send(): Promise<"ACCEPTED" | "KNOWN_FAILED"> { throw new Error("AGENT_REFERRALS_OTP_SENDER_NOT_CONFIGURED"); }
++  deliveryCapability(): OtpDeliveryCapability { return { configured: false, provider_id: null }; }
+ }
+ 
++/**
++ * The partner OTP route cannot borrow the commerce outbox: it deliberately
++ * never persists the plaintext code.  It nevertheless uses the same
++ * configured transactional provider, with a challenge-id correlation value
++ * rather than an outbox row, and reports only accepted versus known refusal.
++ */
++export class UnisenderOtpSender implements OtpSender {
++  constructor(private readonly config: UnisenderGoConfig, private readonly request: typeof fetch = fetch) {}
++
++  deliveryCapability(): OtpDeliveryCapability { return { configured: true, provider_id: "unisender-go" }; }
++
++  async send(input: { recipientEmail: string; code: string; challengeId: string }): Promise<"ACCEPTED" | "KNOWN_FAILED"> {
++    const response = await this.request("https://goapi.unisender.ru/ru/transactional/api/v1/email/send.json", {
++      method: "POST",
++      headers: { "Content-Type": "application/json", Accept: "application/json", "X-API-KEY": this.config.apiKey },
++      body: JSON.stringify({ message: {
++        recipients: [{ email: input.recipientEmail, metadata: { partner_otp_challenge_id: input.challengeId } }],
++        global_metadata: { partner_otp_challenge_id: input.challengeId },
++        body: {
++          plaintext: `Ваш код для входа в партнёрский кабинет FLEXPERIMENT: ${input.code}. Код действует 10 минут.`,
++          html: `<p>Ваш код для входа в партнёрский кабинет FLEXPERIMENT: <strong>${input.code}</strong>.</p><p>Код действует 10 минут.</p>`,
++        },
++        subject: "Код входа в партнёрский кабинет FLEXPERIMENT",
++        from_email: this.config.fromEmail, from_name: this.config.fromName, reply_to: this.config.replyToEmail,
++        template_engine: "none", idempotence_key: `partner-otp-${input.challengeId}`,
++      } }),
++    });
++    const payload = await response.json().catch(() => undefined) as { status?: unknown; job_id?: unknown } | undefined;
++    if (!response.ok) return "KNOWN_FAILED";
++    if (payload?.status === "success" && typeof payload.job_id === "string") return "ACCEPTED";
++    throw new Error("AGENT_REFERRALS_OTP_PROVIDER_OUTCOME_UNKNOWN");
++  }
++}
++
++/** Production is fail-closed: an explicit provider selection and valid configuration are both required. */
++export const otpSenderFromEnvironment = (environment = process.env): OtpSender =>
++  environment.COMMERCE_AGENT_REFERRALS_OTP_PROVIDER === "unisender-go"
++    ? new UnisenderOtpSender(unisenderGoConfigFromEnvironment(environment))
++    : new UnconfiguredOtpSender();
++
+ export type OtpChallengeRow = {
+   id: string;
+   partner_identity_id: string;

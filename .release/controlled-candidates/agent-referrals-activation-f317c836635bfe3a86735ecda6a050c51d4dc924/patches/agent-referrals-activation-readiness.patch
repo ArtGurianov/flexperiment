@@ -1,9 +1,9 @@
 diff --git a/commerce/src/agent-referrals-activation-readiness.ts b/commerce/src/agent-referrals-activation-readiness.ts
 new file mode 100644
-index 0000000..540f789
+index 0000000..99e10c9
 --- /dev/null
 +++ b/commerce/src/agent-referrals-activation-readiness.ts
-@@ -0,0 +1,178 @@
+@@ -0,0 +1,189 @@
 +import { createHash } from "node:crypto";
 +import type Database from "better-sqlite3";
 +import {
@@ -14,6 +14,7 @@ index 0000000..540f789
 +import { activateAgentReferralsInTransaction, agentReferralsFeatureState, type AgentReferralsFeatureStateRow } from "./agent-referrals-feature-state";
 +import { agentReferralsDormantReadinessEvidence, type AgentReferralsDormantReadinessEvidence } from "./agent-referrals-dormant-readiness";
 +import { ReleaseControlError, ReleaseSalesGate, type ReleaseExpectations, type ReleaseRuntimeEvidence } from "./release-control";
++import type { OtpDeliveryCapability } from "./agent-referrals-otp";
 +
 +/**
 + * This is intentionally a single, closed manifest entry rather than a
@@ -43,6 +44,7 @@ index 0000000..540f789
 +  readonly legal_version: string;
 +  readonly legal_manifest_sha256: string;
 +  readonly otp_pepper_sha256: string;
++  readonly otp_delivery_provider: "unisender-go";
 +};
 +
 +export class AgentReferralsActivationReadinessError extends Error {
@@ -54,9 +56,12 @@ index 0000000..540f789
 +const exactActivationId = (source: string) => `agent-referrals-activation-${source}`;
 +const exactTerminalReleaseId = (source: string) => `agent-referrals-q4-dormant-${source}`;
 +
-+const activationManifest = (input: AgentReferralsActivationRequest): AgentReferralsActivationManifest => {
++const activationManifest = (input: AgentReferralsActivationRequest, otpDelivery: OtpDeliveryCapability): AgentReferralsActivationManifest => {
 +  const pepper = process.env.COMMERCE_AGENT_REFERRALS_OTP_PEPPER;
 +  if (!pepper) throw new AgentReferralsActivationReadinessError("AGENT_REFERRALS_ACTIVATION_OTP_PEPPER_MISSING", 503);
++  if (!otpDelivery.configured || otpDelivery.provider_id !== "unisender-go") {
++    throw new AgentReferralsActivationReadinessError("AGENT_REFERRALS_ACTIVATION_OTP_DELIVERY_UNAVAILABLE", 503);
++  }
 +  return {
 +    version: AGENT_REFERRALS_ACTIVATION_MANIFEST_VERSION,
 +    activation_id: input.activation_id,
@@ -66,6 +71,7 @@ index 0000000..540f789
 +    legal_version: input.expected.legal_version,
 +    legal_manifest_sha256: input.expected.legal_manifest_sha256,
 +    otp_pepper_sha256: createHash("sha256").update(pepper).digest("hex"),
++    otp_delivery_provider: otpDelivery.provider_id,
 +  };
 +};
 +
@@ -145,13 +151,18 @@ index 0000000..540f789
 + */
 +export const activateAgentReferralsIfReady = (
 +  db: Database.Database,
-+  runtime: ReleaseRuntimeEvidence,
++  runtimeReader: () => ReleaseRuntimeEvidence,
 +  gate: ReleaseSalesGate,
++  otpDeliveryReader: () => OtpDeliveryCapability,
 +  input: AgentReferralsActivationRequest,
 +): AgentReferralsActivationResult => {
 +  assertRequestIdentity(input);
 +  try {
 +    return db.transaction(() => {
++      // These runtime values are deliberately read only after BEGIN IMMEDIATE,
++      // not by a controller/domain caller before entering this authority.
++      const runtime = runtimeReader();
++      const otpDelivery = otpDeliveryReader();
 +      const current = agentReferralsFeatureState(db);
 +      if (current.state === "ACTIVE" && current.owner_id !== input.activation_id) {
 +        throw new AgentReferralsActivationReadinessError("AGENT_REFERRALS_FEATURE_OWNER_CONFLICT", 409);
@@ -165,7 +176,7 @@ index 0000000..540f789
 +      }
 +
 +      const readiness = assertReadiness(db, runtime, gate, input, current);
-+      const manifest = activationManifest(input);
++      const manifest = activationManifest(input, otpDelivery);
 +      assertManifest(db, manifest);
 +      recordAgentReferralsActivationEvidenceInTransaction(db, AGENT_REFERRALS_ACTIVATION_MANIFEST_KEY, manifest);
 +

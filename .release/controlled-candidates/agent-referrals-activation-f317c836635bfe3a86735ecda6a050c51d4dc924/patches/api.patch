@@ -1,5 +1,5 @@
 diff --git a/commerce/src/api.ts b/commerce/src/api.ts
-index d851d32..a28a054 100644
+index d851d32..05678b9 100644
 --- a/commerce/src/api.ts
 +++ b/commerce/src/api.ts
 @@ -14,7 +14,7 @@ import { createAgentReferralsPartnerRouter } from "./agent-referrals-api-partner
@@ -11,6 +11,15 @@ index d851d32..a28a054 100644
  import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityInterestWithdrawalSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, emailAttentionAcknowledgeSchema, emergencySalesCommandSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrenceNotificationSchema, occurrencePatchSchema, outboxDispatchFenceSchema, preActivationDefectSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
  
  type AppBindings = { Variables: { adminId?: string; adminSessionId?: string } };
+@@ -33,7 +33,7 @@ const jsonBody = async (request: Request) => {
+ 
+ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvider: EmailProvider = new UnconfiguredEmailProvider(), smartCaptcha: SmartCaptchaVerifier = new UnconfiguredSmartCaptchaVerifier(), otpSender: OtpSender = new UnconfiguredOtpSender()) {
+   const app = new Hono<AppBindings>();
+-  const domain = new CommerceDomain(sqlite, provider, emailProvider);
++  const domain = new CommerceDomain(sqlite, provider, emailProvider, Date.now, otpSender.deliveryCapability());
+   const tochkaVerifier = provider instanceof TochkaProvider ? new TochkaWebhookVerifier() : undefined;
+   const unisenderConfig = emailProvider instanceof UnisenderGoProvider ? emailProvider.config : undefined;
+ 
 @@ -610,6 +610,11 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
      const input = completeRollingSchema.parse(await jsonBody(c.req.raw));
      return c.json(agentReferralsDormantReadinessEvidence(sqlite, domain.releaseRuntimeEvidence(), input.expected));
