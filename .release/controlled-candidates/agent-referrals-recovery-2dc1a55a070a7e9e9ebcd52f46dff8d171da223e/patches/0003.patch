@@ -1,0 +1,182 @@
+diff --git a/commerce/src/release-control.ts b/commerce/src/release-control.ts
+index dad8509..387aa7e 100644
+--- a/commerce/src/release-control.ts
++++ b/commerce/src/release-control.ts
+@@ -32,6 +32,36 @@ export type ReleaseCompletion = {
+   expected: ReleaseExpectations | null;
+   reopened_at: string | null;
+ };
++
++export type ReleaseResolution = {
++  release_id: string;
++  complete: boolean;
++  resolution: "NONE" | "COMPLETED" | "SUPERSEDED";
++  reason_code: string | null;
++  replacement_source_commit: string | null;
++  resolved_at: string | null;
++};
++
++export type AgentReferralsStrandedRollingSupersedeRequest = {
++  release_id: "agent-referrals-f540b997d6d31a22293909ded7ce464c3f51732f";
++  expected_old_source_commit: "2dc1a55a070a7e9e9ebcd52f46dff8d171da223e";
++  replacement_source_commit: string;
++  replacement_expected: ReleaseExpectations;
++  reason_code: "SURFACE_CONTRACT_UNAVAILABLE";
++  incident_run_id: "34027377689";
++};
++
++export type StrandedRollingReplacementEvidenceReader = () => {
++  runtime_source_commit: string | null;
++  replacement_dormant_ready: boolean;
++};
++
++export const agentReferralsStrandedRollingIncident = {
++  release_id: "agent-referrals-f540b997d6d31a22293909ded7ce464c3f51732f",
++  expected_old_source_commit: "2dc1a55a070a7e9e9ebcd52f46dff8d171da223e",
++  reason_code: "SURFACE_CONTRACT_UNAVAILABLE",
++  incident_run_id: "34027377689",
++} as const;
+ /**
+  * A deliberately non-generic bridge for the one paused production generation
+  * which predates RUNTIME_READINESS_DEFECT replay support. Do not reuse these
+@@ -260,6 +290,16 @@ type GateRow = {
+ 
+ type ReopenedEvent = { details_json: string; created_at: string };
+ 
++type SupersedeEventDetails = {
++  kind?: unknown;
++  mode?: unknown;
++  reason_code?: unknown;
++  incident_run_id?: unknown;
++  old_expected?: unknown;
++  replacement_source_commit?: unknown;
++  replacement_expected?: unknown;
++};
++
+ const documentIds = ["PUBLIC_OFFER", "PRIVACY_POLICY", "PD_CONSENT", "CHECKOUT_DISCLOSURE"] as const;
+ const event = (db: Database.Database, releaseId: string, action: "ACQUIRED" | "PAUSED" | "REOPENED", details: unknown) =>
+   db.prepare("INSERT INTO release_sales_gate_events(id, release_id, action, details_json) VALUES (?, ?, ?, ?)")
+@@ -405,12 +445,35 @@ export class ReleaseSalesGate {
+     const eventRow = this.db.prepare("SELECT details_json, created_at FROM release_sales_gate_events WHERE release_id = ? AND action = 'REOPENED' ORDER BY created_at DESC LIMIT 1").get(releaseId) as ReopenedEvent | undefined;
+     if (!eventRow) return { complete: false, expected: null, reopened_at: null };
+     try {
+-      const expected = (JSON.parse(eventRow.details_json) as { expected?: ReleaseExpectations }).expected;
++      const details = JSON.parse(eventRow.details_json) as { kind?: unknown; expected?: ReleaseExpectations };
++      // A stranded ROLLING release ends with the same constrained action name
++      // (the table deliberately permits only REOPENED), but it is a
++      // non-success resolution.  Never let the coarse action name turn it
++      // into a successful completion for legacy completion readers.
++      if (details.kind === "ROLLING_SUPERSEDED") return { complete: false, expected: null, reopened_at: null };
++      const expected = details.expected;
+       if (!expected) return { complete: false, expected: null, reopened_at: null };
+       return { complete: true, expected, reopened_at: eventRow.created_at };
+     } catch { return { complete: false, expected: null, reopened_at: null }; }
+   }
+ 
++  resolution(releaseId: string): ReleaseResolution {
++    const gate = row(this.db);
++    if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
++    const eventRow = this.db.prepare("SELECT details_json, created_at FROM release_sales_gate_events WHERE release_id = ? AND action = 'REOPENED' ORDER BY rowid DESC LIMIT 1").get(releaseId) as ReopenedEvent | undefined;
++    if (!eventRow) return { release_id: releaseId, complete: false, resolution: "NONE", reason_code: null, replacement_source_commit: null, resolved_at: null };
++    try {
++      const details = JSON.parse(eventRow.details_json) as SupersedeEventDetails & { expected?: ReleaseExpectations };
++      if (details.kind === "ROLLING_SUPERSEDED") {
++        const reason = typeof details.reason_code === "string" ? details.reason_code : null;
++        const replacement = typeof details.replacement_source_commit === "string" ? details.replacement_source_commit : null;
++        if (!reason || !replacement) return { release_id: releaseId, complete: false, resolution: "NONE", reason_code: null, replacement_source_commit: null, resolved_at: null };
++        return { release_id: releaseId, complete: false, resolution: "SUPERSEDED", reason_code: reason, replacement_source_commit: replacement, resolved_at: eventRow.created_at };
++      }
++      return details.expected ? { release_id: releaseId, complete: true, resolution: "COMPLETED", reason_code: null, replacement_source_commit: null, resolved_at: eventRow.created_at } : { release_id: releaseId, complete: false, resolution: "NONE", reason_code: null, replacement_source_commit: null, resolved_at: null };
++    } catch { return { release_id: releaseId, complete: false, resolution: "NONE", reason_code: null, replacement_source_commit: null, resolved_at: null }; }
++  }
++
+   /**
+    * Shared ownership-consistency check between the current legacy/generic
+    * gate row and the v2 candidate-generation ledger. Used identically by
+@@ -1400,6 +1463,86 @@ export class ReleaseSalesGate {
+     });
+     return transaction();
+   }
++
++  /**
++   * One incident-bound non-success terminal edge for the Agent Referrals Q2
++   * rollout. It exists because Q2's Docker image deterministically omitted
++   * the root surface contract after Q2 had already acquired a ROLLING owner.
++   *
++   * This does not revise Q2's original ACQUIRED expectations and never calls
++   * completeRolling() or reopen(). The replacement has to be the runtime that
++   * executes this code, and its complete DORMANT predicate is evaluated inside
++   * the same transaction that writes the audit event and clears the old owner.
++   */
++  supersedeStrandedAgentReferralsRolling(
++    request: AgentReferralsStrandedRollingSupersedeRequest,
++    replacementEvidence: StrandedRollingReplacementEvidenceReader,
++  ) {
++    const transaction = this.db.transaction(() => {
++      this.assertLegacyMutationAllowed();
++      const incident = agentReferralsStrandedRollingIncident;
++      if (request.release_id !== incident.release_id
++        || request.expected_old_source_commit !== incident.expected_old_source_commit
++        || request.reason_code !== incident.reason_code
++        || request.incident_run_id !== incident.incident_run_id
++        || request.replacement_source_commit === incident.expected_old_source_commit
++        || request.replacement_expected.source_commit !== request.replacement_source_commit) {
++        throw new ReleaseControlError("AGENT_REFERRALS_STRANDED_ROLLING_REQUEST_MISMATCH");
++      }
++
++      const gate = row(this.db);
++      if (!gate) throw new ReleaseControlError("RELEASE_CONTROL_UNAVAILABLE", 503);
++
++      if (gate.owner_release_id === null) {
++        const last = this.db.prepare("SELECT action, details_json FROM release_sales_gate_events WHERE release_id = ? ORDER BY rowid DESC LIMIT 1").get(request.release_id) as { action: string; details_json: string } | undefined;
++        if (last?.action === "REOPENED") {
++          try {
++            const details = JSON.parse(last.details_json) as SupersedeEventDetails;
++            const oldExpected = details.old_expected as ReleaseExpectations | undefined;
++            const replacementExpected = details.replacement_expected as ReleaseExpectations | undefined;
++            if (details.kind === "ROLLING_SUPERSEDED" && details.mode === "ROLLING"
++              && details.reason_code === request.reason_code && details.incident_run_id === request.incident_run_id
++              && details.replacement_source_commit === request.replacement_source_commit
++              && oldExpected?.source_commit === request.expected_old_source_commit
++              && sameReleaseExpectations(replacementExpected, request.replacement_expected)) return this.status();
++          } catch { /* fails closed below */ }
++        }
++        throw new ReleaseControlError("RELEASE_CONTROL_OWNER_MISMATCH");
++      }
++
++      if (gate.owner_release_id !== incident.release_id) throw new ReleaseControlError("RELEASE_CONTROL_OWNER_MISMATCH");
++      if (gate.owner_mode !== "ROLLING") throw new ReleaseControlError("RELEASE_CONTROL_MODE_MISMATCH");
++      if (gate.sales_paused !== 0) throw new ReleaseControlError("RELEASE_CONTROL_SALES_PAUSED");
++      if (this.completion(request.release_id).complete) throw new ReleaseControlError("RELEASE_CONTROL_ALREADY_COMPLETE");
++
++      const acquired = this.db.prepare("SELECT details_json FROM release_sales_gate_events WHERE release_id = ? AND action = 'ACQUIRED' ORDER BY rowid ASC LIMIT 1").get(request.release_id) as { details_json: string } | undefined;
++      let oldExpected: ReleaseExpectations | undefined;
++      try { oldExpected = acquired ? (JSON.parse(acquired.details_json) as { expected?: ReleaseExpectations }).expected : undefined; }
++      catch { oldExpected = undefined; }
++      if (!oldExpected || oldExpected.source_commit !== incident.expected_old_source_commit) throw new ReleaseControlError("AGENT_REFERRALS_STRANDED_ROLLING_OLD_EXPECTATION_MISMATCH");
++
++      const evidence = replacementEvidence();
++      if (evidence.runtime_source_commit !== request.replacement_source_commit) throw new ReleaseControlError("AGENT_REFERRALS_STRANDED_ROLLING_REPLACEMENT_SOURCE_MISMATCH");
++      if (!evidence.replacement_dormant_ready) throw new ReleaseControlError("AGENT_REFERRALS_STRANDED_ROLLING_REPLACEMENT_NOT_DORMANT_READY");
++
++      const changed = this.db.prepare(`UPDATE release_sales_gate SET owner_release_id = NULL, owner_mode = NULL,
++        reopened_at = datetime('now'), updated_at = datetime('now')
++        WHERE singleton = 1 AND sales_paused = 0 AND owner_release_id = ? AND owner_mode = 'ROLLING'
++          AND expected_source_commit = ?`).run(request.release_id, request.expected_old_source_commit);
++      if (!changed.changes) throw new ReleaseControlError("RELEASE_CONTROL_OWNER_MISMATCH");
++      event(this.db, request.release_id, "REOPENED", {
++        kind: "ROLLING_SUPERSEDED",
++        mode: "ROLLING",
++        reason_code: request.reason_code,
++        incident_run_id: request.incident_run_id,
++        old_expected: oldExpected,
++        replacement_source_commit: request.replacement_source_commit,
++        replacement_expected: request.replacement_expected,
++      });
++      return this.status();
++    });
++    return transaction();
++  }
+ }
+ 
+ export const releaseRuntimeEvidence = (db: Database.Database, input: { sourceCommit: string | undefined; currentLegalCopiesMatch: (manifest: LegalManifest) => boolean }): ReleaseRuntimeEvidence => {

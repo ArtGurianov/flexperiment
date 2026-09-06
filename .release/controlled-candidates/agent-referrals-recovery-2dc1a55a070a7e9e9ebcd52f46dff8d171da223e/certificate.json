@@ -1,0 +1,73 @@
+{
+  "base_sha": "2dc1a55a070a7e9e9ebcd52f46dff8d171da223e",
+  "source_main_sha": "1bc61eef8d500c996c7a0c7d478d61e90cd15e36",
+  "patch_source": "controller_tree",
+  "paths": [
+    {
+      "path": "Dockerfile.commerce",
+      "kind": "MODIFY",
+      "mode": "100644",
+      "base_blob_sha": "0541a9758d530305b9c1248775a3afab6451b6bb",
+      "patch_path": ".release/controlled-candidates/agent-referrals-recovery-2dc1a55a070a7e9e9ebcd52f46dff8d171da223e/patches/0001.patch",
+      "patch_git_blob_sha": "754b565a48d67e2cd033a17b4878282088131216",
+      "patch_sha256": "47d60f5347c2686b9f4a5a78ef2c6a4a151f38737b11f9f73fb6b6dcceebd3d4",
+      "result_blob_sha": "765888db9b09ff1ae0aea486cfc1987b5684de36"
+    },
+    {
+      "path": "commerce/src/release-control-schema.ts",
+      "kind": "MODIFY",
+      "mode": "100644",
+      "base_blob_sha": "f642efc4cff5de5595d72a3bc6da5962f9ca5ac9",
+      "patch_path": ".release/controlled-candidates/agent-referrals-recovery-2dc1a55a070a7e9e9ebcd52f46dff8d171da223e/patches/0002.patch",
+      "patch_git_blob_sha": "eb8b9b93a31be34fe37192aa15fd0b156a3d2093",
+      "patch_sha256": "d586f38da0aa6d06a99a5d289e9df9e7f1339c3335e8a5dbd69da39b680f6c58",
+      "result_blob_sha": "cfccc599ece963a50556be34c4c755f18e870525"
+    },
+    {
+      "path": "commerce/src/release-control.ts",
+      "kind": "MODIFY",
+      "mode": "100644",
+      "base_blob_sha": "dad8509eaa362401d19d754b81595b5d6f04c212",
+      "patch_path": ".release/controlled-candidates/agent-referrals-recovery-2dc1a55a070a7e9e9ebcd52f46dff8d171da223e/patches/0003.patch",
+      "patch_git_blob_sha": "b820bc9087bd4eece1a69a8515f4e892337bc607",
+      "patch_sha256": "c6153fff07068a71690f1ccde8b6217f2e1da3c0418210d752c2681b70593be6",
+      "result_blob_sha": "8e1d88609a4e258016ca180ee76614fc0e3cba87"
+    },
+    {
+      "path": "commerce/src/domain.ts",
+      "kind": "MODIFY",
+      "mode": "100644",
+      "base_blob_sha": "73795dae681c3477cf8512c2078219ed75c82ebb",
+      "patch_path": ".release/controlled-candidates/agent-referrals-recovery-2dc1a55a070a7e9e9ebcd52f46dff8d171da223e/patches/0004.patch",
+      "patch_git_blob_sha": "2154bedefa5e631238889938dfbfebaf5947f747",
+      "patch_sha256": "e57ae9730ea288306746245853b0668f74a928ce195f882927c49fc3f3c083a7",
+      "result_blob_sha": "443376aa71b655159f45deea96756da7eadf2562"
+    },
+    {
+      "path": "commerce/src/api.ts",
+      "kind": "MODIFY",
+      "mode": "100644",
+      "base_blob_sha": "103bc616dcae9c1ce213a23c311e623d6fe1c934",
+      "patch_path": ".release/controlled-candidates/agent-referrals-recovery-2dc1a55a070a7e9e9ebcd52f46dff8d171da223e/patches/0005.patch",
+      "patch_git_blob_sha": "60be039cbadb32e65a78ce6707a3aba780044ef9",
+      "patch_sha256": "3c2ed1dba3d2134883d3a9ee43e29d60f22647319799fb6835ea4b5ea6588166",
+      "result_blob_sha": "d851d323670fe4ffa842722a27e48095381bf18e"
+    }
+  ],
+  "commit": {
+    "parent_sha": "2dc1a55a070a7e9e9ebcd52f46dff8d171da223e",
+    "tree_sha": "2c6ab6933b9b78307df83e97eccf8626793651b7",
+    "author_name": "Flexperiment Release Controller",
+    "author_email": "release-controller@flexperiment.ru",
+    "author_timestamp": 1788739200,
+    "author_timezone": "+0000",
+    "committer_name": "Flexperiment Release Controller",
+    "committer_email": "release-controller@flexperiment.ru",
+    "committer_timestamp": 1788739200,
+    "committer_timezone": "+0000",
+    "message": "agent-referrals: Q3 stranded ROLLING recovery candidate",
+    "encoding": "none",
+    "extra_headers": "none",
+    "signed": false
+  }
+}
