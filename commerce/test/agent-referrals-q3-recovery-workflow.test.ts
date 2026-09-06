@@ -17,8 +17,14 @@ describe("Agent Referrals Q3 recovery workflow contract", () => {
     const cas = recovery.indexOf("Guarded Q2 to Q3 pointer transition");
     expect(reconstruct).toBeGreaterThan(-1);
     expect(cas).toBeGreaterThan(reconstruct);
-    expect(recovery).toContain('controlled-candidate-verify.ts certificate.json "$GITHUB_SHA"');
-    expect(recovery).toContain('"$(git rev-parse "$reconstructed^")" == "$FROZEN_OLD_TARGET"');
+    expect(recovery).toContain('BASE_SHA="$FROZEN_OLD_TARGET"');
+    expect(recovery).toContain('TARGET_SHA="$REPLACEMENT_TARGET"');
+    expect(recovery).toContain('agent-referrals-recovery-$BASE_SHA/certificate.json" > candidate-certificate.json');
+    expect(recovery).toContain('SOURCE_MAIN_SHA="$(jq -er \'.source_main_sha\' candidate-certificate.json)"');
+    expect(recovery).toContain('git merge-base --is-ancestor "$SOURCE_MAIN_SHA" "$GITHUB_SHA"');
+    expect(recovery).toContain('controlled-candidate-verify.ts candidate-certificate.json "$GITHUB_SHA"');
+    expect(recovery).toContain('[[ "$RECONSTRUCTED_SHA" == "$TARGET_SHA" ]]');
+    expect(recovery).toContain('"$(git rev-parse "${RECONSTRUCTED_SHA}^")" == "$BASE_SHA"');
     expect(recovery).toContain('STRANDED_RECOVERY_MANIFEST_MISMATCH');
   });
 

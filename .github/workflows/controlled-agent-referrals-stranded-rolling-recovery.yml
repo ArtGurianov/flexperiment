@@ -51,15 +51,18 @@ jobs:
       - name: Reconstruct certified Q3 before any consequence
         run: |
           set -euo pipefail
-          cert=.release/controlled-candidates/agent-referrals-recovery-${FROZEN_OLD_TARGET}/certificate.json
-          git show "$GITHUB_SHA:$cert" > certificate.json
-          jq -e --arg q2 "$FROZEN_OLD_TARGET" '.base_sha == $q2 and .patch_source == "controller_tree"' certificate.json >/dev/null
-          source_main="$(jq -er .source_main_sha certificate.json)"
-          git merge-base --is-ancestor "$source_main" "$GITHUB_SHA" || { echo STRANDED_RECOVERY_SOURCE_MAIN_NOT_ANCESTOR >&2; exit 1; }
-          reconstructed="$(node --import tsx commerce/src/controlled-candidate-verify.ts certificate.json "$GITHUB_SHA")"
-          [[ "$reconstructed" == "$REPLACEMENT_TARGET" && "$(git rev-parse "$reconstructed^")" == "$FROZEN_OLD_TARGET" ]] || { echo STRANDED_RECOVERY_CERTIFIED_Q3_MISMATCH >&2; exit 1; }
-          jq -r '.paths[].path' certificate.json | sort > certified-manifest
-          git diff --name-only "$FROZEN_OLD_TARGET" "$reconstructed" | sort | diff - certified-manifest || { echo STRANDED_RECOVERY_MANIFEST_MISMATCH >&2; exit 1; }
+          BASE_SHA="$FROZEN_OLD_TARGET"
+          TARGET_SHA="$REPLACEMENT_TARGET"
+          git show "$GITHUB_SHA:.release/controlled-candidates/agent-referrals-recovery-$BASE_SHA/certificate.json" > candidate-certificate.json
+          jq -e --arg base "$BASE_SHA" '.base_sha == $base' candidate-certificate.json >/dev/null || { echo STRANDED_RECOVERY_CERTIFICATE_BASE_MISMATCH >&2; exit 1; }
+          jq -e '.patch_source == "controller_tree"' candidate-certificate.json >/dev/null || { echo STRANDED_RECOVERY_CERTIFICATE_PATCH_SOURCE_MISMATCH >&2; exit 1; }
+          SOURCE_MAIN_SHA="$(jq -er '.source_main_sha' candidate-certificate.json)"
+          git merge-base --is-ancestor "$SOURCE_MAIN_SHA" "$GITHUB_SHA" || { echo STRANDED_RECOVERY_SOURCE_MAIN_NOT_ANCESTOR >&2; exit 1; }
+          RECONSTRUCTED_SHA="$(node --import tsx commerce/src/controlled-candidate-verify.ts candidate-certificate.json "$GITHUB_SHA")"
+          [[ "$RECONSTRUCTED_SHA" == "$TARGET_SHA" ]] || { echo STRANDED_RECOVERY_CERTIFIED_Q3_MISMATCH >&2; exit 1; }
+          [[ "$(git rev-parse "${RECONSTRUCTED_SHA}^")" == "$BASE_SHA" ]] || { echo STRANDED_RECOVERY_CERTIFIED_Q3_PARENT_MISMATCH >&2; exit 1; }
+          jq -r '.paths[].path' candidate-certificate.json | sort > certified-manifest
+          git diff --name-only "$BASE_SHA" "$RECONSTRUCTED_SHA" | sort | diff - certified-manifest || { echo STRANDED_RECOVERY_MANIFEST_MISMATCH >&2; exit 1; }
           ! grep -Eq '^(commerce/migrations/|public/legal/|commerce/legal/)' certified-manifest || { echo STRANDED_RECOVERY_FORBIDDEN_Q3_PATH >&2; exit 1; }
       - name: Prove immutable Q2, published Q3, and classify durable recovery state
         run: |
