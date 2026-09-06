@@ -1,0 +1,438 @@
+name: Controlled Agent Referrals production release (ROLLING, DORMANT)
+
+# Manual-only, deliberately dormant: merely merging this PR must execute
+# nothing. No push trigger, no schedule, no automatic release trigger.
+#
+# The dedicated production controller for the detached Agent Referrals
+# candidate Q2 (Q2^ == B2, the release-semantics bootstrap candidate now
+# actually running as production-deploy). Uses the already-designed ROLLING
+# release-control semantics (commerce/src/release-control.ts) - acquire,
+# deploy, apply migrations, prove state, CAS production-deploy,
+# completeRolling() - never the generic CONTROLLED_CUTOVER production-deploy
+# lane, which structurally refuses any candidate that touches
+# commerce/migrations/** and therefore cannot deploy Q2 at all. DORMANT is
+# the terminal state this run leaves the feature in: this workflow never
+# activates Agent Referrals, and never writes real VK/ERIR data.
+#
+# Two fixes relative to PR #61's now-obsolete controller for old Q (Q^ == P):
+#
+# 1. FROZEN_BASE_SHA is pinned to the exact certified B2, never re-derived
+#    from "observe production-deploy fresh" - the same P1.1/FROZEN_BASE-vs-
+#    OBSERVED_PRODUCTION_DEPLOY distinction
+#    controlled-release-semantics-bootstrap.yml already applies, and for the
+#    identical reason: a rerun after a partial CAS must still be understood
+#    as a same-release recovery of the one certified Q2, never as a new
+#    release whose BASE silently became whatever production-deploy currently
+#    reads as.
+# 2. Dependencies are installed before the first step that needs them
+#    (certificate reconstruction, which runs `node --import tsx ...`) - the
+#    exact ordering defect that broke the bootstrap's own first production
+#    run (see docs/release/RELEASE_SEMANTICS_BOOTSTRAP.md) is avoided here
+#    from the start.
+on:
+  workflow_dispatch:
+    inputs:
+      release_id:
+        description: Durable release identifier for this ROLLING rollout (e.g. agent-referrals-<B2>).
+        required: true
+        type: string
+      generation:
+        description: The generation published by controlled-agent-referrals-candidate.yml (refs/heads/runtime/agent-referrals-<generation>) that this run must deploy.
+        required: true
+        type: string
+      expected_target_sha:
+        description: Defensive check - must equal the exact certified Q2 this run reconstructs, or the run refuses.
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
+    env:
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+      COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL }}
+      PUBLIC_FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+      ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
+      # This controller's own commit. Never a deployment candidate, source_commit,
+      # Coolify target, or release acquire target - see "main is never an
+      # implicit deploy target" in docs/release/DEPLOYMENT_INVARIANTS.md.
+      CONTROLLER_SHA: ${{ github.sha }}
+      INPUT_RELEASE_ID: ${{ inputs.release_id }}
+      INPUT_GENERATION: ${{ inputs.generation }}
+      INPUT_EXPECTED_TARGET_SHA: ${{ inputs.expected_target_sha }}
+      # docs/release/CONTROLLED_RELEASE_BOUNDARY.md's own pinned identifier
+      # for the required predecessor completion record - never re-derived,
+      # matching how that document itself treats it as fixed documentation.
+      # Unrelated to and unaffected by the P -> B2 bootstrap: Epoch B's own
+      # completion record already names its own terminal P independently.
+      EPOCH_B_RELEASE_ID: "epoch-b-notification-activation:80e152259628719af20d363a76ed6b991d67482a"
+      POLL_ATTEMPTS: "30"
+      POLL_SECONDS: "10"
+      POLL_CONNECT_TIMEOUT: "3"
+      POLL_MAX_TIME: "7"
+      INITIAL_READINESS_DELAY_SECONDS: "60"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Assert this controller is exact, current main
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "AGENT_REFERRALS_RELEASE_CONTROLLER_NOT_MAIN" >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo "AGENT_REFERRALS_RELEASE_CONTROLLER_MAIN_MOVED" >&2; exit 1; }
+
+      - name: Validate inputs
+        run: |
+          set -euo pipefail
+          [[ "$INPUT_RELEASE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$ ]] || { echo "AGENT_REFERRALS_RELEASE_ID_INVALID" >&2; exit 1; }
+          [[ "$INPUT_GENERATION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || { echo "AGENT_REFERRALS_RELEASE_GENERATION_INVALID" >&2; exit 1; }
+          [[ "$INPUT_EXPECTED_TARGET_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "AGENT_REFERRALS_RELEASE_EXPECTED_TARGET_SHA_INVALID" >&2; exit 1; }
+
+      - name: Read current production-deploy pointer
+        run: |
+          set -euo pipefail
+          production_deploy_sha="$(scripts/read-production-deploy-ref.sh)"
+          git fetch --no-tags origin "$production_deploy_sha"
+          echo "PRODUCTION_DEPLOY_SHA=$production_deploy_sha" >> "$GITHUB_ENV"
+
+      # Dependencies installed before the first step that needs them
+      # (certificate reconstruction runs `node --import tsx ...` next) - see
+      # the header comment above for why this ordering is load-bearing, not
+      # stylistic.
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # --- Preconditions: every one of these must independently hold before
+      # any consequential action (acquire, deploy, CAS, complete) below. ---
+
+      # FROZEN_BASE_SHA is the one true BASE for this entire release - pinned
+      # to the exact certified B2, never re-derived from the live,
+      # possibly-already-mutated production-deploy pointer (that value is
+      # PRODUCTION_DEPLOY_SHA above, read separately and used only for
+      # freshness/predecessor checks, never as BASE itself).
+      - name: Read the frozen certificate and reconstruct Q2
+        run: |
+          set -euo pipefail
+          BASE_SHA="f540b997d6d31a22293909ded7ce464c3f51732f"
+          git show "$GITHUB_SHA:.release/controlled-candidates/agent-referrals-$BASE_SHA/certificate.json" > candidate-certificate.json
+          jq -e --arg base "$BASE_SHA" '.base_sha == $base' candidate-certificate.json >/dev/null || { echo "AGENT_REFERRALS_RELEASE_CANDIDATE_BASE_MISMATCH" >&2; exit 1; }
+          jq -e '.patch_source == "controller_tree"' candidate-certificate.json >/dev/null || { echo "AGENT_REFERRALS_RELEASE_CANDIDATE_PATCH_SOURCE_INVALID" >&2; exit 1; }
+          SOURCE_MAIN_SHA="$(jq -er '.source_main_sha' candidate-certificate.json)"
+          git merge-base --is-ancestor "$SOURCE_MAIN_SHA" "$GITHUB_SHA" || { echo "SOURCE_MAIN_SHA_NOT_ANCESTOR" >&2; exit 1; }
+
+          RECONSTRUCTED_SHA="$(node --import tsx commerce/src/controlled-candidate-verify.ts candidate-certificate.json "$GITHUB_SHA")"
+          [[ "$RECONSTRUCTED_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "AGENT_REFERRALS_RELEASE_RECONSTRUCTION_FAILED" >&2; exit 1; }
+          # TARGET_SHA is always the operator-confirmed candidate; it must
+          # equal the certificate's own independently reconstructed Q2,
+          # never merely be assumed to.
+          TARGET_SHA="$INPUT_EXPECTED_TARGET_SHA"
+          [[ "$RECONSTRUCTED_SHA" == "$TARGET_SHA" ]] || { echo "AGENT_REFERRALS_RELEASE_RECONSTRUCTION_MISMATCH=$RECONSTRUCTED_SHA" >&2; exit 1; }
+          [[ "$(git rev-parse "${RECONSTRUCTED_SHA}^")" == "$BASE_SHA" ]] || { echo "AGENT_REFERRALS_RELEASE_PARENT_NOT_BASE" >&2; exit 1; }
+
+          jq -r '.paths[].path' candidate-certificate.json | sort > certified-manifest.txt
+          git diff --name-only "$BASE_SHA" "$RECONSTRUCTED_SHA" | sort > actual-changed-paths.txt
+          diff certified-manifest.txt actual-changed-paths.txt || { echo "AGENT_REFERRALS_RELEASE_MANIFEST_MISMATCH" >&2; exit 1; }
+          ! grep -qE '^(public/legal/|commerce/legal/)' certified-manifest.txt || { echo "AGENT_REFERRALS_RELEASE_LEGAL_PATH_PRESENT" >&2; exit 1; }
+
+          {
+            echo "BASE_SHA=$BASE_SHA"
+            echo "SOURCE_MAIN_SHA=$SOURCE_MAIN_SHA"
+            echo "TARGET_SHA=$TARGET_SHA"
+          } >> "$GITHUB_ENV"
+
+      # Unconditional, exactly like controlled-release-semantics-bootstrap.yml's
+      # own P1 fix: reconstructing Q2 correctly is not sufficient authority
+      # to deploy it - this proves the publication -> promotion chain was
+      # actually followed. Recovery does not skip this.
+      - name: Prove Q2 was actually published and promoted to runtime-candidate
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            refs/heads/runtime-candidate:refs/remotes/origin/runtime-candidate \
+            '+refs/heads/runtime/agent-referrals-*:refs/remotes/origin/runtime/agent-referrals-*'
+          actual_runtime_candidate="$(git rev-parse origin/runtime-candidate)"
+          [[ "$actual_runtime_candidate" == "$TARGET_SHA" ]] || { echo "AGENT_REFERRALS_RELEASE_RUNTIME_CANDIDATE_NOT_Q2=$actual_runtime_candidate" >&2; exit 1; }
+          published_ref="$(git for-each-ref --format='%(refname:short) %(objectname)' 'refs/remotes/origin/runtime/agent-referrals-*' | awk -v sha="$TARGET_SHA" '$2 == sha { print $1; found = 1 } END { exit !found }')" || { echo "AGENT_REFERRALS_RELEASE_NOT_PUBLISHED" >&2; exit 1; }
+          [[ -n "$published_ref" ]] || { echo "AGENT_REFERRALS_RELEASE_NOT_PUBLISHED" >&2; exit 1; }
+          expected_ref="origin/runtime/agent-referrals-${INPUT_GENERATION}"
+          [[ "$published_ref" == "$expected_ref" ]] || { echo "AGENT_REFERRALS_RELEASE_GENERATION_MISMATCH=$published_ref" >&2; exit 1; }
+          # Independent second read, never trusting the for-each-ref listing alone.
+          republished="$(git ls-remote --exit-code origin "refs/heads/${published_ref#origin/}" | awk '{print $1}')"
+          [[ "$republished" == "$TARGET_SHA" ]] || { echo "AGENT_REFERRALS_RELEASE_PUBLISHED_REF_READBACK_MISMATCH=$republished" >&2; exit 1; }
+
+      - name: Assert Q2 topology against the frozen B2 BASE
+        run: |
+          set -euo pipefail
+          scripts/inspect-runtime-candidate-topology.sh --production-deploy "$BASE_SHA" --candidate "$TARGET_SHA" > topology.json
+          jq -e '.candidate_is_descendant_of_production_deploy == true' topology.json >/dev/null || { echo "AGENT_REFERRALS_RELEASE_NOT_DESCENDANT_OF_BASE" >&2; exit 1; }
+          jq -e '(.maintenance_commits_in_range | length) == 0' topology.json >/dev/null || { jq -c '.maintenance_commits_in_range' topology.json >&2; echo "AGENT_REFERRALS_RELEASE_CONTAINS_MAINTENANCE_COMMIT" >&2; exit 1; }
+          jq -e '(.merge_commits_in_range | length) == 0' topology.json >/dev/null || { jq -c '.merge_commits_in_range' topology.json >&2; echo "AGENT_REFERRALS_RELEASE_NOT_LINEAR" >&2; exit 1; }
+
+      # docs/release/CONTROLLED_RELEASE_BOUNDARY.md: "Before execution, a
+      # controller must freshly prove: ... all required predecessor
+      # completion records == true." Unrelated to and unaffected by the
+      # P -> B2 bootstrap - this uses BASE's own already-existing
+      # /completion endpoint against the pinned Epoch B release id and its
+      # own separately-pinned terminal P, never re-derived here.
+      - name: Prove the required predecessor completion record (Epoch B) is true
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$EPOCH_B_RELEASE_ID" > epoch-b-completion.json
+          jq -e '.complete == true' epoch-b-completion.json >/dev/null || { echo "AGENT_REFERRALS_RELEASE_PREDECESSOR_COMPLETION_NOT_PROVEN" >&2; exit 1; }
+
+      - name: Materialize exact runtime readiness parser
+        run: |
+          set -euo pipefail
+          RUNTIME_ASSERT_DIR="$RUNNER_TEMP/agent-referrals-runtime-readiness"
+          git worktree add --detach "$RUNTIME_ASSERT_DIR" "$TARGET_SHA"
+          [[ "$(git -C "$RUNTIME_ASSERT_DIR" rev-parse HEAD)" == "$TARGET_SHA" ]] || { echo "AGENT_REFERRALS_RELEASE_RUNTIME_ASSERT_WORKTREE_WRONG_SHA" >&2; exit 1; }
+          (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile --ignore-scripts)
+          echo "RUNTIME_ASSERT_DIR=$RUNTIME_ASSERT_DIR" >> "$GITHUB_ENV"
+
+      - name: Compute the expected post-deploy migration inventory from Q2's own tree
+        run: |
+          set -euo pipefail
+          migration_inventory="$(git ls-tree -r --name-only "$TARGET_SHA" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
+          [[ -n "$migration_inventory" ]] || { echo "AGENT_REFERRALS_RELEASE_MIGRATION_INVENTORY_EMPTY" >&2; exit 1; }
+          for migration in 0042_agent_referrals_agents_rebuild.sql 0043_agent_referrals_foundation.sql 0044_partner_identity.sql 0045_engagement_publication.sql 0046_attribution_reward.sql 0047_act_payment_settlement.sql 0048_ord_reporting.sql 0049_agent_referrals_integration_hardening.sql; do
+            grep -qxF "$migration" <<< "$migration_inventory" || { echo "AGENT_REFERRALS_RELEASE_MIGRATION_MISSING=$migration" >&2; exit 1; }
+          done
+          migration_inventory_sha256="$(printf '%s' "$migration_inventory" | shasum -a 256 | awk '{ print $1 }')"
+          echo "EXPECTED_MIGRATION=inventory-sha256:$migration_inventory_sha256" >> "$GITHUB_ENV"
+
+      - name: Build the ROLLING release request from the currently observed, unchanged legal baseline
+        # Agent Referrals never touches public/legal/** or commerce/legal/** -
+        # the certificate machinery refuses any certified path under either
+        # prefix by construction - so the legal expectation must be the
+        # CURRENTLY observed runtime legal state, asserted unchanged, never a
+        # candidate-declared value the way a legal-publishing cutover would.
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > durable-before.json
+          jq -e '
+            (.runtime.legal_version | type == "string") and
+            (.runtime.legal_manifest_sha256 | type == "string") and
+            (.runtime.legal_hashes | type == "object") and
+            (.runtime.current_legal_copies_match == true)
+          ' durable-before.json >/dev/null || { echo "AGENT_REFERRALS_RELEASE_LEGAL_BASELINE_INVALID" >&2; exit 1; }
+          jq -e --arg release_id "$INPUT_RELEASE_ID" --arg source_commit "$TARGET_SHA" --arg migration "$EXPECTED_MIGRATION" '
+            .runtime as $runtime | {
+              release_id: $release_id,
+              mode: "ROLLING",
+              expected: {
+                source_commit: $source_commit,
+                migration: $migration,
+                legal_version: $runtime.legal_version,
+                legal_manifest_sha256: $runtime.legal_manifest_sha256,
+                legal_hashes: $runtime.legal_hashes
+              }
+            }
+          ' durable-before.json > release.json
+
+      # --- Recovery/resumability: classify durable state into the minimum
+      # set of resumption points, so a rerun after any partial failure
+      # continues from exactly where durable state says it is. Three
+      # sanctioned predecessor states only - anything else fails closed. ---
+
+      - name: Classify recovery state from durable evidence
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > durable-status.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$INPUT_RELEASE_ID" > completion.json
+          if jq -e '.complete == true' completion.json >/dev/null; then
+            action=RELEASE_ALREADY_COMPLETE
+          elif jq -e --arg rid "$INPUT_RELEASE_ID" '.owner_release_id != null and .owner_release_id != $rid' durable-status.json >/dev/null; then
+            echo "AGENT_REFERRALS_RELEASE_OWNED_BY_OTHER_RELEASE" >&2
+            jq -c '{owner_release_id, owner_mode}' durable-status.json >&2
+            exit 1
+          elif jq -e '.owner_release_id == null' durable-status.json >/dev/null; then
+            action=ACQUIRE
+          else
+            current_pointer="$(scripts/read-production-deploy-ref.sh)"
+            if [[ "$current_pointer" == "$BASE_SHA" ]]; then
+              action=CONTINUE_BEFORE_CAS
+            elif [[ "$current_pointer" == "$TARGET_SHA" ]]; then
+              # Sanctioned post-CAS recovery: production-deploy already
+              # advanced to Q2 in a prior, interrupted run of this exact
+              # same release - never reclassified as a new release whose
+              # BASE became Q2.
+              runtime_source="$(jq -r '.runtime.source_commit // empty' durable-status.json)"
+              action=$([[ "$runtime_source" == "$TARGET_SHA" ]] && echo PROVE_READINESS || echo DEPLOY_AND_CONVERGE)
+            else
+              echo "AGENT_REFERRALS_RELEASE_POINTER_UNEXPECTED=$current_pointer" >&2
+              exit 1
+            fi
+          fi
+          echo "Recovery classification: $action"
+          echo "RECONCILE_ACTION=$action" >> "$GITHUB_ENV"
+
+      - name: Verify an already-complete release and stop (terminal read-only replay)
+        if: env.RECONCILE_ACTION == 'RELEASE_ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          jq -e --slurpfile request release.json '.expected == $request[0].expected' completion.json >/dev/null || { echo "AGENT_REFERRALS_RELEASE_COMPLETION_EXPECTATION_MISMATCH" >&2; exit 1; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/dormant-readiness" > dormant-readiness-terminal.json
+          jq -e '.feature_state == "DORMANT"' dormant-readiness-terminal.json >/dev/null || { echo "AGENT_REFERRALS_RELEASE_NOT_DORMANT_AT_TERMINAL_REPLAY" >&2; exit 1; }
+          echo "## Agent Referrals production release (ROLLING) - already complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Release id: $INPUT_RELEASE_ID" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Deployed Q2: $TARGET_SHA" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Terminal read-only replay: PASS" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Prove Agent Referrals is DORMANT and carries zero production business facts before touching anything
+        if: env.RECONCILE_ACTION == 'ACQUIRE' || env.RECONCILE_ACTION == 'CONTINUE_BEFORE_CAS'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/dormant-readiness" > dormant-readiness-before.json
+          jq -e '.ready == true' dormant-readiness-before.json >/dev/null || { jq -c '.reasons' dormant-readiness-before.json >&2; echo "AGENT_REFERRALS_RELEASE_NOT_DORMANT_READY_BEFORE" >&2; exit 1; }
+
+      # --- Acquire (ROLLING never pauses: this workflow never calls
+      # /v1/internal/release-control/pause at any point on its normal path). ---
+
+      - name: Reconfirm production-deploy has not moved since preflight
+        if: env.RECONCILE_ACTION == 'ACQUIRE' || env.RECONCILE_ACTION == 'CONTINUE_BEFORE_CAS'
+        run: |
+          set -euo pipefail
+          current_production_deploy_sha="$(scripts/read-production-deploy-ref.sh)"
+          [[ "$current_production_deploy_sha" == "$PRODUCTION_DEPLOY_SHA" ]] || { echo "AGENT_REFERRALS_RELEASE_PRODUCTION_DEPLOY_MOVED_SINCE_PREFLIGHT" >&2; exit 1; }
+          [[ "$current_production_deploy_sha" == "$BASE_SHA" ]] || { echo "AGENT_REFERRALS_RELEASE_PRODUCTION_DEPLOY_UNEXPECTED_PREDECESSOR=$current_production_deploy_sha" >&2; exit 1; }
+
+      - name: Acquire ROLLING ownership with exact owner and Q2 expectations
+        if: env.RECONCILE_ACTION == 'ACQUIRE'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/acquire" > acquired.json
+          jq -e --arg release_id "$INPUT_RELEASE_ID" '.owner_release_id == $release_id and .owner_mode == "ROLLING" and .sales_paused == false' acquired.json >/dev/null || { echo "AGENT_REFERRALS_RELEASE_ACQUIRE_UNEXPECTED_STATE" >&2; exit 1; }
+
+      # --- Deploy exact Q2, guarded CAS with an explicit expected-previous
+      # pointer (never the implicit-current default) - the same fail-closed
+      # predecessor discipline controlled-release-semantics-bootstrap.yml's
+      # own P1/P2 fix already established. ---
+
+      - name: Set guarded production deployment ref (CAS production-deploy B2 -> Q2, explicit expected-previous)
+        if: env.RECONCILE_ACTION == 'ACQUIRE' || env.RECONCILE_ACTION == 'CONTINUE_BEFORE_CAS'
+        run: scripts/set-production-deploy-ref.sh "$TARGET_SHA" "$BASE_SHA"
+
+      - name: Deploy exact Q2
+        if: env.RECONCILE_ACTION != 'RELEASE_ALREADY_COMPLETE' && env.RECONCILE_ACTION != 'PROVE_READINESS'
+        run: |
+          set -euo pipefail
+          scripts/controlled-coolify-deploy.sh "$TARGET_SHA"
+
+      - name: Wait for surfaces to converge on Q2
+        if: env.RECONCILE_ACTION != 'RELEASE_ALREADY_COMPLETE' && env.RECONCILE_ACTION != 'PROVE_READINESS'
+        timeout-minutes: 15
+        run: |
+          set -euo pipefail
+          [[ "$INITIAL_READINESS_DELAY_SECONDS" =~ ^[0-9]+$ ]] || { echo "AGENT_REFERRALS_RELEASE_READINESS_DELAY_CONFIGURATION_INVALID" >&2; exit 1; }
+          echo "Allowing Coolify deployments to start for ${INITIAL_READINESS_DELAY_SECONDS}s..."
+          sleep "$INITIAL_READINESS_DELAY_SECONDS"
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          for attempt in $(seq 1 "$POLL_ATTEMPTS"); do
+            if api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json \
+              && jq -e --arg sha "$TARGET_SHA" '.runtime.source_commit == $sha and .runtime.worker_source_commit == $sha and .sales_paused == false' status.json >/dev/null \
+              && curl --fail --silent --show-error --connect-timeout "$POLL_CONNECT_TIMEOUT" --max-time "$POLL_MAX_TIME" "$PUBLIC_API_URL/healthz" | jq -e '.ok == true' >/dev/null \
+              && curl --fail --silent --show-error --connect-timeout "$POLL_CONNECT_TIMEOUT" --max-time "$POLL_MAX_TIME" "$PUBLIC_API_URL/readyz" | jq -e '.ok == true' >/dev/null \
+              && curl --fail --silent --show-error --connect-timeout "$POLL_CONNECT_TIMEOUT" --max-time "$POLL_MAX_TIME" "$PUBLIC_FRONTEND_URL/release.json" | jq -e --arg sha "$TARGET_SHA" '.source_commit == $sha' >/dev/null \
+              && curl --fail --silent --show-error --connect-timeout "$POLL_CONNECT_TIMEOUT" --max-time "$POLL_MAX_TIME" "$ADMIN_RELEASE_URL" | jq -e --arg sha "$TARGET_SHA" '.source_commit == $sha' >/dev/null
+            then
+              echo "Readiness attempt $attempt/$POLL_ATTEMPTS: PASS"
+              exit 0
+            fi
+            echo "Readiness attempt $attempt/$POLL_ATTEMPTS: SURFACES_CONVERGING"
+            sleep "$POLL_SECONDS"
+          done
+          echo "AGENT_REFERRALS_RELEASE_READINESS_POLL_EXHAUSTED" >&2
+          exit 1
+
+      - name: Prove exact runtime, worker and migration-schema state
+        if: env.RECONCILE_ACTION != 'RELEASE_ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-after-deploy.json
+          jq -e --arg sha "$TARGET_SHA" '.runtime.source_commit == $sha' status-after-deploy.json >/dev/null || { echo "AGENT_REFERRALS_RELEASE_RUNTIME_SOURCE_MISMATCH" >&2; exit 1; }
+          jq -e --arg sha "$TARGET_SHA" '.runtime.worker_source_commit == $sha' status-after-deploy.json >/dev/null || { echo "AGENT_REFERRALS_RELEASE_WORKER_SOURCE_MISMATCH" >&2; exit 1; }
+          runtime_migration_inventory="$(jq -r '.runtime.migration_versions | sort | join("\n")' status-after-deploy.json)"
+          runtime_migration_inventory_sha256="$(printf '%s' "$runtime_migration_inventory" | shasum -a 256 | awk '{ print $1 }')"
+          [[ "inventory-sha256:$runtime_migration_inventory_sha256" == "$EXPECTED_MIGRATION" ]] || { echo "AGENT_REFERRALS_RELEASE_RUNTIME_MIGRATION_INVENTORY_MISMATCH" >&2; exit 1; }
+          for migration in 0042_agent_referrals_agents_rebuild.sql 0043_agent_referrals_foundation.sql 0044_partner_identity.sql 0045_engagement_publication.sql 0046_attribution_reward.sql 0047_act_payment_settlement.sql 0048_ord_reporting.sql 0049_agent_referrals_integration_hardening.sql; do
+            jq -e --arg m "$migration" '.runtime.migration_versions | index($m) != null' status-after-deploy.json >/dev/null || { echo "AGENT_REFERRALS_RELEASE_RUNTIME_MIGRATION_MISSING=$migration" >&2; exit 1; }
+            expected_hash="$(git show "$TARGET_SHA:commerce/migrations/$migration" | shasum -a 256 | awk '{ print $1 }')"
+            jq -e --arg m "$migration" --arg hash "$expected_hash" '.runtime.migration_source_hashes[$m] == $hash' status-after-deploy.json >/dev/null || { echo "AGENT_REFERRALS_RELEASE_RUNTIME_MIGRATION_HASH_MISMATCH=$migration" >&2; exit 1; }
+          done
+
+      # --- Prove DORMANT and zero business facts, against Q2's own runtime.
+      # One consolidated call: /complete-rolling's own predicate is
+      # fail-closed against this exact same evidence
+      # (agent-referrals-dormant-readiness.ts), so this can never disagree
+      # with what completion itself will enforce. Round-8 P1.3 fix: this
+      # evidence now also independently proves runtime/worker source
+      # identity and exact migration inventory, not merely feature state +
+      # schema + business facts - see agent-referrals-dormant-readiness.ts. ---
+
+      - name: Prove Agent Referrals dormant-readiness (Q2's own runtime, post-deploy)
+        if: env.RECONCILE_ACTION != 'RELEASE_ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/dormant-readiness" > dormant-readiness-after.json
+          jq -e '.ready == true' dormant-readiness-after.json >/dev/null || { jq -c '.reasons' dormant-readiness-after.json >&2; echo "AGENT_REFERRALS_RELEASE_NOT_DORMANT_READY_AFTER_DEPLOY" >&2; exit 1; }
+
+      # --- completeRolling(): the only path that clears a ROLLING owner. ---
+
+      - name: completeRolling()
+        if: env.RECONCILE_ACTION != 'RELEASE_ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/complete-rolling" > completed.json
+          jq -e '.owner_release_id == null and .owner_mode == null and .sales_paused == false' completed.json >/dev/null || { echo "AGENT_REFERRALS_RELEASE_COMPLETE_ROLLING_UNEXPECTED_STATE" >&2; exit 1; }
+
+      - name: Prove terminal completion
+        if: env.RECONCILE_ACTION != 'RELEASE_ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$INPUT_RELEASE_ID" > completion.json
+          jq -e --slurpfile request release.json '.complete == true and .expected == $request[0].expected' completion.json >/dev/null || { echo "AGENT_REFERRALS_RELEASE_TERMINAL_COMPLETION_NOT_PROVEN" >&2; exit 1; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/dormant-readiness" > dormant-readiness-terminal.json
+          jq -e '.feature_state == "DORMANT"' dormant-readiness-terminal.json >/dev/null || { echo "AGENT_REFERRALS_RELEASE_NOT_DORMANT_AT_TERMINAL_COMPLETION" >&2; exit 1; }
+          {
+            echo "## Agent Referrals production release (ROLLING)"
+            echo "- Controller SHA: $CONTROLLER_SHA"
+            echo "- Release id: $INPUT_RELEASE_ID"
+            echo "- BASE (B2): $BASE_SHA"
+            echo "- Deployed Q2: $TARGET_SHA"
+            echo "- Migrations applied: 0042-0049 (proven by exact per-file blob hash)"
+            echo "- Terminal feature state: DORMANT"
+            echo "- Business facts: zero"
+            echo "- ROLLING completion: terminal"
+          } >> "$GITHUB_STEP_SUMMARY"
