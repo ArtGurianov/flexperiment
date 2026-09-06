@@ -1,9 +1,10 @@
 import { randomUUID, scryptSync } from "node:crypto";
-import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { reconstructControlledCandidateSha, type ControlledCandidateCertificate } from "../src/controlled-candidate";
 
 /**
  * Round-8 P1.3 fix, negative matrix: every axis
@@ -23,13 +24,31 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
  * (commerce/legal/production-manifest.json, release-surface-contract.json),
  * exactly like production does relative to its own deploy root.
  */
+const B2_SHA = "f540b997d6d31a22293909ded7ce464c3f51732f";
 const Q2_SHA = "a264ee68f597e7a40b6fe4b05359d99365be9149";
+const CERTIFICATE_PATH = `.release/controlled-candidates/agent-referrals-${B2_SHA}/certificate.json`;
 
 process.env.COMMERCE_SESSION_SECRET ??= "test-session-secret";
 process.env.COMMERCE_ADMIN_PASSWORD_SCRYPT ??= `salt:${scryptSync("correct horse", "salt", 64).toString("base64url")}`;
 process.env.COMMERCE_RELEASE_CONTROL_TOKEN ??= "release-control-test-token";
 
 const releaseControlHeaders = { Authorization: "Bearer release-control-test-token", "Content-Type": "application/json" };
+
+function gitRev(...args: string[]): string {
+  const result = spawnSync("git", args, { encoding: "utf8" });
+  if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
+  return result.stdout.trim();
+}
+
+// Q2 is never assumed to already exist as a git object - see
+// commerce/test/agent-referrals-q2-acceptance.test.ts for why.
+function ensureQ2Reconstructed(): string {
+  const controllerSha = gitRev("rev-parse", "HEAD");
+  const certificate = JSON.parse(readFileSync(resolve(CERTIFICATE_PATH), "utf8")) as ControlledCandidateCertificate;
+  const reconstructed = reconstructControlledCandidateSha(certificate, { trusted_patch_source_sha: controllerSha });
+  if (reconstructed !== Q2_SHA) throw new Error(`reconstructed Q2 (${reconstructed}) does not match the pinned Q2_SHA (${Q2_SHA})`);
+  return reconstructed;
+}
 
 function materializeWorktree(sha: string): string {
   const dir = mkdtempSync(join(tmpdir(), `q2-dormant-matrix-${sha.slice(0, 8)}-`));
@@ -62,6 +81,7 @@ describe("Q2 DORMANT completion: negative matrix (each axis independently blocks
   let originalCwd: string;
 
   beforeAll(async () => {
+    ensureQ2Reconstructed();
     q2Dir = materializeWorktree(Q2_SHA);
     process.env.SOURCE_COMMIT = Q2_SHA;
     dbModule = await import(join(q2Dir, "commerce/src/db.ts"));

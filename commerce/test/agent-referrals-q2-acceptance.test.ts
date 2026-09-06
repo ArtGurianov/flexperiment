@@ -1,9 +1,10 @@
 import { randomUUID, scryptSync } from "node:crypto";
-import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { reconstructControlledCandidateSha, type ControlledCandidateCertificate } from "../src/controlled-candidate";
 
 /**
  * Q2's real wire-level acceptance contract, materialized as a detached git
@@ -13,14 +14,38 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
  * re-declared), and that Q2's own ordinary CONTROLLED_CUTOVER path - the
  * path every other production release still uses - is unregressed by any of
  * Q2's own additions.
+ *
+ * Q2 is never assumed to already exist as a git object: it only ever
+ * existed as a detached, unpublished commit built once in one developer's
+ * local object database - a fresh CI checkout has none. This suite
+ * reconstructs it itself from the committed certificate before
+ * materializing its worktree, the same fix
+ * commerce/test/release-semantics-bootstrap-acceptance.test.ts already
+ * needed for the exact same reason.
  */
+const B2_SHA = "f540b997d6d31a22293909ded7ce464c3f51732f";
 const Q2_SHA = "a264ee68f597e7a40b6fe4b05359d99365be9149";
+const CERTIFICATE_PATH = `.release/controlled-candidates/agent-referrals-${B2_SHA}/certificate.json`;
 
 process.env.COMMERCE_SESSION_SECRET ??= "test-session-secret";
 process.env.COMMERCE_ADMIN_PASSWORD_SCRYPT ??= `salt:${scryptSync("correct horse", "salt", 64).toString("base64url")}`;
 process.env.COMMERCE_RELEASE_CONTROL_TOKEN ??= "release-control-test-token";
 
 const releaseControlHeaders = { Authorization: "Bearer release-control-test-token", "Content-Type": "application/json" };
+
+function gitRev(...args: string[]): string {
+  const result = spawnSync("git", args, { encoding: "utf8" });
+  if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`);
+  return result.stdout.trim();
+}
+
+function ensureQ2Reconstructed(): string {
+  const controllerSha = gitRev("rev-parse", "HEAD");
+  const certificate = JSON.parse(readFileSync(resolve(CERTIFICATE_PATH), "utf8")) as ControlledCandidateCertificate;
+  const reconstructed = reconstructControlledCandidateSha(certificate, { trusted_patch_source_sha: controllerSha });
+  if (reconstructed !== Q2_SHA) throw new Error(`reconstructed Q2 (${reconstructed}) does not match the pinned Q2_SHA (${Q2_SHA})`);
+  return reconstructed;
+}
 
 function materializeWorktree(sha: string): string {
   const dir = mkdtempSync(join(tmpdir(), `q2-acceptance-${sha.slice(0, 8)}-`));
@@ -52,6 +77,7 @@ describe("Agent Referrals Q2: real wire-level acceptance contract", () => {
   let originalCwd: string;
 
   beforeAll(async () => {
+    ensureQ2Reconstructed();
     q2Dir = materializeWorktree(Q2_SHA);
     process.env.SOURCE_COMMIT = Q2_SHA;
     dbModule = await import(join(q2Dir, "commerce/src/db.ts"));
