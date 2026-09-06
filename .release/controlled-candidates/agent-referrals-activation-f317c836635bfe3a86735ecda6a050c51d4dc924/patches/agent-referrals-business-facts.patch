@@ -1,0 +1,19 @@
+diff --git a/commerce/src/agent-referrals-business-facts.ts b/commerce/src/agent-referrals-business-facts.ts
+index 7554e41..e7eed96 100644
+--- a/commerce/src/agent-referrals-business-facts.ts
++++ b/commerce/src/agent-referrals-business-facts.ts
+@@ -62,7 +62,13 @@ export class AgentReferralsBusinessFactsSchemaIncompleteError extends Error {
+  * cross-checks this exclusion list against the migrations' own `INSERT INTO`
+  * targets so it cannot silently drift from what they actually seed.
+  */
+-const MIGRATION_SEEDED_TABLES: readonly string[] = ["agent_referrals_feature_state", "ad_channel_policy", "ord_reporting_period_policy"];
++// Q4's activation manifest is likewise control evidence, not a business
++// fact: the combined activation command writes its single closed entry in
++// the same transaction as the state CAS.  Counting that entry as business
++// activity would make an exact same-owner replay fail after a successful
++// activation, while excluding it cannot mask any onboarding, publication,
++// settlement, or provider operation.
++const MIGRATION_SEEDED_TABLES: readonly string[] = ["agent_referrals_feature_state", "agent_referrals_feature_state_events", "agent_referrals_activation_manifest", "ad_channel_policy", "ord_reporting_period_policy"];
+ 
+ export const agentReferralsBusinessFactTables = (db: Database.Database): readonly string[] => {
+   const schema = agentReferralsFoundationSchemaEvidence(db);
