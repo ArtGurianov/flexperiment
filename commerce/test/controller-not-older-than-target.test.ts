@@ -90,10 +90,10 @@ const CERTIFICATE_FILE = "candidate-certificate.json";
  * The certificate-namespace slug and verifier script are the only two
  * feature-specific tokens in an otherwise fully generic proof shape. This is
  * a positive enumeration of the concrete consumers that exist today, never a
- * wildcard - adding a third consumer means adding its exact slug/script pair
+ * wildcard - adding a further consumer means adding its exact slug/script pair
  * here, not loosening the pattern to match anything.
  */
-const CERTIFICATE_NAMESPACE_SLUGS = ["agent-referrals", "release-semantics-bootstrap"] as const;
+const CERTIFICATE_NAMESPACE_SLUGS = ["agent-referrals", "agent-referrals-recovery", "release-semantics-bootstrap"] as const;
 const CANDIDATE_VERIFY_SCRIPTS = ["agent-referrals-candidate-verify", "controlled-candidate-verify"] as const;
 
 const removeLinesMatching = (pattern: RegExp) => (source: string): string =>
@@ -242,7 +242,7 @@ describe("RECONSTRUCTION_BOUND: positive proof obligation for a detached candida
    * and mutually exclusive"), which is where the deploying-vs-publishing
    * distinction actually matters and is actually enforced.
    *
-   * This is deliberately a POSITIVE, named exception - exactly these four
+   * This is deliberately a POSITIVE, named exception - exactly these five
    * real workflows, by exact filename - never a broad "any workflow whose
    * name mentions release-semantics-bootstrap or agent-referrals" allowance,
    * which is precisely the name-based-skip failure shape this machinery
@@ -255,6 +255,7 @@ describe("RECONSTRUCTION_BOUND: positive proof obligation for a detached candida
     const classified = workflows.filter(({ source }) => isReconstructionBound(source));
     expect(classified.map(({ name }) => name).sort()).toEqual([
       "controlled-agent-referrals-candidate.yml",
+      "controlled-agent-referrals-stranded-rolling-recovery.yml",
       "controlled-agent-referrals.yml",
       "controlled-release-semantics-bootstrap-candidate.yml",
       "controlled-release-semantics-bootstrap.yml",
@@ -319,12 +320,17 @@ describe("deployment target classification is exhaustive and mutually exclusive"
       .filter(({ source }) => source.includes("set-production-deploy-ref.sh"))) {
       const targetClass = classify(source, name);
       expect(["ANCESTRY_BOUND", "RECONSTRUCTION_BOUND", "HISTORICAL_HARD_BOUND"]).toContain(targetClass);
-      // controlled-release-semantics-bootstrap.yml and
-      // controlled-agent-referrals.yml are the two real, named
+      // controlled-release-semantics-bootstrap.yml,
+      // controlled-agent-referrals.yml, and the stranded Q2 recovery
+      // controller are the three real, named
       // RECONSTRUCTION_BOUND exceptions today - every other real workflow
       // that advances production-deploy remains ancestry- or
       // historical-hard-bound.
-      if (name === "controlled-release-semantics-bootstrap.yml" || name === "controlled-agent-referrals.yml") expect(targetClass).toBe("RECONSTRUCTION_BOUND");
+      if (
+        name === "controlled-release-semantics-bootstrap.yml"
+        || name === "controlled-agent-referrals.yml"
+        || name === "controlled-agent-referrals-stranded-rolling-recovery.yml"
+      ) expect(targetClass).toBe("RECONSTRUCTION_BOUND");
       else expect(targetClass).not.toBe("RECONSTRUCTION_BOUND");
     }
   });

@@ -1,0 +1,78 @@
+name: Controlled Agent Referrals Q3 recovery candidate publication
+
+# Q3 publication is manual-only provenance. It is not promotion, deployment,
+# recovery, or activation authority.
+on:
+  workflow_dispatch:
+    inputs:
+      generation:
+        required: true
+        type: string
+      expected_target_sha:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    env:
+      CONTROLLER_SHA: ${{ github.sha }}
+      FROZEN_OLD_TARGET: 2dc1a55a070a7e9e9ebcd52f46dff8d171da223e
+      INPUT_GENERATION: ${{ inputs.generation }}
+      INPUT_TARGET: ${{ inputs.expected_target_sha }}
+      AGENT_REFERRALS_RECOVERY_CANDIDATE_REF_TOKEN: ${{ secrets.AGENT_REFERRALS_RECOVERY_CANDIDATE_REF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Bind dedicated recovery publication credential
+        run: |
+          set -euo pipefail
+          [[ -n "$AGENT_REFERRALS_RECOVERY_CANDIDATE_REF_TOKEN" ]] || { echo RECOVERY_CANDIDATE_REF_TOKEN_REQUIRED >&2; exit 1; }
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git remote set-url origin "https://x-access-token:${AGENT_REFERRALS_RECOVERY_CANDIDATE_REF_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+      - name: Assert exact current main controller and fixed identities
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main ]] || { echo RECOVERY_Q3_CONTROLLER_NOT_MAIN >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo RECOVERY_Q3_CONTROLLER_MAIN_MOVED >&2; exit 1; }
+          [[ "$INPUT_GENERATION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ && "$INPUT_TARGET" =~ ^[a-f0-9]{40}$ ]] || { echo RECOVERY_Q3_INPUT_INVALID >&2; exit 1; }
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.29.3 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - name: Reconstruct exact Q3 from immutable Q2
+        run: |
+          set -euo pipefail
+          cert=.release/controlled-candidates/agent-referrals-recovery-${FROZEN_OLD_TARGET}/certificate.json
+          git show "$GITHUB_SHA:$cert" > certificate.json
+          jq -e --arg q2 "$FROZEN_OLD_TARGET" '.base_sha == $q2 and .patch_source == "controller_tree"' certificate.json >/dev/null
+          source_main="$(jq -er .source_main_sha certificate.json)"
+          git merge-base --is-ancestor "$source_main" "$GITHUB_SHA" || { echo RECOVERY_Q3_SOURCE_MAIN_NOT_ANCESTOR >&2; exit 1; }
+          q3="$(node --import tsx commerce/src/controlled-candidate-verify.ts certificate.json "$GITHUB_SHA")"
+          [[ "$q3" == "$INPUT_TARGET" && "$(git rev-parse "$q3^")" == "$FROZEN_OLD_TARGET" ]] || { echo RECOVERY_Q3_RECONSTRUCTION_OR_PARENT_MISMATCH >&2; exit 1; }
+          jq -r '.paths[].path' certificate.json | sort > manifest
+          git diff --name-only "$FROZEN_OLD_TARGET" "$q3" | sort | diff - manifest || { echo RECOVERY_Q3_MANIFEST_MISMATCH >&2; exit 1; }
+          ! grep -Eq '^(commerce/migrations/|public/legal/|commerce/legal/)' manifest || { echo RECOVERY_Q3_FORBIDDEN_PATH >&2; exit 1; }
+          echo "Q3=$q3" >> "$GITHUB_ENV"
+      - name: Publish immutable flat recovery ref and read it back
+        run: |
+          set -euo pipefail
+          ref=refs/heads/runtime/agent-referrals-recovery-${INPUT_GENERATION}
+          existing="$(git ls-remote origin "$ref" | awk '{print $1}')"
+          if [[ -n "$existing" ]]; then [[ "$existing" == "$Q3" ]] || { echo RECOVERY_Q3_REF_ALREADY_DIFFERENT >&2; exit 1; }
+          else git push --force-with-lease="${ref}:" origin "${Q3}:${ref}"; fi
+          [[ "$(git ls-remote --exit-code origin "$ref" | awk '{print $1}')" == "$Q3" ]] || { echo RECOVERY_Q3_READBACK_MISMATCH >&2; exit 1; }

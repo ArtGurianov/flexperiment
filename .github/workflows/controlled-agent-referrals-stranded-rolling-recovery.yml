@@ -1,0 +1,134 @@
+name: Controlled Agent Referrals stranded Q2 ROLLING recovery
+
+# Dedicated to incident 34027377689. Manual-only; never acquires a Q3 release
+# and never activates Agent Referrals.
+on:
+  workflow_dispatch:
+    inputs:
+      replacement_target_sha: { required: true, type: string }
+
+permissions:
+  contents: write
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
+    env:
+      CONTROLLER_SHA: ${{ github.sha }}
+      FROZEN_OLD_TARGET: 2dc1a55a070a7e9e9ebcd52f46dff8d171da223e
+      OLD_RELEASE_ID: agent-referrals-f540b997d6d31a22293909ded7ce464c3f51732f
+      INCIDENT_REASON: SURFACE_CONTRACT_UNAVAILABLE
+      INCIDENT_RUN_ID: '34027377689'
+      REPLACEMENT_TARGET: ${{ inputs.replacement_target_sha }}
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+      COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+      PUBLIC_FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
+      ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: '${{ github.sha }}', fetch-depth: 0 }
+      - name: Bind exact current controller
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main && "$REPLACEMENT_TARGET" =~ ^[a-f0-9]{40}$ ]] || { echo STRANDED_RECOVERY_INPUT_INVALID >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo STRANDED_RECOVERY_CONTROLLER_MAIN_MOVED >&2; exit 1; }
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.29.3 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+      - name: Reconstruct certified Q3 before any consequence
+        run: |
+          set -euo pipefail
+          BASE_SHA="$FROZEN_OLD_TARGET"
+          TARGET_SHA="$REPLACEMENT_TARGET"
+          git show "$GITHUB_SHA:.release/controlled-candidates/agent-referrals-recovery-$BASE_SHA/certificate.json" > candidate-certificate.json
+          jq -e --arg base "$BASE_SHA" '.base_sha == $base' candidate-certificate.json >/dev/null || { echo STRANDED_RECOVERY_CERTIFICATE_BASE_MISMATCH >&2; exit 1; }
+          jq -e '.patch_source == "controller_tree"' candidate-certificate.json >/dev/null || { echo STRANDED_RECOVERY_CERTIFICATE_PATCH_SOURCE_MISMATCH >&2; exit 1; }
+          SOURCE_MAIN_SHA="$(jq -er '.source_main_sha' candidate-certificate.json)"
+          git merge-base --is-ancestor "$SOURCE_MAIN_SHA" "$GITHUB_SHA" || { echo STRANDED_RECOVERY_SOURCE_MAIN_NOT_ANCESTOR >&2; exit 1; }
+          RECONSTRUCTED_SHA="$(node --import tsx commerce/src/controlled-candidate-verify.ts candidate-certificate.json "$GITHUB_SHA")"
+          [[ "$RECONSTRUCTED_SHA" == "$TARGET_SHA" ]] || { echo STRANDED_RECOVERY_CERTIFIED_Q3_MISMATCH >&2; exit 1; }
+          [[ "$(git rev-parse "${RECONSTRUCTED_SHA}^")" == "$BASE_SHA" ]] || { echo STRANDED_RECOVERY_CERTIFIED_Q3_PARENT_MISMATCH >&2; exit 1; }
+          jq -r '.paths[].path' candidate-certificate.json | sort > certified-manifest
+          git diff --name-only "$BASE_SHA" "$RECONSTRUCTED_SHA" | sort | diff - certified-manifest || { echo STRANDED_RECOVERY_MANIFEST_MISMATCH >&2; exit 1; }
+          ! grep -Eq '^(commerce/migrations/|public/legal/|commerce/legal/)' certified-manifest || { echo STRANDED_RECOVERY_FORBIDDEN_Q3_PATH >&2; exit 1; }
+      - name: Prove immutable Q2, published Q3, and classify durable recovery state
+        run: |
+          set -euo pipefail
+          OBSERVED_PRODUCTION_DEPLOY="$(scripts/read-production-deploy-ref.sh)"
+          case "$OBSERVED_PRODUCTION_DEPLOY" in
+            "$FROZEN_OLD_TARGET") RECOVERY_STATE=BEFORE_Q3_CAS ;;
+            "$REPLACEMENT_TARGET") RECOVERY_STATE=POST_Q3_CAS_PRE_DEPLOY ;;
+            *) echo "STRANDED_RECOVERY_PRODUCTION_POINTER_UNEXPECTED=$OBSERVED_PRODUCTION_DEPLOY" >&2; exit 1 ;;
+          esac
+          [[ "$(git ls-remote --exit-code origin refs/heads/runtime-candidate | awk '{print $1}')" == "$REPLACEMENT_TARGET" ]] || { echo STRANDED_RECOVERY_CANDIDATE_NOT_Q3 >&2; exit 1; }
+          [[ "$(git ls-remote --exit-code origin refs/heads/runtime/agent-referrals-1 | awk '{print $1}')" == "$FROZEN_OLD_TARGET" ]] || { echo STRANDED_RECOVERY_Q2_PUBLICATION_MISMATCH >&2; exit 1; }
+          git ls-remote origin 'refs/heads/runtime/agent-referrals-recovery-*' | awk -v q3="$REPLACEMENT_TARGET" '$1 == q3 { found=1 } END { exit !found }' || { echo STRANDED_RECOVERY_Q3_NOT_PUBLISHED >&2; exit 1; }
+          echo "OBSERVED_PRODUCTION_DEPLOY=$OBSERVED_PRODUCTION_DEPLOY" >> "$GITHUB_ENV"
+          echo "RECOVERY_STATE=$RECOVERY_STATE" >> "$GITHUB_ENV"
+      - name: Prove held Q2 owner and build pinned Q3 expectation
+        run: |
+          set -euo pipefail
+          source scripts/release/release-api.sh
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > before.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$OLD_RELEASE_ID" > completion.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/resolution/$OLD_RELEASE_ID" > resolution-before.json
+          if jq -e --arg q3 "$REPLACEMENT_TARGET" '.complete == false and .resolution == "SUPERSEDED" and .replacement_source_commit == $q3' resolution-before.json >/dev/null; then
+            jq -e '.owner_release_id == null and .owner_mode == null and .sales_paused == false' before.json >/dev/null
+            [[ "$OBSERVED_PRODUCTION_DEPLOY" == "$REPLACEMENT_TARGET" ]] || { echo STRANDED_RECOVERY_SUPERSEDED_POINTER_MISMATCH >&2; exit 1; }
+            echo "RECOVERY_STATE=OLD_RELEASE_SUPERSEDED" >> "$GITHUB_ENV"
+            echo "ALREADY_SUPERSEDED=true" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          jq -e --arg id "$OLD_RELEASE_ID" --arg q2 "$FROZEN_OLD_TARGET" '.owner_release_id == $id and .owner_mode == "ROLLING" and .sales_paused == false and .expected.source_commit == $q2' before.json >/dev/null
+          jq -e '.complete == false' completion.json >/dev/null
+          inventory="$(git ls-tree -r --name-only "$REPLACEMENT_TARGET" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
+          migration="inventory-sha256:$(printf '%s' "$inventory" | shasum -a 256 | awk '{print $1}')"
+          jq -e --arg source "$REPLACEMENT_TARGET" --arg migration "$migration" '.runtime as $r | {source_commit:$source,migration:$migration,legal_version:$r.legal_version,legal_manifest_sha256:$r.legal_manifest_sha256,legal_hashes:$r.legal_hashes}' before.json > replacement-expected.json
+      - name: Guarded Q2 to Q3 pointer transition
+        if: env.ALREADY_SUPERSEDED != 'true' && env.RECOVERY_STATE == 'BEFORE_Q3_CAS'
+        run: scripts/set-production-deploy-ref.sh "$REPLACEMENT_TARGET" "$FROZEN_OLD_TARGET"
+      - name: Deploy exact Q3 and wait for all surfaces
+        if: env.ALREADY_SUPERSEDED != 'true'
+        run: |
+          set -euo pipefail
+          scripts/controlled-coolify-deploy.sh "$REPLACEMENT_TARGET"
+          source scripts/release/release-api.sh
+          for attempt in $(seq 1 30); do
+            api "$PUBLIC_API_URL/v1/internal/release-control/status" > after.json || true
+            if jq -e --arg q3 "$REPLACEMENT_TARGET" '.runtime.source_commit == $q3 and .runtime.worker_source_commit == $q3' after.json >/dev/null && curl --fail --silent "$PUBLIC_API_URL/healthz" | jq -e '.ok' >/dev/null && curl --fail --silent "$PUBLIC_API_URL/readyz" | jq -e '.ok' >/dev/null && curl --fail --silent "$PUBLIC_FRONTEND_URL/release.json" | jq -e --arg q3 "$REPLACEMENT_TARGET" '.source_commit == $q3' >/dev/null && curl --fail --silent "$ADMIN_RELEASE_URL" | jq -e --arg q3 "$REPLACEMENT_TARGET" '.source_commit == $q3' >/dev/null; then echo "RECOVERY_STATE=Q3_READY_PRE_SUPERSEDE" >> "$GITHUB_ENV"; exit 0; fi
+            sleep 10
+          done
+          echo STRANDED_RECOVERY_Q3_CONVERGENCE_FAILED >&2; exit 1
+      - name: Prove full Q3 DORMANT readiness then supersede Q2
+        if: env.ALREADY_SUPERSEDED != 'true'
+        run: |
+          set -euo pipefail
+          source scripts/release/release-api.sh
+          jq -n --arg id "$OLD_RELEASE_ID" --arg q2 "$FROZEN_OLD_TARGET" --arg q3 "$REPLACEMENT_TARGET" --arg reason "$INCIDENT_REASON" --arg run "$INCIDENT_RUN_ID" --slurpfile expected replacement-expected.json '{release_id:$id,expected_old_source_commit:$q2,replacement_source_commit:$q3,replacement_expected:$expected[0],reason_code:$reason,incident_run_id:$run}' > supersede.json
+          jq -n --arg id "$OLD_RELEASE_ID" --slurpfile expected replacement-expected.json '{release_id:$id,mode:"ROLLING",expected:$expected[0]}' > readiness-request.json
+          api -X POST --data-binary @readiness-request.json "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/dormant-readiness" > readiness.json
+          jq -e '.ready == true' readiness.json >/dev/null || { jq -c .reasons readiness.json >&2; exit 1; }
+          api -X POST --data-binary @supersede.json "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/stranded-rolling-supersede" > superseded.json
+          jq -e '.owner_release_id == null and .owner_mode == null and .sales_paused == false' superseded.json >/dev/null
+      - name: Prove non-success terminal resolution and STOP
+        run: |
+          set -euo pipefail
+          source scripts/release/release-api.sh
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$OLD_RELEASE_ID" > completion-after.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/resolution/$OLD_RELEASE_ID" > resolution-after.json
+          jq -e '.complete == false' completion-after.json >/dev/null
+          jq -e --arg q3 "$REPLACEMENT_TARGET" '.complete == false and .resolution == "SUPERSEDED" and .reason_code == "SURFACE_CONTRACT_UNAVAILABLE" and .replacement_source_commit == $q3' resolution-after.json >/dev/null
+          echo "RECOVERY_STATE=OLD_RELEASE_SUPERSEDED" >> "$GITHUB_ENV"

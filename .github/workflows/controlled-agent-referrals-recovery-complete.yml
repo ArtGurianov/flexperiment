@@ -1,0 +1,62 @@
+name: Controlled Agent Referrals Q3 recovery terminalization
+
+# A separate, manual authorization boundary after the Q2 incident is durably
+# SUPERSEDED. It performs no deployment and no activation.
+on:
+  workflow_dispatch:
+    inputs:
+      replacement_target_sha: { required: true, type: string }
+      release_id: { required: true, type: string }
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  complete:
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      CONTROLLER_SHA: ${{ github.sha }}
+      FROZEN_OLD_TARGET: 2dc1a55a070a7e9e9ebcd52f46dff8d171da223e
+      OLD_RELEASE_ID: agent-referrals-f540b997d6d31a22293909ded7ce464c3f51732f
+      REPLACEMENT_TARGET: ${{ inputs.replacement_target_sha }}
+      INPUT_RELEASE_ID: ${{ inputs.release_id }}
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with: { ref: '${{ github.sha }}', fetch-depth: 0 }
+      - name: Bind controller and terminal preconditions
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main && "$REPLACEMENT_TARGET" =~ ^[a-f0-9]{40}$ && "$INPUT_RELEASE_ID" == "agent-referrals-recovery-$REPLACEMENT_TARGET" ]] || { echo RECOVERY_COMPLETE_INPUT_INVALID >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo RECOVERY_COMPLETE_CONTROLLER_MAIN_MOVED >&2; exit 1; }
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$REPLACEMENT_TARGET" ]] || { echo RECOVERY_COMPLETE_PRODUCTION_NOT_Q3 >&2; exit 1; }
+          [[ "$(git ls-remote --exit-code origin refs/heads/runtime-candidate | awk '{print $1}')" == "$REPLACEMENT_TARGET" ]] || { echo RECOVERY_COMPLETE_CANDIDATE_NOT_Q3 >&2; exit 1; }
+          source scripts/release/release-api.sh
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/resolution/$OLD_RELEASE_ID" > old-resolution.json
+          jq -e '.owner_release_id == null and .owner_mode == null and .sales_paused == false' status.json >/dev/null
+          jq -e --arg q3 "$REPLACEMENT_TARGET" '.complete == false and .resolution == "SUPERSEDED" and .replacement_source_commit == $q3' old-resolution.json >/dev/null
+      - name: Build, prove, acquire, and complete exact Q3 ROLLING release
+        run: |
+          set -euo pipefail
+          source scripts/release/release-api.sh
+          inventory="$(git ls-tree -r --name-only "$REPLACEMENT_TARGET" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
+          migration="inventory-sha256:$(printf '%s' "$inventory" | shasum -a 256 | awk '{print $1}')"
+          jq -e --arg id "$INPUT_RELEASE_ID" --arg source "$REPLACEMENT_TARGET" --arg migration "$migration" '.runtime as $r | {release_id:$id,mode:"ROLLING",expected:{source_commit:$source,migration:$migration,legal_version:$r.legal_version,legal_manifest_sha256:$r.legal_manifest_sha256,legal_hashes:$r.legal_hashes}}' status.json > release.json
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/dormant-readiness" > readiness.json
+          jq -e '.ready == true' readiness.json >/dev/null
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/acquire" > acquired.json
+          jq -e --arg id "$INPUT_RELEASE_ID" '.owner_release_id == $id and .owner_mode == "ROLLING" and .sales_paused == false' acquired.json >/dev/null
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/complete-rolling" > completed.json
+          jq -e '.owner_release_id == null and .owner_mode == null and .sales_paused == false' completed.json >/dev/null
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$INPUT_RELEASE_ID" | jq -e --slurpfile r release.json '.complete == true and .expected == $r[0].expected' >/dev/null
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/dormant-readiness" > terminal-readiness.json
+          jq -e '.ready == true' terminal-readiness.json >/dev/null
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" | jq -e '.owner_release_id == null and .owner_mode == null and .sales_paused == false' >/dev/null
