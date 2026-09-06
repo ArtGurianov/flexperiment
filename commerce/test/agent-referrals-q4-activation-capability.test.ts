@@ -8,7 +8,7 @@ import { reconstructControlledCandidateSha, type ControlledCandidateCertificate 
 
 const Q2 = "2dc1a55a070a7e9e9ebcd52f46dff8d171da223e";
 const Q3 = "f317c836635bfe3a86735ecda6a050c51d4dc924";
-const Q4 = "f399a998d348c2ad261c59012435d77f0637bdb6";
+const Q4 = "e0cf268496660dade2db3fa43b189682d059c25c";
 const OLD_Q2_RELEASE = "agent-referrals-f540b997d6d31a22293909ded7ce464c3f51732f";
 const CERTIFICATE_PATH = `.release/controlled-candidates/agent-referrals-activation-${Q3}/certificate.json`;
 
@@ -33,7 +33,10 @@ type Q4Modules = {
   gate: { ReleaseSalesGate: new (db: unknown) => Q4Gate };
   feature: typeof import("../src/agent-referrals-feature-state");
   activation: { activateAgentReferralsIfReady: (...args: unknown[]) => unknown };
-  otp: { UnisenderOtpSender: new (config: { apiKey: string; fromEmail: string; fromName: string; replyToEmail: string }, request: typeof fetch) => { send(input: { recipientEmail: string; code: string; challengeId: string }): Promise<string>; deliveryCapability(): { configured: boolean; provider_id: string | null } } };
+  otp: {
+    UnisenderOtpSender: new (config: { apiKey: string; fromEmail: string; fromName: string; replyToEmail: string }, request: typeof fetch) => { send(input: { recipientEmail: string; code: string; challengeId: string }): Promise<string>; deliveryCapability(): { configured: boolean; provider_id: string | null } };
+    issueAndDispatchOtpChallenge(db: unknown, partnerIdentityId: string, sender: { send(input: { recipientEmail: string; code: string; challengeId: string }): Promise<"ACCEPTED" | "KNOWN_FAILED"> }): Promise<{ challenge_id: string }>;
+  };
 };
 
 /** Detached Q4-only methods must never be statically coupled to Q3/controller declarations. */
@@ -154,6 +157,20 @@ describe("Q4 activation capability: atomic DORMANT to ACTIVE authority", () => {
     app.request("http://x/v1/internal/release-control/agent-referrals/activate", { method: "POST", headers: auth, body: JSON.stringify(request) });
   const eventCount = (sqlite: ReturnType<typeof fresh>["sqlite"]) => Number((sqlite.prepare("SELECT COUNT(*) AS n FROM agent_referrals_feature_state_events").get() as { n: number }).n);
   const manifestCount = (sqlite: ReturnType<typeof fresh>["sqlite"]) => Number((sqlite.prepare("SELECT COUNT(*) AS n FROM agent_referrals_activation_manifest").get() as { n: number }).n);
+  const partnerIdentity = (sqlite: ReturnType<typeof fresh>["sqlite"]) => {
+    const agentId = randomUUID();
+    const partnerId = randomUUID();
+    sqlite.prepare("INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value) VALUES (?, ?, ?, ?, ?, 'SELF_EMPLOYED', ?, ?, 'PERCENT', 10)")
+      .run(agentId, `otp-agent-${agentId}`, "OTP Agent", "OTP Agent", `${agentId}@example.test`, "123456789012", "otp-contract");
+    sqlite.prepare("INSERT INTO partner_identities(id, agent_id, email, email_hash, created_by_admin_id, created_at) VALUES (?, ?, ?, ?, ?, datetime('now'))")
+      .run(partnerId, agentId, `${partnerId}@example.test`, `otp-email-${partnerId}`, "admin-test");
+    return partnerId;
+  };
+  const durableOtpOutcome = async (sqlite: ReturnType<typeof fresh>["sqlite"], request: typeof fetch) => {
+    const sender = new modules.otp.UnisenderOtpSender({ apiKey: "key", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "reply@example.test" }, request);
+    const { challenge_id } = await modules.otp.issueAndDispatchOtpChallenge(sqlite, partnerIdentity(sqlite), sender);
+    return (sqlite.prepare("SELECT send_outcome FROM partner_otp_challenges WHERE id = ?").get(challenge_id) as { send_outcome: string }).send_outcome;
+  };
 
   it("is bearer-only, starts Q4 DORMANT, and atomically records the closed manifest with the one DORMANT to ACTIVE event", async () => {
     const { sqlite, app, request } = fresh();
@@ -180,7 +197,7 @@ describe("Q4 activation capability: atomic DORMANT to ACTIVE authority", () => {
     } finally { sqlite.close(); }
   });
 
-  it("reads runtime evidence only after BEGIN IMMEDIATE and ships a usable configured OTP sender", async () => {
+  it("reads runtime evidence only after BEGIN IMMEDIATE and records conservative UniSender delivery outcomes", async () => {
     const { sqlite, request } = fresh();
     try {
       const gate = new modules.gate.ReleaseSalesGate(sqlite);
@@ -197,6 +214,12 @@ describe("Q4 activation capability: atomic DORMANT to ACTIVE authority", () => {
       const sender = new modules.otp.UnisenderOtpSender({ apiKey: "key", fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "reply@example.test" }, async () => Response.json({ status: "success", job_id: "job" }));
       expect(sender.deliveryCapability()).toEqual({ configured: true, provider_id: "unisender-go" });
       await expect(sender.send({ recipientEmail: "partner@example.test", code: "123456", challengeId: "challenge" })).resolves.toBe("ACCEPTED");
+
+      await expect(durableOtpOutcome(sqlite, async () => Response.json({ error: "invalid recipient" }, { status: 400 }))).resolves.toBe("KNOWN_FAILED");
+      await expect(durableOtpOutcome(sqlite, async () => Response.json({ error: "temporarily unavailable" }, { status: 503 }))).resolves.toBe("UNKNOWN");
+      await expect(durableOtpOutcome(sqlite, async () => { throw new Error("network unavailable"); })).resolves.toBe("UNKNOWN");
+      await expect(durableOtpOutcome(sqlite, async () => Response.json({ status: "success" }))).resolves.toBe("UNKNOWN");
+      await expect(durableOtpOutcome(sqlite, async () => Response.json({ status: "success", job_id: "job" }))).resolves.toBe("ACCEPTED");
     } finally { sqlite.close(); }
   });
 

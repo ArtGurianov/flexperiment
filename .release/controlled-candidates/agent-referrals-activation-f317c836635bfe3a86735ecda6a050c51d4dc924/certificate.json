@@ -78,9 +78,9 @@
       "mode": "100644",
       "base_blob_sha": "c8afe9ac19b800866b81a6bdb8dd9adbcac7bb2a",
       "patch_path": ".release/controlled-candidates/agent-referrals-activation-f317c836635bfe3a86735ecda6a050c51d4dc924/patches/agent-referrals-otp.patch",
-      "patch_git_blob_sha": "325006efca7d59370d12c5c7d7494aa1f602a985",
-      "patch_sha256": "5731867a1e072a879454bb49f54abf505974d6d2d7d030296b44020d17565f25",
-      "result_blob_sha": "363f81520cd61d50e755f8b526bec7a3eba8f2c3"
+      "patch_git_blob_sha": "559f88534e98cb3569926868853e6da89ead3022",
+      "patch_sha256": "5e24c4b9e441260b751882ac77d590ad021c37d6c57914c51860cf9f532b6838",
+      "result_blob_sha": "8915db33a9b7e882fce36610181511a428d67cc0"
     },
     {
       "path": "commerce/src/server.ts",
@@ -95,7 +95,7 @@
   ],
   "commit": {
     "parent_sha": "f317c836635bfe3a86735ecda6a050c51d4dc924",
-    "tree_sha": "ecb5aa8be6b7571fa0548d319a1fb1b67067cf02",
+    "tree_sha": "5e122dc8e4fbb5811fb98e27813c1b0883e15911",
     "author_name": "Flexperiment Release Controller",
     "author_email": "release-controller@flexperiment.ru",
     "author_timestamp": 1788825600,

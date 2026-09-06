@@ -1,5 +1,5 @@
 diff --git a/commerce/src/agent-referrals-otp.ts b/commerce/src/agent-referrals-otp.ts
-index c8afe9a..363f815 100644
+index c8afe9a..8915db3 100644
 --- a/commerce/src/agent-referrals-otp.ts
 +++ b/commerce/src/agent-referrals-otp.ts
 @@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
@@ -10,7 +10,7 @@ index c8afe9a..363f815 100644
  
  /**
   * OTP challenge with exact unknown-outcome semantics, mirroring the outbox
-@@ -59,12 +60,56 @@ const hashesMatch = (a: string, b: string) => a.length === b.length && timingSaf
+@@ -59,12 +60,61 @@ const hashesMatch = (a: string, b: string) => a.length === b.length && timingSaf
   */
  export interface OtpSender {
    send(input: { recipientEmail: string; code: string; challengeId: string }): Promise<"ACCEPTED" | "KNOWN_FAILED">;
@@ -52,7 +52,12 @@ index c8afe9a..363f815 100644
 +      } }),
 +    });
 +    const payload = await response.json().catch(() => undefined) as { status?: unknown; job_id?: unknown } | undefined;
-+    if (!response.ok) return "KNOWN_FAILED";
++    // A client refusal is conclusive, but a provider-side error is not: the
++    // provider may have accepted the request before returning a 5xx. Preserve
++    // that ambiguity by throwing so the durable challenge evidence becomes
++    // UNKNOWN rather than licensing an unsafe automatic resend.
++    if (response.status >= 400 && response.status < 500) return "KNOWN_FAILED";
++    if (!response.ok) throw new Error("AGENT_REFERRALS_OTP_PROVIDER_OUTCOME_UNKNOWN");
 +    if (payload?.status === "success" && typeof payload.job_id === "string") return "ACCEPTED";
 +    throw new Error("AGENT_REFERRALS_OTP_PROVIDER_OUTCOME_UNKNOWN");
 +  }
