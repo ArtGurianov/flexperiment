@@ -30,8 +30,22 @@ type Q4Modules = {
   provider: typeof import("../src/provider");
   runtime: typeof import("../src/runtime-release-evidence");
   expectation: typeof import("../src/release-expectation");
-  gate: { ReleaseSalesGate: typeof import("../src/release-control").ReleaseSalesGate };
+  gate: { ReleaseSalesGate: new (db: unknown) => Q4Gate };
   feature: typeof import("../src/agent-referrals-feature-state");
+};
+
+/** Detached Q4-only methods must never be statically coupled to Q3/controller declarations. */
+type Q4Gate = {
+  acquire(input: unknown): unknown;
+  completeRolling(input: unknown, dormantReady: () => boolean): unknown;
+  supersedeStrandedAgentReferralsRolling(input: unknown, evidence: () => { runtime_source_commit: string | null; replacement_dormant_ready: boolean }): unknown;
+};
+
+type LegalHashes = {
+  PUBLIC_OFFER: string;
+  PRIVACY_POLICY: string;
+  PD_CONSENT: string;
+  CHECKOUT_DISCLOSURE: string;
 };
 
 const LEGAL_PATHS = {
@@ -42,7 +56,13 @@ const LEGAL_PATHS = {
 } as const;
 
 const legalManifest = (root: string, version: string) => {
-  const hashes = Object.fromEntries(Object.entries(LEGAL_PATHS).map(([key, path]) => [key, createHash("sha256").update(readFileSync(join(root, path))).digest("hex")]));
+  const hash = (path: string) => createHash("sha256").update(readFileSync(join(root, path))).digest("hex");
+  const hashes: LegalHashes = {
+    PUBLIC_OFFER: hash(LEGAL_PATHS.PUBLIC_OFFER),
+    PRIVACY_POLICY: hash(LEGAL_PATHS.PRIVACY_POLICY),
+    PD_CONSENT: hash(LEGAL_PATHS.PD_CONSENT),
+    CHECKOUT_DISCLOSURE: hash(LEGAL_PATHS.CHECKOUT_DISCLOSURE),
+  };
   const manifest = JSON.stringify({ documents: Object.fromEntries(Object.entries(hashes).map(([document_id, sha256]) => [document_id, {
     document_id, version, sha256,
     current_url: `https://flexperiment.ru/legal/${document_id.toLowerCase()}.md`,
@@ -120,7 +140,7 @@ describe("Q4 activation capability: atomic DORMANT to ACTIVE authority", () => {
     return { sqlite, app, request };
   }
 
-  const activate = (app: ReturnType<typeof fresh>["app"], request: ReturnType<typeof fresh>["request"], auth = headers) =>
+  const activate = (app: ReturnType<typeof fresh>["app"], request: ReturnType<typeof fresh>["request"], auth: Record<string, string> = headers) =>
     app.request("http://x/v1/internal/release-control/agent-referrals/activate", { method: "POST", headers: auth, body: JSON.stringify(request) });
   const eventCount = (sqlite: ReturnType<typeof fresh>["sqlite"]) => Number((sqlite.prepare("SELECT COUNT(*) AS n FROM agent_referrals_feature_state_events").get() as { n: number }).n);
   const manifestCount = (sqlite: ReturnType<typeof fresh>["sqlite"]) => Number((sqlite.prepare("SELECT COUNT(*) AS n FROM agent_referrals_activation_manifest").get() as { n: number }).n);
