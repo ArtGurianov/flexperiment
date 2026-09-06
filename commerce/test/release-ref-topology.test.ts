@@ -106,7 +106,7 @@ const isApprovedAgentReferralsCandidate = (sha: string, currentMain: string) => 
  * enumeration, never a wildcard; a third consumer means adding its exact
  * namespace slug here, not loosening the check.
  */
-const CONTROLLED_CANDIDATE_NAMESPACES = ["release-semantics-bootstrap", "agent-referrals"] as const;
+const CONTROLLED_CANDIDATE_NAMESPACES = ["release-semantics-bootstrap", "agent-referrals", "agent-referrals-recovery", "agent-referrals-activation"] as const;
 const controlledCandidateCertificatePath = (namespace: string, base: string) => `.release/controlled-candidates/${namespace}-${base}/certificate.json`;
 const isApprovedControlledCandidate = (sha: string, currentMain: string) => {
   const base = resolve(`${sha}^`);
@@ -153,7 +153,7 @@ describe("durable release ref topology", () => {
       `production-deploy is not an ancestor of main.\n`
       + `  production-deploy: ${describes("origin/production-deploy")}\n`
       + `  main:              ${describes("origin/main")}\n`
-      + `Only exact 0041 Gen2, exact Epoch A R, deterministic Epoch B P, a valid Agent Referrals reconstruction certificate, or a valid controlled-candidate.ts reconstruction certificate (release-semantics-bootstrap or agent-referrals namespace) may be detached from main.`,
+      + `Only exact 0041 Gen2, exact Epoch A R, deterministic Epoch B P, a valid Agent Referrals reconstruction certificate, or a valid controlled-candidate.ts reconstruction certificate (release-semantics-bootstrap, agent-referrals, agent-referrals-recovery, or agent-referrals-activation namespace) may be detached from main.`,
     ).toBe(true);
   });
 

@@ -1,0 +1,34 @@
+diff --git a/commerce/src/api.ts b/commerce/src/api.ts
+index d851d32..05678b9 100644
+--- a/commerce/src/api.ts
++++ b/commerce/src/api.ts
+@@ -14,7 +14,7 @@ import { createAgentReferralsPartnerRouter } from "./agent-referrals-api-partner
+ import { createAgentReferralsAdminRouter } from "./agent-referrals-api-admin";
+ import { UnconfiguredOtpSender, type OtpSender } from "./agent-referrals-otp";
+ import { agentReferralsDormantReady, agentReferralsDormantReadinessEvidence } from "./agent-referrals-dormant-readiness";
+-import { agentReferralsStrandedRollingSupersedeSchema, completeRollingSchema, releaseControlSchema } from "./release-control-schema";
++import { agentReferralsActivationSchema, agentReferralsStrandedRollingSupersedeSchema, completeRollingSchema, releaseControlSchema } from "./release-control-schema";
+ import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityInterestWithdrawalSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, emailAttentionAcknowledgeSchema, emergencySalesCommandSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrenceNotificationSchema, occurrencePatchSchema, outboxDispatchFenceSchema, preActivationDefectSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
+ 
+ type AppBindings = { Variables: { adminId?: string; adminSessionId?: string } };
+@@ -33,7 +33,7 @@ const jsonBody = async (request: Request) => {
+ 
+ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvider: EmailProvider = new UnconfiguredEmailProvider(), smartCaptcha: SmartCaptchaVerifier = new UnconfiguredSmartCaptchaVerifier(), otpSender: OtpSender = new UnconfiguredOtpSender()) {
+   const app = new Hono<AppBindings>();
+-  const domain = new CommerceDomain(sqlite, provider, emailProvider);
++  const domain = new CommerceDomain(sqlite, provider, emailProvider, Date.now, otpSender.deliveryCapability());
+   const tochkaVerifier = provider instanceof TochkaProvider ? new TochkaWebhookVerifier() : undefined;
+   const unisenderConfig = emailProvider instanceof UnisenderGoProvider ? emailProvider.config : undefined;
+ 
+@@ -610,6 +610,11 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
+     const input = completeRollingSchema.parse(await jsonBody(c.req.raw));
+     return c.json(agentReferralsDormantReadinessEvidence(sqlite, domain.releaseRuntimeEvidence(), input.expected));
+   });
++  // Q4's only DORMANT -> ACTIVE surface.  It is deliberately internal and
++  // bearer-gated by the shared release-control middleware above: no browser
++  // or admin-session route can invoke the combined readiness/CAS authority.
++  releaseControl.post("/agent-referrals/activate", async (c) =>
++    c.json(domain.activateAgentReferralsIfReady(agentReferralsActivationSchema.parse(await jsonBody(c.req.raw)))));
+   const releaseControlHead = new Hono();
+   releaseControlHead.use("*", async (c, next) => {
+     if (!verifyReleaseControlToken(c.req.header("Authorization"))) throw new DomainError("RELEASE_CONTROL_AUTH_REQUIRED", 401);
