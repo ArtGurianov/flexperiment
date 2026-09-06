@@ -34,6 +34,34 @@ describe("Agent Referrals Q3 recovery workflow contract", () => {
     expect(recovery).toContain("ALREADY_SUPERSEDED=true");
   });
 
+  it("uses Q3-only resolution only for a Q3-live, owner-null replay", () => {
+    const heldOwner = recovery.indexOf('if jq -e --arg id "$OLD_RELEASE_ID" --arg q2 "$FROZEN_OLD_TARGET"');
+    const ownerNull = recovery.indexOf("if jq -e '.owner_release_id == null and .owner_mode == null and .sales_paused == false'");
+    const supersededResolution = recovery.indexOf('> resolution-superseded.json');
+    const terminalResolution = recovery.indexOf('> resolution-after.json');
+
+    expect(heldOwner).toBeGreaterThan(-1);
+    expect(ownerNull).toBeGreaterThan(heldOwner);
+    expect(supersededResolution).toBeGreaterThan(ownerNull);
+    expect(terminalResolution).toBeGreaterThan(supersededResolution);
+
+    const heldOwnerBranch = recovery.slice(heldOwner, ownerNull);
+    expect(heldOwnerBranch).toContain('.owner_mode == "ROLLING" and .sales_paused == false and .expected.source_commit == $q2');
+    expect(heldOwnerBranch).toContain("jq -e '.complete == false' completion.json");
+    expect(heldOwnerBranch).toContain("replacement-expected.json");
+    expect(heldOwnerBranch).not.toContain("/resolution/");
+
+    const ownerNullBranch = recovery.slice(ownerNull, terminalResolution);
+    expect(ownerNullBranch).toContain('[[ "$OBSERVED_PRODUCTION_DEPLOY" == "$REPLACEMENT_TARGET" ]]');
+    expect(ownerNullBranch).toContain('.runtime.source_commit == $q3 and .runtime.worker_source_commit == $q3');
+    expect(ownerNullBranch).toContain('> resolution-superseded.json');
+    expect(ownerNullBranch).toContain('.resolution == "SUPERSEDED" and .reason_code == "SURFACE_CONTRACT_UNAVAILABLE" and .replacement_source_commit == $q3');
+    expect(recovery).not.toContain("resolution-before.json");
+    const terminalProof = recovery.slice(terminalResolution);
+    expect(terminalProof).toContain('> resolution-after.json');
+    expect(terminalProof).toContain('.complete == false and .resolution == "SUPERSEDED" and .reason_code == "SURFACE_CONTRACT_UNAVAILABLE" and .replacement_source_commit == $q3');
+  });
+
   it("pins terminal release identity to Q3 and repeats full readiness after completion", () => {
     expect(terminal).toContain('"$INPUT_RELEASE_ID" == "agent-referrals-recovery-$REPLACEMENT_TARGET"');
     expect(terminal).toContain("terminal-readiness.json");

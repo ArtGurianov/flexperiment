@@ -84,19 +84,23 @@ jobs:
           source scripts/release/release-api.sh
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > before.json
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$OLD_RELEASE_ID" > completion.json
-          api "$PUBLIC_API_URL/v1/internal/release-control/resolution/$OLD_RELEASE_ID" > resolution-before.json
-          if jq -e --arg q3 "$REPLACEMENT_TARGET" '.complete == false and .resolution == "SUPERSEDED" and .replacement_source_commit == $q3' resolution-before.json >/dev/null; then
-            jq -e '.owner_release_id == null and .owner_mode == null and .sales_paused == false' before.json >/dev/null
+          if jq -e --arg id "$OLD_RELEASE_ID" --arg q2 "$FROZEN_OLD_TARGET" '.owner_release_id == $id and .owner_mode == "ROLLING" and .sales_paused == false and .expected.source_commit == $q2' before.json >/dev/null; then
+            jq -e '.complete == false' completion.json >/dev/null
+            inventory="$(git ls-tree -r --name-only "$REPLACEMENT_TARGET" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
+            migration="inventory-sha256:$(printf '%s' "$inventory" | shasum -a 256 | awk '{print $1}')"
+            jq -e --arg source "$REPLACEMENT_TARGET" --arg migration "$migration" '.runtime as $r | {source_commit:$source,migration:$migration,legal_version:$r.legal_version,legal_manifest_sha256:$r.legal_manifest_sha256,legal_hashes:$r.legal_hashes}' before.json > replacement-expected.json
+            exit 0
+          fi
+          if jq -e '.owner_release_id == null and .owner_mode == null and .sales_paused == false' before.json >/dev/null; then
             [[ "$OBSERVED_PRODUCTION_DEPLOY" == "$REPLACEMENT_TARGET" ]] || { echo STRANDED_RECOVERY_SUPERSEDED_POINTER_MISMATCH >&2; exit 1; }
+            jq -e --arg q3 "$REPLACEMENT_TARGET" '.runtime.source_commit == $q3 and .runtime.worker_source_commit == $q3' before.json >/dev/null || { echo STRANDED_RECOVERY_SUPERSEDED_RUNTIME_NOT_Q3 >&2; exit 1; }
+            api "$PUBLIC_API_URL/v1/internal/release-control/resolution/$OLD_RELEASE_ID" > resolution-superseded.json
+            jq -e --arg q3 "$REPLACEMENT_TARGET" '.complete == false and .resolution == "SUPERSEDED" and .reason_code == "SURFACE_CONTRACT_UNAVAILABLE" and .replacement_source_commit == $q3' resolution-superseded.json >/dev/null
             echo "RECOVERY_STATE=OLD_RELEASE_SUPERSEDED" >> "$GITHUB_ENV"
             echo "ALREADY_SUPERSEDED=true" >> "$GITHUB_ENV"
             exit 0
           fi
-          jq -e --arg id "$OLD_RELEASE_ID" --arg q2 "$FROZEN_OLD_TARGET" '.owner_release_id == $id and .owner_mode == "ROLLING" and .sales_paused == false and .expected.source_commit == $q2' before.json >/dev/null
-          jq -e '.complete == false' completion.json >/dev/null
-          inventory="$(git ls-tree -r --name-only "$REPLACEMENT_TARGET" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
-          migration="inventory-sha256:$(printf '%s' "$inventory" | shasum -a 256 | awk '{print $1}')"
-          jq -e --arg source "$REPLACEMENT_TARGET" --arg migration "$migration" '.runtime as $r | {source_commit:$source,migration:$migration,legal_version:$r.legal_version,legal_manifest_sha256:$r.legal_manifest_sha256,legal_hashes:$r.legal_hashes}' before.json > replacement-expected.json
+          echo STRANDED_RECOVERY_OWNER_STATE_UNEXPECTED >&2; exit 1
       - name: Guarded Q2 to Q3 pointer transition
         if: env.ALREADY_SUPERSEDED != 'true' && env.RECOVERY_STATE == 'BEFORE_Q3_CAS'
         run: scripts/set-production-deploy-ref.sh "$REPLACEMENT_TARGET" "$FROZEN_OLD_TARGET"
