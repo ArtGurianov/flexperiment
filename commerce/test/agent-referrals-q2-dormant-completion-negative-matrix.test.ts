@@ -302,14 +302,47 @@ describe("Q2 DORMANT completion: negative matrix (each axis independently blocks
     } finally { sqlite.close(); }
   }, 30_000);
 
+  /**
+   * Two of the six business-fact tables carry CHECK constraints and
+   * BEFORE-INSERT relational-consistency triggers beyond plain NOT NULL -
+   * `foreign_keys = OFF` only suppresses declared FK enforcement, never an
+   * application trigger's own RAISE(ABORT), so a blind "probe-value" fill
+   * for every NOT NULL column (which works for the other four tables)
+   * fails for these two. Each override below is the minimal row this
+   * schema's own CHECK/trigger shape actually accepts - a REVOKED payout
+   * profile revision, and a DRAFT ord_provider_operations row backed by its
+   * own required matching profile-revision dependency (itself a distinct,
+   * separately-defined business-fact table - both become non-zero
+   * together, which does not weaken this test: it still proves inserting
+   * a real ord_provider_operations row blocks completion).
+   */
+  const PROBE_ROW_OVERRIDES: Readonly<Record<string, (sqlite: ReturnType<typeof dbModule.openDatabase>) => void>> = {
+    payout_profile_revisions: (sqlite) => {
+      sqlite.prepare(`INSERT INTO payout_profile_revisions (id, partner_identity_id, revision, kind, step_up_grant_id) VALUES (?, ?, 1, 'REVOKED', ?)`)
+        .run(randomUUID(), "probe-partner-identity", "probe-step-up-grant");
+    },
+    ord_provider_operations: (sqlite) => {
+      const profileRevisionId = randomUUID();
+      sqlite.prepare(`INSERT INTO ord_provider_profile_revisions (id, profile_kind, revision, content_json, content_hash, reason, created_by_admin_id) VALUES (?, 'COUNTERPARTY', 1, '{}', 'probe-hash', 'probe', 'probe-admin')`)
+        .run(profileRevisionId);
+      sqlite.prepare(`INSERT INTO ord_provider_operations (id, operation_kind, revision, provider_profile_revision_id, operation_key, created_by_admin_id) VALUES (?, 'COUNTERPARTY', 1, ?, ?, 'probe-admin')`)
+        .run(randomUUID(), profileRevisionId, `probe-op-key-${randomUUID()}`);
+    },
+  };
+
   const insertProbeRow = (sqlite: ReturnType<typeof dbModule.openDatabase>, table: string) => {
-    const columns = (sqlite.prepare(`PRAGMA table_info("${table}")`).all() as Array<{ name: string; notnull: number; dflt_value: unknown; pk: number }>);
-    const requiredColumns = columns.filter((c) => c.notnull === 1 && c.dflt_value === null && c.pk === 0).map((c) => c.name);
     sqlite.pragma("foreign_keys = OFF");
-    if (requiredColumns.length > 0) {
-      sqlite.prepare(`INSERT INTO "${table}" (${requiredColumns.map((n) => `"${n}"`).join(", ")}) VALUES (${requiredColumns.map(() => "?").join(", ")})`).run(...requiredColumns.map(() => "probe-value"));
+    const override = PROBE_ROW_OVERRIDES[table];
+    if (override) {
+      override(sqlite);
     } else {
-      sqlite.prepare(`INSERT INTO "${table}" DEFAULT VALUES`).run();
+      const columns = (sqlite.prepare(`PRAGMA table_info("${table}")`).all() as Array<{ name: string; notnull: number; dflt_value: unknown; pk: number }>);
+      const requiredColumns = columns.filter((c) => c.notnull === 1 && c.dflt_value === null && c.pk === 0).map((c) => c.name);
+      if (requiredColumns.length > 0) {
+        sqlite.prepare(`INSERT INTO "${table}" (${requiredColumns.map((n) => `"${n}"`).join(", ")}) VALUES (${requiredColumns.map(() => "?").join(", ")})`).run(...requiredColumns.map(() => "probe-value"));
+      } else {
+        sqlite.prepare(`INSERT INTO "${table}" DEFAULT VALUES`).run();
+      }
     }
     sqlite.pragma("foreign_keys = ON");
   };
