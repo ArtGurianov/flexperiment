@@ -1,0 +1,290 @@
+diff --git new/commerce/migrations/0046_attribution_reward.sql new/commerce/migrations/0046_attribution_reward.sql
+new file mode 100644
+index 0000000..bcf8243
+--- /dev/null
++++ new/commerce/migrations/0046_attribution_reward.sql
+@@ -0,0 +1,284 @@
++-- Agent Referrals attribution & reward: the checkout-time order authority
++-- tuple, the reward-registry partition, and the immutable reward
++-- registry/effective-snapshot foundation (plan section B-6/B-9, Phase 6).
++-- Ordinary migration - not FK-off. No settlement_flow, no acts, no
++-- payment authorizations/attempts, no NPD receipts, no zero-reward
++-- closure, no ORD/VK/ERIR provider schema (those are 0047+).
++--
++-- `orders` carries eight inbound FK columns of its own (bookings, payments,
++-- checkout_idempotency, refunds, referral_rewards, reward_adjustments) and
++-- is not the reviewed 0042 rebuild, so a table rebuild here is out of
++-- scope for this migration (FK_OFF_MIGRATIONS stays at exactly one entry).
++-- Every new authority column is therefore added with `ALTER TABLE ... ADD
++-- COLUMN` (ordinary, FK-on), and the two structural invariants a
++-- multi-column CHECK would normally carry - "the tuple is internally
++-- consistent" and "these columns never change after insert" - are instead
++-- enforced by two triggers, which SQLite permits to reference every column
++-- of NEW/OLD regardless of how the column was added. A BEFORE INSERT
++-- RAISE(ABORT) refusal is exactly as strong as a table-level CHECK would
++-- have been; a BEFORE UPDATE RAISE(ABORT) is exactly as strong as omitting
++-- application UPDATE support ever was for every other immutable evidence
++-- table in this schema.
++
++-- 1. Order authority tuple (§B-9). reward_authority_kind partitions every
++-- order into LEGACY (the untouched pre-Phase-6 path: discount-only promo,
++-- legacy fx_ref referral slug, or direct) or ENGAGEMENT_SCOPED (an
++-- explicit partner promo, resolved fresh inside the checkout transaction -
++-- never from the quote). explicit_promo_id is the checkout-time-resolved
++-- promo id, deliberately alongside the existing promo_id_snapshot (which
++-- is a quote-time snapshot, persisted before checkout re-validates
++-- eligibility) - the two usually agree but have different provenance, and
++-- neither duplicates the other's role. attribution_rule_version pins which
++-- revision of the §B-9 resolution algorithm produced this row, so a future
++-- change to the algorithm's own semantics is itself evidenced.
++--
++-- Existing rows (and every LEGACY-path order this migration's default
++-- keeps producing) get reward_authority_kind = 'LEGACY' with every
++-- resolved_* column NULL - the true, not fabricated, classification for
++-- every order that predates this migration or never touched a partner
++-- promo. No backfill logic runs; ALTER TABLE's own default fill is exactly
++-- that fact.
++ALTER TABLE orders ADD COLUMN reward_authority_kind TEXT NOT NULL DEFAULT 'LEGACY' CHECK (reward_authority_kind IN ('LEGACY', 'ENGAGEMENT_SCOPED'));
++ALTER TABLE orders ADD COLUMN explicit_promo_id TEXT REFERENCES promo_codes(id);
++ALTER TABLE orders ADD COLUMN resolved_partner_id TEXT REFERENCES agents(id);
++ALTER TABLE orders ADD COLUMN resolved_engagement_id TEXT REFERENCES engagements(id);
++ALTER TABLE orders ADD COLUMN resolved_engagement_revision_id TEXT REFERENCES engagement_revisions(id);
++ALTER TABLE orders ADD COLUMN resolved_promo_authorization_id TEXT REFERENCES engagement_promo_authorizations(id);
++ALTER TABLE orders ADD COLUMN attribution_rule_version INTEGER NOT NULL DEFAULT 1;
++ALTER TABLE orders ADD COLUMN resolution_reason TEXT NOT NULL DEFAULT 'LEGACY';
++
++-- No half-shaped authority row can ever be inserted: LEGACY carries no
++-- resolved_* pin at all, ENGAGEMENT_SCOPED carries every one of them -
++-- promo -> partner -> occurrence authorization -> engagement -> the exact
++-- accepted/activated engagement revision, all-or-nothing. For
++-- ENGAGEMENT_SCOPED this additionally proves the tuple is RELATIONALLY
++-- consistent, not merely non-NULL: the resolved_promo_authorization_id
++-- must be a real engagement_promo_authorizations row whose own
++-- promo_code_id/partner_id/engagement_id/engagement_revision_id/
++-- occurrence_id agree with every one of NEW's resolved_* columns and
++-- NEW.occurrence_id - so a formally-complete-but-fabricated tuple
++-- (authorization belonging to a different partner/engagement than the
++-- one named) can never be inserted, only the exact authorization
++-- activateEngagement itself minted. reward_type_snapshot/
++-- reward_value_snapshot/attributed_agent_id are legacy columns Phase 6
++-- reuses (never re-derives) for reward evidence; this proves they agree
++-- with the resolved engagement revision's own terms and partner - closing
++-- the gap where a caller could otherwise pin correct authority columns
++-- while writing a mismatched reward amount.
++CREATE TRIGGER orders_authority_tuple_consistency_guard
++BEFORE INSERT ON orders
++WHEN NOT (
++  (NEW.reward_authority_kind = 'LEGACY'
++    AND NEW.resolved_partner_id IS NULL AND NEW.resolved_engagement_id IS NULL
++    AND NEW.resolved_engagement_revision_id IS NULL AND NEW.resolved_promo_authorization_id IS NULL)
++  OR
++  (NEW.reward_authority_kind = 'ENGAGEMENT_SCOPED'
++    AND NEW.explicit_promo_id IS NOT NULL AND NEW.resolved_partner_id IS NOT NULL
++    AND NEW.resolved_engagement_id IS NOT NULL AND NEW.resolved_engagement_revision_id IS NOT NULL
++    AND NEW.resolved_promo_authorization_id IS NOT NULL
++    AND NEW.resolution_reason = 'EXPLICIT_PARTNER_PROMO'
++    AND EXISTS (
++      SELECT 1 FROM engagement_promo_authorizations a
++      WHERE a.id = NEW.resolved_promo_authorization_id
++        AND a.promo_code_id = NEW.explicit_promo_id
++        AND a.partner_id = NEW.resolved_partner_id
++        AND a.engagement_id = NEW.resolved_engagement_id
++        AND a.engagement_revision_id = NEW.resolved_engagement_revision_id
++        AND a.occurrence_id = NEW.occurrence_id
++    )
++    AND NEW.attributed_agent_id = NEW.resolved_partner_id
++    AND EXISTS (
++      SELECT 1 FROM engagement_revisions r
++      WHERE r.id = NEW.resolved_engagement_revision_id
++        AND r.engagement_id = NEW.resolved_engagement_id
++        AND r.reward_type = NEW.reward_type_snapshot
++        AND r.reward_value = NEW.reward_value_snapshot
++    ))
++)
++BEGIN SELECT RAISE(ABORT, 'ORDER_AUTHORITY_TUPLE_INCONSISTENT'); END;
++
++-- DB-immutable, not merely "application code never updates these" - no
++-- UPDATE statement anywhere in this codebase currently touches `orders` at
++-- all, so this costs the legacy path nothing and closes the gap for good.
++-- attributed_agent_id/reward_type_snapshot/reward_value_snapshot are
++-- included here too: they are the exact fields rewardForOrder() and the
++-- reward registry actually read, so leaving them mutable while the new
++-- resolved_* columns were immutable would have left the real reward
++-- evidence rewritable after the fact.
++CREATE TRIGGER orders_authority_columns_immutable_guard
++BEFORE UPDATE ON orders
++WHEN NEW.reward_authority_kind IS NOT OLD.reward_authority_kind
++  OR NEW.explicit_promo_id IS NOT OLD.explicit_promo_id
++  OR NEW.resolved_partner_id IS NOT OLD.resolved_partner_id
++  OR NEW.resolved_engagement_id IS NOT OLD.resolved_engagement_id
++  OR NEW.resolved_engagement_revision_id IS NOT OLD.resolved_engagement_revision_id
++  OR NEW.resolved_promo_authorization_id IS NOT OLD.resolved_promo_authorization_id
++  OR NEW.attribution_rule_version IS NOT OLD.attribution_rule_version
++  OR NEW.resolution_reason IS NOT OLD.resolution_reason
++  OR NEW.attributed_agent_id IS NOT OLD.attributed_agent_id
++  OR NEW.reward_type_snapshot IS NOT OLD.reward_type_snapshot
++  OR NEW.reward_value_snapshot IS NOT OLD.reward_value_snapshot
++BEGIN SELECT RAISE(ABORT, 'ORDER_AUTHORITY_COLUMNS_IMMUTABLE'); END;
++
++-- 2. Reward partition (F9 / plan Phase 6). Closes rewardBalance()'s
++-- unpartitioned-source defect for the source referral_rewards already
++-- feeds. Historical NULL reads as LEGACY (COALESCE(reward_authority_kind,
++-- 'LEGACY')) at every read site - never backfilled, since a NULL row is
++-- already, truly, a LEGACY-era reward and no application code needs to
++-- rewrite it to know that. Every NEW row, however, must carry the exact
++-- classification its own order already pins (orders.reward_authority_kind
++-- is NOT NULL, so this is never satisfiable by an absent/mismatched
++-- value) - and once written, that classification is itself immutable, so
++-- a later PR7 settlement partition can trust it structurally rather than
++-- by application convention.
++ALTER TABLE referral_rewards ADD COLUMN reward_authority_kind TEXT CHECK (reward_authority_kind IN ('LEGACY', 'ENGAGEMENT_SCOPED'));
++CREATE TRIGGER referral_rewards_authority_kind_matches_order_guard
++BEFORE INSERT ON referral_rewards
++WHEN NEW.reward_authority_kind IS NOT (SELECT o.reward_authority_kind FROM orders o WHERE o.id = NEW.order_id)
++BEGIN SELECT RAISE(ABORT, 'REFERRAL_REWARD_AUTHORITY_KIND_MISMATCH'); END;
++CREATE TRIGGER referral_rewards_authority_kind_immutable_guard
++BEFORE UPDATE ON referral_rewards
++WHEN NEW.reward_authority_kind IS NOT OLD.reward_authority_kind
++BEGIN SELECT RAISE(ABORT, 'REFERRAL_REWARD_AUTHORITY_KIND_IMMUTABLE'); END;
++
++-- 3. The reward registry: `R` (plan section B-6). Finalizes once per
++-- engagement, ever - UNIQUE(engagement_id), never rewritten
++-- (immutable/delete guards below), terminal_status distinguishing a
++-- COMPLETED occurrence's registry from a CANCELLED occurrence's (the
++-- latter reachable only once every §B-6 CANCELLED-specific gate - sales
++-- CLOSED, captures reconciled, refunds resolved, no UNKNOWN outcome, no
++-- open review - has passed; see agent-referrals-reward-registry.ts).
++-- source_order_ids_json/source_state_hash/watermark/formula_version are
++-- load-bearing evidence, not decoration: a correction recomputes strictly
++-- over source_order_ids_json's pinned order set (never a fresh query that
++-- could silently admit an order this registry never considered), and
++-- source_state_hash is what proves a correction's authoritative fact
++-- actually changed something.
++CREATE TABLE engagement_reward_registry_snapshot (
++  id TEXT PRIMARY KEY,
++  engagement_id TEXT NOT NULL UNIQUE REFERENCES engagements(id),
++  engagement_revision_id TEXT NOT NULL REFERENCES engagement_revisions(id),
++  occurrence_id TEXT NOT NULL REFERENCES occurrences(id),
++  terminal_status TEXT NOT NULL CHECK (terminal_status IN ('COMPLETED', 'CANCELLED')),
++  reward_total_kopecks INTEGER NOT NULL CHECK (reward_total_kopecks >= 0),
++  formula_version INTEGER NOT NULL,
++  source_order_ids_json TEXT NOT NULL,
++  source_state_hash TEXT NOT NULL,
++  watermark TEXT NOT NULL,
++  finalized_by_admin_id TEXT NOT NULL,
++  reason TEXT NOT NULL,
++  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
++  -- §B-6: a CANCELLED occurrence may finalize the registry, but can never
++  -- produce positive payable authority - "mint a zero effective snapshot"
++  -- is not merely an application convention here, since E1 is always
++  -- seeded from R.reward_total_kopecks. A structural (not merely
++  -- application-level) CHECK, because this is exactly the boundary PR7's
++  -- settlement/act/payment machinery will trust R to have already proven.
++  CHECK (terminal_status = 'COMPLETED' OR reward_total_kopecks = 0)
++);
++-- Relational consistency, not just non-NULL FKs: engagement_revision_id
++-- must actually belong to engagement_id, occurrence_id must be the SAME
++-- occurrence engagement_id itself governs, and - closing the final
++-- boundary gap (holistic review round 2) - terminal_status must be the
++-- occurrence's OWN actual fulfillment_status at insert time, never a
++-- value R merely claims. Without this, the CANCELLED-positive-reward
++-- CHECK is trivially defeated by an R row that simply lies and says
++-- COMPLETED for a genuinely CANCELLED occurrence.
++CREATE TRIGGER engagement_reward_registry_snapshot_relational_consistency_guard
++BEFORE INSERT ON engagement_reward_registry_snapshot
++WHEN NOT (
++  EXISTS (SELECT 1 FROM engagement_revisions r WHERE r.id = NEW.engagement_revision_id AND r.engagement_id = NEW.engagement_id)
++  AND EXISTS (SELECT 1 FROM engagements e WHERE e.id = NEW.engagement_id AND e.occurrence_id = NEW.occurrence_id)
++  AND EXISTS (SELECT 1 FROM occurrences o WHERE o.id = NEW.occurrence_id AND o.fulfillment_status = NEW.terminal_status)
++)
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_REWARD_REGISTRY_SNAPSHOT_RELATIONAL_INCONSISTENT'); END;
++CREATE TRIGGER engagement_reward_registry_snapshot_immutable_guard
++BEFORE UPDATE ON engagement_reward_registry_snapshot
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_REWARD_REGISTRY_SNAPSHOT_IMMUTABLE'); END;
++CREATE TRIGGER engagement_reward_registry_snapshot_delete_guard
++BEFORE DELETE ON engagement_reward_registry_snapshot
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_REWARD_REGISTRY_SNAPSHOT_IMMUTABLE'); END;
++
++-- 4. Effective reward snapshots: `E` (plan section B-6). `R` is never the
++-- payable authority read downstream; `E` is - resolved as the row with
++-- MAX(sequence) for an engagement_id, exactly the same "current = highest
++-- revision, never a mutable pointer" idiom already used twice in this
++-- schema (partner_audience_verification_events, engagement_distribution
++-- revisions). The first row (sequence 1) is always kind=INITIAL with
++-- base_registry_snapshot_id = R.id and no supersedes pointer; every later
++-- row is a CORRECTION superseding the previous one, still pointing at the
++-- SAME immutable R - a correction never re-bases onto a different
++-- registry, because there is only ever one. reward_total_kopecks may only
++-- decrease or stay equal between consecutive rows in application code (an
++-- increase is REWARD_CORRECTION_INCREASE_REVIEW_REQUIRED, never an
++-- automatic top-up) - not expressible as a CHECK against a prior row, so
++-- it is enforced in agent-referrals-reward-registry.ts, not here.
++CREATE TABLE engagement_effective_reward_snapshots (
++  id TEXT PRIMARY KEY,
++  engagement_id TEXT NOT NULL REFERENCES engagements(id),
++  engagement_revision_id TEXT NOT NULL REFERENCES engagement_revisions(id),
++  base_registry_snapshot_id TEXT NOT NULL REFERENCES engagement_reward_registry_snapshot(id),
++  supersedes_effective_snapshot_id TEXT REFERENCES engagement_effective_reward_snapshots(id),
++  sequence INTEGER NOT NULL,
++  kind TEXT NOT NULL CHECK (kind IN ('INITIAL', 'CORRECTION')),
++  reward_total_kopecks INTEGER NOT NULL CHECK (reward_total_kopecks >= 0),
++  source_state_hash TEXT NOT NULL,
++  reason TEXT NOT NULL,
++  created_by_admin_id TEXT NOT NULL,
++  canonical_hash TEXT NOT NULL,
++  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
++  UNIQUE (engagement_id, sequence),
++  CHECK ((kind = 'INITIAL') = (sequence = 1)),
++  CHECK ((sequence = 1) = (supersedes_effective_snapshot_id IS NULL))
++);
++CREATE INDEX engagement_effective_reward_snapshots_engagement_idx ON engagement_effective_reward_snapshots(engagement_id, sequence);
++-- Relational consistency for the whole E chain, not just non-NULL FKs -
++-- and (holistic review round 2) the exact §B-6 identity itself, not only
++-- "belongs to the same engagement":
++--   base_registry_snapshot_id must be R for THIS SAME engagement (never a
++--   different engagement's registry);
++--   a CANCELLED R's E can never carry a positive total (mirrors R's own
++--   CHECK, for the whole correction lineage, not just the INITIAL row);
++--   INITIAL (sequence 1) must be an EXACT mirror of its base R -
++--   engagement_revision_id, reward_total_kopecks and source_state_hash
++--   all equal R's own - "E1 = R" is the literal §B-6 identity, not merely
++--   "E1 references R";
++--   every CORRECTION's predecessor (named by supersedes_effective_
++--   snapshot_id) must belong to the same engagement AND the same base
++--   registry AND sit at exactly sequence-1 AND share the SAME
++--   engagement_revision_id (this application never re-bases a correction
++--   onto a different revision - there is no legitimate rebase) - so the
++--   chain can never fork, skip, drift its revision, or re-base onto a
++--   different R.
++CREATE TRIGGER engagement_effective_reward_snapshots_relational_consistency_guard
++BEFORE INSERT ON engagement_effective_reward_snapshots
++WHEN NOT (
++  EXISTS (
++    SELECT 1 FROM engagement_reward_registry_snapshot r
++    WHERE r.id = NEW.base_registry_snapshot_id AND r.engagement_id = NEW.engagement_id
++      AND (r.terminal_status = 'COMPLETED' OR NEW.reward_total_kopecks = 0)
++      AND (
++        NEW.supersedes_effective_snapshot_id IS NOT NULL
++        OR (r.engagement_revision_id = NEW.engagement_revision_id AND r.reward_total_kopecks = NEW.reward_total_kopecks AND r.source_state_hash = NEW.source_state_hash)
++      )
++  )
++  AND EXISTS (SELECT 1 FROM engagement_revisions rev WHERE rev.id = NEW.engagement_revision_id AND rev.engagement_id = NEW.engagement_id)
++  AND (
++    NEW.supersedes_effective_snapshot_id IS NULL
++    OR EXISTS (
++      SELECT 1 FROM engagement_effective_reward_snapshots prev
++      WHERE prev.id = NEW.supersedes_effective_snapshot_id
++        AND prev.engagement_id = NEW.engagement_id
++        AND prev.base_registry_snapshot_id = NEW.base_registry_snapshot_id
++        AND prev.sequence = NEW.sequence - 1
++        AND prev.engagement_revision_id = NEW.engagement_revision_id
++    )
++  )
++)
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_EFFECTIVE_REWARD_SNAPSHOT_RELATIONAL_INCONSISTENT'); END;
++CREATE TRIGGER engagement_effective_reward_snapshots_immutable_guard
++BEFORE UPDATE ON engagement_effective_reward_snapshots
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_EFFECTIVE_REWARD_SNAPSHOT_IMMUTABLE'); END;
++CREATE TRIGGER engagement_effective_reward_snapshots_delete_guard
++BEFORE DELETE ON engagement_effective_reward_snapshots
++BEGIN SELECT RAISE(ABORT, 'ENGAGEMENT_EFFECTIVE_REWARD_SNAPSHOT_IMMUTABLE'); END;

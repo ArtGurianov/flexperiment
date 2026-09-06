@@ -1,0 +1,12 @@
+diff --git old/apps/admin/components/ui/Shell.tsx new/apps/admin/components/ui/Shell.tsx
+index 0e0a266..b8f7e0f 100644
+--- old/apps/admin/components/ui/Shell.tsx
++++ new/apps/admin/components/ui/Shell.tsx
+@@ -14,6 +14,7 @@ const nav: { href: string; page: Page; label: string; index: string }[] = [
+   { href: "/audit/", page: "audit", label: "Аудит", index: "09" },
+   { href: "/agents/", page: "agents", label: "Агенты", index: "10" },
+   { href: "/promo-codes/", page: "promo-codes", label: "Промокоды", index: "11" },
++  { href: "/agent-referrals/", page: "agent-referrals", label: "Agent Referrals", index: "12" },
+ ];
+ 
+ export function Shell({ page, children, onLogout }: { page: Page; children: ReactNode; onLogout: () => void }) {

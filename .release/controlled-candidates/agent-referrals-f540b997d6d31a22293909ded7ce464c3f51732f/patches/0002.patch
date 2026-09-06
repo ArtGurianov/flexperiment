@@ -1,0 +1,11 @@
+diff --git new/apps/admin/app/partner/agreement/page.tsx new/apps/admin/app/partner/agreement/page.tsx
+new file mode 100644
+index 0000000..98bcd07
+--- /dev/null
++++ new/apps/admin/app/partner/agreement/page.tsx
+@@ -0,0 +1,5 @@
++import { PartnerApp } from "../../../components/partner/PartnerApp";
++
++export default function PartnerAgreementPage() {
++  return <PartnerApp page="agreement" />;
++}

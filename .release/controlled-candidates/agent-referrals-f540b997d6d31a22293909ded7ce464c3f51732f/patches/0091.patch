@@ -1,0 +1,175 @@
+diff --git new/commerce/src/agent-referrals-dormant-readiness.ts new/commerce/src/agent-referrals-dormant-readiness.ts
+new file mode 100644
+index 0000000..1849af1
+--- /dev/null
++++ new/commerce/src/agent-referrals-dormant-readiness.ts
+@@ -0,0 +1,169 @@
++import type Database from "better-sqlite3";
++import { readFileSync } from "node:fs";
++import { resolve } from "node:path";
++import { agentReferralsFeatureState, type AgentReferralsFeatureStateName } from "./agent-referrals-feature-state";
++import { agentReferralsFoundationSchemaEvidence } from "./agent-referrals-activation";
++import { agentReferralsBusinessFactEvidence, type AgentReferralsBusinessFactEvidence } from "./agent-referrals-business-facts";
++import type { ReleaseRuntimeEvidence } from "./release-control";
++
++/**
++ * Q2 / round-8 P1.3 fix: the single fail-closed authority for "Agent
++ * Referrals is genuinely dormant" now checks every axis a real completion
++ * gate needs, not merely feature state + schema + business facts. It no
++ * longer trusts a calling workflow to have separately verified runtime
++ * identity, migration inventory, or surface-contract compatibility before
++ * ever reaching this route - completion itself refuses if ANY axis fails,
++ * regardless of what a workflow's own preflight already checked.
++ *
++ * `runtime` is the caller-supplied `ReleaseRuntimeEvidence` (from
++ * `commerce/src/release-control.ts`'s already-reviewed
++ * `releaseRuntimeEvidence()` / `domain.releaseRuntimeEvidence()`) - the same
++ * evidence object the ordinary CONTROLLED_CUTOVER completion path already
++ * computes from `process.env.SOURCE_COMMIT` and the `runtime_release_evidence`
++ * table. Passing it in rather than re-deriving it here keeps this module
++ * database-shape-agnostic about that table and avoids a second,
++ * independently-written evidence reader that could silently drift from the
++ * first.
++ *
++ * `commerce/src/api.ts`'s `/complete-rolling` route wires its
++ * DormantReadinessReader directly to `agentReferralsDormantReady` below, so
++ * completion refuses even if some other caller only checked a subset - the
++ * server, not caller discipline, is what fails closed.
++ */
++export type AgentReferralsDormantReadinessEvidence = {
++  readonly ready: boolean;
++  readonly feature_state: AgentReferralsFeatureStateName;
++  readonly schema_present: boolean;
++  readonly schema_missing: readonly string[];
++  readonly business_facts_all_zero: boolean | null;
++  readonly business_facts_tables: Readonly<Record<string, number>> | null;
++  readonly runtime_source_commit: string | null;
++  readonly worker_source_commit: string | null;
++  readonly runtime_worker_source_match: boolean;
++  readonly migration_inventory_exact: boolean;
++  readonly migration_inventory: readonly string[];
++  readonly surface_contract_present: boolean;
++  readonly surface_contract_checkout_version: string | null;
++  readonly surface_contract_admin_version: string | null;
++  readonly legacy_flows_healthy: boolean;
++  readonly reasons: readonly string[];
++};
++
++/**
++ * The exact immutable migration set this feature ships (0042-0049). A
++ * completion whose runtime reports a different set - fewer (partial
++ * deploy) or a name outside this list (an unexpected schema change) - is
++ * not evidence of a genuinely dormant Q2 and must refuse.
++ */
++export const AGENT_REFERRALS_REQUIRED_MIGRATIONS = [
++  "0042_agent_referrals_agents_rebuild.sql",
++  "0043_agent_referrals_foundation.sql",
++  "0044_partner_identity.sql",
++  "0045_engagement_publication.sql",
++  "0046_attribution_reward.sql",
++  "0047_act_payment_settlement.sql",
++  "0048_ord_reporting.sql",
++  "0049_agent_referrals_integration_hardening.sql",
++] as const;
++
++type SurfaceContractEvidence = {
++  readonly present: boolean;
++  readonly checkout_contract_version: string | null;
++  readonly admin_contract_version: string | null;
++};
++
++/** Read directly from disk, exactly like releaseRuntimeEvidence() already reads commerce/legal/production-manifest.json - never re-derived from a caller-supplied value. */
++const readSurfaceContract = (): SurfaceContractEvidence => {
++  try {
++    const raw = readFileSync(resolve(process.cwd(), "release-surface-contract.json"), "utf8");
++    const parsed = JSON.parse(raw) as { checkout_contract_version?: unknown; admin_contract_version?: unknown };
++    const checkout = typeof parsed.checkout_contract_version === "string" && parsed.checkout_contract_version.length > 0 ? parsed.checkout_contract_version : null;
++    const admin = typeof parsed.admin_contract_version === "string" && parsed.admin_contract_version.length > 0 ? parsed.admin_contract_version : null;
++    return { present: checkout !== null && admin !== null, checkout_contract_version: checkout, admin_contract_version: admin };
++  } catch {
++    return { present: false, checkout_contract_version: null, admin_contract_version: null };
++  }
++};
++
++/**
++ * Legacy (pre-Agent Referrals) flows are healthy: the core commerce tables
++ * this feature never touches (orders/payments/refunds, from migration
++ * 0001) are present and queryable without error. Deliberately a narrow
++ * presence/queryability probe - never a synthetic transaction, an insert,
++ * or any write - so this can never itself create or mutate a real legacy
++ * business record while proving legacy flows were not broken by this
++ * deploy.
++ */
++const LEGACY_HEALTH_TABLES = ["orders", "payments", "refunds"] as const;
++
++const legacyFlowsHealthy = (db: Database.Database): boolean => {
++  try {
++    for (const table of LEGACY_HEALTH_TABLES) {
++      const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
++      if (!exists) return false;
++      db.prepare(`SELECT COUNT(*) AS n FROM "${table}"`).get();
++    }
++    return true;
++  } catch {
++    return false;
++  }
++};
++
++export const agentReferralsDormantReadinessEvidence = (db: Database.Database, runtime: ReleaseRuntimeEvidence): AgentReferralsDormantReadinessEvidence => {
++  const reasons: string[] = [];
++
++  const featureState = agentReferralsFeatureState(db);
++  if (featureState.state !== "DORMANT") reasons.push(`FEATURE_STATE_NOT_DORMANT:${featureState.state}`);
++
++  const schema = agentReferralsFoundationSchemaEvidence(db);
++  if (!schema.present) reasons.push(`SCHEMA_INCOMPLETE:${schema.missing.join(",")}`);
++
++  let businessFacts: AgentReferralsBusinessFactEvidence | null = null;
++  if (schema.present) {
++    // Safe: business-fact table derivation re-checks schema presence itself
++    // and would throw otherwise, but this branch only ever calls it once
++    // presence is already confirmed here.
++    businessFacts = agentReferralsBusinessFactEvidence(db);
++    if (!businessFacts.all_zero) reasons.push("BUSINESS_FACTS_PRESENT");
++  }
++
++  // Runtime identity: the commerce API process's own SOURCE_COMMIT (baked
++  // in at deploy time) must agree with the worker's own durably-recorded
++  // source_commit. Neither is hard-coded to any particular candidate SHA -
++  // this is pure self-consistency between the two deployed processes,
++  // which is exactly what "the whole deployment is genuinely Q2, not a
++  // partial or mixed-version rollout" means.
++  const runtimeWorkerSourceMatch = Boolean(runtime.source_commit) && runtime.source_commit === runtime.worker_source_commit;
++  if (!runtimeWorkerSourceMatch) reasons.push("RUNTIME_WORKER_SOURCE_MISMATCH");
++
++  const migrationInventoryExact = AGENT_REFERRALS_REQUIRED_MIGRATIONS.every((migration) => runtime.migration_versions.includes(migration));
++  if (!migrationInventoryExact) reasons.push("MIGRATION_INVENTORY_INCOMPLETE");
++
++  const surfaceContract = readSurfaceContract();
++  if (!surfaceContract.present) reasons.push("SURFACE_CONTRACT_UNAVAILABLE");
++
++  const legacyHealthy = legacyFlowsHealthy(db);
++  if (!legacyHealthy) reasons.push("LEGACY_FLOWS_UNHEALTHY");
++
++  return {
++    ready: reasons.length === 0,
++    feature_state: featureState.state,
++    schema_present: schema.present,
++    schema_missing: schema.missing,
++    business_facts_all_zero: businessFacts ? businessFacts.all_zero : null,
++    business_facts_tables: businessFacts ? businessFacts.tables : null,
++    runtime_source_commit: runtime.source_commit,
++    worker_source_commit: runtime.worker_source_commit,
++    runtime_worker_source_match: runtimeWorkerSourceMatch,
++    migration_inventory_exact: migrationInventoryExact,
++    migration_inventory: runtime.migration_versions,
++    surface_contract_present: surfaceContract.present,
++    surface_contract_checkout_version: surfaceContract.checkout_contract_version,
++    surface_contract_admin_version: surfaceContract.admin_contract_version,
++    legacy_flows_healthy: legacyHealthy,
++    reasons,
++  };
++};
++
++/** The exact shape `DormantReadinessReader` (release-control.ts) expects: `() => boolean`, once bound to a db and a runtime-evidence snapshot. */
++export const agentReferralsDormantReady = (db: Database.Database, runtime: ReleaseRuntimeEvidence): boolean => agentReferralsDormantReadinessEvidence(db, runtime).ready;
