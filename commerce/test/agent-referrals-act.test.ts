@@ -6,7 +6,7 @@ import { mintSettlementStepUpGrant } from "../src/agent-referrals-settlement-ste
 import { correctPartnerRewardWithSettlement } from "../src/agent-referrals-settlement";
 import { correctEngagementEffectiveRewardSnapshot } from "../src/agent-referrals-reward-registry";
 import {
-  fresh, admin, readyPartner, seedOccurrence, nearTermTerms, offerAcceptActivate, purchaseAndPay, finalizedSettlement,
+  FAR_FUTURE, fresh, admin, readyPartner, seedOccurrence, nearTermTerms, offerAcceptActivate, purchaseAndPay, finalizedSettlement,
 } from "./support/agent-referrals-settlement-fixtures";
 
 const open: Database.Database[] = [];
@@ -116,7 +116,11 @@ describe("act lifecycle: ACT_PREPARED -> ACT_PRESENTED -> ACT_ACCEPTED | DOCUMEN
 
     // A second engagement for the same partner produces act2.
     const occ2 = seedOccurrence(db, p1.cityId, 50_000);
-    const engagement2 = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ2, nearTermTerms(1000, "PERCENT", 5000));
+    const engagement2 = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ2, {
+      ...nearTermTerms(1000, "PERCENT", 5000),
+      // This scenario creates a second act; it does not test the expiry path.
+      publication_end_at: FAR_FUTURE,
+    });
     const code2 = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
     purchaseAndPay(db, domain, occ2, code2.code, "act2@example.test", "idem-act2-0000001");
     const settlement2 = finalizedSettlement(db, domain, occ2, engagement2);
