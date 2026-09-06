@@ -20,7 +20,7 @@ import {
  */
 const B2_SHA = "f540b997d6d31a22293909ded7ce464c3f51732f";
 const SOURCE_MAIN_SHA = "af019452a60b6e968e326eb4684641c5d33cfa58";
-const TARGET_Q2 = "a264ee68f597e7a40b6fe4b05359d99365be9149";
+const TARGET_Q2 = "2dc1a55a070a7e9e9ebcd52f46dff8d171da223e";
 const CERTIFICATE_PATH = `.release/controlled-candidates/agent-referrals-${B2_SHA}/certificate.json`;
 const MIGRATIONS = [
   "0042_agent_referrals_agents_rebuild.sql",

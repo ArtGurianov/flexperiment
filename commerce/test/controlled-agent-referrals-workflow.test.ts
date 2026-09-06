@@ -117,7 +117,7 @@ const ASSERTIONS: ReadonlyArray<{ readonly name: string; readonly pattern: RegEx
     removeLine: removeLinesMatching(/scripts\/controlled-coolify-deploy\.sh "\$TARGET_SHA"/),
   },
   {
-    name: "DORMANT proof (expanded predicate)",
+    name: "DORMANT proof (expanded predicate), post-deploy",
     pattern: /agent-referrals\/dormant-readiness" > dormant-readiness-after\.json[\s\S]*?jq -e '\.ready == true' dormant-readiness-after\.json/,
     removeLine: removeLinesMatching(/jq -e '\.ready == true' dormant-readiness-after\.json/),
   },
@@ -125,6 +125,16 @@ const ASSERTIONS: ReadonlyArray<{ readonly name: string; readonly pattern: RegEx
     name: "completeRolling",
     pattern: /release-control\/complete-rolling" > completed\.json/,
     removeLine: removeLinesMatching(/release-control\/complete-rolling" > completed\.json/),
+  },
+  {
+    name: "terminal completion re-proves the FULL predicate (.ready == true), not a single state bit",
+    pattern: /agent-referrals\/dormant-readiness" > dormant-readiness-terminal\.json[\s\S]*?jq -e '\.ready == true' dormant-readiness-terminal\.json[\s\S]*?AGENT_REFERRALS_RELEASE_NOT_READY_AT_TERMINAL_COMPLETION/,
+    removeLine: removeLinesMatching(/AGENT_REFERRALS_RELEASE_NOT_READY_AT_TERMINAL_COMPLETION/),
+  },
+  {
+    name: "already-complete replay re-proves the FULL predicate (.ready == true), not a single state bit",
+    pattern: /agent-referrals\/dormant-readiness" > dormant-readiness-terminal\.json[\s\S]*?jq -e '\.ready == true' dormant-readiness-terminal\.json[\s\S]*?AGENT_REFERRALS_RELEASE_NOT_READY_AT_TERMINAL_REPLAY/,
+    removeLine: removeLinesMatching(/AGENT_REFERRALS_RELEASE_NOT_READY_AT_TERMINAL_REPLAY/),
   },
 ];
 
@@ -214,12 +224,40 @@ describe("controlled-agent-referrals.yml: rejects obvious weakening patterns", (
     for (const match of invocations) expect(match[1]).toBeTruthy();
   });
 
-  it("never activates Agent Referrals - DORMANT/ready is asserted at every checkpoint and is the only feature-state equality this workflow ever asserts", () => {
-    const stateAssertions = [...REAL_SOURCE.matchAll(/\.(?:feature_state|state) == "([A-Z]+)"/g)].map((m) => m[1]);
-    expect(stateAssertions.length).toBeGreaterThanOrEqual(2);
+  it("never activates Agent Referrals - DORMANT/ready is asserted at every checkpoint and is the only feature-state equality this workflow's real run steps ever assert", () => {
+    // Round-9 fix: every terminal check now re-proves the FULL predicate
+    // (.ready == true), never a single state bit such as
+    // .feature_state == "DORMANT" alone - so real run steps assert .ready,
+    // and any .feature_state/.state text left over is prose explaining the
+    // fix, not an executed check. Strip comment lines before counting real
+    // assertions, exactly like the "no pause" check above only excuses
+    // prose mentions, never a real invocation.
+    const runLines = REAL_SOURCE.split("\n").filter((line) => !/^\s*#/.test(line));
+    const executedSource = runLines.join("\n");
+    const stateAssertions = [...executedSource.matchAll(/\.(?:feature_state|state) == "([A-Z]+)"/g)].map((m) => m[1]);
     for (const state of stateAssertions) expect(state).toBe("DORMANT");
-    const readyAssertions = [...REAL_SOURCE.matchAll(/\.ready == (true|false)/g)].map((m) => m[1]);
-    expect(readyAssertions.length).toBeGreaterThanOrEqual(2);
+    const readyAssertions = [...executedSource.matchAll(/\.ready == (true|false)/g)].map((m) => m[1]);
+    expect(readyAssertions.length).toBeGreaterThanOrEqual(3);
     for (const ready of readyAssertions) expect(ready).toBe("true");
+  });
+
+  it("round-9 P1.1: no pre-CAS call to the Q2-only dormant-readiness route against B2 - every call to it is a POST carrying the exact pinned release.json, and none is a bare GET", () => {
+    const routeCalls = [...REAL_SOURCE.matchAll(/^.*agent-referrals\/dormant-readiness".*$/gm)];
+    expect(routeCalls.length).toBeGreaterThanOrEqual(3);
+    for (const [line] of routeCalls) {
+      expect(line).toContain("-X POST --data-binary @release.json");
+    }
+    // No step gated on ACQUIRE/CONTINUE_BEFORE_CAS (i.e. any step that can
+    // run while production-deploy is still B2, before Q2 has ever been
+    // deployed) may call this route at all - it 404s on B2. The terminal
+    // read-only replay step legitimately calls it, but only under
+    // RELEASE_ALREADY_COMPLETE, where Q2 is already known to have fully
+    // deployed in a prior run - a different, later-file-order-independent
+    // condition, so this check is scoped per-step, not by file position.
+    const steps = REAL_SOURCE.split(/\n(?=      - name:)/);
+    for (const step of steps) {
+      const isPreCasGated = /if:\s*env\.RECONCILE_ACTION == 'ACQUIRE' \|\| env\.RECONCILE_ACTION == 'CONTINUE_BEFORE_CAS'/.test(step);
+      if (isPreCasGated) expect(step).not.toContain("agent-referrals/dormant-readiness");
+    }
   });
 });

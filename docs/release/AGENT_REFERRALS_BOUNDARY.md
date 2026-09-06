@@ -133,9 +133,19 @@ committed to protected `main` by this PR. Patches live alongside it under
 ```text
 BASE (B2)        f540b997d6d31a22293909ded7ce464c3f51732f
 SOURCE_MAIN_SHA  af019452a60b6e968e326eb4684641c5d33cfa58
-Q2               a264ee68f597e7a40b6fe4b05359d99365be9149
-Q2 tree          3a81d4c75490ed19d037d27276a3748ce14957c7
+Q2               2dc1a55a070a7e9e9ebcd52f46dff8d171da223e
+Q2 tree          a446ded261c7b970ebed5723863307e35c6d1f1f
 ```
+
+Round-9 fix: `Q2`'s identity above supersedes an earlier materialization
+(`a264ee68f597e7a40b6fe4b05359d99365be9149`, tree
+`3a81d4c75490ed19d037d27276a3748ce14957c7`) that shipped a pre-CAS
+boundary check calling a Q2-only route against `B2` (would 404 on a real
+run) and a completion predicate that never compared runtime/worker evidence
+against the pinned `expected` request - only against each other. Only the
+`commerce/src/api.ts` and `commerce/src/agent-referrals-dormant-readiness.ts`
+patches (paths `0090`/`0091`) changed; the certified path list is otherwise
+identical (still 91 paths, still `Q2^ == B2`).
 
 89 of 91 certified paths are byte-identical reuses of the earlier `Q`
 materialization's own patches: their base content is unchanged between `P`
@@ -163,33 +173,62 @@ test independently rebuilds `Q2`, compares `BASE..Q2` with that complete
 manifest, and proves every migration blob equals the protected-main source
 blob.
 
-## DORMANT readiness (expanded)
+## DORMANT readiness (expanded, frozen against the pinned `expected`)
 
 `commerce/src/agent-referrals-dormant-readiness.ts` is the single
 authoritative, fail-closed predicate `/complete-rolling` and the dedicated
-`GET .../agent-referrals/dormant-readiness` evidence route both use. Beyond
-the original three checks (feature state, full schema present, zero
-business facts across every Agent Referrals table), it now independently
-proves:
+`POST .../agent-referrals/dormant-readiness` evidence route both use - the
+route is a POST, not a GET, because it now requires the exact same
+`completeRollingSchema`-shaped body (`release_id`/`mode`/`expected`) that
+`/complete-rolling` itself takes, and reports on that pinned `expected`
+rather than on ambient state alone.
 
-- **runtime/worker source identity**: the commerce API process's own
-  `SOURCE_COMMIT` (baked in at deploy time, via
-  `commerce/src/release-control.ts`'s already-reviewed
-  `releaseRuntimeEvidence()`) must agree with the worker's own durably-
-  recorded `source_commit` - self-consistency between the two deployed
-  processes, never a hard-coded target SHA;
-- **exact migration inventory**: all of `0042`-`0049` present in the
-  runtime's own applied-migration set;
-- **release-surface contract presence**: `release-surface-contract.json` is
-  readable and carries both `checkout_contract_version` and
-  `admin_contract_version`;
-- **legacy flow health**: the core, pre-existing commerce tables this
-  feature never touches (`orders`, `payments`, `refunds`) are present and
-  queryable - a narrow presence/queryability probe, never a synthetic
-  transaction or write.
+Round-9 fix: the previous version only compared the runtime's own evidence
+against the worker's own evidence - self-consistency between the two
+deployed processes, never against what was actually pinned at acquire time.
+Two processes could silently agree with each other while both disagreeing
+with the operator's intended target, and completion would still succeed.
+Every axis below is now checked against the request's own `expected` object,
+independently reported in `reasons`, and independently gates `ready`:
+
+- **feature state == DORMANT** and **full schema present**;
+- **zero business facts** across every Agent Referrals table;
+- **runtime source == `expected.source_commit`** and **worker source ==
+  `expected.source_commit`** - checked separately, and both against the
+  pinned target, never merely against each other;
+- **exact migration inventory**: the runtime's own applied-migration set,
+  canonicalized via `commerce/src/release-expectation.ts`'s
+  `migrationInventoryExpectation()` (the same single source of truth the
+  controller workflow and the request DTO already share), must equal
+  `expected.migration` exactly - an extra, unexpected migration fails this
+  exactly like a missing one does, never a subset check;
+- **legal expectation match**: `expected.legal_version`,
+  `expected.legal_manifest_sha256`, and all four `expected.legal_hashes`
+  must equal the runtime's own durably-active legal release, and the
+  runtime's on-disk legal copies must match their declared hashes
+  (`current_legal_copies_match`);
+- **release-surface contract match**: `release-surface-contract.json` must
+  be readable and its `checkout_contract_version`/`admin_contract_version`
+  must equal the required, pinned values - not merely be non-empty strings;
+- **legacy flow health, as three distinct axes**: `orders`, `payments`, and
+  `refunds` are each independently present and queryable - a narrow
+  presence/queryability probe, never a synthetic transaction or write, and
+  never one combined check that could pass on two healthy flows while a
+  third is silently broken.
+
+The controller workflow's terminal checks (the post-deploy proof, the
+`completeRolling()` terminal re-verification, and the `RELEASE_ALREADY_COMPLETE`
+replay path) all re-confirm the FULL `.ready == true` predicate against this
+same pinned `expected`, never a single state bit such as
+`.feature_state == "DORMANT"` alone. There is deliberately no pre-CAS call to
+this route: it exists only inside `Q2`, and `production-deploy` is still
+`B2` (which has no such route at all) at every point before CAS - see
+"Phase 10B control plane" below for what the controller proves instead.
 
 See `commerce/test/agent-referrals-q2-dormant-completion-negative-matrix.test.ts`
-for an executing proof that each axis independently blocks `/complete-rolling`.
+for an executing proof that each axis independently blocks `/complete-rolling`,
+including forged-but-self-consistent runtime/worker evidence that disagrees
+with the pinned `expected`.
 
 ## Phase 10B control plane (dormant)
 
@@ -215,18 +254,24 @@ executes neither.
   production run got wrong - see
   `docs/release/RELEASE_SEMANTICS_BOOTSTRAP.md`). Uses `ROLLING` release
   semantics, never the generic `CONTROLLED_CUTOVER` lane. Before any
-  consequential action it proves: the frozen `BASE` (`B2`) certificate
+  consequential action it proves only facts genuinely available while
+  `production-deploy` is still `B2`: the frozen `BASE` (`B2`) certificate
   reconstructs `Q2`; `Q2` was actually published and promoted to
-  `runtime-candidate`; the required Epoch B predecessor completion record;
-  and the observed `production-deploy` pointer is exactly one of the two
-  sanctioned values (`B2` for a first CAS, `Q2` for a same-release
-  recovery) - anything else fails closed. It then acquires `ROLLING`
-  ownership, CASes `production-deploy` from `B2` to `Q2` with an explicit
-  expected-previous argument, deploys `Q2`, proves exact
-  runtime/worker/migration-schema state, proves the expanded DORMANT
-  readiness above, calls `completeRolling()`, and proves terminal
-  completion. **DORMANT is the terminal state this run leaves the feature
-  in - it never activates Agent Referrals.**
+  `runtime-candidate`; `Q2`'s topology/boundary against `B2`; the required
+  Epoch B predecessor completion record; and the observed
+  `production-deploy` pointer is exactly one of the two sanctioned values
+  (`B2` for a first CAS, `Q2` for a same-release recovery) - anything else
+  fails closed. Round-9 fix: it does **not** call the Q2-only
+  dormant-readiness route at this point - that route does not exist on
+  `B2`, so a real fresh run would 404 before ever acquiring or deploying
+  anything. It then acquires `ROLLING` ownership, CASes
+  `production-deploy` from `B2` to `Q2` with an explicit expected-previous
+  argument, deploys `Q2`, proves exact runtime/worker/migration-schema
+  state, proves the expanded DORMANT readiness above (now genuinely
+  reachable, since `Q2` is running), calls `completeRolling()`, and proves
+  terminal completion by re-confirming the same full predicate. **DORMANT
+  is the terminal state this run leaves the feature in - it never
+  activates Agent Referrals.**
 
 ## Recovery matrix
 

@@ -416,9 +416,9 @@
       "kind": "CREATE",
       "mode": "100644",
       "patch_path": ".release/controlled-candidates/agent-referrals-f540b997d6d31a22293909ded7ce464c3f51732f/patches/0091.patch",
-      "patch_git_blob_sha": "fa07f8e44cfa7efecdbac6496745052d1d101bf8",
-      "patch_sha256": "fb2a2f8e9fe2cc79e23fc00297954a5e972403302e876d0efeb3732c6e92bd7e",
-      "result_blob_sha": "1849af139cf321089ba9f0d43855d06edc3d7dfa"
+      "patch_git_blob_sha": "dc833f1377a0af800762ccb6eab5fc5dd3c20f60",
+      "patch_sha256": "68ff352a9861a6eda6986e40d4e74df0b028c0a6ccea2dd8868873825e3c4dc3",
+      "result_blob_sha": "9bef5c0f444e835482ac3f729532cd6ed35830f6"
     },
     {
       "path": "commerce/src/agent-referrals-engagement-closure.ts",
@@ -741,9 +741,9 @@
       "mode": "100644",
       "base_blob_sha": "557ddfc2e8a87739f208b559d001ebf6669773b3",
       "patch_path": ".release/controlled-candidates/agent-referrals-f540b997d6d31a22293909ded7ce464c3f51732f/patches/0090.patch",
-      "patch_git_blob_sha": "e4eea96c2fe414d9724845c16367e2cb0c933561",
-      "patch_sha256": "001df00ad0deeabb85cc9f8b410a25d9c1c1b1748457ec8c68de3188ab667889",
-      "result_blob_sha": "10c4efc0a1ec166b8a135beb08850d269b093b64"
+      "patch_git_blob_sha": "7a534f427c4e5a0db2a0b5db5e09a1f26d76fa95",
+      "patch_sha256": "27d06f37358c103e33aba603ecd45dd9fe2c648ff092f08df4621ead3a612a0c",
+      "result_blob_sha": "103bc616dcae9c1ce213a23c311e623d6fe1c934"
     },
     {
       "path": "commerce/src/db.ts",
@@ -837,7 +837,7 @@
   ],
   "commit": {
     "parent_sha": "f540b997d6d31a22293909ded7ce464c3f51732f",
-    "tree_sha": "3a81d4c75490ed19d037d27276a3748ce14957c7",
+    "tree_sha": "a446ded261c7b970ebed5723863307e35c6d1f1f",
     "author_name": "Flexperiment Release Control",
     "author_email": "release-control@flexperiment.ru",
     "author_timestamp": 1788739200,
@@ -846,7 +846,7 @@
     "committer_email": "release-control@flexperiment.ru",
     "committer_timestamp": 1788739200,
     "committer_timezone": "+0000",
-    "message": "agent-referrals: Q2 rematerialization from B2 (Q2^ == B2)",
+    "message": "agent-referrals: Q2 rematerialization from B2 (round-9 fix: frozen DORMANT completion authority)",
     "encoding": "none",
     "extra_headers": "none",
     "signed": false

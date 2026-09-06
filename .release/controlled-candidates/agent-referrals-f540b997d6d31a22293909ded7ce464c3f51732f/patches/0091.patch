@@ -1,40 +1,33 @@
 diff --git new/commerce/src/agent-referrals-dormant-readiness.ts new/commerce/src/agent-referrals-dormant-readiness.ts
 new file mode 100644
-index 0000000..1849af1
+index 0000000..9bef5c0
 --- /dev/null
 +++ new/commerce/src/agent-referrals-dormant-readiness.ts
-@@ -0,0 +1,169 @@
+@@ -0,0 +1,194 @@
 +import type Database from "better-sqlite3";
 +import { readFileSync } from "node:fs";
 +import { resolve } from "node:path";
 +import { agentReferralsFeatureState, type AgentReferralsFeatureStateName } from "./agent-referrals-feature-state";
 +import { agentReferralsFoundationSchemaEvidence } from "./agent-referrals-activation";
 +import { agentReferralsBusinessFactEvidence, type AgentReferralsBusinessFactEvidence } from "./agent-referrals-business-facts";
-+import type { ReleaseRuntimeEvidence } from "./release-control";
++import { migrationInventoryExpectation } from "./release-expectation";
++import type { ReleaseExpectations, ReleaseRuntimeEvidence } from "./release-control";
 +
 +/**
-+ * Q2 / round-8 P1.3 fix: the single fail-closed authority for "Agent
-+ * Referrals is genuinely dormant" now checks every axis a real completion
-+ * gate needs, not merely feature state + schema + business facts. It no
-+ * longer trusts a calling workflow to have separately verified runtime
-+ * identity, migration inventory, or surface-contract compatibility before
-+ * ever reaching this route - completion itself refuses if ANY axis fails,
-+ * regardless of what a workflow's own preflight already checked.
++ * Round-9 P1.2 fix: the single authoritative, fail-closed authority for
++ * "Agent Referrals is genuinely dormant AND the exact pinned release
++ * expectations are met" - the full frozen completion contract, not merely a
++ * subset of it. `commerce/src/api.ts`'s `/complete-rolling` route wires its
++ * DormantReadinessReader directly to `agentReferralsDormantReady` below with
++ * the request's own `expected` object, so completion refuses on ANY
++ * mismatch between what actually deployed and what the operator/workflow
++ * pinned at acquire time - never merely on internal self-consistency
++ * (runtime == worker) while both silently disagree with the pinned target.
 + *
-+ * `runtime` is the caller-supplied `ReleaseRuntimeEvidence` (from
-+ * `commerce/src/release-control.ts`'s already-reviewed
-+ * `releaseRuntimeEvidence()` / `domain.releaseRuntimeEvidence()`) - the same
-+ * evidence object the ordinary CONTROLLED_CUTOVER completion path already
-+ * computes from `process.env.SOURCE_COMMIT` and the `runtime_release_evidence`
-+ * table. Passing it in rather than re-deriving it here keeps this module
-+ * database-shape-agnostic about that table and avoids a second,
-+ * independently-written evidence reader that could silently drift from the
-+ * first.
-+ *
-+ * `commerce/src/api.ts`'s `/complete-rolling` route wires its
-+ * DormantReadinessReader directly to `agentReferralsDormantReady` below, so
-+ * completion refuses even if some other caller only checked a subset - the
-+ * server, not caller discipline, is what fails closed.
++ * Every axis is independently reported in `reasons` and independently
++ * gates `ready` - see
++ * commerce/test/agent-referrals-q2-dormant-completion-negative-matrix.test.ts
++ * for an executing proof that each one alone blocks completion.
 + */
 +export type AgentReferralsDormantReadinessEvidence = {
 +  readonly ready: boolean;
@@ -45,32 +38,37 @@ index 0000000..1849af1
 +  readonly business_facts_tables: Readonly<Record<string, number>> | null;
 +  readonly runtime_source_commit: string | null;
 +  readonly worker_source_commit: string | null;
-+  readonly runtime_worker_source_match: boolean;
-+  readonly migration_inventory_exact: boolean;
++  readonly expected_source_commit: string;
++  readonly runtime_source_matches_expected: boolean;
++  readonly worker_source_matches_expected: boolean;
 +  readonly migration_inventory: readonly string[];
++  readonly computed_migration_expectation: string;
++  readonly expected_migration: string;
++  readonly migration_inventory_exact: boolean;
++  readonly legal_expectation_matches: boolean;
 +  readonly surface_contract_present: boolean;
 +  readonly surface_contract_checkout_version: string | null;
 +  readonly surface_contract_admin_version: string | null;
-+  readonly legacy_flows_healthy: boolean;
++  readonly surface_contract_matches_required: boolean;
++  readonly sales_healthy: boolean;
++  readonly payment_healthy: boolean;
++  readonly refund_healthy: boolean;
 +  readonly reasons: readonly string[];
 +};
 +
++/** The exact keys ReleaseExpectations["legal_hashes"] carries - redefined locally (release-control.ts's own `documentIds` is module-private) so a typo here is a compile error, not a silent gap. */
++const DOCUMENT_IDS = ["PUBLIC_OFFER", "PRIVACY_POLICY", "PD_CONSENT", "CHECKOUT_DISCLOSURE"] as const satisfies readonly (keyof ReleaseExpectations["legal_hashes"])[];
++
 +/**
-+ * The exact immutable migration set this feature ships (0042-0049). A
-+ * completion whose runtime reports a different set - fewer (partial
-+ * deploy) or a name outside this list (an unexpected schema change) - is
-+ * not evidence of a genuinely dormant Q2 and must refuse.
++ * The exact release-surface contract versions B2/Q2's own frozen
++ * `release-surface-contract.json` carries - pinned here as the required
++ * value, not merely "some non-empty string present". Neither B2 nor Q2
++ * touches this file (it is not a certified path for either candidate), so
++ * this is a fixed, reviewable constant, not something that needs to track
++ * `main`'s own, separately-evolving copy of the same file.
 + */
-+export const AGENT_REFERRALS_REQUIRED_MIGRATIONS = [
-+  "0042_agent_referrals_agents_rebuild.sql",
-+  "0043_agent_referrals_foundation.sql",
-+  "0044_partner_identity.sql",
-+  "0045_engagement_publication.sql",
-+  "0046_attribution_reward.sql",
-+  "0047_act_payment_settlement.sql",
-+  "0048_ord_reporting.sql",
-+  "0049_agent_referrals_integration_hardening.sql",
-+] as const;
++const REQUIRED_CHECKOUT_CONTRACT_VERSION = "sales-availability-v1";
++const REQUIRED_ADMIN_CONTRACT_VERSION = "sales-availability-v1";
 +
 +type SurfaceContractEvidence = {
 +  readonly present: boolean;
@@ -92,30 +90,28 @@ index 0000000..1849af1
 +};
 +
 +/**
-+ * Legacy (pre-Agent Referrals) flows are healthy: the core commerce tables
-+ * this feature never touches (orders/payments/refunds, from migration
-+ * 0001) are present and queryable without error. Deliberately a narrow
-+ * presence/queryability probe - never a synthetic transaction, an insert,
-+ * or any write - so this can never itself create or mutate a real legacy
-+ * business record while proving legacy flows were not broken by this
-+ * deploy.
++ * Sales/payment/refund health are proven as three DISTINCT axes, never one
++ * combined "legacy flows" bit - each maps to exactly one core, pre-existing
++ * commerce table this feature never touches, and each fails independently
++ * of the others. Deliberately a narrow presence/queryability probe - never
++ * a synthetic transaction, an insert, or any write.
 + */
-+const LEGACY_HEALTH_TABLES = ["orders", "payments", "refunds"] as const;
-+
-+const legacyFlowsHealthy = (db: Database.Database): boolean => {
++const tableHealthy = (db: Database.Database, table: string): boolean => {
 +  try {
-+    for (const table of LEGACY_HEALTH_TABLES) {
-+      const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
-+      if (!exists) return false;
-+      db.prepare(`SELECT COUNT(*) AS n FROM "${table}"`).get();
-+    }
++    const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
++    if (!exists) return false;
++    db.prepare(`SELECT COUNT(*) AS n FROM "${table}"`).get();
 +    return true;
 +  } catch {
 +    return false;
 +  }
 +};
 +
-+export const agentReferralsDormantReadinessEvidence = (db: Database.Database, runtime: ReleaseRuntimeEvidence): AgentReferralsDormantReadinessEvidence => {
++export const agentReferralsDormantReadinessEvidence = (
++  db: Database.Database,
++  runtime: ReleaseRuntimeEvidence,
++  expected: ReleaseExpectations,
++): AgentReferralsDormantReadinessEvidence => {
 +  const reasons: string[] = [];
 +
 +  const featureState = agentReferralsFeatureState(db);
@@ -133,23 +129,43 @@ index 0000000..1849af1
 +    if (!businessFacts.all_zero) reasons.push("BUSINESS_FACTS_PRESENT");
 +  }
 +
-+  // Runtime identity: the commerce API process's own SOURCE_COMMIT (baked
-+  // in at deploy time) must agree with the worker's own durably-recorded
-+  // source_commit. Neither is hard-coded to any particular candidate SHA -
-+  // this is pure self-consistency between the two deployed processes,
-+  // which is exactly what "the whole deployment is genuinely Q2, not a
-+  // partial or mixed-version rollout" means.
-+  const runtimeWorkerSourceMatch = Boolean(runtime.source_commit) && runtime.source_commit === runtime.worker_source_commit;
-+  if (!runtimeWorkerSourceMatch) reasons.push("RUNTIME_WORKER_SOURCE_MISMATCH");
++  // Runtime/worker identity is checked against the PINNED expected source
++  // commit, never merely against each other - two processes silently
++  // agreeing on the WRONG commit must still refuse.
++  const runtimeSourceMatchesExpected = runtime.source_commit === expected.source_commit;
++  if (!runtimeSourceMatchesExpected) reasons.push("RUNTIME_SOURCE_COMMIT_MISMATCH");
++  const workerSourceMatchesExpected = runtime.worker_source_commit === expected.source_commit;
++  if (!workerSourceMatchesExpected) reasons.push("WORKER_SOURCE_COMMIT_MISMATCH");
 +
-+  const migrationInventoryExact = AGENT_REFERRALS_REQUIRED_MIGRATIONS.every((migration) => runtime.migration_versions.includes(migration));
-+  if (!migrationInventoryExact) reasons.push("MIGRATION_INVENTORY_INCOMPLETE");
++  // Exact equality against the canonical inventory expectation - never a
++  // subset check. An extra, unexpected migration changes the computed
++  // digest and must refuse exactly like a missing one does.
++  const computedMigrationExpectation = migrationInventoryExpectation(runtime.migration_versions);
++  const migrationInventoryExact = computedMigrationExpectation === expected.migration;
++  if (!migrationInventoryExact) reasons.push("MIGRATION_INVENTORY_MISMATCH");
++
++  const legalExpectationMatches = Boolean(
++    runtime.legal_version === expected.legal_version
++    && runtime.legal_manifest_sha256 === expected.legal_manifest_sha256
++    && runtime.current_legal_copies_match === true
++    && runtime.legal_hashes
++    && DOCUMENT_IDS.every((id) => runtime.legal_hashes![id] === expected.legal_hashes[id]),
++  );
++  if (!legalExpectationMatches) reasons.push("LEGAL_EXPECTATION_MISMATCH");
 +
 +  const surfaceContract = readSurfaceContract();
 +  if (!surfaceContract.present) reasons.push("SURFACE_CONTRACT_UNAVAILABLE");
++  const surfaceContractMatchesRequired = surfaceContract.present
++    && surfaceContract.checkout_contract_version === REQUIRED_CHECKOUT_CONTRACT_VERSION
++    && surfaceContract.admin_contract_version === REQUIRED_ADMIN_CONTRACT_VERSION;
++  if (surfaceContract.present && !surfaceContractMatchesRequired) reasons.push("SURFACE_CONTRACT_VERSION_MISMATCH");
 +
-+  const legacyHealthy = legacyFlowsHealthy(db);
-+  if (!legacyHealthy) reasons.push("LEGACY_FLOWS_UNHEALTHY");
++  const salesHealthy = tableHealthy(db, "orders");
++  if (!salesHealthy) reasons.push("SALES_UNHEALTHY");
++  const paymentHealthy = tableHealthy(db, "payments");
++  if (!paymentHealthy) reasons.push("PAYMENT_UNHEALTHY");
++  const refundHealthy = tableHealthy(db, "refunds");
++  if (!refundHealthy) reasons.push("REFUND_UNHEALTHY");
 +
 +  return {
 +    ready: reasons.length === 0,
@@ -160,16 +176,25 @@ index 0000000..1849af1
 +    business_facts_tables: businessFacts ? businessFacts.tables : null,
 +    runtime_source_commit: runtime.source_commit,
 +    worker_source_commit: runtime.worker_source_commit,
-+    runtime_worker_source_match: runtimeWorkerSourceMatch,
-+    migration_inventory_exact: migrationInventoryExact,
++    expected_source_commit: expected.source_commit,
++    runtime_source_matches_expected: runtimeSourceMatchesExpected,
++    worker_source_matches_expected: workerSourceMatchesExpected,
 +    migration_inventory: runtime.migration_versions,
++    computed_migration_expectation: computedMigrationExpectation,
++    expected_migration: expected.migration,
++    migration_inventory_exact: migrationInventoryExact,
++    legal_expectation_matches: legalExpectationMatches,
 +    surface_contract_present: surfaceContract.present,
 +    surface_contract_checkout_version: surfaceContract.checkout_contract_version,
 +    surface_contract_admin_version: surfaceContract.admin_contract_version,
-+    legacy_flows_healthy: legacyHealthy,
++    surface_contract_matches_required: surfaceContractMatchesRequired,
++    sales_healthy: salesHealthy,
++    payment_healthy: paymentHealthy,
++    refund_healthy: refundHealthy,
 +    reasons,
 +  };
 +};
 +
-+/** The exact shape `DormantReadinessReader` (release-control.ts) expects: `() => boolean`, once bound to a db and a runtime-evidence snapshot. */
-+export const agentReferralsDormantReady = (db: Database.Database, runtime: ReleaseRuntimeEvidence): boolean => agentReferralsDormantReadinessEvidence(db, runtime).ready;
++/** The exact shape `DormantReadinessReader` (release-control.ts) expects: `() => boolean`, once bound to a db, a runtime-evidence snapshot, and the pinned expected release object. */
++export const agentReferralsDormantReady = (db: Database.Database, runtime: ReleaseRuntimeEvidence, expected: ReleaseExpectations): boolean =>
++  agentReferralsDormantReadinessEvidence(db, runtime, expected).ready;

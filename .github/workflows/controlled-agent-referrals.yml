@@ -29,6 +29,19 @@ name: Controlled Agent Referrals production release (ROLLING, DORMANT)
 #    exact ordering defect that broke the bootstrap's own first production
 #    run (see docs/release/RELEASE_SEMANTICS_BOOTSTRAP.md) is avoided here
 #    from the start.
+#
+# Round-9 fix: the `/v1/internal/release-control/agent-referrals/dormant-
+# readiness` route exists ONLY inside Q2 - current production (B2) has no
+# such route at all. There is therefore no pre-CAS step here that calls it
+# against B2; every fact this controller can truthfully assert before Q2 is
+# actually running (BASE == B2 == current production-deploy, runtime-
+# candidate == Q2 with publication/promotion authority, boundary/topology
+# classification) is proven by dedicated steps above that read only B2-side
+# and ref-side state. The full DORMANT/zero-business-facts proof against
+# Q2's own runtime, and every terminal re-check of it, is a POST carrying
+# the exact pinned `release.json` (release_id/mode/expected) - never a bare
+# GET - and asserts the FULL `.ready == true` predicate, never a single
+# state bit such as `.feature_state == "DORMANT"` alone.
 on:
   workflow_dispatch:
     inputs:
@@ -297,20 +310,31 @@ jobs:
           set -euo pipefail
           jq -e --slurpfile request release.json '.expected == $request[0].expected' completion.json >/dev/null || { echo "AGENT_REFERRALS_RELEASE_COMPLETION_EXPECTATION_MISMATCH" >&2; exit 1; }
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
-          api "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/dormant-readiness" > dormant-readiness-terminal.json
-          jq -e '.feature_state == "DORMANT"' dormant-readiness-terminal.json >/dev/null || { echo "AGENT_REFERRALS_RELEASE_NOT_DORMANT_AT_TERMINAL_REPLAY" >&2; exit 1; }
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/dormant-readiness" > dormant-readiness-terminal.json
+          jq -e '.ready == true' dormant-readiness-terminal.json >/dev/null || { jq -c '.reasons' dormant-readiness-terminal.json >&2; echo "AGENT_REFERRALS_RELEASE_NOT_READY_AT_TERMINAL_REPLAY" >&2; exit 1; }
           echo "## Agent Referrals production release (ROLLING) - already complete" >> "$GITHUB_STEP_SUMMARY"
           echo "- Release id: $INPUT_RELEASE_ID" >> "$GITHUB_STEP_SUMMARY"
           echo "- Deployed Q2: $TARGET_SHA" >> "$GITHUB_STEP_SUMMARY"
           echo "- Terminal read-only replay: PASS" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Prove Agent Referrals is DORMANT and carries zero production business facts before touching anything
-        if: env.RECONCILE_ACTION == 'ACQUIRE' || env.RECONCILE_ACTION == 'CONTINUE_BEFORE_CAS'
-        run: |
-          set -euo pipefail
-          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
-          api "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/dormant-readiness" > dormant-readiness-before.json
-          jq -e '.ready == true' dormant-readiness-before.json >/dev/null || { jq -c '.reasons' dormant-readiness-before.json >&2; echo "AGENT_REFERRALS_RELEASE_NOT_DORMANT_READY_BEFORE" >&2; exit 1; }
+      # Round-9 P1.1 fix: the previous version of this step called the
+      # Q2-only readiness endpoint (GET) against whatever is CURRENTLY
+      # production-deploy before CAS - i.e. against B2 on
+      # ACQUIRE/CONTINUE_BEFORE_CAS. That route only exists inside Q2; B2's
+      # api.ts (unmodified production) has no such route, so a real fresh
+      # run would 404 before ever acquiring or deploying anything. The full
+      # DORMANT/zero-business-facts proof against Q2's own runtime already
+      # runs post-deploy, pre-complete ("Prove Agent Referrals
+      # dormant-readiness (Q2's own runtime, post-deploy)" below) - that is
+      # the only point at which the Q2-only route can be truthfully called.
+      # Everything this step could safely assert on B2 before that point is
+      # already independently proven earlier and unconditionally: BASE ==
+      # B2 == current production-deploy ("Reconfirm production-deploy has
+      # not moved since preflight" below), runtime-candidate == Q2 with
+      # publication/promotion authority ("Prove Q2 was actually published
+      # and promoted to runtime-candidate" above), and boundary/topology
+      # classification ("Assert Q2 topology against the frozen B2 BASE"
+      # above). No separate step is needed to re-assert them.
 
       # --- Acquire (ROLLING never pauses: this workflow never calls
       # /v1/internal/release-control/pause at any point on its normal path). ---
@@ -403,7 +427,7 @@ jobs:
         run: |
           set -euo pipefail
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
-          api "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/dormant-readiness" > dormant-readiness-after.json
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/dormant-readiness" > dormant-readiness-after.json
           jq -e '.ready == true' dormant-readiness-after.json >/dev/null || { jq -c '.reasons' dormant-readiness-after.json >&2; echo "AGENT_REFERRALS_RELEASE_NOT_DORMANT_READY_AFTER_DEPLOY" >&2; exit 1; }
 
       # --- completeRolling(): the only path that clears a ROLLING owner. ---
@@ -423,8 +447,8 @@ jobs:
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$INPUT_RELEASE_ID" > completion.json
           jq -e --slurpfile request release.json '.complete == true and .expected == $request[0].expected' completion.json >/dev/null || { echo "AGENT_REFERRALS_RELEASE_TERMINAL_COMPLETION_NOT_PROVEN" >&2; exit 1; }
-          api "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/dormant-readiness" > dormant-readiness-terminal.json
-          jq -e '.feature_state == "DORMANT"' dormant-readiness-terminal.json >/dev/null || { echo "AGENT_REFERRALS_RELEASE_NOT_DORMANT_AT_TERMINAL_COMPLETION" >&2; exit 1; }
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/dormant-readiness" > dormant-readiness-terminal.json
+          jq -e '.ready == true' dormant-readiness-terminal.json >/dev/null || { jq -c '.reasons' dormant-readiness-terminal.json >&2; echo "AGENT_REFERRALS_RELEASE_NOT_READY_AT_TERMINAL_COMPLETION" >&2; exit 1; }
           {
             echo "## Agent Referrals production release (ROLLING)"
             echo "- Controller SHA: $CONTROLLER_SHA"

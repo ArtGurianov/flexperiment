@@ -24,7 +24,7 @@ import { reconstructControlledCandidateSha, type ControlledCandidateCertificate 
  * needed for the exact same reason.
  */
 const B2_SHA = "f540b997d6d31a22293909ded7ce464c3f51732f";
-const Q2_SHA = "a264ee68f597e7a40b6fe4b05359d99365be9149";
+const Q2_SHA = "2dc1a55a070a7e9e9ebcd52f46dff8d171da223e";
 const CERTIFICATE_PATH = `.release/controlled-candidates/agent-referrals-${B2_SHA}/certificate.json`;
 
 process.env.COMMERCE_SESSION_SECRET ??= "test-session-secret";
@@ -142,9 +142,14 @@ describe("Agent Referrals Q2: real wire-level acceptance contract", () => {
   }, 30_000);
 
   it("no Agent Referrals activation on a fresh deploy - feature state is DORMANT, never ACTIVE", async () => {
+    // Round-9 fix: the route now requires a completeRollingSchema-shaped
+    // POST body (release_id/mode/expected) - a bare GET is refused. This
+    // test only asserts feature_state, so a schema-valid but otherwise
+    // fabricated `expected` is enough; it never expects `.ready == true`.
     const { sqlite, app } = freshApp();
     try {
-      const response = await app.request("http://x/v1/internal/release-control/agent-referrals/dormant-readiness", { headers: releaseControlHeaders });
+      const releaseId = randomUUID();
+      const response = await app.request("http://x/v1/internal/release-control/agent-referrals/dormant-readiness", { method: "POST", headers: releaseControlHeaders, body: JSON.stringify({ release_id: releaseId, mode: "ROLLING", expected: expected() }) });
       expect(response.status).toBe(200);
       const body = await response.json() as { feature_state: string };
       expect(body.feature_state).toBe("DORMANT");
