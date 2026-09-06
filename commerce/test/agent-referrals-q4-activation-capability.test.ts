@@ -34,7 +34,7 @@ type Q4Modules = {
   feature: typeof import("../src/agent-referrals-feature-state");
   activation: { activateAgentReferralsIfReady: (...args: unknown[]) => unknown };
   otp: {
-    UnisenderOtpSender: new (config: { apiKey: string; fromEmail: string; fromName: string; replyToEmail: string }, request: typeof fetch) => { send(input: { recipientEmail: string; code: string; challengeId: string }): Promise<string>; deliveryCapability(): { configured: boolean; provider_id: string | null } };
+    UnisenderOtpSender: new (config: { apiKey: string; fromEmail: string; fromName: string; replyToEmail: string }, request: typeof fetch) => { send(input: { recipientEmail: string; code: string; challengeId: string }): Promise<"ACCEPTED" | "KNOWN_FAILED">; deliveryCapability(): { configured: boolean; provider_id: string | null } };
     issueAndDispatchOtpChallenge(db: unknown, partnerIdentityId: string, sender: { send(input: { recipientEmail: string; code: string; challengeId: string }): Promise<"ACCEPTED" | "KNOWN_FAILED"> }): Promise<{ challenge_id: string }>;
   };
 };
