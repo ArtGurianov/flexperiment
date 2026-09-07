@@ -19,7 +19,10 @@ const runHelper = (commerce: string, frontend: string, production = Q4) => {
   const bin = join(directory, "bin"); const outcomes = join(directory, "outcomes.json"); const curlLog = join(directory, "curl.log");
   mkdirSync(bin); writeFileSync(curlLog, "");
   const git = join(bin, "git"); const curl = join(bin, "curl");
-  writeFileSync(git, `#!/usr/bin/env bash\n[[ "$1 $2 $3" == "ls-remote --exit-code origin" ]] || exit 2\nprintf '%s\\trefs/heads/production-deploy\\n' '${production}'\n`);
+  const gitSource = production === "MOVES_AFTER_COMMERCE"
+    ? `state="$(dirname "$0")/git-call-count"\ncount=0\n[[ -f "$state" ]] && count="$(cat "$state")"\ncount=$((count + 1))\nprintf '%s' "$count" > "$state"\n[[ "$count" -le 2 ]] && sha='${Q4}' || sha='${Q3}'`
+    : `sha='${production}'`;
+  writeFileSync(git, `#!/usr/bin/env bash\n[[ "$1 $2 $3" == "ls-remote --exit-code origin" ]] || exit 2\n${gitSource}\nprintf '%s\\trefs/heads/production-deploy\\n' "$sha"\n`);
   writeFileSync(curl, [
     "#!/usr/bin/env bash", "set -euo pipefail", 'printf "%s\\n" "$*" >> "$CURL_LOG"', 'url="${!#}"',
     `case "$url" in https://commerce.test/hook) value='${commerce}';; https://frontend.test/hook) value='${frontend}';; *) exit 2;; esac`,
@@ -58,6 +61,15 @@ describe("Agent Referrals Q4 stale-surfaces recovery controller", () => {
     expect(precondition).toContain("AGENT_REFERRALS_Q4_STALE_SURFACES_TOPOLOGY_UNEXPECTED");
     expect(precondition).toContain("AGENT_REFERRALS_Q4_STALE_SURFACES_AUTHORITY_MISMATCH");
     expect(precondition).toContain("AGENT_REFERRALS_Q4_STALE_SURFACES_COMPLETION_MISMATCH");
+    expect(precondition).toContain(".runtime as $r | {expected:{source_commit:$source,migration:$migration,legal_version:$r.legal_version,legal_manifest_sha256:$r.legal_manifest_sha256}}");
+    expect(precondition).not.toContain(".expected | {expected:{source_commit,migration,legal_version,legal_manifest_sha256}}");
+  });
+
+  it("keeps full legal hashes out of status projection while retaining them for DORMANT readiness", () => {
+    const prepared = workflow.slice(workflow.indexOf("- name: Prove full exact Q4 DORMANT prepared state"));
+    expect(prepared).toContain("legal_hashes:$r.legal_hashes");
+    expect(prepared).toContain("{expected:(.expected | {source_commit,migration,legal_version,legal_manifest_sha256})}");
+    expect(prepared).toContain("agent-referrals/dormant-readiness");
   });
 
   it("has no generic release authority mutation, admin webhook, terminalization, or activation path", () => {
@@ -96,10 +108,31 @@ describe("Agent Referrals Q4 stale-surfaces recovery controller", () => {
     expect(outcomes).toContain('"service":"frontend","outcome":"ACCEPTED"');
   });
 
+  it("preserves the first consequence evidence if the production pointer moves before the second request", () => {
+    const { result, curlLog, outcomes } = runHelper("202", "202", "MOVES_AFTER_COMMERCE");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("AGENT_REFERRALS_Q4_STALE_SURFACES_PRODUCTION_POINTER_MISMATCH");
+    expect((curlLog.match(/commerce\.test\/hook/g) ?? [])).toHaveLength(1);
+    expect((curlLog.match(/frontend\.test\/hook/g) ?? [])).toHaveLength(0);
+    expect(outcomes).toContain('"service":"commerce","outcome":"ACCEPTED"');
+  });
+
   it("refuses before both webhooks when production-deploy is no longer exact Q4", () => {
     const { result, curlLog } = runHelper("202", "202", Q3);
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("AGENT_REFERRALS_Q4_STALE_SURFACES_PRODUCTION_POINTER_MISMATCH");
     expect(curlLog).toBe("");
+  });
+
+  it("observes before making an UNKNOWN outcome terminally fail closed", () => {
+    const observe = workflow.indexOf("- name: Observe exact Q4 convergence after exact state classification");
+    const unknown = workflow.indexOf("- name: Stop after unknown one-shot recovery consequence");
+    const prepared = workflow.indexOf("- name: Prove full exact Q4 DORMANT prepared state");
+    expect(observe).toBeGreaterThan(-1);
+    expect(unknown).toBeGreaterThan(observe);
+    expect(prepared).toBeGreaterThan(unknown);
+    const unknownStep = workflow.slice(unknown, prepared);
+    expect(unknownStep).toContain('all(.[]; .outcome != "UNKNOWN")');
+    expect(unknownStep).toContain("AGENT_REFERRALS_Q4_STALE_SURFACES_UNKNOWN_OUTCOME_AFTER_OBSERVATION");
   });
 });

@@ -29,6 +29,12 @@ observed_production="$(production_deploy)" || {
 }
 
 outcomes='[]'
+persist_outcomes() {
+  local temporary_outcomes="${COOLIFY_Q4_STALE_SURFACES_OUTCOMES}.tmp"
+  printf '%s\n' "$outcomes" > "$temporary_outcomes"
+  mv "$temporary_outcomes" "$COOLIFY_Q4_STALE_SURFACES_OUTCOMES"
+}
+
 attempt() {
   local service="$1" webhook="$2" http_status="" curl_status=0 outcome
   # Re-read immediately before every consequence; the second independent
@@ -56,8 +62,10 @@ attempt() {
   fi
   outcomes="$(jq -c --arg service "$service" --arg outcome "$outcome" --arg status "$http_status" \
     '. + [{service:$service, outcome:$outcome, http_status:($status | if . == "" then null else . end)}]' <<<"$outcomes")"
+  # Evidence for a completed consequence survives a pointer change that forbids
+  # the next independent request.
+  persist_outcomes
 }
 
 attempt commerce "$COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL"
 attempt frontend "$COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL"
-printf '%s\n' "$outcomes" > "$COOLIFY_Q4_STALE_SURFACES_OUTCOMES"
