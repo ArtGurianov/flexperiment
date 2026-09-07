@@ -55,14 +55,23 @@ describe("Agent Referrals Q5 reconstruction-bound deployment controller", () => 
     expect(workflow).toContain('scripts/set-production-deploy-ref.sh "$TARGET_SHA" "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA"');
   });
 
+  it("derives mandatory readiness inputs and reproves all terminal surfaces", () => {
+    expect(workflow).toContain('git show "$TARGET_SHA:release-surface-contract.json"');
+    for (const value of ["CHECKOUT_CONTRACT_VERSION", "ADMIN_CONTRACT_VERSION", "POLL_ATTEMPTS", "POLL_SECONDS"]) expect(workflow).toContain(value);
+    expect(workflow.indexOf("Materialize exact Q5 surface-contract readiness inputs")).toBeLessThan(workflow.indexOf("controlled-production-readiness.sh"));
+    for (const value of ["terminal-status.json", "terminal-completion.json", "terminal-legal.json", "$PUBLIC_FRONTEND_URL/release.json", "$ADMIN_RELEASE_URL", "$PUBLIC_API_URL/healthz", "$PUBLIC_API_URL/readyz"]) expect(workflow).toContain(value);
+  });
+
   it("keeps same-owner recovery reachable without rereading movable runtime-candidate", () => {
     expect(workflow).toContain("DEPLOYMENT_STATE=OWNED_PRE_CAS");
-    expect(workflow).toContain("DEPLOYMENT_STATE=OWNED_POST_CAS");
+    expect(workflow).toContain("DEPLOYMENT_STATE=OWNED_NEEDS_DEPLOY");
+    expect(workflow).toContain("DEPLOYMENT_STATE=OWNED_CONVERGED");
     const cas = workflow.slice(workflow.indexOf("- name: Rebind same-owner authority"), workflow.indexOf("- name: Deploy exact Q5"));
     expect(cas).not.toContain("runtime-candidate");
     expect(cas).toContain("CONTROLLER_SHA");
-    const deploy = workflow.slice(workflow.indexOf("- name: Deploy exact Q5"), workflow.indexOf("- name: Prove Q5 convergence"));
-    expect(deploy).toContain("env.DEPLOYMENT_STATE == 'FRESH' || env.DEPLOYMENT_STATE == 'OWNED_PRE_CAS'");
-    expect(deploy).not.toContain("OWNED_POST_CAS");
+    const deploy = workflow.slice(workflow.indexOf("- name: Deploy exact Q5"), workflow.indexOf("- name: Prove already-converged Q5"));
+    expect(deploy).toContain("OWNED_NEEDS_DEPLOY");
+    expect(deploy).not.toContain("OWNED_CONVERGED");
+    expect(workflow).toContain('.runtime.source_commit == $target and .runtime.worker_source_commit == $target');
   });
 });

@@ -55,6 +55,8 @@ jobs:
       PUBLIC_FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
       PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
       ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
+      POLL_ATTEMPTS: "30"
+      POLL_SECONDS: "10"
       INITIAL_READINESS_DELAY_SECONDS: "60"
     steps:
       - uses: actions/checkout@v4
@@ -123,10 +125,27 @@ jobs:
           fi
           if jq -e --arg id "$RELEASE_ID" --arg source "$TARGET_SHA" '.owner_release_id == $id and .owner_mode == "CONTROLLED_CUTOVER" and .sales_paused == true and .expected.source_commit == $source' status-before.json >/dev/null; then
             [[ "$production_deploy" == "$BASE_SHA" || "$production_deploy" == "$TARGET_SHA" ]] || exit 1
-            if [[ "$production_deploy" == "$BASE_SHA" ]]; then echo DEPLOYMENT_STATE=OWNED_PRE_CAS >> "$GITHUB_ENV"; else echo DEPLOYMENT_STATE=OWNED_POST_CAS >> "$GITHUB_ENV"; fi
+            if [[ "$production_deploy" == "$BASE_SHA" ]]; then
+              echo DEPLOYMENT_STATE=OWNED_PRE_CAS >> "$GITHUB_ENV"
+            elif jq -e --arg target "$TARGET_SHA" '.runtime.source_commit == $target and .runtime.worker_source_commit == $target' status-before.json >/dev/null; then
+              echo DEPLOYMENT_STATE=OWNED_CONVERGED >> "$GITHUB_ENV"
+            else
+              # A protected pointer is desired source identity, not Coolify
+              # acceptance evidence. The held exact owner permits one retry.
+              echo DEPLOYMENT_STATE=OWNED_NEEDS_DEPLOY >> "$GITHUB_ENV"
+            fi
             exit 0
           fi
           echo AGENT_REFERRALS_Q5_OWNER_STATE_UNEXPECTED >&2; exit 1
+
+      - name: Materialize exact Q5 surface-contract readiness inputs
+        run: |
+          set -euo pipefail
+          git show "$TARGET_SHA:release-surface-contract.json" > q5-release-surface-contract.json
+          checkout_contract_version="$(jq -er '.checkout_contract_version | select(type == "string" and test("^[a-z0-9][a-z0-9.-]{0,63}$"))' q5-release-surface-contract.json)"
+          admin_contract_version="$(jq -er '.admin_contract_version | select(type == "string" and test("^[a-z0-9][a-z0-9.-]{0,63}$"))' q5-release-surface-contract.json)"
+          echo "CHECKOUT_CONTRACT_VERSION=$checkout_contract_version" >> "$GITHUB_ENV"
+          echo "ADMIN_CONTRACT_VERSION=$admin_contract_version" >> "$GITHUB_ENV"
 
       - name: Acquire Q5 owner and pause registrations
         if: env.DEPLOYMENT_STATE == 'FRESH'
@@ -162,8 +181,8 @@ jobs:
           [[ "$(scripts/read-production-deploy-ref.sh)" == "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" || "$(scripts/read-production-deploy-ref.sh)" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q5_PRODUCTION_POINTER_MOVED >&2; exit 1; }
           if [[ "$(scripts/read-production-deploy-ref.sh)" == "$BASE_SHA" ]]; then scripts/set-production-deploy-ref.sh "$TARGET_SHA" "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA"; fi
 
-      - name: Deploy exact Q5 once and prove convergence
-        if: env.DEPLOYMENT_STATE == 'FRESH' || env.DEPLOYMENT_STATE == 'OWNED_PRE_CAS'
+      - name: Deploy exact Q5 for fresh or not-yet-converged same-owner state
+        if: env.DEPLOYMENT_STATE == 'FRESH' || env.DEPLOYMENT_STATE == 'OWNED_PRE_CAS' || env.DEPLOYMENT_STATE == 'OWNED_NEEDS_DEPLOY'
         run: |
           set -euo pipefail
           scripts/controlled-coolify-deploy.sh "$TARGET_SHA"
@@ -172,8 +191,8 @@ jobs:
           (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile --ignore-scripts)
           RUNTIME_ASSERT_DIR="$RUNTIME_ASSERT_DIR" scripts/controlled-production-readiness.sh release.json
 
-      - name: Prove Q5 convergence without retriggering a post-CAS deployment
-        if: env.DEPLOYMENT_STATE == 'OWNED_POST_CAS'
+      - name: Prove already-converged Q5 before guarded reopen
+        if: env.DEPLOYMENT_STATE == 'OWNED_CONVERGED'
         run: |
           set -euo pipefail
           RUNTIME_ASSERT_DIR="$RUNNER_TEMP/q5-runtime"; git worktree add --detach "$RUNTIME_ASSERT_DIR" "$TARGET_SHA"
@@ -189,3 +208,18 @@ jobs:
           jq -e '.sales_paused == false and .owner_release_id == null and .owner_mode == null' reopened.json >/dev/null
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion-after.json
           jq -e --slurpfile release release.json '.complete == true and .expected == $release[0].expected' completion-after.json >/dev/null
+
+      - name: Prove terminal Q5 runtime and all production surfaces
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > terminal-status.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > terminal-completion.json
+          jq -e --arg target "$TARGET_SHA" '.owner_release_id == null and .owner_mode == null and .sales_paused == false and .runtime.source_commit == $target and .runtime.worker_source_commit == $target' terminal-status.json >/dev/null
+          jq -e --slurpfile release release.json '.complete == true and .expected == $release[0].expected' terminal-completion.json >/dev/null
+          curl --fail-with-body --silent --show-error "$PUBLIC_FRONTEND_URL/release.json" | jq -e --arg target "$TARGET_SHA" '.source_commit == $target' >/dev/null
+          curl --fail-with-body --silent --show-error "$ADMIN_RELEASE_URL" | jq -e --arg target "$TARGET_SHA" '.source_commit == $target' >/dev/null
+          curl --fail-with-body --silent --show-error "$PUBLIC_API_URL/v1/public/legal-config" > terminal-legal.json
+          jq -e --slurpfile release release.json '(.version == $release[0].expected.legal_version) and ({PUBLIC_OFFER:.manifest.documents.PUBLIC_OFFER.sha256,PRIVACY_POLICY:.manifest.documents.PRIVACY_POLICY.sha256,PD_CONSENT:.manifest.documents.PD_CONSENT.sha256,CHECKOUT_DISCLOSURE:.manifest.documents.CHECKOUT_DISCLOSURE.sha256} == $release[0].expected.legal_hashes)' terminal-legal.json >/dev/null
+          curl --fail-with-body --silent --show-error "$PUBLIC_API_URL/healthz" | jq -e '.ok' >/dev/null
+          curl --fail-with-body --silent --show-error "$PUBLIC_API_URL/readyz" | jq -e '.ok' >/dev/null
