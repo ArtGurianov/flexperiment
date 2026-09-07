@@ -267,7 +267,7 @@ describe("Q4 activation capability: atomic DORMANT to ACTIVE authority", () => {
     } finally { sqlite.close(); }
   });
 
-  it("has no Q3 bootstrap dependency or executable activation workflow", () => {
+  it("has no Q3 bootstrap dependency; the later controller-only Q6 capability is distinct from Q4 runtime authority", () => {
     expect(git("show", `${Q3}:commerce/src/api.ts`)).not.toContain("/agent-referrals/activate");
     expect(git("show", `${Q3}:commerce/src/agent-referrals-feature-state.ts`)).toContain("deliberately not wired to any HTTP route");
     expect(git("show", `${Q4}:commerce/src/server.ts`)).toContain("otpSenderFromEnvironment");
@@ -277,14 +277,16 @@ describe("Q4 activation capability: atomic DORMANT to ACTIVE authority", () => {
       .map((name) => `.github/workflows/${name}`)
       .filter((path) => !baselineWorkflows.has(path))
       .sort();
-    expect(controllerWorkflowAdditions).not.toContain(".github/workflows/controlled-agent-referrals-activation.yml");
     expect(controllerWorkflowAdditions).toEqual([
       ".github/workflows/controlled-agent-referrals-activation-candidate.yml",
       ".github/workflows/controlled-agent-referrals-activation-reconciliation-candidate.yml",
+      ".github/workflows/controlled-agent-referrals-activation.yml",
       ".github/workflows/controlled-agent-referrals-q4-complete.yml",
       ".github/workflows/controlled-agent-referrals-q4-dormant-deploy.yml",
       ".github/workflows/controlled-agent-referrals-q4-stale-surfaces-recovery.yml",
       ".github/workflows/controlled-agent-referrals-q5-deploy.yml",
+      ".github/workflows/controlled-agent-referrals-q6-candidate.yml",
+      ".github/workflows/controlled-agent-referrals-q6-deploy.yml",
     ]);
   });
 });
