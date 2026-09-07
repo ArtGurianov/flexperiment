@@ -74,4 +74,14 @@ describe("Agent Referrals Q5 reconstruction-bound deployment controller", () => 
     expect(deploy).not.toContain("OWNED_CONVERGED");
     expect(workflow).toContain('.runtime.source_commit == $target and .runtime.worker_source_commit == $target');
   });
+
+  it("binds the full frozen owner expectation at classification and immediately before continuation", () => {
+    const projection = '.expected == ($request[0].expected | del(.legal_hashes))';
+    expect(workflow.match(/\.expected == \(\$request\[0\]\.expected \| del\(\.legal_hashes\)\)/g)).toHaveLength(2);
+    expect(workflow).toContain(projection);
+    const rebind = workflow.slice(workflow.indexOf("- name: Rebind same-owner authority"), workflow.indexOf("- name: Deploy exact Q5"));
+    expect(rebind).toContain('api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-before-consequence.json');
+    expect(rebind).toContain("AGENT_REFERRALS_Q5_HELD_OWNER_CHANGED");
+    expect(rebind.indexOf("status-before-consequence.json")).toBeLessThan(rebind.indexOf("set-production-deploy-ref.sh"));
+  });
 });
