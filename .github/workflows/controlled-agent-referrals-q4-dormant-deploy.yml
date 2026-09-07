@@ -117,6 +117,10 @@ jobs:
           migration="inventory-sha256:$(printf '%s' "$q4_inventory" | shasum -a 256 | awk '{print $1}')"
           jq -e --arg id "$Q4_RELEASE_ID" --arg source "$TARGET_SHA" --arg migration "$migration" '.runtime as $r | {release_id:$id,mode:"ROLLING",expected:{source_commit:$source,migration:$migration,legal_version:$r.legal_version,legal_manifest_sha256:$r.legal_manifest_sha256,legal_hashes:$r.legal_hashes}}' status.json > q4-release.json
           jq -e '.expected.legal_version != null and .expected.legal_manifest_sha256 != null and .expected.legal_hashes != null' q4-release.json >/dev/null || { echo AGENT_REFERRALS_Q4_DORMANT_LEGAL_EVIDENCE_UNAVAILABLE >&2; exit 1; }
+          # The gate/status projection deliberately omits legal_hashes.  The
+          # full q4-release.json remains the request and completion authority;
+          # only status and acquire responses are compared with this projection.
+          jq '{expected: (.expected | {source_commit,migration,legal_version,legal_manifest_sha256})}' q4-release.json > q4-gate-projection.json
           if [[ "$OBSERVED_PRODUCTION_DEPLOY" == "$BASE_SHA" ]]; then
             jq -n --arg id "$Q3_RELEASE_ID" --slurpfile completion q3-completion.json '{release_id:$id,mode:"ROLLING",expected:$completion[0].expected}' > q3-readiness.json
             api -X POST --data-binary @q3-readiness.json "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/dormant-readiness" > q3-readiness-result.json
@@ -135,10 +139,10 @@ jobs:
           if [[ "$OBSERVED_PRODUCTION_DEPLOY" == "$BASE_SHA" ]] && jq -e '.owner_release_id == null and .owner_mode == null and .sales_paused == false' status.json >/dev/null; then
             echo "DEPLOYMENT_STATE=FRESH" >> "$GITHUB_ENV"; exit 0
           fi
-          if [[ "$OBSERVED_PRODUCTION_DEPLOY" == "$BASE_SHA" ]] && jq -e --arg id "$Q4_RELEASE_ID" --slurpfile release q4-release.json '.owner_release_id == $id and .owner_mode == "ROLLING" and .sales_paused == false and .expected == $release[0].expected' status.json >/dev/null; then
+          if [[ "$OBSERVED_PRODUCTION_DEPLOY" == "$BASE_SHA" ]] && jq -e --arg id "$Q4_RELEASE_ID" --slurpfile gate q4-gate-projection.json '.owner_release_id == $id and .owner_mode == "ROLLING" and .sales_paused == false and .expected == $gate[0].expected' status.json >/dev/null; then
             echo "DEPLOYMENT_STATE=OWNED_PRE_CAS" >> "$GITHUB_ENV"; exit 0
           fi
-          if [[ "$OBSERVED_PRODUCTION_DEPLOY" == "$TARGET_SHA" ]] && jq -e --arg id "$Q4_RELEASE_ID" --slurpfile release q4-release.json '.owner_release_id == $id and .owner_mode == "ROLLING" and .sales_paused == false and .expected == $release[0].expected' status.json >/dev/null; then
+          if [[ "$OBSERVED_PRODUCTION_DEPLOY" == "$TARGET_SHA" ]] && jq -e --arg id "$Q4_RELEASE_ID" --slurpfile gate q4-gate-projection.json '.owner_release_id == $id and .owner_mode == "ROLLING" and .sales_paused == false and .expected == $gate[0].expected' status.json >/dev/null; then
             if jq -e --arg q4 "$TARGET_SHA" '.runtime.source_commit == $q4 and .runtime.worker_source_commit == $q4' status.json >/dev/null; then
               api -X POST --data-binary @q4-release.json "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/dormant-readiness" > q4-prepared-readiness.json
               if jq -e '.ready == true' q4-prepared-readiness.json >/dev/null; then echo "DEPLOYMENT_STATE=PREPARED" >> "$GITHUB_ENV"; else echo "DEPLOYMENT_STATE=OWNED_POST_CAS" >> "$GITHUB_ENV"; fi
@@ -165,7 +169,7 @@ jobs:
           set -euo pipefail
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api -X POST --data-binary @q4-release.json "$PUBLIC_API_URL/v1/internal/release-control/acquire" > acquired.json
-          jq -e --arg id "$Q4_RELEASE_ID" --slurpfile release q4-release.json '.owner_release_id == $id and .owner_mode == "ROLLING" and .sales_paused == false and .expected == $release[0].expected' acquired.json >/dev/null || { echo AGENT_REFERRALS_Q4_DORMANT_ACQUIRE_UNEXPECTED_STATE >&2; exit 1; }
+          jq -e --arg id "$Q4_RELEASE_ID" --slurpfile gate q4-gate-projection.json '.owner_release_id == $id and .owner_mode == "ROLLING" and .sales_paused == false and .expected == $gate[0].expected' acquired.json >/dev/null || { echo AGENT_REFERRALS_Q4_DORMANT_ACQUIRE_UNEXPECTED_STATE >&2; exit 1; }
 
       - name: Reconfirm exact Q3 to Q4 CAS authority immediately before pointer transition
         if: env.DEPLOYMENT_STATE == 'FRESH' || env.DEPLOYMENT_STATE == 'OWNED_PRE_CAS'
@@ -175,7 +179,7 @@ jobs:
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > pre-cas-status.json
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$Q4_RELEASE_ID" > pre-cas-completion.json
-          jq -e --arg id "$Q4_RELEASE_ID" --slurpfile release q4-release.json '.owner_release_id == $id and .owner_mode == "ROLLING" and .sales_paused == false and .expected == $release[0].expected' pre-cas-status.json >/dev/null || { echo AGENT_REFERRALS_Q4_DORMANT_CAS_OWNER_MISMATCH >&2; exit 1; }
+          jq -e --arg id "$Q4_RELEASE_ID" --slurpfile gate q4-gate-projection.json '.owner_release_id == $id and .owner_mode == "ROLLING" and .sales_paused == false and .expected == $gate[0].expected' pre-cas-status.json >/dev/null || { echo AGENT_REFERRALS_Q4_DORMANT_CAS_OWNER_MISMATCH >&2; exit 1; }
           jq -e '.complete == false' pre-cas-completion.json >/dev/null || { echo AGENT_REFERRALS_Q4_DORMANT_CAS_COMPLETION_MISMATCH >&2; exit 1; }
 
       - name: Guarded Q3 to Q4 production pointer transition
@@ -190,7 +194,7 @@ jobs:
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           for _ in $(seq 1 30); do
             if ! api "$PUBLIC_API_URL/v1/internal/release-control/status" > converged-status.json; then sleep 10; continue; fi
-            jq -e --arg id "$Q4_RELEASE_ID" --arg q4 "$TARGET_SHA" --slurpfile release q4-release.json '.owner_release_id == $id and .owner_mode == "ROLLING" and .sales_paused == false and .expected == $release[0].expected and .runtime.source_commit == $q4 and .runtime.worker_source_commit == $q4' converged-status.json >/dev/null || { echo AGENT_REFERRALS_Q4_DORMANT_CONVERGENCE_AUTHORITY_MISMATCH >&2; exit 1; }
+            jq -e --arg id "$Q4_RELEASE_ID" --arg q4 "$TARGET_SHA" --slurpfile gate q4-gate-projection.json '.owner_release_id == $id and .owner_mode == "ROLLING" and .sales_paused == false and .expected == $gate[0].expected and .runtime.source_commit == $q4 and .runtime.worker_source_commit == $q4' converged-status.json >/dev/null || { echo AGENT_REFERRALS_Q4_DORMANT_CONVERGENCE_AUTHORITY_MISMATCH >&2; exit 1; }
             if curl --fail --silent "$PUBLIC_API_URL/healthz" | jq -e '.ok' >/dev/null && curl --fail --silent "$PUBLIC_API_URL/readyz" | jq -e '.ok' >/dev/null && curl --fail --silent "$PUBLIC_FRONTEND_URL/release.json" | jq -e --arg q4 "$TARGET_SHA" '.source_commit == $q4' >/dev/null && curl --fail --silent "$ADMIN_RELEASE_URL" | jq -e --arg q4 "$TARGET_SHA" '.source_commit == $q4' >/dev/null; then exit 0; fi
             sleep 10
           done
@@ -202,7 +206,7 @@ jobs:
           set -euo pipefail
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-after-deploy.json
-          jq -e --arg id "$Q4_RELEASE_ID" --arg q4 "$TARGET_SHA" --slurpfile release q4-release.json '.owner_release_id == $id and .owner_mode == "ROLLING" and .sales_paused == false and .expected == $release[0].expected and .runtime.source_commit == $q4 and .runtime.worker_source_commit == $q4' status-after-deploy.json >/dev/null || { echo AGENT_REFERRALS_Q4_DORMANT_POST_DEPLOY_OWNER_MISMATCH >&2; exit 1; }
+          jq -e --arg id "$Q4_RELEASE_ID" --arg q4 "$TARGET_SHA" --slurpfile gate q4-gate-projection.json '.owner_release_id == $id and .owner_mode == "ROLLING" and .sales_paused == false and .expected == $gate[0].expected and .runtime.source_commit == $q4 and .runtime.worker_source_commit == $q4' status-after-deploy.json >/dev/null || { echo AGENT_REFERRALS_Q4_DORMANT_POST_DEPLOY_OWNER_MISMATCH >&2; exit 1; }
           expected_inventory="$(git ls-tree -r --name-only "$TARGET_SHA" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
           runtime_inventory="$(jq -r '.runtime.migration_versions | sort | join("\n")' status-after-deploy.json)"
           [[ "$runtime_inventory" == "$expected_inventory" ]] || { echo AGENT_REFERRALS_Q4_DORMANT_RUNTIME_MIGRATION_INVENTORY_MISMATCH >&2; exit 1; }

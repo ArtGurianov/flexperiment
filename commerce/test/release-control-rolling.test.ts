@@ -89,6 +89,38 @@ describe("HTTP: acquire ROLLING", () => {
       } finally { db.close(); }
     });
   });
+
+  it("projects legal_hashes out of status while preserving the full ACQUIRED expectation for completion", async () => {
+    await withReleaseControlToken(async () => {
+      const { db, app } = appFixture();
+      try {
+        const releaseId = randomUUID();
+        const fullExpected = expected();
+        const release = { release_id: releaseId, mode: "ROLLING", expected: fullExpected } as const;
+        const acquire = await app.request("http://api.flexperiment.ru/v1/internal/release-control/acquire", { method: "POST", headers: releaseControlHeaders, body: JSON.stringify(release) });
+        expect(acquire.status).toBe(200);
+        const acquired = await acquire.json() as { expected: Record<string, unknown> | null };
+        expect(acquired.expected).toEqual({
+          source_commit: fullExpected.source_commit,
+          migration: fullExpected.migration,
+          legal_version: fullExpected.legal_version,
+          legal_manifest_sha256: fullExpected.legal_manifest_sha256,
+        });
+        expect(acquired.expected).not.toHaveProperty("legal_hashes");
+
+        const event = db.prepare("SELECT details_json FROM release_sales_gate_events WHERE release_id = ? AND action = 'ACQUIRED'").get(releaseId) as { details_json: string };
+        expect(JSON.parse(event.details_json)).toEqual({ mode: "ROLLING", expected: fullExpected });
+
+        const legalHashMismatch = {
+          ...fullExpected,
+          legal_hashes: { ...fullExpected.legal_hashes, CHECKOUT_DISCLOSURE: "9".repeat(64) },
+        };
+        const completion = await app.request("http://api.flexperiment.ru/v1/internal/release-control/complete-rolling", { method: "POST", headers: releaseControlHeaders, body: JSON.stringify({ ...release, expected: legalHashMismatch }) });
+        expect(completion.status).toBe(409);
+        expect(await completion.json()).toEqual({ error: { code: "RELEASE_CONTROL_EXPECTATION_MISMATCH" } });
+      } finally { db.close(); }
+    });
+  });
 });
 
 describe("HTTP: POST /v1/internal/release-control/complete-rolling", () => {
