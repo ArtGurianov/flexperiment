@@ -40,7 +40,7 @@ const runObserver = (scenario: "converges" | "wrong-owner") => {
     'url="${!#}"',
     `expected='{"source_commit":"${Q4}","migration":"inventory-sha256:test","legal_version":"2026-09-01.1","legal_manifest_sha256":"${"a".repeat(64)}"}'`,
     `if [[ "$url" == "https://api.test/v1/internal/release-control/status" ]]; then calls="$(cat "$STATUS_CALLS")"; calls=$((calls + 1)); printf "%s" "$calls" > "$STATUS_CALLS"; owner="${Q4_RELEASE}"; [[ "$OBSERVE_SCENARIO" == wrong-owner ]] && owner=other-release; source="${Q3}"; [[ "$calls" -ge 3 ]] && source="${Q4}"; body="{\\"owner_release_id\\":\\"$owner\\",\\"owner_mode\\":\\"ROLLING\\",\\"sales_paused\\":false,\\"expected\\":$expected,\\"runtime\\":{\\"source_commit\\":\\"$source\\",\\"worker_source_commit\\":\\"$source\\"}}"; printf "%s" "$body" > "$output"; printf 200; exit 0; fi`,
-    `if [[ "$url" == "https://api.test/v1/internal/release-control/completion/${Q4_RELEASE}" ]]; then printf '{"complete":false,"expected":%s}' "$expected" > "$output"; printf 200; exit 0; fi`,
+    `if [[ "$url" == "https://api.test/v1/internal/release-control/completion/${Q4_RELEASE}" ]]; then printf '{"complete":false}' > "$output"; printf 200; exit 0; fi`,
     `case "$url" in https://api.test/healthz|https://api.test/readyz) body='{"ok":true}' ;; https://frontend.test/release.json|https://admin.test/release.json) calls="$(cat "$STATUS_CALLS")"; source="${Q3}"; [[ "$calls" -ge 3 ]] && source="${Q4}"; body="{\\"source_commit\\":\\"$source\\"}" ;; *) exit 22 ;; esac`,
     '[[ -n "$output" ]] && { printf "%s" "$body" > "$output"; printf 200; } || printf "%s" "$body"',
     "",
@@ -129,6 +129,7 @@ describe("Agent Referrals Q3 to Q4 DORMANT deployment controller", () => {
     expect(observerSource).toContain('api "$PUBLIC_API_URL/v1/internal/release-control/status"');
     expect(observerSource).toContain('api "$PUBLIC_API_URL/v1/internal/release-control/completion/$Q4_RELEASE_ID"');
     expect(observerSource).toContain("initial-completion.json");
+    expect(observerSource).toContain("initial-status.json > q4-gate-projection.json");
     expect(observerSource).toContain("select(.expected.source_commit == $source and .expected.migration == $migration)");
     for (const forbidden of ["-X POST", "controlled-coolify-deploy.sh", "set-production-deploy-ref.sh", "PRODUCTION_DEPLOY_REF_TOKEN", "runtime-candidate"]) expect(observerSource).not.toContain(forbidden);
   });
