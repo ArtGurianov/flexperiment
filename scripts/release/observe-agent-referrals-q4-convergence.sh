@@ -24,7 +24,7 @@ api "$PUBLIC_API_URL/v1/internal/release-control/status" > initial-status.json
 api "$PUBLIC_API_URL/v1/internal/release-control/completion/$Q4_RELEASE_ID" > initial-completion.json
 jq -e --arg source "$TARGET_SHA" --arg migration "$Q4_MIGRATION" \
   '.expected | {expected:{source_commit, migration, legal_version, legal_manifest_sha256}} | select(.expected.source_commit == $source and .expected.migration == $migration)' \
-  initial-completion.json > q4-gate-projection.json
+  initial-status.json > q4-gate-projection.json
 jq -e '.expected.legal_version != null and .expected.legal_manifest_sha256 != null' q4-gate-projection.json >/dev/null || {
   echo AGENT_REFERRALS_Q4_OBSERVE_LEGAL_PROJECTION_UNAVAILABLE >&2
   exit 1
