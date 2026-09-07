@@ -68,6 +68,16 @@ describe("Agent Referrals Q3 to Q4 DORMANT deployment controller", () => {
     expect(workflow).not.toContain("git checkout $TARGET_SHA");
   });
 
+  it("uses the documented status projection after acquire while retaining full expectation equality for terminal completion", () => {
+    expect(workflow).toContain("q4-gate-projection.json");
+    expect(workflow).toContain("{source_commit,migration,legal_version,legal_manifest_sha256}");
+    expect(workflow).toContain("--slurpfile gate q4-gate-projection.json");
+    expect(workflow).toContain(".expected == $gate[0].expected");
+    expect(workflow).not.toContain(".expected == $release[0].expected' status.json");
+    expect(workflow).not.toContain(".expected == $release[0].expected' acquired.json");
+    expect(workflow).toContain("--slurpfile release q4-release.json '.expected == $release[0].expected' q4-completion.json");
+  });
+
   it("proves Q3 terminal predecessor and full Q4 DORMANT readiness, but never terminalizes or activates", () => {
     expect(workflow).toContain("q3-completion.json");
     expect(workflow).toContain("q2-resolution.json");
