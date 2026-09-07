@@ -1,5 +1,5 @@
 import { createHash, randomUUID, scryptSync } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -11,6 +11,7 @@ const Q3 = "f317c836635bfe3a86735ecda6a050c51d4dc924";
 const Q4 = "e0cf268496660dade2db3fa43b189682d059c25c";
 const OLD_Q2_RELEASE = "agent-referrals-f540b997d6d31a22293909ded7ce464c3f51732f";
 const CERTIFICATE_PATH = `.release/controlled-candidates/agent-referrals-activation-${Q3}/certificate.json`;
+const controllerRoot = process.cwd();
 
 process.env.COMMERCE_SESSION_SECRET ??= "test-session-secret";
 process.env.COMMERCE_ADMIN_PASSWORD_SCRYPT ??= `salt:${scryptSync("correct horse", "salt", 64).toString("base64url")}`;
@@ -81,10 +82,8 @@ describe("Q4 activation capability: atomic DORMANT to ACTIVE authority", () => {
   let root: string;
   let modules: Q4Modules;
   let previousCwd: string;
-  let controllerSha: string;
 
   beforeAll(async () => {
-    controllerSha = git("rev-parse", "HEAD");
     const certificate = JSON.parse(readFileSync(CERTIFICATE_PATH, "utf8")) as ControlledCandidateCertificate;
     const reconstructed = reconstructControlledCandidateSha(certificate, { trusted_patch_source_sha: git("rev-parse", "HEAD") });
     expect(reconstructed).toBe(Q4);
@@ -272,10 +271,16 @@ describe("Q4 activation capability: atomic DORMANT to ACTIVE authority", () => {
     expect(git("show", `${Q3}:commerce/src/api.ts`)).not.toContain("/agent-referrals/activate");
     expect(git("show", `${Q3}:commerce/src/agent-referrals-feature-state.ts`)).toContain("deliberately not wired to any HTTP route");
     expect(git("show", `${Q4}:commerce/src/server.ts`)).toContain("otpSenderFromEnvironment");
-    const controllerDiff = git("diff", "--name-only", "040d8dbdb93af5a33cb5bdd33a1215890796215d", controllerSha);
-    expect(controllerDiff).not.toContain(".github/workflows/controlled-agent-referrals-activation.yml");
-    expect(controllerDiff.split("\n").filter((path) => path.startsWith(".github/workflows/"))).toEqual([
+    const baselineWorkflows = new Set(git("ls-tree", "-r", "--name-only", "040d8dbdb93af5a33cb5bdd33a1215890796215d", ".github/workflows").split("\n").filter(Boolean));
+    const controllerWorkflowAdditions = readdirSync(join(controllerRoot, ".github/workflows"))
+      .filter((name) => name.endsWith(".yml"))
+      .map((name) => `.github/workflows/${name}`)
+      .filter((path) => !baselineWorkflows.has(path))
+      .sort();
+    expect(controllerWorkflowAdditions).not.toContain(".github/workflows/controlled-agent-referrals-activation.yml");
+    expect(controllerWorkflowAdditions).toEqual([
       ".github/workflows/controlled-agent-referrals-activation-candidate.yml",
+      ".github/workflows/controlled-agent-referrals-q4-dormant-deploy.yml",
     ]);
   });
 });
