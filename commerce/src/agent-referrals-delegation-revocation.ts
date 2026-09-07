@@ -1,0 +1,79 @@
+import type Database from "better-sqlite3";
+import { id } from "./crypto";
+import { recordPartnerIdentityEvent } from "./agent-referrals-onboarding";
+import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
+import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
+import { suspendEngagementLifecycle } from "./agent-referrals-engagement";
+import { consumeEngagementStepUpGrantInTransaction } from "./agent-referrals-engagement-step-up";
+import type { AdminPrincipal, PartnerPrincipal } from "./agent-referrals-partner-identity";
+
+/**
+ * Delegation revocation, layered on 0044's ord_reporting_delegations
+ * without editing that migration (see 0045's file header). One
+ * transaction: set revoked_for_new_activity_at (the
+ * ord_reporting_delegation_revocations row itself), preserve every
+ * reporting-tail authority (nothing here touches distribution/reporting
+ * tables), block new publication authority (every later activation check
+ * reads "no revocation row exists" as the effective-delegation test - see
+ * activateEngagement), suspend every currently-ACTIVE engagement for this
+ * partner and revoke its promo authorization, and write review evidence.
+ * The partner's permanent promo is never disabled globally - only the
+ * per-occurrence authorizations engagement suspension revokes.
+ *
+ * DELEGATION_REVOCATION is classified MATURATION_RECOVERY_REPORTING_TAIL
+ * (agent-referrals-suspension-policy.ts, already shipped in PR3) - it
+ * remains permitted under SUSPENDED, blocked only under DORMANT.
+ */
+
+export class DelegationRevocationError extends Error {
+  constructor(readonly code: string, readonly status = 409, detail?: string) {
+    super(detail ? `${code}: ${detail}` : code);
+  }
+}
+
+export type RevokeDelegationResult = { revocation_id: string; suspended_engagement_ids: string[] };
+
+const revokeDelegationInTransaction = (
+  db: Database.Database,
+  delegationId: string,
+  realm: "ADMIN" | "PARTNER",
+  adminId: string | null,
+  reason: string,
+): RevokeDelegationResult => {
+  assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "DELEGATION_REVOCATION");
+
+  const delegation = db.prepare("SELECT id, partner_identity_id FROM ord_reporting_delegations WHERE id = ?").get(delegationId) as { id: string; partner_identity_id: string } | undefined;
+  if (!delegation) throw new DelegationRevocationError("ORD_REPORTING_DELEGATION_NOT_FOUND", 404, delegationId);
+
+  const existing = db.prepare("SELECT id FROM ord_reporting_delegation_revocations WHERE ord_reporting_delegation_id = ?").get(delegationId) as { id: string } | undefined;
+  if (existing) throw new DelegationRevocationError("AGENT_REFERRALS_DELEGATION_ALREADY_REVOKED", 409, delegationId);
+
+  const revocationId = id();
+  db.prepare(`INSERT INTO ord_reporting_delegation_revocations(id, ord_reporting_delegation_id, partner_identity_id, revoked_by_realm, revoked_by_admin_id, reason)
+    VALUES (?, ?, ?, ?, ?, ?)`)
+    .run(revocationId, delegationId, delegation.partner_identity_id, realm, adminId, reason);
+
+  const affected = db.prepare("SELECT id FROM engagements WHERE partner_identity_id = ? AND lifecycle_state = 'ACTIVE'").all(delegation.partner_identity_id) as { id: string }[];
+  for (const row of affected) suspendEngagementLifecycle(db, row.id, `DELEGATION_REVOKED:${reason}`);
+
+  recordPartnerIdentityEvent(db, delegation.partner_identity_id, "DELEGATION_REVOKED", realm, { delegation_id: delegationId, revocation_id: revocationId, reason });
+  return { revocation_id: revocationId, suspended_engagement_ids: affected.map((row) => row.id) };
+};
+
+export const revokeDelegationAsAdmin = (db: Database.Database, admin: AdminPrincipal, delegationId: string, reason: string): RevokeDelegationResult =>
+  db.transaction(() => revokeDelegationInTransaction(db, delegationId, "ADMIN", admin.admin_id, reason)).immediate();
+
+/** Partner self-revocation: material (it terminates the partner's own advertising authority), so it requires a fresh step-up grant, consumed atomically with the revocation. */
+export const revokeDelegationAsPartner = (db: Database.Database, partner: PartnerPrincipal, delegationId: string, stepUpGrantId: string, reason: string): RevokeDelegationResult => {
+  const run = db.transaction((): RevokeDelegationResult => {
+    const delegation = db.prepare("SELECT partner_identity_id FROM ord_reporting_delegations WHERE id = ?").get(delegationId) as { partner_identity_id: string } | undefined;
+    if (!delegation || delegation.partner_identity_id !== partner.partner_identity_id) throw new DelegationRevocationError("ORD_REPORTING_DELEGATION_NOT_FOUND", 404, delegationId);
+    consumeEngagementStepUpGrantInTransaction(db, partner, stepUpGrantId, "DELEGATION_REVOCATION", { delegation_id: delegationId });
+    return revokeDelegationInTransaction(db, delegationId, "PARTNER", null, reason);
+  });
+  return run.immediate();
+};
+
+export const isDelegationEffective = (db: Database.Database, partnerIdentityId: string): boolean =>
+  Boolean(db.prepare(`SELECT 1 FROM ord_reporting_delegations d LEFT JOIN ord_reporting_delegation_revocations r ON r.ord_reporting_delegation_id = d.id
+    WHERE d.partner_identity_id = ? AND r.id IS NULL`).get(partnerIdentityId));

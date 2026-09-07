@@ -1,0 +1,35 @@
+import type { ReactNode } from "react";
+import Link from "next/link";
+import type { PartnerPage } from "../../lib/partner-page";
+
+const nav: { href: string; page: PartnerPage; label: string; index: string }[] = [
+  { href: "/partner", page: "dashboard", label: "Обзор", index: "01" },
+  { href: "/partner/engagements", page: "engagements", label: "Кампании", index: "02" },
+  { href: "/partner/profile", page: "profile", label: "Профиль", index: "03" },
+  { href: "/partner/agreement", page: "agreement", label: "Договор", index: "04" },
+  { href: "/partner/payout", page: "payout", label: "Выплаты", index: "05" },
+];
+
+export function PartnerShell({ page, children, onLogout }: { page: PartnerPage; children: ReactNode; onLogout: () => void }) {
+  return (
+    <div className="shell">
+      <aside className="rail">
+        <Link href="/partner" className="brand"><span>FX</span><strong>PARTNER<br />PORTAL</strong></Link>
+        <nav>
+          {nav.map((item) => (
+            <Link className={item.page === page ? "nav-active" : ""} href={item.href} key={item.page}>
+              <em>{item.index}</em>{item.label}
+            </Link>
+          ))}
+        </nav>
+        <button className="logout" onClick={onLogout}>Выйти из сессии <span>↗</span></button>
+      </aside>
+      <main className="content">
+        <header className="topline">
+          <span>partner.flexperiment.ru</span>
+        </header>
+        {children}
+      </main>
+    </div>
+  );
+}

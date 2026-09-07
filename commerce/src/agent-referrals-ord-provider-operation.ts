@@ -1,0 +1,160 @@
+import type Database from "better-sqlite3";
+import { id } from "./crypto";
+import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
+import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
+import { currentOrdProviderProfile, type OrdProviderProfileKind } from "./agent-referrals-ord-provider-profile";
+import { ordProviderOperationKey } from "./agent-referrals-ord-operation-key";
+
+/**
+ * Provider-operation authority for the four profile kinds (plan Phase 8;
+ * round-2 P0.1 fix): the durable MANUAL fact that Flexperiment actually
+ * submitted/maintains its own counterparty/platform/contract/media
+ * registration with VK ORD - never confused with the immutable CONTENT the
+ * profile revisions describe (agent-referrals-ord-provider-profile.ts).
+ * One operation CHAIN per operation_kind (bounded to the single VK_ORD +
+ * MANUAL provider this plan scopes - no multi-instance abstraction).
+ *
+ * NO PROVIDER NETWORK CALL of any kind is reachable from this module -
+ * every write here is a durable MANUAL recording of a fact an operator
+ * observed by hand.
+ */
+
+export class OrdProviderOperationError extends Error {
+  constructor(readonly code: string, readonly status = 409, detail?: string) {
+    super(detail ? `${code}: ${detail}` : code);
+  }
+}
+
+export type OrdProviderOperationRow = {
+  id: string;
+  operation_kind: OrdProviderProfileKind;
+  revision: number;
+  supersedes_operation_id: string | null;
+  provider_profile_revision_id: string;
+  operation_key: string;
+  local_state: "DRAFT" | "SUBMITTED" | "CONFIRMED";
+  vk_submission_state: "NOT_SUBMITTED" | "SUBMITTED" | "SUBMIT_FAILED";
+  vk_external_id: string | null;
+  erir_code: string | null;
+  erir_evidence_ref: string | null;
+  evidence_ref: string | null;
+  lock_state: "MUTABLE" | "CORRECTION_ONLY" | "EXTERNALLY_LOCKED";
+  correction_reason: string | null;
+  created_by_admin_id: string;
+  created_at: string;
+};
+
+const COLUMNS = `id, operation_kind, revision, supersedes_operation_id, provider_profile_revision_id, operation_key, local_state, vk_submission_state,
+  vk_external_id, erir_code, erir_evidence_ref, evidence_ref, lock_state, correction_reason, created_by_admin_id, created_at`;
+
+/** "Current" is always MAX(revision) for the exact kind. */
+export const currentOrdProviderOperation = (db: Database.Database, kind: OrdProviderProfileKind): OrdProviderOperationRow | null =>
+  (db.prepare(`SELECT ${COLUMNS} FROM ord_provider_operations WHERE operation_kind = ? ORDER BY revision DESC LIMIT 1`)
+    .get(kind) as OrdProviderOperationRow | undefined) ?? null;
+
+export const ordProviderOperationById = (db: Database.Database, operationId: string): OrdProviderOperationRow | null =>
+  (db.prepare(`SELECT ${COLUMNS} FROM ord_provider_operations WHERE id = ?`).get(operationId) as OrdProviderOperationRow | undefined) ?? null;
+
+const gate = (db: Database.Database) => assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "ORD_PROVIDER_OPERATION");
+
+export type OpenOrdProviderOperationResult = { operation: OrdProviderOperationRow; replayed: boolean };
+
+/**
+ * Opens (or returns the existing) DRAFT chain-head for a kind. Idempotent
+ * only while the current revision is still DRAFT (a genuine second open
+ * call after CONFIRMED must go through correctOrdProviderOperation
+ * instead, since a confirmed operation is no longer freely re-openable).
+ */
+export const openOrdProviderOperation = (db: Database.Database, adminId: string, kind: OrdProviderProfileKind): OpenOrdProviderOperationResult => {
+  const run = db.transaction((): OpenOrdProviderOperationResult => {
+    gate(db);
+    const existing = currentOrdProviderOperation(db, kind);
+    if (existing && existing.local_state === "DRAFT") return { operation: existing, replayed: true };
+    const profile = currentOrdProviderProfile(db, kind);
+    if (!profile) throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_PROFILE_MISSING", 409, kind);
+    if (existing && existing.lock_state !== "CORRECTION_ONLY") throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_NOT_CORRECTABLE", 409, existing.id);
+
+    const nextRevision = (existing?.revision ?? 0) + 1;
+    const operationId = id();
+    const operationKey = ordProviderOperationKey({ operation_kind: kind, revision: nextRevision, provider_profile_revision_id: profile.id });
+    db.prepare(`INSERT INTO ord_provider_operations(id, operation_kind, revision, supersedes_operation_id, provider_profile_revision_id, operation_key, correction_reason, created_by_admin_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(operationId, kind, nextRevision, existing?.id ?? null, profile.id, operationKey, existing ? "reopened for correction" : null, adminId);
+    return { operation: currentOrdProviderOperation(db, kind)!, replayed: false };
+  });
+  return run.immediate();
+};
+
+/** Records manual VK submission - the durable fact an operator observed by hand. */
+export const recordOrdProviderOperationSubmitted = (db: Database.Database, operationId: string, vkExternalId: string, evidenceRef: string): OrdProviderOperationRow => {
+  const run = db.transaction((): OrdProviderOperationRow => {
+    gate(db);
+    const operation = ordProviderOperationById(db, operationId);
+    if (!operation) throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_NOT_FOUND", 404, operationId);
+    if (operation.lock_state !== "MUTABLE") throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_NOT_MUTABLE", 409, operationId);
+    db.prepare(`UPDATE ord_provider_operations SET local_state = 'SUBMITTED', vk_submission_state = 'SUBMITTED', vk_external_id = ?, evidence_ref = ?
+      WHERE id = ? AND lock_state = 'MUTABLE'`).run(vkExternalId, evidenceRef, operationId);
+    return ordProviderOperationById(db, operationId)!;
+  });
+  return run.immediate();
+};
+
+/** Confirms the operation and moves it to CORRECTION_ONLY - facts are now frozen; a later error requires a NEW revision via openOrdProviderOperation, never an in-place edit. */
+export const confirmOrdProviderOperation = (db: Database.Database, operationId: string): OrdProviderOperationRow => {
+  const run = db.transaction((): OrdProviderOperationRow => {
+    gate(db);
+    const operation = ordProviderOperationById(db, operationId);
+    if (!operation) throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_NOT_FOUND", 404, operationId);
+    if (operation.local_state !== "SUBMITTED") throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_NOT_SUBMITTED", 409, operationId);
+    db.prepare(`UPDATE ord_provider_operations SET local_state = 'CONFIRMED', lock_state = 'CORRECTION_ONLY' WHERE id = ? AND lock_state = 'MUTABLE'`).run(operationId);
+    return ordProviderOperationById(db, operationId)!;
+  });
+  return run.immediate();
+};
+
+/**
+ * Records the separate Roskomnadzor/ERIR reconciliation code - independent
+ * of submission state, legal any time a real submission is on file (never
+ * on a still-DRAFT operation) and before EXTERNALLY_LOCKED. Requires a
+ * real durable evidence_ref (round-3 P0.4). NULL -> a value is the first
+ * ERIR fact; the SAME (code, evidence) again is an idempotent replay; a
+ * DIFFERENT code is a real conflict - the observed-id guard makes any raw
+ * historical rewrite structurally impossible, so a genuine correction must
+ * go through openOrdProviderOperation (a new revision) instead.
+ */
+export const recordOrdProviderOperationErirReconciliation = (db: Database.Database, operationId: string, erirCode: string, evidenceRef: string): OrdProviderOperationRow => {
+  const run = db.transaction((): OrdProviderOperationRow => {
+    gate(db);
+    const operation = ordProviderOperationById(db, operationId);
+    if (!operation) throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_NOT_FOUND", 404, operationId);
+    if (operation.lock_state === "EXTERNALLY_LOCKED") throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_LOCKED", 409, operationId);
+    if (operation.local_state === "DRAFT") throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_NOT_SUBMITTED", 409, operationId);
+    if (operation.erir_code !== null) {
+      if (operation.erir_code === erirCode && operation.erir_evidence_ref === evidenceRef) return operation; // idempotent replay
+      throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_ERIR_CONFLICT", 409, operationId);
+    }
+    db.prepare("UPDATE ord_provider_operations SET erir_code = ?, erir_evidence_ref = ? WHERE id = ?").run(erirCode, evidenceRef, operationId);
+    return ordProviderOperationById(db, operationId)!;
+  });
+  return run.immediate();
+};
+
+/**
+ * Terminal: no further revision of this operation chain will ever be
+ * minted. Explicit admin action, never implied by CONFIRMED alone. Only
+ * the CURRENT (MAX(revision)) operation for the kind may ever be locked
+ * (round-3 P1.4) - the migration's own guard backs this structurally too.
+ */
+export const lockOrdProviderOperation = (db: Database.Database, operationId: string): OrdProviderOperationRow => {
+  const run = db.transaction((): OrdProviderOperationRow => {
+    gate(db);
+    const operation = ordProviderOperationById(db, operationId);
+    if (!operation) throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_NOT_FOUND", 404, operationId);
+    if (operation.lock_state !== "CORRECTION_ONLY") throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_NOT_CORRECTABLE", 409, operationId);
+    const latest = currentOrdProviderOperation(db, operation.operation_kind)!;
+    if (latest.id !== operation.id) throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_STALE", 409, operationId);
+    db.prepare("UPDATE ord_provider_operations SET lock_state = 'EXTERNALLY_LOCKED' WHERE id = ? AND lock_state = 'CORRECTION_ONLY'").run(operationId);
+    return ordProviderOperationById(db, operationId)!;
+  });
+  return run.immediate();
+};

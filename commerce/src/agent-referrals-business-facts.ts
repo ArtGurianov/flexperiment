@@ -1,0 +1,90 @@
+import type Database from "better-sqlite3";
+import { AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS, agentReferralsFoundationSchemaEvidence } from "./agent-referrals-activation";
+
+export class AgentReferralsBusinessFactsSchemaIncompleteError extends Error {
+  constructor(readonly missing: readonly string[]) {
+    super(`AGENT_REFERRALS_BUSINESS_FACTS_SCHEMA_INCOMPLETE: ${missing.join(", ")}`);
+  }
+}
+
+/**
+ * Phase 10B production controller precondition: "no Agent Referrals
+ * production business facts exist" - proven immediately after Q's migrations
+ * (0042-0049) apply and before production-deploy CASes to Q, so a DORMANT
+ * deploy is provably inert, not merely undeployed-and-therefore-trivially-
+ * empty.
+ *
+ * The table set is derived from AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS
+ * (agent-referrals-activation.ts) rather than re-enumerated by hand: that
+ * list is the already-reviewed canonical inventory every PR3-PR9 migration
+ * names an object into, so reusing it here - filtered to actual `type =
+ * 'table'` rows, which mechanically drops every guard trigger and unique
+ * index name mixed into that same list - ties this module to the same
+ * single source of truth rather than risking silent drift from a second,
+ * independently hand-typed enumeration.
+ *
+ * Round-7 fix: schema completeness is proven FIRST and fails closed
+ * (AgentReferralsBusinessFactsSchemaIncompleteError), never derived by
+ * filtering AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS down to whatever
+ * `sqlite_master` happens to contain. The earlier version did exactly that
+ * silent filtering, so a missing expected table simply vanished from the
+ * result instead of failing, and `agentReferralsBusinessFactEvidence` could
+ * report `all_zero: true` against a broken schema - directly contradicting
+ * its own fail-closed doc comment. This reuses
+ * agentReferralsFoundationSchemaEvidence() (agent-referrals-activation.ts),
+ * the same already-reviewed presence check the activation-readiness path
+ * uses, rather than a second, independently written completeness check.
+ *
+ * `agents` (0042) is deliberately excluded by construction, not by an
+ * explicit exclusion list: it is a pre-existing table (shared with the
+ * unrelated promo/referral-rewards system) that 0042 only widens a CHECK
+ * constraint on, and it never appears as a bare table name in
+ * AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS - only its 0049 guard trigger
+ * (`agents_contractor_type_projection_guard`) does, which `type = 'table'`
+ * filters out. Real pre-existing rows in `agents` are expected and are not
+ * an Agent Referrals business fact.
+ *
+ * `agent_referrals_feature_state` is excluded explicitly: it is the
+ * singleton control row, expected to carry exactly one DORMANT row post-
+ * migration, proven separately (never zero) by the DORMANT-state assertion.
+ *
+ * Two further exclusions beyond the singleton, both migration-seeded rather
+ * than production-usage-derived: `ad_channel_policy` (0043) ships an initial
+ * channel allow/deny/review classification, and `ord_reporting_period_policy`
+ * (0048) ships a static per-format-kind reporting-basis mapping - explicitly
+ * commented there as "seeded static configuration (not a business record)".
+ * Neither row set is evidence anyone has used the feature: both exist the
+ * instant migrations finish, before any HTTP request reaches this deploy.
+ * Their post-migration content is proven correct by the "apply exact
+ * migrations 0042-0049" step (blob-hash equality against Q's own committed
+ * migration file), never by this module - see
+ * commerce/test/agent-referrals-business-facts.test.ts, which mechanically
+ * cross-checks this exclusion list against the migrations' own `INSERT INTO`
+ * targets so it cannot silently drift from what they actually seed.
+ */
+const MIGRATION_SEEDED_TABLES: readonly string[] = ["agent_referrals_feature_state", "ad_channel_policy", "ord_reporting_period_policy"];
+
+export const agentReferralsBusinessFactTables = (db: Database.Database): readonly string[] => {
+  const schema = agentReferralsFoundationSchemaEvidence(db);
+  if (!schema.present) throw new AgentReferralsBusinessFactsSchemaIncompleteError(schema.missing);
+  const placeholders = AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS.map(() => "?").join(", ");
+  const rows = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${placeholders})`)
+    .all(...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS) as Array<{ name: string }>;
+  return rows.map((row) => row.name).filter((name) => !MIGRATION_SEEDED_TABLES.includes(name)).sort();
+};
+
+export type AgentReferralsBusinessFactEvidence = {
+  readonly tables: Readonly<Record<string, number>>;
+  readonly all_zero: boolean;
+};
+
+/** Fails closed via agentReferralsBusinessFactTables(): throws AgentReferralsBusinessFactsSchemaIncompleteError rather than silently omitting a missing table from the count. */
+export const agentReferralsBusinessFactEvidence = (db: Database.Database): AgentReferralsBusinessFactEvidence => {
+  const tables = agentReferralsBusinessFactTables(db);
+  const counts: Record<string, number> = {};
+  for (const table of tables) {
+    const row = db.prepare(`SELECT COUNT(*) AS n FROM "${table}"`).get() as { n: number };
+    counts[table] = row.n;
+  }
+  return { tables: counts, all_zero: Object.values(counts).every((n) => n === 0) };
+};

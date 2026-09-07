@@ -1,0 +1,30 @@
+import { basisPointsOf } from "./basis-points";
+
+/**
+ * The one reward-arithmetic authority, lifted verbatim (identical
+ * semantics, not merely identical output on today's fixtures) out of
+ * CommerceDomain's private `rewardForOrder` (domain.ts) so a module outside
+ * `CommerceDomain` - the Agent Referrals reward registry - can call it too,
+ * rather than growing a second, "almost the same" formula. `basisPointsOf`
+ * remains the only percent-arithmetic primitive; this file adds no
+ * competing rounding rule. See reward-calculation.test.ts for the
+ * byte-identical-before-and-after regression proof.
+ *
+ * No deduction for acquiring, cashbox, USN tax, the 3% levy, or any other
+ * business cost - this is gross reward evidence, exactly as
+ * `rewardForOrder` always computed it.
+ */
+
+export const REWARD_FORMULA_VERSION = 1;
+
+export type RewardOrderFacts = {
+  attributed_agent_id: string | null | undefined;
+  reward_type_snapshot: "PERCENT" | "FIXED" | null | undefined;
+  reward_value_snapshot: number | null | undefined;
+};
+
+export const rewardForOrder = (order: RewardOrderFacts, netCaptured: number): number => {
+  if (netCaptured <= 0 || !order.attributed_agent_id || !order.reward_type_snapshot) return 0;
+  if (order.reward_type_snapshot === "PERCENT") return basisPointsOf(netCaptured, Number(order.reward_value_snapshot ?? 0));
+  return Math.min(netCaptured, Number(order.reward_value_snapshot ?? 0));
+};

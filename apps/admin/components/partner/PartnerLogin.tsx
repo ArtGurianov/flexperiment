@@ -1,0 +1,120 @@
+"use client";
+
+import { useState } from "react";
+import { useRouter } from "next/navigation";
+import { useForm } from "react-hook-form";
+import { partnerApi, PartnerApiError } from "../../lib/partner-api";
+import { Notice } from "../ui/Notice";
+
+/**
+ * Two entry paths into the same OTP-verify step (Phase 9):
+ *   - first-time: an admin-minted invite link (`?invite=<token>`) consumed
+ *     once, which mints and dispatches the first OTP challenge
+ *   - returning: an email address, looked up server-side with an identical
+ *     response whether or not it resolves (agent-referrals-login.ts) - see
+ *     that module's own header for why no challenge_id is ever returned
+ *     directly from that step
+ * Both converge on the same /login/verify call. No password anywhere.
+ */
+export function PartnerLogin() {
+  const router = useRouter();
+  const inviteToken = typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("invite");
+  const [challengeId, setChallengeId] = useState<string | null>(null);
+  const [awaitingCode, setAwaitingCode] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const requestForm = useForm<{ email: string }>({ defaultValues: { email: "" } });
+  const codeForm = useForm<{ code: string }>({ defaultValues: { code: "" } });
+
+  const consumeInvite = async () => {
+    if (!inviteToken) return;
+    setBusy(true); setError(null);
+    try {
+      const { challenge_id } = await partnerApi<{ challenge_id: string }>("/invite/consume", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ token: inviteToken }),
+      });
+      setChallengeId(challenge_id);
+      setAwaitingCode(true);
+    } catch (failure) {
+      setError((failure as PartnerApiError).code);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const requestLogin = requestForm.handleSubmit(async ({ email }) => {
+    setBusy(true); setError(null);
+    try {
+      await partnerApi<{ ok: true }>("/login/request", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email }),
+      });
+      setAwaitingCode(true);
+    } catch (failure) {
+      setError((failure as PartnerApiError).code);
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  const verifyCode = codeForm.handleSubmit(async ({ code }) => {
+    if (inviteToken && !challengeId) { setError("AGENT_REFERRALS_LOGIN_INVITE_NOT_CONSUMED"); return; }
+    setBusy(true); setError(null);
+    try {
+      // A returning login never receives challenge_id from the server (the
+      // anti-enumeration contract - see /login/request's own comment), so
+      // the verify call for that path is keyed only by the code itself;
+      // the server resolves which live challenge it belongs to. The invite
+      // path DOES have a known challenge_id from the consume step above.
+      await partnerApi<{ ok: true }>("/login/verify", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ challenge_id: challengeId ?? "", code }),
+      });
+      router.replace("/partner");
+    } catch (failure) {
+      setError((failure as PartnerApiError).code);
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  return (
+    <main className="login-page">
+      <section className="login-card">
+        <p className="eyebrow">FLEXPERIMENT / PARTNER PORTAL</p>
+        <h1>Кабинет<br /><i>партнёра.</i></h1>
+        <p>Вход по одноразовому коду на email. Пароля нет.</p>
+
+        {inviteToken && !awaitingCode && (
+          <>
+            <p>У вас есть приглашение. Нажмите, чтобы получить код подтверждения.</p>
+            <button className="primary" disabled={busy} onClick={() => void consumeInvite()}>{busy ? "Отправляем код…" : "Получить код"}</button>
+          </>
+        )}
+
+        {!inviteToken && !awaitingCode && (
+          <form onSubmit={requestLogin}>
+            <label>
+              Email
+              <input autoFocus type="email" autoComplete="email" {...requestForm.register("email", { required: true })} />
+            </label>
+            <Notice error={error} />
+            <button className="primary" disabled={busy}>{busy ? "Отправляем код…" : "Получить код"}</button>
+          </form>
+        )}
+
+        {awaitingCode && (
+          <form onSubmit={verifyCode}>
+            <p>Если адрес известен системе, код отправлен на почту.</p>
+            <label>
+              Код из письма
+              <input autoFocus inputMode="numeric" autoComplete="one-time-code" maxLength={6} {...codeForm.register("code", { required: true })} />
+            </label>
+            <Notice error={error} />
+            <button className="primary" disabled={busy}>{busy ? "Проверяем…" : "Войти"}</button>
+          </form>
+        )}
+      </section>
+    </main>
+  );
+}

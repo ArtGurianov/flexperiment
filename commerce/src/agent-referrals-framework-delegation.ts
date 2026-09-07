@@ -1,0 +1,130 @@
+import { createHash } from "node:crypto";
+import type Database from "better-sqlite3";
+import { id } from "./crypto";
+
+/**
+ * Immutable framework-agreement and delegation-template content revisions,
+ * per plan section B-13. These are Agent Referrals partner-facing evidence,
+ * deliberately NOT added to legalDocumentIds (legal-manifest.ts) and with no
+ * checkout legal-release side effect - they never touch public/legal/**,
+ * commerce/legal/**, or the checkout legal bundle.
+ *
+ * Not partner-scoped in PR3: these are the reviewed template text a future
+ * PR4 framework-acceptance command will bind a partner's acceptance to; no
+ * partner_identities table exists yet.
+ *
+ * Content is versioned as an explicit, ordered array of required clause
+ * keys mapped to their text, so the hash is deterministic and independently
+ * recomputable - the same canonical-JSON-over-an-ordered-key-list pattern
+ * canonicalLegalManifest() uses in legal-manifest.ts.
+ */
+
+/** The full B-13 required-content list, in the plan's own order. */
+export const FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES = [
+  "DISTRIBUTION_SERVICES_DIRECT",
+  "APPROVED_CREATIVE_ONLY",
+  "PERMITTED_CHANNELS_PER_POLICY",
+  "REPEATED_MULTI_RESOURCE_PUBLICATION",
+  "MINIMUM_DISTRIBUTION_FACTS_FOR_ORD",
+  "NO_INDEPENDENT_CREATIVE_MODIFICATION",
+  "PROMO_PART_OF_APPROVED_CREATIVE",
+  "REMOVAL_BY_PUBLICATION_END",
+  "PARTNER_LEVY_OBLIGATION",
+  "FLEXPERIMENT_DOES_NOT_WITHHOLD_LEVY",
+  "REWARD_BASED_ON_ATTRIBUTED_PURCHASES",
+  "POSITIVE_REWARD_ONLY_AFTER_COMPLETION",
+  "ZERO_REWARD_NO_OBLIGATION",
+  "ORD_SUBMISSION_DELEGATED",
+  "REPORTING_TAIL_SURVIVES_CLOSURE_AND_REVOCATION",
+] as const;
+export type FrameworkAgreementClauseKey = (typeof FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES)[number];
+
+/** The two B-13 clauses that are specifically about ORD-reporting delegation. */
+export const DELEGATION_TEMPLATE_REQUIRED_CLAUSES = [
+  "ORD_SUBMISSION_DELEGATED",
+  "REPORTING_TAIL_SURVIVES_CLOSURE_AND_REVOCATION",
+] as const;
+export type DelegationTemplateClauseKey = (typeof DELEGATION_TEMPLATE_REQUIRED_CLAUSES)[number];
+
+export class AgentReferralsContentRevisionError extends Error {
+  constructor(readonly code: string, readonly status = 422, detail?: string) {
+    super(detail ? `${code}: ${detail}` : code);
+  }
+}
+
+const canonicalContent = (orderedKeys: readonly string[], clauses: Record<string, string>): string =>
+  JSON.stringify({ clauses: orderedKeys.map((key) => [key, clauses[key]]) });
+
+const contentHash = (canonical: string): string => createHash("sha256").update(canonical).digest("hex");
+
+const assertComplete = (orderedKeys: readonly string[], clauses: Record<string, string>, errorCode: string) => {
+  const missing = orderedKeys.filter((key) => !clauses[key] || clauses[key].trim().length === 0);
+  if (missing.length) throw new AgentReferralsContentRevisionError(errorCode, 422, missing.join(", "));
+  const unknown = Object.keys(clauses).filter((key) => !orderedKeys.includes(key));
+  if (unknown.length) throw new AgentReferralsContentRevisionError(errorCode, 422, `unknown clause(s): ${unknown.join(", ")}`);
+};
+
+export type ContentRevision = {
+  id: string;
+  revision: number;
+  content_hash: string;
+  supersedes_revision_id: string | null;
+  created_at: string;
+};
+
+export const currentFrameworkAgreementRevision = (db: Database.Database): ContentRevision | null =>
+  (db.prepare(`SELECT id, revision, content_hash, supersedes_revision_id, created_at
+    FROM framework_agreement_revisions ORDER BY revision DESC LIMIT 1`).get() as ContentRevision | undefined) ?? null;
+
+export const frameworkAgreementRevisionById = (db: Database.Database, revisionId: string) =>
+  (db.prepare(`SELECT id, revision, content_json, content_hash, supersedes_revision_id, created_at
+    FROM framework_agreement_revisions WHERE id = ?`).get(revisionId) as (ContentRevision & { content_json: string }) | undefined) ?? null;
+
+/**
+ * Mints a new immutable framework-agreement revision. Content must supply
+ * exactly the B-13 clause set - not a subset, not extras - so the hash is
+ * always over the complete, well-formed content this evidence claims to be.
+ * Forward-only: supersedes the current revision, never edits it.
+ */
+export const mintFrameworkAgreementRevision = (db: Database.Database, clauses: Record<FrameworkAgreementClauseKey, string>): ContentRevision => {
+  assertComplete(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, clauses, "FRAMEWORK_AGREEMENT_INCOMPLETE_CONTENT");
+  const canonical = canonicalContent(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, clauses);
+  const hash = contentHash(canonical);
+
+  const run = db.transaction((): ContentRevision => {
+    const current = currentFrameworkAgreementRevision(db);
+    const revisionId = id();
+    const nextRevision = (current?.revision ?? 0) + 1;
+    db.prepare(`INSERT INTO framework_agreement_revisions(id, revision, content_json, content_hash, supersedes_revision_id)
+      VALUES (?, ?, ?, ?, ?)`)
+      .run(revisionId, nextRevision, canonical, hash, current?.id ?? null);
+    return frameworkAgreementRevisionById(db, revisionId)!;
+  });
+  return run.immediate();
+};
+
+export const currentDelegationTemplateRevision = (db: Database.Database): ContentRevision | null =>
+  (db.prepare(`SELECT id, revision, content_hash, supersedes_revision_id, created_at
+    FROM delegation_template_revisions ORDER BY revision DESC LIMIT 1`).get() as ContentRevision | undefined) ?? null;
+
+export const delegationTemplateRevisionById = (db: Database.Database, revisionId: string) =>
+  (db.prepare(`SELECT id, revision, content_json, content_hash, supersedes_revision_id, created_at
+    FROM delegation_template_revisions WHERE id = ?`).get(revisionId) as (ContentRevision & { content_json: string }) | undefined) ?? null;
+
+/** ord_reporting_mode is always 'FLEXPERIMENT_DELEGATED' per B-14 - the column CHECK enforces it structurally too. */
+export const mintDelegationTemplateRevision = (db: Database.Database, clauses: Record<DelegationTemplateClauseKey, string>): ContentRevision => {
+  assertComplete(DELEGATION_TEMPLATE_REQUIRED_CLAUSES, clauses, "DELEGATION_TEMPLATE_INCOMPLETE_CONTENT");
+  const canonical = canonicalContent(DELEGATION_TEMPLATE_REQUIRED_CLAUSES, clauses);
+  const hash = contentHash(canonical);
+
+  const run = db.transaction((): ContentRevision => {
+    const current = currentDelegationTemplateRevision(db);
+    const revisionId = id();
+    const nextRevision = (current?.revision ?? 0) + 1;
+    db.prepare(`INSERT INTO delegation_template_revisions(id, revision, ord_reporting_mode, content_json, content_hash, supersedes_revision_id)
+      VALUES (?, ?, 'FLEXPERIMENT_DELEGATED', ?, ?, ?)`)
+      .run(revisionId, nextRevision, canonical, hash, current?.id ?? null);
+    return delegationTemplateRevisionById(db, revisionId)!;
+  });
+  return run.immediate();
+};

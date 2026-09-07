@@ -1,0 +1,194 @@
+import type Database from "better-sqlite3";
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+import { agentReferralsFeatureState, type AgentReferralsFeatureStateName } from "./agent-referrals-feature-state";
+import { agentReferralsFoundationSchemaEvidence } from "./agent-referrals-activation";
+import { agentReferralsBusinessFactEvidence, type AgentReferralsBusinessFactEvidence } from "./agent-referrals-business-facts";
+import { migrationInventoryExpectation } from "./release-expectation";
+import type { ReleaseExpectations, ReleaseRuntimeEvidence } from "./release-control";
+
+/**
+ * Round-9 P1.2 fix: the single authoritative, fail-closed authority for
+ * "Agent Referrals is genuinely dormant AND the exact pinned release
+ * expectations are met" - the full frozen completion contract, not merely a
+ * subset of it. `commerce/src/api.ts`'s `/complete-rolling` route wires its
+ * DormantReadinessReader directly to `agentReferralsDormantReady` below with
+ * the request's own `expected` object, so completion refuses on ANY
+ * mismatch between what actually deployed and what the operator/workflow
+ * pinned at acquire time - never merely on internal self-consistency
+ * (runtime == worker) while both silently disagree with the pinned target.
+ *
+ * Every axis is independently reported in `reasons` and independently
+ * gates `ready` - see
+ * commerce/test/agent-referrals-q2-dormant-completion-negative-matrix.test.ts
+ * for an executing proof that each one alone blocks completion.
+ */
+export type AgentReferralsDormantReadinessEvidence = {
+  readonly ready: boolean;
+  readonly feature_state: AgentReferralsFeatureStateName;
+  readonly schema_present: boolean;
+  readonly schema_missing: readonly string[];
+  readonly business_facts_all_zero: boolean | null;
+  readonly business_facts_tables: Readonly<Record<string, number>> | null;
+  readonly runtime_source_commit: string | null;
+  readonly worker_source_commit: string | null;
+  readonly expected_source_commit: string;
+  readonly runtime_source_matches_expected: boolean;
+  readonly worker_source_matches_expected: boolean;
+  readonly migration_inventory: readonly string[];
+  readonly computed_migration_expectation: string;
+  readonly expected_migration: string;
+  readonly migration_inventory_exact: boolean;
+  readonly legal_expectation_matches: boolean;
+  readonly surface_contract_present: boolean;
+  readonly surface_contract_checkout_version: string | null;
+  readonly surface_contract_admin_version: string | null;
+  readonly surface_contract_matches_required: boolean;
+  readonly sales_healthy: boolean;
+  readonly payment_healthy: boolean;
+  readonly refund_healthy: boolean;
+  readonly reasons: readonly string[];
+};
+
+/** The exact keys ReleaseExpectations["legal_hashes"] carries - redefined locally (release-control.ts's own `documentIds` is module-private) so a typo here is a compile error, not a silent gap. */
+const DOCUMENT_IDS = ["PUBLIC_OFFER", "PRIVACY_POLICY", "PD_CONSENT", "CHECKOUT_DISCLOSURE"] as const satisfies readonly (keyof ReleaseExpectations["legal_hashes"])[];
+
+/**
+ * The exact release-surface contract versions B2/Q2's own frozen
+ * `release-surface-contract.json` carries - pinned here as the required
+ * value, not merely "some non-empty string present". Neither B2 nor Q2
+ * touches this file (it is not a certified path for either candidate), so
+ * this is a fixed, reviewable constant, not something that needs to track
+ * `main`'s own, separately-evolving copy of the same file.
+ */
+const REQUIRED_CHECKOUT_CONTRACT_VERSION = "sales-availability-v1";
+const REQUIRED_ADMIN_CONTRACT_VERSION = "sales-availability-v1";
+
+type SurfaceContractEvidence = {
+  readonly present: boolean;
+  readonly checkout_contract_version: string | null;
+  readonly admin_contract_version: string | null;
+};
+
+/** Read directly from disk, exactly like releaseRuntimeEvidence() already reads commerce/legal/production-manifest.json - never re-derived from a caller-supplied value. */
+const readSurfaceContract = (): SurfaceContractEvidence => {
+  try {
+    const raw = readFileSync(resolve(process.cwd(), "release-surface-contract.json"), "utf8");
+    const parsed = JSON.parse(raw) as { checkout_contract_version?: unknown; admin_contract_version?: unknown };
+    const checkout = typeof parsed.checkout_contract_version === "string" && parsed.checkout_contract_version.length > 0 ? parsed.checkout_contract_version : null;
+    const admin = typeof parsed.admin_contract_version === "string" && parsed.admin_contract_version.length > 0 ? parsed.admin_contract_version : null;
+    return { present: checkout !== null && admin !== null, checkout_contract_version: checkout, admin_contract_version: admin };
+  } catch {
+    return { present: false, checkout_contract_version: null, admin_contract_version: null };
+  }
+};
+
+/**
+ * Sales/payment/refund health are proven as three DISTINCT axes, never one
+ * combined "legacy flows" bit - each maps to exactly one core, pre-existing
+ * commerce table this feature never touches, and each fails independently
+ * of the others. Deliberately a narrow presence/queryability probe - never
+ * a synthetic transaction, an insert, or any write.
+ */
+const tableHealthy = (db: Database.Database, table: string): boolean => {
+  try {
+    const exists = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table);
+    if (!exists) return false;
+    db.prepare(`SELECT COUNT(*) AS n FROM "${table}"`).get();
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+export const agentReferralsDormantReadinessEvidence = (
+  db: Database.Database,
+  runtime: ReleaseRuntimeEvidence,
+  expected: ReleaseExpectations,
+): AgentReferralsDormantReadinessEvidence => {
+  const reasons: string[] = [];
+
+  const featureState = agentReferralsFeatureState(db);
+  if (featureState.state !== "DORMANT") reasons.push(`FEATURE_STATE_NOT_DORMANT:${featureState.state}`);
+
+  const schema = agentReferralsFoundationSchemaEvidence(db);
+  if (!schema.present) reasons.push(`SCHEMA_INCOMPLETE:${schema.missing.join(",")}`);
+
+  let businessFacts: AgentReferralsBusinessFactEvidence | null = null;
+  if (schema.present) {
+    // Safe: business-fact table derivation re-checks schema presence itself
+    // and would throw otherwise, but this branch only ever calls it once
+    // presence is already confirmed here.
+    businessFacts = agentReferralsBusinessFactEvidence(db);
+    if (!businessFacts.all_zero) reasons.push("BUSINESS_FACTS_PRESENT");
+  }
+
+  // Runtime/worker identity is checked against the PINNED expected source
+  // commit, never merely against each other - two processes silently
+  // agreeing on the WRONG commit must still refuse.
+  const runtimeSourceMatchesExpected = runtime.source_commit === expected.source_commit;
+  if (!runtimeSourceMatchesExpected) reasons.push("RUNTIME_SOURCE_COMMIT_MISMATCH");
+  const workerSourceMatchesExpected = runtime.worker_source_commit === expected.source_commit;
+  if (!workerSourceMatchesExpected) reasons.push("WORKER_SOURCE_COMMIT_MISMATCH");
+
+  // Exact equality against the canonical inventory expectation - never a
+  // subset check. An extra, unexpected migration changes the computed
+  // digest and must refuse exactly like a missing one does.
+  const computedMigrationExpectation = migrationInventoryExpectation(runtime.migration_versions);
+  const migrationInventoryExact = computedMigrationExpectation === expected.migration;
+  if (!migrationInventoryExact) reasons.push("MIGRATION_INVENTORY_MISMATCH");
+
+  const legalExpectationMatches = Boolean(
+    runtime.legal_version === expected.legal_version
+    && runtime.legal_manifest_sha256 === expected.legal_manifest_sha256
+    && runtime.current_legal_copies_match === true
+    && runtime.legal_hashes
+    && DOCUMENT_IDS.every((id) => runtime.legal_hashes![id] === expected.legal_hashes[id]),
+  );
+  if (!legalExpectationMatches) reasons.push("LEGAL_EXPECTATION_MISMATCH");
+
+  const surfaceContract = readSurfaceContract();
+  if (!surfaceContract.present) reasons.push("SURFACE_CONTRACT_UNAVAILABLE");
+  const surfaceContractMatchesRequired = surfaceContract.present
+    && surfaceContract.checkout_contract_version === REQUIRED_CHECKOUT_CONTRACT_VERSION
+    && surfaceContract.admin_contract_version === REQUIRED_ADMIN_CONTRACT_VERSION;
+  if (surfaceContract.present && !surfaceContractMatchesRequired) reasons.push("SURFACE_CONTRACT_VERSION_MISMATCH");
+
+  const salesHealthy = tableHealthy(db, "orders");
+  if (!salesHealthy) reasons.push("SALES_UNHEALTHY");
+  const paymentHealthy = tableHealthy(db, "payments");
+  if (!paymentHealthy) reasons.push("PAYMENT_UNHEALTHY");
+  const refundHealthy = tableHealthy(db, "refunds");
+  if (!refundHealthy) reasons.push("REFUND_UNHEALTHY");
+
+  return {
+    ready: reasons.length === 0,
+    feature_state: featureState.state,
+    schema_present: schema.present,
+    schema_missing: schema.missing,
+    business_facts_all_zero: businessFacts ? businessFacts.all_zero : null,
+    business_facts_tables: businessFacts ? businessFacts.tables : null,
+    runtime_source_commit: runtime.source_commit,
+    worker_source_commit: runtime.worker_source_commit,
+    expected_source_commit: expected.source_commit,
+    runtime_source_matches_expected: runtimeSourceMatchesExpected,
+    worker_source_matches_expected: workerSourceMatchesExpected,
+    migration_inventory: runtime.migration_versions,
+    computed_migration_expectation: computedMigrationExpectation,
+    expected_migration: expected.migration,
+    migration_inventory_exact: migrationInventoryExact,
+    legal_expectation_matches: legalExpectationMatches,
+    surface_contract_present: surfaceContract.present,
+    surface_contract_checkout_version: surfaceContract.checkout_contract_version,
+    surface_contract_admin_version: surfaceContract.admin_contract_version,
+    surface_contract_matches_required: surfaceContractMatchesRequired,
+    sales_healthy: salesHealthy,
+    payment_healthy: paymentHealthy,
+    refund_healthy: refundHealthy,
+    reasons,
+  };
+};
+
+/** The exact shape `DormantReadinessReader` (release-control.ts) expects: `() => boolean`, once bound to a db, a runtime-evidence snapshot, and the pinned expected release object. */
+export const agentReferralsDormantReady = (db: Database.Database, runtime: ReleaseRuntimeEvidence, expected: ReleaseExpectations): boolean =>
+  agentReferralsDormantReadinessEvidence(db, runtime, expected).ready;

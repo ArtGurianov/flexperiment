@@ -14,6 +14,7 @@ const nav: { href: string; page: Page; label: string; index: string }[] = [
   { href: "/audit/", page: "audit", label: "Аудит", index: "09" },
   { href: "/agents/", page: "agents", label: "Агенты", index: "10" },
   { href: "/promo-codes/", page: "promo-codes", label: "Промокоды", index: "11" },
+  { href: "/agent-referrals/", page: "agent-referrals", label: "Agent Referrals", index: "12" },
 ];
 
 export function Shell({ page, children, onLogout }: { page: Page; children: ReactNode; onLogout: () => void }) {

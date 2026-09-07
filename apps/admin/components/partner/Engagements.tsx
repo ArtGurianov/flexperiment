@@ -1,0 +1,302 @@
+"use client";
+
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { useForm } from "react-hook-form";
+import { partnerApi, PartnerApiError } from "../../lib/partner-api";
+import type { Row } from "../../lib/partner-page";
+import { Loading } from "../ui/Loading";
+import { Notice } from "../ui/Notice";
+import { PageTitle } from "../ui/PageTitle";
+import { Badge } from "../ui/Badge";
+
+export function Engagements() {
+  const [selected, setSelected] = useState<string | null>(() => (typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("id")));
+
+  useEffect(() => {
+    const search = new URLSearchParams();
+    if (selected) search.set("id", selected);
+    const qs = search.toString();
+    window.history.replaceState(null, "", `/partner/engagements${qs ? `?${qs}` : ""}`);
+  }, [selected]);
+
+  return selected ? <EngagementDetail engagementId={selected} onBack={() => setSelected(null)} /> : <EngagementList onSelect={setSelected} />;
+}
+
+const LIFECYCLE_LABELS: Record<string, string> = { OFFERED: "Предложена", ACCEPTED: "Принята", ACTIVE: "Активна", SUSPENDED: "Приостановлена", CLOSED: "Закрыта" };
+
+function EngagementList({ onSelect }: { onSelect: (id: string) => void }) {
+  const engagements = useQuery({ queryKey: ["partner", "engagements"], queryFn: () => partnerApi<{ engagements: Row[] }>("/engagements") });
+  if (engagements.isLoading) return <Loading />;
+  if (engagements.isError) return <Notice error={(engagements.error as PartnerApiError).code} />;
+
+  return (
+    <>
+      <PageTitle eyebrow="КАМПАНИИ" title="Ваши кампании" text="Активные и закрытые кампании по всем городам." />
+      <table>
+        <thead><tr><th>Событие</th><th>Город</th><th>Статус</th><th /></tr></thead>
+        <tbody>
+          {engagements.data!.engagements.map((row) => {
+            const occurrence = row.occurrence as Row;
+            return (
+              <tr key={String(row.engagement_id)}>
+                <td>{String(occurrence.title)}</td>
+                <td>{String(occurrence.city_title)}</td>
+                <td><Badge>{LIFECYCLE_LABELS[String(row.lifecycle_state)] ?? String(row.lifecycle_state)}</Badge></td>
+                <td><button onClick={() => onSelect(String(row.engagement_id))}>Открыть</button></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </>
+  );
+}
+
+function EngagementDetail({ engagementId, onBack }: { engagementId: string; onBack: () => void }) {
+  const queryClient = useQueryClient();
+  const detail = useQuery({ queryKey: ["partner", "engagement", engagementId], queryFn: () => partnerApi<Row>(`/engagements/${engagementId}`) });
+  const conversions = useQuery({ queryKey: ["partner", "engagement", engagementId, "conversions"], queryFn: () => partnerApi<{ conversions: Row[] }>(`/engagements/${engagementId}/conversions`) });
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ["partner", "engagement", engagementId] });
+
+  if (detail.isLoading) return <Loading />;
+  if (detail.isError) return <Notice error={(detail.error as PartnerApiError).code} />;
+  const data = detail.data!;
+  const occurrence = data.occurrence as Row;
+  const latestRevision = data.latest_revision as Row | null;
+  const latestAccepted = Boolean(data.latest_revision_accepted);
+  const creative = data.creative as Row | null;
+  const distributions = (data.distributions as Row[]) ?? [];
+  const reward = data.reward as Row;
+  const act = data.act as Row | null;
+  const actAcceptance = data.act_acceptance;
+  const actDispute = data.act_dispute;
+
+  return (
+    <>
+      <button onClick={onBack}>← Все кампании</button>
+      <PageTitle eyebrow="КАМПАНИЯ" title={String(occurrence.title)} text={`${String(occurrence.city_title)} · ${String((data.engagement as Row).lifecycle_state)}`} />
+
+      {latestRevision && !latestAccepted && (
+        <AcceptEngagement engagementId={engagementId} revision={latestRevision} onDone={refresh} />
+      )}
+
+      <section className="card">
+        <h2>Условия</h2>
+        {latestRevision ? (
+          <>
+            <p>Вознаграждение: {String(latestRevision.reward_type)} {String(latestRevision.reward_value)}</p>
+            <p>Окно публикации: {String(latestRevision.publication_start_at)} — {String(latestRevision.publication_end_at)}</p>
+          </>
+        ) : <p>Условия ещё не выданы.</p>}
+      </section>
+
+      <section className="card">
+        <h2>Креатив</h2>
+        {creative ? (
+          <>
+            <p>Формат: {String(creative.format_kind)}</p>
+            <p>Целевая ссылка: {String(creative.creative_target_url)}</p>
+            <p>ERID: {data.erid ? String(data.erid) : "ещё не получен"}</p>
+          </>
+        ) : <p>Креатив ещё не подготовлен администратором.</p>}
+      </section>
+
+      <DistributionsSection engagementId={engagementId} distributions={distributions} onDone={refresh} />
+
+      <section className="card">
+        <h2>Вознаграждение</h2>
+        <p>Реестр закрыт: {reward.registry_finalized ? "да" : "нет"}</p>
+        {reward.reward_total_kopecks !== null && <p>Сумма: {Number(reward.reward_total_kopecks) / 100} ₽</p>}
+        {Boolean(reward.zero_reward_closed) && <p>Кампания закрыта с нулевым вознаграждением.</p>}
+      </section>
+
+      {act && (
+        <ActSection engagementId={engagementId} act={act} acceptance={actAcceptance as Row | null} dispute={actDispute as Row | null} onDone={refresh} />
+      )}
+
+      <section className="card">
+        <h2>Конверсии</h2>
+        {conversions.isLoading ? <Loading /> : conversions.isError ? <Notice error={(conversions.error as PartnerApiError).code} /> : (
+          <table>
+            <thead><tr><th>Ссылка</th><th>Дата</th><th>Промокод</th><th>Сумма продажи</th><th>Вознаграждение</th><th>Статус</th></tr></thead>
+            <tbody>
+              {conversions.data!.conversions.map((row) => (
+                <tr key={String(row.reference)}>
+                  <td>{String(row.reference)}</td>
+                  <td>{String(row.purchase_at)}</td>
+                  <td>{row.promo_code ? String(row.promo_code) : "—"}</td>
+                  <td>{Number(row.gross_attributable_sale_kopecks) / 100} ₽</td>
+                  <td>{Number(row.reward_amount_kopecks) / 100} ₽</td>
+                  <td><Badge>{String(row.booking_status)}</Badge></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </section>
+    </>
+  );
+}
+
+function AcceptEngagement({ engagementId, revision, onDone }: { engagementId: string; revision: Row; onDone: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const accept = async () => {
+    setBusy(true); setError(null);
+    try {
+      const resource = { engagement_id: engagementId, engagement_revision_id: String(revision.id) };
+      const { grant_id } = await partnerApi<{ grant_id: string }>("/engagement-step-up", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "ENGAGEMENT_ACCEPTANCE", resource }),
+      });
+      await partnerApi(`/engagements/${engagementId}/accept`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ engagement_revision_id: revision.id, step_up_grant_id: grant_id }),
+      });
+      onDone();
+    } catch (failure) {
+      setError((failure as PartnerApiError).code);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <section className="card">
+      <h2>Новые условия ожидают вашего согласия</h2>
+      <button className="primary" disabled={busy} onClick={() => void accept()}>{busy ? "Принимаем…" : "Принять условия"}</button>
+      <Notice error={error} />
+    </section>
+  );
+}
+
+function DistributionsSection({ engagementId, distributions, onDone }: { engagementId: string; distributions: Row[]; onDone: () => void }) {
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const { register, handleSubmit, reset } = useForm<{ channel_key: string; resource_kind: string; resource_identifier: string; distribution_resource_url: string; published_at: string; evidence_ref: string }>({
+    defaultValues: { channel_key: "", resource_kind: "channel", resource_identifier: "", distribution_resource_url: "", published_at: "", evidence_ref: "" },
+  });
+
+  const report = handleSubmit(async (values) => {
+    setBusy(true); setError(null);
+    try {
+      await partnerApi(`/engagements/${engagementId}/distributions`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...values, published_at: new Date(values.published_at).toISOString(), ended_at: null }),
+      });
+      reset();
+      onDone();
+    } catch (failure) {
+      setError((failure as PartnerApiError).code);
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  const claimRemoval = async (distributionId: string) => {
+    setBusy(true); setError(null);
+    try {
+      await partnerApi(`/distributions/${distributionId}/removal-claim`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ evidence_ref: "partner-portal-claim" }),
+      });
+      onDone();
+    } catch (failure) {
+      setError((failure as PartnerApiError).code);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="card">
+      <h2>Размещения</h2>
+      <table>
+        <thead><tr><th>Канал</th><th>Ссылка</th><th>Комплаенс</th><th>Снятие</th><th /></tr></thead>
+        <tbody>
+          {distributions.map((row) => {
+            const revision = row.current_revision as Row;
+            return (
+              <tr key={String(row.distribution_id)}>
+                <td>{String(revision.channel_key)}</td>
+                <td>{String(revision.distribution_resource_url)}</td>
+                <td><Badge>{String(row.compliance_state ?? "—")}</Badge></td>
+                <td><Badge>{String(row.removal_state ?? "—")}</Badge></td>
+                <td>
+                  {row.removal_state === "REMOVAL_REQUIRED" && (
+                    <button disabled={busy} onClick={() => void claimRemoval(String(row.distribution_id))}>Заявить о снятии</button>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+
+      <h3>Сообщить о новом размещении</h3>
+      <form onSubmit={report}>
+        <label>Канал (напр. telegram, vk) <input {...register("channel_key", { required: true })} /></label>
+        <label>Тип ресурса
+          <select {...register("resource_kind")}>
+            <option value="channel">Канал</option><option value="page">Страница</option><option value="profile">Профиль</option><option value="site">Сайт</option><option value="stream">Стрим</option>
+          </select>
+        </label>
+        <label>Идентификатор ресурса <input {...register("resource_identifier", { required: true })} /></label>
+        <label>Ссылка на публикацию <input {...register("distribution_resource_url", { required: true })} /></label>
+        <label>Дата публикации <input type="datetime-local" {...register("published_at", { required: true })} /></label>
+        <label>Ссылка на подтверждение <input {...register("evidence_ref", { required: true })} /></label>
+        <Notice error={error} />
+        <button className="primary" disabled={busy}>{busy ? "Отправляем…" : "Сообщить"}</button>
+      </form>
+    </section>
+  );
+}
+
+function ActSection({ engagementId, act, acceptance, dispute, onDone }: { engagementId: string; act: Row; acceptance: Row | null; dispute: Row | null; onDone: () => void }) {
+  void engagementId;
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const accept = async () => {
+    setBusy(true); setError(null);
+    try {
+      const resource = { act_id: String(act.id), amount_kopecks: Number(act.amount_kopecks), engagement_revision_id: String(act.engagement_revision_id) };
+      const { grant_id } = await partnerApi<{ grant_id: string }>("/settlement-step-up", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "ACT_ACCEPTANCE", resource }),
+      });
+      await partnerApi(`/acts/${act.id}/accept`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ step_up_grant_id: grant_id }) });
+      onDone();
+    } catch (failure) {
+      setError((failure as PartnerApiError).code);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const dispute_ = async () => {
+    setBusy(true); setError(null);
+    try {
+      await partnerApi(`/acts/${act.id}/dispute`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: "AMOUNT_INCORRECT" }) });
+      onDone();
+    } catch (failure) {
+      setError((failure as PartnerApiError).code);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="card">
+      <h2>Акт</h2>
+      <p>Сумма: {Number(act.amount_kopecks) / 100} ₽</p>
+      <p>Статус: {act.presented_at ? "предъявлен" : "готовится"}</p>
+      {acceptance && <p>Принят вами {String((acceptance as Row).created_at)}.</p>}
+      {dispute && <p>Оспорен: {String((dispute as Row).reason)}.</p>}
+      {Boolean(act.presented_at) && !acceptance && !dispute && (
+        <>
+          <button className="primary" disabled={busy} onClick={() => void accept()}>{busy ? "Принимаем…" : "Принять акт"}</button>
+          <button disabled={busy} onClick={() => void dispute_()}>Оспорить</button>
+        </>
+      )}
+      <Notice error={error} />
+    </section>
+  );
+}
