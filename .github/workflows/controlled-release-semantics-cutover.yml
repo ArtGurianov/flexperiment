@@ -23,7 +23,19 @@ on:
         required: false
         type: string
       expected_candidate_sha:
-        description: Optional defensive check for an ordinary (non-recovery) deploy - if set, must equal the exact SHA currently at runtime-candidate, or the run refuses.
+        description: Required exact runtime-candidate SHA for an ordinary deploy. Leave empty only for explicit same-owner recovery.
+        required: false
+        type: string
+      expected_controller_sha:
+        description: Required reviewed controller SHA for an ordinary deploy. Leave empty only for explicit same-owner recovery.
+        required: false
+        type: string
+      expected_controller_tree:
+        description: Required reviewed controller tree for an ordinary deploy. Leave empty only for explicit same-owner recovery.
+        required: false
+        type: string
+      expected_production_deploy_sha:
+        description: Required exact production-deploy SHA to lease from for an ordinary deploy. Leave empty only for explicit same-owner recovery.
         required: false
         type: string
 
@@ -55,6 +67,9 @@ jobs:
       CONTROLLER_SHA: ${{ github.sha }}
       INPUT_TARGET_SHA: ${{ inputs.target_sha || '' }}
       INPUT_EXPECTED_CANDIDATE_SHA: ${{ inputs.expected_candidate_sha || '' }}
+      INPUT_EXPECTED_CONTROLLER_SHA: ${{ inputs.expected_controller_sha || '' }}
+      INPUT_EXPECTED_CONTROLLER_TREE: ${{ inputs.expected_controller_tree || '' }}
+      INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA: ${{ inputs.expected_production_deploy_sha || '' }}
       POLL_ATTEMPTS: "30"
       POLL_SECONDS: "10"
       POLL_CONNECT_TIMEOUT: "3"
@@ -100,14 +115,22 @@ jobs:
             # that is this controller's own commit, a distinct identity.
             git fetch --no-tags origin runtime-candidate
             target_sha="$(git rev-parse origin/runtime-candidate)"
-            if [[ -n "$INPUT_EXPECTED_CANDIDATE_SHA" ]]; then
-              [[ "${INPUT_EXPECTED_CANDIDATE_SHA,,}" == "$target_sha" ]] || { echo "RUNTIME_CANDIDATE_UNEXPECTED_SHA=$target_sha" >&2; exit 1; }
-            fi
+            [[ "$INPUT_EXPECTED_CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "ORDINARY_DEPLOY_EXPECTED_CANDIDATE_SHA_REQUIRED" >&2; exit 1; }
+            [[ "$INPUT_EXPECTED_CONTROLLER_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "ORDINARY_DEPLOY_EXPECTED_CONTROLLER_SHA_REQUIRED" >&2; exit 1; }
+            [[ "$INPUT_EXPECTED_CONTROLLER_TREE" =~ ^[0-9a-f]{40}$ ]] || { echo "ORDINARY_DEPLOY_EXPECTED_CONTROLLER_TREE_REQUIRED" >&2; exit 1; }
+            [[ "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "ORDINARY_DEPLOY_EXPECTED_PRODUCTION_DEPLOY_SHA_REQUIRED" >&2; exit 1; }
+            [[ "$INPUT_EXPECTED_CANDIDATE_SHA" == "$target_sha" ]] || { echo "RUNTIME_CANDIDATE_UNEXPECTED_SHA=$target_sha" >&2; exit 1; }
+            [[ "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" == "$PRODUCTION_DEPLOY_SHA" ]] || { echo "PRODUCTION_DEPLOY_UNEXPECTED_SHA=$PRODUCTION_DEPLOY_SHA" >&2; exit 1; }
             recovery_mode=0
           fi
           [[ "$target_sha" =~ ^[a-f0-9]{40}$ ]] || { echo 'GENERIC_DEPLOY_INVALID_SOURCE_COMMIT' >&2; exit 1; }
           git fetch --no-tags origin "$target_sha"
           git cat-file -e "$target_sha^{commit}" || { echo 'GENERIC_DEPLOY_TARGET_NOT_IN_REPOSITORY' >&2; exit 1; }
+          if [[ "$recovery_mode" == 0 ]]; then
+            cas_expected_production_deploy_sha="$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA"
+          else
+            cas_expected_production_deploy_sha="$PRODUCTION_DEPLOY_SHA"
+          fi
           candidate_contract_path="$RUNNER_TEMP/generic-deploy-release-surface-contract.json"
           candidate_manifest_path="$RUNNER_TEMP/generic-deploy-production-manifest.json"
           git show "$target_sha:release-surface-contract.json" > "$candidate_contract_path"
@@ -116,6 +139,7 @@ jobs:
             echo "TARGET_SHA=$target_sha"
             echo "RELEASE_ID=deploy-$target_sha"
             echo "RECOVERY_MODE=$recovery_mode"
+            echo "CAS_EXPECTED_PRODUCTION_DEPLOY_SHA=$cas_expected_production_deploy_sha"
             echo "CANDIDATE_CONTRACT_PATH=$candidate_contract_path"
             echo "CANDIDATE_MANIFEST_PATH=$candidate_manifest_path"
           } >> "$GITHUB_ENV"
@@ -341,22 +365,25 @@ jobs:
             } == $request[0].expected.legal_hashes)
           ' legal.json >/dev/null
 
-      - name: Reconfirm runtime-candidate has not moved since preflight
-        # Freshness matters only up to the first durable mutation: once
-        # acquire/pause has actually run (recovery, or a rerun reusing an
-        # already-paused owner), the durable owner is authoritative and
-        # runtime-candidate is free to move again without stranding it.
-        if: env.RECOVERY_MODE == '0' && env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE' && env.REUSING_PAUSED_OWNER != '1'
-        run: |
-          set -euo pipefail
-          git fetch --no-tags origin runtime-candidate
-          current_candidate_sha="$(git rev-parse origin/runtime-candidate)"
-          [[ "$current_candidate_sha" == "$TARGET_SHA" ]] || { echo "RUNTIME_CANDIDATE_MOVED_SINCE_PREFLIGHT" >&2; exit 1; }
-
       - name: Acquire owner and pause registrations
         if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE' && env.REUSING_PAUSED_OWNER != '1'
         run: |
           set -euo pipefail
+          # These are the final ordinary-deploy authority checks. Keep them in
+          # this same step immediately before acquire, the first durable
+          # consequence. Recovery resumes its already-owned release under its
+          # separate authority and deliberately does not adopt these inputs.
+          if [[ "$RECOVERY_MODE" == 0 ]]; then
+            git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+            [[ "$CONTROLLER_SHA" == "$INPUT_EXPECTED_CONTROLLER_SHA" ]] || { echo "ORDINARY_DEPLOY_CONTROLLER_SHA_MISMATCH" >&2; exit 1; }
+            [[ "$(git rev-parse "${CONTROLLER_SHA}^{tree}")" == "$INPUT_EXPECTED_CONTROLLER_TREE" ]] || { echo "ORDINARY_DEPLOY_CONTROLLER_TREE_MISMATCH" >&2; exit 1; }
+            [[ "$(git rev-parse origin/main)" == "$INPUT_EXPECTED_CONTROLLER_SHA" ]] || { echo "ORDINARY_DEPLOY_CONTROLLER_MAIN_MOVED" >&2; exit 1; }
+            git fetch --no-tags origin runtime-candidate
+            current_candidate_sha="$(git rev-parse origin/runtime-candidate)"
+            [[ "$current_candidate_sha" == "$INPUT_EXPECTED_CANDIDATE_SHA" && "$current_candidate_sha" == "$TARGET_SHA" ]] || { echo "RUNTIME_CANDIDATE_MOVED_SINCE_PREFLIGHT=$current_candidate_sha" >&2; exit 1; }
+            current_production_deploy_sha="$(scripts/read-production-deploy-ref.sh)"
+            [[ "$current_production_deploy_sha" == "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" ]] || { echo "PRODUCTION_DEPLOY_MOVED_SINCE_PREFLIGHT=$current_production_deploy_sha" >&2; exit 1; }
+          fi
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/acquire" > /dev/null
           api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/pause" > paused.json
@@ -388,11 +415,23 @@ jobs:
         run: |
           set -euo pipefail
           current_production_deploy_sha="$(scripts/read-production-deploy-ref.sh)"
-          [[ "$current_production_deploy_sha" == "$PRODUCTION_DEPLOY_SHA" ]] || { echo "PRODUCTION_DEPLOY_MOVED_SINCE_PREFLIGHT" >&2; exit 1; }
+          [[ "$current_production_deploy_sha" == "$CAS_EXPECTED_PRODUCTION_DEPLOY_SHA" ]] || { echo "PRODUCTION_DEPLOY_MOVED_SINCE_PREFLIGHT=$current_production_deploy_sha" >&2; exit 1; }
 
       - name: Set guarded production deployment ref
         if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'
-        run: scripts/set-production-deploy-ref.sh "$TARGET_SHA"
+        run: |
+          set -euo pipefail
+          # A same-owner ordinary replay has already crossed acquire/pause, so
+          # its durable owner—not runtime-candidate—is authoritative. It still
+          # needs the sealed controller authority immediately before this run's
+          # first remaining durable consequence.
+          if [[ "$RECOVERY_MODE" == 0 && "$REUSING_PAUSED_OWNER" == 1 ]]; then
+            git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+            [[ "$CONTROLLER_SHA" == "$INPUT_EXPECTED_CONTROLLER_SHA" ]] || { echo "ORDINARY_DEPLOY_CONTROLLER_SHA_MISMATCH" >&2; exit 1; }
+            [[ "$(git rev-parse "${CONTROLLER_SHA}^{tree}")" == "$INPUT_EXPECTED_CONTROLLER_TREE" ]] || { echo "ORDINARY_DEPLOY_CONTROLLER_TREE_MISMATCH" >&2; exit 1; }
+            [[ "$(git rev-parse origin/main)" == "$INPUT_EXPECTED_CONTROLLER_SHA" ]] || { echo "ORDINARY_DEPLOY_CONTROLLER_MAIN_MOVED" >&2; exit 1; }
+          fi
+          scripts/set-production-deploy-ref.sh "$TARGET_SHA" "$CAS_EXPECTED_PRODUCTION_DEPLOY_SHA"
 
       - name: Deploy exact production candidate
         if: env.DEPLOY_ACTION == 'DEPLOY'
