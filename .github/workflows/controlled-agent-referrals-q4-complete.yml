@@ -1,0 +1,100 @@
+name: Controlled Agent Referrals Q4 terminalization
+
+# Terminalizes only the exact Q4 ROLLING owner that is already held after the
+# Q3-to-Q4 DORMANT deployment. It never deploys, reacquires, or activates.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  complete:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    env:
+      CONTROLLER_SHA: ${{ github.sha }}
+      TARGET_SHA: e0cf268496660dade2db3fa43b189682d059c25c
+      Q4_RELEASE_ID: agent-referrals-q4-dormant-e0cf268496660dade2db3fa43b189682d059c25c
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+      PUBLIC_FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
+      ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind exact current main Q4 terminalization controller
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main ]] || { echo AGENT_REFERRALS_Q4_COMPLETE_CONTROLLER_NOT_MAIN >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo AGENT_REFERRALS_Q4_COMPLETE_CONTROLLER_MAIN_MOVED >&2; exit 1; }
+          [[ "$Q4_RELEASE_ID" == "agent-referrals-q4-dormant-$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q4_COMPLETE_RELEASE_ID_INVALID >&2; exit 1; }
+
+      - name: Prove exact held Q4 DORMANT prepared state before terminalization
+        run: |
+          set -euo pipefail
+          source scripts/release/release-api.sh
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q4_COMPLETE_PRODUCTION_POINTER_MISMATCH >&2; exit 1; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-before.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$Q4_RELEASE_ID" > completion-before.json
+          inventory="$(git ls-tree -r --name-only "$TARGET_SHA" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
+          migration="inventory-sha256:$(printf '%s' "$inventory" | shasum -a 256 | awk '{print $1}')"
+          jq -e --arg id "$Q4_RELEASE_ID" --arg source "$TARGET_SHA" --arg migration "$migration" '.runtime as $r | {release_id:$id,mode:"ROLLING",expected:{source_commit:$source,migration:$migration,legal_version:$r.legal_version,legal_manifest_sha256:$r.legal_manifest_sha256,legal_hashes:$r.legal_hashes}}' status-before.json > q4-release.json
+          jq -e '.expected.legal_version != null and .expected.legal_manifest_sha256 != null and .expected.legal_hashes != null' q4-release.json >/dev/null || { echo AGENT_REFERRALS_Q4_COMPLETE_LEGAL_EVIDENCE_UNAVAILABLE >&2; exit 1; }
+          jq '{expected:(.expected | {source_commit,migration,legal_version,legal_manifest_sha256})}' q4-release.json > q4-status-projection.json
+          jq -e --arg id "$Q4_RELEASE_ID" --arg q4 "$TARGET_SHA" --slurpfile gate q4-status-projection.json '.owner_release_id == $id and .owner_mode == "ROLLING" and .sales_paused == false and .expected == $gate[0].expected and .runtime.source_commit == $q4 and .runtime.worker_source_commit == $q4' status-before.json >/dev/null || { echo AGENT_REFERRALS_Q4_COMPLETE_HELD_OWNER_MISMATCH >&2; exit 1; }
+          jq -e '.complete == false' completion-before.json >/dev/null || { echo AGENT_REFERRALS_Q4_COMPLETE_ALREADY_OR_AMBIGUOUS >&2; exit 1; }
+          health="$(curl --fail --silent --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/healthz" | jq -r '.ok // false' 2>/dev/null || true)"
+          ready="$(curl --fail --silent --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/readyz" | jq -r '.ok // false' 2>/dev/null || true)"
+          frontend="$(curl --fail --silent --connect-timeout 10 --max-time 30 "$PUBLIC_FRONTEND_URL/release.json" | jq -r '.source_commit // empty' 2>/dev/null || true)"
+          admin="$(curl --fail --silent --connect-timeout 10 --max-time 30 "$ADMIN_RELEASE_URL" | jq -r '.source_commit // empty' 2>/dev/null || true)"
+          [[ "$health" == true && "$ready" == true && "$frontend" == "$TARGET_SHA" && "$admin" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q4_COMPLETE_PREPARED_TOPOLOGY_MISMATCH >&2; exit 1; }
+          runtime_inventory="$(jq -r '.runtime.migration_versions | sort | join("\n")' status-before.json)"
+          [[ "$runtime_inventory" == "$inventory" ]] || { echo AGENT_REFERRALS_Q4_COMPLETE_MIGRATION_INVENTORY_MISMATCH >&2; exit 1; }
+          ! printf '%s\n' "$runtime_inventory" | grep -Eq '^005[0-9]' || { echo AGENT_REFERRALS_Q4_COMPLETE_UNEXPECTED_NEW_MIGRATION >&2; exit 1; }
+          for file in 0042_agent_referrals_agents_rebuild.sql 0043_agent_referrals_foundation.sql 0044_partner_identity.sql 0045_engagement_publication.sql 0046_attribution_reward.sql 0047_act_payment_settlement.sql 0048_ord_reporting.sql 0049_agent_referrals_integration_hardening.sql; do
+            hash="$(git show "$TARGET_SHA:commerce/migrations/$file" | shasum -a 256 | awk '{print $1}')"
+            jq -e --arg file "$file" --arg hash "$hash" '.runtime.migration_source_hashes[$file] == $hash' status-before.json >/dev/null || { echo "AGENT_REFERRALS_Q4_COMPLETE_MIGRATION_HASH_MISMATCH=$file" >&2; exit 1; }
+          done
+          api -X POST --data-binary @q4-release.json "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/dormant-readiness" > readiness-before.json
+          jq -e '.ready == true' readiness-before.json >/dev/null || { jq -c '.reasons' readiness-before.json >&2; exit 1; }
+
+      - name: Complete already-held exact Q4 ROLLING release once
+        env:
+          Q4_RELEASE_REQUEST: ${{ github.workspace }}/q4-release.json
+          Q4_COMPLETION_OUTCOME: ${{ runner.temp }}/q4-completion-outcome.json
+        run: |
+          set -euo pipefail
+          scripts/release/complete-agent-referrals-q4-held-release.sh
+          jq -c . "$Q4_COMPLETION_OUTCOME" >> "$GITHUB_STEP_SUMMARY"
+          echo "Q4_COMPLETION_OUTCOME=$Q4_COMPLETION_OUTCOME" >> "$GITHUB_ENV"
+
+      - name: Reconcile exact Q4 terminal completion and prove DORMANT state
+        run: |
+          set -euo pipefail
+          source scripts/release/release-api.sh
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q4_COMPLETE_PRODUCTION_POINTER_MOVED >&2; exit 1; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-after.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$Q4_RELEASE_ID" > completion-after.json
+          jq -e --slurpfile release q4-release.json '.complete == true and .expected == $release[0].expected' completion-after.json >/dev/null || { echo AGENT_REFERRALS_Q4_COMPLETE_RECONCILIATION_INCONCLUSIVE >&2; exit 1; }
+          jq -e --arg q4 "$TARGET_SHA" '.owner_release_id == null and .owner_mode == null and .sales_paused == false and .runtime.source_commit == $q4 and .runtime.worker_source_commit == $q4' status-after.json >/dev/null || { echo AGENT_REFERRALS_Q4_COMPLETE_TERMINAL_OWNER_MISMATCH >&2; exit 1; }
+          api -X POST --data-binary @q4-release.json "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/dormant-readiness" > readiness-after.json
+          jq -e '.ready == true' readiness-after.json >/dev/null || { jq -c '.reasons' readiness-after.json >&2; exit 1; }
+          outcome="$(jq -r '.outcome' "$Q4_COMPLETION_OUTCOME")"
+          [[ "$outcome" == ACCEPTED || "$outcome" == UNKNOWN ]] || { echo AGENT_REFERRALS_Q4_COMPLETE_OUTCOME_INVALID >&2; exit 1; }
+          {
+            echo "## Agent Referrals Q4 terminalization"
+            echo "- completion outcome: $outcome"
+            echo "- Q4 release is COMPLETE; owner is null; sales remain open."
+            echo "- Agent Referrals remains DORMANT."
+          } >> "$GITHUB_STEP_SUMMARY"
