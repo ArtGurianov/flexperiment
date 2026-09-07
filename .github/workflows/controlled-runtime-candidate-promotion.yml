@@ -7,6 +7,18 @@ on:
         description: Exact published runtime-candidate commit SHA to promote.
         required: true
         type: string
+      expected_controller_sha:
+        description: Exact reviewed main controller commit SHA authorized to make this CAS.
+        required: true
+        type: string
+      expected_controller_tree:
+        description: Exact reviewed tree for the authorized controller commit.
+        required: true
+        type: string
+      expected_published_ref:
+        description: Exact runtime publication ref that must still resolve to target_sha.
+        required: true
+        type: string
       expected_runtime_candidate_sha:
         description: Exact current runtime-candidate SHA required for the CAS update.
         required: true
@@ -35,6 +47,9 @@ jobs:
     env:
       CONTROLLER_SHA: ${{ github.sha }}
       INPUT_TARGET_SHA: ${{ inputs.target_sha }}
+      INPUT_EXPECTED_CONTROLLER_SHA: ${{ inputs.expected_controller_sha }}
+      INPUT_EXPECTED_CONTROLLER_TREE: ${{ inputs.expected_controller_tree }}
+      INPUT_EXPECTED_PUBLISHED_REF: ${{ inputs.expected_published_ref }}
       INPUT_EXPECTED_RUNTIME_CANDIDATE_SHA: ${{ inputs.expected_runtime_candidate_sha }}
       INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA: ${{ inputs.expected_production_deploy_sha }}
       INPUT_REASON: ${{ inputs.reason }}
@@ -60,6 +75,9 @@ jobs:
           git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
           [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_CONTROLLER_MAIN_MOVED" >&2; exit 1; }
           [[ "$INPUT_TARGET_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_TARGET_SHA_INVALID" >&2; exit 1; }
+          [[ "$INPUT_EXPECTED_CONTROLLER_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_EXPECTED_CONTROLLER_SHA_INVALID" >&2; exit 1; }
+          [[ "$INPUT_EXPECTED_CONTROLLER_TREE" =~ ^[0-9a-f]{40}$ ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_EXPECTED_CONTROLLER_TREE_INVALID" >&2; exit 1; }
+          [[ "$INPUT_EXPECTED_PUBLISHED_REF" =~ ^refs/heads/runtime/[A-Za-z0-9][A-Za-z0-9._/-]{0,119}$ ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_EXPECTED_PUBLISHED_REF_INVALID" >&2; exit 1; }
           [[ "$INPUT_EXPECTED_RUNTIME_CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_EXPECTED_RUNTIME_CANDIDATE_SHA_INVALID" >&2; exit 1; }
           [[ "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_EXPECTED_PRODUCTION_DEPLOY_SHA_INVALID" >&2; exit 1; }
           [[ "$INPUT_REASON" =~ ^[[:print:]]{1,240}$ ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_REASON_INVALID" >&2; exit 1; }
@@ -80,8 +98,10 @@ jobs:
           [[ "$(git rev-parse origin/runtime-candidate)" == "$actual_runtime_candidate" ]] || { echo "RUNTIME_CANDIDATE_REMOTE_FETCH_MISMATCH" >&2; exit 1; }
           [[ "$(git rev-parse origin/production-deploy)" == "$actual_production_deploy" ]] || { echo "PRODUCTION_DEPLOY_REMOTE_FETCH_MISMATCH" >&2; exit 1; }
           git cat-file -e "$INPUT_TARGET_SHA^{commit}" || { echo "RUNTIME_CANDIDATE_TARGET_NOT_COMMIT" >&2; exit 1; }
-          candidate_source_branch="$(git for-each-ref --format='%(refname:short)' --contains "$INPUT_TARGET_SHA" 'refs/remotes/origin/runtime/*' | head -n 1)"
-          [[ -n "$candidate_source_branch" ]] || { echo "RUNTIME_CANDIDATE_TARGET_NOT_PUBLISHED_RUNTIME_BRANCH" >&2; exit 1; }
+          published_target="$(git ls-remote --exit-code origin "$INPUT_EXPECTED_PUBLISHED_REF" | awk '{print $1}')" || { echo "RUNTIME_CANDIDATE_EXPECTED_PUBLISHED_REF_UNAVAILABLE" >&2; exit 1; }
+          [[ "$published_target" =~ ^[0-9a-f]{40}$ ]] || { echo "RUNTIME_CANDIDATE_EXPECTED_PUBLISHED_REF_INVALID" >&2; exit 1; }
+          [[ "$published_target" == "$INPUT_TARGET_SHA" ]] || { echo "RUNTIME_CANDIDATE_EXPECTED_PUBLISHED_REF_MISMATCH=$published_target" >&2; exit 1; }
+          candidate_source_branch="${INPUT_EXPECTED_PUBLISHED_REF#refs/heads/}"
           # runtime-candidate is a proposal register, never an authority. The
           # only ancestry that matters is that the NEW target descends from what
           # production is actually running - the previous proposal's value and
@@ -101,22 +121,25 @@ jobs:
             echo "CANDIDATE_SOURCE_BRANCH=$candidate_source_branch"
           } >> "$GITHUB_ENV"
 
-      - name: Reconfirm exact CAS inputs immediately before promotion
-        run: |
-          set -euo pipefail
-          current_runtime_candidate="$(git ls-remote --exit-code origin refs/heads/runtime-candidate | awk '{print $1}')"
-          current_production_deploy="$(git ls-remote --exit-code origin refs/heads/production-deploy | awk '{print $1}')"
-          [[ "$current_runtime_candidate" == "$INPUT_EXPECTED_RUNTIME_CANDIDATE_SHA" ]] || { echo "RUNTIME_CANDIDATE_CAS_MISMATCH=$current_runtime_candidate" >&2; exit 1; }
-          [[ "$current_production_deploy" == "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" ]] || { echo "PRODUCTION_DEPLOY_CAS_MISMATCH=$current_production_deploy" >&2; exit 1; }
-          git fetch --no-tags origin \
-            refs/heads/runtime-candidate:refs/remotes/origin/runtime-candidate \
-            refs/heads/production-deploy:refs/remotes/origin/production-deploy
-          [[ "$(git rev-parse origin/runtime-candidate)" == "$current_runtime_candidate" ]] || { echo "RUNTIME_CANDIDATE_PRE_CAS_FETCH_MISMATCH" >&2; exit 1; }
-          [[ "$(git rev-parse origin/production-deploy)" == "$current_production_deploy" ]] || { echo "PRODUCTION_DEPLOY_PRE_CAS_FETCH_MISMATCH" >&2; exit 1; }
-
       - name: Attempt runtime-candidate lease-backed CAS
         run: |
-          set -uo pipefail
+          set -euo pipefail
+          read_remote_ref() {
+            local ref="$1" value
+            value="$(git ls-remote --exit-code origin "$ref" | awk '{print $1}')" || return 1
+            [[ "$value" =~ ^[0-9a-f]{40}$ ]] || return 1
+            printf '%s\n' "$value"
+          }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$INPUT_EXPECTED_CONTROLLER_SHA" ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_CONTROLLER_SHA_MISMATCH" >&2; exit 1; }
+          [[ "$(git rev-parse "${CONTROLLER_SHA}^{tree}")" == "$INPUT_EXPECTED_CONTROLLER_TREE" ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_CONTROLLER_TREE_MISMATCH" >&2; exit 1; }
+          [[ "$(git rev-parse origin/main)" == "$INPUT_EXPECTED_CONTROLLER_SHA" ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_CONTROLLER_MAIN_MOVED" >&2; exit 1; }
+          current_runtime_candidate="$(read_remote_ref refs/heads/runtime-candidate)" || { echo "RUNTIME_CANDIDATE_PRE_CAS_REF_UNAVAILABLE" >&2; exit 1; }
+          current_production_deploy="$(read_remote_ref refs/heads/production-deploy)" || { echo "PRODUCTION_DEPLOY_PRE_CAS_REF_UNAVAILABLE" >&2; exit 1; }
+          current_published_target="$(read_remote_ref "$INPUT_EXPECTED_PUBLISHED_REF")" || { echo "RUNTIME_CANDIDATE_EXPECTED_PUBLISHED_REF_UNAVAILABLE" >&2; exit 1; }
+          [[ "$current_runtime_candidate" == "$INPUT_EXPECTED_RUNTIME_CANDIDATE_SHA" ]] || { echo "RUNTIME_CANDIDATE_CAS_MISMATCH=$current_runtime_candidate" >&2; exit 1; }
+          [[ "$current_production_deploy" == "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" ]] || { echo "PRODUCTION_DEPLOY_CAS_MISMATCH=$current_production_deploy" >&2; exit 1; }
+          [[ "$current_published_target" == "$INPUT_TARGET_SHA" ]] || { echo "RUNTIME_CANDIDATE_EXPECTED_PUBLISHED_REF_MISMATCH=$current_published_target" >&2; exit 1; }
           set +e
           git push --force-with-lease="refs/heads/runtime-candidate:${INPUT_EXPECTED_RUNTIME_CANDIDATE_SHA}" origin "${INPUT_TARGET_SHA}:refs/heads/runtime-candidate"
           cas_push_rc=$?
