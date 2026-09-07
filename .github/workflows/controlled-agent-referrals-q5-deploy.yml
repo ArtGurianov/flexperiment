@@ -1,0 +1,191 @@
+name: Controlled Agent Referrals Q4 to Q5 reconciliation deployment
+
+# Q5 is a detached, certificate-materialized candidate.  This controller is
+# intentionally separate from the ancestry-bound generic controller: it proves
+# the identical candidate positively before adopting the ordinary deploy
+# protocol; it never weakens generic ancestry admission.
+on:
+  workflow_dispatch:
+    inputs:
+      expected_candidate_sha:
+        description: Exact reviewed Q5 runtime-candidate SHA.
+        required: true
+        type: string
+      expected_controller_sha:
+        description: Exact reviewed controller main SHA.
+        required: true
+        type: string
+      expected_controller_tree:
+        description: Exact reviewed controller tree.
+        required: true
+        type: string
+      expected_production_deploy_sha:
+        description: Exact Q4 production-deploy SHA to lease from.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
+    env:
+      CONTROLLER_SHA: ${{ github.sha }}
+      BASE_SHA: e0cf268496660dade2db3fa43b189682d059c25c
+      TARGET_SHA: b153ed226770a947cdbf9cd83e1a9c1181b7cf6f
+      TARGET_TREE: 4b8a9b16299e4f57add486453e51f9855ac7df93
+      RELEASE_ID: deploy-b153ed226770a947cdbf9cd83e1a9c1181b7cf6f
+      INPUT_EXPECTED_CANDIDATE_SHA: ${{ inputs.expected_candidate_sha }}
+      INPUT_EXPECTED_CONTROLLER_SHA: ${{ inputs.expected_controller_sha }}
+      INPUT_EXPECTED_CONTROLLER_TREE: ${{ inputs.expected_controller_tree }}
+      INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA: ${{ inputs.expected_production_deploy_sha }}
+      PRODUCTION_DEPLOY_REF_TOKEN: ${{ secrets.PRODUCTION_DEPLOY_REF_TOKEN }}
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+      COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL }}
+      PUBLIC_FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+      ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
+      INITIAL_READINESS_DELAY_SECONDS: "60"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind dedicated production-deploy credential
+        run: |
+          set -euo pipefail
+          [[ -n "$PRODUCTION_DEPLOY_REF_TOKEN" ]] || { echo AGENT_REFERRALS_Q5_DEPLOY_REF_TOKEN_REQUIRED >&2; exit 1; }
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git remote set-url origin "https://x-access-token:${PRODUCTION_DEPLOY_REF_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: Bind initial current main controller
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main ]] || { echo AGENT_REFERRALS_Q5_CONTROLLER_NOT_MAIN >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo AGENT_REFERRALS_Q5_CONTROLLER_MAIN_MOVED >&2; exit 1; }
+
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.29.3 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+
+      - name: Reconstruct exact certified Q5 from this controller tree
+        run: |
+          set -euo pipefail
+          git show "$GITHUB_SHA:.release/controlled-candidates/agent-referrals-activation-$BASE_SHA/certificate.json" > candidate-certificate.json
+          SOURCE_MAIN_SHA="$(jq -er '.source_main_sha' candidate-certificate.json)"
+          git merge-base --is-ancestor "$SOURCE_MAIN_SHA" "$GITHUB_SHA" || { echo AGENT_REFERRALS_Q5_SOURCE_MAIN_NOT_ANCESTOR >&2; exit 1; }
+          jq -e --arg base "$BASE_SHA" '.base_sha == $base' candidate-certificate.json >/dev/null || { echo AGENT_REFERRALS_Q5_CERTIFICATE_BASE_MISMATCH >&2; exit 1; }
+          jq -e '.patch_source == "controller_tree"' candidate-certificate.json >/dev/null || { echo AGENT_REFERRALS_Q5_CERTIFICATE_PATCH_SOURCE_INVALID >&2; exit 1; }
+          RECONSTRUCTED_SHA="$(node --import tsx commerce/src/controlled-candidate-verify.ts candidate-certificate.json "$GITHUB_SHA")"
+          [[ "$RECONSTRUCTED_SHA" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q5_RECONSTRUCTION_MISMATCH >&2; exit 1; }
+          [[ "$(git rev-parse "${RECONSTRUCTED_SHA}^")" == "$BASE_SHA" ]] || { echo AGENT_REFERRALS_Q5_PARENT_NOT_Q4 >&2; exit 1; }
+          [[ "$(git rev-parse "${RECONSTRUCTED_SHA}^{tree}")" == "$TARGET_TREE" ]] || { echo AGENT_REFERRALS_Q5_TREE_MISMATCH >&2; exit 1; }
+          jq -r '.paths[].path' candidate-certificate.json | sort > certified-manifest.txt
+          git diff --name-only "$BASE_SHA" "$RECONSTRUCTED_SHA" | sort > actual-changed-paths.txt
+          diff certified-manifest.txt actual-changed-paths.txt || { echo AGENT_REFERRALS_Q5_MANIFEST_MISMATCH >&2; exit 1; }
+          ! grep -Eq '^(commerce/migrations/|public/legal/|commerce/legal/|\.github/workflows/)' certified-manifest.txt || { echo AGENT_REFERRALS_Q5_FORBIDDEN_CANDIDATE_PATH >&2; exit 1; }
+
+      - name: Prove Q5 ordinary deployment admission and durable baseline
+        run: |
+          set -euo pipefail
+          git diff --name-only -z "$BASE_SHA" "$TARGET_SHA" > q5-boundary-paths.bin
+          pnpm commerce:production-deploy:assert-boundary q5-boundary-paths.bin
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-before.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion-before.json
+          production_deploy="$(scripts/read-production-deploy-ref.sh)"
+          [[ "$production_deploy" == "$BASE_SHA" || "$production_deploy" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q5_PRODUCTION_POINTER_UNEXPECTED >&2; exit 1; }
+          inventory="$(git ls-tree -r --name-only "$TARGET_SHA" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
+          migration="inventory-sha256:$(printf %s "$inventory" | shasum -a 256 | awk '{print $1}')"
+          jq -e --arg id "$RELEASE_ID" --arg source "$TARGET_SHA" --arg migration "$migration" '.runtime as $r | {release_id:$id,mode:"CONTROLLED_CUTOVER",expected:{source_commit:$source,migration:$migration,legal_version:$r.legal_version,legal_manifest_sha256:$r.legal_manifest_sha256,legal_hashes:$r.legal_hashes}}' status-before.json > release.json
+          jq -e '.expected.legal_version != null and .expected.legal_manifest_sha256 != null and .expected.legal_hashes != null' release.json >/dev/null || { echo AGENT_REFERRALS_Q5_BASELINE_INVALID >&2; exit 1; }
+          if jq -e '.complete == true' completion-before.json >/dev/null; then
+            [[ "$production_deploy" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q5_COMPLETED_POINTER_MISMATCH >&2; exit 1; }
+            echo DEPLOYMENT_STATE=ALREADY_COMPLETE >> "$GITHUB_ENV"; exit 0
+          fi
+          if [[ "$production_deploy" == "$BASE_SHA" ]] && jq -e '.owner_release_id == null and .owner_mode == null and .sales_paused == false' status-before.json >/dev/null; then
+            echo DEPLOYMENT_STATE=FRESH >> "$GITHUB_ENV"; exit 0
+          fi
+          if jq -e --arg id "$RELEASE_ID" --arg source "$TARGET_SHA" '.owner_release_id == $id and .owner_mode == "CONTROLLED_CUTOVER" and .sales_paused == true and .expected.source_commit == $source' status-before.json >/dev/null; then
+            [[ "$production_deploy" == "$BASE_SHA" || "$production_deploy" == "$TARGET_SHA" ]] || exit 1
+            if [[ "$production_deploy" == "$BASE_SHA" ]]; then echo DEPLOYMENT_STATE=OWNED_PRE_CAS >> "$GITHUB_ENV"; else echo DEPLOYMENT_STATE=OWNED_POST_CAS >> "$GITHUB_ENV"; fi
+            exit 0
+          fi
+          echo AGENT_REFERRALS_Q5_OWNER_STATE_UNEXPECTED >&2; exit 1
+
+      - name: Acquire Q5 owner and pause registrations
+        if: env.DEPLOYMENT_STATE == 'FRESH'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$INPUT_EXPECTED_CONTROLLER_SHA" ]] || { echo AGENT_REFERRALS_Q5_CONTROLLER_SHA_MISMATCH >&2; exit 1; }
+          [[ "$(git rev-parse "${CONTROLLER_SHA}^{tree}")" == "$INPUT_EXPECTED_CONTROLLER_TREE" ]] || { echo AGENT_REFERRALS_Q5_CONTROLLER_TREE_MISMATCH >&2; exit 1; }
+          [[ "$(git rev-parse origin/main)" == "$INPUT_EXPECTED_CONTROLLER_SHA" ]] || { echo AGENT_REFERRALS_Q5_CONTROLLER_MAIN_MOVED >&2; exit 1; }
+          git fetch --no-tags origin runtime-candidate
+          [[ "$(git rev-parse origin/runtime-candidate)" == "$INPUT_EXPECTED_CANDIDATE_SHA" && "$INPUT_EXPECTED_CANDIDATE_SHA" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q5_RUNTIME_CANDIDATE_MOVED >&2; exit 1; }
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" && "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" == "$BASE_SHA" ]] || { echo AGENT_REFERRALS_Q5_PRODUCTION_POINTER_MOVED >&2; exit 1; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/acquire" > /dev/null
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/pause" > paused.json
+          jq -e '.sales_paused == true and .owner_release_id == env.RELEASE_ID' paused.json >/dev/null
+
+      - name: Prove public checkout pause
+        if: env.DEPLOYMENT_STATE != 'ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          code="$(curl --silent --show-error --connect-timeout 10 --max-time 30 --output paused-checkout.json --write-out '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: q5-pause-proof-${GITHUB_RUN_ID}" --data '{}' "$PUBLIC_API_URL/v1/public/checkouts")"
+          [[ "$code" == 503 ]] && jq -e '.error.code == "SALES_TEMPORARILY_PAUSED"' paused-checkout.json >/dev/null
+
+      - name: Rebind same-owner authority and guarded Q4 to Q5 CAS
+        if: env.DEPLOYMENT_STATE != 'ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$INPUT_EXPECTED_CONTROLLER_SHA" ]] || { echo AGENT_REFERRALS_Q5_CONTROLLER_SHA_MISMATCH >&2; exit 1; }
+          [[ "$(git rev-parse "${CONTROLLER_SHA}^{tree}")" == "$INPUT_EXPECTED_CONTROLLER_TREE" ]] || { echo AGENT_REFERRALS_Q5_CONTROLLER_TREE_MISMATCH >&2; exit 1; }
+          [[ "$(git rev-parse origin/main)" == "$INPUT_EXPECTED_CONTROLLER_SHA" ]] || { echo AGENT_REFERRALS_Q5_CONTROLLER_MAIN_MOVED >&2; exit 1; }
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" || "$(scripts/read-production-deploy-ref.sh)" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q5_PRODUCTION_POINTER_MOVED >&2; exit 1; }
+          if [[ "$(scripts/read-production-deploy-ref.sh)" == "$BASE_SHA" ]]; then scripts/set-production-deploy-ref.sh "$TARGET_SHA" "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA"; fi
+
+      - name: Deploy exact Q5 once and prove convergence
+        if: env.DEPLOYMENT_STATE == 'FRESH' || env.DEPLOYMENT_STATE == 'OWNED_PRE_CAS'
+        run: |
+          set -euo pipefail
+          scripts/controlled-coolify-deploy.sh "$TARGET_SHA"
+          sleep "$INITIAL_READINESS_DELAY_SECONDS"
+          RUNTIME_ASSERT_DIR="$RUNNER_TEMP/q5-runtime"; git worktree add --detach "$RUNTIME_ASSERT_DIR" "$TARGET_SHA"
+          (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile --ignore-scripts)
+          RUNTIME_ASSERT_DIR="$RUNTIME_ASSERT_DIR" scripts/controlled-production-readiness.sh release.json
+
+      - name: Prove Q5 convergence without retriggering a post-CAS deployment
+        if: env.DEPLOYMENT_STATE == 'OWNED_POST_CAS'
+        run: |
+          set -euo pipefail
+          RUNTIME_ASSERT_DIR="$RUNNER_TEMP/q5-runtime"; git worktree add --detach "$RUNTIME_ASSERT_DIR" "$TARGET_SHA"
+          (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile --ignore-scripts)
+          RUNTIME_ASSERT_DIR="$RUNTIME_ASSERT_DIR" scripts/controlled-production-readiness.sh release.json
+
+      - name: Guarded reopen and completion proof
+        if: env.DEPLOYMENT_STATE != 'ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/reopen" > reopened.json
+          jq -e '.sales_paused == false and .owner_release_id == null and .owner_mode == null' reopened.json >/dev/null
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion-after.json
+          jq -e --slurpfile release release.json '.complete == true and .expected == $release[0].expected' completion-after.json >/dev/null
