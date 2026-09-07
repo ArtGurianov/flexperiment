@@ -66,6 +66,11 @@ describe("Agent Referrals Q3 to Q4 DORMANT deployment controller", () => {
     expect(workflow.indexOf("Guarded Q3 to Q4 production pointer transition")).toBeLessThan(workflow.indexOf("Deploy exact Q4 and wait for all runtime surfaces"));
     expect(workflow).toContain('scripts/controlled-coolify-deploy.sh "$TARGET_SHA"');
     expect(workflow).not.toContain("git checkout $TARGET_SHA");
+
+    const acquireStep = workflow.slice(workflow.indexOf("- name: Acquire exact Q4 ROLLING owner"), workflow.indexOf("- name: Reconfirm exact Q3 to Q4 CAS authority"));
+    const preCasStep = workflow.slice(workflow.indexOf("- name: Reconfirm exact Q3 to Q4 CAS authority"), workflow.indexOf("- name: Guarded Q3 to Q4 production pointer transition"));
+    expect(acquireStep).toContain("if: env.DEPLOYMENT_STATE == 'FRESH'");
+    expect(preCasStep).toContain("env.DEPLOYMENT_STATE == 'OWNED_PRE_CAS'");
   });
 
   it("uses the documented status projection after acquire while retaining full expectation equality for terminal completion", () => {
@@ -73,6 +78,7 @@ describe("Agent Referrals Q3 to Q4 DORMANT deployment controller", () => {
     expect(workflow).toContain("{source_commit,migration,legal_version,legal_manifest_sha256}");
     expect(workflow).toContain("--slurpfile gate q4-gate-projection.json");
     expect(workflow).toContain(".expected == $gate[0].expected");
+    expect(workflow.match(/\.expected == \$gate\[0\]\.expected/g)).toHaveLength(6);
     expect(workflow).not.toContain(".expected == $release[0].expected' status.json");
     expect(workflow).not.toContain(".expected == $release[0].expected' acquired.json");
     expect(workflow).toContain("--slurpfile release q4-release.json '.expected == $release[0].expected' q4-completion.json");
