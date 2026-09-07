@@ -5,6 +5,13 @@ name: Controlled Agent Referrals Q3 to Q4 DORMANT deployment
 # activation are separate authorization boundaries.
 on:
   workflow_dispatch:
+    inputs:
+      operation:
+        description: Read-only post-CAS observation or a separately authorized resume.
+        required: true
+        type: choice
+        options: [observe, resume]
+        default: observe
 
 permissions:
   contents: read
@@ -14,7 +21,43 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  observe:
+    if: inputs.operation == 'observe'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 12
+    env:
+      CONTROLLER_SHA: ${{ github.sha }}
+      TARGET_SHA: e0cf268496660dade2db3fa43b189682d059c25c
+      Q4_RELEASE_ID: agent-referrals-q4-dormant-e0cf268496660dade2db3fa43b189682d059c25c
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+      PUBLIC_FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
+      ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind exact current main observation controller
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main ]] || { echo AGENT_REFERRALS_Q4_OBSERVE_CONTROLLER_NOT_MAIN >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo AGENT_REFERRALS_Q4_OBSERVE_CONTROLLER_MAIN_MOVED >&2; exit 1; }
+
+      - name: Observe exact post-CAS Q4 convergence without mutation
+        run: |
+          set -euo pipefail
+          q4_inventory="$(git ls-tree -r --name-only "$TARGET_SHA" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
+          Q4_MIGRATION="inventory-sha256:$(printf '%s' "$q4_inventory" | shasum -a 256 | awk '{print $1}')" \
+            POLL_ATTEMPTS=30 POLL_SECONDS=10 \
+            scripts/release/observe-agent-referrals-q4-convergence.sh
+
   deploy:
+    if: inputs.operation == 'resume'
     runs-on: ubuntu-latest
     environment: production
     timeout-minutes: 45
@@ -186,19 +229,23 @@ jobs:
         if: env.DEPLOYMENT_STATE == 'FRESH' || env.DEPLOYMENT_STATE == 'OWNED_PRE_CAS'
         run: scripts/set-production-deploy-ref.sh "$TARGET_SHA" "$BASE_SHA"
 
-      - name: Deploy exact Q4 and wait for all runtime surfaces
+      - name: Enqueue exact Q4 deployment only after a new Q3 to Q4 CAS
+        if: env.DEPLOYMENT_STATE == 'FRESH' || env.DEPLOYMENT_STATE == 'OWNED_PRE_CAS'
+        run: scripts/controlled-coolify-deploy.sh "$TARGET_SHA"
+
+      - name: Wait for exact Q4 convergence without retriggering Coolify
         if: env.DEPLOYMENT_STATE != 'PREPARED' && env.DEPLOYMENT_STATE != 'ALREADY_TERMINALIZED'
         run: |
           set -euo pipefail
-          scripts/controlled-coolify-deploy.sh "$TARGET_SHA"
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           for _ in $(seq 1 30); do
             if ! api "$PUBLIC_API_URL/v1/internal/release-control/status" > converged-status.json; then sleep 10; continue; fi
-            jq -e --arg id "$Q4_RELEASE_ID" --arg q4 "$TARGET_SHA" --slurpfile gate q4-gate-projection.json '.owner_release_id == $id and .owner_mode == "ROLLING" and .sales_paused == false and .expected == $gate[0].expected and .runtime.source_commit == $q4 and .runtime.worker_source_commit == $q4' converged-status.json >/dev/null || { echo AGENT_REFERRALS_Q4_DORMANT_CONVERGENCE_AUTHORITY_MISMATCH >&2; exit 1; }
+            jq -e --arg id "$Q4_RELEASE_ID" --slurpfile gate q4-gate-projection.json '.owner_release_id == $id and .owner_mode == "ROLLING" and .sales_paused == false and .expected == $gate[0].expected' converged-status.json >/dev/null || { echo AGENT_REFERRALS_Q4_DORMANT_CONVERGENCE_AUTHORITY_MISMATCH >&2; exit 1; }
+            if ! jq -e --arg q4 "$TARGET_SHA" '.runtime.source_commit == $q4 and .runtime.worker_source_commit == $q4' converged-status.json >/dev/null; then sleep 10; continue; fi
             if curl --fail --silent "$PUBLIC_API_URL/healthz" | jq -e '.ok' >/dev/null && curl --fail --silent "$PUBLIC_API_URL/readyz" | jq -e '.ok' >/dev/null && curl --fail --silent "$PUBLIC_FRONTEND_URL/release.json" | jq -e --arg q4 "$TARGET_SHA" '.source_commit == $q4' >/dev/null && curl --fail --silent "$ADMIN_RELEASE_URL" | jq -e --arg q4 "$TARGET_SHA" '.source_commit == $q4' >/dev/null; then exit 0; fi
             sleep 10
           done
-          echo AGENT_REFERRALS_Q4_DORMANT_CONVERGENCE_FAILED >&2; exit 1
+          echo AGENT_REFERRALS_Q4_DORMANT_CONVERGENCE_TIMEOUT >&2; exit 1
 
       - name: Prove unchanged Q4 migration inventory and full Q4 DORMANT readiness
         if: env.DEPLOYMENT_STATE != 'ALREADY_TERMINALIZED'
