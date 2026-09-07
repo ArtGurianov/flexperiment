@@ -39,6 +39,16 @@ describe("Agent Referrals Q4 held-owner terminalization", () => {
     expect(workflow).toContain(".owner_release_id == null and .owner_mode == null and .sales_paused == false");
   });
 
+  it("rebinds exact current main and production authority immediately before the one completion consequence", () => {
+    const consequence = workflow.slice(workflow.indexOf("- name: Complete already-held exact Q4 ROLLING release once"), workflow.indexOf("- name: Reconcile exact Q4 terminal completion"));
+    const bind = consequence.indexOf("git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main");
+    const production = consequence.indexOf('[[ "$(scripts/read-production-deploy-ref.sh)" == "$TARGET_SHA" ]]');
+    const helper = consequence.indexOf("scripts/release/complete-agent-referrals-q4-held-release.sh");
+    expect(bind).toBeGreaterThan(-1); expect(production).toBeGreaterThan(bind); expect(helper).toBeGreaterThan(production);
+    expect(consequence.slice(production, helper)).not.toContain("curl");
+    expect(consequence.slice(production, helper)).not.toContain("api ");
+  });
+
   it("executes completion once and classifies ambiguous transport, 5xx, and malformed replies without retry", () => {
     for (const response of ["TRANSPORT", "503", "MALFORMED"]) {
       const { child, calls, outcome } = run(response);

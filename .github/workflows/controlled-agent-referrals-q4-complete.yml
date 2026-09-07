@@ -75,6 +75,9 @@ jobs:
           Q4_COMPLETION_OUTCOME: ${{ runner.temp }}/q4-completion-outcome.json
         run: |
           set -euo pipefail
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo AGENT_REFERRALS_Q4_COMPLETE_CONTROLLER_MAIN_MOVED >&2; exit 1; }
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q4_COMPLETE_PRODUCTION_POINTER_MOVED >&2; exit 1; }
           scripts/release/complete-agent-referrals-q4-held-release.sh
           jq -c . "$Q4_COMPLETION_OUTCOME" >> "$GITHUB_STEP_SUMMARY"
           echo "Q4_COMPLETION_OUTCOME=$Q4_COMPLETION_OUTCOME" >> "$GITHUB_ENV"
