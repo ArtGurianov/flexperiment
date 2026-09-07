@@ -23,7 +23,7 @@ describe("Agent Referrals Q5 activation-reconciliation candidate publication wor
     const trigger = workflow.slice(workflow.indexOf("\non:\n"), workflow.indexOf("\npermissions:"));
     expect(trigger).toContain("workflow_dispatch:");
     for (const forbidden of ["push:", "schedule:", "workflow_run:"]) expect(trigger).not.toContain(forbidden);
-    for (const input of ["generation", "expected_target_sha"]) expect(trigger).toMatch(new RegExp(`${input}:\\n\\s+description:[^\\n]+\\n\\s+required: true`));
+    for (const input of ["expected_controller_sha", "expected_controller_tree", "expected_target_sha"]) expect(trigger).toMatch(new RegExp(`${input}:\\n\\s+description:[^\\n]+\\n\\s+required: true`));
     expect(workflow).toContain("environment: production");
     expect(workflow).toContain("group: flexperiment-production-controlled-cutover");
     expect(workflow).toContain("cancel-in-progress: false");
@@ -60,18 +60,21 @@ describe("Agent Referrals Q5 activation-reconciliation candidate publication wor
     for (const forbidden of ["commerce/migrations/", "public/legal/", "commerce/legal/", "\\.github/workflows/"]) expect(workflow).toContain(forbidden);
   });
 
-  it("rebinds main and every protected authority immediately before a single-family, lease-backed publication", () => {
+  it("has one canonical Q5 publication identity and rebinds the reviewed controller plus every protected authority immediately before its lease", () => {
     const publish = workflow.indexOf("Create or reconcile the single immutable Q5 publication ref");
     const push = workflow.indexOf('git push --force-with-lease="${PUBLISH_REF}:" origin "${RECONSTRUCTED_SHA}:${PUBLISH_REF}"');
     expect(publish).toBeGreaterThan(0);
     expect(push).toBeGreaterThan(publish);
     const finalBind = workflow.slice(publish, push);
-    for (const token of ["AGENT_REFERRALS_Q5_CANDIDATE_PRE_PUBLISH_CONTROLLER_MAIN_MOVED", "PRE_PUBLISH_PRODUCTION_MOVED", "PRE_PUBLISH_RUNTIME_CANDIDATE_MOVED", "PRE_PUBLISH_Q2_MOVED", "PRE_PUBLISH_Q3_MOVED", "PRE_PUBLISH_Q4_MOVED"]) expect(finalBind).toContain(token);
+    for (const token of ["AGENT_REFERRALS_Q5_CANDIDATE_CONTROLLER_SHA_MISMATCH", "AGENT_REFERRALS_Q5_CANDIDATE_CONTROLLER_TREE_MISMATCH", "AGENT_REFERRALS_Q5_CANDIDATE_PRE_PUBLISH_CONTROLLER_MAIN_MOVED", "PRE_PUBLISH_PRODUCTION_MOVED", "PRE_PUBLISH_RUNTIME_CANDIDATE_MOVED", "PRE_PUBLISH_Q2_MOVED", "PRE_PUBLISH_Q3_MOVED", "PRE_PUBLISH_Q4_MOVED"]) expect(finalBind).toContain(token);
+    expect(finalBind).toContain('[[ "$CONTROLLER_SHA" == "$EXPECTED_CONTROLLER_SHA" ]]');
+    expect(finalBind).toContain('[[ "$(git rev-parse "${GITHUB_SHA}^{tree}")" == "$EXPECTED_CONTROLLER_TREE" ]]');
+    expect(finalBind).toContain('[[ "$(git rev-parse origin/main)" == "$EXPECTED_CONTROLLER_SHA" ]]');
     expect(finalBind).not.toMatch(/curl|api\s*\(/);
-    expect(workflow).toContain("PUBLISH_REF=refs/heads/runtime/agent-referrals-activation-reconciliation-${INPUT_GENERATION}");
-    expect(workflow).toContain("refs/heads/runtime/agent-referrals-activation-reconciliation-*");
-    expect(workflow).toContain("Q5_PUBLICATION_NAMESPACE_MULTIPLE_REFS");
-    expect(workflow).toContain("Q5_PUBLICATION_NAMESPACE_ALREADY_OCCUPIED");
+    expect(workflow).toContain("PUBLISH_REF=refs/heads/runtime/agent-referrals-activation-reconciliation-1");
+    expect(workflow).not.toContain("INPUT_GENERATION");
+    expect(workflow).not.toContain("refs/heads/runtime/agent-referrals-activation-reconciliation-*");
+    expect(workflow).toContain("Q5_PUBLICATION_CANONICAL_REF_ALREADY_DIFFERENT_SHA");
     expect(workflow).toContain("PUBLISH_PUSH_RC=$publish_push_rc");
     expect(workflow).toContain("AGENT_REFERRALS_Q5_CANDIDATE_SAME_SHA_REPLAY");
     expect(workflow).toContain('published="$(read_remote_ref "$PUBLISH_REF")"');

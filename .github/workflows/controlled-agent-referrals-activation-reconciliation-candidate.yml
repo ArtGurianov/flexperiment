@@ -5,8 +5,12 @@ name: Controlled Agent Referrals Q5 activation-reconciliation candidate publicat
 on:
   workflow_dispatch:
     inputs:
-      generation:
-        description: Immutable generation label for the single Q5 runtime publication ref.
+      expected_controller_sha:
+        description: Exact reviewed squash-merged main controller SHA required to execute publication.
+        required: true
+        type: string
+      expected_controller_tree:
+        description: Exact tree of the reviewed squash-merged main controller required to execute publication.
         required: true
         type: string
       expected_target_sha:
@@ -28,7 +32,8 @@ jobs:
     timeout-minutes: 15
     env:
       CONTROLLER_SHA: ${{ github.sha }}
-      INPUT_GENERATION: ${{ inputs.generation }}
+      EXPECTED_CONTROLLER_SHA: ${{ inputs.expected_controller_sha }}
+      EXPECTED_CONTROLLER_TREE: ${{ inputs.expected_controller_tree }}
       TARGET_SHA: ${{ inputs.expected_target_sha }}
       FIXED_Q2: 2dc1a55a070a7e9e9ebcd52f46dff8d171da223e
       FIXED_Q3: f317c836635bfe3a86735ecda6a050c51d4dc924
@@ -56,7 +61,8 @@ jobs:
           [[ "$GITHUB_REF" == refs/heads/main ]] || { echo AGENT_REFERRALS_Q5_CANDIDATE_CONTROLLER_NOT_MAIN >&2; exit 1; }
           git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
           [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo AGENT_REFERRALS_Q5_CANDIDATE_CONTROLLER_MAIN_MOVED >&2; exit 1; }
-          [[ "$INPUT_GENERATION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || { echo AGENT_REFERRALS_Q5_CANDIDATE_GENERATION_INVALID >&2; exit 1; }
+          [[ "$EXPECTED_CONTROLLER_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo AGENT_REFERRALS_Q5_CANDIDATE_EXPECTED_CONTROLLER_SHA_INVALID >&2; exit 1; }
+          [[ "$EXPECTED_CONTROLLER_TREE" =~ ^[a-f0-9]{40}$ ]] || { echo AGENT_REFERRALS_Q5_CANDIDATE_EXPECTED_CONTROLLER_TREE_INVALID >&2; exit 1; }
           [[ "$TARGET_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo AGENT_REFERRALS_Q5_CANDIDATE_EXPECTED_TARGET_SHA_INVALID >&2; exit 1; }
 
       - uses: pnpm/action-setup@v4
@@ -120,29 +126,27 @@ jobs:
       - name: Create or reconcile the single immutable Q5 publication ref
         run: |
           set -euo pipefail
-          PUBLISH_REF=refs/heads/runtime/agent-referrals-activation-reconciliation-${INPUT_GENERATION}
-          publish_family="$(git ls-remote origin 'refs/heads/runtime/agent-referrals-activation-reconciliation-*')"
+          PUBLISH_REF=refs/heads/runtime/agent-referrals-activation-reconciliation-1
+          existing="$(git ls-remote origin "$PUBLISH_REF" | awk '{print $1}')"
           read_remote_ref() {
             local ref="$1" value
             value="$(git ls-remote --exit-code origin "$ref" | awk '{print $1}')" || return 1
             [[ "$value" =~ ^[a-f0-9]{40}$ ]] || return 1
             printf '%s\n' "$value"
           }
-          # This is in the same step as the sole push. No job boundary or
-          # unrelated network operation separates these controller/authority
-          # bindings from creation of the immutable publication ref.
+          # This is in the same step as the sole push. No job boundary separates
+          # the authorization bindings from creation of the immutable ref.
           git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
-          [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo AGENT_REFERRALS_Q5_CANDIDATE_PRE_PUBLISH_CONTROLLER_MAIN_MOVED >&2; exit 1; }
+          [[ "$CONTROLLER_SHA" == "$EXPECTED_CONTROLLER_SHA" ]] || { echo AGENT_REFERRALS_Q5_CANDIDATE_CONTROLLER_SHA_MISMATCH >&2; exit 1; }
+          [[ "$(git rev-parse "${GITHUB_SHA}^{tree}")" == "$EXPECTED_CONTROLLER_TREE" ]] || { echo AGENT_REFERRALS_Q5_CANDIDATE_CONTROLLER_TREE_MISMATCH >&2; exit 1; }
+          [[ "$(git rev-parse origin/main)" == "$EXPECTED_CONTROLLER_SHA" ]] || { echo AGENT_REFERRALS_Q5_CANDIDATE_PRE_PUBLISH_CONTROLLER_MAIN_MOVED >&2; exit 1; }
           [[ "$(read_remote_ref refs/heads/production-deploy)" == "$OBSERVED_PRODUCTION_DEPLOY" ]] || { echo AGENT_REFERRALS_Q5_CANDIDATE_PRE_PUBLISH_PRODUCTION_MOVED >&2; exit 1; }
           [[ "$(read_remote_ref refs/heads/runtime-candidate)" == "$OBSERVED_RUNTIME_CANDIDATE" ]] || { echo AGENT_REFERRALS_Q5_CANDIDATE_PRE_PUBLISH_RUNTIME_CANDIDATE_MOVED >&2; exit 1; }
           [[ "$(read_remote_ref refs/heads/runtime/agent-referrals-1)" == "$OBSERVED_Q2_PUBLICATION" ]] || { echo AGENT_REFERRALS_Q5_CANDIDATE_PRE_PUBLISH_Q2_MOVED >&2; exit 1; }
           [[ "$(read_remote_ref refs/heads/runtime/agent-referrals-recovery-1)" == "$OBSERVED_Q3_PUBLICATION" ]] || { echo AGENT_REFERRALS_Q5_CANDIDATE_PRE_PUBLISH_Q3_MOVED >&2; exit 1; }
           [[ "$(read_remote_ref refs/heads/runtime/agent-referrals-activation-1)" == "$OBSERVED_Q4_PUBLICATION" ]] || { echo AGENT_REFERRALS_Q5_CANDIDATE_PRE_PUBLISH_Q4_MOVED >&2; exit 1; }
-          if [[ -n "$publish_family" ]]; then
-            [[ "$(printf '%s\n' "$publish_family" | wc -l | tr -d ' ')" == 1 ]] || { echo Q5_PUBLICATION_NAMESPACE_MULTIPLE_REFS >&2; exit 1; }
-            existing_sha="$(printf '%s\n' "$publish_family" | awk '{print $1}')"
-            existing_ref="$(printf '%s\n' "$publish_family" | awk '{print $2}')"
-            [[ "$existing_ref" == "$PUBLISH_REF" && "$existing_sha" == "$RECONSTRUCTED_SHA" ]] || { echo Q5_PUBLICATION_NAMESPACE_ALREADY_OCCUPIED >&2; exit 1; }
+          if [[ -n "$existing" ]]; then
+            [[ "$existing" == "$RECONSTRUCTED_SHA" ]] || { echo Q5_PUBLICATION_CANONICAL_REF_ALREADY_DIFFERENT_SHA >&2; exit 1; }
             echo AGENT_REFERRALS_Q5_CANDIDATE_SAME_SHA_REPLAY
           else
             set +e
