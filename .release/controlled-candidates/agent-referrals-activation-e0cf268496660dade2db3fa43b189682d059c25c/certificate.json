@@ -1,0 +1,42 @@
+{
+  "base_sha": "e0cf268496660dade2db3fa43b189682d059c25c",
+  "source_main_sha": "02b129812182885cf28071387093fe7160cbc38d",
+  "patch_source": "controller_tree",
+  "paths": [
+    {
+      "path": "commerce/src/api.ts",
+      "kind": "MODIFY",
+      "mode": "100644",
+      "base_blob_sha": "05678b92616a583525821d20d1048fc211afc93d",
+      "patch_path": ".release/controlled-candidates/agent-referrals-activation-e0cf268496660dade2db3fa43b189682d059c25c/patches/api.patch",
+      "patch_git_blob_sha": "398e985325ca0c4c7bdf1adf06bdc2196c57d611",
+      "patch_sha256": "3e236997d41fda8b2864a6db354e979eb7070f9b07355241551a51b844436b5b",
+      "result_blob_sha": "c70141641052ad114570aef9f03d0eace86a3c5a"
+    },
+    {
+      "path": "commerce/src/agent-referrals-activation-reconciliation.ts",
+      "kind": "CREATE",
+      "mode": "100644",
+      "patch_path": ".release/controlled-candidates/agent-referrals-activation-e0cf268496660dade2db3fa43b189682d059c25c/patches/agent-referrals-activation-reconciliation.patch",
+      "patch_git_blob_sha": "9b853252b9f079fb2af6c335fbf611851691e407",
+      "patch_sha256": "4bfd5e9af14cc3e23769f63b760c49b9d716b959f7a00df22d26a247be7e1c94",
+      "result_blob_sha": "eedd285efa834a631d5f18acd9cf63cbf8a43067"
+    }
+  ],
+  "commit": {
+    "parent_sha": "e0cf268496660dade2db3fa43b189682d059c25c",
+    "tree_sha": "4b8a9b16299e4f57add486453e51f9855ac7df93",
+    "author_name": "Flexperiment Release Controller",
+    "author_email": "release-controller@flexperiment.ru",
+    "author_timestamp": 1788912000,
+    "author_timezone": "+0000",
+    "committer_name": "Flexperiment Release Controller",
+    "committer_email": "release-controller@flexperiment.ru",
+    "committer_timestamp": 1788912000,
+    "committer_timezone": "+0000",
+    "message": "agent-referrals: Q5 activation reconciliation capability",
+    "encoding": "none",
+    "extra_headers": "none",
+    "signed": false
+  }
+}

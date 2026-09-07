@@ -1,0 +1,23 @@
+diff --git a/commerce/src/api.ts b/commerce/src/api.ts
+index 05678b9..c701416 100644
+--- a/commerce/src/api.ts
++++ b/commerce/src/api.ts
+@@ -13,6 +13,7 @@ import { type SmartCaptchaVerifier, UnconfiguredSmartCaptchaVerifier } from "./s
+ import { createAgentReferralsPartnerRouter } from "./agent-referrals-api-partner";
+ import { createAgentReferralsAdminRouter } from "./agent-referrals-api-admin";
+ import { UnconfiguredOtpSender, type OtpSender } from "./agent-referrals-otp";
++import { agentReferralsActivationReconciliationEvidence } from "./agent-referrals-activation-reconciliation";
+ import { agentReferralsDormantReady, agentReferralsDormantReadinessEvidence } from "./agent-referrals-dormant-readiness";
+ import { agentReferralsActivationSchema, agentReferralsStrandedRollingSupersedeSchema, completeRollingSchema, releaseControlSchema } from "./release-control-schema";
+ import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityInterestWithdrawalSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, emailAttentionAcknowledgeSchema, emergencySalesCommandSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrenceNotificationSchema, occurrencePatchSchema, outboxDispatchFenceSchema, preActivationDefectSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
+@@ -610,6 +611,10 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
+     const input = completeRollingSchema.parse(await jsonBody(c.req.raw));
+     return c.json(agentReferralsDormantReadinessEvidence(sqlite, domain.releaseRuntimeEvidence(), input.expected));
+   });
++  // Q5's only addition: a bearer-gated, parameterless, read-only snapshot of
++  // the exact durable evidence Q4's activation command seals.  It is solely
++  // for post-request reconciliation; it is not an activation authority.
++  releaseControl.get("/agent-referrals/activation-state", (c) => c.json(agentReferralsActivationReconciliationEvidence(sqlite)));
+   // Q4's only DORMANT -> ACTIVE surface.  It is deliberately internal and
+   // bearer-gated by the shared release-control middleware above: no browser
+   // or admin-session route can invoke the combined readiness/CAS authority.
