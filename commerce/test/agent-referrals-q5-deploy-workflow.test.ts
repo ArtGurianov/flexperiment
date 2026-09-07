@@ -1,4 +1,7 @@
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const Q4 = "e0cf268496660dade2db3fa43b189682d059c25c";
@@ -35,6 +38,13 @@ describe("Agent Referrals Q5 reconstruction-bound deployment controller", () => 
     expect(workflow).toContain("pnpm commerce:production-deploy:assert-boundary q5-boundary-paths.bin");
     expect(workflow).not.toContain('merge-base --is-ancestor "$TARGET_SHA" "$CONTROLLER_SHA"');
     for (const forbidden of ["commerce/migrations/", "public/legal/", "commerce/legal/", "\\.github/workflows/"]) expect(workflow).toContain(forbidden);
+  });
+
+  it("admits the actual certified Q4 to Q5 range through the existing generic boundary", () => {
+    const paths = execFileSync("git", ["diff", "--name-only", "-z", Q4, Q5], { encoding: "buffer" });
+    const input = join(mkdtempSync(join(tmpdir(), "q5-boundary-")), "paths.bin");
+    writeFileSync(input, paths);
+    expect(() => execFileSync("node", ["--import", "tsx", "commerce/src/assert-generic-production-deploy-boundary.ts", input], { stdio: "pipe" })).not.toThrow();
   });
 
   it("seals ordinary authority immediately before acquire and leases only from Q4", () => {
