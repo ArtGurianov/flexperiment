@@ -1,0 +1,156 @@
+name: Controlled Agent Referrals Q4 activation-capability candidate publication
+
+# This is immutable candidate publication only. It never promotes, deploys,
+# terminalizes, or activates Agent Referrals.
+on:
+  workflow_dispatch:
+    inputs:
+      generation:
+        description: Immutable generation label for the flat Q4 runtime publication ref.
+        required: true
+        type: string
+      expected_target_sha:
+        description: Operator-confirmed Q4 SHA; a defensive equality assertion only.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    env:
+      CONTROLLER_SHA: ${{ github.sha }}
+      INPUT_GENERATION: ${{ inputs.generation }}
+      TARGET_SHA: ${{ inputs.expected_target_sha }}
+      FIXED_Q2: 2dc1a55a070a7e9e9ebcd52f46dff8d171da223e
+      BASE_SHA: f317c836635bfe3a86735ecda6a050c51d4dc924
+      FIXED_Q4: e0cf268496660dade2db3fa43b189682d059c25c
+      FIXED_Q4_TREE: 5e122dc8e4fbb5811fb98e27813c1b0883e15911
+      AGENT_REFERRALS_ACTIVATION_CANDIDATE_REF_TOKEN: ${{ secrets.AGENT_REFERRALS_ACTIVATION_CANDIDATE_REF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind dedicated Q4 publication credential
+        run: |
+          set -euo pipefail
+          [[ -n "$AGENT_REFERRALS_ACTIVATION_CANDIDATE_REF_TOKEN" ]] || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_REF_TOKEN_REQUIRED >&2; exit 1; }
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git remote set-url origin "https://x-access-token:${AGENT_REFERRALS_ACTIVATION_CANDIDATE_REF_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: Bind exact current main controller and validate inputs
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main ]] || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_CONTROLLER_NOT_MAIN >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_CONTROLLER_MAIN_MOVED >&2; exit 1; }
+          [[ "$INPUT_GENERATION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$ ]] || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_GENERATION_INVALID >&2; exit 1; }
+          [[ "$TARGET_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_EXPECTED_TARGET_SHA_INVALID >&2; exit 1; }
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      - name: Prove frozen Q3 authority and predecessor publications
+        run: |
+          set -euo pipefail
+          read_remote_ref() {
+            local ref="$1" value
+            value="$(git ls-remote --exit-code origin "$ref" | awk '{print $1}')" || return 1
+            [[ "$value" =~ ^[a-f0-9]{40}$ ]] || return 1
+            printf '%s\n' "$value"
+          }
+          production_deploy="$(read_remote_ref refs/heads/production-deploy)" || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_PRODUCTION_DEPLOY_UNAVAILABLE >&2; exit 1; }
+          runtime_candidate="$(read_remote_ref refs/heads/runtime-candidate)" || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_RUNTIME_CANDIDATE_UNAVAILABLE >&2; exit 1; }
+          q2_publication="$(read_remote_ref refs/heads/runtime/agent-referrals-1)" || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_Q2_PUBLICATION_UNAVAILABLE >&2; exit 1; }
+          q3_publication="$(read_remote_ref refs/heads/runtime/agent-referrals-recovery-1)" || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_Q3_PUBLICATION_UNAVAILABLE >&2; exit 1; }
+          [[ "$production_deploy" == "$BASE_SHA" ]] || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_PRODUCTION_NOT_Q3 >&2; exit 1; }
+          [[ "$runtime_candidate" == "$BASE_SHA" ]] || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_RUNTIME_CANDIDATE_NOT_Q3 >&2; exit 1; }
+          [[ "$q2_publication" == "$FIXED_Q2" ]] || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_Q2_PUBLICATION_MISMATCH >&2; exit 1; }
+          [[ "$q3_publication" == "$BASE_SHA" ]] || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_Q3_PUBLICATION_MISMATCH >&2; exit 1; }
+          {
+            echo "OBSERVED_PRODUCTION_DEPLOY=$production_deploy"
+            echo "OBSERVED_RUNTIME_CANDIDATE=$runtime_candidate"
+            echo "OBSERVED_Q2_PUBLICATION=$q2_publication"
+            echo "OBSERVED_Q3_PUBLICATION=$q3_publication"
+          } >> "$GITHUB_ENV"
+
+      - name: Reconstruct exact certified Q4 from this controller tree
+        run: |
+          set -euo pipefail
+          git show "$GITHUB_SHA:.release/controlled-candidates/agent-referrals-activation-$BASE_SHA/certificate.json" > candidate-certificate.json
+          jq -e --arg base "$BASE_SHA" '.base_sha == $base' candidate-certificate.json >/dev/null || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_CERTIFICATE_BASE_INVALID >&2; exit 1; }
+          jq -e '.patch_source == "controller_tree"' candidate-certificate.json >/dev/null || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_CERTIFICATE_PATCH_SOURCE_INVALID >&2; exit 1; }
+          SOURCE_MAIN_SHA="$(jq -er '.source_main_sha' candidate-certificate.json)"
+          git merge-base --is-ancestor "$SOURCE_MAIN_SHA" "$GITHUB_SHA" || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_SOURCE_MAIN_NOT_ANCESTOR >&2; exit 1; }
+          RECONSTRUCTED_SHA="$(node --import tsx commerce/src/controlled-candidate-verify.ts candidate-certificate.json "$GITHUB_SHA")"
+          [[ "$RECONSTRUCTED_SHA" == "$FIXED_Q4" ]] || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_FIXED_RECONSTRUCTION_MISMATCH >&2; exit 1; }
+          [[ "$RECONSTRUCTED_SHA" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_EXPECTED_TARGET_MISMATCH >&2; exit 1; }
+          [[ "$(git rev-parse "${RECONSTRUCTED_SHA}^")" == "$BASE_SHA" ]] || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_PARENT_NOT_Q3 >&2; exit 1; }
+          [[ "$(git rev-parse "${RECONSTRUCTED_SHA}^{tree}")" == "$FIXED_Q4_TREE" ]] || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_TREE_MISMATCH >&2; exit 1; }
+          jq -r '.paths[].path' candidate-certificate.json | sort > certified-manifest.txt
+          git diff --name-only "$BASE_SHA" "$RECONSTRUCTED_SHA" | sort > actual-changed-paths.txt
+          diff certified-manifest.txt actual-changed-paths.txt || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_MANIFEST_MISMATCH >&2; exit 1; }
+          ! grep -Eq '^(commerce/migrations/|public/legal/|commerce/legal/|\.github/workflows/)' certified-manifest.txt || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_FORBIDDEN_PATH >&2; exit 1; }
+          {
+            echo "SOURCE_MAIN_SHA=$SOURCE_MAIN_SHA"
+            echo "RECONSTRUCTED_SHA=$RECONSTRUCTED_SHA"
+          } >> "$GITHUB_ENV"
+
+      - name: Create only the flat immutable Q4 publication ref
+        run: |
+          set -euo pipefail
+          PUBLISH_REF=refs/heads/runtime/agent-referrals-activation-${INPUT_GENERATION}
+          existing="$(git ls-remote origin "$PUBLISH_REF" | awk '{print $1}')"
+          if [[ -n "$existing" ]]; then
+            [[ "$existing" == "$RECONSTRUCTED_SHA" ]] || { echo GENERATION_ALREADY_PUBLISHED_DIFFERENT_SHA >&2; exit 1; }
+            echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_SAME_SHA_REPLAY
+          else
+            git push --force-with-lease="${PUBLISH_REF}:" origin "${RECONSTRUCTED_SHA}:${PUBLISH_REF}"
+          fi
+          echo "PUBLISH_REF=$PUBLISH_REF" >> "$GITHUB_ENV"
+
+      - name: Read back publication and prove no other authority moved
+        run: |
+          set -euo pipefail
+          read_remote_ref() {
+            local ref="$1" value
+            value="$(git ls-remote --exit-code origin "$ref" | awk '{print $1}')" || return 1
+            [[ "$value" =~ ^[a-f0-9]{40}$ ]] || return 1
+            printf '%s\n' "$value"
+          }
+          published="$(read_remote_ref "$PUBLISH_REF")" || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_READBACK_UNAVAILABLE >&2; exit 1; }
+          production_deploy_after="$(read_remote_ref refs/heads/production-deploy)" || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_POST_PRODUCTION_UNAVAILABLE >&2; exit 1; }
+          runtime_candidate_after="$(read_remote_ref refs/heads/runtime-candidate)" || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_POST_RUNTIME_CANDIDATE_UNAVAILABLE >&2; exit 1; }
+          q2_publication_after="$(read_remote_ref refs/heads/runtime/agent-referrals-1)" || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_POST_Q2_PUBLICATION_UNAVAILABLE >&2; exit 1; }
+          q3_publication_after="$(read_remote_ref refs/heads/runtime/agent-referrals-recovery-1)" || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_POST_Q3_PUBLICATION_UNAVAILABLE >&2; exit 1; }
+          [[ "$published" == "$FIXED_Q4" ]] || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_READBACK_MISMATCH >&2; exit 1; }
+          [[ "$production_deploy_after" == "$OBSERVED_PRODUCTION_DEPLOY" && "$runtime_candidate_after" == "$OBSERVED_RUNTIME_CANDIDATE" && "$q2_publication_after" == "$OBSERVED_Q2_PUBLICATION" && "$q3_publication_after" == "$OBSERVED_Q3_PUBLICATION" ]] || { echo AGENT_REFERRALS_ACTIVATION_CANDIDATE_POST_AUTHORITY_MISMATCH >&2; exit 1; }
+          {
+            echo "## Agent Referrals Q4 activation-capability candidate publication"
+            echo "- Controller SHA: $CONTROLLER_SHA"
+            echo "- Q3 base: $BASE_SHA"
+            echo "- Certificate SOURCE_MAIN_SHA: $SOURCE_MAIN_SHA"
+            echo "- Reconstructed Q4: $RECONSTRUCTED_SHA"
+            echo "- Q4 tree: $(git rev-parse "${RECONSTRUCTED_SHA}^{tree}")"
+            echo "- Published ref: $PUBLISH_REF"
+            echo "- Read-back: PASS"
+            echo "- production-deploy: unchanged"
+            echo "- runtime-candidate: unchanged"
+          } >> "$GITHUB_STEP_SUMMARY"
