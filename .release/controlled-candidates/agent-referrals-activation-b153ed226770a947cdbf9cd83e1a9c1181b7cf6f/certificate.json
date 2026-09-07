@@ -1,0 +1,33 @@
+{
+  "base_sha": "b153ed226770a947cdbf9cd83e1a9c1181b7cf6f",
+  "source_main_sha": "dfa534acf5110455055585168db3036e95ed36c8",
+  "patch_source": "controller_tree",
+  "paths": [
+    {
+      "path": "commerce/src/agent-referrals-activation-readiness.ts",
+      "kind": "MODIFY",
+      "mode": "100644",
+      "base_blob_sha": "99e10c9e283e8ba96bd238fabb281c59938283a2",
+      "patch_path": ".release/controlled-candidates/agent-referrals-activation-b153ed226770a947cdbf9cd83e1a9c1181b7cf6f/patches/agent-referrals-activation-readiness.patch",
+      "patch_git_blob_sha": "ce5b00520921a5170ed8235334c3d9971c9c965d",
+      "patch_sha256": "cc39a9bd9bc45b4844d9b7660a10e974f76f046b8a2be8f70376bc7b1c03d482",
+      "result_blob_sha": "78e458c91a2decbe4694d4ac05d6001034ba818d"
+    }
+  ],
+  "commit": {
+    "parent_sha": "b153ed226770a947cdbf9cd83e1a9c1181b7cf6f",
+    "tree_sha": "0873139704a64c30bded58f10361c007473ac227",
+    "author_name": "Flexperiment Release Controller",
+    "author_email": "release-controller@flexperiment.ru",
+    "author_timestamp": 1788998400,
+    "author_timezone": "+0000",
+    "committer_name": "Flexperiment Release Controller",
+    "committer_email": "release-controller@flexperiment.ru",
+    "committer_timestamp": 1788998400,
+    "committer_timezone": "+0000",
+    "message": "agent-referrals: Q6 activation terminal identity correction",
+    "encoding": "none",
+    "extra_headers": "none",
+    "signed": false
+  }
+}

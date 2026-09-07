@@ -1,0 +1,19 @@
+diff --git a/commerce/src/agent-referrals-activation-readiness.ts b/commerce/src/agent-referrals-activation-readiness.ts
+index 99e10c9..78e458c 100644
+--- a/commerce/src/agent-referrals-activation-readiness.ts
++++ b/commerce/src/agent-referrals-activation-readiness.ts
+@@ -50,4 +50,7 @@ export class AgentReferralsActivationReadinessError extends Error {
+ const exactActivationId = (source: string) => `agent-referrals-activation-${source}`;
+-const exactTerminalReleaseId = (source: string) => `agent-referrals-q4-dormant-${source}`;
+-
++// The terminal evidence is created by the controlled production deployment,
++// not by the historical Q4 DORMANT controller. Keep this identity exact: an
++// activation may rely only on the completed deployment for its own source.
++const exactProductionReleaseId = (source: string) => `deploy-${source}`;
++
+ const activationManifest = (input: AgentReferralsActivationRequest, otpDelivery: OtpDeliveryCapability): AgentReferralsActivationManifest => {
+@@ -81,3 +84,3 @@ const assertRequestIdentity = (input: AgentReferralsActivationRequest): void =>
+   }
+-  if (input.terminal_release_id !== exactTerminalReleaseId(input.expected.source_commit)) {
++  if (input.terminal_release_id !== exactProductionReleaseId(input.expected.source_commit)) {
+     throw new AgentReferralsActivationReadinessError("AGENT_REFERRALS_ACTIVATION_TERMINAL_RELEASE_INVALID", 409);
