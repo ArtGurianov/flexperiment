@@ -36,3 +36,20 @@ export const completeRollingSchema = z.object({
   mode: z.literal("ROLLING"),
   expected: releaseExpectedSchema,
 }).strict();
+
+/**
+ * This is deliberately not a generic "clear ROLLING owner" request.  Q2 is
+ * immutable incident evidence: only its exact held owner can be resolved,
+ * only for the incident recorded by the failed Phase 10B controller, and its
+ * old expectations are never changed.  The full replacement expectation is
+ * included so the replacement's DORMANT predicate remains the same strict
+ * predicate completeRolling() uses, rather than a source-only approximation.
+ */
+export const agentReferralsStrandedRollingSupersedeSchema = z.object({
+  release_id: z.literal("agent-referrals-f540b997d6d31a22293909ded7ce464c3f51732f"),
+  expected_old_source_commit: z.literal("2dc1a55a070a7e9e9ebcd52f46dff8d171da223e"),
+  replacement_source_commit: z.string().regex(/^[a-f0-9]{40}$/),
+  replacement_expected: releaseExpectedSchema,
+  reason_code: z.literal("SURFACE_CONTRACT_UNAVAILABLE"),
+  incident_run_id: z.literal("34027377689"),
+}).strict();

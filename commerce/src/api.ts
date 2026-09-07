@@ -14,7 +14,7 @@ import { createAgentReferralsPartnerRouter } from "./agent-referrals-api-partner
 import { createAgentReferralsAdminRouter } from "./agent-referrals-api-admin";
 import { UnconfiguredOtpSender, type OtpSender } from "./agent-referrals-otp";
 import { agentReferralsDormantReady, agentReferralsDormantReadinessEvidence } from "./agent-referrals-dormant-readiness";
-import { completeRollingSchema, releaseControlSchema } from "./release-control-schema";
+import { agentReferralsStrandedRollingSupersedeSchema, completeRollingSchema, releaseControlSchema } from "./release-control-schema";
 import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityInterestWithdrawalSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, emailAttentionAcknowledgeSchema, emergencySalesCommandSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrenceNotificationSchema, occurrencePatchSchema, outboxDispatchFenceSchema, preActivationDefectSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
 
 type AppBindings = { Variables: { adminId?: string; adminSessionId?: string } };
@@ -532,6 +532,10 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     return c.json(domain.unfenceEmailDispatch(input, { release_id: input.release_id, generation: input.generation ?? null }));
   });
   releaseControl.get("/completion/:releaseId", (c) => c.json(domain.releaseControlCompletion(c.req.param("releaseId"))));
+  // Separate from completion so existing consumers retain their exact
+  // successful-completion contract while recovery controllers can prove the
+  // durable, non-success terminal resolution of the stranded Q2 owner.
+  releaseControl.get("/resolution/:releaseId", (c) => c.json(domain.releaseControlResolution(c.req.param("releaseId"))));
   releaseControl.post("/candidates/acquire", async (c) => c.json(domain.acquirePromoCandidate(await jsonBody(c.req.raw) as { head: import("./release-generation").GenerationHead })));
   releaseControl.post("/candidates/adopt", async (c) => c.json(domain.adoptPromoCandidate(await jsonBody(c.req.raw) as import("./release-control").CandidateAdoptRequest)));
   releaseControl.post("/candidates/phase", async (c) => c.json(domain.changePromoCandidatePhase(await jsonBody(c.req.raw) as import("./release-control").CandidatePhaseRequest)));
@@ -585,6 +589,11 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     // release_id-aware; nothing here forecloses that, it simply is not
     // needed while Agent Referrals is the only caller.
     return c.json(domain.completeRolling(input, () => agentReferralsDormantReady(sqlite, domain.releaseRuntimeEvidence(), input.expected)));
+  });
+  releaseControl.post("/agent-referrals/stranded-rolling-supersede", async (c) => {
+    const input = agentReferralsStrandedRollingSupersedeSchema.parse(await jsonBody(c.req.raw));
+    return c.json(domain.supersedeAgentReferralsStrandedRolling(input, () =>
+      agentReferralsDormantReady(sqlite, domain.releaseRuntimeEvidence(), input.replacement_expected)));
   });
   // Phase 10B production-controller precondition, bearer-token gated like
   // every other /v1/internal/release-control/* route - never the admin-
