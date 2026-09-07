@@ -280,6 +280,7 @@ describe("Q4 activation capability: atomic DORMANT to ACTIVE authority", () => {
     expect(controllerWorkflowAdditions).not.toContain(".github/workflows/controlled-agent-referrals-activation.yml");
     expect(controllerWorkflowAdditions).toEqual([
       ".github/workflows/controlled-agent-referrals-activation-candidate.yml",
+      ".github/workflows/controlled-agent-referrals-activation-reconciliation-candidate.yml",
       ".github/workflows/controlled-agent-referrals-q4-complete.yml",
       ".github/workflows/controlled-agent-referrals-q4-dormant-deploy.yml",
       ".github/workflows/controlled-agent-referrals-q4-stale-surfaces-recovery.yml",

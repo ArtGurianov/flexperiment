@@ -255,6 +255,7 @@ describe("RECONSTRUCTION_BOUND: positive proof obligation for a detached candida
     const classified = workflows.filter(({ source }) => isReconstructionBound(source));
     expect(classified.map(({ name }) => name).sort()).toEqual([
       "controlled-agent-referrals-activation-candidate.yml",
+      "controlled-agent-referrals-activation-reconciliation-candidate.yml",
       "controlled-agent-referrals-candidate.yml",
       "controlled-agent-referrals-q4-dormant-deploy.yml",
       "controlled-agent-referrals-stranded-rolling-recovery.yml",
