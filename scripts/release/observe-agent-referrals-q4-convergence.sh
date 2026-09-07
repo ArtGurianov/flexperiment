@@ -55,10 +55,10 @@ for attempt in $(seq 1 "$poll_attempts"); do
   }
   runtime_source="$(jq -r '.runtime.source_commit // empty' observed-status.json)"
   worker_source="$(jq -r '.runtime.worker_source_commit // empty' observed-status.json)"
-  health="$(curl --fail --silent "$PUBLIC_API_URL/healthz" | jq -r '.ok // false' 2>/dev/null || true)"
-  ready="$(curl --fail --silent "$PUBLIC_API_URL/readyz" | jq -r '.ok // false' 2>/dev/null || true)"
-  frontend_source="$(curl --fail --silent "$PUBLIC_FRONTEND_URL/release.json" | jq -r '.source_commit // empty' 2>/dev/null || true)"
-  admin_source="$(curl --fail --silent "$ADMIN_RELEASE_URL" | jq -r '.source_commit // empty' 2>/dev/null || true)"
+  health="$(curl --fail --silent --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/healthz" | jq -r '.ok // false' 2>/dev/null || true)"
+  ready="$(curl --fail --silent --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/readyz" | jq -r '.ok // false' 2>/dev/null || true)"
+  frontend_source="$(curl --fail --silent --connect-timeout 10 --max-time 30 "$PUBLIC_FRONTEND_URL/release.json" | jq -r '.source_commit // empty' 2>/dev/null || true)"
+  admin_source="$(curl --fail --silent --connect-timeout 10 --max-time 30 "$ADMIN_RELEASE_URL" | jq -r '.source_commit // empty' 2>/dev/null || true)"
   if [[ "$runtime_source" == "$TARGET_SHA" && "$worker_source" == "$TARGET_SHA" && "$health" == true && "$ready" == true && "$frontend_source" == "$TARGET_SHA" && "$admin_source" == "$TARGET_SHA" ]]; then
     {
       echo "## Q4 post-CAS convergence observation"
