@@ -1,0 +1,139 @@
+name: Controlled Agent Referrals Q4 stale-surfaces recovery
+
+# One-shot incident controller for the proven post-CAS mixed Q3/Q4 topology.
+# It never mutates a ref or release-control state, terminalizes, or activates.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  recover:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 20
+    env:
+      CONTROLLER_SHA: ${{ github.sha }}
+      BASE_SHA: f317c836635bfe3a86735ecda6a050c51d4dc924
+      TARGET_SHA: e0cf268496660dade2db3fa43b189682d059c25c
+      TARGET_TREE: 5e122dc8e4fbb5811fb98e27813c1b0883e15911
+      Q4_RELEASE_ID: agent-referrals-q4-dormant-e0cf268496660dade2db3fa43b189682d059c25c
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+      COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+      PUBLIC_FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
+      ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind exact current main stale-surfaces controller
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main ]] || { echo AGENT_REFERRALS_Q4_STALE_SURFACES_CONTROLLER_NOT_MAIN >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo AGENT_REFERRALS_Q4_STALE_SURFACES_CONTROLLER_MAIN_MOVED >&2; exit 1; }
+          [[ "$(git rev-parse "${TARGET_SHA}^")" == "$BASE_SHA" ]] || { echo AGENT_REFERRALS_Q4_STALE_SURFACES_PARENT_MISMATCH >&2; exit 1; }
+          [[ "$(git rev-parse "${TARGET_SHA}^{tree}")" == "$TARGET_TREE" ]] || { echo AGENT_REFERRALS_Q4_STALE_SURFACES_TREE_MISMATCH >&2; exit 1; }
+          [[ "$Q4_RELEASE_ID" == "agent-referrals-q4-dormant-$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q4_STALE_SURFACES_RELEASE_ID_INVALID >&2; exit 1; }
+
+      - name: Prove exact stalled Q3/Q4 topology before recovery consequence
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q4_STALE_SURFACES_PRODUCTION_POINTER_MISMATCH >&2; exit 1; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > stalled-status.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$Q4_RELEASE_ID" > stalled-completion.json
+          q4_inventory="$(git ls-tree -r --name-only "$TARGET_SHA" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
+          migration="inventory-sha256:$(printf '%s' "$q4_inventory" | shasum -a 256 | awk '{print $1}')"
+          jq -e --arg source "$TARGET_SHA" --arg migration "$migration" '.runtime as $r | {expected:{source_commit:$source,migration:$migration,legal_version:$r.legal_version,legal_manifest_sha256:$r.legal_manifest_sha256}}' stalled-status.json > q4-gate-projection.json
+          jq -e '.expected.legal_version != null and .expected.legal_manifest_sha256 != null' q4-gate-projection.json >/dev/null || { echo AGENT_REFERRALS_Q4_STALE_SURFACES_LEGAL_PROJECTION_UNAVAILABLE >&2; exit 1; }
+          jq -e --arg id "$Q4_RELEASE_ID" --slurpfile gate q4-gate-projection.json '.owner_release_id == $id and .owner_mode == "ROLLING" and .sales_paused == false and .expected == $gate[0].expected' stalled-status.json >/dev/null || { echo AGENT_REFERRALS_Q4_STALE_SURFACES_AUTHORITY_MISMATCH >&2; exit 1; }
+          jq -e '.complete == false' stalled-completion.json >/dev/null || { echo AGENT_REFERRALS_Q4_STALE_SURFACES_COMPLETION_MISMATCH >&2; exit 1; }
+          runtime_source="$(jq -r '.runtime.source_commit // empty' stalled-status.json)"
+          worker_source="$(jq -r '.runtime.worker_source_commit // empty' stalled-status.json)"
+          health="$(curl --fail --silent --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/healthz" | jq -r '.ok // false' 2>/dev/null || true)"
+          ready="$(curl --fail --silent --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/readyz" | jq -r '.ok // false' 2>/dev/null || true)"
+          frontend_source="$(curl --fail --silent --connect-timeout 10 --max-time 30 "$PUBLIC_FRONTEND_URL/release.json" | jq -r '.source_commit // empty' 2>/dev/null || true)"
+          admin_source="$(curl --fail --silent --connect-timeout 10 --max-time 30 "$ADMIN_RELEASE_URL" | jq -r '.source_commit // empty' 2>/dev/null || true)"
+          if [[ "$runtime_source" == "$TARGET_SHA" && "$worker_source" == "$TARGET_SHA" && "$frontend_source" == "$TARGET_SHA" && "$admin_source" == "$TARGET_SHA" && "$health" == true && "$ready" == true ]]; then
+            echo "RECOVERY_STATE=ALREADY_CONVERGED" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          [[ "$runtime_source" == "$BASE_SHA" && "$worker_source" == "$BASE_SHA" && "$frontend_source" == "$BASE_SHA" && "$admin_source" == "$TARGET_SHA" && "$health" == true && "$ready" == true ]] || { echo AGENT_REFERRALS_Q4_STALE_SURFACES_TOPOLOGY_UNEXPECTED >&2; exit 1; }
+          echo "RECOVERY_STATE=EXACT_STALLED_INCIDENT" >> "$GITHUB_ENV"
+
+      - name: Enqueue one-shot exact Q4 commerce and frontend recovery
+        if: env.RECOVERY_STATE == 'EXACT_STALLED_INCIDENT'
+        env:
+          COOLIFY_Q4_STALE_SURFACES_OUTCOMES: ${{ runner.temp }}/q4-stale-surfaces-outcomes.json
+        run: |
+          set -euo pipefail
+          set +e
+          scripts/release/recover-agent-referrals-q4-stale-surfaces.sh
+          helper_status=$?
+          set -e
+          if [[ -f "$COOLIFY_Q4_STALE_SURFACES_OUTCOMES" ]]; then
+            jq -c . "$COOLIFY_Q4_STALE_SURFACES_OUTCOMES" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          [[ "$helper_status" -eq 0 ]] || exit "$helper_status"
+          echo "COOLIFY_Q4_STALE_SURFACES_OUTCOMES=$COOLIFY_Q4_STALE_SURFACES_OUTCOMES" >> "$GITHUB_ENV"
+
+      - name: Observe exact Q4 convergence after exact state classification
+        run: |
+          set -euo pipefail
+          q4_inventory="$(git ls-tree -r --name-only "$TARGET_SHA" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
+          Q4_MIGRATION="inventory-sha256:$(printf '%s' "$q4_inventory" | shasum -a 256 | awk '{print $1}')" \
+            POLL_ATTEMPTS=30 POLL_SECONDS=10 \
+            scripts/release/observe-agent-referrals-q4-convergence.sh
+
+      - name: Stop after unknown one-shot recovery consequence
+        if: env.RECOVERY_STATE == 'EXACT_STALLED_INCIDENT'
+        run: |
+          set -euo pipefail
+          jq -e 'type == "array" and length == 2' "$COOLIFY_Q4_STALE_SURFACES_OUTCOMES" >/dev/null || { echo AGENT_REFERRALS_Q4_STALE_SURFACES_OUTCOME_EVIDENCE_INVALID >&2; exit 1; }
+          jq -e 'all(.[]; .outcome != "UNKNOWN")' "$COOLIFY_Q4_STALE_SURFACES_OUTCOMES" >/dev/null || {
+            jq -c . "$COOLIFY_Q4_STALE_SURFACES_OUTCOMES" >> "$GITHUB_STEP_SUMMARY"
+            echo AGENT_REFERRALS_Q4_STALE_SURFACES_UNKNOWN_OUTCOME_AFTER_OBSERVATION >&2
+            exit 1
+          }
+
+      - name: Prove full exact Q4 DORMANT prepared state
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > prepared-status.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$Q4_RELEASE_ID" > prepared-completion.json
+          q4_inventory="$(git ls-tree -r --name-only "$TARGET_SHA" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
+          migration="inventory-sha256:$(printf '%s' "$q4_inventory" | shasum -a 256 | awk '{print $1}')"
+          jq -e --arg id "$Q4_RELEASE_ID" --arg source "$TARGET_SHA" --arg migration "$migration" '.runtime as $r | {release_id:$id,mode:"ROLLING",expected:{source_commit:$source,migration:$migration,legal_version:$r.legal_version,legal_manifest_sha256:$r.legal_manifest_sha256,legal_hashes:$r.legal_hashes}}' prepared-status.json > q4-release.json
+          jq -e '.expected.legal_version != null and .expected.legal_manifest_sha256 != null and .expected.legal_hashes != null' q4-release.json >/dev/null || { echo AGENT_REFERRALS_Q4_STALE_SURFACES_LEGAL_EVIDENCE_UNAVAILABLE >&2; exit 1; }
+          jq '{expected:(.expected | {source_commit,migration,legal_version,legal_manifest_sha256})}' q4-release.json > q4-prepared-gate-projection.json
+          jq -e --arg id "$Q4_RELEASE_ID" --arg q4 "$TARGET_SHA" --slurpfile gate q4-prepared-gate-projection.json '.owner_release_id == $id and .owner_mode == "ROLLING" and .sales_paused == false and .expected == $gate[0].expected and .runtime.source_commit == $q4 and .runtime.worker_source_commit == $q4' prepared-status.json >/dev/null || { echo AGENT_REFERRALS_Q4_STALE_SURFACES_PREPARED_OWNER_MISMATCH >&2; exit 1; }
+          jq -e '.complete == false' prepared-completion.json >/dev/null || { echo AGENT_REFERRALS_Q4_STALE_SURFACES_PREPARED_COMPLETION_MISMATCH >&2; exit 1; }
+          expected_inventory="$q4_inventory"
+          runtime_inventory="$(jq -r '.runtime.migration_versions | sort | join("\n")' prepared-status.json)"
+          [[ "$runtime_inventory" == "$expected_inventory" ]] || { echo AGENT_REFERRALS_Q4_STALE_SURFACES_MIGRATION_INVENTORY_MISMATCH >&2; exit 1; }
+          ! printf '%s\n' "$runtime_inventory" | grep -Eq '^005[0-9]' || { echo AGENT_REFERRALS_Q4_STALE_SURFACES_UNEXPECTED_NEW_MIGRATION >&2; exit 1; }
+          for migration_file in 0042_agent_referrals_agents_rebuild.sql 0043_agent_referrals_foundation.sql 0044_partner_identity.sql 0045_engagement_publication.sql 0046_attribution_reward.sql 0047_act_payment_settlement.sql 0048_ord_reporting.sql 0049_agent_referrals_integration_hardening.sql; do
+            expected_hash="$(git show "$TARGET_SHA:commerce/migrations/$migration_file" | shasum -a 256 | awk '{print $1}')"
+            jq -e --arg m "$migration_file" --arg hash "$expected_hash" '.runtime.migration_source_hashes[$m] == $hash' prepared-status.json >/dev/null || { echo "AGENT_REFERRALS_Q4_STALE_SURFACES_MIGRATION_HASH_MISMATCH=$migration_file" >&2; exit 1; }
+          done
+          api -X POST --data-binary @q4-release.json "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/dormant-readiness" > q4-dormant-readiness.json
+          jq -e '.ready == true' q4-dormant-readiness.json >/dev/null || { jq -c '.reasons' q4-dormant-readiness.json >&2; exit 1; }
+          {
+            echo "## Agent Referrals Q4 stale-surfaces recovery"
+            echo "- state: ${RECOVERY_STATE}"
+            echo "- Q4 ROLLING owner remains held: $Q4_RELEASE_ID"
+            echo "- Full DORMANT readiness: PASS"
+          } >> "$GITHUB_STEP_SUMMARY"
