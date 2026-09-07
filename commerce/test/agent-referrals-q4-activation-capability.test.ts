@@ -274,6 +274,8 @@ describe("Q4 activation capability: atomic DORMANT to ACTIVE authority", () => {
     expect(git("show", `${Q4}:commerce/src/server.ts`)).toContain("otpSenderFromEnvironment");
     const controllerDiff = git("diff", "--name-only", "040d8dbdb93af5a33cb5bdd33a1215890796215d", controllerSha);
     expect(controllerDiff).not.toContain(".github/workflows/controlled-agent-referrals-activation.yml");
-    expect(controllerDiff.split("\n").some((path) => path.startsWith(".github/workflows/"))).toBe(false);
+    expect(controllerDiff.split("\n").filter((path) => path.startsWith(".github/workflows/"))).toEqual([
+      ".github/workflows/controlled-agent-referrals-activation-candidate.yml",
+    ]);
   });
 });

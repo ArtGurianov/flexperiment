@@ -93,7 +93,7 @@ const CERTIFICATE_FILE = "candidate-certificate.json";
  * wildcard - adding a further consumer means adding its exact slug/script pair
  * here, not loosening the pattern to match anything.
  */
-const CERTIFICATE_NAMESPACE_SLUGS = ["agent-referrals", "agent-referrals-recovery", "release-semantics-bootstrap"] as const;
+const CERTIFICATE_NAMESPACE_SLUGS = ["agent-referrals", "agent-referrals-recovery", "agent-referrals-activation", "release-semantics-bootstrap"] as const;
 const CANDIDATE_VERIFY_SCRIPTS = ["agent-referrals-candidate-verify", "controlled-candidate-verify"] as const;
 
 const removeLinesMatching = (pattern: RegExp) => (source: string): string =>
@@ -242,7 +242,7 @@ describe("RECONSTRUCTION_BOUND: positive proof obligation for a detached candida
    * and mutually exclusive"), which is where the deploying-vs-publishing
    * distinction actually matters and is actually enforced.
    *
-   * This is deliberately a POSITIVE, named exception - exactly these five
+   * This is deliberately a POSITIVE, named exception - exactly these six
    * real workflows, by exact filename - never a broad "any workflow whose
    * name mentions release-semantics-bootstrap or agent-referrals" allowance,
    * which is precisely the name-based-skip failure shape this machinery
@@ -254,6 +254,7 @@ describe("RECONSTRUCTION_BOUND: positive proof obligation for a detached candida
       .map((name) => ({ name, source: readFileSync(`${WORKFLOWS}/${name}`, "utf8") }));
     const classified = workflows.filter(({ source }) => isReconstructionBound(source));
     expect(classified.map(({ name }) => name).sort()).toEqual([
+      "controlled-agent-referrals-activation-candidate.yml",
       "controlled-agent-referrals-candidate.yml",
       "controlled-agent-referrals-stranded-rolling-recovery.yml",
       "controlled-agent-referrals.yml",
