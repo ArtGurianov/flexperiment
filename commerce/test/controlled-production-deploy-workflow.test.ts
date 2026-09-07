@@ -13,7 +13,7 @@ describe("generic controlled production deploy workflow", () => {
     expect(onBlock).toContain("workflow_dispatch:");
     expect(workflow).not.toContain("paths:");
     expect(workflow).toContain("workflow_dispatch:\n    inputs:\n      target_sha:");
-    expect(workflow).toContain("expected_candidate_sha:");
+    for (const input of ["expected_candidate_sha", "expected_controller_sha", "expected_controller_tree", "expected_production_deploy_sha"]) expect(onBlock).toMatch(new RegExp(`${input}:\\n\\s+description:[^\\n]+\\n\\s+required: false`));
     expect(workflow).toContain("group: flexperiment-production-controlled-cutover");
     expect(workflow).toContain("cancel-in-progress: false");
     expect(workflow).toContain("environment: production");
@@ -53,13 +53,17 @@ describe("generic controlled production deploy workflow", () => {
     expect(workflow).toContain("DEPLOY_CONTROLLER_MAIN_MOVED");
   });
 
-  it("resolves an ordinary deploy's candidate from the runtime-candidate ref, with an optional defensive check", () => {
+  it("requires sealed identities for an ordinary deploy while preserving an explicit recovery path", () => {
     expect(workflow).toContain('if [[ -n "$INPUT_TARGET_SHA" ]]; then');
     expect(workflow).toContain("recovery_mode=1");
     expect(workflow).toContain("git fetch --no-tags origin runtime-candidate");
     expect(workflow).toContain('target_sha="$(git rev-parse origin/runtime-candidate)"');
     expect(workflow).toContain("recovery_mode=0");
-    expect(workflow).toContain('if [[ -n "$INPUT_EXPECTED_CANDIDATE_SHA" ]]; then');
+    expect(workflow).toContain('[[ "$INPUT_EXPECTED_CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]');
+    expect(workflow).toContain("ORDINARY_DEPLOY_EXPECTED_CANDIDATE_SHA_REQUIRED");
+    expect(workflow).toContain("ORDINARY_DEPLOY_EXPECTED_CONTROLLER_SHA_REQUIRED");
+    expect(workflow).toContain("ORDINARY_DEPLOY_EXPECTED_CONTROLLER_TREE_REQUIRED");
+    expect(workflow).toContain("ORDINARY_DEPLOY_EXPECTED_PRODUCTION_DEPLOY_SHA_REQUIRED");
     expect(workflow).toContain("RUNTIME_CANDIDATE_UNEXPECTED_SHA");
   });
 
@@ -73,22 +77,28 @@ describe("generic controlled production deploy workflow", () => {
     expect(noMerge).toBeGreaterThan(noMaintenance);
   });
 
-  it("rechecks runtime-candidate freshness right before the first durable mutation, not after", () => {
+  it("rebinds sealed ordinary authority in the acquire step immediately before the first durable mutation", () => {
     const preflight = workflow.indexOf("Preflight immutable generic-deploy boundaries");
-    const recheck = workflow.indexOf("Reconfirm runtime-candidate has not moved since preflight");
     const acquire = workflow.indexOf("Acquire owner and pause registrations");
     const setRef = workflow.indexOf("Set guarded production deployment ref");
-    expect(recheck).toBeGreaterThan(preflight);
-    expect(recheck).toBeLessThan(acquire);
-    expect(workflow).toContain("if: env.RECOVERY_MODE == '0' && env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE' && env.REUSING_PAUSED_OWNER != '1'");
+    const acquireStep = workflow.slice(acquire, workflow.indexOf("Prove public checkout pause before deployment"));
+    expect(acquire).toBeGreaterThan(preflight);
+    expect(acquireStep).toContain('[[ "$CONTROLLER_SHA" == "$INPUT_EXPECTED_CONTROLLER_SHA" ]]');
+    expect(acquireStep).toContain('git rev-parse "${CONTROLLER_SHA}^{tree}"');
+    expect(acquireStep).toContain('[[ "$(git rev-parse origin/main)" == "$INPUT_EXPECTED_CONTROLLER_SHA" ]]');
     expect(workflow).toContain('current_candidate_sha="$(git rev-parse origin/runtime-candidate)"');
     expect(workflow).toContain("RUNTIME_CANDIDATE_MOVED_SINCE_PREFLIGHT");
     // Only one freshness recheck for the candidate - it does not repeat
     // after the first mutation, since the durable owner becomes
     // authoritative at that point.
-    const firstOccurrence = workflow.indexOf("RUNTIME_CANDIDATE_MOVED_SINCE_PREFLIGHT");
+    const firstOccurrence = acquireStep.indexOf("RUNTIME_CANDIDATE_MOVED_SINCE_PREFLIGHT");
     expect(firstOccurrence).toBeGreaterThan(-1);
-    expect(workflow.indexOf("RUNTIME_CANDIDATE_MOVED_SINCE_PREFLIGHT", firstOccurrence + 1)).toBe(-1);
+    expect(acquireStep.indexOf("RUNTIME_CANDIDATE_MOVED_SINCE_PREFLIGHT", firstOccurrence + 1)).toBe(-1);
+    expect(acquireStep).toContain('[[ "$current_production_deploy_sha" == "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" ]]');
+    const finalAuthority = acquireStep.indexOf('[[ "$current_production_deploy_sha" == "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" ]]');
+    const consequence = acquireStep.indexOf('api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/acquire"');
+    expect(consequence).toBeGreaterThan(finalAuthority);
+    expect(acquireStep.slice(finalAuthority, consequence)).not.toMatch(/(?:curl|api\s|git fetch|git ls-remote)/);
     expect(setRef).toBeGreaterThan(acquire);
   });
 
@@ -154,6 +164,14 @@ describe("generic controlled production deploy workflow", () => {
     expect(reconfirm).toBeLessThan(setRef);
     expect(workflow).toContain('current_production_deploy_sha="$(scripts/read-production-deploy-ref.sh)"');
     expect(workflow).toContain("PRODUCTION_DEPLOY_MOVED_SINCE_PREFLIGHT");
+    expect(workflow).toContain('cas_expected_production_deploy_sha="$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA"');
+    expect(workflow).toContain('cas_expected_production_deploy_sha="$PRODUCTION_DEPLOY_SHA"');
+    expect(workflow).toContain('echo "CAS_EXPECTED_PRODUCTION_DEPLOY_SHA=$cas_expected_production_deploy_sha"');
+    expect(workflow).toContain('[[ "$current_production_deploy_sha" == "$CAS_EXPECTED_PRODUCTION_DEPLOY_SHA" ]]');
+    const setterStep = workflow.slice(setRef, workflow.indexOf("Deploy exact production candidate"));
+    expect(setterStep).toContain('if [[ "$RECOVERY_MODE" == 0 && "$REUSING_PAUSED_OWNER" == 1 ]]; then');
+    expect(setterStep).toContain('[[ "$CONTROLLER_SHA" == "$INPUT_EXPECTED_CONTROLLER_SHA" ]]');
+    expect(setterStep).not.toContain("git fetch --no-tags origin runtime-candidate");
   });
 
   it("binds surface proofs to the exact candidate contract identifiers", () => {
@@ -276,7 +294,7 @@ describe("generic controlled production deploy workflow", () => {
     expect(workflow).not.toContain("CREATE_PROMOTION");
     expect(workflow).not.toContain("legal-publish");
     expect(workflow).not.toContain("git push");
-    expect(workflow).toContain('scripts/set-production-deploy-ref.sh "$TARGET_SHA"');
+    expect(workflow).toContain('scripts/set-production-deploy-ref.sh "$TARGET_SHA" "$CAS_EXPECTED_PRODUCTION_DEPLOY_SHA"');
     expect(deployHelper).toContain("only an enqueue acknowledgement");
   });
 
@@ -336,7 +354,7 @@ describe("generic controlled production deploy workflow", () => {
     const dispatch = workflow.indexOf("workflow_dispatch:");
     const stateGuard = workflow.indexOf("GENERIC_DEPLOY_MANUAL_RECOVERY_STATE_INVALID");
     const acquire = workflow.indexOf("Acquire owner and pause registrations");
-    const setter = workflow.indexOf('scripts/set-production-deploy-ref.sh "$TARGET_SHA"');
+    const setter = workflow.indexOf('scripts/set-production-deploy-ref.sh "$TARGET_SHA" "$CAS_EXPECTED_PRODUCTION_DEPLOY_SHA"');
     const deploy = workflow.indexOf("Deploy exact production candidate");
     const reopen = workflow.indexOf('"$PUBLIC_API_URL/v1/internal/release-control/reopen"');
     expect(dispatch).toBeGreaterThan(-1);

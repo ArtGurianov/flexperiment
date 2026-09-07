@@ -200,6 +200,14 @@ describe("guarded production deployment ref scripts", () => {
     expect(gitLog.match(/ls-remote --exit-code origin refs\/heads\/production-deploy/g)).toHaveLength(2);
   });
 
+  it("refuses to adopt a newly observed pointer when the controller sealed a different old tip", () => {
+    const expectedOldTip = "c".repeat(40);
+    const { result, gitLog } = runScript(setRef, { remote: "b".repeat(40), extraArgs: [expectedOldTip] });
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("PRODUCTION_DEPLOY_EXPECTED_PREVIOUS_POINTER_MISMATCH");
+    expect(gitLog).not.toContain("push ");
+  });
+
   it("fails closed when a concurrent pointer movement invalidates the lease", () => {
     const { result, gitLog } = runScript(setRef, { remote: "b".repeat(40), pushMode: "lease-rejects" });
     expect(result.status).toBe(1);
