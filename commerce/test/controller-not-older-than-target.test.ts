@@ -259,6 +259,7 @@ describe("RECONSTRUCTION_BOUND: positive proof obligation for a detached candida
       "controlled-agent-referrals-candidate.yml",
       "controlled-agent-referrals-q4-dormant-deploy.yml",
       "controlled-agent-referrals-q5-deploy.yml",
+      "controlled-agent-referrals-q6-deploy.yml",
       "controlled-agent-referrals-stranded-rolling-recovery.yml",
       "controlled-agent-referrals.yml",
       "controlled-release-semantics-bootstrap-candidate.yml",
@@ -335,6 +336,7 @@ describe("deployment target classification is exhaustive and mutually exclusive"
         || name === "controlled-agent-referrals.yml"
         || name === "controlled-agent-referrals-q4-dormant-deploy.yml"
         || name === "controlled-agent-referrals-q5-deploy.yml"
+        || name === "controlled-agent-referrals-q6-deploy.yml"
         || name === "controlled-agent-referrals-stranded-rolling-recovery.yml"
       ) expect(targetClass).toBe("RECONSTRUCTION_BOUND");
       else expect(targetClass).not.toBe("RECONSTRUCTION_BOUND");
