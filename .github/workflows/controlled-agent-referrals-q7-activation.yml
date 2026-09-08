@@ -1,0 +1,96 @@
+name: Controlled Agent Referrals Q7 activation
+
+# The only controller that may invoke Q7's DORMANT -> ACTIVE authority. It
+# never deploys, terminalizes, creates a completion, or mutates Git refs.
+on:
+  workflow_dispatch:
+    inputs:
+      expected_controller_sha: { required: true, type: string }
+      expected_controller_tree: { required: true, type: string }
+      expected_q7_sha: { required: true, type: string }
+      expected_q7_publication_ref: { required: true, type: string }
+      expected_feature_revision: { required: true, type: string }
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  activate:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    env:
+      CONTROLLER_SHA: ${{ github.sha }}
+      TARGET_SHA: ce66d23fdcea5fc84018be43cf428270ea889ee8
+      RELEASE_ID: deploy-ce66d23fdcea5fc84018be43cf428270ea889ee8
+      ACTIVATION_ID: agent-referrals-activation-ce66d23fdcea5fc84018be43cf428270ea889ee8
+      EXPECTED_CONTROLLER_SHA: ${{ inputs.expected_controller_sha }}
+      EXPECTED_CONTROLLER_TREE: ${{ inputs.expected_controller_tree }}
+      EXPECTED_Q7_SHA: ${{ inputs.expected_q7_sha }}
+      EXPECTED_Q7_PUBLICATION_REF: ${{ inputs.expected_q7_publication_ref }}
+      EXPECTED_FEATURE_REVISION: ${{ inputs.expected_feature_revision }}
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind initial exact current main controller
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main && "$EXPECTED_CONTROLLER_SHA" =~ ^[a-f0-9]{40}$ && "$EXPECTED_CONTROLLER_TREE" =~ ^[a-f0-9]{40}$ && "$EXPECTED_Q7_SHA" == "$TARGET_SHA" && "$EXPECTED_Q7_PUBLICATION_REF" == refs/heads/runtime/agent-referrals-activation-http-schema-1 && "$EXPECTED_FEATURE_REVISION" =~ ^[0-9]+$ ]] || { echo AGENT_REFERRALS_Q7_ACTIVATION_INPUT_INVALID >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$EXPECTED_CONTROLLER_SHA" && "$(git rev-parse "${CONTROLLER_SHA}^{tree}")" == "$EXPECTED_CONTROLLER_TREE" && "$(git rev-parse origin/main)" == "$EXPECTED_CONTROLLER_SHA" ]] || { echo AGENT_REFERRALS_Q7_ACTIVATION_CONTROLLER_BINDING_INVALID >&2; exit 1; }
+
+      - name: Prove exact Q7 terminal and classify activation state
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-before.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion-before.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/activation-state" > activation-before.json
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q7_ACTIVATION_PRODUCTION_NOT_Q7 >&2; exit 1; }
+          git fetch --no-tags origin runtime-candidate
+          [[ "$(git rev-parse origin/runtime-candidate)" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q7_ACTIVATION_CANDIDATE_NOT_Q7 >&2; exit 1; }
+          [[ "$(git ls-remote --exit-code origin "$EXPECTED_Q7_PUBLICATION_REF" | awk 'NF == 2 { print $1 }')" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q7_ACTIVATION_PUBLICATION_NOT_Q7 >&2; exit 1; }
+          jq -e --arg source "$TARGET_SHA" '.complete == true and .expected.source_commit == $source and .expected.migration != null and .expected.legal_version != null and .expected.legal_manifest_sha256 != null and .expected.legal_hashes != null' completion-before.json >/dev/null || { echo AGENT_REFERRALS_Q7_ACTIVATION_TERMINAL_UNPROVEN >&2; exit 1; }
+          jq -e '.owner_release_id == null and .owner_mode == null and .sales_paused == false' status-before.json >/dev/null || { echo AGENT_REFERRALS_Q7_ACTIVATION_RELEASE_NOT_TERMINAL >&2; exit 1; }
+          jq --arg activation "$ACTIVATION_ID" --arg release "$RELEASE_ID" --argjson revision "$EXPECTED_FEATURE_REVISION" '{activation_id:$activation,terminal_release_id:$release,expected_feature_revision:$revision,expected:.expected}' completion-before.json > activation-request.json
+          if jq -e --argjson revision "$EXPECTED_FEATURE_REVISION" '.feature_state.state == "DORMANT" and .feature_state.owner_id == null and .feature_state.revision == $revision and .last_feature_state_event == null and .activation_manifest == null' activation-before.json >/dev/null; then echo ACTIVATION_MODE=FRESH >> "$GITHUB_ENV"; elif scripts/release/assert-agent-referrals-q6-activation-evidence.sh activation-before.json completion-before.json "$ACTIVATION_ID" "$RELEASE_ID" "$TARGET_SHA" "$EXPECTED_FEATURE_REVISION"; then echo ACTIVATION_MODE=EXACT_REPLAY >> "$GITHUB_ENV"; else echo AGENT_REFERRALS_Q7_ACTIVATION_STATE_UNEXPECTED >&2; exit 1; fi
+
+      - name: Rebind authority and issue at most one fresh activation POST
+        if: env.ACTIVATION_MODE == 'FRESH'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-before-post.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion-before-post.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/activation-state" > activation-before-post.json
+          jq -e '.owner_release_id == null and .owner_mode == null and .sales_paused == false' status-before-post.json >/dev/null || exit 1
+          jq -e --slurpfile expected completion-before.json '.complete == true and .expected == $expected[0].expected' completion-before-post.json >/dev/null || exit 1
+          jq -e --argjson revision "$EXPECTED_FEATURE_REVISION" '.feature_state.state == "DORMANT" and .feature_state.owner_id == null and .feature_state.revision == $revision and .last_feature_state_event == null and .activation_manifest == null' activation-before-post.json >/dev/null || exit 1
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main runtime-candidate
+          [[ "$CONTROLLER_SHA" == "$EXPECTED_CONTROLLER_SHA" && "$(git rev-parse "${CONTROLLER_SHA}^{tree}")" == "$EXPECTED_CONTROLLER_TREE" && "$(git rev-parse origin/main)" == "$EXPECTED_CONTROLLER_SHA" && "$(git rev-parse origin/runtime-candidate)" == "$TARGET_SHA" && "$(scripts/read-production-deploy-ref.sh)" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q7_ACTIVATION_AUTHORITY_REBIND_FAILED >&2; exit 1; }
+          [[ "$(git ls-remote --exit-code origin "$EXPECTED_Q7_PUBLICATION_REF" | awk 'NF == 2 { print $1 }')" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q7_ACTIVATION_PUBLICATION_MOVED >&2; exit 1; }
+          set +e
+          http_status="$(curl --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' --output activation-post.json --write-out '%{http_code}' -X POST --data-binary @activation-request.json "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/activate")"
+          curl_rc=$?
+          set -e
+          if [[ "$curl_rc" -eq 0 && "$http_status" =~ ^4[0-9][0-9]$ ]]; then safe_code="$(jq -r '.error.code // .code // "UNPARSEABLE_4XX"' activation-post.json 2>/dev/null || printf UNPARSEABLE_4XX)"; [[ "$safe_code" =~ ^[A-Z0-9_]{1,120}$ ]] || safe_code=UNSAFE_4XX_CODE; echo "AGENT_REFERRALS_Q7_ACTIVATION_REFUSED_CODE=$safe_code" >&2; exit 1; fi
+          if [[ "$curl_rc" -ne 0 || ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then echo AGENT_REFERRALS_Q7_ACTIVATION_OUTCOME_UNKNOWN >&2; fi
+
+      - name: Reconcile exact Q7 activation evidence
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/activation-state" > activation-after.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion-after.json
+          jq -e --slurpfile before completion-before.json '.complete == true and .expected == $before[0].expected' completion-after.json >/dev/null || { echo AGENT_REFERRALS_Q7_ACTIVATION_TERMINAL_CHANGED >&2; exit 1; }
+          scripts/release/assert-agent-referrals-q6-activation-evidence.sh activation-after.json completion-after.json "$ACTIVATION_ID" "$RELEASE_ID" "$TARGET_SHA" "$EXPECTED_FEATURE_REVISION"

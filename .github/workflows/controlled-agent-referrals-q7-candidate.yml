@@ -1,0 +1,108 @@
+name: Controlled Agent Referrals Q7 activation HTTP-schema candidate publication
+
+# Immutable Q7 publication only. It never promotes, deploys, completes a
+# release, or activates Agent Referrals.
+on:
+  workflow_dispatch:
+    inputs:
+      expected_controller_sha: { required: true, type: string }
+      expected_controller_tree: { required: true, type: string }
+      expected_target_sha: { required: true, type: string }
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    env:
+      CONTROLLER_SHA: ${{ github.sha }}
+      EXPECTED_CONTROLLER_SHA: ${{ inputs.expected_controller_sha }}
+      EXPECTED_CONTROLLER_TREE: ${{ inputs.expected_controller_tree }}
+      TARGET_SHA: ${{ inputs.expected_target_sha }}
+      BASE_SHA: fa3b4aa5651956bb0a35f7a843e95423f057824b
+      TARGET_TREE: 1cbcce745d176dc0d15eb0811a34791e58ad9cdc
+      PUBLISH_REF: refs/heads/runtime/agent-referrals-activation-http-schema-1
+      Q6_PUBLICATION_REF: refs/heads/runtime/agent-referrals-activation-terminal-identity-1
+      AGENT_REFERRALS_Q5_CANDIDATE_REF_TOKEN: ${{ secrets.AGENT_REFERRALS_Q5_CANDIDATE_REF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind existing candidate publication credential
+        run: |
+          set -euo pipefail
+          [[ -n "$AGENT_REFERRALS_Q5_CANDIDATE_REF_TOKEN" ]] || { echo AGENT_REFERRALS_Q7_CANDIDATE_REF_TOKEN_REQUIRED >&2; exit 1; }
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git remote set-url origin "https://x-access-token:${AGENT_REFERRALS_Q5_CANDIDATE_REF_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: Bind exact current main controller and sealed inputs
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main && "$EXPECTED_CONTROLLER_SHA" =~ ^[a-f0-9]{40}$ && "$EXPECTED_CONTROLLER_TREE" =~ ^[a-f0-9]{40}$ && "$TARGET_SHA" == ce66d23fdcea5fc84018be43cf428270ea889ee8 ]] || { echo AGENT_REFERRALS_Q7_CANDIDATE_INPUT_INVALID >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$EXPECTED_CONTROLLER_SHA" && "$(git rev-parse "${GITHUB_SHA}^{tree}")" == "$EXPECTED_CONTROLLER_TREE" && "$(git rev-parse origin/main)" == "$EXPECTED_CONTROLLER_SHA" ]] || { echo AGENT_REFERRALS_Q7_CANDIDATE_CONTROLLER_BINDING_INVALID >&2; exit 1; }
+
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.29.3 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+
+      - name: Prove frozen Q6 authority and immutable publication state
+        run: |
+          set -euo pipefail
+          read_ref() { git ls-remote --exit-code origin "$1" | awk 'NF == 2 { print $1 }' | { read -r sha; [[ "$sha" =~ ^[a-f0-9]{40}$ ]] && printf '%s\n' "$sha"; }; }
+          production="$(read_ref refs/heads/production-deploy)" || exit 1
+          candidate="$(read_ref refs/heads/runtime-candidate)" || exit 1
+          q6_publication="$(read_ref "$Q6_PUBLICATION_REF")" || exit 1
+          existing="$(git ls-remote origin "$PUBLISH_REF" | awk 'NF == 2 { print $1 }')"
+          [[ "$production" == "$BASE_SHA" && "$candidate" == "$BASE_SHA" && "$q6_publication" == "$BASE_SHA" ]] || { echo AGENT_REFERRALS_Q7_CANDIDATE_PRE_AUTHORITY_MISMATCH >&2; exit 1; }
+          [[ -z "$existing" || "$existing" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q7_PUBLICATION_REF_ALREADY_DIFFERENT_SHA >&2; exit 1; }
+          { echo "OBSERVED_PRODUCTION=$production"; echo "OBSERVED_CANDIDATE=$candidate"; echo "OBSERVED_Q6_PUBLICATION=$q6_publication"; } >> "$GITHUB_ENV"
+
+      - name: Reconstruct exact certified Q7 from this controller tree
+        run: |
+          set -euo pipefail
+          git show "$GITHUB_SHA:.release/controlled-candidates/agent-referrals-activation-$BASE_SHA/certificate.json" > candidate-certificate.json
+          SOURCE_MAIN_SHA="$(jq -er '.source_main_sha' candidate-certificate.json)"
+          git merge-base --is-ancestor "$SOURCE_MAIN_SHA" "$GITHUB_SHA" || { echo AGENT_REFERRALS_Q7_SOURCE_MAIN_NOT_ANCESTOR >&2; exit 1; }
+          jq -e --arg base "$BASE_SHA" '.base_sha == $base' candidate-certificate.json >/dev/null || { echo AGENT_REFERRALS_Q7_CERTIFICATE_BASE_MISMATCH >&2; exit 1; }
+          jq -e '.patch_source == "controller_tree"' candidate-certificate.json >/dev/null || { echo AGENT_REFERRALS_Q7_CERTIFICATE_PATCH_SOURCE_INVALID >&2; exit 1; }
+          RECONSTRUCTED_SHA="$(node --import tsx commerce/src/controlled-candidate-verify.ts candidate-certificate.json "$GITHUB_SHA")"
+          [[ "$RECONSTRUCTED_SHA" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q7_RECONSTRUCTION_MISMATCH >&2; exit 1; }
+          [[ "$(git rev-parse "${RECONSTRUCTED_SHA}^")" == "$BASE_SHA" && "$(git rev-parse "${RECONSTRUCTED_SHA}^{tree}")" == "$TARGET_TREE" ]] || { echo AGENT_REFERRALS_Q7_TOPOLOGY_MISMATCH >&2; exit 1; }
+          jq -r '.paths[].path' candidate-certificate.json | sort > certified-paths.txt
+          git diff --name-only "$BASE_SHA" "$RECONSTRUCTED_SHA" | sort > actual-paths.txt
+          diff certified-paths.txt actual-paths.txt || { echo AGENT_REFERRALS_Q7_MANIFEST_MISMATCH >&2; exit 1; }
+          [[ "$(cat certified-paths.txt)" == commerce/src/release-control-schema.ts ]] || { echo AGENT_REFERRALS_Q7_RUNTIME_DELTA_UNEXPECTED >&2; exit 1; }
+          ! grep -Eq '^(commerce/migrations/|public/legal/|commerce/legal/|\.github/workflows/|release-surface-contract\.json$)' certified-paths.txt || { echo AGENT_REFERRALS_Q7_FORBIDDEN_PATH >&2; exit 1; }
+          git diff --no-ext-diff "$BASE_SHA" "$RECONSTRUCTED_SHA" -- commerce/src/release-control-schema.ts > q7-runtime.patch
+          grep -Fqx -- '-  terminal_release_id: z.string().regex(/^agent-referrals-q4-dormant-[a-f0-9]{40}$/),' q7-runtime.patch
+          grep -Fqx -- '+  terminal_release_id: z.string().regex(/^deploy-[a-f0-9]{40}$/),' q7-runtime.patch
+          ! grep -Eq 'agent-referrals-q4-dormant.*\|\||\|\|.*agent-referrals-q4-dormant' q7-runtime.patch
+
+      - name: Create or reconcile the single immutable Q7 publication ref
+        run: |
+          set -euo pipefail
+          read_ref() { git ls-remote --exit-code origin "$1" | awk 'NF == 2 { print $1 }' | { read -r sha; [[ "$sha" =~ ^[a-f0-9]{40}$ ]] && printf '%s\n' "$sha"; }; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$EXPECTED_CONTROLLER_SHA" && "$(git rev-parse "${GITHUB_SHA}^{tree}")" == "$EXPECTED_CONTROLLER_TREE" && "$(git rev-parse origin/main)" == "$EXPECTED_CONTROLLER_SHA" ]] || { echo AGENT_REFERRALS_Q7_CANDIDATE_CONTROLLER_BINDING_CHANGED >&2; exit 1; }
+          [[ "$(read_ref refs/heads/production-deploy)" == "$OBSERVED_PRODUCTION" && "$(read_ref refs/heads/runtime-candidate)" == "$OBSERVED_CANDIDATE" && "$(read_ref "$Q6_PUBLICATION_REF")" == "$OBSERVED_Q6_PUBLICATION" ]] || { echo AGENT_REFERRALS_Q7_CANDIDATE_AUTHORITY_MOVED >&2; exit 1; }
+          existing="$(git ls-remote origin "$PUBLISH_REF" | awk 'NF == 2 { print $1 }')"
+          if [[ -n "$existing" ]]; then [[ "$existing" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q7_PUBLICATION_REF_ALREADY_DIFFERENT_SHA >&2; exit 1; }; echo AGENT_REFERRALS_Q7_PUBLICATION_SAME_SHA_REPLAY; else git push --force-with-lease="${PUBLISH_REF}:" origin "${TARGET_SHA}:${PUBLISH_REF}"; fi
+
+      - name: Read back immutable Q7 publication and unchanged authority
+        run: |
+          set -euo pipefail
+          read_ref() { git ls-remote --exit-code origin "$1" | awk 'NF == 2 { print $1 }' | { read -r sha; [[ "$sha" =~ ^[a-f0-9]{40}$ ]] && printf '%s\n' "$sha"; }; }
+          [[ "$(read_ref "$PUBLISH_REF")" == "$TARGET_SHA" && "$(read_ref refs/heads/runtime-candidate)" == "$BASE_SHA" && "$(read_ref refs/heads/production-deploy)" == "$BASE_SHA" ]] || { echo AGENT_REFERRALS_Q7_PUBLICATION_READBACK_MISMATCH >&2; exit 1; }
