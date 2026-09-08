@@ -40,7 +40,7 @@
     "frontend:test:nginx": "bash deploy/test-frontend-nginx-routing.sh",
     "deploy:test:caddyfile": "bash deploy/test-caddyfile-topology.sh",
     "admin:dev": "pnpm --filter @flexperiment/admin dev",
-    "test": "vitest run",
+    "test": "COMMERCE_TEST_DB_SNAPSHOT=1 vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {

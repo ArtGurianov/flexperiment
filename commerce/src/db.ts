@@ -1,18 +1,42 @@
 import Database from "better-sqlite3";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const defaultPath = join(process.cwd(), "commerce-data", "commerce.sqlite");
+const defaultMigrationsDir = () => join(process.cwd(), "commerce", "migrations");
 
-export function openDatabase(filename = process.env.COMMERCE_DATABASE_PATH ?? defaultPath) {
-  mkdirSync(dirname(filename), { recursive: true });
-  const sqlite = new Database(filename);
+/**
+ * Test-only final-schema snapshots remove repeated migration work from the
+ * ordinary product-suite fixtures. The flag is set only by the test command;
+ * production always opens the requested database and runs the migration ledger
+ * unchanged. The global test setup builds the image from the current
+ * checkout's migrations before workers start.
+ */
+const testSchemaSnapshotsEnabled = () => process.env.COMMERCE_TEST_DB_SNAPSHOT === "1";
+const testSchemaSnapshot = () => {
+  const path = process.env.COMMERCE_TEST_DB_SNAPSHOT_PATH;
+  return path && existsSync(path) ? readFileSync(path) : undefined;
+};
+
+const configureDatabase = (sqlite: Database.Database) => {
   sqlite.pragma("journal_mode = WAL");
   sqlite.pragma("foreign_keys = ON");
   sqlite.pragma("busy_timeout = 5000");
   return sqlite;
+};
+
+export function openDatabase(
+  filename = process.env.COMMERCE_DATABASE_PATH ?? defaultPath,
+  options: { readonly testSchemaSnapshot?: boolean } = {},
+) {
+  mkdirSync(dirname(filename), { recursive: true });
+  const snapshot = options.testSchemaSnapshot !== false && testSchemaSnapshotsEnabled()
+    ? testSchemaSnapshot()
+    : undefined;
+  if (snapshot && filename !== ":memory:" && !existsSync(filename)) writeFileSync(filename, snapshot, { mode: 0o600 });
+  return configureDatabase(new Database(filename === ":memory:" ? snapshot ?? filename : filename));
 }
 
 export function openReadOnlyDatabase(filename = process.env.COMMERCE_DATABASE_PATH ?? defaultPath) {
@@ -121,7 +145,7 @@ export const applyFkOffMigration = (sqlite: Database.Database, version: string, 
   if (foreignKeyViolations(sqlite).length) throw new MigrationFatalError("MIGRATION_FK_OFF_POST_COMMIT_FOREIGN_KEY_CHECK_FAILED");
 };
 
-export function migrate(sqlite: Database.Database, migrationsDir = join(process.cwd(), "commerce", "migrations")) {
+export function migrate(sqlite: Database.Database, migrationsDir = defaultMigrationsDir()) {
   if (!existsSync(migrationsDir)) throw new Error("Commerce migrations directory is missing.");
   sqlite.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)");
   for (const version of readdirSync(migrationsDir).filter((file) => file.endsWith(".sql")).sort()) {

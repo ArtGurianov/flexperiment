@@ -1,7 +1,12 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { openDatabase } from "../src/db";
+import { openUnmigratedTestDatabase } from "./support/test-database";
+
+const openDatabase = (filename = ":memory:") => {
+  if (filename !== ":memory:") throw new Error("Historical migration fixtures require an in-memory database.");
+  return openUnmigratedTestDatabase();
+};
 
 const migrationsDirectory = join(process.cwd(), "commerce", "migrations");
 const applyThrough = (db: ReturnType<typeof openDatabase>, last: string) => {
