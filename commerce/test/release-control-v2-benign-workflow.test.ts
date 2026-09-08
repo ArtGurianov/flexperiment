@@ -60,15 +60,16 @@ describe("Release Control v2 BENIGN orchestration", () => {
       "RELEASE_CONTROL_V2_CONTROLLER_MAIN_MOVED",
       "RELEASE_CONTROL_V2_BASE_TREE_MISMATCH",
       "RELEASE_CONTROL_V2_CANDIDATE_TREE_MISMATCH",
-      "RELEASE_CONTROL_V2_CANDIDATE_NOT_DESCENDANT",
-      "RELEASE_CONTROL_V2_CANDIDATE_NOT_LINEAR",
-      "RELEASE_CONTROL_V2_CANDIDATE_CONTAINS_MAINTENANCE",
+      "RELEASE_CONTROL_V2_CANDIDATE_PARENT_MISMATCH",
+      "RELEASE_CONTROL_V2_MATERIALIZATION_SOURCE_NOT_IN_CONTROLLER",
+      "RELEASE_CONTROL_V2_MATERIALIZATION_PACKET_MISMATCH",
       "RELEASE_CONTROL_V2_RUNTIME_CANDIDATE_BASE_MISMATCH",
       "RELEASE_CONTROL_V2_PRODUCTION_DEPLOY_BASE_MISMATCH",
       "RELEASE_CONTROL_V2_DIFF_MANIFEST_MISMATCH",
       "RELEASE_CONTROL_V2_CERTIFICATE_MISMATCH",
     ]) expect(preflight).toContain(requirement);
     expect(preflight).toContain("validate-release-control-v2-packet.ts");
+    expect(preflight).toContain("verify-release-control-v2-materialization.ts");
     expect(preflight).toContain('git diff --name-only -z "$base_sha" "$candidate_sha"');
     expect(preflight).toContain('readFileSync(process.argv[1]).toString("utf8").split("\\0")');
     const baselineRebind = preflight.indexOf("RELEASE_CONTROL_V2_RUNTIME_CANDIDATE_BASE_MISMATCH");
@@ -145,8 +146,21 @@ describe("Release Control v2 BENIGN orchestration", () => {
     const execute = workflow.slice(workflow.indexOf("Rebind exact ordinary authority before any publication"), workflow.indexOf("Create or reconcile exact immutable BENIGN publication"));
     expect(execute).toContain("RELEASE_CONTROL_V2_RUNTIME_CANDIDATE_BASE_MOVED");
     expect(execute).toContain("RELEASE_CONTROL_V2_PRODUCTION_DEPLOY_BASE_MOVED");
-    expect(execute).toContain('git merge-base --is-ancestor "$BASE_SHA" "$TARGET_SHA"');
+    expect(execute).toContain('[[ "$(git rev-parse "${TARGET_SHA}^")" == "$BASE_SHA" ]]');
+    expect(execute).toContain("verify-release-control-v2-materialization.ts");
+    expect(execute.indexOf("verify-release-control-v2-materialization.ts")).toBeLessThan(execute.indexOf("RELEASE_CONTROL_V2_RUNTIME_CANDIDATE_BASE_MOVED"));
     expect(execute).not.toContain("git push");
+  });
+
+  it("reconstructs instead of fetching a candidate object, before either job can publish", () => {
+    const preflight = section(workflow, "Bind exact current main", "\n\n  execute:");
+    const execute = section(workflow, "Rebind exact ordinary authority before any publication", "Create or reconcile exact immutable BENIGN publication");
+    for (const source of [preflight, execute]) {
+      expect(source).toContain("verify-release-control-v2-materialization.ts");
+      expect(source).toContain("cmp --silent packet.json reconstructed-packet.json");
+    }
+    expect(preflight).not.toContain('git fetch --no-tags origin "$base_sha" "$candidate_sha"');
+    expect(execute).not.toContain('git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main "$BASE_SHA" "$TARGET_SHA"');
   });
 
   it("keeps all non-BENIGN lanes packet-only by construction", () => {

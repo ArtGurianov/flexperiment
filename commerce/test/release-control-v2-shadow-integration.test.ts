@@ -2,9 +2,17 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { genericProductionDeployBoundary, releaseSemanticsCategories } from "../src/generic-production-deploy-boundary";
 import { buildReleasePacket, type ReleasePolicyLane } from "../src/release-control-v2";
+import {
+  RELEASE_CONTROL_V2_COMMIT_METADATA,
+  RELEASE_CONTROL_V2_MATERIALIZATION_SCHEMA_VERSION,
+  RELEASE_CONTROL_V2_MATERIALIZER_VERSION,
+  RELEASE_CONTROL_V2_PATCH_FORMAT_VERSION,
+  type ReleaseControlV2MaterializationCertificate,
+} from "../src/release-control-v2-materializer";
 
 let repo: string;
 const git = (...args: string[]) => execFileSync("git", args, { cwd: repo, encoding: "utf8" }).trim();
@@ -17,8 +25,40 @@ const commit = (path: string, contents: string) => {
 };
 const pathsInRange = (base: string, candidate: string) =>
   execFileSync("git", ["diff", "--name-only", base, candidate], { cwd: repo, encoding: "utf8" }).trim().split("\n").filter(Boolean);
+const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+const materializationFor = (base: { sha: string; tree: string }, candidate: { sha: string; tree: string }, paths: readonly string[]): ReleaseControlV2MaterializationCertificate => {
+  const manifest = [...new Set(paths)].sort();
+  const sourceCommitSha = "a".repeat(40);
+  const sourceParentSha = "b".repeat(40);
+  const message = [
+    "Release Control v2 materialized candidate",
+    "",
+    `source: ${sourceCommitSha}`,
+    `source-parent: ${sourceParentSha}`,
+    `production-base: ${base.sha}`,
+    `materializer: ${RELEASE_CONTROL_V2_MATERIALIZER_VERSION}`,
+  ].join("\n");
+  return {
+    schema_version: RELEASE_CONTROL_V2_MATERIALIZATION_SCHEMA_VERSION,
+    production_base_sha: base.sha,
+    production_base_tree: base.tree,
+    source_commit_sha: sourceCommitSha,
+    source_commit_tree: "c".repeat(40),
+    source_parent_sha: sourceParentSha,
+    source_parent_tree: "d".repeat(40),
+    canonical_path_manifest: manifest,
+    path_manifest_sha256: hash(JSON.stringify(manifest)),
+    patch_format_version: RELEASE_CONTROL_V2_PATCH_FORMAT_VERSION,
+    patch_sha256: "e".repeat(64),
+    candidate_sha: candidate.sha,
+    candidate_tree: candidate.tree,
+    candidate_parent_sha: base.sha,
+    commit_metadata: { ...RELEASE_CONTROL_V2_COMMIT_METADATA, message },
+    materializer_version: RELEASE_CONTROL_V2_MATERIALIZER_VERSION,
+  };
+};
 const packetFor = (base: { sha: string; tree: string }, candidate: { sha: string; tree: string }, paths: readonly string[]) =>
-  buildReleasePacket({ base, candidate, changed_paths: paths, activation_required: false });
+  buildReleasePacket({ base, candidate, changed_paths: paths, activation_required: false, materialization: materializationFor(base, candidate, paths) });
 
 beforeAll(() => {
   repo = mkdtempSync(join(tmpdir(), "release-control-v2-shadow-"));
@@ -91,6 +131,11 @@ describe("Release Control v2 shadow integration", () => {
       candidate: { sha: "3".repeat(40), tree: "4".repeat(40) },
       changed_paths: ["README.md"],
       activation_required: false,
+      materialization: materializationFor(
+        { sha: "x", tree: "2".repeat(40) },
+        { sha: "3".repeat(40), tree: "4".repeat(40) },
+        ["README.md"],
+      ),
     })).toThrow("RELEASE_PACKET_BASE_IDENTITY_INVALID");
   });
 });
