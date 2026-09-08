@@ -150,11 +150,11 @@ describe("Q7 activation HTTP terminal-identity correction", () => {
   });
 
   it.each([
-    ["legacy Q4-dormant Q7", `agent-referrals-q4-dormant-${Q7}`, 400],
-    ["legacy Q4-dormant Q6", `agent-referrals-q4-dormant-${Q6}`, 400],
+    ["legacy Q4-dormant Q7", `agent-referrals-q4-dormant-${Q7}`, 422],
+    ["legacy Q4-dormant Q6", `agent-referrals-q4-dormant-${Q6}`, 422],
     ["Q6 deployment identity for Q7 source", `deploy-${Q6}`, 409],
-    ["arbitrary release identity", "deploy-not-a-commit", 400],
-    ["malformed SHA", "deploy-ABCDEF", 400],
+    ["arbitrary release identity", "deploy-not-a-commit", 422],
+    ["malformed SHA", "deploy-ABCDEF", 422],
   ])("fails closed for %s", async (_name, terminal_release_id, status) => {
     const { sqlite, app, request } = fresh();
     try {
