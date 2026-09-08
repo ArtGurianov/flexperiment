@@ -1,0 +1,191 @@
+name: Controlled Agent Referrals Q6 to Q7 RELEASE_CONTROL deployment
+
+# Q7 is a detached RELEASE_CONTROL-semantics candidate. It is admitted only by
+# positive certificate reconstruction and the strict release-semantics lane;
+# the generic deploy controller remains deliberately ineligible for this diff.
+on:
+  workflow_dispatch:
+    inputs:
+      expected_candidate_sha: { required: true, type: string }
+      expected_controller_sha: { required: true, type: string }
+      expected_controller_tree: { required: true, type: string }
+      expected_production_deploy_sha: { required: true, type: string }
+      expected_published_ref: { required: true, type: string }
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
+    env:
+      CONTROLLER_SHA: ${{ github.sha }}
+      BASE_SHA: fa3b4aa5651956bb0a35f7a843e95423f057824b
+      TARGET_SHA: ce66d23fdcea5fc84018be43cf428270ea889ee8
+      TARGET_TREE: 1cbcce745d176dc0d15eb0811a34791e58ad9cdc
+      RELEASE_ID: deploy-ce66d23fdcea5fc84018be43cf428270ea889ee8
+      INPUT_EXPECTED_CANDIDATE_SHA: ${{ inputs.expected_candidate_sha }}
+      INPUT_EXPECTED_CONTROLLER_SHA: ${{ inputs.expected_controller_sha }}
+      INPUT_EXPECTED_CONTROLLER_TREE: ${{ inputs.expected_controller_tree }}
+      INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA: ${{ inputs.expected_production_deploy_sha }}
+      INPUT_EXPECTED_PUBLISHED_REF: ${{ inputs.expected_published_ref }}
+      PRODUCTION_DEPLOY_REF_TOKEN: ${{ secrets.PRODUCTION_DEPLOY_REF_TOKEN }}
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+      COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL }}
+      PUBLIC_FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+      ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
+      INITIAL_READINESS_DELAY_SECONDS: "60"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind dedicated production-deploy credential
+        run: |
+          set -euo pipefail
+          [[ -n "$PRODUCTION_DEPLOY_REF_TOKEN" ]] || { echo AGENT_REFERRALS_Q7_DEPLOY_REF_TOKEN_REQUIRED >&2; exit 1; }
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git remote set-url origin "https://x-access-token:${PRODUCTION_DEPLOY_REF_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: Bind initial current main controller and sealed inputs
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main && "$INPUT_EXPECTED_CANDIDATE_SHA" == "$TARGET_SHA" && "$INPUT_EXPECTED_CONTROLLER_SHA" =~ ^[a-f0-9]{40}$ && "$INPUT_EXPECTED_CONTROLLER_TREE" =~ ^[a-f0-9]{40}$ && "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" == "$BASE_SHA" && "$INPUT_EXPECTED_PUBLISHED_REF" == refs/heads/runtime/agent-referrals-activation-http-schema-1 ]] || { echo AGENT_REFERRALS_Q7_DEPLOY_INPUT_INVALID >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$INPUT_EXPECTED_CONTROLLER_SHA" && "$(git rev-parse "${CONTROLLER_SHA}^{tree}")" == "$INPUT_EXPECTED_CONTROLLER_TREE" && "$(git rev-parse origin/main)" == "$INPUT_EXPECTED_CONTROLLER_SHA" ]] || { echo AGENT_REFERRALS_Q7_CONTROLLER_BINDING_INVALID >&2; exit 1; }
+
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.29.3 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+
+      - name: Reconstruct exact certified Q7 and prove RELEASE_CONTROL admission
+        run: |
+          set -euo pipefail
+          git show "$GITHUB_SHA:.release/controlled-candidates/agent-referrals-activation-$BASE_SHA/certificate.json" > candidate-certificate.json
+          SOURCE_MAIN_SHA="$(jq -er '.source_main_sha' candidate-certificate.json)"
+          git merge-base --is-ancestor "$SOURCE_MAIN_SHA" "$GITHUB_SHA" || { echo AGENT_REFERRALS_Q7_SOURCE_MAIN_NOT_ANCESTOR >&2; exit 1; }
+          jq -e --arg base "$BASE_SHA" '.base_sha == $base' candidate-certificate.json >/dev/null || { echo AGENT_REFERRALS_Q7_CERTIFICATE_BASE_MISMATCH >&2; exit 1; }
+          jq -e '.patch_source == "controller_tree"' candidate-certificate.json >/dev/null || { echo AGENT_REFERRALS_Q7_CERTIFICATE_PATCH_SOURCE_INVALID >&2; exit 1; }
+          RECONSTRUCTED_SHA="$(node --import tsx commerce/src/controlled-candidate-verify.ts candidate-certificate.json "$GITHUB_SHA")"
+          [[ "$RECONSTRUCTED_SHA" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q7_RECONSTRUCTION_MISMATCH >&2; exit 1; }
+          [[ "$(git rev-parse "${RECONSTRUCTED_SHA}^")" == "$BASE_SHA" && "$(git rev-parse "${RECONSTRUCTED_SHA}^{tree}")" == "$TARGET_TREE" ]] || { echo AGENT_REFERRALS_Q7_TOPOLOGY_MISMATCH >&2; exit 1; }
+          jq -r '.paths[].path' candidate-certificate.json | sort > certified-paths.txt
+          git diff --name-only "$BASE_SHA" "$RECONSTRUCTED_SHA" | sort > actual-paths.txt
+          diff certified-paths.txt actual-paths.txt || { echo AGENT_REFERRALS_Q7_MANIFEST_MISMATCH >&2; exit 1; }
+          [[ "$(cat certified-paths.txt)" == commerce/src/release-control-schema.ts ]] || { echo AGENT_REFERRALS_Q7_RUNTIME_DELTA_UNEXPECTED >&2; exit 1; }
+          ! grep -Eq '^(commerce/migrations/|public/legal/|commerce/legal/|\.github/workflows/|release-surface-contract\.json$)' certified-paths.txt || { echo AGENT_REFERRALS_Q7_FORBIDDEN_PATH >&2; exit 1; }
+          git diff --name-only -z "$BASE_SHA" "$TARGET_SHA" > q7-boundary-paths.bin
+          pnpm commerce:release-semantics-cutover:assert-boundary q7-boundary-paths.bin
+
+      - name: Prove Q6 terminal baseline, DORMANT feature, and classify exact Q7 owner
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-before.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/deploy-$BASE_SHA" > q6-completion.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion-before.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/activation-state" > activation-before.json
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$BASE_SHA" || "$(scripts/read-production-deploy-ref.sh)" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q7_PRODUCTION_POINTER_UNEXPECTED >&2; exit 1; }
+          jq -e --arg source "$BASE_SHA" '.complete == true and .expected.source_commit == $source' q6-completion.json >/dev/null || { echo AGENT_REFERRALS_Q7_Q6_TERMINAL_UNPROVEN >&2; exit 1; }
+          jq -e '.feature_state.state == "DORMANT" and .feature_state.owner_id == null and .feature_state.revision == 1 and .last_feature_state_event == null and .activation_manifest == null' activation-before.json >/dev/null || { echo AGENT_REFERRALS_Q7_ACTIVATION_EVIDENCE_UNEXPECTED >&2; exit 1; }
+          inventory="$(git ls-tree -r --name-only "$TARGET_SHA" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
+          migration="inventory-sha256:$(printf %s "$inventory" | shasum -a 256 | awk '{print $1}')"
+          jq -e --arg id "$RELEASE_ID" --arg source "$TARGET_SHA" --arg migration "$migration" '.runtime as $r | {release_id:$id,mode:"CONTROLLED_CUTOVER",expected:{source_commit:$source,migration:$migration,legal_version:$r.legal_version,legal_manifest_sha256:$r.legal_manifest_sha256,legal_hashes:$r.legal_hashes}}' status-before.json > release.json
+          jq -e '.expected.legal_version != null and .expected.legal_manifest_sha256 != null and .expected.legal_hashes != null' release.json >/dev/null || { echo AGENT_REFERRALS_Q7_BASELINE_INVALID >&2; exit 1; }
+          pointer="$(scripts/read-production-deploy-ref.sh)"
+          if jq -e '.complete == true' completion-before.json >/dev/null; then [[ "$pointer" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q7_COMPLETED_POINTER_MISMATCH >&2; exit 1; }; echo DEPLOYMENT_STATE=ALREADY_COMPLETE >> "$GITHUB_ENV"; exit 0; fi
+          if [[ "$pointer" == "$BASE_SHA" ]] && jq -e --arg source "$BASE_SHA" '.owner_release_id == null and .owner_mode == null and .sales_paused == false and .runtime.source_commit == $source and .runtime.worker_source_commit == $source' status-before.json >/dev/null; then echo DEPLOYMENT_STATE=FRESH >> "$GITHUB_ENV"; exit 0; fi
+          jq -e --arg id "$RELEASE_ID" --slurpfile request release.json '.owner_release_id == $id and .owner_mode == "CONTROLLED_CUTOVER" and .sales_paused == true and .expected == ($request[0].expected | del(.legal_hashes))' status-before.json >/dev/null || { echo AGENT_REFERRALS_Q7_OWNER_STATE_UNEXPECTED >&2; exit 1; }
+          if [[ "$pointer" == "$BASE_SHA" ]]; then echo DEPLOYMENT_STATE=OWNED_PRE_CAS >> "$GITHUB_ENV"; elif jq -e --arg target "$TARGET_SHA" '.runtime.source_commit == $target and .runtime.worker_source_commit == $target' status-before.json >/dev/null; then echo DEPLOYMENT_STATE=OWNED_CONVERGED >> "$GITHUB_ENV"; else echo DEPLOYMENT_STATE=OWNED_NEEDS_DEPLOY >> "$GITHUB_ENV"; fi
+
+      - name: Acquire Q7 owner and pause registrations
+        if: env.DEPLOYMENT_STATE == 'FRESH'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main runtime-candidate
+          [[ "$CONTROLLER_SHA" == "$INPUT_EXPECTED_CONTROLLER_SHA" && "$(git rev-parse "${CONTROLLER_SHA}^{tree}")" == "$INPUT_EXPECTED_CONTROLLER_TREE" && "$(git rev-parse origin/main)" == "$INPUT_EXPECTED_CONTROLLER_SHA" && "$(git rev-parse origin/runtime-candidate)" == "$TARGET_SHA" && "$(scripts/read-production-deploy-ref.sh)" == "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" ]] || { echo AGENT_REFERRALS_Q7_FRESH_AUTHORITY_REBIND_FAILED >&2; exit 1; }
+          [[ "$(git ls-remote --exit-code origin "$INPUT_EXPECTED_PUBLISHED_REF" | awk 'NF == 2 { print $1 }')" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q7_PUBLICATION_MOVED >&2; exit 1; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/acquire" > /dev/null
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/pause" > paused.json
+          jq -e --arg id "$RELEASE_ID" '.sales_paused == true and .owner_release_id == $id and .owner_mode == "CONTROLLED_CUTOVER"' paused.json >/dev/null
+
+      - name: Prove public checkout pause
+        if: env.DEPLOYMENT_STATE != 'ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          code="$(curl --silent --show-error --connect-timeout 10 --max-time 30 --output paused-checkout.json --write-out '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: q7-pause-proof-${GITHUB_RUN_ID}" --data '{}' "$PUBLIC_API_URL/v1/public/checkouts")"
+          [[ "$code" == 503 ]] && jq -e '.error.code == "SALES_TEMPORARILY_PAUSED"' paused-checkout.json >/dev/null
+
+      - name: Rebind same-owner authority and guarded Q6 to Q7 CAS
+        if: env.DEPLOYMENT_STATE != 'ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-before-consequence.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/activation-state" > activation-before-consequence.json
+          jq -e --arg id "$RELEASE_ID" --slurpfile request release.json '.owner_release_id == $id and .owner_mode == "CONTROLLED_CUTOVER" and .sales_paused == true and .expected == ($request[0].expected | del(.legal_hashes))' status-before-consequence.json >/dev/null || { echo AGENT_REFERRALS_Q7_HELD_OWNER_CHANGED >&2; exit 1; }
+          jq -e '.feature_state.state == "DORMANT" and .feature_state.owner_id == null and .feature_state.revision == 1 and .last_feature_state_event == null and .activation_manifest == null' activation-before-consequence.json >/dev/null || { echo AGENT_REFERRALS_Q7_ACTIVATION_STATE_CHANGED >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$INPUT_EXPECTED_CONTROLLER_SHA" && "$(git rev-parse "${CONTROLLER_SHA}^{tree}")" == "$INPUT_EXPECTED_CONTROLLER_TREE" && "$(git rev-parse origin/main)" == "$INPUT_EXPECTED_CONTROLLER_SHA" ]] || { echo AGENT_REFERRALS_Q7_CONTROLLER_BINDING_CHANGED >&2; exit 1; }
+          pointer="$(scripts/read-production-deploy-ref.sh)"
+          [[ "$pointer" == "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" || "$pointer" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q7_PRODUCTION_POINTER_MOVED >&2; exit 1; }
+          [[ "$(git ls-remote --exit-code origin "$INPUT_EXPECTED_PUBLISHED_REF" | awk 'NF == 2 { print $1 }')" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q7_PUBLICATION_MOVED >&2; exit 1; }
+          if [[ "$pointer" == "$BASE_SHA" ]]; then scripts/set-production-deploy-ref.sh "$TARGET_SHA" "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA"; fi
+
+      - name: Deploy exact Q7 only when the held owner is not converged
+        if: env.DEPLOYMENT_STATE == 'FRESH' || env.DEPLOYMENT_STATE == 'OWNED_PRE_CAS' || env.DEPLOYMENT_STATE == 'OWNED_NEEDS_DEPLOY'
+        run: |
+          set -euo pipefail
+          scripts/controlled-coolify-deploy.sh "$TARGET_SHA"
+          sleep "$INITIAL_READINESS_DELAY_SECONDS"
+          RUNTIME_ASSERT_DIR="$RUNNER_TEMP/q7-runtime"; git worktree add --detach "$RUNTIME_ASSERT_DIR" "$TARGET_SHA"
+          (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile --ignore-scripts)
+          RUNTIME_ASSERT_DIR="$RUNTIME_ASSERT_DIR" scripts/controlled-production-readiness.sh release.json
+
+      - name: Prove converged Q7 before guarded reopen
+        if: env.DEPLOYMENT_STATE == 'OWNED_CONVERGED'
+        run: |
+          set -euo pipefail
+          RUNTIME_ASSERT_DIR="$RUNNER_TEMP/q7-runtime"; git worktree add --detach "$RUNTIME_ASSERT_DIR" "$TARGET_SHA"
+          (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile --ignore-scripts)
+          RUNTIME_ASSERT_DIR="$RUNTIME_ASSERT_DIR" scripts/controlled-production-readiness.sh release.json
+
+      - name: Guarded reopen and complete exact Q7 release
+        if: env.DEPLOYMENT_STATE != 'ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/reopen" > reopened.json
+          jq -e '.sales_paused == false and .owner_release_id == null and .owner_mode == null' reopened.json >/dev/null
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion-after.json
+          jq -e --slurpfile release release.json '.complete == true and .expected == $release[0].expected' completion-after.json >/dev/null
+
+      - name: Prove terminal Q7 surfaces and DORMANT feature
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > terminal-status.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > terminal-completion.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/activation-state" > terminal-activation.json
+          jq -e --arg target "$TARGET_SHA" '.owner_release_id == null and .owner_mode == null and .sales_paused == false and .runtime.source_commit == $target and .runtime.worker_source_commit == $target' terminal-status.json >/dev/null
+          jq -e --slurpfile release release.json '.complete == true and .expected == $release[0].expected' terminal-completion.json >/dev/null
+          jq -e '.feature_state.state == "DORMANT" and .feature_state.owner_id == null and .feature_state.revision == 1 and .last_feature_state_event == null and .activation_manifest == null' terminal-activation.json >/dev/null
+          curl --fail-with-body --silent --show-error "$PUBLIC_FRONTEND_URL/release.json" | jq -e --arg target "$TARGET_SHA" '.source_commit == $target' >/dev/null
+          curl --fail-with-body --silent --show-error "$ADMIN_RELEASE_URL" | jq -e --arg target "$TARGET_SHA" '.source_commit == $target' >/dev/null
+          curl --fail-with-body --silent --show-error "$PUBLIC_API_URL/healthz" | jq -e '.ok' >/dev/null
+          curl --fail-with-body --silent --show-error "$PUBLIC_API_URL/readyz" | jq -e '.ok' >/dev/null
