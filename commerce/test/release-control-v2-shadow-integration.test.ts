@@ -61,6 +61,17 @@ describe("Release Control v2 shadow integration", () => {
     expect(packet.decision).toBe("STOP_ESCALATE");
   });
 
+  it("retains compatibility escalation alongside financial arithmetic lanes", () => {
+    const base = commit("financial-compatibility-baseline.txt", "base\n");
+    const candidate = commit("commerce/src/promo-pricing.ts", "arithmetic\n");
+    const changed = pathsInRange(base.sha, candidate.sha);
+    const packet = packetFor(base, candidate, changed);
+
+    expect(genericProductionDeployBoundary(changed)).toBe("RELEASE_SEMANTICS");
+    expect(packet.policy_lanes).toEqual(["FINANCIAL", "COMPATIBILITY"]);
+    expect(packet.decision).toBe("STOP_ESCALATE");
+  });
+
   it("escalates every sensitive lane in a mixed range instead of weakening the current generic refusal", () => {
     const base = commit("mixed-baseline.txt", "base\n");
     commit("commerce/migrations/0052_shadow.sql", "migration\n");

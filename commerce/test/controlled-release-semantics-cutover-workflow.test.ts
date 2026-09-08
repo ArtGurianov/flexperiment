@@ -7,6 +7,7 @@ import { releaseControlSemanticsPaths } from "../src/generic-production-deploy-b
 
 const workflow = readFileSync(".github/workflows/controlled-release-semantics-cutover.yml", "utf8");
 const generic = readFileSync(".github/workflows/controlled-production-deploy.yml", "utf8");
+const genericPrimitive = readFileSync(".github/actions/controlled-production-deploy/action.yml", "utf8");
 
 const assertBoundary = (paths: readonly string[]) => {
   const file = join(mkdtempSync(join(tmpdir(), "release-semantics-boundary-")), "paths.bin");
@@ -110,6 +111,8 @@ describe("controlled release-semantics cutover", () => {
         // the shared deployment machinery, not that narrower entrypoint.
         .replace(/[ \t]*workflow_call:\n(?:[^\n]*\n)*?(?=permissions:)/, "")
         .replace(/commerce:(production-deploy|release-semantics-cutover):assert-boundary/g, "ASSERT_BOUNDARY");
-    expect(strip(workflow)).toBe(strip(generic));
+    const cutoverPrimitive = workflow.slice(workflow.indexOf("      - name: Assert this controller is exact, current main"));
+    const genericSteps = genericPrimitive.slice(genericPrimitive.indexOf("      - name: Assert this controller is exact, current main"));
+    expect(strip(cutoverPrimitive)).toBe(strip(genericSteps));
   });
 });

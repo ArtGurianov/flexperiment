@@ -13,9 +13,13 @@ import { describe, expect, it } from "vitest";
  */
 
 const WORKFLOWS = ".github/workflows";
+const actionSource = (source: string) => {
+  const localActions = [...source.matchAll(/uses:\s*\.\/\.github\/actions\/([^\s]+)/g)].map((match) => match[1]);
+  return `${source}\n${localActions.map((name) => readFileSync(`.github/actions/${name}/action.yml`, "utf8")).join("\n")}`;
+};
 const controllers = readdirSync(WORKFLOWS)
   .filter((name) => name.startsWith("controlled-") && name.endsWith(".yml"))
-  .map((name) => ({ name, source: readFileSync(`${WORKFLOWS}/${name}`, "utf8") }));
+  .map((name) => ({ name, source: actionSource(readFileSync(`${WORKFLOWS}/${name}`, "utf8")) }));
 
 const run = (script: string) => {
   try {

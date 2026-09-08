@@ -15,7 +15,7 @@ const CERTIFICATE = `.release/controlled-candidates/agent-referrals-activation-$
 const publication = readFileSync(".github/workflows/controlled-agent-referrals-q7-candidate.yml", "utf8");
 const deploy = readFileSync(".github/workflows/controlled-agent-referrals-q7-deploy.yml", "utf8");
 const activation = readFileSync(".github/workflows/controlled-agent-referrals-q7-activation.yml", "utf8");
-const promotion = readFileSync(".github/workflows/controlled-runtime-candidate-promotion.yml", "utf8");
+const promotion = `${readFileSync(".github/workflows/controlled-runtime-candidate-promotion.yml", "utf8")}\n${readFileSync(".github/actions/controlled-runtime-candidate-promotion/action.yml", "utf8")}`;
 const verifier = readFileSync("scripts/release/assert-agent-referrals-q6-activation-evidence.sh", "utf8");
 const git = (...args: string[]) => execFileSync("git", args, { encoding: "utf8" }).trim();
 

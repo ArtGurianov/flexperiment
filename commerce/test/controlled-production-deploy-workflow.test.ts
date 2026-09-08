@@ -3,12 +3,17 @@ import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { migrationInventoryExpectation } from "../src/release-control";
 
-const workflow = readFileSync(".github/workflows/controlled-production-deploy.yml", "utf8");
+const wrapper = readFileSync(".github/workflows/controlled-production-deploy.yml", "utf8");
+const primitive = readFileSync(".github/actions/controlled-production-deploy/action.yml", "utf8");
+// The dispatch wrapper owns the environment gate; the shared composite action
+// owns the exact deploy primitive and is also what the v2 one-gate
+// coordinator invokes.
+const workflow = `${wrapper}\n${primitive}`;
 const deployHelper = readFileSync("scripts/controlled-coolify-deploy.sh", "utf8");
 
 describe("generic controlled production deploy workflow", () => {
   it("deploys only from workflow_dispatch on main, never from a push to main or any branch", () => {
-    const onBlock = workflow.slice(workflow.indexOf("\non:\n"), workflow.indexOf("\npermissions:"));
+    const onBlock = wrapper.slice(wrapper.indexOf("\non:\n"), wrapper.indexOf("\npermissions:"));
     expect(onBlock).not.toContain("push:");
     expect(onBlock).toContain("workflow_dispatch:");
     expect(workflow).not.toContain("paths:");

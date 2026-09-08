@@ -74,6 +74,7 @@ const financialPaths = new Set([
   "commerce/src/agent-referrals-payment.ts",
   "commerce/src/agent-referrals-settlement.ts",
   "commerce/src/agent-referrals-reward-registry.ts",
+  "commerce/src/agent-referrals-act.ts",
 ]);
 const attributionPaths = new Set([
   "commerce/src/agent-referrals-attribution.ts",
@@ -87,6 +88,22 @@ const compatibilityPaths = new Set([
   "commerce/src/legal-release.ts",
   "commerce/src/occurrence-notification-capability.ts",
   "commerce/src/utc-timestamp.ts",
+  // These financial primitives define persisted arithmetic and must retain the
+  // generic controller's compatibility boundary even though v2 also reports
+  // their business-risk lane.
+  "commerce/src/promo-pricing.ts",
+  "commerce/src/basis-points.ts",
+  "commerce/src/reward-calculation.ts",
+]);
+
+// BENIGN is a closed registry for runtime source. A new Commerce module is
+// not a harmless deploy merely because it has not been noticed by one of the
+// sensitive registries yet. The small initial allowlist is intentional: Phase
+// 1 must escalate until a path has been reviewed into a lane (or explicitly
+// admitted as ordinary runtime work).
+const benignRuntimePaths = new Set([
+  "commerce/src/domain.ts",
+  "commerce/src/generic-production-deploy.ts",
 ]);
 
 const inDirectory = (path: string, directory: string) => path.startsWith(`${directory}/`);
@@ -94,7 +111,7 @@ const assertIdentity = (label: string, identity: SealedReleaseIdentity) => {
   if (!SHA.test(identity.sha) || !SHA.test(identity.tree)) throw new Error(`RELEASE_PACKET_${label}_IDENTITY_INVALID`);
 };
 
-/** Conservative path classifier. Unknown paths remain BENIGN only when no known sensitive lane is crossed. */
+/** Conservative, closed-registry path classifier. */
 export const classifyReleasePaths = (paths: readonly string[]): readonly ReleasePolicyLane[] => {
   const lanes = new Set<ReleasePolicyLane>();
   for (const path of paths) {
@@ -105,10 +122,16 @@ export const classifyReleasePaths = (paths: readonly string[]): readonly Release
     if (releaseControlPaths.has(path)) lanes.add("RELEASE_CONTROL");
     if (path === "release-surface-contract.json") lanes.add("SURFACE");
     if (compatibilityPaths.has(path)) lanes.add("COMPATIBILITY");
-    // A new release-prefixed runtime seam is intentionally not assumed benign
-    // before the registry has reviewed it. It is a compatibility-shaped
-    // unknown, so the packet escalates rather than silently widening BENIGN.
-    if (path.startsWith("commerce/src/release-") && !releaseControlPaths.has(path) && !compatibilityPaths.has(path)) lanes.add("COMPATIBILITY");
+    // Every unregistered Commerce runtime seam is compatibility-shaped until
+    // reviewed. This includes the whole Agent Referrals namespace: it carries
+    // financial, settlement, attribution and activation authority, so a new
+    // file there must never inherit BENIGN by omission.
+    if (path.startsWith("commerce/src/") &&
+      !benignRuntimePaths.has(path) &&
+      !releaseControlPaths.has(path) &&
+      !financialPaths.has(path) &&
+      !attributionPaths.has(path) &&
+      !compatibilityPaths.has(path)) lanes.add("COMPATIBILITY");
   }
   return (lanes.size ? laneOrder.filter((lane) => lanes.has(lane)) : ["BENIGN"]);
 };

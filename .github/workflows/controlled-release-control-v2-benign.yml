@@ -90,7 +90,16 @@ jobs:
           git merge-base --is-ancestor "$base_sha" "$candidate_sha" || { echo "RELEASE_CONTROL_V2_CANDIDATE_NOT_DESCENDANT" >&2; exit 1; }
           [[ -z "$(git rev-list --merges "$base_sha..$candidate_sha")" ]] || { echo "RELEASE_CONTROL_V2_CANDIDATE_NOT_LINEAR" >&2; exit 1; }
           [[ -z "$(git rev-list "$base_sha..$candidate_sha" | while read -r sha; do git cat-file -e "$sha:.release/maintenance-only" 2>/dev/null && echo "$sha"; done)" ]] || { echo "RELEASE_CONTROL_V2_CANDIDATE_CONTAINS_MAINTENANCE" >&2; exit 1; }
-          git diff --name-only "$base_sha" "$candidate_sha" | sort | jq -Rsc 'split("\n") | map(select(length > 0))' > actual-manifest.json
+          actual_runtime_candidate="$(git ls-remote --exit-code origin refs/heads/runtime-candidate | awk '{print $1}')" || { echo "RELEASE_CONTROL_V2_RUNTIME_CANDIDATE_UNAVAILABLE" >&2; exit 1; }
+          actual_production_deploy="$(git ls-remote --exit-code origin refs/heads/production-deploy | awk '{print $1}')" || { echo "RELEASE_CONTROL_V2_PRODUCTION_DEPLOY_UNAVAILABLE" >&2; exit 1; }
+          [[ "$actual_runtime_candidate" == "$base_sha" ]] || { echo "RELEASE_CONTROL_V2_RUNTIME_CANDIDATE_BASE_MISMATCH=$actual_runtime_candidate" >&2; exit 1; }
+          [[ "$actual_production_deploy" == "$base_sha" ]] || { echo "RELEASE_CONTROL_V2_PRODUCTION_DEPLOY_BASE_MISMATCH=$actual_production_deploy" >&2; exit 1; }
+          git diff --name-only -z "$base_sha" "$candidate_sha" > actual-manifest.bin
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs";
+            const paths = readFileSync(process.argv[1]).toString("utf8").split("\0").filter(Boolean).sort();
+            process.stdout.write(JSON.stringify(paths));
+          ' actual-manifest.bin > actual-manifest.json
           jq -e --slurpfile actual actual-manifest.json '.diff_manifest == $actual[0]' packet.json >/dev/null || { echo "RELEASE_CONTROL_V2_DIFF_MANIFEST_MISMATCH" >&2; exit 1; }
           {
             echo "base_sha=$base_sha"
@@ -100,21 +109,41 @@ jobs:
             echo "controller_tree=$INPUT_EXPECTED_CONTROLLER_TREE"
           } >> "$GITHUB_OUTPUT"
 
-  publish:
+
+  execute:
     needs: preflight
     runs-on: ubuntu-latest
     environment: production
+    timeout-minutes: 55
     permissions:
-      contents: read
+      contents: write
     concurrency:
       group: flexperiment-production-controlled-cutover
       cancel-in-progress: false
     env:
+      BASE_SHA: ${{ needs.preflight.outputs.base_sha }}
       CONTROLLER_SHA: ${{ needs.preflight.outputs.controller_sha }}
       CONTROLLER_TREE: ${{ needs.preflight.outputs.controller_tree }}
       TARGET_SHA: ${{ needs.preflight.outputs.candidate_sha }}
       PUBLICATION_REF: ${{ needs.preflight.outputs.candidate_publication_ref }}
       RELEASE_CONTROL_V2_CANDIDATE_REF_TOKEN: ${{ secrets.RELEASE_CONTROL_V2_CANDIDATE_REF_TOKEN }}
+      RUNTIME_CANDIDATE_REF_TOKEN: ${{ secrets.RUNTIME_CANDIDATE_REF_TOKEN }}
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+      COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL }}
+      PUBLIC_FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+      ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
+      INPUT_TARGET_SHA: ${{ needs.preflight.outputs.candidate_sha }}
+      INPUT_EXPECTED_CONTROLLER_SHA: ${{ needs.preflight.outputs.controller_sha }}
+      INPUT_EXPECTED_CONTROLLER_TREE: ${{ needs.preflight.outputs.controller_tree }}
+      INPUT_EXPECTED_PUBLISHED_REF: ${{ needs.preflight.outputs.candidate_publication_ref }}
+      INPUT_EXPECTED_RUNTIME_CANDIDATE_SHA: ${{ needs.preflight.outputs.base_sha }}
+      INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA: ${{ needs.preflight.outputs.base_sha }}
+      INPUT_REASON: Release Control v2 BENIGN packet promotion
+      GITHUB_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -122,14 +151,23 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Create or reconcile exact immutable BENIGN publication
+      - name: Rebind exact ordinary authority before any publication
         run: |
           set -euo pipefail
           [[ -n "$RELEASE_CONTROL_V2_CANDIDATE_REF_TOKEN" ]] || { echo "RELEASE_CONTROL_V2_CANDIDATE_REF_TOKEN_REQUIRED" >&2; exit 1; }
-          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main "$TARGET_SHA"
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main "$BASE_SHA" "$TARGET_SHA"
           [[ "$GITHUB_SHA" == "$CONTROLLER_SHA" ]] || { echo "RELEASE_CONTROL_V2_PUBLICATION_CONTROLLER_SHA_MISMATCH" >&2; exit 1; }
           [[ "$(git rev-parse "${GITHUB_SHA}^{tree}")" == "$CONTROLLER_TREE" ]] || { echo "RELEASE_CONTROL_V2_PUBLICATION_CONTROLLER_TREE_MISMATCH" >&2; exit 1; }
           [[ "$(git rev-parse origin/main)" == "$CONTROLLER_SHA" ]] || { echo "RELEASE_CONTROL_V2_PUBLICATION_CONTROLLER_MAIN_MOVED" >&2; exit 1; }
+          runtime_candidate="$(git ls-remote --exit-code origin refs/heads/runtime-candidate | awk '{print $1}')" || { echo "RELEASE_CONTROL_V2_RUNTIME_CANDIDATE_UNAVAILABLE" >&2; exit 1; }
+          production_deploy="$(git ls-remote --exit-code origin refs/heads/production-deploy | awk '{print $1}')" || { echo "RELEASE_CONTROL_V2_PRODUCTION_DEPLOY_UNAVAILABLE" >&2; exit 1; }
+          [[ "$runtime_candidate" == "$BASE_SHA" ]] || { echo "RELEASE_CONTROL_V2_RUNTIME_CANDIDATE_BASE_MOVED=$runtime_candidate" >&2; exit 1; }
+          [[ "$production_deploy" == "$BASE_SHA" ]] || { echo "RELEASE_CONTROL_V2_PRODUCTION_DEPLOY_BASE_MOVED=$production_deploy" >&2; exit 1; }
+          git merge-base --is-ancestor "$BASE_SHA" "$TARGET_SHA" || { echo "RELEASE_CONTROL_V2_CANDIDATE_NOT_DESCENDANT" >&2; exit 1; }
+
+      - name: Create or reconcile exact immutable BENIGN publication
+        run: |
+          set -euo pipefail
           existing="$(git ls-remote origin "$PUBLICATION_REF" | awk '{print $1}')"
           if [[ -n "$existing" ]]; then
             [[ "$existing" == "$TARGET_SHA" ]] || { echo "RELEASE_CONTROL_V2_PUBLICATION_REF_CONFLICT=$existing" >&2; exit 1; }
@@ -140,29 +178,15 @@ jobs:
           git push --force-with-lease="$PUBLICATION_REF:" origin "$TARGET_SHA:$PUBLICATION_REF"
           [[ "$(git ls-remote --exit-code origin "$PUBLICATION_REF" | awk '{print $1}')" == "$TARGET_SHA" ]] || { echo "RELEASE_CONTROL_V2_PUBLICATION_READBACK_MISMATCH" >&2; exit 1; }
 
-  promote:
-    needs: [preflight, publish]
-    permissions:
-      contents: read
-    uses: ./.github/workflows/controlled-runtime-candidate-promotion.yml
-    with:
-      target_sha: ${{ needs.preflight.outputs.candidate_sha }}
-      expected_controller_sha: ${{ needs.preflight.outputs.controller_sha }}
-      expected_controller_tree: ${{ needs.preflight.outputs.controller_tree }}
-      expected_published_ref: ${{ needs.preflight.outputs.candidate_publication_ref }}
-      expected_runtime_candidate_sha: ${{ needs.preflight.outputs.base_sha }}
-      expected_production_deploy_sha: ${{ needs.preflight.outputs.base_sha }}
-      reason: Release Control v2 BENIGN packet promotion
-    secrets: inherit
+      - uses: ./.github/actions/controlled-runtime-candidate-promotion
 
-  deploy:
-    needs: [preflight, promote]
-    permissions:
-      contents: write
-    uses: ./.github/workflows/controlled-production-deploy.yml
-    with:
-      expected_candidate_sha: ${{ needs.preflight.outputs.candidate_sha }}
-      expected_controller_sha: ${{ needs.preflight.outputs.controller_sha }}
-      expected_controller_tree: ${{ needs.preflight.outputs.controller_tree }}
-      expected_production_deploy_sha: ${{ needs.preflight.outputs.base_sha }}
-    secrets: inherit
+      - name: Bind generic deployment credential after candidate promotion
+        run: |
+          set -euo pipefail
+          [[ -n "$GITHUB_TOKEN" ]] || { echo "RELEASE_CONTROL_V2_DEPLOYMENT_GITHUB_TOKEN_REQUIRED" >&2; exit 1; }
+          git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: Select ordinary exact candidate deploy
+        run: echo "INPUT_TARGET_SHA=" >> "$GITHUB_ENV"
+
+      - uses: ./.github/actions/controlled-production-deploy

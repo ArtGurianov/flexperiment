@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { buildReleasePacket, canonicalReleasePacket, classifyReleasePaths, validateReleasePacket } from "../src/release-control-v2";
 
@@ -46,7 +46,7 @@ describe("Release Control v2 Phase 1 shadow packet", () => {
   it.each([
     ["migration", ["commerce/migrations/0050_example.sql"], ["MIGRATION"]],
     ["legal", ["public/legal/privacy-policy.md"], ["LEGAL"]],
-    ["financial", ["commerce/src/promo-pricing.ts"], ["FINANCIAL"]],
+    ["financial compatibility primitive", ["commerce/src/promo-pricing.ts"], ["FINANCIAL", "COMPATIBILITY"]],
     ["attribution", ["commerce/src/agent-referrals-attribution.ts"], ["ATTRIBUTION"]],
     ["surface", ["release-surface-contract.json"], ["SURFACE"]],
     ["compatibility", ["commerce/src/crypto.ts"], ["COMPATIBILITY"]],
@@ -89,6 +89,21 @@ describe("Release Control v2 Phase 1 shadow packet", () => {
       policy_lanes: ["COMPATIBILITY"],
       decision: "STOP_ESCALATE",
     });
+  });
+
+  it("uses a closed runtime registry so Agent Referrals authority cannot inherit BENIGN by omission", () => {
+    expect(classifyReleasePaths(["commerce/src/agent-referrals-act.ts"])).toEqual(["FINANCIAL"]);
+    expect(classifyReleasePaths(["commerce/src/agent-referrals-unreviewed-authority.ts"])).toEqual(["COMPATIBILITY"]);
+    expect(classifyReleasePaths(["commerce/src/unreviewed-runtime-authority.ts"])).toEqual(["COMPATIBILITY"]);
+    expect(classifyReleasePaths(["commerce/src/domain.ts"])).toEqual(["BENIGN"]);
+  });
+
+  it("escalates every present Agent Referrals runtime module unless it has an explicit sensitive lane", () => {
+    const paths = readdirSync("commerce/src")
+      .filter((name) => /^agent-referrals-.*\.ts$/.test(name))
+      .map((name) => `commerce/src/${name}`);
+    expect(paths.length).toBeGreaterThan(0);
+    for (const path of paths) expect(classifyReleasePaths([path])).not.toEqual(["BENIGN"]);
   });
 
   it("has no mutation-capable Phase 1 dependency or executable authority surface", () => {

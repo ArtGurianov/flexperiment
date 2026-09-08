@@ -88,7 +88,7 @@ describe("runtime-candidate authority boundary", () => {
    * SHA is never on its own sufficient.
    */
   it("still proves a fresh target descends from production before acquiring it", () => {
-    const deploy = readFileSync(`${directory}/controlled-production-deploy.yml`, "utf8");
+    const deploy = `${readFileSync(`${directory}/controlled-production-deploy.yml`, "utf8")}\n${readFileSync(".github/actions/controlled-production-deploy/action.yml", "utf8")}`;
     expect(deploy).toContain("candidate_is_descendant_of_production_deploy");
     expect(deploy).toContain("RUNTIME_CANDIDATE_NOT_DESCENDANT_OF_PRODUCTION_DEPLOY");
   });

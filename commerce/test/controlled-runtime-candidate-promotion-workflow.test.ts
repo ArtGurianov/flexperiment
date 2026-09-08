@@ -1,10 +1,15 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-const workflow = readFileSync(".github/workflows/controlled-runtime-candidate-promotion.yml", "utf8");
+const wrapper = readFileSync(".github/workflows/controlled-runtime-candidate-promotion.yml", "utf8");
+const primitive = readFileSync(".github/actions/controlled-runtime-candidate-promotion/action.yml", "utf8");
+// The dispatch wrapper owns the environment gate; the shared composite action
+// owns the exact CAS primitive and is also what the v2 one-gate coordinator
+// invokes.
+const workflow = `${wrapper}\n${primitive}`;
 
 describe("controlled runtime-candidate promotion workflow", () => {
-  const workflowDispatch = workflow.slice(workflow.indexOf("\non:\n"), workflow.indexOf("\npermissions:"));
+  const workflowDispatch = wrapper.slice(wrapper.indexOf("\non:\n"), wrapper.indexOf("\npermissions:"));
 
   it("is manual, main-only, serialized, and accepts only audited exact identities", () => {
     expect(workflowDispatch).toContain("workflow_dispatch:");
