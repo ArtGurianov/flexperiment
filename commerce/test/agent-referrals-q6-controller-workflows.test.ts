@@ -1,5 +1,7 @@
-import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { execFileSync, spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const Q5 = "b153ed226770a947cdbf9cd83e1a9c1181b7cf6f";
@@ -12,6 +14,7 @@ const certificate = ".release/controlled-candidates/agent-referrals-activation-b
 const publication = readFileSync(".github/workflows/controlled-agent-referrals-q6-candidate.yml", "utf8");
 const deploy = readFileSync(".github/workflows/controlled-agent-referrals-q6-deploy.yml", "utf8");
 const activation = readFileSync(".github/workflows/controlled-agent-referrals-activation.yml", "utf8");
+const activationEvidenceVerifier = "scripts/release/assert-agent-referrals-q6-activation-evidence.sh";
 const git = (...args: string[]) => execFileSync("git", args, { encoding: "utf8" }).trim();
 
 const manualOnly = (workflow: string) => {
@@ -79,6 +82,9 @@ describe("Agent Referrals Q6 controller capabilities", () => {
     expect(activation).toContain("if: env.ACTIVATION_MODE == 'FRESH'");
     expect(activation.match(/-X POST --data-binary @activation-request\.json/g)).toHaveLength(1);
     expect(activation).toContain("AGENT_REFERRALS_ACTIVATION_OUTCOME_UNKNOWN");
+    expect(activation.match(/assert-agent-referrals-q6-activation-evidence\.sh/g)).toHaveLength(2);
+    expect(activation).toContain("completion-after.json");
+    expect(activation).toContain("AGENT_REFERRALS_ACTIVATION_TERMINAL_CHANGED");
     expect(activation).toContain("/agent-referrals/activation-state");
     expect(activation).not.toContain("agent-referrals-q4-dormant-");
     expect(activation).not.toContain("git push");
@@ -89,5 +95,58 @@ describe("Agent Referrals Q6 controller capabilities", () => {
     for (const binding of ["EXPECTED_CONTROLLER_SHA", "EXPECTED_CONTROLLER_TREE", "origin/main", "origin/runtime-candidate", "completion-before-post.json", "activation-before-post.json"]) expect(post).toContain(binding);
     expect(post.indexOf("activation-before-post.json")).toBeLessThan(post.indexOf("git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main runtime-candidate"));
     expect(post.lastIndexOf("git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main runtime-candidate")).toBeLessThan(post.indexOf("-X POST"));
+  });
+
+  it("fails closed for every corrupted exact-replay manifest field", () => {
+    const dir = mkdtempSync(join(tmpdir(), "q6-activation-evidence-"));
+    const completion = {
+      complete: true,
+      expected: {
+        source_commit: Q6,
+        migration: "inventory-sha256:expected",
+        legal_version: "2026-09-08",
+        legal_manifest_sha256: "a".repeat(64),
+        legal_hashes: { PUBLIC_OFFER: "b".repeat(64), PRIVACY_POLICY: "c".repeat(64), PD_CONSENT: "d".repeat(64), CHECKOUT_DISCLOSURE: "e".repeat(64) },
+      },
+    };
+    const exact = {
+      feature_state: { state: "ACTIVE", owner_id: ACTIVATION_ID, revision: 2 },
+      last_feature_state_event: { from_state: "DORMANT", to_state: "ACTIVE", owner_id: ACTIVATION_ID, reason: "AGENT_REFERRALS_ACTIVATION_V1", revision: 2 },
+      activation_manifest: {
+        version: "agent-referrals-activation-v1",
+        activation_id: ACTIVATION_ID,
+        terminal_release_id: RELEASE_ID,
+        source_commit: Q6,
+        migration: completion.expected.migration,
+        legal_version: completion.expected.legal_version,
+        legal_manifest_sha256: completion.expected.legal_manifest_sha256,
+        otp_pepper_sha256: "f".repeat(64),
+        otp_delivery_provider: "unisender-go",
+      },
+    };
+    const run = (evidence: unknown) => {
+      const activationPath = join(dir, "activation.json");
+      const completionPath = join(dir, "completion.json");
+      writeFileSync(activationPath, JSON.stringify(evidence));
+      writeFileSync(completionPath, JSON.stringify(completion));
+      return spawnSync("bash", [activationEvidenceVerifier, activationPath, completionPath, ACTIVATION_ID, RELEASE_ID, Q6, "1"], { encoding: "utf8" });
+    };
+    try {
+      expect(run(exact).status).toBe(0);
+      const mutate = (change: (manifest: Record<string, unknown>) => void) => {
+        const value = structuredClone(exact);
+        change(value.activation_manifest);
+        expect(run(value).status).not.toBe(0);
+      };
+      mutate((manifest) => { manifest.migration = "wrong"; });
+      mutate((manifest) => { manifest.legal_version = "wrong"; });
+      mutate((manifest) => { manifest.legal_manifest_sha256 = "0".repeat(64); });
+      mutate((manifest) => { manifest.otp_delivery_provider = "wrong"; });
+      mutate((manifest) => { manifest.otp_pepper_sha256 = "not-a-sha256"; });
+      mutate((manifest) => { manifest.extra = "forbidden"; });
+      mutate((manifest) => { delete manifest.migration; });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

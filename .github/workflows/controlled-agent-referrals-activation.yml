@@ -65,11 +65,7 @@ jobs:
           jq --arg activation "$ACTIVATION_ID" --arg release "$RELEASE_ID" --argjson revision "$EXPECTED_FEATURE_REVISION" '{activation_id:$activation, terminal_release_id:$release, expected_feature_revision:$revision, expected:.expected}' completion-before.json > activation-request.json
           if jq -e --argjson revision "$EXPECTED_FEATURE_REVISION" '.feature_state.state == "DORMANT" and .feature_state.owner_id == null and .feature_state.revision == $revision and .last_feature_state_event == null and .activation_manifest == null' activation-before.json >/dev/null; then
             echo ACTIVATION_MODE=FRESH >> "$GITHUB_ENV"
-          elif jq -e --arg owner "$ACTIVATION_ID" --arg release "$RELEASE_ID" --arg source "$TARGET_SHA" --argjson revision "$EXPECTED_FEATURE_REVISION" '
-            .feature_state.state == "ACTIVE" and .feature_state.owner_id == $owner and .feature_state.revision == ($revision + 1)
-            and .last_feature_state_event.from_state == "DORMANT" and .last_feature_state_event.to_state == "ACTIVE" and .last_feature_state_event.owner_id == $owner and .last_feature_state_event.reason == "AGENT_REFERRALS_ACTIVATION_V1" and .last_feature_state_event.revision == ($revision + 1)
-            and .activation_manifest.version == "agent-referrals-activation-v1" and .activation_manifest.activation_id == $owner and .activation_manifest.terminal_release_id == $release and .activation_manifest.source_commit == $source
-          ' activation-before.json >/dev/null; then
+          elif scripts/release/assert-agent-referrals-q6-activation-evidence.sh activation-before.json completion-before.json "$ACTIVATION_ID" "$RELEASE_ID" "$TARGET_SHA" "$EXPECTED_FEATURE_REVISION"; then
             echo ACTIVATION_MODE=EXACT_REPLAY >> "$GITHUB_ENV"
           else
             echo AGENT_REFERRALS_ACTIVATION_STATE_UNEXPECTED >&2; exit 1
@@ -107,9 +103,6 @@ jobs:
           set -euo pipefail
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/activation-state" > activation-after.json
-          jq -e --arg owner "$ACTIVATION_ID" --arg terminal "$RELEASE_ID" --arg source "$TARGET_SHA" --argjson revision "$EXPECTED_FEATURE_REVISION" '
-            .feature_state.state == "ACTIVE" and .feature_state.owner_id == $owner and .feature_state.revision == ($revision + 1)
-            and .last_feature_state_event != null and .last_feature_state_event.from_state == "DORMANT" and .last_feature_state_event.to_state == "ACTIVE" and .last_feature_state_event.owner_id == $owner and .last_feature_state_event.reason == "AGENT_REFERRALS_ACTIVATION_V1" and .last_feature_state_event.revision == ($revision + 1)
-            and .activation_manifest.version == "agent-referrals-activation-v1" and .activation_manifest.activation_id == $owner and .activation_manifest.terminal_release_id == $terminal and .activation_manifest.source_commit == $source
-            and (.activation_manifest | keys | sort) == ["activation_id", "legal_manifest_sha256", "legal_version", "migration", "otp_delivery_provider", "otp_pepper_sha256", "source_commit", "terminal_release_id", "version"]
-          ' activation-after.json >/dev/null || { echo AGENT_REFERRALS_ACTIVATION_RECONCILIATION_MISMATCH >&2; exit 1; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion-after.json
+          jq -e --slurpfile before completion-before.json '.complete == true and .expected == $before[0].expected' completion-after.json >/dev/null || { echo AGENT_REFERRALS_ACTIVATION_TERMINAL_CHANGED >&2; exit 1; }
+          scripts/release/assert-agent-referrals-q6-activation-evidence.sh activation-after.json completion-after.json "$ACTIVATION_ID" "$RELEASE_ID" "$TARGET_SHA" "$EXPECTED_FEATURE_REVISION"
