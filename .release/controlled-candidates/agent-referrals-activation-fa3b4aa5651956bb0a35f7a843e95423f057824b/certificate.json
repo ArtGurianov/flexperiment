@@ -1,0 +1,33 @@
+{
+  "base_sha": "fa3b4aa5651956bb0a35f7a843e95423f057824b",
+  "source_main_sha": "f387f2a0fc1ff0dddad9b7553f135ba61bfccb2d",
+  "patch_source": "controller_tree",
+  "paths": [
+    {
+      "path": "commerce/src/release-control-schema.ts",
+      "kind": "MODIFY",
+      "mode": "100644",
+      "base_blob_sha": "988214511af607a358251f1a7c5ee5afef382f02",
+      "patch_path": ".release/controlled-candidates/agent-referrals-activation-fa3b4aa5651956bb0a35f7a843e95423f057824b/patches/release-control-schema.patch",
+      "patch_git_blob_sha": "de4696a85216684a18defd348b48ad534bf4cdaa",
+      "patch_sha256": "a27ef62b998d3f703baa8c29681f9b7a8a6ec141da6cf358ae850f888b6e83e5",
+      "result_blob_sha": "387618decf53425ec2d18d39cb3ecfc83cade864"
+    }
+  ],
+  "commit": {
+    "parent_sha": "fa3b4aa5651956bb0a35f7a843e95423f057824b",
+    "tree_sha": "1cbcce745d176dc0d15eb0811a34791e58ad9cdc",
+    "author_name": "Flexperiment Release Controller",
+    "author_email": "release-controller@flexperiment.ru",
+    "author_timestamp": 1789084800,
+    "author_timezone": "+0000",
+    "committer_name": "Flexperiment Release Controller",
+    "committer_email": "release-controller@flexperiment.ru",
+    "committer_timestamp": 1789084800,
+    "committer_timezone": "+0000",
+    "message": "agent-referrals: Q7 activation HTTP terminal identity correction",
+    "encoding": "none",
+    "extra_headers": "none",
+    "signed": false
+  }
+}
