@@ -7,13 +7,38 @@ const deploy = readFileSync(".github/workflows/controlled-production-deploy.yml"
 const promotionPrimitive = readFileSync(".github/actions/controlled-runtime-candidate-promotion/action.yml", "utf8");
 const deployPrimitive = readFileSync(".github/actions/controlled-production-deploy/action.yml", "utf8");
 
+function section(source: string, startMarker: string, endMarker: string): string {
+  const start = source.indexOf(startMarker);
+  const end = source.indexOf(endMarker, start + startMarker.length);
+  expect(start, `missing start marker: ${startMarker}`).toBeGreaterThanOrEqual(0);
+  expect(end, `missing end marker: ${endMarker}`).toBeGreaterThan(start);
+  return source.slice(start, end);
+}
+
+function assertCompositeMetadata(source: string): void {
+  expect(source).toContain("runs:\n  using: composite");
+  const steps = source.split(/^ {6}- /m).slice(1);
+  expect(steps.length).toBeGreaterThan(0);
+  for (const step of steps) {
+    if (/(?:^|\n {8})run:/.test(step)) {
+      expect(step).toMatch(/(?:^|\n) {8}shell: bash(?:\n|$)/);
+    }
+  }
+}
+
 describe("Release Control v2 BENIGN orchestration", () => {
+  it("keeps both shared production primitives valid composite actions", () => {
+    assertCompositeMetadata(promotionPrimitive);
+    assertCompositeMetadata(deployPrimitive);
+    expect(deployPrimitive).not.toContain("timeout-minutes:");
+  });
+
   it("is manual-only and rejects every packet that is not an exact execution-eligible BENIGN packet", () => {
     const onBlock = workflow.slice(workflow.indexOf("\non:\n"), workflow.indexOf("\npermissions:"));
     expect(onBlock).toContain("workflow_dispatch:");
     expect(onBlock).not.toContain("push:");
     expect(onBlock).not.toContain("schedule:");
-    const preflight = workflow.slice(workflow.indexOf("Bind exact current main"), workflow.indexOf("  publish:"));
+    const preflight = section(workflow, "Bind exact current main", "\n\n  execute:");
     for (const requirement of [
       '.policy_lanes == ["BENIGN"]',
       '.decision == "ADMIT_BENIGN_SHADOW"',
@@ -28,7 +53,7 @@ describe("Release Control v2 BENIGN orchestration", () => {
   });
 
   it("rebinds controller and certifies all packet identities, topology, and manifest before any consequence", () => {
-    const preflight = workflow.slice(workflow.indexOf("Bind exact current main"), workflow.indexOf("  publish:"));
+    const preflight = section(workflow, "Bind exact current main", "\n\n  execute:");
     for (const requirement of [
       "RELEASE_CONTROL_V2_CONTROLLER_SHA_MISMATCH",
       "RELEASE_CONTROL_V2_CONTROLLER_TREE_MISMATCH",
@@ -53,7 +78,7 @@ describe("Release Control v2 BENIGN orchestration", () => {
   });
 
   it("creates only a deterministic immutable publication ref with a dedicated token and lease", () => {
-    const publish = workflow.slice(workflow.indexOf("Create or reconcile exact immutable BENIGN publication"), workflow.indexOf("  promote:"));
+    const publish = section(workflow, "Create or reconcile exact immutable BENIGN publication", "- uses: ./.github/actions/controlled-runtime-candidate-promotion");
     expect(publish).toContain("RELEASE_CONTROL_V2_CANDIDATE_REF_TOKEN");
     expect(publish).not.toContain("RUNTIME_CANDIDATE_REF_TOKEN");
     expect(publish).not.toContain("PRODUCTION_DEPLOY_REF_TOKEN");
@@ -89,6 +114,31 @@ describe("Release Control v2 BENIGN orchestration", () => {
     expect(promotion).toBeGreaterThan(-1);
     expect(credential).toBeGreaterThan(promotion);
     expect(deploy).toBeGreaterThan(credential);
+  });
+
+  it("passes the complete sealed ordinary-deploy interface only after promotion", () => {
+    const executeStart = workflow.indexOf("  execute:");
+    expect(executeStart, "missing execute job marker").toBeGreaterThanOrEqual(0);
+    const execute = workflow.slice(executeStart);
+    const promotion = execute.indexOf("uses: ./.github/actions/controlled-runtime-candidate-promotion");
+    const ordinaryMode = execute.indexOf("Select ordinary exact candidate deploy");
+    const deploy = execute.indexOf("uses: ./.github/actions/controlled-production-deploy");
+    expect(promotion).toBeGreaterThan(-1);
+    expect(ordinaryMode).toBeGreaterThan(promotion);
+    expect(deploy).toBeGreaterThan(ordinaryMode);
+    for (const binding of [
+      "INPUT_EXPECTED_CANDIDATE_SHA: ${{ needs.preflight.outputs.candidate_sha }}",
+      "INPUT_EXPECTED_CONTROLLER_SHA: ${{ needs.preflight.outputs.controller_sha }}",
+      "INPUT_EXPECTED_CONTROLLER_TREE: ${{ needs.preflight.outputs.controller_tree }}",
+      "INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA: ${{ needs.preflight.outputs.base_sha }}",
+      'POLL_ATTEMPTS: "30"',
+      'POLL_SECONDS: "10"',
+      'POLL_CONNECT_TIMEOUT: "3"',
+      'POLL_MAX_TIME: "7"',
+      'INITIAL_READINESS_DELAY_SECONDS: "60"',
+    ]) expect(execute).toContain(binding);
+    const ordinaryBinding = section(execute, "Select ordinary exact candidate deploy", "- uses: ./.github/actions/controlled-production-deploy");
+    expect(ordinaryBinding).toContain('echo "INPUT_TARGET_SHA=" >> "$GITHUB_ENV"');
   });
 
   it("rebinds the sealed base refs immediately before its first mutable publication", () => {

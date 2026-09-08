@@ -110,6 +110,12 @@ describe("controlled release-semantics cutover", () => {
         // workflow. The release-semantics lane stays dispatch-only; compare
         // the shared deployment machinery, not that narrower entrypoint.
         .replace(/[ \t]*workflow_call:\n(?:[^\n]*\n)*?(?=permissions:)/, "")
+        // The generic controller's reusable machinery is a composite action,
+        // where run steps must name their shell and nested timeouts are not
+        // supported. The paired cutover remains an inline workflow, where
+        // these are caller-step concerns rather than deployment semantics.
+        .replace(/^\s*shell: bash\n/gm, "")
+        .replace(/^\s*timeout-minutes: 12\n/gm, "")
         .replace(/commerce:(production-deploy|release-semantics-cutover):assert-boundary/g, "ASSERT_BOUNDARY");
     const cutoverPrimitive = workflow.slice(workflow.indexOf("      - name: Assert this controller is exact, current main"));
     const genericSteps = genericPrimitive.slice(genericPrimitive.indexOf("      - name: Assert this controller is exact, current main"));

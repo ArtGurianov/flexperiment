@@ -4,12 +4,14 @@ runs:
   using: composite
   steps:
       - name: Bind dedicated candidate-ref credential
+        shell: bash
         run: |
           set -euo pipefail
           [[ -n "$RUNTIME_CANDIDATE_REF_TOKEN" ]] || { echo "RUNTIME_CANDIDATE_REF_TOKEN_REQUIRED" >&2; exit 1; }
           git config --local --unset-all http.https://github.com/.extraheader || true
           git remote set-url origin "https://x-access-token:${RUNTIME_CANDIDATE_REF_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
       - name: Assert exact current main controller and validate immutable inputs
+        shell: bash
         run: |
           set -euo pipefail
           [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_CONTROLLER_NOT_MAIN" >&2; exit 1; }
@@ -23,6 +25,7 @@ runs:
           [[ "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_EXPECTED_PRODUCTION_DEPLOY_SHA_INVALID" >&2; exit 1; }
           [[ "$INPUT_REASON" =~ ^[[:print:]]{1,240}$ ]] || { echo "RUNTIME_CANDIDATE_PROMOTION_REASON_INVALID" >&2; exit 1; }
       - name: Resolve exact remote refs and prove ordinary promotion topology
+        shell: bash
         run: |
           set -euo pipefail
           actual_runtime_candidate="$(git ls-remote --exit-code origin refs/heads/runtime-candidate | awk '{print $1}')"
@@ -61,6 +64,7 @@ runs:
             echo "CANDIDATE_SOURCE_BRANCH=$candidate_source_branch"
           } >> "$GITHUB_ENV"
       - name: Attempt runtime-candidate lease-backed CAS
+        shell: bash
         run: |
           set -euo pipefail
           read_remote_ref() {
@@ -85,6 +89,7 @@ runs:
           set -e
           echo "CAS_PUSH_RC=$cas_push_rc" >> "$GITHUB_ENV"
       - name: Reconcile authoritative post-CAS refs and write audit summary
+        shell: bash
         run: |
           set -euo pipefail
           read_remote_ref() {

@@ -330,7 +330,8 @@ describe("generic controlled production deploy workflow", () => {
     expect(workflow).toContain('POLL_CONNECT_TIMEOUT: "3"');
     expect(workflow).toContain('POLL_MAX_TIME: "7"');
     expect(workflow).toContain('INITIAL_READINESS_DELAY_SECONDS: "60"');
-    expect(workflow).toContain("timeout-minutes: 12");
+    expect(wrapper).toContain("timeout-minutes: 45");
+    expect(primitive).not.toContain("timeout-minutes:");
     expect(workflow).not.toContain("pnpm commerce:production-deploy:assert-ready");
     expect(dispatch).toBeGreaterThan(workflow.indexOf("Deploy exact production candidate"));
     expect(settlingDelay).toBeGreaterThan(dispatch);

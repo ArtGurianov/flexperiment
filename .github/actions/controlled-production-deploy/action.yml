@@ -8,18 +8,21 @@ runs:
         # untrusted/read-only candidate object. A workflow_dispatch can be
         # run from any ref, so this must be proven explicitly - unlike the
         # old push-to-main trigger, dispatch does not itself guarantee it.
+        shell: bash
         run: |
           set -euo pipefail
           [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "DEPLOY_CONTROLLER_NOT_MAIN" >&2; exit 1; }
           git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
           [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo "DEPLOY_CONTROLLER_MAIN_MOVED" >&2; exit 1; }
       - name: Read current production-deploy pointer
+        shell: bash
         run: |
           set -euo pipefail
           production_deploy_sha="$(scripts/read-production-deploy-ref.sh)"
           git fetch --no-tags origin "$production_deploy_sha"
           echo "PRODUCTION_DEPLOY_SHA=$production_deploy_sha" >> "$GITHUB_ENV"
       - name: Resolve controller and immutable deployment target
+        shell: bash
         run: |
           set -euo pipefail
           if [[ -n "$INPUT_TARGET_SHA" ]]; then
@@ -69,6 +72,7 @@ runs:
         # may target a SHA that predates the current production-deploy tip;
         # it explicitly waives the descendant/maintenance-lineage rule below.
         if: env.RECOVERY_MODE == '0'
+        shell: bash
         run: |
           set -euo pipefail
           scripts/inspect-runtime-candidate-topology.sh --production-deploy "$PRODUCTION_DEPLOY_SHA" --candidate "$TARGET_SHA" > topology.json
@@ -83,6 +87,7 @@ runs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+        shell: bash
       - name: Materialize exact runtime readiness parser
         # Runtime readiness evidence must be interpreted with the exact
         # runtime's semantics, never with main's controller copy. In
@@ -91,6 +96,7 @@ runs:
         # Only the explicitly named readiness evaluator and reconciler may
         # execute from the runtime worktree; dependency lifecycle scripts
         # remain disabled.
+        shell: bash
         run: |
           set -euo pipefail
           RUNTIME_ASSERT_DIR="$RUNNER_TEMP/generic-runtime-readiness"
@@ -99,6 +105,7 @@ runs:
           (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile --ignore-scripts)
           echo "RUNTIME_ASSERT_DIR=$RUNTIME_ASSERT_DIR" >> "$GITHUB_ENV"
       - name: Preflight immutable generic-deploy boundaries
+        shell: bash
         run: |
           set -euo pipefail
           [[ "$TARGET_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "GENERIC_DEPLOY_INVALID_SOURCE_COMMIT" >&2; exit 1; }
@@ -253,6 +260,7 @@ runs:
           echo "DEPLOY_ACTION=$action" >> "$GITHUB_ENV"
       - name: Verify an already completed deployment
         if: env.DEPLOY_ACTION == 'RELEASE_ALREADY_COMPLETE'
+        shell: bash
         run: |
           set -euo pipefail
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
@@ -278,6 +286,7 @@ runs:
           ' legal.json >/dev/null
       - name: Acquire owner and pause registrations
         if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE' && env.REUSING_PAUSED_OWNER != '1'
+        shell: bash
         run: |
           set -euo pipefail
           # These are the final ordinary-deploy authority checks. Keep them in
@@ -301,6 +310,7 @@ runs:
           jq -e '.sales_paused and .owner_release_id == env.RELEASE_ID' paused.json >/dev/null
       - name: Prove public checkout pause before deployment
         if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'
+        shell: bash
         run: |
           set -euo pipefail
           pause_status="$(curl --silent --show-error --connect-timeout 10 --max-time 30 --output paused-checkout.json --write-out '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: pause-proof-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" --data '{}' "$PUBLIC_API_URL/v1/public/checkouts")"
@@ -308,6 +318,7 @@ runs:
           jq -e '.error.code == "SALES_TEMPORARILY_PAUSED"' paused-checkout.json >/dev/null
       - name: Reconcile paused deployment
         if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'
+        shell: bash
         run: |
           set -euo pipefail
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
@@ -320,12 +331,14 @@ runs:
           echo "DEPLOY_ACTION=$action" >> "$GITHUB_ENV"
       - name: Reconfirm production-deploy has not moved since preflight
         if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'
+        shell: bash
         run: |
           set -euo pipefail
           current_production_deploy_sha="$(scripts/read-production-deploy-ref.sh)"
           [[ "$current_production_deploy_sha" == "$CAS_EXPECTED_PRODUCTION_DEPLOY_SHA" ]] || { echo "PRODUCTION_DEPLOY_MOVED_SINCE_PREFLIGHT=$current_production_deploy_sha" >&2; exit 1; }
       - name: Set guarded production deployment ref
         if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'
+        shell: bash
         run: |
           set -euo pipefail
           # A same-owner ordinary replay has already crossed acquire/pause, so
@@ -341,13 +354,14 @@ runs:
           scripts/set-production-deploy-ref.sh "$TARGET_SHA" "$CAS_EXPECTED_PRODUCTION_DEPLOY_SHA"
       - name: Deploy exact production candidate
         if: env.DEPLOY_ACTION == 'DEPLOY'
+        shell: bash
         run: |
           set -euo pipefail
           scripts/controlled-coolify-deploy.sh "$TARGET_SHA"
           echo 'COOLIFY_DEPLOY_DISPATCHED=1' >> "$GITHUB_ENV"
       - name: Prove all surfaces and guarded reopen
         if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'
-        timeout-minutes: 12
+        shell: bash
         run: |
           set -euo pipefail
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
@@ -361,6 +375,7 @@ runs:
           jq -e '.sales_paused == false and .owner_release_id == null and .owner_mode == null' reopened.json >/dev/null
       - name: Verify post-reopen completion and all production surfaces
         if: env.DEPLOY_ACTION != 'RELEASE_ALREADY_COMPLETE'
+        shell: bash
         run: |
           set -euo pipefail
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"

@@ -137,12 +137,18 @@ jobs:
       PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
       ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
       INPUT_TARGET_SHA: ${{ needs.preflight.outputs.candidate_sha }}
+      INPUT_EXPECTED_CANDIDATE_SHA: ${{ needs.preflight.outputs.candidate_sha }}
       INPUT_EXPECTED_CONTROLLER_SHA: ${{ needs.preflight.outputs.controller_sha }}
       INPUT_EXPECTED_CONTROLLER_TREE: ${{ needs.preflight.outputs.controller_tree }}
       INPUT_EXPECTED_PUBLISHED_REF: ${{ needs.preflight.outputs.candidate_publication_ref }}
       INPUT_EXPECTED_RUNTIME_CANDIDATE_SHA: ${{ needs.preflight.outputs.base_sha }}
       INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA: ${{ needs.preflight.outputs.base_sha }}
       INPUT_REASON: Release Control v2 BENIGN packet promotion
+      POLL_ATTEMPTS: "30"
+      POLL_SECONDS: "10"
+      POLL_CONNECT_TIMEOUT: "3"
+      POLL_MAX_TIME: "7"
+      INITIAL_READINESS_DELAY_SECONDS: "60"
       GITHUB_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
