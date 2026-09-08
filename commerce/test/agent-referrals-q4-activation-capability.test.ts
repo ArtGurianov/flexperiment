@@ -267,7 +267,7 @@ describe("Q4 activation capability: atomic DORMANT to ACTIVE authority", () => {
     } finally { sqlite.close(); }
   });
 
-  it("has no Q3 bootstrap dependency; the later controller-only Q6 capability is distinct from Q4 runtime authority", () => {
+  it("has no Q3 bootstrap dependency; later controller-only capabilities remain distinct from Q4 runtime authority", () => {
     expect(git("show", `${Q3}:commerce/src/api.ts`)).not.toContain("/agent-referrals/activate");
     expect(git("show", `${Q3}:commerce/src/agent-referrals-feature-state.ts`)).toContain("deliberately not wired to any HTTP route");
     expect(git("show", `${Q4}:commerce/src/server.ts`)).toContain("otpSenderFromEnvironment");
@@ -290,6 +290,7 @@ describe("Q4 activation capability: atomic DORMANT to ACTIVE authority", () => {
       ".github/workflows/controlled-agent-referrals-q7-activation.yml",
       ".github/workflows/controlled-agent-referrals-q7-candidate.yml",
       ".github/workflows/controlled-agent-referrals-q7-deploy.yml",
+      ".github/workflows/controlled-release-control-v2-benign.yml",
     ]);
   });
 });

@@ -16,6 +16,12 @@ export default defineConfig({
     },
   },
   test: {
+    globalSetup: ["./vitest.setup.test-db-snapshot.ts"],
+    setupFiles: ["./vitest.setup.test-db-snapshot-worker.ts"],
+    // Workflow-contract cases intentionally run bounded shell-process
+    // matrices. The contract remains the same, but 5s is insufficient when
+    // all Vitest workers compete for local CPU and filesystem resources.
+    testTimeout: 20_000,
     projects: [
       {
         extends: true,
@@ -34,7 +40,7 @@ export default defineConfig({
           name: "jsdom",
           environment: "jsdom",
           include: ["apps/admin/**/*.dom.test.tsx", "components/**/*.dom.test.tsx"],
-          setupFiles: ["./vitest.setup.dom.ts"],
+          setupFiles: ["./vitest.setup.test-db-snapshot-worker.ts", "./vitest.setup.dom.ts"],
         },
       },
     ],

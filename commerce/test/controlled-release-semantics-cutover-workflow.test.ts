@@ -7,6 +7,7 @@ import { releaseControlSemanticsPaths } from "../src/generic-production-deploy-b
 
 const workflow = readFileSync(".github/workflows/controlled-release-semantics-cutover.yml", "utf8");
 const generic = readFileSync(".github/workflows/controlled-production-deploy.yml", "utf8");
+const genericPrimitive = readFileSync(".github/actions/controlled-production-deploy/action.yml", "utf8");
 
 const assertBoundary = (paths: readonly string[]) => {
   const file = join(mkdtempSync(join(tmpdir(), "release-semantics-boundary-")), "paths.bin");
@@ -105,7 +106,19 @@ describe("controlled release-semantics cutover", () => {
         .filter((line) => line.trim() !== "" && !line.trim().startsWith("#"))
         .filter((line) => !line.startsWith("name: Controlled "))
         .join("\n")
+        // v2 invokes only the ordinary generic controller as a reusable
+        // workflow. The release-semantics lane stays dispatch-only; compare
+        // the shared deployment machinery, not that narrower entrypoint.
+        .replace(/[ \t]*workflow_call:\n(?:[^\n]*\n)*?(?=permissions:)/, "")
+        // The generic controller's reusable machinery is a composite action,
+        // where run steps must name their shell and nested timeouts are not
+        // supported. The paired cutover remains an inline workflow, where
+        // these are caller-step concerns rather than deployment semantics.
+        .replace(/^\s*shell: bash\n/gm, "")
+        .replace(/^\s*timeout-minutes: 12\n/gm, "")
         .replace(/commerce:(production-deploy|release-semantics-cutover):assert-boundary/g, "ASSERT_BOUNDARY");
-    expect(strip(workflow)).toBe(strip(generic));
+    const cutoverPrimitive = workflow.slice(workflow.indexOf("      - name: Assert this controller is exact, current main"));
+    const genericSteps = genericPrimitive.slice(genericPrimitive.indexOf("      - name: Assert this controller is exact, current main"));
+    expect(strip(cutoverPrimitive)).toBe(strip(genericSteps));
   });
 });

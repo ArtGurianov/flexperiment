@@ -3,10 +3,15 @@ import { cpSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs"
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
-import { migrate, openDatabase } from "../src/db";
+import { migrate } from "../src/db";
+import { openUnmigratedTestDatabase } from "./support/test-database";
 import { recordRuntimeHeartbeatEvidence, recordRuntimeStartupEvidence, recordSuccessfulWorkerSweep } from "../src/runtime-release-evidence";
 
 const migrationsDirectory = join(process.cwd(), "commerce", "migrations");
+const openDatabase = (filename = ":memory:") => {
+  if (filename !== ":memory:") throw new Error("Historical migration fixtures require an in-memory database.");
+  return openUnmigratedTestDatabase();
+};
 const applyThrough = (db: ReturnType<typeof openDatabase>, last: string) => {
   for (const migration of readdirSync(migrationsDirectory).filter((name) => name.endsWith(".sql") && name <= last).sort()) {
     db.transaction(() => db.exec(readFileSync(join(migrationsDirectory, migration), "utf8")))();

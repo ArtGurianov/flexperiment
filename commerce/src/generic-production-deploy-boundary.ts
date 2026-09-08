@@ -76,6 +76,11 @@ export const controlPlanePaths: readonly string[] = [
   "commerce/src/assert-candidate-runtime-ready.ts",
   "commerce/src/reconcile-generic-production-deploy.ts",
   "commerce/src/reconcile-cutover.ts",
+  // Release Control v2 Phase 1 packet construction/validation. These files
+  // describe a possible authority boundary from a controller checkout; they
+  // are not imported by a Commerce runtime entrypoint.
+  "commerce/src/release-control-v2.ts",
+  "commerce/src/validate-release-control-v2-packet.ts",
   // Agent Referrals candidate reconstruction: the certificate schema,
   // builder and verifier a future controller runs from its own checkout to
   // independently reconstruct Q before candidate publication and again
