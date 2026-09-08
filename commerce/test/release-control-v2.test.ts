@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { buildReleasePacket, canonicalReleasePacket, classifyReleasePaths } from "../src/release-control-v2";
+import { buildReleasePacket, canonicalReleasePacket, classifyReleasePaths, validateReleasePacket } from "../src/release-control-v2";
 
 const base = { sha: "1".repeat(40), tree: "2".repeat(40) };
 const candidate = { sha: "3".repeat(40), tree: "4".repeat(40) };
@@ -24,12 +24,23 @@ describe("Release Control v2 Phase 1 shadow packet", () => {
       base,
       candidate,
       diff_manifest: ["README.md", "docs/guide.md"],
+      certificate: {
+        schema_version: "release-control-v2-certificate-v1",
+        base_sha: base.sha,
+        base_tree: base.tree,
+        candidate_sha: candidate.sha,
+        candidate_tree: candidate.tree,
+        diff_manifest_sha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+      },
       expected_deploy_target: candidate.sha,
+      candidate_publication_ref: `refs/heads/runtime/release-control-v2-${candidate.sha}`,
       generated_workflows: [],
       historical_synthesis: false,
       mutation_plan: null,
     });
     expect(first.semantic_hash).toMatch(/^[a-f0-9]{64}$/);
+    expect(first.stop_conditions).toEqual([]);
+    expect(validateReleasePacket(JSON.parse(canonicalReleasePacket(first)))).toEqual(first);
   });
 
   it.each([
@@ -68,6 +79,9 @@ describe("Release Control v2 Phase 1 shadow packet", () => {
   it("fails closed on malformed immutable evidence", () => {
     expect(() => buildReleasePacket({ base: { ...base, sha: "not-a-sha" }, candidate, changed_paths: [], activation_required: false })).toThrow("RELEASE_PACKET_BASE_IDENTITY_INVALID");
     expect(() => packet(["../commerce/src/release-control.ts"])).toThrow("RELEASE_PACKET_DIFF_MANIFEST_INVALID");
+    const tampered = { ...packet(["README.md"]), semantic_hash: "0".repeat(64) };
+    expect(() => validateReleasePacket(tampered)).toThrow("RELEASE_PACKET_HASH_MISMATCH");
+    expect(() => validateReleasePacket({ ...packet(["README.md"]), unreviewed: true })).toThrow("RELEASE_PACKET_SCHEMA_INVALID");
   });
 
   it("escalates an unregistered release-prefixed runtime seam instead of assuming it is BENIGN", () => {

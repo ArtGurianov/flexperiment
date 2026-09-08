@@ -105,6 +105,10 @@ describe("controlled release-semantics cutover", () => {
         .filter((line) => line.trim() !== "" && !line.trim().startsWith("#"))
         .filter((line) => !line.startsWith("name: Controlled "))
         .join("\n")
+        // v2 invokes only the ordinary generic controller as a reusable
+        // workflow. The release-semantics lane stays dispatch-only; compare
+        // the shared deployment machinery, not that narrower entrypoint.
+        .replace(/[ \t]*workflow_call:\n(?:[^\n]*\n)*?(?=permissions:)/, "")
         .replace(/commerce:(production-deploy|release-semantics-cutover):assert-boundary/g, "ASSERT_BOUNDARY");
     expect(strip(workflow)).toBe(strip(generic));
   });

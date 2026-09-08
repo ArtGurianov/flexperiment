@@ -34,11 +34,20 @@ export type ReleasePacket = {
   readonly base: SealedReleaseIdentity;
   readonly candidate: SealedReleaseIdentity;
   readonly diff_manifest: readonly string[];
+  readonly certificate: {
+    readonly schema_version: "release-control-v2-certificate-v1";
+    readonly base_sha: string;
+    readonly base_tree: string;
+    readonly candidate_sha: string;
+    readonly candidate_tree: string;
+    readonly diff_manifest_sha256: string;
+  };
   readonly policy_lanes: readonly ReleasePolicyLane[];
   readonly risk_reasons: readonly string[];
   readonly decision: ReleasePacketDecision;
   readonly required_authority: "NONE" | "ESCALATION_REQUIRED";
   readonly expected_ref_transitions: readonly { readonly ref: "runtime-candidate" | "production-deploy"; readonly from: string; readonly to: string; readonly operation: "GUARDED_CAS" }[];
+  readonly candidate_publication_ref: string;
   readonly expected_deploy_target: string | null;
   readonly expected_reconciliation_checks: readonly string[];
   readonly stop_conditions: readonly string[];
@@ -106,6 +115,7 @@ export const classifyReleasePaths = (paths: readonly string[]): readonly Release
 
 const canonicalManifest = (paths: readonly string[]) => [...new Set(paths)].sort();
 const reasonFor = (lane: ReleasePolicyLane) => `POLICY_LANE_${lane}`;
+const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 
 type UnsignedReleasePacket = Omit<ReleasePacket, "semantic_hash">;
 const stableHash = (packet: UnsignedReleasePacket) => createHash("sha256").update(JSON.stringify(packet)).digest("hex");
@@ -119,6 +129,14 @@ export const buildReleasePacket = (input: ReleasePacketInput): ReleasePacket => 
   }
 
   const diff_manifest = canonicalManifest(input.changed_paths);
+  const certificate = {
+    schema_version: "release-control-v2-certificate-v1" as const,
+    base_sha: input.base.sha,
+    base_tree: input.base.tree,
+    candidate_sha: input.candidate.sha,
+    candidate_tree: input.candidate.tree,
+    diff_manifest_sha256: sha256(JSON.stringify(diff_manifest)),
+  };
   const policy_lanes = classifyReleasePaths(diff_manifest);
   const benign = policy_lanes.length === 1 && policy_lanes[0] === "BENIGN";
   const decision: ReleasePacketDecision = benign ? "ADMIT_BENIGN_SHADOW" : "STOP_ESCALATE";
@@ -126,6 +144,7 @@ export const buildReleasePacket = (input: ReleasePacketInput): ReleasePacket => 
     { ref: "runtime-candidate" as const, from: input.base.sha, to: input.candidate.sha, operation: "GUARDED_CAS" as const },
     { ref: "production-deploy" as const, from: input.base.sha, to: input.candidate.sha, operation: "GUARDED_CAS" as const },
   ];
+  const candidate_publication_ref = `refs/heads/runtime/release-control-v2-${input.candidate.sha}`;
 
   const unsigned: UnsignedReleasePacket = {
     schema_version: RELEASE_PACKET_SCHEMA_VERSION,
@@ -140,15 +159,17 @@ export const buildReleasePacket = (input: ReleasePacketInput): ReleasePacket => 
     base: { ...input.base },
     candidate: { ...input.candidate },
     diff_manifest,
+    certificate,
     policy_lanes,
     risk_reasons: policy_lanes.map(reasonFor),
     decision,
     required_authority: benign ? "NONE" : "ESCALATION_REQUIRED",
     expected_ref_transitions,
+    candidate_publication_ref,
     expected_deploy_target: input.candidate.sha,
     expected_reconciliation_checks: ["EXACT_RUNTIME_CONVERGENCE", "EXACT_PROTECTED_REF_READBACK"],
     stop_conditions: benign
-      ? ["PHASE_1_PACKET_ONLY"]
+      ? []
       : ["SENSITIVE_POLICY_LANE", "PHASE_1_ESCALATION_REQUIRED", "NO_AUTONOMOUS_EXECUTION"],
     activation_required: input.activation_required,
     generated_workflows: [],
@@ -160,3 +181,32 @@ export const buildReleasePacket = (input: ReleasePacketInput): ReleasePacket => 
 
 /** Stable serialization makes a packet directly reviewable and hashable by a later, separate executor. */
 export const canonicalReleasePacket = (packet: ReleasePacket): string => JSON.stringify(packet);
+
+const packetKeys = new Set<keyof ReleasePacket>([
+  "schema_version", "mode", "production_authority", "mutations", "release_id", "semantic_hash",
+  "base_sha", "base_tree", "candidate_sha", "candidate_tree", "base", "candidate", "diff_manifest", "certificate",
+  "policy_lanes", "risk_reasons", "decision", "required_authority", "expected_ref_transitions",
+  "candidate_publication_ref", "expected_deploy_target", "expected_reconciliation_checks", "stop_conditions",
+  "activation_required", "generated_workflows", "historical_synthesis", "mutation_plan",
+]);
+
+/** Strictly rehydrates a packet from untrusted transport JSON without granting it authority. */
+export const validateReleasePacket = (value: unknown): ReleasePacket => {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("RELEASE_PACKET_INVALID");
+  const packet = value as Record<string, unknown>;
+  if (Object.keys(packet).length !== packetKeys.size || Object.keys(packet).some((key) => !packetKeys.has(key as keyof ReleasePacket))) {
+    throw new Error("RELEASE_PACKET_SCHEMA_INVALID");
+  }
+  if (!packet.base || !packet.candidate || !Array.isArray(packet.diff_manifest)) throw new Error("RELEASE_PACKET_SCHEMA_INVALID");
+  const base = packet.base as SealedReleaseIdentity;
+  const candidate = packet.candidate as SealedReleaseIdentity;
+  const rebuilt = buildReleasePacket({
+    base,
+    candidate,
+    changed_paths: packet.diff_manifest as string[],
+    activation_required: packet.activation_required as boolean,
+  });
+  if (packet.semantic_hash !== rebuilt.semantic_hash) throw new Error("RELEASE_PACKET_HASH_MISMATCH");
+  if (canonicalReleasePacket(value as ReleasePacket) !== canonicalReleasePacket(rebuilt)) throw new Error("RELEASE_PACKET_SEMANTICS_MISMATCH");
+  return rebuilt;
+};

@@ -23,6 +23,23 @@ on:
         description: Required exact production-deploy SHA to lease from for an ordinary deploy. Leave empty only for explicit same-owner recovery.
         required: false
         type: string
+  workflow_call:
+    inputs:
+      target_sha:
+        required: false
+        type: string
+      expected_candidate_sha:
+        required: false
+        type: string
+      expected_controller_sha:
+        required: false
+        type: string
+      expected_controller_tree:
+        required: false
+        type: string
+      expected_production_deploy_sha:
+        required: false
+        type: string
 
 permissions:
   contents: write

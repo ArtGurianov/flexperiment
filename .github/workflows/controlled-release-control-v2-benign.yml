@@ -1,0 +1,168 @@
+name: Controlled Release Control v2 BENIGN release
+
+# This is the only v2 execution-capable path. It composes the existing exact
+# publication, promotion, and generic deploy authorities; it does not contain
+# a second release-control or Coolify implementation. Sensitive packets never
+# reach a consequential job.
+on:
+  workflow_dispatch:
+    inputs:
+      release_packet:
+        description: Canonical Release Control v2 packet JSON, reviewed by semantic_hash before dispatch.
+        required: true
+        type: string
+      expected_controller_sha:
+        description: Exact reviewed main controller SHA that must remain current for this run.
+        required: true
+        type: string
+      expected_controller_tree:
+        description: Exact reviewed tree for expected_controller_sha.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    outputs:
+      base_sha: ${{ steps.packet.outputs.base_sha }}
+      candidate_sha: ${{ steps.packet.outputs.candidate_sha }}
+      candidate_publication_ref: ${{ steps.packet.outputs.candidate_publication_ref }}
+      controller_sha: ${{ steps.packet.outputs.controller_sha }}
+      controller_tree: ${{ steps.packet.outputs.controller_tree }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind exact current main and validate sealed BENIGN packet
+        id: packet
+        env:
+          INPUT_RELEASE_PACKET: ${{ inputs.release_packet }}
+          INPUT_EXPECTED_CONTROLLER_SHA: ${{ inputs.expected_controller_sha }}
+          INPUT_EXPECTED_CONTROLLER_TREE: ${{ inputs.expected_controller_tree }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "RELEASE_CONTROL_V2_CONTROLLER_NOT_MAIN" >&2; exit 1; }
+          [[ "$INPUT_EXPECTED_CONTROLLER_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "RELEASE_CONTROL_V2_CONTROLLER_SHA_INVALID" >&2; exit 1; }
+          [[ "$INPUT_EXPECTED_CONTROLLER_TREE" =~ ^[a-f0-9]{40}$ ]] || { echo "RELEASE_CONTROL_V2_CONTROLLER_TREE_INVALID" >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$GITHUB_SHA" == "$INPUT_EXPECTED_CONTROLLER_SHA" ]] || { echo "RELEASE_CONTROL_V2_CONTROLLER_SHA_MISMATCH" >&2; exit 1; }
+          [[ "$(git rev-parse "${GITHUB_SHA}^{tree}")" == "$INPUT_EXPECTED_CONTROLLER_TREE" ]] || { echo "RELEASE_CONTROL_V2_CONTROLLER_TREE_MISMATCH" >&2; exit 1; }
+          [[ "$(git rev-parse origin/main)" == "$INPUT_EXPECTED_CONTROLLER_SHA" ]] || { echo "RELEASE_CONTROL_V2_CONTROLLER_MAIN_MOVED" >&2; exit 1; }
+          printf '%s' "$INPUT_RELEASE_PACKET" > packet-input.json
+          node --import tsx commerce/src/validate-release-control-v2-packet.ts packet-input.json > packet.json
+          jq -e '
+            .mode == "SHADOW_ONLY" and
+            .production_authority == "NONE" and
+            .mutations == "FORBIDDEN" and
+            .policy_lanes == ["BENIGN"] and
+            .decision == "ADMIT_BENIGN_SHADOW" and
+            .required_authority == "NONE" and
+            (.stop_conditions | length) == 0 and
+            .activation_required == false and
+            .generated_workflows == [] and
+            .historical_synthesis == false and
+            .mutation_plan == null
+          ' packet.json >/dev/null || { echo "RELEASE_CONTROL_V2_PACKET_NOT_EXECUTION_ELIGIBLE" >&2; exit 1; }
+          base_sha="$(jq -er '.base_sha' packet.json)"
+          candidate_sha="$(jq -er '.candidate_sha' packet.json)"
+          base_tree="$(jq -er '.base_tree' packet.json)"
+          candidate_tree="$(jq -er '.candidate_tree' packet.json)"
+          candidate_publication_ref="$(jq -er '.candidate_publication_ref' packet.json)"
+          [[ "$base_sha" =~ ^[a-f0-9]{40}$ && "$candidate_sha" =~ ^[a-f0-9]{40}$ && "$base_sha" != "$candidate_sha" ]] || { echo "RELEASE_CONTROL_V2_PACKET_TARGET_INVALID" >&2; exit 1; }
+          [[ "$candidate_publication_ref" == "refs/heads/runtime/release-control-v2-$candidate_sha" ]] || { echo "RELEASE_CONTROL_V2_PUBLICATION_REF_MISMATCH" >&2; exit 1; }
+          jq -e --arg base_sha "$base_sha" --arg base_tree "$base_tree" --arg candidate_sha "$candidate_sha" --arg candidate_tree "$candidate_tree" '
+            .certificate.schema_version == "release-control-v2-certificate-v1" and
+            .certificate.base_sha == $base_sha and
+            .certificate.base_tree == $base_tree and
+            .certificate.candidate_sha == $candidate_sha and
+            .certificate.candidate_tree == $candidate_tree and
+            (.certificate.diff_manifest_sha256 | type == "string" and test("^[a-f0-9]{64}$"))
+          ' packet.json >/dev/null || { echo "RELEASE_CONTROL_V2_CERTIFICATE_MISMATCH" >&2; exit 1; }
+          git fetch --no-tags origin "$base_sha" "$candidate_sha"
+          [[ "$(git rev-parse "${base_sha}^{tree}")" == "$base_tree" ]] || { echo "RELEASE_CONTROL_V2_BASE_TREE_MISMATCH" >&2; exit 1; }
+          [[ "$(git rev-parse "${candidate_sha}^{tree}")" == "$candidate_tree" ]] || { echo "RELEASE_CONTROL_V2_CANDIDATE_TREE_MISMATCH" >&2; exit 1; }
+          git merge-base --is-ancestor "$base_sha" "$candidate_sha" || { echo "RELEASE_CONTROL_V2_CANDIDATE_NOT_DESCENDANT" >&2; exit 1; }
+          [[ -z "$(git rev-list --merges "$base_sha..$candidate_sha")" ]] || { echo "RELEASE_CONTROL_V2_CANDIDATE_NOT_LINEAR" >&2; exit 1; }
+          [[ -z "$(git rev-list "$base_sha..$candidate_sha" | while read -r sha; do git cat-file -e "$sha:.release/maintenance-only" 2>/dev/null && echo "$sha"; done)" ]] || { echo "RELEASE_CONTROL_V2_CANDIDATE_CONTAINS_MAINTENANCE" >&2; exit 1; }
+          git diff --name-only "$base_sha" "$candidate_sha" | sort | jq -Rsc 'split("\n") | map(select(length > 0))' > actual-manifest.json
+          jq -e --slurpfile actual actual-manifest.json '.diff_manifest == $actual[0]' packet.json >/dev/null || { echo "RELEASE_CONTROL_V2_DIFF_MANIFEST_MISMATCH" >&2; exit 1; }
+          {
+            echo "base_sha=$base_sha"
+            echo "candidate_sha=$candidate_sha"
+            echo "candidate_publication_ref=$candidate_publication_ref"
+            echo "controller_sha=$INPUT_EXPECTED_CONTROLLER_SHA"
+            echo "controller_tree=$INPUT_EXPECTED_CONTROLLER_TREE"
+          } >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: preflight
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    concurrency:
+      group: flexperiment-production-controlled-cutover
+      cancel-in-progress: false
+    env:
+      CONTROLLER_SHA: ${{ needs.preflight.outputs.controller_sha }}
+      CONTROLLER_TREE: ${{ needs.preflight.outputs.controller_tree }}
+      TARGET_SHA: ${{ needs.preflight.outputs.candidate_sha }}
+      PUBLICATION_REF: ${{ needs.preflight.outputs.candidate_publication_ref }}
+      RELEASE_CONTROL_V2_CANDIDATE_REF_TOKEN: ${{ secrets.RELEASE_CONTROL_V2_CANDIDATE_REF_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Create or reconcile exact immutable BENIGN publication
+        run: |
+          set -euo pipefail
+          [[ -n "$RELEASE_CONTROL_V2_CANDIDATE_REF_TOKEN" ]] || { echo "RELEASE_CONTROL_V2_CANDIDATE_REF_TOKEN_REQUIRED" >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main "$TARGET_SHA"
+          [[ "$GITHUB_SHA" == "$CONTROLLER_SHA" ]] || { echo "RELEASE_CONTROL_V2_PUBLICATION_CONTROLLER_SHA_MISMATCH" >&2; exit 1; }
+          [[ "$(git rev-parse "${GITHUB_SHA}^{tree}")" == "$CONTROLLER_TREE" ]] || { echo "RELEASE_CONTROL_V2_PUBLICATION_CONTROLLER_TREE_MISMATCH" >&2; exit 1; }
+          [[ "$(git rev-parse origin/main)" == "$CONTROLLER_SHA" ]] || { echo "RELEASE_CONTROL_V2_PUBLICATION_CONTROLLER_MAIN_MOVED" >&2; exit 1; }
+          existing="$(git ls-remote origin "$PUBLICATION_REF" | awk '{print $1}')"
+          if [[ -n "$existing" ]]; then
+            [[ "$existing" == "$TARGET_SHA" ]] || { echo "RELEASE_CONTROL_V2_PUBLICATION_REF_CONFLICT=$existing" >&2; exit 1; }
+            exit 0
+          fi
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git remote set-url origin "https://x-access-token:${RELEASE_CONTROL_V2_CANDIDATE_REF_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push --force-with-lease="$PUBLICATION_REF:" origin "$TARGET_SHA:$PUBLICATION_REF"
+          [[ "$(git ls-remote --exit-code origin "$PUBLICATION_REF" | awk '{print $1}')" == "$TARGET_SHA" ]] || { echo "RELEASE_CONTROL_V2_PUBLICATION_READBACK_MISMATCH" >&2; exit 1; }
+
+  promote:
+    needs: [preflight, publish]
+    permissions:
+      contents: read
+    uses: ./.github/workflows/controlled-runtime-candidate-promotion.yml
+    with:
+      target_sha: ${{ needs.preflight.outputs.candidate_sha }}
+      expected_controller_sha: ${{ needs.preflight.outputs.controller_sha }}
+      expected_controller_tree: ${{ needs.preflight.outputs.controller_tree }}
+      expected_published_ref: ${{ needs.preflight.outputs.candidate_publication_ref }}
+      expected_runtime_candidate_sha: ${{ needs.preflight.outputs.base_sha }}
+      expected_production_deploy_sha: ${{ needs.preflight.outputs.base_sha }}
+      reason: Release Control v2 BENIGN packet promotion
+    secrets: inherit
+
+  deploy:
+    needs: [preflight, promote]
+    permissions:
+      contents: write
+    uses: ./.github/workflows/controlled-production-deploy.yml
+    with:
+      expected_candidate_sha: ${{ needs.preflight.outputs.candidate_sha }}
+      expected_controller_sha: ${{ needs.preflight.outputs.controller_sha }}
+      expected_controller_tree: ${{ needs.preflight.outputs.controller_tree }}
+      expected_production_deploy_sha: ${{ needs.preflight.outputs.base_sha }}
+    secrets: inherit

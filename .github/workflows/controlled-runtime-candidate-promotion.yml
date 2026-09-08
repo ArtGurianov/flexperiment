@@ -31,6 +31,29 @@ on:
         description: Bounded human-readable audit reason for this ordinary candidate promotion.
         required: true
         type: string
+  workflow_call:
+    inputs:
+      target_sha:
+        required: true
+        type: string
+      expected_controller_sha:
+        required: true
+        type: string
+      expected_controller_tree:
+        required: true
+        type: string
+      expected_published_ref:
+        required: true
+        type: string
+      expected_runtime_candidate_sha:
+        required: true
+        type: string
+      expected_production_deploy_sha:
+        required: true
+        type: string
+      reason:
+        required: true
+        type: string
 
 permissions:
   contents: read
