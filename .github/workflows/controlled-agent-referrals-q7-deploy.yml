@@ -44,6 +44,8 @@ jobs:
       PUBLIC_FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
       PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
       ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
+      POLL_ATTEMPTS: "30"
+      POLL_SECONDS: "10"
       INITIAL_READINESS_DELAY_SECONDS: "60"
     steps:
       - uses: actions/checkout@v4
@@ -123,6 +125,13 @@ jobs:
           api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/acquire" > /dev/null
           api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/pause" > paused.json
           jq -e --arg id "$RELEASE_ID" '.sales_paused == true and .owner_release_id == $id and .owner_mode == "CONTROLLED_CUTOVER"' paused.json >/dev/null
+
+      - name: Materialize exact Q7 surface-contract readiness inputs
+        run: |
+          set -euo pipefail
+          git show "$TARGET_SHA:release-surface-contract.json" > q7-release-surface-contract.json
+          echo "CHECKOUT_CONTRACT_VERSION=$(jq -er '.checkout_contract_version | select(type == "string")' q7-release-surface-contract.json)" >> "$GITHUB_ENV"
+          echo "ADMIN_CONTRACT_VERSION=$(jq -er '.admin_contract_version | select(type == "string")' q7-release-surface-contract.json)" >> "$GITHUB_ENV"
 
       - name: Prove public checkout pause
         if: env.DEPLOYMENT_STATE != 'ALREADY_COMPLETE'

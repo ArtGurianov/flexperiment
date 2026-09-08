@@ -100,6 +100,11 @@ describe("Agent Referrals Q7 controller capabilities", () => {
     expect(deploy).not.toContain("/agent-referrals/activate");
     expect(deploy).toContain('"$PUBLIC_API_URL/healthz"');
     expect(deploy).toContain('"$PUBLIC_API_URL/readyz"');
+    for (const prerequisite of ["POLL_ATTEMPTS: \"30\"", "POLL_SECONDS: \"10\"", "CHECKOUT_CONTRACT_VERSION=", "ADMIN_CONTRACT_VERSION="]) expect(deploy).toContain(prerequisite);
+    const readinessInputs = deploy.indexOf("Materialize exact Q7 surface-contract readiness inputs");
+    const firstReadiness = deploy.indexOf("scripts/controlled-production-readiness.sh");
+    expect(readinessInputs).toBeGreaterThan(-1);
+    expect(readinessInputs).toBeLessThan(firstReadiness);
     const rebind = deploy.slice(deploy.indexOf("Rebind same-owner authority"), deploy.indexOf("Deploy exact Q7"));
     expect(rebind).toContain("status-before-consequence.json");
     expect(rebind).not.toContain("runtime-candidate");
