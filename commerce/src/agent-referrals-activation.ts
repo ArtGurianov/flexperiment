@@ -325,11 +325,11 @@ export const agentReferralsActivationEvidence = (db: Database.Database, key: str
 };
 
 /** Recursive sorted-key JSON, so semantically identical values compare equal regardless of key insertion order. */
-const canonicalJson = (value: unknown): string => {
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+export const canonicalAgentReferralsActivationJson = (value: unknown): string => {
+  if (Array.isArray(value)) return `[${value.map(canonicalAgentReferralsActivationJson).join(",")}]`;
   if (value !== null && typeof value === "object") {
     const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalJson(v)}`).join(",")}}`;
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalAgentReferralsActivationJson(v)}`).join(",")}}`;
   }
   return JSON.stringify(value);
 };
@@ -351,14 +351,19 @@ export class AgentReferralsActivationEvidenceConflictError extends AgentReferral
  */
 export const recordAgentReferralsActivationEvidence = (db: Database.Database, key: string, value: unknown): void => {
   const run = db.transaction(() => {
-    const existing = db.prepare("SELECT value_json FROM agent_referrals_activation_manifest WHERE key = ?").get(key) as
-      { value_json: string } | undefined;
-    if (existing) {
-      if (canonicalJson(JSON.parse(existing.value_json)) === canonicalJson(value)) return; // idempotent replay
-      throw new AgentReferralsActivationEvidenceConflictError(key);
-    }
-    db.prepare("INSERT INTO agent_referrals_activation_manifest(key, value_json, recorded_at) VALUES (?, ?, CURRENT_TIMESTAMP)")
-      .run(key, JSON.stringify(value));
+    recordAgentReferralsActivationEvidenceInTransaction(db, key, value);
   });
   run.immediate();
+};
+
+/** Same immutable insert contract, usable by a combined authority command. */
+export const recordAgentReferralsActivationEvidenceInTransaction = (db: Database.Database, key: string, value: unknown): void => {
+  const existing = db.prepare("SELECT value_json FROM agent_referrals_activation_manifest WHERE key = ?").get(key) as
+    { value_json: string } | undefined;
+  if (existing) {
+    if (canonicalAgentReferralsActivationJson(JSON.parse(existing.value_json)) === canonicalAgentReferralsActivationJson(value)) return;
+    throw new AgentReferralsActivationEvidenceConflictError(key);
+  }
+  db.prepare("INSERT INTO agent_referrals_activation_manifest(key, value_json, recorded_at) VALUES (?, ?, CURRENT_TIMESTAMP)")
+    .run(key, JSON.stringify(value));
 };

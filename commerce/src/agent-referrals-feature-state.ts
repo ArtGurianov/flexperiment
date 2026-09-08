@@ -75,7 +75,7 @@ export type AgentReferralsFeatureTransitionInput = {
  * command run "assert readiness, then transition" as one atomic unit
  * without this module knowing anything about that command.
  */
-const transitionInTransaction = (
+export const transitionAgentReferralsFeatureInTransaction = (
   db: Database.Database,
   to: AgentReferralsFeatureStateName,
   input: AgentReferralsFeatureTransitionInput,
@@ -110,7 +110,7 @@ const transitionInTransaction = (
 };
 
 const transition = (db: Database.Database, to: AgentReferralsFeatureStateName, input: AgentReferralsFeatureTransitionInput) =>
-  db.transaction(() => transitionInTransaction(db, to, input)).immediate();
+  db.transaction(() => transitionAgentReferralsFeatureInTransaction(db, to, input)).immediate();
 
 /**
  * DORMANT -> ACTIVE only. PR3 ships DORMANT and calls this from nowhere -
@@ -120,6 +120,14 @@ const transition = (db: Database.Database, to: AgentReferralsFeatureStateName, i
  */
 export const activateAgentReferrals = (db: Database.Database, input: AgentReferralsFeatureTransitionInput) =>
   transition(db, "ACTIVE", input);
+
+/**
+ * Narrow building block for the Q4 activation command.  It intentionally is
+ * not an HTTP authority by itself: callers must establish their complete
+ * readiness predicate in the same transaction before invoking this CAS.
+ */
+export const activateAgentReferralsInTransaction = (db: Database.Database, input: AgentReferralsFeatureTransitionInput) =>
+  transitionAgentReferralsFeatureInTransaction(db, "ACTIVE", input);
 
 export const suspendAgentReferrals = (db: Database.Database, input: AgentReferralsFeatureTransitionInput) =>
   transition(db, "SUSPENDED", input);

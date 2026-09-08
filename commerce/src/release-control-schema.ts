@@ -37,6 +37,13 @@ export const completeRollingSchema = z.object({
   expected: releaseExpectedSchema,
 }).strict();
 
+export const agentReferralsActivationSchema = z.object({
+  activation_id: z.string().regex(/^agent-referrals-activation-[a-f0-9]{40}$/),
+  terminal_release_id: z.string().regex(/^agent-referrals-q4-dormant-[a-f0-9]{40}$/),
+  expected_feature_revision: z.number().int().nonnegative(),
+  expected: releaseExpectedSchema,
+}).strict();
+
 /**
  * This is deliberately not a generic "clear ROLLING owner" request.  Q2 is
  * immutable incident evidence: only its exact held owner can be resolved,
