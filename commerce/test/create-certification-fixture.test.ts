@@ -12,6 +12,13 @@ const scriptPath = resolve(repositoryRoot, "commerce/src/create-certification-fi
 const directories: string[] = [];
 afterEach(() => { while (directories.length) rmSync(directories.pop()!, { recursive: true, force: true }); });
 
+function productionScriptEnvironment(env: Record<string, string>) {
+  const environment = { ...process.env, ...env };
+  delete environment.COMMERCE_TEST_DB_SNAPSHOT;
+  delete environment.COMMERCE_TEST_DB_SNAPSHOT_PATH;
+  return environment;
+}
+
 function fixtureEnvironment() {
   const directory = mkdtempSync(resolve(tmpdir(), "flexperiment-certification-fixture-"));
   directories.push(directory);
@@ -34,7 +41,7 @@ function run(env: Record<string, string>) {
   return execFileSync("node", ["--import", "tsx", scriptPath], {
     cwd: repositoryRoot,
     encoding: "utf8",
-    env: { ...process.env, ...env },
+    env: productionScriptEnvironment(env),
   });
 }
 
@@ -78,7 +85,7 @@ describe("certification fixture creation script", () => {
     execFileSync("bash", ["-lc", `node --import tsx ${JSON.stringify(scriptPath)} | head -1`], {
       cwd: repositoryRoot,
       encoding: "utf8",
-      env: { ...process.env, ...baseEnv(fixture) },
+      env: productionScriptEnvironment(baseEnv(fixture)),
     });
     expect(existsSync(fixture.keyPath)).toBe(false);
     expect(existsSync(fixture.manifestPath)).toBe(false);

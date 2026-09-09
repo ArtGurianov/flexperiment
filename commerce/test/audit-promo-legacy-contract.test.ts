@@ -32,10 +32,13 @@ describe("promo legacy-contract audit", () => {
 
     let failure: { stdout: string } | undefined;
     try {
+      const environment: NodeJS.ProcessEnv = { ...process.env, COMMERCE_DATABASE_PATH: databasePath };
+      delete environment.COMMERCE_TEST_DB_SNAPSHOT;
+      delete environment.COMMERCE_TEST_DB_SNAPSHOT_PATH;
       execFileSync("node", ["--import", "tsx", scriptPath], {
         cwd: repositoryRoot,
         encoding: "utf8",
-        env: { ...process.env, COMMERCE_DATABASE_PATH: databasePath },
+        env: environment,
       });
     } catch (error) {
       failure = error as { stdout: string };
