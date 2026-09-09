@@ -96,12 +96,22 @@ describe("controlled release-semantics cutover", () => {
     expect(reopen).toBeGreaterThan(deploy);
   });
 
-  it("differs from the generic controller only in its admission test", () => {
+  it("keeps ordinary machinery identical while refusing the v2-only materialized coverage path", () => {
     // The value of this lane is that it is the same machinery. If it drifts,
     // it stops being the generic path with a stricter door and becomes a second
     // deployment implementation to keep correct.
+    const stripMaterializedCoverage = (source: string) => {
+      const start = source.indexOf('          if [[ -n "${INPUT_MATERIALIZED_RELEASE_PACKET:-}" ]]; then');
+      if (start < 0) return source;
+      const ordinary = source.indexOf("          else\n", start);
+      const end = source.indexOf("          fi\n", ordinary);
+      expect(ordinary, "missing materialized-coverage ordinary fallback").toBeGreaterThan(start);
+      expect(end, "missing materialized-coverage terminator").toBeGreaterThan(ordinary);
+      const ordinaryBranch = source.slice(ordinary + "          else\n".length, end).replace(/^ {12}/gm, "          ");
+      return `${source.slice(0, start)}${ordinaryBranch}${source.slice(end + "          fi\n".length)}`;
+    };
     const strip = (source: string) =>
-      source
+      stripMaterializedCoverage(source)
         .split("\n")
         .filter((line) => line.trim() !== "" && !line.trim().startsWith("#"))
         .filter((line) => !line.startsWith("name: Controlled "))
@@ -119,6 +129,8 @@ describe("controlled release-semantics cutover", () => {
         .replace(/commerce:(production-deploy|release-semantics-cutover):assert-boundary/g, "ASSERT_BOUNDARY");
     const cutoverPrimitive = workflow.slice(workflow.indexOf("      - name: Assert this controller is exact, current main"));
     const genericSteps = genericPrimitive.slice(genericPrimitive.indexOf("      - name: Assert this controller is exact, current main"));
+    expect(cutoverPrimitive).not.toContain("INPUT_MATERIALIZED_RELEASE_PACKET");
+    expect(genericSteps).toContain("INPUT_MATERIALIZED_RELEASE_PACKET");
     expect(strip(cutoverPrimitive)).toBe(strip(genericSteps));
   });
 });

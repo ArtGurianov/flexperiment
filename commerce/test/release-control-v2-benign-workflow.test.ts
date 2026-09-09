@@ -149,6 +149,7 @@ describe("Release Control v2 BENIGN orchestration", () => {
       "INPUT_EXPECTED_CONTROLLER_SHA: ${{ needs.preflight.outputs.controller_sha }}",
       "INPUT_EXPECTED_CONTROLLER_TREE: ${{ needs.preflight.outputs.controller_tree }}",
       "INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA: ${{ needs.preflight.outputs.base_sha }}",
+      "INPUT_MATERIALIZED_RELEASE_PACKET: ${{ inputs.release_packet }}",
       'POLL_ATTEMPTS: "30"',
       'POLL_SECONDS: "10"',
       'POLL_CONNECT_TIMEOUT: "3"',
@@ -157,6 +158,18 @@ describe("Release Control v2 BENIGN orchestration", () => {
     ]) expect(execute).toContain(binding);
     const ordinaryBinding = section(execute, "Select ordinary exact candidate deploy", "- uses: ./.github/actions/controlled-production-deploy");
     expect(ordinaryBinding).toContain('echo "INPUT_TARGET_SHA=" >> "$GITHUB_ENV"');
+  });
+
+  it("proves materialized provenance before publication and passes the same sealed packet to the shared deploy primitive", () => {
+    const rebind = section(workflow, "Rebind exact ordinary authority before any publication", "Create or reconcile exact immutable BENIGN publication");
+    const publication = workflow.indexOf("Create or reconcile exact immutable BENIGN publication");
+    const reconstruction = rebind.indexOf("verify-release-control-v2-materialization.ts");
+
+    expect(reconstruction).toBeGreaterThan(-1);
+    expect(reconstruction).toBeLessThan(publication);
+    expect(rebind).toContain('node --import tsx commerce/src/verify-release-control-v2-materialization.ts packet.json "$GITHUB_SHA"');
+    expect(rebind).toContain('cmp --silent packet.json reconstructed-packet.json');
+    expect(workflow).toContain("INPUT_MATERIALIZED_RELEASE_PACKET: ${{ inputs.release_packet }}");
   });
 
   it("rebinds the sealed base refs immediately before its first mutable publication", () => {

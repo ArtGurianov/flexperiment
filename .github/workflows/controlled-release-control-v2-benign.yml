@@ -158,6 +158,7 @@ jobs:
       INPUT_EXPECTED_PUBLISHED_REF: ${{ needs.preflight.outputs.candidate_publication_ref }}
       INPUT_EXPECTED_RUNTIME_CANDIDATE_SHA: ${{ needs.preflight.outputs.base_sha }}
       INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA: ${{ needs.preflight.outputs.base_sha }}
+      INPUT_MATERIALIZED_RELEASE_PACKET: ${{ inputs.release_packet }}
       INPUT_REASON: Release Control v2 BENIGN packet promotion
       INPUT_RELEASE_PACKET: ${{ inputs.release_packet }}
       POLL_ATTEMPTS: "30"
