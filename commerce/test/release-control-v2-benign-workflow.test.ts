@@ -15,6 +15,18 @@ function section(source: string, startMarker: string, endMarker: string): string
   return source.slice(start, end);
 }
 
+function assertLockedTsxBootstrap(job: string): void {
+  const pnpmSetup = job.indexOf("uses: pnpm/action-setup@v4");
+  const nodeSetup = job.indexOf("uses: actions/setup-node@v4");
+  const install = job.indexOf("pnpm install --frozen-lockfile --ignore-scripts");
+  const firstTsx = job.indexOf("node --import tsx");
+
+  expect(pnpmSetup).toBeGreaterThan(-1);
+  expect(nodeSetup).toBeGreaterThan(pnpmSetup);
+  expect(install).toBeGreaterThan(nodeSetup);
+  expect(firstTsx).toBeGreaterThan(install);
+}
+
 function assertCompositeMetadata(source: string): void {
   expect(source).toContain("runs:\n  using: composite");
   const steps = source.split(/^ {6}- /m).slice(1);
@@ -50,6 +62,14 @@ describe("Release Control v2 BENIGN orchestration", () => {
       '.mutation_plan == null',
       "RELEASE_CONTROL_V2_PACKET_NOT_EXECUTION_ELIGIBLE",
     ]) expect(preflight).toContain(requirement);
+  });
+
+  it("installs locked Node dependencies before either job invokes tsx", () => {
+    const preflight = section(workflow, "  preflight:\n", "\n\n  execute:");
+    const execute = workflow.slice(workflow.indexOf("  execute:\n"));
+
+    assertLockedTsxBootstrap(preflight);
+    assertLockedTsxBootstrap(execute);
   });
 
   it("rebinds controller and certifies all packet identities, topology, and manifest before any consequence", () => {

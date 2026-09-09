@@ -39,6 +39,18 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install locked controller dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
       - name: Bind exact current main and validate sealed BENIGN packet
         id: packet
         env:
@@ -160,6 +172,18 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.29.3
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install locked controller dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
 
       - name: Rebind exact ordinary authority before any publication
         run: |
