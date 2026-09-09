@@ -136,7 +136,7 @@ describe("Release Control v2 deterministic candidate materializer", () => {
       .toThrow("MATERIALIZATION_SOURCE_NOT_FIRST_PARENT_INTEGRATION_LINE");
   });
 
-  it("classifies the maintenance marker as consequential before any publication can be eligible", () => {
+  it("classifies the maintenance marker as consequential and excludes its valid packet from the shared deploy exception", () => {
     const { repo, base } = fixture();
     git(repo, ["checkout", "-q", "source"]);
     mkdirSync(join(repo, ".release"), { recursive: true });
@@ -153,6 +153,18 @@ describe("Release Control v2 deterministic candidate materializer", () => {
     expect(packet.policy_lanes).toEqual(["RELEASE_CONTROL"]);
     expect(packet.decision).toBe("STOP_ESCALATE");
     expect(packet.required_authority).toBe("ESCALATION_REQUIRED");
+
+    const action = readFileSync(".github/actions/controlled-production-deploy/action.yml", "utf8");
+    const start = action.indexOf("            jq -e '\n              .mode == \"SHADOW_ONLY\"");
+    const end = action.indexOf("' materialized-release-packet.json >/dev/null", start);
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const filter = action.slice(start + "            jq -e '\n".length, end);
+
+    expect(() => execFileSync("jq", ["-e", filter], {
+      input: JSON.stringify(packet),
+      encoding: "utf8",
+    })).toThrow();
   });
 
   it("binds the packet classifier to the actual B..C manifest and escalates sensitive source deltas", () => {

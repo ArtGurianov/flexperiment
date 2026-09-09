@@ -119,6 +119,25 @@ runs:
             # and bind this target and exact production base before any API call.
             printf '%s' "$INPUT_MATERIALIZED_RELEASE_PACKET" > materialized-release-packet-input.json
             node --import tsx commerce/src/validate-release-control-v2-packet.ts materialized-release-packet-input.json > materialized-release-packet.json
+            # Packet validation only proves that the JSON can be rehydrated;
+            # it never grants execution authority. The one ancestry exception
+            # this primitive owns is therefore restricted to the same inert,
+            # exact BENIGN packet shape the v2 workflow admits before calling
+            # us. A future caller cannot bypass ordinary controller coverage
+            # merely by supplying a well-formed STOP_ESCALATE packet.
+            jq -e '
+              .mode == "SHADOW_ONLY" and
+              .production_authority == "NONE" and
+              .mutations == "FORBIDDEN" and
+              .policy_lanes == ["BENIGN"] and
+              .decision == "ADMIT_BENIGN_SHADOW" and
+              .required_authority == "NONE" and
+              (.stop_conditions | length) == 0 and
+              .activation_required == false and
+              .generated_workflows == [] and
+              .historical_synthesis == false and
+              .mutation_plan == null
+            ' materialized-release-packet.json >/dev/null || { echo "MATERIALIZED_DEPLOY_PACKET_NOT_EXECUTION_ELIGIBLE" >&2; exit 1; }
             packet_base_sha="$(jq -er '.base_sha' materialized-release-packet.json)"
             packet_candidate_sha="$(jq -er '.candidate_sha' materialized-release-packet.json)"
             [[ "$packet_base_sha" == "$PRODUCTION_DEPLOY_SHA" && "$packet_base_sha" == "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" ]] || { echo "MATERIALIZED_DEPLOY_PACKET_BASE_MISMATCH" >&2; exit 1; }
