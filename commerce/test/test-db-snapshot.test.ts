@@ -67,7 +67,9 @@ describe("test-only migrated database snapshot", () => {
     const db = openDatabase(":memory:");
     try {
       migrate(db);
-      expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual(expect.objectContaining({ count: expect.any(Number) }));
+      expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get()).toEqual({
+        count: readdirSync(join(process.cwd(), "commerce", "migrations")).filter((file) => file.endsWith(".sql")).length,
+      });
     } finally {
       db.close();
       if (previous === undefined) delete process.env.COMMERCE_TEST_DB_SNAPSHOT;
