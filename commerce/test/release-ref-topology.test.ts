@@ -3,6 +3,15 @@ import { describe, expect, it } from "vitest";
 import { epochBPromotionArtifactReason } from "../src/epoch-b-notification-activation";
 import { verifyAgentReferralsCandidateCertificate, type AgentReferralsCandidateCertificate } from "../src/agent-referrals-candidate";
 import { verifyControlledCandidateCertificate, type ControlledCandidateCertificate } from "../src/controlled-candidate";
+import { buildReleasePacket } from "../src/release-control-v2";
+import {
+  assertReleaseControlV2SourceOnFirstParentIntegrationLineage,
+  materializeReleaseControlV2Candidate,
+} from "../src/release-control-v2-materializer";
+import {
+  RELEASE_CONTROL_V2_MATERIALIZER_VERSION,
+  releaseControlV2MaterializationMessage,
+} from "../src/release-control-v2-materialization-schema";
 
 /**
  * Durable release refs must stay in a provable relationship. Both invariants
@@ -124,6 +133,47 @@ const isApprovedControlledCandidate = (sha: string, currentMain: string) => {
   return false;
 };
 
+/**
+ * A v2 runtime is intentionally materialized as a direct child of the durable
+ * production base, rather than of controller main. It is therefore accepted
+ * here only when its canonical commit metadata names a source that is covered
+ * by trusted main's first-parent lineage and the existing materializer
+ * recreates this exact Git object. The resulting packet must still be the
+ * inert BENIGN shape; this is never a ref-name or detached-commit exemption.
+ */
+const isApprovedReleaseControlV2MaterializedCandidate = (sha: string, currentMain: string) => {
+  const base = resolve(`${sha}^`);
+  if (!base) return false;
+  const message = git("show", "-s", "--format=%B", sha).stdout.toString().trimEnd();
+  const match = /^Release Control v2 materialized candidate\n\nsource: ([0-9a-f]{40})\nsource-parent: ([0-9a-f]{40})\nproduction-base: ([0-9a-f]{40})\nmaterializer: ([^\n]+)$/.exec(message);
+  if (!match) return false;
+  const [, source, sourceParent, messageBase, materializer] = match;
+  if (materializer !== RELEASE_CONTROL_V2_MATERIALIZER_VERSION || messageBase !== base ||
+    message !== releaseControlV2MaterializationMessage(base, sourceParent!, source!)) return false;
+  try {
+    assertReleaseControlV2SourceOnFirstParentIntegrationLineage(process.cwd(), source!, currentMain);
+    const materialized = materializeReleaseControlV2Candidate(process.cwd(), {
+      production_base_sha: base,
+      source_commit_sha: source!,
+    });
+    if (materialized.certificate.source_parent_sha !== sourceParent ||
+      materialized.certificate.candidate_sha !== sha ||
+      git("rev-parse", `${sha}^{tree}`).stdout.trim() !== materialized.certificate.candidate_tree) return false;
+    const packet = buildReleasePacket({
+      base: { sha: materialized.certificate.production_base_sha, tree: materialized.certificate.production_base_tree },
+      candidate: { sha: materialized.certificate.candidate_sha, tree: materialized.certificate.candidate_tree },
+      changed_paths: materialized.certificate.canonical_path_manifest,
+      activation_required: false,
+      materialization: materialized.certificate,
+    });
+    return packet.policy_lanes.length === 1 && packet.policy_lanes[0] === "BENIGN" &&
+      packet.decision === "ADMIT_BENIGN_SHADOW" && packet.required_authority === "NONE" &&
+      packet.stop_conditions.length === 0 && packet.activation_required === false;
+  } catch {
+    return false;
+  }
+};
+
 // Resolved SHAs, never branch names: a ref that has been repointed must not
 // pass because its name still looks familiar.
 const productionDeploy = resolve("origin/production-deploy");
@@ -149,12 +199,19 @@ describe("durable release ref topology", () => {
       || isApprovedEpochADetachedRuntime(judged.productionDeploy)
       || isApprovedEpochBPromotionArtifact(judged.productionDeploy)
       || isApprovedAgentReferralsCandidate(judged.productionDeploy, judged.main)
-      || isApprovedControlledCandidate(judged.productionDeploy, judged.main),
+      || isApprovedControlledCandidate(judged.productionDeploy, judged.main)
+      || isApprovedReleaseControlV2MaterializedCandidate(judged.productionDeploy, judged.main),
       `production-deploy is not an ancestor of main.\n`
       + `  production-deploy: ${describes("origin/production-deploy")}\n`
       + `  main:              ${describes("origin/main")}\n`
-      + `Only exact 0041 Gen2, exact Epoch A R, deterministic Epoch B P, a valid Agent Referrals reconstruction certificate, or a valid controlled-candidate.ts reconstruction certificate (release-semantics-bootstrap, agent-referrals, agent-referrals-recovery, or agent-referrals-activation namespace) may be detached from main.`,
+      + `Only exact 0041 Gen2, exact Epoch A R, deterministic Epoch B P, a valid Agent Referrals reconstruction certificate, a valid controlled-candidate.ts reconstruction certificate, or a reconstructed BENIGN Release Control v2 materialization may be detached from main.`,
     ).toBe(true);
+  });
+
+  it("does not exempt an arbitrary commit or provenance outside trusted main", (ctx) => {
+    if (!judged) return ctx.skip();
+    expect(isApprovedReleaseControlV2MaterializedCandidate(judged.main, judged.main)).toBe(false);
+    expect(isApprovedReleaseControlV2MaterializedCandidate(judged.productionDeploy, judged.productionDeploy)).toBe(false);
   });
 
 });
