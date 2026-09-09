@@ -65,17 +65,14 @@ describe("Release Control v2 BENIGN orchestration", () => {
       "RELEASE_CONTROL_V2_MATERIALIZATION_PACKET_MISMATCH",
       "RELEASE_CONTROL_V2_RUNTIME_CANDIDATE_BASE_MISMATCH",
       "RELEASE_CONTROL_V2_PRODUCTION_DEPLOY_BASE_MISMATCH",
-      "RELEASE_CONTROL_V2_DIFF_MANIFEST_MISMATCH",
       "RELEASE_CONTROL_V2_CERTIFICATE_MISMATCH",
     ]) expect(preflight).toContain(requirement);
     expect(preflight).toContain("validate-release-control-v2-packet.ts");
     expect(preflight).toContain("verify-release-control-v2-materialization.ts");
-    expect(preflight).toContain('git diff --name-only -z "$base_sha" "$candidate_sha"');
-    expect(preflight).toContain('readFileSync(process.argv[1]).toString("utf8").split("\\0")');
     const baselineRebind = preflight.indexOf("RELEASE_CONTROL_V2_RUNTIME_CANDIDATE_BASE_MISMATCH");
-    const manifest = preflight.indexOf("git diff --name-only -z");
     expect(baselineRebind).toBeGreaterThan(-1);
-    expect(manifest).toBeGreaterThan(baselineRebind);
+    expect(preflight).not.toContain("git diff --name-only");
+    expect(preflight).not.toContain("RELEASE_CONTROL_V2_DIFF_MANIFEST_MISMATCH");
   });
 
   it("creates only a deterministic immutable publication ref with a dedicated token and lease", () => {

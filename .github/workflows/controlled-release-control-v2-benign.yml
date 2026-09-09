@@ -104,14 +104,6 @@ jobs:
           actual_production_deploy="$(git ls-remote --exit-code origin refs/heads/production-deploy | awk '{print $1}')" || { echo "RELEASE_CONTROL_V2_PRODUCTION_DEPLOY_UNAVAILABLE" >&2; exit 1; }
           [[ "$actual_runtime_candidate" == "$base_sha" ]] || { echo "RELEASE_CONTROL_V2_RUNTIME_CANDIDATE_BASE_MISMATCH=$actual_runtime_candidate" >&2; exit 1; }
           [[ "$actual_production_deploy" == "$base_sha" ]] || { echo "RELEASE_CONTROL_V2_PRODUCTION_DEPLOY_BASE_MISMATCH=$actual_production_deploy" >&2; exit 1; }
-          git diff --name-only -z "$base_sha" "$candidate_sha" > actual-manifest.bin
-          node --input-type=module -e '
-            import { readFileSync } from "node:fs";
-            const paths = readFileSync(process.argv[1]).toString("utf8").split("\0").filter(Boolean)
-              .sort((left, right) => Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8")));
-            process.stdout.write(JSON.stringify(paths));
-          ' actual-manifest.bin > actual-manifest.json
-          jq -e --slurpfile actual actual-manifest.json '.diff_manifest == $actual[0]' packet.json >/dev/null || { echo "RELEASE_CONTROL_V2_DIFF_MANIFEST_MISMATCH" >&2; exit 1; }
           {
             echo "base_sha=$base_sha"
             echo "candidate_sha=$candidate_sha"

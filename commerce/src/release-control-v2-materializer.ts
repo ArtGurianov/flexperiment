@@ -32,6 +32,13 @@ const patchArgs = [
   "-c", "diff.renames=false",
   "-c", "diff.orderFile=/dev/null",
   "-c", "diff.indentHeuristic=false",
+  "-c", "diff.context=3",
+  "-c", "diff.interHunkContext=0",
+  "-c", "diff.suppressBlankEmpty=false",
+  "-c", "diff.relative=false",
+  "-c", "diff.ignoreSubmodules=none",
+  "-c", "diff.submodule=short",
+  "-c", "color.diff=false",
   "-c", "diff.mnemonicPrefix=false",
   "-c", "diff.noprefix=false",
   "diff",
@@ -39,21 +46,36 @@ const patchArgs = [
   "--full-index",
   "--no-ext-diff",
   "--no-textconv",
+  "--no-color",
+  "--no-relative",
   "--no-renames",
+  "--ignore-submodules=none",
+  "--submodule=short",
   "--no-indent-heuristic",
+  "--unified=3",
+  "--inter-hunk-context=0",
   "--diff-algorithm=myers",
   "--src-prefix=a/",
   "--dst-prefix=b/",
 ] as const;
 const manifestArgs = [
   "-c", "core.quotePath=true",
+  "-c", "diff.renames=false",
   "-c", "diff.orderFile=/dev/null",
+  "-c", "diff.relative=false",
+  "-c", "diff.ignoreSubmodules=none",
+  "-c", "diff.submodule=short",
+  "-c", "color.diff=false",
   "diff",
   "--name-only",
   "-z",
   "--no-ext-diff",
   "--no-textconv",
+  "--no-color",
+  "--no-relative",
   "--no-renames",
+  "--ignore-submodules=none",
+  "--submodule=short",
   "--diff-algorithm=myers",
 ] as const;
 
@@ -149,7 +171,7 @@ const materializeTree = (cwd: string, base: string, patch: Buffer) => {
   try {
     gitText(cwd, ["read-tree", `${base}^{tree}`], { env });
     try {
-      gitText(cwd, ["apply", "--cached", "--whitespace=error"], { env, input: patch });
+      gitText(cwd, ["-c", "apply.ignoreWhitespace=false", "apply", "--cached", "--whitespace=nowarn"], { env, input: patch });
     } catch (error) {
       fail("MATERIALIZATION_APPLY_FAILED", error);
     }

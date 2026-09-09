@@ -59,6 +59,14 @@ describe("Release Control v2 deterministic candidate materializer", () => {
     writeFileSync(orderFile, "mode.sh\ncommerce-domain.txt\nbinary.bin\n");
     git(repo, ["config", "--local", "diff.orderFile", orderFile]);
     git(repo, ["config", "--local", "diff.indentHeuristic", "true"]);
+    git(repo, ["config", "--local", "diff.context", "0"]);
+    git(repo, ["config", "--local", "diff.interHunkContext", "12"]);
+    git(repo, ["config", "--local", "diff.suppressBlankEmpty", "true"]);
+    git(repo, ["config", "--local", "diff.relative", "true"]);
+    git(repo, ["config", "--local", "diff.ignoreSubmodules", "all"]);
+    git(repo, ["config", "--local", "diff.submodule", "log"]);
+    git(repo, ["config", "--local", "color.diff", "always"]);
+    git(repo, ["config", "--local", "apply.ignoreWhitespace", "true"]);
     const second = materializeReleaseControlV2Candidate(repo, { production_base_sha: base, source_commit_sha: source });
 
     expect(first.certificate).toEqual(second.certificate);
@@ -71,6 +79,27 @@ describe("Release Control v2 deterministic candidate materializer", () => {
     expect(git(repo, ["ls-tree", first.certificate.candidate_sha, "mode.sh"]).startsWith("100755")).toBe(true);
     expect(git(repo, ["ls-tree", "--name-only", first.certificate.candidate_sha])).not.toContain("removed.txt");
     expect(reconstructReleaseControlV2Candidate(repo, first.certificate).certificate).toEqual(first.certificate);
+  });
+
+  it("uses the same no-rename path manifest in the certificate and reconstructed candidate", () => {
+    const repo = mkdtempSync(join(tmpdir(), "release-control-v2-materializer-rename-"));
+    repos.push(repo);
+    git(repo, ["init", "-q", "-b", "main"]);
+    git(repo, ["config", "user.name", "fixture"]);
+    git(repo, ["config", "user.email", "fixture@example.invalid"]);
+    writeFileSync(join(repo, "old-name.txt"), "unchanged\n");
+    const root = commit(repo, "root");
+    git(repo, ["checkout", "-qb", "source", root]);
+    git(repo, ["mv", "old-name.txt", "new-name.txt"]);
+    const source = commit(repo, "rename integration");
+    git(repo, ["checkout", "-q", "main"]);
+    writeFileSync(join(repo, "production-only.txt"), "production\n");
+    const base = commit(repo, "production base");
+
+    const materialized = materializeReleaseControlV2Candidate(repo, { production_base_sha: base, source_commit_sha: source });
+    expect(materialized.certificate.canonical_path_manifest).toEqual(["new-name.txt", "old-name.txt"]);
+    expect(reconstructReleaseControlV2Candidate(repo, materialized.certificate).certificate.canonical_path_manifest)
+      .toEqual(["new-name.txt", "old-name.txt"]);
   });
 
   it("fails closed instead of using a three-way merge when the canonical patch conflicts", () => {

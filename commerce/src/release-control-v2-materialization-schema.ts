@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 
-export const RELEASE_CONTROL_V2_MATERIALIZER_VERSION = "release-control-v2-materializer-v1" as const;
+export const RELEASE_CONTROL_V2_MATERIALIZER_VERSION = "release-control-v2-materializer-v2" as const;
 export const RELEASE_CONTROL_V2_MATERIALIZATION_SCHEMA_VERSION = "release-control-v2-materialization-v1" as const;
-export const RELEASE_CONTROL_V2_PATCH_FORMAT_VERSION = "git-diff-binary-full-index-no-ext-diff-no-textconv-no-renames-myers-v1" as const;
+export const RELEASE_CONTROL_V2_PATCH_FORMAT_VERSION = "git-diff-binary-full-index-hermetic-no-ext-diff-no-textconv-no-renames-myers-v2" as const;
 
 export const RELEASE_CONTROL_V2_COMMIT_METADATA = {
   author_name: "Flexperiment Release Control",
