@@ -61,7 +61,7 @@ describe("Release Control v2 BENIGN orchestration", () => {
       "RELEASE_CONTROL_V2_BASE_TREE_MISMATCH",
       "RELEASE_CONTROL_V2_CANDIDATE_TREE_MISMATCH",
       "RELEASE_CONTROL_V2_CANDIDATE_PARENT_MISMATCH",
-      "RELEASE_CONTROL_V2_MATERIALIZATION_SOURCE_NOT_IN_CONTROLLER",
+      "RELEASE_CONTROL_V2_CANDIDATE_IS_MAINTENANCE_ONLY",
       "RELEASE_CONTROL_V2_MATERIALIZATION_PACKET_MISMATCH",
       "RELEASE_CONTROL_V2_RUNTIME_CANDIDATE_BASE_MISMATCH",
       "RELEASE_CONTROL_V2_PRODUCTION_DEPLOY_BASE_MISMATCH",
@@ -161,6 +161,19 @@ describe("Release Control v2 BENIGN orchestration", () => {
     }
     expect(preflight).not.toContain('git fetch --no-tags origin "$base_sha" "$candidate_sha"');
     expect(execute).not.toContain('git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main "$BASE_SHA" "$TARGET_SHA"');
+  });
+
+  it("blocks maintenance artifacts after reconstruction in both jobs before the publication step", () => {
+    const preflight = section(workflow, "Bind exact current main", "\n\n  execute:");
+    const execute = section(workflow, "Rebind exact ordinary authority before any publication", "Create or reconcile exact immutable BENIGN publication");
+    for (const source of [preflight, execute]) {
+      const reconstruction = source.indexOf("verify-release-control-v2-materialization.ts");
+      const marker = source.indexOf("RELEASE_CONTROL_V2_CANDIDATE_IS_MAINTENANCE_ONLY");
+      expect(reconstruction).toBeGreaterThan(-1);
+      expect(marker).toBeGreaterThan(reconstruction);
+    }
+    expect(preflight.indexOf("RELEASE_CONTROL_V2_CANDIDATE_IS_MAINTENANCE_ONLY")).toBeLessThan(preflight.indexOf('echo "base_sha=$base_sha"'));
+    expect(execute.indexOf("RELEASE_CONTROL_V2_CANDIDATE_IS_MAINTENANCE_ONLY")).toBeLessThan(workflow.indexOf("Create or reconcile exact immutable BENIGN publication"));
   });
 
   it("keeps all non-BENIGN lanes packet-only by construction", () => {

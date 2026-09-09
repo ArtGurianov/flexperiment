@@ -123,6 +123,7 @@ const assertIdentity = (label: string, identity: SealedReleaseIdentity) => {
 export const classifyReleasePaths = (paths: readonly string[]): readonly ReleasePolicyLane[] => {
   const lanes = new Set<ReleasePolicyLane>();
   for (const path of paths) {
+    if (path === ".release/maintenance-only") lanes.add("RELEASE_CONTROL");
     if (inDirectory(path, "commerce/migrations")) lanes.add("MIGRATION");
     if (inDirectory(path, "commerce/legal") || inDirectory(path, "public/legal")) lanes.add("LEGAL");
     if (financialPaths.has(path)) lanes.add("FINANCIAL");

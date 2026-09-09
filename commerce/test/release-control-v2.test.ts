@@ -100,6 +100,7 @@ describe("Release Control v2 Phase 1 shadow packet", () => {
     ["financial compatibility primitive", ["commerce/src/promo-pricing.ts"], ["FINANCIAL", "COMPATIBILITY"]],
     ["attribution", ["commerce/src/agent-referrals-attribution.ts"], ["ATTRIBUTION"]],
     ["surface", ["release-surface-contract.json"], ["SURFACE"]],
+    ["maintenance marker", [".release/maintenance-only"], ["RELEASE_CONTROL"]],
     ["compatibility", ["commerce/src/crypto.ts"], ["COMPATIBILITY"]],
     ["benign", ["README.md"], ["BENIGN"]],
   ] as const)("classifies %s paths conservatively", (_name, paths, expected) => {

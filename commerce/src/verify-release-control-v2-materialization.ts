@@ -4,12 +4,17 @@ import {
   canonicalReleasePacket,
   validateReleasePacket,
 } from "./release-control-v2";
-import { reconstructReleaseControlV2Candidate } from "./release-control-v2-materializer";
+import {
+  assertReleaseControlV2SourceOnFirstParentIntegrationLineage,
+  reconstructReleaseControlV2Candidate,
+} from "./release-control-v2-materializer";
 
 const path = process.argv[2];
-if (!path) throw new Error("RELEASE_CONTROL_V2_MATERIALIZATION_PACKET_REQUIRED");
+const integrationTip = process.argv[3];
+if (!path || !integrationTip) throw new Error("RELEASE_CONTROL_V2_MATERIALIZATION_PACKET_AND_INTEGRATION_TIP_REQUIRED");
 
 const packet = validateReleasePacket(JSON.parse(readFileSync(path, "utf8")));
+assertReleaseControlV2SourceOnFirstParentIntegrationLineage(process.cwd(), packet.materialization.source_commit_sha, integrationTip);
 const materialized = reconstructReleaseControlV2Candidate(process.cwd(), packet.materialization);
 const rebuilt = buildReleasePacket({
   base: {

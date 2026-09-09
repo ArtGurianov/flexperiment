@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildReleasePacket } from "../src/release-control-v2";
 import {
+  assertReleaseControlV2SourceOnFirstParentIntegrationLineage,
   materializeReleaseControlV2Candidate,
   reconstructReleaseControlV2Candidate,
 } from "../src/release-control-v2-materializer";
@@ -54,6 +55,10 @@ describe("Release Control v2 deterministic candidate materializer", () => {
   it("creates the same detached linear candidate from a divergent base and one exact integration commit", () => {
     const { repo, base, parent, source } = fixture();
     const first = materializeReleaseControlV2Candidate(repo, { production_base_sha: base, source_commit_sha: source });
+    const orderFile = join(repo, "ambient-diff-order");
+    writeFileSync(orderFile, "mode.sh\ncommerce-domain.txt\nbinary.bin\n");
+    git(repo, ["config", "--local", "diff.orderFile", orderFile]);
+    git(repo, ["config", "--local", "diff.indentHeuristic", "true"]);
     const second = materializeReleaseControlV2Candidate(repo, { production_base_sha: base, source_commit_sha: source });
 
     expect(first.certificate).toEqual(second.certificate);
@@ -91,6 +96,34 @@ describe("Release Control v2 deterministic candidate materializer", () => {
     expect(() => materializeReleaseControlV2Candidate(repo, { production_base_sha: base, source_commit_sha: merge }))
       .toThrow("MATERIALIZATION_SOURCE_NOT_SINGLE_PARENT");
     expect(git(repo, ["show-ref"])).toBe(refsBefore);
+  });
+
+  it("rejects a single-parent side-branch commit that is only reachable through a merge", () => {
+    const { repo, source } = fixture();
+    git(repo, ["checkout", "-q", "main"]);
+    git(repo, ["merge", "--no-ff", "source", "-m", "merge side integration"]);
+    const controller = git(repo, ["rev-parse", "HEAD"]);
+    expect(() => assertReleaseControlV2SourceOnFirstParentIntegrationLineage(repo, source, controller))
+      .toThrow("MATERIALIZATION_SOURCE_NOT_FIRST_PARENT_INTEGRATION_LINE");
+  });
+
+  it("classifies the maintenance marker as consequential before any publication can be eligible", () => {
+    const { repo, base } = fixture();
+    git(repo, ["checkout", "-q", "source"]);
+    mkdirSync(join(repo, ".release"), { recursive: true });
+    writeFileSync(join(repo, ".release/maintenance-only"), "maintenance\n");
+    const source = commit(repo, "maintenance integration");
+    const materialized = materializeReleaseControlV2Candidate(repo, { production_base_sha: base, source_commit_sha: source });
+    const packet = buildReleasePacket({
+      base: { sha: materialized.certificate.production_base_sha, tree: materialized.certificate.production_base_tree },
+      candidate: { sha: materialized.certificate.candidate_sha, tree: materialized.certificate.candidate_tree },
+      changed_paths: materialized.certificate.canonical_path_manifest,
+      activation_required: false,
+      materialization: materialized.certificate,
+    });
+    expect(packet.policy_lanes).toEqual(["RELEASE_CONTROL"]);
+    expect(packet.decision).toBe("STOP_ESCALATE");
+    expect(packet.required_authority).toBe("ESCALATION_REQUIRED");
   });
 
   it("binds the packet classifier to the actual B..C manifest and escalates sensitive source deltas", () => {

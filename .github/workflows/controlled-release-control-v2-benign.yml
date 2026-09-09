@@ -91,12 +91,15 @@ jobs:
           git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main "$base_sha"
           git cat-file -e "${source_parent_sha}^{commit}" || { echo "RELEASE_CONTROL_V2_MATERIALIZATION_SOURCE_PARENT_UNAVAILABLE" >&2; exit 1; }
           git cat-file -e "${source_commit_sha}^{commit}" || { echo "RELEASE_CONTROL_V2_MATERIALIZATION_SOURCE_UNAVAILABLE" >&2; exit 1; }
-          git merge-base --is-ancestor "$source_commit_sha" "$GITHUB_SHA" || { echo "RELEASE_CONTROL_V2_MATERIALIZATION_SOURCE_NOT_IN_CONTROLLER" >&2; exit 1; }
-          node --import tsx commerce/src/verify-release-control-v2-materialization.ts packet.json > reconstructed-packet.json
+          node --import tsx commerce/src/verify-release-control-v2-materialization.ts packet.json "$GITHUB_SHA" > reconstructed-packet.json
           cmp --silent packet.json reconstructed-packet.json || { echo "RELEASE_CONTROL_V2_MATERIALIZATION_PACKET_MISMATCH" >&2; exit 1; }
           [[ "$(git rev-parse "${base_sha}^{tree}")" == "$base_tree" ]] || { echo "RELEASE_CONTROL_V2_BASE_TREE_MISMATCH" >&2; exit 1; }
           [[ "$(git rev-parse "${candidate_sha}^{tree}")" == "$candidate_tree" ]] || { echo "RELEASE_CONTROL_V2_CANDIDATE_TREE_MISMATCH" >&2; exit 1; }
           [[ "$(git rev-parse "${candidate_sha}^")" == "$base_sha" ]] || { echo "RELEASE_CONTROL_V2_CANDIDATE_PARENT_MISMATCH" >&2; exit 1; }
+          if git cat-file -e "$candidate_sha:.release/maintenance-only" 2>/dev/null; then
+            echo "RELEASE_CONTROL_V2_CANDIDATE_IS_MAINTENANCE_ONLY" >&2
+            exit 1
+          fi
           actual_runtime_candidate="$(git ls-remote --exit-code origin refs/heads/runtime-candidate | awk '{print $1}')" || { echo "RELEASE_CONTROL_V2_RUNTIME_CANDIDATE_UNAVAILABLE" >&2; exit 1; }
           actual_production_deploy="$(git ls-remote --exit-code origin refs/heads/production-deploy | awk '{print $1}')" || { echo "RELEASE_CONTROL_V2_PRODUCTION_DEPLOY_UNAVAILABLE" >&2; exit 1; }
           [[ "$actual_runtime_candidate" == "$base_sha" ]] || { echo "RELEASE_CONTROL_V2_RUNTIME_CANDIDATE_BASE_MISMATCH=$actual_runtime_candidate" >&2; exit 1; }
@@ -178,8 +181,7 @@ jobs:
           git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main "$BASE_SHA"
           git cat-file -e "${source_parent_sha}^{commit}" || { echo "RELEASE_CONTROL_V2_EXECUTE_SOURCE_PARENT_UNAVAILABLE" >&2; exit 1; }
           git cat-file -e "${source_commit_sha}^{commit}" || { echo "RELEASE_CONTROL_V2_EXECUTE_SOURCE_UNAVAILABLE" >&2; exit 1; }
-          git merge-base --is-ancestor "$source_commit_sha" "$GITHUB_SHA" || { echo "RELEASE_CONTROL_V2_EXECUTE_SOURCE_NOT_IN_CONTROLLER" >&2; exit 1; }
-          node --import tsx commerce/src/verify-release-control-v2-materialization.ts packet.json > reconstructed-packet.json
+          node --import tsx commerce/src/verify-release-control-v2-materialization.ts packet.json "$GITHUB_SHA" > reconstructed-packet.json
           cmp --silent packet.json reconstructed-packet.json || { echo "RELEASE_CONTROL_V2_EXECUTE_PACKET_MISMATCH" >&2; exit 1; }
           [[ "$GITHUB_SHA" == "$CONTROLLER_SHA" ]] || { echo "RELEASE_CONTROL_V2_PUBLICATION_CONTROLLER_SHA_MISMATCH" >&2; exit 1; }
           [[ "$(git rev-parse "${GITHUB_SHA}^{tree}")" == "$CONTROLLER_TREE" ]] || { echo "RELEASE_CONTROL_V2_PUBLICATION_CONTROLLER_TREE_MISMATCH" >&2; exit 1; }
@@ -189,6 +191,10 @@ jobs:
           [[ "$runtime_candidate" == "$BASE_SHA" ]] || { echo "RELEASE_CONTROL_V2_RUNTIME_CANDIDATE_BASE_MOVED=$runtime_candidate" >&2; exit 1; }
           [[ "$production_deploy" == "$BASE_SHA" ]] || { echo "RELEASE_CONTROL_V2_PRODUCTION_DEPLOY_BASE_MOVED=$production_deploy" >&2; exit 1; }
           [[ "$(git rev-parse "${TARGET_SHA}^")" == "$BASE_SHA" ]] || { echo "RELEASE_CONTROL_V2_CANDIDATE_PARENT_MISMATCH" >&2; exit 1; }
+          if git cat-file -e "$TARGET_SHA:.release/maintenance-only" 2>/dev/null; then
+            echo "RELEASE_CONTROL_V2_CANDIDATE_IS_MAINTENANCE_ONLY" >&2
+            exit 1
+          fi
 
       - name: Create or reconcile exact immutable BENIGN publication
         run: |

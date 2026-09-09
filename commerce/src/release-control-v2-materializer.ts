@@ -30,6 +30,8 @@ const patchArgs = [
   "-c", "core.attributesFile=/dev/null",
   "-c", "core.quotePath=true",
   "-c", "diff.renames=false",
+  "-c", "diff.orderFile=/dev/null",
+  "-c", "diff.indentHeuristic=false",
   "-c", "diff.mnemonicPrefix=false",
   "-c", "diff.noprefix=false",
   "diff",
@@ -38,12 +40,14 @@ const patchArgs = [
   "--no-ext-diff",
   "--no-textconv",
   "--no-renames",
+  "--no-indent-heuristic",
   "--diff-algorithm=myers",
   "--src-prefix=a/",
   "--dst-prefix=b/",
 ] as const;
 const manifestArgs = [
   "-c", "core.quotePath=true",
+  "-c", "diff.orderFile=/dev/null",
   "diff",
   "--name-only",
   "-z",
@@ -108,6 +112,14 @@ const parentsOf = (cwd: string, sha: string) => {
   const tokens = gitText(cwd, ["rev-list", "--parents", "-n", "1", sha]).split(" ").filter(Boolean);
   if (tokens[0] !== sha) fail("MATERIALIZATION_SOURCE_IDENTITY_INVALID");
   return tokens.slice(1);
+};
+
+/** Refuses a side-branch commit even when it is otherwise reachable from main. */
+export const assertReleaseControlV2SourceOnFirstParentIntegrationLineage = (cwd: string, source: string, integrationTip: string) => {
+  assertCommit(cwd, source, "MATERIALIZATION_SOURCE_COMMIT_INVALID");
+  assertCommit(cwd, integrationTip, "MATERIALIZATION_INTEGRATION_TIP_INVALID");
+  const firstParentLineage = gitText(cwd, ["rev-list", "--first-parent", integrationTip]).split("\n").filter(Boolean);
+  if (!firstParentLineage.includes(source)) fail("MATERIALIZATION_SOURCE_NOT_FIRST_PARENT_INTEGRATION_LINE");
 };
 const manifestBetween = (cwd: string, from: string, to: string) => {
   const bytes = gitBytes(cwd, [...manifestArgs, from, to]);
