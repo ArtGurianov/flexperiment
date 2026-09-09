@@ -146,6 +146,15 @@ runs:
             node --import tsx commerce/src/verify-release-control-v2-materialization.ts materialized-release-packet.json "$CONTROLLER_SHA" > reconstructed-materialized-release-packet.json
             cmp --silent materialized-release-packet.json reconstructed-materialized-release-packet.json || { echo "MATERIALIZED_DEPLOY_PACKET_RECONSTRUCTION_MISMATCH" >&2; exit 1; }
             [[ "$(git rev-parse "${TARGET_SHA}^")" == "$packet_base_sha" ]] || { echo "MATERIALIZED_DEPLOY_CANDIDATE_PARENT_MISMATCH" >&2; exit 1; }
+          elif [[ "$RECOVERY_MODE" == 1 ]]; then
+            # A manual recovery neither selects a new candidate nor repeats
+            # initial materialized-candidate admission. Its authority comes
+            # solely from the exact held release verified below: paused sales,
+            # same deploy-<target> owner, CONTROLLED_CUTOVER mode, matching
+            # durable source, and incomplete terminal evidence. In particular,
+            # a detached v2 materialized target intentionally need not be an
+            # ancestor of this newer controller main.
+            :
           else
             # The controller must not be OLDER than what an ordinary candidate
             # deploys, so its policy covers the code it is judging. Equality is

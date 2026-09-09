@@ -114,6 +114,74 @@ describe("generic controlled production deploy workflow", () => {
     expect(preflight.indexOf("verify-release-control-v2-materialization.ts")).toBeLessThan(ordinary);
   });
 
+  it("treats a same-owner recovery as durable-state recovery, not initial candidate admission", () => {
+    const preflight = workflow.slice(workflow.indexOf("Preflight immutable generic-deploy boundaries"), workflow.indexOf("Verify an already completed deployment"));
+    const materialized = preflight.indexOf('if [[ -n "${INPUT_MATERIALIZED_RELEASE_PACKET:-}" ]]; then');
+    const recovery = preflight.indexOf('elif [[ "$RECOVERY_MODE" == 1 ]]; then');
+    const ordinary = preflight.indexOf('git merge-base --is-ancestor "$TARGET_SHA" "$CONTROLLER_SHA"');
+    const durableState = preflight.indexOf("GENERIC_DEPLOY_MANUAL_RECOVERY_STATE_INVALID");
+    const firstConsequence = workflow.indexOf("Acquire owner and pause registrations");
+
+    // A materialized packet remains its own narrowly-certified initial
+    // admission path. Recovery does not inherit that exception or its stale
+    // base binding after production-deploy has already crossed to the target.
+    expect(materialized).toBeGreaterThan(-1);
+    expect(recovery).toBeGreaterThan(materialized);
+    expect(ordinary).toBeGreaterThan(recovery);
+    expect(preflight.slice(recovery, ordinary)).toContain('[[ "$RECOVERY_MODE" == 1 ]]');
+    expect(preflight.slice(recovery, ordinary)).toContain("same deploy-<target> owner");
+
+    // Non-recovery callers without a valid materialized packet still take the
+    // original ancestry guard. Recovery is admitted only after the exact
+    // durable held-owner predicate, before any API consequence.
+    expect(preflight.slice(ordinary)).toContain("GENERIC_DEPLOY_CONTROLLER_OLDER_THAN_TARGET");
+    expect(durableState).toBeGreaterThan(ordinary);
+    expect(durableState).toBeLessThan(firstConsequence);
+    for (const requirement of [
+      ".sales_paused == true",
+      ".owner_release_id == $release_id",
+      '.owner_mode == "CONTROLLED_CUTOVER"',
+      ".expected.source_commit == $source_commit",
+      ".complete == false",
+    ]) expect(preflight).toContain(requirement);
+  });
+
+  it("admits recovery only for the exact held, paused, incomplete owner", () => {
+    const preflight = workflow.slice(workflow.indexOf("Preflight immutable generic-deploy boundaries"), workflow.indexOf("Verify an already completed deployment"));
+    const startMarker = 'if ! jq -e --arg release_id "$RELEASE_ID" --arg source_commit "$TARGET_SHA" \'\n';
+    const endMarker = "' durable-before.json >/dev/null || ! jq -e '.complete == false' completion.json >/dev/null; then";
+    const start = preflight.indexOf(startMarker);
+    const end = preflight.indexOf(endMarker, start + startMarker.length);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const statusPredicate = preflight.slice(start + startMarker.length, end);
+    const releaseId = "deploy-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const targetSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const exactHeldStatus = {
+      sales_paused: true,
+      owner_release_id: releaseId,
+      owner_mode: "CONTROLLED_CUTOVER",
+      expected: { source_commit: targetSha },
+    };
+    const admitted = (status: object, complete: boolean) => {
+      const statusResult = spawnSync("jq", ["-e", "--arg", "release_id", releaseId, "--arg", "source_commit", targetSha, statusPredicate], {
+        input: JSON.stringify(status),
+        encoding: "utf8",
+      });
+      const completionResult = spawnSync("jq", ["-e", ".complete == false"], {
+        input: JSON.stringify({ complete }),
+        encoding: "utf8",
+      });
+      return statusResult.status === 0 && completionResult.status === 0;
+    };
+
+    expect(admitted(exactHeldStatus, false)).toBe(true);
+    expect(admitted({ ...exactHeldStatus, owner_release_id: "deploy-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }, false)).toBe(false);
+    expect(admitted({ ...exactHeldStatus, expected: { source_commit: "b".repeat(40) } }, false)).toBe(false);
+    expect(admitted({ ...exactHeldStatus, sales_paused: false }, false)).toBe(false);
+    expect(admitted(exactHeldStatus, true)).toBe(false);
+  });
+
   it("rebinds sealed ordinary authority in the acquire step immediately before the first durable mutation", () => {
     const preflight = workflow.indexOf("Preflight immutable generic-deploy boundaries");
     const acquire = workflow.indexOf("Acquire owner and pause registrations");
