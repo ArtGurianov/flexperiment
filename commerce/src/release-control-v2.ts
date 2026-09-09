@@ -1,4 +1,9 @@
 import { createHash } from "node:crypto";
+import {
+  RELEASE_CONTROL_V2_MATERIALIZATION_SCHEMA_VERSION,
+  type ReleaseControlV2MaterializationCertificate,
+  validateReleaseControlV2MaterializationCertificate,
+} from "./release-control-v2-materialization-schema";
 
 /**
  * Release Control v2, Phase 1.
@@ -8,7 +13,7 @@ import { createHash } from "node:crypto";
  * A packet describes a possible future authority boundary but never grants one.
  */
 
-export const RELEASE_PACKET_SCHEMA_VERSION = "release-control-v2-packet-v1" as const;
+export const RELEASE_PACKET_SCHEMA_VERSION = "release-control-v2-packet-v2" as const;
 export type ReleasePolicyLane = "BENIGN" | "MIGRATION" | "LEGAL" | "FINANCIAL" | "ATTRIBUTION" | "RELEASE_CONTROL" | "SURFACE" | "COMPATIBILITY";
 export type ReleasePacketDecision = "ADMIT_BENIGN_SHADOW" | "STOP_ESCALATE";
 
@@ -18,6 +23,7 @@ export type ReleasePacketInput = {
   readonly candidate: SealedReleaseIdentity;
   readonly changed_paths: readonly string[];
   readonly activation_required: boolean;
+  readonly materialization: ReleaseControlV2MaterializationCertificate;
 };
 
 export type ReleasePacket = {
@@ -35,13 +41,15 @@ export type ReleasePacket = {
   readonly candidate: SealedReleaseIdentity;
   readonly diff_manifest: readonly string[];
   readonly certificate: {
-    readonly schema_version: "release-control-v2-certificate-v1";
+    readonly schema_version: "release-control-v2-certificate-v2";
     readonly base_sha: string;
     readonly base_tree: string;
     readonly candidate_sha: string;
     readonly candidate_tree: string;
     readonly diff_manifest_sha256: string;
+    readonly materialization_schema_version: typeof RELEASE_CONTROL_V2_MATERIALIZATION_SCHEMA_VERSION;
   };
+  readonly materialization: ReleaseControlV2MaterializationCertificate;
   readonly policy_lanes: readonly ReleasePolicyLane[];
   readonly risk_reasons: readonly string[];
   readonly decision: ReleasePacketDecision;
@@ -115,6 +123,7 @@ const assertIdentity = (label: string, identity: SealedReleaseIdentity) => {
 export const classifyReleasePaths = (paths: readonly string[]): readonly ReleasePolicyLane[] => {
   const lanes = new Set<ReleasePolicyLane>();
   for (const path of paths) {
+    if (path === ".release/maintenance-only") lanes.add("RELEASE_CONTROL");
     if (inDirectory(path, "commerce/migrations")) lanes.add("MIGRATION");
     if (inDirectory(path, "commerce/legal") || inDirectory(path, "public/legal")) lanes.add("LEGAL");
     if (financialPaths.has(path)) lanes.add("FINANCIAL");
@@ -136,7 +145,7 @@ export const classifyReleasePaths = (paths: readonly string[]): readonly Release
   return (lanes.size ? laneOrder.filter((lane) => lanes.has(lane)) : ["BENIGN"]);
 };
 
-const canonicalManifest = (paths: readonly string[]) => [...new Set(paths)].sort();
+const canonicalManifest = (paths: readonly string[]) => [...new Set(paths)].sort((left, right) => Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8")));
 const reasonFor = (lane: ReleasePolicyLane) => `POLICY_LANE_${lane}`;
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 
@@ -152,13 +161,24 @@ export const buildReleasePacket = (input: ReleasePacketInput): ReleasePacket => 
   }
 
   const diff_manifest = canonicalManifest(input.changed_paths);
+  const materialization = validateReleaseControlV2MaterializationCertificate(input.materialization);
+  if (
+    materialization.production_base_sha !== input.base.sha ||
+    materialization.production_base_tree !== input.base.tree ||
+    materialization.candidate_sha !== input.candidate.sha ||
+    materialization.candidate_tree !== input.candidate.tree ||
+    JSON.stringify(materialization.canonical_path_manifest) !== JSON.stringify(diff_manifest)
+  ) {
+    throw new Error("RELEASE_PACKET_MATERIALIZATION_MISMATCH");
+  }
   const certificate = {
-    schema_version: "release-control-v2-certificate-v1" as const,
+    schema_version: "release-control-v2-certificate-v2" as const,
     base_sha: input.base.sha,
     base_tree: input.base.tree,
     candidate_sha: input.candidate.sha,
     candidate_tree: input.candidate.tree,
     diff_manifest_sha256: sha256(JSON.stringify(diff_manifest)),
+    materialization_schema_version: RELEASE_CONTROL_V2_MATERIALIZATION_SCHEMA_VERSION,
   };
   const policy_lanes = classifyReleasePaths(diff_manifest);
   const benign = policy_lanes.length === 1 && policy_lanes[0] === "BENIGN";
@@ -183,6 +203,7 @@ export const buildReleasePacket = (input: ReleasePacketInput): ReleasePacket => 
     candidate: { ...input.candidate },
     diff_manifest,
     certificate,
+    materialization,
     policy_lanes,
     risk_reasons: policy_lanes.map(reasonFor),
     decision,
@@ -208,6 +229,7 @@ export const canonicalReleasePacket = (packet: ReleasePacket): string => JSON.st
 const packetKeys = new Set<keyof ReleasePacket>([
   "schema_version", "mode", "production_authority", "mutations", "release_id", "semantic_hash",
   "base_sha", "base_tree", "candidate_sha", "candidate_tree", "base", "candidate", "diff_manifest", "certificate",
+  "materialization",
   "policy_lanes", "risk_reasons", "decision", "required_authority", "expected_ref_transitions",
   "candidate_publication_ref", "expected_deploy_target", "expected_reconciliation_checks", "stop_conditions",
   "activation_required", "generated_workflows", "historical_synthesis", "mutation_plan",
@@ -220,7 +242,7 @@ export const validateReleasePacket = (value: unknown): ReleasePacket => {
   if (Object.keys(packet).length !== packetKeys.size || Object.keys(packet).some((key) => !packetKeys.has(key as keyof ReleasePacket))) {
     throw new Error("RELEASE_PACKET_SCHEMA_INVALID");
   }
-  if (!packet.base || !packet.candidate || !Array.isArray(packet.diff_manifest)) throw new Error("RELEASE_PACKET_SCHEMA_INVALID");
+  if (!packet.base || !packet.candidate || !Array.isArray(packet.diff_manifest) || !packet.materialization) throw new Error("RELEASE_PACKET_SCHEMA_INVALID");
   const base = packet.base as SealedReleaseIdentity;
   const candidate = packet.candidate as SealedReleaseIdentity;
   const rebuilt = buildReleasePacket({
@@ -228,6 +250,7 @@ export const validateReleasePacket = (value: unknown): ReleasePacket => {
     candidate,
     changed_paths: packet.diff_manifest as string[],
     activation_required: packet.activation_required as boolean,
+    materialization: packet.materialization as ReleaseControlV2MaterializationCertificate,
   });
   if (packet.semantic_hash !== rebuilt.semantic_hash) throw new Error("RELEASE_PACKET_HASH_MISMATCH");
   if (canonicalReleasePacket(value as ReleasePacket) !== canonicalReleasePacket(rebuilt)) throw new Error("RELEASE_PACKET_SEMANTICS_MISMATCH");

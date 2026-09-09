@@ -77,30 +77,33 @@ jobs:
           [[ "$base_sha" =~ ^[a-f0-9]{40}$ && "$candidate_sha" =~ ^[a-f0-9]{40}$ && "$base_sha" != "$candidate_sha" ]] || { echo "RELEASE_CONTROL_V2_PACKET_TARGET_INVALID" >&2; exit 1; }
           [[ "$candidate_publication_ref" == "refs/heads/runtime/release-control-v2-$candidate_sha" ]] || { echo "RELEASE_CONTROL_V2_PUBLICATION_REF_MISMATCH" >&2; exit 1; }
           jq -e --arg base_sha "$base_sha" --arg base_tree "$base_tree" --arg candidate_sha "$candidate_sha" --arg candidate_tree "$candidate_tree" '
-            .certificate.schema_version == "release-control-v2-certificate-v1" and
+            .certificate.schema_version == "release-control-v2-certificate-v2" and
             .certificate.base_sha == $base_sha and
             .certificate.base_tree == $base_tree and
             .certificate.candidate_sha == $candidate_sha and
             .certificate.candidate_tree == $candidate_tree and
+            .certificate.materialization_schema_version == "release-control-v2-materialization-v1" and
             (.certificate.diff_manifest_sha256 | type == "string" and test("^[a-f0-9]{64}$"))
           ' packet.json >/dev/null || { echo "RELEASE_CONTROL_V2_CERTIFICATE_MISMATCH" >&2; exit 1; }
-          git fetch --no-tags origin "$base_sha" "$candidate_sha"
+          source_commit_sha="$(jq -er '.materialization.source_commit_sha' packet.json)"
+          source_parent_sha="$(jq -er '.materialization.source_parent_sha' packet.json)"
+          [[ "$source_commit_sha" =~ ^[a-f0-9]{40}$ && "$source_parent_sha" =~ ^[a-f0-9]{40}$ ]] || { echo "RELEASE_CONTROL_V2_MATERIALIZATION_SOURCE_INVALID" >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main "$base_sha"
+          git cat-file -e "${source_parent_sha}^{commit}" || { echo "RELEASE_CONTROL_V2_MATERIALIZATION_SOURCE_PARENT_UNAVAILABLE" >&2; exit 1; }
+          git cat-file -e "${source_commit_sha}^{commit}" || { echo "RELEASE_CONTROL_V2_MATERIALIZATION_SOURCE_UNAVAILABLE" >&2; exit 1; }
+          node --import tsx commerce/src/verify-release-control-v2-materialization.ts packet.json "$GITHUB_SHA" > reconstructed-packet.json
+          cmp --silent packet.json reconstructed-packet.json || { echo "RELEASE_CONTROL_V2_MATERIALIZATION_PACKET_MISMATCH" >&2; exit 1; }
           [[ "$(git rev-parse "${base_sha}^{tree}")" == "$base_tree" ]] || { echo "RELEASE_CONTROL_V2_BASE_TREE_MISMATCH" >&2; exit 1; }
           [[ "$(git rev-parse "${candidate_sha}^{tree}")" == "$candidate_tree" ]] || { echo "RELEASE_CONTROL_V2_CANDIDATE_TREE_MISMATCH" >&2; exit 1; }
-          git merge-base --is-ancestor "$base_sha" "$candidate_sha" || { echo "RELEASE_CONTROL_V2_CANDIDATE_NOT_DESCENDANT" >&2; exit 1; }
-          [[ -z "$(git rev-list --merges "$base_sha..$candidate_sha")" ]] || { echo "RELEASE_CONTROL_V2_CANDIDATE_NOT_LINEAR" >&2; exit 1; }
-          [[ -z "$(git rev-list "$base_sha..$candidate_sha" | while read -r sha; do git cat-file -e "$sha:.release/maintenance-only" 2>/dev/null && echo "$sha"; done)" ]] || { echo "RELEASE_CONTROL_V2_CANDIDATE_CONTAINS_MAINTENANCE" >&2; exit 1; }
+          [[ "$(git rev-parse "${candidate_sha}^")" == "$base_sha" ]] || { echo "RELEASE_CONTROL_V2_CANDIDATE_PARENT_MISMATCH" >&2; exit 1; }
+          if git cat-file -e "$candidate_sha:.release/maintenance-only" 2>/dev/null; then
+            echo "RELEASE_CONTROL_V2_CANDIDATE_IS_MAINTENANCE_ONLY" >&2
+            exit 1
+          fi
           actual_runtime_candidate="$(git ls-remote --exit-code origin refs/heads/runtime-candidate | awk '{print $1}')" || { echo "RELEASE_CONTROL_V2_RUNTIME_CANDIDATE_UNAVAILABLE" >&2; exit 1; }
           actual_production_deploy="$(git ls-remote --exit-code origin refs/heads/production-deploy | awk '{print $1}')" || { echo "RELEASE_CONTROL_V2_PRODUCTION_DEPLOY_UNAVAILABLE" >&2; exit 1; }
           [[ "$actual_runtime_candidate" == "$base_sha" ]] || { echo "RELEASE_CONTROL_V2_RUNTIME_CANDIDATE_BASE_MISMATCH=$actual_runtime_candidate" >&2; exit 1; }
           [[ "$actual_production_deploy" == "$base_sha" ]] || { echo "RELEASE_CONTROL_V2_PRODUCTION_DEPLOY_BASE_MISMATCH=$actual_production_deploy" >&2; exit 1; }
-          git diff --name-only -z "$base_sha" "$candidate_sha" > actual-manifest.bin
-          node --input-type=module -e '
-            import { readFileSync } from "node:fs";
-            const paths = readFileSync(process.argv[1]).toString("utf8").split("\0").filter(Boolean).sort();
-            process.stdout.write(JSON.stringify(paths));
-          ' actual-manifest.bin > actual-manifest.json
-          jq -e --slurpfile actual actual-manifest.json '.diff_manifest == $actual[0]' packet.json >/dev/null || { echo "RELEASE_CONTROL_V2_DIFF_MANIFEST_MISMATCH" >&2; exit 1; }
           {
             echo "base_sha=$base_sha"
             echo "candidate_sha=$candidate_sha"
@@ -144,6 +147,7 @@ jobs:
       INPUT_EXPECTED_RUNTIME_CANDIDATE_SHA: ${{ needs.preflight.outputs.base_sha }}
       INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA: ${{ needs.preflight.outputs.base_sha }}
       INPUT_REASON: Release Control v2 BENIGN packet promotion
+      INPUT_RELEASE_PACKET: ${{ inputs.release_packet }}
       POLL_ATTEMPTS: "30"
       POLL_SECONDS: "10"
       POLL_CONNECT_TIMEOUT: "3"
@@ -161,7 +165,16 @@ jobs:
         run: |
           set -euo pipefail
           [[ -n "$RELEASE_CONTROL_V2_CANDIDATE_REF_TOKEN" ]] || { echo "RELEASE_CONTROL_V2_CANDIDATE_REF_TOKEN_REQUIRED" >&2; exit 1; }
-          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main "$BASE_SHA" "$TARGET_SHA"
+          printf '%s' "$INPUT_RELEASE_PACKET" > packet-input.json
+          node --import tsx commerce/src/validate-release-control-v2-packet.ts packet-input.json > packet.json
+          [[ "$(jq -er '.base_sha' packet.json)" == "$BASE_SHA" && "$(jq -er '.candidate_sha' packet.json)" == "$TARGET_SHA" ]] || { echo "RELEASE_CONTROL_V2_EXECUTE_PACKET_TARGET_MISMATCH" >&2; exit 1; }
+          source_commit_sha="$(jq -er '.materialization.source_commit_sha' packet.json)"
+          source_parent_sha="$(jq -er '.materialization.source_parent_sha' packet.json)"
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main "$BASE_SHA"
+          git cat-file -e "${source_parent_sha}^{commit}" || { echo "RELEASE_CONTROL_V2_EXECUTE_SOURCE_PARENT_UNAVAILABLE" >&2; exit 1; }
+          git cat-file -e "${source_commit_sha}^{commit}" || { echo "RELEASE_CONTROL_V2_EXECUTE_SOURCE_UNAVAILABLE" >&2; exit 1; }
+          node --import tsx commerce/src/verify-release-control-v2-materialization.ts packet.json "$GITHUB_SHA" > reconstructed-packet.json
+          cmp --silent packet.json reconstructed-packet.json || { echo "RELEASE_CONTROL_V2_EXECUTE_PACKET_MISMATCH" >&2; exit 1; }
           [[ "$GITHUB_SHA" == "$CONTROLLER_SHA" ]] || { echo "RELEASE_CONTROL_V2_PUBLICATION_CONTROLLER_SHA_MISMATCH" >&2; exit 1; }
           [[ "$(git rev-parse "${GITHUB_SHA}^{tree}")" == "$CONTROLLER_TREE" ]] || { echo "RELEASE_CONTROL_V2_PUBLICATION_CONTROLLER_TREE_MISMATCH" >&2; exit 1; }
           [[ "$(git rev-parse origin/main)" == "$CONTROLLER_SHA" ]] || { echo "RELEASE_CONTROL_V2_PUBLICATION_CONTROLLER_MAIN_MOVED" >&2; exit 1; }
@@ -169,7 +182,11 @@ jobs:
           production_deploy="$(git ls-remote --exit-code origin refs/heads/production-deploy | awk '{print $1}')" || { echo "RELEASE_CONTROL_V2_PRODUCTION_DEPLOY_UNAVAILABLE" >&2; exit 1; }
           [[ "$runtime_candidate" == "$BASE_SHA" ]] || { echo "RELEASE_CONTROL_V2_RUNTIME_CANDIDATE_BASE_MOVED=$runtime_candidate" >&2; exit 1; }
           [[ "$production_deploy" == "$BASE_SHA" ]] || { echo "RELEASE_CONTROL_V2_PRODUCTION_DEPLOY_BASE_MOVED=$production_deploy" >&2; exit 1; }
-          git merge-base --is-ancestor "$BASE_SHA" "$TARGET_SHA" || { echo "RELEASE_CONTROL_V2_CANDIDATE_NOT_DESCENDANT" >&2; exit 1; }
+          [[ "$(git rev-parse "${TARGET_SHA}^")" == "$BASE_SHA" ]] || { echo "RELEASE_CONTROL_V2_CANDIDATE_PARENT_MISMATCH" >&2; exit 1; }
+          if git cat-file -e "$TARGET_SHA:.release/maintenance-only" 2>/dev/null; then
+            echo "RELEASE_CONTROL_V2_CANDIDATE_IS_MAINTENANCE_ONLY" >&2
+            exit 1
+          fi
 
       - name: Create or reconcile exact immutable BENIGN publication
         run: |
