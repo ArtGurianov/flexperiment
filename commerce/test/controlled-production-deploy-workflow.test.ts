@@ -82,6 +82,25 @@ describe("generic controlled production deploy workflow", () => {
     expect(noMerge).toBeGreaterThan(noMaintenance);
   });
 
+  it("preserves ordinary controller ancestry while admitting materialized candidates only through exact packet reconstruction", () => {
+    const preflight = workflow.slice(workflow.indexOf("Preflight immutable generic-deploy boundaries"), workflow.indexOf("Verify an already completed deployment"));
+    const materialized = preflight.indexOf('if [[ -n "${INPUT_MATERIALIZED_RELEASE_PACKET:-}" ]]; then');
+    const ordinary = preflight.indexOf('git merge-base --is-ancestor "$TARGET_SHA" "$CONTROLLER_SHA"');
+
+    expect(materialized).toBeGreaterThan(-1);
+    expect(ordinary).toBeGreaterThan(materialized);
+    for (const requirement of [
+      "validate-release-control-v2-packet.ts materialized-release-packet-input.json",
+      'verify-release-control-v2-materialization.ts materialized-release-packet.json "$CONTROLLER_SHA"',
+      "MATERIALIZED_DEPLOY_PACKET_BASE_MISMATCH",
+      "MATERIALIZED_DEPLOY_PACKET_CANDIDATE_MISMATCH",
+      "MATERIALIZED_DEPLOY_CONTROLLER_BINDING_MISMATCH",
+      "MATERIALIZED_DEPLOY_PACKET_RECONSTRUCTION_MISMATCH",
+      "MATERIALIZED_DEPLOY_CANDIDATE_PARENT_MISMATCH",
+    ]) expect(preflight).toContain(requirement);
+    expect(preflight.indexOf("verify-release-control-v2-materialization.ts")).toBeLessThan(ordinary);
+  });
+
   it("rebinds sealed ordinary authority in the acquire step immediately before the first durable mutation", () => {
     const preflight = workflow.indexOf("Preflight immutable generic-deploy boundaries");
     const acquire = workflow.indexOf("Acquire owner and pause registrations");
