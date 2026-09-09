@@ -502,13 +502,14 @@ describe("ZERO_REWARD_STATISTICS vs CONTINUING_STATISTICS (plan §B-3)", () => {
     const p1 = readyPartner(db, "OTHER");
     const occ = seedOccurrence(db, p1.cityId);
     const start = new Date();
-    const terms = { reward_type: "PERCENT" as const, reward_value: 1000, customer_discount_type: "PERCENT" as const, customer_discount_value: 1000, publication_start_at: start.toISOString(), publication_end_at: new Date(start.getTime() + 250).toISOString(), terms: {} };
+    // This helper tests zero-reward reporting, not the expiry boundary. Keep
+    // activation valid independently of scheduler delay in the test process.
+    const terms = { reward_type: "PERCENT" as const, reward_value: 1000, customer_discount_type: "PERCENT" as const, customer_discount_value: 1000, publication_start_at: start.toISOString(), publication_end_at: new Date(start.getTime() + 86_400_000).toISOString(), terms: {} };
     const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, terms);
     const { code } = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
     readyCreative(db, engagementId, canonicalTargetUrl(p1.cityId, code), "post");
     const distributionId = distributionFor(db, engagementId, new Date(start.getTime() + 50).toISOString());
     const serviceMonth = start.toISOString().slice(0, 7);
-    await wait(300);
     closeAndComplete(db, domain, occ);
     const finalize = finalizeEngagementRewardRegistry(db, admin, engagementId, "no purchases");
     const { closeEngagementZeroReward } = await import("../src/agent-referrals-zero-reward-closure");
