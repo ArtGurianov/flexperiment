@@ -123,12 +123,16 @@ const resolveSettlementContext = (db: Database.Database, effectiveRewardSnapshot
 
   const partnerIdentity = getPartnerIdentity(db, engagement.partner_identity_id);
   if (!partnerIdentity) throw new SettlementError("AGENT_REFERRALS_PARTNER_IDENTITY_NOT_FOUND", 404, engagement.partner_identity_id);
-  if (!partnerIdentity.legal_profile_revision_id) throw new SettlementError("AGENT_REFERRALS_SETTLEMENT_LEGAL_PROFILE_MISSING", 409, partnerIdentity.id);
 
   // D2 §4/§5-A: tax_mode and contractor_type both come from the SAME pinned
   // revision - resolveCurrentLegalProfileBinding proves pointer == MAX
   // first, so this is never agents.contractor_type (a second, independently
-  // mutable copy) and never a revision read by the pointer alone.
+  // mutable copy) and never a revision read by the pointer alone. No
+  // settlement-local "pointer is null" pre-check exists here on purpose:
+  // classifying that case as a friendly LEGAL_PROFILE_MISSING would be
+  // wrong the moment MAX is non-null (that is POINTER_DIVERGED, a
+  // structural defect, not "never verified") - one resolver owns the
+  // entire classification, never a locally-duplicated partial one.
   const currentLegalProfile = resolveCurrentLegalProfileBinding(db, partnerIdentity);
 
   // D2 §5-Б: the engagement's own activation-pinned legal identity must

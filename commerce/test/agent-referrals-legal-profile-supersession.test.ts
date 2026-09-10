@@ -19,7 +19,7 @@ import { mintStepUpGrant } from "../src/agent-referrals-step-up";
 import { acceptFrameworkAndDelegation } from "../src/agent-referrals-framework-acceptance";
 import { createPartnerPromo } from "../src/agent-referrals-promo";
 import { mintEngagementStepUpGrant } from "../src/agent-referrals-engagement-step-up";
-import { offerEngagement, verifyAudienceForPartnerCity, acceptEngagement, activateEngagement, resolveActivatedLegalProfileBinding, type EngagementRevisionTerms } from "../src/agent-referrals-engagement";
+import { offerEngagement, verifyAudienceForPartnerCity, acceptEngagement, activateEngagement, getEngagement, resolveActivatedLegalProfileBinding, type EngagementRevisionTerms } from "../src/agent-referrals-engagement";
 import { closeEngagementWithRewardRegistry } from "../src/agent-referrals-reward-registry";
 import { closeEngagementZeroReward } from "../src/agent-referrals-zero-reward-closure";
 import { preparePartnerSettlement, correctPartnerRewardWithSettlement, agentReferralsSettlementById, SettlementError } from "../src/agent-referrals-settlement";
@@ -232,7 +232,7 @@ describe("D2: submit()", () => {
       .toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_ALREADY_PENDING/);
   });
 
-  it("two concurrent submits for the same identity: exactly one succeeds, the other gets ALREADY_PENDING via the partial unique index race, never 500", () => {
+  it("two sequential submits for the same identity (serialized by better-sqlite3's synchronous execution): exactly one succeeds, the other gets ALREADY_PENDING via the pre-check, never 500", () => {
     const db = fresh();
     const p1 = readyPartner(db);
     const b = new Database(db.name); b.pragma("journal_mode = WAL"); b.pragma("foreign_keys = ON"); b.pragma("busy_timeout = 5000"); open.push(b);
@@ -247,6 +247,31 @@ describe("D2: submit()", () => {
     expect(failure.code).toBe("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_ALREADY_PENDING");
     const requests = db.prepare("SELECT COUNT(*) AS n FROM agent_referrals_legal_profile_change_requests").get();
     expect(requests).toEqual({ n: 1 });
+  });
+
+  it("the structural backstop itself: a genuine race window (this connection's own pre-check already passed, then a second writer commits first) still resolves via the partial unique index, with the exact error shape submit()'s catch block translates - proving that regex is not merely aspirational", () => {
+    const db = fresh();
+    const p1 = readyPartner(db);
+    const b = new Database(db.name); b.pragma("journal_mode = WAL"); b.pragma("foreign_keys = ON"); b.pragma("busy_timeout = 5000"); open.push(b);
+
+    // The exact window submit()'s own pre-check-then-INSERT leaves open
+    // under real concurrency (two statements, not one atomic check): this
+    // connection observes nothing PENDING right now.
+    expect(pendingLegalProfileChangeRequestForPartner(db, p1.partnerIdentityId)).toBeNull();
+
+    // A second writer wins the race and commits a PENDING request first -
+    // via the real domain function, not a shortcut.
+    submitLegalProfileSupersession(b, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", reason: "B", evidenceRef: "ev.pdf" });
+
+    // This connection now attempts the exact INSERT its own submit() would
+    // issue after that now-stale pre-check - proving the partial unique
+    // index, not merely the pre-check, is the real backstop, and that its
+    // error message is exactly what submit()'s catch regex expects.
+    const current = currentAgentReferralsLegalProfile(db, p1.agentId)!;
+    expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_change_requests(id, partner_identity_id, legal_form, tax_mode, assertion_source, reason, supersedes_revision_id, created_by)
+      VALUES (?, ?, 'INDIVIDUAL_ENTREPRENEUR', 'OTHER', 'PARTNER_ASSERTED', 'A', ?, ?)`)
+      .run(randomUUID(), p1.partnerIdentityId, current.id, p1.partnerIdentityId))
+      .toThrow(/UNIQUE constraint failed: agent_referrals_legal_profile_change_requests\.partner_identity_id/);
   });
 
   it("assertion_source and created_by are derived from the principal's own realm, never accepted from the caller", () => {
@@ -581,19 +606,55 @@ describe("D2: enum-drift guard - not exhaustive, but a new CHECK value must fail
     expect(values).toEqual(["CANCELLED_BEFORE_PAYMENT", "PENDING_DOCUMENT", "PREPARED", "SETTLED"].sort());
   });
 
-  it("a CLOSED engagement with no reward registry finalized at all (no current E, never zero-closed) is ZERO_EFFECTIVE, not UNCLASSIFIED - the no-currentE branch is covered explicitly, not by falling through", () => {
+  it("a CLOSED engagement with no reward registry finalized at all (no current E, never zero-closed) is UNCLASSIFIED/BLOCK, not a false ALLOW - this state is structurally impossible via any sanctioned path (closeEngagementWithRewardRegistry requires the registry finalized, and finalization mints R and E1 atomically), so it is evidence corruption, not 'nothing owed'", () => {
     const db = fresh();
     const p1 = readyPartner(db);
     const occurrenceId = seedOccurrence(db, p1.cityId);
     const { engagementId } = activatedEngagement(db, p1.partner, p1.partnerIdentityId, occurrenceId, new Date(Date.now() + 400).toISOString());
     completeOccurrence(db, occurrenceId);
     // White-box: force CLOSED without ever finalizing a reward registry or
-    // minting an E - a state no sanctioned closure path can produce
-    // (closeEngagementWithRewardRegistry requires rewardRegistrySnapshot to
-    // already exist). Proves currentEffective === null is handled by name
-    // (rule 3d, "no E ever minted"), not by accidentally falling into the
-    // exhaustive UNCLASSIFIED default.
+    // minting an E - a state no sanctioned closure path can produce.
     db.prepare("UPDATE engagements SET lifecycle_state = 'CLOSED' WHERE id = ?").run(engagementId);
-    expect(supersessionBindingDecision(db, p1.partnerIdentityId)).toMatchObject({ blocked: false, reason: "ZERO_EFFECTIVE" });
+    expect(supersessionBindingDecision(db, p1.partnerIdentityId)).toMatchObject({ blocked: true, reason: "UNCLASSIFIED" });
+  });
+});
+
+describe("D2: activateEngagement mints from proven MAX, never trusts the pointer directly (P1 review fix)", () => {
+  it("MAX=#2, pointer stale at #1: activation refuses with POINTER_DIVERGED, mints no activation event, no new promo authorization, and leaves the engagement's lifecycle_state untouched", () => {
+    const db = fresh();
+    const p1 = readyPartner(db);
+    const occurrenceId = seedOccurrence(db, p1.cityId);
+    const { engagement_id: engagementId, engagement_revision_id: revisionId } = offerEngagement(db, admin, p1.partnerIdentityId, occurrenceId, farTerms, "offer");
+    const grant = mintEngagementStepUpGrant(db, p1.partner, "ENGAGEMENT_ACCEPTANCE", { engagement_id: engagementId, engagement_revision_id: revisionId }).grant_id;
+    acceptEngagement(db, p1.partner, engagementId, revisionId, grant);
+
+    // White-box: mint a second legal-profile revision directly (out of
+    // band) so MAX advances to #2 while the pointer is left stale at #1 -
+    // exactly the precondition resolveCurrentLegalProfileBinding exists to
+    // catch, reached here through activateEngagement's own mint path
+    // rather than D2's verify().
+    const staleId = getPartnerIdentity(db, p1.partnerIdentityId)!.legal_profile_revision_id!;
+    db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, supersedes_revision_id, reason, assertion_source)
+      VALUES ('lp-out-of-band-2', ?, 2, 'INDIVIDUAL_ENTREPRENEUR', 'OTHER', 'INDIVIDUAL_ENTREPRENEUR', ?, 'out of band', 'PARTNER_ASSERTED')`)
+      .run(p1.agentId, staleId);
+    // partner_identities.legal_profile_revision_id deliberately left at #1.
+
+    const before = getEngagement(db, engagementId)!;
+    const authorizationsBefore = db.prepare("SELECT COUNT(*) AS n FROM engagement_promo_authorizations").get();
+    const activationEventsBefore = db.prepare("SELECT COUNT(*) AS n FROM engagement_activation_events").get();
+
+    expect(() => activateEngagement(db, admin, engagementId, revisionId)).toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_POINTER_DIVERGED/);
+
+    expect(getEngagement(db, engagementId)).toEqual(before);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM engagement_promo_authorizations").get()).toEqual(authorizationsBefore);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM engagement_activation_events").get()).toEqual(activationEventsBefore);
+  });
+
+  it("pointer == MAX (the coherent case): activation still succeeds and pins the current revision, unchanged behavior", () => {
+    const db = fresh();
+    const p1 = readyPartner(db);
+    const occurrenceId = seedOccurrence(db, p1.cityId);
+    const { engagementId } = activatedEngagement(db, p1.partner, p1.partnerIdentityId, occurrenceId);
+    expect(resolveActivatedLegalProfileBinding(db, engagementId)).toMatchObject({ id: getPartnerIdentity(db, p1.partnerIdentityId)!.legal_profile_revision_id });
   });
 });

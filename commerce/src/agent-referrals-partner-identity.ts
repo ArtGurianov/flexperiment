@@ -184,7 +184,6 @@ export const verifyPartnerLegalProfile = (db: Database.Database, admin: AdminPri
 
     const revisionResult = applyVerifiedLegalProfileForPartnerIdentity(db, {
       partnerIdentityId,
-      agentId: identity.agent_id,
       legalForm: identity.submitted_legal_form as LegalForm,
       taxMode: identity.submitted_tax_mode as TaxMode,
       reason,

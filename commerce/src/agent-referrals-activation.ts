@@ -267,9 +267,28 @@ export const AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS = [
   "agent_referrals_activation_manifest_delete_guard",
   "agents_contractor_type_projection_guard",
   "reward_settlements_contractor_type_projection_guard",
+  // PR-D foundation (0050): a rebuild of agent_referrals_legal_profile_revisions
+  // (assertion_source/evidence_ref provenance) - same table/index/trigger
+  // names as PR3 already listed above, nothing new to name here. Tracked
+  // via MIGRATIONS below instead, the same way 0046/0047's own ALTERs on
+  // pre-existing tables (orders, reward_settlements) are.
+  //
+  // D2 (0051): the legal-profile supersession candidate lifecycle - every
+  // object it ships is new and named here for the identical reason every
+  // other PR's own list is.
+  "agent_referrals_legal_profile_change_requests",
+  "agent_referrals_legal_profile_change_requests_pending_unique",
+  "agent_referrals_legal_profile_change_requests_terminal_immutable_guard",
+  "agent_referrals_legal_profile_change_requests_pending_reentry_guard",
+  "agent_referrals_legal_profile_change_requests_request_fields_immutable_guard",
+  "agent_referrals_legal_profile_change_requests_delete_guard",
 ] as const;
 
-const MIGRATIONS = ["0043_agent_referrals_foundation.sql", "0044_partner_identity.sql", "0045_engagement_publication.sql", "0046_attribution_reward.sql", "0047_act_payment_settlement.sql", "0048_ord_reporting.sql", "0049_agent_referrals_integration_hardening.sql"] as const;
+const MIGRATIONS = [
+  "0043_agent_referrals_foundation.sql", "0044_partner_identity.sql", "0045_engagement_publication.sql", "0046_attribution_reward.sql",
+  "0047_act_payment_settlement.sql", "0048_ord_reporting.sql", "0049_agent_referrals_integration_hardening.sql",
+  "0050_agent_referrals_legal_profile_provenance_rebuild.sql", "0051_agent_referrals_legal_profile_supersession.sql",
+] as const;
 
 export class AgentReferralsActivationError extends Error {
   constructor(readonly code: string, readonly status = 409, detail?: string) {

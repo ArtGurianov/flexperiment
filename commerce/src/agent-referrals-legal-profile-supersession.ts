@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { id } from "./crypto";
 import {
-  agentReferralsLegalProfileRevisionById, applyAgentReferralsLegalProfile, currentAgentReferralsLegalProfile, resolveCurrentLegalProfileBinding,
+  agentReferralsLegalProfileRevisionById, applyAgentReferralsLegalProfile, currentAgentReferralsLegalProfile, resolveCurrentLegalProfileBinding, resolveProjectedContractorType,
   type ApplyAgentReferralsLegalProfileResult, type AssertionSource, type LegalForm, type TaxMode,
 } from "./agent-referrals-legal-profile";
 import { getPartnerIdentity, recordPartnerIdentityEvent, type PartnerIdentityRow } from "./agent-referrals-onboarding";
@@ -45,7 +45,6 @@ export class AgentReferralsLegalProfileSupersessionError extends Error {
 
 export type ApplyVerifiedLegalProfileForPartnerIdentityInput = {
   partnerIdentityId: string;
-  agentId: string;
   legalForm: LegalForm;
   taxMode: TaxMode;
   assertionSource: AssertionSource;
@@ -61,34 +60,44 @@ export type ApplyVerifiedLegalProfileForPartnerIdentityInput = {
  * coherent pointer (== MAX) about to be superseded. Any other combination
  * is POINTER_DIVERGED and this never repairs it by writing over it - the
  * caller must investigate, never silently proceed.
+ *
+ * agentId is deliberately NOT part of the input: it is derived exclusively
+ * from the loaded partnerIdentityId row, never accepted as a second,
+ * independently-supplied identifier - a caller passing a mismatched
+ * (partnerIdentityId, agentId) pair would otherwise mint a real revision
+ * for one agent while pointing a DIFFERENT identity's pointer at it, and
+ * the postcondition below re-reads the ACTUAL identity row (not a
+ * synthetic { agent_id, legal_profile_revision_id } object built from the
+ * caller's own inputs) specifically so that class of corruption cannot
+ * pass unnoticed.
  */
 export const applyVerifiedLegalProfileForPartnerIdentity = (
   db: Database.Database,
   input: ApplyVerifiedLegalProfileForPartnerIdentityInput,
 ): ApplyAgentReferralsLegalProfileResult => {
   const run = db.transaction((): ApplyAgentReferralsLegalProfileResult => {
-    const current = currentAgentReferralsLegalProfile(db, input.agentId);
     const identity = getPartnerIdentity(db, input.partnerIdentityId);
     if (!identity) throw new AgentReferralsLegalProfileSupersessionError("PARTNER_IDENTITY_NOT_FOUND", 404);
+    const agentId = identity.agent_id;
+    const current = currentAgentReferralsLegalProfile(db, agentId);
 
     const preconditionOk = (current === null && identity.legal_profile_revision_id === null)
       || (current !== null && identity.legal_profile_revision_id === current.id);
     if (!preconditionOk) throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_POINTER_DIVERGED", 500, input.partnerIdentityId);
 
     const result = applyAgentReferralsLegalProfile(db, {
-      agent_id: input.agentId, legal_form: input.legalForm, tax_mode: input.taxMode,
+      agent_id: agentId, legal_form: input.legalForm, tax_mode: input.taxMode,
       reason: input.reason, assertion_source: input.assertionSource, evidence_ref: input.evidenceRef,
     });
 
     db.prepare(`UPDATE partner_identities SET legal_profile_revision_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
       .run(result.revision_id, input.partnerIdentityId);
 
-    // Postcondition: a revision now unconditionally exists (we just minted
-    // or confirmed one), so resolveCurrentLegalProfileBinding's own
-    // pointer==MAX proof is exactly what this needs - reusing it here means
-    // the postcondition and every other caller's coherence proof are
-    // structurally the SAME check, never two independently-maintained ones.
-    resolveCurrentLegalProfileBinding(db, { agent_id: input.agentId, legal_profile_revision_id: result.revision_id });
+    // Postcondition proves the REAL identity row, re-read fresh (never the
+    // caller's own inputs echoed back) - the same coherence proof every
+    // other caller of resolveCurrentLegalProfileBinding relies on.
+    const updatedIdentity = getPartnerIdentity(db, input.partnerIdentityId)!;
+    resolveCurrentLegalProfileBinding(db, updatedIdentity);
 
     return result;
   });
@@ -154,7 +163,19 @@ const classifyEngagementForSupersession = (db: Database.Database, engagement: En
     if (hasRecoveryExposureForCurrent) return { blocked: false, reason: "RECOVERY_EXPOSURE" };
   }
 
-  if (!currentEffective || currentEffective.reward_total_kopecks === 0) return { blocked: false, reason: "ZERO_EFFECTIVE" };
+  // A CLOSED engagement with NO current E at all is not "nothing owed" -
+  // the only sanctioned path to CLOSED (closeEngagementWithRewardRegistry)
+  // requires resolveRewardRegistryFinalization to already report the
+  // reward registry finalized, and finalizeEngagementRewardRegistry mints
+  // R and E1 atomically in the same transaction (closeEngagementZeroReward
+  // likewise requires both to already exist and never touches
+  // lifecycle_state at all). "CLOSED, zero settlements, no zero-reward
+  // closure, no E whatsoever" is therefore evidence corruption, never a
+  // legitimate zero - it fails closed via the exhaustive default, not the
+  // ALLOW branch below.
+  if (!currentEffective) return { blocked: true, reason: "UNCLASSIFIED", engagementId: engagement.id };
+
+  if (currentEffective.reward_total_kopecks === 0) return { blocked: false, reason: "ZERO_EFFECTIVE" };
 
   if (currentEffective.reward_total_kopecks > 0) return { blocked: true, reason: "POSITIVE_EFFECTIVE_UNSETTLED", engagementId: engagement.id };
 
@@ -260,6 +281,17 @@ export const submitLegalProfileSupersession = (
     if (!identity) throw new AgentReferralsLegalProfileSupersessionError("PARTNER_IDENTITY_NOT_FOUND", 404);
     if (!eligibleForSupersession(identity)) {
       throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_INELIGIBLE_IDENTITY", 409, identity.onboarding_state);
+    }
+
+    // Domain validation, not just DB admissibility: a rejected or
+    // out-of-union (legal_form, tax_mode) pairing must resolve to a typed
+    // 422 here, before the INSERT - not surface as an unhandled SqliteError
+    // (no `.status`) that the global HTTP error handler falls through to
+    // INTERNAL_ERROR/500 for. Same shared lookup applyAgentReferralsLegalProfile
+    // itself uses, so this can never drift from what the mint path actually
+    // accepts.
+    if (!resolveProjectedContractorType(input.legalForm, input.taxMode)) {
+      throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_REJECTED_COMBINATION", 422, `${input.legalForm}+${input.taxMode}`);
     }
 
     const current = resolveCurrentLegalProfileBinding(db, identity);
@@ -407,7 +439,7 @@ export const verifyLegalProfileSupersession = (
     if (decision.blocked) return { outcome: "BLOCKED", reason: decision.reason };
 
     const result = applyVerifiedLegalProfileForPartnerIdentity(db, {
-      partnerIdentityId: identity.id, agentId: identity.agent_id,
+      partnerIdentityId: identity.id,
       legalForm: request.legal_form, taxMode: request.tax_mode,
       assertionSource: request.assertion_source, evidenceRef: request.evidence_ref, reason,
     });

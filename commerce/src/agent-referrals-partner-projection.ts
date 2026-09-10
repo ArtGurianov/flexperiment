@@ -19,7 +19,7 @@ import { settlementActForSettlement, actAcceptanceForAct, actDisputeForAct } fro
 import { paymentAttemptsForSettlement } from "./agent-referrals-payment";
 import { latestNpdStatusCheck } from "./agent-referrals-npd";
 import { rewardForOrder, type RewardOrderFacts } from "./reward-calculation";
-import { pendingLegalProfileChangeRequestForPartner, type LegalProfileChangeRequestRow } from "./agent-referrals-legal-profile-supersession";
+import { pendingLegalProfileChangeRequestForPartner } from "./agent-referrals-legal-profile-supersession";
 
 /**
  * §B-11: the ONE explicit allowlist projection every `/v1/partner/*` read
@@ -63,6 +63,24 @@ export const assertPartnerOwnsEngagement = (db: Database.Database, partnerIdenti
   ownedEngagement(db, partnerIdentityId, engagementId);
 };
 
+/**
+ * D2 §9, kept to §B-11's own allowlist discipline: never the raw
+ * LegalProfileChangeRequestRow (which also carries created_by,
+ * assertion_source, evidence_ref, supersedes_revision_id and the
+ * resolution-internals columns - none of it needed by, or safe to hand to,
+ * the partner realm). At most one, by the migration's own partial unique
+ * index, and always PENDING - a partner never sees a terminal request
+ * through this projection.
+ */
+export type PartnerPendingLegalProfileChangeRequestProjection = {
+  id: string;
+  legal_form: string;
+  tax_mode: string;
+  reason: string;
+  state: "PENDING";
+  created_at: string;
+};
+
 export type PartnerProfileProjection = {
   partner_identity_id: string;
   email: string;
@@ -70,8 +88,7 @@ export type PartnerProfileProjection = {
   submitted_legal_form: string | null;
   submitted_tax_mode: string | null;
   legal_profile: { legal_form: string; tax_mode: string; projected_contractor_type: string; revision: number; created_at: string } | null;
-  /** D2 §9: at most one, by the migration's own partial unique index. */
-  pending_legal_profile_change_request: LegalProfileChangeRequestRow | null;
+  pending_legal_profile_change_request: PartnerPendingLegalProfileChangeRequestProjection | null;
   payout_profile: ReturnType<typeof currentPayoutProfile>;
   promo_code: string | null;
   delegation_effective: boolean;
@@ -86,6 +103,7 @@ export const partnerProfileProjection = (db: Database.Database, partnerIdentityI
   const promoCode = partnerPromo
     ? (db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(partnerPromo.promo_code_id) as { code: string } | undefined)
     : undefined;
+  const pendingChangeRequest = pendingLegalProfileChangeRequestForPartner(db, partnerIdentityId);
   return {
     partner_identity_id: identity.id,
     email: identity.email,
@@ -95,7 +113,9 @@ export const partnerProfileProjection = (db: Database.Database, partnerIdentityI
     legal_profile: legalProfile
       ? { legal_form: legalProfile.legal_form, tax_mode: legalProfile.tax_mode, projected_contractor_type: legalProfile.projected_contractor_type, revision: legalProfile.revision, created_at: legalProfile.created_at }
       : null,
-    pending_legal_profile_change_request: pendingLegalProfileChangeRequestForPartner(db, partnerIdentityId),
+    pending_legal_profile_change_request: pendingChangeRequest
+      ? { id: pendingChangeRequest.id, legal_form: pendingChangeRequest.legal_form, tax_mode: pendingChangeRequest.tax_mode, reason: pendingChangeRequest.reason, state: "PENDING", created_at: pendingChangeRequest.created_at }
+      : null,
     payout_profile: currentPayoutProfile(db, partnerIdentityId),
     promo_code: promoCode?.code ?? null,
     delegation_effective: isDelegationEffective(db, partnerIdentityId),

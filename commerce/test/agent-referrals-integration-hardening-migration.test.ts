@@ -129,11 +129,11 @@ describe("0049 integration-hardening migration", () => {
       "agents_contractor_type_projection_guard", "reward_settlements_contractor_type_projection_guard",
     ];
 
-    it("AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS includes every 0049 object, exhaustively, as the list's exact suffix", () => {
+    it("AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS includes every 0049 object, exhaustively, as one contiguous ordered block - not necessarily at the very end, since a later PR (D2/0051) legitimately appends its own objects after it", () => {
       for (const object of integrationHardeningObjects) expect(AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS, object).toContain(object);
-      const priorObjects = AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS.length - integrationHardeningObjects.length;
-      const suffix = [...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS].slice(priorObjects);
-      expect(suffix).toEqual(integrationHardeningObjects);
+      const startIndex = AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS.indexOf(integrationHardeningObjects[0] as (typeof AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS)[number]);
+      const actualBlock = AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS.slice(startIndex, startIndex + integrationHardeningObjects.length);
+      expect(actualBlock).toEqual(integrationHardeningObjects);
     });
 
     it("passes on a DB migrated through 0049", () => {

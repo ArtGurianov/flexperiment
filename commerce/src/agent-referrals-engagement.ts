@@ -8,7 +8,7 @@ import { AudienceVerificationError, currentAudienceVerification, isAudienceVerif
 import { consumeEngagementStepUpGrantInTransaction } from "./agent-referrals-engagement-step-up";
 import { partnerPromoByPartnerId, currentEngagementPromoAuthorization, revokeEngagementPromoAuthorizationInTransaction, type EngagementPromoAuthorizationRow } from "./agent-referrals-promo";
 import type { AdminPrincipal, PartnerPrincipal } from "./agent-referrals-partner-identity";
-import { agentReferralsLegalProfileRevisionById, type AgentReferralsLegalProfileRevision } from "./agent-referrals-legal-profile";
+import { agentReferralsLegalProfileRevisionById, resolveCurrentLegalProfileBinding, type AgentReferralsLegalProfileRevision } from "./agent-referrals-legal-profile";
 
 /**
  * Engagement identity, immutable revisions, partner acceptance and
@@ -123,6 +123,17 @@ export const resolveActivatedLegalProfileBinding = (db: Database.Database, engag
   if (pins.length !== 1) throw new EngagementError("AGENT_REFERRALS_ACTIVATION_BINDING_CORRUPTED", 500, engagementId);
   const revision = agentReferralsLegalProfileRevisionById(db, pins[0].legal_profile_revision_id);
   if (!revision) throw new EngagementError("AGENT_REFERRALS_ACTIVATION_BINDING_CORRUPTED", 500, engagementId);
+  // A pinned revision belonging to some OTHER agent entirely is not an
+  // ordinary business-level BINDING_MISMATCH (settlement.ts's own concern,
+  // which compares two revisions of the SAME agent's chain) - it is
+  // corrupted evidence, the same class as a missing or duplicated pin, and
+  // must be reported as such rather than handed to a caller that will
+  // silently reason about it as if it were a legitimate identity.
+  const engagement = getEngagement(db, engagementId);
+  const partner = engagement ? getPartnerIdentity(db, engagement.partner_identity_id) : null;
+  if (!engagement || !partner || revision.agent_id !== partner.agent_id) {
+    throw new EngagementError("AGENT_REFERRALS_ACTIVATION_BINDING_CORRUPTED", 500, engagementId);
+  }
   return revision;
 };
 
@@ -304,6 +315,13 @@ export const activateEngagement = (db: Database.Database, admin: AdminPrincipal,
     // authority. destroyed_at is the terminal signal for that.
     if (partner.destroyed_at !== null) throw new EngagementError("AGENT_REFERRALS_PARTNER_IDENTITY_DESTROYED", 409, partner.id);
     if (!partner.legal_profile_revision_id) throw new EngagementError("AGENT_REFERRALS_ACTIVATION_LEGAL_PROFILE_MISSING", 409);
+    // D2: this is the ONE sanctioned path that mints new commercial
+    // authority pinning a legal identity - it must prove pointer == MAX
+    // itself, never trust partner.legal_profile_revision_id (the pointer)
+    // directly. A divergence here is POINTER_DIVERGED (500), the same
+    // structural-defect class resolveSettlementContext and D2's own verify()
+    // already fail closed on, never a silent mint under a stale identity.
+    const currentLegalProfile = resolveCurrentLegalProfileBinding(db, partner);
 
     const revision = engagementRevisionById(db, engagementRevisionId);
     if (!revision || revision.engagement_id !== engagementId) throw new EngagementError("AGENT_REFERRALS_ENGAGEMENT_REVISION_NOT_FOUND", 404, engagementRevisionId);
@@ -373,7 +391,7 @@ export const activateEngagement = (db: Database.Database, admin: AdminPrincipal,
     const activationEventId = id();
     db.prepare(`INSERT INTO engagement_activation_events(id, engagement_id, engagement_revision_id, audience_verification_event_id, legal_profile_revision_id, framework_acceptance_id, ord_reporting_delegation_id, promo_authorization_id, occurrence_id, activated_by_admin_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(activationEventId, engagementId, engagementRevisionId, audience.id, partner.legal_profile_revision_id, frameworkAcceptance.id, delegation.id, authorization.id, occurrence.id, admin.admin_id);
+      .run(activationEventId, engagementId, engagementRevisionId, audience.id, currentLegalProfile.id, frameworkAcceptance.id, delegation.id, authorization.id, occurrence.id, admin.admin_id);
 
     const changed = db.prepare(`UPDATE engagements SET lifecycle_state = 'ACTIVE', lifecycle_revision = lifecycle_revision + 1, updated_at = CURRENT_TIMESTAMP
       WHERE id = ? AND lifecycle_revision = ? AND lifecycle_state IN ('ACCEPTED', 'ACTIVE', 'SUSPENDED')`).run(engagementId, engagement.lifecycle_revision);

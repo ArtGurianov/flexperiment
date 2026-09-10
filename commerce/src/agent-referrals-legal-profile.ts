@@ -47,6 +47,21 @@ const PROJECTION: Readonly<Record<LegalForm, Partial<Record<TaxMode, ProjectedCo
   LEGAL_ENTITY: { OTHER: "ORGANIZATION" },
 };
 
+/**
+ * The one shared lookup every caller that will eventually reach the 0043
+ * CHECK constraint must call FIRST, domain-side - not just
+ * applyAgentReferralsLegalProfile's own mint path. Returns null for both a
+ * legitimate-enum-but-rejected pairing (INDIVIDUAL+OTHER) and a value
+ * outside the LegalForm/TaxMode union entirely (an unchecked `as LegalForm`
+ * cast at an HTTP boundary, say) - plain object indexing doesn't
+ * distinguish the two, and neither does a caller need to. A caller that
+ * skips this and lets the DB CHECK reject the row instead gets a raw
+ * SqliteError the global HTTP error handler does not recognize (no
+ * `.status`), i.e. an internal 500 for what is actually a 422.
+ */
+export const resolveProjectedContractorType = (legalForm: LegalForm, taxMode: TaxMode): ProjectedContractorType | null =>
+  PROJECTION[legalForm]?.[taxMode] ?? null;
+
 export class AgentReferralsLegalProfileError extends Error {
   constructor(readonly code: string, readonly status = 422, detail?: string) {
     super(detail ? `${code}: ${detail}` : code);
@@ -135,7 +150,7 @@ export const applyAgentReferralsLegalProfile = (
   db: Database.Database,
   input: ApplyAgentReferralsLegalProfileInput,
 ): ApplyAgentReferralsLegalProfileResult => {
-  const projected = PROJECTION[input.legal_form]?.[input.tax_mode];
+  const projected = resolveProjectedContractorType(input.legal_form, input.tax_mode);
   if (!projected) {
     throw new AgentReferralsLegalProfileError("AGENT_REFERRALS_LEGAL_PROFILE_REJECTED_COMBINATION", 422, `${input.legal_form}+${input.tax_mode}`);
   }
