@@ -8,6 +8,8 @@ import { generateSettlementAct, presentSettlementAct } from "../src/agent-referr
 import { mintStepUpGrant } from "../src/agent-referrals-step-up";
 import { setPartnerPayoutDestination, currentPayoutProfile } from "../src/agent-referrals-payout-profile";
 import { mintOrdPaidInvoicePayload, recordOrdPaidInvoiceSubmission, recordOrdPaidInvoiceReconciliation, ordPaidInvoicePayloadForAct, OrdPaidInvoiceError } from "../src/agent-referrals-ord-paid-invoice";
+import { canonicalizeOrdParticipantV1, ORD_PARTICIPANT_CANONICALIZATION_VERSION } from "../src/agent-referrals-ord-canonical";
+import { agentReferralsLegalProfileRevisionById } from "../src/agent-referrals-legal-profile";
 
 const open: Database.Database[] = [];
 afterEach(() => { while (open.length) open.pop()!.close(); });
@@ -37,6 +39,27 @@ describe("mintOrdPaidInvoicePayload: VKPaidInvoicePayload", () => {
     expect(payload.accepted_amount_kopecks).toBe(act.amount_kopecks);
     expect(payload.tax_mode_snapshot).toBe(settlement.tax_mode_snapshot);
     expect(payload.legal_profile_revision_id_snapshot).toBe(settlement.legal_profile_revision_id_snapshot);
+  });
+
+  it("PR-F: carries the ORD participant canonicalization derived from the settlement's own pinned legal-profile snapshot, byte-matching canonicalizeOrdParticipantV1", () => {
+    const { db, act, settlement } = readyAcceptedAct();
+    const { payload } = mintOrdPaidInvoicePayload(db, admin, act.id);
+    const legalProfile = agentReferralsLegalProfileRevisionById(db, settlement.legal_profile_revision_id_snapshot)!;
+    const expected = canonicalizeOrdParticipantV1(legalProfile);
+
+    expect(payload.ord_participant_canonicalization_version).toBe(ORD_PARTICIPANT_CANONICALIZATION_VERSION);
+    expect(payload.partner_participant_hash).toBe(expected.canonical_hash);
+    expect(payload.partner_participant_json).toBe(expected.canonical_json);
+  });
+
+  it("PR-F: carries the tax canonical snapshot copied verbatim from the settlement's own pin, never re-canonicalized", () => {
+    const { db, act, settlement } = readyAcceptedAct();
+    const { payload } = mintOrdPaidInvoicePayload(db, admin, act.id);
+
+    expect(payload.tax_treatment_revision_id_snapshot).toBe(settlement.tax_treatment_revision_id_snapshot);
+    expect(payload.tax_canonicalization_version).toBe(settlement.tax_canonicalization_version);
+    expect(payload.tax_canonical_hash).toBe(settlement.tax_canonical_hash);
+    expect(payload.tax_canonical_json).toBe(settlement.tax_canonical_json);
   });
 
   it("is idempotent by act_id - a second call returns the SAME payload, never a divergent second one", () => {
@@ -75,6 +98,8 @@ describe("mintOrdPaidInvoicePayload: VKPaidInvoicePayload", () => {
     const after = mintOrdPaidInvoicePayload(db, admin, act.id).payload; // idempotent replay of the SAME payload
     expect(after.canonical_hash).toBe(before.canonical_hash);
     expect(after.legal_profile_revision_id_snapshot).toBe(before.legal_profile_revision_id_snapshot);
+    expect(after.partner_participant_hash).toBe(before.partner_participant_hash);
+    expect(after.tax_canonical_hash).toBe(before.tax_canonical_hash);
   });
 
   it("no caller-supplied amount is ever accepted - the mint signature takes no amount parameter at all", () => {

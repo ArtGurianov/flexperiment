@@ -78,6 +78,15 @@ const seedLegalProfileRevision = (db: Database.Database, agentId = "agent-1", re
   return revisionId;
 };
 
+/** PR-F: the tax-treatment revision a settlement pins alongside its legal-profile snapshot - NPD is SYSTEM_DERIVED (no evidence/admin), OTHER is a minimal ADMIN_ASSERTED USN exemption. */
+const seedTaxTreatment = (db: Database.Database, partnerId: string, legalProfileRevisionId: string, taxMode: "NPD" | "OTHER", revisionId = "tt-1", sequence = 1) => {
+  const isNpd = taxMode === "NPD";
+  db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, evidence_ref, created_by_admin_id, reason)
+    VALUES (?, ?, ?, ?, ?, 'NO_VAT', ?, '2020-01-01', ?, ?, ?, 'seed')`)
+    .run(revisionId, partnerId, legalProfileRevisionId, sequence, isNpd ? "NPD" : "USN", isNpd ? "NPD" : "USN_EXEMPT", isNpd ? "SYSTEM_DERIVED" : "ADMIN_ASSERTED", isNpd ? null : "ev.pdf", isNpd ? null : "admin");
+  return revisionId;
+};
+
 const seedPayoutProfileRevision = (db: Database.Database, partnerId = "partner-1", revisionId = "pp-1", revision = 1, kind: "ACTIVE_DESTINATION" | "REVOKED" = "ACTIVE_DESTINATION") => {
   const sessionId = `${partnerId}-session-${revision}`;
   db.prepare(`INSERT INTO partner_sessions(id, partner_identity_id, token_hash, expires_at) VALUES (?, ?, ?, datetime('now', '+1 hour'))`).run(sessionId, partnerId, `${sessionId}-hash`);
@@ -135,6 +144,7 @@ const seedFixture = (db: Database.Database, opts: { taxMode?: "NPD" | "OTHER"; t
   seedAgent(db, "agent-1", contractorType);
   const legalProfileRevisionId = seedLegalProfileRevision(db, "agent-1", "lp-1", taxMode);
   seedPartnerIdentity(db, "partner-1", "agent-1", legalProfileRevisionId);
+  const taxTreatmentRevisionId = seedTaxTreatment(db, "partner-1", legalProfileRevisionId, taxMode);
   const payoutProfileRevisionId = seedPayoutProfileRevision(db);
   seedOccurrence(db);
   if (terminalStatus !== "SCHEDULED" as unknown as "COMPLETED") markOccurrenceTerminal(db, "occ-1", terminalStatus);
@@ -142,7 +152,7 @@ const seedFixture = (db: Database.Database, opts: { taxMode?: "NPD" | "OTHER"; t
   seedEngagementRevision(db);
   const { registryId, effectiveId, rewardRegistryHash } = seedRegistryAndEffective(db, { total, terminalStatus });
   return {
-    agentId: "agent-1", partnerId: "partner-1", legalProfileRevisionId, payoutProfileRevisionId, occurrenceId: "occ-1",
+    agentId: "agent-1", partnerId: "partner-1", legalProfileRevisionId, taxTreatmentRevisionId, payoutProfileRevisionId, occurrenceId: "occ-1",
     engagementId: "eng-1", revisionId: "rev-1", registryId, effectiveId, taxMode, contractorType, rewardRegistryHash,
   };
 };
@@ -152,23 +162,28 @@ const seedSettlement = (db: Database.Database, f: ReturnType<typeof seedFixture>
   base_registry_snapshot_id: string; reward_registry_hash: string; partner_identity_id: string; payout_profile_revision_id: string; supersedes_settlement_id: string | null;
   status: string; cancellation_reason: string | null; agent_id: string; occurrence_id: string;
   tax_mode_snapshot: string | null; legal_profile_revision_id_snapshot: string | null; contractor_type_snapshot: string;
+  tax_treatment_revision_id_snapshot: string | null; tax_canonicalization_version: string | null; tax_canonical_json: string | null; tax_canonical_hash: string | null;
 }> = {}) => {
   const v = {
     id: "settle-1", amount_kopecks: 9000, effective_reward_snapshot_id: f.effectiveId, engagement_id: f.engagementId, engagement_revision_id: f.revisionId,
     base_registry_snapshot_id: f.registryId, reward_registry_hash: f.rewardRegistryHash, partner_identity_id: f.partnerId, payout_profile_revision_id: f.payoutProfileRevisionId,
     supersedes_settlement_id: null, status: "PREPARED", cancellation_reason: null, agent_id: f.agentId, occurrence_id: f.occurrenceId,
     tax_mode_snapshot: f.taxMode as string | null, legal_profile_revision_id_snapshot: f.legalProfileRevisionId as string | null, contractor_type_snapshot: f.contractorType,
+    tax_treatment_revision_id_snapshot: f.taxTreatmentRevisionId as string | null, tax_canonicalization_version: "SETTLEMENT_TAX_V1" as string | null,
+    tax_canonical_json: "{}" as string | null, tax_canonical_hash: "seed-tax-hash" as string | null,
     ...overrides,
   };
   db.prepare(`INSERT INTO reward_settlements(
       id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id,
       settlement_flow, engagement_id, engagement_revision_id, base_registry_snapshot_id, reward_registry_hash, effective_reward_snapshot_id,
-      partner_identity_id, payout_profile_revision_id, tax_mode_snapshot, legal_profile_revision_id_snapshot, supersedes_settlement_id, cancellation_reason)
+      partner_identity_id, payout_profile_revision_id, tax_mode_snapshot, legal_profile_revision_id_snapshot, supersedes_settlement_id, cancellation_reason,
+      tax_treatment_revision_id_snapshot, tax_canonicalization_version, tax_canonical_json, tax_canonical_hash)
     VALUES (?, ?, ?, ?, 'PAYOUT_PROFILE', ?, ?, datetime('now'), 'admin',
-      'AGENT_REFERRALS', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      'AGENT_REFERRALS', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(v.id, v.agent_id, v.occurrence_id, v.amount_kopecks, v.status, v.contractor_type_snapshot,
       v.engagement_id, v.engagement_revision_id, v.base_registry_snapshot_id, v.reward_registry_hash, v.effective_reward_snapshot_id,
-      v.partner_identity_id, v.payout_profile_revision_id, v.tax_mode_snapshot, v.legal_profile_revision_id_snapshot, v.supersedes_settlement_id, v.cancellation_reason);
+      v.partner_identity_id, v.payout_profile_revision_id, v.tax_mode_snapshot, v.legal_profile_revision_id_snapshot, v.supersedes_settlement_id, v.cancellation_reason,
+      v.tax_treatment_revision_id_snapshot, v.tax_canonicalization_version, v.tax_canonical_json, v.tax_canonical_hash);
   return v.id;
 };
 

@@ -288,6 +288,16 @@ export const AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS = [
   // same table/index/trigger names already listed above (D2's own note on
   // 0050 applies identically here). Nothing new to name; tracked via
   // MIGRATIONS below.
+  //
+  // PR-F (0053): tax/VAT treatment authority + ORD canonicalization - a new
+  // table of its own, named here for the identical reason every other PR's
+  // own list is. reward_settlements/ord_paid_invoice_payloads only gain new
+  // COLUMNS (no new object), same as 0046/0047's own ALTERs - tracked via
+  // MIGRATIONS below instead.
+  "agent_referrals_tax_treatment_revisions",
+  "agent_referrals_tax_treatment_revisions_relational_consistency_guard",
+  "agent_referrals_tax_treatment_revisions_immutable_guard",
+  "agent_referrals_tax_treatment_revisions_delete_guard",
 ] as const;
 
 const MIGRATIONS = [
@@ -295,6 +305,7 @@ const MIGRATIONS = [
   "0047_act_payment_settlement.sql", "0048_ord_reporting.sql", "0049_agent_referrals_integration_hardening.sql",
   "0050_agent_referrals_legal_profile_provenance_rebuild.sql", "0051_agent_referrals_legal_profile_supersession.sql",
   "0052_agent_referrals_unified_legal_requisites.sql",
+  "0053_agent_referrals_tax_treatment_ord_canonicalization.sql",
 ] as const;
 
 export class AgentReferralsActivationError extends Error {

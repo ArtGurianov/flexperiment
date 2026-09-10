@@ -32,6 +32,13 @@ export type AgentReferralsOperationClass =
   // authority, so both are NEW_AUTHORITY, never a bespoke third category.
   | "INITIAL_LEGAL_PROFILE_VERIFICATION"
   | "LEGAL_PROFILE_CHANGE_VERIFICATION"
+  // PR-F: recording a non-NPD tax/VAT treatment mints new tax authority the
+  // same way a legal-profile verification mints new identity authority -
+  // NEW_AUTHORITY, never MATURATION_RECOVERY_REPORTING_TAIL. The automatic
+  // SYSTEM_DERIVED NPD mint is not reachable through this gate on its own;
+  // it is atomic with (and gated by) the legal-profile mint that produces
+  // it, which already carries this same classification.
+  | "TAX_TREATMENT_VERIFICATION"
   // MATURATION / RECOVERY / REPORTING_TAIL - permitted under SUSPENDED.
   | "PORTAL_ACCESS_AND_EVIDENCE_EXPORT"
   | "DISTRIBUTION_FACT_REPORTING"
@@ -84,6 +91,7 @@ export const AGENT_REFERRALS_OPERATION_POLICY: Readonly<Record<AgentReferralsOpe
   ORD_CREATIVE_REGISTRATION: "NEW_AUTHORITY",
   INITIAL_LEGAL_PROFILE_VERIFICATION: "NEW_AUTHORITY",
   LEGAL_PROFILE_CHANGE_VERIFICATION: "NEW_AUTHORITY",
+  TAX_TREATMENT_VERIFICATION: "NEW_AUTHORITY",
   // Registering/maintaining Flexperiment's OWN counterparty/platform/
   // contract/media entity with VK ORD is a prerequisite for any future
   // creative registration or reporting - the same "authority that does not

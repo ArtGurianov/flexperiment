@@ -124,6 +124,9 @@ function PartnerDetail({ partnerId, onBack }: { partnerId: string; onBack: () =>
           onDone={refresh}
         />
       )}
+      {detail.data!.legal_profile != null && (
+        <TaxTreatmentPanel partnerId={partnerId} taxTreatment={detail.data!.tax_treatment as Row | null} onDone={refresh} />
+      )}
 
       <Panel title="Хранение и удаление">
         <NpdCheckForm partnerId={partnerId} onDone={refresh} />
@@ -336,6 +339,72 @@ function LegalProfileSupersession({ partnerId, legalProfile, pendingRequest, onD
         </form>
       )}
       <Notice error={error} />
+    </Panel>
+  );
+}
+
+const TAX_SYSTEM_LABELS: Record<string, string> = { NPD: "НПД", USN: "УСН", AUSN: "АУСН", OSNO: "ОСНО", PSN: "ПСН", ESHN: "ЕСХН", OTHER: "Другое" };
+const VAT_TREATMENT_LABELS: Record<string, string> = { NO_VAT: "Без НДС", VAT_5: "5%", VAT_7: "7%", VAT_22: "22%" };
+
+/** Admin never asserts NPD directly - it is minted automatically alongside the legal profile (agent-referrals-tax-treatment.ts's own SYSTEM_DERIVED mint). */
+const ADMIN_TAX_SYSTEM_OPTIONS = ["USN", "AUSN", "OSNO", "PSN", "ESHN", "OTHER"];
+
+/** Mirrors 0053's own tax_system x vat_treatment matrix (commerce/src/agent-referrals-tax-treatment.ts's validateTaxTreatmentTuple). no_vat_basis is derived from tax_system, never a separate form field - each tax_system has exactly one meaningful "no VAT" reason. */
+const vatOptionsForTaxSystem = (taxSystem: string): Array<{ value: string; label: string }> => {
+  if (taxSystem === "AUSN") return [{ value: "NO_VAT", label: "Без НДС (АУСН)" }];
+  if (taxSystem === "USN") return [{ value: "NO_VAT", label: "Без НДС (освобождение УСН)" }, { value: "VAT_5", label: "5%" }, { value: "VAT_7", label: "7%" }, { value: "VAT_22", label: "22%" }];
+  return [{ value: "VAT_22", label: "22%" }, { value: "NO_VAT", label: "Без НДС (подтверждённое освобождение)" }];
+};
+const noVatBasisForTaxSystem = (taxSystem: string): string => (taxSystem === "USN" ? "USN_EXEMPT" : taxSystem === "AUSN" ? "AUSN" : "OTHER_CONFIRMED");
+
+/** PR-F: recording a non-NPD tax/VAT treatment - always targets the partner's CURRENT legal profile, resolved server-side. */
+function TaxTreatmentPanel({ partnerId, taxTreatment, onDone }: { partnerId: string; taxTreatment: Row | null; onDone: () => void }) {
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const { register, handleSubmit, reset, watch } = useForm<{ tax_system: string; vat_treatment: string; effective_from: string; evidence_ref: string; reason: string }>({
+    defaultValues: { tax_system: "USN", vat_treatment: "NO_VAT", effective_from: "", evidence_ref: "", reason: "" },
+  });
+  const selectedTaxSystem = watch("tax_system");
+
+  const submit = handleSubmit(async (values) => {
+    setBusy(true); setError(null);
+    try {
+      await api(`/agent-referrals/partners/${partnerId}/tax-treatment`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...values, no_vat_basis: values.vat_treatment === "NO_VAT" ? noVatBasisForTaxSystem(values.tax_system) : null }),
+      });
+      reset();
+      onDone();
+    } catch (failure) { setError((failure as AdminApiError).code); } finally { setBusy(false); }
+  });
+
+  return (
+    <Panel title="Налоговый режим / НДС">
+      {taxTreatment ? (
+        <p>
+          Текущий: <Badge>{TAX_SYSTEM_LABELS[String(taxTreatment.tax_system)] ?? String(taxTreatment.tax_system)}</Badge>
+          {" "}{VAT_TREATMENT_LABELS[String(taxTreatment.vat_treatment)] ?? String(taxTreatment.vat_treatment)}, действует с {String(taxTreatment.effective_from)}
+        </p>
+      ) : (
+        <p>Налоговый режим ещё не зафиксирован для текущего юридического профиля.</p>
+      )}
+      <form className="form" onSubmit={submit}>
+        <label>Система налогообложения
+          <select {...register("tax_system", { required: true })}>
+            {ADMIN_TAX_SYSTEM_OPTIONS.map((s) => <option key={s} value={s}>{TAX_SYSTEM_LABELS[s]}</option>)}
+          </select>
+        </label>
+        <label>НДС
+          <select {...register("vat_treatment", { required: true })}>
+            {vatOptionsForTaxSystem(selectedTaxSystem).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        </label>
+        <label>Действует с <input type="date" {...register("effective_from", { required: true })} /></label>
+        <label>Ссылка на подтверждающий документ <input {...register("evidence_ref", { required: true })} /></label>
+        <label>Причина <input {...register("reason", { required: true })} /></label>
+        <Notice error={error} />
+        <button className="primary" disabled={busy}>{busy ? "…" : "Зафиксировать налоговый режим"}</button>
+      </form>
     </Panel>
   );
 }

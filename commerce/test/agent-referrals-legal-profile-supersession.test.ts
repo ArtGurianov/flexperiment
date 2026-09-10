@@ -29,6 +29,7 @@ import { mintSettlementStepUpGrant } from "../src/agent-referrals-settlement-ste
 import { recordNpdStatusCheck } from "../src/agent-referrals-npd";
 import { beginPayment, recordPaymentMade, recordNpdReceipt } from "../src/agent-referrals-payment";
 import { mintRetentionPolicyRevision, destroyPartnerIdentity } from "../src/agent-referrals-identity-retention";
+import { recordVerifiedTaxTreatment } from "../src/agent-referrals-tax-treatment";
 import { currentAgentReferralsLegalProfile, resolveCurrentLegalProfileBinding } from "../src/agent-referrals-legal-profile";
 import {
   submitLegalProfileSupersession, verifyLegalProfileSupersession, rejectLegalProfileSupersession,
@@ -338,6 +339,13 @@ describe("D2: seam test - blocked, unblocked, verified, replayed, activates the 
     const occurrenceId2 = seedOccurrence(db, p1.cityId);
     const { engagementId: engagementId2, revisionId: revision2Id } = activatedEngagement(db, p1.partner, p1.partnerIdentityId, occurrenceId2, new Date(Date.now() + 400).toISOString());
     expect(resolveActivatedLegalProfileBinding(db, engagementId2).revision).toBe(2);
+
+    // PR-F: LEGAL_ENTITY/OTHER never auto-mints a tax treatment (unlike
+    // NPD) - an explicit admin-asserted one is required before a
+    // settlement can be prepared under revision #2.
+    recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
+      taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2020-01-01", evidenceRef: "usn-exempt.pdf", reason: "became an organization, USN exemption",
+    });
 
     // A settlement prepared for post-supersession work carries tax_mode and contractor_type BOTH from #2, and 0047/0049's guards pass without a 500.
     completeOccurrence(db, occurrenceId2);

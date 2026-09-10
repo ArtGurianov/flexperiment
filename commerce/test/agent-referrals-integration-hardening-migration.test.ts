@@ -101,9 +101,9 @@ describe("0049 integration-hardening migration", () => {
     ]);
   });
 
-  it("ships no 0053+ migration file (PR-E's own 0052 is the current boundary)", () => {
+  it("ships no 0054+ migration file (PR-F's own 0053 is the current boundary)", () => {
     const all = readdirSync(MIGRATIONS).filter((n) => n.endsWith(".sql"));
-    expect(all.filter((n) => n > "0052_agent_referrals_unified_legal_requisites.sql")).toEqual([]);
+    expect(all.filter((n) => n > "0053_agent_referrals_tax_treatment_ord_canonicalization.sql")).toEqual([]);
   });
 
   it("introduces no new base table - every fix is a trigger/index on an existing 0043/0047 table, or pure application code", () => {
