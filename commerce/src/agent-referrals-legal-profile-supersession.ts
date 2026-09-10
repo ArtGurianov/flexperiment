@@ -279,6 +279,16 @@ export const submitLegalProfileSupersession = (
 
     const identity = getPartnerIdentity(db, partnerIdentityId);
     if (!identity) throw new AgentReferralsLegalProfileSupersessionError("PARTNER_IDENTITY_NOT_FOUND", 404);
+    // A partner-realm principal is only ever authority for its OWN
+    // identity - never a caller-supplied target another partner's session
+    // could point at someone else. 404, not 403, matching
+    // revokeDelegationAsPartner's own precedent (agent-referrals-
+    // delegation-revocation.ts): a mismatch is indistinguishable from the
+    // target simply not existing, never confirming a foreign identity's
+    // existence to a caller with no authority over it.
+    if (principal.realm === "PARTNER" && principal.partner_identity_id !== identity.id) {
+      throw new AgentReferralsLegalProfileSupersessionError("PARTNER_IDENTITY_NOT_FOUND", 404);
+    }
     if (!eligibleForSupersession(identity)) {
       throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_INELIGIBLE_IDENTITY", 409, identity.onboarding_state);
     }
@@ -300,7 +310,10 @@ export const submitLegalProfileSupersession = (
     }
 
     const assertionSource: AssertionSource = principal.realm === "ADMIN" ? "ADMIN_ASSERTED" : "PARTNER_ASSERTED";
-    const createdBy = principal.realm === "ADMIN" ? principal.admin_id : principal.partner_identity_id;
+    // For PARTNER, derived from the proven identity row, not re-trusted
+    // from principal a second time - identical in value now that the
+    // equality above is proven, but never a second independent read of it.
+    const createdBy = principal.realm === "ADMIN" ? principal.admin_id : identity.id;
     const evidenceRef = input.evidenceRef?.trim() || null;
     if (assertionSource === "ADMIN_ASSERTED" && !evidenceRef) {
       throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_EVIDENCE_REF_REQUIRED", 422, assertionSource);

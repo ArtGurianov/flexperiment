@@ -658,3 +658,37 @@ describe("D2: activateEngagement mints from proven MAX, never trusts the pointer
     expect(resolveActivatedLegalProfileBinding(db, engagementId)).toMatchObject({ id: getPartnerIdentity(db, p1.partnerIdentityId)!.legal_profile_revision_id });
   });
 });
+
+describe("D2: submit() proves a PARTNER principal is authority only for its own identity (P1 review fix)", () => {
+  it("partner A targeting partner B's identity is refused as if B did not exist - no candidate, no event, MAX(B)/pointer(B) untouched", () => {
+    const db = fresh();
+    const partnerA = readyPartner(db);
+    const partnerB = readyPartner(db);
+
+    const maxBefore = currentAgentReferralsLegalProfile(db, partnerB.agentId);
+    const pointerBefore = getPartnerIdentity(db, partnerB.partnerIdentityId)!.legal_profile_revision_id;
+
+    expect(() => submitLegalProfileSupersession(db, partnerA.partner, partnerB.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", reason: "x" }))
+      .toThrow(/PARTNER_IDENTITY_NOT_FOUND/);
+
+    expect(pendingLegalProfileChangeRequestForPartner(db, partnerB.partnerIdentityId)).toBeNull();
+    expect(db.prepare("SELECT COUNT(*) AS n FROM partner_identity_events WHERE partner_identity_id = ? AND event_kind = 'LEGAL_PROFILE_CHANGE_ASSERTED_BY_PARTNER'").get(partnerB.partnerIdentityId))
+      .toEqual({ n: 0 });
+    expect(currentAgentReferralsLegalProfile(db, partnerB.agentId)).toEqual(maxBefore);
+    expect(getPartnerIdentity(db, partnerB.partnerIdentityId)!.legal_profile_revision_id).toBe(pointerBefore);
+  });
+
+  it("an admin principal targeting any partner identity is unaffected by this check - admin deliberately chooses its target", () => {
+    const db = fresh();
+    const p1 = readyPartner(db);
+    expect(() => submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", reason: "x", evidenceRef: "ev.pdf" }))
+      .not.toThrow();
+  });
+
+  it("a partner submitting for its own identity is unaffected by this check", () => {
+    const db = fresh();
+    const p1 = readyPartner(db);
+    const request = submitLegalProfileSupersession(db, p1.partner, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", reason: "x" });
+    expect(request).toMatchObject({ created_by: p1.partnerIdentityId, assertion_source: "PARTNER_ASSERTED" });
+  });
+});

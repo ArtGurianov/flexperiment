@@ -314,13 +314,16 @@ export const activateEngagement = (db: Database.Database, admin: AdminPrincipal,
     // longer sufficient proof this identity may receive NEW commercial
     // authority. destroyed_at is the terminal signal for that.
     if (partner.destroyed_at !== null) throw new EngagementError("AGENT_REFERRALS_PARTNER_IDENTITY_DESTROYED", 409, partner.id);
-    if (!partner.legal_profile_revision_id) throw new EngagementError("AGENT_REFERRALS_ACTIVATION_LEGAL_PROFILE_MISSING", 409);
     // D2: this is the ONE sanctioned path that mints new commercial
     // authority pinning a legal identity - it must prove pointer == MAX
     // itself, never trust partner.legal_profile_revision_id (the pointer)
-    // directly. A divergence here is POINTER_DIVERGED (500), the same
-    // structural-defect class resolveSettlementContext and D2's own verify()
-    // already fail closed on, never a silent mint under a stale identity.
+    // directly. No local "pointer is null" pre-check exists here on
+    // purpose, matching resolveSettlementContext's own fix: classifying a
+    // null pointer as a friendly "never verified" 409 would be wrong the
+    // moment MAX is non-null (that is POINTER_DIVERGED, a structural
+    // defect) - one resolver owns the entire classification, including the
+    // legitimately-never-verified case, never a locally-duplicated partial
+    // one guessing at which case it is.
     const currentLegalProfile = resolveCurrentLegalProfileBinding(db, partner);
 
     const revision = engagementRevisionById(db, engagementRevisionId);
