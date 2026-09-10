@@ -72,8 +72,8 @@ const seedPartnerIdentity = (db: Database.Database, partnerId = "partner-1", age
 const seedLegalProfileRevision = (db: Database.Database, agentId = "agent-1", revisionId = "lp-1", taxMode: "NPD" | "OTHER" = "NPD", revision = 1) => {
   const legalForm = taxMode === "NPD" ? "INDIVIDUAL" : "INDIVIDUAL_ENTREPRENEUR";
   const projected = taxMode === "NPD" ? "SELF_EMPLOYED" : "INDIVIDUAL_ENTREPRENEUR";
-  db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason)
-    VALUES (?, ?, ?, ?, ?, ?, 'seed')`).run(revisionId, agentId, revision, legalForm, taxMode, projected);
+  db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason, assertion_source)
+    VALUES (?, ?, ?, ?, ?, ?, 'seed', 'PARTNER_ASSERTED')`).run(revisionId, agentId, revision, legalForm, taxMode, projected);
   return revisionId;
 };
 
@@ -259,14 +259,15 @@ describe("0047 act/payment/settlement migration", () => {
     expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
   });
 
-  it("is not FK-off, and the registry still contains only the exact 0042 tuple", () => {
+  it("is not FK-off, and the registry still contains only the exact 0042 and 0050 tuples", () => {
     const db = at0046();
     const sql = readFileSync(join(MIGRATIONS, MIGRATION_FILE), "utf8");
     expect(isFkOffMigration(MIGRATION_FILE, createHash("sha256").update(sql).digest("hex"))).toBe(false);
     migrate(db);
-    expect(FK_OFF_MIGRATIONS).toHaveLength(1);
+    expect(FK_OFF_MIGRATIONS).toHaveLength(2);
     expect(FK_OFF_MIGRATIONS).toEqual([
       { filename: "0042_agent_referrals_agents_rebuild.sql", sha256: "d9b5ecbf496993669201b45440ea5213ba0e52af778e2094d569f772adfee6ab" },
+      { filename: "0050_agent_referrals_legal_profile_provenance_rebuild.sql", sha256: "e1cbd9ce177546ea621fb4a9da861f63e69e999e8bf6a5c159d1c967761349f0" },
     ]);
   });
 

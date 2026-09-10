@@ -53,7 +53,7 @@ describe("agent-referrals legal-profile revisions", () => {
       const agentId = seedAgent(db);
 
       if (allowed) {
-        const result = applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form, tax_mode, reason: "matrix test" });
+        const result = applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form, tax_mode, reason: "matrix test", assertion_source: "PARTNER_ASSERTED" });
         expect(result).toMatchObject({ revision: 1, projected_contractor_type: projected, minted: true });
         expect(agentContractorType(db, agentId)).toBe(projected);
         const current = currentAgentReferralsLegalProfile(db, agentId);
@@ -65,7 +65,7 @@ describe("agent-referrals legal-profile revisions", () => {
         const before = agentContractorType(db, agentId);
         const eventsBefore = db.prepare("SELECT COUNT(*) AS n FROM agent_referrals_legal_profile_revisions").get();
 
-        expect(() => applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form, tax_mode, reason: "matrix test" }))
+        expect(() => applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form, tax_mode, reason: "matrix test", assertion_source: "PARTNER_ASSERTED" }))
           .toThrow(AgentReferralsLegalProfileError);
 
         expect(agentContractorType(db, agentId)).toBe(before);
@@ -79,7 +79,7 @@ describe("agent-referrals legal-profile revisions", () => {
     it("a rejected combination leaves no revision, no agent projection change, no partial evidence", () => {
       const { db } = fresh();
       const agentId = seedAgent(db, "SELF_EMPLOYED");
-      expect(() => applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "INDIVIDUAL", tax_mode: "OTHER", reason: "reject" }))
+      expect(() => applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "INDIVIDUAL", tax_mode: "OTHER", reason: "reject", assertion_source: "PARTNER_ASSERTED" }))
         .toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_REJECTED_COMBINATION/);
       expect(agentContractorType(db, agentId)).toBe("SELF_EMPLOYED");
       expect(allAgentReferralsLegalProfileRevisions(db, agentId)).toEqual([]);
@@ -90,8 +90,8 @@ describe("agent-referrals legal-profile revisions", () => {
     it("re-submitting the same (legal_form, tax_mode) mints no new revision", () => {
       const { db } = fresh();
       const agentId = seedAgent(db);
-      const first = applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "INDIVIDUAL", tax_mode: "NPD", reason: "initial" });
-      const second = applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "INDIVIDUAL", tax_mode: "NPD", reason: "retry" });
+      const first = applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "INDIVIDUAL", tax_mode: "NPD", reason: "initial", assertion_source: "PARTNER_ASSERTED" });
+      const second = applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "INDIVIDUAL", tax_mode: "NPD", reason: "retry", assertion_source: "PARTNER_ASSERTED" });
       expect(second).toEqual({ revision_id: first.revision_id, revision: 1, projected_contractor_type: "SELF_EMPLOYED", minted: false });
       expect(allAgentReferralsLegalProfileRevisions(db, agentId)).toHaveLength(1);
     });
@@ -101,8 +101,8 @@ describe("agent-referrals legal-profile revisions", () => {
     it("a genuinely different (legal_form, tax_mode) mints revision 2, superseding revision 1", () => {
       const { db } = fresh();
       const agentId = seedAgent(db);
-      applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "INDIVIDUAL", tax_mode: "NPD", reason: "initial" });
-      const second = applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "INDIVIDUAL_ENTREPRENEUR", tax_mode: "OTHER", reason: "became an IE" });
+      applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "INDIVIDUAL", tax_mode: "NPD", reason: "initial", assertion_source: "PARTNER_ASSERTED" });
+      const second = applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "INDIVIDUAL_ENTREPRENEUR", tax_mode: "OTHER", reason: "became an IE", assertion_source: "PARTNER_ASSERTED" });
       expect(second).toMatchObject({ revision: 2, projected_contractor_type: "INDIVIDUAL_ENTREPRENEUR", minted: true });
       expect(agentContractorType(db, agentId)).toBe("INDIVIDUAL_ENTREPRENEUR");
 
@@ -116,14 +116,80 @@ describe("agent-referrals legal-profile revisions", () => {
     });
   });
 
+  describe("provenance: assertion_source and evidence_ref", () => {
+    it("PARTNER_ASSERTED mints with no evidence_ref", () => {
+      const { db } = fresh();
+      const agentId = seedAgent(db);
+      applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "INDIVIDUAL", tax_mode: "NPD", reason: "onboarding", assertion_source: "PARTNER_ASSERTED" });
+      expect(currentAgentReferralsLegalProfile(db, agentId)).toMatchObject({ assertion_source: "PARTNER_ASSERTED", evidence_ref: null });
+    });
+
+    it("ADMIN_ASSERTED without evidence_ref is refused before any transaction opens", () => {
+      const { db } = fresh();
+      const agentId = seedAgent(db);
+      expect(() => applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "admin claim", assertion_source: "ADMIN_ASSERTED" }))
+        .toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_EVIDENCE_REF_REQUIRED/);
+      expect(currentAgentReferralsLegalProfile(db, agentId)).toBeNull();
+      expect(allAgentReferralsLegalProfileRevisions(db, agentId)).toEqual([]);
+    });
+
+    it("ADMIN_ASSERTED with a blank evidence_ref is refused the same way as missing", () => {
+      const { db } = fresh();
+      const agentId = seedAgent(db);
+      expect(() => applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "admin claim", assertion_source: "ADMIN_ASSERTED", evidence_ref: "   " }))
+        .toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_EVIDENCE_REF_REQUIRED/);
+    });
+
+    it("ADMIN_ASSERTED with a real evidence_ref mints and persists it", () => {
+      const { db } = fresh();
+      const agentId = seedAgent(db);
+      applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "admin claim", assertion_source: "ADMIN_ASSERTED", evidence_ref: "egrul-extract-2026-09-10.pdf" });
+      expect(currentAgentReferralsLegalProfile(db, agentId)).toMatchObject({ assertion_source: "ADMIN_ASSERTED", evidence_ref: "egrul-extract-2026-09-10.pdf" });
+    });
+
+    it("a same-semantic no-op resubmission under a different assertion_source keeps the original revision's provenance unchanged", () => {
+      const { db } = fresh();
+      const agentId = seedAgent(db);
+      const first = applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "INDIVIDUAL", tax_mode: "NPD", reason: "onboarding", assertion_source: "PARTNER_ASSERTED" });
+      applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "INDIVIDUAL", tax_mode: "NPD", reason: "resubmit", assertion_source: "ADMIN_ASSERTED", evidence_ref: "should-not-be-persisted" });
+      const current = currentAgentReferralsLegalProfile(db, agentId);
+      expect(current).toMatchObject({ id: first.revision_id, assertion_source: "PARTNER_ASSERTED", evidence_ref: null });
+      expect(allAgentReferralsLegalProfileRevisions(db, agentId)).toHaveLength(1);
+    });
+
+    it("the database CHECK independently rejects ADMIN_ASSERTED with a NULL evidence_ref via a raw INSERT, bypassing the application check", () => {
+      const { db } = fresh();
+      const agentId = seedAgent(db);
+      expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason, assertion_source, evidence_ref)
+        VALUES ('r1', ?, 1, 'INDIVIDUAL', 'NPD', 'SELF_EMPLOYED', 'bypass', 'ADMIN_ASSERTED', NULL)`).run(agentId))
+        .toThrow(/CHECK constraint failed/);
+    });
+
+    it("the database CHECK independently rejects a blank-string evidence_ref via a raw INSERT", () => {
+      const { db } = fresh();
+      const agentId = seedAgent(db);
+      expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason, assertion_source, evidence_ref)
+        VALUES ('r1', ?, 1, 'INDIVIDUAL', 'NPD', 'SELF_EMPLOYED', 'bypass', 'PARTNER_ASSERTED', '')`).run(agentId))
+        .toThrow(/CHECK constraint failed/);
+    });
+
+    it("the database CHECK rejects an unrecognized assertion_source", () => {
+      const { db } = fresh();
+      const agentId = seedAgent(db);
+      expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason, assertion_source)
+        VALUES ('r1', ?, 1, 'INDIVIDUAL', 'NPD', 'SELF_EMPLOYED', 'bypass', 'SOMETHING_ELSE')`).run(agentId))
+        .toThrow(/CHECK constraint failed/);
+    });
+  });
+
   describe("concurrency: two simultaneous updates of one profile", () => {
     it("the same identical request racing collapses to one revision (idempotent, not double-applied)", () => {
       const { db: a, file } = fresh();
       const agentId = seedAgent(a);
       const b = new Database(file); b.pragma("journal_mode = WAL"); b.pragma("foreign_keys = ON"); b.pragma("busy_timeout = 5000"); open.push(b);
 
-      const first = applyAgentReferralsLegalProfile(a, { agent_id: agentId, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "racer A" });
-      const second = applyAgentReferralsLegalProfile(b, { agent_id: agentId, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "racer B" });
+      const first = applyAgentReferralsLegalProfile(a, { agent_id: agentId, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "racer A", assertion_source: "PARTNER_ASSERTED" });
+      const second = applyAgentReferralsLegalProfile(b, { agent_id: agentId, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "racer B", assertion_source: "PARTNER_ASSERTED" });
 
       expect(first.minted).toBe(true);
       expect(second.minted).toBe(false);
@@ -137,8 +203,8 @@ describe("agent-referrals legal-profile revisions", () => {
       const agentId = seedAgent(a);
       const b = new Database(file); b.pragma("journal_mode = WAL"); b.pragma("foreign_keys = ON"); b.pragma("busy_timeout = 5000"); open.push(b);
 
-      const first = applyAgentReferralsLegalProfile(a, { agent_id: agentId, legal_form: "INDIVIDUAL", tax_mode: "NPD", reason: "racer A" });
-      const second = applyAgentReferralsLegalProfile(b, { agent_id: agentId, legal_form: "INDIVIDUAL_ENTREPRENEUR", tax_mode: "NPD", reason: "racer B" });
+      const first = applyAgentReferralsLegalProfile(a, { agent_id: agentId, legal_form: "INDIVIDUAL", tax_mode: "NPD", reason: "racer A", assertion_source: "PARTNER_ASSERTED" });
+      const second = applyAgentReferralsLegalProfile(b, { agent_id: agentId, legal_form: "INDIVIDUAL_ENTREPRENEUR", tax_mode: "NPD", reason: "racer B", assertion_source: "PARTNER_ASSERTED" });
 
       expect(first).toMatchObject({ revision: 1, minted: true });
       expect(second).toMatchObject({ revision: 2, minted: true });

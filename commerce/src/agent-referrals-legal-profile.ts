@@ -25,6 +25,14 @@ export type TaxMode = "NPD" | "OTHER";
 export type ProjectedContractorType = "SELF_EMPLOYED" | "INDIVIDUAL_ENTREPRENEUR" | "ORGANIZATION";
 
 /**
+ * PARTNER_ASSERTED: the partner's own onboarding submission, verified by an
+ * admin (verifyPartnerLegalProfile) - the only production mint path today.
+ * ADMIN_ASSERTED: an admin acting on external evidence; not yet reachable
+ * from any route. See 0050_agent_referrals_legal_profile_provenance_rebuild.sql.
+ */
+export type AssertionSource = "PARTNER_ASSERTED" | "ADMIN_ASSERTED";
+
+/**
  * The exact matrix from the plan. SELF_EMPLOYED is Russian tax law's own
  * definition of "self-employed" (an individual taxed under NPD); an
  * individual entrepreneur projects to INDIVIDUAL_ENTREPRENEUR regardless of
@@ -54,17 +62,21 @@ export type AgentReferralsLegalProfileRevision = {
   projected_contractor_type: ProjectedContractorType;
   supersedes_revision_id: string | null;
   reason: string;
+  assertion_source: AssertionSource;
+  evidence_ref: string | null;
   created_at: string;
 };
 
+const REVISION_COLUMNS = "id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, supersedes_revision_id, reason, assertion_source, evidence_ref, created_at";
+
 /** The latest (and only meaningful) revision for an agent - never a stored pointer. See the migration's comment for why. */
 export const currentAgentReferralsLegalProfile = (db: Database.Database, agentId: string): AgentReferralsLegalProfileRevision | null =>
-  (db.prepare(`SELECT id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, supersedes_revision_id, reason, created_at
+  (db.prepare(`SELECT ${REVISION_COLUMNS}
     FROM agent_referrals_legal_profile_revisions WHERE agent_id = ? ORDER BY revision DESC LIMIT 1`).get(agentId) as
     AgentReferralsLegalProfileRevision | undefined) ?? null;
 
 export const allAgentReferralsLegalProfileRevisions = (db: Database.Database, agentId: string): AgentReferralsLegalProfileRevision[] =>
-  db.prepare(`SELECT id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, supersedes_revision_id, reason, created_at
+  db.prepare(`SELECT ${REVISION_COLUMNS}
     FROM agent_referrals_legal_profile_revisions WHERE agent_id = ? ORDER BY revision ASC`).all(agentId) as AgentReferralsLegalProfileRevision[];
 
 export type ApplyAgentReferralsLegalProfileInput = {
@@ -72,6 +84,9 @@ export type ApplyAgentReferralsLegalProfileInput = {
   legal_form: LegalForm;
   tax_mode: TaxMode;
   reason: string;
+  assertion_source: AssertionSource;
+  /** Optional for PARTNER_ASSERTED; required (and non-blank) for ADMIN_ASSERTED - enforced both here and by the table's own CHECK. */
+  evidence_ref?: string | null;
 };
 
 export type ApplyAgentReferralsLegalProfileResult = {
@@ -95,22 +110,33 @@ export const applyAgentReferralsLegalProfile = (
   if (!projected) {
     throw new AgentReferralsLegalProfileError("AGENT_REFERRALS_LEGAL_PROFILE_REJECTED_COMBINATION", 422, `${input.legal_form}+${input.tax_mode}`);
   }
+  // Mirrors the table's own CHECK (assertion_source = 'PARTNER_ASSERTED' OR
+  // (assertion_source = 'ADMIN_ASSERTED' AND evidence_ref IS NOT NULL)) as an
+  // application-level error before any transaction opens, same as the
+  // rejected-combination check above - the DB CHECK remains the structural
+  // backstop, this is only for a caller-legible error.
+  if (input.assertion_source === "ADMIN_ASSERTED" && !input.evidence_ref?.trim()) {
+    throw new AgentReferralsLegalProfileError("AGENT_REFERRALS_LEGAL_PROFILE_EVIDENCE_REF_REQUIRED", 422, input.assertion_source);
+  }
+  const evidenceRef = input.evidence_ref?.trim() || null;
 
   const run = db.transaction((): ApplyAgentReferralsLegalProfileResult => {
     const current = currentAgentReferralsLegalProfile(db, input.agent_id);
 
     // Same semantic profile as already current: idempotent no-op, mints no
     // new revision and leaves agents.contractor_type untouched (it is
-    // already correct).
+    // already correct). The existing revision's own provenance is kept -
+    // immutable evidence is never rewritten by a later resubmission, even
+    // one asserted from a different source.
     if (current && current.legal_form === input.legal_form && current.tax_mode === input.tax_mode) {
       return { revision_id: current.id, revision: current.revision, projected_contractor_type: current.projected_contractor_type, minted: false };
     }
 
     const nextRevision = (current?.revision ?? 0) + 1;
     const revisionId = id();
-    db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, supersedes_revision_id, reason)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(revisionId, input.agent_id, nextRevision, input.legal_form, input.tax_mode, projected, current?.id ?? null, input.reason);
+    db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, supersedes_revision_id, reason, assertion_source, evidence_ref)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(revisionId, input.agent_id, nextRevision, input.legal_form, input.tax_mode, projected, current?.id ?? null, input.reason, input.assertion_source, evidenceRef);
 
     // agent_id's FK already refuses an unknown agent when the revision insert
     // above runs, so this UPDATE only ever reaches an agent known to exist.
