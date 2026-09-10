@@ -84,7 +84,14 @@ CREATE TABLE agent_referrals_legal_profile_revisions_0050_new (
     OR (legal_form = 'INDIVIDUAL_ENTREPRENEUR' AND tax_mode IN ('NPD', 'OTHER') AND projected_contractor_type = 'INDIVIDUAL_ENTREPRENEUR')
     OR (legal_form = 'LEGAL_ENTITY' AND tax_mode = 'OTHER' AND projected_contractor_type = 'ORGANIZATION')
   ),
-  CHECK (evidence_ref IS NULL OR trim(evidence_ref) != ''),
+  -- SQLite's single-argument trim() strips only ASCII space (0x20), not
+  -- TAB/LF/CR/VT/FF - a whitespace-only evidence_ref built from those would
+  -- pass `trim(evidence_ref) != ''` while still being blank. The explicit
+  -- second argument names every ASCII whitespace character actually being
+  -- stripped, closing that gap structurally rather than relying on the
+  -- caller (applyAgentReferralsLegalProfile) always going through JS's own
+  -- fully-whitespace-aware .trim() first.
+  CHECK (evidence_ref IS NULL OR trim(evidence_ref, ' ' || char(9) || char(10) || char(11) || char(12) || char(13)) != ''),
   CHECK (assertion_source = 'PARTNER_ASSERTED' OR (assertion_source = 'ADMIN_ASSERTED' AND evidence_ref IS NOT NULL))
 );
 

@@ -113,7 +113,7 @@ describe("FK-off registry: exactly two production entries after the PR-D foundat
   it("is exactly the 0042 agents-rebuild and 0050 legal-profile-provenance-rebuild tuples", () => {
     expect(FK_OFF_MIGRATIONS).toEqual([
       { filename: "0042_agent_referrals_agents_rebuild.sql", sha256: "d9b5ecbf496993669201b45440ea5213ba0e52af778e2094d569f772adfee6ab" },
-      { filename: "0050_agent_referrals_legal_profile_provenance_rebuild.sql", sha256: "be67c7784ec24d84b10980466bd3de35ebf8562ae1ff8d5b3bc8346345a1d8df" },
+      { filename: "0050_agent_referrals_legal_profile_provenance_rebuild.sql", sha256: "e1cbd9ce177546ea621fb4a9da861f63e69e999e8bf6a5c159d1c967761349f0" },
     ]);
   });
 
@@ -122,7 +122,7 @@ describe("FK-off registry: exactly two production entries after the PR-D foundat
   });
 
   it("treats the exact committed 0050 (filename, sha256) pair as privileged", () => {
-    expect(isFkOffMigration("0050_agent_referrals_legal_profile_provenance_rebuild.sql", "be67c7784ec24d84b10980466bd3de35ebf8562ae1ff8d5b3bc8346345a1d8df")).toBe(true);
+    expect(isFkOffMigration("0050_agent_referrals_legal_profile_provenance_rebuild.sql", "e1cbd9ce177546ea621fb4a9da861f63e69e999e8bf6a5c159d1c967761349f0")).toBe(true);
   });
 
   it("refuses the 0042 filename paired with any other hash", () => {

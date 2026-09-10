@@ -183,6 +183,34 @@ describe("0050 agent-referrals legal-profile provenance rebuild migration", () =
         .toThrow(/CHECK constraint failed/);
     });
 
+    describe("whitespace-only evidence_ref (SQLite's single-argument trim() strips only ASCII space, not TAB/LF/CR)", () => {
+      const whitespaceCases: Array<[string, string]> = [
+        ["plain spaces", "   "],
+        ["TAB", "\t"],
+        ["LF", "\n"],
+        ["CR", "\r"],
+        ["TAB + spaces + LF", "\t  \n"],
+      ];
+
+      it.each(whitespaceCases)("rejects evidence_ref = %s (raw INSERT, ADMIN_ASSERTED)", (_label, value) => {
+        const { db } = at0049();
+        const agentId = seedAgent(db);
+        migrate(db);
+        expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason, assertion_source, evidence_ref)
+          VALUES ('lp-ws', ?, 1, 'LEGAL_ENTITY', 'OTHER', 'ORGANIZATION', 'admin claim', 'ADMIN_ASSERTED', ?)`).run(agentId, value))
+          .toThrow(/CHECK constraint failed/);
+      });
+
+      it.each(whitespaceCases)("rejects evidence_ref = %s even under PARTNER_ASSERTED, where it is otherwise optional", (_label, value) => {
+        const { db } = at0049();
+        const agentId = seedAgent(db);
+        migrate(db);
+        expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason, assertion_source, evidence_ref)
+          VALUES ('lp-ws-partner', ?, 1, 'INDIVIDUAL', 'NPD', 'SELF_EMPLOYED', 'x', 'PARTNER_ASSERTED', ?)`).run(agentId, value))
+          .toThrow(/CHECK constraint failed/);
+      });
+    });
+
     it("after 0050: an unrecognized assertion_source is rejected", () => {
       const { db } = at0049();
       const agentId = seedAgent(db);
@@ -421,6 +449,28 @@ describe("0050 agent-referrals legal-profile provenance rebuild migration", () =
 
       applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "admin claim", assertion_source: "ADMIN_ASSERTED", evidence_ref: "egrul-extract.pdf" });
       expect(currentAgentReferralsLegalProfile(db, agentId)).toMatchObject({ assertion_source: "ADMIN_ASSERTED", evidence_ref: "egrul-extract.pdf" });
+    });
+  });
+
+  describe("J. the three recreated cross-table triggers are byte-for-byte identical, not merely behaviorally equivalent", () => {
+    const recreatedTriggers = [
+      "agents_contractor_type_projection_guard",
+      "reward_settlements_contractor_type_projection_guard",
+      "reward_settlements_authority_tuple_consistency_guard",
+    ] as const;
+
+    it("sqlite_master.sql for each of the three triggers is unchanged across the 0050 rebuild", () => {
+      const { db } = at0049();
+      const before = Object.fromEntries(
+        recreatedTriggers.map((name) => [name, (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(name) as { sql: string }).sql]),
+      );
+
+      migrate(db);
+
+      for (const name of recreatedTriggers) {
+        const after = (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(name) as { sql: string }).sql;
+        expect(after, name).toEqual(before[name]);
+      }
     });
   });
 });
