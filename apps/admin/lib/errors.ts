@@ -82,6 +82,19 @@ const PRESENTATIONS: Readonly<Record<string, AdminErrorPresentation>> = {
   AGENT_REFERRALS_LEGAL_PROFILE_EVIDENCE_REF_REQUIRED: {
     message: "Для заявки, поданной администратором, укажите ссылку на подтверждающий документ.",
   },
+  // PR-E: unified legal requisites matrix validation.
+  AGENT_REFERRALS_LEGAL_PROFILE_REQUISITE_REQUIRED: {
+    message: "Не заполнено обязательное поле юридических реквизитов.",
+    hint: "Для выбранной формы (физлицо/ИП/юрлицо) проверьте, что заполнены все обязательные реквизиты.",
+  },
+  AGENT_REFERRALS_LEGAL_PROFILE_REQUISITE_FORBIDDEN: {
+    message: "Указано поле, недопустимое для выбранной юридической формы.",
+    hint: "Например, ОПФ/КПП/юридический адрес применимы только к юридическим лицам.",
+  },
+  AGENT_REFERRALS_LEGAL_PROFILE_REQUISITE_INVALID_FORMAT: {
+    message: "Неверный формат ИНН, КПП или регистрационного номера.",
+    hint: "Проверьте количество цифр: ИНН — 10 (юрлицо) или 12 (физлицо/ИП), КПП — 9, ОГРН — 13, ОГРНИП — 15.",
+  },
   AGENT_REFERRALS_SETTLEMENT_LEGAL_PROFILE_BINDING_MISMATCH: {
     message: "Юридическая привязка активации engagement'а не совпадает с текущим профилем партнёра.",
     hint: "Расчёт по этой работе нельзя провести под новой юридической идентичностью.",

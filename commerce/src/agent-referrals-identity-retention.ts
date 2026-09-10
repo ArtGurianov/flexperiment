@@ -8,10 +8,18 @@ import type { AdminPrincipal } from "./agent-referrals-partner-identity";
  * rows (released_at set to lift one, never deleted), and immutable
  * destruction evidence. Destruction never hard-deletes partner_identities -
  * that would break every FK evidence chain (framework_acceptances,
- * payout_profile_revisions, ...) this PR builds. It scrubs only the PII
- * columns (email/email_hash) under this module's authority alone, and the
- * ONLY way to do that is through destroyPartnerIdentity() below - there is
- * no other write path to those two columns anywhere in this codebase.
+ * payout_profile_revisions, ...) this PR builds. It scrubs the mutable PII
+ * columns on partner_identities itself - email/email_hash, and (PR-E) the
+ * submitted_* onboarding draft requisites (opf/full_name/short_name/inn/
+ * kpp/registration_number/legal_address) - under this module's authority
+ * alone; the ONLY way to do that is through destroyPartnerIdentity() below,
+ * there is no other write path to those columns anywhere in this codebase.
+ *
+ * Deliberately NOT scrubbed: agent_referrals_legal_profile_revisions. Once
+ * verified, that is immutable legal evidence historical activation/
+ * settlement bindings resolve against - a destroyed identity's mutable
+ * onboarding draft is erased, but a MINTED legal-profile revision is
+ * retained exactly as any other retention policy already governs it.
  */
 
 export class RetentionError extends Error {
@@ -97,8 +105,12 @@ export const destroyPartnerIdentity = (db: Database.Database, admin: AdminPrinci
     const identity = db.prepare("SELECT id FROM partner_identities WHERE id = ?").get(partnerIdentityId) as { id: string } | undefined;
     if (!identity) throw new RetentionError("PARTNER_IDENTITY_NOT_FOUND", 404, partnerIdentityId);
 
-    const destroyedFields = ["email", "email_hash"];
-    db.prepare(`UPDATE partner_identities SET email = ?, email_hash = ?, destroyed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+    const destroyedFields = ["email", "email_hash", "submitted_opf", "submitted_full_name", "submitted_short_name", "submitted_inn", "submitted_kpp", "submitted_registration_number", "submitted_legal_address"];
+    db.prepare(`UPDATE partner_identities SET
+        email = ?, email_hash = ?,
+        submitted_opf = NULL, submitted_full_name = NULL, submitted_short_name = NULL, submitted_inn = NULL, submitted_kpp = NULL, submitted_registration_number = NULL, submitted_legal_address = NULL,
+        destroyed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?`)
       .run(DESTROYED_EMAIL_SENTINEL, DESTROYED_EMAIL_HASH_SENTINEL, partnerIdentityId);
 
     const eventId = id();

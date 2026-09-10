@@ -13,7 +13,10 @@ import {
   placeLegalHold,
   releaseLegalHold,
 } from "../src/agent-referrals-identity-retention";
-import type { AdminPrincipal } from "../src/agent-referrals-partner-identity";
+import { provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile, type AdminPrincipal } from "../src/agent-referrals-partner-identity";
+import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { currentAgentReferralsLegalProfile, resolveCurrentLegalProfileBinding } from "../src/agent-referrals-legal-profile";
+import { getPartnerIdentity } from "../src/agent-referrals-onboarding";
 
 const open: Database.Database[] = [];
 afterEach(() => { while (open.length) open.pop()!.close(); });
@@ -211,13 +214,78 @@ describe("identity retention / legal holds / destruction evidence", () => {
 
       const event = db.prepare("SELECT * FROM partner_identity_destruction_events WHERE id = ?").get(result.destruction_event_id) as Record<string, unknown>;
       expect(event).toMatchObject({ partner_identity_id: partnerIdentityId, retention_policy_revision_id: policy.id, requested_by_admin_id: "admin-1" });
-      expect(JSON.parse(event.destroyed_fields_json as string)).toEqual(["email", "email_hash"]);
+      expect(JSON.parse(event.destroyed_fields_json as string)).toEqual([
+        "email", "email_hash", "submitted_opf", "submitted_full_name", "submitted_short_name", "submitted_inn", "submitted_kpp", "submitted_registration_number", "submitted_legal_address",
+      ]);
 
       const identity = db.prepare("SELECT email, email_hash, destroyed_at FROM partner_identities WHERE id = ?").get(partnerIdentityId) as
         { email: string; email_hash: string; destroyed_at: string | null };
       expect(identity.email).not.toBe("p@example.test");
       expect(identity.email_hash).not.toBe("emailhash");
       expect(identity.destroyed_at).toBeTruthy();
+    });
+
+    /** PR-E requisites: LEGAL_ENTITY/OTHER, the fullest shape (opf/kpp/registration_number/legal_address all required). */
+    const legalEntityRequisites = { opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" };
+
+    const provisionedPartner = (db: Database.Database): { partnerIdentityId: string; agentId: string } => {
+      activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
+      const agentId = randomUUID();
+      db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
+        VALUES (?, ?, 'A', 'A Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId, `p-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+      const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p2@example.test", "test");
+      return { partnerIdentityId, agentId };
+    };
+
+    const draftRequisitesColumns = "submitted_opf, submitted_full_name, submitted_short_name, submitted_inn, submitted_kpp, submitted_registration_number, submitted_legal_address";
+
+    it("PR-E: destruction of a never-verified identity (PROFILE_SUBMITTED) scrubs the submitted draft requisites and names them in the evidence", () => {
+      const db = fresh();
+      withPolicy(db);
+      const { partnerIdentityId, agentId } = provisionedPartner(db);
+      submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "LEGAL_ENTITY", "OTHER", legalEntityRequisites);
+      expect(getPartnerIdentity(db, partnerIdentityId)!.submitted_full_name).toBe("Romashka LLC");
+
+      const result = destroyPartnerIdentity(db, admin, partnerIdentityId, "erasure request");
+      expect(result.replayed).toBe(false);
+
+      const event = db.prepare("SELECT destroyed_fields_json FROM partner_identity_destruction_events WHERE id = ?").get(result.destruction_event_id) as { destroyed_fields_json: string };
+      const destroyedFields: string[] = JSON.parse(event.destroyed_fields_json);
+      for (const field of ["submitted_opf", "submitted_full_name", "submitted_short_name", "submitted_inn", "submitted_kpp", "submitted_registration_number", "submitted_legal_address"]) {
+        expect(destroyedFields, field).toContain(field);
+      }
+
+      const draft = db.prepare(`SELECT ${draftRequisitesColumns} FROM partner_identities WHERE id = ?`).get(partnerIdentityId);
+      expect(draft).toEqual({
+        submitted_opf: null, submitted_full_name: null, submitted_short_name: null, submitted_inn: null, submitted_kpp: null, submitted_registration_number: null, submitted_legal_address: null,
+      });
+      // Never verified: no legal-profile revision was ever minted, so there is nothing immutable to preserve here.
+      expect(db.prepare("SELECT COUNT(*) AS n FROM agent_referrals_legal_profile_revisions WHERE agent_id = ?").get(agentId)).toEqual({ n: 0 });
+    });
+
+    it("PR-E: destruction of a verified (PARTNER_ACTIVE-eligible) identity scrubs the mutable draft copy but leaves the minted immutable legal-profile revision byte-identical, still resolvable", () => {
+      const db = fresh();
+      withPolicy(db);
+      const { partnerIdentityId, agentId } = provisionedPartner(db);
+      submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "LEGAL_ENTITY", "OTHER", legalEntityRequisites);
+      verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
+
+      const before = currentAgentReferralsLegalProfile(db, agentId);
+      expect(before).toMatchObject({ full_name: "Romashka LLC", inn: "1234567890", legal_form: "LEGAL_ENTITY" });
+
+      destroyPartnerIdentity(db, admin, partnerIdentityId, "erasure request");
+
+      // Immutable legal evidence: byte-identical, not touched by destruction.
+      const after = currentAgentReferralsLegalProfile(db, agentId);
+      expect(after).toEqual(before);
+      // The pointer/MAX coherence proof used by every activation/settlement path still resolves post-destruction.
+      expect(() => resolveCurrentLegalProfileBinding(db, getPartnerIdentity(db, partnerIdentityId)!)).not.toThrow();
+
+      // Mutable onboarding draft copy: scrubbed, exactly like the never-verified case above.
+      const draft = db.prepare(`SELECT ${draftRequisitesColumns} FROM partner_identities WHERE id = ?`).get(partnerIdentityId);
+      expect(draft).toEqual({
+        submitted_opf: null, submitted_full_name: null, submitted_short_name: null, submitted_inn: null, submitted_kpp: null, submitted_registration_number: null, submitted_legal_address: null,
+      });
     });
 
     it("destruction evidence is immutable - direct UPDATE/DELETE refused", () => {

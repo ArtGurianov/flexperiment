@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useForm, type UseFormRegister } from "react-hook-form";
 import { api, AdminApiError } from "../../lib/api";
 import type { Row } from "../../lib/page";
@@ -236,16 +236,39 @@ function LegalRequisitesFields({ legalForm, register }: { legalForm: string; reg
   );
 }
 
+/** Mirrors the backend's frozen legal_form x tax_mode matrix (commerce/src/agent-referrals-legal-profile.ts's PROJECTION table) - only INDIVIDUAL_ENTREPRENEUR actually has a choice. */
+const TAX_MODE_OPTIONS: Record<string, Array<{ value: string; label: string }>> = {
+  INDIVIDUAL: [{ value: "NPD", label: "НПД" }],
+  INDIVIDUAL_ENTREPRENEUR: [{ value: "NPD", label: "НПД" }, { value: "OTHER", label: "Иной" }],
+  LEGAL_ENTITY: [{ value: "OTHER", label: "Иной" }],
+};
+
+/** Keeps tax_mode inside the set the selected legal_form actually allows - without this, switching legal_form silently leaves a now-invalid tax_mode selected and submission fails REJECTED_COMBINATION for no reason visible in the form itself. */
+function useConstrainedTaxMode(legalForm: string, taxMode: string, setValue: (name: "tax_mode", value: string) => void) {
+  useEffect(() => {
+    const allowed = TAX_MODE_OPTIONS[legalForm]?.map((o) => o.value) ?? [];
+    if (allowed.length && !allowed.includes(taxMode)) setValue("tax_mode", allowed[0]);
+  }, [legalForm, taxMode, setValue]);
+}
+
 /** D2 §10: a separate action for an already-active partner, never a repeat of onboarding verification. */
 function LegalProfileSupersession({ partnerId, legalProfile, pendingRequest, onDone }: {
   partnerId: string; legalProfile: Row | null; pendingRequest: Row | null; onDone: () => void;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const { register, handleSubmit, reset, watch } = useForm<{ legal_form: string; tax_mode: string; reason: string; evidence_ref: string } & LegalRequisitesFormFields>({
+  // shouldUnregister: a field hidden by LegalRequisitesFields' own
+  // conditional rendering (e.g. opf/kpp/legal_address when legal_form
+  // switches away from LEGAL_ENTITY) must not survive in form state - RHF's
+  // default keeps it, which would resubmit a stale value the backend
+  // correctly refuses as AGENT_REFERRALS_LEGAL_PROFILE_REQUISITE_FORBIDDEN.
+  const { register, handleSubmit, reset, watch, setValue } = useForm<{ legal_form: string; tax_mode: string; reason: string; evidence_ref: string } & LegalRequisitesFormFields>({
+    shouldUnregister: true,
     defaultValues: { legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "", evidence_ref: "", opf: "", full_name: "", short_name: "", inn: "", kpp: "", registration_number: "", legal_address: "" },
   });
   const selectedLegalForm = watch("legal_form");
+  const selectedTaxMode = watch("tax_mode");
+  useConstrainedTaxMode(selectedLegalForm, selectedTaxMode, setValue);
 
   const submitChange = handleSubmit(async (values) => {
     setBusy(true); setError(null);
@@ -304,7 +327,7 @@ function LegalProfileSupersession({ partnerId, legalProfile, pendingRequest, onD
             </select>
           </label>
           <label>Налоговый режим
-            <select {...register("tax_mode", { required: true })}><option value="NPD">НПД</option><option value="OTHER">Иной</option></select>
+            <select {...register("tax_mode", { required: true })}>{(TAX_MODE_OPTIONS[selectedLegalForm] ?? []).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
           </label>
           <LegalRequisitesFields legalForm={selectedLegalForm} register={register as unknown as UseFormRegister<LegalRequisitesFormFields>} />
           <label>Причина <input {...register("reason", { required: true })} /></label>
