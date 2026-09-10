@@ -98,24 +98,31 @@ describe("migrate(): ordinary path", () => {
   });
 });
 
-describe("FK-off registry: exactly one production entry after PR2", () => {
+describe("FK-off registry: exactly two production entries after the PR-D foundation", () => {
   // PR1 shipped this empty. PR2 adds the agents-rebuild migration and this
   // entry in the same reviewed commit - see commerce/src/db.ts and
-  // commerce/migrations/0042_agent_referrals_agents_rebuild.sql. This
-  // asserts PR2's own scope (one production member: 0042), not a ceiling on
-  // PR3+ ever adding another reviewed entry.
-  it("has exactly one entry", () => {
-    expect(FK_OFF_MIGRATIONS).toHaveLength(1);
+  // commerce/migrations/0042_agent_referrals_agents_rebuild.sql. The PR-D
+  // foundation adds the second entry the same way - see
+  // commerce/migrations/0050_agent_referrals_legal_profile_provenance_
+  // rebuild.sql. This asserts the current reviewed scope (two production
+  // members: 0042, 0050), not a ceiling on a later PR ever adding another.
+  it("has exactly two entries", () => {
+    expect(FK_OFF_MIGRATIONS).toHaveLength(2);
   });
 
-  it("is exactly the 0042 agents-rebuild tuple", () => {
+  it("is exactly the 0042 agents-rebuild and 0050 legal-profile-provenance-rebuild tuples", () => {
     expect(FK_OFF_MIGRATIONS).toEqual([
       { filename: "0042_agent_referrals_agents_rebuild.sql", sha256: "d9b5ecbf496993669201b45440ea5213ba0e52af778e2094d569f772adfee6ab" },
+      { filename: "0050_agent_referrals_legal_profile_provenance_rebuild.sql", sha256: "be67c7784ec24d84b10980466bd3de35ebf8562ae1ff8d5b3bc8346345a1d8df" },
     ]);
   });
 
-  it("treats the exact committed (filename, sha256) pair as privileged", () => {
+  it("treats the exact committed 0042 (filename, sha256) pair as privileged", () => {
     expect(isFkOffMigration("0042_agent_referrals_agents_rebuild.sql", "d9b5ecbf496993669201b45440ea5213ba0e52af778e2094d569f772adfee6ab")).toBe(true);
+  });
+
+  it("treats the exact committed 0050 (filename, sha256) pair as privileged", () => {
+    expect(isFkOffMigration("0050_agent_referrals_legal_profile_provenance_rebuild.sql", "be67c7784ec24d84b10980466bd3de35ebf8562ae1ff8d5b3bc8346345a1d8df")).toBe(true);
   });
 
   it("refuses the 0042 filename paired with any other hash", () => {

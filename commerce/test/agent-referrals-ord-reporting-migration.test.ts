@@ -66,14 +66,15 @@ describe("0048 ord_reporting migration", () => {
     expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
   });
 
-  it("is not FK-off, and the registry still contains only the exact 0042 tuple", () => {
+  it("is not FK-off, and the registry still contains only the exact 0042 and 0050 tuples", () => {
     const db = at0047();
     const sql = readFileSync(join(MIGRATIONS, MIGRATION_FILE), "utf8");
     expect(isFkOffMigration(MIGRATION_FILE, createHash("sha256").update(sql).digest("hex"))).toBe(false);
     migrate(db);
-    expect(FK_OFF_MIGRATIONS).toHaveLength(1);
+    expect(FK_OFF_MIGRATIONS).toHaveLength(2);
     expect(FK_OFF_MIGRATIONS).toEqual([
       { filename: "0042_agent_referrals_agents_rebuild.sql", sha256: "d9b5ecbf496993669201b45440ea5213ba0e52af778e2094d569f772adfee6ab" },
+      { filename: "0050_agent_referrals_legal_profile_provenance_rebuild.sql", sha256: "be67c7784ec24d84b10980466bd3de35ebf8562ae1ff8d5b3bc8346345a1d8df" },
     ]);
   });
 

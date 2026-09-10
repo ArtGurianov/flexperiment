@@ -181,6 +181,10 @@ export const verifyPartnerLegalProfile = (db: Database.Database, admin: AdminPri
       legal_form: identity.submitted_legal_form as LegalForm,
       tax_mode: identity.submitted_tax_mode as TaxMode,
       reason,
+      // The admin only verifies; the asserted profile is the partner's own
+      // submitted draft (submitted_legal_form/_tax_mode above), so the
+      // provenance is PARTNER_ASSERTED, not ADMIN_ASSERTED.
+      assertion_source: "PARTNER_ASSERTED",
     });
 
     db.prepare(`UPDATE partner_identities SET legal_profile_revision_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)

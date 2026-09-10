@@ -60,8 +60,13 @@ export function openReadOnlyDatabase(filename = process.env.COMMERCE_DATABASE_PA
  * the migration file did. PR2 adds `0042_agent_referrals_agents_rebuild.sql`
  * - the `agents` table rebuild that widens `contractor_type` to admit
  * `ORGANIZATION` - and this entry in the same reviewed commit, so both enter
- * the release together. This is the only production entry; PR2 ships no
- * second FK-off migration.
+ * the release together.
+ *
+ * The PR-D foundation adds the second entry (0050) the same way:
+ * `0050_agent_referrals_legal_profile_provenance_rebuild.sql` rebuilds
+ * `agent_referrals_legal_profile_revisions` to add the `assertion_source`/
+ * `evidence_ref` provenance columns and their CHECK, which - like 0042 -
+ * SQLite cannot add without recreating the table.
  *
  * `commerce/src/db.ts` is runtime-reachable from server.ts and is in no
  * boundary list of its own (see docs/release/DEPLOYMENT_INVARIANTS.md and
@@ -72,6 +77,7 @@ export function openReadOnlyDatabase(filename = process.env.COMMERCE_DATABASE_PA
  */
 export const FK_OFF_MIGRATIONS: ReadonlyArray<{ readonly filename: string; readonly sha256: string }> = [
   { filename: "0042_agent_referrals_agents_rebuild.sql", sha256: "d9b5ecbf496993669201b45440ea5213ba0e52af778e2094d569f772adfee6ab" },
+  { filename: "0050_agent_referrals_legal_profile_provenance_rebuild.sql", sha256: "be67c7784ec24d84b10980466bd3de35ebf8562ae1ff8d5b3bc8346345a1d8df" },
 ];
 
 export const isFkOffMigration = (filename: string, sha256Hex: string): boolean =>

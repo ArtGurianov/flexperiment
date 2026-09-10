@@ -93,10 +93,11 @@ describe("0043 agent-referrals foundation migration", () => {
     expect(db.prepare("SELECT version FROM schema_migrations WHERE version = ?").get(MIGRATION_FILE)).toEqual({ version: MIGRATION_FILE });
   });
 
-  it("leaves the FK_OFF_MIGRATIONS registry containing only the exact 0042 tuple", () => {
-    expect(FK_OFF_MIGRATIONS).toHaveLength(1);
+  it("leaves the FK_OFF_MIGRATIONS registry containing only the exact 0042 and 0050 tuples", () => {
+    expect(FK_OFF_MIGRATIONS).toHaveLength(2);
     expect(FK_OFF_MIGRATIONS).toEqual([
       { filename: "0042_agent_referrals_agents_rebuild.sql", sha256: "d9b5ecbf496993669201b45440ea5213ba0e52af778e2094d569f772adfee6ab" },
+      { filename: "0050_agent_referrals_legal_profile_provenance_rebuild.sql", sha256: "be67c7784ec24d84b10980466bd3de35ebf8562ae1ff8d5b3bc8346345a1d8df" },
     ]);
   });
 
@@ -172,8 +173,8 @@ describe("0043 agent-referrals foundation migration", () => {
       for (const [legalForm, taxMode, projected] of allowed) {
         const agentId = `agent-matrix-allowed-${legalForm}-${taxMode}`;
         insertAgent(agentId);
-        expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason)
-          VALUES (?, ?, 1, ?, ?, ?, 'structural-proof')`).run(`${legalForm}-${taxMode}`, agentId, legalForm, taxMode, projected),
+        expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason, assertion_source)
+          VALUES (?, ?, 1, ?, ?, ?, 'structural-proof', 'PARTNER_ASSERTED')`).run(`${legalForm}-${taxMode}`, agentId, legalForm, taxMode, projected),
           `${legalForm}+${taxMode}`).not.toThrow();
       }
       const rejected: Array<[string, string, string]> = [
@@ -183,8 +184,8 @@ describe("0043 agent-referrals foundation migration", () => {
       for (const [legalForm, taxMode, projected] of rejected) {
         const agentId = `agent-matrix-rejected-${legalForm}-${taxMode}`;
         insertAgent(agentId);
-        expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason)
-          VALUES (?, ?, 1, ?, ?, ?, 'structural-proof')`).run(`${legalForm}-${taxMode}`, agentId, legalForm, taxMode, projected),
+        expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason, assertion_source)
+          VALUES (?, ?, 1, ?, ?, ?, 'structural-proof', 'PARTNER_ASSERTED')`).run(`${legalForm}-${taxMode}`, agentId, legalForm, taxMode, projected),
           `${legalForm}+${taxMode}`).toThrow(/CHECK constraint failed/);
       }
     });
@@ -214,8 +215,8 @@ describe("0043 agent-referrals foundation migration", () => {
       db.prepare(`INSERT INTO delegation_template_revisions(id, revision, ord_reporting_mode, content_json, content_hash) VALUES ('d1', 1, 'FLEXPERIMENT_DELEGATED', '{}', 'h')`).run();
       db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
         VALUES ('agent-guard', 'guard-agent', 'G', 'G Legal', 'g@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run();
-      db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason)
-        VALUES ('r1', 'agent-guard', 1, 'INDIVIDUAL', 'NPD', 'SELF_EMPLOYED', 'seed')`).run();
+      db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason, assertion_source)
+        VALUES ('r1', 'agent-guard', 1, 'INDIVIDUAL', 'NPD', 'SELF_EMPLOYED', 'seed', 'PARTNER_ASSERTED')`).run();
 
       expect(() => db.exec("UPDATE framework_agreement_revisions SET content_hash = 'x' WHERE id = 'f1'")).toThrow(/FRAMEWORK_AGREEMENT_REVISION_IMMUTABLE/);
       expect(() => db.exec("UPDATE delegation_template_revisions SET content_hash = 'x' WHERE id = 'd1'")).toThrow(/DELEGATION_TEMPLATE_REVISION_IMMUTABLE/);
@@ -229,8 +230,8 @@ describe("0043 agent-referrals foundation migration", () => {
       db.prepare(`INSERT INTO delegation_template_revisions(id, revision, ord_reporting_mode, content_json, content_hash) VALUES ('d1', 1, 'FLEXPERIMENT_DELEGATED', '{}', 'h')`).run();
       db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
         VALUES ('agent-guard-2', 'guard-agent-2', 'G', 'G Legal', 'g2@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run();
-      db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason)
-        VALUES ('r1', 'agent-guard-2', 1, 'INDIVIDUAL', 'NPD', 'SELF_EMPLOYED', 'seed')`).run();
+      db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason, assertion_source)
+        VALUES ('r1', 'agent-guard-2', 1, 'INDIVIDUAL', 'NPD', 'SELF_EMPLOYED', 'seed', 'PARTNER_ASSERTED')`).run();
 
       expect(() => db.exec("DELETE FROM framework_agreement_revisions WHERE id = 'f1'")).toThrow(/FRAMEWORK_AGREEMENT_REVISION_IMMUTABLE/);
       expect(() => db.exec("DELETE FROM delegation_template_revisions WHERE id = 'd1'")).toThrow(/DELEGATION_TEMPLATE_REVISION_IMMUTABLE/);
