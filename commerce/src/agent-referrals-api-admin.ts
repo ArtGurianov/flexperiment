@@ -2,25 +2,25 @@ import { Hono } from "hono";
 import type Database from "better-sqlite3";
 import { DomainError } from "./domain";
 import type { AdminPrincipal } from "./agent-referrals-partner-identity";
-import { provisionPartnerOwner, reissuePartnerInvite, revokePartnerInvite, verifyPartnerLegalProfile, issueFrameworkToPartner } from "./agent-referrals-partner-identity";
+import { provisionPartnerOwner, rotatePartnerInvite, inviteCapabilityHeadId, revokePartnerInvite, type InviteRotationReason, verifyPartnerLegalProfile, issueFrameworkToPartner } from "./agent-referrals-partner-identity";
 import { getPartnerIdentity, activatePartner } from "./agent-referrals-onboarding";
 import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, currentFrameworkAgreementRevision, currentDelegationTemplateRevision, type FrameworkAgreementClauseKey, type DelegationTemplateClauseKey } from "./agent-referrals-framework-delegation";
 import { agentReferralsFeatureState, suspendAgentReferrals, reactivateAgentReferrals } from "./agent-referrals-feature-state";
 import { setAgentReferralsChannelPolicy, resolveAgentReferralsChannelPolicyNow, type ChannelPolicyStatus } from "./agent-referrals-channel-policy";
-import { verifyAudienceForPartnerCity, revokeAudienceVerificationForPartnerCity } from "./agent-referrals-engagement";
+import { verifyAudienceForPartnerCityIdempotent, revokeAudienceVerificationForPartnerCity } from "./agent-referrals-engagement";
 import { createPartnerPromo } from "./agent-referrals-promo";
 import { revokeDelegationAsAdmin } from "./agent-referrals-delegation-revocation";
-import { currentRetentionPolicy, mintRetentionPolicyRevision, placeLegalHold, releaseLegalHold, destroyPartnerIdentity } from "./agent-referrals-identity-retention";
-import { recordNpdStatusCheck, type NpdCheckStatus } from "./agent-referrals-npd";
+import { currentRetentionPolicy, mintRetentionPolicyRevisionIdempotent, placeLegalHoldIdempotent, releaseLegalHold, destroyPartnerIdentity } from "./agent-referrals-identity-retention";
+import { recordNpdStatusCheckIdempotent, type NpdCheckStatus } from "./agent-referrals-npd";
 import {
-  offerEngagement, mintEngagementRevision, activateEngagement, suspendEngagement, getEngagement, engagementsForPartner,
+  offerEngagement, mintEngagementRevision, activateEngagementIdempotent, suspendEngagement, getEngagement, engagementsForPartner,
   currentEngagementRevision, lastActivatedEngagementRevision, type EngagementRevisionTerms,
 } from "./agent-referrals-engagement";
 import { closeEngagementWithRewardRegistry } from "./agent-referrals-reward-registry";
-import { mintCreativeRevision, authorizeCreative, revokeCreativeAuthorization, currentCreativeRevision, currentCreativeAuthorization, type CreativeMaterialFields } from "./agent-referrals-creative";
+import { mintCreativeRevision, authorizeCreative, revokeCreativeAuthorization, currentCreativeRevision, currentCreativeAuthorization, lastCreativeAuthorization, type CreativeMaterialFields } from "./agent-referrals-creative";
 import { assessCreativeReadyToPublish } from "./agent-referrals-creative-readiness";
 import {
-  distributionsForEngagement, distributionProjection, reportDistribution, correctDistribution, requireRemoval, confirmRemoval, markOverdueRemoval,
+  distributionsForEngagement, distributionProjection, reportDistributionByAdminIdempotent, correctDistribution, requireRemoval, confirmRemoval, markOverdueRemoval,
   markRemovalUnverified, markReviewCleared, type ResourceKind,
 } from "./agent-referrals-distribution";
 import { mintOrdProviderProfile, currentOrdProviderProfile, type OrdProviderProfileKind } from "./agent-referrals-ord-provider-profile";
@@ -38,9 +38,16 @@ import { closeEngagementZeroReward, type ZeroRewardClosureReason } from "./agent
 import { preparePartnerSettlement, agentReferralsSettlementById, recoveryExposure, correctPartnerRewardWithSettlement } from "./agent-referrals-settlement";
 import { generateSettlementAct, presentSettlementAct, settlementActForSettlement, actAcceptanceForAct, actDisputeForAct } from "./agent-referrals-act";
 import {
-  beginPayment, recordPaymentMade, recordPayoutUnknown, recordConfirmedNotMade, recordNpdReceipt, paymentAttemptsForSettlement, paymentAttemptById,
+  beginPaymentIdempotent, recordPaymentMade, recordPayoutUnknown, recordConfirmedNotMade, recordNpdReceipt, paymentAttemptsForSettlement, paymentAttemptById,
 } from "./agent-referrals-payment";
 import { agentReferralsReviewQueue } from "./agent-referrals-review-queue";
+import { currentAgentReferralsLegalProfile, type LegalForm, type RawLegalRequisitesInput, type TaxMode } from "./agent-referrals-legal-profile";
+import {
+  submitLegalProfileSupersession, verifyLegalProfileSupersession, rejectLegalProfileSupersession,
+  ownedLegalProfileChangeRequest, pendingLegalProfileChangeRequestForPartner, legalProfileChangeRequestHeadForPartner, AgentReferralsLegalProfileSupersessionError,
+} from "./agent-referrals-legal-profile-supersession";
+import { recordVerifiedTaxTreatment, resolveTaxTreatmentForLegalProfileAt, type TaxSystem, type VatTreatment, type NoVatBasis } from "./agent-referrals-tax-treatment";
+import { now } from "./crypto";
 
 /**
  * `/v1/admin/agent-referrals/*` - mounted INSIDE api.ts's already-
@@ -64,6 +71,17 @@ const jsonBody = async (request: Request) => {
   try { return await request.json(); } catch { throw new DomainError("INVALID_JSON", 400); }
 };
 const asRecord = (value: unknown): Record<string, unknown> => (value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {});
+/**
+ * PR-C2: the six agent-referrals admin commands that carry durable command
+ * identity REQUIRE a key - there is no "if supplied" path, the same
+ * convention api.ts already applies to the commerce-core admin commands.
+ */
+const requireIdempotencyKey = (c: { req: { header: (name: string) => string | undefined } }): string => {
+  const key = c.req.header("Idempotency-Key");
+  if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
+  return key;
+};
+
 const requireString = (body: Record<string, unknown>, field: string): string => {
   const value = body[field];
   if (typeof value !== "string" || !value.trim()) throw new DomainError("AGENT_REFERRALS_ADMIN_FIELD_REQUIRED", 422, field);
@@ -78,20 +96,65 @@ const requireNumber = (body: Record<string, unknown>, field: string): number => 
   if (typeof value !== "number" || !Number.isFinite(value)) throw new DomainError("AGENT_REFERRALS_ADMIN_FIELD_REQUIRED", 422, field);
   return value;
 };
+const nullableString = (body: Record<string, unknown>, field: string): string | null => {
+  const value = body[field];
+  return typeof value === "string" ? value : null;
+};
+/** PR-E: the full requisites tuple as submitted over HTTP - normalizeAndValidateLegalProfile (called inside submitLegalProfileSupersession) is what actually proves per-legal_form shape; this only proves the wire types. */
+const legalRequisitesFromBody = (body: Record<string, unknown>): RawLegalRequisitesInput => ({
+  full_name: requireString(body, "full_name"),
+  inn: requireString(body, "inn"),
+  opf: nullableString(body, "opf"),
+  short_name: nullableString(body, "short_name"),
+  kpp: nullableString(body, "kpp"),
+  registration_number: nullableString(body, "registration_number"),
+  legal_address: nullableString(body, "legal_address"),
+});
 
 export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   const app = new Hono<AdminAppBindings>();
   const adminOf = (c: { var: { adminId?: string } }): AdminPrincipal => ({ realm: "ADMIN", admin_id: c.var.adminId! });
 
   // ---- Global feature state ------------------------------------------------
+  /**
+   * The operator is the ACTOR; the feature row itself holds the AUTHORITY.
+   *
+   * Passing `adminId` as `owner_id` conflated the two, and made the operator
+   * kill switch unreachable for exactly the states it exists to serve: the
+   * live owner is minted by the activation contour
+   * (`activateAgentReferralsIfReady` passes `input.activation_id`), never by
+   * an admin session, so `transitionInTransaction`'s owner check refused
+   * every suspend and every reactivate with OWNER_CONFLICT once the feature
+   * was ACTIVE. Found during the D-C3 cutover preflight against production,
+   * where the live owner is an `agent-referrals-activation-*` id and the only
+   * admin ids are `singleton-admin` and `release-control-operator`.
+   *
+   * So the transition PRESERVES the current owner rather than claiming it.
+   * The client never gets to choose an authority owner - taking it from the
+   * body would let any admin name any owner and defeat the check outright.
+   *
+   * The DORMANT fallback keeps today's behaviour: DORMANT is unowned, an
+   * unowned row passes the owner check by construction, and the only edge
+   * this adapter could aim at it - DORMANT -> SUSPENDED - stays refused by
+   * LEGAL_EDGES regardless of who asks.
+   *
+   * Reading the row outside the transaction is safe because it is not the
+   * proof: a concurrent writer that moves the owner is still caught by the
+   * owner check inside the CAS, and one that moves the revision is still
+   * caught by `expected_revision`. This read can only ever produce a refusal,
+   * never an unearned success.
+   */
+  const preservedOwner = (c: { var: { adminId?: string } }): string =>
+    agentReferralsFeatureState(sqlite).owner_id ?? c.var.adminId!;
+
   app.get("/feature-state", (c) => c.json(agentReferralsFeatureState(sqlite)));
   app.post("/feature-state/suspend", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(suspendAgentReferrals(sqlite, { expected_revision: requireNumber(body, "expected_revision"), owner_id: c.var.adminId!, reason: requireString(body, "reason") }));
+    return c.json(suspendAgentReferrals(sqlite, { expected_revision: requireNumber(body, "expected_revision"), owner_id: preservedOwner(c), reason: requireString(body, "reason") }));
   });
   app.post("/feature-state/reactivate", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(reactivateAgentReferrals(sqlite, { expected_revision: requireNumber(body, "expected_revision"), owner_id: c.var.adminId!, reason: requireString(body, "reason") }));
+    return c.json(reactivateAgentReferrals(sqlite, { expected_revision: requireNumber(body, "expected_revision"), owner_id: preservedOwner(c), reason: requireString(body, "reason") }));
   });
 
   /** §11 operator review reminders (round-2 fix): the same live-derived read the worker logs a summary of every cycle - see agent-referrals-review-queue.ts's own header. */
@@ -112,18 +175,60 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
       identity,
       engagements: engagementsForPartner(sqlite, identity.id),
       invites: sqlite.prepare(`SELECT id, purpose, expires_at, consumed_at, revoked_at, superseded_by_id, created_at FROM partner_invite_capabilities WHERE partner_identity_id = ? ORDER BY created_at DESC`).all(identity.id),
+      // PR-C3: the mint-chain head a rotation is pinned against - monotone,
+      // unlike "which invite is usable", which returns to null on every
+      // revoke or consume. Derivable from `invites` above, but naming it is
+      // what stops each caller re-deriving it slightly differently.
+      invite_capability_head_id: inviteCapabilityHeadId(sqlite, identity.id),
       audience_verifications: sqlite.prepare(`SELECT v.id, v.city_id, c.title AS city_title, v.event_kind, v.valid_until, v.aggregate_revision, v.created_at
         FROM partner_audience_verification_events v JOIN cities c ON c.id = v.city_id WHERE v.partner_identity_id = ? ORDER BY v.aggregate_revision DESC`).all(identity.id),
       legal_holds: sqlite.prepare(`SELECT id, reason, placed_at, released_at FROM partner_identity_legal_holds WHERE partner_identity_id = ? ORDER BY placed_at DESC`).all(identity.id),
+      // D2 §9: current verified profile (MAX(revision), never the pointer
+      // read in isolation) plus any PENDING supersession request.
+      legal_profile: currentAgentReferralsLegalProfile(sqlite, identity.agent_id),
+      pending_legal_profile_change_request: pendingLegalProfileChangeRequestForPartner(sqlite, identity.id),
+      // PR-C2: the request-chain head a new supersession is pinned against.
+      // A rejection frees the pending slot above without moving the verified
+      // revision, so the revision alone cannot carry that pin.
+      legal_profile_change_request_head: legalProfileChangeRequestHeadForPartner(sqlite, identity.id),
+      // PR-F: the tax treatment applicable right now for the CURRENT legal
+      // profile - null if the profile has none recorded yet (a fresh
+      // non-NPD supersession awaiting an explicit admin assertion).
+      tax_treatment: (() => {
+        const legalProfile = currentAgentReferralsLegalProfile(sqlite, identity.agent_id);
+        return legalProfile ? resolveTaxTreatmentForLegalProfileAt(sqlite, legalProfile.id, now()) : null;
+      })(),
     });
   });
   app.post("/partners", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
     return c.json(provisionPartnerOwner(sqlite, adminOf(c), requireString(body, "agent_id"), requireString(body, "email"), requireString(body, "reason")), 201);
   });
+  /**
+   * PR-C3: one rotation endpoint, with the operator's INTENT in the body.
+   * Recovery is not a second infrastructure - the raw token is never
+   * persisted, so a lost response cannot be replayed, only rotated past
+   * deliberately. `expected_live_capability_id` is what stops a retried old
+   * request destroying the capability its own first attempt created.
+   */
   app.post("/partners/:id/invite/reissue", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(reissuePartnerInvite(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason")));
+    // Required, with no default. A server-chosen MANUAL_REISSUE would put
+    // the business meaning of the command back where the caller cannot see
+    // it - and the whole point of collapsing recovery into a reason is that
+    // the reason IS the semantics. Validated before rotatePartnerInvite is
+    // reached, so a malformed request performs no writes at all.
+    //
+    // Machine-semantic, and never inferred from the human `reason` text
+    // beside it: "the response was lost" in prose does not make a rotation a
+    // recovery.
+    const rotationReason = requireString(body, "rotation_reason") as InviteRotationReason;
+    if (rotationReason !== "MANUAL_REISSUE" && rotationReason !== "LOST_RESPONSE_RECOVERY") {
+      throw new DomainError("AGENT_REFERRALS_INVITE_ROTATION_REASON_INVALID", 422, rotationReason);
+    }
+    // The mint-chain head, not "what is usable now": usability returns to
+    // null on every revoke or consume, which is a value a legal B* restores.
+    return c.json(rotatePartnerInvite(sqlite, adminOf(c), c.req.param("id"), requireString(body, "expected_invite_capability_head_id"), rotationReason, requireString(body, "reason")));
   });
   app.post("/invites/:id/revoke", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
@@ -134,6 +239,52 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
     const body = asRecord(await jsonBody(c.req.raw));
     return c.json(verifyPartnerLegalProfile(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason")));
   });
+
+  // ---- D2: legal-profile supersession (post-onboarding identity change) --
+  app.post("/partners/:id/legal-profile/change", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(submitLegalProfileSupersession(sqlite, adminOf(c), c.req.param("id"), {
+      legalForm: requireString(body, "legal_form") as LegalForm, taxMode: requireString(body, "tax_mode") as TaxMode,
+      reason: requireString(body, "reason"), evidenceRef: optionalString(body, "evidence_ref") ?? null,
+      // PR-C2 STALE_BOUND: the profile the caller was changing FROM. Without
+      // it, a retry after the first request was verified files a SECOND
+      // supersession against the revision its own first attempt produced.
+      expectedCurrentLegalProfileRevision: requireNumber(body, "expected_current_legal_profile_revision"),
+      expectedRequestSequence: requireNumber(body, "expected_request_sequence"),
+      ...legalRequisitesFromBody(body),
+    }), 201);
+  });
+  app.post("/partners/:id/legal-profile/change/:requestId/verify", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    // Relational authorization first, matching ownedEngagement's pattern -
+    // knowing requestId alone is never authority.
+    ownedLegalProfileChangeRequest(sqlite, c.req.param("id"), c.req.param("requestId"));
+    const outcome = verifyLegalProfileSupersession(sqlite, adminOf(c), c.req.param("requestId"), requireString(body, "reason"));
+    // The domain transaction has already committed by this point (STALE
+    // included) - translating a non-success outcome into an HTTP error here
+    // rolls nothing back, per the plan's own "outside the transaction" design.
+    if (outcome.outcome === "VERIFIED" || outcome.outcome === "REPLAYED") return c.json(outcome);
+    if (outcome.outcome === "STALE") throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_STALE", 409, `${outcome.expected}!=${outcome.actual}`);
+    if (outcome.outcome === "BLOCKED") throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_BLOCKED_BY_EXISTING_BINDING", 409, outcome.reason);
+    throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_INVALID_STATE", 409, outcome.state);
+  });
+  app.post("/partners/:id/legal-profile/change/:requestId/reject", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    ownedLegalProfileChangeRequest(sqlite, c.req.param("id"), c.req.param("requestId"));
+    return c.json(rejectLegalProfileSupersession(sqlite, adminOf(c), c.req.param("requestId"), requireString(body, "reason")));
+  });
+  // ---- PR-F: tax/VAT treatment authority (always targets the partner's CURRENT legal profile, resolved server-side - never a caller-supplied revision id). ----
+  app.post("/partners/:id/tax-treatment", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    const idempotencyKey = c.req.header("Idempotency-Key");
+    if (!idempotencyKey) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
+    return c.json(recordVerifiedTaxTreatment(sqlite, adminOf(c), c.req.param("id"), {
+      taxSystem: requireString(body, "tax_system") as TaxSystem, vatTreatment: requireString(body, "vat_treatment") as VatTreatment,
+      noVatBasis: (optionalString(body, "no_vat_basis") ?? null) as NoVatBasis | null,
+      effectiveFrom: requireString(body, "effective_from"), evidenceRef: requireString(body, "evidence_ref"), reason: requireString(body, "reason"),
+    }, idempotencyKey), 201);
+  });
+
   app.post("/partners/:id/framework/issue", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
     return c.json(issueFrameworkToPartner(sqlite, adminOf(c), c.req.param("id"), requireString(body, "framework_agreement_revision_id"), requireString(body, "delegation_template_revision_id"), requireString(body, "reason")));
@@ -150,11 +301,11 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   });
   app.post("/partners/:id/audience/:cityId/verify", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(verifyAudienceForPartnerCity(sqlite, adminOf(c), c.req.param("id"), c.req.param("cityId"), requireString(body, "valid_until"), requireString(body, "reason"), requireString(body, "evidence_ref")));
+    return c.json(verifyAudienceForPartnerCityIdempotent(sqlite, adminOf(c), requireIdempotencyKey(c), c.req.param("id"), c.req.param("cityId"), requireString(body, "valid_until"), requireString(body, "reason"), requireString(body, "evidence_ref")).response);
   });
   app.post("/partners/:id/audience/:cityId/revoke", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(revokeAudienceVerificationForPartnerCity(sqlite, adminOf(c), c.req.param("id"), c.req.param("cityId"), requireString(body, "reason"), requireString(body, "evidence_ref")));
+    return c.json(revokeAudienceVerificationForPartnerCity(sqlite, adminOf(c), c.req.param("id"), c.req.param("cityId"), requireString(body, "reason"), requireString(body, "evidence_ref"), requireNumber(body, "expected_aggregate_revision")));
   });
   app.post("/delegations/:id/revoke", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
@@ -162,18 +313,18 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   });
   app.post("/partners/:id/npd-status", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(recordNpdStatusCheck(sqlite, adminOf(c), c.req.param("id"), requireString(body, "status") as NpdCheckStatus, requireString(body, "evidence_ref")), 201);
+    return c.json(recordNpdStatusCheckIdempotent(sqlite, adminOf(c), requireIdempotencyKey(c), c.req.param("id"), requireString(body, "status") as NpdCheckStatus, requireString(body, "evidence_ref")).response, 201);
   });
 
   // ---- Retention / legal holds / destruction ------------------------------
   app.get("/retention-policy", (c) => c.json(currentRetentionPolicy(sqlite)));
   app.post("/retention-policy", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(mintRetentionPolicyRevision(sqlite, adminOf(c), requireString(body, "reason")), 201);
+    return c.json(mintRetentionPolicyRevisionIdempotent(sqlite, adminOf(c), requireIdempotencyKey(c), requireString(body, "reason")).response, 201);
   });
   app.post("/partners/:id/legal-hold", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(placeLegalHold(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason")), 201);
+    return c.json(placeLegalHoldIdempotent(sqlite, adminOf(c), requireIdempotencyKey(c), c.req.param("id"), requireString(body, "reason")).response, 201);
   });
   app.post("/legal-holds/:id/release", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
@@ -189,12 +340,12 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   app.get("/framework-agreement-revisions/current", (c) => c.json(currentFrameworkAgreementRevision(sqlite)));
   app.post("/framework-agreement-revisions", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(mintFrameworkAgreementRevision(sqlite, asRecord(body.clauses) as Record<FrameworkAgreementClauseKey, string>), 201);
+    return c.json(mintFrameworkAgreementRevision(sqlite, asRecord(body.clauses) as Record<FrameworkAgreementClauseKey, string>, nullableString(body, "expected_current_revision_id")), 201);
   });
   app.get("/delegation-template-revisions/current", (c) => c.json(currentDelegationTemplateRevision(sqlite)));
   app.post("/delegation-template-revisions", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(mintDelegationTemplateRevision(sqlite, asRecord(body.clauses) as Record<DelegationTemplateClauseKey, string>), 201);
+    return c.json(mintDelegationTemplateRevision(sqlite, asRecord(body.clauses) as Record<DelegationTemplateClauseKey, string>, nullableString(body, "expected_current_revision_id")), 201);
   });
 
   // ---- Channel policy -------------------------------------------------------
@@ -204,6 +355,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
     return c.json(setAgentReferralsChannelPolicy(sqlite, {
       channel_key: requireString(body, "channel_key"), status: requireString(body, "status") as ChannelPolicyStatus,
       effective_from: requireString(body, "effective_from"), reason: requireString(body, "reason"),
+      expected_policy_revision: requireNumber(body, "expected_policy_revision"),
     }), 201);
   });
 
@@ -247,6 +399,9 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
       active_revision: lastActivatedEngagementRevision(sqlite, engagementId),
       creative,
       creative_authorization: currentCreativeAuthorization(sqlite, engagementId),
+      // PR-C2: the chain HEAD, live or revoked - the live row above goes
+      // back to null on every revocation and so cannot be pinned against.
+      creative_authorization_head: lastCreativeAuthorization(sqlite, engagementId),
       distributions: distributionsForEngagement(sqlite, engagementId).map((d) => ({
         ...distributionProjection(sqlite, d.id),
         reporting_periods: ordDistributionPeriodReportsForDistribution(sqlite, d.id),
@@ -267,15 +422,15 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   });
   app.post("/engagements/:id/revisions", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(mintEngagementRevision(sqlite, adminOf(c), c.req.param("id"), revisionTerms(body), requireString(body, "reason")), 201);
+    return c.json(mintEngagementRevision(sqlite, adminOf(c), c.req.param("id"), revisionTerms(body), requireString(body, "reason"), nullableString(body, "expected_current_revision_id")), 201);
   });
   app.post("/engagements/:id/activate", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(activateEngagement(sqlite, adminOf(c), c.req.param("id"), requireString(body, "engagement_revision_id")));
+    return c.json(activateEngagementIdempotent(sqlite, adminOf(c), requireIdempotencyKey(c), c.req.param("id"), requireString(body, "engagement_revision_id")).response);
   });
   app.post("/engagements/:id/suspend", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(suspendEngagement(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason")));
+    return c.json(suspendEngagement(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"), requireNumber(body, "expected_lifecycle_revision")));
   });
   app.post("/engagements/:id/close", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
@@ -294,9 +449,14 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
       mandatory_labeling_text: requireString(body, "mandatory_labeling_text"),
       creative_target_url: requireString(body, "creative_target_url"),
     };
-    return c.json(mintCreativeRevision(sqlite, adminOf(c), c.req.param("id"), fields), 201);
+    return c.json(mintCreativeRevision(sqlite, adminOf(c), c.req.param("id"), fields, nullableString(body, "expected_current_revision_id")), 201);
   });
-  app.post("/engagements/:id/creative/:revisionId/authorize", (c) => c.json(authorizeCreative(sqlite, adminOf(c), c.req.param("id"), c.req.param("revisionId"))));
+  app.post("/engagements/:id/creative/:revisionId/authorize", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    // Pinned against the authorization chain HEAD, not the live one: a
+    // revocation would otherwise make a stale retry look current again.
+    return c.json(authorizeCreative(sqlite, adminOf(c), c.req.param("id"), c.req.param("revisionId"), nullableString(body, "expected_authorization_head_id")));
+  });
   app.post("/creative-authorizations/:id/revoke", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
     revokeCreativeAuthorization(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"));
@@ -306,11 +466,15 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   // ---- Distributions ------------------------------------------------------------
   app.post("/engagements/:id/distributions", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(reportDistribution(sqlite, adminOf(c), c.req.param("id"), {
+    // .response, never the whole AdminCommandResult: `replayed` is an
+    // internal disposition, and leaking it would also make a replay
+    // byte-different from the original - the exact property the key exists
+    // to provide.
+    return c.json(reportDistributionByAdminIdempotent(sqlite, adminOf(c), requireIdempotencyKey(c), c.req.param("id"), {
       channel_key: requireString(body, "channel_key"), resource_kind: requireString(body, "resource_kind") as ResourceKind,
       resource_identifier: requireString(body, "resource_identifier"), distribution_resource_url: requireString(body, "distribution_resource_url"),
       published_at: requireString(body, "published_at"), ended_at: optionalString(body, "ended_at") ?? null, evidence_ref: requireString(body, "evidence_ref"),
-    }), 201);
+    }).response, 201);
   });
   app.post("/distributions/:id/correct", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
@@ -318,31 +482,31 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
       channel_key: requireString(body, "channel_key"), resource_kind: requireString(body, "resource_kind") as ResourceKind,
       resource_identifier: requireString(body, "resource_identifier"), distribution_resource_url: requireString(body, "distribution_resource_url"),
       published_at: requireString(body, "published_at"), ended_at: optionalString(body, "ended_at") ?? null, evidence_ref: requireString(body, "evidence_ref"),
-    }, requireString(body, "correction_reason")));
+    }, requireString(body, "correction_reason"), requireString(body, "expected_supersedes_revision_id")));
   });
   app.post("/distributions/:id/require-removal", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    requireRemoval(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"));
+    requireRemoval(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"), requireNumber(body, "expected_event_sequence"));
     return c.json({ ok: true });
   });
   app.post("/distributions/:id/confirm-removal", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    confirmRemoval(sqlite, adminOf(c), c.req.param("id"), requireString(body, "evidence_ref"));
+    confirmRemoval(sqlite, adminOf(c), c.req.param("id"), requireString(body, "evidence_ref"), requireNumber(body, "expected_event_sequence"));
     return c.json({ ok: true });
   });
   app.post("/distributions/:id/mark-overdue", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    markOverdueRemoval(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"));
+    markOverdueRemoval(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"), requireNumber(body, "expected_event_sequence"));
     return c.json({ ok: true });
   });
   app.post("/distributions/:id/mark-unverified", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    markRemovalUnverified(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"));
+    markRemovalUnverified(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"), requireNumber(body, "expected_event_sequence"));
     return c.json({ ok: true });
   });
   app.post("/distributions/:id/review-cleared", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    markReviewCleared(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"));
+    markReviewCleared(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"), requireNumber(body, "expected_event_sequence"));
     return c.json({ ok: true });
   });
   app.get("/distributions/:id/reporting-tail", (c) => {
@@ -357,11 +521,11 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   app.get("/ord/provider-profile/:kind", (c) => c.json(currentOrdProviderProfile(sqlite, c.req.param("kind") as OrdProviderProfileKind)));
   app.post("/ord/provider-profile", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(mintOrdProviderProfile(sqlite, c.var.adminId!, requireString(body, "kind") as OrdProviderProfileKind, asRecord(body.content), requireString(body, "reason")), 201);
+    return c.json(mintOrdProviderProfile(sqlite, c.var.adminId!, requireString(body, "kind") as OrdProviderProfileKind, asRecord(body.content), requireString(body, "reason"), nullableString(body, "expected_current_revision_id")), 201);
   });
   app.post("/ord/provider-operation", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(openOrdProviderOperation(sqlite, c.var.adminId!, requireString(body, "kind") as OrdProviderProfileKind), 201);
+    return c.json(openOrdProviderOperation(sqlite, c.var.adminId!, requireString(body, "kind") as OrdProviderProfileKind, nullableString(body, "expected_current_operation_id")), 201);
   });
   app.post("/ord/provider-operation/:id/submitted", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
@@ -413,11 +577,11 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
       correction_reason: optionalString(body, "correction_reason"), statistics_reason: optionalString(body, "statistics_reason") as "ZERO_REWARD_STATISTICS" | "CONTINUING_STATISTICS" | undefined,
       special_period_is_service_period: typeof body.special_period_is_service_period === "boolean" ? body.special_period_is_service_period : undefined,
       submission: body.submission ? { vk_operation_external_id: requireString(asRecord(body.submission), "vk_operation_external_id"), erir_code: requireString(asRecord(body.submission), "erir_code"), submission_evidence_ref: requireString(asRecord(body.submission), "submission_evidence_ref") } : undefined,
-    }), 201);
+    }, nullableString(body, "expected_current_report_id")), 201);
   });
   app.post("/distributions/:id/reports/:periodKey/reconciliation", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(recordOrdDistributionPeriodReportReconciliation(sqlite, adminOf(c), c.req.param("id"), c.req.param("periodKey"), requireString(body, "vk_operation_external_id"), requireString(body, "erir_code"), requireString(body, "submission_evidence_ref")));
+    return c.json(recordOrdDistributionPeriodReportReconciliation(sqlite, adminOf(c), c.req.param("id"), c.req.param("periodKey"), requireString(body, "vk_operation_external_id"), requireString(body, "erir_code"), requireString(body, "submission_evidence_ref"), requireString(body, "expected_current_report_id")));
   });
 
   // ---- Reward registry / zero-reward closure -----------------------------------------
@@ -427,7 +591,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   });
   app.post("/engagements/:id/reward-registry/correct", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(correctPartnerRewardWithSettlement(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason")));
+    return c.json(correctPartnerRewardWithSettlement(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"), requireString(body, "expected_current_effective_snapshot_id")));
   });
   app.get("/engagements/:id/recovery-exposure", (c) => c.json(recoveryExposure(sqlite, c.req.param("id"))));
   app.post("/engagements/:id/zero-reward-closure", async (c) => {
@@ -468,7 +632,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   });
   app.post("/payments/begin", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(beginPayment(sqlite, adminOf(c), requireString(body, "settlement_id")), 201);
+    return c.json(beginPaymentIdempotent(sqlite, adminOf(c), requireIdempotencyKey(c), requireString(body, "settlement_id")).response, 201);
   });
   app.post("/payment-attempts/:id/made", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));

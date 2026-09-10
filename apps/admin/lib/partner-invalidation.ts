@@ -1,0 +1,63 @@
+import type { QueryKey } from "@tanstack/react-query";
+import { partnerKeys } from "./query-keys";
+
+/**
+ * PR-C: the partner realm's own mutation -> cache-consequence table, the
+ * exact counterpart of invalidation.ts for the admin realm. It is a separate
+ * table rather than more arms on AdminMutation on purpose: realm separation
+ * is a hard boundary in this system, and neither side should be able to
+ * invalidate the other's cache by naming one of its mutations.
+ *
+ * Unlike the admin table there is no universal summary key here - the
+ * partner surface has no dashboard counters (PartnerApp routes "dashboard"
+ * straight to the engagements view), so a blanket key would be inventing a
+ * query nothing renders.
+ */
+export type PartnerMutation =
+  | "partner.legalProfileSubmit" | "partner.legalProfileChange"
+  | "partner.frameworkAccept"
+  | "partner.payoutSet" | "partner.payoutRevoke"
+  | "partner.engagementAccept" | "partner.distributionReport" | "partner.removalClaim"
+  | "partner.actAccept" | "partner.actDispute";
+
+export type PartnerMutationContext = {
+  engagementId?: string;
+};
+
+export function partnerInvalidationKeysFor(mutation: PartnerMutation, ctx: PartnerMutationContext = {}): readonly QueryKey[] {
+  switch (mutation) {
+    // Both land in the same place: /me carries onboarding_state, the current
+    // legal profile and the pending change request all at once.
+    case "partner.legalProfileSubmit":
+    case "partner.legalProfileChange":
+      return [partnerKeys.me()];
+    // Acceptance advances onboarding_state, which /me renders too.
+    case "partner.frameworkAccept":
+      return [partnerKeys.agreements(), partnerKeys.me()];
+    // /me renders the redacted payout destination alongside the profile.
+    case "partner.payoutSet":
+    case "partner.payoutRevoke":
+      return [partnerKeys.payoutProfile(), partnerKeys.me()];
+    // Engagement-scoped commands change the open detail and the lifecycle
+    // state the list shows. Conversions are NOT invalidated: no partner
+    // command moves them (they follow real orders), and refetching that
+    // query on every act acceptance would be pure request budget.
+    case "partner.engagementAccept":
+    case "partner.distributionReport":
+    case "partner.removalClaim":
+    case "partner.actAccept":
+    case "partner.actDispute":
+      return [
+        ...(ctx.engagementId ? [partnerKeys.engagement(ctx.engagementId)] : []),
+        partnerKeys.engagements(),
+      ];
+  }
+}
+
+export const ALL_PARTNER_MUTATIONS: readonly PartnerMutation[] = [
+  "partner.legalProfileSubmit", "partner.legalProfileChange",
+  "partner.frameworkAccept",
+  "partner.payoutSet", "partner.payoutRevoke",
+  "partner.engagementAccept", "partner.distributionReport", "partner.removalClaim",
+  "partner.actAccept", "partner.actDispute",
+];

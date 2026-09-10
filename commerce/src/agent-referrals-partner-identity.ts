@@ -1,6 +1,8 @@
 import type Database from "better-sqlite3";
 import { emailHash, id } from "./crypto";
-import { applyAgentReferralsLegalProfile, type LegalForm, type TaxMode } from "./agent-referrals-legal-profile";
+import { requireObservedVersion } from "./agent-referrals-command-precondition";
+import { normalizeAndValidateLegalProfile, type LegalForm, type RawLegalRequisitesInput, type TaxMode } from "./agent-referrals-legal-profile";
+import { applyVerifiedLegalProfileForPartnerIdentity } from "./agent-referrals-legal-profile-supersession";
 import { getPartnerIdentity, recordPartnerIdentityEvent, transitionOnboardingStateInTransaction, type PartnerIdentityRow } from "./agent-referrals-onboarding";
 import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
 import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
@@ -45,8 +47,22 @@ export const provisionPartnerOwner = (db: Database.Database, admin: AdminPrincip
     assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "NEW_PARTNER_PROVISIONING");
 
     const partnerIdentityId = id();
-    db.prepare(`INSERT INTO partner_identities(id, agent_id, email, email_hash, created_by_admin_id) VALUES (?, ?, ?, ?, ?)`)
-      .run(partnerIdentityId, agentId, email.trim().toLowerCase(), emailHash(email), admin.admin_id);
+    try {
+      db.prepare(`INSERT INTO partner_identities(id, agent_id, email, email_hash, created_by_admin_id) VALUES (?, ?, ?, ?, ?)`)
+        .run(partnerIdentityId, agentId, email.trim().toLowerCase(), emailHash(email), admin.admin_id);
+    } catch (error) {
+      // PR-C idempotency audit: this command carries no durable key, so the
+      // ONLY thing a retry after an ambiguous network failure meets is the
+      // agent_id UNIQUE index - and it met it as a raw SqliteError, i.e. a
+      // 500 for what is really "this agent already has a partner". The
+      // operator's correct next move (re-read, see the partner, stop) was
+      // being reported as a server fault. Narrow catch by the exact
+      // constraint, per agent-referrals-payment.ts's own precedent.
+      if (error instanceof Error && /UNIQUE constraint failed: partner_identities\.agent_id/.test(error.message)) {
+        throw new PartnerIdentityError("AGENT_REFERRALS_PARTNER_ALREADY_PROVISIONED", 409, agentId);
+      }
+      throw error;
+    }
 
     const rawToken = generateOpaqueToken();
     const inviteId = id();
@@ -63,16 +79,77 @@ export const provisionPartnerOwner = (db: Database.Database, admin: AdminPrincip
 };
 
 /**
- * Explicit reissue: supersedes the current live invite (if any) and mints a
- * brand-new one. The partial unique index on partner_invite_capabilities
- * guarantees at most one live invite exists at any instant regardless of
- * what this function does, but superseding explicitly is what keeps the old
- * token from silently continuing to work between the two writes.
+ * The HEAD of a partner's invite mint chain - the last capability minted,
+ * whether or not it is still usable. 0057's partial unique index makes it at
+ * most one.
+ *
+ * This is what a rotation is pinned against, and the distinction from "the
+ * capability that is usable right now" is the whole point: usability is
+ * CYCLIC (revoke or consume returns it to null, the next mint gives it a
+ * value, revoking returns it to null again), so pinning it let a stale
+ * rotation through after any legal revocation. The head only ever moves
+ * forward, because a superseded row is never un-superseded.
+ *
+ *   consumed_at / revoked_at   -> is this token usable?
+ *   superseded_by_id           -> which capability is last in the chain?
+ *
+ * Null only for a partner with no capability at all, which provisioning
+ * never leaves behind - it mints the first invite in the same transaction.
  */
-export const reissuePartnerInvite = (db: Database.Database, admin: AdminPrincipal, partnerIdentityId: string, reason: string): { invite_id: string; raw_invite_token: string } => {
+export const inviteCapabilityHeadId = (db: Database.Database, partnerIdentityId: string): string | null =>
+  ((db.prepare(`SELECT id FROM partner_invite_capabilities
+    WHERE partner_identity_id = ? AND superseded_by_id IS NULL`)
+    .get(partnerIdentityId) as { id: string } | undefined)?.id) ?? null;
+
+/**
+ * PR-C3: rotating a partner's invite capability - the ONE operation, with a
+ * reason rather than a twin.
+ *
+ * The defect this exists for is small and real:
+ *
+ *   T1 live
+ *   reissue(T1) commits -> T2, raw token in the response
+ *   the response is lost
+ *   the old reissue(T1) must not destroy T2
+ *
+ * and it needs exactly one new invariant: a rotation must NAME the
+ * capability it replaces. Before this, reissue read whatever was live and
+ * superseded it, so a retry minted a THIRD capability and destroyed the
+ * second - whose raw token nobody held either. At every instant exactly one
+ * capability was live, so 0044's partial unique index was satisfied and
+ * nothing looked wrong.
+ *
+ * Recovery is NOT a second mechanism. The raw token is never persisted, so
+ * restoring a lost response is impossible in principle; the only thing that
+ * can exist is "rotate again, deliberately". What differs between an
+ * operator reissuing and an operator recovering a lost response is the
+ * REASON, which the audit trail records - not the state machine, not the
+ * transaction, not the error. An earlier draft of this PR split them into
+ * two exported commands and two routes that differed by one string literal;
+ * that was two concepts where there is one.
+ *
+ * A retried old request simply meets the stale refusal. There is no
+ * idempotency infrastructure here, and there should not be.
+ */
+export type InviteRotationReason = "MANUAL_REISSUE" | "LOST_RESPONSE_RECOVERY";
+
+export const rotatePartnerInvite = (
+  db: Database.Database,
+  admin: AdminPrincipal,
+  partnerIdentityId: string,
+  /**
+   * The mint-chain head this rotation replaces, as the caller last saw it.
+   * Non-nullable: provisioning always mints the first capability, so a
+   * partner that can be rotated always has a head, and admitting null would
+   * reintroduce the restorable value this pin exists to avoid.
+   */
+  expectedCapabilityHeadId: string,
+  rotationReason: InviteRotationReason,
+  reason: string,
+): { invite_id: string; raw_invite_token: string } => {
   const run = db.transaction(() => {
-    const current = db.prepare(`SELECT id FROM partner_invite_capabilities
-      WHERE partner_identity_id = ? AND consumed_at IS NULL AND revoked_at IS NULL AND superseded_by_id IS NULL`).get(partnerIdentityId) as { id: string } | undefined;
+    const current = inviteCapabilityHeadId(db, partnerIdentityId);
+    requireObservedVersion("AGENT_REFERRALS_INVITE_CAPABILITY_STALE", expectedCapabilityHeadId, current);
 
     const rawToken = generateOpaqueToken();
     const inviteId = id();
@@ -86,13 +163,21 @@ export const reissuePartnerInvite = (db: Database.Database, admin: AdminPrincipa
     // of the transaction), which is what lets these two writes happen in
     // the only order the unique index permits.
     db.pragma("defer_foreign_keys = ON");
-    if (current) db.prepare(`UPDATE partner_invite_capabilities SET superseded_by_id = ? WHERE id = ?`).run(inviteId, current.id);
+    // The head is superseded even when it is already consumed or revoked:
+    // that is what keeps the chain single-headed, and 0057's unique index
+    // refuses the alternative structurally.
+    if (current) db.prepare(`UPDATE partner_invite_capabilities SET superseded_by_id = ? WHERE id = ?`).run(inviteId, current);
 
     db.prepare(`INSERT INTO partner_invite_capabilities(id, partner_identity_id, purpose, verifier_hash, expires_at, created_by_admin_id)
       VALUES (?, ?, 'ONBOARDING', ?, ?, ?)`)
       .run(inviteId, partnerIdentityId, hashOpaqueToken(rawToken), new Date(Date.now() + INVITE_TTL_MS).toISOString(), admin.admin_id);
 
-    recordPartnerIdentityEvent(db, partnerIdentityId, "INVITE_REISSUED", "ADMIN", { invite_id: inviteId, superseded_invite_id: current?.id ?? null, reason });
+    // One audit stream, and the reason is what makes a recovery
+    // distinguishable from a deliberate reissue. Never the raw token, which
+    // exists solely in the value returned below.
+    recordPartnerIdentityEvent(db, partnerIdentityId, "INVITE_ROTATED", "ADMIN", {
+      invite_id: inviteId, superseded_invite_id: current, rotation_reason: rotationReason, reason,
+    });
     return { invite_id: inviteId, raw_invite_token: rawToken };
   });
   return run.immediate();
@@ -143,16 +228,70 @@ export const consumePartnerInvite = (db: Database.Database, rawToken: string): {
  * Transitions INVITED -> PROFILE_SUBMITTED on first submission; a later
  * resubmission while already PROFILE_SUBMITTED updates the draft without
  * consuming another onboarding transition.
+ *
+ * PR-E: the FULL requisites payload is required and validated through the
+ * exact same matrix normalizeAndValidateLegalProfile enforces on the mint
+ * path itself - an incomplete or malformed draft can never reach
+ * PROFILE_SUBMITTED, so verifyPartnerLegalProfile's later mint can never
+ * fail on a requisites shape violation the partner wasn't already told
+ * about at submission time.
  */
-export const submitPartnerLegalProfile = (db: Database.Database, partner: PartnerPrincipal, legalForm: LegalForm, taxMode: TaxMode): PartnerIdentityRow => {
+export const submitPartnerLegalProfile = (
+  db: Database.Database,
+  partner: PartnerPrincipal,
+  legalForm: LegalForm,
+  taxMode: TaxMode,
+  requisites: RawLegalRequisitesInput,
+  /**
+   * PR-C2 STALE_BOUND: the draft revision the partner was looking at. The
+   * no-change branch below is NOT a replay proof on its own - after a
+   * second, different submission the candidate no longer equals the current
+   * draft, so a retried first submission would silently overwrite the
+   * second one and an admin verifying "the submitted profile" would verify
+   * the draft the partner had already replaced.
+   */
+  expectedDraftRevision: number,
+): PartnerIdentityRow => {
+  const { requisites: validated } = normalizeAndValidateLegalProfile(legalForm, taxMode, requisites);
   const run = db.transaction((): PartnerIdentityRow => {
     const identity = getPartnerIdentity(db, partner.partner_identity_id);
-    if (!identity) throw new PartnerIdentityError("PARTNER_IDENTITY_NOT_FOUND", 404);
+    // A PartnerPrincipal is resolved from a session BEFORE this transaction
+    // opens (the session lookup itself already refuses a destroyed identity,
+    // but a principal obtained just before a concurrent destroy is still a
+    // valid-looking value the caller holds) - destroyed_at must be re-proven
+    // here, inside the write lock, or a stale principal could resurrect the
+    // exact PII destroyPartnerIdentity() just scrubbed. 404, matching the
+    // "identity does not exist" treatment used everywhere else in this file -
+    // a destroyed identity is not a distinguishable state to an unauthorized
+    // caller.
+    if (!identity || identity.destroyed_at !== null) throw new PartnerIdentityError("PARTNER_IDENTITY_NOT_FOUND", 404);
     if (identity.onboarding_state !== "INVITED" && identity.onboarding_state !== "PROFILE_SUBMITTED") {
       throw new PartnerIdentityError("AGENT_REFERRALS_LEGAL_PROFILE_SUBMISSION_LOCKED", 409, identity.onboarding_state);
     }
-    db.prepare(`UPDATE partner_identities SET submitted_legal_form = ?, submitted_tax_mode = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
-      .run(legalForm, taxMode, partner.partner_identity_id);
+    // Proven against the aggregate's own monotone counter (0055), never
+    // against the draft's content: X -> Y -> X is a legal sequence of edits
+    // and a content pin would match again at the end of it.
+    requireObservedVersion("AGENT_REFERRALS_LEGAL_PROFILE_DRAFT_STALE", expectedDraftRevision, identity.legal_profile_draft_revision);
+
+    // PR-C2: resubmitting the draft the identity already carries is not a
+    // second submission. The old path rewrote the same columns and appended
+    // another LEGAL_PROFILE_SUBMITTED event every time - and the partner form
+    // stays on screen in PROFILE_SUBMITTED, so a lost response plus one more
+    // click reached it normally. Mirrors applyAgentReferralsLegalProfile's
+    // own idempotent no-op on an unchanged semantic profile.
+    const unchanged = identity.onboarding_state === "PROFILE_SUBMITTED"
+      && identity.submitted_legal_form === legalForm && identity.submitted_tax_mode === taxMode
+      && identity.submitted_opf === validated.opf && identity.submitted_full_name === validated.full_name
+      && identity.submitted_short_name === validated.short_name && identity.submitted_inn === validated.inn
+      && identity.submitted_kpp === validated.kpp && identity.submitted_registration_number === validated.registration_number
+      && identity.submitted_legal_address === validated.legal_address;
+    if (unchanged) return identity;
+
+    db.prepare(`UPDATE partner_identities SET submitted_legal_form = ?, submitted_tax_mode = ?,
+        submitted_opf = ?, submitted_full_name = ?, submitted_short_name = ?, submitted_inn = ?, submitted_kpp = ?, submitted_registration_number = ?, submitted_legal_address = ?,
+        legal_profile_draft_revision = legal_profile_draft_revision + 1,
+        updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .run(legalForm, taxMode, validated.opf, validated.full_name, validated.short_name, validated.inn, validated.kpp, validated.registration_number, validated.legal_address, partner.partner_identity_id);
     recordPartnerIdentityEvent(db, partner.partner_identity_id, "LEGAL_PROFILE_SUBMITTED", "PARTNER", { legal_form: legalForm, tax_mode: taxMode });
     if (identity.onboarding_state === "INVITED") {
       transitionOnboardingStateInTransaction(db, partner.partner_identity_id, "PROFILE_SUBMITTED", identity.onboarding_revision, "PARTNER", "legal profile submitted");
@@ -171,20 +310,43 @@ export const submitPartnerLegalProfile = (db: Database.Database, partner: Partne
  */
 export const verifyPartnerLegalProfile = (db: Database.Database, admin: AdminPrincipal, partnerIdentityId: string, reason: string): PartnerIdentityRow => {
   const run = db.transaction((): PartnerIdentityRow => {
-    const identity = getPartnerIdentity(db, partnerIdentityId);
-    if (!identity) throw new PartnerIdentityError("PARTNER_IDENTITY_NOT_FOUND", 404);
-    if (identity.onboarding_state !== "PROFILE_SUBMITTED") throw new PartnerIdentityError("AGENT_REFERRALS_LEGAL_PROFILE_NOT_SUBMITTED", 409, identity.onboarding_state);
-    if (!identity.submitted_legal_form || !identity.submitted_tax_mode) throw new PartnerIdentityError("AGENT_REFERRALS_LEGAL_PROFILE_NOT_SUBMITTED", 409);
+    // D2: everything that moves the verified MAX(revision) is classified
+    // NEW_AUTHORITY, gated the same as D2's own supersession verify() -
+    // this initial mint was the pre-D2 gap in that rule.
+    assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "INITIAL_LEGAL_PROFILE_VERIFICATION");
 
-    const revisionResult = applyAgentReferralsLegalProfile(db, {
-      agent_id: identity.agent_id,
-      legal_form: identity.submitted_legal_form as LegalForm,
-      tax_mode: identity.submitted_tax_mode as TaxMode,
+    const identity = getPartnerIdentity(db, partnerIdentityId);
+    // Explicit, not merely implied by the submitted_full_name/inn NULL check
+    // below: a destroyed identity must never become new legal authority,
+    // independent of whatever the draft columns happen to contain - matches
+    // D2's own eligibleForSupersession (agent-referrals-legal-profile-
+    // supersession.ts), which checks destroyed_at the same way for its own
+    // verify path.
+    if (!identity || identity.destroyed_at !== null) throw new PartnerIdentityError("PARTNER_IDENTITY_NOT_FOUND", 404);
+    if (identity.onboarding_state !== "PROFILE_SUBMITTED") throw new PartnerIdentityError("AGENT_REFERRALS_LEGAL_PROFILE_NOT_SUBMITTED", 409, identity.onboarding_state);
+    // full_name/inn are mandatory for every legal_form - their absence is
+    // sufficient proof the draft was never (successfully) submitted through
+    // submitPartnerLegalProfile, which validates the whole matrix before
+    // ever writing these columns.
+    if (!identity.submitted_legal_form || !identity.submitted_tax_mode || !identity.submitted_full_name || !identity.submitted_inn) {
+      throw new PartnerIdentityError("AGENT_REFERRALS_LEGAL_PROFILE_NOT_SUBMITTED", 409);
+    }
+
+    const revisionResult = applyVerifiedLegalProfileForPartnerIdentity(db, {
+      partnerIdentityId,
+      legalForm: identity.submitted_legal_form as LegalForm,
+      taxMode: identity.submitted_tax_mode as TaxMode,
       reason,
+      // The admin only verifies; the asserted profile is the partner's own
+      // submitted draft (submitted_legal_form/_tax_mode above), so the
+      // provenance is PARTNER_ASSERTED, not ADMIN_ASSERTED.
+      assertionSource: "PARTNER_ASSERTED",
+      // The whole proven snapshot, carried straight through - never
+      // re-collected or re-derived at verify time.
+      opf: identity.submitted_opf, full_name: identity.submitted_full_name, short_name: identity.submitted_short_name,
+      inn: identity.submitted_inn, kpp: identity.submitted_kpp, registration_number: identity.submitted_registration_number, legal_address: identity.submitted_legal_address,
     });
 
-    db.prepare(`UPDATE partner_identities SET legal_profile_revision_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
-      .run(revisionResult.revision_id, partnerIdentityId);
     recordPartnerIdentityEvent(db, partnerIdentityId, "LEGAL_PROFILE_VERIFIED", "ADMIN", { legal_profile_revision_id: revisionResult.revision_id, reason });
     transitionOnboardingStateInTransaction(db, partnerIdentityId, "PROFILE_VERIFIED", identity.onboarding_revision, "ADMIN", reason);
     return getPartnerIdentity(db, partnerIdentityId)!;

@@ -1,23 +1,41 @@
 import { useCallback, useRef, useState } from "react";
 import { useMutation, useQueryClient, type UseMutationOptions } from "@tanstack/react-query";
-import { type AdminApiError } from "./api";
+import { type PartnerApiError } from "./partner-api";
 import { shouldRefreshAuthoritativeState, shouldRetainCommandIntent } from "./idempotency";
-import { invalidationKeysFor, type AdminMutation, type MutationContext } from "./invalidation";
+import { partnerInvalidationKeysFor, type PartnerMutation, type PartnerMutationContext } from "./partner-invalidation";
 
 /**
- * The only sanctioned way to mutate admin state. No component may call
- * queryClient.invalidateQueries directly — that is exactly how A1/A2's
- * divergent, forgettable wiring grows back. This wrapper awaits every
- * invalidation inside onSuccess, which is also what keeps isPending true
- * until the refetch completes (fixing the submit button's premature
- * not-busy state).
+ * PR-C: the only sanctioned way to mutate partner state, the exact
+ * counterpart of useAdminMutation. No partner component may call
+ * queryClient.invalidateQueries directly - that is how the divergent,
+ * forgettable per-component wiring this PR removes grows back.
+ *
+ * Two properties matter more here than the tidiness. First, every
+ * invalidation is awaited inside onSuccess, which is also what keeps
+ * isPending true until the refetch completes, so a submit button cannot go
+ * idle while the screen still shows pre-command state. Second - and this is
+ * the reliability contract the raw `partnerApi` + local `busy/error` pattern
+ * never had - an ambiguous failure refreshes authoritative state instead of
+ * leaving the partner staring at an error for a command that may well have
+ * committed.
+ *
+ * What this does NOT do is mint a key. PR-C2 gave the partner realm four
+ * DURABLE_KEY routes (payout set/revoke, distribution reporting, NPD receipt
+ * evidence) and those components hold their own persistent key, per intent -
+ * a hook that dispatches many different commands cannot hold one key for all
+ * of them. Every other partner command is made safe by a monotone pin, a
+ * single-use step-up grant, or a state machine that refuses a second
+ * application. Adding a key where the server ignores it would be decoration
+ * that reads like a guarantee.
+ *
+ * It DOES retain command intent - see the retained-intent block below.
  */
-export function useAdminMutation<TVariables, TData = unknown>(
-  mutation: AdminMutation,
+export function usePartnerMutation<TVariables, TData = unknown>(
+  mutation: PartnerMutation,
   mutationFn: (variables: TVariables) => Promise<TData>,
   options: {
-    context?: (variables: TVariables, data?: TData) => MutationContext;
-  } & Omit<UseMutationOptions<TData, AdminApiError, TVariables>, "mutationFn" | "onSuccess"> = {},
+    context?: (variables: TVariables, data?: TData) => PartnerMutationContext;
+  } & Omit<UseMutationOptions<TData, PartnerApiError, TVariables>, "mutationFn" | "onSuccess"> = {},
 ) {
   const queryClient = useQueryClient();
   const { context, onError, ...rest } = options;
@@ -34,10 +52,10 @@ export function useAdminMutation<TVariables, TData = unknown>(
   };
   const invalidate = async (variables: TVariables, data?: TData) => {
     const ctx = context?.(variables, data) ?? {};
-    const keys = invalidationKeysFor(mutation, ctx);
+    const keys = partnerInvalidationKeysFor(mutation, ctx);
     await Promise.all(keys.map((key) => queryClient.invalidateQueries({ queryKey: key })));
   };
-  const command = useMutation<TData, AdminApiError, TVariables>({
+  const command = useMutation<TData, PartnerApiError, TVariables>({
     ...rest,
     mutationFn,
     retry: 0,
@@ -46,9 +64,6 @@ export function useAdminMutation<TVariables, TData = unknown>(
       await invalidate(variables, data);
     },
     onError: async (error, variables, onMutateResult, mutationContext) => {
-      // An ambiguous result and an idempotency conflict are not a licence to
-      // mint a fresh key. Refresh the records the command could have changed;
-      // a replay with the retained key is then safe and deterministic.
       // Retained BEFORE the refresh below, never after: that refresh is
       // exactly what would otherwise let the next attempt read a NEWER pin
       // and stop being a retry of this command at all.
