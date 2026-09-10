@@ -24,6 +24,7 @@ import {
   partnerProfileProjection, partnerAgreementsProjection, partnerEngagementSummaries, partnerEngagementDetail, partnerConversionProjection,
   PartnerProjectionError,
 } from "./agent-referrals-partner-projection";
+import { submitLegalProfileSupersession } from "./agent-referrals-legal-profile-supersession";
 
 /**
  * `/v1/partner/*` - the entire HTTP surface for the PARTNER realm (Phase 9
@@ -147,6 +148,16 @@ export function createAgentReferralsPartnerRouter(sqlite: Database.Database, otp
     const legalForm = requireString(body, "legal_form") as "INDIVIDUAL" | "INDIVIDUAL_ENTREPRENEUR" | "LEGAL_ENTITY";
     const taxMode = requireString(body, "tax_mode") as "NPD" | "OTHER";
     return c.json(submitPartnerLegalProfile(sqlite, c.var.partner, legalForm, taxMode));
+  });
+
+  /** D2 §9: post-onboarding legal-identity change, never a caller-supplied partner_identity_id - always the session's own. */
+  protectedRouter.post("/legal-profile/change", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    const legalForm = requireString(body, "legal_form") as "INDIVIDUAL" | "INDIVIDUAL_ENTREPRENEUR" | "LEGAL_ENTITY";
+    const taxMode = requireString(body, "tax_mode") as "NPD" | "OTHER";
+    return c.json(submitLegalProfileSupersession(sqlite, c.var.partner, c.var.partner.partner_identity_id, {
+      legalForm, taxMode, reason: requireString(body, "reason"),
+    }), 201);
   });
 
   protectedRouter.get("/agreements", (c) => c.json(partnerAgreementsProjection(sqlite, c.var.partner.partner_identity_id)));

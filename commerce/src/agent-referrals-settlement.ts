@@ -1,11 +1,12 @@
 import type Database from "better-sqlite3";
 import { id, now } from "./crypto";
-import { getEngagement, occurrenceFacts, type EngagementRow } from "./agent-referrals-engagement";
+import { getEngagement, occurrenceFacts, resolveActivatedLegalProfileBinding, type EngagementRow } from "./agent-referrals-engagement";
 import { getPartnerIdentity } from "./agent-referrals-onboarding";
 import { currentPayoutProfile } from "./agent-referrals-payout-profile";
 import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
 import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
 import { correctEngagementEffectiveRewardSnapshot, currentEffectiveRewardSnapshot, type EffectiveRewardSnapshotRow } from "./agent-referrals-reward-registry";
+import { resolveCurrentLegalProfileBinding } from "./agent-referrals-legal-profile";
 import type { AdminPrincipal } from "./agent-referrals-partner-identity";
 
 /**
@@ -122,18 +123,36 @@ const resolveSettlementContext = (db: Database.Database, effectiveRewardSnapshot
 
   const partnerIdentity = getPartnerIdentity(db, engagement.partner_identity_id);
   if (!partnerIdentity) throw new SettlementError("AGENT_REFERRALS_PARTNER_IDENTITY_NOT_FOUND", 404, engagement.partner_identity_id);
-  if (!partnerIdentity.legal_profile_revision_id) throw new SettlementError("AGENT_REFERRALS_SETTLEMENT_LEGAL_PROFILE_MISSING", 409, partnerIdentity.id);
-  const legalProfile = db.prepare("SELECT id, tax_mode FROM agent_referrals_legal_profile_revisions WHERE id = ?")
-    .get(partnerIdentity.legal_profile_revision_id) as { id: string; tax_mode: "NPD" | "OTHER" };
+
+  // D2 §4/§5-A: tax_mode and contractor_type both come from the SAME pinned
+  // revision - resolveCurrentLegalProfileBinding proves pointer == MAX
+  // first, so this is never agents.contractor_type (a second, independently
+  // mutable copy) and never a revision read by the pointer alone. No
+  // settlement-local "pointer is null" pre-check exists here on purpose:
+  // classifying that case as a friendly LEGAL_PROFILE_MISSING would be
+  // wrong the moment MAX is non-null (that is POINTER_DIVERGED, a
+  // structural defect, not "never verified") - one resolver owns the
+  // entire classification, never a locally-duplicated partial one.
+  const currentLegalProfile = resolveCurrentLegalProfileBinding(db, partnerIdentity);
+
+  // D2 §5-Б: the engagement's own activation-pinned legal identity must
+  // still be the current one. This is what makes it structurally
+  // impossible to mint a NEW payable settlement for old work under a legal
+  // identity the engagement was never activated under - including via the
+  // post-payment RECOVERY_EXPOSURE correction path, which the blocking
+  // predicate alone cannot close (it only gates supersession, not later
+  // settlement minting against an already-superseded engagement).
+  const activatedLegalProfile = resolveActivatedLegalProfileBinding(db, engagement.id);
+  if (activatedLegalProfile.id !== currentLegalProfile.id) {
+    throw new SettlementError("AGENT_REFERRALS_SETTLEMENT_LEGAL_PROFILE_BINDING_MISMATCH", 409, `activated=${activatedLegalProfile.id} current=${currentLegalProfile.id}`);
+  }
 
   const payoutProfile = currentPayoutProfile(db, partnerIdentity.id);
   if (!payoutProfile || payoutProfile.kind !== "ACTIVE_DESTINATION") throw new SettlementError("AGENT_REFERRALS_SETTLEMENT_PAYOUT_PROFILE_UNUSABLE", 409, partnerIdentity.id);
 
-  const agent = db.prepare("SELECT id, contractor_type FROM agents WHERE id = ?").get(partnerIdentity.agent_id) as { id: string; contractor_type: string };
-
   return {
-    effective, engagement, partnerIdentityId: partnerIdentity.id, agentId: agent.id, contractorType: agent.contractor_type,
-    payoutProfileRevisionId: payoutProfile.id, taxMode: legalProfile.tax_mode, legalProfileRevisionId: legalProfile.id,
+    effective, engagement, partnerIdentityId: partnerIdentity.id, agentId: partnerIdentity.agent_id, contractorType: currentLegalProfile.projected_contractor_type,
+    payoutProfileRevisionId: payoutProfile.id, taxMode: currentLegalProfile.tax_mode, legalProfileRevisionId: currentLegalProfile.id,
     rewardRegistryHash: registry.source_state_hash,
   };
 };

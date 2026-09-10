@@ -26,6 +26,12 @@ export type AgentReferralsOperationClass =
   | "NEW_ATTRIBUTION"
   | "ORD_CREATIVE_REGISTRATION"
   | "ORD_PROVIDER_OPERATION"
+  // D2: anything that moves the verified MAX(revision) - initial onboarding
+  // verification and a supersession's own verify - mints new legal-identity
+  // authority the same way NEW_PARTNER_PROVISIONING mints new partner
+  // authority, so both are NEW_AUTHORITY, never a bespoke third category.
+  | "INITIAL_LEGAL_PROFILE_VERIFICATION"
+  | "LEGAL_PROFILE_CHANGE_VERIFICATION"
   // MATURATION / RECOVERY / REPORTING_TAIL - permitted under SUSPENDED.
   | "PORTAL_ACCESS_AND_EVIDENCE_EXPORT"
   | "DISTRIBUTION_FACT_REPORTING"
@@ -49,7 +55,14 @@ export type AgentReferralsOperationClass =
   | "RECOVERY_RECONCILIATION"
   | "VK_ERIR_REPORTING"
   | "DELEGATION_REVOCATION"
-  | "REPORTING_TAIL_PROCESSING";
+  | "REPORTING_TAIL_PROCESSING"
+  // D2: filing or withdrawing a proposed legal-identity change is fixing
+  // evidence, not creating authority - both stay permitted under SUSPENDED,
+  // same rationale as every other MATURATION_RECOVERY_REPORTING_TAIL class.
+  // Realm (partner vs admin submission) affects provenance, never this
+  // classification.
+  | "LEGAL_PROFILE_CHANGE_SUBMISSION"
+  | "LEGAL_PROFILE_CHANGE_REJECTION";
 
 export type AgentReferralsOperationPolicyCategory = "NEW_AUTHORITY" | "MATURATION_RECOVERY_REPORTING_TAIL";
 
@@ -69,6 +82,8 @@ export const AGENT_REFERRALS_OPERATION_POLICY: Readonly<Record<AgentReferralsOpe
   // into a locked, ERID-bearing fact (plan Phase 8 / §B-4: "the first real
   // VK/ERIR business fact stays prohibited before global ACTIVE").
   ORD_CREATIVE_REGISTRATION: "NEW_AUTHORITY",
+  INITIAL_LEGAL_PROFILE_VERIFICATION: "NEW_AUTHORITY",
+  LEGAL_PROFILE_CHANGE_VERIFICATION: "NEW_AUTHORITY",
   // Registering/maintaining Flexperiment's OWN counterparty/platform/
   // contract/media entity with VK ORD is a prerequisite for any future
   // creative registration or reporting - the same "authority that does not
@@ -100,6 +115,8 @@ export const AGENT_REFERRALS_OPERATION_POLICY: Readonly<Record<AgentReferralsOpe
   VK_ERIR_REPORTING: "MATURATION_RECOVERY_REPORTING_TAIL",
   DELEGATION_REVOCATION: "MATURATION_RECOVERY_REPORTING_TAIL",
   REPORTING_TAIL_PROCESSING: "MATURATION_RECOVERY_REPORTING_TAIL",
+  LEGAL_PROFILE_CHANGE_SUBMISSION: "MATURATION_RECOVERY_REPORTING_TAIL",
+  LEGAL_PROFILE_CHANGE_REJECTION: "MATURATION_RECOVERY_REPORTING_TAIL",
 };
 
 export class AgentReferralsSuspensionPolicyError extends Error {

@@ -116,6 +116,14 @@ function PartnerDetail({ partnerId, onBack }: { partnerId: string; onBack: () =>
       </Panel>
 
       {onboardingState === "PARTNER_ACTIVE" && <PromoAndAudience partnerId={partnerId} onDone={refresh} />}
+      {onboardingState === "PARTNER_ACTIVE" && (
+        <LegalProfileSupersession
+          partnerId={partnerId}
+          legalProfile={detail.data!.legal_profile as Row | null}
+          pendingRequest={detail.data!.pending_legal_profile_change_request as Row | null}
+          onDone={refresh}
+        />
+      )}
 
       <Panel title="Хранение и удаление">
         <NpdCheckForm partnerId={partnerId} onDone={refresh} />
@@ -188,6 +196,85 @@ function PromoAndAudience({ partnerId, onDone }: { partnerId: string; onDone: ()
         <label>Ссылка на подтверждение <input {...audienceForm.register("evidence_ref", { required: true })} /></label>
         <button className="primary" disabled={busy}>{busy ? "…" : "Подтвердить аудиторию города"}</button>
       </form>
+      <Notice error={error} />
+    </Panel>
+  );
+}
+
+const LEGAL_FORM_LABELS: Record<string, string> = {
+  INDIVIDUAL: "Физическое лицо (НПД)", INDIVIDUAL_ENTREPRENEUR: "ИП", LEGAL_ENTITY: "Юридическое лицо",
+};
+const CHANGE_REQUEST_STATE_LABELS: Record<string, string> = {
+  PENDING: "На рассмотрении", VERIFIED: "Подтверждена", REJECTED: "Отклонена", STALE: "Устарела",
+};
+
+/** D2 §10: a separate action for an already-active partner, never a repeat of onboarding verification. */
+function LegalProfileSupersession({ partnerId, legalProfile, pendingRequest, onDone }: {
+  partnerId: string; legalProfile: Row | null; pendingRequest: Row | null; onDone: () => void;
+}) {
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const { register, handleSubmit, reset } = useForm<{ legal_form: string; tax_mode: string; reason: string; evidence_ref: string }>({
+    defaultValues: { legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "", evidence_ref: "" },
+  });
+
+  const submitChange = handleSubmit(async (values) => {
+    setBusy(true); setError(null);
+    try {
+      await api(`/agent-referrals/partners/${partnerId}/legal-profile/change`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(values),
+      });
+      reset();
+      onDone();
+    } catch (failure) { setError((failure as AdminApiError).code); } finally { setBusy(false); }
+  });
+
+  const runOnRequest = async (action: "verify" | "reject") => {
+    setBusy(true); setError(null);
+    try {
+      await api(`/agent-referrals/partners/${partnerId}/legal-profile/change/${String(pendingRequest!.id)}/${action}`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: action === "verify" ? "verified by operator" : "rejected by operator" }),
+      });
+      onDone();
+    } catch (failure) { setError((failure as AdminApiError).code); } finally { setBusy(false); }
+  };
+
+  return (
+    <Panel title="Юридические данные">
+      {legalProfile && (
+        <p>
+          Текущий профиль: <Badge>{LEGAL_FORM_LABELS[String(legalProfile.legal_form)] ?? String(legalProfile.legal_form)}</Badge>
+          {" "}({String(legalProfile.tax_mode)}), ревизия {String(legalProfile.revision)}
+        </p>
+      )}
+      {pendingRequest ? (
+        <>
+          <p>
+            Заявка на изменение: <Badge>{CHANGE_REQUEST_STATE_LABELS[String(pendingRequest.state)] ?? String(pendingRequest.state)}</Badge>
+            {" → "}{LEGAL_FORM_LABELS[String(pendingRequest.legal_form)] ?? String(pendingRequest.legal_form)} ({String(pendingRequest.tax_mode)})
+          </p>
+          <p>Причина: {String(pendingRequest.reason)}</p>
+          <button disabled={busy} onClick={() => void runOnRequest("verify")}>{busy ? "…" : "Подтвердить изменение"}</button>{" "}
+          <button disabled={busy} onClick={() => void runOnRequest("reject")}>{busy ? "…" : "Отклонить заявку"}</button>
+        </>
+      ) : (
+        <form className="form" onSubmit={submitChange}>
+          <label>Новая форма
+            <select {...register("legal_form", { required: true })}>
+              <option value="INDIVIDUAL">Физическое лицо (НПД)</option>
+              <option value="INDIVIDUAL_ENTREPRENEUR">ИП</option>
+              <option value="LEGAL_ENTITY">Юридическое лицо</option>
+            </select>
+          </label>
+          <label>Налоговый режим
+            <select {...register("tax_mode", { required: true })}><option value="NPD">НПД</option><option value="OTHER">Иной</option></select>
+          </label>
+          <label>Причина <input {...register("reason", { required: true })} /></label>
+          <label>Ссылка на подтверждающий документ (обязательно для заявки от администратора) <input {...register("evidence_ref")} /></label>
+          <button className="primary" disabled={busy}>{busy ? "…" : "Изменить юридические данные"}</button>
+        </form>
+      )}
       <Notice error={error} />
     </Panel>
   );

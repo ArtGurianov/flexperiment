@@ -15,17 +15,35 @@ const ONBOARDING_LABELS: Record<string, string> = {
   FRAMEWORK_ISSUED: "Договор выдан", FRAMEWORK_ACCEPTED: "Договор принят", PARTNER_ACTIVE: "Активен",
 };
 
+const CHANGE_REQUEST_STATE_LABELS: Record<string, string> = {
+  PENDING: "На рассмотрении", VERIFIED: "Подтверждена", REJECTED: "Отклонена", STALE: "Устарела",
+};
+
 export function Profile() {
   const queryClient = useQueryClient();
   const profile = useQuery({ queryKey: ["partner", "me"], queryFn: () => partnerApi<Row>("/me") });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const { register, handleSubmit } = useForm<{ legal_form: string; tax_mode: string }>({ defaultValues: { legal_form: "INDIVIDUAL", tax_mode: "NPD" } });
+  const changeForm = useForm<{ legal_form: string; tax_mode: string; reason: string }>({ defaultValues: { legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "" } });
 
   const submitLegalProfile = handleSubmit(async (values) => {
     setBusy(true); setError(null);
     try {
       await partnerApi("/legal-profile", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(values) });
+      await queryClient.invalidateQueries({ queryKey: ["partner", "me"] });
+    } catch (failure) {
+      setError((failure as PartnerApiError).code);
+    } finally {
+      setBusy(false);
+    }
+  });
+
+  const submitChangeRequest = changeForm.handleSubmit(async (values) => {
+    setBusy(true); setError(null);
+    try {
+      await partnerApi("/legal-profile/change", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(values) });
+      changeForm.reset();
       await queryClient.invalidateQueries({ queryKey: ["partner", "me"] });
     } catch (failure) {
       setError((failure as PartnerApiError).code);
@@ -41,6 +59,7 @@ export function Profile() {
   const canSubmit = onboardingState === "INVITED" || onboardingState === "PROFILE_SUBMITTED";
   const legalProfile = data.legal_profile as Row | null;
   const payoutProfile = data.payout_profile as Row | null;
+  const pendingChangeRequest = data.pending_legal_profile_change_request as Row | null;
 
   return (
     <>
@@ -57,6 +76,43 @@ export function Profile() {
           <h2>Подтверждённый юридический статус</h2>
           <p>Форма: {String(legalProfile.legal_form)} · Налоговый режим: {String(legalProfile.tax_mode)}</p>
           <p>Тип контрагента: {String(legalProfile.projected_contractor_type)}</p>
+        </section>
+      )}
+
+      {onboardingState === "PARTNER_ACTIVE" && (
+        <section className="card">
+          <h2>Изменить юридические данные</h2>
+          {pendingChangeRequest ? (
+            <>
+              <p>
+                Заявка: <Badge>{CHANGE_REQUEST_STATE_LABELS[String(pendingChangeRequest.state)] ?? String(pendingChangeRequest.state)}</Badge>
+                {" → "}{String(pendingChangeRequest.legal_form)} ({String(pendingChangeRequest.tax_mode)})
+              </p>
+              <p>Причина: {String(pendingChangeRequest.reason)}</p>
+              <p>Заявка рассматривается администратором.</p>
+            </>
+          ) : (
+            <form onSubmit={submitChangeRequest}>
+              <label>
+                Новая форма
+                <select {...changeForm.register("legal_form", { required: true })}>
+                  <option value="INDIVIDUAL">Физическое лицо</option>
+                  <option value="INDIVIDUAL_ENTREPRENEUR">ИП</option>
+                  <option value="LEGAL_ENTITY">Юридическое лицо</option>
+                </select>
+              </label>
+              <label>
+                Налоговый режим
+                <select {...changeForm.register("tax_mode", { required: true })}>
+                  <option value="NPD">НПД (самозанятый)</option>
+                  <option value="OTHER">Другой</option>
+                </select>
+              </label>
+              <label>Причина изменения <input {...changeForm.register("reason", { required: true })} /></label>
+              <Notice error={error} />
+              <button className="primary" disabled={busy}>{busy ? "Отправляем…" : "Подать заявку на изменение"}</button>
+            </form>
+          )}
         </section>
       )}
 

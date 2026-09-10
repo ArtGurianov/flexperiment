@@ -1,6 +1,7 @@
 import type Database from "better-sqlite3";
 import { emailHash, id } from "./crypto";
-import { applyAgentReferralsLegalProfile, type LegalForm, type TaxMode } from "./agent-referrals-legal-profile";
+import type { LegalForm, TaxMode } from "./agent-referrals-legal-profile";
+import { applyVerifiedLegalProfileForPartnerIdentity } from "./agent-referrals-legal-profile-supersession";
 import { getPartnerIdentity, recordPartnerIdentityEvent, transitionOnboardingStateInTransaction, type PartnerIdentityRow } from "./agent-referrals-onboarding";
 import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
 import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
@@ -171,24 +172,27 @@ export const submitPartnerLegalProfile = (db: Database.Database, partner: Partne
  */
 export const verifyPartnerLegalProfile = (db: Database.Database, admin: AdminPrincipal, partnerIdentityId: string, reason: string): PartnerIdentityRow => {
   const run = db.transaction((): PartnerIdentityRow => {
+    // D2: everything that moves the verified MAX(revision) is classified
+    // NEW_AUTHORITY, gated the same as D2's own supersession verify() -
+    // this initial mint was the pre-D2 gap in that rule.
+    assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "INITIAL_LEGAL_PROFILE_VERIFICATION");
+
     const identity = getPartnerIdentity(db, partnerIdentityId);
     if (!identity) throw new PartnerIdentityError("PARTNER_IDENTITY_NOT_FOUND", 404);
     if (identity.onboarding_state !== "PROFILE_SUBMITTED") throw new PartnerIdentityError("AGENT_REFERRALS_LEGAL_PROFILE_NOT_SUBMITTED", 409, identity.onboarding_state);
     if (!identity.submitted_legal_form || !identity.submitted_tax_mode) throw new PartnerIdentityError("AGENT_REFERRALS_LEGAL_PROFILE_NOT_SUBMITTED", 409);
 
-    const revisionResult = applyAgentReferralsLegalProfile(db, {
-      agent_id: identity.agent_id,
-      legal_form: identity.submitted_legal_form as LegalForm,
-      tax_mode: identity.submitted_tax_mode as TaxMode,
+    const revisionResult = applyVerifiedLegalProfileForPartnerIdentity(db, {
+      partnerIdentityId,
+      legalForm: identity.submitted_legal_form as LegalForm,
+      taxMode: identity.submitted_tax_mode as TaxMode,
       reason,
       // The admin only verifies; the asserted profile is the partner's own
       // submitted draft (submitted_legal_form/_tax_mode above), so the
       // provenance is PARTNER_ASSERTED, not ADMIN_ASSERTED.
-      assertion_source: "PARTNER_ASSERTED",
+      assertionSource: "PARTNER_ASSERTED",
     });
 
-    db.prepare(`UPDATE partner_identities SET legal_profile_revision_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
-      .run(revisionResult.revision_id, partnerIdentityId);
     recordPartnerIdentityEvent(db, partnerIdentityId, "LEGAL_PROFILE_VERIFIED", "ADMIN", { legal_profile_revision_id: revisionResult.revision_id, reason });
     transitionOnboardingStateInTransaction(db, partnerIdentityId, "PROFILE_VERIFIED", identity.onboarding_revision, "ADMIN", reason);
     return getPartnerIdentity(db, partnerIdentityId)!;

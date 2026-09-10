@@ -47,6 +47,21 @@ const PROJECTION: Readonly<Record<LegalForm, Partial<Record<TaxMode, ProjectedCo
   LEGAL_ENTITY: { OTHER: "ORGANIZATION" },
 };
 
+/**
+ * The one shared lookup every caller that will eventually reach the 0043
+ * CHECK constraint must call FIRST, domain-side - not just
+ * applyAgentReferralsLegalProfile's own mint path. Returns null for both a
+ * legitimate-enum-but-rejected pairing (INDIVIDUAL+OTHER) and a value
+ * outside the LegalForm/TaxMode union entirely (an unchecked `as LegalForm`
+ * cast at an HTTP boundary, say) - plain object indexing doesn't
+ * distinguish the two, and neither does a caller need to. A caller that
+ * skips this and lets the DB CHECK reject the row instead gets a raw
+ * SqliteError the global HTTP error handler does not recognize (no
+ * `.status`), i.e. an internal 500 for what is actually a 422.
+ */
+export const resolveProjectedContractorType = (legalForm: LegalForm, taxMode: TaxMode): ProjectedContractorType | null =>
+  PROJECTION[legalForm]?.[taxMode] ?? null;
+
 export class AgentReferralsLegalProfileError extends Error {
   constructor(readonly code: string, readonly status = 422, detail?: string) {
     super(detail ? `${code}: ${detail}` : code);
@@ -79,6 +94,35 @@ export const allAgentReferralsLegalProfileRevisions = (db: Database.Database, ag
   db.prepare(`SELECT ${REVISION_COLUMNS}
     FROM agent_referrals_legal_profile_revisions WHERE agent_id = ? ORDER BY revision ASC`).all(agentId) as AgentReferralsLegalProfileRevision[];
 
+/** A single revision by its own id, independent of whether it is anyone's current one - resolveActivatedLegalProfileBinding's own reader. */
+export const agentReferralsLegalProfileRevisionById = (db: Database.Database, revisionId: string): AgentReferralsLegalProfileRevision | null =>
+  (db.prepare(`SELECT ${REVISION_COLUMNS} FROM agent_referrals_legal_profile_revisions WHERE id = ?`)
+    .get(revisionId) as AgentReferralsLegalProfileRevision | undefined) ?? null;
+
+/**
+ * MAX(revision) is the sole semantic authority; partner_identities.legal_
+ * profile_revision_id is a redundant, checked projection of it (the D2
+ * plan's three-level-authority model). No caller may compare anything
+ * against the pointer directly - every caller that needs "the current
+ * profile" goes through here, which proves pointer == MAX first and
+ * returns MAX, never the pointer's own row read independently.
+ *
+ * Two legal pre-states exist for (MAX, pointer): both null (no profile
+ * minted yet) or both naming the same row. Any other combination -
+ * including "MAX exists but pointer is null/different" - is
+ * POINTER_DIVERGED, a structural defect this never silently repairs.
+ */
+export const resolveCurrentLegalProfileBinding = (
+  db: Database.Database,
+  partnerIdentity: { agent_id: string; legal_profile_revision_id: string | null },
+): AgentReferralsLegalProfileRevision => {
+  const current = currentAgentReferralsLegalProfile(db, partnerIdentity.agent_id);
+  if (!current || partnerIdentity.legal_profile_revision_id !== current.id) {
+    throw new AgentReferralsLegalProfileError("AGENT_REFERRALS_LEGAL_PROFILE_POINTER_DIVERGED", 500, partnerIdentity.legal_profile_revision_id ?? "null");
+  }
+  return current;
+};
+
 export type ApplyAgentReferralsLegalProfileInput = {
   agent_id: string;
   legal_form: LegalForm;
@@ -106,7 +150,7 @@ export const applyAgentReferralsLegalProfile = (
   db: Database.Database,
   input: ApplyAgentReferralsLegalProfileInput,
 ): ApplyAgentReferralsLegalProfileResult => {
-  const projected = PROJECTION[input.legal_form]?.[input.tax_mode];
+  const projected = resolveProjectedContractorType(input.legal_form, input.tax_mode);
   if (!projected) {
     throw new AgentReferralsLegalProfileError("AGENT_REFERRALS_LEGAL_PROFILE_REJECTED_COMBINATION", 422, `${input.legal_form}+${input.tax_mode}`);
   }
