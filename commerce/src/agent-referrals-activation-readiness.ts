@@ -48,7 +48,10 @@ export class AgentReferralsActivationReadinessError extends Error {
 }
 
 const exactActivationId = (source: string) => `agent-referrals-activation-${source}`;
-const exactTerminalReleaseId = (source: string) => `agent-referrals-q4-dormant-${source}`;
+// The terminal evidence is created by the controlled production deployment,
+// not by the historical Q4 DORMANT controller. Keep this identity exact: an
+// activation may rely only on the completed deployment for its own source.
+const exactProductionReleaseId = (source: string) => `deploy-${source}`;
 
 const activationManifest = (input: AgentReferralsActivationRequest, otpDelivery: OtpDeliveryCapability): AgentReferralsActivationManifest => {
   const pepper = process.env.COMMERCE_AGENT_REFERRALS_OTP_PEPPER;
@@ -79,7 +82,7 @@ const assertRequestIdentity = (input: AgentReferralsActivationRequest): void => 
   if (input.activation_id !== exactActivationId(input.expected.source_commit)) {
     throw new AgentReferralsActivationReadinessError("AGENT_REFERRALS_ACTIVATION_OWNER_INVALID", 409);
   }
-  if (input.terminal_release_id !== exactTerminalReleaseId(input.expected.source_commit)) {
+  if (input.terminal_release_id !== exactProductionReleaseId(input.expected.source_commit)) {
     throw new AgentReferralsActivationReadinessError("AGENT_REFERRALS_ACTIVATION_TERMINAL_RELEASE_INVALID", 409);
   }
 };
