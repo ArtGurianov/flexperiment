@@ -92,6 +92,23 @@ const seedLegacyRevision = (db: Database.Database, opts: { id: string; agentId: 
     .run(opts.id, opts.agentId, opts.revision, opts.supersedesRevisionId ?? null);
 };
 
+/**
+ * Scoped to exactly 0050, regardless of what later migrations (0052's own
+ * zero-legacy-rows premise guard included) exist in the real migrations
+ * directory - matches agent-referrals-integration-hardening-migration.test
+ * .ts's own migrateOnly0049 precedent. This file's whole point is proving
+ * 0050's OWN row-preservation/CHECK/trigger behavior on data seeded in
+ * 0050's pre-rebuild shape; using the general migrate() runner here would
+ * make every test that seeds a legacy row before migrating collide with a
+ * premise 0052 introduced years after this file was written - exactly the
+ * drift migrateOnly0049 already exists to avoid.
+ */
+const migrateOnly0050 = (db: Database.Database) => {
+  const dir = mkdtempSync(join(tmpdir(), "legal-profile-provenance-only-0050-"));
+  copyFileSync(join(MIGRATIONS, MIGRATION_FILE), join(dir, MIGRATION_FILE));
+  migrate(db, dir);
+};
+
 describe("0050 agent-referrals legal-profile provenance rebuild migration", () => {
   it("is the exact committed file the registry pins", () => {
     expect(isFkOffMigration(MIGRATION_FILE, M0050_SHA256)).toBe(true);
@@ -104,7 +121,7 @@ describe("0050 agent-referrals legal-profile provenance rebuild migration", () =
       seedLegacyRevision(db, { id: "lp-1", agentId, revision: 1 });
       const before = db.prepare("SELECT id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, supersedes_revision_id, reason, created_at FROM agent_referrals_legal_profile_revisions WHERE id = 'lp-1'").get();
 
-      migrate(db);
+      migrateOnly0050(db);
 
       const after = db.prepare("SELECT id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, supersedes_revision_id, reason, created_at FROM agent_referrals_legal_profile_revisions WHERE id = 'lp-1'").get();
       expect(after).toEqual(before);
@@ -118,7 +135,7 @@ describe("0050 agent-referrals legal-profile provenance rebuild migration", () =
       seedLegacyRevision(db, { id: "lp-1", agentId, revision: 1 });
       seedLegacyRevision(db, { id: "lp-2", agentId, revision: 2, supersedesRevisionId: "lp-1" });
 
-      migrate(db);
+      migrateOnly0050(db);
 
       const rows = db.prepare("SELECT id, revision, supersedes_revision_id, assertion_source, evidence_ref FROM agent_referrals_legal_profile_revisions WHERE agent_id = ? ORDER BY revision").all(agentId);
       expect(rows).toEqual([
@@ -138,7 +155,7 @@ describe("0050 agent-referrals legal-profile provenance rebuild migration", () =
       seedLegacyRevision(db, { id: "lp-b2", agentId: agentB, revision: 2, supersedesRevisionId: "lp-b1" });
       const before = db.prepare("SELECT COUNT(*) AS n FROM agent_referrals_legal_profile_revisions").get();
 
-      migrate(db);
+      migrateOnly0050(db);
 
       expect(db.prepare("SELECT COUNT(*) AS n FROM agent_referrals_legal_profile_revisions").get()).toEqual(before);
       expect(before).toEqual({ n: 3 });
@@ -160,8 +177,8 @@ describe("0050 agent-referrals legal-profile provenance rebuild migration", () =
       const { db } = at0049();
       const agentId = seedAgent(db);
       migrate(db);
-      expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason, assertion_source, evidence_ref)
-        VALUES ('lp-admin', ?, 1, 'LEGAL_ENTITY', 'OTHER', 'ORGANIZATION', 'admin claim', 'ADMIN_ASSERTED', 'egrul-extract.pdf')`).run(agentId))
+      expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, opf, full_name, inn, kpp, registration_number, legal_address, reason, assertion_source, evidence_ref)
+        VALUES ('lp-admin', ?, 1, 'LEGAL_ENTITY', 'OTHER', 'ORGANIZATION', 'OOO', 'Romashka LLC', '1234567890', '123456789', '1234567890123', 'Moscow', 'admin claim', 'ADMIN_ASSERTED', 'egrul-extract.pdf')`).run(agentId))
         .not.toThrow();
     });
 
@@ -169,8 +186,8 @@ describe("0050 agent-referrals legal-profile provenance rebuild migration", () =
       const { db } = at0049();
       const agentId = seedAgent(db);
       migrate(db);
-      expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason, assertion_source)
-        VALUES ('lp-admin-noev', ?, 1, 'LEGAL_ENTITY', 'OTHER', 'ORGANIZATION', 'admin claim', 'ADMIN_ASSERTED')`).run(agentId))
+      expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, opf, full_name, inn, kpp, registration_number, legal_address, reason, assertion_source)
+        VALUES ('lp-admin-noev', ?, 1, 'LEGAL_ENTITY', 'OTHER', 'ORGANIZATION', 'OOO', 'Romashka LLC', '1234567890', '123456789', '1234567890123', 'Moscow', 'admin claim', 'ADMIN_ASSERTED')`).run(agentId))
         .toThrow(/CHECK constraint failed/);
     });
 
@@ -178,8 +195,8 @@ describe("0050 agent-referrals legal-profile provenance rebuild migration", () =
       const { db } = at0049();
       const agentId = seedAgent(db);
       migrate(db);
-      expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason, assertion_source, evidence_ref)
-        VALUES ('lp-blank', ?, 1, 'INDIVIDUAL', 'NPD', 'SELF_EMPLOYED', 'x', 'PARTNER_ASSERTED', '')`).run(agentId))
+      expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, full_name, inn, reason, assertion_source, evidence_ref)
+        VALUES ('lp-blank', ?, 1, 'INDIVIDUAL', 'NPD', 'SELF_EMPLOYED', 'Ivanov Ivan Ivanovich', '123456789012', 'x', 'PARTNER_ASSERTED', '')`).run(agentId))
         .toThrow(/CHECK constraint failed/);
     });
 
@@ -196,8 +213,8 @@ describe("0050 agent-referrals legal-profile provenance rebuild migration", () =
         const { db } = at0049();
         const agentId = seedAgent(db);
         migrate(db);
-        expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason, assertion_source, evidence_ref)
-          VALUES ('lp-ws', ?, 1, 'LEGAL_ENTITY', 'OTHER', 'ORGANIZATION', 'admin claim', 'ADMIN_ASSERTED', ?)`).run(agentId, value))
+        expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, opf, full_name, inn, kpp, registration_number, legal_address, reason, assertion_source, evidence_ref)
+          VALUES ('lp-ws', ?, 1, 'LEGAL_ENTITY', 'OTHER', 'ORGANIZATION', 'OOO', 'Romashka LLC', '1234567890', '123456789', '1234567890123', 'Moscow', 'admin claim', 'ADMIN_ASSERTED', ?)`).run(agentId, value))
           .toThrow(/CHECK constraint failed/);
       });
 
@@ -205,8 +222,8 @@ describe("0050 agent-referrals legal-profile provenance rebuild migration", () =
         const { db } = at0049();
         const agentId = seedAgent(db);
         migrate(db);
-        expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason, assertion_source, evidence_ref)
-          VALUES ('lp-ws-partner', ?, 1, 'INDIVIDUAL', 'NPD', 'SELF_EMPLOYED', 'x', 'PARTNER_ASSERTED', ?)`).run(agentId, value))
+        expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, full_name, inn, reason, assertion_source, evidence_ref)
+          VALUES ('lp-ws-partner', ?, 1, 'INDIVIDUAL', 'NPD', 'SELF_EMPLOYED', 'Ivanov Ivan Ivanovich', '123456789012', 'x', 'PARTNER_ASSERTED', ?)`).run(agentId, value))
           .toThrow(/CHECK constraint failed/);
       });
     });
@@ -215,8 +232,8 @@ describe("0050 agent-referrals legal-profile provenance rebuild migration", () =
       const { db } = at0049();
       const agentId = seedAgent(db);
       migrate(db);
-      expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason, assertion_source)
-        VALUES ('lp-bad', ?, 1, 'INDIVIDUAL', 'NPD', 'SELF_EMPLOYED', 'x', 'SOMETHING_ELSE')`).run(agentId))
+      expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, full_name, inn, reason, assertion_source)
+        VALUES ('lp-bad', ?, 1, 'INDIVIDUAL', 'NPD', 'SELF_EMPLOYED', 'Ivanov Ivan Ivanovich', '123456789012', 'x', 'SOMETHING_ELSE')`).run(agentId))
         .toThrow(/CHECK constraint failed/);
     });
 
@@ -224,8 +241,8 @@ describe("0050 agent-referrals legal-profile provenance rebuild migration", () =
       const { db } = at0049();
       const agentId = seedAgent(db);
       migrate(db);
-      expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason, assertion_source)
-        VALUES ('lp-matrix-bad', ?, 1, 'INDIVIDUAL', 'OTHER', 'SELF_EMPLOYED', 'x', 'PARTNER_ASSERTED')`).run(agentId))
+      expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, full_name, inn, reason, assertion_source)
+        VALUES ('lp-matrix-bad', ?, 1, 'INDIVIDUAL', 'OTHER', 'SELF_EMPLOYED', 'Ivanov Ivan Ivanovich', '123456789012', 'x', 'PARTNER_ASSERTED')`).run(agentId))
         .toThrow(/CHECK constraint failed/);
     });
 
@@ -233,7 +250,7 @@ describe("0050 agent-referrals legal-profile provenance rebuild migration", () =
       const { db } = at0049();
       const agentId = seedAgent(db);
       seedLegacyRevision(db, { id: "lp-guard", agentId, revision: 1 });
-      migrate(db);
+      migrateOnly0050(db);
       expect(() => db.exec("UPDATE agent_referrals_legal_profile_revisions SET reason = 'x' WHERE id = 'lp-guard'")).toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_REVISION_IMMUTABLE/);
       expect(() => db.exec("DELETE FROM agent_referrals_legal_profile_revisions WHERE id = 'lp-guard'")).toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_REVISION_IMMUTABLE/);
     });
@@ -273,7 +290,7 @@ describe("0050 agent-referrals legal-profile provenance rebuild migration", () =
       seedLegacyRevision(db, { id: "lp-1", agentId, revision: 1 });
       db.prepare(`INSERT INTO partner_identities(id, agent_id, email, email_hash, legal_profile_revision_id, created_by_admin_id) VALUES (?, ?, 'p@example.test', 'h', 'lp-1', 'admin')`)
         .run(randomUUID(), agentId);
-      migrate(db);
+      migrateOnly0050(db);
       expect(db.pragma("foreign_key_check")).toEqual([]);
     });
   });
@@ -287,7 +304,7 @@ describe("0050 agent-referrals legal-profile provenance rebuild migration", () =
       db.prepare(`INSERT INTO partner_identities(id, agent_id, email, email_hash, legal_profile_revision_id, created_by_admin_id) VALUES (?, ?, 'p@example.test', 'h', 'lp-1', 'admin')`)
         .run(partnerId, agentId);
 
-      migrate(db);
+      migrateOnly0050(db);
 
       expect(db.prepare("SELECT legal_profile_revision_id FROM partner_identities WHERE id = ?").get(partnerId)).toEqual({ legal_profile_revision_id: "lp-1" });
       expect(() => db.prepare("UPDATE partner_identities SET legal_profile_revision_id = 'does-not-exist' WHERE id = ?").run(partnerId))
@@ -301,7 +318,7 @@ describe("0050 agent-referrals legal-profile provenance rebuild migration", () =
       const agentId = seedAgent(db);
       seedLegacyRevision(db, { id: "lp-1", agentId, revision: 1 });
       expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
-      migrate(db);
+      migrateOnly0050(db);
       expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
       expect(db.pragma("foreign_key_check")).toEqual([]);
     });
@@ -317,11 +334,11 @@ describe("0050 agent-referrals legal-profile provenance rebuild migration", () =
       const { db } = at0049();
       const agentId = seedAgent(db);
       seedLegacyRevision(db, { id: "lp-1", agentId, revision: 1 });
-      migrate(db);
+      migrateOnly0050(db);
       const afterFirst = db.prepare("SELECT * FROM schema_migrations WHERE version = ?").get(MIGRATION_FILE);
       const rowCountAfterFirst = db.prepare("SELECT COUNT(*) AS n FROM agent_referrals_legal_profile_revisions").get();
 
-      expect(() => migrate(db)).not.toThrow();
+      expect(() => migrateOnly0050(db)).not.toThrow();
 
       expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
       expect(db.prepare("SELECT * FROM schema_migrations WHERE version = ?").get(MIGRATION_FILE)).toEqual(afterFirst);
@@ -405,8 +422,8 @@ describe("0050 agent-referrals legal-profile provenance rebuild migration", () =
       b.pragma("busy_timeout = 5000");
       open.push(b);
 
-      migrate(a);
-      expect(() => migrate(b)).not.toThrow();
+      migrateOnly0050(a);
+      expect(() => migrateOnly0050(b)).not.toThrow();
 
       expect(a.prepare("SELECT COUNT(*) AS n FROM schema_migrations WHERE version = ?").get(MIGRATION_FILE)).toEqual({ n: 1 });
       expect(a.prepare("SELECT sql FROM sqlite_master WHERE name = 'agent_referrals_legal_profile_revisions'").get()).toMatchObject({ sql: expect.stringContaining("assertion_source") });
@@ -428,7 +445,7 @@ describe("0050 agent-referrals legal-profile provenance rebuild migration", () =
       activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
       const agentId = seedAgent(db);
       const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
-      submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD");
+      submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" });
       verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
 
       expect(currentAgentReferralsLegalProfile(db, agentId)).toMatchObject({
@@ -444,10 +461,11 @@ describe("0050 agent-referrals legal-profile provenance rebuild migration", () =
       open.push(db);
       const agentId = seedAgent(db);
 
-      expect(() => applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "admin claim", assertion_source: "ADMIN_ASSERTED" }))
+      const legalEntityRequisites = { opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" };
+      expect(() => applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "admin claim", assertion_source: "ADMIN_ASSERTED", ...legalEntityRequisites }))
         .toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_EVIDENCE_REF_REQUIRED/);
 
-      applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "admin claim", assertion_source: "ADMIN_ASSERTED", evidence_ref: "egrul-extract.pdf" });
+      applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "admin claim", assertion_source: "ADMIN_ASSERTED", evidence_ref: "egrul-extract.pdf", ...legalEntityRequisites });
       expect(currentAgentReferralsLegalProfile(db, agentId)).toMatchObject({ assertion_source: "ADMIN_ASSERTED", evidence_ref: "egrul-extract.pdf" });
     });
   });

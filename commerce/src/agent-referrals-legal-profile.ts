@@ -68,6 +68,146 @@ export class AgentReferralsLegalProfileError extends Error {
   }
 }
 
+/**
+ * PR-E: the unified legal requisites tuple, every field an asserted fact -
+ * never derived from another (full_name is never built from opf+short_name
+ * or vice versa). TEXT throughout, including every identifier (inn/kpp/
+ * registration_number): these are never arithmetic values, and a leading
+ * zero is significant. Mirrors 0052's own per-legal_form shape/format CHECKs
+ * exactly - see that migration for the authoritative matrix this type and
+ * normalizeAndValidateLegalProfile below both reproduce.
+ *
+ * legal_address deliberately has no INDIVIDUAL/INDIVIDUAL_ENTREPRENEUR
+ * counterpart in PR-E: collecting a natural person's address is real PII
+ * with no concrete document/provider consumer yet, not schema symmetry for
+ * its own sake.
+ */
+export type LegalRequisites = {
+  opf: string | null;
+  full_name: string;
+  short_name: string | null;
+  inn: string;
+  kpp: string | null;
+  registration_number: string | null;
+  legal_address: string | null;
+};
+
+/** Every field optional/nullable at the input boundary - normalizeAndValidateLegalProfile is what proves the per-legal_form shape. */
+export type RawLegalRequisitesInput = {
+  opf?: string | null;
+  full_name: string;
+  short_name?: string | null;
+  inn: string;
+  kpp?: string | null;
+  registration_number?: string | null;
+  legal_address?: string | null;
+};
+
+const INN_LENGTH: Readonly<Record<LegalForm, number>> = { INDIVIDUAL: 12, INDIVIDUAL_ENTREPRENEUR: 12, LEGAL_ENTITY: 10 };
+const KPP_LENGTH = 9;
+const REGISTRATION_NUMBER_LENGTH: Partial<Readonly<Record<LegalForm, number>>> = { INDIVIDUAL_ENTREPRENEUR: 15, LEGAL_ENTITY: 13 };
+
+type RequisiteFieldRule = "REQUIRED" | "OPTIONAL" | "FORBIDDEN";
+
+/** The per-legal_form shape for every field EXCEPT full_name/inn, which are REQUIRED for all three and handled separately (their format, not their presence, varies by legal_form). */
+const REQUISITE_SHAPE: Readonly<Record<LegalForm, Readonly<Record<"opf" | "short_name" | "kpp" | "registration_number" | "legal_address", RequisiteFieldRule>>>> = {
+  INDIVIDUAL: { opf: "FORBIDDEN", short_name: "FORBIDDEN", kpp: "FORBIDDEN", registration_number: "FORBIDDEN", legal_address: "FORBIDDEN" },
+  INDIVIDUAL_ENTREPRENEUR: { opf: "FORBIDDEN", short_name: "FORBIDDEN", kpp: "FORBIDDEN", registration_number: "REQUIRED", legal_address: "FORBIDDEN" },
+  LEGAL_ENTITY: { opf: "REQUIRED", short_name: "OPTIONAL", kpp: "REQUIRED", registration_number: "REQUIRED", legal_address: "REQUIRED" },
+};
+
+const isBlank = (value: string): boolean => value.trim().length === 0;
+
+/** "" (after trim) is never accepted as "provided" for an optional field - collapses to null, matching the DB CHECKs' own whitespace-aware trim() discipline. */
+const normalizeOptional = (value: string | null | undefined): string | null => {
+  if (value === null || value === undefined) return null;
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? null : trimmed;
+};
+
+const requireDigits = (value: string, length: number, field: string, legalForm: LegalForm): void => {
+  if (value.length !== length || !/^[0-9]+$/.test(value)) {
+    throw new AgentReferralsLegalProfileError("AGENT_REFERRALS_LEGAL_PROFILE_REQUISITE_INVALID_FORMAT", 422, `${field} must be exactly ${length} digits for ${legalForm}`);
+  }
+};
+
+/**
+ * The one shared validator every caller that will eventually reach 0052's
+ * CHECK constraints must call FIRST, domain-side - not just
+ * applyAgentReferralsLegalProfile's own mint path (mirrors
+ * resolveProjectedContractorType's own role for the legal_form x tax_mode
+ * matrix, extended to the full requisites tuple). Normalizes (trims,
+ * collapses blank-optional to null) AND validates in one pass, returning the
+ * exact tuple ready for INSERT; throws AgentReferralsLegalProfileError
+ * (422) naming the offending field on any violation. A caller that skips
+ * this and lets the DB CHECK reject the row instead gets a raw SqliteError
+ * the global HTTP error handler does not recognize (no `.status`), i.e. an
+ * internal 500 for what is actually a 422 - the same hazard
+ * resolveProjectedContractorType's own doc comment describes.
+ */
+export const normalizeAndValidateLegalProfile = (
+  legalForm: LegalForm,
+  taxMode: TaxMode,
+  raw: RawLegalRequisitesInput,
+): { projectedContractorType: ProjectedContractorType; requisites: LegalRequisites } => {
+  const projectedContractorType = resolveProjectedContractorType(legalForm, taxMode);
+  if (!projectedContractorType) {
+    throw new AgentReferralsLegalProfileError("AGENT_REFERRALS_LEGAL_PROFILE_REJECTED_COMBINATION", 422, `${legalForm}+${taxMode}`);
+  }
+
+  const fullName = raw.full_name.trim();
+  if (isBlank(fullName)) throw new AgentReferralsLegalProfileError("AGENT_REFERRALS_LEGAL_PROFILE_REQUISITE_REQUIRED", 422, "full_name");
+  const inn = raw.inn.trim();
+  if (isBlank(inn)) throw new AgentReferralsLegalProfileError("AGENT_REFERRALS_LEGAL_PROFILE_REQUISITE_REQUIRED", 422, "inn");
+  requireDigits(inn, INN_LENGTH[legalForm], "inn", legalForm);
+
+  const shape = REQUISITE_SHAPE[legalForm];
+  const normalized: Record<"opf" | "short_name" | "kpp" | "registration_number" | "legal_address", string | null> = {
+    opf: normalizeOptional(raw.opf), short_name: normalizeOptional(raw.short_name), kpp: normalizeOptional(raw.kpp),
+    registration_number: normalizeOptional(raw.registration_number), legal_address: normalizeOptional(raw.legal_address),
+  };
+  for (const field of ["opf", "short_name", "kpp", "registration_number", "legal_address"] as const) {
+    const rule = shape[field];
+    const value = normalized[field];
+    if (rule === "REQUIRED" && value === null) {
+      throw new AgentReferralsLegalProfileError("AGENT_REFERRALS_LEGAL_PROFILE_REQUISITE_REQUIRED", 422, field);
+    }
+    if (rule === "FORBIDDEN" && value !== null) {
+      throw new AgentReferralsLegalProfileError("AGENT_REFERRALS_LEGAL_PROFILE_REQUISITE_FORBIDDEN", 422, field);
+    }
+  }
+  if (normalized.kpp !== null) requireDigits(normalized.kpp, KPP_LENGTH, "kpp", legalForm);
+  if (normalized.registration_number !== null) {
+    requireDigits(normalized.registration_number, REGISTRATION_NUMBER_LENGTH[legalForm]!, "registration_number", legalForm);
+  }
+
+  return {
+    projectedContractorType,
+    requisites: { opf: normalized.opf, full_name: fullName, short_name: normalized.short_name, inn, kpp: normalized.kpp, registration_number: normalized.registration_number, legal_address: normalized.legal_address },
+  };
+};
+
+/**
+ * Semantic identity equality for a legal profile: legal_form/tax_mode plus
+ * the full requisites tuple, NEVER provenance (assertion_source,
+ * evidence_ref, reason, created_by, timestamps, ids). Used both by
+ * applyAgentReferralsLegalProfile's own idempotent-no-op check below and by
+ * agent-referrals-legal-profile-supersession.ts's NO_CHANGE refusal - one
+ * function, not duplicated per call site, so PR-E's requisites extension
+ * only had to change this once. Provenance is deliberately excluded: a
+ * re-proof of the exact same facts must never mint a new authority, even
+ * under a different assertion_source/evidence_ref/reason - otherwise a
+ * repeated submission could be used to artificially mint new legal
+ * authority with nothing about the identity actually changed.
+ */
+export const canonicalLegalProfileEquals = (
+  a: { legal_form: LegalForm; tax_mode: TaxMode } & LegalRequisites,
+  b: { legal_form: LegalForm; tax_mode: TaxMode } & LegalRequisites,
+): boolean =>
+  a.legal_form === b.legal_form && a.tax_mode === b.tax_mode
+  && a.opf === b.opf && a.full_name === b.full_name && a.short_name === b.short_name
+  && a.inn === b.inn && a.kpp === b.kpp && a.registration_number === b.registration_number && a.legal_address === b.legal_address;
+
 export type AgentReferralsLegalProfileRevision = {
   id: string;
   agent_id: string;
@@ -75,6 +215,13 @@ export type AgentReferralsLegalProfileRevision = {
   legal_form: LegalForm;
   tax_mode: TaxMode;
   projected_contractor_type: ProjectedContractorType;
+  opf: string | null;
+  full_name: string;
+  short_name: string | null;
+  inn: string;
+  kpp: string | null;
+  registration_number: string | null;
+  legal_address: string | null;
   supersedes_revision_id: string | null;
   reason: string;
   assertion_source: AssertionSource;
@@ -82,7 +229,7 @@ export type AgentReferralsLegalProfileRevision = {
   created_at: string;
 };
 
-const REVISION_COLUMNS = "id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, supersedes_revision_id, reason, assertion_source, evidence_ref, created_at";
+const REVISION_COLUMNS = "id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, opf, full_name, short_name, inn, kpp, registration_number, legal_address, supersedes_revision_id, reason, assertion_source, evidence_ref, created_at";
 
 /** The latest (and only meaningful) revision for an agent - never a stored pointer. See the migration's comment for why. */
 export const currentAgentReferralsLegalProfile = (db: Database.Database, agentId: string): AgentReferralsLegalProfileRevision | null =>
@@ -123,7 +270,7 @@ export const resolveCurrentLegalProfileBinding = (
   return current;
 };
 
-export type ApplyAgentReferralsLegalProfileInput = {
+export type ApplyAgentReferralsLegalProfileInput = RawLegalRequisitesInput & {
   agent_id: string;
   legal_form: LegalForm;
   tax_mode: TaxMode;
@@ -150,14 +297,11 @@ export const applyAgentReferralsLegalProfile = (
   db: Database.Database,
   input: ApplyAgentReferralsLegalProfileInput,
 ): ApplyAgentReferralsLegalProfileResult => {
-  const projected = resolveProjectedContractorType(input.legal_form, input.tax_mode);
-  if (!projected) {
-    throw new AgentReferralsLegalProfileError("AGENT_REFERRALS_LEGAL_PROFILE_REJECTED_COMBINATION", 422, `${input.legal_form}+${input.tax_mode}`);
-  }
+  const { projectedContractorType: projected, requisites } = normalizeAndValidateLegalProfile(input.legal_form, input.tax_mode, input);
   // Mirrors the table's own CHECK (assertion_source = 'PARTNER_ASSERTED' OR
   // (assertion_source = 'ADMIN_ASSERTED' AND evidence_ref IS NOT NULL)) as an
   // application-level error before any transaction opens, same as the
-  // rejected-combination check above - the DB CHECK remains the structural
+  // requisites validation above - the DB CHECK remains the structural
   // backstop, this is only for a caller-legible error.
   if (input.assertion_source === "ADMIN_ASSERTED" && !input.evidence_ref?.trim()) {
     throw new AgentReferralsLegalProfileError("AGENT_REFERRALS_LEGAL_PROFILE_EVIDENCE_REF_REQUIRED", 422, input.assertion_source);
@@ -172,15 +316,17 @@ export const applyAgentReferralsLegalProfile = (
     // already correct). The existing revision's own provenance is kept -
     // immutable evidence is never rewritten by a later resubmission, even
     // one asserted from a different source.
-    if (current && current.legal_form === input.legal_form && current.tax_mode === input.tax_mode) {
+    if (current && canonicalLegalProfileEquals(current, { legal_form: input.legal_form, tax_mode: input.tax_mode, ...requisites })) {
       return { revision_id: current.id, revision: current.revision, projected_contractor_type: current.projected_contractor_type, minted: false };
     }
 
     const nextRevision = (current?.revision ?? 0) + 1;
     const revisionId = id();
-    db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, supersedes_revision_id, reason, assertion_source, evidence_ref)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(revisionId, input.agent_id, nextRevision, input.legal_form, input.tax_mode, projected, current?.id ?? null, input.reason, input.assertion_source, evidenceRef);
+    db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, opf, full_name, short_name, inn, kpp, registration_number, legal_address, supersedes_revision_id, reason, assertion_source, evidence_ref)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(revisionId, input.agent_id, nextRevision, input.legal_form, input.tax_mode, projected,
+        requisites.opf, requisites.full_name, requisites.short_name, requisites.inn, requisites.kpp, requisites.registration_number, requisites.legal_address,
+        current?.id ?? null, input.reason, input.assertion_source, evidenceRef);
 
     // agent_id's FK already refuses an unknown agent when the revision insert
     // above runs, so this UPDATE only ever reaches an agent known to exist.

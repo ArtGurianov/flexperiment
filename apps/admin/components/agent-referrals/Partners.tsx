@@ -1,8 +1,8 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
-import { useForm } from "react-hook-form";
+import { useEffect, useState } from "react";
+import { useForm, type UseFormRegister } from "react-hook-form";
 import { api, AdminApiError } from "../../lib/api";
 import type { Row } from "../../lib/page";
 import { Loading } from "../ui/Loading";
@@ -208,15 +208,67 @@ const CHANGE_REQUEST_STATE_LABELS: Record<string, string> = {
   PENDING: "На рассмотрении", VERIFIED: "Подтверждена", REJECTED: "Отклонена", STALE: "Устарела",
 };
 
+/** PR-E: the unified requisites tuple - present on every legal-profile submission (initial onboarding and D2 supersession alike). */
+type LegalRequisitesFormFields = { opf: string; full_name: string; short_name: string; inn: string; kpp: string; registration_number: string; legal_address: string };
+
+/**
+ * Renders only the fields the selected legal_form actually requires -
+ * matches normalizeAndValidateLegalProfile's own per-legal_form shape
+ * matrix exactly (commerce/src/agent-referrals-legal-profile.ts), so a
+ * submission is never missing a field the backend would refuse (or ask for
+ * one it silently ignores). Mirrors apps/admin/components/partner/Profile
+ * .tsx's own copy - each surface owns its own small form component, not a
+ * shared one, matching this file's existing per-surface style.
+ */
+function LegalRequisitesFields({ legalForm, register }: { legalForm: string; register: UseFormRegister<LegalRequisitesFormFields> }) {
+  return (
+    <>
+      <label>ФИО / полное наименование <input {...register("full_name", { required: true })} /></label>
+      {legalForm === "LEGAL_ENTITY" && <label>Сокращённое наименование <input {...register("short_name")} /></label>}
+      {legalForm === "LEGAL_ENTITY" && <label>ОПФ <input {...register("opf", { required: true })} placeholder="ООО" /></label>}
+      <label>ИНН <input {...register("inn", { required: true })} placeholder={legalForm === "LEGAL_ENTITY" ? "10 цифр" : "12 цифр"} /></label>
+      {legalForm === "LEGAL_ENTITY" && <label>КПП <input {...register("kpp", { required: true })} placeholder="9 цифр" /></label>}
+      {(legalForm === "INDIVIDUAL_ENTREPRENEUR" || legalForm === "LEGAL_ENTITY") && (
+        <label>{legalForm === "INDIVIDUAL_ENTREPRENEUR" ? "ОГРНИП" : "ОГРН"} <input {...register("registration_number", { required: true })} placeholder={legalForm === "INDIVIDUAL_ENTREPRENEUR" ? "15 цифр" : "13 цифр"} /></label>
+      )}
+      {legalForm === "LEGAL_ENTITY" && <label>Юридический адрес <input {...register("legal_address", { required: true })} /></label>}
+    </>
+  );
+}
+
+/** Mirrors the backend's frozen legal_form x tax_mode matrix (commerce/src/agent-referrals-legal-profile.ts's PROJECTION table) - only INDIVIDUAL_ENTREPRENEUR actually has a choice. */
+const TAX_MODE_OPTIONS: Record<string, Array<{ value: string; label: string }>> = {
+  INDIVIDUAL: [{ value: "NPD", label: "НПД" }],
+  INDIVIDUAL_ENTREPRENEUR: [{ value: "NPD", label: "НПД" }, { value: "OTHER", label: "Иной" }],
+  LEGAL_ENTITY: [{ value: "OTHER", label: "Иной" }],
+};
+
+/** Keeps tax_mode inside the set the selected legal_form actually allows - without this, switching legal_form silently leaves a now-invalid tax_mode selected and submission fails REJECTED_COMBINATION for no reason visible in the form itself. */
+function useConstrainedTaxMode(legalForm: string, taxMode: string, setValue: (name: "tax_mode", value: string) => void) {
+  useEffect(() => {
+    const allowed = TAX_MODE_OPTIONS[legalForm]?.map((o) => o.value) ?? [];
+    if (allowed.length && !allowed.includes(taxMode)) setValue("tax_mode", allowed[0]);
+  }, [legalForm, taxMode, setValue]);
+}
+
 /** D2 §10: a separate action for an already-active partner, never a repeat of onboarding verification. */
 function LegalProfileSupersession({ partnerId, legalProfile, pendingRequest, onDone }: {
   partnerId: string; legalProfile: Row | null; pendingRequest: Row | null; onDone: () => void;
 }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const { register, handleSubmit, reset } = useForm<{ legal_form: string; tax_mode: string; reason: string; evidence_ref: string }>({
-    defaultValues: { legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "", evidence_ref: "" },
+  // shouldUnregister: a field hidden by LegalRequisitesFields' own
+  // conditional rendering (e.g. opf/kpp/legal_address when legal_form
+  // switches away from LEGAL_ENTITY) must not survive in form state - RHF's
+  // default keeps it, which would resubmit a stale value the backend
+  // correctly refuses as AGENT_REFERRALS_LEGAL_PROFILE_REQUISITE_FORBIDDEN.
+  const { register, handleSubmit, reset, watch, setValue } = useForm<{ legal_form: string; tax_mode: string; reason: string; evidence_ref: string } & LegalRequisitesFormFields>({
+    shouldUnregister: true,
+    defaultValues: { legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "", evidence_ref: "", opf: "", full_name: "", short_name: "", inn: "", kpp: "", registration_number: "", legal_address: "" },
   });
+  const selectedLegalForm = watch("legal_form");
+  const selectedTaxMode = watch("tax_mode");
+  useConstrainedTaxMode(selectedLegalForm, selectedTaxMode, setValue);
 
   const submitChange = handleSubmit(async (values) => {
     setBusy(true); setError(null);
@@ -243,10 +295,16 @@ function LegalProfileSupersession({ partnerId, legalProfile, pendingRequest, onD
   return (
     <Panel title="Юридические данные">
       {legalProfile && (
-        <p>
-          Текущий профиль: <Badge>{LEGAL_FORM_LABELS[String(legalProfile.legal_form)] ?? String(legalProfile.legal_form)}</Badge>
-          {" "}({String(legalProfile.tax_mode)}), ревизия {String(legalProfile.revision)}
-        </p>
+        <>
+          <p>
+            Текущий профиль: <Badge>{LEGAL_FORM_LABELS[String(legalProfile.legal_form)] ?? String(legalProfile.legal_form)}</Badge>
+            {" "}({String(legalProfile.tax_mode)}), ревизия {String(legalProfile.revision)}
+          </p>
+          <p>{legalProfile.opf ? `${String(legalProfile.opf)} ` : ""}{String(legalProfile.full_name)}{legalProfile.short_name ? ` (${String(legalProfile.short_name)})` : ""}, ИНН {String(legalProfile.inn)}
+            {legalProfile.kpp ? `, КПП ${String(legalProfile.kpp)}` : ""}{legalProfile.registration_number ? `, ${legalProfile.legal_form === "INDIVIDUAL_ENTREPRENEUR" ? "ОГРНИП" : "ОГРН"} ${String(legalProfile.registration_number)}` : ""}
+          </p>
+          {Boolean(legalProfile.legal_address) && <p>Адрес: {String(legalProfile.legal_address)}</p>}
+        </>
       )}
       {pendingRequest ? (
         <>
@@ -254,6 +312,7 @@ function LegalProfileSupersession({ partnerId, legalProfile, pendingRequest, onD
             Заявка на изменение: <Badge>{CHANGE_REQUEST_STATE_LABELS[String(pendingRequest.state)] ?? String(pendingRequest.state)}</Badge>
             {" → "}{LEGAL_FORM_LABELS[String(pendingRequest.legal_form)] ?? String(pendingRequest.legal_form)} ({String(pendingRequest.tax_mode)})
           </p>
+          <p>{pendingRequest.opf ? `${String(pendingRequest.opf)} ` : ""}{String(pendingRequest.full_name)}{pendingRequest.short_name ? ` (${String(pendingRequest.short_name)})` : ""}, ИНН {String(pendingRequest.inn)}</p>
           <p>Причина: {String(pendingRequest.reason)}</p>
           <button disabled={busy} onClick={() => void runOnRequest("verify")}>{busy ? "…" : "Подтвердить изменение"}</button>{" "}
           <button disabled={busy} onClick={() => void runOnRequest("reject")}>{busy ? "…" : "Отклонить заявку"}</button>
@@ -268,8 +327,9 @@ function LegalProfileSupersession({ partnerId, legalProfile, pendingRequest, onD
             </select>
           </label>
           <label>Налоговый режим
-            <select {...register("tax_mode", { required: true })}><option value="NPD">НПД</option><option value="OTHER">Иной</option></select>
+            <select {...register("tax_mode", { required: true })}>{(TAX_MODE_OPTIONS[selectedLegalForm] ?? []).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
           </label>
+          <LegalRequisitesFields legalForm={selectedLegalForm} register={register as unknown as UseFormRegister<LegalRequisitesFormFields>} />
           <label>Причина <input {...register("reason", { required: true })} /></label>
           <label>Ссылка на подтверждающий документ (обязательно для заявки от администратора) <input {...register("evidence_ref")} /></label>
           <button className="primary" disabled={busy}>{busy ? "…" : "Изменить юридические данные"}</button>

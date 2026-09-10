@@ -93,11 +93,12 @@ describe("0043 agent-referrals foundation migration", () => {
     expect(db.prepare("SELECT version FROM schema_migrations WHERE version = ?").get(MIGRATION_FILE)).toEqual({ version: MIGRATION_FILE });
   });
 
-  it("leaves the FK_OFF_MIGRATIONS registry containing only the exact 0042 and 0050 tuples", () => {
-    expect(FK_OFF_MIGRATIONS).toHaveLength(2);
+  it("leaves the FK_OFF_MIGRATIONS registry containing only the exact 0042, 0050 and 0052 tuples", () => {
+    expect(FK_OFF_MIGRATIONS).toHaveLength(3);
     expect(FK_OFF_MIGRATIONS).toEqual([
       { filename: "0042_agent_referrals_agents_rebuild.sql", sha256: "d9b5ecbf496993669201b45440ea5213ba0e52af778e2094d569f772adfee6ab" },
       { filename: "0050_agent_referrals_legal_profile_provenance_rebuild.sql", sha256: "e1cbd9ce177546ea621fb4a9da861f63e69e999e8bf6a5c159d1c967761349f0" },
+      { filename: "0052_agent_referrals_unified_legal_requisites.sql", sha256: "bcc44feaa37acb5930a8b9d7fe4a1bd4e711306e2640b9cb04ff78844cec9104" },
     ]);
   });
 
@@ -164,6 +165,18 @@ describe("0043 agent-referrals foundation migration", () => {
       const insertAgent = (agentId: string) => db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
         VALUES (?, ?, 'M', 'M Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId, agentId, `${agentId}@example.test`);
 
+      // PR-E: full_name/inn are mandatory for every legal_form, and
+      // LEGAL_ENTITY additionally requires opf/kpp/registration_number/
+      // legal_address (INDIVIDUAL_ENTREPRENEUR requires only registration_
+      // number) - required here so the rejected cases still fail on the
+      // MATRIX check specifically, not a shape/NOT NULL violation on an
+      // unrelated column.
+      const requisites = (legalForm: string): { opf: string | null; inn: string; kpp: string | null; registrationNumber: string | null; legalAddress: string | null } => {
+        if (legalForm === "LEGAL_ENTITY") return { opf: "OOO", inn: "1234567890", kpp: "123456789", registrationNumber: "1234567890123", legalAddress: "Moscow" };
+        if (legalForm === "INDIVIDUAL_ENTREPRENEUR") return { opf: null, inn: "123456789012", kpp: null, registrationNumber: "123456789012345", legalAddress: null };
+        return { opf: null, inn: "123456789012", kpp: null, registrationNumber: null, legalAddress: null };
+      };
+
       const allowed: Array<[string, string, string]> = [
         ["INDIVIDUAL", "NPD", "SELF_EMPLOYED"],
         ["INDIVIDUAL_ENTREPRENEUR", "NPD", "INDIVIDUAL_ENTREPRENEUR"],
@@ -173,8 +186,9 @@ describe("0043 agent-referrals foundation migration", () => {
       for (const [legalForm, taxMode, projected] of allowed) {
         const agentId = `agent-matrix-allowed-${legalForm}-${taxMode}`;
         insertAgent(agentId);
-        expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason, assertion_source)
-          VALUES (?, ?, 1, ?, ?, ?, 'structural-proof', 'PARTNER_ASSERTED')`).run(`${legalForm}-${taxMode}`, agentId, legalForm, taxMode, projected),
+        const { opf, inn, kpp, registrationNumber, legalAddress } = requisites(legalForm);
+        expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, opf, full_name, inn, kpp, registration_number, legal_address, reason, assertion_source)
+          VALUES (?, ?, 1, ?, ?, ?, ?, 'Test Name', ?, ?, ?, ?, 'structural-proof', 'PARTNER_ASSERTED')`).run(`${legalForm}-${taxMode}`, agentId, legalForm, taxMode, projected, opf, inn, kpp, registrationNumber, legalAddress),
           `${legalForm}+${taxMode}`).not.toThrow();
       }
       const rejected: Array<[string, string, string]> = [
@@ -184,8 +198,9 @@ describe("0043 agent-referrals foundation migration", () => {
       for (const [legalForm, taxMode, projected] of rejected) {
         const agentId = `agent-matrix-rejected-${legalForm}-${taxMode}`;
         insertAgent(agentId);
-        expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason, assertion_source)
-          VALUES (?, ?, 1, ?, ?, ?, 'structural-proof', 'PARTNER_ASSERTED')`).run(`${legalForm}-${taxMode}`, agentId, legalForm, taxMode, projected),
+        const { opf, inn, kpp, registrationNumber, legalAddress } = requisites(legalForm);
+        expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, opf, full_name, inn, kpp, registration_number, legal_address, reason, assertion_source)
+          VALUES (?, ?, 1, ?, ?, ?, ?, 'Test Name', ?, ?, ?, ?, 'structural-proof', 'PARTNER_ASSERTED')`).run(`${legalForm}-${taxMode}`, agentId, legalForm, taxMode, projected, opf, inn, kpp, registrationNumber, legalAddress),
           `${legalForm}+${taxMode}`).toThrow(/CHECK constraint failed/);
       }
     });
@@ -215,8 +230,8 @@ describe("0043 agent-referrals foundation migration", () => {
       db.prepare(`INSERT INTO delegation_template_revisions(id, revision, ord_reporting_mode, content_json, content_hash) VALUES ('d1', 1, 'FLEXPERIMENT_DELEGATED', '{}', 'h')`).run();
       db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
         VALUES ('agent-guard', 'guard-agent', 'G', 'G Legal', 'g@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run();
-      db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason, assertion_source)
-        VALUES ('r1', 'agent-guard', 1, 'INDIVIDUAL', 'NPD', 'SELF_EMPLOYED', 'seed', 'PARTNER_ASSERTED')`).run();
+      db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, full_name, inn, reason, assertion_source)
+        VALUES ('r1', 'agent-guard', 1, 'INDIVIDUAL', 'NPD', 'SELF_EMPLOYED', 'Ivanov Ivan Ivanovich', '123456789012', 'seed', 'PARTNER_ASSERTED')`).run();
 
       expect(() => db.exec("UPDATE framework_agreement_revisions SET content_hash = 'x' WHERE id = 'f1'")).toThrow(/FRAMEWORK_AGREEMENT_REVISION_IMMUTABLE/);
       expect(() => db.exec("UPDATE delegation_template_revisions SET content_hash = 'x' WHERE id = 'd1'")).toThrow(/DELEGATION_TEMPLATE_REVISION_IMMUTABLE/);
@@ -230,8 +245,8 @@ describe("0043 agent-referrals foundation migration", () => {
       db.prepare(`INSERT INTO delegation_template_revisions(id, revision, ord_reporting_mode, content_json, content_hash) VALUES ('d1', 1, 'FLEXPERIMENT_DELEGATED', '{}', 'h')`).run();
       db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
         VALUES ('agent-guard-2', 'guard-agent-2', 'G', 'G Legal', 'g2@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run();
-      db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, reason, assertion_source)
-        VALUES ('r1', 'agent-guard-2', 1, 'INDIVIDUAL', 'NPD', 'SELF_EMPLOYED', 'seed', 'PARTNER_ASSERTED')`).run();
+      db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, full_name, inn, reason, assertion_source)
+        VALUES ('r1', 'agent-guard-2', 1, 'INDIVIDUAL', 'NPD', 'SELF_EMPLOYED', 'Ivanov Ivan Ivanovich', '123456789012', 'seed', 'PARTNER_ASSERTED')`).run();
 
       expect(() => db.exec("DELETE FROM framework_agreement_revisions WHERE id = 'f1'")).toThrow(/FRAMEWORK_AGREEMENT_REVISION_IMMUTABLE/);
       expect(() => db.exec("DELETE FROM delegation_template_revisions WHERE id = 'd1'")).toThrow(/DELEGATION_TEMPLATE_REVISION_IMMUTABLE/);

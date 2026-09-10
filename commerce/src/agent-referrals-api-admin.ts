@@ -41,7 +41,7 @@ import {
   beginPayment, recordPaymentMade, recordPayoutUnknown, recordConfirmedNotMade, recordNpdReceipt, paymentAttemptsForSettlement, paymentAttemptById,
 } from "./agent-referrals-payment";
 import { agentReferralsReviewQueue } from "./agent-referrals-review-queue";
-import { currentAgentReferralsLegalProfile, type LegalForm, type TaxMode } from "./agent-referrals-legal-profile";
+import { currentAgentReferralsLegalProfile, type LegalForm, type RawLegalRequisitesInput, type TaxMode } from "./agent-referrals-legal-profile";
 import {
   submitLegalProfileSupersession, verifyLegalProfileSupersession, rejectLegalProfileSupersession,
   ownedLegalProfileChangeRequest, pendingLegalProfileChangeRequestForPartner, AgentReferralsLegalProfileSupersessionError,
@@ -83,6 +83,20 @@ const requireNumber = (body: Record<string, unknown>, field: string): number => 
   if (typeof value !== "number" || !Number.isFinite(value)) throw new DomainError("AGENT_REFERRALS_ADMIN_FIELD_REQUIRED", 422, field);
   return value;
 };
+const nullableString = (body: Record<string, unknown>, field: string): string | null => {
+  const value = body[field];
+  return typeof value === "string" ? value : null;
+};
+/** PR-E: the full requisites tuple as submitted over HTTP - normalizeAndValidateLegalProfile (called inside submitLegalProfileSupersession) is what actually proves per-legal_form shape; this only proves the wire types. */
+const legalRequisitesFromBody = (body: Record<string, unknown>): RawLegalRequisitesInput => ({
+  full_name: requireString(body, "full_name"),
+  inn: requireString(body, "inn"),
+  opf: nullableString(body, "opf"),
+  short_name: nullableString(body, "short_name"),
+  kpp: nullableString(body, "kpp"),
+  registration_number: nullableString(body, "registration_number"),
+  legal_address: nullableString(body, "legal_address"),
+});
 
 export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   const app = new Hono<AdminAppBindings>();
@@ -150,6 +164,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
     return c.json(submitLegalProfileSupersession(sqlite, adminOf(c), c.req.param("id"), {
       legalForm: requireString(body, "legal_form") as LegalForm, taxMode: requireString(body, "tax_mode") as TaxMode,
       reason: requireString(body, "reason"), evidenceRef: optionalString(body, "evidence_ref") ?? null,
+      ...legalRequisitesFromBody(body),
     }), 201);
   });
   app.post("/partners/:id/legal-profile/change/:requestId/verify", async (c) => {

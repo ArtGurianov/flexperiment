@@ -33,7 +33,7 @@ describe("agents.contractor_type projection lock (integration-hardening #3)", ()
       slug: "org-partner", display_name: "Org Partner", legal_name: "Org LLC", email: "org@example.com",
       contractor_type: "ORGANIZATION", inn: "7700000001", contract_reference: "ref-1", default_reward_type: "FIXED", default_reward_value: 100,
     }).id);
-    applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "verified", assertion_source: "PARTNER_ASSERTED" });
+    applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "verified", assertion_source: "PARTNER_ASSERTED", opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" });
 
     expect(() => domain.patchAgent(agentId, { contractor_type: "SELF_EMPLOYED" })).toThrow("AGENT_REFERRALS_CONTRACTOR_TYPE_PROJECTION_LOCKED");
     expect((db.prepare("SELECT contractor_type FROM agents WHERE id = ?").get(agentId) as { contractor_type: string }).contractor_type).toBe("ORGANIZATION");
@@ -55,7 +55,7 @@ describe("agents.contractor_type projection lock (integration-hardening #3)", ()
       slug: "org-partner-2", display_name: "Org Partner 2", legal_name: "Org LLC 2", email: "org2@example.com",
       contractor_type: "ORGANIZATION", inn: "7700000003", contract_reference: "ref-3", default_reward_type: "FIXED", default_reward_value: 100,
     }).id);
-    applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "verified", assertion_source: "PARTNER_ASSERTED" });
+    applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "verified", assertion_source: "PARTNER_ASSERTED", opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" });
     expect(() => domain.patchAgent(agentId, { contractor_type: "ORGANIZATION", display_name: "Renamed" })).not.toThrow();
     expect((db.prepare("SELECT display_name FROM agents WHERE id = ?").get(agentId) as { display_name: string }).display_name).toBe("Renamed");
   });
@@ -66,7 +66,7 @@ describe("agents.contractor_type projection lock (integration-hardening #3)", ()
       slug: "org-partner-3", display_name: "Org Partner 3", legal_name: "Org LLC 3", email: "org3@example.com",
       contractor_type: "ORGANIZATION", inn: "7700000004", contract_reference: "ref-4", default_reward_type: "FIXED", default_reward_value: 100,
     }).id);
-    applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "verified", assertion_source: "PARTNER_ASSERTED" });
+    applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "verified", assertion_source: "PARTNER_ASSERTED", opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" });
     expect(() => db.prepare("UPDATE agents SET contractor_type = 'SELF_EMPLOYED' WHERE id = ?").run(agentId)).toThrow(/AGENT_REFERRALS_CONTRACTOR_TYPE_PROJECTION_LOCKED/);
   });
 
@@ -77,8 +77,8 @@ describe("agents.contractor_type projection lock (integration-hardening #3)", ()
       contractor_type: "SELF_EMPLOYED", inn: "7700000005", contract_reference: "ref-5", default_reward_type: "FIXED", default_reward_value: 100,
     }).id);
     // Individual/NPD -> SELF_EMPLOYED first (matches the legacy create value), then a genuine re-verification to LEGAL_ENTITY/ORGANIZATION - a real projection CHANGE, exactly what the guard must never block.
-    applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "INDIVIDUAL", tax_mode: "NPD", reason: "initial verification", assertion_source: "PARTNER_ASSERTED" });
-    expect(() => applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "re-verified as an organization", assertion_source: "PARTNER_ASSERTED" })).not.toThrow();
+    applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "INDIVIDUAL", tax_mode: "NPD", reason: "initial verification", assertion_source: "PARTNER_ASSERTED", full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" });
+    expect(() => applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "re-verified as an organization", assertion_source: "PARTNER_ASSERTED", opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" })).not.toThrow();
     expect(currentAgentReferralsLegalProfile(db, agentId)?.projected_contractor_type).toBe("ORGANIZATION");
     expect((db.prepare("SELECT contractor_type FROM agents WHERE id = ?").get(agentId) as { contractor_type: string }).contractor_type).toBe("ORGANIZATION");
   });

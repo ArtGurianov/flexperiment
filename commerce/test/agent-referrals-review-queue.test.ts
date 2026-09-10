@@ -120,7 +120,7 @@ describe("agent-referrals-review-queue.ts: live-derived operator findings, never
       VALUES (?, 'p1', 'A', 'A Legal', 'a@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId);
     const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
     const asPartner: PartnerPrincipal = { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" };
-    submitPartnerLegalProfile(db, asPartner, "INDIVIDUAL", "NPD");
+    submitPartnerLegalProfile(db, asPartner, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" });
 
     const submitted = agentReferralsReviewQueue(db, new Date().toISOString());
     expect(submitted.partners_profile_pending_verification).toEqual({ total: 1, items: [{ partner_identity_id: partnerIdentityId }], truncated: false });

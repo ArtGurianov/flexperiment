@@ -67,7 +67,11 @@ export const readyPartner = (db: Database.Database, taxMode: "NPD" | "OTHER" = "
   db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
     VALUES (?, ?, 'Agent', 'Agent Legal', ?, ?, '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`, contractorType);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
-  submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, taxMode === "NPD" ? "INDIVIDUAL" : "INDIVIDUAL_ENTREPRENEUR", taxMode);
+  const legalForm = taxMode === "NPD" ? "INDIVIDUAL" : "INDIVIDUAL_ENTREPRENEUR";
+  submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, legalForm, taxMode,
+    legalForm === "INDIVIDUAL"
+      ? { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }
+      : { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012", registration_number: "123456789012345" });
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
   const fw = mintFrameworkAgreementRevision(db, clause(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES));
   const dt = mintDelegationTemplateRevision(db, clause(DELEGATION_TEMPLATE_REQUIRED_CLAUSES));
