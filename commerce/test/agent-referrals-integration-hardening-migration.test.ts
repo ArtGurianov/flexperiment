@@ -57,6 +57,19 @@ const at0048 = () => {
 const tableNames = (db: Database.Database): string[] =>
   (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[]).map((r) => r.name);
 
+/**
+ * Scoped to exactly 0049, regardless of what later migrations (0050+) exist
+ * in the real migrations directory - matches agent-referrals-foundation-
+ * migration.test.ts's own migrateOnly0043 precedent. Using the general
+ * migrate() runner here would make "0049 introduces no new table" drift
+ * the moment a later PR adds one of its own (0051 did, for D2).
+ */
+const migrateOnly0049 = (db: Database.Database) => {
+  const dir = mkdtempSync(join(tmpdir(), "integration-hardening-only-0049-"));
+  copyFileSync(join(MIGRATIONS, MIGRATION_FILE), join(dir, MIGRATION_FILE));
+  migrate(db, dir);
+};
+
 describe("0049 integration-hardening migration", () => {
   it("applies cleanly on top of 0042-0048, FK stays ON, foreign_key_check is clean", () => {
     const db = at0048();
@@ -87,15 +100,15 @@ describe("0049 integration-hardening migration", () => {
     ]);
   });
 
-  it("ships no 0051+ migration file (the PR-D foundation's own 0050 is the current boundary)", () => {
+  it("ships no 0052+ migration file (D2's own 0051 is the current boundary)", () => {
     const all = readdirSync(MIGRATIONS).filter((n) => n.endsWith(".sql"));
-    expect(all.filter((n) => n > "0050_agent_referrals_legal_profile_provenance_rebuild.sql")).toEqual([]);
+    expect(all.filter((n) => n > "0051_agent_referrals_legal_profile_supersession.sql")).toEqual([]);
   });
 
   it("introduces no new base table - every fix is a trigger/index on an existing 0043/0047 table, or pure application code", () => {
     const db = at0048();
     const before = new Set(tableNames(db));
-    migrate(db);
+    migrateOnly0049(db);
     const introduced = tableNames(db).filter((name) => !before.has(name) && name !== "schema_migrations");
     expect(introduced).toEqual([]);
   });

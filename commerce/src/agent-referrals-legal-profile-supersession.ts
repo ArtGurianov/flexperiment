@@ -1,0 +1,425 @@
+import type Database from "better-sqlite3";
+import { id } from "./crypto";
+import {
+  agentReferralsLegalProfileRevisionById, applyAgentReferralsLegalProfile, currentAgentReferralsLegalProfile, resolveCurrentLegalProfileBinding,
+  type ApplyAgentReferralsLegalProfileResult, type AssertionSource, type LegalForm, type TaxMode,
+} from "./agent-referrals-legal-profile";
+import { getPartnerIdentity, recordPartnerIdentityEvent, type PartnerIdentityRow } from "./agent-referrals-onboarding";
+import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
+import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
+import { engagementsForPartner, type EngagementRow } from "./agent-referrals-engagement";
+import { currentEffectiveRewardSnapshot } from "./agent-referrals-reward-registry";
+import { zeroRewardClosureForEngagement } from "./agent-referrals-zero-reward-closure";
+import { settlementForEffectiveSnapshot, recoveryExposureEvidenceForEngagement } from "./agent-referrals-settlement";
+// Type-only: erased at compile time, so this never becomes a runtime import
+// edge back to agent-referrals-partner-identity.ts, which itself imports
+// applyVerifiedLegalProfileForPartnerIdentity (a VALUE) from this module -
+// a real value-level cycle in the other direction would be a problem, a
+// type-only one in this direction is not.
+import type { AdminPrincipal, PartnerPrincipal } from "./agent-referrals-partner-identity";
+
+/**
+ * PR-D2: legal-profile supersession & binding semantics. Builds on the
+ * PR-D foundation (0050's assertion_source/evidence_ref) and the immutable
+ * revision chain (0043) to make a post-onboarding change of legal identity
+ * an achievable, atomic operation between engagement epochs - never a live
+ * substitution of contractor inside one engagement.
+ *
+ * Three levels of authority, never confused:
+ *   current verified profile = MAX(revision)         the ONLY semantic authority
+ *   partner_identity pointer = redundant checked projection of it
+ *   activation pin            = immutable historical binding, never replayed
+ */
+
+export class AgentReferralsLegalProfileSupersessionError extends Error {
+  constructor(readonly code: string, readonly status = 409, detail?: string) {
+    super(detail ? `${code}: ${detail}` : code);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// §4: the one atomic operation that ever moves the pointer, shared by the
+// original onboarding verification (verifyPartnerLegalProfile,
+// agent-referrals-partner-identity.ts) and this module's own verify().
+// ---------------------------------------------------------------------------
+
+export type ApplyVerifiedLegalProfileForPartnerIdentityInput = {
+  partnerIdentityId: string;
+  agentId: string;
+  legalForm: LegalForm;
+  taxMode: TaxMode;
+  assertionSource: AssertionSource;
+  evidenceRef?: string | null;
+  reason: string;
+};
+
+/**
+ * Precondition -> mint (+ legacy contractor_type projection, via
+ * applyAgentReferralsLegalProfile) -> pointer UPDATE -> postcondition, all
+ * one transaction. The precondition admits exactly two legal pre-states:
+ * first-ever verification (MAX and pointer both null) or an already-
+ * coherent pointer (== MAX) about to be superseded. Any other combination
+ * is POINTER_DIVERGED and this never repairs it by writing over it - the
+ * caller must investigate, never silently proceed.
+ */
+export const applyVerifiedLegalProfileForPartnerIdentity = (
+  db: Database.Database,
+  input: ApplyVerifiedLegalProfileForPartnerIdentityInput,
+): ApplyAgentReferralsLegalProfileResult => {
+  const run = db.transaction((): ApplyAgentReferralsLegalProfileResult => {
+    const current = currentAgentReferralsLegalProfile(db, input.agentId);
+    const identity = getPartnerIdentity(db, input.partnerIdentityId);
+    if (!identity) throw new AgentReferralsLegalProfileSupersessionError("PARTNER_IDENTITY_NOT_FOUND", 404);
+
+    const preconditionOk = (current === null && identity.legal_profile_revision_id === null)
+      || (current !== null && identity.legal_profile_revision_id === current.id);
+    if (!preconditionOk) throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_POINTER_DIVERGED", 500, input.partnerIdentityId);
+
+    const result = applyAgentReferralsLegalProfile(db, {
+      agent_id: input.agentId, legal_form: input.legalForm, tax_mode: input.taxMode,
+      reason: input.reason, assertion_source: input.assertionSource, evidence_ref: input.evidenceRef,
+    });
+
+    db.prepare(`UPDATE partner_identities SET legal_profile_revision_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .run(result.revision_id, input.partnerIdentityId);
+
+    // Postcondition: a revision now unconditionally exists (we just minted
+    // or confirmed one), so resolveCurrentLegalProfileBinding's own
+    // pointer==MAX proof is exactly what this needs - reusing it here means
+    // the postcondition and every other caller's coherence proof are
+    // structurally the SAME check, never two independently-maintained ones.
+    resolveCurrentLegalProfileBinding(db, { agent_id: input.agentId, legal_profile_revision_id: result.revision_id });
+
+    return result;
+  });
+  return run.immediate();
+};
+
+// ---------------------------------------------------------------------------
+// §3: blocking predicate - "does this partner have an unclosed obligation
+// under the CURRENT legal identity". Order is part of the contract: first
+// match wins, exhaustive default is BLOCK.
+// ---------------------------------------------------------------------------
+
+export type SupersessionBindingReason =
+  | "ENGAGEMENT_NOT_CLOSED"
+  | "OUTSTANDING_SETTLEMENT"
+  | "POSITIVE_EFFECTIVE_UNSETTLED"
+  | "UNCLASSIFIED"
+  | "CURRENT_SETTLEMENT_SETTLED"
+  | "ZERO_REWARD_CLOSED"
+  | "RECOVERY_EXPOSURE"
+  | "ZERO_EFFECTIVE";
+
+export type SupersessionBindingDecision =
+  | { blocked: true; reason: "ENGAGEMENT_NOT_CLOSED" | "OUTSTANDING_SETTLEMENT" | "POSITIVE_EFFECTIVE_UNSETTLED" | "UNCLASSIFIED"; engagementId: string }
+  | { blocked: false; reason: "CURRENT_SETTLEMENT_SETTLED" | "ZERO_REWARD_CLOSED" | "RECOVERY_EXPOSURE" | "ZERO_EFFECTIVE" };
+
+/**
+ * §3, per engagement. Terminality is proven by the CURRENT effective
+ * snapshot only - "was ever paid" is deliberately not a branch here (У5):
+ * a post-payment RECOVERY_EXPOSURE correction mints a new E with no
+ * settlement of its own by design (agent-referrals-settlement.ts never
+ * mints one after MADE), so a naive "no settlement for current E => block"
+ * rule would make every engagement that was ever corrected after payment
+ * permanently unsupersedable. Recovery-exposure evidence pinned to the
+ * CURRENT E is instead its own terminal outcome, on equal footing with a
+ * zero-reward closure.
+ */
+const classifyEngagementForSupersession = (db: Database.Database, engagement: EngagementRow): SupersessionBindingDecision => {
+  if (engagement.lifecycle_state !== "CLOSED") return { blocked: true, reason: "ENGAGEMENT_NOT_CLOSED", engagementId: engagement.id };
+
+  // Any settlement still PREPARED or PENDING_DOCUMENT - engagement-scoped,
+  // not "for the current E" - is an unfinished monetary or documentary
+  // obligation under the identity about to be superseded, historical E or
+  // not. PENDING_DOCUMENT is closable (recordNpdReceipt moves it to
+  // SETTLED); it is a named political decision to block here, not an
+  // oversight.
+  const outstanding = db.prepare(`SELECT 1 FROM reward_settlements WHERE settlement_flow = 'AGENT_REFERRALS' AND engagement_id = ? AND status IN ('PREPARED', 'PENDING_DOCUMENT') LIMIT 1`)
+    .get(engagement.id);
+  if (outstanding) return { blocked: true, reason: "OUTSTANDING_SETTLEMENT", engagementId: engagement.id };
+
+  const currentEffective = currentEffectiveRewardSnapshot(db, engagement.id);
+
+  if (currentEffective) {
+    const settlement = settlementForEffectiveSnapshot(db, currentEffective.id);
+    if (settlement?.status === "SETTLED") return { blocked: false, reason: "CURRENT_SETTLEMENT_SETTLED" };
+  }
+
+  if (zeroRewardClosureForEngagement(db, engagement.id)) return { blocked: false, reason: "ZERO_REWARD_CLOSED" };
+
+  if (currentEffective) {
+    const hasRecoveryExposureForCurrent = recoveryExposureEvidenceForEngagement(db, engagement.id)
+      .some((evidence) => evidence.effective_reward_snapshot_id === currentEffective.id);
+    if (hasRecoveryExposureForCurrent) return { blocked: false, reason: "RECOVERY_EXPOSURE" };
+  }
+
+  if (!currentEffective || currentEffective.reward_total_kopecks === 0) return { blocked: false, reason: "ZERO_EFFECTIVE" };
+
+  if (currentEffective.reward_total_kopecks > 0) return { blocked: true, reason: "POSITIVE_EFFECTIVE_UNSETTLED", engagementId: engagement.id };
+
+  return { blocked: true, reason: "UNCLASSIFIED", engagementId: engagement.id };
+};
+
+/**
+ * Partner-level aggregation: ANY blocking engagement blocks the whole
+ * partner, first one found (short-circuit, no need to classify the rest).
+ * A partner with zero engagements, or every engagement independently
+ * terminal, is allowed - ZERO_EFFECTIVE is the reported reason when there
+ * is nothing to represent (no engagements at all, same as "nothing owed").
+ */
+export const supersessionBindingDecision = (db: Database.Database, partnerIdentityId: string): SupersessionBindingDecision => {
+  const engagements = engagementsForPartner(db, partnerIdentityId);
+  let lastAllow: SupersessionBindingDecision = { blocked: false, reason: "ZERO_EFFECTIVE" };
+  for (const engagement of engagements) {
+    const decision = classifyEngagementForSupersession(db, engagement);
+    if (decision.blocked) return decision;
+    lastAllow = decision;
+  }
+  return lastAllow;
+};
+
+// ---------------------------------------------------------------------------
+// §1/§2: the candidate row and its lifecycle - submit / verify / reject.
+// ---------------------------------------------------------------------------
+
+export type LegalProfileChangeRequestState = "PENDING" | "VERIFIED" | "REJECTED" | "STALE";
+
+export type LegalProfileChangeRequestRow = {
+  id: string;
+  partner_identity_id: string;
+  legal_form: LegalForm;
+  tax_mode: TaxMode;
+  assertion_source: AssertionSource;
+  evidence_ref: string | null;
+  reason: string;
+  supersedes_revision_id: string;
+  created_by: string;
+  created_at: string;
+  state: LegalProfileChangeRequestState;
+  resolved_legal_profile_revision_id: string | null;
+  resolved_at: string | null;
+  resolved_by: string | null;
+  resolution_reason: string | null;
+};
+
+const CHANGE_REQUEST_COLUMNS = `id, partner_identity_id, legal_form, tax_mode, assertion_source, evidence_ref, reason, supersedes_revision_id, created_by, created_at,
+  state, resolved_legal_profile_revision_id, resolved_at, resolved_by, resolution_reason`;
+
+export const legalProfileChangeRequestById = (db: Database.Database, requestId: string): LegalProfileChangeRequestRow | null =>
+  (db.prepare(`SELECT ${CHANGE_REQUEST_COLUMNS} FROM agent_referrals_legal_profile_change_requests WHERE id = ?`)
+    .get(requestId) as LegalProfileChangeRequestRow | undefined) ?? null;
+
+export const pendingLegalProfileChangeRequestForPartner = (db: Database.Database, partnerIdentityId: string): LegalProfileChangeRequestRow | null =>
+  (db.prepare(`SELECT ${CHANGE_REQUEST_COLUMNS} FROM agent_referrals_legal_profile_change_requests WHERE partner_identity_id = ? AND state = 'PENDING'`)
+    .get(partnerIdentityId) as LegalProfileChangeRequestRow | undefined) ?? null;
+
+/** §9: relational authorization for admin routes carrying both :id and :requestId - matches ownedEngagement's exact shape (agent-referrals-partner-projection.ts). Knowing requestId alone is never authority. */
+export const ownedLegalProfileChangeRequest = (db: Database.Database, partnerIdentityId: string, requestId: string): LegalProfileChangeRequestRow => {
+  const request = legalProfileChangeRequestById(db, requestId);
+  if (!request) throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_REQUEST_NOT_FOUND", 404, requestId);
+  if (request.partner_identity_id !== partnerIdentityId) throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_REQUEST_WRONG_PARTNER", 403, requestId);
+  return request;
+};
+
+/** No-op supersession is refused (variant A, §2): a change request must actually change the authoritative profile. Extend this one function, not each call site, when PR-E adds requisites to the comparison. */
+export const canonicalLegalProfileEquals = (
+  a: { legal_form: LegalForm; tax_mode: TaxMode },
+  b: { legal_form: LegalForm; tax_mode: TaxMode },
+): boolean => a.legal_form === b.legal_form && a.tax_mode === b.tax_mode;
+
+const eligibleForSupersession = (identity: PartnerIdentityRow): boolean =>
+  identity.onboarding_state === "PARTNER_ACTIVE" && identity.destroyed_at === null;
+
+export type SubmitLegalProfileSupersessionInput = {
+  legalForm: LegalForm;
+  taxMode: TaxMode;
+  reason: string;
+  evidenceRef?: string | null;
+};
+
+/**
+ * §2: assertion_source and created_by are derived from the principal's own
+ * realm, never accepted from the request body - partner-realm is always
+ * PARTNER_ASSERTED (created_by = the partner's own identity), admin-realm
+ * is always ADMIN_ASSERTED (created_by = the admin). supersedes_revision_id
+ * is MAX at the instant of INSERT, inside this same transaction.
+ */
+export const submitLegalProfileSupersession = (
+  db: Database.Database,
+  principal: AdminPrincipal | PartnerPrincipal,
+  partnerIdentityId: string,
+  input: SubmitLegalProfileSupersessionInput,
+): LegalProfileChangeRequestRow => {
+  const run = db.transaction((): LegalProfileChangeRequestRow => {
+    // Filing evidence is permitted even while SUSPENDED (§2б) - it fixes a
+    // fact, it does not create authority.
+    assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "LEGAL_PROFILE_CHANGE_SUBMISSION");
+
+    const identity = getPartnerIdentity(db, partnerIdentityId);
+    if (!identity) throw new AgentReferralsLegalProfileSupersessionError("PARTNER_IDENTITY_NOT_FOUND", 404);
+    if (!eligibleForSupersession(identity)) {
+      throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_INELIGIBLE_IDENTITY", 409, identity.onboarding_state);
+    }
+
+    const current = resolveCurrentLegalProfileBinding(db, identity);
+    if (canonicalLegalProfileEquals({ legal_form: input.legalForm, tax_mode: input.taxMode }, current)) {
+      throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_NO_CHANGE", 409, partnerIdentityId);
+    }
+
+    const assertionSource: AssertionSource = principal.realm === "ADMIN" ? "ADMIN_ASSERTED" : "PARTNER_ASSERTED";
+    const createdBy = principal.realm === "ADMIN" ? principal.admin_id : principal.partner_identity_id;
+    const evidenceRef = input.evidenceRef?.trim() || null;
+    if (assertionSource === "ADMIN_ASSERTED" && !evidenceRef) {
+      throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_EVIDENCE_REF_REQUIRED", 422, assertionSource);
+    }
+
+    // Pre-check for a legible error; the partial unique index below is the
+    // real structural backstop a genuine race still hits.
+    if (pendingLegalProfileChangeRequestForPartner(db, partnerIdentityId)) {
+      throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_ALREADY_PENDING", 409, partnerIdentityId);
+    }
+
+    const requestId = id();
+    try {
+      db.prepare(`INSERT INTO agent_referrals_legal_profile_change_requests(id, partner_identity_id, legal_form, tax_mode, assertion_source, evidence_ref, reason, supersedes_revision_id, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(requestId, partnerIdentityId, input.legalForm, input.taxMode, assertionSource, evidenceRef, input.reason, current.id, createdBy);
+    } catch (error) {
+      if (error instanceof Error && /UNIQUE constraint failed: agent_referrals_legal_profile_change_requests\.partner_identity_id/.test(error.message)) {
+        throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_ALREADY_PENDING", 409, partnerIdentityId);
+      }
+      throw error;
+    }
+
+    recordPartnerIdentityEvent(
+      db, partnerIdentityId,
+      principal.realm === "ADMIN" ? "LEGAL_PROFILE_CHANGE_ASSERTED_BY_ADMIN" : "LEGAL_PROFILE_CHANGE_ASSERTED_BY_PARTNER",
+      principal.realm,
+      { request_id: requestId, legal_form: input.legalForm, tax_mode: input.taxMode, reason: input.reason },
+    );
+
+    return legalProfileChangeRequestById(db, requestId)!;
+  });
+  return run.immediate();
+};
+
+export const rejectLegalProfileSupersession = (
+  db: Database.Database,
+  admin: AdminPrincipal,
+  requestId: string,
+  reason: string,
+): LegalProfileChangeRequestRow => {
+  const run = db.transaction((): LegalProfileChangeRequestRow => {
+    // Cleanup of already-filed evidence is permitted even while SUSPENDED
+    // (§2б) - rejecting mints no authority.
+    assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "LEGAL_PROFILE_CHANGE_REJECTION");
+
+    const request = legalProfileChangeRequestById(db, requestId);
+    if (!request) throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_REQUEST_NOT_FOUND", 404, requestId);
+    if (request.state !== "PENDING") throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_INVALID_STATE", 409, request.state);
+
+    const changed = db.prepare(`UPDATE agent_referrals_legal_profile_change_requests
+      SET state = 'REJECTED', resolved_at = CURRENT_TIMESTAMP, resolved_by = ?, resolution_reason = ?
+      WHERE id = ? AND state = 'PENDING'`).run(admin.admin_id, reason, requestId);
+    if (changed.changes !== 1) throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_INVALID_STATE", 409, requestId);
+
+    recordPartnerIdentityEvent(db, request.partner_identity_id, "LEGAL_PROFILE_CHANGE_REJECTED", "ADMIN", { request_id: requestId, reason });
+    return legalProfileChangeRequestById(db, requestId)!;
+  });
+  return run.immediate();
+};
+
+export type VerifyLegalProfileSupersessionOutcome =
+  | { outcome: "VERIFIED"; revision_id: string; revision: number }
+  | { outcome: "REPLAYED"; revision_id: string; revision: number }
+  | { outcome: "STALE"; expected: string; actual: string }
+  | { outcome: "BLOCKED"; reason: SupersessionBindingReason }
+  | { outcome: "INVALID_STATE"; state: LegalProfileChangeRequestState };
+
+/**
+ * Terminal states resolve BEFORE any gate, eligibility re-check or
+ * pointer-precondition - a replay of an already-completed command is not
+ * new authority, so it must not retroactively become a 409 because the
+ * feature suspended or the identity was destroyed AFTER the original
+ * success. Precedent: acceptEngagement finds an existing
+ * engagement_acceptances row and returns replayed:true before ever calling
+ * assertAgentReferralsOperationPermitted (agent-referrals-engagement.ts).
+ *
+ * STALE is committed, never thrown: throwing would roll back the very
+ * fact this branch exists to record, and leave the request PENDING forever
+ * (occupying the partial-unique-index slot) since nothing else ever moves
+ * it out of PENDING for this request again.
+ */
+export const verifyLegalProfileSupersession = (
+  db: Database.Database,
+  admin: AdminPrincipal,
+  requestId: string,
+  reason: string,
+): VerifyLegalProfileSupersessionOutcome => {
+  const run = db.transaction((): VerifyLegalProfileSupersessionOutcome => {
+    const request = legalProfileChangeRequestById(db, requestId);
+    if (!request) throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_REQUEST_NOT_FOUND", 404, requestId);
+
+    if (request.state === "VERIFIED") {
+      const revision = agentReferralsLegalProfileRevisionById(db, request.resolved_legal_profile_revision_id!);
+      if (!revision) throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_POINTER_DIVERGED", 500, requestId);
+      return { outcome: "REPLAYED", revision_id: revision.id, revision: revision.revision };
+    }
+    if (request.state === "REJECTED" || request.state === "STALE") {
+      return { outcome: "INVALID_STATE", state: request.state };
+    }
+
+    assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "LEGAL_PROFILE_CHANGE_VERIFICATION");
+
+    const identity = getPartnerIdentity(db, request.partner_identity_id);
+    if (!identity) throw new AgentReferralsLegalProfileSupersessionError("PARTNER_IDENTITY_NOT_FOUND", 404, request.partner_identity_id);
+    // Re-checked, not merely trusted from submit time: the identity could
+    // have been destroyed, or (structurally impossible today, but never
+    // assumed) lost PARTNER_ACTIVE, in the interval between submit and verify.
+    if (!eligibleForSupersession(identity)) {
+      throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_INELIGIBLE_IDENTITY", 409, identity.onboarding_state);
+    }
+
+    // Precondition: pointer == MAX, proven fresh under the write lock -
+    // POINTER_DIVERGED here is a genuine defect and rolls back rather than
+    // silently repairing the pointer.
+    const current = resolveCurrentLegalProfileBinding(db, identity);
+
+    if (request.supersedes_revision_id !== current.id) {
+      db.prepare(`UPDATE agent_referrals_legal_profile_change_requests
+        SET state = 'STALE', resolved_at = CURRENT_TIMESTAMP, resolved_by = ?, resolution_reason = ?
+        WHERE id = ? AND state = 'PENDING'`)
+        .run(admin.admin_id, `expected supersedes_revision_id ${request.supersedes_revision_id}, current is ${current.id}`, requestId);
+      recordPartnerIdentityEvent(db, identity.id, "LEGAL_PROFILE_CHANGE_STALE", "ADMIN", {
+        request_id: requestId, expected_supersedes_revision_id: request.supersedes_revision_id, actual_current_revision_id: current.id,
+      });
+      return { outcome: "STALE", expected: request.supersedes_revision_id, actual: current.id };
+    }
+
+    // Re-derived, not merely trusted from submit time (state may have
+    // changed between the two) - same rationale as the eligibility recheck.
+    if (canonicalLegalProfileEquals(request, current)) {
+      throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_NO_CHANGE", 409, requestId);
+    }
+
+    const decision = supersessionBindingDecision(db, identity.id);
+    if (decision.blocked) return { outcome: "BLOCKED", reason: decision.reason };
+
+    const result = applyVerifiedLegalProfileForPartnerIdentity(db, {
+      partnerIdentityId: identity.id, agentId: identity.agent_id,
+      legalForm: request.legal_form, taxMode: request.tax_mode,
+      assertionSource: request.assertion_source, evidenceRef: request.evidence_ref, reason,
+    });
+
+    const changed = db.prepare(`UPDATE agent_referrals_legal_profile_change_requests
+      SET state = 'VERIFIED', resolved_legal_profile_revision_id = ?, resolved_at = CURRENT_TIMESTAMP, resolved_by = ?
+      WHERE id = ? AND state = 'PENDING'`).run(result.revision_id, admin.admin_id, requestId);
+    if (changed.changes !== 1) throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_REQUEST_CONFLICT", 409, requestId);
+
+    recordPartnerIdentityEvent(db, identity.id, "LEGAL_PROFILE_CHANGE_VERIFIED", "ADMIN", { request_id: requestId, legal_profile_revision_id: result.revision_id, reason });
+
+    return { outcome: "VERIFIED", revision_id: result.revision_id, revision: result.revision };
+  });
+  return run.immediate();
+};

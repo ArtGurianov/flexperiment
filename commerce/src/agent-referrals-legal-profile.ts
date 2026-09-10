@@ -79,6 +79,35 @@ export const allAgentReferralsLegalProfileRevisions = (db: Database.Database, ag
   db.prepare(`SELECT ${REVISION_COLUMNS}
     FROM agent_referrals_legal_profile_revisions WHERE agent_id = ? ORDER BY revision ASC`).all(agentId) as AgentReferralsLegalProfileRevision[];
 
+/** A single revision by its own id, independent of whether it is anyone's current one - resolveActivatedLegalProfileBinding's own reader. */
+export const agentReferralsLegalProfileRevisionById = (db: Database.Database, revisionId: string): AgentReferralsLegalProfileRevision | null =>
+  (db.prepare(`SELECT ${REVISION_COLUMNS} FROM agent_referrals_legal_profile_revisions WHERE id = ?`)
+    .get(revisionId) as AgentReferralsLegalProfileRevision | undefined) ?? null;
+
+/**
+ * MAX(revision) is the sole semantic authority; partner_identities.legal_
+ * profile_revision_id is a redundant, checked projection of it (the D2
+ * plan's three-level-authority model). No caller may compare anything
+ * against the pointer directly - every caller that needs "the current
+ * profile" goes through here, which proves pointer == MAX first and
+ * returns MAX, never the pointer's own row read independently.
+ *
+ * Two legal pre-states exist for (MAX, pointer): both null (no profile
+ * minted yet) or both naming the same row. Any other combination -
+ * including "MAX exists but pointer is null/different" - is
+ * POINTER_DIVERGED, a structural defect this never silently repairs.
+ */
+export const resolveCurrentLegalProfileBinding = (
+  db: Database.Database,
+  partnerIdentity: { agent_id: string; legal_profile_revision_id: string | null },
+): AgentReferralsLegalProfileRevision => {
+  const current = currentAgentReferralsLegalProfile(db, partnerIdentity.agent_id);
+  if (!current || partnerIdentity.legal_profile_revision_id !== current.id) {
+    throw new AgentReferralsLegalProfileError("AGENT_REFERRALS_LEGAL_PROFILE_POINTER_DIVERGED", 500, partnerIdentity.legal_profile_revision_id ?? "null");
+  }
+  return current;
+};
+
 export type ApplyAgentReferralsLegalProfileInput = {
   agent_id: string;
   legal_form: LegalForm;

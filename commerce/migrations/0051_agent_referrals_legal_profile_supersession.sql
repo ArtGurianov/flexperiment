@@ -1,0 +1,114 @@
+-- PR-D2: legal-profile supersession candidate lifecycle. Builds on the
+-- PR-D foundation (0050's assertion_source/evidence_ref provenance) to make
+-- a post-onboarding legal-identity change an achievable, atomic operation
+-- between engagement epochs - never a live substitution of contractor
+-- inside one engagement.
+--
+-- `agent_referrals_legal_profile_revisions` (0043, extended 0050) remains
+-- the SOLE semantic authority: current = MAX(revision). This table is a
+-- separate MUTABLE candidate with its own lifecycle - not a repurposing of
+-- partner_identities.submitted_legal_form/_tax_mode (PR3's onboarding
+-- draft, a different concern with a different lifecycle) and not a second
+-- writer of the immutable revision chain itself.
+--
+-- Two column groups with two different mutability rules, enforced
+-- structurally below rather than only by convention:
+--   "заявка" (the request itself)  - immutable from the moment of INSERT
+--   "резолюция" (the outcome)      - written exactly once, only from PENDING
+CREATE TABLE agent_referrals_legal_profile_change_requests (
+  id TEXT PRIMARY KEY,
+  partner_identity_id TEXT NOT NULL REFERENCES partner_identities(id),
+  legal_form TEXT NOT NULL CHECK (legal_form IN ('INDIVIDUAL', 'INDIVIDUAL_ENTREPRENEUR', 'LEGAL_ENTITY')),
+  tax_mode TEXT NOT NULL CHECK (tax_mode IN ('NPD', 'OTHER')),
+  assertion_source TEXT NOT NULL CHECK (assertion_source IN ('PARTNER_ASSERTED', 'ADMIN_ASSERTED')),
+  evidence_ref TEXT,
+  reason TEXT NOT NULL,
+  -- MAX(revision) for this partner's agent at the moment of submit - the
+  -- staleness baseline verify() re-proves against, never re-derived later.
+  supersedes_revision_id TEXT NOT NULL REFERENCES agent_referrals_legal_profile_revisions(id),
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+  state TEXT NOT NULL DEFAULT 'PENDING' CHECK (state IN ('PENDING', 'VERIFIED', 'REJECTED', 'STALE')),
+  resolved_legal_profile_revision_id TEXT REFERENCES agent_referrals_legal_profile_revisions(id),
+  resolved_at TEXT,
+  resolved_by TEXT,
+  resolution_reason TEXT,
+
+  -- Same 4-allowed/2-rejected matrix 0043 enforces on the revision this
+  -- request may eventually mint - structurally, not only via the
+  -- application-level PROJECTION lookup in agent-referrals-legal-profile.ts,
+  -- so a bypass of that function still cannot even file a candidate for a
+  -- rejected combination.
+  CHECK (
+    (legal_form = 'INDIVIDUAL' AND tax_mode = 'NPD')
+    OR (legal_form = 'INDIVIDUAL_ENTREPRENEUR' AND tax_mode IN ('NPD', 'OTHER'))
+    OR (legal_form = 'LEGAL_ENTITY' AND tax_mode = 'OTHER')
+  ),
+  -- Same provenance discipline as 0050's revisions themselves: PARTNER_
+  -- ASSERTED may omit evidence_ref, ADMIN_ASSERTED may not, and a blank
+  -- string is never accepted as "provided" for either (SQLite's single-
+  -- argument trim() only strips ASCII space - the second argument names
+  -- every ASCII whitespace character actually being stripped).
+  CHECK (evidence_ref IS NULL OR trim(evidence_ref, ' ' || char(9) || char(10) || char(11) || char(12) || char(13)) != ''),
+  CHECK (assertion_source = 'PARTNER_ASSERTED' OR (assertion_source = 'ADMIN_ASSERTED' AND evidence_ref IS NOT NULL)),
+  -- The full resolution-tuple CHECK, not merely "resolved_revision matches
+  -- state": PENDING carries no resolution evidence of any kind; VERIFIED
+  -- always carries a minted revision plus who/when; REJECTED and STALE
+  -- always carry who/when/why but never a revision (neither ever mints).
+  CHECK (
+    (state = 'PENDING' AND resolved_legal_profile_revision_id IS NULL AND resolved_at IS NULL AND resolved_by IS NULL AND resolution_reason IS NULL)
+    OR (state = 'VERIFIED' AND resolved_legal_profile_revision_id IS NOT NULL AND resolved_at IS NOT NULL AND resolved_by IS NOT NULL)
+    OR (state IN ('REJECTED', 'STALE') AND resolved_legal_profile_revision_id IS NULL AND resolved_at IS NOT NULL AND resolved_by IS NOT NULL AND resolution_reason IS NOT NULL)
+  )
+);
+
+CREATE INDEX agent_referrals_legal_profile_change_requests_partner_idx
+  ON agent_referrals_legal_profile_change_requests(partner_identity_id, created_at);
+
+-- At most one PENDING request per partner, ever - same partial-unique-index
+-- pattern as partner_invite_capabilities_active_unique (0044). This is the
+-- structural backstop the domain's own pre-check races against; the
+-- pre-check gives a legible ALREADY_PENDING error, this index is what
+-- actually makes the property true under concurrency.
+CREATE UNIQUE INDEX agent_referrals_legal_profile_change_requests_pending_unique
+  ON agent_referrals_legal_profile_change_requests(partner_identity_id) WHERE state = 'PENDING';
+
+-- Terminal states are fully locked: once state leaves PENDING, the row
+-- never changes again in any way, including a second call attempting to
+-- "resolve" it a different way or re-write the same resolution.
+CREATE TRIGGER agent_referrals_legal_profile_change_requests_terminal_immutable_guard
+BEFORE UPDATE ON agent_referrals_legal_profile_change_requests
+WHEN OLD.state != 'PENDING'
+BEGIN SELECT RAISE(ABORT, 'AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_REQUEST_IMMUTABLE'); END;
+
+-- No PENDING -> PENDING update exists in this domain (submit only INSERTs;
+-- verify/reject always move to a terminal state or leave the row alone) -
+-- a stay-PENDING UPDATE, resolution fields or not, is never legitimate.
+CREATE TRIGGER agent_referrals_legal_profile_change_requests_pending_reentry_guard
+BEFORE UPDATE ON agent_referrals_legal_profile_change_requests
+WHEN OLD.state = 'PENDING' AND NEW.state = 'PENDING'
+BEGIN SELECT RAISE(ABORT, 'AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_REQUEST_IMMUTABLE'); END;
+
+-- The "заявка" column group is immutable from INSERT, independent of state:
+-- a legitimate PENDING -> terminal transition writes only the "резолюция"
+-- columns, never restates or alters what was originally filed.
+CREATE TRIGGER agent_referrals_legal_profile_change_requests_request_fields_immutable_guard
+BEFORE UPDATE ON agent_referrals_legal_profile_change_requests
+WHEN NEW.partner_identity_id IS NOT OLD.partner_identity_id
+  OR NEW.legal_form IS NOT OLD.legal_form
+  OR NEW.tax_mode IS NOT OLD.tax_mode
+  OR NEW.assertion_source IS NOT OLD.assertion_source
+  OR NEW.evidence_ref IS NOT OLD.evidence_ref
+  OR NEW.reason IS NOT OLD.reason
+  OR NEW.supersedes_revision_id IS NOT OLD.supersedes_revision_id
+  OR NEW.created_by IS NOT OLD.created_by
+  OR NEW.created_at IS NOT OLD.created_at
+BEGIN SELECT RAISE(ABORT, 'AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_REQUEST_IMMUTABLE'); END;
+
+-- Immutable must also mean undeletable - matching every other evidence
+-- table in this schema (0043's legal-profile revisions, 0045's activation
+-- events, and so on). No path in this domain ever deletes a filed request.
+CREATE TRIGGER agent_referrals_legal_profile_change_requests_delete_guard
+BEFORE DELETE ON agent_referrals_legal_profile_change_requests
+BEGIN SELECT RAISE(ABORT, 'AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_REQUEST_IMMUTABLE'); END;

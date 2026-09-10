@@ -41,6 +41,11 @@ import {
   beginPayment, recordPaymentMade, recordPayoutUnknown, recordConfirmedNotMade, recordNpdReceipt, paymentAttemptsForSettlement, paymentAttemptById,
 } from "./agent-referrals-payment";
 import { agentReferralsReviewQueue } from "./agent-referrals-review-queue";
+import { currentAgentReferralsLegalProfile, type LegalForm, type TaxMode } from "./agent-referrals-legal-profile";
+import {
+  submitLegalProfileSupersession, verifyLegalProfileSupersession, rejectLegalProfileSupersession,
+  ownedLegalProfileChangeRequest, pendingLegalProfileChangeRequestForPartner, AgentReferralsLegalProfileSupersessionError,
+} from "./agent-referrals-legal-profile-supersession";
 
 /**
  * `/v1/admin/agent-referrals/*` - mounted INSIDE api.ts's already-
@@ -115,6 +120,10 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
       audience_verifications: sqlite.prepare(`SELECT v.id, v.city_id, c.title AS city_title, v.event_kind, v.valid_until, v.aggregate_revision, v.created_at
         FROM partner_audience_verification_events v JOIN cities c ON c.id = v.city_id WHERE v.partner_identity_id = ? ORDER BY v.aggregate_revision DESC`).all(identity.id),
       legal_holds: sqlite.prepare(`SELECT id, reason, placed_at, released_at FROM partner_identity_legal_holds WHERE partner_identity_id = ? ORDER BY placed_at DESC`).all(identity.id),
+      // D2 §9: current verified profile (MAX(revision), never the pointer
+      // read in isolation) plus any PENDING supersession request.
+      legal_profile: currentAgentReferralsLegalProfile(sqlite, identity.agent_id),
+      pending_legal_profile_change_request: pendingLegalProfileChangeRequestForPartner(sqlite, identity.id),
     });
   });
   app.post("/partners", async (c) => {
@@ -133,6 +142,34 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   app.post("/partners/:id/legal-profile/verify", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
     return c.json(verifyPartnerLegalProfile(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason")));
+  });
+
+  // ---- D2: legal-profile supersession (post-onboarding identity change) --
+  app.post("/partners/:id/legal-profile/change", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    return c.json(submitLegalProfileSupersession(sqlite, adminOf(c), c.req.param("id"), {
+      legalForm: requireString(body, "legal_form") as LegalForm, taxMode: requireString(body, "tax_mode") as TaxMode,
+      reason: requireString(body, "reason"), evidenceRef: optionalString(body, "evidence_ref") ?? null,
+    }), 201);
+  });
+  app.post("/partners/:id/legal-profile/change/:requestId/verify", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    // Relational authorization first, matching ownedEngagement's pattern -
+    // knowing requestId alone is never authority.
+    ownedLegalProfileChangeRequest(sqlite, c.req.param("id"), c.req.param("requestId"));
+    const outcome = verifyLegalProfileSupersession(sqlite, adminOf(c), c.req.param("requestId"), requireString(body, "reason"));
+    // The domain transaction has already committed by this point (STALE
+    // included) - translating a non-success outcome into an HTTP error here
+    // rolls nothing back, per the plan's own "outside the transaction" design.
+    if (outcome.outcome === "VERIFIED" || outcome.outcome === "REPLAYED") return c.json(outcome);
+    if (outcome.outcome === "STALE") throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_STALE", 409, `${outcome.expected}!=${outcome.actual}`);
+    if (outcome.outcome === "BLOCKED") throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_BLOCKED_BY_EXISTING_BINDING", 409, outcome.reason);
+    throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_INVALID_STATE", 409, outcome.state);
+  });
+  app.post("/partners/:id/legal-profile/change/:requestId/reject", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    ownedLegalProfileChangeRequest(sqlite, c.req.param("id"), c.req.param("requestId"));
+    return c.json(rejectLegalProfileSupersession(sqlite, adminOf(c), c.req.param("requestId"), requireString(body, "reason")));
   });
   app.post("/partners/:id/framework/issue", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));

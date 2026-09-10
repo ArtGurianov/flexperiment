@@ -56,6 +56,42 @@ const PRESENTATIONS: Readonly<Record<string, AdminErrorPresentation>> = {
   OCCURRENCE_SALES_MUST_BE_CLOSED: { message: "Перед завершением события закройте продажи." },
   OCCURRENCE_TERMINAL: { message: "Терминальное событие нельзя изменить этой командой." },
   SALES_GATE_REVISION_CONFLICT: { message: "Состояние экстренной остановки уже изменил другой оператор.", hint: "Состояние перечитано. Откройте новое подтверждение с актуальной ревизией." },
+
+  // D2: legal-profile supersession (post-onboarding change of legal identity).
+  AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_BLOCKED_BY_EXISTING_BINDING: {
+    message: "Сначала завершите расчёты и другие незавершённые обязательства по текущему партнёрскому профилю.",
+    hint: "Это верно и для закрытого engagement'а с незавершённым расчётом.",
+  },
+  AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_STALE: {
+    message: "Профиль партнёра уже был изменён после подачи этой заявки.",
+    hint: "Заявка помечена устаревшей. Подайте новую при необходимости.",
+  },
+  AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_INVALID_STATE: {
+    message: "Эта заявка уже обработана и не может быть изменена повторно.",
+  },
+  AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_NO_CHANGE: {
+    message: "Новый профиль совпадает с текущим — изменение не требуется.",
+  },
+  AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_ALREADY_PENDING: {
+    message: "У партнёра уже есть заявка на изменение юридических данных.",
+    hint: "Дождитесь её обработки или отклоните её перед подачей новой.",
+  },
+  AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_INELIGIBLE_IDENTITY: {
+    message: "Партнёр не может подать заявку на изменение юридических данных в текущем состоянии.",
+  },
+  AGENT_REFERRALS_LEGAL_PROFILE_EVIDENCE_REF_REQUIRED: {
+    message: "Для заявки, поданной администратором, укажите ссылку на подтверждающий документ.",
+  },
+  AGENT_REFERRALS_SETTLEMENT_LEGAL_PROFILE_BINDING_MISMATCH: {
+    message: "Юридическая привязка активации engagement'а не совпадает с текущим профилем партнёра.",
+    hint: "Расчёт по этой работе нельзя провести под новой юридической идентичностью.",
+  },
+  AGENT_REFERRALS_ACTIVATION_BINDING_CORRUPTED: {
+    message: "Обнаружено повреждение evidence активации — обратитесь к разработчикам.",
+  },
+  AGENT_REFERRALS_LEGAL_PROFILE_POINTER_DIVERGED: {
+    message: "Обнаружено расхождение в цепочке юридического профиля — обратитесь к разработчикам.",
+  },
 };
 
 export const presentAdminError = (code: string): AdminErrorPresentation =>

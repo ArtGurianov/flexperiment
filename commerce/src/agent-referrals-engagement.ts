@@ -8,6 +8,7 @@ import { AudienceVerificationError, currentAudienceVerification, isAudienceVerif
 import { consumeEngagementStepUpGrantInTransaction } from "./agent-referrals-engagement-step-up";
 import { partnerPromoByPartnerId, currentEngagementPromoAuthorization, revokeEngagementPromoAuthorizationInTransaction, type EngagementPromoAuthorizationRow } from "./agent-referrals-promo";
 import type { AdminPrincipal, PartnerPrincipal } from "./agent-referrals-partner-identity";
+import { agentReferralsLegalProfileRevisionById, type AgentReferralsLegalProfileRevision } from "./agent-referrals-legal-profile";
 
 /**
  * Engagement identity, immutable revisions, partner acceptance and
@@ -101,6 +102,28 @@ export const lastActivatedEngagementRevision = (db: Database.Database, engagemen
   if (!activatedRevisionIds.length) return null;
   const revisions = activatedRevisionIds.map((row) => engagementRevisionById(db, row.engagement_revision_id)!);
   return revisions.reduce((max, candidate) => (candidate.revision > max.revision ? candidate : max));
+};
+
+/**
+ * §5: the legal-profile revision that actually governs this engagement's
+ * activated authority - resolved from the activation-pinned evidence
+ * itself, never by `ORDER BY created_at` / rowid. Repeated activation of
+ * the SAME engagement_revision is legal (forward-only, see
+ * lastActivatedEngagementRevision) and every one of those activation
+ * events MUST have pinned the identical legal-profile revision; more than
+ * one distinct pin on the same engagement_revision_id is not an ordinary
+ * business mismatch (that class is settlement.ts's own BINDING_MISMATCH)
+ * but corruption of this evidence itself, and is reported as such.
+ */
+export const resolveActivatedLegalProfileBinding = (db: Database.Database, engagementId: string): AgentReferralsLegalProfileRevision => {
+  const lastRevision = lastActivatedEngagementRevision(db, engagementId);
+  if (!lastRevision) throw new EngagementError("AGENT_REFERRALS_ACTIVATION_BINDING_CORRUPTED", 500, engagementId);
+  const pins = db.prepare(`SELECT DISTINCT legal_profile_revision_id FROM engagement_activation_events WHERE engagement_id = ? AND engagement_revision_id = ?`)
+    .all(engagementId, lastRevision.id) as { legal_profile_revision_id: string }[];
+  if (pins.length !== 1) throw new EngagementError("AGENT_REFERRALS_ACTIVATION_BINDING_CORRUPTED", 500, engagementId);
+  const revision = agentReferralsLegalProfileRevisionById(db, pins[0].legal_profile_revision_id);
+  if (!revision) throw new EngagementError("AGENT_REFERRALS_ACTIVATION_BINDING_CORRUPTED", 500, engagementId);
+  return revision;
 };
 
 export type OccurrenceFacts = { id: string; city_id: string; fulfillment_status: "SCHEDULED" | "COMPLETED" | "CANCELLED"; sales_status: "OPEN" | "PAUSED" | "CLOSED"; material_revision: number };
