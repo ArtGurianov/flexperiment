@@ -162,7 +162,16 @@ export const submitPartnerLegalProfile = (
   const { requisites: validated } = normalizeAndValidateLegalProfile(legalForm, taxMode, requisites);
   const run = db.transaction((): PartnerIdentityRow => {
     const identity = getPartnerIdentity(db, partner.partner_identity_id);
-    if (!identity) throw new PartnerIdentityError("PARTNER_IDENTITY_NOT_FOUND", 404);
+    // A PartnerPrincipal is resolved from a session BEFORE this transaction
+    // opens (the session lookup itself already refuses a destroyed identity,
+    // but a principal obtained just before a concurrent destroy is still a
+    // valid-looking value the caller holds) - destroyed_at must be re-proven
+    // here, inside the write lock, or a stale principal could resurrect the
+    // exact PII destroyPartnerIdentity() just scrubbed. 404, matching the
+    // "identity does not exist" treatment used everywhere else in this file -
+    // a destroyed identity is not a distinguishable state to an unauthorized
+    // caller.
+    if (!identity || identity.destroyed_at !== null) throw new PartnerIdentityError("PARTNER_IDENTITY_NOT_FOUND", 404);
     if (identity.onboarding_state !== "INVITED" && identity.onboarding_state !== "PROFILE_SUBMITTED") {
       throw new PartnerIdentityError("AGENT_REFERRALS_LEGAL_PROFILE_SUBMISSION_LOCKED", 409, identity.onboarding_state);
     }
@@ -194,7 +203,13 @@ export const verifyPartnerLegalProfile = (db: Database.Database, admin: AdminPri
     assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "INITIAL_LEGAL_PROFILE_VERIFICATION");
 
     const identity = getPartnerIdentity(db, partnerIdentityId);
-    if (!identity) throw new PartnerIdentityError("PARTNER_IDENTITY_NOT_FOUND", 404);
+    // Explicit, not merely implied by the submitted_full_name/inn NULL check
+    // below: a destroyed identity must never become new legal authority,
+    // independent of whatever the draft columns happen to contain - matches
+    // D2's own eligibleForSupersession (agent-referrals-legal-profile-
+    // supersession.ts), which checks destroyed_at the same way for its own
+    // verify path.
+    if (!identity || identity.destroyed_at !== null) throw new PartnerIdentityError("PARTNER_IDENTITY_NOT_FOUND", 404);
     if (identity.onboarding_state !== "PROFILE_SUBMITTED") throw new PartnerIdentityError("AGENT_REFERRALS_LEGAL_PROFILE_NOT_SUBMITTED", 409, identity.onboarding_state);
     // full_name/inn are mandatory for every legal_form - their absence is
     // sufficient proof the draft was never (successfully) submitted through

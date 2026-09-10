@@ -288,6 +288,47 @@ describe("identity retention / legal holds / destruction evidence", () => {
       });
     });
 
+    /**
+     * Destruction monotonicity (review round 3 P1): a PartnerPrincipal
+     * obtained BEFORE destroyPartnerIdentity() runs is still a value the
+     * caller holds afterward - session lookup already refuses it for a NEW
+     * request, but the domain function itself must independently refuse a
+     * stale principal still in hand, or the exact PII destruction just
+     * scrubbed can be resurrected through the very same identity.
+     */
+    it("PR-E destruction monotonicity: a PartnerPrincipal obtained before destruction cannot resurrect the scrubbed draft via submitPartnerLegalProfile", () => {
+      const db = fresh();
+      withPolicy(db);
+      const { partnerIdentityId } = provisionedPartner(db);
+      const stalePrincipal = { realm: "PARTNER" as const, partner_identity_id: partnerIdentityId, partner_session_id: "n/a" };
+      submitPartnerLegalProfile(db, stalePrincipal, "LEGAL_ENTITY", "OTHER", legalEntityRequisites);
+      expect(getPartnerIdentity(db, partnerIdentityId)!.onboarding_state).toBe("PROFILE_SUBMITTED");
+
+      destroyPartnerIdentity(db, admin, partnerIdentityId, "erasure request");
+      const eventsBefore = db.prepare("SELECT COUNT(*) AS n FROM partner_identity_events WHERE partner_identity_id = ? AND event_kind = 'LEGAL_PROFILE_SUBMITTED'").get(partnerIdentityId);
+
+      expect(() => submitPartnerLegalProfile(db, stalePrincipal, "INDIVIDUAL", "NPD", { full_name: "Resurrected Name", inn: "123456789012" }))
+        .toThrow(/PARTNER_IDENTITY_NOT_FOUND/);
+
+      const draft = db.prepare(`SELECT ${draftRequisitesColumns} FROM partner_identities WHERE id = ?`).get(partnerIdentityId);
+      expect(draft).toEqual({
+        submitted_opf: null, submitted_full_name: null, submitted_short_name: null, submitted_inn: null, submitted_kpp: null, submitted_registration_number: null, submitted_legal_address: null,
+      });
+      expect(db.prepare("SELECT COUNT(*) AS n FROM partner_identity_events WHERE partner_identity_id = ? AND event_kind = 'LEGAL_PROFILE_SUBMITTED'").get(partnerIdentityId)).toEqual(eventsBefore);
+      expect(getPartnerIdentity(db, partnerIdentityId)!.destroyed_at).toBeTruthy();
+    });
+
+    it("PR-E destruction monotonicity: verifyPartnerLegalProfile also refuses a destroyed identity explicitly, independent of the draft-columns NULL check", () => {
+      const db = fresh();
+      withPolicy(db);
+      const { partnerIdentityId } = provisionedPartner(db);
+      submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "LEGAL_ENTITY", "OTHER", legalEntityRequisites);
+      destroyPartnerIdentity(db, admin, partnerIdentityId, "erasure request");
+
+      expect(() => verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verify")).toThrow(/PARTNER_IDENTITY_NOT_FOUND/);
+      expect(db.prepare("SELECT COUNT(*) AS n FROM agent_referrals_legal_profile_revisions").get()).toEqual({ n: 0 });
+    });
+
     it("destruction evidence is immutable - direct UPDATE/DELETE refused", () => {
       const db = fresh();
       withPolicy(db);
