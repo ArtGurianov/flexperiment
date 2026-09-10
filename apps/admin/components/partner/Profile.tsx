@@ -2,7 +2,7 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, type UseFormRegister } from "react-hook-form";
 import { partnerApi, PartnerApiError } from "../../lib/partner-api";
 import type { Row } from "../../lib/partner-page";
 import { Loading } from "../ui/Loading";
@@ -19,13 +19,45 @@ const CHANGE_REQUEST_STATE_LABELS: Record<string, string> = {
   PENDING: "На рассмотрении", VERIFIED: "Подтверждена", REJECTED: "Отклонена", STALE: "Устарела",
 };
 
+/** PR-E: the unified requisites tuple - present on every legal-profile submission (initial onboarding and D2 supersession alike). */
+type LegalRequisitesFormFields = { opf: string; full_name: string; short_name: string; inn: string; kpp: string; registration_number: string; legal_address: string };
+
+/**
+ * Renders only the fields the selected legal_form actually requires -
+ * matches normalizeAndValidateLegalProfile's own per-legal_form shape
+ * matrix exactly (commerce/src/agent-referrals-legal-profile.ts), so a
+ * partner is never shown a field the backend would refuse (or asked for
+ * one it silently ignores).
+ */
+function LegalRequisitesFields({ legalForm, register }: { legalForm: string; register: UseFormRegister<LegalRequisitesFormFields> }) {
+  return (
+    <>
+      <label>ФИО / полное наименование <input {...register("full_name", { required: true })} /></label>
+      {legalForm === "LEGAL_ENTITY" && <label>Сокращённое наименование <input {...register("short_name")} /></label>}
+      {legalForm === "LEGAL_ENTITY" && <label>ОПФ <input {...register("opf", { required: true })} placeholder="ООО" /></label>}
+      <label>ИНН <input {...register("inn", { required: true })} placeholder={legalForm === "LEGAL_ENTITY" ? "10 цифр" : "12 цифр"} /></label>
+      {legalForm === "LEGAL_ENTITY" && <label>КПП <input {...register("kpp", { required: true })} placeholder="9 цифр" /></label>}
+      {(legalForm === "INDIVIDUAL_ENTREPRENEUR" || legalForm === "LEGAL_ENTITY") && (
+        <label>{legalForm === "INDIVIDUAL_ENTREPRENEUR" ? "ОГРНИП" : "ОГРН"} <input {...register("registration_number", { required: true })} placeholder={legalForm === "INDIVIDUAL_ENTREPRENEUR" ? "15 цифр" : "13 цифр"} /></label>
+      )}
+      {legalForm === "LEGAL_ENTITY" && <label>Юридический адрес <input {...register("legal_address", { required: true })} /></label>}
+    </>
+  );
+}
+
 export function Profile() {
   const queryClient = useQueryClient();
   const profile = useQuery({ queryKey: ["partner", "me"], queryFn: () => partnerApi<Row>("/me") });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const { register, handleSubmit } = useForm<{ legal_form: string; tax_mode: string }>({ defaultValues: { legal_form: "INDIVIDUAL", tax_mode: "NPD" } });
-  const changeForm = useForm<{ legal_form: string; tax_mode: string; reason: string }>({ defaultValues: { legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "" } });
+  const { register, handleSubmit, watch } = useForm<{ legal_form: string; tax_mode: string } & LegalRequisitesFormFields>({
+    defaultValues: { legal_form: "INDIVIDUAL", tax_mode: "NPD", opf: "", full_name: "", short_name: "", inn: "", kpp: "", registration_number: "", legal_address: "" },
+  });
+  const changeForm = useForm<{ legal_form: string; tax_mode: string; reason: string } & LegalRequisitesFormFields>({
+    defaultValues: { legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "", opf: "", full_name: "", short_name: "", inn: "", kpp: "", registration_number: "", legal_address: "" },
+  });
+  const submitLegalForm = watch("legal_form");
+  const changeLegalForm = changeForm.watch("legal_form");
 
   const submitLegalProfile = handleSubmit(async (values) => {
     setBusy(true); setError(null);
@@ -76,6 +108,9 @@ export function Profile() {
           <h2>Подтверждённый юридический статус</h2>
           <p>Форма: {String(legalProfile.legal_form)} · Налоговый режим: {String(legalProfile.tax_mode)}</p>
           <p>Тип контрагента: {String(legalProfile.projected_contractor_type)}</p>
+          <p>{legalProfile.opf ? `${String(legalProfile.opf)} ` : ""}{String(legalProfile.full_name)}{legalProfile.short_name ? ` (${String(legalProfile.short_name)})` : ""}</p>
+          <p>ИНН: {String(legalProfile.inn)}{legalProfile.kpp ? ` · КПП: ${String(legalProfile.kpp)}` : ""}{legalProfile.registration_number ? ` · ${legalProfile.legal_form === "INDIVIDUAL_ENTREPRENEUR" ? "ОГРНИП" : "ОГРН"}: ${String(legalProfile.registration_number)}` : ""}</p>
+          {Boolean(legalProfile.legal_address) && <p>Адрес: {String(legalProfile.legal_address)}</p>}
         </section>
       )}
 
@@ -88,6 +123,7 @@ export function Profile() {
                 Заявка: <Badge>{CHANGE_REQUEST_STATE_LABELS[String(pendingChangeRequest.state)] ?? String(pendingChangeRequest.state)}</Badge>
                 {" → "}{String(pendingChangeRequest.legal_form)} ({String(pendingChangeRequest.tax_mode)})
               </p>
+              <p>{pendingChangeRequest.opf ? `${String(pendingChangeRequest.opf)} ` : ""}{String(pendingChangeRequest.full_name)}{pendingChangeRequest.short_name ? ` (${String(pendingChangeRequest.short_name)})` : ""}, ИНН {String(pendingChangeRequest.inn)}</p>
               <p>Причина: {String(pendingChangeRequest.reason)}</p>
               <p>Заявка рассматривается администратором.</p>
             </>
@@ -108,6 +144,7 @@ export function Profile() {
                   <option value="OTHER">Другой</option>
                 </select>
               </label>
+              <LegalRequisitesFields legalForm={changeLegalForm} register={changeForm.register as unknown as UseFormRegister<LegalRequisitesFormFields>} />
               <label>Причина изменения <input {...changeForm.register("reason", { required: true })} /></label>
               <Notice error={error} />
               <button className="primary" disabled={busy}>{busy ? "Отправляем…" : "Подать заявку на изменение"}</button>
@@ -142,6 +179,7 @@ export function Profile() {
                 <option value="OTHER">Другой</option>
               </select>
             </label>
+            <LegalRequisitesFields legalForm={submitLegalForm} register={register as unknown as UseFormRegister<LegalRequisitesFormFields>} />
             <Notice error={error} />
             <button className="primary" disabled={busy}>{busy ? "Отправляем…" : "Отправить на проверку"}</button>
           </form>

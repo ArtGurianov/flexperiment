@@ -98,22 +98,25 @@ describe("migrate(): ordinary path", () => {
   });
 });
 
-describe("FK-off registry: exactly two production entries after the PR-D foundation", () => {
+describe("FK-off registry: exactly three production entries after PR-E", () => {
   // PR1 shipped this empty. PR2 adds the agents-rebuild migration and this
   // entry in the same reviewed commit - see commerce/src/db.ts and
   // commerce/migrations/0042_agent_referrals_agents_rebuild.sql. The PR-D
   // foundation adds the second entry the same way - see
   // commerce/migrations/0050_agent_referrals_legal_profile_provenance_
-  // rebuild.sql. This asserts the current reviewed scope (two production
-  // members: 0042, 0050), not a ceiling on a later PR ever adding another.
-  it("has exactly two entries", () => {
-    expect(FK_OFF_MIGRATIONS).toHaveLength(2);
+  // rebuild.sql. PR-E adds the third - see commerce/migrations/0052_
+  // agent_referrals_unified_legal_requisites.sql. This asserts the current
+  // reviewed scope (three production members: 0042, 0050, 0052), not a
+  // ceiling on a later PR ever adding another.
+  it("has exactly three entries", () => {
+    expect(FK_OFF_MIGRATIONS).toHaveLength(3);
   });
 
-  it("is exactly the 0042 agents-rebuild and 0050 legal-profile-provenance-rebuild tuples", () => {
+  it("is exactly the 0042 agents-rebuild, 0050 legal-profile-provenance-rebuild and 0052 unified-legal-requisites tuples", () => {
     expect(FK_OFF_MIGRATIONS).toEqual([
       { filename: "0042_agent_referrals_agents_rebuild.sql", sha256: "d9b5ecbf496993669201b45440ea5213ba0e52af778e2094d569f772adfee6ab" },
       { filename: "0050_agent_referrals_legal_profile_provenance_rebuild.sql", sha256: "e1cbd9ce177546ea621fb4a9da861f63e69e999e8bf6a5c159d1c967761349f0" },
+      { filename: "0052_agent_referrals_unified_legal_requisites.sql", sha256: "bcc44feaa37acb5930a8b9d7fe4a1bd4e711306e2640b9cb04ff78844cec9104" },
     ]);
   });
 

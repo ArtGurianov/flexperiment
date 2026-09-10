@@ -1,8 +1,9 @@
 import type Database from "better-sqlite3";
 import { id } from "./crypto";
 import {
-  agentReferralsLegalProfileRevisionById, applyAgentReferralsLegalProfile, currentAgentReferralsLegalProfile, resolveCurrentLegalProfileBinding, resolveProjectedContractorType,
-  type ApplyAgentReferralsLegalProfileResult, type AssertionSource, type LegalForm, type TaxMode,
+  agentReferralsLegalProfileRevisionById, applyAgentReferralsLegalProfile, canonicalLegalProfileEquals, currentAgentReferralsLegalProfile,
+  normalizeAndValidateLegalProfile, resolveCurrentLegalProfileBinding,
+  type ApplyAgentReferralsLegalProfileResult, type AssertionSource, type LegalForm, type LegalRequisites, type RawLegalRequisitesInput, type TaxMode,
 } from "./agent-referrals-legal-profile";
 import { getPartnerIdentity, recordPartnerIdentityEvent, type PartnerIdentityRow } from "./agent-referrals-onboarding";
 import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
@@ -43,7 +44,7 @@ export class AgentReferralsLegalProfileSupersessionError extends Error {
 // agent-referrals-partner-identity.ts) and this module's own verify().
 // ---------------------------------------------------------------------------
 
-export type ApplyVerifiedLegalProfileForPartnerIdentityInput = {
+export type ApplyVerifiedLegalProfileForPartnerIdentityInput = RawLegalRequisitesInput & {
   partnerIdentityId: string;
   legalForm: LegalForm;
   taxMode: TaxMode;
@@ -88,6 +89,8 @@ export const applyVerifiedLegalProfileForPartnerIdentity = (
     const result = applyAgentReferralsLegalProfile(db, {
       agent_id: agentId, legal_form: input.legalForm, tax_mode: input.taxMode,
       reason: input.reason, assertion_source: input.assertionSource, evidence_ref: input.evidenceRef,
+      opf: input.opf, full_name: input.full_name, short_name: input.short_name, inn: input.inn,
+      kpp: input.kpp, registration_number: input.registration_number, legal_address: input.legal_address,
     });
 
     db.prepare(`UPDATE partner_identities SET legal_profile_revision_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
@@ -206,7 +209,7 @@ export const supersessionBindingDecision = (db: Database.Database, partnerIdenti
 
 export type LegalProfileChangeRequestState = "PENDING" | "VERIFIED" | "REJECTED" | "STALE";
 
-export type LegalProfileChangeRequestRow = {
+export type LegalProfileChangeRequestRow = LegalRequisites & {
   id: string;
   partner_identity_id: string;
   legal_form: LegalForm;
@@ -224,7 +227,7 @@ export type LegalProfileChangeRequestRow = {
   resolution_reason: string | null;
 };
 
-const CHANGE_REQUEST_COLUMNS = `id, partner_identity_id, legal_form, tax_mode, assertion_source, evidence_ref, reason, supersedes_revision_id, created_by, created_at,
+const CHANGE_REQUEST_COLUMNS = `id, partner_identity_id, legal_form, tax_mode, opf, full_name, short_name, inn, kpp, registration_number, legal_address, assertion_source, evidence_ref, reason, supersedes_revision_id, created_by, created_at,
   state, resolved_legal_profile_revision_id, resolved_at, resolved_by, resolution_reason`;
 
 export const legalProfileChangeRequestById = (db: Database.Database, requestId: string): LegalProfileChangeRequestRow | null =>
@@ -243,16 +246,10 @@ export const ownedLegalProfileChangeRequest = (db: Database.Database, partnerIde
   return request;
 };
 
-/** No-op supersession is refused (variant A, §2): a change request must actually change the authoritative profile. Extend this one function, not each call site, when PR-E adds requisites to the comparison. */
-export const canonicalLegalProfileEquals = (
-  a: { legal_form: LegalForm; tax_mode: TaxMode },
-  b: { legal_form: LegalForm; tax_mode: TaxMode },
-): boolean => a.legal_form === b.legal_form && a.tax_mode === b.tax_mode;
-
 const eligibleForSupersession = (identity: PartnerIdentityRow): boolean =>
   identity.onboarding_state === "PARTNER_ACTIVE" && identity.destroyed_at === null;
 
-export type SubmitLegalProfileSupersessionInput = {
+export type SubmitLegalProfileSupersessionInput = RawLegalRequisitesInput & {
   legalForm: LegalForm;
   taxMode: TaxMode;
   reason: string;
@@ -293,19 +290,18 @@ export const submitLegalProfileSupersession = (
       throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_INELIGIBLE_IDENTITY", 409, identity.onboarding_state);
     }
 
-    // Domain validation, not just DB admissibility: a rejected or
-    // out-of-union (legal_form, tax_mode) pairing must resolve to a typed
+    // Domain validation, not just DB admissibility: a rejected combination,
+    // an out-of-union (legal_form, tax_mode) pairing, or a requisites tuple
+    // that does not match the per-legal_form shape must resolve to a typed
     // 422 here, before the INSERT - not surface as an unhandled SqliteError
     // (no `.status`) that the global HTTP error handler falls through to
-    // INTERNAL_ERROR/500 for. Same shared lookup applyAgentReferralsLegalProfile
+    // INTERNAL_ERROR/500 for. Same shared validator applyAgentReferralsLegalProfile
     // itself uses, so this can never drift from what the mint path actually
     // accepts.
-    if (!resolveProjectedContractorType(input.legalForm, input.taxMode)) {
-      throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_REJECTED_COMBINATION", 422, `${input.legalForm}+${input.taxMode}`);
-    }
+    const { requisites } = normalizeAndValidateLegalProfile(input.legalForm, input.taxMode, input);
 
     const current = resolveCurrentLegalProfileBinding(db, identity);
-    if (canonicalLegalProfileEquals({ legal_form: input.legalForm, tax_mode: input.taxMode }, current)) {
+    if (canonicalLegalProfileEquals({ legal_form: input.legalForm, tax_mode: input.taxMode, ...requisites }, current)) {
       throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_NO_CHANGE", 409, partnerIdentityId);
     }
 
@@ -327,9 +323,11 @@ export const submitLegalProfileSupersession = (
 
     const requestId = id();
     try {
-      db.prepare(`INSERT INTO agent_referrals_legal_profile_change_requests(id, partner_identity_id, legal_form, tax_mode, assertion_source, evidence_ref, reason, supersedes_revision_id, created_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(requestId, partnerIdentityId, input.legalForm, input.taxMode, assertionSource, evidenceRef, input.reason, current.id, createdBy);
+      db.prepare(`INSERT INTO agent_referrals_legal_profile_change_requests(id, partner_identity_id, legal_form, tax_mode, opf, full_name, short_name, inn, kpp, registration_number, legal_address, assertion_source, evidence_ref, reason, supersedes_revision_id, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(requestId, partnerIdentityId, input.legalForm, input.taxMode,
+          requisites.opf, requisites.full_name, requisites.short_name, requisites.inn, requisites.kpp, requisites.registration_number, requisites.legal_address,
+          assertionSource, evidenceRef, input.reason, current.id, createdBy);
     } catch (error) {
       if (error instanceof Error && /UNIQUE constraint failed: agent_referrals_legal_profile_change_requests\.partner_identity_id/.test(error.message)) {
         throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_ALREADY_PENDING", 409, partnerIdentityId);
@@ -455,6 +453,8 @@ export const verifyLegalProfileSupersession = (
       partnerIdentityId: identity.id,
       legalForm: request.legal_form, taxMode: request.tax_mode,
       assertionSource: request.assertion_source, evidenceRef: request.evidence_ref, reason,
+      opf: request.opf, full_name: request.full_name, short_name: request.short_name, inn: request.inn,
+      kpp: request.kpp, registration_number: request.registration_number, legal_address: request.legal_address,
     });
 
     const changed = db.prepare(`UPDATE agent_referrals_legal_profile_change_requests

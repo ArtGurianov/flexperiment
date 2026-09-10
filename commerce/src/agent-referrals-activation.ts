@@ -282,12 +282,19 @@ export const AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS = [
   "agent_referrals_legal_profile_change_requests_pending_reentry_guard",
   "agent_referrals_legal_profile_change_requests_request_fields_immutable_guard",
   "agent_referrals_legal_profile_change_requests_delete_guard",
+  // PR-E (0052): unified legal requisites - another rebuild of
+  // agent_referrals_legal_profile_revisions plus a fresh
+  // agent_referrals_legal_profile_change_requests, both under the exact
+  // same table/index/trigger names already listed above (D2's own note on
+  // 0050 applies identically here). Nothing new to name; tracked via
+  // MIGRATIONS below.
 ] as const;
 
 const MIGRATIONS = [
   "0043_agent_referrals_foundation.sql", "0044_partner_identity.sql", "0045_engagement_publication.sql", "0046_attribution_reward.sql",
   "0047_act_payment_settlement.sql", "0048_ord_reporting.sql", "0049_agent_referrals_integration_hardening.sql",
   "0050_agent_referrals_legal_profile_provenance_rebuild.sql", "0051_agent_referrals_legal_profile_supersession.sql",
+  "0052_agent_referrals_unified_legal_requisites.sql",
 ] as const;
 
 export class AgentReferralsActivationError extends Error {

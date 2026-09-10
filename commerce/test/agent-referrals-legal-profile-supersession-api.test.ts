@@ -46,11 +46,17 @@ describe("POST /v1/admin/agent-referrals/partners/:id/legal-profile/change: inva
       method: "POST", headers: { Origin: ADMIN_ORIGIN, Cookie: cookie, "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
 
+  // full_name/inn are present but deliberately arbitrary here: the
+  // combination check (resolveProjectedContractorType) runs BEFORE any
+  // requisites-shape validation in normalizeAndValidateLegalProfile, so
+  // these values never need to match the (invalid) legal_form's own matrix
+  // for REJECTED_COMBINATION to fire first - only their presence matters,
+  // since the wire-level legalRequisitesFromBody() requires them unconditionally.
   it.each([
-    ["a legal_form outside the LegalForm union entirely (an unchecked cast at the route boundary)", { legal_form: "ALIEN_CORPORATION", tax_mode: "OTHER", reason: "x" }],
-    ["a tax_mode outside the TaxMode union entirely", { legal_form: "LEGAL_ENTITY", tax_mode: "QUANTUM", reason: "x" }],
-    ["a legitimate-enum but rejected pairing: INDIVIDUAL + OTHER", { legal_form: "INDIVIDUAL", tax_mode: "OTHER", reason: "x" }],
-    ["a legitimate-enum but rejected pairing: LEGAL_ENTITY + NPD", { legal_form: "LEGAL_ENTITY", tax_mode: "NPD", reason: "x" }],
+    ["a legal_form outside the LegalForm union entirely (an unchecked cast at the route boundary)", { legal_form: "ALIEN_CORPORATION", tax_mode: "OTHER", reason: "x", full_name: "x", inn: "123456789012" }],
+    ["a tax_mode outside the TaxMode union entirely", { legal_form: "LEGAL_ENTITY", tax_mode: "QUANTUM", reason: "x", full_name: "x", inn: "1234567890" }],
+    ["a legitimate-enum but rejected pairing: INDIVIDUAL + OTHER", { legal_form: "INDIVIDUAL", tax_mode: "OTHER", reason: "x", full_name: "x", inn: "123456789012" }],
+    ["a legitimate-enum but rejected pairing: LEGAL_ENTITY + NPD", { legal_form: "LEGAL_ENTITY", tax_mode: "NPD", reason: "x", full_name: "x", inn: "1234567890" }],
   ])("%s -> 422, no candidate row, no event", async (_label, body) => {
     const { db, app } = appFixture();
     const cookie = await adminCookie(app);
@@ -71,7 +77,10 @@ describe("POST /v1/admin/agent-referrals/partners/:id/legal-profile/change: inva
     const cookie = await adminCookie(app);
     const p1 = readyPartner(db);
 
-    const response = await post(app, cookie, p1.partnerIdentityId, { legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "became org", evidence_ref: "egrul.pdf" });
+    const response = await post(app, cookie, p1.partnerIdentityId, {
+      legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "became org", evidence_ref: "egrul.pdf",
+      opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow",
+    });
     expect(response.status).toBe(201);
     const payload = await response.json();
     expect(payload.state).toBe("PENDING");

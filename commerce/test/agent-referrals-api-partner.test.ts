@@ -291,4 +291,48 @@ describe("/v1/partner/*: horizontal isolation and §B-11 projection allowlist", 
       expect(raw).not.toContain(forbiddenKey);
     }
   });
+
+  /**
+   * PR-E REALM gate: /me's legal_profile and pending_legal_profile_change_
+   * request carry the full semantic requisites tuple (product-required, and
+   * owned by the partner) but never provenance/resolution internals -
+   * matches agent-referrals-partner-projection.ts's own §B-11 allowlist,
+   * exercised here through the real HTTP route rather than the domain
+   * function directly.
+   */
+  it("§B-11/PR-E: /me exposes the full requisites tuple but never assertion_source/evidence_ref/created_by/supersedes/resolution internals", async () => {
+    const { db, app } = appFixture();
+    const p1 = readyPartner(db, "NPD");
+    const cookie = httpSessionCookie(db, p1.partnerIdentityId);
+
+    const meResponse = await app.request("http://partner.flexperiment.ru/v1/partner/me", { headers: { Origin: PARTNER_ORIGIN, Cookie: cookie } });
+    expect(meResponse.status).toBe(200);
+    const me = await meResponse.json() as { legal_profile: Record<string, unknown> };
+    expect(Object.keys(me.legal_profile).sort()).toEqual(
+      ["legal_form", "tax_mode", "projected_contractor_type", "opf", "full_name", "short_name", "inn", "kpp", "registration_number", "legal_address", "revision", "created_at"].sort(),
+    );
+    expect(me.legal_profile).toMatchObject({ legal_form: "INDIVIDUAL", full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" });
+
+    const changeResponse = await app.request(`http://partner.flexperiment.ru/v1/partner/legal-profile/change`, {
+      method: "POST", headers: { Origin: PARTNER_ORIGIN, Cookie: cookie, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "became org",
+        opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow",
+      }),
+    });
+    expect(changeResponse.status).toBe(201);
+
+    const meAfter = await app.request("http://partner.flexperiment.ru/v1/partner/me", { headers: { Origin: PARTNER_ORIGIN, Cookie: cookie } });
+    const bodyAfter = await meAfter.json() as { pending_legal_profile_change_request: Record<string, unknown> };
+    expect(Object.keys(bodyAfter.pending_legal_profile_change_request).sort()).toEqual(
+      ["id", "legal_form", "tax_mode", "opf", "full_name", "short_name", "inn", "kpp", "registration_number", "legal_address", "reason", "state", "created_at"].sort(),
+    );
+    // Scoped to the legal-profile-change sub-object specifically - the wider
+    // /me payload legitimately carries an unrelated supersedes_revision_id
+    // on payout_profile, which this check must not false-positive on.
+    const raw = JSON.stringify(bodyAfter.pending_legal_profile_change_request);
+    for (const forbiddenKey of ["assertion_source", "evidence_ref", "created_by", "supersedes_revision_id", "resolved_legal_profile_revision_id", "resolved_at", "resolved_by", "resolution_reason"]) {
+      expect(raw).not.toContain(forbiddenKey);
+    }
+  });
 });

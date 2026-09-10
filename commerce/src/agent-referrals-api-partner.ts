@@ -25,6 +25,7 @@ import {
   PartnerProjectionError,
 } from "./agent-referrals-partner-projection";
 import { submitLegalProfileSupersession } from "./agent-referrals-legal-profile-supersession";
+import type { RawLegalRequisitesInput } from "./agent-referrals-legal-profile";
 
 /**
  * `/v1/partner/*` - the entire HTTP surface for the PARTNER realm (Phase 9
@@ -64,6 +65,17 @@ const nullableString = (body: Record<string, unknown>, field: string): string | 
   const value = body[field];
   return typeof value === "string" ? value : null;
 };
+
+/** PR-E: the full requisites tuple as submitted over HTTP - normalizeAndValidateLegalProfile (called inside submitPartnerLegalProfile/submitLegalProfileSupersession) is what actually proves per-legal_form shape; this only proves the wire types. */
+const legalRequisitesFromBody = (body: Record<string, unknown>): RawLegalRequisitesInput => ({
+  full_name: requireString(body, "full_name"),
+  inn: requireString(body, "inn"),
+  opf: nullableString(body, "opf"),
+  short_name: nullableString(body, "short_name"),
+  kpp: nullableString(body, "kpp"),
+  registration_number: nullableString(body, "registration_number"),
+  legal_address: nullableString(body, "legal_address"),
+});
 
 const distributionReportInput = (body: Record<string, unknown>) => ({
   channel_key: requireString(body, "channel_key"),
@@ -147,7 +159,7 @@ export function createAgentReferralsPartnerRouter(sqlite: Database.Database, otp
     const body = asRecord(await jsonBody(c.req.raw));
     const legalForm = requireString(body, "legal_form") as "INDIVIDUAL" | "INDIVIDUAL_ENTREPRENEUR" | "LEGAL_ENTITY";
     const taxMode = requireString(body, "tax_mode") as "NPD" | "OTHER";
-    return c.json(submitPartnerLegalProfile(sqlite, c.var.partner, legalForm, taxMode));
+    return c.json(submitPartnerLegalProfile(sqlite, c.var.partner, legalForm, taxMode, legalRequisitesFromBody(body)));
   });
 
   /** D2 §9: post-onboarding legal-identity change, never a caller-supplied partner_identity_id - always the session's own. */
@@ -156,7 +168,7 @@ export function createAgentReferralsPartnerRouter(sqlite: Database.Database, otp
     const legalForm = requireString(body, "legal_form") as "INDIVIDUAL" | "INDIVIDUAL_ENTREPRENEUR" | "LEGAL_ENTITY";
     const taxMode = requireString(body, "tax_mode") as "NPD" | "OTHER";
     return c.json(submitLegalProfileSupersession(sqlite, c.var.partner, c.var.partner.partner_identity_id, {
-      legalForm, taxMode, reason: requireString(body, "reason"),
+      legalForm, taxMode, reason: requireString(body, "reason"), ...legalRequisitesFromBody(body),
     }), 201);
   });
 

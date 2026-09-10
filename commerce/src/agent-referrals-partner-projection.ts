@@ -76,6 +76,13 @@ export type PartnerPendingLegalProfileChangeRequestProjection = {
   id: string;
   legal_form: string;
   tax_mode: string;
+  opf: string | null;
+  full_name: string;
+  short_name: string | null;
+  inn: string;
+  kpp: string | null;
+  registration_number: string | null;
+  legal_address: string | null;
   reason: string;
   state: "PENDING";
   created_at: string;
@@ -87,7 +94,18 @@ export type PartnerProfileProjection = {
   onboarding_state: string;
   submitted_legal_form: string | null;
   submitted_tax_mode: string | null;
-  legal_profile: { legal_form: string; tax_mode: string; projected_contractor_type: string; revision: number; created_at: string } | null;
+  submitted_opf: string | null;
+  submitted_full_name: string | null;
+  submitted_short_name: string | null;
+  submitted_inn: string | null;
+  submitted_kpp: string | null;
+  submitted_registration_number: string | null;
+  submitted_legal_address: string | null;
+  legal_profile: {
+    legal_form: string; tax_mode: string; projected_contractor_type: string;
+    opf: string | null; full_name: string; short_name: string | null; inn: string; kpp: string | null; registration_number: string | null; legal_address: string | null;
+    revision: number; created_at: string;
+  } | null;
   pending_legal_profile_change_request: PartnerPendingLegalProfileChangeRequestProjection | null;
   payout_profile: ReturnType<typeof currentPayoutProfile>;
   promo_code: string | null;
@@ -110,11 +128,26 @@ export const partnerProfileProjection = (db: Database.Database, partnerIdentityI
     onboarding_state: identity.onboarding_state,
     submitted_legal_form: identity.submitted_legal_form,
     submitted_tax_mode: identity.submitted_tax_mode,
+    submitted_opf: identity.submitted_opf,
+    submitted_full_name: identity.submitted_full_name,
+    submitted_short_name: identity.submitted_short_name,
+    submitted_inn: identity.submitted_inn,
+    submitted_kpp: identity.submitted_kpp,
+    submitted_registration_number: identity.submitted_registration_number,
+    submitted_legal_address: identity.submitted_legal_address,
     legal_profile: legalProfile
-      ? { legal_form: legalProfile.legal_form, tax_mode: legalProfile.tax_mode, projected_contractor_type: legalProfile.projected_contractor_type, revision: legalProfile.revision, created_at: legalProfile.created_at }
+      ? {
+          legal_form: legalProfile.legal_form, tax_mode: legalProfile.tax_mode, projected_contractor_type: legalProfile.projected_contractor_type,
+          opf: legalProfile.opf, full_name: legalProfile.full_name, short_name: legalProfile.short_name, inn: legalProfile.inn, kpp: legalProfile.kpp, registration_number: legalProfile.registration_number, legal_address: legalProfile.legal_address,
+          revision: legalProfile.revision, created_at: legalProfile.created_at,
+        }
       : null,
     pending_legal_profile_change_request: pendingChangeRequest
-      ? { id: pendingChangeRequest.id, legal_form: pendingChangeRequest.legal_form, tax_mode: pendingChangeRequest.tax_mode, reason: pendingChangeRequest.reason, state: "PENDING", created_at: pendingChangeRequest.created_at }
+      ? {
+          id: pendingChangeRequest.id, legal_form: pendingChangeRequest.legal_form, tax_mode: pendingChangeRequest.tax_mode,
+          opf: pendingChangeRequest.opf, full_name: pendingChangeRequest.full_name, short_name: pendingChangeRequest.short_name, inn: pendingChangeRequest.inn, kpp: pendingChangeRequest.kpp, registration_number: pendingChangeRequest.registration_number, legal_address: pendingChangeRequest.legal_address,
+          reason: pendingChangeRequest.reason, state: "PENDING", created_at: pendingChangeRequest.created_at,
+        }
       : null,
     payout_profile: currentPayoutProfile(db, partnerIdentityId),
     promo_code: promoCode?.code ?? null,

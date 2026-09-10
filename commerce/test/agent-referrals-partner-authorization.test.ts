@@ -58,7 +58,7 @@ describe("partner authorization: the plan's may/may-not matrix", () => {
     it("submit their own legal profile", () => {
       const db = fresh();
       const { partner_identity_id } = provisionedActive(db);
-      expect(() => submitPartnerLegalProfile(db, asPartner(partner_identity_id), "INDIVIDUAL", "NPD")).not.toThrow();
+      expect(() => submitPartnerLegalProfile(db, asPartner(partner_identity_id), "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" })).not.toThrow();
     });
 
     it("read their own identity/onboarding evidence", () => {
@@ -86,7 +86,7 @@ describe("partner authorization: the plan's may/may-not matrix", () => {
     it("verify their own legal profile - verifyPartnerLegalProfile takes only AdminPrincipal", () => {
       const db = fresh();
       const { partner_identity_id } = provisionedActive(db);
-      submitPartnerLegalProfile(db, asPartner(partner_identity_id), "INDIVIDUAL", "NPD");
+      submitPartnerLegalProfile(db, asPartner(partner_identity_id), "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" });
       // The function's signature admits only an AdminPrincipal in its
       // `admin` parameter position - there is no partner-shaped principal
       // this could be called with. Verified structurally, and once more by

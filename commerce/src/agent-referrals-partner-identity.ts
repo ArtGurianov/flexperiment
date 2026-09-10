@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { emailHash, id } from "./crypto";
-import type { LegalForm, TaxMode } from "./agent-referrals-legal-profile";
+import { normalizeAndValidateLegalProfile, type LegalForm, type RawLegalRequisitesInput, type TaxMode } from "./agent-referrals-legal-profile";
 import { applyVerifiedLegalProfileForPartnerIdentity } from "./agent-referrals-legal-profile-supersession";
 import { getPartnerIdentity, recordPartnerIdentityEvent, transitionOnboardingStateInTransaction, type PartnerIdentityRow } from "./agent-referrals-onboarding";
 import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
@@ -144,16 +144,32 @@ export const consumePartnerInvite = (db: Database.Database, rawToken: string): {
  * Transitions INVITED -> PROFILE_SUBMITTED on first submission; a later
  * resubmission while already PROFILE_SUBMITTED updates the draft without
  * consuming another onboarding transition.
+ *
+ * PR-E: the FULL requisites payload is required and validated through the
+ * exact same matrix normalizeAndValidateLegalProfile enforces on the mint
+ * path itself - an incomplete or malformed draft can never reach
+ * PROFILE_SUBMITTED, so verifyPartnerLegalProfile's later mint can never
+ * fail on a requisites shape violation the partner wasn't already told
+ * about at submission time.
  */
-export const submitPartnerLegalProfile = (db: Database.Database, partner: PartnerPrincipal, legalForm: LegalForm, taxMode: TaxMode): PartnerIdentityRow => {
+export const submitPartnerLegalProfile = (
+  db: Database.Database,
+  partner: PartnerPrincipal,
+  legalForm: LegalForm,
+  taxMode: TaxMode,
+  requisites: RawLegalRequisitesInput,
+): PartnerIdentityRow => {
+  const { requisites: validated } = normalizeAndValidateLegalProfile(legalForm, taxMode, requisites);
   const run = db.transaction((): PartnerIdentityRow => {
     const identity = getPartnerIdentity(db, partner.partner_identity_id);
     if (!identity) throw new PartnerIdentityError("PARTNER_IDENTITY_NOT_FOUND", 404);
     if (identity.onboarding_state !== "INVITED" && identity.onboarding_state !== "PROFILE_SUBMITTED") {
       throw new PartnerIdentityError("AGENT_REFERRALS_LEGAL_PROFILE_SUBMISSION_LOCKED", 409, identity.onboarding_state);
     }
-    db.prepare(`UPDATE partner_identities SET submitted_legal_form = ?, submitted_tax_mode = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
-      .run(legalForm, taxMode, partner.partner_identity_id);
+    db.prepare(`UPDATE partner_identities SET submitted_legal_form = ?, submitted_tax_mode = ?,
+        submitted_opf = ?, submitted_full_name = ?, submitted_short_name = ?, submitted_inn = ?, submitted_kpp = ?, submitted_registration_number = ?, submitted_legal_address = ?,
+        updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .run(legalForm, taxMode, validated.opf, validated.full_name, validated.short_name, validated.inn, validated.kpp, validated.registration_number, validated.legal_address, partner.partner_identity_id);
     recordPartnerIdentityEvent(db, partner.partner_identity_id, "LEGAL_PROFILE_SUBMITTED", "PARTNER", { legal_form: legalForm, tax_mode: taxMode });
     if (identity.onboarding_state === "INVITED") {
       transitionOnboardingStateInTransaction(db, partner.partner_identity_id, "PROFILE_SUBMITTED", identity.onboarding_revision, "PARTNER", "legal profile submitted");
@@ -180,7 +196,13 @@ export const verifyPartnerLegalProfile = (db: Database.Database, admin: AdminPri
     const identity = getPartnerIdentity(db, partnerIdentityId);
     if (!identity) throw new PartnerIdentityError("PARTNER_IDENTITY_NOT_FOUND", 404);
     if (identity.onboarding_state !== "PROFILE_SUBMITTED") throw new PartnerIdentityError("AGENT_REFERRALS_LEGAL_PROFILE_NOT_SUBMITTED", 409, identity.onboarding_state);
-    if (!identity.submitted_legal_form || !identity.submitted_tax_mode) throw new PartnerIdentityError("AGENT_REFERRALS_LEGAL_PROFILE_NOT_SUBMITTED", 409);
+    // full_name/inn are mandatory for every legal_form - their absence is
+    // sufficient proof the draft was never (successfully) submitted through
+    // submitPartnerLegalProfile, which validates the whole matrix before
+    // ever writing these columns.
+    if (!identity.submitted_legal_form || !identity.submitted_tax_mode || !identity.submitted_full_name || !identity.submitted_inn) {
+      throw new PartnerIdentityError("AGENT_REFERRALS_LEGAL_PROFILE_NOT_SUBMITTED", 409);
+    }
 
     const revisionResult = applyVerifiedLegalProfileForPartnerIdentity(db, {
       partnerIdentityId,
@@ -191,6 +213,10 @@ export const verifyPartnerLegalProfile = (db: Database.Database, admin: AdminPri
       // submitted draft (submitted_legal_form/_tax_mode above), so the
       // provenance is PARTNER_ASSERTED, not ADMIN_ASSERTED.
       assertionSource: "PARTNER_ASSERTED",
+      // The whole proven snapshot, carried straight through - never
+      // re-collected or re-derived at verify time.
+      opf: identity.submitted_opf, full_name: identity.submitted_full_name, short_name: identity.submitted_short_name,
+      inn: identity.submitted_inn, kpp: identity.submitted_kpp, registration_number: identity.submitted_registration_number, legal_address: identity.submitted_legal_address,
     });
 
     recordPartnerIdentityEvent(db, partnerIdentityId, "LEGAL_PROFILE_VERIFIED", "ADMIN", { legal_profile_revision_id: revisionResult.revision_id, reason });
