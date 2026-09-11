@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { requireObservedVersion } from "./agent-referrals-command-precondition";
 import { canonicalV2, id, sha256 } from "./crypto";
 import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
 import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
@@ -66,7 +67,7 @@ export const creativeRevisionById = (db: Database.Database, revisionId: string):
  * evidence for engagement A binding promo B's code, an evidence-integrity
  * defect no later check could safely paper over (Phase 5 review note 5).
  */
-export const mintCreativeRevision = (db: Database.Database, admin: AdminPrincipal, engagementId: string, fields: CreativeMaterialFields): CreativeRevisionRow => {
+export const mintCreativeRevision = (db: Database.Database, admin: AdminPrincipal, engagementId: string, fields: CreativeMaterialFields, expectedCurrentRevisionId: string | null): CreativeRevisionRow => {
   const run = db.transaction((): CreativeRevisionRow => {
     const owner = db.prepare(`SELECT pi.agent_id AS agent_id FROM engagements e JOIN partner_identities pi ON pi.id = e.partner_identity_id WHERE e.id = ?`)
       .get(engagementId) as { agent_id: string } | undefined;
@@ -81,6 +82,10 @@ export const mintCreativeRevision = (db: Database.Database, admin: AdminPrincipa
     // at. Re-minting the same content returns the existing revision.
     const creativeHash = creativeHashOf(partnerPromo.promo_code_id, fields);
     if (current && current.creative_hash === creativeHash) return current;
+    // PR-C2 STALE_BOUND, guarding the mint. Content equality answers first
+    // and mutates nothing; the pin is what stops a retry that arrives after
+    // a different revision from restoring A's material as current.
+    requireObservedVersion("AGENT_REFERRALS_CREATIVE_REVISION_STALE", expectedCurrentRevisionId, current?.id ?? null);
     const revisionId = id();
     const nextRevision = (current?.revision ?? 0) + 1;
     db.prepare(`INSERT INTO engagement_creative_revisions(id, engagement_id, revision, partner_id, promo_code_id, format_kind, media_ref, copy_text, cta_text, mandatory_labeling_text, creative_target_url, creative_hash, supersedes_creative_revision_id, created_by_admin_id)
@@ -113,6 +118,18 @@ export const currentCreativeAuthorization = (db: Database.Database, engagementId
     .get(engagementId) as CreativeAuthorizationRow | undefined) ?? null;
 
 /**
+ * The newest authorization for an engagement whether or not it is still
+ * live - the chain HEAD, which is what an authorization command is pinned
+ * against. currentCreativeAuthorization (the live one) is deliberately NOT
+ * that pin: it goes back to null on every revocation, so
+ * authorize -> revoke -> retried authorize would find the pin matching
+ * again and mint a second authorization. A head id only ever moves forward.
+ */
+export const lastCreativeAuthorization = (db: Database.Database, engagementId: string): CreativeAuthorizationRow | null =>
+  (db.prepare(`SELECT ${AUTHORIZATION_COLUMNS} FROM engagement_creative_authorizations WHERE engagement_id = ? ORDER BY rowid DESC LIMIT 1`)
+    .get(engagementId) as CreativeAuthorizationRow | undefined) ?? null;
+
+/**
  * Admin-only, gated as NEW_PUBLICATION_AUTHORITY. Always binds to the
  * engagement's CURRENT (live) promo authorization - which pins its own
  * engagement_revision_id - so an engagement that never activated, or is
@@ -121,7 +138,7 @@ export const currentCreativeAuthorization = (db: Database.Database, engagementId
  * authorized publication: creativeRevisionId must be the engagement's
  * CURRENT creative revision.
  */
-export const authorizeCreative = (db: Database.Database, admin: AdminPrincipal, engagementId: string, creativeRevisionId: string): CreativeAuthorizationRow => {
+export const authorizeCreative = (db: Database.Database, admin: AdminPrincipal, engagementId: string, creativeRevisionId: string, expectedAuthorizationHeadId: string | null): CreativeAuthorizationRow => {
   void admin;
   const run = db.transaction((): CreativeAuthorizationRow => {
     assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "NEW_PUBLICATION_AUTHORITY");
@@ -163,6 +180,13 @@ export const authorizeCreative = (db: Database.Database, admin: AdminPrincipal, 
       && existingCurrent.promo_authorization_id === promoAuthorization.id) {
       return existingCurrent;
     }
+
+    // PR-C2 STALE_BOUND, guarding the mint. Pinned against the chain HEAD,
+    // not the live authorization: revoking is legal, so after
+    // authorize -> revoke the live one is null again and a pin on it would
+    // match exactly as it did when A was authored - the A -> B -> A trap.
+    requireObservedVersion("AGENT_REFERRALS_CREATIVE_AUTHORIZATION_STALE", expectedAuthorizationHeadId, lastCreativeAuthorization(db, engagementId)?.id ?? null);
+
     if (existingCurrent) {
       const changed = db.prepare(`UPDATE engagement_creative_authorizations SET revoked_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), revoked_reason = 'SUPERSEDED_BY_NEW_AUTHORIZATION' WHERE id = ? AND revoked_at IS NULL`).run(existingCurrent.id);
       if (changed.changes !== 1) throw new CreativeError("AGENT_REFERRALS_CREATIVE_AUTHORIZATION_CONCURRENTLY_SUPERSEDED", 409, existingCurrent.id);

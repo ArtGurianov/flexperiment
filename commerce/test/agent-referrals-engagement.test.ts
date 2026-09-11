@@ -1,3 +1,4 @@
+import { currentAudienceVerification } from "../src/agent-referrals-audience-verification";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -52,10 +53,10 @@ const readyPartner = (db: Database.Database) => {
   db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
     VALUES (?, ?, 'Agent', 'Agent Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
-  submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" });
+  submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
-  const fw = mintFrameworkAgreementRevision(db, clause(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES));
-  const dt = mintDelegationTemplateRevision(db, clause(DELEGATION_TEMPLATE_REQUIRED_CLAUSES));
+  const fw = mintFrameworkAgreementRevision(db, clause(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES), null);
+  const dt = mintDelegationTemplateRevision(db, clause(DELEGATION_TEMPLATE_REQUIRED_CLAUSES), null);
   issueFrameworkToPartner(db, admin, partnerIdentityId, fw.id, dt.id, "issued");
   const sessionId = randomUUID();
   db.prepare(`INSERT INTO partner_sessions(id, partner_identity_id, token_hash, expires_at) VALUES (?, ?, ?, datetime('now', '+1 hour'))`).run(sessionId, partnerIdentityId, randomUUID());
@@ -100,7 +101,7 @@ describe("engagement offer / accept / activate: four separate authorities, never
     const { engagement_id: engagementId, engagement_revision_id: revisionId } = offerEngagement(db, admin, partnerIdentityId, occurrenceId, terms1, "offer");
     expect(getEngagement(db, engagementId)).toMatchObject({ lifecycle_state: "OFFERED", lifecycle_revision: 1 });
 
-    const revision2 = mintEngagementRevision(db, admin, engagementId, { ...terms1, reward_value: 2000 }, "reward tweak");
+    const revision2 = mintEngagementRevision(db, admin, engagementId, { ...terms1, reward_value: 2000 }, "reward tweak", currentEngagementRevision(db, engagementId)?.id ?? null);
     expect(revision2.revision).toBe(2);
     expect(revision2.supersedes_revision_id).toBe(revisionId);
     // Minting alone does not accept it and does not change lifecycle_state.
@@ -165,7 +166,7 @@ describe("engagement offer / accept / activate: four separate authorities, never
     const { partner, partnerIdentityId, cityId } = readyPartner(db);
     const occurrenceId = seedOccurrence(db, cityId);
     const { engagement_id: engagementId, engagement_revision_id: revisionId } = offerEngagement(db, admin, partnerIdentityId, occurrenceId, terms1, "offer");
-    const revision2 = mintEngagementRevision(db, admin, engagementId, { ...terms1, reward_value: 2000 }, "tweak");
+    const revision2 = mintEngagementRevision(db, admin, engagementId, { ...terms1, reward_value: 2000 }, "tweak", currentEngagementRevision(db, engagementId)?.id ?? null);
     const grant = mintEngagementStepUpGrant(db, partner, "ENGAGEMENT_ACCEPTANCE", { engagement_id: engagementId, engagement_revision_id: revisionId }).grant_id;
     acceptEngagement(db, partner, engagementId, revisionId, grant); // accepts revision 1 only
     expect(() => activateEngagement(db, admin, engagementId, revision2.id)).toThrow(/AGENT_REFERRALS_ACTIVATION_REVISION_NOT_ACCEPTED/);
@@ -200,7 +201,7 @@ describe("engagement suspend / reactivate", () => {
     const engA = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occA);
     const engB = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occB);
 
-    suspendEngagement(db, admin, engA.engagementId, "manual pause Tomsk");
+    suspendEngagement(db, admin, engA.engagementId, "manual pause Tomsk", getEngagement(db, engA.engagementId)!.lifecycle_revision);
     expect(getEngagement(db, engA.engagementId)).toMatchObject({ lifecycle_state: "SUSPENDED" });
     expect(getEngagement(db, engB.engagementId)).toMatchObject({ lifecycle_state: "ACTIVE" });
     const authA = db.prepare("SELECT revoked_at FROM engagement_promo_authorizations WHERE id = ?").get(engA.activation.promo_authorization_id) as { revoked_at: string | null };
@@ -214,7 +215,7 @@ describe("engagement suspend / reactivate", () => {
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);
     const eng = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ);
-    suspendEngagement(db, admin, eng.engagementId, "pause");
+    suspendEngagement(db, admin, eng.engagementId, "pause", getEngagement(db, eng.engagementId)!.lifecycle_revision);
     const reactivation = reactivateEngagement(db, admin, eng.engagementId, eng.revisionId);
     expect(getEngagement(db, eng.engagementId)).toMatchObject({ lifecycle_state: "ACTIVE" });
     expect(reactivation.promo_authorization_id).not.toBe(eng.activation.promo_authorization_id);
@@ -227,7 +228,7 @@ describe("engagement suspend / reactivate", () => {
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);
     const eng = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ);
-    suspendEngagement(db, admin, eng.engagementId, "pause");
+    suspendEngagement(db, admin, eng.engagementId, "pause", getEngagement(db, eng.engagementId)!.lifecycle_revision);
     suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "unrelated global pause" });
     activateAgentReferrals(db, { expected_revision: 3, owner_id: "test-owner", reason: "global resume" });
     expect(getEngagement(db, eng.engagementId)).toMatchObject({ lifecycle_state: "SUSPENDED" });
@@ -241,7 +242,7 @@ describe("audience revocation cascade (one authority transaction)", () => {
     const occ = seedOccurrence(db, p1.cityId);
     const eng = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ);
 
-    const cascade = revokeAudienceVerificationForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "compliance issue", "ev-revoke");
+    const cascade = revokeAudienceVerificationForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "compliance issue", "ev-revoke", currentAudienceVerification(db, p1.partnerIdentityId, p1.cityId)!.aggregate_revision);
     expect(cascade.suspended_engagement_ids).toEqual([eng.engagementId]);
     expect(getEngagement(db, eng.engagementId)).toMatchObject({ lifecycle_state: "SUSPENDED" });
     const auth = db.prepare("SELECT revoked_at FROM engagement_promo_authorizations WHERE id = ?").get(eng.activation.promo_authorization_id) as { revoked_at: string | null };
@@ -259,7 +260,7 @@ describe("audience revocation cascade (one authority transaction)", () => {
     const engTomsk = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occTomsk);
     const engNovosibirsk = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occNovosibirsk);
 
-    revokeAudienceVerificationForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "issue in Novosibirsk only", "ev-revoke");
+    revokeAudienceVerificationForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "issue in Novosibirsk only", "ev-revoke", currentAudienceVerification(db, p1.partnerIdentityId, p1.cityId)!.aggregate_revision);
     expect(getEngagement(db, engNovosibirsk.engagementId)).toMatchObject({ lifecycle_state: "SUSPENDED" });
     expect(getEngagement(db, engTomsk.engagementId)).toMatchObject({ lifecycle_state: "ACTIVE" });
   });
@@ -316,7 +317,7 @@ describe("step-up grant scoping", () => {
 describe("engagement error export", () => {
   it("throws EngagementError for a not-found engagement", () => {
     const db = fresh();
-    expect(() => mintEngagementRevision(db, admin, "nonexistent", terms1, "x")).toThrow(EngagementError);
+    expect(() => mintEngagementRevision(db, admin, "nonexistent", terms1, "x", currentEngagementRevision(db, "nonexistent")?.id ?? null)).toThrow(EngagementError);
   });
 });
 
@@ -324,7 +325,7 @@ describe("audience verification must remain valid through the whole publication 
   it("refuses activation when the verified window expires BEFORE the revision's publication_end_at", () => {
     const db = fresh();
     const p1 = readyPartner(db); // verified through 2040-01-01 by default
-    revokeAudienceVerificationForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "reset for test", "ev-reset");
+    revokeAudienceVerificationForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "reset for test", "ev-reset", currentAudienceVerification(db, p1.partnerIdentityId, p1.cityId)!.aggregate_revision);
     verifyAudienceForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "2030-06-01T00:00:00.000Z", "narrower window", "ev-2");
     const occ = seedOccurrence(db, p1.cityId);
     // terms1.publication_end_at = 2035-01-01, which is AFTER the 2030-06-01 verified window - activation must refuse.
@@ -338,7 +339,7 @@ describe("audience verification must remain valid through the whole publication 
   it("activates when valid_until is exactly equal to publication_end_at - the boundary is inclusive", () => {
     const db = fresh();
     const p1 = readyPartner(db);
-    revokeAudienceVerificationForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "reset for test", "ev-reset");
+    revokeAudienceVerificationForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "reset for test", "ev-reset", currentAudienceVerification(db, p1.partnerIdentityId, p1.cityId)!.aggregate_revision);
     const validUntil = "2030-06-01T00:00:00.000Z";
     verifyAudienceForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, validUntil, "exact-boundary window", "ev-2");
     const occ = seedOccurrence(db, p1.cityId);
@@ -353,7 +354,7 @@ describe("audience verification must remain valid through the whole publication 
   it("a REPLACEMENT VERIFIED extending validity past publication_end_at unblocks a previously-refused activation", () => {
     const db = fresh();
     const p1 = readyPartner(db);
-    revokeAudienceVerificationForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "reset for test", "ev-reset");
+    revokeAudienceVerificationForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "reset for test", "ev-reset", currentAudienceVerification(db, p1.partnerIdentityId, p1.cityId)!.aggregate_revision);
     verifyAudienceForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "2030-06-01T00:00:00.000Z", "narrower window", "ev-2");
     const occ = seedOccurrence(db, p1.cityId);
     const { engagement_id: engagementId, engagement_revision_id: revisionId } = offerEngagement(db, admin, p1.partnerIdentityId, occ, terms1, "offer");
@@ -361,7 +362,7 @@ describe("audience verification must remain valid through the whole publication 
     acceptEngagement(db, p1.partner, engagementId, revisionId, grant);
     expect(() => activateEngagement(db, admin, engagementId, revisionId)).toThrow(/AUDIENCE_VERIFICATION_EXPIRES_BEFORE_PUBLICATION_END/);
 
-    revokeAudienceVerificationForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "widen window", "ev-3");
+    revokeAudienceVerificationForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "widen window", "ev-3", currentAudienceVerification(db, p1.partnerIdentityId, p1.cityId)!.aggregate_revision);
     verifyAudienceForPartnerCity(db, admin, p1.partnerIdentityId, p1.cityId, "2040-01-01T00:00:00.000Z", "wider window", "ev-4");
     expect(() => activateEngagement(db, admin, engagementId, revisionId)).not.toThrow();
     expect(getEngagement(db, engagementId)!.lifecycle_state).toBe("ACTIVE");
@@ -376,7 +377,7 @@ describe("lastActivatedEngagementRevision (P1.1): resolves by the maximum ACTIVA
     const { engagementId, revisionId: rev1 } = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ);
     expect(lastActivatedEngagementRevision(db, engagementId)!.id).toBe(rev1);
 
-    const rev2 = mintEngagementRevision(db, admin, engagementId, { ...terms1, customer_discount_value: 1500 }, "material change");
+    const rev2 = mintEngagementRevision(db, admin, engagementId, { ...terms1, customer_discount_value: 1500 }, "material change", currentEngagementRevision(db, engagementId)?.id ?? null);
     const grant2 = mintEngagementStepUpGrant(db, p1.partner, "ENGAGEMENT_ACCEPTANCE", { engagement_id: engagementId, engagement_revision_id: rev2.id }).grant_id;
     acceptEngagement(db, p1.partner, engagementId, rev2.id, grant2);
     activateEngagement(db, admin, engagementId, rev2.id);
@@ -391,7 +392,7 @@ describe("lastActivatedEngagementRevision (P1.1): resolves by the maximum ACTIVA
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);
     const { engagementId, revisionId } = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ);
-    suspendEngagement(db, admin, engagementId, "pause");
+    suspendEngagement(db, admin, engagementId, "pause", getEngagement(db, engagementId)!.lifecycle_revision);
     reactivateEngagement(db, admin, engagementId, revisionId); // a SECOND activation event, same revision
     const last = lastActivatedEngagementRevision(db, engagementId)!;
     expect(last.id).toBe(revisionId);

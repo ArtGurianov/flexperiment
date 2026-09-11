@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { requireObservedVersion } from "./agent-referrals-command-precondition";
 import { id } from "./crypto";
 import {
   agentReferralsLegalProfileRevisionById, applyAgentReferralsLegalProfile, canonicalLegalProfileEquals, currentAgentReferralsLegalProfile,
@@ -259,6 +260,18 @@ export const pendingLegalProfileChangeRequestForPartner = (db: Database.Database
   (db.prepare(`SELECT ${CHANGE_REQUEST_COLUMNS} FROM agent_referrals_legal_profile_change_requests WHERE partner_identity_id = ? AND state = 'PENDING'`)
     .get(partnerIdentityId) as LegalProfileChangeRequestRow | undefined) ?? null;
 
+/**
+ * The revision NUMBER a supersession must be authored against - the same MAX
+ * the command itself pins, exposed so a caller can send back exactly what it
+ * saw. 0 only for an identity with no verified profile at all, which
+ * supersession refuses anyway.
+ */
+export const currentLegalProfileRevisionForPartner = (db: Database.Database, partnerIdentityId: string): number => {
+  const identity = getPartnerIdentity(db, partnerIdentityId);
+  if (!identity) return 0;
+  return currentAgentReferralsLegalProfile(db, identity.agent_id)?.revision ?? 0;
+};
+
 /** §9: relational authorization for admin routes carrying both :id and :requestId - matches ownedEngagement's exact shape (agent-referrals-partner-projection.ts). Knowing requestId alone is never authority. */
 export const ownedLegalProfileChangeRequest = (db: Database.Database, partnerIdentityId: string, requestId: string): LegalProfileChangeRequestRow => {
   const request = legalProfileChangeRequestById(db, requestId);
@@ -275,6 +288,13 @@ export type SubmitLegalProfileSupersessionInput = RawLegalRequisitesInput & {
   taxMode: TaxMode;
   reason: string;
   evidenceRef?: string | null;
+  /**
+   * PR-C2 STALE_BOUND: the legal-profile REVISION NUMBER the caller was
+   * changing from. The number rather than the id deliberately - it is
+   * monotone per agent, it is already in both realms' read models, and
+   * §B-11's partner projection does not expose internal revision ids.
+   */
+  expectedCurrentLegalProfileRevision: number;
 };
 
 /**
@@ -322,6 +342,15 @@ export const submitLegalProfileSupersession = (
     const { requisites } = normalizeAndValidateLegalProfile(input.legalForm, input.taxMode, input);
 
     const current = resolveCurrentLegalProfileBinding(db, identity);
+    // PR-C2 STALE_BOUND. supersedes_revision_id is derived from MAX below,
+    // which on its own makes a retry DANGEROUS rather than safe: after the
+    // request A created is verified, MAX has moved, the ALREADY_PENDING
+    // slot is free again, and a retried A files a SECOND request - against
+    // the profile its own first attempt produced. Naming the profile the
+    // caller was changing FROM is what refuses that, and it is also the
+    // truthful shape of the command: a supersession is always "replace
+    // THIS identity", never "replace whatever is current when you read it".
+    requireObservedVersion("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_STALE", input.expectedCurrentLegalProfileRevision, current.revision);
     if (canonicalLegalProfileEquals({ legal_form: input.legalForm, tax_mode: input.taxMode, ...requisites }, current)) {
       throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_NO_CHANGE", 409, partnerIdentityId);
     }

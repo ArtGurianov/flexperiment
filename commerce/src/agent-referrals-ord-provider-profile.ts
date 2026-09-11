@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { requireObservedVersion } from "./agent-referrals-command-precondition";
 import { canonicalV2, id, sha256 } from "./crypto";
 
 /**
@@ -60,6 +61,7 @@ export const mintOrdProviderProfile = (
   kind: OrdProviderProfileKind,
   content: Record<string, unknown>,
   reason: string,
+  expectedCurrentRevisionId: string | null,
 ): OrdProviderProfileRevision => {
   const run = db.transaction((): OrdProviderProfileRevision => {
     const current = currentOrdProviderProfile(db, kind);
@@ -71,6 +73,12 @@ export const mintOrdProviderProfile = (
     // superseding twin. (reason/actor are provenance, deliberately outside
     // the comparison, exactly as canonicalLegalProfileEquals treats them.)
     if (current && current.content_hash === contentHash) return current;
+
+    // PR-C2 STALE_BOUND, guarding every actual mint. The no-change branch
+    // above mutates nothing and so is safe for any retry; this pin is what
+    // stops a retried A, arriving after a different revision B, from
+    // minting a third revision that restores A's content over B's.
+    requireObservedVersion("AGENT_REFERRALS_CONTENT_REVISION_STALE", expectedCurrentRevisionId, current?.id ?? null);
     const revisionId = id();
     const nextRevision = (current?.revision ?? 0) + 1;
     const contentJson = JSON.stringify(content);

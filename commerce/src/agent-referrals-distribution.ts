@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { requireObservedVersion } from "./agent-referrals-command-precondition";
 import { canonicalV2, id, sha256 } from "./crypto";
 import { withPartnerCommandInTransaction, type PartnerCommandResult } from "./agent-referrals-partner-command";
 import { withAdminCommandInTransaction, type AdminCommandResult } from "./agent-referrals-admin-command";
@@ -115,6 +116,14 @@ export type DistributionProjection = {
   current_revision: DistributionRevisionRow;
   compliance_state: string | null;
   removal_state: string | null;
+  /**
+   * PR-C2: the monotone event counter a lifecycle command is authored
+   * against. The removal/compliance STATES above cannot serve as that pin -
+   * required -> claimed -> required is a legal sequence, so a stale retry
+   * would find the state it was authored against restored and append its
+   * event a second time. event_sequence never goes backwards.
+   */
+  event_sequence: number;
 };
 
 /**
@@ -138,7 +147,10 @@ export const distributionProjection = (db: Database.Database, distributionId: st
   const boundary = events.map((event) => event.event_kind).lastIndexOf("DECLARED");
   const currentRevisionEvents = boundary === -1 ? events : events.slice(boundary);
   const lastOf = (kinds: Set<string>) => [...currentRevisionEvents].reverse().find((event) => kinds.has(event.event_kind))?.event_kind ?? null;
-  return { current_revision: current, compliance_state: lastOf(COMPLIANCE_KINDS), removal_state: lastOf(REMOVAL_KINDS) };
+  return {
+    current_revision: current, compliance_state: lastOf(COMPLIANCE_KINDS), removal_state: lastOf(REMOVAL_KINDS),
+    event_sequence: events.length ? events[events.length - 1].event_sequence : 0,
+  };
 };
 
 /**
@@ -334,7 +346,7 @@ export const reportDistributionByPartnerIdempotent = (
  * from an old creative's authorized interval into a newer one's) must
  * re-pin, never silently retain the prior revision's now-wrong authority.
  */
-export const correctDistribution = (db: Database.Database, actor: DistributionActor, distributionId: string, input: DistributionReportInput, correctionReason: string): ReportDistributionResult => {
+export const correctDistribution = (db: Database.Database, actor: DistributionActor, distributionId: string, input: DistributionReportInput, correctionReason: string, expectedSupersedesRevisionId: string): ReportDistributionResult => {
   const run = db.transaction((): ReportDistributionResult => {
     gate(db, "DISTRIBUTION_FACT_REPORTING");
     assertDistributionOwnership(db, distributionId, actor);
@@ -350,6 +362,13 @@ export const correctDistribution = (db: Database.Database, actor: DistributionAc
     // out of the comparison, like every other content-addressed chain here.
     const canonicalHash = canonicalRevisionHash(input);
     if (current.canonical_hash === canonicalHash) return { distribution_id: distributionId, revision: current };
+
+    // PR-C2 STALE_BOUND, guarding the correction itself. Content equality
+    // answers first and mutates nothing; after a DIFFERENT correction B,
+    // though, a retried A no longer matches and would file a third revision
+    // reinstating facts an operator had already replaced - and the ORD
+    // reporting tail pins whichever revision is current when it files.
+    requireObservedVersion("AGENT_REFERRALS_DISTRIBUTION_REVISION_STALE", expectedSupersedesRevisionId, current.id);
 
     const authority = resolveHistoricalCreativeAuthority(db, identity.engagement_id, input.published_at);
     const classification = resolveAgentReferralsChannelPolicy(db, input.channel_key, input.published_at);
@@ -393,11 +412,18 @@ const COMPLIANCE_LEGAL_FROM: Readonly<Record<string, ReadonlySet<string | null>>
   REVIEW_CLEARED: new Set<string | null>(["REVIEW_REQUIRED"]),
 };
 
-const appendLifecycleEvent = (db: Database.Database, actor: DistributionActor, distributionId: string, eventKind: string, operationClass: AgentReferralsOperationClass, evidenceRef: string | null, reason: string | null): void => {
+const appendLifecycleEvent = (db: Database.Database, actor: DistributionActor, distributionId: string, eventKind: string, operationClass: AgentReferralsOperationClass, evidenceRef: string | null, reason: string | null, expectedEventSequence: number): void => {
   const run = db.transaction(() => {
     gate(db, operationClass);
     assertDistributionOwnership(db, distributionId, actor);
     const projection = distributionProjection(db, distributionId); // throws AGENT_REFERRALS_DISTRIBUTION_NOT_FOUND if the distribution does not exist
+    // PR-C2 STALE_BOUND. The LEGAL_FROM matrices below are a legality
+    // check, never a replay proof: every one of these lifecycles is cyclic
+    // by design (a removal can be required again after it was claimed, a
+    // review re-opened by a correction), so the predecessor a stale retry
+    // was authored against is frequently restored by ordinary operator
+    // work. Pinning the append-only counter is what separates the two.
+    requireObservedVersion("AGENT_REFERRALS_DISTRIBUTION_EVENT_STALE", expectedEventSequence, projection.event_sequence);
     const legalRemovalFrom = REMOVAL_LEGAL_FROM[eventKind];
     if (legalRemovalFrom && !legalRemovalFrom.has(projection.removal_state)) {
       throw new DistributionError("AGENT_REFERRALS_DISTRIBUTION_REMOVAL_ILLEGAL_TRANSITION", 409, `${projection.removal_state}->${eventKind}`);
@@ -412,17 +438,17 @@ const appendLifecycleEvent = (db: Database.Database, actor: DistributionActor, d
 };
 
 /** Admin/system: marks a distribution's window closed and removal owed. */
-export const requireRemoval = (db: Database.Database, admin: AdminPrincipal, distributionId: string, reason: string): void =>
-  appendLifecycleEvent(db, admin, distributionId, "REMOVAL_REQUIRED", "REMOVAL_VERIFICATION", null, reason);
+export const requireRemoval = (db: Database.Database, admin: AdminPrincipal, distributionId: string, reason: string, expectedEventSequence: number): void =>
+  appendLifecycleEvent(db, admin, distributionId, "REMOVAL_REQUIRED", "REMOVAL_VERIFICATION", null, reason, expectedEventSequence);
 /** Partner: claims the content was taken down. Refused for a distribution owned by a different partner. */
-export const claimRemoval = (db: Database.Database, partner: PartnerPrincipal, distributionId: string, evidenceRef: string): void =>
-  appendLifecycleEvent(db, partner, distributionId, "REMOVAL_CLAIMED", "PUBLICATION_REMOVAL", evidenceRef, null);
+export const claimRemoval = (db: Database.Database, partner: PartnerPrincipal, distributionId: string, evidenceRef: string, expectedEventSequence: number): void =>
+  appendLifecycleEvent(db, partner, distributionId, "REMOVAL_CLAIMED", "PUBLICATION_REMOVAL", evidenceRef, null, expectedEventSequence);
 /** Admin: independently confirms removal - the per-distribution authority §B-5d requires, never an aggregate shortcut. */
-export const confirmRemoval = (db: Database.Database, admin: AdminPrincipal, distributionId: string, evidenceRef: string): void =>
-  appendLifecycleEvent(db, admin, distributionId, "REMOVAL_CONFIRMED", "PUBLICATION_REMOVAL", evidenceRef, null);
-export const markOverdueRemoval = (db: Database.Database, admin: AdminPrincipal, distributionId: string, reason: string): void =>
-  appendLifecycleEvent(db, admin, distributionId, "OVERDUE_REMOVAL", "REMOVAL_VERIFICATION", null, reason);
-export const markRemovalUnverified = (db: Database.Database, admin: AdminPrincipal, distributionId: string, reason: string): void =>
-  appendLifecycleEvent(db, admin, distributionId, "REMOVAL_UNVERIFIED", "REMOVAL_VERIFICATION", null, reason);
-export const markReviewCleared = (db: Database.Database, admin: AdminPrincipal, distributionId: string, reason: string): void =>
-  appendLifecycleEvent(db, admin, distributionId, "REVIEW_CLEARED", "REMOVAL_VERIFICATION", null, reason);
+export const confirmRemoval = (db: Database.Database, admin: AdminPrincipal, distributionId: string, evidenceRef: string, expectedEventSequence: number): void =>
+  appendLifecycleEvent(db, admin, distributionId, "REMOVAL_CONFIRMED", "PUBLICATION_REMOVAL", evidenceRef, null, expectedEventSequence);
+export const markOverdueRemoval = (db: Database.Database, admin: AdminPrincipal, distributionId: string, reason: string, expectedEventSequence: number): void =>
+  appendLifecycleEvent(db, admin, distributionId, "OVERDUE_REMOVAL", "REMOVAL_VERIFICATION", null, reason, expectedEventSequence);
+export const markRemovalUnverified = (db: Database.Database, admin: AdminPrincipal, distributionId: string, reason: string, expectedEventSequence: number): void =>
+  appendLifecycleEvent(db, admin, distributionId, "REMOVAL_UNVERIFIED", "REMOVAL_VERIFICATION", null, reason, expectedEventSequence);
+export const markReviewCleared = (db: Database.Database, admin: AdminPrincipal, distributionId: string, reason: string, expectedEventSequence: number): void =>
+  appendLifecycleEvent(db, admin, distributionId, "REVIEW_CLEARED", "REMOVAL_VERIFICATION", null, reason, expectedEventSequence);

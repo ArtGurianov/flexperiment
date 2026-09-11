@@ -78,7 +78,8 @@ describe("/v1/admin/agent-referrals/*: authentication boundary", () => {
     const cookie = await adminCookie(app);
     const headers = { Origin: ADMIN_ORIGIN, Cookie: cookie, "Content-Type": "application/json" };
     const set = await app.request("http://admin.flexperiment.ru/v1/admin/agent-referrals/channel-policy", {
-      method: "POST", headers, body: JSON.stringify({ channel_key: "dzen", status: "ALLOWED", effective_from: "2020-01-01T00:00:00.000Z", reason: "reviewed" }),
+      // dzen carries no policy row yet, so the command is authored against 0.
+      method: "POST", headers, body: JSON.stringify({ channel_key: "dzen", status: "ALLOWED", effective_from: "2020-01-01T00:00:00.000Z", reason: "reviewed", expected_policy_revision: 0 }),
     });
     expect(set.status).toBe(201);
     const read = await app.request("http://admin.flexperiment.ru/v1/admin/agent-referrals/channel-policy/dzen", { headers: { Origin: ADMIN_ORIGIN, Cookie: cookie } });

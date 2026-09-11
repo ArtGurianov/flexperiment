@@ -7,7 +7,7 @@ import {
   admin, fresh, readyPartner, seedOccurrence, nearTermTerms, offerAcceptActivate, closeAndComplete, wait,
 } from "./support/agent-referrals-settlement-fixtures";
 import { seedOrdProviderProfiles, readyCreative, canonicalTargetUrl, reportedDistribution } from "./support/agent-referrals-ord-fixtures";
-import { correctDistribution } from "../src/agent-referrals-distribution";
+import { correctDistribution, distributionProjection, currentDistributionRevision } from "../src/agent-referrals-distribution";
 import { finalizeEngagementRewardRegistry, closeEngagementWithRewardRegistry } from "../src/agent-referrals-reward-registry";
 import {
   fileOrdDistributionPeriodReport, recordOrdDistributionPeriodReportReconciliation, currentOrdDistributionPeriodReport, resolveOrdReportingBasis,
@@ -189,7 +189,7 @@ describe("fileOrdDistributionPeriodReport: ordinary CALENDAR_MONTH reporting", (
       correctDistribution(db, admin, distributionId, {
         channel_key: "telegram", resource_kind: "channel", resource_identifier: "@example_channel", distribution_resource_url: "https://t.me/example_channel/1",
         published_at: "2026-09-20T00:00:00.000Z", ended_at: "2026-09-25T00:00:00.000Z", evidence_ref: "ev-distribution-1",
-      }, "distribution concluded");
+      }, "distribution concluded", currentDistributionRevision(db, distributionId)!.id);
       const submitted = fileOrdDistributionPeriodReport(db, admin, {
         distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
         submission: { vk_operation_external_id: "vk-op-1", erir_code: "erir-1", submission_evidence_ref: "ev-submit" },
@@ -292,7 +292,7 @@ describe("correction lineage: revision 1 -> 2 -> 3", () => {
     correctDistribution(db, admin1, distributionId, {
       channel_key: "telegram", resource_kind: "channel", resource_identifier: "@corrected_channel", distribution_resource_url: "https://t.me/corrected_channel/1",
       published_at: "2026-09-20T00:00:00.000Z", ended_at: null, evidence_ref: "ev-correction",
-    }, "wrong resource identifier");
+    }, "wrong resource identifier", currentDistributionRevision(db, distributionId)!.id);
     const d2RevisionId = (db.prepare("SELECT id FROM engagement_distribution_revisions WHERE distribution_id = ? ORDER BY revision DESC LIMIT 1").get(distributionId) as { id: string }).id;
     expect(d2RevisionId).not.toBe(d1RevisionId);
 
@@ -619,7 +619,7 @@ describe("recordOrdDistributionPeriodReportReconciliation", () => {
     correctDistribution(db, admin1, distributionId, {
       channel_key: "telegram", resource_kind: "channel", resource_identifier: "@corrected_channel", distribution_resource_url: "https://t.me/corrected_channel/1",
       published_at: "2026-09-20T00:00:00.000Z", ended_at: null, evidence_ref: "ev-correction",
-    }, "wrong resource identifier");
+    }, "wrong resource identifier", currentDistributionRevision(db, distributionId)!.id);
     const d2RevisionId = (db.prepare("SELECT id FROM engagement_distribution_revisions WHERE distribution_id = ? ORDER BY revision DESC LIMIT 1").get(distributionId) as { id: string }).id;
     expect(d2RevisionId).not.toBe(d1RevisionId);
 

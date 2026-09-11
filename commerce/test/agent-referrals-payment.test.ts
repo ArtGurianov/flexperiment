@@ -7,7 +7,7 @@ import {
 } from "../src/agent-referrals-payment";
 import { recordNpdStatusCheck, currentUsableNpdCheck, NPD_STATUS_CHECK_FRESHNESS_MS } from "../src/agent-referrals-npd";
 import { closeEngagementZeroReward, zeroRewardClosureForEngagement, ZeroRewardClosureError } from "../src/agent-referrals-zero-reward-closure";
-import { finalizeEngagementRewardRegistry, closeEngagementWithRewardRegistry, resolveRewardRegistryFinalizationFromRegistry, correctEngagementEffectiveRewardSnapshot } from "../src/agent-referrals-reward-registry";
+import { finalizeEngagementRewardRegistry, closeEngagementWithRewardRegistry, resolveRewardRegistryFinalizationFromRegistry, correctEngagementEffectiveRewardSnapshot, currentEffectiveRewardSnapshot } from "../src/agent-referrals-reward-registry";
 import { preparePartnerSettlement, correctPartnerRewardWithSettlement, type AgentReferralsSettlementRow } from "../src/agent-referrals-settlement";
 import { generateSettlementAct, presentSettlementAct, acceptSettlementAct } from "../src/agent-referrals-act";
 import { mintSettlementStepUpGrant } from "../src/agent-referrals-settlement-step-up";
@@ -64,7 +64,7 @@ describe("beginPayment: full recheck in one transaction", () => {
     const payment = db.prepare("SELECT id FROM payments WHERE order_id = ?").get(orderId) as { id: string };
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 10000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
       .run(randomUUID(), randomUUID(), orderId, payment.id, randomUUID());
-    correctPartnerRewardWithSettlement(db, admin, engagementId, "test cancellation");
+    correctPartnerRewardWithSettlement(db, admin, engagementId, "test cancellation", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(() => beginPayment(db, admin, settlement.id)).toThrow(/AGENT_REFERRALS_PAYMENT_SETTLEMENT_NOT_PAYABLE/);
   });
 
@@ -406,7 +406,7 @@ describe("zero-reward closure", () => {
 
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, ?, 'full', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
       .run(randomUUID(), randomUUID(), order.id, order.payment_id, order.amount_kopecks, randomUUID());
-    const result = correctPartnerRewardWithSettlement(db, admin, engagementId, "fully refunded after payment");
+    const result = correctPartnerRewardWithSettlement(db, admin, engagementId, "fully refunded after payment", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(result.settlement_action).toBe("RECOVERY_EXPOSURE");
     expect(result.correction.reward_total_kopecks).toBe(0);
 

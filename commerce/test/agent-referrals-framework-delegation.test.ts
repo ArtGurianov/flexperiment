@@ -41,14 +41,14 @@ describe("framework-agreement / delegation-template immutable content revisions"
   describe("immutability", () => {
     it("a filed framework-agreement revision cannot be UPDATEd", () => {
       const db = fresh();
-      const revision = mintFrameworkAgreementRevision(db, framework());
+      const revision = mintFrameworkAgreementRevision(db, framework(), null);
       expect(() => db.exec(`UPDATE framework_agreement_revisions SET content_hash = 'tampered' WHERE id = '${revision.id}'`))
         .toThrow(/FRAMEWORK_AGREEMENT_REVISION_IMMUTABLE/);
     });
 
     it("a filed delegation-template revision cannot be UPDATEd", () => {
       const db = fresh();
-      const revision = mintDelegationTemplateRevision(db, delegation());
+      const revision = mintDelegationTemplateRevision(db, delegation(), null);
       expect(() => db.exec(`UPDATE delegation_template_revisions SET content_hash = 'tampered' WHERE id = '${revision.id}'`))
         .toThrow(/DELEGATION_TEMPLATE_REVISION_IMMUTABLE/);
     });
@@ -57,7 +57,7 @@ describe("framework-agreement / delegation-template immutable content revisions"
   describe("content hash: exact and deterministic", () => {
     it("two independent mints of byte-identical content produce the same hash", () => {
       const db = fresh();
-      const a = mintFrameworkAgreementRevision(db, framework());
+      const a = mintFrameworkAgreementRevision(db, framework(), null);
       // Independently recomputed by the test, not read back from the row -
       // proves the hash is a pure function of content, not an opaque stamp.
       const recomputed = createHash("sha256").update(JSON.stringify({ clauses: FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES.map((key) => [key, `${key} text v1`]) })).digest("hex");
@@ -66,8 +66,8 @@ describe("framework-agreement / delegation-template immutable content revisions"
 
     it("changing one clause's text changes the hash", () => {
       const db = fresh();
-      const a = mintFrameworkAgreementRevision(db, framework());
-      const b = mintFrameworkAgreementRevision(db, framework({ PARTNER_LEVY_OBLIGATION: "a materially different clause" }));
+      const a = mintFrameworkAgreementRevision(db, framework(), null);
+      const b = mintFrameworkAgreementRevision(db, framework({ PARTNER_LEVY_OBLIGATION: "a materially different clause" }), a.id);
       expect(a.content_hash).not.toBe(b.content_hash);
     });
 
@@ -75,8 +75,8 @@ describe("framework-agreement / delegation-template immutable content revisions"
       const db = fresh();
       const incomplete = framework();
       delete (incomplete as Record<string, string>).PARTNER_LEVY_OBLIGATION;
-      expect(() => mintFrameworkAgreementRevision(db, incomplete)).toThrow(AgentReferralsContentRevisionError);
-      try { mintFrameworkAgreementRevision(db, incomplete); } catch (error) {
+      expect(() => mintFrameworkAgreementRevision(db, incomplete, null)).toThrow(AgentReferralsContentRevisionError);
+      try { mintFrameworkAgreementRevision(db, incomplete, null); } catch (error) {
         expect((error as AgentReferralsContentRevisionError).message).toContain("PARTNER_LEVY_OBLIGATION");
       }
       expect(db.prepare("SELECT COUNT(*) AS n FROM framework_agreement_revisions").get()).toEqual({ n: 0 });
@@ -86,8 +86,8 @@ describe("framework-agreement / delegation-template immutable content revisions"
   describe("supersession is forward-only, old revision stays readable", () => {
     it("framework agreement: revision 2 supersedes revision 1, revision 1 unchanged and readable", () => {
       const db = fresh();
-      const first = mintFrameworkAgreementRevision(db, framework());
-      const second = mintFrameworkAgreementRevision(db, framework({ PARTNER_LEVY_OBLIGATION: "revised clause" }));
+      const first = mintFrameworkAgreementRevision(db, framework(), null);
+      const second = mintFrameworkAgreementRevision(db, framework({ PARTNER_LEVY_OBLIGATION: "revised clause" }), first.id);
       expect(second.revision).toBe(2);
       expect(second.supersedes_revision_id).toBe(first.id);
 
@@ -98,8 +98,8 @@ describe("framework-agreement / delegation-template immutable content revisions"
 
     it("delegation template: revision 2 supersedes revision 1, revision 1 unchanged and readable", () => {
       const db = fresh();
-      const first = mintDelegationTemplateRevision(db, delegation());
-      const second = mintDelegationTemplateRevision(db, delegation({ REPORTING_TAIL_SURVIVES_CLOSURE_AND_REVOCATION: "revised" }));
+      const first = mintDelegationTemplateRevision(db, delegation(), null);
+      const second = mintDelegationTemplateRevision(db, delegation({ REPORTING_TAIL_SURVIVES_CLOSURE_AND_REVOCATION: "revised" }), first.id);
       expect(second.supersedes_revision_id).toBe(first.id);
       expect(delegationTemplateRevisionById(db, first.id)).toMatchObject({ id: first.id, revision: 1 });
       expect(currentDelegationTemplateRevision(db)).toMatchObject({ id: second.id, revision: 2 });
@@ -110,8 +110,8 @@ describe("framework-agreement / delegation-template immutable content revisions"
     it("mints no side effect on legal_releases and never touches legalDocumentIds", () => {
       const db = fresh();
       const before = db.prepare("SELECT COUNT(*) AS n FROM legal_releases").get();
-      mintFrameworkAgreementRevision(db, framework());
-      mintDelegationTemplateRevision(db, delegation());
+      mintFrameworkAgreementRevision(db, framework(), null);
+      mintDelegationTemplateRevision(db, delegation(), null);
       expect(db.prepare("SELECT COUNT(*) AS n FROM legal_releases").get()).toEqual(before);
 
       for (const clauseKey of [...FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, ...DELEGATION_TEMPLATE_REQUIRED_CLAUSES]) {
@@ -124,7 +124,7 @@ describe("framework-agreement / delegation-template immutable content revisions"
   describe("delegation always FLEXPERIMENT_DELEGATED (B-14)", () => {
     it("every minted delegation-template revision pins ord_reporting_mode structurally", () => {
       const db = fresh();
-      const revision = mintDelegationTemplateRevision(db, delegation());
+      const revision = mintDelegationTemplateRevision(db, delegation(), null);
       expect(db.prepare("SELECT ord_reporting_mode FROM delegation_template_revisions WHERE id = ?").get(revision.id))
         .toEqual({ ord_reporting_mode: "FLEXPERIMENT_DELEGATED" });
     });

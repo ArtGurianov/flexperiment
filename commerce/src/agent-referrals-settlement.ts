@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { requireObservedVersion } from "./agent-referrals-command-precondition";
 import { id, now } from "./crypto";
 import { getEngagement, occurrenceFacts, resolveActivatedLegalProfileBinding, type EngagementRow } from "./agent-referrals-engagement";
 import { getPartnerIdentity } from "./agent-referrals-onboarding";
@@ -313,10 +314,19 @@ export const correctPartnerRewardWithSettlement = (
   admin: AdminPrincipal,
   engagementId: string,
   reason: string,
+  /**
+   * PR-C2 STALE_BOUND: the effective snapshot the correction was decided
+   * against. Every call mints a NEW E, so a retried correction after a
+   * second, genuine correction would mint a third - recomputing a total
+   * from state that has since moved, and (post-payment) writing another
+   * recovery-exposure row against it.
+   */
+  expectedCurrentEffectiveSnapshotId: string,
 ): CorrectPartnerRewardResult => {
   const run = db.transaction((): CorrectPartnerRewardResult => {
     const before = currentEffectiveRewardSnapshot(db, engagementId);
     if (!before) throw new SettlementError("AGENT_REFERRALS_REWARD_REGISTRY_NOT_FINALIZED", 409, engagementId);
+    requireObservedVersion("AGENT_REFERRALS_REWARD_CORRECTION_STALE", expectedCurrentEffectiveSnapshotId, before.id);
 
     const paidSettlement = paidSettlementForEngagement(db, engagementId);
     if (paidSettlement) {

@@ -5,7 +5,7 @@ import { MockProvider } from "../src/provider";
 import { generateOpaqueToken, hashOpaqueToken } from "../src/agent-referrals-partner-auth";
 import { provisionPartnerOwner } from "../src/agent-referrals-partner-identity";
 import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
-import { mintCreativeRevision, authorizeCreative } from "../src/agent-referrals-creative";
+import { mintCreativeRevision, authorizeCreative, currentCreativeRevision, lastCreativeAuthorization } from "../src/agent-referrals-creative";
 import type { OtpSender } from "../src/agent-referrals-otp";
 import {
   fresh, admin, readyPartner, seedOccurrence, nearTermTerms, offerAcceptActivate, purchaseAndPay, finalizedSettlement, acceptedAct,
@@ -148,8 +148,8 @@ describe("/v1/partner/*: horizontal isolation and §B-11 projection allowlist", 
     acceptedAct(db, p1.partner, settlement1);
     const creative1 = mintCreativeRevision(db, admin, engagementId1, {
       format_kind: "post", media_ref: "media-ref-1", copy_text: "copy", cta_text: "cta", mandatory_labeling_text: "Реклама. ART", creative_target_url: "https://flexperiment.ru/city?promo=ART",
-    });
-    authorizeCreative(db, admin, engagementId1, creative1.id);
+    }, currentCreativeRevision(db, engagementId1)?.id ?? null);
+    authorizeCreative(db, admin, engagementId1, creative1.id, lastCreativeAuthorization(db, engagementId1)?.id ?? null);
 
     const p2 = readyPartner(db, "OTHER");
     const occ2 = seedOccurrence(db, p2.cityId, 100_000);
@@ -320,6 +320,9 @@ describe("/v1/partner/*: horizontal isolation and §B-11 projection allowlist", 
       method: "POST", headers: { Origin: PARTNER_ORIGIN, Cookie: cookie, "Content-Type": "application/json" },
       body: JSON.stringify({
         legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "became org",
+        // PR-C2: the verified profile this change is authored against - /me's
+        // own legal_profile.revision, echoed back.
+        expected_current_legal_profile_revision: 1,
         opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow",
       }),
     });

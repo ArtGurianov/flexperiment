@@ -36,10 +36,10 @@ const readyPartner = (db: Database.Database) => {
   db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
     VALUES (?, ?, 'Agent', 'Agent Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
-  submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" });
+  submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
-  const fw = mintFrameworkAgreementRevision(db, clause(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES));
-  const dt = mintDelegationTemplateRevision(db, clause(DELEGATION_TEMPLATE_REQUIRED_CLAUSES));
+  const fw = mintFrameworkAgreementRevision(db, clause(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES), null);
+  const dt = mintDelegationTemplateRevision(db, clause(DELEGATION_TEMPLATE_REQUIRED_CLAUSES), null);
   issueFrameworkToPartner(db, admin, partnerIdentityId, fw.id, dt.id, "issued");
   const sessionId = randomUUID();
   db.prepare(`INSERT INTO partner_sessions(id, partner_identity_id, token_hash, expires_at) VALUES (?, ?, ?, datetime('now', '+1 hour'))`).run(sessionId, partnerIdentityId, randomUUID());
@@ -156,7 +156,7 @@ describe("engagement closure (§B-7): forward-authority-only, one-time, dependen
     const { engagementId, occurrenceId } = activatedEngagement(db, new Date(Date.now() + 500).toISOString());
     const firstAuthId = (db.prepare("SELECT id FROM engagement_promo_authorizations WHERE engagement_id = ?").get(engagementId) as { id: string }).id;
 
-    suspendEngagement(db, admin, engagementId, "pause");
+    suspendEngagement(db, admin, engagementId, "pause", getEngagement(db, engagementId)!.lifecycle_revision);
     const revisionId = (db.prepare("SELECT engagement_revision_id FROM engagement_activation_events WHERE engagement_id = ? LIMIT 1").get(engagementId) as { engagement_revision_id: string }).engagement_revision_id;
     reactivateEngagement(db, admin, engagementId, revisionId);
     const secondAuthId = (db.prepare("SELECT id FROM engagement_promo_authorizations WHERE engagement_id = ? AND revoked_at IS NULL").get(engagementId) as { id: string }).id;

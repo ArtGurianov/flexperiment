@@ -15,7 +15,7 @@ import { mintStepUpGrant } from "../src/agent-referrals-step-up";
 import { acceptFrameworkAndDelegation } from "../src/agent-referrals-framework-acceptance";
 import { createPartnerPromo } from "../src/agent-referrals-promo";
 import { mintEngagementStepUpGrant } from "../src/agent-referrals-engagement-step-up";
-import { offerEngagement, verifyAudienceForPartnerCity, acceptEngagement, activateEngagement, mintEngagementRevision, getEngagement, suspendEngagement, EngagementError, type EngagementRevisionTerms } from "../src/agent-referrals-engagement";
+import { offerEngagement, verifyAudienceForPartnerCity, acceptEngagement, activateEngagement, mintEngagementRevision, getEngagement, suspendEngagement, EngagementError, type EngagementRevisionTerms, currentEngagementRevision } from "../src/agent-referrals-engagement";
 import { suspendAgentReferrals } from "../src/agent-referrals-feature-state";
 
 const open: Database.Database[] = [];
@@ -43,10 +43,10 @@ const readyPartner = (db: Database.Database) => {
   db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
     VALUES (?, ?, 'Agent', 'Agent Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
-  submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" });
+  submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
-  const fw = mintFrameworkAgreementRevision(db, clause(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES));
-  const dt = mintDelegationTemplateRevision(db, clause(DELEGATION_TEMPLATE_REQUIRED_CLAUSES));
+  const fw = mintFrameworkAgreementRevision(db, clause(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES), null);
+  const dt = mintDelegationTemplateRevision(db, clause(DELEGATION_TEMPLATE_REQUIRED_CLAUSES), null);
   issueFrameworkToPartner(db, admin, partnerIdentityId, fw.id, dt.id, "issued");
   const sessionId = randomUUID();
   db.prepare(`INSERT INTO partner_sessions(id, partner_identity_id, token_hash, expires_at) VALUES (?, ?, ?, datetime('now', '+1 hour'))`).run(sessionId, partnerIdentityId, randomUUID());
@@ -82,7 +82,7 @@ const offerAcceptActivate = (db: Database.Database, partner: PartnerPrincipal, p
 };
 
 const reviseAcceptActivate = (db: Database.Database, partner: PartnerPrincipal, engagementId: string, terms: EngagementRevisionTerms, reason: string) => {
-  const revision = mintEngagementRevision(db, admin, engagementId, terms, reason);
+  const revision = mintEngagementRevision(db, admin, engagementId, terms, reason, currentEngagementRevision(db, engagementId)?.id ?? null);
   const grant = mintEngagementStepUpGrant(db, partner, "ENGAGEMENT_ACCEPTANCE", { engagement_id: engagementId, engagement_revision_id: revision.id }).grant_id;
   acceptEngagement(db, partner, engagementId, revision.id, grant);
   activateEngagement(db, admin, engagementId, revision.id);
@@ -191,7 +191,7 @@ describe("checkout with a partner-owned promo: real §B-9 attribution now resolv
     const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
     const quote = domain.checkoutContext({ occurrenceId: occ, promoCode: code.code });
 
-    suspendEngagement(db, admin, engagementId, "manual pause between quote and checkout"); // revokes the live promo authorization in the same transaction
+    suspendEngagement(db, admin, engagementId, "manual pause between quote and checkout", getEngagement(db, engagementId)!.lifecycle_revision); // revokes the live promo authorization in the same transaction
 
     expect(() => domain.checkout(checkoutInput(quote.quote_id, "nopartial@example.test"), "idem-nopartial-0000001")).toThrow(/PROMO_NO_LONGER_ELIGIBLE/);
     expect(db.prepare("SELECT COUNT(*) AS n FROM orders").get()).toEqual({ n: 0 });
@@ -454,7 +454,7 @@ describe("occurrence material revision (§ Phase 5 review note 6): occurrence da
     db.prepare("UPDATE occurrences SET material_revision = material_revision + 1 WHERE id = ?").run(occ);
 
     // A fresh revision, minted AFTER the change, pins the NEW material_revision and activates cleanly.
-    const revision2 = mintEngagementRevision(db, admin, engagementId, baseTerms(1000), "re-offer after schedule change");
+    const revision2 = mintEngagementRevision(db, admin, engagementId, baseTerms(1000), "re-offer after schedule change", currentEngagementRevision(db, engagementId)?.id ?? null);
     expect(revision2.occurrence_material_revision).toBe(2);
 
     // But re-activating the OLD, stale revision (still technically "accepted") must be refused.
@@ -472,7 +472,7 @@ describe("occurrence material revision (§ Phase 5 review note 6): occurrence da
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);
     const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, 1000); // activates revision 1
-    const revision2 = mintEngagementRevision(db, admin, engagementId, baseTerms(1500), "discount increase");
+    const revision2 = mintEngagementRevision(db, admin, engagementId, baseTerms(1500), "discount increase", currentEngagementRevision(db, engagementId)?.id ?? null);
     const grant2 = mintEngagementStepUpGrant(db, p1.partner, "ENGAGEMENT_ACCEPTANCE", { engagement_id: engagementId, engagement_revision_id: revision2.id }).grant_id;
     acceptEngagement(db, p1.partner, engagementId, revision2.id, grant2);
     activateEngagement(db, admin, engagementId, revision2.id); // now revision 2 governs

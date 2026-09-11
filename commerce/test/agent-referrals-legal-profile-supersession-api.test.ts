@@ -1,3 +1,4 @@
+import { currentLegalProfileRevisionForPartner } from "../src/agent-referrals-legal-profile-supersession";
 import { scryptSync } from "node:crypto";
 import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
@@ -41,9 +42,13 @@ const adminCookie = async (app: ReturnType<typeof createApp>) => {
  * calling submitLegalProfileSupersession directly would not have caught it.
  */
 describe("POST /v1/admin/agent-referrals/partners/:id/legal-profile/change: invalid combinations are a typed 422, never a raw 500", () => {
-  const post = async (app: ReturnType<typeof createApp>, cookie: string, partnerIdentityId: string, body: Record<string, unknown>) =>
+  // PR-C2: the route requires the STALE_BOUND pin, so every case here
+  // supplies the real current revision - these tests are about the
+  // validator, and a missing pin would refuse them for the wrong reason.
+  const post = async (app: ReturnType<typeof createApp>, cookie: string, partnerIdentityId: string, body: Record<string, unknown>, db?: Database.Database) =>
     app.request(`http://admin.flexperiment.ru/v1/admin/agent-referrals/partners/${partnerIdentityId}/legal-profile/change`, {
-      method: "POST", headers: { Origin: ADMIN_ORIGIN, Cookie: cookie, "Content-Type": "application/json" }, body: JSON.stringify(body),
+      method: "POST", headers: { Origin: ADMIN_ORIGIN, Cookie: cookie, "Content-Type": "application/json" },
+      body: JSON.stringify({ expected_current_legal_profile_revision: db ? currentLegalProfileRevisionForPartner(db, partnerIdentityId) : 1, ...body }),
     });
 
   // full_name/inn are present but deliberately arbitrary here: the
@@ -80,7 +85,7 @@ describe("POST /v1/admin/agent-referrals/partners/:id/legal-profile/change: inva
     const response = await post(app, cookie, p1.partnerIdentityId, {
       legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "became org", evidence_ref: "egrul.pdf",
       opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow",
-    });
+    }, db);
     expect(response.status).toBe(201);
     const payload = await response.json();
     expect(payload.state).toBe("PENDING");

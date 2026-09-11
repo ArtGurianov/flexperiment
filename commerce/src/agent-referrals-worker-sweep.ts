@@ -89,7 +89,7 @@ const sweepRemovalRequired = (db: Database.Database, atMs: number): number => {
       const projection = distributionProjection(db, distribution.id);
       if (projection.removal_state !== null) continue;
       try {
-        requireRemoval(db, SYSTEM_ADMIN, distribution.id, "AGENT_REFERRALS_WORKER_PUBLICATION_WINDOW_ENDED");
+        requireRemoval(db, SYSTEM_ADMIN, distribution.id, "AGENT_REFERRALS_WORKER_PUBLICATION_WINDOW_ENDED", distributionProjection(db, distribution.id).event_sequence);
         marked += 1;
       } catch (error) {
         // A concurrent admin/partner action may have already advanced this
@@ -116,7 +116,7 @@ const sweepRemovalOverdue = (db: Database.Database, atMs: number): number => {
     const ageMs = atMs - new Date(lastEvent.occurred_at).getTime();
     if (ageMs < REMOVAL_OVERDUE_GRACE_MS) continue;
     try {
-      markOverdueRemoval(db, SYSTEM_ADMIN, distributionId, "AGENT_REFERRALS_WORKER_REMOVAL_GRACE_PERIOD_ELAPSED");
+      markOverdueRemoval(db, SYSTEM_ADMIN, distributionId, "AGENT_REFERRALS_WORKER_REMOVAL_GRACE_PERIOD_ELAPSED", distributionProjection(db, distributionId).event_sequence);
       marked += 1;
     } catch (error) {
       if (!(error instanceof DistributionError)) throw error;

@@ -103,6 +103,8 @@ export type PartnerProfileProjection = {
   submitted_kpp: string | null;
   submitted_registration_number: string | null;
   submitted_legal_address: string | null;
+  /** PR-C2: the monotone draft counter the partner's own submission must be authored against (0 before the first submission). */
+  legal_profile_draft_revision: number;
   legal_profile: {
     legal_form: string; tax_mode: string; projected_contractor_type: string;
     opf: string | null; full_name: string; short_name: string | null; inn: string; kpp: string | null; registration_number: string | null; legal_address: string | null;
@@ -142,6 +144,7 @@ export const partnerProfileProjection = (db: Database.Database, partnerIdentityI
     submitted_kpp: identity.submitted_kpp,
     submitted_registration_number: identity.submitted_registration_number,
     submitted_legal_address: identity.submitted_legal_address,
+    legal_profile_draft_revision: identity.legal_profile_draft_revision,
     legal_profile: legalProfile
       ? {
           legal_form: legalProfile.legal_form, tax_mode: legalProfile.tax_mode, projected_contractor_type: legalProfile.projected_contractor_type,

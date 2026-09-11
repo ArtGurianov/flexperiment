@@ -184,6 +184,10 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
     return c.json(submitLegalProfileSupersession(sqlite, adminOf(c), c.req.param("id"), {
       legalForm: requireString(body, "legal_form") as LegalForm, taxMode: requireString(body, "tax_mode") as TaxMode,
       reason: requireString(body, "reason"), evidenceRef: optionalString(body, "evidence_ref") ?? null,
+      // PR-C2 STALE_BOUND: the profile the caller was changing FROM. Without
+      // it, a retry after the first request was verified files a SECOND
+      // supersession against the revision its own first attempt produced.
+      expectedCurrentLegalProfileRevision: requireNumber(body, "expected_current_legal_profile_revision"),
       ...legalRequisitesFromBody(body),
     }), 201);
   });
@@ -238,7 +242,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   });
   app.post("/partners/:id/audience/:cityId/revoke", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(revokeAudienceVerificationForPartnerCity(sqlite, adminOf(c), c.req.param("id"), c.req.param("cityId"), requireString(body, "reason"), requireString(body, "evidence_ref")));
+    return c.json(revokeAudienceVerificationForPartnerCity(sqlite, adminOf(c), c.req.param("id"), c.req.param("cityId"), requireString(body, "reason"), requireString(body, "evidence_ref"), requireNumber(body, "expected_aggregate_revision")));
   });
   app.post("/delegations/:id/revoke", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
@@ -273,12 +277,12 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   app.get("/framework-agreement-revisions/current", (c) => c.json(currentFrameworkAgreementRevision(sqlite)));
   app.post("/framework-agreement-revisions", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(mintFrameworkAgreementRevision(sqlite, asRecord(body.clauses) as Record<FrameworkAgreementClauseKey, string>), 201);
+    return c.json(mintFrameworkAgreementRevision(sqlite, asRecord(body.clauses) as Record<FrameworkAgreementClauseKey, string>, nullableString(body, "expected_current_revision_id")), 201);
   });
   app.get("/delegation-template-revisions/current", (c) => c.json(currentDelegationTemplateRevision(sqlite)));
   app.post("/delegation-template-revisions", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(mintDelegationTemplateRevision(sqlite, asRecord(body.clauses) as Record<DelegationTemplateClauseKey, string>), 201);
+    return c.json(mintDelegationTemplateRevision(sqlite, asRecord(body.clauses) as Record<DelegationTemplateClauseKey, string>, nullableString(body, "expected_current_revision_id")), 201);
   });
 
   // ---- Channel policy -------------------------------------------------------
@@ -288,6 +292,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
     return c.json(setAgentReferralsChannelPolicy(sqlite, {
       channel_key: requireString(body, "channel_key"), status: requireString(body, "status") as ChannelPolicyStatus,
       effective_from: requireString(body, "effective_from"), reason: requireString(body, "reason"),
+      expected_policy_revision: requireNumber(body, "expected_policy_revision"),
     }), 201);
   });
 
@@ -351,7 +356,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   });
   app.post("/engagements/:id/revisions", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(mintEngagementRevision(sqlite, adminOf(c), c.req.param("id"), revisionTerms(body), requireString(body, "reason")), 201);
+    return c.json(mintEngagementRevision(sqlite, adminOf(c), c.req.param("id"), revisionTerms(body), requireString(body, "reason"), nullableString(body, "expected_current_revision_id")), 201);
   });
   app.post("/engagements/:id/activate", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
@@ -359,7 +364,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   });
   app.post("/engagements/:id/suspend", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(suspendEngagement(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason")));
+    return c.json(suspendEngagement(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"), requireNumber(body, "expected_lifecycle_revision")));
   });
   app.post("/engagements/:id/close", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
@@ -378,9 +383,14 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
       mandatory_labeling_text: requireString(body, "mandatory_labeling_text"),
       creative_target_url: requireString(body, "creative_target_url"),
     };
-    return c.json(mintCreativeRevision(sqlite, adminOf(c), c.req.param("id"), fields), 201);
+    return c.json(mintCreativeRevision(sqlite, adminOf(c), c.req.param("id"), fields, nullableString(body, "expected_current_revision_id")), 201);
   });
-  app.post("/engagements/:id/creative/:revisionId/authorize", (c) => c.json(authorizeCreative(sqlite, adminOf(c), c.req.param("id"), c.req.param("revisionId"))));
+  app.post("/engagements/:id/creative/:revisionId/authorize", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    // Pinned against the authorization chain HEAD, not the live one: a
+    // revocation would otherwise make a stale retry look current again.
+    return c.json(authorizeCreative(sqlite, adminOf(c), c.req.param("id"), c.req.param("revisionId"), nullableString(body, "expected_authorization_head_id")));
+  });
   app.post("/creative-authorizations/:id/revoke", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
     revokeCreativeAuthorization(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"));
@@ -406,31 +416,31 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
       channel_key: requireString(body, "channel_key"), resource_kind: requireString(body, "resource_kind") as ResourceKind,
       resource_identifier: requireString(body, "resource_identifier"), distribution_resource_url: requireString(body, "distribution_resource_url"),
       published_at: requireString(body, "published_at"), ended_at: optionalString(body, "ended_at") ?? null, evidence_ref: requireString(body, "evidence_ref"),
-    }, requireString(body, "correction_reason")));
+    }, requireString(body, "correction_reason"), requireString(body, "expected_supersedes_revision_id")));
   });
   app.post("/distributions/:id/require-removal", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    requireRemoval(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"));
+    requireRemoval(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"), requireNumber(body, "expected_event_sequence"));
     return c.json({ ok: true });
   });
   app.post("/distributions/:id/confirm-removal", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    confirmRemoval(sqlite, adminOf(c), c.req.param("id"), requireString(body, "evidence_ref"));
+    confirmRemoval(sqlite, adminOf(c), c.req.param("id"), requireString(body, "evidence_ref"), requireNumber(body, "expected_event_sequence"));
     return c.json({ ok: true });
   });
   app.post("/distributions/:id/mark-overdue", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    markOverdueRemoval(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"));
+    markOverdueRemoval(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"), requireNumber(body, "expected_event_sequence"));
     return c.json({ ok: true });
   });
   app.post("/distributions/:id/mark-unverified", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    markRemovalUnverified(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"));
+    markRemovalUnverified(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"), requireNumber(body, "expected_event_sequence"));
     return c.json({ ok: true });
   });
   app.post("/distributions/:id/review-cleared", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    markReviewCleared(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"));
+    markReviewCleared(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"), requireNumber(body, "expected_event_sequence"));
     return c.json({ ok: true });
   });
   app.get("/distributions/:id/reporting-tail", (c) => {
@@ -445,7 +455,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   app.get("/ord/provider-profile/:kind", (c) => c.json(currentOrdProviderProfile(sqlite, c.req.param("kind") as OrdProviderProfileKind)));
   app.post("/ord/provider-profile", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(mintOrdProviderProfile(sqlite, c.var.adminId!, requireString(body, "kind") as OrdProviderProfileKind, asRecord(body.content), requireString(body, "reason")), 201);
+    return c.json(mintOrdProviderProfile(sqlite, c.var.adminId!, requireString(body, "kind") as OrdProviderProfileKind, asRecord(body.content), requireString(body, "reason"), nullableString(body, "expected_current_revision_id")), 201);
   });
   app.post("/ord/provider-operation", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
@@ -515,7 +525,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   });
   app.post("/engagements/:id/reward-registry/correct", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(correctPartnerRewardWithSettlement(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason")));
+    return c.json(correctPartnerRewardWithSettlement(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"), requireString(body, "expected_current_effective_snapshot_id")));
   });
   app.get("/engagements/:id/recovery-exposure", (c) => c.json(recoveryExposure(sqlite, c.req.param("id"))));
   app.post("/engagements/:id/zero-reward-closure", async (c) => {

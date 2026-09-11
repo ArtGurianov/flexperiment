@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { emailHash, id } from "./crypto";
+import { requireObservedVersion } from "./agent-referrals-command-precondition";
 import { normalizeAndValidateLegalProfile, type LegalForm, type RawLegalRequisitesInput, type TaxMode } from "./agent-referrals-legal-profile";
 import { applyVerifiedLegalProfileForPartnerIdentity } from "./agent-referrals-legal-profile-supersession";
 import { getPartnerIdentity, recordPartnerIdentityEvent, transitionOnboardingStateInTransaction, type PartnerIdentityRow } from "./agent-referrals-onboarding";
@@ -172,6 +173,15 @@ export const submitPartnerLegalProfile = (
   legalForm: LegalForm,
   taxMode: TaxMode,
   requisites: RawLegalRequisitesInput,
+  /**
+   * PR-C2 STALE_BOUND: the draft revision the partner was looking at. The
+   * no-change branch below is NOT a replay proof on its own - after a
+   * second, different submission the candidate no longer equals the current
+   * draft, so a retried first submission would silently overwrite the
+   * second one and an admin verifying "the submitted profile" would verify
+   * the draft the partner had already replaced.
+   */
+  expectedDraftRevision: number,
 ): PartnerIdentityRow => {
   const { requisites: validated } = normalizeAndValidateLegalProfile(legalForm, taxMode, requisites);
   const run = db.transaction((): PartnerIdentityRow => {
@@ -189,6 +199,11 @@ export const submitPartnerLegalProfile = (
     if (identity.onboarding_state !== "INVITED" && identity.onboarding_state !== "PROFILE_SUBMITTED") {
       throw new PartnerIdentityError("AGENT_REFERRALS_LEGAL_PROFILE_SUBMISSION_LOCKED", 409, identity.onboarding_state);
     }
+    // Proven against the aggregate's own monotone counter (0055), never
+    // against the draft's content: X -> Y -> X is a legal sequence of edits
+    // and a content pin would match again at the end of it.
+    requireObservedVersion("AGENT_REFERRALS_LEGAL_PROFILE_DRAFT_STALE", expectedDraftRevision, identity.legal_profile_draft_revision);
+
     // PR-C2: resubmitting the draft the identity already carries is not a
     // second submission. The old path rewrote the same columns and appended
     // another LEGAL_PROFILE_SUBMITTED event every time - and the partner form
@@ -205,6 +220,7 @@ export const submitPartnerLegalProfile = (
 
     db.prepare(`UPDATE partner_identities SET submitted_legal_form = ?, submitted_tax_mode = ?,
         submitted_opf = ?, submitted_full_name = ?, submitted_short_name = ?, submitted_inn = ?, submitted_kpp = ?, submitted_registration_number = ?, submitted_legal_address = ?,
+        legal_profile_draft_revision = legal_profile_draft_revision + 1,
         updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
       .run(legalForm, taxMode, validated.opf, validated.full_name, validated.short_name, validated.inn, validated.kpp, validated.registration_number, validated.legal_address, partner.partner_identity_id);
     recordPartnerIdentityEvent(db, partner.partner_identity_id, "LEGAL_PROFILE_SUBMITTED", "PARTNER", { legal_form: legalForm, tax_mode: taxMode });

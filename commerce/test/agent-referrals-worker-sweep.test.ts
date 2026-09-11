@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { runAgentReferralsWorkerSweep, REMOVAL_OVERDUE_GRACE_MS } from "../src/agent-referrals-worker-sweep";
-import { reportDistribution, distributionProjection, claimRemoval, confirmRemoval } from "../src/agent-referrals-distribution";
+import { reportDistribution, distributionProjection, claimRemoval, confirmRemoval, currentDistributionRevision } from "../src/agent-referrals-distribution";
 import { beginPayment } from "../src/agent-referrals-payment";
 import { recordNpdStatusCheck, NPD_STATUS_CHECK_FRESHNESS_MS } from "../src/agent-referrals-npd";
 import {
@@ -124,8 +124,8 @@ describe("Agent Referrals worker sweep (Phase 9 §11): deterministic, idempotent
     db.prepare(`INSERT INTO engagement_distribution_events(id, distribution_id, event_sequence, event_kind, actor_realm, evidence_ref, reason, occurred_at)
       VALUES (?, ?, (SELECT COALESCE(MAX(event_sequence), 0) + 1 FROM engagement_distribution_events WHERE distribution_id = ?), 'REMOVAL_REQUIRED', 'ADMIN', NULL, 'backdated for test', ?)`)
       .run(randomUUID(), distributionId, distributionId, backdated);
-    claimRemoval(db, p1.partner, distributionId, "evidence-of-takedown");
-    confirmRemoval(db, admin, distributionId, "confirmed-evidence");
+    claimRemoval(db, p1.partner, distributionId, "evidence-of-takedown", distributionProjection(db, distributionId).event_sequence);
+    confirmRemoval(db, admin, distributionId, "confirmed-evidence", distributionProjection(db, distributionId).event_sequence);
     expect(distributionProjection(db, distributionId).removal_state).toBe("REMOVAL_CONFIRMED");
 
     const swept = runAgentReferralsWorkerSweep(db, publicationEndAtMs + 1);

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { admin, fresh, readyPartner, seedOccurrence, nearTermTerms, offerAcceptActivate } from "./support/agent-referrals-settlement-fixtures";
-import { mintEngagementRevision } from "../src/agent-referrals-engagement";
-import { reportDistribution, correctDistribution } from "../src/agent-referrals-distribution";
-import { mintCreativeRevision, authorizeCreative } from "../src/agent-referrals-creative";
+import { mintEngagementRevision, currentEngagementRevision } from "../src/agent-referrals-engagement";
+import { reportDistribution, correctDistribution, distributionProjection, currentDistributionRevision } from "../src/agent-referrals-distribution";
+import { mintCreativeRevision, authorizeCreative, currentCreativeRevision, lastCreativeAuthorization } from "../src/agent-referrals-creative";
 import { mintOrdProviderProfile } from "../src/agent-referrals-ord-provider-profile";
 import {
   mintFrameworkAgreementRevision, mintDelegationTemplateRevision,
@@ -35,15 +35,15 @@ describe("identical content does not mint a second revision", () => {
     // window from Date.now(), so calling it twice would legitimately be two
     // different revisions - and the test would be asserting nothing.
     const terms = nearTermTerms(2000);
-    const first = mintEngagementRevision(db, admin, engagementId, terms, "repriced");
-    const replay = mintEngagementRevision(db, admin, engagementId, terms, "retry after a lost response");
+    const first = mintEngagementRevision(db, admin, engagementId, terms, "repriced", currentEngagementRevision(db, engagementId)?.id ?? null);
+    const replay = mintEngagementRevision(db, admin, engagementId, terms, "retry after a lost response", currentEngagementRevision(db, engagementId)?.id ?? null);
     expect(replay.id).toBe(first.id);
     expect(db.prepare("SELECT COUNT(*) AS n FROM engagement_revisions WHERE engagement_id = ?").get(engagementId))
       .toEqual({ n: before.n + 1 });
 
     // Genuinely different terms still mint: the branch is a no-change check,
     // not a lock.
-    const changed = mintEngagementRevision(db, admin, engagementId, nearTermTerms(3000), "really repriced");
+    const changed = mintEngagementRevision(db, admin, engagementId, nearTermTerms(3000), "really repriced", currentEngagementRevision(db, engagementId)?.id ?? null);
     expect(changed.id).not.toBe(first.id);
   });
 
@@ -58,11 +58,11 @@ describe("identical content does not mint a second revision", () => {
       evidence_ref: "ev-1",
     };
     const { distribution_id: distributionId } = reportDistribution(db, admin, engagementId, report);
-    const corrected = correctDistribution(db, admin, distributionId, { ...report, evidence_ref: "ev-2" }, "fixed the evidence");
+    const corrected = correctDistribution(db, admin, distributionId, { ...report, evidence_ref: "ev-2" }, "fixed the evidence", currentDistributionRevision(db, distributionId)!.id);
     const countEvents = () => (db.prepare("SELECT COUNT(*) AS n FROM engagement_distribution_events WHERE distribution_id = ?").get(distributionId) as { n: number }).n;
     const eventsAfterCorrection = countEvents();
 
-    const replay = correctDistribution(db, admin, distributionId, { ...report, evidence_ref: "ev-2" }, "retry after a lost response");
+    const replay = correctDistribution(db, admin, distributionId, { ...report, evidence_ref: "ev-2" }, "retry after a lost response", currentDistributionRevision(db, distributionId)!.id);
 
     expect(replay.revision.id).toBe(corrected.revision.id);
     expect(db.prepare("SELECT COUNT(*) AS n FROM engagement_distribution_revisions WHERE distribution_id = ?").get(distributionId))
@@ -83,12 +83,12 @@ describe("identical content does not mint a second revision", () => {
       mandatory_labeling_text: "Реклама. ООО Ромашка", creative_target_url: "https://example.test/x",
     };
 
-    const first = mintCreativeRevision(db, admin, engagementId, material);
-    expect(mintCreativeRevision(db, admin, engagementId, material).id).toBe(first.id);
+    const first = mintCreativeRevision(db, admin, engagementId, material, currentCreativeRevision(db, engagementId)?.id ?? null);
+    expect(mintCreativeRevision(db, admin, engagementId, material, currentCreativeRevision(db, engagementId)?.id ?? null).id).toBe(first.id);
     expect(db.prepare("SELECT COUNT(*) AS n FROM engagement_creative_revisions WHERE engagement_id = ?").get(engagementId)).toEqual({ n: 1 });
 
-    const authorization = authorizeCreative(db, admin, engagementId, first.id);
-    const replayedAuthorization = authorizeCreative(db, admin, engagementId, first.id);
+    const authorization = authorizeCreative(db, admin, engagementId, first.id, lastCreativeAuthorization(db, engagementId)?.id ?? null);
+    const replayedAuthorization = authorizeCreative(db, admin, engagementId, first.id, lastCreativeAuthorization(db, engagementId)?.id ?? null);
     expect(replayedAuthorization.id).toBe(authorization.id);
     // The old path revoked the live authorization and minted a replacement,
     // so a retry left a revoked row behind for authority nothing superseded.
@@ -98,30 +98,35 @@ describe("identical content does not mint a second revision", () => {
 
   it("global content chains: ORD provider profile, framework agreement and delegation template", () => {
     const { db } = fresh();
-    const profile = mintOrdProviderProfile(db, "admin-1", "CONTRACT", { contract: "x" }, "initial");
-    expect(mintOrdProviderProfile(db, "admin-1", "CONTRACT", { contract: "x" }, "retry").id).toBe(profile.id);
-    expect(mintOrdProviderProfile(db, "admin-1", "CONTRACT", { contract: "y" }, "genuine change").id).not.toBe(profile.id);
+    const profile = mintOrdProviderProfile(db, "admin-1", "CONTRACT", { contract: "x" }, "initial", null);
+    // The retry carries the SAME stale pin the first attempt did - the
+    // no-change branch answers before the pin is consulted, which is what
+    // keeps an ordinary lost-response retry a success rather than a 409.
+    expect(mintOrdProviderProfile(db, "admin-1", "CONTRACT", { contract: "x" }, "retry", null).id).toBe(profile.id);
+    expect(mintOrdProviderProfile(db, "admin-1", "CONTRACT", { contract: "y" }, "genuine change", profile.id).id).not.toBe(profile.id);
 
-    const agreement = mintFrameworkAgreementRevision(db, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES.reduce((acc, key) => ({ ...acc, [key]: `${key} text` }), {} as Record<string, string>));
-    expect(mintFrameworkAgreementRevision(db, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES.reduce((acc, key) => ({ ...acc, [key]: `${key} text` }), {} as Record<string, string>)).id).toBe(agreement.id);
+    const agreement = mintFrameworkAgreementRevision(db, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES.reduce((acc, key) => ({ ...acc, [key]: `${key} text` }), {} as Record<string, string>), null);
+    expect(mintFrameworkAgreementRevision(db, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES.reduce((acc, key) => ({ ...acc, [key]: `${key} text` }), {} as Record<string, string>), null).id).toBe(agreement.id);
 
-    const template = mintDelegationTemplateRevision(db, DELEGATION_TEMPLATE_REQUIRED_CLAUSES.reduce((acc, key) => ({ ...acc, [key]: `${key} text` }), {} as Record<string, string>));
-    expect(mintDelegationTemplateRevision(db, DELEGATION_TEMPLATE_REQUIRED_CLAUSES.reduce((acc, key) => ({ ...acc, [key]: `${key} text` }), {} as Record<string, string>)).id).toBe(template.id);
+    const template = mintDelegationTemplateRevision(db, DELEGATION_TEMPLATE_REQUIRED_CLAUSES.reduce((acc, key) => ({ ...acc, [key]: `${key} text` }), {} as Record<string, string>), null);
+    expect(mintDelegationTemplateRevision(db, DELEGATION_TEMPLATE_REQUIRED_CLAUSES.reduce((acc, key) => ({ ...acc, [key]: `${key} text` }), {} as Record<string, string>), null).id).toBe(template.id);
   });
 
   it("channel policy: the same status from the same instant does not renumber the chain", () => {
     const { db } = fresh();
     const effectiveFrom = new Date().toISOString();
-    const first = setAgentReferralsChannelPolicy(db, { channel_key: "telegram", status: "BLOCKED", effective_from: effectiveFrom, reason: "policy" });
+    // telegram is seeded at policy_revision 1 by 0043, so that is what this
+    // command is authored against.
+    const first = setAgentReferralsChannelPolicy(db, { channel_key: "telegram", status: "BLOCKED", effective_from: effectiveFrom, reason: "policy", expected_policy_revision: 1 });
     // telegram is seeded ALLOWED at revision 1 by 0043, so the count is
     // compared across the replay rather than against an absolute.
     const countRows = () => (db.prepare("SELECT COUNT(*) AS n FROM ad_channel_policy WHERE channel_key = 'telegram'").get() as { n: number }).n;
     const rowsAfterFirst = countRows();
-    const replay = setAgentReferralsChannelPolicy(db, { channel_key: "telegram", status: "BLOCKED", effective_from: effectiveFrom, reason: "retry" });
+    const replay = setAgentReferralsChannelPolicy(db, { channel_key: "telegram", status: "BLOCKED", effective_from: effectiveFrom, reason: "retry", expected_policy_revision: 1 });
     expect(replay.policy_revision).toBe(first.policy_revision);
     expect(countRows()).toBe(rowsAfterFirst);
 
-    const changed = setAgentReferralsChannelPolicy(db, { channel_key: "telegram", status: "REVIEW_REQUIRED", effective_from: effectiveFrom, reason: "escalated" });
+    const changed = setAgentReferralsChannelPolicy(db, { channel_key: "telegram", status: "REVIEW_REQUIRED", effective_from: effectiveFrom, reason: "escalated", expected_policy_revision: first.policy_revision });
     expect(changed.policy_revision).toBe(first.policy_revision + 1);
   });
 });

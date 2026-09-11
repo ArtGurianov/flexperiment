@@ -70,6 +70,12 @@ const requireString = (body: Record<string, unknown>, field: string): string => 
   if (typeof value !== "string" || !value.trim()) throw new DomainError("AGENT_REFERRALS_PARTNER_FIELD_REQUIRED", 422, field);
   return value;
 };
+/** Numeric body field, used for the monotone version pins PR-C2's STALE_BOUND commands are authored against. */
+const requireNumber = (body: Record<string, unknown>, field: string): number => {
+  const value = body[field];
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new DomainError("AGENT_REFERRALS_PARTNER_FIELD_REQUIRED", 422, field);
+  return value;
+};
 const optionalString = (body: Record<string, unknown>, field: string): string | undefined => {
   const value = body[field];
   return typeof value === "string" ? value : undefined;
@@ -172,7 +178,9 @@ export function createAgentReferralsPartnerRouter(sqlite: Database.Database, otp
     const body = asRecord(await jsonBody(c.req.raw));
     const legalForm = requireString(body, "legal_form") as "INDIVIDUAL" | "INDIVIDUAL_ENTREPRENEUR" | "LEGAL_ENTITY";
     const taxMode = requireString(body, "tax_mode") as "NPD" | "OTHER";
-    return c.json(submitPartnerLegalProfile(sqlite, c.var.partner, legalForm, taxMode, legalRequisitesFromBody(body)));
+    // PR-C2 STALE_BOUND: the draft revision the partner's form was rendered
+    // from (0 when nothing has been submitted yet).
+    return c.json(submitPartnerLegalProfile(sqlite, c.var.partner, legalForm, taxMode, legalRequisitesFromBody(body), requireNumber(body, "expected_draft_revision")));
   });
 
   /** D2 §9: post-onboarding legal-identity change, never a caller-supplied partner_identity_id - always the session's own. */
@@ -181,7 +189,9 @@ export function createAgentReferralsPartnerRouter(sqlite: Database.Database, otp
     const legalForm = requireString(body, "legal_form") as "INDIVIDUAL" | "INDIVIDUAL_ENTREPRENEUR" | "LEGAL_ENTITY";
     const taxMode = requireString(body, "tax_mode") as "NPD" | "OTHER";
     return c.json(submitLegalProfileSupersession(sqlite, c.var.partner, c.var.partner.partner_identity_id, {
-      legalForm, taxMode, reason: requireString(body, "reason"), ...legalRequisitesFromBody(body),
+      legalForm, taxMode, reason: requireString(body, "reason"),
+      expectedCurrentLegalProfileRevision: requireNumber(body, "expected_current_legal_profile_revision"),
+      ...legalRequisitesFromBody(body),
     }), 201);
   });
 
@@ -252,12 +262,12 @@ export function createAgentReferralsPartnerRouter(sqlite: Database.Database, otp
 
   protectedRouter.post("/distributions/:id/correct", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(correctDistribution(sqlite, c.var.partner, c.req.param("id"), distributionReportInput(body), requireString(body, "correction_reason")));
+    return c.json(correctDistribution(sqlite, c.var.partner, c.req.param("id"), distributionReportInput(body), requireString(body, "correction_reason"), requireString(body, "expected_supersedes_revision_id")));
   });
 
   protectedRouter.post("/distributions/:id/removal-claim", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    claimRemoval(sqlite, c.var.partner, c.req.param("id"), requireString(body, "evidence_ref"));
+    claimRemoval(sqlite, c.var.partner, c.req.param("id"), requireString(body, "evidence_ref"), requireNumber(body, "expected_event_sequence"));
     return c.json({ ok: true });
   });
 

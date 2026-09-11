@@ -101,9 +101,12 @@ describe("0049 integration-hardening migration", () => {
     ]);
   });
 
-  it("ships no 0055+ migration file (PR-C2's own 0054 is the current boundary)", () => {
+  it("ships no 0056+ migration file (PR-C2's own 0055 is the current boundary)", () => {
     const all = readdirSync(MIGRATIONS).filter((n) => n.endsWith(".sql"));
-    expect(all.filter((n) => n > "0054_partner_command_idempotency.sql")).toEqual([]);
+    // 0055 adds partner_identities.legal_profile_draft_revision - a monotone
+    // counter, not a rebuild: ALTER TABLE ADD COLUMN with a NOT NULL DEFAULT,
+    // which is why it does not appear in the rebuild list asserted above.
+    expect(all.filter((n) => n > "0055_partner_legal_profile_draft_revision.sql")).toEqual([]);
   });
 
   it("introduces no new base table - every fix is a trigger/index on an existing 0043/0047 table, or pure application code", () => {

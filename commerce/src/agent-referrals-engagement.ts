@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { canonicalV2, id, sha256 } from "./crypto";
+import { requireObservedVersion } from "./agent-referrals-command-precondition";
 import { validatePromoTerms, PromoPricingError } from "./promo-pricing";
 import { getPartnerIdentity, recordPartnerIdentityEvent } from "./agent-referrals-onboarding";
 import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
@@ -173,6 +174,8 @@ const insertEngagementRevisionInTransaction = (
   engagement: EngagementRow,
   terms: EngagementRevisionTerms,
   reason: string,
+  /** PR-C2 STALE_BOUND. `null` at offer time, where there is no predecessor. */
+  expectedCurrentRevisionId: string | null,
 ): EngagementRevisionRow => {
   validateRevisionTerms(terms);
   const current = currentEngagementRevision(db, engagement.id);
@@ -188,6 +191,13 @@ const insertEngagementRevisionInTransaction = (
   if (current && current.content_hash === contentHash && current.occurrence_material_revision === occurrence.material_revision) {
     return current;
   }
+  // PR-C2 STALE_BOUND, guarding the mint itself. The no-change branch above
+  // mutates nothing and answers first, so an ordinary retry still succeeds;
+  // what this refuses is a retry arriving after a DIFFERENT revision B,
+  // which would otherwise mint a third revision restoring A's terms and ask
+  // the partner to accept terms that were superseded before they ever saw
+  // them.
+  requireObservedVersion("AGENT_REFERRALS_ENGAGEMENT_REVISION_STALE", expectedCurrentRevisionId, current?.id ?? null);
   const revisionId = id();
   const nextRevision = (current?.revision ?? 0) + 1;
   db.prepare(`INSERT INTO engagement_revisions(id, engagement_id, revision, occurrence_material_revision, reward_type, reward_value, customer_discount_type, customer_discount_value, publication_start_at, publication_end_at, terms_json, content_hash, supersedes_revision_id, created_by_admin_id, reason)
@@ -232,7 +242,9 @@ export const offerEngagement = (
     const engagementId = id();
     db.prepare(`INSERT INTO engagements(id, partner_identity_id, occurrence_id, lifecycle_state, created_by_admin_id) VALUES (?, ?, ?, 'OFFERED', ?)`)
       .run(engagementId, partnerIdentityId, occurrenceId, admin.admin_id);
-    const revision = insertEngagementRevisionInTransaction(db, admin, getEngagement(db, engagementId)!, terms, reason);
+    // The first revision of a brand-new engagement has no predecessor, and
+    // the ALREADY_EXISTS refusal above is what makes offering replay-safe.
+    const revision = insertEngagementRevisionInTransaction(db, admin, getEngagement(db, engagementId)!, terms, reason, null);
     recordPartnerIdentityEvent(db, partnerIdentityId, "ENGAGEMENT_OFFERED", "ADMIN", { engagement_id: engagementId, engagement_revision_id: revision.id, occurrence_id: occurrenceId, reason });
     return { engagement_id: engagementId, engagement_revision_id: revision.id };
   });
@@ -240,12 +252,12 @@ export const offerEngagement = (
 };
 
 /** Admin-only: mints a new material revision for an existing, not-yet-closed engagement. Does not itself change lifecycle_state or count as acceptance. */
-export const mintEngagementRevision = (db: Database.Database, admin: AdminPrincipal, engagementId: string, terms: EngagementRevisionTerms, reason: string): EngagementRevisionRow => {
+export const mintEngagementRevision = (db: Database.Database, admin: AdminPrincipal, engagementId: string, terms: EngagementRevisionTerms, reason: string, expectedCurrentRevisionId: string | null): EngagementRevisionRow => {
   const run = db.transaction((): EngagementRevisionRow => {
     const engagement = getEngagement(db, engagementId);
     if (!engagement) throw new EngagementError("AGENT_REFERRALS_ENGAGEMENT_NOT_FOUND", 404, engagementId);
     if (engagement.lifecycle_state === "CLOSED") throw new EngagementError("AGENT_REFERRALS_ENGAGEMENT_CLOSED", 409, engagementId);
-    const revision = insertEngagementRevisionInTransaction(db, admin, engagement, terms, reason);
+    const revision = insertEngagementRevisionInTransaction(db, admin, engagement, terms, reason, expectedCurrentRevisionId);
     recordPartnerIdentityEvent(db, engagement.partner_identity_id, "ENGAGEMENT_REVISION_MINTED", "ADMIN", { engagement_id: engagementId, engagement_revision_id: revision.id, reason });
     return revision;
   });
@@ -475,9 +487,20 @@ const suspendEngagementLifecycleInTransaction = (db: Database.Database, engageme
 };
 
 /** Admin-only manual pause. Revokes the current promo authorization for that occurrence in the same transaction - suspending Tomsk must never touch Novosibirsk. */
-export const suspendEngagement = (db: Database.Database, admin: AdminPrincipal, engagementId: string, reason: string): EngagementRow => {
+export const suspendEngagement = (db: Database.Database, admin: AdminPrincipal, engagementId: string, reason: string, expectedLifecycleRevision: number): EngagementRow => {
   void admin;
-  return db.transaction(() => suspendEngagementLifecycleInTransaction(db, engagementId, reason)).immediate();
+  return db.transaction(() => {
+    // PR-C2 STALE_BOUND. "Requires ACTIVE" is NOT a proof: reactivation
+    // through activateEngagement is an ordinary, legal thing to do, so
+    // suspend -> reactivate -> retried suspend would suspend a second time,
+    // revoking a promo authorization that was legitimately re-issued in
+    // between. lifecycle_revision only ever increases, so pinning it tells a
+    // retry apart from a genuine second suspension.
+    const engagement = getEngagement(db, engagementId);
+    if (!engagement) throw new EngagementError("AGENT_REFERRALS_ENGAGEMENT_NOT_FOUND", 404, engagementId);
+    requireObservedVersion("AGENT_REFERRALS_ENGAGEMENT_LIFECYCLE_STALE", expectedLifecycleRevision, engagement.lifecycle_revision);
+    return suspendEngagementLifecycleInTransaction(db, engagementId, reason);
+  }).immediate();
 };
 
 /**
@@ -529,10 +552,19 @@ export const revokeAudienceVerificationForPartnerCity = (
   cityId: string,
   reason: string,
   evidenceRef: string,
+  /**
+   * PR-C2 STALE_BOUND: the aggregate_revision the operator was looking at.
+   * "Requires a current VERIFIED" is not a proof - re-verification is
+   * ordinary work, so revoke -> verify -> retried revoke would revoke the
+   * NEW verification and cascade a second suspension over engagements that
+   * had legitimately come back. The counter only increases.
+   */
+  expectedAggregateRevision: number,
 ): RevokeAudienceCascadeResult => {
   const run = db.transaction((): RevokeAudienceCascadeResult => {
     const current = currentAudienceVerification(db, partnerIdentityId, cityId);
     if (current?.event_kind !== "VERIFIED") throw new AudienceVerificationError("AGENT_REFERRALS_AUDIENCE_NOT_VERIFIED", 409, `${partnerIdentityId}:${cityId}`);
+    requireObservedVersion("AGENT_REFERRALS_AUDIENCE_VERIFICATION_STALE", expectedAggregateRevision, current.aggregate_revision);
     const eventId = id();
     const nextRevision = current.aggregate_revision + 1;
     db.prepare(`INSERT INTO partner_audience_verification_events(id, partner_identity_id, city_id, aggregate_revision, event_kind, valid_until, supersedes_event_id, evidence_ref, reason, placed_by_admin_id)

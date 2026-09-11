@@ -13,11 +13,11 @@ import { mintStepUpGrant } from "../src/agent-referrals-step-up";
 import { acceptFrameworkAndDelegation } from "../src/agent-referrals-framework-acceptance";
 import { createPartnerPromo } from "../src/agent-referrals-promo";
 import { mintEngagementStepUpGrant } from "../src/agent-referrals-engagement-step-up";
-import { offerEngagement, verifyAudienceForPartnerCity, acceptEngagement, activateEngagement, suspendEngagement, mintEngagementRevision, type EngagementRevisionTerms } from "../src/agent-referrals-engagement";
-import { mintCreativeRevision, authorizeCreative } from "../src/agent-referrals-creative";
+import { offerEngagement, verifyAudienceForPartnerCity, acceptEngagement, activateEngagement, suspendEngagement, mintEngagementRevision, type EngagementRevisionTerms, currentEngagementRevision, getEngagement } from "../src/agent-referrals-engagement";
+import { mintCreativeRevision, authorizeCreative, currentCreativeRevision, lastCreativeAuthorization } from "../src/agent-referrals-creative";
 import { revokeDelegationAsAdmin } from "../src/agent-referrals-delegation-revocation";
 import { assessCreativeReadyToPublish, CreativeReadinessError } from "../src/agent-referrals-creative-readiness";
-import { mintOrdProviderProfile } from "../src/agent-referrals-ord-provider-profile";
+import { mintOrdProviderProfile, currentOrdProviderProfile } from "../src/agent-referrals-ord-provider-profile";
 import { mintRetentionPolicyRevision, destroyPartnerIdentity } from "../src/agent-referrals-identity-retention";
 import { registerOrdCreative, confirmOrdCreativeRegistration, recordOrdCreativeRegistrationSubmitted } from "../src/agent-referrals-ord-creative-registration";
 
@@ -41,10 +41,10 @@ const readyPartner = (db: Database.Database, citySlug = `novosibirsk-${randomUUI
   db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
     VALUES (?, ?, 'Agent', 'Agent Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
-  submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" });
+  submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
-  const fw = mintFrameworkAgreementRevision(db, clause(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES));
-  const dt = mintDelegationTemplateRevision(db, clause(DELEGATION_TEMPLATE_REQUIRED_CLAUSES));
+  const fw = mintFrameworkAgreementRevision(db, clause(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES), null);
+  const dt = mintDelegationTemplateRevision(db, clause(DELEGATION_TEMPLATE_REQUIRED_CLAUSES), null);
   issueFrameworkToPartner(db, admin, partnerIdentityId, fw.id, dt.id, "issued");
   const sessionId = randomUUID();
   db.prepare(`INSERT INTO partner_sessions(id, partner_identity_id, token_hash, expires_at) VALUES (?, ?, ?, datetime('now', '+1 hour'))`).run(sessionId, partnerIdentityId, randomUUID());
@@ -78,8 +78,8 @@ const activateAndAuthorizeCreative = (db: Database.Database, p1: ReturnType<type
   activateEngagement(db, admin, engagementId, revisionId);
   const creative = mintCreativeRevision(db, admin, engagementId, {
     format_kind: "post", media_ref: null, copy_text: "Buy now", cta_text: "Click", mandatory_labeling_text: "Реклама", creative_target_url: targetUrl,
-  });
-  authorizeCreative(db, admin, engagementId, creative.id);
+  }, currentCreativeRevision(db, engagementId)?.id ?? null);
+  authorizeCreative(db, admin, engagementId, creative.id, lastCreativeAuthorization(db, engagementId)?.id ?? null);
   return engagementId;
 };
 
@@ -109,7 +109,7 @@ describe("CREATIVE_READY_TO_PUBLISH, local half (§B-5e)", () => {
     const occ = seedOccurrence(db, p1.cityId);
     const canonicalUrl = `https://flexperiment.ru/${p1.citySlug}?promo=${(db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string }).code}`;
     const engagementId = activateAndAuthorizeCreative(db, p1, occ, canonicalUrl);
-    suspendEngagement(db, admin, engagementId, "pause");
+    suspendEngagement(db, admin, engagementId, "pause", getEngagement(db, engagementId)!.lifecycle_revision);
     expect(() => assessCreativeReadyToPublish(db, engagementId)).toThrow(/AGENT_REFERRALS_READINESS_ENGAGEMENT_NOT_ACTIVE/);
   });
 
@@ -189,7 +189,7 @@ describe("CREATIVE_READY_TO_PUBLISH, local half (§B-5e)", () => {
     const engagementId = activateAndAuthorizeCreative(db, p1, occ, canonicalUrl);
 
     // Admin mints a draft R2 with a totally different (not-yet-open) publication window - never accepted, never activated.
-    mintEngagementRevision(db, admin, engagementId, { ...terms1, publication_start_at: "2040-01-01T00:00:00.000Z", publication_end_at: "2041-01-01T00:00:00.000Z" }, "draft for a future campaign");
+    mintEngagementRevision(db, admin, engagementId, { ...terms1, publication_start_at: "2040-01-01T00:00:00.000Z", publication_end_at: "2041-01-01T00:00:00.000Z" }, "draft for a future campaign", currentEngagementRevision(db, engagementId)?.id ?? null);
 
     // Readiness still resolves against the ACTIVATED revision (R1), not the draft - still fails closed on the provider half only, exactly as before the draft existed.
     try {
@@ -213,8 +213,8 @@ describe("CREATIVE_READY_TO_PUBLISH, provider half (PR8 completes B-5e)", () => 
 
   it("refuses when a registration exists but local_state has not reached CONFIRMED (no ERID yet)", () => {
     const db = fresh();
-    mintOrdProviderProfile(db, "admin", "COUNTERPARTY", { legal_name: "Flexperiment" }, "seed");
-    mintOrdProviderProfile(db, "admin", "CONTRACT", { ref: "C-1" }, "seed");
+    mintOrdProviderProfile(db, "admin", "COUNTERPARTY", { legal_name: "Flexperiment" }, "seed", currentOrdProviderProfile(db, "COUNTERPARTY")?.id ?? null);
+    mintOrdProviderProfile(db, "admin", "CONTRACT", { ref: "C-1" }, "seed", currentOrdProviderProfile(db, "CONTRACT")?.id ?? null);
     const { engagementId, creativeRevisionId } = readyEngagementAndCreative(db);
     const { registration } = registerOrdCreative(db, admin, creativeRevisionId);
     recordOrdCreativeRegistrationSubmitted(db, registration.id, "vk-ext-1", "ev");
@@ -223,8 +223,8 @@ describe("CREATIVE_READY_TO_PUBLISH, provider half (PR8 completes B-5e)", () => 
 
   it("succeeds once local AND provider facts both hold - never needs a channel_id, distribution_resource_url, or any capacity check", () => {
     const db = fresh();
-    mintOrdProviderProfile(db, "admin", "COUNTERPARTY", { legal_name: "Flexperiment" }, "seed");
-    mintOrdProviderProfile(db, "admin", "CONTRACT", { ref: "C-1" }, "seed");
+    mintOrdProviderProfile(db, "admin", "COUNTERPARTY", { legal_name: "Flexperiment" }, "seed", currentOrdProviderProfile(db, "COUNTERPARTY")?.id ?? null);
+    mintOrdProviderProfile(db, "admin", "CONTRACT", { ref: "C-1" }, "seed", currentOrdProviderProfile(db, "CONTRACT")?.id ?? null);
     const { engagementId, creativeRevisionId } = readyEngagementAndCreative(db);
     const { registration } = registerOrdCreative(db, admin, creativeRevisionId);
     recordOrdCreativeRegistrationSubmitted(db, registration.id, "vk-ext-1", "ev-submit");
