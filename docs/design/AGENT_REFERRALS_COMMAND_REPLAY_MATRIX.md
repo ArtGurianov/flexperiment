@@ -28,55 +28,66 @@ Two things this criterion deliberately does **not** accept as replay safety:
   not stale: it re-reads the counter the first attempt just bumped and
   proceeds. `activateEngagement` is the clearest case.
 
-## Matrix
+## Boundary
 
-### Durable command identity — safe
+**Every write route published by `agent-referrals-api-admin.ts` and
+`agent-referrals-api-partner.ts`** — 67 admin and 20 partner routes, not the
+subset the React surfaces happen to call. Both routers are authenticated but
+externally callable: a caller does not need a button to reach a route, so a
+matrix scoped to buttons leaves the HTTP path unaudited.
 
-| command | mechanism |
+This boundary was chosen after three review rounds in which the matrix
+claimed "every command" and delivered the UI-reachable subset each time. The
+missing entries were never found by re-reading the document.
+
+## Where the matrix lives
+
+In `commerce/test/agent-referrals-command-replay-registry.test.ts`, not here.
+The test extracts every write route from both routers and fails if any is
+unclassified, so **a new POST route cannot ship without a replay
+classification** — which is the only thing that stops this document rotting
+again between now and PR-C2. It also pins the `REPEATABLE` set and the count
+of still-`UNAUDITED` routes, so neither can drift silently.
+
+That registry found three partner routes (`/invite/consume`, `/login/request`,
+`/login/verify`) that a careful manual pass over the same file had missed.
+
+Classifications:
+
+| value | meaning |
 |---|---|
-| `recordVerifiedTaxTreatment` | `admin_command_idempotency` + caller-supplied `Idempotency-Key`, resolved **before** any gate or mutable-state read (PR-F round 3) |
+| `DURABLE_KEY` | exact replay returns the original response |
+| `REPLAY_SAFE` | a repeat is refused or replayed by construction |
+| `NAMED_REFUSAL` | a repeat is refused with a named code (added by PR-C) |
+| `REPEATABLE` | an identical repeat mints a **new durable fact** — PR-C2 scope |
+| `SPECIAL_NON_REPLAYABLE_SECRET` | the response carries a secret that is never persisted, so ordinary durable identity cannot re-serve it |
+| `NOT_A_BUSINESS_WRITE` | session / authorization plumbing |
+| `UNAUDITED` | not yet checked against the criterion — **must reach zero before rollout** |
 
-### Replay-safe by construction — safe
+### Current state
 
-| command | mechanism |
-|---|---|
-| `offerEngagement` | `engagementByPartnerAndOccurrence` → `AGENT_REFERRALS_ENGAGEMENT_ALREADY_EXISTS` |
-| `acceptEngagement` | existing acceptance row → `replayed: true` |
-| `acceptSettlementAct` | existing acceptance → `replayed: true` |
-| `acceptFrameworkAndDelegation` | exact-parameter replay → idempotent no-op, no writes |
-| `preparePartnerSettlement` | `settlementForEffectiveSnapshot` → `replayed: true` |
-| `activatePartner` and onboarding transitions | one-way edges + CAS on `onboarding_revision`; a retry finds the edge already taken |
-| `submitLegalProfileSupersession` | partial unique index → `ALREADY_PENDING` |
-| `verifyLegalProfileSupersession` | terminal-state replay contract → `REPLAYED`, resolved before every gate |
-| `beginPayment` | unique active attempt → `ATTEMPT_ALREADY_ACTIVE` |
+20 `REPEATABLE` routes (14 admin, 6 partner) and **35 still `UNAUDITED`** (32 admin, 3 partner). Both
+numbers are asserted by the test. PR-C2 has to drive `UNAUDITED` to zero and
+`REPEATABLE` to zero, in that order — an unaudited route may well turn out to
+be a twenty-first repeatable one.
 
-### Named refusal on retry — closed in PR-C
+Two entries deserve naming here because their remedy is not the generic one:
 
-Both were raw `SqliteError`, i.e. a **500 for a command that had succeeded**.
+- **`/engagements/:id/activate`** is the heaviest repeatable command. A lost
+  response plus the same click revokes the live promo authorization, mints a
+  replacement, and writes a **second activation event** — evidence that
+  settlement and ORD both pin. CAS does not help: the retry re-reads the
+  `lifecycle_revision` the first attempt bumped, and `ACTIVE` is an accepted
+  starting state.
+- **`/partners/:id/invite/reissue`** returns a raw invite token that is
+  deliberately never persisted. If its response is lost, the original secret
+  cannot be re-served by any idempotency mechanism, so this one needs
+  explicitly defined lost-response recovery semantics rather than a command
+  key.
 
-| command | constraint | code |
-|---|---|---|
-| `provisionPartnerOwner` | `partner_identities.agent_id` UNIQUE | `AGENT_REFERRALS_PARTNER_ALREADY_PROVISIONED` |
-| `createPartnerPromo` (same code) | `promo_codes.normalized_code` UNIQUE | `PROMO_CODE_ALREADY_EXISTS` |
-| `createPartnerPromo` (different code, partner already has one) | `partner_promos.partner_id` UNIQUE | `AGENT_REFERRALS_PARTNER_PROMO_ALREADY_EXISTS` |
-
-### Repeatable — **PR-C2 scope, rollout blocker**
-
-Each mints a new durable fact on an identical retry.
-
-| realm | command | what a retry creates |
-|---|---|---|
-| admin | `activateEngagement` | revokes the live promo authorization, mints a new one, writes a **second activation event** — and the final CAS succeeds against the revision the first attempt bumped. The heaviest of these: activation events are legal evidence, pinned by settlement and ORD. |
-| admin | `authorizeCreative` | revokes the current authorization and inserts a new one even for the same creative revision |
-| admin | `correctDistribution` | `revision + 1` plus a fresh classification event, with no same-content branch |
-| admin | `mintCreativeRevision` | `revision + 1` |
-| admin | `verifyAudienceForPartnerCity` | `aggregate_revision + 1`, new VERIFIED event |
-| admin | `recordNpdStatusCheck` | `sequence + 1` |
-| admin | `setAgentReferralsChannelPolicy` | `MAX(policy_revision) + 1` |
-| partner | `setPartnerPayoutDestination` | `revision + 1` (see the grant note above) |
-| partner | `revokePartnerPayoutDestination` | `revision + 1` |
-| partner | `reportDistribution` | a **fresh distribution identity**, with its own compliance and ORD tail |
-| partner | `submitPartnerLegalProfile` | re-accepts `PROFILE_SUBMITTED`, re-writes the draft and appends another `LEGAL_PROFILE_SUBMITTED` event. Reachable normally: the partner form stays on screen in that state after the refresh. |
+Note also that `reportDistribution` and `correctDistribution` are each
+published in **both** realms. C2 must close both, or state why one surface is
+not a rollout surface.
 
 ## PR-C2 shape
 
