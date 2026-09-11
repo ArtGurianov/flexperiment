@@ -1961,26 +1961,68 @@ export class CommerceDomain {
     return one(this.db, "SELECT * FROM agents WHERE id = ?", agentId)!;
   }
 
+  /**
+   * PR-A read model. `contractor_type` is a PROJECTION for every agent an
+   * Agent Referrals legal profile governs, so the read side must say where
+   * the value came from and carry the profile it was projected from -
+   * otherwise the admin UI has to infer authority on its own, and the
+   * legacy editor goes on offering to write a field it is not allowed to
+   * write (`patchAgent` below refuses it).
+   *
+   * "Current profile" is resolved the one canonical way, MAX(revision) -
+   * never partner_identities.legal_profile_revision_id, which is a
+   * redundant relational pointer maintained for 0047's guard, not the
+   * semantic authority (see agent-referrals-legal-profile.ts). The join is
+   * 1:1 by construction: UNIQUE (agent_id, revision) lets at most one row
+   * match the correlated MAX, so it cannot multiply the promo-count group.
+   */
   agentList() {
-    return many(this.db, `SELECT a.*, COUNT(p.id) AS promo_count
-      FROM agents a LEFT JOIN promo_codes p ON p.agent_id = a.id
-      GROUP BY a.id ORDER BY a.created_at DESC, a.id DESC`);
+    return many(this.db, `SELECT a.*, COUNT(p.id) AS promo_count,
+        lp.id AS lp_id, lp.revision AS lp_revision, lp.legal_form AS lp_legal_form, lp.tax_mode AS lp_tax_mode,
+        lp.projected_contractor_type AS lp_projected_contractor_type, lp.opf AS lp_opf, lp.full_name AS lp_full_name,
+        lp.short_name AS lp_short_name, lp.inn AS lp_inn, lp.kpp AS lp_kpp,
+        lp.registration_number AS lp_registration_number, lp.legal_address AS lp_legal_address
+      FROM agents a
+      LEFT JOIN promo_codes p ON p.agent_id = a.id
+      LEFT JOIN agent_referrals_legal_profile_revisions lp ON lp.agent_id = a.id
+        AND lp.revision = (SELECT MAX(revision) FROM agent_referrals_legal_profile_revisions WHERE agent_id = a.id)
+      GROUP BY a.id ORDER BY a.created_at DESC, a.id DESC`)
+      .map(({
+        lp_id, lp_revision, lp_legal_form, lp_tax_mode, lp_projected_contractor_type, lp_opf, lp_full_name,
+        lp_short_name, lp_inn, lp_kpp, lp_registration_number, lp_legal_address, ...agent
+      }): Row => ({
+        ...agent,
+        contractor_type_source: lp_id ? "LEGAL_PROFILE" : "LEGACY",
+        legal_profile: lp_id
+          ? {
+            id: lp_id, revision: lp_revision, legal_form: lp_legal_form, tax_mode: lp_tax_mode,
+            projected_contractor_type: lp_projected_contractor_type, opf: lp_opf, full_name: lp_full_name,
+            short_name: lp_short_name, inn: lp_inn, kpp: lp_kpp,
+            registration_number: lp_registration_number, legal_address: lp_legal_address,
+          }
+          : null,
+      }));
   }
 
   patchAgent(agentId: string, input: Record<string, unknown>) {
     const existing = one(this.db, "SELECT * FROM agents WHERE id = ?", agentId);
     if (!existing) throw new DomainError("AGENT_NOT_FOUND", 404);
-    // Integration-hardening #3: an agent governed by an Agent Referrals
-    // legal profile has its contractor_type projected from that immutable
-    // chain (agent-referrals-legal-profile.ts) - the legacy PATCH path must
-    // not be able to rewrite it to a DIFFERENT value out from under that
-    // projection (the DB carries the same guard structurally; this is the
-    // named, catchable app-level refusal).
-    if (input.contractor_type !== undefined) {
-      const legalProfile = currentAgentReferralsLegalProfile(this.db, agentId);
-      if (legalProfile && input.contractor_type !== legalProfile.projected_contractor_type) {
-        throw new DomainError("AGENT_REFERRALS_CONTRACTOR_TYPE_PROJECTION_LOCKED", 409);
-      }
+    // Integration-hardening #3, tightened by PR-A: an agent governed by an
+    // Agent Referrals legal profile has its contractor_type projected from
+    // that immutable chain, and (since PR-E) legal_name/inn are that same
+    // profile's own requisites. The legacy PATCH path may not write ANY of
+    // them once a profile exists - not even the value that currently
+    // happens to match, because "the caller sent the same value" is not
+    // authority, and accepting it keeps a second writer alive for a field
+    // that has exactly one. The DB carries the contractor_type half of this
+    // structurally (0049); these are the named, catchable app-level
+    // refusals, and they refuse the WHOLE command rather than silently
+    // dropping the offending field.
+    const legalProfile = currentAgentReferralsLegalProfile(this.db, agentId);
+    if (legalProfile) {
+      if (input.contractor_type !== undefined) throw new DomainError("AGENT_REFERRALS_CONTRACTOR_TYPE_PROJECTION_LOCKED", 409);
+      const projectedIdentity = (["legal_name", "inn"] as const).filter((field) => input[field] !== undefined);
+      if (projectedIdentity.length) throw new DomainError("AGENT_REFERRALS_LEGAL_IDENTITY_PROJECTION_LOCKED", 409, projectedIdentity.join(","));
     }
     const allowed = ["display_name", "legal_name", "email", "contractor_type", "inn", "contract_reference", "enabled", "default_reward_type", "default_reward_value", "npd_status_checked_at"];
     const fields = allowed.filter((field) => input[field] !== undefined);

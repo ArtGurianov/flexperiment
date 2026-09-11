@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import { MockProvider } from "../src/provider";
 import { agentPatchSchema, agentSchema } from "../src/types";
+import { applyAgentReferralsLegalProfile } from "../src/agent-referrals-legal-profile";
 
 /**
  * 0042 makes the DATABASE capable of storing contractor_type = 'ORGANIZATION'.
@@ -115,5 +116,73 @@ describe("legacy agent HTTP surface refuses ORGANIZATION end to end, against a D
     expect(patched.status).toBe(422);
     expect(db.prepare("SELECT contractor_type FROM agents WHERE id = ?").get(agent.id)).toEqual(before);
     expect(before).toEqual({ contractor_type: "SELF_EMPLOYED" });
+  });
+
+  // PR-A: once a legal profile governs the agent, the legacy surface may not
+  // name the projected legal identity at ALL - the two-valued Zod enum is no
+  // longer the only thing standing in the way, and the refusal the operator
+  // actually meets is a named 409, not a bare validation error.
+  it("PATCH /v1/admin/agents/:id refuses a governed agent's projected legal identity with a named 409", async () => {
+    const { db, app } = fixture();
+    const headers = await login(app);
+    const created = await app.request("http://admin.flexperiment.ru/v1/admin/agents", {
+      method: "POST",
+      headers: { ...headers, "Idempotency-Key": randomUUID() },
+      body: JSON.stringify(legacyAgentPayload({ contractor_type: "SELF_EMPLOYED" })),
+    });
+    const agent = await created.json() as { id: string };
+    applyAgentReferralsLegalProfile(db, {
+      agent_id: agent.id, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "verified", assertion_source: "ADMIN_ASSERTED",
+      evidence_ref: "doc-1", opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789",
+      registration_number: "1234567890123", legal_address: "Moscow",
+    });
+
+    const patchGoverned = async (body: Record<string, unknown>) => {
+      const response = await app.request(`http://admin.flexperiment.ru/v1/admin/agents/${agent.id}`, {
+        method: "PATCH", headers: { ...headers, "Idempotency-Key": randomUUID() }, body: JSON.stringify(body),
+      });
+      return { status: response.status, code: (await response.json() as { error?: { code?: string } }).error?.code };
+    };
+
+    // The value that MATCHES the projection is refused too - sending the
+    // right value is not authority over a field with exactly one writer.
+    // (Zod still rejects ORGANIZATION earlier with 422; that contract is
+    // unchanged and covered above.)
+    expect(await patchGoverned({ contractor_type: "SELF_EMPLOYED" }))
+      .toEqual({ status: 409, code: "AGENT_REFERRALS_CONTRACTOR_TYPE_PROJECTION_LOCKED" });
+    expect(await patchGoverned({ legal_name: "Rewritten LLC" }))
+      .toEqual({ status: 409, code: "AGENT_REFERRALS_LEGAL_IDENTITY_PROJECTION_LOCKED" });
+    expect(await patchGoverned({ inn: "9999999999" }))
+      .toEqual({ status: 409, code: "AGENT_REFERRALS_LEGAL_IDENTITY_PROJECTION_LOCKED" });
+
+    // Operational fields on the same governed agent still go through, and
+    // the projection is untouched throughout.
+    expect(await patchGoverned({ email: "moved@example.test" })).toEqual({ status: 200, code: undefined });
+    expect(db.prepare("SELECT contractor_type, legal_name, inn, email FROM agents WHERE id = ?").get(agent.id)).toEqual({
+      contractor_type: "ORGANIZATION", legal_name: "Legacy Agent Legal", inn: "123456789012", email: "moved@example.test",
+    });
+  });
+
+  it("GET /v1/admin/agents reports the projection source and current profile for a governed agent", async () => {
+    const { db, app } = fixture();
+    const headers = await login(app);
+    const created = await app.request("http://admin.flexperiment.ru/v1/admin/agents", {
+      method: "POST",
+      headers: { ...headers, "Idempotency-Key": randomUUID() },
+      body: JSON.stringify(legacyAgentPayload({ contractor_type: "SELF_EMPLOYED" })),
+    });
+    const agent = await created.json() as { id: string };
+    applyAgentReferralsLegalProfile(db, {
+      agent_id: agent.id, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "verified", assertion_source: "ADMIN_ASSERTED",
+      evidence_ref: "doc-1", opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789",
+      registration_number: "1234567890123", legal_address: "Moscow",
+    });
+
+    const listed = await app.request("http://admin.flexperiment.ru/v1/admin/agents", { headers });
+    const { agents } = await listed.json() as { agents: Array<Record<string, unknown>> };
+    const governed = agents.find((row) => row.id === agent.id)!;
+    expect(governed.contractor_type).toBe("ORGANIZATION");
+    expect(governed.contractor_type_source).toBe("LEGAL_PROFILE");
+    expect(governed.legal_profile).toMatchObject({ legal_form: "LEGAL_ENTITY", projected_contractor_type: "ORGANIZATION", opf: "OOO", full_name: "Romashka LLC" });
   });
 });

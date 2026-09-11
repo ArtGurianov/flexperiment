@@ -72,4 +72,55 @@ describe("Agents", () => {
     expect(Object.keys(requests[0].body).sort()).toEqual(["contract_reference", "contractor_type", "default_reward_type", "default_reward_value", "display_name", "email", "enabled", "inn", "legal_name"]);
     for (const field of ["percent", "fixedRubles", "id", "created_at", "updated_at", "promo_count", "slug"]) expect(requests[0].body).not.toHaveProperty(field);
   });
+
+  // PR-A: an agent whose contractor_type is PROJECTED from an Agent
+  // Referrals legal profile has no writable legal identity on this card -
+  // the editor must render it as evidence and leave it out of the PATCH
+  // entirely (the server refuses those fields, and offering them would be
+  // the old dual-authority bug with a nicer label).
+  it("renders a projected agent's legal identity read-only and never sends it back", async () => {
+    const requests: Array<{ method: string; body: Record<string, unknown> }> = [];
+    const agent = {
+      id: "agent-2", slug: "org-agent", display_name: "Org Agent", legal_name: "Stale Legacy Name", email: "org@example.test",
+      contractor_type: "ORGANIZATION", contractor_type_source: "LEGAL_PROFILE", inn: "7700000001", contract_reference: "Contract 2",
+      enabled: 1, default_reward_type: "PERCENT", default_reward_value: 1000, created_at: "old", updated_at: "new", promo_count: 0,
+      legal_profile: {
+        id: "lp-2", revision: 2, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", projected_contractor_type: "ORGANIZATION",
+        opf: "ООО", full_name: "Ромашка", short_name: null, inn: "1234567890", kpp: "123456789",
+        registration_number: "1234567890123", legal_address: "Москва",
+      },
+    };
+    global.fetch = vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).includes("/agents") && (!init?.method || init.method === "GET")) return { ok: true, status: 200, json: async () => ({ agents: [agent] }) } as Response;
+      requests.push({ method: init?.method ?? "GET", body: JSON.parse(String(init?.body)) });
+      return { ok: true, status: 200, json: async () => ({ ...agent }) } as Response;
+    });
+    const user = userEvent.setup(); const client = createTestQueryClient();
+    render(<Agents />, { wrapper: (props) => <QueryClientWrapper client={client}>{props.children}</QueryClientWrapper> });
+
+    // The list itself tells the operator the value is projected, so the
+    // card is never opened in the dark.
+    expect(await screen.findByText("Юридическое лицо · ООО")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Редактировать" }));
+    const dialog = screen.getByRole("dialog", { name: "Редактировать агента" });
+    expect(within(dialog).getByText(/Юридическое лицо · ООО/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/Источник: юридический профиль партнёра \(ревизия 2\)/)).toBeInTheDocument();
+    // Profile requisites, not the agents-row copies.
+    expect(within(dialog).getByText(/ООО Ромашка/)).toBeInTheDocument();
+    expect(within(dialog).getByText("1234567890")).toBeInTheDocument();
+    expect(within(dialog).queryByLabelText("Тип исполнителя")).not.toBeInTheDocument();
+    expect(within(dialog).queryByLabelText("Юридическое имя")).not.toBeInTheDocument();
+    expect(within(dialog).queryByLabelText("ИНН")).not.toBeInTheDocument();
+
+    await user.clear(within(dialog).getByLabelText("Email"));
+    await user.type(within(dialog).getByLabelText("Email"), "moved@example.test");
+    await user.click(within(dialog).getByRole("button", { name: "Сохранить" }));
+
+    await waitFor(() => expect(requests).toHaveLength(1));
+    expect(requests[0]).toMatchObject({ method: "PATCH" });
+    expect(Object.keys(requests[0].body).sort()).toEqual(["contract_reference", "default_reward_type", "default_reward_value", "display_name", "email", "enabled"]);
+    for (const field of ["contractor_type", "legal_name", "inn", "slug"]) expect(requests[0].body).not.toHaveProperty(field);
+    expect(requests[0].body.email).toBe("moved@example.test");
+  });
 });

@@ -4,6 +4,7 @@ import {
 } from "./support/agent-referrals-settlement-fixtures";
 import { finalizeEngagementRewardRegistry } from "../src/agent-referrals-reward-registry";
 import { applyAgentReferralsLegalProfile, currentAgentReferralsLegalProfile } from "../src/agent-referrals-legal-profile";
+import type { DomainError } from "../src/domain";
 
 /**
  * Integration-hardening #3: agents.contractor_type is the projection target
@@ -49,15 +50,78 @@ describe("agents.contractor_type projection lock (integration-hardening #3)", ()
     expect((db.prepare("SELECT contractor_type FROM agents WHERE id = ?").get(agentId) as { contractor_type: string }).contractor_type).toBe("INDIVIDUAL_ENTREPRENEUR");
   });
 
-  it("app-level: patching a governed agent's contractor_type to its OWN current projection is a harmless no-op, never refused", () => {
+  // PR-A tightened this: the pre-PR-A rule accepted contractor_type as long
+  // as the caller happened to send the projection's OWN current value. That
+  // kept a second writer alive for a field with exactly one authority, and
+  // "the caller sent the same value" is not authority. The legacy surface
+  // may no longer name the field at all once a profile governs the agent.
+  it("app-level: patching a governed agent's contractor_type is refused even when it names the CURRENT projection", () => {
     const { db, domain } = fresh();
     const agentId = String(domain.createAgent({
       slug: "org-partner-2", display_name: "Org Partner 2", legal_name: "Org LLC 2", email: "org2@example.com",
       contractor_type: "ORGANIZATION", inn: "7700000003", contract_reference: "ref-3", default_reward_type: "FIXED", default_reward_value: 100,
     }).id);
     applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "verified", assertion_source: "PARTNER_ASSERTED", opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" });
-    expect(() => domain.patchAgent(agentId, { contractor_type: "ORGANIZATION", display_name: "Renamed" })).not.toThrow();
-    expect((db.prepare("SELECT display_name FROM agents WHERE id = ?").get(agentId) as { display_name: string }).display_name).toBe("Renamed");
+
+    expect(() => domain.patchAgent(agentId, { contractor_type: "ORGANIZATION", display_name: "Renamed" })).toThrow("AGENT_REFERRALS_CONTRACTOR_TYPE_PROJECTION_LOCKED");
+    // The WHOLE command is refused - the operational field riding along in
+    // the same patch is not quietly applied.
+    expect((db.prepare("SELECT display_name FROM agents WHERE id = ?").get(agentId) as { display_name: string }).display_name).toBe("Org Partner 2");
+  });
+
+  it("app-level: legal_name/inn are the governed agent's PROFILE requisites (PR-E) and the legacy patch may not write them either", () => {
+    const { db, domain } = fresh();
+    const agentId = String(domain.createAgent({
+      slug: "org-partner-3", display_name: "Org Partner 3", legal_name: "Org LLC 3", email: "org3@example.com",
+      contractor_type: "ORGANIZATION", inn: "7700000004", contract_reference: "ref-4", default_reward_type: "FIXED", default_reward_value: 100,
+    }).id);
+    applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "verified", assertion_source: "PARTNER_ASSERTED", opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" });
+
+    // DomainError carries the code on `.code` and uses the message slot for
+    // the offending field list (domain.ts's own idiom - see
+    // PROMO_OWNED_BY_PARTNER), so the code is asserted, not the message.
+    const refusedCode = (patch: Record<string, unknown>): string => {
+      try { domain.patchAgent(agentId, patch); return "NO_THROW"; } catch (error) { return (error as DomainError).code; }
+    };
+    expect(refusedCode({ legal_name: "Rewritten LLC" })).toBe("AGENT_REFERRALS_LEGAL_IDENTITY_PROJECTION_LOCKED");
+    expect(refusedCode({ inn: "9999999999" })).toBe("AGENT_REFERRALS_LEGAL_IDENTITY_PROJECTION_LOCKED");
+    const row = db.prepare("SELECT legal_name, inn FROM agents WHERE id = ?").get(agentId) as { legal_name: string; inn: string };
+    expect(row).toEqual({ legal_name: "Org LLC 3", inn: "7700000004" });
+
+    // Operational fields on the very same governed agent stay editable -
+    // the lock is on the projected legal identity, not on the card.
+    expect(() => domain.patchAgent(agentId, { email: "moved@example.com", display_name: "Renamed" })).not.toThrow();
+    expect((db.prepare("SELECT email, display_name FROM agents WHERE id = ?").get(agentId) as { email: string; display_name: string }))
+      .toEqual({ email: "moved@example.com", display_name: "Renamed" });
+  });
+
+  it("read model: agentList reports the projection source and the current profile, resolved through MAX(revision)", () => {
+    const { db, domain } = fresh();
+    const governedId = String(domain.createAgent({
+      slug: "org-partner-4", display_name: "Org Partner 4", legal_name: "Org LLC 4", email: "org4@example.com",
+      contractor_type: "SELF_EMPLOYED", inn: "7700000005", contract_reference: "ref-5", default_reward_type: "FIXED", default_reward_value: 100,
+    }).id);
+    const legacyId = String(domain.createAgent({
+      slug: "legacy-partner-4", display_name: "Legacy Partner 4", legal_name: "Legacy LLC 4", email: "legacy4@example.com",
+      contractor_type: "SELF_EMPLOYED", inn: "7700000006", contract_reference: "ref-6", default_reward_type: "FIXED", default_reward_value: 100,
+    }).id);
+    applyAgentReferralsLegalProfile(db, { agent_id: governedId, legal_form: "INDIVIDUAL", tax_mode: "NPD", reason: "initial", assertion_source: "PARTNER_ASSERTED", full_name: "Ivan Ivanov", inn: "123456789012" });
+    // Supersession: the read model must follow the LATEST revision, never
+    // the first one and never a stored pointer.
+    applyAgentReferralsLegalProfile(db, { agent_id: governedId, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "became an LLC", assertion_source: "ADMIN_ASSERTED", evidence_ref: "doc-1", opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" });
+
+    const agents = domain.agentList();
+    const governed = agents.find((agent) => agent.id === governedId) as Record<string, unknown>;
+    const legacy = agents.find((agent) => agent.id === legacyId) as Record<string, unknown>;
+
+    expect(governed.contractor_type).toBe("ORGANIZATION");
+    expect(governed.contractor_type_source).toBe("LEGAL_PROFILE");
+    expect(governed.legal_profile).toMatchObject({ revision: 2, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", projected_contractor_type: "ORGANIZATION", opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789" });
+
+    expect(legacy.contractor_type_source).toBe("LEGACY");
+    expect(legacy.legal_profile).toBeNull();
+    // The profile join must not multiply the promo-count group.
+    expect(agents.filter((agent) => agent.id === governedId)).toHaveLength(1);
   });
 
   it("DB-level: a raw UPDATE of agents.contractor_type is refused once a legal profile governs the agent, even bypassing patchAgent entirely", () => {
