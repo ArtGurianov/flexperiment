@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { suspendAgentReferrals, agentReferralsFeatureState } from "../src/agent-referrals-feature-state";
@@ -12,6 +13,9 @@ import { fresh, admin, readyPartner } from "./support/agent-referrals-settlement
 
 const open: Database.Database[] = [];
 afterEach(() => { while (open.length) open.pop()!.close(); });
+
+/** A fresh, valid Idempotency-Key for a call that isn't itself testing idempotency semantics. */
+const freshKey = () => randomUUID();
 
 /**
  * PR-F: tax/VAT treatment authority. A SEPARATE temporal chain from the
@@ -75,10 +79,10 @@ describe("agent-referrals tax treatment", () => {
 
       const t1 = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
         taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2026-01-01", evidenceRef: "ev1.pdf", reason: "exempt from Jan",
-      });
+      }, freshKey());
       const t2 = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
         taxSystem: "USN", vatTreatment: "VAT_5", noVatBasis: null, effectiveFrom: "2026-07-01", evidenceRef: "ev2.pdf", reason: "5% from Jul",
-      });
+      }, freshKey());
 
       expect(resolveTaxTreatmentForLegalProfileAt(db, legalProfile.id, "2026-06-30T23:59:59.000Z")?.id).toBe(t1.id);
       expect(resolveTaxTreatmentForLegalProfileAt(db, legalProfile.id, "2026-07-01T00:00:00.000Z")?.id).toBe(t2.id);
@@ -148,16 +152,16 @@ describe("agent-referrals tax treatment", () => {
       const p1 = readyPartner(db, "OTHER");
       expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
         taxSystem: "NPD", vatTreatment: "NO_VAT", noVatBasis: "NPD", effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x",
-      })).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_NPD_IS_SYSTEM_DERIVED/);
+      }, freshKey())).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_NPD_IS_SYSTEM_DERIVED/);
     });
 
     it("refuses a blank evidence_ref, a blank reason, and a blank effective_from", () => {
       const { db } = fresh(); open.push(db);
       const p1 = readyPartner(db, "OTHER");
       const base = { taxSystem: "USN" as const, vatTreatment: "NO_VAT" as const, noVatBasis: "USN_EXEMPT" as const, effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x" };
-      expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, { ...base, evidenceRef: "   " })).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_EVIDENCE_REF_REQUIRED/);
-      expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, { ...base, reason: "" })).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_REASON_REQUIRED/);
-      expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, { ...base, effectiveFrom: "" })).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_EFFECTIVE_FROM_REQUIRED/);
+      expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, { ...base, evidenceRef: "   " }, freshKey())).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_EVIDENCE_REF_REQUIRED/);
+      expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, { ...base, reason: "" }, freshKey())).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_REASON_REQUIRED/);
+      expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, { ...base, effectiveFrom: "" }, freshKey())).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_EFFECTIVE_FROM_REQUIRED/);
     });
 
     it("refuses an invalid tuple as a typed 422 before any INSERT, mirroring validateTaxTreatmentTuple", () => {
@@ -165,7 +169,7 @@ describe("agent-referrals tax treatment", () => {
       const p1 = readyPartner(db, "OTHER");
       expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
         taxSystem: "OSNO", vatTreatment: "VAT_5", noVatBasis: null, effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x",
-      })).toThrow(TaxTreatmentError);
+      }, freshKey())).toThrow(TaxTreatmentError);
       const legalProfile = currentAgentReferralsLegalProfile(db, p1.agentId)!;
       expect(taxTreatmentRevisionsForLegalProfile(db, legalProfile.id)).toHaveLength(1); // only readyPartner's own fixture treatment, no partial row
     });
@@ -177,52 +181,14 @@ describe("agent-referrals tax treatment", () => {
       destroyPartnerIdentity(db, admin, p1.partnerIdentityId, "erasure");
       expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
         taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x",
-      })).toThrow(/PARTNER_IDENTITY_NOT_FOUND/);
+      }, freshKey())).toThrow(/PARTNER_IDENTITY_NOT_FOUND/);
 
       const { db: db2 } = fresh(); open.push(db2);
       const p2 = readyPartner(db2, "OTHER");
       suspendAgentReferrals(db2, { expected_revision: agentReferralsFeatureState(db2).revision, owner_id: "test-owner", reason: "suspend" });
       expect(() => recordVerifiedTaxTreatment(db2, admin, p2.partnerIdentityId, {
         taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x",
-      })).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
-    });
-
-    it("a TRUE replay succeeds even after the feature has since been SUSPENDED (review round 2, P1): replay is checked before the suspension gate", () => {
-      const { db } = fresh(); open.push(db);
-      const p1 = readyPartner(db, "OTHER");
-      const input = { taxSystem: "USN" as const, vatTreatment: "NO_VAT" as const, noVatBasis: "USN_EXEMPT" as const, effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x" };
-      const first = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, input);
-
-      suspendAgentReferrals(db, { expected_revision: agentReferralsFeatureState(db).revision, owner_id: "test-owner", reason: "suspend" });
-
-      // A retried POST of the EXACT same already-durable command must
-      // still succeed - it reflects authority proven and consumed BEFORE
-      // suspension, not a new mutation attempt.
-      const replay = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, input);
-      expect(replay).toEqual(first);
-
-      // A genuinely NEW mutation, by contrast, is still correctly blocked.
-      expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
-        ...input, reason: "a genuinely different reason",
-      })).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
-    });
-
-    it("a TRUE replay succeeds even after this identity has since been destroyed (review round 2, P1): destruction never turns an already-durable command into a retry failure", () => {
-      const { db } = fresh(); open.push(db);
-      const p1 = readyPartner(db, "OTHER");
-      const input = { taxSystem: "USN" as const, vatTreatment: "NO_VAT" as const, noVatBasis: "USN_EXEMPT" as const, effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x" };
-      const first = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, input);
-
-      mintRetentionPolicyRevision(db, admin, "policy");
-      destroyPartnerIdentity(db, admin, p1.partnerIdentityId, "erasure");
-
-      const replay = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, input);
-      expect(replay).toEqual(first);
-
-      // A genuinely NEW mutation is still correctly refused post-destruction.
-      expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
-        ...input, reason: "a genuinely different reason",
-      })).toThrow(/PARTNER_IDENTITY_NOT_FOUND/);
+      }, freshKey())).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
     });
 
     it("always targets the CURRENT legal-profile revision, resolved server-side - never a stale one held from before a supersession", () => {
@@ -237,7 +203,7 @@ describe("agent-referrals tax treatment", () => {
 
       const treatment = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
         taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "usn exempt",
-      });
+      }, freshKey());
       expect(treatment.legal_profile_revision_id).toBe(newLegalProfile.id);
       expect(treatment.legal_profile_revision_id).not.toBe(oldLegalProfile.id);
     });
@@ -251,10 +217,10 @@ describe("agent-referrals tax treatment", () => {
 
       const t1 = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
         taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2026-01-01", evidenceRef: "ev1.pdf", reason: "x",
-      });
+      }, freshKey());
       const t2 = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
         taxSystem: "USN", vatTreatment: "VAT_5", noVatBasis: null, effectiveFrom: "2026-07-01", evidenceRef: "ev2.pdf", reason: "y",
-      });
+      }, freshKey());
       // sequence 1 was already consumed by readyPartner's own automatic NPD mint on the ORIGINAL revision.
       expect(t1.sequence).toBe(2);
       expect(t2.sequence).toBe(3);
@@ -272,7 +238,7 @@ describe("agent-referrals tax treatment", () => {
       verifyLegalProfileSupersession(db, admin, request.id, "verify");
       expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
         taxSystem: "PSN", vatTreatment: "NO_VAT", noVatBasis: "PSN", effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x",
-      })).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_PSN_REQUIRES_INDIVIDUAL_ENTREPRENEUR/);
+      }, freshKey())).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_PSN_REQUIRES_INDIVIDUAL_ENTREPRENEUR/);
     });
 
     it("refuses ANY admin-asserted tax_system for a legal profile whose OWN tax_mode is NPD, as a typed 422 (review round 2, new P1)", () => {
@@ -280,7 +246,7 @@ describe("agent-referrals tax treatment", () => {
       const p1 = readyPartner(db, "NPD");
       expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
         taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x",
-      })).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_NPD_IS_SYSTEM_DERIVED/);
+      }, freshKey())).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_NPD_IS_SYSTEM_DERIVED/);
       const legalProfile = currentAgentReferralsLegalProfile(db, p1.agentId)!;
       // only the automatic SYSTEM_DERIVED NPD mint - no partial row from the rejected attempt
       expect(taxTreatmentRevisionsForLegalProfile(db, legalProfile.id)).toHaveLength(1);
@@ -291,7 +257,7 @@ describe("agent-referrals tax treatment", () => {
       const p1 = readyPartner(db, "OTHER"); // readyPartner's OTHER fixture is INDIVIDUAL_ENTREPRENEUR
       const treatment = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
         taxSystem: "PSN", vatTreatment: "NO_VAT", noVatBasis: "PSN", effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "patent",
-      });
+      }, freshKey());
       expect(treatment).toMatchObject({ tax_system: "PSN", vat_treatment: "NO_VAT", no_vat_basis: "PSN" });
     });
 
@@ -300,7 +266,7 @@ describe("agent-referrals tax treatment", () => {
       const p1 = readyPartner(db, "OTHER");
       const treatment = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
         taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x",
-      });
+      }, freshKey());
       expect(treatment.effective_from).toBe("2026-01-01T00:00:00.000Z");
     });
 
@@ -309,54 +275,150 @@ describe("agent-referrals tax treatment", () => {
       const p1 = readyPartner(db, "OTHER");
       expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
         taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "not-a-date", evidenceRef: "ev.pdf", reason: "x",
-      })).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_EFFECTIVE_FROM_INVALID/);
+      }, freshKey())).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_EFFECTIVE_FROM_INVALID/);
       const legalProfile = currentAgentReferralsLegalProfile(db, p1.agentId)!;
       expect(taxTreatmentRevisionsForLegalProfile(db, legalProfile.id)).toHaveLength(1); // only readyPartner's own fixture treatment
     });
 
-    it("is idempotent under a TRUE exact-duplicate replay (P2.2): same tuple + same effective_from + same evidence_ref/reason/actor returns the existing row, mints no new sequence", () => {
+    it("refuses an idempotency key shorter than 16 characters or longer than 200", () => {
       const { db } = fresh(); open.push(db);
       const p1 = readyPartner(db, "OTHER");
-      const first = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
-        taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x",
-      });
-      const replay = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
-        taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x",
-      });
+      const input = { taxSystem: "USN" as const, vatTreatment: "NO_VAT" as const, noVatBasis: "USN_EXEMPT" as const, effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x" };
+      expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, input, "short")).toThrow(/IDEMPOTENCY_KEY_INVALID/);
+      expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, input, "x".repeat(201))).toThrow(/IDEMPOTENCY_KEY_INVALID/);
+    });
+  });
+
+  describe("recordVerifiedTaxTreatment: durable command idempotency (review round 3, P1)", () => {
+    it("a TRUE replay (same key) returns the exact original row, mints no new sequence", () => {
+      const { db } = fresh(); open.push(db);
+      const p1 = readyPartner(db, "OTHER");
+      const key = freshKey();
+      const input = { taxSystem: "USN" as const, vatTreatment: "NO_VAT" as const, noVatBasis: "USN_EXEMPT" as const, effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x" };
+      const first = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, input, key);
+      const replay = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, input, key);
       expect(replay).toEqual(first);
       const legalProfile = currentAgentReferralsLegalProfile(db, p1.agentId)!;
-      // readyPartner("OTHER") already seeds its own fixture treatment (a
-      // distinct USN_EXEMPT/2020-01-01 tuple) - so 2 total: fixture + first,
-      // the replay must not add a third.
+      // readyPartner("OTHER") already seeds its own fixture treatment - 2
+      // total: fixture + first, the replay must not add a third.
       expect(taxTreatmentRevisionsForLegalProfile(db, legalProfile.id)).toHaveLength(2);
     });
 
-    it("is provenance-safe under a DIFFERENT evidence_ref/reason (review round 2, P1): same tax tuple but corrected evidence is a NEW revision, never silently collapsed into the old row", () => {
+    it("the SAME key with a DIFFERENT body is IDEMPOTENCY_CONFLICT, never silently accepted or silently replayed", () => {
       const { db } = fresh(); open.push(db);
       const p1 = readyPartner(db, "OTHER");
-      const first = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
+      const key = freshKey();
+      recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
         taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x",
-      });
-      const corrected = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
-        taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2026-01-01", evidenceRef: "different-evidence.pdf", reason: "different reason",
-      });
-      expect(corrected.id).not.toBe(first.id);
-      expect(corrected.sequence).toBe(first.sequence + 1);
-      expect(corrected.evidence_ref).toBe("different-evidence.pdf");
-      expect(corrected.reason).toBe("different reason");
+      }, key);
+      expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
+        taxSystem: "USN", vatTreatment: "VAT_22", noVatBasis: null, effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x",
+      }, key)).toThrow(/IDEMPOTENCY_CONFLICT/);
     });
 
-    it("is NOT idempotent for a genuinely later correction (different effective_from mints a new sequence)", () => {
+    it("a DIFFERENT key with byte-identical facts is a genuinely NEW assertion revision, never confused with a replay of the first", () => {
       const { db } = fresh(); open.push(db);
       const p1 = readyPartner(db, "OTHER");
-      const first = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
-        taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x",
-      });
-      const correction = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
-        taxSystem: "USN", vatTreatment: "VAT_22", noVatBasis: null, effectiveFrom: "2026-07-01", evidenceRef: "ev2.pdf", reason: "threshold crossed",
-      });
-      expect(correction.id).not.toBe(first.id);
-      expect(correction.sequence).toBe(first.sequence + 1);
+      const input = { taxSystem: "USN" as const, vatTreatment: "NO_VAT" as const, noVatBasis: "USN_EXEMPT" as const, effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x" };
+      const first = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, input, freshKey());
+      const second = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, input, freshKey());
+      expect(second.id).not.toBe(first.id);
+      expect(second.sequence).toBe(first.sequence + 1);
+    });
+
+    it("THE REVIEW'S OWN SCENARIO: retrying an original command after an intervening DIFFERENT legitimate command replays the ORIGINAL row and never clobbers the intervening one as the current authority", () => {
+      const { db } = fresh(); open.push(db);
+      const p1 = readyPartner(db, "OTHER");
+      const keyA = freshKey();
+      const inputA = { taxSystem: "USN" as const, vatTreatment: "NO_VAT" as const, noVatBasis: "USN_EXEMPT" as const, effectiveFrom: "2026-01-01", evidenceRef: "A.pdf", reason: "A" };
+      const A = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, inputA, keyA);
+
+      // A genuine SECOND command lands (network response for A was lost,
+      // but A itself is durable - the operator or a colleague issues a
+      // real correction B with its OWN key).
+      const inputB = { taxSystem: "USN" as const, vatTreatment: "VAT_22" as const, noVatBasis: null, effectiveFrom: "2026-01-01", evidenceRef: "B.pdf", reason: "B" };
+      const B = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, inputB, freshKey());
+      expect(B.sequence).toBeGreaterThan(A.sequence);
+
+      // The original client, unaware B ever happened, retries A with its
+      // ORIGINAL key. The old mostRecent-tuple-match design (round 2) would
+      // have misclassified this as a NEW mutation (mostRecent is now B, not
+      // A) and minted a stray row reasserting A's facts - silently
+      // rolling back B as the effective_from = Jan 1 authority. The durable
+      // key must instead return A's own row, unchanged, and mint nothing.
+      const retryA = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, inputA, keyA);
+      expect(retryA).toEqual(A);
+
+      const legalProfile = currentAgentReferralsLegalProfile(db, p1.agentId)!;
+      const all = taxTreatmentRevisionsForLegalProfile(db, legalProfile.id);
+      // fixture + A + B, no fourth row from the retry.
+      expect(all).toHaveLength(3);
+      // B, not a reasserted A, remains the current temporal authority.
+      const currentTreatment = resolveTaxTreatmentForLegalProfileAt(db, legalProfile.id, new Date().toISOString());
+      expect(currentTreatment?.id).toBe(B.id);
+    });
+
+    it("THE REVIEW'S OWN SCENARIO: retrying an original command after an intervening legal-profile supersession still replays the ORIGINAL row against the ORIGINAL legal profile, never re-asserted against the new one", () => {
+      const { db } = fresh(); open.push(db);
+      const p1 = readyPartner(db, "NPD");
+      const legalEntityRequisites = { opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" };
+      const request1 = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf" });
+      verifyLegalProfileSupersession(db, admin, request1.id, "verify");
+      const l1 = currentAgentReferralsLegalProfile(db, p1.agentId)!;
+
+      const key = freshKey();
+      const input = { taxSystem: "USN" as const, vatTreatment: "NO_VAT" as const, noVatBasis: "USN_EXEMPT" as const, effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "usn exempt" };
+      const A = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, input, key);
+      expect(A.legal_profile_revision_id).toBe(l1.id);
+
+      // Legal identity changes again (a genuinely new legal-profile
+      // revision) - the OLD round-2 mostRecent-tuple-match compared
+      // against the CURRENT profile and would have re-asserted A as a
+      // NEW mutation against l2 on retry. The durable key must instead
+      // still resolve to A's own original row, pinned to l1.
+      const request2 = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", opf: "OOO", full_name: "Vasya Romashka LLC v2", inn: "1234567890", kpp: "123456789", registration_number: "9999999999999", legal_address: "Moscow", reason: "re-registered", evidenceRef: "ev2.pdf" });
+      const outcome2 = verifyLegalProfileSupersession(db, admin, request2.id, "verify");
+      expect(outcome2).toMatchObject({ outcome: "VERIFIED" });
+      const l2 = currentAgentReferralsLegalProfile(db, p1.agentId)!;
+      expect(l2.id).not.toBe(l1.id);
+
+      const retryA = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, input, key);
+      expect(retryA).toEqual(A);
+      expect(retryA.legal_profile_revision_id).toBe(l1.id);
+      expect(taxTreatmentRevisionsForLegalProfile(db, l2.id)).toEqual([]);
+    });
+
+    it("a TRUE replay (same key) succeeds even after the feature has since been SUSPENDED - replay is checked before the suspension gate", () => {
+      const { db } = fresh(); open.push(db);
+      const p1 = readyPartner(db, "OTHER");
+      const key = freshKey();
+      const input = { taxSystem: "USN" as const, vatTreatment: "NO_VAT" as const, noVatBasis: "USN_EXEMPT" as const, effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x" };
+      const first = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, input, key);
+
+      suspendAgentReferrals(db, { expected_revision: agentReferralsFeatureState(db).revision, owner_id: "test-owner", reason: "suspend" });
+
+      const replay = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, input, key);
+      expect(replay).toEqual(first);
+
+      // A genuinely NEW key, by contrast, is still correctly blocked.
+      expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, input, freshKey())).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
+    });
+
+    it("a TRUE replay (same key) succeeds even after this identity has since been destroyed - destruction never turns an already-durable command into a retry failure", () => {
+      const { db } = fresh(); open.push(db);
+      const p1 = readyPartner(db, "OTHER");
+      const key = freshKey();
+      const input = { taxSystem: "USN" as const, vatTreatment: "NO_VAT" as const, noVatBasis: "USN_EXEMPT" as const, effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x" };
+      const first = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, input, key);
+
+      mintRetentionPolicyRevision(db, admin, "policy");
+      destroyPartnerIdentity(db, admin, p1.partnerIdentityId, "erasure");
+
+      const replay = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, input, key);
+      expect(replay).toEqual(first);
+
+      // A genuinely NEW key is still correctly refused post-destruction.
+      expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, input, freshKey())).toThrow(/PARTNER_IDENTITY_NOT_FOUND/);
     });
   });
 });

@@ -81,7 +81,7 @@ export const readyPartner = (db: Database.Database, taxMode: "NPD" | "OTHER" = "
   if (taxMode === "OTHER") {
     recordVerifiedTaxTreatment(db, admin, partnerIdentityId, {
       taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2020-01-01", evidenceRef: "usn-exempt-fixture.pdf", reason: "fixture: USN exemption",
-    });
+    }, randomUUID());
   }
   const fw = mintFrameworkAgreementRevision(db, clause(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES));
   const dt = mintDelegationTemplateRevision(db, clause(DELEGATION_TEMPLATE_REQUIRED_CLAUSES));

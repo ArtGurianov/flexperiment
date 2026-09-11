@@ -198,11 +198,13 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   // ---- PR-F: tax/VAT treatment authority (always targets the partner's CURRENT legal profile, resolved server-side - never a caller-supplied revision id). ----
   app.post("/partners/:id/tax-treatment", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
+    const idempotencyKey = c.req.header("Idempotency-Key");
+    if (!idempotencyKey) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
     return c.json(recordVerifiedTaxTreatment(sqlite, adminOf(c), c.req.param("id"), {
       taxSystem: requireString(body, "tax_system") as TaxSystem, vatTreatment: requireString(body, "vat_treatment") as VatTreatment,
       noVatBasis: (optionalString(body, "no_vat_basis") ?? null) as NoVatBasis | null,
       effectiveFrom: requireString(body, "effective_from"), evidenceRef: requireString(body, "evidence_ref"), reason: requireString(body, "reason"),
-    }), 201);
+    }, idempotencyKey), 201);
   });
 
   app.post("/partners/:id/framework/issue", async (c) => {

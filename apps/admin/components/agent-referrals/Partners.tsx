@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useForm, type UseFormRegister } from "react-hook-form";
 import { api, AdminApiError } from "../../lib/api";
+import { usePersistentIdempotencyKey } from "../../lib/use-persistent-idempotency-key";
 import type { Row } from "../../lib/page";
 import { Loading } from "../ui/Loading";
 import { Notice } from "../ui/Notice";
@@ -401,14 +402,20 @@ function TaxTreatmentPanel({ partnerId, legalProfile, taxTreatment, onDone }: { 
   useConstrainedVatTreatment(selectedTaxSystem, selectedVatTreatment, setValue);
   const taxSystemOptions = adminTaxSystemOptions(legalProfile?.legal_form as string | undefined);
   const isNpdProfile = legalProfile?.tax_mode === "NPD";
+  // Backend command identity (review round 3): the SAME key must be
+  // retained across a failed submission's retry, and only rotated after a
+  // genuine success - otherwise a second, DISTINCT assertion made from
+  // this same still-mounted panel would collide as IDEMPOTENCY_CONFLICT.
+  const commandKey = usePersistentIdempotencyKey();
 
   const submit = handleSubmit(async (values) => {
     setBusy(true); setError(null);
     try {
       await api(`/agent-referrals/partners/${partnerId}/tax-treatment`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
+        method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": commandKey.acquire() },
         body: JSON.stringify({ ...values, no_vat_basis: values.vat_treatment === "NO_VAT" ? noVatBasisForTaxSystem(values.tax_system) : null }),
       });
+      commandKey.clear();
       reset();
       onDone();
     } catch (failure) { setError((failure as AdminApiError).code); } finally { setBusy(false); }

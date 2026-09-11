@@ -345,7 +345,7 @@ describe("D2: seam test - blocked, unblocked, verified, replayed, activates the 
     // settlement can be prepared under revision #2.
     recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
       taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2020-01-01", evidenceRef: "usn-exempt.pdf", reason: "became an organization, USN exemption",
-    });
+    }, randomUUID());
 
     // A settlement prepared for post-supersession work carries tax_mode and contractor_type BOTH from #2, and 0047/0049's guards pass without a 500.
     completeOccurrence(db, occurrenceId2);

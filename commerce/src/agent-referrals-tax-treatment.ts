@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { id, now } from "./crypto";
+import { id, now, sha256, canonicalV2 } from "./crypto";
 import { getPartnerIdentity, recordPartnerIdentityEvent } from "./agent-referrals-onboarding";
 import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
 import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
@@ -188,6 +188,8 @@ export type RecordVerifiedTaxTreatmentInput = {
   reason: string;
 };
 
+const TAX_TREATMENT_COMMAND = "AGENT_REFERRALS_TAX_TREATMENT_RECORD";
+
 /**
  * The one admin command that records a NON-NPD tax treatment. Always
  * targets the partner's CURRENT legal-profile revision, resolved server-
@@ -199,16 +201,62 @@ export type RecordVerifiedTaxTreatmentInput = {
  * legal-profile supersession candidate lifecycle): a VAT/tax-system fact is
  * financially significant enough that PR-F requires it always be an
  * explicit, evidenced ADMIN_ASSERTED fact.
+ *
+ * Review round 3, P1: replay is now a DURABLE COMMAND IDENTITY (the
+ * project's own established `admin_command_idempotency` pattern -
+ * domain.ts's withAdminCommandV2Core - reused here directly, not
+ * reinvented), not a "does this match the most recent row" heuristic.
+ * Round 2's mostRecent-tuple comparison broke as soon as ANY other tax-
+ * treatment revision (a genuinely later correction, or a legal-profile
+ * supersession changing the current profile) landed between the original
+ * call and a retry: mostRecent no longer matched, so the retry was
+ * (mis)classified as a brand-new mutation and could mint a stray row that
+ * clobbers the intervening one as the new temporal authority. A caller-
+ * supplied Idempotency-Key sidesteps this entirely - the SAME key always
+ * resolves to the SAME already-minted row regardless of what else has
+ * happened since, and a DIFFERENT key is unambiguously a new command, so
+ * two genuinely distinct assertions with byte-identical facts (two
+ * separate NO_VAT/USN_EXEMPT elections a year apart, say) are never
+ * confused with one retried command either.
  */
 export const recordVerifiedTaxTreatment = (
   db: Database.Database,
   admin: AdminPrincipal,
   partnerIdentityId: string,
   input: RecordVerifiedTaxTreatmentInput,
+  idempotencyKey: string,
 ): TaxTreatmentRevisionRow => {
+  if (!idempotencyKey || idempotencyKey.trim().length < 16 || idempotencyKey.length > 200) {
+    throw new TaxTreatmentError("IDEMPOTENCY_KEY_INVALID", 400);
+  }
   const run = db.transaction((): TaxTreatmentRevisionRow => {
+    const keyHash = sha256(idempotencyKey);
+    // The RAW caller-supplied body, not the normalized/trimmed form -
+    // matching withAdminCommandV2Core's own fingerprint shape. A retry
+    // that resends the exact same bytes always fingerprints identically,
+    // independent of how this function happens to normalize things
+    // internally.
+    const fingerprint = sha256(canonicalV2({ command: TAX_TREATMENT_COMMAND, admin_id: admin.admin_id, partner_identity_id: partnerIdentityId, body: input }));
+
+    // Checked BEFORE anything else - identity resolution, suspension,
+    // destruction, every business-rule gate below. A retry of an
+    // already-durable command reflects authority proven and consumed at
+    // the time of the ORIGINAL call; nothing that has happened since
+    // (suspension, destruction, a legal-profile supersession, a later
+    // correction) can turn that into a failure or a different mutation.
+    const existingCommand = db.prepare("SELECT canonical_request_hash, response_json FROM admin_command_idempotency WHERE command = ? AND idempotency_key_hash = ?")
+      .get(TAX_TREATMENT_COMMAND, keyHash) as { canonical_request_hash: string; response_json: string | null } | undefined;
+    if (existingCommand) {
+      if (existingCommand.canonical_request_hash !== fingerprint) throw new TaxTreatmentError("IDEMPOTENCY_CONFLICT", 409);
+      if (!existingCommand.response_json) throw new TaxTreatmentError("IDEMPOTENCY_CONTRACT_SUPERSEDED", 409);
+      return JSON.parse(existingCommand.response_json) as TaxTreatmentRevisionRow;
+    }
+
+    // Everything below only runs for a genuinely NEW idempotency key.
     const identity = getPartnerIdentity(db, partnerIdentityId);
     if (!identity) throw new TaxTreatmentError("PARTNER_IDENTITY_NOT_FOUND", 404);
+    assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "TAX_TREATMENT_VERIFICATION");
+    if (identity.destroyed_at !== null) throw new TaxTreatmentError("PARTNER_IDENTITY_NOT_FOUND", 404);
 
     if (input.taxSystem === "NPD") throw new TaxTreatmentError("AGENT_REFERRALS_TAX_TREATMENT_NPD_IS_SYSTEM_DERIVED", 422);
     const evidenceRef = input.evidenceRef?.trim();
@@ -222,51 +270,16 @@ export const recordVerifiedTaxTreatment = (
     // Proves pointer == MAX first (the same coherence proof every other
     // legal-profile-consuming caller in this codebase relies on) - the
     // treatment is always minted against the CURRENT revision, never a
-    // caller-named one. Resolved regardless of destroyed_at: destruction
-    // never clears this pointer (agent-referrals-identity-retention.ts),
-    // and the replay check right below needs it even for an identity
-    // destroyed AFTER the original command it might be replaying.
+    // caller-named one.
     const currentLegalProfile = resolveCurrentLegalProfileBinding(db, identity);
 
-    // Idempotent HTTP retry (review round 1, P2.2), made provenance-safe
-    // and correctly ordered (review round 2, P1 x2):
-    //
-    // - Provenance-complete: compares EVERY persisted command fact - the
-    //   tax tuple, effective_from, AND evidence_ref/reason/actor - not
-    //   just tax semantics. A corrected evidence_ref or a different
-    //   reason is a genuinely new assertion revision even when the
-    //   tax_system/vat_treatment conclusion happens to be unchanged
-    //   (review round 2 caught a test that had locked in the WRONG
-    //   semantics here - two DIFFERENT evidence_ref/reason values were
-    //   being silently collapsed into one row).
-    // - Ordered BEFORE the suspension and destroyed-identity gates below,
-    //   mirroring D2's own REPLAYED-before-NEW_AUTHORITY precedent: a
-    //   retried POST that already succeeded once reflects authority that
-    //   was already proven and consumed AT THE TIME of the original call.
-    //   The feature suspending afterward, or this identity being
-    //   destroyed afterward, must never turn that already-durable command
-    //   into a failure on retry - only a GENUINELY NEW mutation (no
-    //   matching row) is subject to either gate.
-    const mostRecent = db.prepare(`SELECT ${COLUMNS} FROM agent_referrals_tax_treatment_revisions WHERE partner_identity_id = ? ORDER BY sequence DESC LIMIT 1`)
-      .get(partnerIdentityId) as TaxTreatmentRevisionRow | undefined;
-    if (mostRecent && mostRecent.legal_profile_revision_id === currentLegalProfile.id
-      && mostRecent.tax_system === input.taxSystem && mostRecent.vat_treatment === input.vatTreatment && mostRecent.no_vat_basis === input.noVatBasis
-      && mostRecent.effective_from === effectiveFrom
-      && mostRecent.evidence_ref === evidenceRef && mostRecent.reason === reason && mostRecent.created_by_admin_id === admin.admin_id) {
-      return mostRecent;
-    }
-
-    // Everything below only runs for a genuinely NEW mutation.
-    assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "TAX_TREATMENT_VERIFICATION");
-    if (identity.destroyed_at !== null) throw new TaxTreatmentError("PARTNER_IDENTITY_NOT_FOUND", 404);
-
-    // NPD boundary (review round 2, new P1): the CURRENT legal profile
-    // itself being NPD means its tax treatment is exclusively
-    // SYSTEM_DERIVED (mintSystemDerivedNpdTaxTreatment) - an admin
-    // asserting ANY tax_system here (even a structurally valid one, like
-    // USN) for an NPD profile is not a real admin decision this module
-    // ever sanctions. Without this, such a request passed every check
-    // above and only failed at 0053's own relational-consistency trigger
+    // NPD boundary (review round 2): the CURRENT legal profile itself
+    // being NPD means its tax treatment is exclusively SYSTEM_DERIVED
+    // (mintSystemDerivedNpdTaxTreatment) - an admin asserting ANY
+    // tax_system here (even a structurally valid one, like USN) for an
+    // NPD profile is not a real admin decision this module ever
+    // sanctions. Without this, such a request passed every check above
+    // and only failed at 0053's own relational-consistency trigger
     // ((lp.tax_mode = 'NPD') = (NEW.tax_system = 'NPD')) as a raw
     // SqliteError/500 instead of a typed 422.
     if (currentLegalProfile.tax_mode === "NPD") {
@@ -291,7 +304,11 @@ export const recordVerifiedTaxTreatment = (
       tax_treatment_id: treatmentId, legal_profile_revision_id: currentLegalProfile.id, tax_system: input.taxSystem, vat_treatment: input.vatTreatment, reason,
     });
 
-    return taxTreatmentRevisionById(db, treatmentId)!;
+    const created = taxTreatmentRevisionById(db, treatmentId)!;
+    db.prepare("INSERT INTO admin_command_idempotency(command, idempotency_key_hash, canonical_request_hash, entity_id, response_json) VALUES (?, ?, ?, ?, ?)")
+      .run(TAX_TREATMENT_COMMAND, keyHash, fingerprint, treatmentId, JSON.stringify(created));
+
+    return created;
   });
   return run.immediate();
 };
