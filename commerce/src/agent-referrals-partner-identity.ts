@@ -79,16 +79,77 @@ export const provisionPartnerOwner = (db: Database.Database, admin: AdminPrincip
 };
 
 /**
- * Explicit reissue: supersedes the current live invite (if any) and mints a
- * brand-new one. The partial unique index on partner_invite_capabilities
- * guarantees at most one live invite exists at any instant regardless of
- * what this function does, but superseding explicitly is what keeps the old
- * token from silently continuing to work between the two writes.
+ * The HEAD of a partner's invite mint chain - the last capability minted,
+ * whether or not it is still usable. 0057's partial unique index makes it at
+ * most one.
+ *
+ * This is what a rotation is pinned against, and the distinction from "the
+ * capability that is usable right now" is the whole point: usability is
+ * CYCLIC (revoke or consume returns it to null, the next mint gives it a
+ * value, revoking returns it to null again), so pinning it let a stale
+ * rotation through after any legal revocation. The head only ever moves
+ * forward, because a superseded row is never un-superseded.
+ *
+ *   consumed_at / revoked_at   -> is this token usable?
+ *   superseded_by_id           -> which capability is last in the chain?
+ *
+ * Null only for a partner with no capability at all, which provisioning
+ * never leaves behind - it mints the first invite in the same transaction.
  */
-export const reissuePartnerInvite = (db: Database.Database, admin: AdminPrincipal, partnerIdentityId: string, reason: string): { invite_id: string; raw_invite_token: string } => {
+export const inviteCapabilityHeadId = (db: Database.Database, partnerIdentityId: string): string | null =>
+  ((db.prepare(`SELECT id FROM partner_invite_capabilities
+    WHERE partner_identity_id = ? AND superseded_by_id IS NULL`)
+    .get(partnerIdentityId) as { id: string } | undefined)?.id) ?? null;
+
+/**
+ * PR-C3: rotating a partner's invite capability - the ONE operation, with a
+ * reason rather than a twin.
+ *
+ * The defect this exists for is small and real:
+ *
+ *   T1 live
+ *   reissue(T1) commits -> T2, raw token in the response
+ *   the response is lost
+ *   the old reissue(T1) must not destroy T2
+ *
+ * and it needs exactly one new invariant: a rotation must NAME the
+ * capability it replaces. Before this, reissue read whatever was live and
+ * superseded it, so a retry minted a THIRD capability and destroyed the
+ * second - whose raw token nobody held either. At every instant exactly one
+ * capability was live, so 0044's partial unique index was satisfied and
+ * nothing looked wrong.
+ *
+ * Recovery is NOT a second mechanism. The raw token is never persisted, so
+ * restoring a lost response is impossible in principle; the only thing that
+ * can exist is "rotate again, deliberately". What differs between an
+ * operator reissuing and an operator recovering a lost response is the
+ * REASON, which the audit trail records - not the state machine, not the
+ * transaction, not the error. An earlier draft of this PR split them into
+ * two exported commands and two routes that differed by one string literal;
+ * that was two concepts where there is one.
+ *
+ * A retried old request simply meets the stale refusal. There is no
+ * idempotency infrastructure here, and there should not be.
+ */
+export type InviteRotationReason = "MANUAL_REISSUE" | "LOST_RESPONSE_RECOVERY";
+
+export const rotatePartnerInvite = (
+  db: Database.Database,
+  admin: AdminPrincipal,
+  partnerIdentityId: string,
+  /**
+   * The mint-chain head this rotation replaces, as the caller last saw it.
+   * Non-nullable: provisioning always mints the first capability, so a
+   * partner that can be rotated always has a head, and admitting null would
+   * reintroduce the restorable value this pin exists to avoid.
+   */
+  expectedCapabilityHeadId: string,
+  rotationReason: InviteRotationReason,
+  reason: string,
+): { invite_id: string; raw_invite_token: string } => {
   const run = db.transaction(() => {
-    const current = db.prepare(`SELECT id FROM partner_invite_capabilities
-      WHERE partner_identity_id = ? AND consumed_at IS NULL AND revoked_at IS NULL AND superseded_by_id IS NULL`).get(partnerIdentityId) as { id: string } | undefined;
+    const current = inviteCapabilityHeadId(db, partnerIdentityId);
+    requireObservedVersion("AGENT_REFERRALS_INVITE_CAPABILITY_STALE", expectedCapabilityHeadId, current);
 
     const rawToken = generateOpaqueToken();
     const inviteId = id();
@@ -102,13 +163,21 @@ export const reissuePartnerInvite = (db: Database.Database, admin: AdminPrincipa
     // of the transaction), which is what lets these two writes happen in
     // the only order the unique index permits.
     db.pragma("defer_foreign_keys = ON");
-    if (current) db.prepare(`UPDATE partner_invite_capabilities SET superseded_by_id = ? WHERE id = ?`).run(inviteId, current.id);
+    // The head is superseded even when it is already consumed or revoked:
+    // that is what keeps the chain single-headed, and 0057's unique index
+    // refuses the alternative structurally.
+    if (current) db.prepare(`UPDATE partner_invite_capabilities SET superseded_by_id = ? WHERE id = ?`).run(inviteId, current);
 
     db.prepare(`INSERT INTO partner_invite_capabilities(id, partner_identity_id, purpose, verifier_hash, expires_at, created_by_admin_id)
       VALUES (?, ?, 'ONBOARDING', ?, ?, ?)`)
       .run(inviteId, partnerIdentityId, hashOpaqueToken(rawToken), new Date(Date.now() + INVITE_TTL_MS).toISOString(), admin.admin_id);
 
-    recordPartnerIdentityEvent(db, partnerIdentityId, "INVITE_REISSUED", "ADMIN", { invite_id: inviteId, superseded_invite_id: current?.id ?? null, reason });
+    // One audit stream, and the reason is what makes a recovery
+    // distinguishable from a deliberate reissue. Never the raw token, which
+    // exists solely in the value returned below.
+    recordPartnerIdentityEvent(db, partnerIdentityId, "INVITE_ROTATED", "ADMIN", {
+      invite_id: inviteId, superseded_invite_id: current, rotation_reason: rotationReason, reason,
+    });
     return { invite_id: inviteId, raw_invite_token: rawToken };
   });
   return run.immediate();

@@ -10,7 +10,7 @@ import {
   consumePartnerInvite,
   PartnerIdentityError,
   provisionPartnerOwner,
-  reissuePartnerInvite,
+  rotatePartnerInvite,
   revokePartnerInvite,
   type AdminPrincipal,
 } from "../src/agent-referrals-partner-identity";
@@ -157,8 +157,9 @@ describe("partner provisioning", () => {
       const { db } = fresh();
       const agentId = seedAgent(db);
       activated(db);
-      const { raw_invite_token: oldToken, partner_identity_id } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
-      const { raw_invite_token: newToken } = reissuePartnerInvite(db, admin, partner_identity_id, "reissue");
+      const { raw_invite_token: oldToken, partner_identity_id, invite_id } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
+      // PR-C3: the reissue names the capability it supersedes.
+      const { raw_invite_token: newToken } = rotatePartnerInvite(db, admin, partner_identity_id, invite_id, "MANUAL_REISSUE", "reissue");
       expect(() => consumePartnerInvite(db, oldToken)).toThrow(/AGENT_REFERRALS_INVITE_SUPERSEDED/);
       expect(consumePartnerInvite(db, newToken).partner_identity_id).toBe(partner_identity_id);
     });

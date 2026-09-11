@@ -103,11 +103,11 @@ need a key.
 
 ### Current state
 
-**Proven: 80 routes. `UNPROVEN`: 0.** Both pinned by the registry test.
+**Proven: 81 routes. `UNPROVEN`: 0.** Both pinned by the registry test.
 
 | class | admin | partner |
 |---|---|---|
-| `STALE_BOUND` | 24 | 4 |
+| `STALE_BOUND` | 25 | 4 |
 | `MONOTONIC_REPLAY_SAFE` | 34 | 6 |
 | `DURABLE_KEY` | 8 | 4 |
 
@@ -126,13 +126,32 @@ particular arithmetic cannot be wrong silently again.
 the point. Twelve routes out of eighty need a caller-supplied key; the rest
 answer the question out of their own semantics.
 
-The `SPECIAL_RECOVERY` case is the one thing still open:
-`/partners/:id/invite/reissue` returns a raw token that is never persisted,
-so no idempotency mechanism can re-serve the original after a lost response.
-It needs defined recovery semantics — plausibly "an explicit recovery
-reissue atomically supersedes T1 and returns T2, leaving only T2 live" —
-named and tested as such. **A zero in the UNPROVEN column does not close the
-rollout gate while this is open.**
+`SPECIAL_RECOVERY` is gone, and with it the last open route. It held exactly
+one: `/partners/:id/invite/reissue` returns a raw token that is never
+persisted, so no idempotency mechanism can re-serve the original after a lost
+response.
+
+PR-C3 answered that with the same invariant as everything else rather than a
+new mechanism — **a rotation must NAME the capability it replaces** — and
+writing that contract red first found the ordinary reissue had the worse
+half of the defect sitting unexamined behind the quarantine label: it read
+whatever was live and superseded it, so a retried reissue minted a third
+capability and destroyed the second, whose raw token nobody held either. One
+capability was live at every instant, so 0044's partial unique index was
+satisfied and nothing looked wrong.
+
+Recovery is a **reason on that one rotation**, not a second command: the raw
+token is never stored, so a lost response cannot be replayed at all — only
+rotated past deliberately, against whatever is live after an authoritative
+refresh. A retried old request meets the ordinary stale refusal. An earlier
+draft of C3 split this into two exported commands and two routes differing by
+one string literal; that was two concepts where there is one, and the review
+was right to cut it.
+
+The quarantine label was worth having — it kept an unproven route visible
+instead of letting a zero elsewhere imply the gate was closed. What it must
+not become is a place things rest: the route behind it went unexamined for
+as long as the label was there.
 
 ## How the 62 were closed
 
