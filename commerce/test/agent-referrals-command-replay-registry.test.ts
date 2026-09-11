@@ -204,10 +204,22 @@ describe("agent-referrals command replay classification is exhaustive over the p
       "/partners/:id/framework/issue",
       "/partners/:id/legal-profile/verify",
     ]);
+    expect(proven(PARTNER, "MONOTONIC_REPLAY_SAFE")).toEqual([
+      "/framework/accept",
+      "/invite/consume",
+    ]);
     expect(proven(ADMIN, "STALE_BOUND")).toEqual([
       "/ord/creative-registrations/:id/correct",
       "/partners/:id/legal-profile/change/:requestId/verify",
     ]);
+    expect(proven(PARTNER, "STALE_BOUND")).toEqual([]);
+
+    // The total is asserted rather than left to be recomputed by hand: the
+    // first write-up of this said 16 by forgetting the partner monotonic
+    // pair, which is exactly the arithmetic a pinned number prevents.
+    const provenTotal = [...Object.values(ADMIN), ...Object.values(PARTNER)]
+      .filter((value) => value === "DURABLE_KEY" || value === "STALE_BOUND" || value === "MONOTONIC_REPLAY_SAFE").length;
+    expect(provenTotal).toBe(18);
   });
 
   it("pins what is still UNPROVEN, which must be zero before rollout", () => {
