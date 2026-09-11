@@ -251,6 +251,14 @@ out of the table and requires every filed-evidence column to be named in the
 guard — so the next stale recreate fails even if it is textually
 self-consistent.
 
+That structural test then found one more, in its own definition: `id` had
+been listed as a resolution column, which made it carve out exactly the hole
+it exists to close. A `TEXT PRIMARY KEY` is not an immutable one — SQLite
+permits updating a PK whose new value does not collide — so the same
+resolution statement that may not rewrite a filed INN could still have
+rewritten WHICH filed request it was resolving. The row's identity is the
+first thing the evidence asserts, and it is inside the guard now.
+
 `RetainedIntentNotice`'s buttons are `type="button"`: it renders inside the
 forms whose command it is about, and a bare `<button>` there would submit the
 form as well, issuing a freshly-pinned second command beside the replay.

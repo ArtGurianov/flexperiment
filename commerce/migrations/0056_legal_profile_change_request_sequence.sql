@@ -71,7 +71,14 @@ CREATE UNIQUE INDEX agent_referrals_legal_profile_change_requests_sequence_uniqu
 DROP TRIGGER agent_referrals_legal_profile_change_requests_request_fields_immutable_guard;
 CREATE TRIGGER agent_referrals_legal_profile_change_requests_request_fields_immutable_guard
 BEFORE UPDATE ON agent_referrals_legal_profile_change_requests
-WHEN NEW.partner_identity_id IS NOT OLD.partner_identity_id
+-- id joins the group too, and it was missing from every version of this
+-- guard including 0052's. A TEXT PRIMARY KEY is not an immutable one:
+-- SQLite permits updating a PK as long as the new value does not collide,
+-- so the same resolution statement that may not rewrite a filed INN could
+-- still have rewritten WHICH filed request it was resolving. The row's
+-- identity is the first thing the evidence asserts, not a resolution field.
+WHEN NEW.id IS NOT OLD.id
+  OR NEW.partner_identity_id IS NOT OLD.partner_identity_id
   OR NEW.legal_form IS NOT OLD.legal_form
   OR NEW.tax_mode IS NOT OLD.tax_mode
   OR NEW.opf IS NOT OLD.opf

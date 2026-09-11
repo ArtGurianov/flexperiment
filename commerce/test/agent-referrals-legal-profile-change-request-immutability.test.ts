@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
+import { randomUUID } from "node:crypto";
 import { admin, fresh, readyPartner } from "./support/agent-referrals-settlement-fixtures";
 import {
   submitLegalProfileSupersession, currentLegalProfileRevisionForPartner, legalProfileChangeRequestHeadForPartner,
@@ -27,13 +28,21 @@ const open: Database.Database[] = [];
 afterEach(() => { while (open.length) open.pop()!.close(); });
 
 /**
- * The "заявка" group: everything describing WHAT was filed, as opposed to
- * HOW it was resolved. Derived from the table itself below, so a future
- * column added to the request group cannot join it without joining the
- * guard too.
+ * The RESOLUTION group: the columns a legitimate PENDING -> terminal update
+ * is allowed to write. Everything else in the table is the "заявка" group -
+ * what was filed - and is immutable from INSERT. Derived from the table
+ * itself below, so a future column added to the request group cannot join it
+ * without joining the guard too.
+ *
+ * `id` is deliberately NOT here, and the first version of this file had it
+ * wrong. The row's identity is the first thing the evidence asserts, not a
+ * resolution field, and a TEXT PRIMARY KEY is not an immutable one - SQLite
+ * permits updating a PK whose new value does not collide. Listing it as a
+ * resolution column made this very test carve out the hole it exists to
+ * close.
  */
 const RESOLUTION_COLUMNS = new Set([
-  "id", "state", "resolved_legal_profile_revision_id", "resolved_at", "resolved_by", "resolution_reason",
+  "state", "resolved_legal_profile_revision_id", "resolved_at", "resolved_by", "resolution_reason",
 ]);
 
 const pendingRequest = (db: Database.Database) => {
@@ -50,10 +59,15 @@ const pendingRequest = (db: Database.Database) => {
 };
 
 describe("legal-profile change requests: filed evidence is immutable through its own resolution", () => {
-  // Every requisite column 0052 added, plus the provenance columns 0051
-  // already had and the counter 0056 adds. A resolution may write ONLY the
-  // resolution group.
+  // The columns whose rewrite would be most damaging and least visible -
+  // every requisite 0052 added, the provenance 0051 already had, the counter
+  // 0056 adds, and the row's own identity. This table is deliberately NOT
+  // exhaustive over the request group (partner_identity_id,
+  // supersedes_revision_id and created_at are absent): the structural test
+  // below covers the whole group mechanically, and duplicating it by hand
+  // here would only be a second list to forget to update.
   const MUTATIONS: Array<[string, unknown]> = [
+    ["id", randomUUID()],
     ["opf", "AO"],
     ["full_name", "Someone Else LLC"],
     ["short_name", "SE"],
