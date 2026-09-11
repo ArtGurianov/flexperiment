@@ -107,21 +107,50 @@ export const validateTaxTreatmentTuple = (taxSystem: TaxSystem, vatTreatment: Va
   if (!valid) throw new TaxTreatmentError("AGENT_REFERRALS_TAX_TREATMENT_MATRIX_REJECTED", 422, `${taxSystem}/${vatTreatment}/${noVatBasis ?? "null"}`);
 };
 
+const EFFECTIVE_FROM_DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
+
 /**
  * ONE canonical sortable format, never a caller-chosen string (review
  * round 1, P1.1) - mirrors 0053's own strftime()-based CHECK exactly: a UTC
  * instant, millisecond precision, always Z-suffixed (Date.prototype
- * .toISOString()'s own shape). Accepts anything JS Date can parse
- * (including a bare "YYYY-MM-DD" from an HTML date input, which resolves to
- * UTC midnight) and re-serializes it to the one canonical shape - never
- * passes a caller's own string through unexamined. Malformed/unparseable
- * input throws a typed 422 here, before any transaction opens, rather than
- * surfacing as a raw SqliteError from the DB CHECK.
+ * .toISOString()'s own shape).
+ *
+ * Review round 2, P1: `new Date(raw)` alone is NOT a normalization - it is
+ * JS's own calendar-rollover behavior (`new Date("2026-02-30")` silently
+ * becomes March 2nd), which would let an admin's asserted business date
+ * drift to a DIFFERENT date without any error. This is exactly the kind of
+ * silent corruption 0053's own effective_from CHECK exists to catch at the
+ * DB layer - the domain mirror must refuse it just as strictly, before a
+ * transaction ever opens. Exactly two shapes are accepted, each proven by
+ * an EXACT round-trip rather than "whatever Date can parse":
+ *   - a bare "YYYY-MM-DD" calendar date (the one shape <input type="date">
+ *     sends) - every component must survive a UTC round-trip unchanged, or
+ *     the date never existed (Feb 30, Apr 31, ...) and is refused, never
+ *     silently rolled forward;
+ *   - an already-canonical instant, proven by `raw === new
+ *     Date(raw).toISOString()` - accepted verbatim (never re-derived to a
+ *     DIFFERENT instant), so mintSystemDerivedNpdTaxTreatment's own
+ *     `now()` (already exactly this shape) passes through unchanged.
+ * Every other shape (a non-canonical instant, an offset-bearing timestamp,
+ * a loosely-parsed string) is refused with a typed 422 rather than
+ * silently canonicalized to a different moment.
  */
 export const normalizeTaxEffectiveFrom = (raw: string): string => {
+  const dateOnly = EFFECTIVE_FROM_DATE_ONLY.exec(raw);
+  if (dateOnly) {
+    const [, y, m, d] = dateOnly;
+    const year = Number(y), month = Number(m), day = Number(d);
+    const asUtcMidnight = new Date(Date.UTC(year, month - 1, day));
+    if (asUtcMidnight.getUTCFullYear() !== year || asUtcMidnight.getUTCMonth() !== month - 1 || asUtcMidnight.getUTCDate() !== day) {
+      throw new TaxTreatmentError("AGENT_REFERRALS_TAX_TREATMENT_EFFECTIVE_FROM_INVALID", 422, raw);
+    }
+    return asUtcMidnight.toISOString();
+  }
   const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) throw new TaxTreatmentError("AGENT_REFERRALS_TAX_TREATMENT_EFFECTIVE_FROM_INVALID", 422, raw);
-  return parsed.toISOString();
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString() !== raw) {
+    throw new TaxTreatmentError("AGENT_REFERRALS_TAX_TREATMENT_EFFECTIVE_FROM_INVALID", 422, raw);
+  }
+  return raw;
 };
 
 const nextSequenceForPartner = (db: Database.Database, partnerIdentityId: string): number =>
@@ -178,10 +207,8 @@ export const recordVerifiedTaxTreatment = (
   input: RecordVerifiedTaxTreatmentInput,
 ): TaxTreatmentRevisionRow => {
   const run = db.transaction((): TaxTreatmentRevisionRow => {
-    assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "TAX_TREATMENT_VERIFICATION");
-
     const identity = getPartnerIdentity(db, partnerIdentityId);
-    if (!identity || identity.destroyed_at !== null) throw new TaxTreatmentError("PARTNER_IDENTITY_NOT_FOUND", 404);
+    if (!identity) throw new TaxTreatmentError("PARTNER_IDENTITY_NOT_FOUND", 404);
 
     if (input.taxSystem === "NPD") throw new TaxTreatmentError("AGENT_REFERRALS_TAX_TREATMENT_NPD_IS_SYSTEM_DERIVED", 422);
     const evidenceRef = input.evidenceRef?.trim();
@@ -195,30 +222,62 @@ export const recordVerifiedTaxTreatment = (
     // Proves pointer == MAX first (the same coherence proof every other
     // legal-profile-consuming caller in this codebase relies on) - the
     // treatment is always minted against the CURRENT revision, never a
-    // caller-named one.
+    // caller-named one. Resolved regardless of destroyed_at: destruction
+    // never clears this pointer (agent-referrals-identity-retention.ts),
+    // and the replay check right below needs it even for an identity
+    // destroyed AFTER the original command it might be replaying.
     const currentLegalProfile = resolveCurrentLegalProfileBinding(db, identity);
+
+    // Idempotent HTTP retry (review round 1, P2.2), made provenance-safe
+    // and correctly ordered (review round 2, P1 x2):
+    //
+    // - Provenance-complete: compares EVERY persisted command fact - the
+    //   tax tuple, effective_from, AND evidence_ref/reason/actor - not
+    //   just tax semantics. A corrected evidence_ref or a different
+    //   reason is a genuinely new assertion revision even when the
+    //   tax_system/vat_treatment conclusion happens to be unchanged
+    //   (review round 2 caught a test that had locked in the WRONG
+    //   semantics here - two DIFFERENT evidence_ref/reason values were
+    //   being silently collapsed into one row).
+    // - Ordered BEFORE the suspension and destroyed-identity gates below,
+    //   mirroring D2's own REPLAYED-before-NEW_AUTHORITY precedent: a
+    //   retried POST that already succeeded once reflects authority that
+    //   was already proven and consumed AT THE TIME of the original call.
+    //   The feature suspending afterward, or this identity being
+    //   destroyed afterward, must never turn that already-durable command
+    //   into a failure on retry - only a GENUINELY NEW mutation (no
+    //   matching row) is subject to either gate.
+    const mostRecent = db.prepare(`SELECT ${COLUMNS} FROM agent_referrals_tax_treatment_revisions WHERE partner_identity_id = ? ORDER BY sequence DESC LIMIT 1`)
+      .get(partnerIdentityId) as TaxTreatmentRevisionRow | undefined;
+    if (mostRecent && mostRecent.legal_profile_revision_id === currentLegalProfile.id
+      && mostRecent.tax_system === input.taxSystem && mostRecent.vat_treatment === input.vatTreatment && mostRecent.no_vat_basis === input.noVatBasis
+      && mostRecent.effective_from === effectiveFrom
+      && mostRecent.evidence_ref === evidenceRef && mostRecent.reason === reason && mostRecent.created_by_admin_id === admin.admin_id) {
+      return mostRecent;
+    }
+
+    // Everything below only runs for a genuinely NEW mutation.
+    assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "TAX_TREATMENT_VERIFICATION");
+    if (identity.destroyed_at !== null) throw new TaxTreatmentError("PARTNER_IDENTITY_NOT_FOUND", 404);
+
+    // NPD boundary (review round 2, new P1): the CURRENT legal profile
+    // itself being NPD means its tax treatment is exclusively
+    // SYSTEM_DERIVED (mintSystemDerivedNpdTaxTreatment) - an admin
+    // asserting ANY tax_system here (even a structurally valid one, like
+    // USN) for an NPD profile is not a real admin decision this module
+    // ever sanctions. Without this, such a request passed every check
+    // above and only failed at 0053's own relational-consistency trigger
+    // ((lp.tax_mode = 'NPD') = (NEW.tax_system = 'NPD')) as a raw
+    // SqliteError/500 instead of a typed 422.
+    if (currentLegalProfile.tax_mode === "NPD") {
+      throw new TaxTreatmentError("AGENT_REFERRALS_TAX_TREATMENT_NPD_IS_SYSTEM_DERIVED", 422);
+    }
 
     // PSN (review round 1, P1.4): an individual-entrepreneur-only regime -
     // mirrors 0053's own relational-consistency trigger, checked here too
     // for a typed 422 instead of a raw SqliteError.
     if (input.taxSystem === "PSN" && currentLegalProfile.legal_form !== "INDIVIDUAL_ENTREPRENEUR") {
       throw new TaxTreatmentError("AGENT_REFERRALS_TAX_TREATMENT_PSN_REQUIRES_INDIVIDUAL_ENTREPRENEUR", 422, currentLegalProfile.legal_form);
-    }
-
-    // Idempotent HTTP retry (review round 1, P2): a retried POST carrying
-    // the EXACT same asserted tuple as the most recent treatment for this
-    // partner - same legal profile, same tax_system/vat_treatment/
-    // no_vat_basis/effective_from - is a replay of one operator action, not
-    // a second correction, and returns the existing row unchanged rather
-    // than minting a spurious extra revision. This is a literal-replay
-    // check only: a genuinely later correction (any field different, most
-    // commonly a new effective_from) is never silently deduplicated.
-    const mostRecent = db.prepare(`SELECT ${COLUMNS} FROM agent_referrals_tax_treatment_revisions WHERE partner_identity_id = ? ORDER BY sequence DESC LIMIT 1`)
-      .get(partnerIdentityId) as TaxTreatmentRevisionRow | undefined;
-    if (mostRecent && mostRecent.legal_profile_revision_id === currentLegalProfile.id
-      && mostRecent.tax_system === input.taxSystem && mostRecent.vat_treatment === input.vatTreatment && mostRecent.no_vat_basis === input.noVatBasis
-      && mostRecent.effective_from === effectiveFrom) {
-      return mostRecent;
     }
 
     const treatmentId = id();

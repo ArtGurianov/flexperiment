@@ -3,7 +3,7 @@ import type Database from "better-sqlite3";
 import { suspendAgentReferrals, agentReferralsFeatureState } from "../src/agent-referrals-feature-state";
 import {
   mintSystemDerivedNpdTaxTreatment, recordVerifiedTaxTreatment, resolveTaxTreatmentForLegalProfileAt, taxTreatmentRevisionsForLegalProfile,
-  validateTaxTreatmentTuple, TaxTreatmentError,
+  validateTaxTreatmentTuple, normalizeTaxEffectiveFrom, TaxTreatmentError,
 } from "../src/agent-referrals-tax-treatment";
 import { submitLegalProfileSupersession, verifyLegalProfileSupersession } from "../src/agent-referrals-legal-profile-supersession";
 import { currentAgentReferralsLegalProfile } from "../src/agent-referrals-legal-profile";
@@ -115,6 +115,33 @@ describe("agent-referrals tax treatment", () => {
     });
   });
 
+  describe("normalizeTaxEffectiveFrom: strict grammar, never a silent calendar-rollover rewrite (review round 2, P1)", () => {
+    it("accepts a bare YYYY-MM-DD calendar date, normalized to UTC midnight", () => {
+      expect(normalizeTaxEffectiveFrom("2026-01-01")).toBe("2026-01-01T00:00:00.000Z");
+      expect(normalizeTaxEffectiveFrom("2026-12-31")).toBe("2026-12-31T00:00:00.000Z");
+      expect(normalizeTaxEffectiveFrom("2024-02-29")).toBe("2024-02-29T00:00:00.000Z"); // genuine leap day
+    });
+
+    it("accepts an already-canonical instant unchanged (never re-derives a DIFFERENT moment)", () => {
+      expect(normalizeTaxEffectiveFrom("2026-01-01T12:34:56.789Z")).toBe("2026-01-01T12:34:56.789Z");
+    });
+
+    it("rejects a calendar date that never existed, rather than silently rolling it over to a DIFFERENT date", () => {
+      // new Date("2026-02-30") would otherwise silently become March 2nd -
+      // exactly the asserted-date corruption this grammar exists to catch.
+      expect(() => normalizeTaxEffectiveFrom("2026-02-30")).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_EFFECTIVE_FROM_INVALID/);
+      expect(() => normalizeTaxEffectiveFrom("2026-04-31")).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_EFFECTIVE_FROM_INVALID/);
+      expect(() => normalizeTaxEffectiveFrom("2023-02-29")).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_EFFECTIVE_FROM_INVALID/); // not a leap year
+    });
+
+    it.each(["2026-1-01", "zzz", "2026/07/01", "2026-07-01+03:00", "2026-01-01T00:00:00Z", "2026-01-01 00:00:00"])(
+      "rejects every other non-canonical shape %s, never coercing it to a nearby instant",
+      (raw) => {
+        expect(() => normalizeTaxEffectiveFrom(raw)).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_EFFECTIVE_FROM_INVALID/);
+      },
+    );
+  });
+
   describe("recordVerifiedTaxTreatment: the one admin command for non-NPD facts", () => {
     it("refuses NPD as the asserted tax_system - NPD is SYSTEM_DERIVED only, never a caller-asserted fact", () => {
       const { db } = fresh(); open.push(db);
@@ -160,6 +187,44 @@ describe("agent-referrals tax treatment", () => {
       })).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
     });
 
+    it("a TRUE replay succeeds even after the feature has since been SUSPENDED (review round 2, P1): replay is checked before the suspension gate", () => {
+      const { db } = fresh(); open.push(db);
+      const p1 = readyPartner(db, "OTHER");
+      const input = { taxSystem: "USN" as const, vatTreatment: "NO_VAT" as const, noVatBasis: "USN_EXEMPT" as const, effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x" };
+      const first = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, input);
+
+      suspendAgentReferrals(db, { expected_revision: agentReferralsFeatureState(db).revision, owner_id: "test-owner", reason: "suspend" });
+
+      // A retried POST of the EXACT same already-durable command must
+      // still succeed - it reflects authority proven and consumed BEFORE
+      // suspension, not a new mutation attempt.
+      const replay = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, input);
+      expect(replay).toEqual(first);
+
+      // A genuinely NEW mutation, by contrast, is still correctly blocked.
+      expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
+        ...input, reason: "a genuinely different reason",
+      })).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
+    });
+
+    it("a TRUE replay succeeds even after this identity has since been destroyed (review round 2, P1): destruction never turns an already-durable command into a retry failure", () => {
+      const { db } = fresh(); open.push(db);
+      const p1 = readyPartner(db, "OTHER");
+      const input = { taxSystem: "USN" as const, vatTreatment: "NO_VAT" as const, noVatBasis: "USN_EXEMPT" as const, effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x" };
+      const first = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, input);
+
+      mintRetentionPolicyRevision(db, admin, "policy");
+      destroyPartnerIdentity(db, admin, p1.partnerIdentityId, "erasure");
+
+      const replay = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, input);
+      expect(replay).toEqual(first);
+
+      // A genuinely NEW mutation is still correctly refused post-destruction.
+      expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
+        ...input, reason: "a genuinely different reason",
+      })).toThrow(/PARTNER_IDENTITY_NOT_FOUND/);
+    });
+
     it("always targets the CURRENT legal-profile revision, resolved server-side - never a stale one held from before a supersession", () => {
       const { db } = fresh(); open.push(db);
       const p1 = readyPartner(db, "NPD");
@@ -197,10 +262,28 @@ describe("agent-referrals tax treatment", () => {
 
     it("refuses PSN for a legal profile whose legal_form is not INDIVIDUAL_ENTREPRENEUR (P1.4)", () => {
       const { db } = fresh(); open.push(db);
-      const p1 = readyPartner(db, "NPD"); // legal_form INDIVIDUAL, not INDIVIDUAL_ENTREPRENEUR
+      // readyPartner("NPD") is legal_form INDIVIDUAL/tax_mode NPD - the NEW
+      // NPD-boundary check (review round 2) would fire first and mask this
+      // one, so this needs a non-IE, non-NPD profile: supersede to
+      // LEGAL_ENTITY/OTHER.
+      const p1 = readyPartner(db, "NPD");
+      const legalEntityRequisites = { opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" };
+      const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf" });
+      verifyLegalProfileSupersession(db, admin, request.id, "verify");
       expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
         taxSystem: "PSN", vatTreatment: "NO_VAT", noVatBasis: "PSN", effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x",
       })).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_PSN_REQUIRES_INDIVIDUAL_ENTREPRENEUR/);
+    });
+
+    it("refuses ANY admin-asserted tax_system for a legal profile whose OWN tax_mode is NPD, as a typed 422 (review round 2, new P1)", () => {
+      const { db } = fresh(); open.push(db);
+      const p1 = readyPartner(db, "NPD");
+      expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
+        taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x",
+      })).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_NPD_IS_SYSTEM_DERIVED/);
+      const legalProfile = currentAgentReferralsLegalProfile(db, p1.agentId)!;
+      // only the automatic SYSTEM_DERIVED NPD mint - no partial row from the rejected attempt
+      expect(taxTreatmentRevisionsForLegalProfile(db, legalProfile.id)).toHaveLength(1);
     });
 
     it("accepts PSN for a legal profile whose legal_form IS INDIVIDUAL_ENTREPRENEUR", () => {
@@ -231,14 +314,14 @@ describe("agent-referrals tax treatment", () => {
       expect(taxTreatmentRevisionsForLegalProfile(db, legalProfile.id)).toHaveLength(1); // only readyPartner's own fixture treatment
     });
 
-    it("is idempotent under an exact-duplicate replay (P2.2): same tuple + same effective_from returns the existing row, mints no new sequence", () => {
+    it("is idempotent under a TRUE exact-duplicate replay (P2.2): same tuple + same effective_from + same evidence_ref/reason/actor returns the existing row, mints no new sequence", () => {
       const { db } = fresh(); open.push(db);
       const p1 = readyPartner(db, "OTHER");
       const first = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
         taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x",
       });
       const replay = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
-        taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2026-01-01", evidenceRef: "different-evidence.pdf", reason: "different reason",
+        taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x",
       });
       expect(replay).toEqual(first);
       const legalProfile = currentAgentReferralsLegalProfile(db, p1.agentId)!;
@@ -246,6 +329,21 @@ describe("agent-referrals tax treatment", () => {
       // distinct USN_EXEMPT/2020-01-01 tuple) - so 2 total: fixture + first,
       // the replay must not add a third.
       expect(taxTreatmentRevisionsForLegalProfile(db, legalProfile.id)).toHaveLength(2);
+    });
+
+    it("is provenance-safe under a DIFFERENT evidence_ref/reason (review round 2, P1): same tax tuple but corrected evidence is a NEW revision, never silently collapsed into the old row", () => {
+      const { db } = fresh(); open.push(db);
+      const p1 = readyPartner(db, "OTHER");
+      const first = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
+        taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x",
+      });
+      const corrected = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
+        taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2026-01-01", evidenceRef: "different-evidence.pdf", reason: "different reason",
+      });
+      expect(corrected.id).not.toBe(first.id);
+      expect(corrected.sequence).toBe(first.sequence + 1);
+      expect(corrected.evidence_ref).toBe("different-evidence.pdf");
+      expect(corrected.reason).toBe("different reason");
     });
 
     it("is NOT idempotent for a genuinely later correction (different effective_from mints a new sequence)", () => {

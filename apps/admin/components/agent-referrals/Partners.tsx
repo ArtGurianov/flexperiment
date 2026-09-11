@@ -372,15 +372,35 @@ const vatOptionsForTaxSystem = (taxSystem: string): Array<{ value: string; label
 const noVatBasisForTaxSystem = (taxSystem: string): string =>
   taxSystem === "USN" ? "USN_EXEMPT" : taxSystem === "AUSN" ? "AUSN" : taxSystem === "PSN" ? "PSN" : "OTHER_CONFIRMED";
 
-/** PR-F: recording a non-NPD tax/VAT treatment - always targets the partner's CURRENT legal profile, resolved server-side. */
+/** Keeps vat_treatment inside the set the selected tax_system actually allows - without this, switching tax_system (e.g. USN/VAT_5 -> AUSN) silently leaves a now-invalid vat_treatment selected and submission fails MATRIX_REJECTED for no reason visible in the form itself. */
+function useConstrainedVatTreatment(taxSystem: string, vatTreatment: string, setValue: (name: "vat_treatment", value: string) => void) {
+  useEffect(() => {
+    const allowed = vatOptionsForTaxSystem(taxSystem).map((o) => o.value);
+    if (allowed.length && !allowed.includes(vatTreatment)) setValue("vat_treatment", allowed[0]);
+  }, [taxSystem, vatTreatment, setValue]);
+}
+
+/**
+ * PR-F: recording a non-NPD tax/VAT treatment - always targets the
+ * partner's CURRENT legal profile, resolved server-side. NPD boundary
+ * (review round 2): a legal profile whose OWN tax_mode is NPD has its tax
+ * treatment fixed exclusively by the automatic SYSTEM_DERIVED mint
+ * (mintSystemDerivedNpdTaxTreatment) - recordVerifiedTaxTreatment refuses
+ * ANY admin-asserted tax_system for such a profile (even one that is
+ * otherwise structurally valid, like USN), so the form is never offered
+ * for one; only the read-only current-treatment display is shown.
+ */
 function TaxTreatmentPanel({ partnerId, legalProfile, taxTreatment, onDone }: { partnerId: string; legalProfile: Row | null; taxTreatment: Row | null; onDone: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const { register, handleSubmit, reset, watch } = useForm<{ tax_system: string; vat_treatment: string; effective_from: string; evidence_ref: string; reason: string }>({
+  const { register, handleSubmit, reset, watch, setValue } = useForm<{ tax_system: string; vat_treatment: string; effective_from: string; evidence_ref: string; reason: string }>({
     defaultValues: { tax_system: "USN", vat_treatment: "NO_VAT", effective_from: "", evidence_ref: "", reason: "" },
   });
   const selectedTaxSystem = watch("tax_system");
+  const selectedVatTreatment = watch("vat_treatment");
+  useConstrainedVatTreatment(selectedTaxSystem, selectedVatTreatment, setValue);
   const taxSystemOptions = adminTaxSystemOptions(legalProfile?.legal_form as string | undefined);
+  const isNpdProfile = legalProfile?.tax_mode === "NPD";
 
   const submit = handleSubmit(async (values) => {
     setBusy(true); setError(null);
@@ -404,23 +424,27 @@ function TaxTreatmentPanel({ partnerId, legalProfile, taxTreatment, onDone }: { 
       ) : (
         <p>Налоговый режим ещё не зафиксирован для текущего юридического профиля.</p>
       )}
-      <form className="form" onSubmit={submit}>
-        <label>Система налогообложения
-          <select {...register("tax_system", { required: true })}>
-            {taxSystemOptions.map((s) => <option key={s} value={s}>{TAX_SYSTEM_LABELS[s]}</option>)}
-          </select>
-        </label>
-        <label>НДС
-          <select {...register("vat_treatment", { required: true })}>
-            {vatOptionsForTaxSystem(selectedTaxSystem).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-          </select>
-        </label>
-        <label>Действует с <input type="date" {...register("effective_from", { required: true })} /></label>
-        <label>Ссылка на подтверждающий документ <input {...register("evidence_ref", { required: true })} /></label>
-        <label>Причина <input {...register("reason", { required: true })} /></label>
-        <Notice error={error} />
-        <button className="primary" disabled={busy}>{busy ? "…" : "Зафиксировать налоговый режим"}</button>
-      </form>
+      {isNpdProfile ? (
+        <p>Текущий юридический профиль — НПД: налоговый режим фиксируется автоматически, ручная запись недоступна.</p>
+      ) : (
+        <form className="form" onSubmit={submit}>
+          <label>Система налогообложения
+            <select {...register("tax_system", { required: true })}>
+              {taxSystemOptions.map((s) => <option key={s} value={s}>{TAX_SYSTEM_LABELS[s]}</option>)}
+            </select>
+          </label>
+          <label>НДС
+            <select {...register("vat_treatment", { required: true })}>
+              {vatOptionsForTaxSystem(selectedTaxSystem).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </label>
+          <label>Действует с <input type="date" {...register("effective_from", { required: true })} /></label>
+          <label>Ссылка на подтверждающий документ <input {...register("evidence_ref", { required: true })} /></label>
+          <label>Причина <input {...register("reason", { required: true })} /></label>
+          <Notice error={error} />
+          <button className="primary" disabled={busy}>{busy ? "…" : "Зафиксировать налоговый режим"}</button>
+        </form>
+      )}
     </Panel>
   );
 }

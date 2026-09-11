@@ -364,6 +364,30 @@ describe("0053 agent-referrals tax-treatment + ORD canonicalization migration", 
       expect(() => migrate(db)).toThrow();
       expect(db.prepare("SELECT COUNT(*) AS n FROM schema_migrations WHERE version = ?").get(MIGRATION_FILE)).toEqual({ n: 0 });
     });
+
+    it("fails closed when reward_settlements has a pre-existing AGENT_REFERRALS row, independent of the legal-profile branch (review round 2, P2)", () => {
+      const db = at0052();
+      const agentId = seedAgent(db);
+      const cityId = "city-guard";
+      db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, 'novosibirsk', 'Новосибирск')").run(cityId);
+      db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, venue_status, venue_name, venue_address)
+        VALUES ('occ-guard', ?, 'FLEXPERIMENT', '2020-10-01T10:00:00.000Z', '2020-10-01T13:00:00.000Z', 'Asia/Novosibirsk', 100000, 5, 'PUBLISHED', 'CONFIRMED', 'Studio', 'Lenina 1')`).run(cityId);
+      // The full authority-tuple-consistency guard (proving a real
+      // completed engagement/effective-snapshot chain) is 0052's own
+      // concern and is proven elsewhere - dropped here ONLY so this raw
+      // seed can insert a bare AGENT_REFERRALS-flow row without
+      // reconstructing that entire chain, isolating this test to what it
+      // actually verifies: 0053's own clean-slate guard fires from the
+      // reward_settlements branch specifically. Migration aborts at the
+      // guard (the very first statement in 0053) before ever reaching its
+      // own DROP/CREATE of this trigger, so dropping it here first causes
+      // no conflict.
+      db.exec("DROP TRIGGER reward_settlements_authority_tuple_consistency_guard");
+      db.prepare(`INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id, settlement_flow)
+        VALUES ('rs-guard', ?, 'occ-guard', 100000, 'PAYOUT_PROFILE', 'PREPARED', 'SELF_EMPLOYED', '2026-01-01T00:00:00.000Z', 'admin', 'AGENT_REFERRALS')`).run(agentId);
+      expect(() => migrate(db)).toThrow();
+      expect(db.prepare("SELECT COUNT(*) AS n FROM schema_migrations WHERE version = ?").get(MIGRATION_FILE)).toEqual({ n: 0 });
+    });
   });
 
   describe("C. immutability", () => {

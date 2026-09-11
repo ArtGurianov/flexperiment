@@ -113,6 +113,11 @@ const PRESENTATIONS: Readonly<Record<string, AdminErrorPresentation>> = {
   AGENT_REFERRALS_TAX_TREATMENT_EVIDENCE_REF_REQUIRED: { message: "Укажите ссылку на подтверждающий документ." },
   AGENT_REFERRALS_TAX_TREATMENT_REASON_REQUIRED: { message: "Укажите причину." },
   AGENT_REFERRALS_TAX_TREATMENT_EFFECTIVE_FROM_REQUIRED: { message: "Укажите дату, с которой действует налоговый режим." },
+  AGENT_REFERRALS_TAX_TREATMENT_EFFECTIVE_FROM_INVALID: { message: "Некорректная дата, с которой действует налоговый режим." },
+  AGENT_REFERRALS_TAX_TREATMENT_PSN_REQUIRES_INDIVIDUAL_ENTREPRENEUR: {
+    message: "ПСН доступна только для индивидуального предпринимателя.",
+    hint: "Проверьте текущую организационно-правовую форму партнёра.",
+  },
   AGENT_REFERRALS_TAX_TREATMENT_MATRIX_REJECTED: {
     message: "Недопустимое сочетание системы налогообложения и НДС.",
     hint: "Например, для АУСН доступно только «Без НДС», а НПД фиксируется автоматически.",
