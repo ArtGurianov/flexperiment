@@ -236,6 +236,21 @@ the hook, both of which the hook being correct did not save:
   it is the reason these two surfaces now carry DOM tests asserting the exact
   HTTP body.
 
+**A DROP + CREATE must restate the CURRENT definition of a trigger, never
+the one in the migration that first created it.** 0056 recreated this
+table's request-fields immutability guard from 0051's text and so silently
+dropped the seven requisite columns 0052 had already added to it. The other
+two guards do not cover the gap — they block `PENDING → PENDING` and updates
+to an already-terminal row, while a resolution is
+`PENDING → VERIFIED/REJECTED/STALE`, which both ignore by design. For the one
+UPDATE this table legitimately accepts, that guard is the only thing between
+a resolution and a rewrite of the evidence being resolved. The regression
+suite is table-driven over every request-group column, plus a structural test
+that reads the LIVE trigger out of `sqlite_master` and the LIVE column list
+out of the table and requires every filed-evidence column to be named in the
+guard — so the next stale recreate fails even if it is textually
+self-consistent.
+
 `RetainedIntentNotice`'s buttons are `type="button"`: it renders inside the
 forms whose command it is about, and a bare `<button>` there would submit the
 form as well, issuing a freshly-pinned second command beside the replay.

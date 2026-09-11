@@ -52,20 +52,40 @@ CREATE UNIQUE INDEX agent_referrals_legal_profile_change_requests_sequence_uniqu
 
 -- The "заявка" column group is immutable from INSERT, and request_sequence
 -- belongs to it: it identifies WHICH filing this row is, not how it was
--- resolved. SQLite cannot alter a trigger, so 0051's guard is dropped and
+-- resolved. SQLite cannot alter a trigger, so the guard is dropped and
 -- recreated with the new column rather than a second overlapping guard
 -- being added beside it.
+--
+-- RECREATED FROM 0052, NOT FROM 0051. The first version of this migration
+-- copied 0051's original text and so silently DROPPED the seven requisite
+-- columns 0052 had already added to this guard (opf, full_name, short_name,
+-- inn, kpp, registration_number, legal_address). Nothing else covers them
+-- during the one UPDATE this table legitimately accepts: the terminal and
+-- pending-reentry guards both ignore PENDING -> VERIFIED/REJECTED/STALE,
+-- which is exactly the transition a resolution performs - so a raw update
+-- could have terminalized a request and rewritten the INN it was filed with
+-- in the same statement.
+--
+-- The rule this cost: a DROP + CREATE must restate the CURRENT definition of
+-- a trigger, never the one in the migration that first created it.
 DROP TRIGGER agent_referrals_legal_profile_change_requests_request_fields_immutable_guard;
 CREATE TRIGGER agent_referrals_legal_profile_change_requests_request_fields_immutable_guard
 BEFORE UPDATE ON agent_referrals_legal_profile_change_requests
 WHEN NEW.partner_identity_id IS NOT OLD.partner_identity_id
   OR NEW.legal_form IS NOT OLD.legal_form
   OR NEW.tax_mode IS NOT OLD.tax_mode
+  OR NEW.opf IS NOT OLD.opf
+  OR NEW.full_name IS NOT OLD.full_name
+  OR NEW.short_name IS NOT OLD.short_name
+  OR NEW.inn IS NOT OLD.inn
+  OR NEW.kpp IS NOT OLD.kpp
+  OR NEW.registration_number IS NOT OLD.registration_number
+  OR NEW.legal_address IS NOT OLD.legal_address
   OR NEW.assertion_source IS NOT OLD.assertion_source
   OR NEW.evidence_ref IS NOT OLD.evidence_ref
   OR NEW.reason IS NOT OLD.reason
   OR NEW.supersedes_revision_id IS NOT OLD.supersedes_revision_id
-  OR NEW.request_sequence IS NOT OLD.request_sequence
   OR NEW.created_by IS NOT OLD.created_by
   OR NEW.created_at IS NOT OLD.created_at
+  OR NEW.request_sequence IS NOT OLD.request_sequence
 BEGIN SELECT RAISE(ABORT, 'AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_REQUEST_IMMUTABLE'); END;
