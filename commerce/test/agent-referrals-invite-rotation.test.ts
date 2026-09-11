@@ -12,7 +12,7 @@ process.env.COMMERCE_AGENT_REFERRALS_OTP_PEPPER ??= "test-otp-pepper-for-agent-r
 const { createApp } = await import("../src/api");
 const ADMIN_ORIGIN = "https://admin.flexperiment.ru";
 import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
-import { provisionPartnerOwner, rotatePartnerInvite, liveInviteCapabilityId } from "../src/agent-referrals-partner-identity";
+import { provisionPartnerOwner, rotatePartnerInvite, inviteCapabilityHeadId } from "../src/agent-referrals-partner-identity";
 
 /**
  * PR-C3: the last rollout blocker C2 left open, and the contract was written
@@ -55,7 +55,7 @@ const countCapabilities = (db: Database.Database, partnerIdentityId: string) =>
   (db.prepare("SELECT COUNT(*) AS n FROM partner_invite_capabilities WHERE partner_identity_id = ?").get(partnerIdentityId) as { n: number }).n;
 
 const rotate = (
-  db: Database.Database, partnerIdentityId: string, expected: string | null,
+  db: Database.Database, partnerIdentityId: string, expected: string,
   rotationReason: "MANUAL_REISSUE" | "LOST_RESPONSE_RECOVERY", reason: string,
 ) => rotatePartnerInvite(db, admin, partnerIdentityId, expected, rotationReason, reason);
 
@@ -91,7 +91,7 @@ describe("invite rotation is predecessor-bound, and recovery is a reason on it",
     // The operator refreshes: the live capability is T2. The recovery is
     // authored against THAT, never against the T1 the lost request named -
     // otherwise predecessor binding would be fiction.
-    expect(liveInviteCapabilityId(db, partnerIdentityId)).toBe(t2.invite_id);
+    expect(inviteCapabilityHeadId(db, partnerIdentityId)).toBe(t2.invite_id);
     const t3 = rotate(db, partnerIdentityId, t2.invite_id, "LOST_RESPONSE_RECOVERY", "response was lost");
 
     expect(liveIds(db, partnerIdentityId)).toEqual([t3.invite_id]);
@@ -163,16 +163,70 @@ describe("invite rotation is predecessor-bound, and recovery is a reason on it",
       .not.toContain(rotated.raw_invite_token);
   });
 
-  it("a revoked invite leaves nothing live, and the next rotation is pinned to that absence", () => {
+  /**
+   * Review round 2, P1. The pin was "the capability that is usable right
+   * now", which is CYCLIC: revoking or consuming returns it to null, a mint
+   * gives it a value, revoking returns it to null again. requireObservedVersion's
+   * own contract forbids exactly that - a pin must be monotone, or A -> B -> A
+   * restores the value a stale retry was authored against.
+   *
+   * The first version of this file encoded the defect's premise as expected
+   * behaviour: it asserted that after a revoke nothing was live, then let a
+   * rotation pin that absence.
+   *
+   * The fix needs no new counter. 0044 already carries the monotone axis -
+   * superseded_by_id IS NULL is the mint-chain HEAD, and a row once
+   * superseded is never un-superseded. consumed_at/revoked_at answer "is
+   * this token usable"; superseded_by_id answers "which capability is last
+   * in the chain". Two different questions that were being conflated.
+   */
+  it("the pin is the mint-chain head, not usability: a revoke does not let a stale rotation through", () => {
     const { db } = fresh();
     open.push(db);
     const { partnerIdentityId, inviteId: t1 } = invitedPartner(db);
     db.prepare("UPDATE partner_invite_capabilities SET revoked_at = CURRENT_TIMESTAMP WHERE id = ?").run(t1);
 
-    expect(liveInviteCapabilityId(db, partnerIdentityId)).toBeNull();
+    // The head does not move when a capability is revoked - only when one is
+    // superseded by the next mint.
+    expect(inviteCapabilityHeadId(db, partnerIdentityId)).toBe(t1);
+
+    const t2 = rotate(db, partnerIdentityId, t1, "MANUAL_REISSUE", "reissue after revocation");
+    // A: the response is lost. B: an ordinary, legal revocation of T2, which
+    // under the old pin returned the aggregate to null - exactly the value A
+    // was authored against.
+    db.prepare("UPDATE partner_invite_capabilities SET revoked_at = CURRENT_TIMESTAMP WHERE id = ?").run(t2.invite_id);
+
+    expectStale(() => rotate(db, partnerIdentityId, t1, "MANUAL_REISSUE", "reissue after revocation"));
+
+    expect(inviteCapabilityHeadId(db, partnerIdentityId)).toBe(t2.invite_id);
+    expect(countCapabilities(db, partnerIdentityId)).toBe(2);
+  });
+
+  it("the same holds for consumption, which also used to return the old pin to null", () => {
+    const { db } = fresh();
+    open.push(db);
+    const { partnerIdentityId, inviteId: t1 } = invitedPartner(db);
+
+    const t2 = rotate(db, partnerIdentityId, t1, "MANUAL_REISSUE", "reissue");
+    db.prepare("UPDATE partner_invite_capabilities SET consumed_at = CURRENT_TIMESTAMP WHERE id = ?").run(t2.invite_id);
+
     expectStale(() => rotate(db, partnerIdentityId, t1, "MANUAL_REISSUE", "reissue"));
-    const next = rotate(db, partnerIdentityId, null, "MANUAL_REISSUE", "reissue after revocation");
-    expect(liveIds(db, partnerIdentityId)).toEqual([next.invite_id]);
+
+    expect(inviteCapabilityHeadId(db, partnerIdentityId)).toBe(t2.invite_id);
+    expect(countCapabilities(db, partnerIdentityId)).toBe(2);
+  });
+
+  it("at most one chain head per partner, structurally", () => {
+    const { db } = fresh();
+    open.push(db);
+    const { partnerIdentityId, inviteId: t1 } = invitedPartner(db);
+    rotate(db, partnerIdentityId, t1, "MANUAL_REISSUE", "reissue");
+
+    // 0057's partial unique index, not merely the application's discipline.
+    expect(() => db.prepare(`INSERT INTO partner_invite_capabilities(id, partner_identity_id, purpose, verifier_hash, expires_at, created_by_admin_id)
+      VALUES (?, ?, 'ONBOARDING', ?, ?, 'admin-1')`)
+      .run(randomUUID(), partnerIdentityId, randomUUID(), new Date(Date.now() + 3600_000).toISOString()))
+      .toThrow(/UNIQUE constraint failed/);
   });
 });
 
@@ -208,7 +262,7 @@ describe("POST /partners/:id/invite/reissue: rotation_reason is required and exp
   ])("refuses %s with 422, and the live capability is untouched", async (_label, partial) => {
     const { db, app, cookie, partnerIdentityId, inviteId } = await httpFixture();
 
-    const response = await post(app, cookie, partnerIdentityId, { expected_live_capability_id: inviteId, reason: "rotate", ...partial });
+    const response = await post(app, cookie, partnerIdentityId, { expected_invite_capability_head_id: inviteId, reason: "rotate", ...partial });
     expect(response.status).toBe(422);
 
     expect(liveIds(db, partnerIdentityId)).toEqual([inviteId]);
@@ -220,7 +274,7 @@ describe("POST /partners/:id/invite/reissue: rotation_reason is required and exp
     const { db, app, cookie, partnerIdentityId, inviteId } = await httpFixture();
 
     const response = await post(app, cookie, partnerIdentityId, {
-      expected_live_capability_id: inviteId, rotation_reason: rotationReason, reason: "operator action",
+      expected_invite_capability_head_id: inviteId, rotation_reason: rotationReason, reason: "operator action",
     });
     expect(response.status).toBe(200);
     const payload = await response.json() as { invite_id: string; raw_invite_token: string };

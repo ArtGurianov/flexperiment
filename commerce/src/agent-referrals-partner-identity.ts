@@ -79,14 +79,26 @@ export const provisionPartnerOwner = (db: Database.Database, admin: AdminPrincip
 };
 
 /**
- * The one capability that is live for a partner right now, or null. The
- * partial unique index (0044) guarantees at most one, so this is a single
- * value rather than a list - and it is what both issuance commands below are
- * pinned against.
+ * The HEAD of a partner's invite mint chain - the last capability minted,
+ * whether or not it is still usable. 0057's partial unique index makes it at
+ * most one.
+ *
+ * This is what a rotation is pinned against, and the distinction from "the
+ * capability that is usable right now" is the whole point: usability is
+ * CYCLIC (revoke or consume returns it to null, the next mint gives it a
+ * value, revoking returns it to null again), so pinning it let a stale
+ * rotation through after any legal revocation. The head only ever moves
+ * forward, because a superseded row is never un-superseded.
+ *
+ *   consumed_at / revoked_at   -> is this token usable?
+ *   superseded_by_id           -> which capability is last in the chain?
+ *
+ * Null only for a partner with no capability at all, which provisioning
+ * never leaves behind - it mints the first invite in the same transaction.
  */
-export const liveInviteCapabilityId = (db: Database.Database, partnerIdentityId: string): string | null =>
+export const inviteCapabilityHeadId = (db: Database.Database, partnerIdentityId: string): string | null =>
   ((db.prepare(`SELECT id FROM partner_invite_capabilities
-    WHERE partner_identity_id = ? AND consumed_at IS NULL AND revoked_at IS NULL AND superseded_by_id IS NULL`)
+    WHERE partner_identity_id = ? AND superseded_by_id IS NULL`)
     .get(partnerIdentityId) as { id: string } | undefined)?.id) ?? null;
 
 /**
@@ -125,14 +137,19 @@ export const rotatePartnerInvite = (
   db: Database.Database,
   admin: AdminPrincipal,
   partnerIdentityId: string,
-  /** The live capability this rotation replaces, as the caller last saw it; null only when none is live. */
-  expectedLiveCapabilityId: string | null,
+  /**
+   * The mint-chain head this rotation replaces, as the caller last saw it.
+   * Non-nullable: provisioning always mints the first capability, so a
+   * partner that can be rotated always has a head, and admitting null would
+   * reintroduce the restorable value this pin exists to avoid.
+   */
+  expectedCapabilityHeadId: string,
   rotationReason: InviteRotationReason,
   reason: string,
 ): { invite_id: string; raw_invite_token: string } => {
   const run = db.transaction(() => {
-    const current = liveInviteCapabilityId(db, partnerIdentityId);
-    requireObservedVersion("AGENT_REFERRALS_INVITE_CAPABILITY_STALE", expectedLiveCapabilityId, current);
+    const current = inviteCapabilityHeadId(db, partnerIdentityId);
+    requireObservedVersion("AGENT_REFERRALS_INVITE_CAPABILITY_STALE", expectedCapabilityHeadId, current);
 
     const rawToken = generateOpaqueToken();
     const inviteId = id();
@@ -146,6 +163,9 @@ export const rotatePartnerInvite = (
     // of the transaction), which is what lets these two writes happen in
     // the only order the unique index permits.
     db.pragma("defer_foreign_keys = ON");
+    // The head is superseded even when it is already consumed or revoked:
+    // that is what keeps the chain single-headed, and 0057's unique index
+    // refuses the alternative structurally.
     if (current) db.prepare(`UPDATE partner_invite_capabilities SET superseded_by_id = ? WHERE id = ?`).run(inviteId, current);
 
     db.prepare(`INSERT INTO partner_invite_capabilities(id, partner_identity_id, purpose, verifier_hash, expires_at, created_by_admin_id)

@@ -123,7 +123,7 @@ function PartnerDetail({ partnerId, onBack }: { partnerId: string; onBack: () =>
 
       <InviteRotation
         partnerId={partnerId}
-        liveCapabilityId={detail.data!.live_invite_capability_id ? String(detail.data!.live_invite_capability_id) : null}
+        capabilityHeadId={detail.data!.invite_capability_head_id ? String(detail.data!.invite_capability_head_id) : null}
       />
 
       {onboardingState === "PARTNER_ACTIVE" && <PromoAndAudience partnerId={partnerId} />}
@@ -269,30 +269,31 @@ function useConstrainedTaxMode(legalForm: string, taxMode: string, setValue: (na
  * with, so a stale click is refused rather than destroying a capability
  * somebody else's rotation just created.
  */
-function InviteRotation({ partnerId, liveCapabilityId }: { partnerId: string; liveCapabilityId: string | null }) {
+function InviteRotation({ partnerId, capabilityHeadId }: { partnerId: string; capabilityHeadId: string | null }) {
   // Held in component state and never in the query cache: this is the one
   // moment the raw token exists outside the response.
   const [issued, setIssued] = useState<string | null>(null);
 
-  const rotate = usePartnerScopedCommand(partnerId, (variables: { rotation_reason: string; reason: string; expected_live_capability_id: string | null }) =>
+  const rotate = usePartnerScopedCommand(partnerId, (variables: { rotation_reason: string; reason: string; expected_invite_capability_head_id: string }) =>
     api<{ raw_invite_token: string }>(`/agent-referrals/partners/${partnerId}/invite/reissue`, {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(variables),
     }));
 
   const run = async (rotationReason: "MANUAL_REISSUE" | "LOST_RESPONSE_RECOVERY", reason: string) => {
     setIssued(null);
-    const result = await rotate.mutateAsync({ rotation_reason: rotationReason, reason, expected_live_capability_id: liveCapabilityId })
+    if (!capabilityHeadId) return;
+    const result = await rotate.mutateAsync({ rotation_reason: rotationReason, reason, expected_invite_capability_head_id: capabilityHeadId })
       .catch(() => undefined) as { raw_invite_token?: string } | undefined;
     if (result?.raw_invite_token) setIssued(result.raw_invite_token);
   };
 
   return (
     <Panel title="Приглашение">
-      <p>Действующее приглашение: {liveCapabilityId ?? "нет"}</p>
-      <button disabled={rotate.isPending} onClick={() => void run("MANUAL_REISSUE", "reissued by operator")}>
+      <p>Последнее выпущенное приглашение: {capabilityHeadId ?? "нет"}</p>
+      <button disabled={rotate.isPending || !capabilityHeadId} onClick={() => void run("MANUAL_REISSUE", "reissued by operator")}>
         Перевыпустить приглашение
       </button>
-      <button disabled={rotate.isPending} onClick={() => void run("LOST_RESPONSE_RECOVERY", "previous response was lost")}>
+      <button disabled={rotate.isPending || !capabilityHeadId} onClick={() => void run("LOST_RESPONSE_RECOVERY", "previous response was lost")}>
         Ответ потерян — выпустить новый токен
       </button>
       {issued && (
