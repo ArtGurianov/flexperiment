@@ -66,8 +66,8 @@ Classifications:
 
 ### Current state
 
-**`UNAUDITED` is zero** (PR-C2 step 1). 20 `REPEATABLE` routes remain — 14
-admin, 6 partner — and closing them is PR-C2 step 2.
+**`UNAUDITED` is zero** (PR-C2 step 1). **10 `REPEATABLE` routes remain** — 6
+admin, 4 partner — after step 2a closed the content-addressed half.
 
 All 35 previously pending routes resolved to `REPLAY_SAFE`, and that result is
 the useful part: the repeatable class is exactly *"mint the next revision in
@@ -102,17 +102,34 @@ not a rollout surface.
 
 ## PR-C2 shape
 
-The remedy is not uniform, and should not be forced to be:
+The remedy is not uniform, and was not forced to be.
 
-- Where the same semantic body is **never** a legitimate second command, an
-  explicit replay / no-change branch is enough (`authorizeCreative` for the
-  same creative revision; `correctDistribution` for identical content).
-- Where repeating the same body **can** be a deliberate new command, only a
-  caller-supplied command key can tell a retry from an intent. Activation is
-  the example: re-activating onto the same revision after a genuine
-  suspension is a real business action, and CAS cannot distinguish it from a
-  lost-response retry. `K1 + activate(E,R1)` replays to the original
-  activation event; `K2 + activate(E,R1)` is a new one.
+**Step 2a — done.** Where the same semantic body is **never** a legitimate
+second command, an explicit no-change branch is enough, and the chain's own
+content hash is the comparison. Closed this way: engagement revisions
+(`content_hash` plus the occurrence material revision, since the same terms
+against changed material *are* a new revision), creative revisions
+(`creative_hash`), creative authorization (the live authorization already
+naming that creative), distribution corrections (`canonical_hash`, both
+realms), ORD provider profiles and the framework/delegation template chains
+(`content_hash`), channel policy (same status from the same instant), and the
+partner's own legal-profile draft resubmission.
+
+**Step 2b — remaining.** Where repeating the same body **can** be a deliberate
+new command, only a caller-supplied command key can tell a retry from an
+intent, because no content comparison can:
+
+- `activateEngagement` — re-activating onto the same revision after a genuine
+  suspension is a real business action.
+- `recordNpdStatusCheck` — a fresh check with the same status is the point;
+  freshness is what the payment guard consumes.
+- `placeLegalHold` — a second hold for a different matter is legitimate.
+- `verifyAudienceForPartnerCity` — re-verification after a revocation is
+  legitimate, and it has no guard of its own (unlike its revoke twin).
+- `reportDistribution` (both realms) — each call is a new distribution
+  identity by design.
+- `mintRetentionPolicyRevision` — a restated policy is a governance act.
+- partner payout set / revoke, partner NPD receipt evidence.
 
 Admin realm can reuse `admin_command_idempotency` directly. The partner realm
 needs a principal-scoped equivalent — a partner must not be able to replay

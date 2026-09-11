@@ -303,13 +303,21 @@ export const correctDistribution = (db: Database.Database, actor: DistributionAc
     if (!correctionReason.trim()) throw new DistributionError("AGENT_REFERRALS_DISTRIBUTION_CORRECTION_REASON_REQUIRED", 422);
     const identity = getDistribution(db, distributionId)!;
 
+    // PR-C2: a correction that restates the revision already current is not
+    // a second correction - it renumbers the chain and appends another
+    // classification event for facts that did not change. canonical_hash
+    // covers the reported facts; correction_reason is provenance and stays
+    // out of the comparison, like every other content-addressed chain here.
+    const canonicalHash = canonicalRevisionHash(input);
+    if (current.canonical_hash === canonicalHash) return { distribution_id: distributionId, revision: current };
+
     const authority = resolveHistoricalCreativeAuthority(db, identity.engagement_id, input.published_at);
     const classification = resolveAgentReferralsChannelPolicy(db, input.channel_key, input.published_at);
     const revisionId = id();
     db.prepare(`INSERT INTO engagement_distribution_revisions(id, distribution_id, revision, supersedes_revision_id, engagement_revision_id, creative_revision_id, channel_key, channel_policy_status, channel_policy_revision, resource_kind, resource_identifier, distribution_resource_url, published_at, ended_at, reported_by, correction_reason, evidence_ref, canonical_hash)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(revisionId, distributionId, current.revision + 1, current.id, authority.engagement_revision_id, authority.creative_revision_id, input.channel_key, classification.status, classification.policy_revision, input.resource_kind,
-        input.resource_identifier, input.distribution_resource_url, input.published_at, input.ended_at, actorRealm(actor), correctionReason, input.evidence_ref, canonicalRevisionHash(input));
+        input.resource_identifier, input.distribution_resource_url, input.published_at, input.ended_at, actorRealm(actor), correctionReason, input.evidence_ref, canonicalHash);
 
     classifyAndAppend(db, distributionId, input.channel_key, input.published_at, authority.state, actorRealm(actor));
     return { distribution_id: distributionId, revision: currentDistributionRevision(db, distributionId)! };

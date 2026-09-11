@@ -76,9 +76,18 @@ export const setAgentReferralsChannelPolicy = (db: Database.Database, input: Set
   }
 
   const run = db.transaction(() => {
-    const current = db.prepare(`SELECT MAX(policy_revision) AS max_revision FROM ad_channel_policy WHERE channel_key = ?`)
-      .get(input.channel_key) as { max_revision: number | null };
-    const nextRevision = (current.max_revision ?? 0) + 1;
+    const current = db.prepare(`SELECT id, policy_revision, status, effective_from FROM ad_channel_policy
+      WHERE channel_key = ? ORDER BY policy_revision DESC LIMIT 1`)
+      .get(input.channel_key) as { id: string; policy_revision: number; status: string; effective_from: string } | undefined;
+    // PR-C2: re-stating the policy a channel already carries, from the same
+    // instant, is not a second decision - it only renumbers the chain, and a
+    // lost-response retry would do exactly that. `reason` is provenance and
+    // stays outside the comparison, matching every other content-addressed
+    // chain in this module family.
+    if (current && current.status === input.status && current.effective_from === input.effective_from) {
+      return { channel_key: input.channel_key, policy_revision: current.policy_revision, status: current.status, effective_from: current.effective_from };
+    }
+    const nextRevision = (current?.policy_revision ?? 0) + 1;
     db.prepare(`INSERT INTO ad_channel_policy(id, channel_key, policy_revision, status, effective_from, reason)
       VALUES (?, ?, ?, ?, ?, ?)`)
       .run(id(), input.channel_key, nextRevision, input.status, input.effective_from, input.reason);

@@ -63,12 +63,20 @@ export const mintOrdProviderProfile = (
 ): OrdProviderProfileRevision => {
   const run = db.transaction((): OrdProviderProfileRevision => {
     const current = currentOrdProviderProfile(db, kind);
+    const contentHash = canonicalContentHash(content);
+    // PR-C2: an identical profile is never a meaningful second revision -
+    // the chain is content-addressed, so re-minting the same content only
+    // renumbers it. This is also what makes a lost-response retry harmless:
+    // it returns the revision the first attempt created instead of a
+    // superseding twin. (reason/actor are provenance, deliberately outside
+    // the comparison, exactly as canonicalLegalProfileEquals treats them.)
+    if (current && current.content_hash === contentHash) return current;
     const revisionId = id();
     const nextRevision = (current?.revision ?? 0) + 1;
     const contentJson = JSON.stringify(content);
     db.prepare(`INSERT INTO ord_provider_profile_revisions(id, profile_kind, revision, content_json, content_hash, supersedes_revision_id, reason, created_by_admin_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(revisionId, kind, nextRevision, contentJson, canonicalContentHash(content), current?.id ?? null, reason, adminId);
+      .run(revisionId, kind, nextRevision, contentJson, contentHash, current?.id ?? null, reason, adminId);
     return currentOrdProviderProfile(db, kind)!;
   });
   return run.immediate();

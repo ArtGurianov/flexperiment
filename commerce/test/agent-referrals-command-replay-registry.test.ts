@@ -60,25 +60,25 @@ const ADMIN: Readonly<Record<string, Classification>> = {
   "/partners/:id/legal-hold": "REPEATABLE", // unconditional INSERT; each hold independently blocks destruction
   "/legal-holds/:id/release": "REPLAY_SAFE", // conditional UPDATE, changes !== 1 -> ALREADY_RELEASED
   "/partners/:id/destroy": "REPLAY_SAFE", // existing destruction event -> replayed: true
-  "/framework-agreement-revisions": "REPEATABLE", // revision + 1
-  "/delegation-template-revisions": "REPEATABLE", // revision + 1
-  "/channel-policy": "REPEATABLE", // MAX(policy_revision) + 1
+  "/framework-agreement-revisions": "REPLAY_SAFE", // PR-C2: identical clauses return the current revision
+  "/delegation-template-revisions": "REPLAY_SAFE", // PR-C2: identical clauses return the current revision
+  "/channel-policy": "REPLAY_SAFE", // PR-C2: same status from the same instant returns the current policy
   "/engagements": "REPLAY_SAFE", // engagementByPartnerAndOccurrence -> ALREADY_EXISTS
-  "/engagements/:id/revisions": "REPEATABLE", // a new engagement revision per call
+  "/engagements/:id/revisions": "REPLAY_SAFE", // PR-C2: identical terms + same occurrence material return the current revision
   "/engagements/:id/activate": "REPEATABLE", // CAS is not idempotency: revokes the live authorization, writes a second activation event
   "/engagements/:id/suspend": "REPLAY_SAFE", // requires ACTIVE; after suspension the retry is ILLEGAL_TRANSITION
   "/engagements/:id/close": "REPLAY_SAFE", // requires a non-CLOSED state + lifecycle CAS
-  "/engagements/:id/creative": "REPEATABLE", // revision + 1
-  "/engagements/:id/creative/:revisionId/authorize": "REPEATABLE", // revokes and re-inserts even for the same creative revision
+  "/engagements/:id/creative": "REPLAY_SAFE", // PR-C2: identical creative_hash returns the current revision
+  "/engagements/:id/creative/:revisionId/authorize": "REPLAY_SAFE", // PR-C2: the live authorization for the same creative is returned, not churned
   "/creative-authorizations/:id/revoke": "REPLAY_SAFE", // conditional UPDATE on revoked_at IS NULL -> ALREADY_REVOKED
   "/engagements/:id/distributions": "REPEATABLE", // fresh distribution identity per call (same command as the partner route)
-  "/distributions/:id/correct": "REPEATABLE", // revision + 1, no same-content branch
+  "/distributions/:id/correct": "REPLAY_SAFE", // PR-C2: identical canonical_hash returns the current revision
   "/distributions/:id/require-removal": "REPLAY_SAFE", // removal state machine has no self-loop -> ILLEGAL_TRANSITION
   "/distributions/:id/confirm-removal": "REPLAY_SAFE", // same state machine
   "/distributions/:id/mark-overdue": "REPLAY_SAFE", // same state machine
   "/distributions/:id/mark-unverified": "REPLAY_SAFE", // same state machine
   "/distributions/:id/review-cleared": "REPLAY_SAFE", // compliance transition legal only from REVIEW_REQUIRED
-  "/ord/provider-profile": "REPEATABLE", // MAX(revision) + 1
+  "/ord/provider-profile": "REPLAY_SAFE", // PR-C2: identical content returns the current revision
   "/ord/provider-operation": "REPLAY_SAFE", // existing DRAFT -> replayed: true
   "/ord/provider-operation/:id/submitted": "REPLAY_SAFE", // converging UPDATE of the same values; no new row
   "/ord/provider-operation/:id/confirm": "REPLAY_SAFE", // requires local_state SUBMITTED -> NOT_SUBMITTED on retry
@@ -118,7 +118,7 @@ const PARTNER: Readonly<Record<string, Classification>> = {
   "/step-up": "NOT_A_BUSINESS_WRITE", // mints a single-use authorization credential, not a business fact
   "/engagement-step-up": "NOT_A_BUSINESS_WRITE",
   "/settlement-step-up": "NOT_A_BUSINESS_WRITE",
-  "/legal-profile": "REPEATABLE", // re-accepts PROFILE_SUBMITTED, appends another LEGAL_PROFILE_SUBMITTED event
+  "/legal-profile": "REPLAY_SAFE", // PR-C2: an unchanged draft returns the identity without appending another event
   "/legal-profile/change": "REPLAY_SAFE", // partial unique index -> ALREADY_PENDING
   "/framework/accept": "REPLAY_SAFE", // exact-parameter replay -> idempotent no-op
   "/delegation/:id/revoke": "REPLAY_SAFE", // same revokeDelegationInTransaction -> ALREADY_REVOKED
@@ -126,7 +126,7 @@ const PARTNER: Readonly<Record<string, Classification>> = {
   "/payout-profile/revoke": "REPEATABLE", // revision + 1
   "/engagements/:id/accept": "REPLAY_SAFE", // existing acceptance -> replayed: true
   "/engagements/:id/distributions": "REPEATABLE", // fresh distribution identity per call
-  "/distributions/:id/correct": "REPEATABLE", // same command as the admin route, exposed in both realms
+  "/distributions/:id/correct": "REPLAY_SAFE", // PR-C2, same command as the admin route (both realms)
   "/distributions/:id/removal-claim": "REPLAY_SAFE", // removal state machine has no self-loop -> ILLEGAL_TRANSITION
   "/acts/:id/accept": "REPLAY_SAFE", // existing acceptance -> replayed: true
   "/acts/:id/dispute": "REPLAY_SAFE", // existing dispute -> replayed: true
@@ -160,26 +160,21 @@ describe("agent-referrals command replay classification is exhaustive over the p
     // new repeatable command was introduced and needs to be in PR-C2 too.
     const repeatable = (table: Readonly<Record<string, Classification>>) =>
       Object.entries(table).filter(([, value]) => value === "REPEATABLE").map(([route]) => route).sort();
+    // PR-C2 step 2a closed the content-addressed half: what is left needs
+    // durable command identity, because an identical body CAN be a
+    // legitimate second command (a fresh NPD check, a second hold for a
+    // different matter, a genuine re-activation) and no content comparison
+    // can tell that from a retry.
     expect(repeatable(ADMIN)).toEqual([
-      "/channel-policy",
-      "/delegation-template-revisions",
-      "/distributions/:id/correct",
       "/engagements/:id/activate",
-      "/engagements/:id/creative",
-      "/engagements/:id/creative/:revisionId/authorize",
       "/engagements/:id/distributions",
-      "/engagements/:id/revisions",
-      "/framework-agreement-revisions",
-      "/ord/provider-profile",
       "/partners/:id/audience/:cityId/verify",
       "/partners/:id/legal-hold",
       "/partners/:id/npd-status",
       "/retention-policy",
     ]);
     expect(repeatable(PARTNER)).toEqual([
-      "/distributions/:id/correct",
       "/engagements/:id/distributions",
-      "/legal-profile",
       "/npd-receipts/submit",
       "/payout-profile",
       "/payout-profile/revoke",

@@ -189,6 +189,20 @@ export const submitPartnerLegalProfile = (
     if (identity.onboarding_state !== "INVITED" && identity.onboarding_state !== "PROFILE_SUBMITTED") {
       throw new PartnerIdentityError("AGENT_REFERRALS_LEGAL_PROFILE_SUBMISSION_LOCKED", 409, identity.onboarding_state);
     }
+    // PR-C2: resubmitting the draft the identity already carries is not a
+    // second submission. The old path rewrote the same columns and appended
+    // another LEGAL_PROFILE_SUBMITTED event every time - and the partner form
+    // stays on screen in PROFILE_SUBMITTED, so a lost response plus one more
+    // click reached it normally. Mirrors applyAgentReferralsLegalProfile's
+    // own idempotent no-op on an unchanged semantic profile.
+    const unchanged = identity.onboarding_state === "PROFILE_SUBMITTED"
+      && identity.submitted_legal_form === legalForm && identity.submitted_tax_mode === taxMode
+      && identity.submitted_opf === validated.opf && identity.submitted_full_name === validated.full_name
+      && identity.submitted_short_name === validated.short_name && identity.submitted_inn === validated.inn
+      && identity.submitted_kpp === validated.kpp && identity.submitted_registration_number === validated.registration_number
+      && identity.submitted_legal_address === validated.legal_address;
+    if (unchanged) return identity;
+
     db.prepare(`UPDATE partner_identities SET submitted_legal_form = ?, submitted_tax_mode = ?,
         submitted_opf = ?, submitted_full_name = ?, submitted_short_name = ?, submitted_inn = ?, submitted_kpp = ?, submitted_registration_number = ?, submitted_legal_address = ?,
         updated_at = CURRENT_TIMESTAMP WHERE id = ?`)

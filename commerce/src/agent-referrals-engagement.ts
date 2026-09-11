@@ -176,12 +176,23 @@ const insertEngagementRevisionInTransaction = (
   validateRevisionTerms(terms);
   const current = currentEngagementRevision(db, engagement.id);
   const occurrence = occurrenceFacts(db, engagement.occurrence_id)!;
+  // PR-C2: identical terms against the SAME occurrence material revision are
+  // not a second revision - re-minting only renumbers the chain, and the
+  // partner would be asked to accept terms they already accepted. The
+  // material revision is part of the comparison because content_hash covers
+  // the terms alone: the same terms against changed occurrence material ARE
+  // a new revision. At offer time there is no current revision, so this
+  // never fires on the first one.
+  const contentHash = revisionContentHash(terms);
+  if (current && current.content_hash === contentHash && current.occurrence_material_revision === occurrence.material_revision) {
+    return current;
+  }
   const revisionId = id();
   const nextRevision = (current?.revision ?? 0) + 1;
   db.prepare(`INSERT INTO engagement_revisions(id, engagement_id, revision, occurrence_material_revision, reward_type, reward_value, customer_discount_type, customer_discount_value, publication_start_at, publication_end_at, terms_json, content_hash, supersedes_revision_id, created_by_admin_id, reason)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(revisionId, engagement.id, nextRevision, occurrence.material_revision, terms.reward_type, terms.reward_value, terms.customer_discount_type, terms.customer_discount_value,
-      terms.publication_start_at, terms.publication_end_at, JSON.stringify(terms.terms ?? {}), revisionContentHash(terms), current?.id ?? null, admin.admin_id, reason);
+      terms.publication_start_at, terms.publication_end_at, JSON.stringify(terms.terms ?? {}), contentHash, current?.id ?? null, admin.admin_id, reason);
   return currentEngagementRevision(db, engagement.id)!;
 };
 

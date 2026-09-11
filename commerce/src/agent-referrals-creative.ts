@@ -75,12 +75,18 @@ export const mintCreativeRevision = (db: Database.Database, admin: AdminPrincipa
     if (!partnerPromo) throw new CreativeError("AGENT_REFERRALS_CREATIVE_PARTNER_HAS_NO_PROMO", 409, engagementId);
 
     const current = currentCreativeRevision(db, engagementId);
+    // PR-C2: creative_hash covers every material field, so an identical
+    // creative is not a second revision - it only renumbers the chain, and
+    // worse, it supersedes a revision an ORD registration may already point
+    // at. Re-minting the same content returns the existing revision.
+    const creativeHash = creativeHashOf(partnerPromo.promo_code_id, fields);
+    if (current && current.creative_hash === creativeHash) return current;
     const revisionId = id();
     const nextRevision = (current?.revision ?? 0) + 1;
     db.prepare(`INSERT INTO engagement_creative_revisions(id, engagement_id, revision, partner_id, promo_code_id, format_kind, media_ref, copy_text, cta_text, mandatory_labeling_text, creative_target_url, creative_hash, supersedes_creative_revision_id, created_by_admin_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(revisionId, engagementId, nextRevision, owner.agent_id, partnerPromo.promo_code_id, fields.format_kind, fields.media_ref, fields.copy_text, fields.cta_text, fields.mandatory_labeling_text, fields.creative_target_url,
-        creativeHashOf(partnerPromo.promo_code_id, fields), current?.id ?? null, admin.admin_id);
+        creativeHash, current?.id ?? null, admin.admin_id);
     return currentCreativeRevision(db, engagementId)!;
   });
   return run.immediate();
@@ -146,6 +152,17 @@ export const authorizeCreative = (db: Database.Database, admin: AdminPrincipal, 
     if (creative.promo_code_id !== promoAuthorization.promo_code_id) throw new CreativeError("AGENT_REFERRALS_CREATIVE_PROMO_MISMATCH", 409, creativeRevisionId);
 
     const existingCurrent = currentCreativeAuthorization(db, engagementId);
+    // PR-C2: the live authorization already names THIS creative revision
+    // against THIS promo authorization - authorizing it again is not a
+    // second decision, and the old path revoked the live authority and
+    // minted a replacement for it. A lost-response retry did exactly that:
+    // it churned the authority chain and left a revoked row behind for an
+    // authorization nothing had superseded.
+    if (existingCurrent
+      && existingCurrent.creative_revision_id === creativeRevisionId
+      && existingCurrent.promo_authorization_id === promoAuthorization.id) {
+      return existingCurrent;
+    }
     if (existingCurrent) {
       const changed = db.prepare(`UPDATE engagement_creative_authorizations SET revoked_at = strftime('%Y-%m-%d %H:%M:%f', 'now'), revoked_reason = 'SUPERSEDED_BY_NEW_AUTHORIZATION' WHERE id = ? AND revoked_at IS NULL`).run(existingCurrent.id);
       if (changed.changes !== 1) throw new CreativeError("AGENT_REFERRALS_CREATIVE_AUTHORIZATION_CONCURRENTLY_SUPERSEDED", 409, existingCurrent.id);

@@ -93,6 +93,11 @@ export const mintFrameworkAgreementRevision = (db: Database.Database, clauses: R
 
   const run = db.transaction((): ContentRevision => {
     const current = currentFrameworkAgreementRevision(db);
+    // PR-C2: content-addressed chain - an identical revision is never a
+    // meaningful second one, so re-minting the same clauses returns the
+    // existing revision instead of a superseding twin. That is also what
+    // makes a lost-response retry harmless here.
+    if (current && current.content_hash === hash) return current;
     const revisionId = id();
     const nextRevision = (current?.revision ?? 0) + 1;
     db.prepare(`INSERT INTO framework_agreement_revisions(id, revision, content_json, content_hash, supersedes_revision_id)
@@ -119,6 +124,11 @@ export const mintDelegationTemplateRevision = (db: Database.Database, clauses: R
 
   const run = db.transaction((): ContentRevision => {
     const current = currentDelegationTemplateRevision(db);
+    // PR-C2: content-addressed chain - an identical revision is never a
+    // meaningful second one, so re-minting the same clauses returns the
+    // existing revision instead of a superseding twin. That is also what
+    // makes a lost-response retry harmless here.
+    if (current && current.content_hash === hash) return current;
     const revisionId = id();
     const nextRevision = (current?.revision ?? 0) + 1;
     db.prepare(`INSERT INTO delegation_template_revisions(id, revision, ord_reporting_mode, content_json, content_hash, supersedes_revision_id)
