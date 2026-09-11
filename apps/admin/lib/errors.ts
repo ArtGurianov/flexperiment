@@ -106,6 +106,19 @@ const PRESENTATIONS: Readonly<Record<string, AdminErrorPresentation>> = {
     message: "Обнаружено расхождение в цепочке юридического профиля — обратитесь к разработчикам.",
   },
 
+  // PR-A: the legacy /agents surface may not write a projected legal
+  // identity. Reaching these from the admin UI means the card was opened
+  // against stale data (the partner's profile changed under it) - the fix
+  // is always to re-read, never to resend.
+  AGENT_REFERRALS_CONTRACTOR_TYPE_PROJECTION_LOCKED: {
+    message: "Тип исполнителя задаётся юридическим профилем партнёра и не меняется на этой карточке.",
+    hint: "Карточка перечитана. Чтобы изменить тип, проведите смену юридических данных партнёра в разделе Agent Referrals.",
+  },
+  AGENT_REFERRALS_LEGAL_IDENTITY_PROJECTION_LOCKED: {
+    message: "Наименование и ИНН задаются юридическим профилем партнёра и не меняются на этой карточке.",
+    hint: "Карточка перечитана. Реквизиты изменяются сменой юридических данных партнёра в разделе Agent Referrals.",
+  },
+
   // PR-F: tax/VAT treatment authority.
   AGENT_REFERRALS_TAX_TREATMENT_NPD_IS_SYSTEM_DERIVED: {
     message: "НПД фиксируется автоматически вместе с юридическим профилем и не может быть указан вручную.",
