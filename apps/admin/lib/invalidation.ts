@@ -21,6 +21,7 @@ export type AdminMutation =
   | "agentReferrals.featureState"
   | "agentReferrals.partnerProvision" | "agentReferrals.partnerCommand"
   | "agentReferrals.engagementOffer" | "agentReferrals.engagementCommand"
+  | "agentReferrals.creativeRegistrationCommand"
   | "agentReferrals.channelPolicy";
 
 export type MutationContext = {
@@ -32,6 +33,7 @@ export type MutationContext = {
   promoId?: string;
   partnerIdentityId?: string;
   engagementId?: string;
+  creativeRevisionId?: string;
   channelKey?: string;
 };
 
@@ -99,15 +101,27 @@ export function invalidationKeysFor(mutation: AdminMutation, ctx: MutationContex
         ...(ctx.partnerIdentityId ? [agentReferralsKeys.partner(ctx.partnerIdentityId)] : []),
         agentReferralsKeys.partners(), agentReferralsKeys.reviewQueue(), dashboardKeys.summary(),
       ];
+    // The list family, not one filtered list: a command has no way to know
+    // which partner filter the operator currently has typed in, and a key
+    // scoped to the command's own partner leaves the open list stale for
+    // every other filter value - including the empty one, which is the
+    // default.
     case "agentReferrals.engagementOffer":
-      return [
-        ...(ctx.partnerIdentityId ? [agentReferralsKeys.engagements(ctx.partnerIdentityId)] : []),
-        agentReferralsKeys.reviewQueue(), dashboardKeys.summary(),
-      ];
+      return [agentReferralsKeys.engagementLists(), agentReferralsKeys.reviewQueue(), dashboardKeys.summary()];
     case "agentReferrals.engagementCommand":
       return [
         ...(ctx.engagementId ? [agentReferralsKeys.engagement(ctx.engagementId)] : []),
-        ...(ctx.partnerIdentityId ? [agentReferralsKeys.engagements(ctx.partnerIdentityId)] : []),
+        agentReferralsKeys.engagementLists(), agentReferralsKeys.reviewQueue(), dashboardKeys.summary(),
+      ];
+    // The ORD registration list is keyed by creative revision, outside the
+    // engagement key space - so it needs its own arm rather than a
+    // component-local refetch. A refetch chained onto success would go on
+    // missing the one case this layer exists for: the command committed and
+    // the response was lost.
+    case "agentReferrals.creativeRegistrationCommand":
+      return [
+        ...(ctx.engagementId ? [agentReferralsKeys.engagement(ctx.engagementId)] : []),
+        ...(ctx.creativeRevisionId ? [agentReferralsKeys.creativeRegistrations(ctx.creativeRevisionId)] : []),
         agentReferralsKeys.reviewQueue(), dashboardKeys.summary(),
       ];
     case "agentReferrals.channelPolicy":
@@ -128,5 +142,6 @@ export const ALL_ADMIN_MUTATIONS: readonly AdminMutation[] = [
   "agent.create", "agent.patch", "promo.create", "promo.patch",
   "emergency-sales-pause", "emergency-sales-reopen",
   "agentReferrals.featureState", "agentReferrals.partnerProvision", "agentReferrals.partnerCommand",
-  "agentReferrals.engagementOffer", "agentReferrals.engagementCommand", "agentReferrals.channelPolicy",
+  "agentReferrals.engagementOffer", "agentReferrals.engagementCommand", "agentReferrals.creativeRegistrationCommand",
+  "agentReferrals.channelPolicy",
 ];

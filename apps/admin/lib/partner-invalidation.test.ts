@@ -22,12 +22,25 @@ describe("partnerInvalidationKeysFor", () => {
     expect(partnerInvalidationKeysFor("partner.actAccept", {})).toContainEqual(partnerKeys.engagements());
   });
 
-  it("leaves conversions alone: no partner command moves them", () => {
-    // They follow real orders, so refetching them on every act acceptance
-    // would be request budget spent on an answer that cannot have changed.
+  it("leaves conversions alone - proven by PREFIX matching, which is what invalidateQueries actually does", () => {
+    // Asserting "the conversions key is not in the array" proves nothing:
+    // invalidateQueries({queryKey: K}) matches every query whose key STARTS
+    // WITH K, so a key that is a prefix of the conversions key invalidates it
+    // just as surely as naming it. That is precisely how the first version of
+    // this table did invalidate conversions while claiming not to, back when
+    // they lived under ["partner","engagement",id,"conversions"].
+    const invalidates = (declared: readonly unknown[], target: readonly unknown[]) =>
+      declared.length <= target.length && declared.every((segment, index) => target[index] === segment);
+    const conversions = partnerKeys.conversions("e1");
     for (const mutation of ALL_PARTNER_MUTATIONS) {
-      expect(partnerInvalidationKeysFor(mutation, { engagementId: "e1" })).not.toContainEqual(partnerKeys.conversions("e1"));
+      for (const key of partnerInvalidationKeysFor(mutation, { engagementId: "e1" })) {
+        expect(invalidates(key as readonly unknown[], conversions), `${mutation} invalidates conversions via ${JSON.stringify(key)}`).toBe(false);
+      }
     }
+    // ...and the engagement detail IS still reached, so the test above is not
+    // passing merely because nothing is invalidated at all.
+    const acceptKeys = partnerInvalidationKeysFor("partner.actAccept", { engagementId: "e1" });
+    expect(acceptKeys.some((key) => invalidates(key as readonly unknown[], partnerKeys.engagement("e1")))).toBe(true);
   });
 
   it("keeps the two realms disjoint: neither table can reach into the other's cache", () => {

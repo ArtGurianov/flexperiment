@@ -63,9 +63,23 @@ export const createPartnerPromo = (db: Database.Database, admin: AdminPrincipal,
   const normalized = promoCodeSchema.parse(input.code);
   const run = db.transaction((): PartnerPromoRow => {
     const promoCodeId = id();
-    db.prepare(`INSERT INTO promo_codes(id, agent_id, code, normalized_code, status, discount_type, discount_value)
-      VALUES (?, ?, ?, ?, 'ACTIVE', 'NONE', 0)`)
-      .run(promoCodeId, input.partner_id, normalized, normalized);
+    try {
+      db.prepare(`INSERT INTO promo_codes(id, agent_id, code, normalized_code, status, discount_type, discount_value)
+        VALUES (?, ?, ?, ?, 'ACTIVE', 'NONE', 0)`)
+        .run(promoCodeId, input.partner_id, normalized, normalized);
+    } catch (error) {
+      // PR-C idempotency audit, same defect class as provisionPartnerOwner:
+      // this command carries no durable key, so a retry after an ambiguous
+      // network failure meets normalized_code UNIQUE as a raw SqliteError -
+      // a 500 for what is really "that code is taken" (very often taken by
+      // the operator's OWN first attempt, which succeeded). The legacy admin
+      // promo surface already names this exact condition; agent-referrals
+      // reuses its code rather than inventing a second one.
+      if (error instanceof Error && /UNIQUE constraint failed: promo_codes\.normalized_code/.test(error.message)) {
+        throw new AgentReferralsPromoError("PROMO_CODE_ALREADY_EXISTS", 409, normalized);
+      }
+      throw error;
+    }
     const partnerPromoId = id();
     db.prepare(`INSERT INTO partner_promos(id, promo_code_id, partner_id, created_by_admin_id) VALUES (?, ?, ?, ?)`)
       .run(partnerPromoId, promoCodeId, input.partner_id, admin.admin_id);

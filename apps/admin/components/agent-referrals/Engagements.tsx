@@ -158,14 +158,19 @@ function CreativeSection({ engagementId, creative }: { engagementId: string; cre
   });
   const currentRegistration = registrations.data?.registrations.at(-1) ?? null;
 
-  const command = useEngagementCommand(engagementId);
+  // Declares creativeRevisionId so the ORD registration list - keyed by
+  // creative revision, outside the engagement key space - is refreshed by
+  // the same contract as everything else, on an ambiguous failure too. A
+  // refetch chained onto success went on missing exactly the case this
+  // layer exists for: the command committed and the response was lost.
+  const command = useAdminMutation("agentReferrals.creativeRegistrationCommand",
+    ({ path, body }: { path: string; body?: Record<string, unknown> }) =>
+      api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body ?? {}) }),
+    { context: () => ({ engagementId, creativeRevisionId: creative ? String(creative.id) : undefined }) });
   const busy = command.isPending;
   const error = command.error?.code ?? null;
-  // The ORD registration list is this section's own query, outside the
-  // shared table (it is keyed by creative revision, not by engagement), so
-  // it is refetched explicitly rather than pretending the table covers it.
   const run = async (path: string, body: Record<string, unknown> = {}) => {
-    await command.mutateAsync({ path, body }).then(() => registrations.refetch()).catch(() => undefined);
+    await command.mutateAsync({ path, body }).catch(() => undefined);
   };
 
   const mint = handleSubmit((values) => run(`/agent-referrals/engagements/${engagementId}/creative`, values));

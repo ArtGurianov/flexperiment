@@ -93,6 +93,8 @@ export const agentReferralsKeys = {
   reviewQueue: () => ["agent-referrals", "review-queue"] as const,
   partners: () => ["agent-referrals", "partners"] as const,
   partner: (partnerIdentityId: string) => ["agent-referrals", "partner", partnerIdentityId] as const,
+  /** The list FAMILY. A command cannot know which partner filter the operator currently has typed in, so it invalidates the family and every filtered list under it re-reads. Detail keys live under the singular "engagement" segment, so this prefix never reaches them. */
+  engagementLists: () => ["agent-referrals", "engagements"] as const,
   engagements: (partnerIdentityId: string) => ["agent-referrals", "engagements", partnerIdentityId] as const,
   engagement: (engagementId: string) => ["agent-referrals", "engagement", engagementId] as const,
   creativeRegistrations: (creativeRevisionId: string) => ["agent-referrals", "creative-registrations", creativeRevisionId] as const,
@@ -112,5 +114,13 @@ export const partnerKeys = {
   payoutProfile: () => ["partner", "payout-profile"] as const,
   engagements: () => ["partner", "engagements"] as const,
   engagement: (engagementId: string) => ["partner", "engagement", engagementId] as const,
-  conversions: (engagementId: string) => ["partner", "engagement", engagementId, "conversions"] as const,
+  /**
+   * A SIBLING of engagement(), not a child. TanStack matches invalidation by
+   * key prefix, so ["partner","engagement",id,"conversions"] would be swept
+   * up by every engagement invalidation - which is exactly what the table
+   * claims it does not do. Conversions follow real orders; no partner
+   * command moves them, and refetching them on every act acceptance is
+   * request budget spent on an answer that cannot have changed.
+   */
+  conversions: (engagementId: string) => ["partner", "conversions", engagementId] as const,
 };
