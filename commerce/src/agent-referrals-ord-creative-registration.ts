@@ -129,6 +129,16 @@ export const recordOrdCreativeRegistrationSubmitted = (db: Database.Database, re
     const registration = ordCreativeRegistrationById(db, registrationId);
     if (!registration) throw new OrdCreativeRegistrationError("AGENT_REFERRALS_ORD_CREATIVE_REGISTRATION_NOT_FOUND", 404, registrationId);
     if (registration.lock_state !== "MUTABLE") throw new OrdCreativeRegistrationError("AGENT_REFERRALS_ORD_CREATIVE_REGISTRATION_NOT_MUTABLE", 409, registrationId);
+    // PR-C2 MONOTONIC_REPLAY_SAFE, exactly as the provider operation's own
+    // submission: 0048's observed-id guard makes a non-null vk_external_id
+    // unchangeable in place, so no legal B* can replace it and a correction
+    // must mint a new revision instead. evidence_ref alone stayed writable,
+    // which is what this branch closes - an exact restatement replays, and
+    // anything else is a named conflict rather than an overwrite.
+    if (registration.vk_external_id !== null) {
+      if (registration.vk_external_id === vkExternalId && registration.evidence_ref === evidenceRef) return registration;
+      throw new OrdCreativeRegistrationError("AGENT_REFERRALS_ORD_CREATIVE_REGISTRATION_SUBMISSION_CONFLICT", 409, registrationId);
+    }
     const changed = db.prepare(`UPDATE ord_creative_registrations SET local_state = 'SUBMITTED', vk_submission_state = 'SUBMITTED', vk_external_id = ?, evidence_ref = ?
       WHERE id = ? AND lock_state = 'MUTABLE'`).run(vkExternalId, evidenceRef, registrationId);
     if (changed.changes !== 1) throw new OrdCreativeRegistrationError("AGENT_REFERRALS_ORD_CREATIVE_REGISTRATION_CONCURRENT_CONFLICT", 409, registrationId);

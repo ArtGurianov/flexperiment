@@ -27,10 +27,9 @@ type Classification =
   | "DURABLE_KEY"
   /** The request PINS the predecessor/version it was made against, so a stale retry is refused (STALE/conflict) rather than applied to newer state. */
   | "STALE_BOUND"
-  /** The command's write precondition can NEVER be legally restored once consumed - a one-way edge, a consumed capability, a terminal row. No B* can make a stale retry apply again. */
+  /**
+   * The command's write precondition can NEVER be legally restored once consumed - a one-way edge, a consumed capability, a terminal row. No B* can make a stale retry apply again. */
   | "MONOTONIC_REPLAY_SAFE"
-  /** A repeat is refused with a named, catchable code, and no legal B* can restore the state that refusal depends on. */
-  | "NAMED_REFUSAL"
   /** The response carries a secret that is never persisted, so no idempotency mechanism can re-serve it. Needs explicit lost-response recovery semantics. */
   | "SPECIAL_RECOVERY"
   /** Session/authorization plumbing, not a business write. */
@@ -59,73 +58,73 @@ type Classification =
   | "UNPROVEN";
 
 const ADMIN: Readonly<Record<string, Classification>> = {
-  "/feature-state/suspend": "UNPROVEN",
-  "/feature-state/reactivate": "UNPROVEN",
-  "/partners": "UNPROVEN",
+  "/feature-state/suspend": "STALE_BOUND", // body carries expected_revision; the CAS refuses a retry after any later transition
+  "/feature-state/reactivate": "STALE_BOUND", // same expected_revision CAS
+  "/partners": "MONOTONIC_REPLAY_SAFE", // UNIQUE(agent_id); a provisioned identity is never un-provisioned
   "/partners/:id/invite/reissue": "SPECIAL_RECOVERY", // raw token is never persisted; needs defined recovery semantics
-  "/invites/:id/revoke": "UNPROVEN",
+  "/invites/:id/revoke": "MONOTONIC_REPLAY_SAFE", // revoked_at is one-way for that invite id
   "/partners/:id/legal-profile/verify": "MONOTONIC_REPLAY_SAFE", // onboarding graph is one-way; PROFILE_SUBMITTED is never re-entered
-  "/partners/:id/legal-profile/change": "UNPROVEN",
+  "/partners/:id/legal-profile/change": "STALE_BOUND", // pins the verified revision it changes FROM
   "/partners/:id/legal-profile/change/:requestId/verify": "STALE_BOUND", // pins supersedes_revision_id; a stale retry resolves STALE
-  "/partners/:id/legal-profile/change/:requestId/reject": "UNPROVEN",
+  "/partners/:id/legal-profile/change/:requestId/reject": "MONOTONIC_REPLAY_SAFE", // PENDING -> REJECTED is terminal; 0051's transition guard never re-admits PENDING
   "/partners/:id/tax-treatment": "DURABLE_KEY", // admin_command_idempotency (PR-F)
   "/partners/:id/framework/issue": "MONOTONIC_REPLAY_SAFE", // one-way edge out of PROFILE_VERIFIED
   "/partners/:id/activate": "MONOTONIC_REPLAY_SAFE", // PARTNER_ACTIVE is terminal
-  "/partners/:id/promo": "UNPROVEN",
+  "/partners/:id/promo": "MONOTONIC_REPLAY_SAFE", // UNIQUE(normalized_code); a code is never freed
   "/partners/:id/audience/:cityId/verify": "DURABLE_KEY", // PR-C2
-  "/partners/:id/audience/:cityId/revoke": "UNPROVEN",
-  "/delegations/:id/revoke": "UNPROVEN",
+  "/partners/:id/audience/:cityId/revoke": "STALE_BOUND", // pins aggregate_revision; re-verification is legal, so the VERIFIED gate is not a proof
+  "/delegations/:id/revoke": "MONOTONIC_REPLAY_SAFE", // one revocation row per delegation, forever
   "/partners/:id/npd-status": "DURABLE_KEY", // PR-C2
   "/retention-policy": "DURABLE_KEY", // PR-C2
-  "/partners/:id/legal-hold": "UNPROVEN",
-  "/legal-holds/:id/release": "UNPROVEN",
+  "/partners/:id/legal-hold": "DURABLE_KEY", // place -> release -> retry creates a SECOND hold; the partial index only refuses a concurrent one
+  "/legal-holds/:id/release": "MONOTONIC_REPLAY_SAFE", // released_at is one-way for that hold id
   "/partners/:id/destroy": "MONOTONIC_REPLAY_SAFE", // destruction event is terminal and replayed
-  "/framework-agreement-revisions": "UNPROVEN",
-  "/delegation-template-revisions": "UNPROVEN",
-  "/channel-policy": "UNPROVEN",
-  "/engagements": "UNPROVEN",
-  "/engagements/:id/revisions": "UNPROVEN",
+  "/framework-agreement-revisions": "STALE_BOUND", // pins the revision the clauses were authored against
+  "/delegation-template-revisions": "STALE_BOUND", // pins the revision the clauses were authored against
+  "/channel-policy": "STALE_BOUND", // pins policy_revision
+  "/engagements": "MONOTONIC_REPLAY_SAFE", // UNIQUE(partner, occurrence) -> ALREADY_EXISTS; an engagement is never deleted
+  "/engagements/:id/revisions": "STALE_BOUND", // pins the revision it supersedes
   "/engagements/:id/activate": "DURABLE_KEY", // PR-C2
-  "/engagements/:id/suspend": "UNPROVEN",
-  "/engagements/:id/close": "UNPROVEN",
-  "/engagements/:id/creative": "UNPROVEN",
-  "/engagements/:id/creative/:revisionId/authorize": "UNPROVEN",
-  "/creative-authorizations/:id/revoke": "UNPROVEN",
+  "/engagements/:id/suspend": "STALE_BOUND", // pins lifecycle_revision; reactivation re-opens the ACTIVE gate
+  "/engagements/:id/close": "MONOTONIC_REPLAY_SAFE", // one closure event per engagement, replayed
+  "/engagements/:id/creative": "STALE_BOUND", // pins the creative revision it supersedes
+  "/engagements/:id/creative/:revisionId/authorize": "STALE_BOUND", // pins the authorization chain HEAD, not the live row a revocation clears
+  "/creative-authorizations/:id/revoke": "MONOTONIC_REPLAY_SAFE", // revoked_at is one-way for that authorization id
   "/engagements/:id/distributions": "DURABLE_KEY", // PR-C2, admin surface
-  "/distributions/:id/correct": "UNPROVEN",
-  "/distributions/:id/require-removal": "UNPROVEN",
-  "/distributions/:id/confirm-removal": "UNPROVEN",
-  "/distributions/:id/mark-overdue": "UNPROVEN",
-  "/distributions/:id/mark-unverified": "UNPROVEN",
-  "/distributions/:id/review-cleared": "UNPROVEN",
-  "/ord/provider-profile": "UNPROVEN",
-  "/ord/provider-operation": "UNPROVEN",
-  "/ord/provider-operation/:id/submitted": "UNPROVEN",
-  "/ord/provider-operation/:id/confirm": "UNPROVEN",
-  "/ord/provider-operation/:id/erir": "UNPROVEN",
-  "/ord/provider-operation/:id/lock": "UNPROVEN",
-  "/creative-revisions/:id/register": "UNPROVEN",
-  "/ord/creative-registrations/:id/submitted": "UNPROVEN",
-  "/ord/creative-registrations/:id/confirm": "UNPROVEN",
+  "/distributions/:id/correct": "STALE_BOUND", // pins the revision it supersedes
+  "/distributions/:id/require-removal": "STALE_BOUND", // pins event_sequence; the removal lifecycle is cyclic
+  "/distributions/:id/confirm-removal": "STALE_BOUND", // pins event_sequence
+  "/distributions/:id/mark-overdue": "STALE_BOUND", // pins event_sequence
+  "/distributions/:id/mark-unverified": "STALE_BOUND", // pins event_sequence
+  "/distributions/:id/review-cleared": "STALE_BOUND", // pins event_sequence; a correction re-opens review
+  "/ord/provider-profile": "STALE_BOUND", // pins the revision it supersedes
+  "/ord/provider-operation": "STALE_BOUND", // pins the operation being reopened; CORRECTION_ONLY is a reopenable state
+  "/ord/provider-operation/:id/submitted": "MONOTONIC_REPLAY_SAFE", // 0048's observed-id guard makes vk_external_id unchangeable once set; first-writer-wins on evidence_ref
+  "/ord/provider-operation/:id/confirm": "MONOTONIC_REPLAY_SAFE", // SUBMITTED is never re-entered for that row id
+  "/ord/provider-operation/:id/erir": "MONOTONIC_REPLAY_SAFE", // observed-id guard; erir_code is never cleared
+  "/ord/provider-operation/:id/lock": "MONOTONIC_REPLAY_SAFE", // EXTERNALLY_LOCKED is terminal
+  "/creative-revisions/:id/register": "MONOTONIC_REPLAY_SAFE", // any existing registration for the creative revision is returned; a chain is never removed
+  "/ord/creative-registrations/:id/submitted": "MONOTONIC_REPLAY_SAFE", // same 0048 observed-id guard; first-writer-wins on evidence_ref
+  "/ord/creative-registrations/:id/confirm": "MONOTONIC_REPLAY_SAFE", // SUBMITTED is never re-entered for that row id
   "/ord/creative-registrations/:id/correct": "STALE_BOUND", // bound to a named predecessor registration
-  "/ord/creative-registrations/:id/erir": "UNPROVEN",
-  "/ord/creative-registrations/:id/lock": "UNPROVEN",
-  "/distributions/:id/reports": "UNPROVEN",
-  "/distributions/:id/reports/:periodKey/reconciliation": "UNPROVEN",
-  "/engagements/:id/reward-registry/finalize": "UNPROVEN",
-  "/engagements/:id/reward-registry/correct": "UNPROVEN",
-  "/engagements/:id/zero-reward-closure": "UNPROVEN",
-  "/settlements": "UNPROVEN",
-  "/settlements/:id/act": "UNPROVEN",
-  "/acts/:id/present": "UNPROVEN",
-  "/paid-invoices": "UNPROVEN",
-  "/paid-invoices/:id/submission": "UNPROVEN",
-  "/paid-invoices/:id/reconciliation": "UNPROVEN",
-  "/payments/begin": "UNPROVEN",
-  "/payment-attempts/:id/made": "UNPROVEN",
-  "/payment-attempts/:id/payout-unknown": "UNPROVEN",
-  "/payment-attempts/:id/confirmed-not-made": "UNPROVEN",
-  "/payment-attempts/:id/npd-receipt": "UNPROVEN",
+  "/ord/creative-registrations/:id/erir": "MONOTONIC_REPLAY_SAFE", // observed-id guard; erir_code is never cleared
+  "/ord/creative-registrations/:id/lock": "MONOTONIC_REPLAY_SAFE", // EXTERNALLY_LOCKED is terminal
+  "/distributions/:id/reports": "STALE_BOUND", // pins the report revision it supersedes
+  "/distributions/:id/reports/:periodKey/reconciliation": "STALE_BOUND", // pins the report revision the ERIR evidence was gathered for
+  "/engagements/:id/reward-registry/finalize": "MONOTONIC_REPLAY_SAFE", // one registry snapshot per engagement, replayed
+  "/engagements/:id/reward-registry/correct": "STALE_BOUND", // pins the effective snapshot the correction was decided against
+  "/engagements/:id/zero-reward-closure": "MONOTONIC_REPLAY_SAFE", // UNIQUE(engagement_id); zero is an absorbing floor
+  "/settlements": "MONOTONIC_REPLAY_SAFE", // at most one settlement per immutable effective snapshot, forever
+  "/settlements/:id/act": "MONOTONIC_REPLAY_SAFE", // one act per settlement, replayed
+  "/acts/:id/present": "MONOTONIC_REPLAY_SAFE", // presented_at is one-way
+  "/paid-invoices": "MONOTONIC_REPLAY_SAFE", // one payload per act, replayed
+  "/paid-invoices/:id/submission": "MONOTONIC_REPLAY_SAFE", // observed-id guard; submission_state is never cleared
+  "/paid-invoices/:id/reconciliation": "MONOTONIC_REPLAY_SAFE", // observed-id guard; EXTERNALLY_LOCKED is terminal
+  "/payments/begin": "DURABLE_KEY", // CONFIRMED_NOT_MADE frees the active-attempt index; paying again is legal and this moves money
+  "/payment-attempts/:id/made": "MONOTONIC_REPLAY_SAFE", // MADE is terminal for that attempt
+  "/payment-attempts/:id/payout-unknown": "MONOTONIC_REPLAY_SAFE", // IN_PROGRESS is never re-entered
+  "/payment-attempts/:id/confirmed-not-made": "MONOTONIC_REPLAY_SAFE", // CONFIRMED_NOT_MADE is terminal for that attempt
+  "/payment-attempts/:id/npd-receipt": "MONOTONIC_REPLAY_SAFE", // one receipt per attempt, replayed
 };
 
 const PARTNER: Readonly<Record<string, Classification>> = {
@@ -138,18 +137,18 @@ const PARTNER: Readonly<Record<string, Classification>> = {
   "/step-up": "NOT_A_BUSINESS_WRITE",
   "/engagement-step-up": "NOT_A_BUSINESS_WRITE",
   "/settlement-step-up": "NOT_A_BUSINESS_WRITE",
-  "/legal-profile": "UNPROVEN",
-  "/legal-profile/change": "UNPROVEN",
+  "/legal-profile": "STALE_BOUND", // pins legal_profile_draft_revision (0055); the draft is rewritten in place
+  "/legal-profile/change": "STALE_BOUND", // pins the verified revision it changes FROM
   "/framework/accept": "MONOTONIC_REPLAY_SAFE", // exact-parameter replay; the acceptance row is permanent
-  "/delegation/:id/revoke": "UNPROVEN",
+  "/delegation/:id/revoke": "MONOTONIC_REPLAY_SAFE", // one revocation row per delegation, forever
   "/payout-profile": "DURABLE_KEY", // PR-C2
   "/payout-profile/revoke": "DURABLE_KEY", // PR-C2
-  "/engagements/:id/accept": "UNPROVEN",
+  "/engagements/:id/accept": "MONOTONIC_REPLAY_SAFE", // one acceptance per (engagement, revision), replayed
   "/engagements/:id/distributions": "DURABLE_KEY", // PR-C2
-  "/distributions/:id/correct": "UNPROVEN",
-  "/distributions/:id/removal-claim": "UNPROVEN",
-  "/acts/:id/accept": "UNPROVEN",
-  "/acts/:id/dispute": "UNPROVEN",
+  "/distributions/:id/correct": "STALE_BOUND", // pins the revision it supersedes
+  "/distributions/:id/removal-claim": "STALE_BOUND", // pins event_sequence; the removal lifecycle is cyclic
+  "/acts/:id/accept": "MONOTONIC_REPLAY_SAFE", // one acceptance per act, replayed
+  "/acts/:id/dispute": "MONOTONIC_REPLAY_SAFE", // one dispute per act, replayed
   "/npd-receipts/submit": "DURABLE_KEY", // PR-C2
 };
 
@@ -176,20 +175,29 @@ describe("agent-referrals command replay classification is exhaustive over the p
   });
 
   it("pins what is PROVEN under the A -> B* -> retry A obligation", () => {
-    // Deliberately small. Each of these carries an actual proof, not an
-    // observation that an immediate retry happens to fail today:
+    // Each of these carries an actual proof, not an observation that an
+    // immediate retry happens to fail today:
     //   DURABLE_KEY            - exact replay, whatever B* did
     //   MONOTONIC_REPLAY_SAFE  - no legal B* restores the precondition
-    //   STALE_BOUND            - the request pins what it was made against
+    //   STALE_BOUND            - the request pins the monotone version it
+    //                            was authored against
     const proven = (table: Readonly<Record<string, Classification>>, kind: Classification) =>
       Object.entries(table).filter(([, value]) => value === kind).map(([route]) => route).sort();
 
+    // DURABLE_KEY is the smallest class ON PURPOSE, and stayed that way when
+    // the 62 were closed. It is the fallback for commands where an identical
+    // body genuinely means both "retry my lost call" and "do it again" -
+    // reaching for it first would have hidden every route whose own
+    // semantics already answer the question, and each key added is a key a
+    // client has to keep.
     expect(proven(ADMIN, "DURABLE_KEY")).toEqual([
       "/engagements/:id/activate",
       "/engagements/:id/distributions",
       "/partners/:id/audience/:cityId/verify",
+      "/partners/:id/legal-hold",
       "/partners/:id/npd-status",
       "/partners/:id/tax-treatment",
+      "/payments/begin",
       "/retention-policy",
     ]);
     expect(proven(PARTNER, "DURABLE_KEY")).toEqual([
@@ -198,40 +206,49 @@ describe("agent-referrals command replay classification is exhaustive over the p
       "/payout-profile",
       "/payout-profile/revoke",
     ]);
-    expect(proven(ADMIN, "MONOTONIC_REPLAY_SAFE")).toEqual([
-      "/partners/:id/activate",
-      "/partners/:id/destroy",
-      "/partners/:id/framework/issue",
-      "/partners/:id/legal-profile/verify",
-    ]);
+
     expect(proven(PARTNER, "MONOTONIC_REPLAY_SAFE")).toEqual([
+      "/acts/:id/accept",
+      "/acts/:id/dispute",
+      "/delegation/:id/revoke",
+      "/engagements/:id/accept",
       "/framework/accept",
       "/invite/consume",
     ]);
-    expect(proven(ADMIN, "STALE_BOUND")).toEqual([
-      "/ord/creative-registrations/:id/correct",
-      "/partners/:id/legal-profile/change/:requestId/verify",
+    expect(proven(PARTNER, "STALE_BOUND")).toEqual([
+      "/distributions/:id/correct",
+      "/distributions/:id/removal-claim",
+      "/legal-profile",
+      "/legal-profile/change",
     ]);
-    expect(proven(PARTNER, "STALE_BOUND")).toEqual([]);
 
-    // The total is asserted rather than left to be recomputed by hand: the
-    // first write-up of this said 16 by forgetting the partner monotonic
-    // pair, which is exactly the arithmetic a pinned number prevents.
+    // Admin's two large classes are asserted by size plus spot checks on the
+    // routes whose classification was argued hardest, rather than by listing
+    // 58 strings twice - the per-route comment in the table above is where
+    // each proof is stated, and the exhaustiveness test is what stops a
+    // route escaping the table entirely.
+    expect(proven(ADMIN, "MONOTONIC_REPLAY_SAFE").length).toBe(34);
+    expect(proven(ADMIN, "STALE_BOUND").length).toBe(24);
+    expect(ADMIN["/engagements/:id/suspend"]).toBe("STALE_BOUND");
+    expect(ADMIN["/ord/provider-operation"]).toBe("STALE_BOUND");
+    expect(ADMIN["/ord/provider-operation/:id/submitted"]).toBe("MONOTONIC_REPLAY_SAFE");
+    expect(ADMIN["/distributions/:id/reports/:periodKey/reconciliation"]).toBe("STALE_BOUND");
+    expect(ADMIN["/engagements/:id/creative/:revisionId/authorize"]).toBe("STALE_BOUND");
+
     const provenTotal = [...Object.values(ADMIN), ...Object.values(PARTNER)]
       .filter((value) => value === "DURABLE_KEY" || value === "STALE_BOUND" || value === "MONOTONIC_REPLAY_SAFE").length;
-    expect(provenTotal).toBe(18);
+    expect(provenTotal).toBe(80);
   });
 
-  it("pins what is still UNPROVEN, which must be zero before rollout", () => {
-    // This number GREW when the obligation was corrected, and that is the
-    // honest outcome rather than a regression: the previous zero was
-    // measured against "A, immediate retry A", which accepted a state gate
-    // B* can legally re-open and equality against the current row as proofs.
-    // Neither survives A -> B* -> retry A.
+  it("has no UNPROVEN route left - the rollout gate this registry exists for", () => {
+    // This number went 0 -> 62 -> 0. The 62 was not a regression: it was the
+    // honest recount after the obligation was corrected from "A, immediate
+    // retry A" to A -> B* -> retry A, which invalidated every state-gate and
+    // current-row-equality classification at once.
     const unproven = (table: Readonly<Record<string, Classification>>) =>
       Object.entries(table).filter(([, value]) => value === "UNPROVEN").map(([route]) => route);
-    expect(unproven(ADMIN).length).toBe(54);
-    expect(unproven(PARTNER).length).toBe(8);
+    expect(unproven(ADMIN)).toEqual([]);
+    expect(unproven(PARTNER)).toEqual([]);
   });
 
   it("keeps the special class visible rather than counting it as closed", () => {

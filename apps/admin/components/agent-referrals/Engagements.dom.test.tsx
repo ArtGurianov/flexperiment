@@ -15,6 +15,8 @@ const distributionRow = (removalState: string | null) => ({
   current_revision: { revision: 1, channel_key: "telegram", channel_policy_status: "ALLOWED", resource_kind: "channel", resource_identifier: "x", distribution_resource_url: "https://t.me/x/1", published_at: "2026-01-01T00:00:00.000Z", ended_at: null, reported_by: "PARTNER", correction_reason: null, evidence_ref: "ev", created_at: "now" },
   compliance_state: "MARKED_REPORTABLE",
   removal_state: removalState,
+  // PR-C2: the monotone counter every lifecycle command is authored against.
+  event_sequence: 7,
   reporting_periods: [],
 });
 
@@ -59,7 +61,9 @@ describe("Engagements (Agent Referrals admin console): distribution removal veri
     await user.type(evidenceInput, "https://t.me/x/1/2 — screenshot reviewed 2026-09-05");
     await user.click(confirmButton);
     await waitFor(() => expect(confirmCalls).toHaveLength(1));
-    expect(confirmCalls[0].body).toEqual({ evidence_ref: "https://t.me/x/1/2 — screenshot reviewed 2026-09-05" });
+    // PR-C2: the command also carries the event_sequence the row was
+    // rendered with, so a stale click is refused rather than appended.
+    expect(confirmCalls[0].body).toEqual({ evidence_ref: "https://t.me/x/1/2 — screenshot reviewed 2026-09-05", expected_event_sequence: 7 });
   });
 
   it("never offers 'confirm removal' for a distribution with no removal event yet - only 'require removal'", async () => {
@@ -180,6 +184,9 @@ describe("Engagements (Agent Referrals admin console): distribution removal veri
       statistics: { statistics_state: "ACTUAL", statistics_json: { views: 1000 } },
       evidence_ref: "ord-report-evidence",
       correction_reason: undefined,
+      // PR-C2: null because this fixture has no report filed for the period
+      // yet - the panel resolves the pin from the periods it rendered.
+      expected_current_report_id: null,
     });
 
     const reconciliationForm = (await screen.findByText("Сверка ЕРИР по периоду")).closest("form") as HTMLElement;
@@ -191,6 +198,7 @@ describe("Engagements (Agent Referrals admin console): distribution removal veri
     await waitFor(() => expect(reconciliationCalls).toHaveLength(1));
     expect(reconciliationCalls[0].body).toEqual({
       vk_operation_external_id: "vk-op-1", erir_code: "erir-1", submission_evidence_ref: "submission-evidence",
+      expected_current_report_id: null,
     });
   });
 
@@ -439,7 +447,7 @@ describe("Engagements (Agent Referrals admin console): distribution removal veri
       await user.type(evidenceInput, "confirmed by operator after review");
       await user.click(screen.getByRole("button", { name: "Подтвердить снятие" }));
       await waitFor(() => expect(confirmCalls).toHaveLength(1));
-      expect(confirmCalls[0].body).toEqual({ evidence_ref: "confirmed by operator after review" });
+      expect(confirmCalls[0].body).toEqual({ evidence_ref: "confirmed by operator after review", expected_event_sequence: 7 });
     },
   );
 

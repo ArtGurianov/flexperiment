@@ -106,9 +106,19 @@ export function Profile() {
   // what to send. A failure is not swallowed here - it is rendered from the
   // hook's own error below, and an ambiguous one has already triggered an
   // authoritative refresh by the time it lands there.
-  const submitLegalProfile = handleSubmit(async (values) => { await submit.mutateAsync(values).catch(() => undefined); });
+  //
+  // PR-C2: both commands carry the version this screen was rendered from.
+  // The draft counter, not the draft's content: editing the draft and
+  // editing it back would restore a content pin to exactly what a stale
+  // retry was authored against, and the counter never goes backwards.
+  const submitLegalProfile = handleSubmit(async (values) => {
+    await submit.mutateAsync({ ...values, expected_draft_revision: Number(profile.data?.legal_profile_draft_revision ?? 0) }).catch(() => undefined);
+  });
   const submitChangeRequest = changeForm.handleSubmit(async (values) => {
-    await change.mutateAsync(values).then(() => changeForm.reset()).catch(() => undefined);
+    await change.mutateAsync({
+      ...values,
+      expected_current_legal_profile_revision: Number((profile.data?.legal_profile as Row | null)?.revision ?? 0),
+    }).then(() => changeForm.reset()).catch(() => undefined);
   });
 
   if (profile.isLoading) return <Loading />;

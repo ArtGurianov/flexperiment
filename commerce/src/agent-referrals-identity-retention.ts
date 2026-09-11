@@ -87,14 +87,19 @@ export const placeLegalHold = (db: Database.Database, admin: AdminPrincipal, par
   db.transaction(() => placeLegalHoldInTransaction(db, admin, partnerIdentityId, reason)).immediate();
 
 /**
- * PR-C2: this command does NOT need a durable key, and the invariant matrix
- * is what established that - the first draft gave it one. 0044's
- * partner_identity_legal_holds_active_unique is a PARTIAL unique index on
- * released_at IS NULL, so a partner can carry at most one ACTIVE hold: a
- * retry cannot create a second, it meets the index. What it met there was a
- * raw SqliteError - a 500 for "this partner is already on hold". Naming the
- * refusal is the entire fix. Placing another hold AFTER a release stays
- * legal, exactly as the partial predicate says.
+ * Names the refusal 0044's partner_identity_legal_holds_active_unique
+ * already enforces - a PARTIAL unique index on released_at IS NULL, so a
+ * partner carries at most one ACTIVE hold and a second attempt met a raw
+ * SqliteError (a 500 for "this partner is already on hold") before this
+ * existed. Correct and worth keeping on its own merits.
+ *
+ * It is NOT, however, a replay proof, and this classification has now moved
+ * twice: key -> name -> key. The partial predicate says exactly what the
+ * index does and does not cover - placing another hold AFTER a release is
+ * legal - so `place -> release -> retried place` creates a second hold and
+ * a release is entirely ordinary work. Under A -> B* -> retry A only a
+ * caller-supplied command key separates that retry from a deliberate
+ * re-hold, because an identical body means both.
  */
 export const placeLegalHoldNamed = (db: Database.Database, admin: AdminPrincipal, partnerIdentityId: string, reason: string): { hold_id: string } => {
   try {
@@ -106,6 +111,25 @@ export const placeLegalHoldNamed = (db: Database.Database, admin: AdminPrincipal
     throw error;
   }
 };
+
+/** PR-C2 DURABLE_KEY: the HTTP entry point. Keeps the named refusal above for the "already on hold" case and adds the command identity a re-hold after a release needs. */
+export const placeLegalHoldIdempotent = (
+  db: Database.Database, admin: AdminPrincipal, idempotencyKey: string, partnerIdentityId: string, reason: string,
+): AdminCommandResult<{ hold_id: string }> =>
+  db.transaction(() => withAdminCommandInTransaction<{ hold_id: string }>({
+    db, admin, command: "agent-referrals.legal-hold.place", idempotencyKey, request: { partner_identity_id: partnerIdentityId, reason },
+    entityIdOf: (result) => result.hold_id,
+    execute: () => {
+      try {
+        return placeLegalHoldInTransaction(db, admin, partnerIdentityId, reason);
+      } catch (error) {
+        if (error instanceof Error && /UNIQUE constraint failed: partner_identity_legal_holds\.partner_identity_id/.test(error.message)) {
+          throw new RetentionError("AGENT_REFERRALS_LEGAL_HOLD_ALREADY_ACTIVE", 409, partnerIdentityId);
+        }
+        throw error;
+      }
+    },
+  })).immediate();
 
 export const releaseLegalHold = (db: Database.Database, admin: AdminPrincipal, holdId: string, reason: string): void => {
   const run = db.transaction(() => {

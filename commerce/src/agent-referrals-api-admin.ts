@@ -10,14 +10,14 @@ import { setAgentReferralsChannelPolicy, resolveAgentReferralsChannelPolicyNow, 
 import { verifyAudienceForPartnerCityIdempotent, revokeAudienceVerificationForPartnerCity } from "./agent-referrals-engagement";
 import { createPartnerPromo } from "./agent-referrals-promo";
 import { revokeDelegationAsAdmin } from "./agent-referrals-delegation-revocation";
-import { currentRetentionPolicy, mintRetentionPolicyRevisionIdempotent, placeLegalHoldNamed, releaseLegalHold, destroyPartnerIdentity } from "./agent-referrals-identity-retention";
+import { currentRetentionPolicy, mintRetentionPolicyRevisionIdempotent, placeLegalHoldIdempotent, releaseLegalHold, destroyPartnerIdentity } from "./agent-referrals-identity-retention";
 import { recordNpdStatusCheckIdempotent, type NpdCheckStatus } from "./agent-referrals-npd";
 import {
   offerEngagement, mintEngagementRevision, activateEngagementIdempotent, suspendEngagement, getEngagement, engagementsForPartner,
   currentEngagementRevision, lastActivatedEngagementRevision, type EngagementRevisionTerms,
 } from "./agent-referrals-engagement";
 import { closeEngagementWithRewardRegistry } from "./agent-referrals-reward-registry";
-import { mintCreativeRevision, authorizeCreative, revokeCreativeAuthorization, currentCreativeRevision, currentCreativeAuthorization, type CreativeMaterialFields } from "./agent-referrals-creative";
+import { mintCreativeRevision, authorizeCreative, revokeCreativeAuthorization, currentCreativeRevision, currentCreativeAuthorization, lastCreativeAuthorization, type CreativeMaterialFields } from "./agent-referrals-creative";
 import { assessCreativeReadyToPublish } from "./agent-referrals-creative-readiness";
 import {
   distributionsForEngagement, distributionProjection, reportDistributionByAdminIdempotent, correctDistribution, requireRemoval, confirmRemoval, markOverdueRemoval,
@@ -38,7 +38,7 @@ import { closeEngagementZeroReward, type ZeroRewardClosureReason } from "./agent
 import { preparePartnerSettlement, agentReferralsSettlementById, recoveryExposure, correctPartnerRewardWithSettlement } from "./agent-referrals-settlement";
 import { generateSettlementAct, presentSettlementAct, settlementActForSettlement, actAcceptanceForAct, actDisputeForAct } from "./agent-referrals-act";
 import {
-  beginPayment, recordPaymentMade, recordPayoutUnknown, recordConfirmedNotMade, recordNpdReceipt, paymentAttemptsForSettlement, paymentAttemptById,
+  beginPaymentIdempotent, recordPaymentMade, recordPayoutUnknown, recordConfirmedNotMade, recordNpdReceipt, paymentAttemptsForSettlement, paymentAttemptById,
 } from "./agent-referrals-payment";
 import { agentReferralsReviewQueue } from "./agent-referrals-review-queue";
 import { currentAgentReferralsLegalProfile, type LegalForm, type RawLegalRequisitesInput, type TaxMode } from "./agent-referrals-legal-profile";
@@ -261,7 +261,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   });
   app.post("/partners/:id/legal-hold", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(placeLegalHoldNamed(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason")), 201);
+    return c.json(placeLegalHoldIdempotent(sqlite, adminOf(c), requireIdempotencyKey(c), c.req.param("id"), requireString(body, "reason")).response, 201);
   });
   app.post("/legal-holds/:id/release", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
@@ -336,6 +336,9 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
       active_revision: lastActivatedEngagementRevision(sqlite, engagementId),
       creative,
       creative_authorization: currentCreativeAuthorization(sqlite, engagementId),
+      // PR-C2: the chain HEAD, live or revoked - the live row above goes
+      // back to null on every revocation and so cannot be pinned against.
+      creative_authorization_head: lastCreativeAuthorization(sqlite, engagementId),
       distributions: distributionsForEngagement(sqlite, engagementId).map((d) => ({
         ...distributionProjection(sqlite, d.id),
         reporting_periods: ordDistributionPeriodReportsForDistribution(sqlite, d.id),
@@ -459,7 +462,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   });
   app.post("/ord/provider-operation", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(openOrdProviderOperation(sqlite, c.var.adminId!, requireString(body, "kind") as OrdProviderProfileKind), 201);
+    return c.json(openOrdProviderOperation(sqlite, c.var.adminId!, requireString(body, "kind") as OrdProviderProfileKind, nullableString(body, "expected_current_operation_id")), 201);
   });
   app.post("/ord/provider-operation/:id/submitted", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
@@ -511,11 +514,11 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
       correction_reason: optionalString(body, "correction_reason"), statistics_reason: optionalString(body, "statistics_reason") as "ZERO_REWARD_STATISTICS" | "CONTINUING_STATISTICS" | undefined,
       special_period_is_service_period: typeof body.special_period_is_service_period === "boolean" ? body.special_period_is_service_period : undefined,
       submission: body.submission ? { vk_operation_external_id: requireString(asRecord(body.submission), "vk_operation_external_id"), erir_code: requireString(asRecord(body.submission), "erir_code"), submission_evidence_ref: requireString(asRecord(body.submission), "submission_evidence_ref") } : undefined,
-    }), 201);
+    }, nullableString(body, "expected_current_report_id")), 201);
   });
   app.post("/distributions/:id/reports/:periodKey/reconciliation", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(recordOrdDistributionPeriodReportReconciliation(sqlite, adminOf(c), c.req.param("id"), c.req.param("periodKey"), requireString(body, "vk_operation_external_id"), requireString(body, "erir_code"), requireString(body, "submission_evidence_ref")));
+    return c.json(recordOrdDistributionPeriodReportReconciliation(sqlite, adminOf(c), c.req.param("id"), c.req.param("periodKey"), requireString(body, "vk_operation_external_id"), requireString(body, "erir_code"), requireString(body, "submission_evidence_ref"), requireString(body, "expected_current_report_id")));
   });
 
   // ---- Reward registry / zero-reward closure -----------------------------------------
@@ -566,7 +569,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   });
   app.post("/payments/begin", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(beginPayment(sqlite, adminOf(c), requireString(body, "settlement_id")), 201);
+    return c.json(beginPaymentIdempotent(sqlite, adminOf(c), requireIdempotencyKey(c), requireString(body, "settlement_id")).response, 201);
   });
   app.post("/payment-attempts/:id/made", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));

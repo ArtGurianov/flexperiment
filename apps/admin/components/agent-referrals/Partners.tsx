@@ -269,9 +269,13 @@ function LegalProfileSupersession({ partnerId, legalProfile, pendingRequest }: {
   const selectedTaxMode = watch("tax_mode");
   useConstrainedTaxMode(selectedLegalForm, selectedTaxMode, setValue);
 
+  // PR-C2: the verified revision this screen was rendered from. Without it a
+  // retry arriving after the first request was resolved would file a SECOND
+  // supersession - against the profile its own first attempt produced.
   const submitRequest = usePartnerScopedCommand(partnerId, (values: Record<string, unknown>) =>
     api(`/agent-referrals/partners/${partnerId}/legal-profile/change`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(values),
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...values, expected_current_legal_profile_revision: Number(legalProfile?.revision ?? 0) }),
     }));
   const resolveRequest = usePartnerScopedCommand(partnerId, (action: "verify" | "reject") =>
     api(`/agent-referrals/partners/${partnerId}/legal-profile/change/${String(pendingRequest!.id)}/${action}`, {

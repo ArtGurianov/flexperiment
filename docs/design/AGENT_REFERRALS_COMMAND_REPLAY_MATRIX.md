@@ -37,8 +37,14 @@ from the earlier versions:
 - **A single-use step-up grant** stops a *grant* being replayed, not an
   *intent* being repeated: the retry mints a fresh grant which, after the
   authoritative refresh, is legitimately valid against the new revision.
-- **A CAS on a revision counter** refuses a *stale writer*; a retry is not
-  stale, it re-reads the counter the first attempt bumped.
+- **A CAS on a revision counter the SERVER re-reads** refuses a *stale
+  writer*; a retry is not stale, it re-reads the counter the first attempt
+  bumped. This is the one that needs care, because the shape that DOES work
+  looks similar: a counter the CLIENT supplies in the request body travels
+  with the retry, so the retry still carries the value A was authored
+  against and is refused. That is `STALE_BOUND`, and it is why
+  `/feature-state/suspend` — which has carried `expected_revision` since it
+  was written — needed no change.
 
 Only three kinds of proof are accepted now:
 
@@ -73,116 +79,165 @@ silently.
 That registry found three partner routes (`/invite/consume`, `/login/request`,
 `/login/verify`) that a careful manual pass over the same file had missed.
 
-Classifications - these are the CURRENT seven, and they replaced an earlier
+Classifications - these are the CURRENT six, and they replaced an earlier
 set (`REPLAY_SAFE`, `REPEATABLE`, `UNAUDITED`) that was defined against the
 weak obligation. The rename is not cosmetic: `REPLAY_SAFE` asserted a
 conclusion, while the three proof names each state WHY the conclusion holds,
 which is what makes a wrong classification visible on inspection.
+
+`NAMED_REFUSAL` was in this table for one revision and is gone: under
+`A -> B* -> retry A` a named refusal is a proof only when the state it
+depends on is unrestorable, which is exactly `MONOTONIC_REPLAY_SAFE`.
+Keeping both invited classifying by the error message instead of by the
+invariant - and `placeLegalHold`, the one route that had it, turned out to
+need a key.
 
 | value | meaning |
 |---|---|
 | `DURABLE_KEY` | exact replay through a caller-supplied command key, whatever B* did |
 | `STALE_BOUND` | the request pins the predecessor/version it was made against, so a stale retry is refused rather than applied |
 | `MONOTONIC_REPLAY_SAFE` | no legal B* can restore the command's write precondition |
-| `NAMED_REFUSAL` | a repeat is refused with a named, catchable code, **and** no legal B* can restore the state that refusal depends on |
 | `SPECIAL_RECOVERY` | the response carries a secret that is never persisted, so no idempotency mechanism can re-serve it |
 | `NOT_A_BUSINESS_WRITE` | session / authorization plumbing |
 | `UNPROVEN` | not yet proven against the criterion — **must reach zero before rollout** |
 
 ### Current state
 
-**Proven: 18 routes. `UNPROVEN`: 62.** Both pinned by the registry test,
-along with the membership of each proven class:
+**Proven: 80 routes. `UNPROVEN`: 0.** Both pinned by the registry test.
 
 | class | admin | partner |
 |---|---|---|
-| `DURABLE_KEY` | 6 | 4 |
-| `MONOTONIC_REPLAY_SAFE` | 4 | 2 (`/framework/accept`, `/invite/consume`) |
-| `STALE_BOUND` | 2 | 0 |
+| `STALE_BOUND` | 24 | 4 |
+| `MONOTONIC_REPLAY_SAFE` | 34 | 6 |
+| `DURABLE_KEY` | 8 | 4 |
 
-The first write-up of this state said **16**, by counting the admin classes
-and forgetting the two partner monotonic routes. That is exactly the
-arithmetic a pinned total prevents, so the registry test now asserts the
-total as well as the membership.
+The count went **0 → 62 → 0**. The 62 was not a regression: it was the
+honest recount after the obligation was corrected from `A, immediate retry A`
+to `A → B* → retry A`, which invalidated every state-gate and
+current-row-equality classification at once. An earlier revision of this
+section also said 16 proven where the truth was 18, by forgetting the two
+partner monotonic routes — the registry now asserts the total, so that
+particular arithmetic cannot be wrong silently again.
 
-The 62 grew out of a corrected obligation, not out of a regression. The
-previous count was measured against `A, immediate retry A`; re-measuring
-against `A → B* → retry A` invalidated most of the state-gate and
-current-row-equality classifications at once. Nothing in the code got worse -
-what changed is what counts as a proof.
+`DURABLE_KEY` stayed the smallest class through the whole pass, which was
+the point. Twelve routes out of eighty need a caller-supplied key; the rest
+answer the question out of their own semantics.
 
-Worth naming specifically, because it inverts an earlier decision twice over:
-`placeLegalHold` was first classified "needs a key", then reclassified to
-"needs a name" because 0044's partial unique index on `released_at IS NULL`
-refuses a second ACTIVE hold. Under the strong obligation it needs a key
-after all - `place → release → retry place` creates a second hold, and a
-release is entirely legal. The named refusal it gained is still correct and
-stays; it is simply not a replay proof.
+The `SPECIAL_RECOVERY` case is the one thing still open:
+`/partners/:id/invite/reissue` returns a raw token that is never persisted,
+so no idempotency mechanism can re-serve the original after a lost response.
+It needs defined recovery semantics — plausibly "an explicit recovery
+reissue atomically supersedes T1 and returns T2, leaving only T2 live" —
+named and tested as such. **A zero in the UNPROVEN column does not close the
+rollout gate while this is open.**
 
-The `SPECIAL_RECOVERY` case is also still open: `/partners/:id/invite/reissue`
-returns a raw token that is never persisted, so no idempotency mechanism can
-re-serve the original after a lost response. A zero elsewhere does not cover
-it, and the rollout gate is not closed until it has defined recovery
-semantics - plausibly "an explicit recovery reissue atomically supersedes T1
-and returns T2, leaving only T2 live", named and tested as such.
+## How the 62 were closed
 
-## PR-C2 shape
-
-The remedy is not uniform, and was not forced to be.
-
-**What steps 2a and 2b BUILT — mechanisms, not coverage.** Both steps are
-implemented and shipped; neither is a claim that the routes they touched are
-now proven. Step 2a added content-addressed no-change branches to the
-revision chains (engagement, creative and its authorization, distribution
-corrections in both realms, ORD provider profiles, framework/delegation
-templates, channel policy, the partner's legal-profile draft). Step 2b added
-durable command identity: the shared admin helper over
-`admin_command_idempotency` with an explicit `entityIdOf` selector, and
-`partner_command_idempotency` (migration 0054) keyed
-`(partner_identity_id, command, key_hash)` so two partners picking the same
-raw key are independent rather than in conflict.
-
-**Where step 2a does NOT discharge the obligation.** Equality against the
-CURRENT row is not a replay proof: after an intervening B the equality branch
-does not fire at all, and `A → B → A` is frequently a legitimate revert -
-back to the previous contract text, channel policy or campaign terms - so
-content alone cannot separate a revert intent from a stale retry. Those
-routes are content-*coherent*, which is worth having on its own merits, and
-still `UNPROVEN`.
-
-**The question each remaining route has to answer**, in this form rather than
-as a reflex toward a key:
+Not by defaulting to a key. Each route answered one question:
 
 > Can a legal B* make the OLD request A a valid command against the NEW
 > authority again?
 
-- **No, and it can never be** → `MONOTONIC_REPLAY_SAFE`. A one-way edge, a
-  consumed capability, a terminal row.
-- **No, because A names the thing it was made against** → `STALE_BOUND`. A
-  command that is naturally stale-bound should answer STALE rather than be
-  handed a command identity; a key on top of it would only add a second way
-  to say the same no.
-- **Yes** → `DURABLE_KEY`. Only a caller-supplied key separates the retry
-  from the intent.
+- **No, and it never can be** → `MONOTONIC_REPLAY_SAFE`. A one-way edge, a
+  consumed capability, a terminal row, a uniqueness that is never freed.
+  Forty routes, and most of them needed no code at all — the proof was
+  already there and had simply never been stated.
+- **No, because A names what it was made against** → `STALE_BOUND`.
+  Twenty-eight routes.
+- **Yes** → `DURABLE_KEY`. Twelve routes.
 
-`DURABLE_KEY` is the fallback, never the default: reaching for it first
-hides the routes whose own semantics already answer the question, and every
-key added is a key the client has to keep.
+### The STALE_BOUND mechanism
 
-**Each closed classification carries a regression test in one generic shape**
-- `A`, then a legal `B*` chosen to be the strongest attack on that class,
-then a retry of the original `A` - asserting all three of:
+One helper, `requireObservedVersion`
+(`commerce/src/agent-referrals-command-precondition.ts`), called inside each
+command's own transaction before any mutation. The command names the version
+it was authored against; after a legal B* that version is no longer current,
+so the retry is refused instead of applied.
+
+**The pinned value must be MONOTONE** — a counter that only increases, or the
+id of the newest row in an append-only chain. This is the rule the whole
+mechanism rests on, and the reason a pin on the aggregate's current STATE is
+never routed through it: `A → B → A` restores a cyclic state to exactly the
+value A was authored against (a distribution required for removal, claimed,
+then required again; a draft edited and edited back), so a stale retry would
+pass the check and apply anyway. That is the current-row-equality trap
+wearing a different hat.
+
+The pins, and why each is the monotone one rather than the obvious one:
+
+| aggregate | pin | why not the obvious choice |
+|---|---|---|
+| feature state | `expected_revision` (already existed) | — |
+| engagement lifecycle | `lifecycle_revision` | "requires ACTIVE" is re-opened by every legal reactivation |
+| creative authorization | the chain HEAD, live or revoked | the LIVE authorization returns to null on every revocation |
+| distribution removal/compliance | `event_sequence` | the states are cyclic by design |
+| partner legal-profile draft | a new counter (migration 0055) | `onboarding_revision` does not move on a resubmission; the draft's content is edit-revertible |
+| legal-profile supersession | the verified revision NUMBER | §B-11 exposes no internal revision ids to the partner realm |
+| audience verification | `aggregate_revision` | "requires a current VERIFIED" is re-opened by re-verification |
+| content chains (engagement, creative, framework, delegation, channel policy, ORD provider profile, distribution revisions, ORD period reports) | the revision/id being superseded | content equality cannot separate a revert from a stale retry |
+| reward correction | the effective snapshot it was decided against | every call mints a new E |
+
+Where a content no-change branch already existed, it answers **first** and
+the pin guards only the actual mint. A no-op mutates nothing, so it is safe
+for any retry whatever its pin says, and letting it answer first keeps an
+ordinary lost-response retry a success rather than a 409.
+
+### Two corrections found while closing
+
+**`placeLegalHold` moved key → name → key.** 0044's partial unique index on
+`released_at IS NULL` refuses a *concurrent* second hold, which is not the
+same as refusing a retry: a release is ordinary work, and after one,
+`place → release → retried place` creates a second hold. The named refusal it
+gained is still correct and stays; it is simply not a replay proof.
+
+**Both ORD `submitted` routes moved STALE_BOUND → MONOTONIC.** The first pass
+gave them a pin on the observed external id, on the theory that the row stays
+MUTABLE until confirmation so a corrected re-submission is legal. It is not:
+0048's `..._observed_id_immutable_guard` refuses any UPDATE that changes a
+non-null `vk_external_id`, so no legal B* exists to pin against. What *was*
+reachable is an `evidence_ref` overwrite, which a first-writer-wins branch now
+refuses by name — the same shape the ERIR path in the same file already used.
+
+### Regression shape
+
+Every closed classification carries a test in one generic shape — `A`, then a
+legal `B*` chosen to be the strongest attack on that class, then a retry of
+the original `A` — asserting all three of:
 
 1. no row created by B is overwritten,
 2. no new row derived from A exists after B,
 3. the current authority is still B's.
 
 Plus the per-class assertion: `DURABLE_KEY` returns the byte-identical
-original response; `STALE_BOUND` refuses with its named stale/conflict code;
-`MONOTONIC_REPLAY_SAFE` refuses with the named code its one-way edge raises.
+original response; `STALE_BOUND` and `MONOTONIC_REPLAY_SAFE` refuse with
+their named codes. The `B*` is deliberately the sequence that RESTORES the
+surface condition the old classification relied on — a reactivation after a
+suspension, a re-verification after a revocation, a revert back to the
+content A itself wrote.
 
-In both realms, exact replay must resolve **before** any mutable-state or
-gate read, exactly as `recordVerifiedTaxTreatment` already does.
+Two files: `agent-referrals-command-replay-stale-bound.test.ts` and
+`agent-referrals-command-replay-monotonic.test.ts`.
+
+## PR-C2 shape
+
+**Step 2a — content-addressed no-change branches** on the revision chains.
+This is content *coherence*, worth having on its own merits: it stops a
+double click renumbering a chain and, in two cases, superseding evidence
+something else already pointed at. **It is not a replay proof**, and the
+routes it touched were closed by the pins above, not by it.
+
+**Step 2b — durable command identity.** The shared admin helper over the
+existing `admin_command_idempotency` taking an explicit `entityIdOf(result)`
+selector (four of the commands return `{ activation_event_id }` /
+`{ hold_id }` / `{ verification_event_id }` / `{ distribution_id }`, never
+`id`), and `partner_command_idempotency` (migration 0054) keyed
+`(partner_identity_id, command, key_hash)` — scoped to the identity, never
+the session, so a retry survives a logout and a new login while staying
+unreachable to anyone else.
+
+In both realms, exact replay resolves **before** any mutable-state or gate
+read, and the business writes plus the idempotency record share one
+`BEGIN IMMEDIATE`.
 
 ---
 
