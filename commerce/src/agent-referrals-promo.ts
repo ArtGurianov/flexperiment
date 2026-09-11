@@ -81,8 +81,23 @@ export const createPartnerPromo = (db: Database.Database, admin: AdminPrincipal,
       throw error;
     }
     const partnerPromoId = id();
-    db.prepare(`INSERT INTO partner_promos(id, promo_code_id, partner_id, created_by_admin_id) VALUES (?, ?, ?, ?)`)
-      .run(partnerPromoId, promoCodeId, input.partner_id, admin.admin_id);
+    try {
+      db.prepare(`INSERT INTO partner_promos(id, promo_code_id, partner_id, created_by_admin_id) VALUES (?, ?, ?, ?)`)
+        .run(partnerPromoId, promoCodeId, input.partner_id, admin.admin_id);
+    } catch (error) {
+      // A DIFFERENT code for a partner who already has one: the promo_codes
+      // insert above succeeds (the code is free), and only partner_promos'
+      // own partner_id UNIQUE - the "one permanent promo per partner" rule -
+      // refuses it. The transaction rolls back cleanly, but as a raw
+      // SqliteError that reached the operator as a 500 for what is an
+      // ordinary, well-defined refusal. The admin form offers "Выдать
+      // промокод" even to a partner who already has one, so this is a normal
+      // path, not a corner.
+      if (error instanceof Error && /UNIQUE constraint failed: partner_promos\.partner_id/.test(error.message)) {
+        throw new AgentReferralsPromoError("AGENT_REFERRALS_PARTNER_PROMO_ALREADY_EXISTS", 409, input.partner_id);
+      }
+      throw error;
+    }
     return partnerPromoByPartnerId(db, input.partner_id)!;
   });
   return run.immediate();
