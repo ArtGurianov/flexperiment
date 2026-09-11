@@ -216,17 +216,34 @@ describe("invite rotation is predecessor-bound, and recovery is a reason on it",
     expect(countCapabilities(db, partnerIdentityId)).toBe(2);
   });
 
-  it("at most one chain head per partner, structurally", () => {
+  /**
+   * Review round 3, P2. The first version of this case inserted a USABLE
+   * second capability, which 0044's older
+   * partner_invite_capabilities_active_unique already refuses on its own -
+   * so it passed without 0057 and proved nothing about the head index.
+   *
+   * This form keeps every row out of that older index entirely: the head is
+   * revoked first, and the row being inserted is revoked too. Nothing here
+   * is usable, so `active_unique` has no opinion - and the only thing that
+   * can refuse a second `superseded_by_id IS NULL` row is 0057's
+   * partner_invite_capabilities_head_unique.
+   */
+  it("at most one mint-chain head per partner, enforced by 0057 rather than by the older usable-uniqueness index", () => {
     const { db } = fresh();
     open.push(db);
     const { partnerIdentityId, inviteId: t1 } = invitedPartner(db);
-    rotate(db, partnerIdentityId, t1, "MANUAL_REISSUE", "reissue");
+    db.prepare("UPDATE partner_invite_capabilities SET revoked_at = CURRENT_TIMESTAMP WHERE id = ?").run(t1);
 
-    // 0057's partial unique index, not merely the application's discipline.
-    expect(() => db.prepare(`INSERT INTO partner_invite_capabilities(id, partner_identity_id, purpose, verifier_hash, expires_at, created_by_admin_id)
-      VALUES (?, ?, 'ONBOARDING', ?, ?, 'admin-1')`)
+    // Revoked, unsuperseded - a second chain head and nothing more. 0044's
+    // predicate excludes it (revoked_at IS NOT NULL), so a refusal here can
+    // only come from the head index.
+    expect(() => db.prepare(`INSERT INTO partner_invite_capabilities(id, partner_identity_id, purpose, verifier_hash, expires_at, revoked_at, created_by_admin_id)
+      VALUES (?, ?, 'ONBOARDING', ?, ?, CURRENT_TIMESTAMP, 'admin-1')`)
       .run(randomUUID(), partnerIdentityId, randomUUID(), new Date(Date.now() + 3600_000).toISOString()))
-      .toThrow(/UNIQUE constraint failed/);
+      .toThrow(/partner_invite_capabilities_head_unique|UNIQUE constraint failed/);
+
+    expect(countCapabilities(db, partnerIdentityId)).toBe(1);
+    expect(inviteCapabilityHeadId(db, partnerIdentityId)).toBe(t1);
   });
 });
 
