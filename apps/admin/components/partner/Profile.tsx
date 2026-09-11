@@ -1,13 +1,15 @@
 "use client";
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useForm, type UseFormRegister } from "react-hook-form";
 import { partnerApi, PartnerApiError } from "../../lib/partner-api";
+import { usePartnerMutation } from "../../lib/use-partner-mutation";
+import { partnerKeys } from "../../lib/query-keys";
 import type { Row } from "../../lib/partner-page";
 import {
-  INN_LENGTH, KPP_LENGTH, REGISTRATION_NUMBER_LENGTH, requisiteRule, taxModesForLegalForm,
-  type LegalForm, type RequisiteField, type TaxMode,
+  ALWAYS_REQUIRED_REQUISITE_FIELDS, INN_LENGTH, KPP_LENGTH, REGISTRATION_NUMBER_LENGTH, isLegalForm, requisiteRule, taxModesForLegalForm,
+  type AlwaysRequiredRequisiteField, type LegalForm, type RequisiteField, type TaxMode,
 } from "../../../../lib/legal-profile-rules";
 import { Loading } from "../ui/Loading";
 import { Notice } from "../ui/Notice";
@@ -53,18 +55,19 @@ const digitsHint = (length: number | undefined) => (length === undefined ? undef
  * with a hand-copied condition. Only the wording is this surface's own.
  */
 function LegalRequisitesFields({ legalForm, register }: { legalForm: string; register: UseFormRegister<LegalRequisitesFormFields> }) {
-  const form = legalForm as LegalForm;
-  const shown = (field: RequisiteField) => requisiteRule(form, field) !== "FORBIDDEN";
-  const required = (field: RequisiteField) => requisiteRule(form, field) === "REQUIRED";
+  const form = isLegalForm(legalForm) ? legalForm : null;
+  const alwaysRequired = (field: AlwaysRequiredRequisiteField) => ALWAYS_REQUIRED_REQUISITE_FIELDS.includes(field);
+  const shown = (field: RequisiteField) => requisiteRule(legalForm, field) !== "FORBIDDEN";
+  const required = (field: RequisiteField) => requisiteRule(legalForm, field) === "REQUIRED";
   return (
     <>
-      <label>ФИО / полное наименование <input {...register("full_name", { required: true })} /></label>
+      <label>ФИО / полное наименование <input {...register("full_name", { required: alwaysRequired("full_name") })} /></label>
       {shown("short_name") && <label>Сокращённое наименование <input {...register("short_name", { required: required("short_name") })} /></label>}
       {shown("opf") && <label>ОПФ <input {...register("opf", { required: required("opf") })} placeholder="ООО" /></label>}
-      <label>ИНН <input {...register("inn", { required: true })} placeholder={digitsHint(INN_LENGTH[form])} /></label>
+      <label>ИНН <input {...register("inn", { required: alwaysRequired("inn") })} placeholder={digitsHint(form ? INN_LENGTH[form] : undefined)} /></label>
       {shown("kpp") && <label>КПП <input {...register("kpp", { required: required("kpp") })} placeholder={digitsHint(KPP_LENGTH)} /></label>}
       {shown("registration_number") && (
-        <label>{REGISTRATION_NUMBER_LABELS[form] ?? "Регистрационный номер"} <input {...register("registration_number", { required: required("registration_number") })} placeholder={digitsHint(REGISTRATION_NUMBER_LENGTH[form])} /></label>
+        <label>{(form && REGISTRATION_NUMBER_LABELS[form]) ?? "Регистрационный номер"} <input {...register("registration_number", { required: required("registration_number") })} placeholder={digitsHint(form ? REGISTRATION_NUMBER_LENGTH[form] : undefined)} /></label>
       )}
       {shown("legal_address") && <label>Юридический адрес <input {...register("legal_address", { required: required("legal_address") })} /></label>}
     </>
@@ -72,10 +75,13 @@ function LegalRequisitesFields({ legalForm, register }: { legalForm: string; reg
 }
 
 export function Profile() {
-  const queryClient = useQueryClient();
-  const profile = useQuery({ queryKey: ["partner", "me"], queryFn: () => partnerApi<Row>("/me") });
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  const profile = useQuery({ queryKey: partnerKeys.me(), queryFn: () => partnerApi<Row>("/me") });
+  const submit = usePartnerMutation("partner.legalProfileSubmit", (body: Record<string, unknown>) =>
+    partnerApi("/legal-profile", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }));
+  const change = usePartnerMutation("partner.legalProfileChange", (body: Record<string, unknown>) =>
+    partnerApi("/legal-profile/change", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }));
+  const busy = submit.isPending || change.isPending;
+  const error = submit.error?.code ?? change.error?.code ?? null;
   // shouldUnregister: a field hidden by LegalRequisitesFields' own
   // conditional rendering (e.g. opf/kpp/legal_address when legal_form
   // switches away from LEGAL_ENTITY) must not survive in form state - RHF's
@@ -96,29 +102,13 @@ export function Profile() {
   useConstrainedTaxMode(submitLegalForm, submitTaxMode, setValue);
   useConstrainedTaxMode(changeLegalForm, changeTaxMode, changeForm.setValue);
 
-  const submitLegalProfile = handleSubmit(async (values) => {
-    setBusy(true); setError(null);
-    try {
-      await partnerApi("/legal-profile", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(values) });
-      await queryClient.invalidateQueries({ queryKey: ["partner", "me"] });
-    } catch (failure) {
-      setError((failure as PartnerApiError).code);
-    } finally {
-      setBusy(false);
-    }
-  });
-
+  // The mutation hook owns busy/error/invalidation; the handler only says
+  // what to send. A failure is not swallowed here - it is rendered from the
+  // hook's own error below, and an ambiguous one has already triggered an
+  // authoritative refresh by the time it lands there.
+  const submitLegalProfile = handleSubmit(async (values) => { await submit.mutateAsync(values).catch(() => undefined); });
   const submitChangeRequest = changeForm.handleSubmit(async (values) => {
-    setBusy(true); setError(null);
-    try {
-      await partnerApi("/legal-profile/change", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(values) });
-      changeForm.reset();
-      await queryClient.invalidateQueries({ queryKey: ["partner", "me"] });
-    } catch (failure) {
-      setError((failure as PartnerApiError).code);
-    } finally {
-      setBusy(false);
-    }
+    await change.mutateAsync(values).then(() => changeForm.reset()).catch(() => undefined);
   });
 
   if (profile.isLoading) return <Loading />;

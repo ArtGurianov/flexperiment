@@ -1,9 +1,11 @@
 "use client";
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { useForm } from "react-hook-form";
 import { api, AdminApiError } from "../../lib/api";
+import { useAdminMutation } from "../../lib/use-admin-mutation";
+import { agentReferralsKeys } from "../../lib/query-keys";
 import { toLocalInput } from "../../lib/values";
 import type { Row } from "../../lib/page";
 import { Loading } from "../ui/Loading";
@@ -19,33 +21,39 @@ export function Engagements({ selected, onSelect, focusDistributionId, focusRepo
     : <EngagementList onSelect={onSelect} />;
 }
 
+/**
+ * Every engagement-scoped command here has the same cache consequence - this
+ * engagement's detail, the list it appears in, and the review queue - so they
+ * share one wrapper instead of repeating the intent at each of the five call
+ * sites that used to hand-roll their own try/catch/refresh.
+ */
+function useEngagementCommand(engagementId: string) {
+  return useAdminMutation("agentReferrals.engagementCommand", ({ path, body }: { path: string; body?: Record<string, unknown> }) =>
+    api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body ?? {}) }),
+    { context: () => ({ engagementId }) });
+}
+
 function EngagementList({ onSelect }: { onSelect: (id: string) => void }) {
   const [partnerIdentityId, setPartnerIdentityId] = useState("");
   const engagements = useQuery({
-    queryKey: ["agent-referrals", "engagements", partnerIdentityId],
+    queryKey: agentReferralsKeys.engagements(partnerIdentityId),
     queryFn: () => api<{ engagements: Row[] }>(`/agent-referrals/engagements${partnerIdentityId ? `?partner_identity_id=${partnerIdentityId}` : ""}`),
   });
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   const { register, handleSubmit, reset } = useForm<{
     partner_identity_id: string; occurrence_id: string; reward_type: "PERCENT" | "FIXED"; reward_value: number;
     customer_discount_type: "NONE" | "PERCENT" | "FIXED"; customer_discount_value: number; publication_start_at: string; publication_end_at: string;
   }>({ defaultValues: { reward_type: "PERCENT", reward_value: 1000, customer_discount_type: "PERCENT", customer_discount_value: 1000 } });
+  const offerEngagement = useAdminMutation("agentReferrals.engagementOffer", (values: { partner_identity_id: string; reward_value: number; customer_discount_value: number; publication_start_at: string; publication_end_at: string }) =>
+    api("/agent-referrals/engagements", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...values, reward_value: Number(values.reward_value), customer_discount_value: Number(values.customer_discount_value),
+        publication_start_at: new Date(values.publication_start_at).toISOString(), publication_end_at: new Date(values.publication_end_at).toISOString(), reason: "offer" }),
+    }), { context: (values) => ({ partnerIdentityId: values.partner_identity_id }) });
+  const busy = offerEngagement.isPending;
+  const error = offerEngagement.error?.code ?? null;
 
   const offer = handleSubmit(async (values) => {
-    setBusy(true); setError(null);
-    try {
-      await api("/agent-referrals/engagements", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...values, reward_value: Number(values.reward_value), customer_discount_value: Number(values.customer_discount_value),
-          publication_start_at: new Date(values.publication_start_at).toISOString(), publication_end_at: new Date(values.publication_end_at).toISOString(), reason: "offer" }),
-      });
-      reset();
-    } catch (failure) {
-      setError((failure as AdminApiError).code);
-    } finally {
-      setBusy(false);
-    }
+    await offerEngagement.mutateAsync(values).then(() => reset()).catch(() => undefined);
   });
 
   return (
@@ -88,22 +96,13 @@ function EngagementList({ onSelect }: { onSelect: (id: string) => void }) {
 function EngagementDetail({ engagementId, onBack, focusDistributionId, focusReporting }: {
   engagementId: string; onBack: () => void; focusDistributionId: string | null; focusReporting: boolean;
 }) {
-  const queryClient = useQueryClient();
-  const detail = useQuery({ queryKey: ["agent-referrals", "engagement", engagementId], queryFn: () => api<Row>(`/agent-referrals/engagements/${engagementId}`) });
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const refresh = () => queryClient.invalidateQueries({ queryKey: ["agent-referrals", "engagement", engagementId] });
+  const detail = useQuery({ queryKey: agentReferralsKeys.engagement(engagementId), queryFn: () => api<Row>(`/agent-referrals/engagements/${engagementId}`) });
+  const command = useEngagementCommand(engagementId);
+  const busy = command.isPending;
+  const error = command.error?.code ?? null;
 
   const post = async (path: string, body: Record<string, unknown> = {}) => {
-    setBusy(true); setError(null);
-    try {
-      await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      refresh();
-    } catch (failure) {
-      setError((failure as AdminApiError).code);
-    } finally {
-      setBusy(false);
-    }
+    await command.mutateAsync({ path, body }).catch(() => undefined);
   };
 
   if (detail.isLoading) return <Loading />;
@@ -140,34 +139,33 @@ function EngagementDetail({ engagementId, onBack, focusDistributionId, focusRepo
         <Notice error={error} />
       </Panel>
 
-      <CreativeSection engagementId={engagementId} creative={creative} onDone={refresh} />
-      <DistributionsSection engagementId={engagementId} distributions={distributions} onDone={refresh} focusDistributionId={focusDistributionId} focusReporting={focusReporting} />
-      <RewardSection engagementId={engagementId} effective={effective} settlement={settlement} onDone={refresh} />
-      {settlement && <ActPaymentSection settlement={settlement} act={act} actAcceptance={actAcceptance} actDispute={actDispute} paymentAttempts={paymentAttempts} onDone={refresh} />}
+      <CreativeSection engagementId={engagementId} creative={creative} />
+      <DistributionsSection engagementId={engagementId} distributions={distributions} focusDistributionId={focusDistributionId} focusReporting={focusReporting} />
+      <RewardSection engagementId={engagementId} effective={effective} settlement={settlement} />
+      {settlement && <ActPaymentSection engagementId={engagementId} settlement={settlement} act={act} actAcceptance={actAcceptance} actDispute={actDispute} paymentAttempts={paymentAttempts} />}
     </>
   );
 }
 
-function CreativeSection({ engagementId, creative, onDone }: { engagementId: string; creative: Row | null; onDone: () => void }) {
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+function CreativeSection({ engagementId, creative }: { engagementId: string; creative: Row | null }) {
   const { register, handleSubmit } = useForm<{ format_kind: string; media_ref: string; copy_text: string; cta_text: string; mandatory_labeling_text: string; creative_target_url: string }>({
     defaultValues: { format_kind: "post", mandatory_labeling_text: "Реклама." },
   });
   const registrations = useQuery({
-    queryKey: ["agent-referrals", "creative-registrations", creative?.id],
+    queryKey: agentReferralsKeys.creativeRegistrations(String(creative?.id ?? "")),
     queryFn: () => api<{ registrations: Row[] }>(`/agent-referrals/creative-revisions/${creative!.id}/registrations`),
     enabled: Boolean(creative),
   });
   const currentRegistration = registrations.data?.registrations.at(-1) ?? null;
 
+  const command = useEngagementCommand(engagementId);
+  const busy = command.isPending;
+  const error = command.error?.code ?? null;
+  // The ORD registration list is this section's own query, outside the
+  // shared table (it is keyed by creative revision, not by engagement), so
+  // it is refetched explicitly rather than pretending the table covers it.
   const run = async (path: string, body: Record<string, unknown> = {}) => {
-    setBusy(true); setError(null);
-    try {
-      await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      onDone();
-      await registrations.refetch();
-    } catch (failure) { setError((failure as AdminApiError).code); } finally { setBusy(false); }
+    await command.mutateAsync({ path, body }).then(() => registrations.refetch()).catch(() => undefined);
   };
 
   const mint = handleSubmit((values) => run(`/agent-referrals/engagements/${engagementId}/creative`, values));
@@ -248,11 +246,9 @@ function OrdErirForm({ onSubmit, busy }: { onSubmit: (v: { erir_code: string; ev
   );
 }
 
-function DistributionsSection({ engagementId, distributions, onDone, focusDistributionId, focusReporting }: {
-  engagementId: string; distributions: Row[]; onDone: () => void; focusDistributionId: string | null; focusReporting: boolean;
+function DistributionsSection({ engagementId, distributions, focusDistributionId, focusReporting }: {
+  engagementId: string; distributions: Row[]; focusDistributionId: string | null; focusReporting: boolean;
 }) {
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   const [correcting, setCorrecting] = useState<string | null>(null);
   // Round-4 fix: a review-queue item names one specific distribution, not merely the engagement - land
   // directly in that distribution's reporting panel when the queue item that brought us here was the
@@ -265,12 +261,11 @@ function DistributionsSection({ engagementId, distributions, onDone, focusDistri
   const focusedDistributionExists = focusDistributionId !== null && distributions.some((row) => String(row.distribution_id) === focusDistributionId);
   const [reporting, setReporting] = useState<string | null>(() => (focusReporting && focusedDistributionExists ? focusDistributionId : null));
 
+  const command = useEngagementCommand(engagementId);
+  const busy = command.isPending;
+  const error = command.error?.code ?? null;
   const run = async (path: string, body: Record<string, unknown>) => {
-    setBusy(true); setError(null);
-    try {
-      await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      onDone();
-    } catch (failure) { setError((failure as AdminApiError).code); } finally { setBusy(false); }
+    await command.mutateAsync({ path, body }).catch(() => undefined);
   };
 
   return (
@@ -501,16 +496,13 @@ function DistributionFactForm({ title, initial, requireCorrectionReason, busy, o
   );
 }
 
-function RewardSection({ engagementId, effective, settlement, onDone }: { engagementId: string; effective: Row | null; settlement: Row | null; onDone: () => void }) {
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+function RewardSection({ engagementId, effective, settlement }: { engagementId: string; effective: Row | null; settlement: Row | null }) {
+  const command = useEngagementCommand(engagementId);
+  const busy = command.isPending;
+  const error = command.error?.code ?? null;
 
   const post = async (path: string, body: Record<string, unknown> = {}) => {
-    setBusy(true); setError(null);
-    try {
-      await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      onDone();
-    } catch (failure) { setError((failure as AdminApiError).code); } finally { setBusy(false); }
+    await command.mutateAsync({ path, body }).catch(() => undefined);
   };
 
   return (
@@ -537,23 +529,20 @@ function RewardSection({ engagementId, effective, settlement, onDone }: { engage
   );
 }
 
-function ActPaymentSection({ settlement, act, actAcceptance, actDispute, paymentAttempts, onDone }: {
-  settlement: Row; act: Row | null; actAcceptance: Row | null; actDispute: Row | null; paymentAttempts: Row[]; onDone: () => void;
+function ActPaymentSection({ engagementId, settlement, act, actAcceptance, actDispute, paymentAttempts }: {
+  engagementId: string; settlement: Row; act: Row | null; actAcceptance: Row | null; actDispute: Row | null; paymentAttempts: Row[];
 }) {
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   // The domain's own notion of an "active" attempt (agent-referrals-payment.ts) is any attempt whose
   // status is NOT CONFIRMED_NOT_MADE - that includes MADE, not only IN_PROGRESS/PAYOUT_UNKNOWN. A MADE
   // attempt on an NPD settlement still needs a receipt before the settlement reaches SETTLED, so dropping
   // it here would strand the operator with no way to finish a real in-flight NPD settlement.
   const activeAttempt = paymentAttempts.find((attempt) => attempt.status !== "CONFIRMED_NOT_MADE") ?? null;
 
+  const command = useEngagementCommand(engagementId);
+  const busy = command.isPending;
+  const error = command.error?.code ?? null;
   const run = async (path: string, body: Record<string, unknown> = {}) => {
-    setBusy(true); setError(null);
-    try {
-      await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      onDone();
-    } catch (failure) { setError((failure as AdminApiError).code); } finally { setBusy(false); }
+    await command.mutateAsync({ path, body }).catch(() => undefined);
   };
 
   return (

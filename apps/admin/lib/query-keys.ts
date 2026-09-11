@@ -79,3 +79,38 @@ export const dashboardKeys = {
   all: () => ["dashboard"] as const,
   summary: () => ["dashboard", "summary"] as const,
 };
+
+/**
+ * PR-C: the agent-referrals admin surfaces used to spell their keys inline
+ * at every call site, which is also why their invalidation was written by
+ * hand per component. Same taxonomy rule as every other resource here: a
+ * list key and a detail key never share a prefix, so refreshing a list
+ * cannot nuke an open detail panel.
+ */
+export const agentReferralsKeys = {
+  all: () => ["agent-referrals"] as const,
+  featureState: () => ["agent-referrals", "feature-state"] as const,
+  reviewQueue: () => ["agent-referrals", "review-queue"] as const,
+  partners: () => ["agent-referrals", "partners"] as const,
+  partner: (partnerIdentityId: string) => ["agent-referrals", "partner", partnerIdentityId] as const,
+  engagements: (partnerIdentityId: string) => ["agent-referrals", "engagements", partnerIdentityId] as const,
+  engagement: (engagementId: string) => ["agent-referrals", "engagement", engagementId] as const,
+  creativeRegistrations: (creativeRevisionId: string) => ["agent-referrals", "creative-registrations", creativeRevisionId] as const,
+  channelPolicy: (channelKey: string) => ["agent-referrals", "channel-policy", channelKey] as const,
+};
+
+/**
+ * PARTNER realm keys. Deliberately a separate taxonomy from every key above:
+ * realm separation is a hard boundary in this system (see 0044's own comment
+ * on the partner audit trail), and an admin-realm invalidation must never be
+ * able to reach into partner-realm cache, or vice versa, by sharing a prefix.
+ */
+export const partnerKeys = {
+  all: () => ["partner"] as const,
+  me: () => ["partner", "me"] as const,
+  agreements: () => ["partner", "agreements"] as const,
+  payoutProfile: () => ["partner", "payout-profile"] as const,
+  engagements: () => ["partner", "engagements"] as const,
+  engagement: (engagementId: string) => ["partner", "engagement", engagementId] as const,
+  conversions: (engagementId: string) => ["partner", "engagement", engagementId, "conversions"] as const,
+};

@@ -46,8 +46,22 @@ export const provisionPartnerOwner = (db: Database.Database, admin: AdminPrincip
     assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "NEW_PARTNER_PROVISIONING");
 
     const partnerIdentityId = id();
-    db.prepare(`INSERT INTO partner_identities(id, agent_id, email, email_hash, created_by_admin_id) VALUES (?, ?, ?, ?, ?)`)
-      .run(partnerIdentityId, agentId, email.trim().toLowerCase(), emailHash(email), admin.admin_id);
+    try {
+      db.prepare(`INSERT INTO partner_identities(id, agent_id, email, email_hash, created_by_admin_id) VALUES (?, ?, ?, ?, ?)`)
+        .run(partnerIdentityId, agentId, email.trim().toLowerCase(), emailHash(email), admin.admin_id);
+    } catch (error) {
+      // PR-C idempotency audit: this command carries no durable key, so the
+      // ONLY thing a retry after an ambiguous network failure meets is the
+      // agent_id UNIQUE index - and it met it as a raw SqliteError, i.e. a
+      // 500 for what is really "this agent already has a partner". The
+      // operator's correct next move (re-read, see the partner, stop) was
+      // being reported as a server fault. Narrow catch by the exact
+      // constraint, per agent-referrals-payment.ts's own precedent.
+      if (error instanceof Error && /UNIQUE constraint failed: partner_identities\.agent_id/.test(error.message)) {
+        throw new PartnerIdentityError("AGENT_REFERRALS_PARTNER_ALREADY_PROVISIONED", 409, agentId);
+      }
+      throw error;
+    }
 
     const rawToken = generateOpaqueToken();
     const inviteId = id();

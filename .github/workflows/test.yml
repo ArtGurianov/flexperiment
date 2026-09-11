@@ -44,6 +44,11 @@ jobs:
       # Locally these are masked by leftover .next/dev/types from next dev.
       - run: pnpm exec next typegen
       - run: pnpm exec tsc --noEmit
+      # The root tsconfig EXCLUDES apps/admin, so the line above never saw a
+      # single admin/partner component. The admin app carries its own
+      # tsconfig (its own jsx/lib/bundler settings) and needs its own
+      # invocation - without this, a type error in the operator UI ships.
+      - run: pnpm admin:typecheck
       - run: pnpm test
       - name: Real-Nginx frontend static-export routing contract
         run: pnpm frontend:test:nginx
