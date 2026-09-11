@@ -63,12 +63,41 @@ export const createPartnerPromo = (db: Database.Database, admin: AdminPrincipal,
   const normalized = promoCodeSchema.parse(input.code);
   const run = db.transaction((): PartnerPromoRow => {
     const promoCodeId = id();
-    db.prepare(`INSERT INTO promo_codes(id, agent_id, code, normalized_code, status, discount_type, discount_value)
-      VALUES (?, ?, ?, ?, 'ACTIVE', 'NONE', 0)`)
-      .run(promoCodeId, input.partner_id, normalized, normalized);
+    try {
+      db.prepare(`INSERT INTO promo_codes(id, agent_id, code, normalized_code, status, discount_type, discount_value)
+        VALUES (?, ?, ?, ?, 'ACTIVE', 'NONE', 0)`)
+        .run(promoCodeId, input.partner_id, normalized, normalized);
+    } catch (error) {
+      // PR-C idempotency audit, same defect class as provisionPartnerOwner:
+      // this command carries no durable key, so a retry after an ambiguous
+      // network failure meets normalized_code UNIQUE as a raw SqliteError -
+      // a 500 for what is really "that code is taken" (very often taken by
+      // the operator's OWN first attempt, which succeeded). The legacy admin
+      // promo surface already names this exact condition; agent-referrals
+      // reuses its code rather than inventing a second one.
+      if (error instanceof Error && /UNIQUE constraint failed: promo_codes\.normalized_code/.test(error.message)) {
+        throw new AgentReferralsPromoError("PROMO_CODE_ALREADY_EXISTS", 409, normalized);
+      }
+      throw error;
+    }
     const partnerPromoId = id();
-    db.prepare(`INSERT INTO partner_promos(id, promo_code_id, partner_id, created_by_admin_id) VALUES (?, ?, ?, ?)`)
-      .run(partnerPromoId, promoCodeId, input.partner_id, admin.admin_id);
+    try {
+      db.prepare(`INSERT INTO partner_promos(id, promo_code_id, partner_id, created_by_admin_id) VALUES (?, ?, ?, ?)`)
+        .run(partnerPromoId, promoCodeId, input.partner_id, admin.admin_id);
+    } catch (error) {
+      // A DIFFERENT code for a partner who already has one: the promo_codes
+      // insert above succeeds (the code is free), and only partner_promos'
+      // own partner_id UNIQUE - the "one permanent promo per partner" rule -
+      // refuses it. The transaction rolls back cleanly, but as a raw
+      // SqliteError that reached the operator as a 500 for what is an
+      // ordinary, well-defined refusal. The admin form offers "Выдать
+      // промокод" even to a partner who already has one, so this is a normal
+      // path, not a corner.
+      if (error instanceof Error && /UNIQUE constraint failed: partner_promos\.partner_id/.test(error.message)) {
+        throw new AgentReferralsPromoError("AGENT_REFERRALS_PARTNER_PROMO_ALREADY_EXISTS", 409, input.partner_id);
+      }
+      throw error;
+    }
     return partnerPromoByPartnerId(db, input.partner_id)!;
   });
   return run.immediate();

@@ -1,9 +1,11 @@
 "use client";
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useForm } from "react-hook-form";
 import { partnerApi, PartnerApiError } from "../../lib/partner-api";
+import { usePartnerMutation } from "../../lib/use-partner-mutation";
+import { partnerKeys } from "../../lib/query-keys";
 import type { Row } from "../../lib/partner-page";
 import { Loading } from "../ui/Loading";
 import { Notice } from "../ui/Notice";
@@ -26,7 +28,7 @@ export function Engagements() {
 const LIFECYCLE_LABELS: Record<string, string> = { OFFERED: "Предложена", ACCEPTED: "Принята", ACTIVE: "Активна", SUSPENDED: "Приостановлена", CLOSED: "Закрыта" };
 
 function EngagementList({ onSelect }: { onSelect: (id: string) => void }) {
-  const engagements = useQuery({ queryKey: ["partner", "engagements"], queryFn: () => partnerApi<{ engagements: Row[] }>("/engagements") });
+  const engagements = useQuery({ queryKey: partnerKeys.engagements(), queryFn: () => partnerApi<{ engagements: Row[] }>("/engagements") });
   if (engagements.isLoading) return <Loading />;
   if (engagements.isError) return <Notice error={(engagements.error as PartnerApiError).code} />;
 
@@ -54,10 +56,8 @@ function EngagementList({ onSelect }: { onSelect: (id: string) => void }) {
 }
 
 function EngagementDetail({ engagementId, onBack }: { engagementId: string; onBack: () => void }) {
-  const queryClient = useQueryClient();
-  const detail = useQuery({ queryKey: ["partner", "engagement", engagementId], queryFn: () => partnerApi<Row>(`/engagements/${engagementId}`) });
-  const conversions = useQuery({ queryKey: ["partner", "engagement", engagementId, "conversions"], queryFn: () => partnerApi<{ conversions: Row[] }>(`/engagements/${engagementId}/conversions`) });
-  const refresh = () => queryClient.invalidateQueries({ queryKey: ["partner", "engagement", engagementId] });
+  const detail = useQuery({ queryKey: partnerKeys.engagement(engagementId), queryFn: () => partnerApi<Row>(`/engagements/${engagementId}`) });
+  const conversions = useQuery({ queryKey: partnerKeys.conversions(engagementId), queryFn: () => partnerApi<{ conversions: Row[] }>(`/engagements/${engagementId}/conversions`) });
 
   if (detail.isLoading) return <Loading />;
   if (detail.isError) return <Notice error={(detail.error as PartnerApiError).code} />;
@@ -78,7 +78,7 @@ function EngagementDetail({ engagementId, onBack }: { engagementId: string; onBa
       <PageTitle eyebrow="КАМПАНИЯ" title={String(occurrence.title)} text={`${String(occurrence.city_title)} · ${String((data.engagement as Row).lifecycle_state)}`} />
 
       {latestRevision && !latestAccepted && (
-        <AcceptEngagement engagementId={engagementId} revision={latestRevision} onDone={refresh} />
+        <AcceptEngagement engagementId={engagementId} revision={latestRevision} />
       )}
 
       <section className="card">
@@ -102,7 +102,7 @@ function EngagementDetail({ engagementId, onBack }: { engagementId: string; onBa
         ) : <p>Креатив ещё не подготовлен администратором.</p>}
       </section>
 
-      <DistributionsSection engagementId={engagementId} distributions={distributions} onDone={refresh} />
+      <DistributionsSection engagementId={engagementId} distributions={distributions} />
 
       <section className="card">
         <h2>Вознаграждение</h2>
@@ -112,7 +112,7 @@ function EngagementDetail({ engagementId, onBack }: { engagementId: string; onBa
       </section>
 
       {act && (
-        <ActSection engagementId={engagementId} act={act} acceptance={actAcceptance as Row | null} dispute={actDispute as Row | null} onDone={refresh} />
+        <ActSection engagementId={engagementId} act={act} acceptance={actAcceptance as Row | null} dispute={actDispute as Row | null} />
       )}
 
       <section className="card">
@@ -139,71 +139,50 @@ function EngagementDetail({ engagementId, onBack }: { engagementId: string; onBa
   );
 }
 
-function AcceptEngagement({ engagementId, revision, onDone }: { engagementId: string; revision: Row; onDone: () => void }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const accept = async () => {
-    setBusy(true); setError(null);
-    try {
-      const resource = { engagement_id: engagementId, engagement_revision_id: String(revision.id) };
-      const { grant_id } = await partnerApi<{ grant_id: string }>("/engagement-step-up", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "ENGAGEMENT_ACCEPTANCE", resource }),
-      });
-      await partnerApi(`/engagements/${engagementId}/accept`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ engagement_revision_id: revision.id, step_up_grant_id: grant_id }),
-      });
-      onDone();
-    } catch (failure) {
-      setError((failure as PartnerApiError).code);
-    } finally {
-      setBusy(false);
-    }
-  };
+function AcceptEngagement({ engagementId, revision }: { engagementId: string; revision: Row }) {
+  const accept = usePartnerMutation("partner.engagementAccept", async () => {
+    const resource = { engagement_id: engagementId, engagement_revision_id: String(revision.id) };
+    const { grant_id } = await partnerApi<{ grant_id: string }>("/engagement-step-up", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "ENGAGEMENT_ACCEPTANCE", resource }),
+    });
+    return partnerApi(`/engagements/${engagementId}/accept`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ engagement_revision_id: revision.id, step_up_grant_id: grant_id }),
+    });
+  }, { context: () => ({ engagementId }) });
   return (
     <section className="card">
       <h2>Новые условия ожидают вашего согласия</h2>
-      <button className="primary" disabled={busy} onClick={() => void accept()}>{busy ? "Принимаем…" : "Принять условия"}</button>
-      <Notice error={error} />
+      <button className="primary" disabled={accept.isPending} onClick={() => void accept.mutateAsync(undefined).catch(() => undefined)}>
+        {accept.isPending ? "Принимаем…" : "Принять условия"}
+      </button>
+      <Notice error={accept.error?.code ?? null} />
     </section>
   );
 }
 
-function DistributionsSection({ engagementId, distributions, onDone }: { engagementId: string; distributions: Row[]; onDone: () => void }) {
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+function DistributionsSection({ engagementId, distributions }: { engagementId: string; distributions: Row[] }) {
   const { register, handleSubmit, reset } = useForm<{ channel_key: string; resource_kind: string; resource_identifier: string; distribution_resource_url: string; published_at: string; evidence_ref: string }>({
     defaultValues: { channel_key: "", resource_kind: "channel", resource_identifier: "", distribution_resource_url: "", published_at: "", evidence_ref: "" },
   });
 
-  const report = handleSubmit(async (values) => {
-    setBusy(true); setError(null);
-    try {
-      await partnerApi(`/engagements/${engagementId}/distributions`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...values, published_at: new Date(values.published_at).toISOString(), ended_at: null }),
-      });
-      reset();
-      onDone();
-    } catch (failure) {
-      setError((failure as PartnerApiError).code);
-    } finally {
-      setBusy(false);
-    }
-  });
+  const reportDistribution = usePartnerMutation("partner.distributionReport", (values: Record<string, unknown>) =>
+    partnerApi(`/engagements/${engagementId}/distributions`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...values, published_at: new Date(String(values.published_at)).toISOString(), ended_at: null }),
+    }), { context: () => ({ engagementId }) });
+  const removalClaim = usePartnerMutation("partner.removalClaim", (distributionId: string) =>
+    partnerApi(`/distributions/${distributionId}/removal-claim`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ evidence_ref: "partner-portal-claim" }),
+    }), { context: () => ({ engagementId }) });
+  const busy = reportDistribution.isPending || removalClaim.isPending;
+  const error = reportDistribution.error?.code ?? removalClaim.error?.code ?? null;
 
+  const report = handleSubmit(async (values) => {
+    await reportDistribution.mutateAsync(values).then(() => reset()).catch(() => undefined);
+  });
   const claimRemoval = async (distributionId: string) => {
-    setBusy(true); setError(null);
-    try {
-      await partnerApi(`/distributions/${distributionId}/removal-claim`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ evidence_ref: "partner-portal-claim" }),
-      });
-      onDone();
-    } catch (failure) {
-      setError((failure as PartnerApiError).code);
-    } finally {
-      setBusy(false);
-    }
+    await removalClaim.mutateAsync(distributionId).catch(() => undefined);
   };
 
   return (
@@ -250,38 +229,25 @@ function DistributionsSection({ engagementId, distributions, onDone }: { engagem
   );
 }
 
-function ActSection({ engagementId, act, acceptance, dispute, onDone }: { engagementId: string; act: Row; acceptance: Row | null; dispute: Row | null; onDone: () => void }) {
-  void engagementId;
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+function ActSection({ engagementId, act, acceptance, dispute }: { engagementId: string; act: Row; acceptance: Row | null; dispute: Row | null }) {
+  // The ACT_ACCEPTANCE step-up resource must re-derive byte-identically to
+  // acceptSettlementAct's own server-side hash, so the three pinned fields
+  // are read from the act itself, never re-typed.
+  const acceptAct = usePartnerMutation("partner.actAccept", async () => {
+    const resource = { act_id: String(act.id), amount_kopecks: Number(act.amount_kopecks), engagement_revision_id: String(act.engagement_revision_id) };
+    const { grant_id } = await partnerApi<{ grant_id: string }>("/settlement-step-up", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "ACT_ACCEPTANCE", resource }),
+    });
+    return partnerApi(`/acts/${act.id}/accept`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ step_up_grant_id: grant_id }) });
+  }, { context: () => ({ engagementId }) });
+  const disputeAct = usePartnerMutation("partner.actDispute", () =>
+    partnerApi(`/acts/${act.id}/dispute`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: "AMOUNT_INCORRECT" }) }),
+    { context: () => ({ engagementId }) });
+  const busy = acceptAct.isPending || disputeAct.isPending;
+  const error = acceptAct.error?.code ?? disputeAct.error?.code ?? null;
 
-  const accept = async () => {
-    setBusy(true); setError(null);
-    try {
-      const resource = { act_id: String(act.id), amount_kopecks: Number(act.amount_kopecks), engagement_revision_id: String(act.engagement_revision_id) };
-      const { grant_id } = await partnerApi<{ grant_id: string }>("/settlement-step-up", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "ACT_ACCEPTANCE", resource }),
-      });
-      await partnerApi(`/acts/${act.id}/accept`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ step_up_grant_id: grant_id }) });
-      onDone();
-    } catch (failure) {
-      setError((failure as PartnerApiError).code);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const dispute_ = async () => {
-    setBusy(true); setError(null);
-    try {
-      await partnerApi(`/acts/${act.id}/dispute`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason: "AMOUNT_INCORRECT" }) });
-      onDone();
-    } catch (failure) {
-      setError((failure as PartnerApiError).code);
-    } finally {
-      setBusy(false);
-    }
-  };
+  const accept = async () => { await acceptAct.mutateAsync(undefined).catch(() => undefined); };
+  const dispute_ = async () => { await disputeAct.mutateAsync(undefined).catch(() => undefined); };
 
   return (
     <section className="card">

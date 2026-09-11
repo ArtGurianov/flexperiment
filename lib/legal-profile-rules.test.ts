@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  LEGAL_FORMS, LEGAL_PROFILE_PROJECTION, REQUISITE_FIELDS, REQUISITE_SHAPE, TAX_MODES,
-  requisiteRule, resolveProjectedContractorType, taxModesForLegalForm,
+  ALWAYS_REQUIRED_REQUISITE_FIELDS, LEGAL_FORMS, LEGAL_PROFILE_PROJECTION, REQUISITE_FIELDS, REQUISITE_SHAPE, TAX_MODES,
+  isLegalForm, requisiteRule, resolveProjectedContractorType, taxModesForLegalForm,
 } from "./legal-profile-rules";
 
 /**
@@ -34,6 +34,26 @@ describe("legal-profile rules: derived helpers agree with the tables", () => {
         expect(requisiteRule(legalForm, field), `${legalForm}.${field}`).toBe(REQUISITE_SHAPE[legalForm][field]);
       }
     }
+  });
+
+  it("requisiteRule fails closed for a value outside the union instead of throwing", () => {
+    // Both forms hand it a plain string; FORBIDDEN renders no field, which is
+    // a visible problem rather than a crashed admin page.
+    expect(requisiteRule("NOT_A_LEGAL_FORM", "kpp")).toBe("FORBIDDEN");
+    expect(isLegalForm("NOT_A_LEGAL_FORM")).toBe(false);
+    for (const legalForm of LEGAL_FORMS) expect(isLegalForm(legalForm)).toBe(true);
+  });
+
+  it("keeps the always-required fields disjoint from the per-form shape, and together they cover the tuple", () => {
+    // full_name/inn are REQUIRED for every form, which is why they are not in
+    // REQUISITE_SHAPE (that table is about what varies). The two lists must
+    // stay disjoint, or a field would have two rules.
+    for (const field of ALWAYS_REQUIRED_REQUISITE_FIELDS) {
+      expect(REQUISITE_FIELDS as readonly string[]).not.toContain(field);
+    }
+    expect([...ALWAYS_REQUIRED_REQUISITE_FIELDS, ...REQUISITE_FIELDS].sort()).toEqual(
+      ["full_name", "inn", "kpp", "legal_address", "opf", "registration_number", "short_name"],
+    );
   });
 
   it("pins the two deliberately rejected combinations", () => {

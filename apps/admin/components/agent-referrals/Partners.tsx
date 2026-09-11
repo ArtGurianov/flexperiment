@@ -1,14 +1,16 @@
 "use client";
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { useForm, type UseFormRegister } from "react-hook-form";
 import { api, AdminApiError } from "../../lib/api";
+import { useAdminMutation } from "../../lib/use-admin-mutation";
+import { agentReferralsKeys } from "../../lib/query-keys";
 import { usePersistentIdempotencyKey } from "../../lib/use-persistent-idempotency-key";
 import type { Row } from "../../lib/page";
 import {
-  INN_LENGTH, KPP_LENGTH, REGISTRATION_NUMBER_LENGTH, requisiteRule, taxModesForLegalForm,
-  type LegalForm, type RequisiteField, type TaxMode,
+  ALWAYS_REQUIRED_REQUISITE_FIELDS, INN_LENGTH, KPP_LENGTH, REGISTRATION_NUMBER_LENGTH, isLegalForm, requisiteRule, taxModesForLegalForm,
+  type AlwaysRequiredRequisiteField, type LegalForm, type RequisiteField, type TaxMode,
 } from "../../../../lib/legal-profile-rules";
 import { Loading } from "../ui/Loading";
 import { Notice } from "../ui/Notice";
@@ -20,28 +22,29 @@ const ONBOARDING_LABELS: Record<string, string> = {
   FRAMEWORK_ISSUED: "Договор выдан", FRAMEWORK_ACCEPTED: "Договор принят", PARTNER_ACTIVE: "Активен",
 };
 
+/**
+ * Every partner-scoped command in this file declares the same intent and the
+ * same cache consequence, so they share one wrapper rather than repeating the
+ * mutation name and the context callback nine times.
+ */
+function usePartnerScopedCommand<TVariables>(partnerId: string, mutationFn: (variables: TVariables) => Promise<unknown>) {
+  return useAdminMutation("agentReferrals.partnerCommand", mutationFn, { context: () => ({ partnerIdentityId: partnerId }) });
+}
+
 export function Partners({ selected, onSelect }: { selected: string | null; onSelect: (id: string | null) => void }) {
   return selected ? <PartnerDetail partnerId={selected} onBack={() => onSelect(null)} /> : <PartnerList onSelect={onSelect} />;
 }
 
 function PartnerList({ onSelect }: { onSelect: (id: string) => void }) {
-  const partners = useQuery({ queryKey: ["agent-referrals", "partners"], queryFn: () => api<{ partners: Row[] }>("/agent-referrals/partners") });
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const queryClient = useQueryClient();
+  const partners = useQuery({ queryKey: agentReferralsKeys.partners(), queryFn: () => api<{ partners: Row[] }>("/agent-referrals/partners") });
   const { register, handleSubmit, reset } = useForm<{ agent_id: string; email: string; reason: string }>({ defaultValues: { agent_id: "", email: "", reason: "onboarding" } });
+  const provisionPartner = useAdminMutation("agentReferrals.partnerProvision", (values: Record<string, unknown>) =>
+    api("/agent-referrals/partners", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(values) }));
+  const busy = provisionPartner.isPending;
+  const error = provisionPartner.error?.code ?? null;
 
   const provision = handleSubmit(async (values) => {
-    setBusy(true); setError(null);
-    try {
-      await api("/agent-referrals/partners", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(values) });
-      reset();
-      await queryClient.invalidateQueries({ queryKey: ["agent-referrals", "partners"] });
-    } catch (failure) {
-      setError((failure as AdminApiError).code);
-    } finally {
-      setBusy(false);
-    }
+    await provisionPartner.mutateAsync(values).then(() => reset()).catch(() => undefined);
   });
 
   return (
@@ -76,22 +79,19 @@ function PartnerList({ onSelect }: { onSelect: (id: string) => void }) {
 }
 
 function PartnerDetail({ partnerId, onBack }: { partnerId: string; onBack: () => void }) {
-  const queryClient = useQueryClient();
-  const detail = useQuery({ queryKey: ["agent-referrals", "partner", partnerId], queryFn: () => api<Row>(`/agent-referrals/partners/${partnerId}`) });
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const refresh = () => queryClient.invalidateQueries({ queryKey: ["agent-referrals", "partner", partnerId] });
+  const detail = useQuery({ queryKey: agentReferralsKeys.partner(partnerId), queryFn: () => api<Row>(`/agent-referrals/partners/${partnerId}`) });
+  // One hook for every partner-scoped command this panel issues: they all
+  // have the same cache consequence (this partner's detail, the list column
+  // that shows onboarding state, the review queue), so they declare the same
+  // intent and differ only in the request they send.
+  const partnerCommand = useAdminMutation("agentReferrals.partnerCommand", ({ path, body }: { path: string; body: Record<string, unknown> }) =>
+    api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+    { context: () => ({ partnerIdentityId: partnerId }) });
+  const busy = partnerCommand.isPending;
+  const error = partnerCommand.error?.code ?? null;
 
   const runAction = async (path: string, body: Record<string, unknown>) => {
-    setBusy(true); setError(null);
-    try {
-      await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-      refresh();
-    } catch (failure) {
-      setError((failure as AdminApiError).code);
-    } finally {
-      setBusy(false);
-    }
+    await partnerCommand.mutateAsync({ path, body }).catch(() => undefined);
   };
 
   if (detail.isLoading) return <Loading />;
@@ -111,7 +111,7 @@ function PartnerDetail({ partnerId, onBack }: { partnerId: string; onBack: () =>
             {busy ? "…" : "Проверить юридический профиль"}
           </button>
         )}
-        {onboardingState === "PROFILE_VERIFIED" && <IssueFrameworkForm partnerId={partnerId} onDone={refresh} />}
+        {onboardingState === "PROFILE_VERIFIED" && <IssueFrameworkForm partnerId={partnerId} />}
         {onboardingState === "FRAMEWORK_ACCEPTED" && (
           <button disabled={busy} onClick={() => void runAction(`/agent-referrals/partners/${partnerId}/activate`, { expected_revision: identity.onboarding_revision, reason: "activated by operator" })}>
             {busy ? "…" : "Активировать партнёра (PARTNER_ACTIVE)"}
@@ -120,13 +120,12 @@ function PartnerDetail({ partnerId, onBack }: { partnerId: string; onBack: () =>
         <Notice error={error} />
       </Panel>
 
-      {onboardingState === "PARTNER_ACTIVE" && <PromoAndAudience partnerId={partnerId} onDone={refresh} />}
+      {onboardingState === "PARTNER_ACTIVE" && <PromoAndAudience partnerId={partnerId} />}
       {onboardingState === "PARTNER_ACTIVE" && (
         <LegalProfileSupersession
           partnerId={partnerId}
           legalProfile={detail.data!.legal_profile as Row | null}
           pendingRequest={detail.data!.pending_legal_profile_change_request as Row | null}
-          onDone={refresh}
         />
       )}
       {detail.data!.legal_profile != null && (
@@ -134,12 +133,11 @@ function PartnerDetail({ partnerId, onBack }: { partnerId: string; onBack: () =>
           partnerId={partnerId}
           legalProfile={detail.data!.legal_profile as Row | null}
           taxTreatment={detail.data!.tax_treatment as Row | null}
-          onDone={refresh}
         />
       )}
 
       <Panel title="Хранение и удаление">
-        <NpdCheckForm partnerId={partnerId} onDone={refresh} />
+        <NpdCheckForm partnerId={partnerId} />
         <button disabled={busy} onClick={() => void runAction(`/agent-referrals/partners/${partnerId}/destroy`, { reason: "erasure request" })}>
           {busy ? "…" : "Удалить персональные данные (destroy)"}
         </button>
@@ -148,54 +146,37 @@ function PartnerDetail({ partnerId, onBack }: { partnerId: string; onBack: () =>
   );
 }
 
-function IssueFrameworkForm({ partnerId, onDone }: { partnerId: string; onDone: () => void }) {
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+function IssueFrameworkForm({ partnerId }: { partnerId: string }) {
   const { register, handleSubmit } = useForm<{ framework_agreement_revision_id: string; delegation_template_revision_id: string }>();
-  const submit = handleSubmit(async (values) => {
-    setBusy(true); setError(null);
-    try {
-      await api(`/agent-referrals/partners/${partnerId}/framework/issue`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...values, reason: "issued by operator" }) });
-      onDone();
-    } catch (failure) {
-      setError((failure as AdminApiError).code);
-    } finally {
-      setBusy(false);
-    }
-  });
+  const issue = usePartnerScopedCommand(partnerId, (values: Record<string, unknown>) =>
+    api(`/agent-referrals/partners/${partnerId}/framework/issue`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...values, reason: "issued by operator" }) }));
+  const submit = handleSubmit(async (values) => { await issue.mutateAsync(values).catch(() => undefined); });
   return (
     <form className="form" onSubmit={submit}>
       <label>ID редакции договора <input {...register("framework_agreement_revision_id", { required: true })} /></label>
       <label>ID редакции делегирования <input {...register("delegation_template_revision_id", { required: true })} /></label>
-      <Notice error={error} />
-      <button className="primary" disabled={busy}>{busy ? "…" : "Выдать договор"}</button>
+      <Notice error={issue.error?.code} />
+      <button className="primary" disabled={issue.isPending}>{issue.isPending ? "…" : "Выдать договор"}</button>
     </form>
   );
 }
 
-function PromoAndAudience({ partnerId, onDone }: { partnerId: string; onDone: () => void }) {
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+function PromoAndAudience({ partnerId }: { partnerId: string }) {
   const promoForm = useForm<{ code: string }>();
   const audienceForm = useForm<{ city_id: string; valid_until: string; evidence_ref: string }>();
 
-  const mintPromo = promoForm.handleSubmit(async ({ code }) => {
-    setBusy(true); setError(null);
-    try {
-      await api(`/agent-referrals/partners/${partnerId}/promo`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, reason: "mint" }) });
-      onDone();
-    } catch (failure) { setError((failure as AdminApiError).code); } finally { setBusy(false); }
-  });
-  const verifyAudience = audienceForm.handleSubmit(async ({ city_id, valid_until, evidence_ref }) => {
-    setBusy(true); setError(null);
-    try {
-      await api(`/agent-referrals/partners/${partnerId}/audience/${city_id}/verify`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ valid_until: new Date(valid_until).toISOString(), reason: "verified by operator", evidence_ref }),
-      });
-      onDone();
-    } catch (failure) { setError((failure as AdminApiError).code); } finally { setBusy(false); }
-  });
+  const mint = usePartnerScopedCommand(partnerId, ({ code }: { code: string }) =>
+    api(`/agent-referrals/partners/${partnerId}/promo`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, reason: "mint" }) }));
+  const verify = usePartnerScopedCommand(partnerId, ({ city_id, valid_until, evidence_ref }: { city_id: string; valid_until: string; evidence_ref: string }) =>
+    api(`/agent-referrals/partners/${partnerId}/audience/${city_id}/verify`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ valid_until: new Date(valid_until).toISOString(), reason: "verified by operator", evidence_ref }),
+    }));
+  const busy = mint.isPending || verify.isPending;
+  const error = mint.error?.code ?? verify.error?.code ?? null;
+
+  const mintPromo = promoForm.handleSubmit(async (values) => { await mint.mutateAsync(values).catch(() => undefined); });
+  const verifyAudience = audienceForm.handleSubmit(async (values) => { await verify.mutateAsync(values).catch(() => undefined); });
 
   return (
     <Panel title="Промокод и аудитория">
@@ -235,18 +216,19 @@ const digitsHint = (length: number | undefined) => (length === undefined ? undef
  * hand-copied condition. Only the wording is this surface's own.
  */
 function LegalRequisitesFields({ legalForm, register }: { legalForm: string; register: UseFormRegister<LegalRequisitesFormFields> }) {
-  const form = legalForm as LegalForm;
-  const shown = (field: RequisiteField) => requisiteRule(form, field) !== "FORBIDDEN";
-  const required = (field: RequisiteField) => requisiteRule(form, field) === "REQUIRED";
+  const form = isLegalForm(legalForm) ? legalForm : null;
+  const alwaysRequired = (field: AlwaysRequiredRequisiteField) => ALWAYS_REQUIRED_REQUISITE_FIELDS.includes(field);
+  const shown = (field: RequisiteField) => requisiteRule(legalForm, field) !== "FORBIDDEN";
+  const required = (field: RequisiteField) => requisiteRule(legalForm, field) === "REQUIRED";
   return (
     <>
-      <label>ФИО / полное наименование <input {...register("full_name", { required: true })} /></label>
+      <label>ФИО / полное наименование <input {...register("full_name", { required: alwaysRequired("full_name") })} /></label>
       {shown("short_name") && <label>Сокращённое наименование <input {...register("short_name", { required: required("short_name") })} /></label>}
       {shown("opf") && <label>ОПФ <input {...register("opf", { required: required("opf") })} placeholder="ООО" /></label>}
-      <label>ИНН <input {...register("inn", { required: true })} placeholder={digitsHint(INN_LENGTH[form])} /></label>
+      <label>ИНН <input {...register("inn", { required: alwaysRequired("inn") })} placeholder={digitsHint(form ? INN_LENGTH[form] : undefined)} /></label>
       {shown("kpp") && <label>КПП <input {...register("kpp", { required: required("kpp") })} placeholder={digitsHint(KPP_LENGTH)} /></label>}
       {shown("registration_number") && (
-        <label>{REGISTRATION_NUMBER_LABELS[form] ?? "Регистрационный номер"} <input {...register("registration_number", { required: required("registration_number") })} placeholder={digitsHint(REGISTRATION_NUMBER_LENGTH[form])} /></label>
+        <label>{(form && REGISTRATION_NUMBER_LABELS[form]) ?? "Регистрационный номер"} <input {...register("registration_number", { required: required("registration_number") })} placeholder={digitsHint(form ? REGISTRATION_NUMBER_LENGTH[form] : undefined)} /></label>
       )}
       {shown("legal_address") && <label>Юридический адрес <input {...register("legal_address", { required: required("legal_address") })} /></label>}
     </>
@@ -266,11 +248,9 @@ function useConstrainedTaxMode(legalForm: string, taxMode: string, setValue: (na
 }
 
 /** D2 §10: a separate action for an already-active partner, never a repeat of onboarding verification. */
-function LegalProfileSupersession({ partnerId, legalProfile, pendingRequest, onDone }: {
-  partnerId: string; legalProfile: Row | null; pendingRequest: Row | null; onDone: () => void;
+function LegalProfileSupersession({ partnerId, legalProfile, pendingRequest }: {
+  partnerId: string; legalProfile: Row | null; pendingRequest: Row | null;
 }) {
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
   // shouldUnregister: a field hidden by LegalRequisitesFields' own
   // conditional rendering (e.g. opf/kpp/legal_address when legal_form
   // switches away from LEGAL_ENTITY) must not survive in form state - RHF's
@@ -284,26 +264,23 @@ function LegalProfileSupersession({ partnerId, legalProfile, pendingRequest, onD
   const selectedTaxMode = watch("tax_mode");
   useConstrainedTaxMode(selectedLegalForm, selectedTaxMode, setValue);
 
-  const submitChange = handleSubmit(async (values) => {
-    setBusy(true); setError(null);
-    try {
-      await api(`/agent-referrals/partners/${partnerId}/legal-profile/change`, {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(values),
-      });
-      reset();
-      onDone();
-    } catch (failure) { setError((failure as AdminApiError).code); } finally { setBusy(false); }
-  });
+  const submitRequest = usePartnerScopedCommand(partnerId, (values: Record<string, unknown>) =>
+    api(`/agent-referrals/partners/${partnerId}/legal-profile/change`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(values),
+    }));
+  const resolveRequest = usePartnerScopedCommand(partnerId, (action: "verify" | "reject") =>
+    api(`/agent-referrals/partners/${partnerId}/legal-profile/change/${String(pendingRequest!.id)}/${action}`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: action === "verify" ? "verified by operator" : "rejected by operator" }),
+    }));
+  const busy = submitRequest.isPending || resolveRequest.isPending;
+  const error = submitRequest.error?.code ?? resolveRequest.error?.code ?? null;
 
+  const submitChange = handleSubmit(async (values) => {
+    await submitRequest.mutateAsync(values).then(() => reset()).catch(() => undefined);
+  });
   const runOnRequest = async (action: "verify" | "reject") => {
-    setBusy(true); setError(null);
-    try {
-      await api(`/agent-referrals/partners/${partnerId}/legal-profile/change/${String(pendingRequest!.id)}/${action}`, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reason: action === "verify" ? "verified by operator" : "rejected by operator" }),
-      });
-      onDone();
-    } catch (failure) { setError((failure as AdminApiError).code); } finally { setBusy(false); }
+    await resolveRequest.mutateAsync(action).catch(() => undefined);
   };
 
   return (
@@ -396,9 +373,7 @@ function useConstrainedVatTreatment(taxSystem: string, vatTreatment: string, set
  * otherwise structurally valid, like USN), so the form is never offered
  * for one; only the read-only current-treatment display is shown.
  */
-function TaxTreatmentPanel({ partnerId, legalProfile, taxTreatment, onDone }: { partnerId: string; legalProfile: Row | null; taxTreatment: Row | null; onDone: () => void }) {
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+function TaxTreatmentPanel({ partnerId, legalProfile, taxTreatment }: { partnerId: string; legalProfile: Row | null; taxTreatment: Row | null }) {
   const { register, handleSubmit, reset, watch, setValue } = useForm<{ tax_system: string; vat_treatment: string; effective_from: string; evidence_ref: string; reason: string }>({
     defaultValues: { tax_system: "USN", vat_treatment: "NO_VAT", effective_from: "", evidence_ref: "", reason: "" },
   });
@@ -413,17 +388,19 @@ function TaxTreatmentPanel({ partnerId, legalProfile, taxTreatment, onDone }: { 
   // this same still-mounted panel would collide as IDEMPOTENCY_CONFLICT.
   const commandKey = usePersistentIdempotencyKey();
 
+  // The ONLY agent-referrals route that carries durable command identity
+  // (PR-F round 3): the key is retained across a failed retry by
+  // usePersistentIdempotencyKey and rotated only after a genuine success.
+  const record = usePartnerScopedCommand(partnerId, (values: { tax_system: string; vat_treatment: string }) =>
+    api(`/agent-referrals/partners/${partnerId}/tax-treatment`, {
+      method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": commandKey.acquire() },
+      body: JSON.stringify({ ...values, no_vat_basis: values.vat_treatment === "NO_VAT" ? noVatBasisForTaxSystem(values.tax_system) : null }),
+    }));
+  const busy = record.isPending;
+  const error = record.error?.code ?? null;
+
   const submit = handleSubmit(async (values) => {
-    setBusy(true); setError(null);
-    try {
-      await api(`/agent-referrals/partners/${partnerId}/tax-treatment`, {
-        method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": commandKey.acquire() },
-        body: JSON.stringify({ ...values, no_vat_basis: values.vat_treatment === "NO_VAT" ? noVatBasisForTaxSystem(values.tax_system) : null }),
-      });
-      commandKey.clear();
-      reset();
-      onDone();
-    } catch (failure) { setError((failure as AdminApiError).code); } finally { setBusy(false); }
+    await record.mutateAsync(values).then(() => { commandKey.clear(); reset(); }).catch(() => undefined);
   });
 
   return (
@@ -461,17 +438,13 @@ function TaxTreatmentPanel({ partnerId, legalProfile, taxTreatment, onDone }: { 
   );
 }
 
-function NpdCheckForm({ partnerId, onDone }: { partnerId: string; onDone: () => void }) {
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+function NpdCheckForm({ partnerId }: { partnerId: string }) {
   const { register, handleSubmit } = useForm<{ status: "ACTIVE" | "INACTIVE" | "UNKNOWN"; evidence_ref: string }>({ defaultValues: { status: "ACTIVE", evidence_ref: "" } });
-  const submit = handleSubmit(async (values) => {
-    setBusy(true); setError(null);
-    try {
-      await api(`/agent-referrals/partners/${partnerId}/npd-status`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(values) });
-      onDone();
-    } catch (failure) { setError((failure as AdminApiError).code); } finally { setBusy(false); }
-  });
+  const record = usePartnerScopedCommand(partnerId, (values: Record<string, unknown>) =>
+    api(`/agent-referrals/partners/${partnerId}/npd-status`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(values) }));
+  const busy = record.isPending;
+  const error = record.error?.code ?? null;
+  const submit = handleSubmit(async (values) => { await record.mutateAsync(values).catch(() => undefined); });
   return (
     <form className="form" onSubmit={submit}>
       <label>Статус НПД

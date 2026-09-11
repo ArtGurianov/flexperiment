@@ -8,6 +8,7 @@ import { migrate, openDatabase } from "../src/db";
 import { activateAgentReferrals, suspendAgentReferrals } from "../src/agent-referrals-feature-state";
 import {
   consumePartnerInvite,
+  PartnerIdentityError,
   provisionPartnerOwner,
   reissuePartnerInvite,
   revokePartnerInvite,
@@ -95,7 +96,12 @@ describe("partner provisioning", () => {
       activated(db);
       provisionPartnerOwner(db, admin, agentId, "first@example.test", "first");
       const invitesBefore = db.prepare("SELECT COUNT(*) AS n FROM partner_invite_capabilities").get();
-      expect(() => provisionPartnerOwner(db, admin, agentId, "second@example.test", "second")).toThrow();
+      // PR-C: a named 409, not a raw SqliteError - an operator retrying after
+      // an ambiguous network failure must be told "already provisioned", not
+      // handed a 500 for a command that actually succeeded.
+      let code = "NO_THROW";
+      try { provisionPartnerOwner(db, admin, agentId, "second@example.test", "second"); } catch (error) { code = (error as PartnerIdentityError).code; }
+      expect(code).toBe("AGENT_REFERRALS_PARTNER_ALREADY_PROVISIONED");
       expect(db.prepare("SELECT COUNT(*) AS n FROM partner_identities WHERE agent_id = ?").get(agentId)).toEqual({ n: 1 });
       expect(db.prepare("SELECT COUNT(*) AS n FROM partner_invite_capabilities").get()).toEqual(invitesBefore);
     });

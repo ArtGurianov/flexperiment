@@ -37,6 +37,7 @@
     "commerce:email:unack": "tsx commerce/src/clear-email-operational-acknowledgement.ts",
     "commerce:test:image": "bash commerce/test/docker-image-smoke.sh",
     "admin:build": "pnpm --filter @flexperiment/admin build",
+    "admin:typecheck": "tsc -p apps/admin/tsconfig.json --noEmit",
     "admin:test:nginx": "bash deploy/test-admin-nginx-config.sh",
     "frontend:test:nginx": "bash deploy/test-frontend-nginx-routing.sh",
     "deploy:test:caddyfile": "bash deploy/test-caddyfile-topology.sh",

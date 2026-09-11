@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ALL_ADMIN_MUTATIONS, invalidationKeysFor } from "./invalidation";
-import { dashboardKeys } from "./query-keys";
+import { agentReferralsKeys, dashboardKeys } from "./query-keys";
 
 describe("invalidationKeysFor", () => {
   it("has a table row for every AdminMutation", () => {
@@ -39,6 +39,26 @@ describe("invalidationKeysFor", () => {
     const keys = invalidationKeysFor("occurrence.cancel", { occurrenceId: "occ-1" });
     expect(keys).toContainEqual(["occurrences", "list"]);
     expect(keys).toContainEqual(["occurrences", "cancellationFinancials", "occ-1"]);
+  });
+
+  // PR-C review: an engagement command cannot know which partner filter the
+  // operator currently has typed into the list, so it must refresh the list
+  // FAMILY. Scoping to the command's own partner left the open list stale for
+  // every other filter value - including "" (the default).
+  it("refreshes the whole engagement list family, whatever filter the open list uses", () => {
+    const familyKey = agentReferralsKeys.engagementLists();
+    for (const mutation of ["agentReferrals.engagementOffer", "agentReferrals.engagementCommand"] as const) {
+      expect(invalidationKeysFor(mutation, { engagementId: "e1", partnerIdentityId: "p1" })).toContainEqual(familyKey);
+    }
+    // Still narrow: the family prefix must not reach an engagement DETAIL key.
+    const detail = agentReferralsKeys.engagement("e1") as readonly unknown[];
+    expect(familyKey.every((segment, index) => detail[index] === segment)).toBe(false);
+  });
+
+  it("refreshes the ORD registration list on a creative command, which lives outside the engagement key space", () => {
+    const keys = invalidationKeysFor("agentReferrals.creativeRegistrationCommand", { engagementId: "e1", creativeRevisionId: "cr1" });
+    expect(keys).toContainEqual(agentReferralsKeys.creativeRegistrations("cr1"));
+    expect(keys).toContainEqual(agentReferralsKeys.engagement("e1"));
   });
 
   it("omits a scoped leaf key when its id is not in context, rather than guessing", () => {

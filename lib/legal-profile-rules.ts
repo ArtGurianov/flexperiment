@@ -18,8 +18,8 @@
  * two honest is not a shared import but an exhaustive conformance test
  * (commerce/test/agent-referrals-legal-profile-conformance.test.ts), which
  * walks every cell of the tables below and proves the DB accepts exactly
- * what the domain accepts - so changing one side without the other fails
- * loudly instead of drifting.
+ * what the domain accepts once normalized - so changing one side without the
+ * other fails loudly instead of drifting.
  */
 
 export const LEGAL_FORMS = ["INDIVIDUAL", "INDIVIDUAL_ENTREPRENEUR", "LEGAL_ENTITY"] as const;
@@ -55,6 +55,14 @@ export const LEGAL_PROFILE_PROJECTION: Readonly<Record<LegalForm, Readonly<Parti
 export const resolveProjectedContractorType = (legalForm: LegalForm, taxMode: TaxMode): ProjectedContractorType | null =>
   LEGAL_PROFILE_PROJECTION[legalForm]?.[taxMode] ?? null;
 
+/**
+ * The forms hold `legal_form` as a plain string (react-hook-form), so every
+ * lookup below has to survive a value outside the union. This is the one
+ * place that decides whether a string IS one - callers narrow with it rather
+ * than each inventing its own cast.
+ */
+export const isLegalForm = (value: string): value is LegalForm => (LEGAL_FORMS as readonly string[]).includes(value);
+
 /** Derived from the projection table, never listed a second time: a form offering a tax mode the matrix rejects is a form that submits a guaranteed 422. */
 export const taxModesForLegalForm = (legalForm: LegalForm): readonly TaxMode[] =>
   TAX_MODES.filter((taxMode) => LEGAL_PROFILE_PROJECTION[legalForm]?.[taxMode] !== undefined);
@@ -76,7 +84,24 @@ export const REQUISITE_SHAPE: Readonly<Record<LegalForm, Readonly<Record<Requisi
   LEGAL_ENTITY: { opf: "REQUIRED", short_name: "OPTIONAL", kpp: "REQUIRED", registration_number: "REQUIRED", legal_address: "REQUIRED" },
 };
 
-export const requisiteRule = (legalForm: LegalForm, field: RequisiteField): RequisiteFieldRule => REQUISITE_SHAPE[legalForm][field];
+/**
+ * Fail-closed for an unknown legal_form: FORBIDDEN, so a form renders NO
+ * requisite fields rather than crashing on `undefined[field]`. A form that
+ * shows nothing is a visible problem; a form that throws takes the whole
+ * admin page down for what is, at worst, an unexpected string.
+ */
+export const requisiteRule = (legalForm: string, field: RequisiteField): RequisiteFieldRule =>
+  (isLegalForm(legalForm) ? REQUISITE_SHAPE[legalForm][field] : "FORBIDDEN");
+
+/**
+ * full_name and inn are REQUIRED for every legal_form, which is exactly why
+ * they are not in REQUISITE_SHAPE (that table is about what VARIES). They
+ * are still stated once here rather than as a `required: true` hand-written
+ * into each form: if the rule ever becomes form-dependent, there is one
+ * place to change, not three.
+ */
+export const ALWAYS_REQUIRED_REQUISITE_FIELDS = ["full_name", "inn"] as const;
+export type AlwaysRequiredRequisiteField = (typeof ALWAYS_REQUIRED_REQUISITE_FIELDS)[number];
 
 /** ИНН: 10 digits for an organization, 12 for a natural person (an individual entrepreneur is a natural person). */
 export const INN_LENGTH: Readonly<Record<LegalForm, number>> = { INDIVIDUAL: 12, INDIVIDUAL_ENTREPRENEUR: 12, LEGAL_ENTITY: 10 };

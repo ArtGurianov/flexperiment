@@ -1,8 +1,9 @@
 "use client";
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { partnerApi, PartnerApiError } from "../../lib/partner-api";
+import { usePartnerMutation } from "../../lib/use-partner-mutation";
+import { partnerKeys } from "../../lib/query-keys";
 import type { Row } from "../../lib/partner-page";
 import { Loading } from "../ui/Loading";
 import { Notice } from "../ui/Notice";
@@ -10,8 +11,7 @@ import { PageTitle } from "../ui/PageTitle";
 
 /** Framework acceptance: mint the exact FRAMEWORK_ACCEPTANCE step-up grant, then accept - the resource hash must match agent-referrals-framework-acceptance.ts's own byte for byte. */
 export function Agreement() {
-  const queryClient = useQueryClient();
-  const agreements = useQuery({ queryKey: ["partner", "agreements"], queryFn: () => partnerApi<Row>("/agreements") });
+  const agreements = useQuery({ queryKey: partnerKeys.agreements(), queryFn: () => partnerApi<Row>("/agreements") });
 
   if (agreements.isLoading) return <Loading />;
   if (agreements.isError) return <Notice error={(agreements.error as PartnerApiError).code} />;
@@ -43,7 +43,6 @@ export function Agreement() {
         <AcceptForm
           frameworkAgreementRevisionId={frameworkAgreementRevisionId}
           delegationTemplateRevisionId={delegationTemplateRevisionId}
-          onDone={() => void queryClient.invalidateQueries({ queryKey: ["partner", "agreements"] })}
         />
       )}
       {Boolean(data.delegation_revoked) && <Notice><>Делегирование отозвано {String(data.delegation_revoked_at)}.</></Notice>}
@@ -51,35 +50,29 @@ export function Agreement() {
   );
 }
 
-function AcceptForm({ frameworkAgreementRevisionId, delegationTemplateRevisionId, onDone }: {
-  frameworkAgreementRevisionId: string; delegationTemplateRevisionId: string; onDone: () => void;
+function AcceptForm({ frameworkAgreementRevisionId, delegationTemplateRevisionId }: {
+  frameworkAgreementRevisionId: string; delegationTemplateRevisionId: string;
 }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const accept = async () => {
-    setBusy(true); setError(null);
-    try {
-      const resource = { framework_agreement_revision_id: frameworkAgreementRevisionId, delegation_template_revision_id: delegationTemplateRevisionId };
-      const { grant_id } = await partnerApi<{ grant_id: string }>("/step-up", {
-        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "FRAMEWORK_ACCEPTANCE", resource }),
-      });
-      await partnerApi("/framework/accept", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ step_up_grant_id: grant_id, ...resource }),
-      });
-      onDone();
-    } catch (failure) {
-      setError((failure as PartnerApiError).code);
-    } finally {
-      setBusy(false);
-    }
-  };
+  // Grant mint and acceptance are one intent (see Payout's own note): the
+  // grant is bound to this exact revision pair, so the pair is derived once
+  // and used for both calls.
+  const accept = usePartnerMutation("partner.frameworkAccept", async () => {
+    const resource = { framework_agreement_revision_id: frameworkAgreementRevisionId, delegation_template_revision_id: delegationTemplateRevisionId };
+    const { grant_id } = await partnerApi<{ grant_id: string }>("/step-up", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "FRAMEWORK_ACCEPTANCE", resource }),
+    });
+    return partnerApi("/framework/accept", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ step_up_grant_id: grant_id, ...resource }),
+    });
+  });
 
   return (
     <section className="card">
-      <button className="primary" disabled={busy} onClick={() => void accept()}>{busy ? "Принимаем…" : "Принять договор и делегирование"}</button>
-      <Notice error={error} />
+      <button className="primary" disabled={accept.isPending} onClick={() => void accept.mutateAsync(undefined).catch(() => undefined)}>
+        {accept.isPending ? "Принимаем…" : "Принять договор и делегирование"}
+      </button>
+      <Notice error={accept.error?.code ?? null} />
     </section>
   );
 }

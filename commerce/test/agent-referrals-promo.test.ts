@@ -211,3 +211,37 @@ describe("structural authority bypass surface (Phase 5 holistic review, P0 findi
     expect(promoModule).toHaveProperty("revokeEngagementPromoAuthorizationInTransaction"); // revoking never grants unearned authority - safe to keep shared
   });
 });
+
+describe("PR-C idempotency audit: a repeated partner-promo mint is a named refusal, not a 500", () => {
+  it("refuses a duplicate code with PROMO_CODE_ALREADY_EXISTS instead of a raw SqliteError", () => {
+    const db = fresh();
+    const agentId = seedAgent(db);
+    createPartnerPromo(db, admin, { partner_id: agentId, code: "DUPLICATE", reason: "mint" });
+
+    // The retry an operator makes after an ambiguous network failure - the
+    // first call having, in fact, succeeded.
+    let code = "NO_THROW";
+    try { createPartnerPromo(db, admin, { partner_id: agentId, code: "DUPLICATE", reason: "retry after ambiguous failure" }); }
+    catch (error) { code = (error as AgentReferralsPromoError).code; }
+    expect(code).toBe("PROMO_CODE_ALREADY_EXISTS");
+    expect(db.prepare("SELECT COUNT(*) AS n FROM promo_codes WHERE normalized_code = 'DUPLICATE'").get()).toEqual({ n: 1 });
+  });
+
+  it("refuses a SECOND promo for the same partner with a named 409, not a structural 500", () => {
+    const db = fresh();
+    const agentId = seedAgent(db);
+    createPartnerPromo(db, admin, { partner_id: agentId, code: "ART", reason: "mint" });
+
+    // A different, free code - so promo_codes accepts it and only
+    // partner_promos' own partner_id UNIQUE (one permanent promo per
+    // partner) refuses. The admin form offers this action regardless, so an
+    // operator reaches it normally.
+    let code = "NO_THROW";
+    try { createPartnerPromo(db, admin, { partner_id: agentId, code: "ART2", reason: "second promo" }); }
+    catch (error) { code = (error as AgentReferralsPromoError).code; }
+    expect(code).toBe("AGENT_REFERRALS_PARTNER_PROMO_ALREADY_EXISTS");
+    // The whole transaction rolled back: the free code was not consumed either.
+    expect(db.prepare("SELECT COUNT(*) AS n FROM promo_codes WHERE normalized_code = 'ART2'").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM partner_promos WHERE partner_id = ?").get(agentId)).toEqual({ n: 1 });
+  });
+});

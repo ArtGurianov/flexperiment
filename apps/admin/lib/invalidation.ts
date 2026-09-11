@@ -2,6 +2,7 @@ import type { QueryKey } from "@tanstack/react-query";
 import {
   cityKeys, dashboardKeys, emailAttentionKeys, incidentKeys,
   occurrenceKeys, orderKeys, refundKeys, settlementKeys, agentKeys, promoKeys, driftKeys,
+  agentReferralsKeys,
 } from "./query-keys";
 
 export type AdminMutation =
@@ -12,7 +13,16 @@ export type AdminMutation =
   | "settlement.paymentMade" | "settlement.documentsComplete"
   | "settlement.cancelBeforePayment" | "settlement.recovery"
   | "agent.create" | "agent.patch" | "promo.create" | "promo.patch"
-  | "emergency-sales-pause" | "emergency-sales-reopen";
+  | "emergency-sales-pause" | "emergency-sales-reopen"
+  // PR-C: agent-referrals admin commands. Grouped by cache CONSEQUENCE, not
+  // one arm per route - the same idiom the settlement.* arms below already
+  // use, since what this table decides is what goes stale, not which button
+  // was pressed (the audit trail is the backend's job, not the cache's).
+  | "agentReferrals.featureState"
+  | "agentReferrals.partnerProvision" | "agentReferrals.partnerCommand"
+  | "agentReferrals.engagementOffer" | "agentReferrals.engagementCommand"
+  | "agentReferrals.creativeRegistrationCommand"
+  | "agentReferrals.channelPolicy";
 
 export type MutationContext = {
   cityId?: string;
@@ -21,6 +31,10 @@ export type MutationContext = {
   settlementId?: string;
   agentId?: string;
   promoId?: string;
+  partnerIdentityId?: string;
+  engagementId?: string;
+  creativeRevisionId?: string;
+  channelKey?: string;
 };
 
 /**
@@ -70,6 +84,51 @@ export function invalidationKeysFor(mutation: AdminMutation, ctx: MutationContex
     case "emergency-sales-pause":
     case "emergency-sales-reopen":
       return [dashboardKeys.summary()];
+    // Suspending or reactivating the whole feature changes what the review
+    // queue is allowed to contain, so both go stale together.
+    case "agentReferrals.featureState":
+      return [agentReferralsKeys.featureState(), agentReferralsKeys.reviewQueue(), dashboardKeys.summary()];
+    // Provisioning adds a partner to the list; there is no detail open for
+    // an identity that did not exist a moment ago.
+    case "agentReferrals.partnerProvision":
+      return [agentReferralsKeys.partners(), dashboardKeys.summary()];
+    // Every other partner-scoped command (verification, framework issuance,
+    // activation, promo, audience, NPD, destruction, legal-profile
+    // supersession, tax treatment) changes the open detail AND the
+    // onboarding state the list column shows.
+    case "agentReferrals.partnerCommand":
+      return [
+        ...(ctx.partnerIdentityId ? [agentReferralsKeys.partner(ctx.partnerIdentityId)] : []),
+        agentReferralsKeys.partners(), agentReferralsKeys.reviewQueue(), dashboardKeys.summary(),
+      ];
+    // The list family, not one filtered list: a command has no way to know
+    // which partner filter the operator currently has typed in, and a key
+    // scoped to the command's own partner leaves the open list stale for
+    // every other filter value - including the empty one, which is the
+    // default.
+    case "agentReferrals.engagementOffer":
+      return [agentReferralsKeys.engagementLists(), agentReferralsKeys.reviewQueue(), dashboardKeys.summary()];
+    case "agentReferrals.engagementCommand":
+      return [
+        ...(ctx.engagementId ? [agentReferralsKeys.engagement(ctx.engagementId)] : []),
+        agentReferralsKeys.engagementLists(), agentReferralsKeys.reviewQueue(), dashboardKeys.summary(),
+      ];
+    // The ORD registration list is keyed by creative revision, outside the
+    // engagement key space - so it needs its own arm rather than a
+    // component-local refetch. A refetch chained onto success would go on
+    // missing the one case this layer exists for: the command committed and
+    // the response was lost.
+    case "agentReferrals.creativeRegistrationCommand":
+      return [
+        ...(ctx.engagementId ? [agentReferralsKeys.engagement(ctx.engagementId)] : []),
+        ...(ctx.creativeRevisionId ? [agentReferralsKeys.creativeRegistrations(ctx.creativeRevisionId)] : []),
+        agentReferralsKeys.reviewQueue(), dashboardKeys.summary(),
+      ];
+    case "agentReferrals.channelPolicy":
+      return [
+        ...(ctx.channelKey ? [agentReferralsKeys.channelPolicy(ctx.channelKey)] : []),
+        agentReferralsKeys.reviewQueue(), dashboardKeys.summary(),
+      ];
   }
 }
 
@@ -82,4 +141,7 @@ export const ALL_ADMIN_MUTATIONS: readonly AdminMutation[] = [
   "settlement.cancelBeforePayment", "settlement.recovery",
   "agent.create", "agent.patch", "promo.create", "promo.patch",
   "emergency-sales-pause", "emergency-sales-reopen",
+  "agentReferrals.featureState", "agentReferrals.partnerProvision", "agentReferrals.partnerCommand",
+  "agentReferrals.engagementOffer", "agentReferrals.engagementCommand", "agentReferrals.creativeRegistrationCommand",
+  "agentReferrals.channelPolicy",
 ];

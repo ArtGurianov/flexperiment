@@ -123,4 +123,45 @@ describe("Agents", () => {
     for (const field of ["contractor_type", "legal_name", "inn", "slug"]) expect(requests[0].body).not.toHaveProperty(field);
     expect(requests[0].body.email).toBe("moved@example.test");
   });
+
+  // PR-C: the editor holds an id and derives the row from query data, so an
+  // authoritative refresh reaches the OPEN dialog too. Holding a snapshot
+  // meant an agent that became governed mid-edit kept rendering the legacy
+  // writable form while the list behind it already knew better.
+  it("re-renders an open editor as projected when the agent becomes governed under it", async () => {
+    const legacy = {
+      id: "agent-3", slug: "mutating-agent", display_name: "Mutating", legal_name: "Mutating LLC", email: "m@example.test",
+      contractor_type: "SELF_EMPLOYED", contractor_type_source: "LEGACY", inn: "123456789012", contract_reference: "C-3",
+      enabled: 1, default_reward_type: "PERCENT", default_reward_value: 1000, created_at: "old", updated_at: "new", promo_count: 0,
+      legal_profile: null,
+    };
+    const governed = {
+      ...legacy, contractor_type: "ORGANIZATION", contractor_type_source: "LEGAL_PROFILE",
+      legal_profile: {
+        id: "lp-3", revision: 1, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", projected_contractor_type: "ORGANIZATION",
+        opf: "ООО", full_name: "Ромашка", short_name: null, inn: "1234567890", kpp: "123456789",
+        registration_number: "1234567890123", legal_address: "Москва",
+      },
+    };
+    let current: Record<string, unknown> = legacy;
+    global.fetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input).includes("/agents")) return { ok: true, status: 200, json: async () => ({ agents: [current] }) } as Response;
+      throw new Error(`unhandled fetch: ${input}`);
+    });
+    const user = userEvent.setup(); const client = createTestQueryClient();
+    render(<Agents />, { wrapper: (props) => <QueryClientWrapper client={client}>{props.children}</QueryClientWrapper> });
+
+    await user.click(await screen.findByRole("button", { name: "Редактировать" }));
+    const dialog = screen.getByRole("dialog", { name: "Редактировать агента" });
+    expect(within(dialog).getByLabelText("Тип исполнителя")).toBeInTheDocument();
+
+    // The partner's legal profile is verified elsewhere; the next
+    // authoritative read is what this admin console learns it from.
+    current = governed;
+    await client.invalidateQueries({ queryKey: ["agents", "list"] });
+
+    await waitFor(() => expect(within(dialog).queryByLabelText("Тип исполнителя")).not.toBeInTheDocument());
+    expect(within(dialog).getByText(/Юридическое лицо · ООО/)).toBeInTheDocument();
+    expect(within(dialog).queryByLabelText("Юридическое имя")).not.toBeInTheDocument();
+  });
 });
