@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
-import { suspendAgentReferrals, agentReferralsFeatureState, activateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { suspendAgentReferrals, agentReferralsFeatureState } from "../src/agent-referrals-feature-state";
 import {
   mintSystemDerivedNpdTaxTreatment, recordVerifiedTaxTreatment, resolveTaxTreatmentForLegalProfileAt, taxTreatmentRevisionsForLegalProfile,
   validateTaxTreatmentTuple, TaxTreatmentError,
@@ -32,21 +32,20 @@ describe("agent-referrals tax treatment", () => {
       expect(treatment).toMatchObject({ tax_system: "NPD", vat_treatment: "NO_VAT", no_vat_basis: "NPD", assertion_source: "SYSTEM_DERIVED", evidence_ref: null, created_by_admin_id: null });
     });
 
-    it("mintSystemDerivedNpdTaxTreatment is idempotent-shaped: each call mints its own sequence, never reused across legal-profile revisions", () => {
+    it("mintSystemDerivedNpdTaxTreatment refuses a second SYSTEM_DERIVED mint for the same legal-profile revision (P2.1 unique index)", () => {
       const { db } = fresh(); open.push(db);
       const p1 = readyPartner(db, "NPD");
       const legalProfile = currentAgentReferralsLegalProfile(db, p1.agentId)!;
       const before = taxTreatmentRevisionsForLegalProfile(db, legalProfile.id);
       expect(before).toHaveLength(1);
-      // A second direct mint for the SAME revision is a distinct row
-      // (never deduplicated at this layer) - the atomic hook itself only
-      // calls this once per genuine mint (gated on `result.minted`), so
-      // this white-box call proves the function's own shape, not a
-      // sanctioned double-mint scenario.
-      mintSystemDerivedNpdTaxTreatment(db, p1.partnerIdentityId, legalProfile.id);
+      // The atomic hook only calls this once per genuine mint (gated on
+      // `result.minted`); this white-box call proves the DB-level
+      // uniqueness constraint actually rejects a duplicate mint attempt
+      // rather than silently accumulating extra authority rows for the
+      // same legal-profile revision.
+      expect(() => mintSystemDerivedNpdTaxTreatment(db, p1.partnerIdentityId, legalProfile.id)).toThrow(/UNIQUE constraint failed/);
       const after = taxTreatmentRevisionsForLegalProfile(db, legalProfile.id);
-      expect(after).toHaveLength(2);
-      expect(after[1].sequence).toBe(before[0].sequence + 1);
+      expect(after).toHaveLength(1);
     });
 
     it("D2 supersession to LEGAL_ENTITY/OTHER never auto-mints a treatment for the new revision - it starts with zero treatment rows of its own", () => {
@@ -92,12 +91,18 @@ describe("agent-referrals tax treatment", () => {
     it("accepts every matrix-legal tuple the migration test also proves at the DB layer", () => {
       expect(() => validateTaxTreatmentTuple("NPD", "NO_VAT", "NPD")).not.toThrow();
       expect(() => validateTaxTreatmentTuple("AUSN", "NO_VAT", "AUSN")).not.toThrow();
+      expect(() => validateTaxTreatmentTuple("PSN", "NO_VAT", "PSN")).not.toThrow();
       expect(() => validateTaxTreatmentTuple("USN", "NO_VAT", "USN_EXEMPT")).not.toThrow();
       for (const vat of ["VAT_5", "VAT_7", "VAT_22"] as const) expect(() => validateTaxTreatmentTuple("USN", vat, null)).not.toThrow();
-      for (const sys of ["OSNO", "PSN", "ESHN", "OTHER"] as const) {
+      for (const sys of ["OSNO", "ESHN", "OTHER"] as const) {
         expect(() => validateTaxTreatmentTuple(sys, "VAT_22", null)).not.toThrow();
         expect(() => validateTaxTreatmentTuple(sys, "NO_VAT", "OTHER_CONFIRMED")).not.toThrow();
       }
+    });
+
+    it("PSN is always NO_VAT/PSN, never groupable with OSNO/ESHN/OTHER (P1.4)", () => {
+      expect(() => validateTaxTreatmentTuple("PSN", "VAT_22", null)).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_MATRIX_REJECTED/);
+      expect(() => validateTaxTreatmentTuple("PSN", "NO_VAT", "OTHER_CONFIRMED")).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_MATRIX_REJECTED/);
     });
 
     it("rejects a rejected tuple with the matrix-rejected code", () => {
@@ -188,6 +193,72 @@ describe("agent-referrals tax treatment", () => {
       // sequence 1 was already consumed by readyPartner's own automatic NPD mint on the ORIGINAL revision.
       expect(t1.sequence).toBe(2);
       expect(t2.sequence).toBe(3);
+    });
+
+    it("refuses PSN for a legal profile whose legal_form is not INDIVIDUAL_ENTREPRENEUR (P1.4)", () => {
+      const { db } = fresh(); open.push(db);
+      const p1 = readyPartner(db, "NPD"); // legal_form INDIVIDUAL, not INDIVIDUAL_ENTREPRENEUR
+      expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
+        taxSystem: "PSN", vatTreatment: "NO_VAT", noVatBasis: "PSN", effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x",
+      })).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_PSN_REQUIRES_INDIVIDUAL_ENTREPRENEUR/);
+    });
+
+    it("accepts PSN for a legal profile whose legal_form IS INDIVIDUAL_ENTREPRENEUR", () => {
+      const { db } = fresh(); open.push(db);
+      const p1 = readyPartner(db, "OTHER"); // readyPartner's OTHER fixture is INDIVIDUAL_ENTREPRENEUR
+      const treatment = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
+        taxSystem: "PSN", vatTreatment: "NO_VAT", noVatBasis: "PSN", effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "patent",
+      });
+      expect(treatment).toMatchObject({ tax_system: "PSN", vat_treatment: "NO_VAT", no_vat_basis: "PSN" });
+    });
+
+    it("normalizes effective_from to canonical millisecond-precision UTC ISO, whatever shape the caller sends (P1.1)", () => {
+      const { db } = fresh(); open.push(db);
+      const p1 = readyPartner(db, "OTHER");
+      const treatment = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
+        taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x",
+      });
+      expect(treatment.effective_from).toBe("2026-01-01T00:00:00.000Z");
+    });
+
+    it("refuses an unparseable effective_from as a typed 422, before any INSERT (P1.1)", () => {
+      const { db } = fresh(); open.push(db);
+      const p1 = readyPartner(db, "OTHER");
+      expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
+        taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "not-a-date", evidenceRef: "ev.pdf", reason: "x",
+      })).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_EFFECTIVE_FROM_INVALID/);
+      const legalProfile = currentAgentReferralsLegalProfile(db, p1.agentId)!;
+      expect(taxTreatmentRevisionsForLegalProfile(db, legalProfile.id)).toHaveLength(1); // only readyPartner's own fixture treatment
+    });
+
+    it("is idempotent under an exact-duplicate replay (P2.2): same tuple + same effective_from returns the existing row, mints no new sequence", () => {
+      const { db } = fresh(); open.push(db);
+      const p1 = readyPartner(db, "OTHER");
+      const first = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
+        taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x",
+      });
+      const replay = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
+        taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2026-01-01", evidenceRef: "different-evidence.pdf", reason: "different reason",
+      });
+      expect(replay).toEqual(first);
+      const legalProfile = currentAgentReferralsLegalProfile(db, p1.agentId)!;
+      // readyPartner("OTHER") already seeds its own fixture treatment (a
+      // distinct USN_EXEMPT/2020-01-01 tuple) - so 2 total: fixture + first,
+      // the replay must not add a third.
+      expect(taxTreatmentRevisionsForLegalProfile(db, legalProfile.id)).toHaveLength(2);
+    });
+
+    it("is NOT idempotent for a genuinely later correction (different effective_from mints a new sequence)", () => {
+      const { db } = fresh(); open.push(db);
+      const p1 = readyPartner(db, "OTHER");
+      const first = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
+        taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x",
+      });
+      const correction = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
+        taxSystem: "USN", vatTreatment: "VAT_22", noVatBasis: null, effectiveFrom: "2026-07-01", evidenceRef: "ev2.pdf", reason: "threshold crossed",
+      });
+      expect(correction.id).not.toBe(first.id);
+      expect(correction.sequence).toBe(first.sequence + 1);
     });
   });
 });

@@ -125,14 +125,14 @@ describe("0053 agent-referrals tax-treatment + ORD canonicalization migration", 
       const db = at0052(); migrate(db);
       const { partnerId, lpId } = seedProfile(db, "NPD");
       expect(() => db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, reason)
-        VALUES ('tt-1', ?, ?, 1, 'NPD', 'NO_VAT', 'NPD', '2026-01-01', 'SYSTEM_DERIVED', 'auto')`).run(partnerId, lpId)).not.toThrow();
+        VALUES ('tt-1', ?, ?, 1, 'NPD', 'NO_VAT', 'NPD', '2026-01-01T00:00:00.000Z', 'SYSTEM_DERIVED', 'auto')`).run(partnerId, lpId)).not.toThrow();
     });
 
     it("rejects NPD tax_system under ADMIN_ASSERTED, even with evidence", () => {
       const db = at0052(); migrate(db);
       const { partnerId, lpId } = seedProfile(db, "NPD");
       expect(() => db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, evidence_ref, created_by_admin_id, reason)
-        VALUES ('tt-bad', ?, ?, 1, 'NPD', 'NO_VAT', 'NPD', '2026-01-01', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'x')`).run(partnerId, lpId))
+        VALUES ('tt-bad', ?, ?, 1, 'NPD', 'NO_VAT', 'NPD', '2026-01-01T00:00:00.000Z', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'x')`).run(partnerId, lpId))
         .toThrow(/CHECK constraint failed/);
     });
 
@@ -140,7 +140,7 @@ describe("0053 agent-referrals tax-treatment + ORD canonicalization migration", 
       const db = at0052(); migrate(db);
       const { partnerId, lpId } = seedProfile(db, "OTHER");
       expect(() => db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, reason)
-        VALUES ('tt-bad2', ?, ?, 1, 'AUSN', 'NO_VAT', 'AUSN', '2026-01-01', 'SYSTEM_DERIVED', 'x')`).run(partnerId, lpId))
+        VALUES ('tt-bad2', ?, ?, 1, 'AUSN', 'NO_VAT', 'AUSN', '2026-01-01T00:00:00.000Z', 'SYSTEM_DERIVED', 'x')`).run(partnerId, lpId))
         .toThrow(/CHECK constraint failed/);
     });
 
@@ -148,50 +148,73 @@ describe("0053 agent-referrals tax-treatment + ORD canonicalization migration", 
       const db = at0052(); migrate(db);
       const { partnerId, lpId } = seedProfile(db, "OTHER");
       expect(() => db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, evidence_ref, created_by_admin_id, reason)
-        VALUES ('tt-ausn', ?, ?, 1, 'AUSN', 'NO_VAT', 'AUSN', '2026-01-01', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'ausn')`).run(partnerId, lpId)).not.toThrow();
+        VALUES ('tt-ausn', ?, ?, 1, 'AUSN', 'NO_VAT', 'AUSN', '2026-01-01T00:00:00.000Z', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'ausn')`).run(partnerId, lpId)).not.toThrow();
     });
 
     it.each(["VAT_5", "VAT_7", "VAT_22"])("accepts USN/%s with no_vat_basis NULL", (vat) => {
       const db = at0052(); migrate(db);
       const { partnerId, lpId } = seedProfile(db, "OTHER");
       expect(() => db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, evidence_ref, created_by_admin_id, reason)
-        VALUES ('tt-usn', ?, ?, 1, 'USN', ?, NULL, '2026-01-01', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'usn')`).run(partnerId, lpId, vat)).not.toThrow();
+        VALUES ('tt-usn', ?, ?, 1, 'USN', ?, NULL, '2026-01-01T00:00:00.000Z', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'usn')`).run(partnerId, lpId, vat)).not.toThrow();
     });
 
     it("accepts USN/NO_VAT/USN_EXEMPT", () => {
       const db = at0052(); migrate(db);
       const { partnerId, lpId } = seedProfile(db, "OTHER");
       expect(() => db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, evidence_ref, created_by_admin_id, reason)
-        VALUES ('tt-usn-ex', ?, ?, 1, 'USN', 'NO_VAT', 'USN_EXEMPT', '2026-01-01', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'usn exempt')`).run(partnerId, lpId)).not.toThrow();
+        VALUES ('tt-usn-ex', ?, ?, 1, 'USN', 'NO_VAT', 'USN_EXEMPT', '2026-01-01T00:00:00.000Z', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'usn exempt')`).run(partnerId, lpId)).not.toThrow();
     });
 
     it("rejects USN/NO_VAT/OTHER_CONFIRMED (wrong basis for USN)", () => {
       const db = at0052(); migrate(db);
       const { partnerId, lpId } = seedProfile(db, "OTHER");
       expect(() => db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, evidence_ref, created_by_admin_id, reason)
-        VALUES ('tt-usn-bad', ?, ?, 1, 'USN', 'NO_VAT', 'OTHER_CONFIRMED', '2026-01-01', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'x')`).run(partnerId, lpId))
+        VALUES ('tt-usn-bad', ?, ?, 1, 'USN', 'NO_VAT', 'OTHER_CONFIRMED', '2026-01-01T00:00:00.000Z', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'x')`).run(partnerId, lpId))
         .toThrow(/CHECK constraint failed/);
     });
 
-    it.each(["OSNO", "PSN", "ESHN", "OTHER"])("accepts %s/VAT_22", (taxSystem) => {
+    it.each(["OSNO", "ESHN", "OTHER"])("accepts %s/VAT_22", (taxSystem) => {
       const db = at0052(); migrate(db);
       const { partnerId, lpId } = seedProfile(db, "OTHER");
       expect(() => db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, evidence_ref, created_by_admin_id, reason)
-        VALUES ('tt-full', ?, ?, 1, ?, 'VAT_22', NULL, '2026-01-01', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'full rate')`).run(partnerId, lpId, taxSystem)).not.toThrow();
+        VALUES ('tt-full', ?, ?, 1, ?, 'VAT_22', NULL, '2026-01-01T00:00:00.000Z', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'full rate')`).run(partnerId, lpId, taxSystem)).not.toThrow();
     });
 
-    it.each(["OSNO", "PSN", "ESHN", "OTHER"])("accepts %s/NO_VAT/OTHER_CONFIRMED (confirmed exemption)", (taxSystem) => {
+    it.each(["OSNO", "ESHN", "OTHER"])("accepts %s/NO_VAT/OTHER_CONFIRMED (confirmed exemption)", (taxSystem) => {
       const db = at0052(); migrate(db);
       const { partnerId, lpId } = seedProfile(db, "OTHER");
       expect(() => db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, evidence_ref, created_by_admin_id, reason)
-        VALUES ('tt-exempt', ?, ?, 1, ?, 'NO_VAT', 'OTHER_CONFIRMED', '2026-01-01', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'confirmed exemption')`).run(partnerId, lpId, taxSystem)).not.toThrow();
+        VALUES ('tt-exempt', ?, ?, 1, ?, 'NO_VAT', 'OTHER_CONFIRMED', '2026-01-01T00:00:00.000Z', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'confirmed exemption')`).run(partnerId, lpId, taxSystem)).not.toThrow();
+    });
+
+    it("accepts PSN/NO_VAT/PSN for an individual entrepreneur (seedProfile('OTHER') is always IE)", () => {
+      const db = at0052(); migrate(db);
+      const { partnerId, lpId } = seedProfile(db, "OTHER");
+      expect(() => db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, evidence_ref, created_by_admin_id, reason)
+        VALUES ('tt-psn', ?, ?, 1, 'PSN', 'NO_VAT', 'PSN', '2026-01-01T00:00:00.000Z', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'psn')`).run(partnerId, lpId)).not.toThrow();
+    });
+
+    it("rejects PSN/VAT_22 - PSN is always NO_VAT, never groupable with OSNO/ESHN/OTHER", () => {
+      const db = at0052(); migrate(db);
+      const { partnerId, lpId } = seedProfile(db, "OTHER");
+      expect(() => db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, evidence_ref, created_by_admin_id, reason)
+        VALUES ('tt-psn-bad', ?, ?, 1, 'PSN', 'VAT_22', NULL, '2026-01-01T00:00:00.000Z', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'x')`).run(partnerId, lpId))
+        .toThrow(/CHECK constraint failed/);
+    });
+
+    it("rejects PSN/NO_VAT/OTHER_CONFIRMED - PSN's own no_vat_basis is always PSN, never OTHER_CONFIRMED", () => {
+      const db = at0052(); migrate(db);
+      const { partnerId, lpId } = seedProfile(db, "OTHER");
+      expect(() => db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, evidence_ref, created_by_admin_id, reason)
+        VALUES ('tt-psn-bad2', ?, ?, 1, 'PSN', 'NO_VAT', 'OTHER_CONFIRMED', '2026-01-01T00:00:00.000Z', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'x')`).run(partnerId, lpId))
+        .toThrow(/CHECK constraint failed/);
     });
 
     it.each(["OSNO", "PSN", "ESHN", "OTHER"])("rejects %s/VAT_5 (not an allowed rate outside USN)", (taxSystem) => {
       const db = at0052(); migrate(db);
       const { partnerId, lpId } = seedProfile(db, "OTHER");
       expect(() => db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, evidence_ref, created_by_admin_id, reason)
-        VALUES ('tt-bad-rate', ?, ?, 1, ?, 'VAT_5', NULL, '2026-01-01', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'x')`).run(partnerId, lpId, taxSystem))
+        VALUES ('tt-bad-rate', ?, ?, 1, ?, 'VAT_5', NULL, '2026-01-01T00:00:00.000Z', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'x')`).run(partnerId, lpId, taxSystem))
         .toThrow(/CHECK constraint failed/);
     });
 
@@ -199,7 +222,7 @@ describe("0053 agent-referrals tax-treatment + ORD canonicalization migration", 
       const db = at0052(); migrate(db);
       const { partnerId, lpId } = seedProfile(db, "OTHER");
       expect(() => db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, evidence_ref, created_by_admin_id, reason)
-        VALUES ('tt-no-basis', ?, ?, 1, 'USN', 'NO_VAT', NULL, '2026-01-01', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'x')`).run(partnerId, lpId))
+        VALUES ('tt-no-basis', ?, ?, 1, 'USN', 'NO_VAT', NULL, '2026-01-01T00:00:00.000Z', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'x')`).run(partnerId, lpId))
         .toThrow(/CHECK constraint failed/);
     });
 
@@ -207,7 +230,7 @@ describe("0053 agent-referrals tax-treatment + ORD canonicalization migration", 
       const db = at0052(); migrate(db);
       const { partnerId, lpId } = seedProfile(db, "OTHER");
       expect(() => db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, evidence_ref, created_by_admin_id, reason)
-        VALUES ('tt-basis-forbidden', ?, ?, 1, 'USN', 'VAT_5', 'USN_EXEMPT', '2026-01-01', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'x')`).run(partnerId, lpId))
+        VALUES ('tt-basis-forbidden', ?, ?, 1, 'USN', 'VAT_5', 'USN_EXEMPT', '2026-01-01T00:00:00.000Z', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'x')`).run(partnerId, lpId))
         .toThrow(/CHECK constraint failed/);
     });
 
@@ -215,7 +238,7 @@ describe("0053 agent-referrals tax-treatment + ORD canonicalization migration", 
       const db = at0052(); migrate(db);
       const { partnerId, lpId } = seedProfile(db, "OTHER");
       expect(() => db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, evidence_ref, created_by_admin_id, reason)
-        VALUES ('tt-blank', ?, ?, 1, 'USN', 'NO_VAT', 'USN_EXEMPT', '2026-01-01', 'ADMIN_ASSERTED', '   ', 'admin', 'x')`).run(partnerId, lpId))
+        VALUES ('tt-blank', ?, ?, 1, 'USN', 'NO_VAT', 'USN_EXEMPT', '2026-01-01T00:00:00.000Z', 'ADMIN_ASSERTED', '   ', 'admin', 'x')`).run(partnerId, lpId))
         .toThrow(/CHECK constraint failed/);
     });
   });
@@ -228,7 +251,7 @@ describe("0053 agent-referrals tax-treatment + ORD canonicalization migration", 
       const lpA = seedLegalProfileRevision(db, agentA, `lp-${randomUUID()}`, "NPD");
       const partnerB = seedPartnerIdentity(db, agentB, null);
       expect(() => db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, reason)
-        VALUES ('tt-cross', ?, ?, 1, 'NPD', 'NO_VAT', 'NPD', '2026-01-01', 'SYSTEM_DERIVED', 'x')`).run(partnerB, lpA))
+        VALUES ('tt-cross', ?, ?, 1, 'NPD', 'NO_VAT', 'NPD', '2026-01-01T00:00:00.000Z', 'SYSTEM_DERIVED', 'x')`).run(partnerB, lpA))
         .toThrow(/AGENT_REFERRALS_TAX_TREATMENT_RELATIONAL_INCONSISTENT/);
     });
 
@@ -238,7 +261,7 @@ describe("0053 agent-referrals tax-treatment + ORD canonicalization migration", 
       const lpOther = seedLegalProfileRevision(db, agentId, `lp-${randomUUID()}`, "OTHER");
       const partnerId = seedPartnerIdentity(db, agentId, lpOther);
       expect(() => db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, reason)
-        VALUES ('tt-mismatch', ?, ?, 1, 'NPD', 'NO_VAT', 'NPD', '2026-01-01', 'SYSTEM_DERIVED', 'x')`).run(partnerId, lpOther))
+        VALUES ('tt-mismatch', ?, ?, 1, 'NPD', 'NO_VAT', 'NPD', '2026-01-01T00:00:00.000Z', 'SYSTEM_DERIVED', 'x')`).run(partnerId, lpOther))
         .toThrow(/AGENT_REFERRALS_TAX_TREATMENT_RELATIONAL_INCONSISTENT/);
     });
 
@@ -248,8 +271,98 @@ describe("0053 agent-referrals tax-treatment + ORD canonicalization migration", 
       const lpNpd = seedLegalProfileRevision(db, agentId, `lp-${randomUUID()}`, "NPD");
       const partnerId = seedPartnerIdentity(db, agentId, lpNpd);
       expect(() => db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, evidence_ref, created_by_admin_id, reason)
-        VALUES ('tt-npd-mismatch', ?, ?, 1, 'USN', 'NO_VAT', 'USN_EXEMPT', '2026-01-01', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'x')`).run(partnerId, lpNpd))
+        VALUES ('tt-npd-mismatch', ?, ?, 1, 'USN', 'NO_VAT', 'USN_EXEMPT', '2026-01-01T00:00:00.000Z', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'x')`).run(partnerId, lpNpd))
         .toThrow(/AGENT_REFERRALS_TAX_TREATMENT_RELATIONAL_INCONSISTENT/);
+    });
+
+    it("rejects PSN naming a legal profile whose legal_form is NOT INDIVIDUAL_ENTREPRENEUR (P1.4)", () => {
+      const db = at0052(); migrate(db);
+      const agentId = seedAgent(db);
+      const lpNpd = seedLegalProfileRevision(db, agentId, `lp-${randomUUID()}`, "NPD");
+      const partnerId = seedPartnerIdentity(db, agentId, lpNpd);
+      expect(() => db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, evidence_ref, created_by_admin_id, reason)
+        VALUES ('tt-psn-legal-form', ?, ?, 1, 'PSN', 'NO_VAT', 'PSN', '2026-01-01T00:00:00.000Z', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'x')`).run(partnerId, lpNpd))
+        .toThrow(/AGENT_REFERRALS_TAX_TREATMENT_RELATIONAL_INCONSISTENT/);
+    });
+
+    it("accepts PSN naming a legal profile whose legal_form IS INDIVIDUAL_ENTREPRENEUR", () => {
+      const db = at0052(); migrate(db);
+      const { partnerId, lpId } = (() => {
+        const agentId = seedAgent(db);
+        const lpId = seedLegalProfileRevision(db, agentId, `lp-${randomUUID()}`, "OTHER");
+        const partnerId = seedPartnerIdentity(db, agentId, lpId);
+        return { partnerId, lpId };
+      })();
+      expect(() => db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, evidence_ref, created_by_admin_id, reason)
+        VALUES ('tt-psn-legal-form-ok', ?, ?, 1, 'PSN', 'NO_VAT', 'PSN', '2026-01-01T00:00:00.000Z', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'x')`).run(partnerId, lpId)).not.toThrow();
+    });
+  });
+
+  describe("F. effective_from canonical format CHECK (P1.1)", () => {
+    const insertWith = (db: Database.Database, partnerId: string, lpId: string, effectiveFrom: string) =>
+      db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, reason)
+        VALUES ('tt-fmt', ?, ?, 1, 'NPD', 'NO_VAT', 'NPD', ?, 'SYSTEM_DERIVED', 'x')`).run(partnerId, lpId, effectiveFrom);
+
+    it("accepts canonical millisecond-precision UTC ISO", () => {
+      const db = at0052(); migrate(db);
+      const { partnerId, lpId } = (() => {
+        const agentId = seedAgent(db);
+        const lpId = seedLegalProfileRevision(db, agentId, `lp-${randomUUID()}`, "NPD");
+        const partnerId = seedPartnerIdentity(db, agentId, lpId);
+        return { partnerId, lpId };
+      })();
+      expect(() => insertWith(db, partnerId, lpId, "2026-01-01T00:00:00.000Z")).not.toThrow();
+    });
+
+    it.each(["2026-01-01", "2026-2-01", "zzz", "2026/07/01", "2026-07-01+03:00", "2026-01-01T00:00:00Z"])(
+      "rejects malformed/non-canonical value %s",
+      (raw) => {
+        const db = at0052(); migrate(db);
+        const agentId = seedAgent(db);
+        const lpId = seedLegalProfileRevision(db, agentId, `lp-${randomUUID()}`, "NPD");
+        const partnerId = seedPartnerIdentity(db, agentId, lpId);
+        expect(() => insertWith(db, partnerId, lpId, raw)).toThrow(/CHECK constraint failed/);
+      },
+    );
+  });
+
+  describe("G. SYSTEM_DERIVED uniqueness per legal_profile_revision_id (P2.1)", () => {
+    it("rejects a second SYSTEM_DERIVED row naming the same legal_profile_revision_id", () => {
+      const db = at0052(); migrate(db);
+      const agentId = seedAgent(db);
+      const lpId = seedLegalProfileRevision(db, agentId, `lp-${randomUUID()}`, "NPD");
+      const partnerId = seedPartnerIdentity(db, agentId, lpId);
+      db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, reason)
+        VALUES ('tt-sd-1', ?, ?, 1, 'NPD', 'NO_VAT', 'NPD', '2026-01-01T00:00:00.000Z', 'SYSTEM_DERIVED', 'x')`).run(partnerId, lpId);
+      expect(() => db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, reason)
+        VALUES ('tt-sd-2', ?, ?, 2, 'NPD', 'NO_VAT', 'NPD', '2026-01-01T00:00:00.000Z', 'SYSTEM_DERIVED', 'x')`).run(partnerId, lpId))
+        .toThrow(/UNIQUE constraint failed/);
+    });
+
+    it("does not restrict multiple ADMIN_ASSERTED rows for the same legal_profile_revision_id", () => {
+      const db = at0052(); migrate(db);
+      const agentId = seedAgent(db);
+      const lpId = seedLegalProfileRevision(db, agentId, `lp-${randomUUID()}`, "OTHER");
+      const partnerId = seedPartnerIdentity(db, agentId, lpId);
+      db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, evidence_ref, created_by_admin_id, reason)
+        VALUES ('tt-aa-1', ?, ?, 1, 'USN', 'NO_VAT', 'USN_EXEMPT', '2026-01-01T00:00:00.000Z', 'ADMIN_ASSERTED', 'ev.pdf', 'admin', 'x')`).run(partnerId, lpId);
+      expect(() => db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, evidence_ref, created_by_admin_id, reason)
+        VALUES ('tt-aa-2', ?, ?, 2, 'USN', 'VAT_22', NULL, '2026-06-01T00:00:00.000Z', 'ADMIN_ASSERTED', 'ev2.pdf', 'admin', 'correction')`).run(partnerId, lpId)).not.toThrow();
+    });
+  });
+
+  describe("H. clean-slate production-zero-premise guard (P1.3)", () => {
+    it("applies cleanly when all three checked tables are empty", () => {
+      const db = at0052();
+      expect(() => migrate(db)).not.toThrow();
+    });
+
+    it("fails closed when agent_referrals_legal_profile_revisions is non-empty", () => {
+      const db = at0052();
+      const agentId = seedAgent(db);
+      seedLegalProfileRevision(db, agentId, `lp-${randomUUID()}`, "NPD");
+      expect(() => migrate(db)).toThrow();
+      expect(db.prepare("SELECT COUNT(*) AS n FROM schema_migrations WHERE version = ?").get(MIGRATION_FILE)).toEqual({ n: 0 });
     });
   });
 
@@ -260,7 +373,7 @@ describe("0053 agent-referrals tax-treatment + ORD canonicalization migration", 
       const lpId = seedLegalProfileRevision(db, agentId, `lp-${randomUUID()}`, "NPD");
       const partnerId = seedPartnerIdentity(db, agentId, lpId);
       db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, reason)
-        VALUES ('tt-guard', ?, ?, 1, 'NPD', 'NO_VAT', 'NPD', '2026-01-01', 'SYSTEM_DERIVED', 'x')`).run(partnerId, lpId);
+        VALUES ('tt-guard', ?, ?, 1, 'NPD', 'NO_VAT', 'NPD', '2026-01-01T00:00:00.000Z', 'SYSTEM_DERIVED', 'x')`).run(partnerId, lpId);
       expect(() => db.exec("UPDATE agent_referrals_tax_treatment_revisions SET reason = 'y' WHERE id = 'tt-guard'")).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_REVISION_IMMUTABLE/);
       expect(() => db.exec("DELETE FROM agent_referrals_tax_treatment_revisions WHERE id = 'tt-guard'")).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_REVISION_IMMUTABLE/);
     });

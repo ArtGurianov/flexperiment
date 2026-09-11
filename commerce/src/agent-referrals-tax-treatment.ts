@@ -33,7 +33,7 @@ export class TaxTreatmentError extends Error {
 
 export type TaxSystem = "NPD" | "USN" | "AUSN" | "OSNO" | "PSN" | "ESHN" | "OTHER";
 export type VatTreatment = "NO_VAT" | "VAT_5" | "VAT_7" | "VAT_22";
-export type NoVatBasis = "NPD" | "AUSN" | "USN_EXEMPT" | "OTHER_CONFIRMED";
+export type NoVatBasis = "NPD" | "AUSN" | "PSN" | "USN_EXEMPT" | "OTHER_CONFIRMED";
 export type TaxTreatmentAssertionSource = "SYSTEM_DERIVED" | "ADMIN_ASSERTED";
 
 export type TaxTreatmentRevisionRow = {
@@ -87,13 +87,41 @@ export const validateTaxTreatmentTuple = (taxSystem: TaxSystem, vatTreatment: Va
   if (vatTreatment === "NO_VAT" && noVatBasis === null) throw new TaxTreatmentError("AGENT_REFERRALS_TAX_TREATMENT_NO_VAT_BASIS_REQUIRED", 422);
   if (vatTreatment !== "NO_VAT" && noVatBasis !== null) throw new TaxTreatmentError("AGENT_REFERRALS_TAX_TREATMENT_NO_VAT_BASIS_FORBIDDEN", 422, noVatBasis);
 
+  // PSN (patent system) is its own branch, not grouped with OSNO/ESHN/OTHER
+  // (review round 1, P1.4): it is always NO_VAT/PSN, never a real rate -
+  // ФНС describes PSN as an individual-entrepreneur-only regime, and income
+  // taxed under it is exempt from VAT with only narrow statutory exceptions
+  // this schema does not model. The legal_form = INDIVIDUAL_ENTREPRENEUR
+  // requirement is proven relationally (against the joined legal-profile
+  // revision, which this pure function has no access to) - see
+  // recordVerifiedTaxTreatment's own explicit check and 0053's relational-
+  // consistency trigger, both named PSN_REQUIRES_INDIVIDUAL_ENTREPRENEUR /
+  // AGENT_REFERRALS_TAX_TREATMENT_RELATIONAL_INCONSISTENT respectively.
   const valid =
     (taxSystem === "NPD" && vatTreatment === "NO_VAT" && noVatBasis === "NPD")
     || (taxSystem === "AUSN" && vatTreatment === "NO_VAT" && noVatBasis === "AUSN")
+    || (taxSystem === "PSN" && vatTreatment === "NO_VAT" && noVatBasis === "PSN")
     || (taxSystem === "USN" && ((vatTreatment === "NO_VAT" && noVatBasis === "USN_EXEMPT") || vatTreatment === "VAT_5" || vatTreatment === "VAT_7" || vatTreatment === "VAT_22"))
-    || ((taxSystem === "OSNO" || taxSystem === "PSN" || taxSystem === "ESHN" || taxSystem === "OTHER")
+    || ((taxSystem === "OSNO" || taxSystem === "ESHN" || taxSystem === "OTHER")
       && (vatTreatment === "VAT_22" || (vatTreatment === "NO_VAT" && noVatBasis === "OTHER_CONFIRMED")));
   if (!valid) throw new TaxTreatmentError("AGENT_REFERRALS_TAX_TREATMENT_MATRIX_REJECTED", 422, `${taxSystem}/${vatTreatment}/${noVatBasis ?? "null"}`);
+};
+
+/**
+ * ONE canonical sortable format, never a caller-chosen string (review
+ * round 1, P1.1) - mirrors 0053's own strftime()-based CHECK exactly: a UTC
+ * instant, millisecond precision, always Z-suffixed (Date.prototype
+ * .toISOString()'s own shape). Accepts anything JS Date can parse
+ * (including a bare "YYYY-MM-DD" from an HTML date input, which resolves to
+ * UTC midnight) and re-serializes it to the one canonical shape - never
+ * passes a caller's own string through unexamined. Malformed/unparseable
+ * input throws a typed 422 here, before any transaction opens, rather than
+ * surfacing as a raw SqliteError from the DB CHECK.
+ */
+export const normalizeTaxEffectiveFrom = (raw: string): string => {
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) throw new TaxTreatmentError("AGENT_REFERRALS_TAX_TREATMENT_EFFECTIVE_FROM_INVALID", 422, raw);
+  return parsed.toISOString();
 };
 
 const nextSequenceForPartner = (db: Database.Database, partnerIdentityId: string): number =>
@@ -118,7 +146,7 @@ export const mintSystemDerivedNpdTaxTreatment = (
   db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions
       (id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, reason)
     VALUES (?, ?, ?, ?, 'NPD', 'NO_VAT', 'NPD', ?, 'SYSTEM_DERIVED', 'automatic NPD tax treatment, minted with the legal-profile revision')`)
-    .run(treatmentId, partnerIdentityId, legalProfileRevisionId, sequence, now());
+    .run(treatmentId, partnerIdentityId, legalProfileRevisionId, sequence, normalizeTaxEffectiveFrom(now()));
   return taxTreatmentRevisionById(db, treatmentId)!;
 };
 
@@ -160,8 +188,8 @@ export const recordVerifiedTaxTreatment = (
     if (!evidenceRef) throw new TaxTreatmentError("AGENT_REFERRALS_TAX_TREATMENT_EVIDENCE_REF_REQUIRED", 422);
     const reason = input.reason?.trim();
     if (!reason) throw new TaxTreatmentError("AGENT_REFERRALS_TAX_TREATMENT_REASON_REQUIRED", 422);
-    const effectiveFrom = input.effectiveFrom?.trim();
-    if (!effectiveFrom) throw new TaxTreatmentError("AGENT_REFERRALS_TAX_TREATMENT_EFFECTIVE_FROM_REQUIRED", 422);
+    if (!input.effectiveFrom?.trim()) throw new TaxTreatmentError("AGENT_REFERRALS_TAX_TREATMENT_EFFECTIVE_FROM_REQUIRED", 422);
+    const effectiveFrom = normalizeTaxEffectiveFrom(input.effectiveFrom);
     validateTaxTreatmentTuple(input.taxSystem, input.vatTreatment, input.noVatBasis);
 
     // Proves pointer == MAX first (the same coherence proof every other
@@ -169,6 +197,29 @@ export const recordVerifiedTaxTreatment = (
     // treatment is always minted against the CURRENT revision, never a
     // caller-named one.
     const currentLegalProfile = resolveCurrentLegalProfileBinding(db, identity);
+
+    // PSN (review round 1, P1.4): an individual-entrepreneur-only regime -
+    // mirrors 0053's own relational-consistency trigger, checked here too
+    // for a typed 422 instead of a raw SqliteError.
+    if (input.taxSystem === "PSN" && currentLegalProfile.legal_form !== "INDIVIDUAL_ENTREPRENEUR") {
+      throw new TaxTreatmentError("AGENT_REFERRALS_TAX_TREATMENT_PSN_REQUIRES_INDIVIDUAL_ENTREPRENEUR", 422, currentLegalProfile.legal_form);
+    }
+
+    // Idempotent HTTP retry (review round 1, P2): a retried POST carrying
+    // the EXACT same asserted tuple as the most recent treatment for this
+    // partner - same legal profile, same tax_system/vat_treatment/
+    // no_vat_basis/effective_from - is a replay of one operator action, not
+    // a second correction, and returns the existing row unchanged rather
+    // than minting a spurious extra revision. This is a literal-replay
+    // check only: a genuinely later correction (any field different, most
+    // commonly a new effective_from) is never silently deduplicated.
+    const mostRecent = db.prepare(`SELECT ${COLUMNS} FROM agent_referrals_tax_treatment_revisions WHERE partner_identity_id = ? ORDER BY sequence DESC LIMIT 1`)
+      .get(partnerIdentityId) as TaxTreatmentRevisionRow | undefined;
+    if (mostRecent && mostRecent.legal_profile_revision_id === currentLegalProfile.id
+      && mostRecent.tax_system === input.taxSystem && mostRecent.vat_treatment === input.vatTreatment && mostRecent.no_vat_basis === input.noVatBasis
+      && mostRecent.effective_from === effectiveFrom) {
+      return mostRecent;
+    }
 
     const treatmentId = id();
     const sequence = nextSequenceForPartner(db, partnerIdentityId);

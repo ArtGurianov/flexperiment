@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as cryptoModule from "../src/crypto";
 import { AgentReferralsSuspensionPolicyError } from "../src/agent-referrals-suspension-policy";
 import { suspendAgentReferrals } from "../src/agent-referrals-feature-state";
 import { finalizeEngagementRewardRegistry, currentEffectiveRewardSnapshot } from "../src/agent-referrals-reward-registry";
@@ -8,6 +9,7 @@ import { preparePartnerSettlement, correctPartnerRewardWithSettlement, recoveryE
 import { beginPayment, recordPaymentMade } from "../src/agent-referrals-payment";
 import { CommerceDomain } from "../src/domain";
 import { canonicalizeSettlementTaxV1 } from "../src/agent-referrals-ord-canonical";
+import { resolveTaxTreatmentForLegalProfileAt } from "../src/agent-referrals-tax-treatment";
 import { submitLegalProfileSupersession, verifyLegalProfileSupersession } from "../src/agent-referrals-legal-profile-supersession";
 import { currentAgentReferralsLegalProfile } from "../src/agent-referrals-legal-profile";
 import {
@@ -463,6 +465,34 @@ describe("PR-F: tax-treatment snapshot pinning", () => {
       tax_canonical_json: before.tax_canonical_json,
       tax_canonical_hash: before.tax_canonical_hash,
     });
+  });
+
+  it("reads the clock exactly once for both tax-treatment resolution and prepared_at (P1.2 single-clock-read)", () => {
+    const { db, domain } = fresh(); track(db);
+    const p1 = readyPartner(db);
+    const occ = seedOccurrence(db, p1.cityId, 100_000);
+    const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, nearTermTerms(1000, "PERCENT", 1000));
+    const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
+    purchaseAndPay(db, domain, occ, code.code, "settle-tax-clock@example.test", "idem-settle-tax-clock-01");
+    closeAndComplete(db, domain, occ);
+    const finalize = finalizeEngagementRewardRegistry(db, admin, engagementId, "occurrence completed");
+
+    // A second, distinct clock read here (the P1.2 defect) would make
+    // prepared_at diverge from the instant actually used to resolve the
+    // pinned tax treatment - proven by counting calls, not just comparing
+    // two timestamps that would usually match anyway at millisecond
+    // resolution.
+    const nowSpy = vi.spyOn(cryptoModule, "now");
+    const callsBefore = nowSpy.mock.calls.length;
+    const { settlement } = preparePartnerSettlement(db, admin, finalize.effective_snapshot_id);
+    const nowCallsDuringPrepare = nowSpy.mock.calls.length - callsBefore;
+    nowSpy.mockRestore();
+
+    expect(nowCallsDuringPrepare).toBe(1);
+    const legalProfile = currentAgentReferralsLegalProfile(db, p1.agentId)!;
+    const treatment = db.prepare("SELECT id FROM agent_referrals_tax_treatment_revisions WHERE legal_profile_revision_id = ?").get(legalProfile.id) as { id: string };
+    expect(settlement.tax_treatment_revision_id_snapshot).toBe(treatment.id);
+    expect(resolveTaxTreatmentForLegalProfileAt(db, legalProfile.id, settlement.prepared_at)?.id).toBe(treatment.id);
   });
 });
 

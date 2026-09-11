@@ -82,7 +82,7 @@ const seedLegalProfileRevision = (db: Database.Database, agentId = "agent-1", re
 const seedTaxTreatment = (db: Database.Database, partnerId: string, legalProfileRevisionId: string, taxMode: "NPD" | "OTHER", revisionId = "tt-1", sequence = 1) => {
   const isNpd = taxMode === "NPD";
   db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions(id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, evidence_ref, created_by_admin_id, reason)
-    VALUES (?, ?, ?, ?, ?, 'NO_VAT', ?, '2020-01-01', ?, ?, ?, 'seed')`)
+    VALUES (?, ?, ?, ?, ?, 'NO_VAT', ?, '2020-01-01T00:00:00.000Z', ?, ?, ?, 'seed')`)
     .run(revisionId, partnerId, legalProfileRevisionId, sequence, isNpd ? "NPD" : "USN", isNpd ? "NPD" : "USN_EXEMPT", isNpd ? "SYSTEM_DERIVED" : "ADMIN_ASSERTED", isNpd ? null : "ev.pdf", isNpd ? null : "admin");
   return revisionId;
 };

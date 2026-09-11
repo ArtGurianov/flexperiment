@@ -125,7 +125,12 @@ function PartnerDetail({ partnerId, onBack }: { partnerId: string; onBack: () =>
         />
       )}
       {detail.data!.legal_profile != null && (
-        <TaxTreatmentPanel partnerId={partnerId} taxTreatment={detail.data!.tax_treatment as Row | null} onDone={refresh} />
+        <TaxTreatmentPanel
+          partnerId={partnerId}
+          legalProfile={detail.data!.legal_profile as Row | null}
+          taxTreatment={detail.data!.tax_treatment as Row | null}
+          onDone={refresh}
+        />
       )}
 
       <Panel title="Хранение и удаление">
@@ -346,25 +351,36 @@ function LegalProfileSupersession({ partnerId, legalProfile, pendingRequest, onD
 const TAX_SYSTEM_LABELS: Record<string, string> = { NPD: "НПД", USN: "УСН", AUSN: "АУСН", OSNO: "ОСНО", PSN: "ПСН", ESHN: "ЕСХН", OTHER: "Другое" };
 const VAT_TREATMENT_LABELS: Record<string, string> = { NO_VAT: "Без НДС", VAT_5: "5%", VAT_7: "7%", VAT_22: "22%" };
 
-/** Admin never asserts NPD directly - it is minted automatically alongside the legal profile (agent-referrals-tax-treatment.ts's own SYSTEM_DERIVED mint). */
-const ADMIN_TAX_SYSTEM_OPTIONS = ["USN", "AUSN", "OSNO", "PSN", "ESHN", "OTHER"];
+/**
+ * Admin never asserts NPD directly - it is minted automatically alongside
+ * the legal profile (agent-referrals-tax-treatment.ts's own SYSTEM_DERIVED
+ * mint). PSN (patent system) is individual-entrepreneur-only under Russian
+ * law - offered only when the partner's current legal profile is genuinely
+ * INDIVIDUAL_ENTREPRENEUR, mirroring the backend's own relational-
+ * consistency trigger and recordVerifiedTaxTreatment's own explicit check.
+ */
+const adminTaxSystemOptions = (legalForm: string | undefined): string[] =>
+  legalForm === "INDIVIDUAL_ENTREPRENEUR" ? ["USN", "AUSN", "PSN", "OSNO", "ESHN", "OTHER"] : ["USN", "AUSN", "OSNO", "ESHN", "OTHER"];
 
 /** Mirrors 0053's own tax_system x vat_treatment matrix (commerce/src/agent-referrals-tax-treatment.ts's validateTaxTreatmentTuple). no_vat_basis is derived from tax_system, never a separate form field - each tax_system has exactly one meaningful "no VAT" reason. */
 const vatOptionsForTaxSystem = (taxSystem: string): Array<{ value: string; label: string }> => {
   if (taxSystem === "AUSN") return [{ value: "NO_VAT", label: "Без НДС (АУСН)" }];
+  if (taxSystem === "PSN") return [{ value: "NO_VAT", label: "Без НДС (ПСН)" }];
   if (taxSystem === "USN") return [{ value: "NO_VAT", label: "Без НДС (освобождение УСН)" }, { value: "VAT_5", label: "5%" }, { value: "VAT_7", label: "7%" }, { value: "VAT_22", label: "22%" }];
   return [{ value: "VAT_22", label: "22%" }, { value: "NO_VAT", label: "Без НДС (подтверждённое освобождение)" }];
 };
-const noVatBasisForTaxSystem = (taxSystem: string): string => (taxSystem === "USN" ? "USN_EXEMPT" : taxSystem === "AUSN" ? "AUSN" : "OTHER_CONFIRMED");
+const noVatBasisForTaxSystem = (taxSystem: string): string =>
+  taxSystem === "USN" ? "USN_EXEMPT" : taxSystem === "AUSN" ? "AUSN" : taxSystem === "PSN" ? "PSN" : "OTHER_CONFIRMED";
 
 /** PR-F: recording a non-NPD tax/VAT treatment - always targets the partner's CURRENT legal profile, resolved server-side. */
-function TaxTreatmentPanel({ partnerId, taxTreatment, onDone }: { partnerId: string; taxTreatment: Row | null; onDone: () => void }) {
+function TaxTreatmentPanel({ partnerId, legalProfile, taxTreatment, onDone }: { partnerId: string; legalProfile: Row | null; taxTreatment: Row | null; onDone: () => void }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const { register, handleSubmit, reset, watch } = useForm<{ tax_system: string; vat_treatment: string; effective_from: string; evidence_ref: string; reason: string }>({
     defaultValues: { tax_system: "USN", vat_treatment: "NO_VAT", effective_from: "", evidence_ref: "", reason: "" },
   });
   const selectedTaxSystem = watch("tax_system");
+  const taxSystemOptions = adminTaxSystemOptions(legalProfile?.legal_form as string | undefined);
 
   const submit = handleSubmit(async (values) => {
     setBusy(true); setError(null);
@@ -391,7 +407,7 @@ function TaxTreatmentPanel({ partnerId, taxTreatment, onDone }: { partnerId: str
       <form className="form" onSubmit={submit}>
         <label>Система налогообложения
           <select {...register("tax_system", { required: true })}>
-            {ADMIN_TAX_SYSTEM_OPTIONS.map((s) => <option key={s} value={s}>{TAX_SYSTEM_LABELS[s]}</option>)}
+            {taxSystemOptions.map((s) => <option key={s} value={s}>{TAX_SYSTEM_LABELS[s]}</option>)}
           </select>
         </label>
         <label>НДС

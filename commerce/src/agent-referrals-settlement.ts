@@ -98,6 +98,7 @@ type SettlementContext = {
   taxCanonicalizationVersion: string;
   taxCanonicalJson: string;
   taxCanonicalHash: string;
+  preparedAt: string;
 };
 
 /**
@@ -169,8 +170,17 @@ const resolveSettlementContext = (db: Database.Database, effectiveRewardSnapshot
   // without changing this function's own contract (one instant, resolved
   // once, pinned forever - never re-resolved for an already-minted
   // settlement).
-  const taxTreatmentResolvedAt = now();
-  const taxTreatment = resolveTaxTreatmentForLegalProfileAt(db, currentLegalProfile.id, taxTreatmentResolvedAt);
+  //
+  // Captured EXACTLY once here (review round 1, P1.2) and reused below AND
+  // by mintAgentReferralsSettlement's own prepared_at - not a second,
+  // independent now() call there. Two separate clock reads could otherwise
+  // straddle a tax-treatment boundary (a treatment with effective_from
+  // falling between the two reads), leaving an immutable settlement whose
+  // own prepared_at is already past a treatment its own pinned snapshot
+  // does not reflect - silently contradicting this comment's own claim that
+  // the resolution instant IS the settlement-preparation instant.
+  const preparedAt = now();
+  const taxTreatment = resolveTaxTreatmentForLegalProfileAt(db, currentLegalProfile.id, preparedAt);
   if (!taxTreatment) throw new SettlementError("AGENT_REFERRALS_TAX_TREATMENT_MISSING", 409, currentLegalProfile.id);
   const taxCanonical = canonicalizeSettlementTaxV1(taxTreatment);
 
@@ -179,6 +189,7 @@ const resolveSettlementContext = (db: Database.Database, effectiveRewardSnapshot
     payoutProfileRevisionId: payoutProfile.id, taxMode: currentLegalProfile.tax_mode, legalProfileRevisionId: currentLegalProfile.id,
     rewardRegistryHash: registry.source_state_hash,
     taxTreatmentRevisionId: taxTreatment.id, taxCanonicalizationVersion: taxCanonical.version, taxCanonicalJson: taxCanonical.canonical_json, taxCanonicalHash: taxCanonical.canonical_hash,
+    preparedAt,
   };
 };
 
@@ -196,7 +207,7 @@ const mintAgentReferralsSettlement = (
       tax_treatment_revision_id_snapshot, tax_canonicalization_version, tax_canonical_json, tax_canonical_hash)
     VALUES (?, ?, ?, ?, 'PAYOUT_PROFILE', 'PREPARED', ?, ?, ?, 'AGENT_REFERRALS', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(
-      settlementId, context.agentId, context.engagement.occurrence_id, context.effective.reward_total_kopecks, context.contractorType, now(), admin.admin_id,
+      settlementId, context.agentId, context.engagement.occurrence_id, context.effective.reward_total_kopecks, context.contractorType, context.preparedAt, admin.admin_id,
       context.effective.engagement_id, context.effective.engagement_revision_id, context.effective.base_registry_snapshot_id, context.rewardRegistryHash, context.effective.id,
       context.partnerIdentityId, context.payoutProfileRevisionId, context.taxMode, context.legalProfileRevisionId, supersedesSettlementId,
       context.taxTreatmentRevisionId, context.taxCanonicalizationVersion, context.taxCanonicalJson, context.taxCanonicalHash,

@@ -18,13 +18,30 @@
 -- already mix LEGACY and AGENT_REFERRALS rows under one schema, exactly
 -- like their existing tax_mode_snapshot/legal_profile_revision_id_snapshot
 -- columns), so a plain ALTER TABLE ADD COLUMN is sufficient - no rebuild,
--- no SQLite ALTER-TABLE-RENAME trigger-recompilation hazard. A production
--- read-only check (2026-09-11) proved zero AGENT_REFERRALS rows in
--- reward_settlements and zero rows in ord_paid_invoice_payloads, so the new
--- structural requirement on the authority-tuple trigger (a genuine
--- AGENT_REFERRALS settlement must carry a real tax-treatment snapshot) is
--- introduced immediately rather than phased in - but the ALTER itself does
--- not depend on that premise, since the columns are nullable either way.
+-- no SQLite ALTER-TABLE-RENAME trigger-recompilation hazard.
+--
+-- A production read-only check (2026-09-11) proved zero AGENT_REFERRALS
+-- rows in reward_settlements, zero rows in ord_paid_invoice_payloads, and
+-- (transitively, from PR-E's own 2026-09-10 check) zero rows in
+-- agent_referrals_legal_profile_revisions. That manual check is design
+-- evidence, not a durable guarantee by itself (review round 1, P1.3) -
+-- matching 0052's own zero-legacy-rows discipline, this migration re-proves
+-- the same premise as an executable, fail-closed deployment invariant
+-- BEFORE touching anything. All three tables are checked, not only the two
+-- new-column ones: if 0052 alone were deployed ahead of this migration and
+-- a real NPD partner completed onboarding in the gap, that partner's legal
+-- profile would predate the automatic-NPD-treatment hook this migration
+-- introduces, and would be left with a legal profile but no tax treatment
+-- forever unless separately remediated - the guard below refuses to let
+-- that premise go unnoticed.
+CREATE TEMP TABLE _pr_f_clean_slate_guard (
+  row_count INTEGER NOT NULL,
+  CONSTRAINT pr_f_requires_clean_slate CHECK (row_count = 0)
+);
+INSERT INTO _pr_f_clean_slate_guard(row_count) SELECT COUNT(*) FROM agent_referrals_legal_profile_revisions;
+INSERT INTO _pr_f_clean_slate_guard(row_count) SELECT COUNT(*) FROM reward_settlements WHERE settlement_flow = 'AGENT_REFERRALS';
+INSERT INTO _pr_f_clean_slate_guard(row_count) SELECT COUNT(*) FROM ord_paid_invoice_payloads;
+DROP TABLE _pr_f_clean_slate_guard;
 
 CREATE TABLE agent_referrals_tax_treatment_revisions (
   id TEXT PRIMARY KEY,
@@ -44,11 +61,30 @@ CREATE TABLE agent_referrals_tax_treatment_revisions (
   sequence INTEGER NOT NULL,
   tax_system TEXT NOT NULL CHECK (tax_system IN ('NPD', 'USN', 'AUSN', 'OSNO', 'PSN', 'ESHN', 'OTHER')),
   vat_treatment TEXT NOT NULL CHECK (vat_treatment IN ('NO_VAT', 'VAT_5', 'VAT_7', 'VAT_22')),
-  no_vat_basis TEXT CHECK (no_vat_basis IS NULL OR no_vat_basis IN ('NPD', 'AUSN', 'USN_EXEMPT', 'OTHER_CONFIRMED')),
+  no_vat_basis TEXT CHECK (no_vat_basis IS NULL OR no_vat_basis IN ('NPD', 'AUSN', 'PSN', 'USN_EXEMPT', 'OTHER_CONFIRMED')),
   -- The instant this treatment becomes the applicable one - a temporal
   -- fact, resolved via "latest effective_from <= instant", never simply
   -- MAX(sequence). Ties (a same-instant correction) break on sequence DESC.
-  effective_from TEXT NOT NULL,
+  -- ONE canonical sortable format, never a caller-chosen string (review
+  -- round 1, P1.1): a UTC instant, millisecond precision, always Z-suffixed
+  -- - exactly what Date.prototype.toISOString() produces. Enforced below by
+  -- round-tripping through strftime() and requiring byte-identity with the
+  -- input: a value already in this exact shape round-trips unchanged; every
+  -- other representation (date-only, no milliseconds, an explicit +HH:MM
+  -- offset, or outright malformed input) round-trips to something different
+  -- (or to NULL for unparseable input) and is rejected. The explicit
+  -- `IS NOT NULL` guard is required, not redundant: SQLite's CHECK accepts
+  -- a NULL result as satisfied (three-valued SQL logic - a bare
+  -- `x = NULL` comparison is itself NULL, never FALSE), so unparseable
+  -- input - where strftime() itself returns NULL - would otherwise pass
+  -- this CHECK silently instead of being rejected. This is what makes the
+  -- lexicographic ORDER BY effective_from ... above a sound temporal
+  -- ordering, not merely a string comparison that happens to work for
+  -- well-behaved input.
+  effective_from TEXT NOT NULL CHECK (
+    strftime('%Y-%m-%dT%H:%M:%fZ', effective_from) IS NOT NULL
+    AND effective_from = strftime('%Y-%m-%dT%H:%M:%fZ', effective_from)
+  ),
   assertion_source TEXT NOT NULL CHECK (assertion_source IN ('SYSTEM_DERIVED', 'ADMIN_ASSERTED')),
   evidence_ref TEXT,
   reason TEXT NOT NULL,
@@ -69,26 +105,35 @@ CREATE TABLE agent_referrals_tax_treatment_revisions (
 
   -- The tax_system x vat_treatment x no_vat_basis matrix. Deliberately NOT
   -- a general Russian VAT engine and NOT an income-threshold inference: for
-  -- every tax_system other than NPD/AUSN, this only proves INTERNAL
+  -- every tax_system other than NPD/AUSN/PSN, this only proves INTERNAL
   -- consistency of the tuple an admin explicitly asserted (with evidence) -
   -- it never decides which rate is legally correct for a given operator.
   --   NPD  - always NO_VAT/NPD, SYSTEM_DERIVED only (enforced below).
   --   AUSN - always NO_VAT/AUSN (not a plaintiff-supplied fact - AUSN in
   --          general does not recognize VAT payer status).
+  --   PSN  - always NO_VAT/PSN (review round 1, P1.4: PSN is an individual-
+  --          entrepreneur-only patent regime under Russian law - ФНС
+  --          describes it as obtained by an ИП, and income taxed under it
+  --          is exempt from VAT with only narrow statutory exceptions this
+  --          schema does not model). Restricted to legal_form =
+  --          INDIVIDUAL_ENTREPRENEUR by the relational trigger below, not
+  --          this table-local CHECK, which cannot see the joined legal
+  --          profile's own legal_form.
   --   USN  - either NO_VAT/USN_EXEMPT or any of VAT_5/VAT_7/VAT_22,
   --          entirely by explicit admin assertion (2026 thresholds and the
   --          5%/7%/22% choice are a business/legal fact this schema does
   --          not compute).
-  --   OSNO/PSN/ESHN/OTHER - either VAT_22 or an explicitly confirmed
-  --          exemption (NO_VAT/OTHER_CONFIRMED) - never auto-derived.
+  --   OSNO/ESHN/OTHER - either VAT_22 or an explicitly confirmed exemption
+  --          (NO_VAT/OTHER_CONFIRMED) - never auto-derived.
   CHECK (
     (tax_system = 'NPD' AND vat_treatment = 'NO_VAT' AND no_vat_basis = 'NPD')
     OR (tax_system = 'AUSN' AND vat_treatment = 'NO_VAT' AND no_vat_basis = 'AUSN')
+    OR (tax_system = 'PSN' AND vat_treatment = 'NO_VAT' AND no_vat_basis = 'PSN')
     OR (tax_system = 'USN' AND (
       (vat_treatment = 'NO_VAT' AND no_vat_basis = 'USN_EXEMPT')
       OR vat_treatment IN ('VAT_5', 'VAT_7', 'VAT_22')
     ))
-    OR (tax_system IN ('OSNO', 'PSN', 'ESHN', 'OTHER') AND (
+    OR (tax_system IN ('OSNO', 'ESHN', 'OTHER') AND (
       vat_treatment = 'VAT_22'
       OR (vat_treatment = 'NO_VAT' AND no_vat_basis = 'OTHER_CONFIRMED')
     ))
@@ -113,15 +158,29 @@ CREATE TABLE agent_referrals_tax_treatment_revisions (
 CREATE INDEX agent_referrals_tax_treatment_revisions_legal_profile_idx
   ON agent_referrals_tax_treatment_revisions(legal_profile_revision_id, effective_from, sequence);
 
+-- Review round 1, P2.1: a legal profile minted with tax_mode=NPD gets
+-- EXACTLY one SYSTEM_DERIVED treatment, never more than one - strengthens
+-- the atomic-mint invariant applyVerifiedLegalProfileForPartnerIdentity's
+-- own hook already establishes in application code into a structural
+-- guarantee a raw INSERT (or a future bug re-calling the mint helper)
+-- cannot violate. Scoped to SYSTEM_DERIVED only: ADMIN_ASSERTED corrections
+-- for the same legal profile remain unrestricted in count, as intended.
+CREATE UNIQUE INDEX agent_referrals_tax_treatment_revisions_system_derived_unique
+  ON agent_referrals_tax_treatment_revisions(legal_profile_revision_id) WHERE assertion_source = 'SYSTEM_DERIVED';
+
 -- Relational authority, not merely FK existence: the treatment's own
 -- partner_identity and its named legal_profile_revision must belong to the
 -- SAME agent (never a treatment minted against one partner's identity but
--- naming a different agent's legal-profile revision), and a treatment
--- naming tax_system='NPD' must reference a legal-profile revision whose OWN
+-- naming a different agent's legal-profile revision); a treatment naming
+-- tax_system='NPD' must reference a legal-profile revision whose OWN
 -- tax_mode is genuinely 'NPD' (and vice versa - a non-NPD tax_system can
 -- never attach to an NPD legal profile) - this is what makes the
 -- SYSTEM_DERIVED/NPD pairing above a real structural fact, not merely an
--- application-level convention a raw INSERT could violate.
+-- application-level convention a raw INSERT could violate; and (review
+-- round 1, P1.4) tax_system='PSN' must reference a legal-profile revision
+-- whose OWN legal_form is genuinely INDIVIDUAL_ENTREPRENEUR - PSN is an
+-- individual-entrepreneur-only regime under Russian law, never available to
+-- a LEGAL_ENTITY.
 CREATE TRIGGER agent_referrals_tax_treatment_revisions_relational_consistency_guard
 BEFORE INSERT ON agent_referrals_tax_treatment_revisions
 WHEN NOT EXISTS (
@@ -129,6 +188,7 @@ WHEN NOT EXISTS (
   JOIN agent_referrals_legal_profile_revisions lp ON lp.id = NEW.legal_profile_revision_id
   WHERE pi.id = NEW.partner_identity_id AND pi.agent_id = lp.agent_id
     AND (lp.tax_mode = 'NPD') = (NEW.tax_system = 'NPD')
+    AND (NEW.tax_system != 'PSN' OR lp.legal_form = 'INDIVIDUAL_ENTREPRENEUR')
 )
 BEGIN SELECT RAISE(ABORT, 'AGENT_REFERRALS_TAX_TREATMENT_RELATIONAL_INCONSISTENT'); END;
 
@@ -152,6 +212,11 @@ ALTER TABLE reward_settlements ADD COLUMN tax_canonical_hash TEXT;
 -- Replaces 0052's own copy of this trigger (same name, extended body) -
 -- every AGENT_REFERRALS branch requirement it already proved stays exactly
 -- as it was; only the new tax-treatment-snapshot requirement is added.
+-- tax_canonicalization_version is pinned to the exact current version
+-- string, not merely NOT NULL (review round 1, P1.5) - this codebase can
+-- only ever mint SETTLEMENT_TAX_V1 snapshots today, so nothing else is a
+-- legitimate value; a future V2 revises this CHECK in its own migration,
+-- the same way a stored V1 row's own meaning never changes underneath it.
 DROP TRIGGER reward_settlements_authority_tuple_consistency_guard;
 CREATE TRIGGER reward_settlements_authority_tuple_consistency_guard
 BEFORE INSERT ON reward_settlements
@@ -170,7 +235,7 @@ WHEN NOT (
     AND NEW.base_registry_snapshot_id IS NOT NULL AND NEW.reward_registry_hash IS NOT NULL AND NEW.effective_reward_snapshot_id IS NOT NULL
     AND NEW.partner_identity_id IS NOT NULL AND NEW.payout_profile_revision_id IS NOT NULL
     AND NEW.tax_mode_snapshot IS NOT NULL AND NEW.legal_profile_revision_id_snapshot IS NOT NULL
-    AND NEW.tax_treatment_revision_id_snapshot IS NOT NULL AND NEW.tax_canonicalization_version IS NOT NULL
+    AND NEW.tax_treatment_revision_id_snapshot IS NOT NULL AND NEW.tax_canonicalization_version = 'SETTLEMENT_TAX_V1'
     AND NEW.tax_canonical_json IS NOT NULL AND NEW.tax_canonical_hash IS NOT NULL
     AND EXISTS (
       SELECT 1 FROM engagement_effective_reward_snapshots e
@@ -239,6 +304,19 @@ ALTER TABLE ord_paid_invoice_payloads ADD COLUMN tax_canonical_hash TEXT;
 -- Replaces 0048's own copy (same name, extended body): every prior
 -- requirement stays exactly as it was; the new PR-F snapshot fields are
 -- additionally required and proven consistent with the pinned settlement.
+--
+-- Review round 1, P1.5: the settlement-consistency EXISTS clause below now
+-- also proves tax_canonicalization_version/tax_canonical_json/
+-- tax_canonical_hash are copied VERBATIM from the pinned settlement's own
+-- snapshot - not merely that tax_treatment_revision_id_snapshot matches.
+-- Without this, a raw INSERT naming the correct act/settlement/treatment id
+-- could still carry a FABRICATED canonical version/json/hash (e.g. a bogus
+-- "FAKE_V99" with garbage content) that this trigger's own IS NOT NULL
+-- checks would not catch, and the immutability guard would then make that
+-- corruption permanent. The two canonicalization-version columns are
+-- additionally pinned to their exact current version strings, not merely
+-- NOT NULL, for the identical reason the settlement trigger above pins
+-- tax_canonicalization_version.
 DROP TRIGGER ord_paid_invoice_payloads_relational_consistency_guard;
 CREATE TRIGGER ord_paid_invoice_payloads_relational_consistency_guard
 BEFORE INSERT ON ord_paid_invoice_payloads
@@ -255,13 +333,15 @@ OR NOT EXISTS (
   WHERE rs.id = NEW.settlement_id AND rs.settlement_flow = 'AGENT_REFERRALS'
     AND rs.tax_mode_snapshot = NEW.tax_mode_snapshot AND rs.legal_profile_revision_id_snapshot = NEW.legal_profile_revision_id_snapshot AND rs.contractor_type_snapshot = NEW.contractor_type_snapshot
     AND rs.tax_treatment_revision_id_snapshot = NEW.tax_treatment_revision_id_snapshot
+    AND rs.tax_canonicalization_version = NEW.tax_canonicalization_version
+    AND rs.tax_canonical_json = NEW.tax_canonical_json AND rs.tax_canonical_hash = NEW.tax_canonical_hash
 )
 OR NOT EXISTS (
   SELECT 1 FROM ord_provider_profile_revisions p WHERE p.id = NEW.provider_contract_profile_id AND p.profile_kind = 'CONTRACT'
     AND p.revision = (SELECT MAX(revision) FROM ord_provider_profile_revisions WHERE profile_kind = 'CONTRACT')
 )
-OR NEW.ord_participant_canonicalization_version IS NULL OR NEW.partner_participant_json IS NULL OR NEW.partner_participant_hash IS NULL
-OR NEW.tax_canonicalization_version IS NULL OR NEW.tax_canonical_json IS NULL OR NEW.tax_canonical_hash IS NULL
+OR NEW.ord_participant_canonicalization_version != 'ORD_PARTICIPANT_V1' OR NEW.partner_participant_json IS NULL OR NEW.partner_participant_hash IS NULL
+OR NEW.tax_canonicalization_version != 'SETTLEMENT_TAX_V1' OR NEW.tax_canonical_json IS NULL OR NEW.tax_canonical_hash IS NULL
 BEGIN SELECT RAISE(ABORT, 'ORD_PAID_INVOICE_PAYLOAD_RELATIONAL_INCONSISTENT'); END;
 
 -- Replaces 0048's own copy: the immutable-columns list now also names the
