@@ -6,6 +6,7 @@ import { useForm } from "react-hook-form";
 import { api, AdminApiError } from "../../lib/api";
 import { useAdminMutation } from "../../lib/use-admin-mutation";
 import { agentReferralsKeys } from "../../lib/query-keys";
+import { usePersistentIdempotencyKey } from "../../lib/use-persistent-idempotency-key";
 import { toLocalInput } from "../../lib/values";
 import type { Row } from "../../lib/page";
 import { Loading } from "../ui/Loading";
@@ -98,8 +99,19 @@ function EngagementDetail({ engagementId, onBack, focusDistributionId, focusRepo
 }) {
   const detail = useQuery({ queryKey: agentReferralsKeys.engagement(engagementId), queryFn: () => api<Row>(`/agent-referrals/engagements/${engagementId}`) });
   const command = useEngagementCommand(engagementId);
-  const busy = command.isPending;
-  const error = command.error?.code ?? null;
+  // PR-C2: activation carries durable command identity, so it gets its OWN
+  // key rather than sharing the generic dispatcher above - a key has to be
+  // per intent, and a hook that dispatches many different paths cannot hold
+  // one. Re-activating after a suspension is a legitimate separate command;
+  // only the key tells that from a lost-response retry.
+  const activateKey = usePersistentIdempotencyKey();
+  const activate = useAdminMutation("agentReferrals.engagementCommand", (engagementRevisionId: string) =>
+    api(`/agent-referrals/engagements/${engagementId}/activate`, {
+      method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": activateKey.acquire() },
+      body: JSON.stringify({ engagement_revision_id: engagementRevisionId }),
+    }), { context: () => ({ engagementId }) });
+  const busy = command.isPending || activate.isPending;
+  const error = command.error?.code ?? activate.error?.code ?? null;
 
   const post = async (path: string, body: Record<string, unknown> = {}) => {
     await command.mutateAsync({ path, body }).catch(() => undefined);
@@ -126,7 +138,7 @@ function EngagementDetail({ engagementId, onBack, focusDistributionId, focusRepo
       <Panel title={`Кампания: ${String(engagement.id)}`}>
         <p>Статус: <Badge>{lifecycleState}</Badge></p>
         {lifecycleState === "ACCEPTED" && latestRevision && (
-          <button disabled={busy} onClick={() => void post(`/agent-referrals/engagements/${engagementId}/activate`, { engagement_revision_id: latestRevision.id })}>
+          <button disabled={busy} onClick={() => void activate.mutateAsync(String(latestRevision.id)).then(() => activateKey.clear()).catch(() => undefined)}>
             {busy ? "…" : "Активировать (требует принятой редакции + подтверждённой аудитории/договора/делегирования/промокода)"}
           </button>
         )}

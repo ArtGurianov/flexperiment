@@ -1,5 +1,7 @@
 import type Database from "better-sqlite3";
 import { canonicalV2, id, sha256 } from "./crypto";
+import { withPartnerCommandInTransaction, type PartnerCommandResult } from "./agent-referrals-partner-command";
+import { withAdminCommandInTransaction, type AdminCommandResult } from "./agent-referrals-admin-command";
 import { agentReferralsFeatureState, agentReferralsFeatureStateAt } from "./agent-referrals-feature-state";
 import { assertAgentReferralsOperationPermitted, isAgentReferralsOperationPermitted, type AgentReferralsOperationClass } from "./agent-referrals-suspension-policy";
 import { resolveAgentReferralsChannelPolicy, type ChannelPolicyStatus } from "./agent-referrals-channel-policy";
@@ -263,8 +265,8 @@ export type ReportDistributionResult = { distribution_id: string; revision: Dist
  * authority classify it, never reject it (§B-5e). Refuses only if the
  * caller is a PARTNER reporting for an engagement they do not own.
  */
-export const reportDistribution = (db: Database.Database, actor: DistributionActor, engagementId: string, input: DistributionReportInput): ReportDistributionResult => {
-  const run = db.transaction((): ReportDistributionResult => {
+export const reportDistributionInTransaction = (db: Database.Database, actor: DistributionActor, engagementId: string, input: DistributionReportInput): ReportDistributionResult => {
+  {
     gate(db, "DISTRIBUTION_FACT_REPORTING");
     assertEngagementOwnership(db, engagementId, actor);
 
@@ -281,9 +283,47 @@ export const reportDistribution = (db: Database.Database, actor: DistributionAct
 
     classifyAndAppend(db, distributionId, input.channel_key, input.published_at, authority.state, actorRealm(actor));
     return { distribution_id: distributionId, revision: currentDistributionRevision(db, distributionId)! };
-  });
-  return run.immediate();
+  }
 };
+
+/** Transaction-owning wrapper for in-process callers. Both HTTP surfaces use the idempotent entry points below instead: this command mints a fresh distribution identity per call, so a retry without a key is a second real distribution with its own compliance and ORD tail. */
+export const reportDistribution = (db: Database.Database, actor: DistributionActor, engagementId: string, input: DistributionReportInput): ReportDistributionResult =>
+  db.transaction(() => reportDistributionInTransaction(db, actor, engagementId, input)).immediate();
+
+/**
+ * PR-C2: the PARTNER route's entry point. The engagement id and the reported
+ * facts make the fingerprint; the distribution id cannot, because it is what
+ * the command mints. Reporting the same publication twice under DIFFERENT
+ * keys stays legal - a partner may genuinely publish the same creative to
+ * the same channel twice - which is exactly why a content comparison could
+ * not have solved this and a key can.
+ */
+export const reportDistributionByAdminIdempotent = (
+  db: Database.Database,
+  admin: AdminPrincipal,
+  idempotencyKey: string,
+  engagementId: string,
+  input: DistributionReportInput,
+): AdminCommandResult<ReportDistributionResult> =>
+  db.transaction(() => withAdminCommandInTransaction<ReportDistributionResult>({
+    db, admin, command: "agent-referrals.distribution.report", idempotencyKey,
+    request: { engagement_id: engagementId, ...input },
+    entityIdOf: (result) => result.distribution_id,
+    execute: () => reportDistributionInTransaction(db, admin, engagementId, input),
+  })).immediate();
+
+export const reportDistributionByPartnerIdempotent = (
+  db: Database.Database,
+  partner: PartnerPrincipal,
+  idempotencyKey: string,
+  engagementId: string,
+  input: DistributionReportInput,
+): PartnerCommandResult<ReportDistributionResult> =>
+  db.transaction(() => withPartnerCommandInTransaction<ReportDistributionResult>({
+    db, partner, command: "partner.distribution.report", idempotencyKey, successStatus: 201,
+    request: { engagement_id: engagementId, ...input },
+    execute: () => reportDistributionInTransaction(db, partner, engagementId, input),
+  })).immediate();
 
 /**
  * A CORRECTION: a new revision with provenance, never an UPDATE over a

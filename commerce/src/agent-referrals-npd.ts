@@ -3,6 +3,7 @@ import { id } from "./crypto";
 import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
 import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
 import type { AdminPrincipal } from "./agent-referrals-partner-identity";
+import { withAdminCommandInTransaction, type AdminCommandResult } from "./agent-referrals-admin-command";
 
 // Integration-hardening #6: NPD_STATUS_PROCESSING is already classified in
 // AGENT_REFERRALS_OPERATION_POLICY (MATURATION_RECOVERY_REPORTING_TAIL -
@@ -75,7 +76,7 @@ export type NpdStatusCheckRow = {
 
 const CHECK_COLUMNS = "id, partner_identity_id, sequence, status, checked_at, evidence_ref, created_by_admin_id, created_at";
 
-export const recordNpdStatusCheck = (
+export const recordNpdStatusCheckInTransaction = (
   db: Database.Database,
   admin: AdminPrincipal,
   partnerIdentityId: string,
@@ -83,7 +84,7 @@ export const recordNpdStatusCheck = (
   evidenceRef: string,
   checkedAtIso = new Date().toISOString(),
 ): NpdStatusCheckRow => {
-  const run = db.transaction((): NpdStatusCheckRow => {
+  {
     gate(db);
     const current = db.prepare("SELECT MAX(sequence) AS sequence FROM npd_status_checks WHERE partner_identity_id = ?").get(partnerIdentityId) as { sequence: number | null };
     const nextSequence = (current.sequence ?? 0) + 1;
@@ -92,9 +93,31 @@ export const recordNpdStatusCheck = (
       VALUES (?, ?, ?, ?, ?, ?, ?)`)
       .run(checkId, partnerIdentityId, nextSequence, status, checkedAtIso, evidenceRef, admin.admin_id);
     return db.prepare(`SELECT ${CHECK_COLUMNS} FROM npd_status_checks WHERE id = ?`).get(checkId) as NpdStatusCheckRow;
-  });
-  return run.immediate();
+  }
 };
+
+/** Transaction-owning wrapper for in-process callers; the HTTP surface uses the idempotent entry point below. */
+export const recordNpdStatusCheck = (
+  db: Database.Database, admin: AdminPrincipal, partnerIdentityId: string, status: NpdCheckStatus, evidenceRef: string,
+  checkedAtIso?: string,
+): NpdStatusCheckRow =>
+  db.transaction(() => recordNpdStatusCheckInTransaction(db, admin, partnerIdentityId, status, evidenceRef, checkedAtIso ?? new Date().toISOString())).immediate();
+
+/**
+ * PR-C2: a fresh check with the same status is the POINT of this command -
+ * the payment guard consumes its freshness, not its value - so an identical
+ * body is routinely a legitimate second command and only a key can separate
+ * that from a retry.
+ */
+export const recordNpdStatusCheckIdempotent = (
+  db: Database.Database, admin: AdminPrincipal, idempotencyKey: string, partnerIdentityId: string, status: NpdCheckStatus, evidenceRef: string,
+): AdminCommandResult<NpdStatusCheckRow> =>
+  db.transaction(() => withAdminCommandInTransaction<NpdStatusCheckRow>({
+    db, admin, command: "agent-referrals.npd-status.record", idempotencyKey,
+    request: { partner_identity_id: partnerIdentityId, status, evidence_ref: evidenceRef },
+    entityIdOf: (result) => result.id,
+    execute: () => recordNpdStatusCheckInTransaction(db, admin, partnerIdentityId, status, evidenceRef),
+  })).immediate();
 
 /** The current (MAX sequence) fact on file for this partner - not necessarily fresh or ACTIVE; freshness/status are judged separately below. */
 export const latestNpdStatusCheck = (db: Database.Database, partnerIdentityId: string): NpdStatusCheckRow | null =>

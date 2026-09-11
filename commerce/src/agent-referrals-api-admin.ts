@@ -7,20 +7,20 @@ import { getPartnerIdentity, activatePartner } from "./agent-referrals-onboardin
 import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, currentFrameworkAgreementRevision, currentDelegationTemplateRevision, type FrameworkAgreementClauseKey, type DelegationTemplateClauseKey } from "./agent-referrals-framework-delegation";
 import { agentReferralsFeatureState, suspendAgentReferrals, reactivateAgentReferrals } from "./agent-referrals-feature-state";
 import { setAgentReferralsChannelPolicy, resolveAgentReferralsChannelPolicyNow, type ChannelPolicyStatus } from "./agent-referrals-channel-policy";
-import { verifyAudienceForPartnerCity, revokeAudienceVerificationForPartnerCity } from "./agent-referrals-engagement";
+import { verifyAudienceForPartnerCityIdempotent, revokeAudienceVerificationForPartnerCity } from "./agent-referrals-engagement";
 import { createPartnerPromo } from "./agent-referrals-promo";
 import { revokeDelegationAsAdmin } from "./agent-referrals-delegation-revocation";
-import { currentRetentionPolicy, mintRetentionPolicyRevision, placeLegalHold, releaseLegalHold, destroyPartnerIdentity } from "./agent-referrals-identity-retention";
-import { recordNpdStatusCheck, type NpdCheckStatus } from "./agent-referrals-npd";
+import { currentRetentionPolicy, mintRetentionPolicyRevisionIdempotent, placeLegalHoldNamed, releaseLegalHold, destroyPartnerIdentity } from "./agent-referrals-identity-retention";
+import { recordNpdStatusCheckIdempotent, type NpdCheckStatus } from "./agent-referrals-npd";
 import {
-  offerEngagement, mintEngagementRevision, activateEngagement, suspendEngagement, getEngagement, engagementsForPartner,
+  offerEngagement, mintEngagementRevision, activateEngagementIdempotent, suspendEngagement, getEngagement, engagementsForPartner,
   currentEngagementRevision, lastActivatedEngagementRevision, type EngagementRevisionTerms,
 } from "./agent-referrals-engagement";
 import { closeEngagementWithRewardRegistry } from "./agent-referrals-reward-registry";
 import { mintCreativeRevision, authorizeCreative, revokeCreativeAuthorization, currentCreativeRevision, currentCreativeAuthorization, type CreativeMaterialFields } from "./agent-referrals-creative";
 import { assessCreativeReadyToPublish } from "./agent-referrals-creative-readiness";
 import {
-  distributionsForEngagement, distributionProjection, reportDistribution, correctDistribution, requireRemoval, confirmRemoval, markOverdueRemoval,
+  distributionsForEngagement, distributionProjection, reportDistributionByAdminIdempotent, correctDistribution, requireRemoval, confirmRemoval, markOverdueRemoval,
   markRemovalUnverified, markReviewCleared, type ResourceKind,
 } from "./agent-referrals-distribution";
 import { mintOrdProviderProfile, currentOrdProviderProfile, type OrdProviderProfileKind } from "./agent-referrals-ord-provider-profile";
@@ -71,6 +71,17 @@ const jsonBody = async (request: Request) => {
   try { return await request.json(); } catch { throw new DomainError("INVALID_JSON", 400); }
 };
 const asRecord = (value: unknown): Record<string, unknown> => (value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {});
+/**
+ * PR-C2: the six agent-referrals admin commands that carry durable command
+ * identity REQUIRE a key - there is no "if supplied" path, the same
+ * convention api.ts already applies to the commerce-core admin commands.
+ */
+const requireIdempotencyKey = (c: { req: { header: (name: string) => string | undefined } }): string => {
+  const key = c.req.header("Idempotency-Key");
+  if (!key) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
+  return key;
+};
+
 const requireString = (body: Record<string, unknown>, field: string): string => {
   const value = body[field];
   if (typeof value !== "string" || !value.trim()) throw new DomainError("AGENT_REFERRALS_ADMIN_FIELD_REQUIRED", 422, field);
@@ -223,7 +234,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   });
   app.post("/partners/:id/audience/:cityId/verify", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(verifyAudienceForPartnerCity(sqlite, adminOf(c), c.req.param("id"), c.req.param("cityId"), requireString(body, "valid_until"), requireString(body, "reason"), requireString(body, "evidence_ref")));
+    return c.json(verifyAudienceForPartnerCityIdempotent(sqlite, adminOf(c), requireIdempotencyKey(c), c.req.param("id"), c.req.param("cityId"), requireString(body, "valid_until"), requireString(body, "reason"), requireString(body, "evidence_ref")).response);
   });
   app.post("/partners/:id/audience/:cityId/revoke", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
@@ -235,18 +246,18 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   });
   app.post("/partners/:id/npd-status", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(recordNpdStatusCheck(sqlite, adminOf(c), c.req.param("id"), requireString(body, "status") as NpdCheckStatus, requireString(body, "evidence_ref")), 201);
+    return c.json(recordNpdStatusCheckIdempotent(sqlite, adminOf(c), requireIdempotencyKey(c), c.req.param("id"), requireString(body, "status") as NpdCheckStatus, requireString(body, "evidence_ref")).response, 201);
   });
 
   // ---- Retention / legal holds / destruction ------------------------------
   app.get("/retention-policy", (c) => c.json(currentRetentionPolicy(sqlite)));
   app.post("/retention-policy", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(mintRetentionPolicyRevision(sqlite, adminOf(c), requireString(body, "reason")), 201);
+    return c.json(mintRetentionPolicyRevisionIdempotent(sqlite, adminOf(c), requireIdempotencyKey(c), requireString(body, "reason")).response, 201);
   });
   app.post("/partners/:id/legal-hold", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(placeLegalHold(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason")), 201);
+    return c.json(placeLegalHoldNamed(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason")), 201);
   });
   app.post("/legal-holds/:id/release", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
@@ -344,7 +355,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   });
   app.post("/engagements/:id/activate", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(activateEngagement(sqlite, adminOf(c), c.req.param("id"), requireString(body, "engagement_revision_id")));
+    return c.json(activateEngagementIdempotent(sqlite, adminOf(c), requireIdempotencyKey(c), c.req.param("id"), requireString(body, "engagement_revision_id")).response);
   });
   app.post("/engagements/:id/suspend", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
@@ -379,7 +390,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   // ---- Distributions ------------------------------------------------------------
   app.post("/engagements/:id/distributions", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(reportDistribution(sqlite, adminOf(c), c.req.param("id"), {
+    return c.json(reportDistributionByAdminIdempotent(sqlite, adminOf(c), requireIdempotencyKey(c), c.req.param("id"), {
       channel_key: requireString(body, "channel_key"), resource_kind: requireString(body, "resource_kind") as ResourceKind,
       resource_identifier: requireString(body, "resource_identifier"), distribution_resource_url: requireString(body, "distribution_resource_url"),
       published_at: requireString(body, "published_at"), ended_at: optionalString(body, "ended_at") ?? null, evidence_ref: requireString(body, "evidence_ref"),

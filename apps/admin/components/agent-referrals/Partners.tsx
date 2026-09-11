@@ -167,16 +167,21 @@ function PromoAndAudience({ partnerId }: { partnerId: string }) {
 
   const mint = usePartnerScopedCommand(partnerId, ({ code }: { code: string }) =>
     api(`/agent-referrals/partners/${partnerId}/promo`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code, reason: "mint" }) }));
+  // PR-C2: audience verification has no state gate of its own (unlike its
+  // revoke twin), so the backend gave it durable command identity - the key
+  // is what separates a deliberate re-verification from a retry, and it is
+  // retained across a failure exactly like the tax-treatment panel's.
+  const verifyKey = usePersistentIdempotencyKey();
   const verify = usePartnerScopedCommand(partnerId, ({ city_id, valid_until, evidence_ref }: { city_id: string; valid_until: string; evidence_ref: string }) =>
     api(`/agent-referrals/partners/${partnerId}/audience/${city_id}/verify`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": verifyKey.acquire() },
       body: JSON.stringify({ valid_until: new Date(valid_until).toISOString(), reason: "verified by operator", evidence_ref }),
     }));
   const busy = mint.isPending || verify.isPending;
   const error = mint.error?.code ?? verify.error?.code ?? null;
 
   const mintPromo = promoForm.handleSubmit(async (values) => { await mint.mutateAsync(values).catch(() => undefined); });
-  const verifyAudience = audienceForm.handleSubmit(async (values) => { await verify.mutateAsync(values).catch(() => undefined); });
+  const verifyAudience = audienceForm.handleSubmit(async (values) => { await verify.mutateAsync(values).then(() => verifyKey.clear()).catch(() => undefined); });
 
   return (
     <Panel title="Промокод и аудитория">
@@ -440,11 +445,15 @@ function TaxTreatmentPanel({ partnerId, legalProfile, taxTreatment }: { partnerI
 
 function NpdCheckForm({ partnerId }: { partnerId: string }) {
   const { register, handleSubmit } = useForm<{ status: "ACTIVE" | "INACTIVE" | "UNKNOWN"; evidence_ref: string }>({ defaultValues: { status: "ACTIVE", evidence_ref: "" } });
+  // PR-C2: a fresh check with the same status is a legitimate new command -
+  // the payment guard consumes freshness - so only the key distinguishes it
+  // from a retry.
+  const recordKey = usePersistentIdempotencyKey();
   const record = usePartnerScopedCommand(partnerId, (values: Record<string, unknown>) =>
-    api(`/agent-referrals/partners/${partnerId}/npd-status`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(values) }));
+    api(`/agent-referrals/partners/${partnerId}/npd-status`, { method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": recordKey.acquire() }, body: JSON.stringify(values) }));
   const busy = record.isPending;
   const error = record.error?.code ?? null;
-  const submit = handleSubmit(async (values) => { await record.mutateAsync(values).catch(() => undefined); });
+  const submit = handleSubmit(async (values) => { await record.mutateAsync(values).then(() => recordKey.clear()).catch(() => undefined); });
   return (
     <form className="form" onSubmit={submit}>
       <label>Статус НПД

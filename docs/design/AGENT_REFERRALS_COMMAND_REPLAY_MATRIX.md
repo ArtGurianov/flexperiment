@@ -66,8 +66,12 @@ Classifications:
 
 ### Current state
 
-**`UNAUDITED` is zero** (PR-C2 step 1). **10 `REPEATABLE` routes remain** — 6
-admin, 4 partner — after step 2a closed the content-addressed half.
+**`UNAUDITED` is zero and `REPEATABLE` is zero.** PR-C2 is complete: step 1
+audited the whole published surface, step 2a closed the content-addressed
+half with no-change branches, step 2b gave durable command identity to the
+nine commands where an identical body can be a legitimate second command,
+and one more turned out to need only a name. All four numbers are asserted
+by the registry test.
 
 All 35 previously pending routes resolved to `REPLAY_SAFE`, and that result is
 the useful part: the repeatable class is exactly *"mint the next revision in
@@ -115,15 +119,19 @@ realms), ORD provider profiles and the framework/delegation template chains
 (`content_hash`), channel policy (same status from the same instant), and the
 partner's own legal-profile draft resubmission.
 
-**Step 2b — remaining.** Where repeating the same body **can** be a deliberate
-new command, only a caller-supplied command key can tell a retry from an
-intent, because no content comparison can:
+**Step 2b — done.** Where repeating the same body **can** be a deliberate new
+command, only a caller-supplied command key can tell a retry from an intent,
+because no content comparison can. Admin commands use the existing
+`admin_command_idempotency` through a shared helper taking an explicit
+`entityIdOf` selector; partner commands use `partner_command_idempotency`
+(migration 0054), keyed `(partner_identity_id, command, key_hash)` so two
+partners picking the same raw key are independent rather than in conflict.
+Closed this way:
 
 - `activateEngagement` — re-activating onto the same revision after a genuine
   suspension is a real business action.
 - `recordNpdStatusCheck` — a fresh check with the same status is the point;
   freshness is what the payment guard consumes.
-- `placeLegalHold` — a second hold for a different matter is legitimate.
 - `verifyAudienceForPartnerCity` — re-verification after a revocation is
   legitimate, and it has no guard of its own (unlike its revoke twin).
 - `reportDistribution` (both realms) — each call is a new distribution
@@ -131,8 +139,127 @@ intent, because no content comparison can:
 - `mintRetentionPolicyRevision` — a restated policy is a governance act.
 - partner payout set / revoke, partner NPD receipt evidence.
 
+**One reclassification, found by the invariant matrix rather than by
+review.** `placeLegalHold` was on this list and does not belong on it:
+0044's `partner_identity_legal_holds_active_unique` is a PARTIAL unique index
+on `released_at IS NULL`, so a partner can carry at most one ACTIVE hold and
+a retry cannot create a second. It met that index as a raw `SqliteError` —
+a 500 for "already on hold" — so it needed a named refusal, not a command
+identity. Placing another hold after a release stays legal, exactly as the
+partial predicate says.
+
 Admin realm can reuse `admin_command_idempotency` directly. The partner realm
 needs a principal-scoped equivalent — a partner must not be able to replay
 another partner's command key. In both realms, exact replay must resolve
 **before** any mutable-state or gate read, exactly as
 `recordVerifiedTaxTreatment` already does.
+
+---
+
+# PR-C2 step 2b: durable command identity (design gate)
+
+Ten routes remain. For each, an identical body can be a legitimate second
+command, so only a caller-supplied key separates a retry from an intent.
+
+## Partner realm: a new, principal-scoped table
+
+```sql
+CREATE TABLE partner_command_idempotency (
+  partner_identity_id TEXT NOT NULL REFERENCES partner_identities(id),
+  command             TEXT NOT NULL,   -- stable semantic name, never a URL
+  key_hash            TEXT NOT NULL,   -- sha256 of the raw Idempotency-Key; the raw key is never stored
+  request_hash        TEXT NOT NULL,
+  response_status     INTEGER NOT NULL,
+  response_json       TEXT NOT NULL,
+  created_at          TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (partner_identity_id, command, key_hash)
+);
+```
+
+Scope is `partner_identity_id`, never `partner_session_id`: a retry must
+survive logout, a new login and a new session belonging to the same partner,
+and must be unreachable by any other partner. Partners are mutually
+untrusted, which is why this namespace is stricter than the admin one below.
+
+`response_status` is stored, unlike the admin table, so an exact replay
+returns the original status as well as the original body (partner routes mix
+200 and 201).
+
+## Execution contract
+
+```text
+authenticate  →  partner_identity_id established   (key scope needs the principal first)
+
+BEGIN IMMEDIATE
+  lookup(partner_identity_id, command, key_hash)
+    found, same request_hash       → return stored (status, body) verbatim
+                                     BEFORE any business-state / gate / current-revision read
+    found, different request_hash  → IDEMPOTENCY_CONFLICT 409, zero writes
+    absent                         → validate current state
+                                     execute
+                                     persist durable facts
+                                     persist (request_hash, status, body)
+COMMIT
+```
+
+```text
+same K + same body      → exact replay
+same K + different body → 409
+new  K + same body      → a genuinely new command   ← what these ten need
+```
+
+`request_hash = sha256(canonicalV2({ command, resource ids from the path, normalized body }))`.
+`partner_identity_id` is not repeated inside the hash: the primary key
+already scopes it, and duplicating it would only make the same fact fail in
+two different ways.
+
+## Admin realm: reuse, with one required change
+
+`admin_command_idempotency` + `withAdminCommandV2Core` already implement this
+contract, including `IDEMPOTENCY_CONFLICT` on a fingerprint mismatch and
+`IDEMPOTENCY_CONTRACT_SUPERSEDED` for a record predating stored responses.
+No new table.
+
+But it cannot be reused unchanged. The helper is typed `T extends Row` and
+does `String(created.id)` into a `NOT NULL entity_id` — and four of the six
+admin commands return no `id` at all:
+
+| command | result |
+|---|---|
+| `activateEngagement` | `{ activation_event_id, promo_authorization_id }` |
+| `placeLegalHold` | `{ hold_id }` |
+| `verifyAudienceForPartnerCity` | `{ verification_event_id, suspended_engagement_ids }` |
+| `reportDistribution` | `{ distribution_id, revision }` |
+
+The proposal is to take an explicit `entityIdOf(result)` selector rather than
+widening `entity_id` to nullable: every one of these has a durable entity to
+name, and keeping the column meaningful is worth more than a migration on a
+table the whole commerce core shares.
+
+One asymmetry, stated so it is a decision and not an accident: the admin key
+namespace is `(command, key_hash)` — shared across admins, with `admin_id`
+inside the fingerprint, so one admin reusing another's key with a different
+body gets 409 rather than someone else's response. The partner namespace is
+per-identity. That difference is deliberate.
+
+## Client key lifetime
+
+A persistent key lives until a **definitive outcome**, not until the HTTP
+call returns:
+
+```text
+NETWORK_AMBIGUOUS            → retain (this is the case the key exists for)
+authoritative refresh        → retain (a refresh is not an outcome)
+success / exact replay       → rotate
+definitive business refusal  → rotate, per the existing error classification
+```
+
+## Test invariants
+
+1. `K1` commits, response lost, mutable state moves on, retry `K1` → original
+   response, no new durable fact.
+2. `K1`/body A then `K1`/body B → 409, zero writes.
+3. `K1`/body A then `K2`/body A → the second command genuinely happens.
+4. Partner A's `K1` and partner B's `K1` are independent namespaces.
+5. Payout specifically: `set(K1) → R1`, response lost, refresh observes R1,
+   retry `K1` → returns R1, mints **no** grant against R1, creates **no** R2.

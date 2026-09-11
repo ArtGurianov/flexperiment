@@ -192,7 +192,10 @@ describe("/v1/partner/*: horizontal isolation and §B-11 projection allowlist", 
     const { p1, engagementId2 } = twoPartnersWithEngagements(db, domain);
     const cookieA = httpSessionCookie(db, p1.partnerIdentityId);
     const reportResponse = await app.request(`http://partner.flexperiment.ru/v1/partner/engagements/${engagementId2}/distributions`, {
-      method: "POST", headers: { Origin: PARTNER_ORIGIN, Cookie: cookieA, "Content-Type": "application/json" },
+      // PR-C2: the route now requires a command key. The key is supplied so
+      // this still tests what it says it tests - ownership - rather than
+      // passing on a 400 that never reaches the ownership proof.
+      method: "POST", headers: { Origin: PARTNER_ORIGIN, Cookie: cookieA, "Content-Type": "application/json", "Idempotency-Key": "partner-a-report-key-1" },
       body: JSON.stringify({ channel_key: "telegram", resource_kind: "channel", resource_identifier: "x", distribution_resource_url: "https://t.me/x/1", published_at: "2020-06-01T00:00:00.000Z", evidence_ref: "ev" }),
     });
     expect(reportResponse.status).toBe(403);

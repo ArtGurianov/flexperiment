@@ -52,12 +52,12 @@ const ADMIN: Readonly<Record<string, Classification>> = {
   "/partners/:id/framework/issue": "REPLAY_SAFE", // onboarding transition CAS
   "/partners/:id/activate": "REPLAY_SAFE", // onboarding transition CAS
   "/partners/:id/promo": "NAMED_REFUSAL", // both promo UNIQUE constraints named (PR-C)
-  "/partners/:id/audience/:cityId/verify": "REPEATABLE", // aggregate_revision + 1
+  "/partners/:id/audience/:cityId/verify": "DURABLE_KEY", // PR-C2: re-verification after a revocation is legitimate, so a key separates it from a retry
   "/partners/:id/audience/:cityId/revoke": "REPLAY_SAFE", // requires current event_kind VERIFIED; after one revoke the retry is AUDIENCE_NOT_VERIFIED
   "/delegations/:id/revoke": "REPLAY_SAFE", // existing revocation row -> ALREADY_REVOKED
-  "/partners/:id/npd-status": "REPEATABLE", // sequence + 1
-  "/retention-policy": "REPEATABLE", // revision + 1, no same-content branch
-  "/partners/:id/legal-hold": "REPEATABLE", // unconditional INSERT; each hold independently blocks destruction
+  "/partners/:id/npd-status": "DURABLE_KEY", // PR-C2: a fresh check with the same status is the point
+  "/retention-policy": "DURABLE_KEY", // PR-C2: restating a policy is a governance act
+  "/partners/:id/legal-hold": "NAMED_REFUSAL", // PR-C2: the partial unique index on released_at IS NULL already refuses a second ACTIVE hold - it only needed a name
   "/legal-holds/:id/release": "REPLAY_SAFE", // conditional UPDATE, changes !== 1 -> ALREADY_RELEASED
   "/partners/:id/destroy": "REPLAY_SAFE", // existing destruction event -> replayed: true
   "/framework-agreement-revisions": "REPLAY_SAFE", // PR-C2: identical clauses return the current revision
@@ -65,13 +65,13 @@ const ADMIN: Readonly<Record<string, Classification>> = {
   "/channel-policy": "REPLAY_SAFE", // PR-C2: same status from the same instant returns the current policy
   "/engagements": "REPLAY_SAFE", // engagementByPartnerAndOccurrence -> ALREADY_EXISTS
   "/engagements/:id/revisions": "REPLAY_SAFE", // PR-C2: identical terms + same occurrence material return the current revision
-  "/engagements/:id/activate": "REPEATABLE", // CAS is not idempotency: revokes the live authorization, writes a second activation event
+  "/engagements/:id/activate": "DURABLE_KEY", // PR-C2: CAS is not idempotency; a deliberate re-activation is legitimate
   "/engagements/:id/suspend": "REPLAY_SAFE", // requires ACTIVE; after suspension the retry is ILLEGAL_TRANSITION
   "/engagements/:id/close": "REPLAY_SAFE", // requires a non-CLOSED state + lifecycle CAS
   "/engagements/:id/creative": "REPLAY_SAFE", // PR-C2: identical creative_hash returns the current revision
   "/engagements/:id/creative/:revisionId/authorize": "REPLAY_SAFE", // PR-C2: the live authorization for the same creative is returned, not churned
   "/creative-authorizations/:id/revoke": "REPLAY_SAFE", // conditional UPDATE on revoked_at IS NULL -> ALREADY_REVOKED
-  "/engagements/:id/distributions": "REPEATABLE", // fresh distribution identity per call (same command as the partner route)
+  "/engagements/:id/distributions": "DURABLE_KEY", // PR-C2, admin surface of the same command
   "/distributions/:id/correct": "REPLAY_SAFE", // PR-C2: identical canonical_hash returns the current revision
   "/distributions/:id/require-removal": "REPLAY_SAFE", // removal state machine has no self-loop -> ILLEGAL_TRANSITION
   "/distributions/:id/confirm-removal": "REPLAY_SAFE", // same state machine
@@ -122,15 +122,15 @@ const PARTNER: Readonly<Record<string, Classification>> = {
   "/legal-profile/change": "REPLAY_SAFE", // partial unique index -> ALREADY_PENDING
   "/framework/accept": "REPLAY_SAFE", // exact-parameter replay -> idempotent no-op
   "/delegation/:id/revoke": "REPLAY_SAFE", // same revokeDelegationInTransaction -> ALREADY_REVOKED
-  "/payout-profile": "REPEATABLE", // revision + 1; the retry's fresh grant binds to the NEW revision
-  "/payout-profile/revoke": "REPEATABLE", // revision + 1
+  "/payout-profile": "DURABLE_KEY", // PR-C2: the grant cannot protect this - the retry's fresh grant is legitimately valid
+  "/payout-profile/revoke": "DURABLE_KEY", // PR-C2
   "/engagements/:id/accept": "REPLAY_SAFE", // existing acceptance -> replayed: true
-  "/engagements/:id/distributions": "REPEATABLE", // fresh distribution identity per call
+  "/engagements/:id/distributions": "DURABLE_KEY", // PR-C2, partner surface of the same command
   "/distributions/:id/correct": "REPLAY_SAFE", // PR-C2, same command as the admin route (both realms)
   "/distributions/:id/removal-claim": "REPLAY_SAFE", // removal state machine has no self-loop -> ILLEGAL_TRANSITION
   "/acts/:id/accept": "REPLAY_SAFE", // existing acceptance -> replayed: true
   "/acts/:id/dispute": "REPLAY_SAFE", // existing dispute -> replayed: true
-  "/npd-receipts/submit": "REPEATABLE", // unconditional NPD_RECEIPT_EVIDENCE_SUBMITTED_BY_PARTNER event per call
+  "/npd-receipts/submit": "DURABLE_KEY", // PR-C2: each submission was an unconditional evidence event
 };
 
 const writeRoutesOf = (file: string): string[] => {
@@ -160,25 +160,14 @@ describe("agent-referrals command replay classification is exhaustive over the p
     // new repeatable command was introduced and needs to be in PR-C2 too.
     const repeatable = (table: Readonly<Record<string, Classification>>) =>
       Object.entries(table).filter(([, value]) => value === "REPEATABLE").map(([route]) => route).sort();
-    // PR-C2 step 2a closed the content-addressed half: what is left needs
-    // durable command identity, because an identical body CAN be a
-    // legitimate second command (a fresh NPD check, a second hold for a
-    // different matter, a genuine re-activation) and no content comparison
-    // can tell that from a retry.
-    expect(repeatable(ADMIN)).toEqual([
-      "/engagements/:id/activate",
-      "/engagements/:id/distributions",
-      "/partners/:id/audience/:cityId/verify",
-      "/partners/:id/legal-hold",
-      "/partners/:id/npd-status",
-      "/retention-policy",
-    ]);
-    expect(repeatable(PARTNER)).toEqual([
-      "/engagements/:id/distributions",
-      "/npd-receipts/submit",
-      "/payout-profile",
-      "/payout-profile/revoke",
-    ]);
+    // PR-C2 is complete: nothing is REPEATABLE any more. Step 2a closed the
+    // content-addressed half with no-change branches; step 2b gave durable
+    // command identity to the nine where an identical body can be a
+    // legitimate second command, and a NAME to the one the schema was
+    // already refusing (legal hold, whose partial unique index made it a 500
+    // rather than a duplicate).
+    expect(repeatable(ADMIN)).toEqual([]);
+    expect(repeatable(PARTNER)).toEqual([]);
   });
 
   it("has no UNAUDITED route left: the audit covers the whole published surface", () => {

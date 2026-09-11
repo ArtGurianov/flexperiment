@@ -6,6 +6,7 @@ import { useForm } from "react-hook-form";
 import { partnerApi, PartnerApiError } from "../../lib/partner-api";
 import { usePartnerMutation } from "../../lib/use-partner-mutation";
 import { partnerKeys } from "../../lib/query-keys";
+import { usePersistentIdempotencyKey } from "../../lib/use-persistent-idempotency-key";
 import type { Row } from "../../lib/partner-page";
 import { Loading } from "../ui/Loading";
 import { Notice } from "../ui/Notice";
@@ -166,9 +167,12 @@ function DistributionsSection({ engagementId, distributions }: { engagementId: s
     defaultValues: { channel_key: "", resource_kind: "channel", resource_identifier: "", distribution_resource_url: "", published_at: "", evidence_ref: "" },
   });
 
+  // PR-C2: each report mints a NEW distribution identity, so a retry without
+  // a key is a second real distribution with its own compliance and ORD tail.
+  const reportKey = usePersistentIdempotencyKey();
   const reportDistribution = usePartnerMutation("partner.distributionReport", (values: Record<string, unknown>) =>
     partnerApi(`/engagements/${engagementId}/distributions`, {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": reportKey.acquire() },
       body: JSON.stringify({ ...values, published_at: new Date(String(values.published_at)).toISOString(), ended_at: null }),
     }), { context: () => ({ engagementId }) });
   const removalClaim = usePartnerMutation("partner.removalClaim", (distributionId: string) =>
@@ -179,7 +183,7 @@ function DistributionsSection({ engagementId, distributions }: { engagementId: s
   const error = reportDistribution.error?.code ?? removalClaim.error?.code ?? null;
 
   const report = handleSubmit(async (values) => {
-    await reportDistribution.mutateAsync(values).then(() => reset()).catch(() => undefined);
+    await reportDistribution.mutateAsync(values).then(() => { reportKey.clear(); reset(); }).catch(() => undefined);
   });
   const claimRemoval = async (distributionId: string) => {
     await removalClaim.mutateAsync(distributionId).catch(() => undefined);

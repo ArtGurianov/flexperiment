@@ -31,8 +31,12 @@ describe("identical content does not mint a second revision", () => {
     const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occurrenceId, nearTermTerms(1000));
     const before = db.prepare("SELECT COUNT(*) AS n FROM engagement_revisions WHERE engagement_id = ?").get(engagementId) as { n: number };
 
-    const first = mintEngagementRevision(db, admin, engagementId, nearTermTerms(2000), "repriced");
-    const replay = mintEngagementRevision(db, admin, engagementId, nearTermTerms(2000), "retry after a lost response");
+    // ONE terms object, reused: nearTermTerms() derives its publication
+    // window from Date.now(), so calling it twice would legitimately be two
+    // different revisions - and the test would be asserting nothing.
+    const terms = nearTermTerms(2000);
+    const first = mintEngagementRevision(db, admin, engagementId, terms, "repriced");
+    const replay = mintEngagementRevision(db, admin, engagementId, terms, "retry after a lost response");
     expect(replay.id).toBe(first.id);
     expect(db.prepare("SELECT COUNT(*) AS n FROM engagement_revisions WHERE engagement_id = ?").get(engagementId))
       .toEqual({ n: before.n + 1 });

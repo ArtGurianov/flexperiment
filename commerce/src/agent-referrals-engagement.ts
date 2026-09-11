@@ -8,6 +8,7 @@ import { AudienceVerificationError, currentAudienceVerification, isAudienceVerif
 import { consumeEngagementStepUpGrantInTransaction } from "./agent-referrals-engagement-step-up";
 import { partnerPromoByPartnerId, currentEngagementPromoAuthorization, revokeEngagementPromoAuthorizationInTransaction, type EngagementPromoAuthorizationRow } from "./agent-referrals-promo";
 import type { AdminPrincipal, PartnerPrincipal } from "./agent-referrals-partner-identity";
+import { withAdminCommandInTransaction, type AdminCommandResult } from "./agent-referrals-admin-command";
 import { agentReferralsLegalProfileRevisionById, resolveCurrentLegalProfileBinding, type AgentReferralsLegalProfileRevision } from "./agent-referrals-legal-profile";
 
 /**
@@ -306,8 +307,8 @@ export type ActivateEngagementResult = { activation_event_id: string; promo_auth
  * about the GLOBAL feature transition, not this explicit per-engagement
  * command - nothing calls this function except a deliberate admin action.
  */
-export const activateEngagement = (db: Database.Database, admin: AdminPrincipal, engagementId: string, engagementRevisionId: string): ActivateEngagementResult => {
-  const run = db.transaction((): ActivateEngagementResult => {
+export const activateEngagementInTransaction = (db: Database.Database, admin: AdminPrincipal, engagementId: string, engagementRevisionId: string): ActivateEngagementResult => {
+  {
     assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "ENGAGEMENT_ACTIVATION");
 
     const engagement = getEngagement(db, engagementId);
@@ -413,9 +414,35 @@ export const activateEngagement = (db: Database.Database, admin: AdminPrincipal,
 
     recordPartnerIdentityEvent(db, engagement.partner_identity_id, "ENGAGEMENT_ACTIVATED", "ADMIN", { engagement_id: engagementId, engagement_revision_id: engagementRevisionId, activation_event_id: activationEventId });
     return { activation_event_id: activationEventId, promo_authorization_id: authorization.id };
-  });
-  return run.immediate();
+  }
 };
+
+/** Transaction-owning wrapper for in-process callers; the HTTP surface uses the idempotent entry point below. */
+export const activateEngagement = (db: Database.Database, admin: AdminPrincipal, engagementId: string, engagementRevisionId: string): ActivateEngagementResult =>
+  db.transaction(() => activateEngagementInTransaction(db, admin, engagementId, engagementRevisionId)).immediate();
+
+/**
+ * PR-C2: activation carries durable command identity because CAS cannot
+ * stand in for it here. ACTIVE is an accepted starting state and an equal
+ * revision is not a rollback, so a retry re-reads the lifecycle_revision the
+ * first attempt bumped, revokes the live promo authorization, mints a
+ * replacement and writes a SECOND activation event - evidence settlement and
+ * ORD both pin. A different key with the same body is still a genuine
+ * re-activation, which is exactly the distinction only a key can make.
+ */
+export const activateEngagementIdempotent = (
+  db: Database.Database,
+  admin: AdminPrincipal,
+  idempotencyKey: string,
+  engagementId: string,
+  engagementRevisionId: string,
+): AdminCommandResult<ActivateEngagementResult> =>
+  db.transaction(() => withAdminCommandInTransaction<ActivateEngagementResult>({
+    db, admin, command: "agent-referrals.engagement.activate", idempotencyKey,
+    request: { engagement_id: engagementId, engagement_revision_id: engagementRevisionId },
+    entityIdOf: (result) => result.activation_event_id,
+    execute: () => activateEngagementInTransaction(db, admin, engagementId, engagementRevisionId),
+  })).immediate();
 
 /** Alias, for callers making the "reactivate after suspension" intent explicit - identical mechanism to activateEngagement. */
 export const reactivateEngagement = activateEngagement;
@@ -551,7 +578,7 @@ export type VerifyAudienceCascadeResult = { verification_event_id: string; suspe
  * verification (onboarding, before any engagement exists) and every
  * later re-verification: there is no separate "bare initial-only" path.
  */
-export const verifyAudienceForPartnerCity = (
+export const verifyAudienceForPartnerCityInTransaction = (
   db: Database.Database,
   admin: AdminPrincipal,
   partnerIdentityId: string,
@@ -560,7 +587,7 @@ export const verifyAudienceForPartnerCity = (
   reason: string,
   evidenceRef: string,
 ): VerifyAudienceCascadeResult => {
-  const run = db.transaction((): VerifyAudienceCascadeResult => {
+  {
     const current = currentAudienceVerification(db, partnerIdentityId, cityId);
     const eventId = id();
     const nextRevision = (current?.aggregate_revision ?? 0) + 1;
@@ -580,9 +607,33 @@ export const verifyAudienceForPartnerCity = (
       }
     }
     return { verification_event_id: event.id, suspended_engagement_ids: suspended };
-  });
-  return run.immediate();
+  }
 };
+
+/** Transaction-owning wrapper for in-process callers; the HTTP surface uses the idempotent entry point below. */
+export const verifyAudienceForPartnerCity = (
+  db: Database.Database, admin: AdminPrincipal, partnerIdentityId: string, cityId: string,
+  validUntil: string, reason: string, evidenceRef: string,
+): VerifyAudienceCascadeResult =>
+  db.transaction(() => verifyAudienceForPartnerCityInTransaction(db, admin, partnerIdentityId, cityId, validUntil, reason, evidenceRef)).immediate();
+
+/**
+ * PR-C2: unlike its revoke twin - which requires the current event to be
+ * VERIFIED and so refuses a retry outright - this command has no state gate
+ * and appends another VERIFIED event on every call. Re-verification after a
+ * revocation is legitimate, so the two cases are separated by a key rather
+ * than by a guard.
+ */
+export const verifyAudienceForPartnerCityIdempotent = (
+  db: Database.Database, admin: AdminPrincipal, idempotencyKey: string, partnerIdentityId: string, cityId: string,
+  validUntil: string, reason: string, evidenceRef: string,
+): AdminCommandResult<VerifyAudienceCascadeResult> =>
+  db.transaction(() => withAdminCommandInTransaction<VerifyAudienceCascadeResult>({
+    db, admin, command: "agent-referrals.audience.verify", idempotencyKey,
+    request: { partner_identity_id: partnerIdentityId, city_id: cityId, valid_until: validUntil, reason, evidence_ref: evidenceRef },
+    entityIdOf: (result) => result.verification_event_id,
+    execute: () => verifyAudienceForPartnerCityInTransaction(db, admin, partnerIdentityId, cityId, validUntil, reason, evidenceRef),
+  })).immediate();
 
 /** Exported for the delegation-revocation cascade - the narrow SUSPENDED-only primitive (never CLOSED-capable; see suspendEngagementLifecycleInTransaction's own header). */
 export const suspendEngagementLifecycle = suspendEngagementLifecycleInTransaction;
