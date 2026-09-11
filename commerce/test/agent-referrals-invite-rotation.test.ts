@@ -1,7 +1,16 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
+import { scryptSync } from "node:crypto";
 import { admin, fresh } from "./support/agent-referrals-settlement-fixtures";
+import { MockProvider } from "../src/provider";
+
+process.env.COMMERCE_SESSION_SECRET ??= "test-session-secret-agent-referrals-invite-rotation";
+process.env.COMMERCE_ADMIN_PASSWORD_SCRYPT ??= `salt:${scryptSync("correct horse", "salt", 64).toString("base64url")}`;
+process.env.COMMERCE_AGENT_REFERRALS_OTP_PEPPER ??= "test-otp-pepper-for-agent-referrals-invite-rotation";
+
+const { createApp } = await import("../src/api");
+const ADMIN_ORIGIN = "https://admin.flexperiment.ru";
 import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
 import { provisionPartnerOwner, rotatePartnerInvite, liveInviteCapabilityId } from "../src/agent-referrals-partner-identity";
 
@@ -164,5 +173,64 @@ describe("invite rotation is predecessor-bound, and recovery is a reason on it",
     expectStale(() => rotate(db, partnerIdentityId, t1, "MANUAL_REISSUE", "reissue"));
     const next = rotate(db, partnerIdentityId, null, "MANUAL_REISSUE", "reissue after revocation");
     expect(liveIds(db, partnerIdentityId)).toEqual([next.invite_id]);
+  });
+});
+
+/**
+ * The HTTP boundary, where `rotation_reason` is a required, machine-semantic
+ * field with no default. A server-chosen MANUAL_REISSUE would put the
+ * business meaning of the command back where the caller cannot see it - and
+ * the whole point of collapsing recovery into a reason is that the reason IS
+ * the semantics.
+ */
+describe("POST /partners/:id/invite/reissue: rotation_reason is required and explicit", () => {
+  const post = (app: ReturnType<typeof createApp>, cookie: string, partnerIdentityId: string, body: Record<string, unknown>) =>
+    app.request(`http://admin.flexperiment.ru/v1/admin/agent-referrals/partners/${partnerIdentityId}/invite/reissue`, {
+      method: "POST", headers: { Origin: ADMIN_ORIGIN, Cookie: cookie, "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+
+  const httpFixture = async () => {
+    const { db } = fresh();
+    open.push(db);
+    const app = createApp(db, new MockProvider());
+    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", {
+      method: "POST", headers: { Origin: ADMIN_ORIGIN, "Content-Type": "application/json" }, body: JSON.stringify({ password: "correct horse" }),
+    });
+    const { partnerIdentityId, inviteId } = invitedPartner(db);
+    return { db, app, cookie: login.headers.get("set-cookie")!, partnerIdentityId, inviteId };
+  };
+
+  it.each([
+    ["missing", {}],
+    ["an unknown value", { rotation_reason: "BECAUSE_I_SAID_SO" }],
+    // Deliberately: the human `reason` text must never be inferred from.
+    ["prose that merely mentions a lost response", { reason: "the response was lost" }],
+  ])("refuses %s with 422, and the live capability is untouched", async (_label, partial) => {
+    const { db, app, cookie, partnerIdentityId, inviteId } = await httpFixture();
+
+    const response = await post(app, cookie, partnerIdentityId, { expected_live_capability_id: inviteId, reason: "rotate", ...partial });
+    expect(response.status).toBe(422);
+
+    expect(liveIds(db, partnerIdentityId)).toEqual([inviteId]);
+    expect(countCapabilities(db, partnerIdentityId)).toBe(1);
+    expect((db.prepare("SELECT COUNT(*) AS n FROM partner_identity_events WHERE partner_identity_id = ? AND event_kind = 'INVITE_ROTATED'").get(partnerIdentityId) as { n: number }).n).toBe(0);
+  });
+
+  it.each(["MANUAL_REISSUE", "LOST_RESPONSE_RECOVERY"] as const)("accepts %s through the same primitive, recording it verbatim", async (rotationReason) => {
+    const { db, app, cookie, partnerIdentityId, inviteId } = await httpFixture();
+
+    const response = await post(app, cookie, partnerIdentityId, {
+      expected_live_capability_id: inviteId, rotation_reason: rotationReason, reason: "operator action",
+    });
+    expect(response.status).toBe(200);
+    const payload = await response.json() as { invite_id: string; raw_invite_token: string };
+
+    // Same rotation, same event kind - only the recorded intent differs.
+    const events = db.prepare("SELECT event_kind, details_json FROM partner_identity_events WHERE partner_identity_id = ? AND event_kind = 'INVITE_ROTATED'").all(partnerIdentityId) as { event_kind: string; details_json: string }[];
+    expect(events).toHaveLength(1);
+    expect(JSON.parse(events[0].details_json)).toMatchObject({
+      invite_id: payload.invite_id, superseded_invite_id: inviteId, rotation_reason: rotationReason,
+    });
+    expect(liveIds(db, partnerIdentityId)).toEqual([payload.invite_id]);
   });
 });

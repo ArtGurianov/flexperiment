@@ -181,7 +181,16 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
    */
   app.post("/partners/:id/invite/reissue", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    const rotationReason = (optionalString(body, "rotation_reason") ?? "MANUAL_REISSUE") as InviteRotationReason;
+    // Required, with no default. A server-chosen MANUAL_REISSUE would put
+    // the business meaning of the command back where the caller cannot see
+    // it - and the whole point of collapsing recovery into a reason is that
+    // the reason IS the semantics. Validated before rotatePartnerInvite is
+    // reached, so a malformed request performs no writes at all.
+    //
+    // Machine-semantic, and never inferred from the human `reason` text
+    // beside it: "the response was lost" in prose does not make a rotation a
+    // recovery.
+    const rotationReason = requireString(body, "rotation_reason") as InviteRotationReason;
     if (rotationReason !== "MANUAL_REISSUE" && rotationReason !== "LOST_RESPONSE_RECOVERY") {
       throw new DomainError("AGENT_REFERRALS_INVITE_ROTATION_REASON_INVALID", 422, rotationReason);
     }
