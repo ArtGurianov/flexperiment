@@ -39,7 +39,7 @@ export const completeRollingSchema = z.object({
 
 export const agentReferralsActivationSchema = z.object({
   activation_id: z.string().regex(/^agent-referrals-activation-[a-f0-9]{40}$/),
-  terminal_release_id: z.string().regex(/^agent-referrals-q4-dormant-[a-f0-9]{40}$/),
+  terminal_release_id: z.string().regex(/^deploy-[a-f0-9]{40}$/),
   expected_feature_revision: z.number().int().nonnegative(),
   expected: releaseExpectedSchema,
 }).strict();
