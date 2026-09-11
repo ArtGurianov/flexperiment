@@ -6,7 +6,7 @@ import {
   mintSystemDerivedNpdTaxTreatment, recordVerifiedTaxTreatment, resolveTaxTreatmentForLegalProfileAt, taxTreatmentRevisionsForLegalProfile,
   validateTaxTreatmentTuple, normalizeTaxEffectiveFrom, TaxTreatmentError,
 } from "../src/agent-referrals-tax-treatment";
-import { submitLegalProfileSupersession, verifyLegalProfileSupersession, currentLegalProfileRevisionForPartner } from "../src/agent-referrals-legal-profile-supersession";
+import { submitLegalProfileSupersession, verifyLegalProfileSupersession, currentLegalProfileRevisionForPartner, legalProfileChangeRequestHeadForPartner } from "../src/agent-referrals-legal-profile-supersession";
 import { currentAgentReferralsLegalProfile } from "../src/agent-referrals-legal-profile";
 import { destroyPartnerIdentity, mintRetentionPolicyRevision } from "../src/agent-referrals-identity-retention";
 import { fresh, admin, readyPartner } from "./support/agent-referrals-settlement-fixtures";
@@ -56,7 +56,7 @@ describe("agent-referrals tax treatment", () => {
       const { db } = fresh(); open.push(db);
       const p1 = readyPartner(db, "NPD");
       const legalEntityRequisites = { opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" };
-      const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId) });
+      const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
       const outcome = verifyLegalProfileSupersession(db, admin, request.id, "verify");
       expect(outcome).toMatchObject({ outcome: "VERIFIED" });
       const newLegalProfile = currentAgentReferralsLegalProfile(db, p1.agentId)!;
@@ -73,7 +73,7 @@ describe("agent-referrals tax treatment", () => {
       // Supersede to LEGAL_ENTITY/OTHER so this legal profile can carry
       // ADMIN_ASSERTED, temporally-distinct treatments.
       const legalEntityRequisites = { opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" };
-      const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId) });
+      const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
       verifyLegalProfileSupersession(db, admin, request.id, "verify");
       const legalProfile = currentAgentReferralsLegalProfile(db, p1.agentId)!;
 
@@ -196,7 +196,7 @@ describe("agent-referrals tax treatment", () => {
       const p1 = readyPartner(db, "NPD");
       const oldLegalProfile = currentAgentReferralsLegalProfile(db, p1.agentId)!;
       const legalEntityRequisites = { opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" };
-      const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId) });
+      const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
       verifyLegalProfileSupersession(db, admin, request.id, "verify");
       const newLegalProfile = currentAgentReferralsLegalProfile(db, p1.agentId)!;
       expect(newLegalProfile.id).not.toBe(oldLegalProfile.id);
@@ -212,7 +212,7 @@ describe("agent-referrals tax treatment", () => {
       const { db } = fresh(); open.push(db);
       const p1 = readyPartner(db, "NPD");
       const legalEntityRequisites = { opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" };
-      const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId) });
+      const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
       verifyLegalProfileSupersession(db, admin, request.id, "verify");
 
       const t1 = recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
@@ -234,7 +234,7 @@ describe("agent-referrals tax treatment", () => {
       // LEGAL_ENTITY/OTHER.
       const p1 = readyPartner(db, "NPD");
       const legalEntityRequisites = { opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" };
-      const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId) });
+      const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
       verifyLegalProfileSupersession(db, admin, request.id, "verify");
       expect(() => recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
         taxSystem: "PSN", vatTreatment: "NO_VAT", noVatBasis: "PSN", effectiveFrom: "2026-01-01", evidenceRef: "ev.pdf", reason: "x",
@@ -362,7 +362,7 @@ describe("agent-referrals tax treatment", () => {
       const { db } = fresh(); open.push(db);
       const p1 = readyPartner(db, "NPD");
       const legalEntityRequisites = { opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" };
-      const request1 = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId) });
+      const request1 = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
       verifyLegalProfileSupersession(db, admin, request1.id, "verify");
       const l1 = currentAgentReferralsLegalProfile(db, p1.agentId)!;
 
@@ -376,7 +376,7 @@ describe("agent-referrals tax treatment", () => {
       // against the CURRENT profile and would have re-asserted A as a
       // NEW mutation against l2 on retry. The durable key must instead
       // still resolve to A's own original row, pinned to l1.
-      const request2 = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", opf: "OOO", full_name: "Vasya Romashka LLC v2", inn: "1234567890", kpp: "123456789", registration_number: "9999999999999", legal_address: "Moscow", reason: "re-registered", evidenceRef: "ev2.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId) });
+      const request2 = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", opf: "OOO", full_name: "Vasya Romashka LLC v2", inn: "1234567890", kpp: "123456789", registration_number: "9999999999999", legal_address: "Moscow", reason: "re-registered", evidenceRef: "ev2.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
       const outcome2 = verifyLegalProfileSupersession(db, admin, request2.id, "verify");
       expect(outcome2).toMatchObject({ outcome: "VERIFIED" });
       const l2 = currentAgentReferralsLegalProfile(db, p1.agentId)!;

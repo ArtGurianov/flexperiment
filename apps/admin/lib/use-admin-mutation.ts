@@ -1,6 +1,7 @@
+import { useCallback, useRef, useState } from "react";
 import { useMutation, useQueryClient, type UseMutationOptions } from "@tanstack/react-query";
 import { type AdminApiError } from "./api";
-import { shouldRefreshAuthoritativeState } from "./idempotency";
+import { shouldRefreshAuthoritativeState, shouldRetainCommandIntent } from "./idempotency";
 import { invalidationKeysFor, type AdminMutation, type MutationContext } from "./invalidation";
 
 /**
@@ -20,24 +21,56 @@ export function useAdminMutation<TVariables, TData = unknown>(
 ) {
   const queryClient = useQueryClient();
   const { context, onError, ...rest } = options;
+  // PR-C2 review round 2, P1: retained command intent. A ref as well as
+  // state, for the same reason usePersistentIdempotencyKey keeps both - the
+  // retained value must be readable synchronously by a retry issued in the
+  // same tick, while the notice offering that retry needs a render to
+  // appear.
+  const retainedRef = useRef<TVariables | null>(null);
+  const [retainedIntent, setRetainedIntent] = useState<TVariables | null>(null);
+  const retain = (variables: TVariables | null) => {
+    retainedRef.current = variables;
+    setRetainedIntent(variables);
+  };
   const invalidate = async (variables: TVariables, data?: TData) => {
     const ctx = context?.(variables, data) ?? {};
     const keys = invalidationKeysFor(mutation, ctx);
     await Promise.all(keys.map((key) => queryClient.invalidateQueries({ queryKey: key })));
   };
-  return useMutation<TData, AdminApiError, TVariables>({
+  const command = useMutation<TData, AdminApiError, TVariables>({
     ...rest,
     mutationFn,
     retry: 0,
     onSuccess: async (data, variables) => {
+      retain(null);
       await invalidate(variables, data);
     },
     onError: async (error, variables, onMutateResult, mutationContext) => {
       // An ambiguous result and an idempotency conflict are not a licence to
       // mint a fresh key. Refresh the records the command could have changed;
       // a replay with the retained key is then safe and deterministic.
+      // Retained BEFORE the refresh below, never after: that refresh is
+      // exactly what would otherwise let the next attempt read a NEWER pin
+      // and stop being a retry of this command at all.
+      retain(shouldRetainCommandIntent(error) ? variables : null);
       if (shouldRefreshAuthoritativeState(error)) await invalidate(variables);
       await onError?.(error, variables, onMutateResult, mutationContext);
     },
   });
+
+  /**
+   * Replays the retained variables EXACTLY - pin included. This is what
+   * makes "retry A" mean retry A after the authoritative refresh has already
+   * moved the screen on.
+   */
+  const retryRetainedIntent = useCallback(async () => {
+    const retained = retainedRef.current;
+    if (retained === null) return undefined;
+    return command.mutateAsync(retained).catch(() => undefined);
+  }, [command]);
+
+  /** The operator says this is a NEW action, not a retry: drop the snapshot so the next submit derives a fresh pin. */
+  const discardRetainedIntent = useCallback(() => retain(null), []);
+
+  return { ...command, retainedIntent, retryRetainedIntent, discardRetainedIntent };
 }

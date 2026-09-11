@@ -14,6 +14,7 @@ import {
 } from "../../../../lib/legal-profile-rules";
 import { Loading } from "../ui/Loading";
 import { Notice } from "../ui/Notice";
+import { RetainedIntentNotice } from "../ui/RetainedIntentNotice";
 import { Panel } from "../ui/Panel";
 import { Badge } from "../ui/Badge";
 
@@ -126,6 +127,7 @@ function PartnerDetail({ partnerId, onBack }: { partnerId: string; onBack: () =>
           partnerId={partnerId}
           legalProfile={detail.data!.legal_profile as Row | null}
           pendingRequest={detail.data!.pending_legal_profile_change_request as Row | null}
+          requestHead={Number(detail.data!.legal_profile_change_request_head ?? 0)}
         />
       )}
       {detail.data!.legal_profile != null && (
@@ -253,8 +255,8 @@ function useConstrainedTaxMode(legalForm: string, taxMode: string, setValue: (na
 }
 
 /** D2 §10: a separate action for an already-active partner, never a repeat of onboarding verification. */
-function LegalProfileSupersession({ partnerId, legalProfile, pendingRequest }: {
-  partnerId: string; legalProfile: Row | null; pendingRequest: Row | null;
+function LegalProfileSupersession({ partnerId, legalProfile, pendingRequest, requestHead }: {
+  partnerId: string; legalProfile: Row | null; pendingRequest: Row | null; requestHead: number;
 }) {
   // shouldUnregister: a field hidden by LegalRequisitesFields' own
   // conditional rendering (e.g. opf/kpp/legal_address when legal_form
@@ -269,13 +271,19 @@ function LegalProfileSupersession({ partnerId, legalProfile, pendingRequest }: {
   const selectedTaxMode = watch("tax_mode");
   useConstrainedTaxMode(selectedLegalForm, selectedTaxMode, setValue);
 
-  // PR-C2: the verified revision this screen was rendered from. Without it a
-  // retry arriving after the first request was resolved would file a SECOND
-  // supersession - against the profile its own first attempt produced.
+  // PR-C2: both pins travel INSIDE the mutation variables, never derived
+  // inside mutationFn from a query that the ambiguous-outcome refresh may
+  // already have moved on - that is what lets the retained intent be
+  // replayed verbatim.
+  //
+  // Two pins, because they cover different B*: the verified revision covers
+  // "someone verified a change in between", and the request-chain head
+  // covers "someone REJECTED my request" - a rejection mints no revision, so
+  // it leaves the first pin untouched while freeing the pending slot.
   const submitRequest = usePartnerScopedCommand(partnerId, (values: Record<string, unknown>) =>
     api(`/agent-referrals/partners/${partnerId}/legal-profile/change`, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...values, expected_current_legal_profile_revision: Number(legalProfile?.revision ?? 0) }),
+      body: JSON.stringify(values),
     }));
   const resolveRequest = usePartnerScopedCommand(partnerId, (action: "verify" | "reject") =>
     api(`/agent-referrals/partners/${partnerId}/legal-profile/change/${String(pendingRequest!.id)}/${action}`, {
@@ -286,7 +294,11 @@ function LegalProfileSupersession({ partnerId, legalProfile, pendingRequest }: {
   const error = submitRequest.error?.code ?? resolveRequest.error?.code ?? null;
 
   const submitChange = handleSubmit(async (values) => {
-    await submitRequest.mutateAsync(values).then(() => reset()).catch(() => undefined);
+    await submitRequest.mutateAsync({
+      ...values,
+      expected_current_legal_profile_revision: Number(legalProfile?.revision ?? 0),
+      expected_request_sequence: requestHead,
+    }).then(() => reset()).catch(() => undefined);
   });
   const runOnRequest = async (action: "verify" | "reject") => {
     await resolveRequest.mutateAsync(action).catch(() => undefined);
@@ -335,6 +347,12 @@ function LegalProfileSupersession({ partnerId, legalProfile, pendingRequest }: {
           <button className="primary" disabled={busy}>{busy ? "…" : "Изменить юридические данные"}</button>
         </form>
       )}
+      <RetainedIntentNotice
+        retained={submitRequest.retainedIntent}
+        onRetry={() => void submitRequest.retryRetainedIntent()}
+        onDiscard={submitRequest.discardRetainedIntent}
+        busy={busy}
+      />
       <Notice error={error} />
     </Panel>
   );

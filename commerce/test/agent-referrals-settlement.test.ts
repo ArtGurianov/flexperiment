@@ -10,7 +10,7 @@ import { beginPayment, recordPaymentMade } from "../src/agent-referrals-payment"
 import { CommerceDomain } from "../src/domain";
 import { canonicalizeSettlementTaxV1 } from "../src/agent-referrals-ord-canonical";
 import { resolveTaxTreatmentForLegalProfileAt } from "../src/agent-referrals-tax-treatment";
-import { submitLegalProfileSupersession, verifyLegalProfileSupersession, currentLegalProfileRevisionForPartner } from "../src/agent-referrals-legal-profile-supersession";
+import { submitLegalProfileSupersession, verifyLegalProfileSupersession, currentLegalProfileRevisionForPartner, legalProfileChangeRequestHeadForPartner } from "../src/agent-referrals-legal-profile-supersession";
 import { currentAgentReferralsLegalProfile } from "../src/agent-referrals-legal-profile";
 import {
   fresh, admin, readyPartner, seedOccurrence, nearTermTerms, offerAcceptActivate, purchaseAndPay, closeAndComplete,
@@ -420,7 +420,7 @@ describe("PR-F: tax-treatment snapshot pinning", () => {
     const { db, domain } = fresh(); track(db);
     const p1 = readyPartner(db, "NPD");
     const legalEntityRequisites = { opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" };
-    const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId) });
+    const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
     // Nothing outstanding blocks this supersession: readyPartner mints no engagement of its own.
     const outcome = verifyLegalProfileSupersession(db, admin, request.id, "verify");
     expect(outcome).toMatchObject({ outcome: "VERIFIED" });
@@ -451,7 +451,7 @@ describe("PR-F: tax-treatment snapshot pinning", () => {
     // revision must never reach back and mutate the settlement already
     // prepared under the OLD revision/treatment.
     const legalEntityRequisites = { opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" };
-    const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId) });
+    const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
     // BLOCKED (outstanding settlement) is expected here and is not the
     // point of this test - it proves the historical row is untouched
     // regardless of whether the supersession itself could even complete.

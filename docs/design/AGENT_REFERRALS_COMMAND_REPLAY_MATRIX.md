@@ -111,6 +111,9 @@ need a key.
 | `MONOTONIC_REPLAY_SAFE` | 34 | 6 |
 | `DURABLE_KEY` | 8 | 4 |
 
+Each class is pinned by full sorted membership, so a route cannot change
+class silently even if the counts still add up.
+
 The count went **0 → 62 → 0**. The 62 was not a regression: it was the
 honest recount after the obligation was corrected from `A, immediate retry A`
 to `A → B* → retry A`, which invalidated every state-gate and
@@ -172,7 +175,7 @@ The pins, and why each is the monotone one rather than the obvious one:
 | creative authorization | the chain HEAD, live or revoked | the LIVE authorization returns to null on every revocation |
 | distribution removal/compliance | `event_sequence` | the states are cyclic by design |
 | partner legal-profile draft | a new counter (migration 0055) | `onboarding_revision` does not move on a resubmission; the draft's content is edit-revertible |
-| legal-profile supersession | the verified revision NUMBER | §B-11 exposes no internal revision ids to the partner realm |
+| legal-profile supersession | the verified revision NUMBER **and** the request-chain head (0056) | two pins, not one: a REJECTION mints no revision, so it leaves the revision pin unmoved while freeing the pending slot |
 | audience verification | `aggregate_revision` | "requires a current VERIFIED" is re-opened by re-verification |
 | content chains (engagement, creative, framework, delegation, channel policy, ORD provider profile, distribution revisions, ORD period reports) | the revision/id being superseded | content equality cannot separate a revert from a stale retry |
 | reward correction | the effective snapshot it was decided against | every call mints a new E |
@@ -182,13 +185,57 @@ the pin guards only the actual mint. A no-op mutates nothing, so it is safe
 for any retry whatever its pin says, and letting it answer first keeps an
 ordinary lost-response retry a success rather than a 409.
 
-### Two corrections found while closing
+### The client side of the same proof
+
+A `STALE_BOUND` route is safe against a literal HTTP retry. That is weaker
+than the operational model this console actually has: the sanctioned mutation
+layer **refreshes authoritative state on an ambiguous outcome**, and then the
+operator repeats the same logical intent. A form that re-derives its
+`expected_*` pin from the refreshed query at that moment is no longer
+retrying A — it is authoring a NEW command against B's state carrying A's
+body, and the server applies it, correctly, because that is what the request
+now says.
+
+So the pin has to survive the ambiguity the same way the idempotency KEY
+does. Both hooks now retain the command's full variables on an ambiguous
+outcome, read from the same disposition table rather than a second policy
+that can drift: **if it is unsafe to mint a new key, it is unsafe to
+re-derive the pin.** A definitive business refusal means the command did not
+happen, so the snapshot is dropped and the next submit derives a fresh pin.
+
+`RetainedIntentNotice` then asks the operator which of two genuinely
+different commands they mean, rather than guessing:
+
+```text
+first attempt          -> snapshot the variables, pin included
+ambiguous outcome      -> keep the snapshot; refresh authoritative state
+"повторить прежнюю"    -> replay that exact snapshot
+"это новое действие"   -> discard it, author against what is on screen now
+success / definitive   -> cleared
+```
+
+Every `STALE_BOUND` surface passes its pin **inside the mutation variables**,
+never derived inside `mutationFn` from a query the refresh may already have
+moved on — that is what makes the snapshot replayable at all.
+
+### Three corrections found while closing
 
 **`placeLegalHold` moved key → name → key.** 0044's partial unique index on
 `released_at IS NULL` refuses a *concurrent* second hold, which is not the
 same as refusing a retry: a release is ordinary work, and after one,
 `place → release → retried place` creates a second hold. The named refusal it
 gained is still correct and stays; it is simply not a replay proof.
+
+**Supersession submit needed a SECOND pin.** It was classified
+`STALE_BOUND` on the verified legal-profile revision alone, which misses a
+rejection: a rejection mints no revision, so the pin does not move, while the
+"one PENDING per partner" slot it frees is the write precondition. Retrying A
+after its request was refused would file a second request indistinguishable
+from a deliberate one. 0056 adds the monotone per-partner request-chain head,
+and a submit now pins both. The regression test for this had been passing for
+the wrong reason — it called B a verification and retried with `pinA - 1`
+instead of the original pin, so the refusal was guaranteed by the test rather
+than by the command.
 
 **Both ORD `submitted` routes moved STALE_BOUND → MONOTONIC.** The first pass
 gave them a pin on the observed external id, on the theory that the row stays
@@ -215,8 +262,14 @@ surface condition the old classification relied on — a reactivation after a
 suspension, a re-verification after a revocation, a revert back to the
 content A itself wrote.
 
-Two files: `agent-referrals-command-replay-stale-bound.test.ts` and
-`agent-referrals-command-replay-monotonic.test.ts`.
+Three files: `agent-referrals-command-replay-stale-bound.test.ts`,
+`agent-referrals-command-replay-monotonic.test.ts`, and
+`apps/admin/lib/retained-command-intent.dom.test.tsx` for the client half.
+
+The registry pins the **full sorted membership** of every proof class, not a
+count: a count leaves two routes free to swap classes without CI noticing,
+which after four rounds of this matrix moving is exactly the drift it exists
+to stop.
 
 ## PR-C2 shape
 

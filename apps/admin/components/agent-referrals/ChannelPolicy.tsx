@@ -9,6 +9,7 @@ import { agentReferralsKeys } from "../../lib/query-keys";
 import type { Row } from "../../lib/page";
 import { Loading } from "../ui/Loading";
 import { Notice } from "../ui/Notice";
+import { RetainedIntentNotice } from "../ui/RetainedIntentNotice";
 import { Panel } from "../ui/Panel";
 import { Badge } from "../ui/Badge";
 
@@ -116,6 +117,12 @@ export function ChannelPolicy() {
           <label>Действует с <input type="datetime-local" {...register("effective_from", { required: true })} /></label>
           <label>Причина <input {...register("reason", { required: true })} /></label>
           {pinMissing && <p>Сначала нажмите «Проверить» для этого канала — решение принимается относительно текущей политики, а не вслепую.</p>}
+          <RetainedIntentNotice
+            retained={setPolicy.retainedIntent}
+            onRetry={() => void setPolicy.retryRetainedIntent()}
+            onDiscard={setPolicy.discardRetainedIntent}
+            busy={setPolicy.isPending}
+          />
           <Notice error={setPolicy.error?.code} />
           <button className="primary" disabled={setPolicy.isPending}>{setPolicy.isPending ? "…" : "Сохранить"}</button>
         </form>

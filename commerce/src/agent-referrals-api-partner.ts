@@ -191,6 +191,7 @@ export function createAgentReferralsPartnerRouter(sqlite: Database.Database, otp
     return c.json(submitLegalProfileSupersession(sqlite, c.var.partner, c.var.partner.partner_identity_id, {
       legalForm, taxMode, reason: requireString(body, "reason"),
       expectedCurrentLegalProfileRevision: requireNumber(body, "expected_current_legal_profile_revision"),
+      expectedRequestSequence: requireNumber(body, "expected_request_sequence"),
       ...legalRequisitesFromBody(body),
     }), 201);
   });

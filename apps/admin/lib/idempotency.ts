@@ -113,5 +113,28 @@ export function safeToMintNewKey(error: AdminApiError): boolean {
  * the class lets both realms share it without either importing the other's
  * error type (PR-C).
  */
+/**
+ * PR-C2 review round 2, P1: the client-side half of every `STALE_BOUND`
+ * proof.
+ *
+ * The server-side proof holds only if the RETRY carries the same observed
+ * version the original attempt did. But this layer deliberately refreshes
+ * authoritative state on an ambiguous outcome, and a form that re-derives
+ * its `expected_*` pin from the refreshed query afterwards is no longer
+ * retrying A - it is authoring a NEW command against B's state, with A's
+ * body. The server would apply it, correctly, because that is what the
+ * request now says.
+ *
+ * So the command's own variables - pin included - must survive the
+ * ambiguity, exactly as the idempotency KEY does. The rule is the same one,
+ * and is read from the same table rather than being a second policy that
+ * can drift: if the outcome leaves it unsafe to mint a new key, it is also
+ * unsafe to re-derive the pin. A definitive business refusal means the
+ * command did not happen, so a fresh pin is right and the intent is
+ * discarded; anything ambiguous, unknown, or 500-class is retained.
+ */
+export const shouldRetainCommandIntent = (error: { status: number; code: string }) =>
+  !safeToMintNewKey(error as AdminApiError);
+
 export const shouldRefreshAuthoritativeState = (error: { status: number; code: string }) =>
   error.status === 0 || error.status >= 500 || REFRESH_DISPOSITION[error.code as AdminCommandErrorCode] !== "NO_REFRESH_NEEDED";

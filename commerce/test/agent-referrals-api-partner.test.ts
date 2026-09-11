@@ -323,6 +323,7 @@ describe("/v1/partner/*: horizontal isolation and §B-11 projection allowlist", 
         // PR-C2: the verified profile this change is authored against - /me's
         // own legal_profile.revision, echoed back.
         expected_current_legal_profile_revision: 1,
+        expected_request_sequence: 0,
         opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow",
       }),
     });

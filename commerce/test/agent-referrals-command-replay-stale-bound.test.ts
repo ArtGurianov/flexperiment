@@ -21,7 +21,11 @@ import {
 } from "../src/agent-referrals-ord-provider-operation";
 import { submitPartnerLegalProfile, provisionPartnerOwner } from "../src/agent-referrals-partner-identity";
 import { getPartnerIdentity } from "../src/agent-referrals-onboarding";
-import { submitLegalProfileSupersession, currentLegalProfileRevisionForPartner } from "../src/agent-referrals-legal-profile-supersession";
+import {
+  submitLegalProfileSupersession, rejectLegalProfileSupersession, verifyLegalProfileSupersession,
+  legalProfileChangeRequestById, pendingLegalProfileChangeRequestForPartner,
+  currentLegalProfileRevisionForPartner, legalProfileChangeRequestHeadForPartner,
+} from "../src/agent-referrals-legal-profile-supersession";
 import { suspendAgentReferrals, reactivateAgentReferrals, agentReferralsFeatureState, activateAgentReferrals } from "../src/agent-referrals-feature-state";
 
 /**
@@ -351,31 +355,81 @@ describe("STALE_BOUND: a retry that arrives after a legal B* is refused, not app
     expect(after.legal_profile_draft_revision).toBe(afterB.legal_profile_draft_revision); // 2
   });
 
-  it("legal-profile supersession: a retry after the first request was verified does not file a second one", () => {
+  it("legal-profile supersession: a REJECTION frees the pending slot without moving the verified revision, and the byte-for-byte retry is still refused", () => {
+    // Review round 2, P1. The first version of this test passed for the
+    // wrong reason: it called B a verification ("MAX has moved"), wrote it
+    // with a raw UPDATE, and then retried A with `pinA - 1` instead of the
+    // original pin - so the refusal was guaranteed by the test itself, not
+    // by the command. The real counterexample is a REJECTION, which mints
+    // no revision at all: the verified-revision pin is UNMOVED by it, while
+    // the "one PENDING per partner" slot it occupied is free again.
     const { db } = fresh();
     const p1 = readyPartner(db);
-    const pinA = currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId);
 
+    // The exact variables A was authored with. Both are re-sent verbatim
+    // below - that is what "retry A" means.
+    const pinnedRevision = currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId);
+    const pinnedRequestHead = legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId);
     const requisites = { opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" };
-    const a = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, {
-      legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...requisites, reason: "A: became org", evidenceRef: "ev.pdf",
-      expectedCurrentLegalProfileRevision: pinA,
-    });
-    // B: an admin resolves it. The ALREADY_PENDING slot is free again and
-    // MAX has moved - the two facts the old classification leaned on.
-    db.prepare("UPDATE agent_referrals_legal_profile_change_requests SET state = 'REJECTED', resolved_at = CURRENT_TIMESTAMP, resolved_by = 'admin-1', resolution_reason = 'B: rejected' WHERE id = ?").run(a.id);
+    const requestA = {
+      legalForm: "LEGAL_ENTITY" as const, taxMode: "OTHER" as const, ...requisites,
+      reason: "A: became org", evidenceRef: "ev.pdf",
+      expectedCurrentLegalProfileRevision: pinnedRevision,
+      expectedRequestSequence: pinnedRequestHead,
+    };
+
+    const a = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, requestA);
+
+    // B: an ordinary admin rejection, through the domain command rather than
+    // a hand-written UPDATE.
+    rejectLegalProfileSupersession(db, admin, a.id, "B: not the right entity after all");
+    expect(legalProfileChangeRequestById(db, a.id)!.state).toBe("REJECTED");
+    // The pin A carried is genuinely unchanged - which is the whole point.
+    expect(currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId)).toBe(pinnedRevision);
+    expect(pendingLegalProfileChangeRequestForPartner(db, p1.partnerIdentityId)).toBeNull();
 
     expectStale(
-      () => submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, {
-        legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...requisites, reason: "A: became org", evidenceRef: "ev.pdf",
-        expectedCurrentLegalProfileRevision: pinA - 1,
-      }),
+      () => submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, requestA),
       "AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_STALE",
     );
 
-    const rows = db.prepare("SELECT id, state FROM agent_referrals_legal_profile_change_requests WHERE partner_identity_id = ?").all(p1.partnerIdentityId) as { id: string; state: string }[];
-    expect(rows.map((r) => r.id)).toEqual([a.id]);                                   // 2
-    expect(rows[0].state).toBe("REJECTED");                                          // 1 and 3
+    const rows = db.prepare("SELECT id, state, request_sequence FROM agent_referrals_legal_profile_change_requests WHERE partner_identity_id = ?").all(p1.partnerIdentityId) as { id: string; state: string; request_sequence: number }[];
+    expect(rows.map((r) => r.id)).toEqual([a.id]);                                   // 2: no second request
+    expect(rows[0].state).toBe("REJECTED");                                          // 1 and 3: B's resolution stands
+
+    // And a DELIBERATE re-application after the refusal is still possible -
+    // the pin refuses a stale retry, it does not close the door on a real
+    // second decision.
+    const deliberate = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, {
+      ...requestA, reason: "actually yes, re-filing after review",
+      expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId),
+    });
+    expect(deliberate.id).not.toBe(a.id);
+    expect(deliberate.request_sequence).toBe(rows[0].request_sequence + 1);
+  });
+
+  it("legal-profile supersession: a VERIFICATION is the other half of the pin, and a retry after it is refused too", () => {
+    const { db } = fresh();
+    const p1 = readyPartner(db);
+    const requisites = { opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" };
+    const requestA = {
+      legalForm: "LEGAL_ENTITY" as const, taxMode: "OTHER" as const, ...requisites,
+      reason: "A: became org", evidenceRef: "ev.pdf",
+      expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId),
+      expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId),
+    };
+
+    const a = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, requestA);
+    const outcome = verifyLegalProfileSupersession(db, admin, a.id, "B: verified");
+    expect(outcome.outcome).toBe("VERIFIED");
+
+    expectStale(
+      () => submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, requestA),
+      "AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_STALE",
+    );
+
+    expect(db.prepare("SELECT COUNT(*) AS n FROM agent_referrals_legal_profile_change_requests WHERE partner_identity_id = ?").get(p1.partnerIdentityId)).toEqual({ n: 1 });
+    expect(legalProfileChangeRequestById(db, a.id)!.state).toBe("VERIFIED");
   });
 
   it("feature state: the CAS in the body is the pin, and a reactivation does not let a retried suspend through", () => {

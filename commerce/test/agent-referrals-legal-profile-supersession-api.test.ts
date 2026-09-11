@@ -1,4 +1,4 @@
-import { currentLegalProfileRevisionForPartner } from "../src/agent-referrals-legal-profile-supersession";
+import { currentLegalProfileRevisionForPartner, legalProfileChangeRequestHeadForPartner } from "../src/agent-referrals-legal-profile-supersession";
 import { scryptSync } from "node:crypto";
 import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
@@ -48,7 +48,11 @@ describe("POST /v1/admin/agent-referrals/partners/:id/legal-profile/change: inva
   const post = async (app: ReturnType<typeof createApp>, cookie: string, partnerIdentityId: string, body: Record<string, unknown>, db?: Database.Database) =>
     app.request(`http://admin.flexperiment.ru/v1/admin/agent-referrals/partners/${partnerIdentityId}/legal-profile/change`, {
       method: "POST", headers: { Origin: ADMIN_ORIGIN, Cookie: cookie, "Content-Type": "application/json" },
-      body: JSON.stringify({ expected_current_legal_profile_revision: db ? currentLegalProfileRevisionForPartner(db, partnerIdentityId) : 1, ...body }),
+      body: JSON.stringify({
+        expected_current_legal_profile_revision: db ? currentLegalProfileRevisionForPartner(db, partnerIdentityId) : 1,
+        expected_request_sequence: db ? legalProfileChangeRequestHeadForPartner(db, partnerIdentityId) : 0,
+        ...body,
+      }),
     });
 
   // full_name/inn are present but deliberately arbitrary here: the

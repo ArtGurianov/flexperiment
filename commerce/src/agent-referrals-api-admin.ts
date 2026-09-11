@@ -44,7 +44,7 @@ import { agentReferralsReviewQueue } from "./agent-referrals-review-queue";
 import { currentAgentReferralsLegalProfile, type LegalForm, type RawLegalRequisitesInput, type TaxMode } from "./agent-referrals-legal-profile";
 import {
   submitLegalProfileSupersession, verifyLegalProfileSupersession, rejectLegalProfileSupersession,
-  ownedLegalProfileChangeRequest, pendingLegalProfileChangeRequestForPartner, AgentReferralsLegalProfileSupersessionError,
+  ownedLegalProfileChangeRequest, pendingLegalProfileChangeRequestForPartner, legalProfileChangeRequestHeadForPartner, AgentReferralsLegalProfileSupersessionError,
 } from "./agent-referrals-legal-profile-supersession";
 import { recordVerifiedTaxTreatment, resolveTaxTreatmentForLegalProfileAt, type TaxSystem, type VatTreatment, type NoVatBasis } from "./agent-referrals-tax-treatment";
 import { now } from "./crypto";
@@ -151,6 +151,10 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
       // read in isolation) plus any PENDING supersession request.
       legal_profile: currentAgentReferralsLegalProfile(sqlite, identity.agent_id),
       pending_legal_profile_change_request: pendingLegalProfileChangeRequestForPartner(sqlite, identity.id),
+      // PR-C2: the request-chain head a new supersession is pinned against.
+      // A rejection frees the pending slot above without moving the verified
+      // revision, so the revision alone cannot carry that pin.
+      legal_profile_change_request_head: legalProfileChangeRequestHeadForPartner(sqlite, identity.id),
       // PR-F: the tax treatment applicable right now for the CURRENT legal
       // profile - null if the profile has none recorded yet (a fresh
       // non-NPD supersession awaiting an explicit admin assertion).
@@ -188,6 +192,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
       // it, a retry after the first request was verified files a SECOND
       // supersession against the revision its own first attempt produced.
       expectedCurrentLegalProfileRevision: requireNumber(body, "expected_current_legal_profile_revision"),
+      expectedRequestSequence: requireNumber(body, "expected_request_sequence"),
       ...legalRequisitesFromBody(body),
     }), 201);
   });

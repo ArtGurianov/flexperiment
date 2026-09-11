@@ -11,6 +11,7 @@ import { toLocalInput } from "../../lib/values";
 import type { Row } from "../../lib/page";
 import { Loading } from "../ui/Loading";
 import { Notice } from "../ui/Notice";
+import { RetainedIntentNotice } from "../ui/RetainedIntentNotice";
 import { Panel } from "../ui/Panel";
 import { Badge } from "../ui/Badge";
 
@@ -151,6 +152,12 @@ function EngagementDetail({ engagementId, onBack, focusDistributionId, focusRepo
         {(lifecycleState === "ACTIVE" || lifecycleState === "SUSPENDED") && (
           <button disabled={busy} onClick={() => void post(`/agent-referrals/engagements/${engagementId}/close`, { reason: "closed by operator" })}>{busy ? "…" : "Закрыть (требует завершённого события)"}</button>
         )}
+        <RetainedIntentNotice
+          retained={command.retainedIntent}
+          onRetry={() => void command.retryRetainedIntent()}
+          onDiscard={command.discardRetainedIntent}
+          busy={busy}
+        />
         <Notice error={error} />
       </Panel>
 
@@ -229,6 +236,12 @@ function CreativeSection({ engagementId, creative, authorizationHeadId }: { enga
         <label>CTA <input {...register("cta_text")} /></label>
         <label>Обязательная маркировка <input {...register("mandatory_labeling_text", { required: true })} /></label>
         <label>Целевая ссылка <input {...register("creative_target_url", { required: true })} /></label>
+        <RetainedIntentNotice
+          retained={command.retainedIntent}
+          onRetry={() => void command.retryRetainedIntent()}
+          onDiscard={command.discardRetainedIntent}
+          busy={busy}
+        />
         <Notice error={error} />
         <button className="primary" disabled={busy}>{busy ? "…" : "Подготовить новую редакцию креатива"}</button>
       </form>
@@ -367,6 +380,12 @@ function DistributionsSection({ engagementId, distributions, focusDistributionId
         />
       )}
       <DistributionFactForm title="Сообщить о новом размещении" busy={busy} onSubmit={(values) => reportDistribution.mutateAsync(values).then(() => reportKey.clear()).catch(() => undefined)} />
+      <RetainedIntentNotice
+        retained={command.retainedIntent}
+        onRetry={() => void command.retryRetainedIntent()}
+        onDiscard={command.discardRetainedIntent}
+        busy={busy}
+      />
       <Notice error={error} />
     </Panel>
   );
@@ -574,6 +593,12 @@ function RewardSection({ engagementId, effective, settlement }: { engagementId: 
         <button disabled={busy} onClick={() => void post(`/agent-referrals/engagements/${engagementId}/reward-registry/correct`, { reason: "correction by operator", expected_current_effective_snapshot_id: String(effective.id) })}>{busy ? "…" : "Скорректировать вознаграждение"}</button>
       )}
       {settlement && <p>Расчёт: <Badge>{String(settlement.status)}</Badge> · {Number(settlement.amount_kopecks) / 100} ₽</p>}
+      <RetainedIntentNotice
+        retained={command.retainedIntent}
+        onRetry={() => void command.retryRetainedIntent()}
+        onDiscard={command.discardRetainedIntent}
+        busy={busy}
+      />
       <Notice error={error} />
     </Panel>
   );

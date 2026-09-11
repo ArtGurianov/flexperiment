@@ -222,18 +222,72 @@ describe("agent-referrals command replay classification is exhaustive over the p
       "/legal-profile/change",
     ]);
 
-    // Admin's two large classes are asserted by size plus spot checks on the
-    // routes whose classification was argued hardest, rather than by listing
-    // 58 strings twice - the per-route comment in the table above is where
-    // each proof is stated, and the exhaustiveness test is what stops a
-    // route escaping the table entirely.
-    expect(proven(ADMIN, "MONOTONIC_REPLAY_SAFE").length).toBe(34);
-    expect(proven(ADMIN, "STALE_BOUND").length).toBe(24);
-    expect(ADMIN["/engagements/:id/suspend"]).toBe("STALE_BOUND");
-    expect(ADMIN["/ord/provider-operation"]).toBe("STALE_BOUND");
-    expect(ADMIN["/ord/provider-operation/:id/submitted"]).toBe("MONOTONIC_REPLAY_SAFE");
-    expect(ADMIN["/distributions/:id/reports/:periodKey/reconciliation"]).toBe("STALE_BOUND");
-    expect(ADMIN["/engagements/:id/creative/:revisionId/authorize"]).toBe("STALE_BOUND");
+    // Review round 2, P2: the admin classes are pinned by full sorted
+    // MEMBERSHIP, not by count plus spot checks. A count leaves two routes
+    // free to swap classes without CI noticing - which, after four rounds of
+    // this matrix moving, is exactly the drift this registry exists to stop.
+    expect(proven(ADMIN, "MONOTONIC_REPLAY_SAFE")).toEqual([
+      "/acts/:id/present",
+      "/creative-authorizations/:id/revoke",
+      "/creative-revisions/:id/register",
+      "/delegations/:id/revoke",
+      "/engagements",
+      "/engagements/:id/close",
+      "/engagements/:id/reward-registry/finalize",
+      "/engagements/:id/zero-reward-closure",
+      "/invites/:id/revoke",
+      "/legal-holds/:id/release",
+      "/ord/creative-registrations/:id/confirm",
+      "/ord/creative-registrations/:id/erir",
+      "/ord/creative-registrations/:id/lock",
+      "/ord/creative-registrations/:id/submitted",
+      "/ord/provider-operation/:id/confirm",
+      "/ord/provider-operation/:id/erir",
+      "/ord/provider-operation/:id/lock",
+      "/ord/provider-operation/:id/submitted",
+      "/paid-invoices",
+      "/paid-invoices/:id/reconciliation",
+      "/paid-invoices/:id/submission",
+      "/partners",
+      "/partners/:id/activate",
+      "/partners/:id/destroy",
+      "/partners/:id/framework/issue",
+      "/partners/:id/legal-profile/change/:requestId/reject",
+      "/partners/:id/legal-profile/verify",
+      "/partners/:id/promo",
+      "/payment-attempts/:id/confirmed-not-made",
+      "/payment-attempts/:id/made",
+      "/payment-attempts/:id/npd-receipt",
+      "/payment-attempts/:id/payout-unknown",
+      "/settlements",
+      "/settlements/:id/act",
+    ]);
+    expect(proven(ADMIN, "STALE_BOUND")).toEqual([
+      "/channel-policy",
+      "/delegation-template-revisions",
+      "/distributions/:id/confirm-removal",
+      "/distributions/:id/correct",
+      "/distributions/:id/mark-overdue",
+      "/distributions/:id/mark-unverified",
+      "/distributions/:id/reports",
+      "/distributions/:id/reports/:periodKey/reconciliation",
+      "/distributions/:id/require-removal",
+      "/distributions/:id/review-cleared",
+      "/engagements/:id/creative",
+      "/engagements/:id/creative/:revisionId/authorize",
+      "/engagements/:id/revisions",
+      "/engagements/:id/reward-registry/correct",
+      "/engagements/:id/suspend",
+      "/feature-state/reactivate",
+      "/feature-state/suspend",
+      "/framework-agreement-revisions",
+      "/ord/creative-registrations/:id/correct",
+      "/ord/provider-operation",
+      "/ord/provider-profile",
+      "/partners/:id/audience/:cityId/revoke",
+      "/partners/:id/legal-profile/change",
+      "/partners/:id/legal-profile/change/:requestId/verify",
+    ]);
 
     const provenTotal = [...Object.values(ADMIN), ...Object.values(PARTNER)]
       .filter((value) => value === "DURABLE_KEY" || value === "STALE_BOUND" || value === "MONOTONIC_REPLAY_SAFE").length;

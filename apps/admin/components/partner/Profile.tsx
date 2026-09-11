@@ -13,6 +13,7 @@ import {
 } from "../../../../lib/legal-profile-rules";
 import { Loading } from "../ui/Loading";
 import { Notice } from "../ui/Notice";
+import { RetainedIntentNotice } from "../ui/RetainedIntentNotice";
 import { PageTitle } from "../ui/PageTitle";
 import { Badge } from "../ui/Badge";
 
@@ -118,6 +119,10 @@ export function Profile() {
     await change.mutateAsync({
       ...values,
       expected_current_legal_profile_revision: Number((profile.data?.legal_profile as Row | null)?.revision ?? 0),
+      // The second pin: a REJECTION of an earlier request moves no revision
+      // but frees the pending slot, so the revision alone cannot tell a
+      // retry from a deliberate re-application after a refusal.
+      expected_request_sequence: Number(profile.data?.legal_profile_change_request_head ?? 0),
     }).then(() => changeForm.reset()).catch(() => undefined);
   });
 
@@ -195,6 +200,12 @@ export function Profile() {
               </label>
               <LegalRequisitesFields legalForm={changeLegalForm} register={changeForm.register as unknown as UseFormRegister<LegalRequisitesFormFields>} />
               <label>Причина изменения <input {...changeForm.register("reason", { required: true })} /></label>
+              <RetainedIntentNotice
+                retained={submit.retainedIntent ?? change.retainedIntent}
+                onRetry={() => void (submit.retainedIntent ? submit.retryRetainedIntent() : change.retryRetainedIntent())}
+                onDiscard={() => { submit.discardRetainedIntent(); change.discardRetainedIntent(); }}
+                busy={busy}
+              />
               <Notice error={error} />
               <button className="primary" disabled={busy}>{busy ? "Отправляем…" : "Подать заявку на изменение"}</button>
             </form>

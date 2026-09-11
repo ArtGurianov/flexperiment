@@ -19,7 +19,7 @@ import { settlementActForSettlement, actAcceptanceForAct, actDisputeForAct } fro
 import { paymentAttemptsForSettlement } from "./agent-referrals-payment";
 import { latestNpdStatusCheck } from "./agent-referrals-npd";
 import { rewardForOrder, type RewardOrderFacts } from "./reward-calculation";
-import { pendingLegalProfileChangeRequestForPartner } from "./agent-referrals-legal-profile-supersession";
+import { pendingLegalProfileChangeRequestForPartner, legalProfileChangeRequestHeadForPartner } from "./agent-referrals-legal-profile-supersession";
 import { resolveTaxTreatmentForLegalProfileAt } from "./agent-referrals-tax-treatment";
 import { now } from "./crypto";
 
@@ -111,6 +111,8 @@ export type PartnerProfileProjection = {
     revision: number; created_at: string;
   } | null;
   pending_legal_profile_change_request: PartnerPendingLegalProfileChangeRequestProjection | null;
+  /** PR-C2: the request-chain head a new supersession is pinned against - a count, never an internal id, so §B-11's allowlist discipline is unchanged. */
+  legal_profile_change_request_head: number;
   // PR-F: the tax treatment applicable right now - never assertion_source/
   // evidence_ref/created_by_admin_id (admin-only provenance, matching
   // §B-11's own discipline for pending_legal_profile_change_request above).
@@ -152,6 +154,7 @@ export const partnerProfileProjection = (db: Database.Database, partnerIdentityI
           revision: legalProfile.revision, created_at: legalProfile.created_at,
         }
       : null,
+    legal_profile_change_request_head: legalProfileChangeRequestHeadForPartner(db, partnerIdentityId),
     pending_legal_profile_change_request: pendingChangeRequest
       ? {
           id: pendingChangeRequest.id, legal_form: pendingChangeRequest.legal_form, tax_mode: pendingChangeRequest.tax_mode,
