@@ -53,59 +53,59 @@ const ADMIN: Readonly<Record<string, Classification>> = {
   "/partners/:id/activate": "REPLAY_SAFE", // onboarding transition CAS
   "/partners/:id/promo": "NAMED_REFUSAL", // both promo UNIQUE constraints named (PR-C)
   "/partners/:id/audience/:cityId/verify": "REPEATABLE", // aggregate_revision + 1
-  "/partners/:id/audience/:cityId/revoke": "UNAUDITED",
-  "/delegations/:id/revoke": "UNAUDITED",
+  "/partners/:id/audience/:cityId/revoke": "REPLAY_SAFE", // requires current event_kind VERIFIED; after one revoke the retry is AUDIENCE_NOT_VERIFIED
+  "/delegations/:id/revoke": "REPLAY_SAFE", // existing revocation row -> ALREADY_REVOKED
   "/partners/:id/npd-status": "REPEATABLE", // sequence + 1
   "/retention-policy": "REPEATABLE", // revision + 1, no same-content branch
   "/partners/:id/legal-hold": "REPEATABLE", // unconditional INSERT; each hold independently blocks destruction
-  "/legal-holds/:id/release": "UNAUDITED",
-  "/partners/:id/destroy": "UNAUDITED",
+  "/legal-holds/:id/release": "REPLAY_SAFE", // conditional UPDATE, changes !== 1 -> ALREADY_RELEASED
+  "/partners/:id/destroy": "REPLAY_SAFE", // existing destruction event -> replayed: true
   "/framework-agreement-revisions": "REPEATABLE", // revision + 1
   "/delegation-template-revisions": "REPEATABLE", // revision + 1
   "/channel-policy": "REPEATABLE", // MAX(policy_revision) + 1
   "/engagements": "REPLAY_SAFE", // engagementByPartnerAndOccurrence -> ALREADY_EXISTS
   "/engagements/:id/revisions": "REPEATABLE", // a new engagement revision per call
   "/engagements/:id/activate": "REPEATABLE", // CAS is not idempotency: revokes the live authorization, writes a second activation event
-  "/engagements/:id/suspend": "UNAUDITED",
-  "/engagements/:id/close": "UNAUDITED",
+  "/engagements/:id/suspend": "REPLAY_SAFE", // requires ACTIVE; after suspension the retry is ILLEGAL_TRANSITION
+  "/engagements/:id/close": "REPLAY_SAFE", // requires a non-CLOSED state + lifecycle CAS
   "/engagements/:id/creative": "REPEATABLE", // revision + 1
   "/engagements/:id/creative/:revisionId/authorize": "REPEATABLE", // revokes and re-inserts even for the same creative revision
-  "/creative-authorizations/:id/revoke": "UNAUDITED",
+  "/creative-authorizations/:id/revoke": "REPLAY_SAFE", // conditional UPDATE on revoked_at IS NULL -> ALREADY_REVOKED
   "/engagements/:id/distributions": "REPEATABLE", // fresh distribution identity per call (same command as the partner route)
   "/distributions/:id/correct": "REPEATABLE", // revision + 1, no same-content branch
-  "/distributions/:id/require-removal": "UNAUDITED",
-  "/distributions/:id/confirm-removal": "UNAUDITED",
-  "/distributions/:id/mark-overdue": "UNAUDITED",
-  "/distributions/:id/mark-unverified": "UNAUDITED",
-  "/distributions/:id/review-cleared": "UNAUDITED",
+  "/distributions/:id/require-removal": "REPLAY_SAFE", // removal state machine has no self-loop -> ILLEGAL_TRANSITION
+  "/distributions/:id/confirm-removal": "REPLAY_SAFE", // same state machine
+  "/distributions/:id/mark-overdue": "REPLAY_SAFE", // same state machine
+  "/distributions/:id/mark-unverified": "REPLAY_SAFE", // same state machine
+  "/distributions/:id/review-cleared": "REPLAY_SAFE", // compliance transition legal only from REVIEW_REQUIRED
   "/ord/provider-profile": "REPEATABLE", // MAX(revision) + 1
-  "/ord/provider-operation": "UNAUDITED",
-  "/ord/provider-operation/:id/submitted": "UNAUDITED",
-  "/ord/provider-operation/:id/confirm": "UNAUDITED",
-  "/ord/provider-operation/:id/erir": "UNAUDITED",
-  "/ord/provider-operation/:id/lock": "UNAUDITED",
+  "/ord/provider-operation": "REPLAY_SAFE", // existing DRAFT -> replayed: true
+  "/ord/provider-operation/:id/submitted": "REPLAY_SAFE", // converging UPDATE of the same values; no new row
+  "/ord/provider-operation/:id/confirm": "REPLAY_SAFE", // requires local_state SUBMITTED -> NOT_SUBMITTED on retry
+  "/ord/provider-operation/:id/erir": "REPLAY_SAFE", // explicit idempotent replay on identical code + evidence
+  "/ord/provider-operation/:id/lock": "REPLAY_SAFE", // requires CORRECTION_ONLY -> NOT_CORRECTABLE once locked
   "/creative-revisions/:id/register": "REPLAY_SAFE", // existing current registration -> replayed: true
-  "/ord/creative-registrations/:id/submitted": "UNAUDITED",
-  "/ord/creative-registrations/:id/confirm": "UNAUDITED",
+  "/ord/creative-registrations/:id/submitted": "REPLAY_SAFE", // converging UPDATE, guarded by lock_state
+  "/ord/creative-registrations/:id/confirm": "REPLAY_SAFE", // WHERE lock_state = MUTABLE; once CORRECTION_ONLY -> CONCURRENT_CONFLICT
   "/ord/creative-registrations/:id/correct": "REPLAY_SAFE", // bound to a predecessor id; a second attempt is STALE
-  "/ord/creative-registrations/:id/erir": "UNAUDITED",
-  "/ord/creative-registrations/:id/lock": "UNAUDITED",
+  "/ord/creative-registrations/:id/erir": "REPLAY_SAFE", // explicit idempotent replay on identical code + evidence
+  "/ord/creative-registrations/:id/lock": "REPLAY_SAFE", // requires CORRECTION_ONLY -> NOT_CORRECTABLE once locked
   "/distributions/:id/reports": "REPLAY_SAFE", // explicit exact-semantic replay in insertReport
   "/distributions/:id/reports/:periodKey/reconciliation": "REPLAY_SAFE", // same insertReport path, identical reconciliation mints no revision
-  "/engagements/:id/reward-registry/finalize": "UNAUDITED",
-  "/engagements/:id/reward-registry/correct": "UNAUDITED",
-  "/engagements/:id/zero-reward-closure": "UNAUDITED",
+  "/engagements/:id/reward-registry/finalize": "REPLAY_SAFE", // existing registry snapshot -> replayed: true
+  "/engagements/:id/reward-registry/correct": "REPLAY_SAFE", // correction is bound to the current effective snapshot; see correctPartnerRewardWithSettlement
+  "/engagements/:id/zero-reward-closure": "REPLAY_SAFE", // existing closure -> replayed: true
   "/settlements": "REPLAY_SAFE", // settlementForEffectiveSnapshot -> replayed: true
-  "/settlements/:id/act": "UNAUDITED",
-  "/acts/:id/present": "UNAUDITED",
+  "/settlements/:id/act": "REPLAY_SAFE", // existing act for the settlement -> replayed: true
+  "/acts/:id/present": "REPLAY_SAFE", // presented_at already set -> replayed: true
   "/paid-invoices": "REPLAY_SAFE", // idempotent by act_id, returns the byte-identical payload
-  "/paid-invoices/:id/submission": "UNAUDITED",
-  "/paid-invoices/:id/reconciliation": "UNAUDITED",
+  "/paid-invoices/:id/submission": "REPLAY_SAFE", // identical submission -> the same payload; differing values -> SUBMISSION_CONFLICT
+  "/paid-invoices/:id/reconciliation": "REPLAY_SAFE", // lock_state guard + changes !== 1
   "/payments/begin": "REPLAY_SAFE", // unique active attempt -> ATTEMPT_ALREADY_ACTIVE
-  "/payment-attempts/:id/made": "UNAUDITED",
-  "/payment-attempts/:id/payout-unknown": "UNAUDITED",
-  "/payment-attempts/:id/confirmed-not-made": "UNAUDITED",
-  "/payment-attempts/:id/npd-receipt": "UNAUDITED",
+  "/payment-attempts/:id/made": "REPLAY_SAFE", // terminal status already MADE -> replayed: true
+  "/payment-attempts/:id/payout-unknown": "REPLAY_SAFE", // terminal status already PAYOUT_UNKNOWN -> replayed: true
+  "/payment-attempts/:id/confirmed-not-made": "REPLAY_SAFE", // terminal status already CONFIRMED_NOT_MADE -> replayed: true
+  "/payment-attempts/:id/npd-receipt": "REPLAY_SAFE", // existing receipt for the attempt -> replayed: true
 };
 
 const PARTNER: Readonly<Record<string, Classification>> = {
@@ -121,15 +121,15 @@ const PARTNER: Readonly<Record<string, Classification>> = {
   "/legal-profile": "REPEATABLE", // re-accepts PROFILE_SUBMITTED, appends another LEGAL_PROFILE_SUBMITTED event
   "/legal-profile/change": "REPLAY_SAFE", // partial unique index -> ALREADY_PENDING
   "/framework/accept": "REPLAY_SAFE", // exact-parameter replay -> idempotent no-op
-  "/delegation/:id/revoke": "UNAUDITED",
+  "/delegation/:id/revoke": "REPLAY_SAFE", // same revokeDelegationInTransaction -> ALREADY_REVOKED
   "/payout-profile": "REPEATABLE", // revision + 1; the retry's fresh grant binds to the NEW revision
   "/payout-profile/revoke": "REPEATABLE", // revision + 1
   "/engagements/:id/accept": "REPLAY_SAFE", // existing acceptance -> replayed: true
   "/engagements/:id/distributions": "REPEATABLE", // fresh distribution identity per call
   "/distributions/:id/correct": "REPEATABLE", // same command as the admin route, exposed in both realms
-  "/distributions/:id/removal-claim": "UNAUDITED",
+  "/distributions/:id/removal-claim": "REPLAY_SAFE", // removal state machine has no self-loop -> ILLEGAL_TRANSITION
   "/acts/:id/accept": "REPLAY_SAFE", // existing acceptance -> replayed: true
-  "/acts/:id/dispute": "UNAUDITED",
+  "/acts/:id/dispute": "REPLAY_SAFE", // existing dispute -> replayed: true
   "/npd-receipts/submit": "REPEATABLE", // unconditional NPD_RECEIPT_EVIDENCE_SUBMITTED_BY_PARTNER event per call
 };
 
@@ -186,13 +186,15 @@ describe("agent-referrals command replay classification is exhaustive over the p
     ]);
   });
 
-  it("pins what is still UNAUDITED, which must be empty before rollout", () => {
-    // This is the honest state of the audit, not a hidden gap: PR-C2 has to
-    // drive both of these to zero, and CI will not let the number drift
-    // upward unnoticed in the meantime.
+  it("has no UNAUDITED route left: the audit covers the whole published surface", () => {
+    // PR-C2 step 1. Every one of the 35 routes PR-C left pending resolved to
+    // REPLAY_SAFE, which is itself the useful finding: the repeatable class is
+    // exactly "mint the next revision in an append-only chain with no state
+    // gate", while every state TRANSITION in this system is already guarded
+    // by the state it transitions from.
     const unaudited = (table: Readonly<Record<string, Classification>>) =>
       Object.values(table).filter((value) => value === "UNAUDITED").length;
-    expect(unaudited(ADMIN)).toBe(32);
-    expect(unaudited(PARTNER)).toBe(3);
+    expect(unaudited(ADMIN)).toBe(0);
+    expect(unaudited(PARTNER)).toBe(0);
   });
 });

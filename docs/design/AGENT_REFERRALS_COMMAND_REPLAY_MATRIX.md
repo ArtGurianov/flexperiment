@@ -66,10 +66,21 @@ Classifications:
 
 ### Current state
 
-20 `REPEATABLE` routes (14 admin, 6 partner) and **35 still `UNAUDITED`** (32 admin, 3 partner). Both
-numbers are asserted by the test. PR-C2 has to drive `UNAUDITED` to zero and
-`REPEATABLE` to zero, in that order — an unaudited route may well turn out to
-be a twenty-first repeatable one.
+**`UNAUDITED` is zero** (PR-C2 step 1). 20 `REPEATABLE` routes remain — 14
+admin, 6 partner — and closing them is PR-C2 step 2.
+
+All 35 previously pending routes resolved to `REPLAY_SAFE`, and that result is
+the useful part: the repeatable class is exactly *"mint the next revision in
+an append-only chain with no state gate"*. Every state **transition** in this
+system is already guarded by the state it transitions from, and every
+mint-if-absent command already returns the existing row. What is left
+repeatable is the set of commands that append unconditionally.
+
+The sharpest illustration is a matched pair on the same table:
+`revokeAudienceVerificationForPartnerCity` requires the current event to be
+`VERIFIED` and so refuses a retry, while `verifyAudienceForPartnerCity` — its
+twin, writing to the same event chain — has no guard at all and mints another
+`VERIFIED` event every time it is called.
 
 Two entries deserve naming here because their remedy is not the generic one:
 
