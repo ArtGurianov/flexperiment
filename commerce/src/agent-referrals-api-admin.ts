@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type Database from "better-sqlite3";
 import { DomainError } from "./domain";
 import type { AdminPrincipal } from "./agent-referrals-partner-identity";
-import { provisionPartnerOwner, reissuePartnerInvite, revokePartnerInvite, verifyPartnerLegalProfile, issueFrameworkToPartner } from "./agent-referrals-partner-identity";
+import { provisionPartnerOwner, rotatePartnerInvite, liveInviteCapabilityId, revokePartnerInvite, type InviteRotationReason, verifyPartnerLegalProfile, issueFrameworkToPartner } from "./agent-referrals-partner-identity";
 import { getPartnerIdentity, activatePartner } from "./agent-referrals-onboarding";
 import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, currentFrameworkAgreementRevision, currentDelegationTemplateRevision, type FrameworkAgreementClauseKey, type DelegationTemplateClauseKey } from "./agent-referrals-framework-delegation";
 import { agentReferralsFeatureState, suspendAgentReferrals, reactivateAgentReferrals } from "./agent-referrals-feature-state";
@@ -144,6 +144,10 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
       identity,
       engagements: engagementsForPartner(sqlite, identity.id),
       invites: sqlite.prepare(`SELECT id, purpose, expires_at, consumed_at, revoked_at, superseded_by_id, created_at FROM partner_invite_capabilities WHERE partner_identity_id = ? ORDER BY created_at DESC`).all(identity.id),
+      // PR-C3: the capability both issuance commands are pinned against.
+      // Derivable from `invites` above, but naming it is what stops each
+      // caller re-deriving "which one is live" slightly differently.
+      live_invite_capability_id: liveInviteCapabilityId(sqlite, identity.id),
       audience_verifications: sqlite.prepare(`SELECT v.id, v.city_id, c.title AS city_title, v.event_kind, v.valid_until, v.aggregate_revision, v.created_at
         FROM partner_audience_verification_events v JOIN cities c ON c.id = v.city_id WHERE v.partner_identity_id = ? ORDER BY v.aggregate_revision DESC`).all(identity.id),
       legal_holds: sqlite.prepare(`SELECT id, reason, placed_at, released_at FROM partner_identity_legal_holds WHERE partner_identity_id = ? ORDER BY placed_at DESC`).all(identity.id),
@@ -168,9 +172,20 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
     const body = asRecord(await jsonBody(c.req.raw));
     return c.json(provisionPartnerOwner(sqlite, adminOf(c), requireString(body, "agent_id"), requireString(body, "email"), requireString(body, "reason")), 201);
   });
+  /**
+   * PR-C3: one rotation endpoint, with the operator's INTENT in the body.
+   * Recovery is not a second infrastructure - the raw token is never
+   * persisted, so a lost response cannot be replayed, only rotated past
+   * deliberately. `expected_live_capability_id` is what stops a retried old
+   * request destroying the capability its own first attempt created.
+   */
   app.post("/partners/:id/invite/reissue", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(reissuePartnerInvite(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason")));
+    const rotationReason = (optionalString(body, "rotation_reason") ?? "MANUAL_REISSUE") as InviteRotationReason;
+    if (rotationReason !== "MANUAL_REISSUE" && rotationReason !== "LOST_RESPONSE_RECOVERY") {
+      throw new DomainError("AGENT_REFERRALS_INVITE_ROTATION_REASON_INVALID", 422, rotationReason);
+    }
+    return c.json(rotatePartnerInvite(sqlite, adminOf(c), c.req.param("id"), nullableString(body, "expected_live_capability_id"), rotationReason, requireString(body, "reason")));
   });
   app.post("/invites/:id/revoke", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));

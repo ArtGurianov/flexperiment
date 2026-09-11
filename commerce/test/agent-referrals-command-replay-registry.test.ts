@@ -30,8 +30,6 @@ type Classification =
   /**
    * The command's write precondition can NEVER be legally restored once consumed - a one-way edge, a consumed capability, a terminal row. No B* can make a stale retry apply again. */
   | "MONOTONIC_REPLAY_SAFE"
-  /** The response carries a secret that is never persisted, so no idempotency mechanism can re-serve it. Needs explicit lost-response recovery semantics. */
-  | "SPECIAL_RECOVERY"
   /** Session/authorization plumbing, not a business write. */
   | "NOT_A_BUSINESS_WRITE"
   /**
@@ -61,7 +59,7 @@ const ADMIN: Readonly<Record<string, Classification>> = {
   "/feature-state/suspend": "STALE_BOUND", // body carries expected_revision; the CAS refuses a retry after any later transition
   "/feature-state/reactivate": "STALE_BOUND", // same expected_revision CAS
   "/partners": "MONOTONIC_REPLAY_SAFE", // UNIQUE(agent_id); a provisioned identity is never un-provisioned
-  "/partners/:id/invite/reissue": "SPECIAL_RECOVERY", // raw token is never persisted; needs defined recovery semantics
+  "/partners/:id/invite/reissue": "STALE_BOUND", // PR-C3: pins the live capability it replaces; recovery is a reason on the same rotation
   "/invites/:id/revoke": "MONOTONIC_REPLAY_SAFE", // revoked_at is one-way for that invite id
   "/partners/:id/legal-profile/verify": "MONOTONIC_REPLAY_SAFE", // onboarding graph is one-way; PROFILE_SUBMITTED is never re-entered
   "/partners/:id/legal-profile/change": "STALE_BOUND", // pins the verified revision it changes FROM
@@ -285,13 +283,14 @@ describe("agent-referrals command replay classification is exhaustive over the p
       "/ord/provider-operation",
       "/ord/provider-profile",
       "/partners/:id/audience/:cityId/revoke",
+      "/partners/:id/invite/reissue",
       "/partners/:id/legal-profile/change",
       "/partners/:id/legal-profile/change/:requestId/verify",
     ]);
 
     const provenTotal = [...Object.values(ADMIN), ...Object.values(PARTNER)]
       .filter((value) => value === "DURABLE_KEY" || value === "STALE_BOUND" || value === "MONOTONIC_REPLAY_SAFE").length;
-    expect(provenTotal).toBe(80);
+    expect(provenTotal).toBe(81);
   });
 
   it("has no UNPROVEN route left - the rollout gate this registry exists for", () => {
@@ -305,11 +304,19 @@ describe("agent-referrals command replay classification is exhaustive over the p
     expect(unproven(PARTNER)).toEqual([]);
   });
 
-  it("keeps the special class visible rather than counting it as closed", () => {
-    // /partners/:id/invite/reissue returns a raw token that is never
-    // persisted, so no idempotency mechanism can re-serve the original after
-    // a lost response. It needs defined recovery semantics, and until it has
-    // them the rollout gate is not closed - a zero elsewhere does not cover it.
-    expect(ADMIN["/partners/:id/invite/reissue"]).toBe("SPECIAL_RECOVERY");
+  it("no route is parked in a quarantine class any more", () => {
+    // SPECIAL_RECOVERY existed for exactly one route: invite reissue returns
+    // a raw token that is never persisted, so no idempotency mechanism can
+    // re-serve the original after a lost response. PR-C3 answered that with
+    // a NAMED recovery command rather than a key - and, writing the contract
+    // red first, found the ordinary reissue had the same defect sitting
+    // unexamined behind the quarantine label. Both are predecessor-bound
+    // now, so the class has nothing left to hold.
+    //
+    // The label was worth having: it kept an unproven route visible instead
+    // of letting a zero elsewhere imply the gate was closed. What it must
+    // not become is a place things rest.
+    expect(Object.values(ADMIN)).not.toContain("SPECIAL_RECOVERY");
+    expect(ADMIN["/partners/:id/invite/reissue"]).toBe("STALE_BOUND");
   });
 });
