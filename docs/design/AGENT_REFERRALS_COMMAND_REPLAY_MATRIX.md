@@ -5,28 +5,48 @@ input to **PR-C2**, which is a rollout blocker.
 
 ## The criterion
 
-One question, applied to every command:
-
 ```text
-the command commits
+A commits
 its HTTP response is lost
-the sanctioned mutation layer refreshes authoritative state
-the operator (or partner) repeats the same logical action
+ANY legally possible sequence B* occurs
+old A is retried
 
-→ does another durable fact, revision or identity appear?
+→ old A must NEVER mutate authority or evidence created after A
 ```
 
-Two things this criterion deliberately does **not** accept as replay safety:
+**This is stronger than the obligation the first three versions of this
+document used**, which was effectively `A, immediate retry A`. Under the weak
+form, three things were accepted as proofs. None of them survive:
 
-- **A single-use step-up grant.** It stops a *grant* from being replayed. It
-  does not stop an *intent* from being repeated: the UI mints a fresh grant
-  for the retry, and after PR-C's own authoritative refresh that grant is
-  bound to the new current revision — so the second write is not merely
-  possible, it is legitimate. `setPartnerPayoutDestination` is the clearest
-  case.
-- **A CAS on a revision counter.** It refuses a *stale* writer. A retry is
-  not stale: it re-reads the counter the first attempt just bumped and
-  proceeds. `activateEngagement` is the clearest case.
+- **A state gate.** "Suspend requires ACTIVE, so a retry is refused" holds
+  only until a legal reactivation puts the engagement back in ACTIVE. Same
+  for audience revoke after a new verification, and for ORD `open` once the
+  first draft has been confirmed into CORRECTION_ONLY.
+- **Equality against the CURRENT row.** `A → B → A` is frequently a
+  legitimate revert - back to the previous contract text, channel policy or
+  campaign terms - so content equality cannot distinguish a revert intent
+  from a stale retry, and after B the equality branch simply does not fire.
+- **A converging in-place UPDATE.** It writes no second row, but a stale
+  retry can overwrite evidence *newer* than itself. ORD submission is the
+  clearest case: `submit A(vk1)`, `submit B(vk2)`, retry `A(vk1)` puts vk1
+  back.
+
+Two further things that look like replay safety and are not, carried over
+from the earlier versions:
+
+- **A single-use step-up grant** stops a *grant* being replayed, not an
+  *intent* being repeated: the retry mints a fresh grant which, after the
+  authoritative refresh, is legitimately valid against the new revision.
+- **A CAS on a revision counter** refuses a *stale writer*; a retry is not
+  stale, it re-reads the counter the first attempt bumped.
+
+Only three kinds of proof are accepted now:
+
+| proof | meaning |
+|---|---|
+| `DURABLE_KEY` | exact replay through a caller-supplied key, whatever B* did |
+| `STALE_BOUND` | the request pins the predecessor/version it was made against, so a stale retry is refused rather than applied |
+| `MONOTONIC_REPLAY_SAFE` | no legal B* can restore the command's write precondition |
 
 ## Boundary
 
@@ -66,43 +86,28 @@ Classifications:
 
 ### Current state
 
-**`UNAUDITED` is zero and `REPEATABLE` is zero.** PR-C2 is complete: step 1
-audited the whole published surface, step 2a closed the content-addressed
-half with no-change branches, step 2b gave durable command identity to the
-nine commands where an identical body can be a legitimate second command,
-and one more turned out to need only a name. All four numbers are asserted
-by the registry test.
+**Proven: 16 routes. `UNPROVEN`: 62.** Both pinned by the registry test, along
+with the membership of each proven class.
 
-All 35 previously pending routes resolved to `REPLAY_SAFE`, and that result is
-the useful part: the repeatable class is exactly *"mint the next revision in
-an append-only chain with no state gate"*. Every state **transition** in this
-system is already guarded by the state it transitions from, and every
-mint-if-absent command already returns the existing row. What is left
-repeatable is the set of commands that append unconditionally.
+That number grew when the obligation was corrected, and the growth is the
+honest outcome rather than a regression. The previous `REPEATABLE = 0` was
+measured against `A, immediate retry A`; re-measuring against
+`A → B* → retry A` invalidated most of the state-gate and current-row-equality
+classifications at once. Nothing regressed in the code - what changed is what
+counts as a proof.
 
-The sharpest illustration is a matched pair on the same table:
-`revokeAudienceVerificationForPartnerCity` requires the current event to be
-`VERIFIED` and so refuses a retry, while `verifyAudienceForPartnerCity` — its
-twin, writing to the same event chain — has no guard at all and mints another
-`VERIFIED` event every time it is called.
+Worth naming specifically, because it inverts an earlier decision: under the
+weak obligation `placeLegalHold` was reclassified from "needs a key" to "needs
+a name", since the partial unique index refuses a second ACTIVE hold. Under
+the strong one it needs a key after all - `place → release → retry place`
+creates a second hold, and a release is entirely legal.
 
-Two entries deserve naming here because their remedy is not the generic one:
-
-- **`/engagements/:id/activate`** is the heaviest repeatable command. A lost
-  response plus the same click revokes the live promo authorization, mints a
-  replacement, and writes a **second activation event** — evidence that
-  settlement and ORD both pin. CAS does not help: the retry re-reads the
-  `lifecycle_revision` the first attempt bumped, and `ACTIVE` is an accepted
-  starting state.
-- **`/partners/:id/invite/reissue`** returns a raw invite token that is
-  deliberately never persisted. If its response is lost, the original secret
-  cannot be re-served by any idempotency mechanism, so this one needs
-  explicitly defined lost-response recovery semantics rather than a command
-  key.
-
-Note also that `reportDistribution` and `correctDistribution` are each
-published in **both** realms. C2 must close both, or state why one surface is
-not a rollout surface.
+The `SPECIAL_RECOVERY` case is also still open: `/partners/:id/invite/reissue`
+returns a raw token that is never persisted, so no idempotency mechanism can
+re-serve the original after a lost response. A zero elsewhere does not cover
+it, and the rollout gate is not closed until it has defined recovery
+semantics - plausibly "an explicit recovery reissue atomically supersedes T1
+and returns T2, leaving only T2 live", named and tested as such.
 
 ## PR-C2 shape
 

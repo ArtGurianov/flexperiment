@@ -23,114 +23,134 @@ import { describe, expect, it } from "vitest";
  */
 
 type Classification =
-  /** Durable command identity: an exact replay returns the original response. */
+  /** Exact replay through a caller-supplied command key. The only proof that holds for a command whose precondition an intervening B* can legally restore. */
   | "DURABLE_KEY"
-  /** A repeat is refused or replayed by construction (unique index, existing-row check, one-way state edge). */
-  | "REPLAY_SAFE"
-  /** A repeat is refused with a named, catchable code added by PR-C. */
+  /** The request PINS the predecessor/version it was made against, so a stale retry is refused (STALE/conflict) rather than applied to newer state. */
+  | "STALE_BOUND"
+  /** The command's write precondition can NEVER be legally restored once consumed - a one-way edge, a consumed capability, a terminal row. No B* can make a stale retry apply again. */
+  | "MONOTONIC_REPLAY_SAFE"
+  /** A repeat is refused with a named, catchable code, and no legal B* can restore the state that refusal depends on. */
   | "NAMED_REFUSAL"
-  /** An identical repeat mints a NEW durable fact. PR-C2 scope, rollout blocker. */
-  | "REPEATABLE"
-  /** A repeat mints a new secret that cannot be re-served, so plain durable identity does not apply. Needs its own defined recovery semantics. */
-  | "SPECIAL_NON_REPLAYABLE_SECRET"
+  /** The response carries a secret that is never persisted, so no idempotency mechanism can re-serve it. Needs explicit lost-response recovery semantics. */
+  | "SPECIAL_RECOVERY"
   /** Session/authorization plumbing, not a business write. */
   | "NOT_A_BUSINESS_WRITE"
-  /** Not yet audited against the criterion. Must be empty before rollout. */
-  | "UNAUDITED";
+  /**
+   * Not yet PROVEN under the current obligation. Must be zero before rollout.
+   *
+   * Note what this replaced. Until this revision the obligation was
+   * "A commits, retry A" - and "the current state no longer admits an
+   * immediate retry" or "the candidate equals the current row" were accepted
+   * as proofs. Neither survives the real question:
+   *
+   *     A commits, its response is lost,
+   *     ANY legally possible sequence B* occurs,
+   *     old A is retried
+   *     -> old A must never mutate authority or evidence created after A.
+   *
+   * A state gate that B* can legally re-open (suspend after a reactivation,
+   * audience revoke after a new verification, ORD open after the draft was
+   * confirmed) is not a proof. Neither is equality against the CURRENT row,
+   * because A -> B -> A is often a legitimate revert intent and content
+   * equality cannot distinguish it from a stale retry. Neither is an
+   * in-place converging UPDATE, which writes no second row but can overwrite
+   * evidence newer than the retry.
+   */
+  | "UNPROVEN";
 
 const ADMIN: Readonly<Record<string, Classification>> = {
-  "/feature-state/suspend": "REPLAY_SAFE", // CAS on expected_revision, one-way per revision
-  "/feature-state/reactivate": "REPLAY_SAFE",
-  "/partners": "NAMED_REFUSAL", // partner_identities.agent_id UNIQUE -> ALREADY_PROVISIONED (PR-C)
-  "/partners/:id/invite/reissue": "SPECIAL_NON_REPLAYABLE_SECRET", // supersedes the live invite and returns a raw token that is never persisted
-  "/invites/:id/revoke": "REPLAY_SAFE", // conditional UPDATE, changes !== 1 -> NOT_REVOCABLE
-  "/partners/:id/legal-profile/verify": "REPLAY_SAFE", // requires PROFILE_SUBMITTED
-  "/partners/:id/legal-profile/change": "REPLAY_SAFE", // partial unique index -> ALREADY_PENDING
-  "/partners/:id/legal-profile/change/:requestId/verify": "REPLAY_SAFE", // terminal-state replay -> REPLAYED
-  "/partners/:id/legal-profile/change/:requestId/reject": "REPLAY_SAFE", // state CAS on the request row
+  "/feature-state/suspend": "UNPROVEN",
+  "/feature-state/reactivate": "UNPROVEN",
+  "/partners": "UNPROVEN",
+  "/partners/:id/invite/reissue": "SPECIAL_RECOVERY", // raw token is never persisted; needs defined recovery semantics
+  "/invites/:id/revoke": "UNPROVEN",
+  "/partners/:id/legal-profile/verify": "MONOTONIC_REPLAY_SAFE", // onboarding graph is one-way; PROFILE_SUBMITTED is never re-entered
+  "/partners/:id/legal-profile/change": "UNPROVEN",
+  "/partners/:id/legal-profile/change/:requestId/verify": "STALE_BOUND", // pins supersedes_revision_id; a stale retry resolves STALE
+  "/partners/:id/legal-profile/change/:requestId/reject": "UNPROVEN",
   "/partners/:id/tax-treatment": "DURABLE_KEY", // admin_command_idempotency (PR-F)
-  "/partners/:id/framework/issue": "REPLAY_SAFE", // onboarding transition CAS
-  "/partners/:id/activate": "REPLAY_SAFE", // onboarding transition CAS
-  "/partners/:id/promo": "NAMED_REFUSAL", // both promo UNIQUE constraints named (PR-C)
-  "/partners/:id/audience/:cityId/verify": "DURABLE_KEY", // PR-C2: re-verification after a revocation is legitimate, so a key separates it from a retry
-  "/partners/:id/audience/:cityId/revoke": "REPLAY_SAFE", // requires current event_kind VERIFIED; after one revoke the retry is AUDIENCE_NOT_VERIFIED
-  "/delegations/:id/revoke": "REPLAY_SAFE", // existing revocation row -> ALREADY_REVOKED
-  "/partners/:id/npd-status": "DURABLE_KEY", // PR-C2: a fresh check with the same status is the point
-  "/retention-policy": "DURABLE_KEY", // PR-C2: restating a policy is a governance act
-  "/partners/:id/legal-hold": "NAMED_REFUSAL", // PR-C2: the partial unique index on released_at IS NULL already refuses a second ACTIVE hold - it only needed a name
-  "/legal-holds/:id/release": "REPLAY_SAFE", // conditional UPDATE, changes !== 1 -> ALREADY_RELEASED
-  "/partners/:id/destroy": "REPLAY_SAFE", // existing destruction event -> replayed: true
-  "/framework-agreement-revisions": "REPLAY_SAFE", // PR-C2: identical clauses return the current revision
-  "/delegation-template-revisions": "REPLAY_SAFE", // PR-C2: identical clauses return the current revision
-  "/channel-policy": "REPLAY_SAFE", // PR-C2: same status from the same instant returns the current policy
-  "/engagements": "REPLAY_SAFE", // engagementByPartnerAndOccurrence -> ALREADY_EXISTS
-  "/engagements/:id/revisions": "REPLAY_SAFE", // PR-C2: identical terms + same occurrence material return the current revision
-  "/engagements/:id/activate": "DURABLE_KEY", // PR-C2: CAS is not idempotency; a deliberate re-activation is legitimate
-  "/engagements/:id/suspend": "REPLAY_SAFE", // requires ACTIVE; after suspension the retry is ILLEGAL_TRANSITION
-  "/engagements/:id/close": "REPLAY_SAFE", // requires a non-CLOSED state + lifecycle CAS
-  "/engagements/:id/creative": "REPLAY_SAFE", // PR-C2: identical creative_hash returns the current revision
-  "/engagements/:id/creative/:revisionId/authorize": "REPLAY_SAFE", // PR-C2: the live authorization for the same creative is returned, not churned
-  "/creative-authorizations/:id/revoke": "REPLAY_SAFE", // conditional UPDATE on revoked_at IS NULL -> ALREADY_REVOKED
-  "/engagements/:id/distributions": "DURABLE_KEY", // PR-C2, admin surface of the same command
-  "/distributions/:id/correct": "REPLAY_SAFE", // PR-C2: identical canonical_hash returns the current revision
-  "/distributions/:id/require-removal": "REPLAY_SAFE", // removal state machine has no self-loop -> ILLEGAL_TRANSITION
-  "/distributions/:id/confirm-removal": "REPLAY_SAFE", // same state machine
-  "/distributions/:id/mark-overdue": "REPLAY_SAFE", // same state machine
-  "/distributions/:id/mark-unverified": "REPLAY_SAFE", // same state machine
-  "/distributions/:id/review-cleared": "REPLAY_SAFE", // compliance transition legal only from REVIEW_REQUIRED
-  "/ord/provider-profile": "REPLAY_SAFE", // PR-C2: identical content returns the current revision
-  "/ord/provider-operation": "REPLAY_SAFE", // existing DRAFT -> replayed: true
-  "/ord/provider-operation/:id/submitted": "REPLAY_SAFE", // converging UPDATE of the same values; no new row
-  "/ord/provider-operation/:id/confirm": "REPLAY_SAFE", // requires local_state SUBMITTED -> NOT_SUBMITTED on retry
-  "/ord/provider-operation/:id/erir": "REPLAY_SAFE", // explicit idempotent replay on identical code + evidence
-  "/ord/provider-operation/:id/lock": "REPLAY_SAFE", // requires CORRECTION_ONLY -> NOT_CORRECTABLE once locked
-  "/creative-revisions/:id/register": "REPLAY_SAFE", // existing current registration -> replayed: true
-  "/ord/creative-registrations/:id/submitted": "REPLAY_SAFE", // converging UPDATE, guarded by lock_state
-  "/ord/creative-registrations/:id/confirm": "REPLAY_SAFE", // WHERE lock_state = MUTABLE; once CORRECTION_ONLY -> CONCURRENT_CONFLICT
-  "/ord/creative-registrations/:id/correct": "REPLAY_SAFE", // bound to a predecessor id; a second attempt is STALE
-  "/ord/creative-registrations/:id/erir": "REPLAY_SAFE", // explicit idempotent replay on identical code + evidence
-  "/ord/creative-registrations/:id/lock": "REPLAY_SAFE", // requires CORRECTION_ONLY -> NOT_CORRECTABLE once locked
-  "/distributions/:id/reports": "REPLAY_SAFE", // explicit exact-semantic replay in insertReport
-  "/distributions/:id/reports/:periodKey/reconciliation": "REPLAY_SAFE", // same insertReport path, identical reconciliation mints no revision
-  "/engagements/:id/reward-registry/finalize": "REPLAY_SAFE", // existing registry snapshot -> replayed: true
-  "/engagements/:id/reward-registry/correct": "REPLAY_SAFE", // correction is bound to the current effective snapshot; see correctPartnerRewardWithSettlement
-  "/engagements/:id/zero-reward-closure": "REPLAY_SAFE", // existing closure -> replayed: true
-  "/settlements": "REPLAY_SAFE", // settlementForEffectiveSnapshot -> replayed: true
-  "/settlements/:id/act": "REPLAY_SAFE", // existing act for the settlement -> replayed: true
-  "/acts/:id/present": "REPLAY_SAFE", // presented_at already set -> replayed: true
-  "/paid-invoices": "REPLAY_SAFE", // idempotent by act_id, returns the byte-identical payload
-  "/paid-invoices/:id/submission": "REPLAY_SAFE", // identical submission -> the same payload; differing values -> SUBMISSION_CONFLICT
-  "/paid-invoices/:id/reconciliation": "REPLAY_SAFE", // lock_state guard + changes !== 1
-  "/payments/begin": "REPLAY_SAFE", // unique active attempt -> ATTEMPT_ALREADY_ACTIVE
-  "/payment-attempts/:id/made": "REPLAY_SAFE", // terminal status already MADE -> replayed: true
-  "/payment-attempts/:id/payout-unknown": "REPLAY_SAFE", // terminal status already PAYOUT_UNKNOWN -> replayed: true
-  "/payment-attempts/:id/confirmed-not-made": "REPLAY_SAFE", // terminal status already CONFIRMED_NOT_MADE -> replayed: true
-  "/payment-attempts/:id/npd-receipt": "REPLAY_SAFE", // existing receipt for the attempt -> replayed: true
+  "/partners/:id/framework/issue": "MONOTONIC_REPLAY_SAFE", // one-way edge out of PROFILE_VERIFIED
+  "/partners/:id/activate": "MONOTONIC_REPLAY_SAFE", // PARTNER_ACTIVE is terminal
+  "/partners/:id/promo": "UNPROVEN",
+  "/partners/:id/audience/:cityId/verify": "DURABLE_KEY", // PR-C2
+  "/partners/:id/audience/:cityId/revoke": "UNPROVEN",
+  "/delegations/:id/revoke": "UNPROVEN",
+  "/partners/:id/npd-status": "DURABLE_KEY", // PR-C2
+  "/retention-policy": "DURABLE_KEY", // PR-C2
+  "/partners/:id/legal-hold": "UNPROVEN",
+  "/legal-holds/:id/release": "UNPROVEN",
+  "/partners/:id/destroy": "MONOTONIC_REPLAY_SAFE", // destruction event is terminal and replayed
+  "/framework-agreement-revisions": "UNPROVEN",
+  "/delegation-template-revisions": "UNPROVEN",
+  "/channel-policy": "UNPROVEN",
+  "/engagements": "UNPROVEN",
+  "/engagements/:id/revisions": "UNPROVEN",
+  "/engagements/:id/activate": "DURABLE_KEY", // PR-C2
+  "/engagements/:id/suspend": "UNPROVEN",
+  "/engagements/:id/close": "UNPROVEN",
+  "/engagements/:id/creative": "UNPROVEN",
+  "/engagements/:id/creative/:revisionId/authorize": "UNPROVEN",
+  "/creative-authorizations/:id/revoke": "UNPROVEN",
+  "/engagements/:id/distributions": "DURABLE_KEY", // PR-C2, admin surface
+  "/distributions/:id/correct": "UNPROVEN",
+  "/distributions/:id/require-removal": "UNPROVEN",
+  "/distributions/:id/confirm-removal": "UNPROVEN",
+  "/distributions/:id/mark-overdue": "UNPROVEN",
+  "/distributions/:id/mark-unverified": "UNPROVEN",
+  "/distributions/:id/review-cleared": "UNPROVEN",
+  "/ord/provider-profile": "UNPROVEN",
+  "/ord/provider-operation": "UNPROVEN",
+  "/ord/provider-operation/:id/submitted": "UNPROVEN",
+  "/ord/provider-operation/:id/confirm": "UNPROVEN",
+  "/ord/provider-operation/:id/erir": "UNPROVEN",
+  "/ord/provider-operation/:id/lock": "UNPROVEN",
+  "/creative-revisions/:id/register": "UNPROVEN",
+  "/ord/creative-registrations/:id/submitted": "UNPROVEN",
+  "/ord/creative-registrations/:id/confirm": "UNPROVEN",
+  "/ord/creative-registrations/:id/correct": "STALE_BOUND", // bound to a named predecessor registration
+  "/ord/creative-registrations/:id/erir": "UNPROVEN",
+  "/ord/creative-registrations/:id/lock": "UNPROVEN",
+  "/distributions/:id/reports": "UNPROVEN",
+  "/distributions/:id/reports/:periodKey/reconciliation": "UNPROVEN",
+  "/engagements/:id/reward-registry/finalize": "UNPROVEN",
+  "/engagements/:id/reward-registry/correct": "UNPROVEN",
+  "/engagements/:id/zero-reward-closure": "UNPROVEN",
+  "/settlements": "UNPROVEN",
+  "/settlements/:id/act": "UNPROVEN",
+  "/acts/:id/present": "UNPROVEN",
+  "/paid-invoices": "UNPROVEN",
+  "/paid-invoices/:id/submission": "UNPROVEN",
+  "/paid-invoices/:id/reconciliation": "UNPROVEN",
+  "/payments/begin": "UNPROVEN",
+  "/payment-attempts/:id/made": "UNPROVEN",
+  "/payment-attempts/:id/payout-unknown": "UNPROVEN",
+  "/payment-attempts/:id/confirmed-not-made": "UNPROVEN",
+  "/payment-attempts/:id/npd-receipt": "UNPROVEN",
 };
 
 const PARTNER: Readonly<Record<string, Classification>> = {
   // The unauthenticated router. Found by this test, not by hand - which is
   // the point: a manual pass over "the partner surface" missed all three.
-  "/invite/consume": "REPLAY_SAFE", // atomic CAS on consumed_at; a replay is ALREADY_CONSUMED
-  "/login/request": "NOT_A_BUSINESS_WRITE", // OTP challenge, rate-limited auth plumbing
-  "/login/verify": "NOT_A_BUSINESS_WRITE", // session mint
+  "/invite/consume": "MONOTONIC_REPLAY_SAFE", // consumed_at is never un-consumed
+  "/login/request": "NOT_A_BUSINESS_WRITE",
+  "/login/verify": "NOT_A_BUSINESS_WRITE",
   "/logout": "NOT_A_BUSINESS_WRITE",
-  "/step-up": "NOT_A_BUSINESS_WRITE", // mints a single-use authorization credential, not a business fact
+  "/step-up": "NOT_A_BUSINESS_WRITE",
   "/engagement-step-up": "NOT_A_BUSINESS_WRITE",
   "/settlement-step-up": "NOT_A_BUSINESS_WRITE",
-  "/legal-profile": "REPLAY_SAFE", // PR-C2: an unchanged draft returns the identity without appending another event
-  "/legal-profile/change": "REPLAY_SAFE", // partial unique index -> ALREADY_PENDING
-  "/framework/accept": "REPLAY_SAFE", // exact-parameter replay -> idempotent no-op
-  "/delegation/:id/revoke": "REPLAY_SAFE", // same revokeDelegationInTransaction -> ALREADY_REVOKED
-  "/payout-profile": "DURABLE_KEY", // PR-C2: the grant cannot protect this - the retry's fresh grant is legitimately valid
+  "/legal-profile": "UNPROVEN",
+  "/legal-profile/change": "UNPROVEN",
+  "/framework/accept": "MONOTONIC_REPLAY_SAFE", // exact-parameter replay; the acceptance row is permanent
+  "/delegation/:id/revoke": "UNPROVEN",
+  "/payout-profile": "DURABLE_KEY", // PR-C2
   "/payout-profile/revoke": "DURABLE_KEY", // PR-C2
-  "/engagements/:id/accept": "REPLAY_SAFE", // existing acceptance -> replayed: true
-  "/engagements/:id/distributions": "DURABLE_KEY", // PR-C2, partner surface of the same command
-  "/distributions/:id/correct": "REPLAY_SAFE", // PR-C2, same command as the admin route (both realms)
-  "/distributions/:id/removal-claim": "REPLAY_SAFE", // removal state machine has no self-loop -> ILLEGAL_TRANSITION
-  "/acts/:id/accept": "REPLAY_SAFE", // existing acceptance -> replayed: true
-  "/acts/:id/dispute": "REPLAY_SAFE", // existing dispute -> replayed: true
-  "/npd-receipts/submit": "DURABLE_KEY", // PR-C2: each submission was an unconditional evidence event
+  "/engagements/:id/accept": "UNPROVEN",
+  "/engagements/:id/distributions": "DURABLE_KEY", // PR-C2
+  "/distributions/:id/correct": "UNPROVEN",
+  "/distributions/:id/removal-claim": "UNPROVEN",
+  "/acts/:id/accept": "UNPROVEN",
+  "/acts/:id/dispute": "UNPROVEN",
+  "/npd-receipts/submit": "DURABLE_KEY", // PR-C2
 };
 
 const writeRoutesOf = (file: string): string[] => {
@@ -155,30 +175,58 @@ describe("agent-referrals command replay classification is exhaustive over the p
     expect(Object.keys(PARTNER).filter((route) => !routes.includes(route))).toEqual([]);
   });
 
-  it("pins the PR-C2 scope: the repeatable set, in both realms", () => {
-    // Changing this list is a deliberate act - either PR-C2 closed one, or a
-    // new repeatable command was introduced and needs to be in PR-C2 too.
-    const repeatable = (table: Readonly<Record<string, Classification>>) =>
-      Object.entries(table).filter(([, value]) => value === "REPEATABLE").map(([route]) => route).sort();
-    // PR-C2 is complete: nothing is REPEATABLE any more. Step 2a closed the
-    // content-addressed half with no-change branches; step 2b gave durable
-    // command identity to the nine where an identical body can be a
-    // legitimate second command, and a NAME to the one the schema was
-    // already refusing (legal hold, whose partial unique index made it a 500
-    // rather than a duplicate).
-    expect(repeatable(ADMIN)).toEqual([]);
-    expect(repeatable(PARTNER)).toEqual([]);
+  it("pins what is PROVEN under the A -> B* -> retry A obligation", () => {
+    // Deliberately small. Each of these carries an actual proof, not an
+    // observation that an immediate retry happens to fail today:
+    //   DURABLE_KEY            - exact replay, whatever B* did
+    //   MONOTONIC_REPLAY_SAFE  - no legal B* restores the precondition
+    //   STALE_BOUND            - the request pins what it was made against
+    const proven = (table: Readonly<Record<string, Classification>>, kind: Classification) =>
+      Object.entries(table).filter(([, value]) => value === kind).map(([route]) => route).sort();
+
+    expect(proven(ADMIN, "DURABLE_KEY")).toEqual([
+      "/engagements/:id/activate",
+      "/engagements/:id/distributions",
+      "/partners/:id/audience/:cityId/verify",
+      "/partners/:id/npd-status",
+      "/partners/:id/tax-treatment",
+      "/retention-policy",
+    ]);
+    expect(proven(PARTNER, "DURABLE_KEY")).toEqual([
+      "/engagements/:id/distributions",
+      "/npd-receipts/submit",
+      "/payout-profile",
+      "/payout-profile/revoke",
+    ]);
+    expect(proven(ADMIN, "MONOTONIC_REPLAY_SAFE")).toEqual([
+      "/partners/:id/activate",
+      "/partners/:id/destroy",
+      "/partners/:id/framework/issue",
+      "/partners/:id/legal-profile/verify",
+    ]);
+    expect(proven(ADMIN, "STALE_BOUND")).toEqual([
+      "/ord/creative-registrations/:id/correct",
+      "/partners/:id/legal-profile/change/:requestId/verify",
+    ]);
   });
 
-  it("has no UNAUDITED route left: the audit covers the whole published surface", () => {
-    // PR-C2 step 1. Every one of the 35 routes PR-C left pending resolved to
-    // REPLAY_SAFE, which is itself the useful finding: the repeatable class is
-    // exactly "mint the next revision in an append-only chain with no state
-    // gate", while every state TRANSITION in this system is already guarded
-    // by the state it transitions from.
-    const unaudited = (table: Readonly<Record<string, Classification>>) =>
-      Object.values(table).filter((value) => value === "UNAUDITED").length;
-    expect(unaudited(ADMIN)).toBe(0);
-    expect(unaudited(PARTNER)).toBe(0);
+  it("pins what is still UNPROVEN, which must be zero before rollout", () => {
+    // This number GREW when the obligation was corrected, and that is the
+    // honest outcome rather than a regression: the previous zero was
+    // measured against "A, immediate retry A", which accepted a state gate
+    // B* can legally re-open and equality against the current row as proofs.
+    // Neither survives A -> B* -> retry A.
+    const unproven = (table: Readonly<Record<string, Classification>>) =>
+      Object.entries(table).filter(([, value]) => value === "UNPROVEN").map(([route]) => route);
+    expect(unproven(ADMIN).length).toBe(54);
+    expect(unproven(PARTNER).length).toBe(8);
+  });
+
+  it("keeps the special class visible rather than counting it as closed", () => {
+    // /partners/:id/invite/reissue returns a raw token that is never
+    // persisted, so no idempotency mechanism can re-serve the original after
+    // a lost response. It needs defined recovery semantics, and until it has
+    // them the rollout gate is not closed - a zero elsewhere does not cover it.
+    expect(ADMIN["/partners/:id/invite/reissue"]).toBe("SPECIAL_RECOVERY");
   });
 });

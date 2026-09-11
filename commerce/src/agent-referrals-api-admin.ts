@@ -390,11 +390,15 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   // ---- Distributions ------------------------------------------------------------
   app.post("/engagements/:id/distributions", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
+    // .response, never the whole AdminCommandResult: `replayed` is an
+    // internal disposition, and leaking it would also make a replay
+    // byte-different from the original - the exact property the key exists
+    // to provide.
     return c.json(reportDistributionByAdminIdempotent(sqlite, adminOf(c), requireIdempotencyKey(c), c.req.param("id"), {
       channel_key: requireString(body, "channel_key"), resource_kind: requireString(body, "resource_kind") as ResourceKind,
       resource_identifier: requireString(body, "resource_identifier"), distribution_resource_url: requireString(body, "distribution_resource_url"),
       published_at: requireString(body, "published_at"), ended_at: optionalString(body, "ended_at") ?? null, evidence_ref: requireString(body, "evidence_ref"),
-    }), 201);
+    }).response, 201);
   });
   app.post("/distributions/:id/correct", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));

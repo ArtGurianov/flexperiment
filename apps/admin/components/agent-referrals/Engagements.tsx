@@ -279,8 +279,17 @@ function DistributionsSection({ engagementId, distributions, focusDistributionId
   const [reporting, setReporting] = useState<string | null>(() => (focusReporting && focusedDistributionExists ? focusDistributionId : null));
 
   const command = useEngagementCommand(engagementId);
-  const busy = command.isPending;
-  const error = command.error?.code ?? null;
+  // PR-C2: reporting a distribution carries durable command identity, so it
+  // needs its OWN key - the generic dispatcher above sends none, and a key
+  // has to be per intent anyway.
+  const reportKey = usePersistentIdempotencyKey();
+  const reportDistribution = useAdminMutation("agentReferrals.engagementCommand", (values: Record<string, unknown>) =>
+    api(`/agent-referrals/engagements/${engagementId}/distributions`, {
+      method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": reportKey.acquire() },
+      body: JSON.stringify(values),
+    }), { context: () => ({ engagementId }) });
+  const busy = command.isPending || reportDistribution.isPending;
+  const error = command.error?.code ?? reportDistribution.error?.code ?? null;
   const run = async (path: string, body: Record<string, unknown>) => {
     await command.mutateAsync({ path, body }).catch(() => undefined);
   };
@@ -343,7 +352,7 @@ function DistributionsSection({ engagementId, distributions, focusDistributionId
           onReconcile={(periodKey, values) => run(`/agent-referrals/distributions/${reporting}/reports/${periodKey}/reconciliation`, values)}
         />
       )}
-      <DistributionFactForm title="Сообщить о новом размещении" busy={busy} onSubmit={(values) => run(`/agent-referrals/engagements/${engagementId}/distributions`, values)} />
+      <DistributionFactForm title="Сообщить о новом размещении" busy={busy} onSubmit={(values) => reportDistribution.mutateAsync(values).then(() => reportKey.clear()).catch(() => undefined)} />
       <Notice error={error} />
     </Panel>
   );
