@@ -21,7 +21,7 @@ import { createPartnerPromo } from "../src/agent-referrals-promo";
 import { mintEngagementStepUpGrant } from "../src/agent-referrals-engagement-step-up";
 import { offerEngagement, verifyAudienceForPartnerCity, acceptEngagement, activateEngagement, getEngagement, resolveActivatedLegalProfileBinding, type EngagementRevisionTerms } from "../src/agent-referrals-engagement";
 import { closeEngagementWithRewardRegistry } from "../src/agent-referrals-reward-registry";
-import { closeEngagementZeroReward } from "../src/agent-referrals-zero-reward-closure";
+import { closeEngagementZeroReward, zeroRewardClosureForEngagement } from "../src/agent-referrals-zero-reward-closure";
 import { preparePartnerSettlement, correctPartnerRewardWithSettlement, agentReferralsSettlementById, SettlementError } from "../src/agent-referrals-settlement";
 import { setPartnerPayoutDestination } from "../src/agent-referrals-payout-profile";
 import { generateSettlementAct, presentSettlementAct, acceptSettlementAct } from "../src/agent-referrals-act";
@@ -524,6 +524,36 @@ describe("D2: blocking predicate - matrix and the У5 no-eternal-block property"
     const occurrenceId = seedOccurrence(db, p1.cityId);
     activatedEngagement(db, p1.partner, p1.partnerIdentityId, occurrenceId);
     expect(supersessionBindingDecision(db, p1.partnerIdentityId)).toMatchObject({ blocked: true, reason: "ENGAGEMENT_NOT_CLOSED" });
+  });
+
+  // PR-B: the two allow-reasons the D2 matrix never covered. NO_ENGAGEMENT
+  // is new vocabulary (it used to report ZERO_EFFECTIVE, claiming evidence
+  // that does not exist); ZERO_EFFECTIVE now means only what it says, and
+  // the test below also proves that branch is genuinely reachable rather
+  // than dead code.
+  it("NO_ENGAGEMENT: a partner that never had an engagement allows, and says so", () => {
+    const db = fresh();
+    const p1 = readyPartner(db);
+    expect(supersessionBindingDecision(db, p1.partnerIdentityId)).toEqual({ blocked: false, reason: "NO_ENGAGEMENT" });
+  });
+
+  it("ZERO_EFFECTIVE: a correction that zeroes the reward under a PREPARED settlement leaves a terminal zero E with no closure row", async () => {
+    const db = fresh();
+    const p1 = readyPartner(db);
+    const { engagementId } = await closedEngagementWithReward(db, p1.partner, p1.partnerIdentityId, p1.cityId, 9000);
+    const effectiveId = (db.prepare("SELECT id FROM engagement_effective_reward_snapshots WHERE engagement_id = ?").get(engagementId) as { id: string }).id;
+    preparePartnerSettlement(db, admin, effectiveId);
+    expect(supersessionBindingDecision(db, p1.partnerIdentityId)).toMatchObject({ blocked: true, reason: "OUTSTANDING_SETTLEMENT" });
+
+    // The seeded reward was never backed by real orders, so recomputing it
+    // yields zero: the settlement is cancelled before payment and no
+    // replacement is minted (CANCELLED_ZERO). That leaves a CLOSED
+    // engagement whose CURRENT E is zero with no zero-reward closure row -
+    // the only shape that reaches the ZERO_EFFECTIVE branch.
+    const correction = correctPartnerRewardWithSettlement(db, admin, engagementId, "no orders actually backed this reward");
+    expect(correction.settlement_action).toBe("CANCELLED_ZERO");
+    expect(zeroRewardClosureForEngagement(db, engagementId)).toBeNull();
+    expect(supersessionBindingDecision(db, p1.partnerIdentityId)).toEqual({ blocked: false, reason: "ZERO_EFFECTIVE" });
   });
 
   it("OUTSTANDING_SETTLEMENT: a CLOSED engagement with a still-PREPARED settlement blocks", async () => {

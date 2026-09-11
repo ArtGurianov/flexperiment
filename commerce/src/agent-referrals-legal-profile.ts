@@ -1,5 +1,10 @@
 import type Database from "better-sqlite3";
 import { id } from "./crypto";
+import {
+  INN_LENGTH, KPP_LENGTH, REGISTRATION_NUMBER_LENGTH, REQUISITE_FIELDS, REQUISITE_SHAPE,
+  resolveProjectedContractorType as resolveProjectedContractorTypeRule,
+  type LegalForm, type ProjectedContractorType, type TaxMode,
+} from "../../lib/legal-profile-rules";
 
 /**
  * Agent Referrals immutable legal-profile revisions and their projection to
@@ -20,9 +25,13 @@ import { id } from "./crypto";
  * cannot write a rejected combination or a projection inconsistent with it.
  */
 
-export type LegalForm = "INDIVIDUAL" | "INDIVIDUAL_ENTREPRENEUR" | "LEGAL_ENTITY";
-export type TaxMode = "NPD" | "OTHER";
-export type ProjectedContractorType = "SELF_EMPLOYED" | "INDIVIDUAL_ENTREPRENEUR" | "ORGANIZATION";
+// PR-B: the shape itself lives in lib/legal-profile-rules.ts, the one
+// representation the domain AND both React surfaces import (the DB's own
+// CHECKs are the deliberate separate representation, held to it by
+// agent-referrals-legal-profile-conformance.test.ts). Re-exported here so
+// every existing `from "./agent-referrals-legal-profile"` import keeps
+// working - this module remains the domain's front door for the concept.
+export type { LegalForm, TaxMode, ProjectedContractorType };
 
 /**
  * PARTNER_ASSERTED: the partner's own onboarding submission, verified by an
@@ -31,21 +40,6 @@ export type ProjectedContractorType = "SELF_EMPLOYED" | "INDIVIDUAL_ENTREPRENEUR
  * from any route. See 0050_agent_referrals_legal_profile_provenance_rebuild.sql.
  */
 export type AssertionSource = "PARTNER_ASSERTED" | "ADMIN_ASSERTED";
-
-/**
- * The exact matrix from the plan. SELF_EMPLOYED is Russian tax law's own
- * definition of "self-employed" (an individual taxed under NPD); an
- * individual entrepreneur projects to INDIVIDUAL_ENTREPRENEUR regardless of
- * tax mode, since the legacy field never distinguished tax mode; a legal
- * entity - only representable under OTHER, since NPD is individual-only in
- * Russian tax law - projects to ORGANIZATION, the value PR2 added
- * specifically to represent it.
- */
-const PROJECTION: Readonly<Record<LegalForm, Partial<Record<TaxMode, ProjectedContractorType>>>> = {
-  INDIVIDUAL: { NPD: "SELF_EMPLOYED" },
-  INDIVIDUAL_ENTREPRENEUR: { NPD: "INDIVIDUAL_ENTREPRENEUR", OTHER: "INDIVIDUAL_ENTREPRENEUR" },
-  LEGAL_ENTITY: { OTHER: "ORGANIZATION" },
-};
 
 /**
  * The one shared lookup every caller that will eventually reach the 0043
@@ -60,7 +54,7 @@ const PROJECTION: Readonly<Record<LegalForm, Partial<Record<TaxMode, ProjectedCo
  * `.status`), i.e. an internal 500 for what is actually a 422.
  */
 export const resolveProjectedContractorType = (legalForm: LegalForm, taxMode: TaxMode): ProjectedContractorType | null =>
-  PROJECTION[legalForm]?.[taxMode] ?? null;
+  resolveProjectedContractorTypeRule(legalForm, taxMode);
 
 export class AgentReferralsLegalProfileError extends Error {
   constructor(readonly code: string, readonly status = 422, detail?: string) {
@@ -101,19 +95,6 @@ export type RawLegalRequisitesInput = {
   kpp?: string | null;
   registration_number?: string | null;
   legal_address?: string | null;
-};
-
-const INN_LENGTH: Readonly<Record<LegalForm, number>> = { INDIVIDUAL: 12, INDIVIDUAL_ENTREPRENEUR: 12, LEGAL_ENTITY: 10 };
-const KPP_LENGTH = 9;
-const REGISTRATION_NUMBER_LENGTH: Partial<Readonly<Record<LegalForm, number>>> = { INDIVIDUAL_ENTREPRENEUR: 15, LEGAL_ENTITY: 13 };
-
-type RequisiteFieldRule = "REQUIRED" | "OPTIONAL" | "FORBIDDEN";
-
-/** The per-legal_form shape for every field EXCEPT full_name/inn, which are REQUIRED for all three and handled separately (their format, not their presence, varies by legal_form). */
-const REQUISITE_SHAPE: Readonly<Record<LegalForm, Readonly<Record<"opf" | "short_name" | "kpp" | "registration_number" | "legal_address", RequisiteFieldRule>>>> = {
-  INDIVIDUAL: { opf: "FORBIDDEN", short_name: "FORBIDDEN", kpp: "FORBIDDEN", registration_number: "FORBIDDEN", legal_address: "FORBIDDEN" },
-  INDIVIDUAL_ENTREPRENEUR: { opf: "FORBIDDEN", short_name: "FORBIDDEN", kpp: "FORBIDDEN", registration_number: "REQUIRED", legal_address: "FORBIDDEN" },
-  LEGAL_ENTITY: { opf: "REQUIRED", short_name: "OPTIONAL", kpp: "REQUIRED", registration_number: "REQUIRED", legal_address: "REQUIRED" },
 };
 
 const isBlank = (value: string): boolean => value.trim().length === 0;
@@ -166,7 +147,7 @@ export const normalizeAndValidateLegalProfile = (
     opf: normalizeOptional(raw.opf), short_name: normalizeOptional(raw.short_name), kpp: normalizeOptional(raw.kpp),
     registration_number: normalizeOptional(raw.registration_number), legal_address: normalizeOptional(raw.legal_address),
   };
-  for (const field of ["opf", "short_name", "kpp", "registration_number", "legal_address"] as const) {
+  for (const field of REQUISITE_FIELDS) {
     const rule = shape[field];
     const value = normalized[field];
     if (rule === "REQUIRED" && value === null) {
