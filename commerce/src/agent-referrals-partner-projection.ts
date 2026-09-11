@@ -20,6 +20,8 @@ import { paymentAttemptsForSettlement } from "./agent-referrals-payment";
 import { latestNpdStatusCheck } from "./agent-referrals-npd";
 import { rewardForOrder, type RewardOrderFacts } from "./reward-calculation";
 import { pendingLegalProfileChangeRequestForPartner } from "./agent-referrals-legal-profile-supersession";
+import { resolveTaxTreatmentForLegalProfileAt } from "./agent-referrals-tax-treatment";
+import { now } from "./crypto";
 
 /**
  * §B-11: the ONE explicit allowlist projection every `/v1/partner/*` read
@@ -107,6 +109,10 @@ export type PartnerProfileProjection = {
     revision: number; created_at: string;
   } | null;
   pending_legal_profile_change_request: PartnerPendingLegalProfileChangeRequestProjection | null;
+  // PR-F: the tax treatment applicable right now - never assertion_source/
+  // evidence_ref/created_by_admin_id (admin-only provenance, matching
+  // §B-11's own discipline for pending_legal_profile_change_request above).
+  tax_treatment: { tax_system: string; vat_treatment: string; no_vat_basis: string | null; effective_from: string } | null;
   payout_profile: ReturnType<typeof currentPayoutProfile>;
   promo_code: string | null;
   delegation_effective: boolean;
@@ -122,6 +128,7 @@ export const partnerProfileProjection = (db: Database.Database, partnerIdentityI
     ? (db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(partnerPromo.promo_code_id) as { code: string } | undefined)
     : undefined;
   const pendingChangeRequest = pendingLegalProfileChangeRequestForPartner(db, partnerIdentityId);
+  const taxTreatment = legalProfile ? resolveTaxTreatmentForLegalProfileAt(db, legalProfile.id, now()) : null;
   return {
     partner_identity_id: identity.id,
     email: identity.email,
@@ -148,6 +155,9 @@ export const partnerProfileProjection = (db: Database.Database, partnerIdentityI
           opf: pendingChangeRequest.opf, full_name: pendingChangeRequest.full_name, short_name: pendingChangeRequest.short_name, inn: pendingChangeRequest.inn, kpp: pendingChangeRequest.kpp, registration_number: pendingChangeRequest.registration_number, legal_address: pendingChangeRequest.legal_address,
           reason: pendingChangeRequest.reason, state: "PENDING", created_at: pendingChangeRequest.created_at,
         }
+      : null,
+    tax_treatment: taxTreatment
+      ? { tax_system: taxTreatment.tax_system, vat_treatment: taxTreatment.vat_treatment, no_vat_basis: taxTreatment.no_vat_basis, effective_from: taxTreatment.effective_from }
       : null,
     payout_profile: currentPayoutProfile(db, partnerIdentityId),
     promo_code: promoCode?.code ?? null,

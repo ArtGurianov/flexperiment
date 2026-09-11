@@ -105,6 +105,32 @@ const PRESENTATIONS: Readonly<Record<string, AdminErrorPresentation>> = {
   AGENT_REFERRALS_LEGAL_PROFILE_POINTER_DIVERGED: {
     message: "Обнаружено расхождение в цепочке юридического профиля — обратитесь к разработчикам.",
   },
+
+  // PR-F: tax/VAT treatment authority.
+  AGENT_REFERRALS_TAX_TREATMENT_NPD_IS_SYSTEM_DERIVED: {
+    message: "НПД фиксируется автоматически вместе с юридическим профилем и не может быть указан вручную.",
+  },
+  AGENT_REFERRALS_TAX_TREATMENT_EVIDENCE_REF_REQUIRED: { message: "Укажите ссылку на подтверждающий документ." },
+  AGENT_REFERRALS_TAX_TREATMENT_REASON_REQUIRED: { message: "Укажите причину." },
+  AGENT_REFERRALS_TAX_TREATMENT_EFFECTIVE_FROM_REQUIRED: { message: "Укажите дату, с которой действует налоговый режим." },
+  AGENT_REFERRALS_TAX_TREATMENT_EFFECTIVE_FROM_INVALID: { message: "Некорректная дата, с которой действует налоговый режим." },
+  AGENT_REFERRALS_TAX_TREATMENT_PSN_REQUIRES_INDIVIDUAL_ENTREPRENEUR: {
+    message: "ПСН доступна только для индивидуального предпринимателя.",
+    hint: "Проверьте текущую организационно-правовую форму партнёра.",
+  },
+  AGENT_REFERRALS_TAX_TREATMENT_MATRIX_REJECTED: {
+    message: "Недопустимое сочетание системы налогообложения и НДС.",
+    hint: "Например, для АУСН доступно только «Без НДС», а НПД фиксируется автоматически.",
+  },
+  AGENT_REFERRALS_TAX_TREATMENT_NO_VAT_BASIS_REQUIRED: { message: "Для «Без НДС» нужно указать основание освобождения." },
+  AGENT_REFERRALS_TAX_TREATMENT_NO_VAT_BASIS_FORBIDDEN: { message: "Основание освобождения указывается только вместе с «Без НДС»." },
+  AGENT_REFERRALS_TAX_TREATMENT_MISSING: {
+    message: "Для текущего юридического профиля партнёра ещё не зафиксирован налоговый режим.",
+    hint: "Зафиксируйте налоговый режим на странице партнёра перед подготовкой расчёта.",
+  },
+  AGENT_REFERRALS_TAX_TREATMENT_RELATIONAL_INCONSISTENT: {
+    message: "Обнаружено расхождение в цепочке налогового режима — обратитесь к разработчикам.",
+  },
 };
 
 export const presentAdminError = (code: string): AdminErrorPresentation =>

@@ -21,6 +21,7 @@ import { preparePartnerSettlement, type AgentReferralsSettlementRow } from "../.
 import { generateSettlementAct, presentSettlementAct, acceptSettlementAct, type SettlementActRow } from "../../src/agent-referrals-act";
 import { mintSettlementStepUpGrant } from "../../src/agent-referrals-settlement-step-up";
 import { recordNpdStatusCheck } from "../../src/agent-referrals-npd";
+import { recordVerifiedTaxTreatment } from "../../src/agent-referrals-tax-treatment";
 
 /**
  * Shared PR7 fixture chain, mirroring
@@ -73,6 +74,15 @@ export const readyPartner = (db: Database.Database, taxMode: "NPD" | "OTHER" = "
       ? { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }
       : { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012", registration_number: "123456789012345" });
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
+  // PR-F: NPD gets its tax treatment automatically, minted atomically with
+  // the legal-profile revision above. OTHER (INDIVIDUAL_ENTREPRENEUR here)
+  // does not - an explicit admin-asserted tax treatment is always required
+  // before a settlement can be prepared for a non-NPD profile.
+  if (taxMode === "OTHER") {
+    recordVerifiedTaxTreatment(db, admin, partnerIdentityId, {
+      taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2020-01-01", evidenceRef: "usn-exempt-fixture.pdf", reason: "fixture: USN exemption",
+    }, randomUUID());
+  }
   const fw = mintFrameworkAgreementRevision(db, clause(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES));
   const dt = mintDelegationTemplateRevision(db, clause(DELEGATION_TEMPLATE_REQUIRED_CLAUSES));
   issueFrameworkToPartner(db, admin, partnerIdentityId, fw.id, dt.id, "issued");

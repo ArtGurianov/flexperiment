@@ -1,0 +1,102 @@
+import { canonicalV2, sha256 } from "./crypto";
+import type { AgentReferralsLegalProfileRevision } from "./agent-referrals-legal-profile";
+import type { TaxTreatmentRevisionRow } from "./agent-referrals-tax-treatment";
+
+/**
+ * PR-F: pure, provider-neutral canonicalization - no DB reads, no side
+ * effects. Resolving WHICH legal-profile revision and WHICH tax-treatment
+ * revision are authoritative is the caller's job (resolveCurrentLegalProfileBinding,
+ * resolveTaxTreatmentForLegalProfileAt, ...); these functions only
+ * deterministically serialize an already-resolved fact and hash it.
+ *
+ * Two independent version namespaces, not one shared "V1": legal-identity
+ * serialization and tax logic evolve on different schedules, and a future
+ * V2 of one must never force a V2 of the other. A version string is part of
+ * every hash's own input (see each canonicalizer below) and is itself
+ * pinned into every immutable snapshot that stores the hash - a stored V1
+ * payload's canonical facts never change meaning when V2 ships; a stored
+ * hash is never recomputed under new logic on replay (see
+ * agent-referrals-ord-paid-invoice.ts's own idempotency discipline).
+ *
+ * ORD_PARTICIPANT_V1 deliberately does NOT include tax_mode/tax_system: it
+ * answers "who is this contractor", not "how are they taxed" - a provider
+ * adapter that also needs a tax fact reads it from the separate
+ * SETTLEMENT_TAX_V1 object. This is also why this is a provider-NEUTRAL
+ * internal schema, not a literal VK ORD API field mapping - no public,
+ * authoritative VK field schema was available to bind directly to.
+ */
+
+export const ORD_PARTICIPANT_CANONICALIZATION_VERSION = "ORD_PARTICIPANT_V1" as const;
+export type OrdParticipantCanonicalizationVersion = typeof ORD_PARTICIPANT_CANONICALIZATION_VERSION;
+
+export type OrdParticipantCanonicalV1 =
+  | { version: OrdParticipantCanonicalizationVersion; participant_kind: "NATURAL_PERSON"; legal_form: "INDIVIDUAL"; full_name: string; inn: string }
+  | { version: OrdParticipantCanonicalizationVersion; participant_kind: "INDIVIDUAL_ENTREPRENEUR"; legal_form: "INDIVIDUAL_ENTREPRENEUR"; full_name: string; inn: string; registration_number: string }
+  | {
+      version: OrdParticipantCanonicalizationVersion; participant_kind: "LEGAL_ENTITY"; legal_form: "LEGAL_ENTITY";
+      opf: string; full_name: string; short_name: string | null; inn: string; kpp: string; registration_number: string; legal_address: string;
+    };
+
+export type Canonicalized<T> = { version: string; value: T; canonical_json: string; canonical_hash: string };
+
+/**
+ * Requisites shape/nullability is already fully proven by 0052's own
+ * per-legal_form CHECK matrix on agent_referrals_legal_profile_revisions -
+ * the non-null assertions below (`!`) rely on that structural guarantee,
+ * never re-validate it.
+ */
+export const canonicalizeOrdParticipantV1 = (profile: AgentReferralsLegalProfileRevision): Canonicalized<OrdParticipantCanonicalV1> => {
+  let value: OrdParticipantCanonicalV1;
+  if (profile.legal_form === "INDIVIDUAL") {
+    value = { version: ORD_PARTICIPANT_CANONICALIZATION_VERSION, participant_kind: "NATURAL_PERSON", legal_form: "INDIVIDUAL", full_name: profile.full_name, inn: profile.inn };
+  } else if (profile.legal_form === "INDIVIDUAL_ENTREPRENEUR") {
+    value = {
+      version: ORD_PARTICIPANT_CANONICALIZATION_VERSION, participant_kind: "INDIVIDUAL_ENTREPRENEUR", legal_form: "INDIVIDUAL_ENTREPRENEUR",
+      full_name: profile.full_name, inn: profile.inn, registration_number: profile.registration_number!,
+    };
+  } else {
+    value = {
+      version: ORD_PARTICIPANT_CANONICALIZATION_VERSION, participant_kind: "LEGAL_ENTITY", legal_form: "LEGAL_ENTITY",
+      opf: profile.opf!, full_name: profile.full_name, short_name: profile.short_name, inn: profile.inn,
+      kpp: profile.kpp!, registration_number: profile.registration_number!, legal_address: profile.legal_address!,
+    };
+  }
+  const canonicalJson = canonicalV2(value as unknown as Record<string, unknown>);
+  return { version: ORD_PARTICIPANT_CANONICALIZATION_VERSION, value, canonical_json: canonicalJson, canonical_hash: sha256(canonicalJson) };
+};
+
+export const SETTLEMENT_TAX_CANONICALIZATION_VERSION = "SETTLEMENT_TAX_V1" as const;
+export type SettlementTaxCanonicalizationVersion = typeof SETTLEMENT_TAX_CANONICALIZATION_VERSION;
+
+export type SettlementTaxCanonicalV1 = {
+  version: SettlementTaxCanonicalizationVersion;
+  legal_profile_revision_id: string;
+  tax_treatment_revision_id: string;
+  tax_system: TaxTreatmentRevisionRow["tax_system"];
+  vat_treatment: TaxTreatmentRevisionRow["vat_treatment"];
+  no_vat_basis: TaxTreatmentRevisionRow["no_vat_basis"];
+  npd_receipt_required: boolean;
+};
+
+/**
+ * npd_receipt_required is a DOCUMENT/TAX classification derived from this
+ * immutable treatment fact alone - it is NOT the same authority as a
+ * payment-time NPD status check (agent-referrals-npd.ts's own fresh/ACTIVE
+ * gate at BEGIN_PAYMENT). The two never substitute for each other: this
+ * says "this settlement's tax classification is NPD", the other says
+ * "right now, immediately before money moves, the partner's NPD
+ * registration is still ACTIVE and recently confirmed".
+ */
+export const canonicalizeSettlementTaxV1 = (taxTreatment: TaxTreatmentRevisionRow): Canonicalized<SettlementTaxCanonicalV1> => {
+  const value: SettlementTaxCanonicalV1 = {
+    version: SETTLEMENT_TAX_CANONICALIZATION_VERSION,
+    legal_profile_revision_id: taxTreatment.legal_profile_revision_id,
+    tax_treatment_revision_id: taxTreatment.id,
+    tax_system: taxTreatment.tax_system,
+    vat_treatment: taxTreatment.vat_treatment,
+    no_vat_basis: taxTreatment.no_vat_basis,
+    npd_receipt_required: taxTreatment.tax_system === "NPD",
+  };
+  const canonicalJson = canonicalV2(value as unknown as Record<string, unknown>);
+  return { version: SETTLEMENT_TAX_CANONICALIZATION_VERSION, value, canonical_json: canonicalJson, canonical_hash: sha256(canonicalJson) };
+};

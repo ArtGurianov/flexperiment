@@ -483,7 +483,13 @@ describe("0050 agent-referrals legal-profile provenance rebuild migration", () =
         recreatedTriggers.map((name) => [name, (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(name) as { sql: string }).sql]),
       );
 
-      migrate(db);
+      // Scoped to exactly 0050, not the general migrate() runner: a LATER
+      // migration (PR-F's own 0053) legitimately extends reward_settlements_
+      // authority_tuple_consistency_guard's own body for an unrelated
+      // reason - this test's only claim is about what 0050's OWN rebuild
+      // does to these triggers, matching migrateOnly0050's own established
+      // rationale elsewhere in this file.
+      migrateOnly0050(db);
 
       for (const name of recreatedTriggers) {
         const after = (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(name) as { sql: string }).sql;

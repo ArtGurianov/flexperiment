@@ -45,6 +45,24 @@ const template = (() => {
   return file;
 })();
 
+/**
+ * Scoped to exactly 0052, regardless of what later migrations (PR-F's own
+ * 0053 included) exist in the real migrations directory - matches
+ * agent-referrals-integration-hardening-migration.test.ts's own
+ * migrateOnly0049 precedent and agent-referrals-legal-profile-provenance-
+ * migration.test.ts's own migrateOnly0050. This file's own section H
+ * proves what 0052's rebuild itself does to every pre-existing trigger
+ * naming the rebuilt table; a later migration extending one of those same
+ * triggers for an unrelated reason (0053 extends reward_settlements_
+ * authority_tuple_consistency_guard's own body) must not make this section
+ * drift.
+ */
+const migrateOnly0052 = (db: Database.Database) => {
+  const dir = mkdtempSync(join(tmpdir(), "unified-legal-requisites-only-0052-"));
+  copyFileSync(join(MIGRATIONS, MIGRATION_FILE), join(dir, MIGRATION_FILE));
+  migrate(db, dir);
+};
+
 const at0051 = () => {
   const file = join(mkdtempSync(join(tmpdir(), "unified-legal-requisites-")), "commerce.sqlite");
   copyFileSync(template, file);
@@ -506,7 +524,7 @@ describe("0052 agent-referrals unified legal requisites migration", () => {
       expect(before.length).toBeGreaterThanOrEqual(3);
       const beforeByName = new Map(before.map((t) => [t.name, t.sql]));
 
-      migrate(db);
+      migrateOnly0052(db);
 
       for (const [name, sql] of beforeByName) {
         const after = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?").get(name) as { sql: string } | undefined;

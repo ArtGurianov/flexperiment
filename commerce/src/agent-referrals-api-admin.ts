@@ -46,6 +46,8 @@ import {
   submitLegalProfileSupersession, verifyLegalProfileSupersession, rejectLegalProfileSupersession,
   ownedLegalProfileChangeRequest, pendingLegalProfileChangeRequestForPartner, AgentReferralsLegalProfileSupersessionError,
 } from "./agent-referrals-legal-profile-supersession";
+import { recordVerifiedTaxTreatment, resolveTaxTreatmentForLegalProfileAt, type TaxSystem, type VatTreatment, type NoVatBasis } from "./agent-referrals-tax-treatment";
+import { now } from "./crypto";
 
 /**
  * `/v1/admin/agent-referrals/*` - mounted INSIDE api.ts's already-
@@ -138,6 +140,13 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
       // read in isolation) plus any PENDING supersession request.
       legal_profile: currentAgentReferralsLegalProfile(sqlite, identity.agent_id),
       pending_legal_profile_change_request: pendingLegalProfileChangeRequestForPartner(sqlite, identity.id),
+      // PR-F: the tax treatment applicable right now for the CURRENT legal
+      // profile - null if the profile has none recorded yet (a fresh
+      // non-NPD supersession awaiting an explicit admin assertion).
+      tax_treatment: (() => {
+        const legalProfile = currentAgentReferralsLegalProfile(sqlite, identity.agent_id);
+        return legalProfile ? resolveTaxTreatmentForLegalProfileAt(sqlite, legalProfile.id, now()) : null;
+      })(),
     });
   });
   app.post("/partners", async (c) => {
@@ -186,6 +195,18 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
     ownedLegalProfileChangeRequest(sqlite, c.req.param("id"), c.req.param("requestId"));
     return c.json(rejectLegalProfileSupersession(sqlite, adminOf(c), c.req.param("requestId"), requireString(body, "reason")));
   });
+  // ---- PR-F: tax/VAT treatment authority (always targets the partner's CURRENT legal profile, resolved server-side - never a caller-supplied revision id). ----
+  app.post("/partners/:id/tax-treatment", async (c) => {
+    const body = asRecord(await jsonBody(c.req.raw));
+    const idempotencyKey = c.req.header("Idempotency-Key");
+    if (!idempotencyKey) throw new DomainError("IDEMPOTENCY_KEY_REQUIRED", 400);
+    return c.json(recordVerifiedTaxTreatment(sqlite, adminOf(c), c.req.param("id"), {
+      taxSystem: requireString(body, "tax_system") as TaxSystem, vatTreatment: requireString(body, "vat_treatment") as VatTreatment,
+      noVatBasis: (optionalString(body, "no_vat_basis") ?? null) as NoVatBasis | null,
+      effectiveFrom: requireString(body, "effective_from"), evidenceRef: requireString(body, "evidence_ref"), reason: requireString(body, "reason"),
+    }, idempotencyKey), 201);
+  });
+
   app.post("/partners/:id/framework/issue", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
     return c.json(issueFrameworkToPartner(sqlite, adminOf(c), c.req.param("id"), requireString(body, "framework_agreement_revision_id"), requireString(body, "delegation_template_revision_id"), requireString(body, "reason")));

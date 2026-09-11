@@ -19,6 +19,10 @@ const CHANGE_REQUEST_STATE_LABELS: Record<string, string> = {
   PENDING: "На рассмотрении", VERIFIED: "Подтверждена", REJECTED: "Отклонена", STALE: "Устарела",
 };
 
+/** PR-F: read-only display labels - the partner never asserts a tax treatment directly (no self-service candidate lifecycle exists for it, unlike legal-profile supersession above). */
+const TAX_SYSTEM_LABELS: Record<string, string> = { NPD: "НПД", USN: "УСН", AUSN: "АУСН", OSNO: "ОСНО", PSN: "ПСН", ESHN: "ЕСХН", OTHER: "Другое" };
+const VAT_TREATMENT_LABELS: Record<string, string> = { NO_VAT: "Без НДС", VAT_5: "5%", VAT_7: "7%", VAT_22: "22%" };
+
 /** PR-E: the unified requisites tuple - present on every legal-profile submission (initial onboarding and D2 supersession alike). */
 type LegalRequisitesFormFields = { opf: string; full_name: string; short_name: string; inn: string; kpp: string; registration_number: string; legal_address: string };
 
@@ -118,6 +122,7 @@ export function Profile() {
   const legalProfile = data.legal_profile as Row | null;
   const payoutProfile = data.payout_profile as Row | null;
   const pendingChangeRequest = data.pending_legal_profile_change_request as Row | null;
+  const taxTreatment = data.tax_treatment as Row | null;
 
   return (
     <>
@@ -137,6 +142,18 @@ export function Profile() {
           <p>{legalProfile.opf ? `${String(legalProfile.opf)} ` : ""}{String(legalProfile.full_name)}{legalProfile.short_name ? ` (${String(legalProfile.short_name)})` : ""}</p>
           <p>ИНН: {String(legalProfile.inn)}{legalProfile.kpp ? ` · КПП: ${String(legalProfile.kpp)}` : ""}{legalProfile.registration_number ? ` · ${legalProfile.legal_form === "INDIVIDUAL_ENTREPRENEUR" ? "ОГРНИП" : "ОГРН"}: ${String(legalProfile.registration_number)}` : ""}</p>
           {Boolean(legalProfile.legal_address) && <p>Адрес: {String(legalProfile.legal_address)}</p>}
+        </section>
+      )}
+
+      {taxTreatment && (
+        <section className="card">
+          <h2>Налоговый режим</h2>
+          <p>
+            {TAX_SYSTEM_LABELS[String(taxTreatment.tax_system)] ?? String(taxTreatment.tax_system)}
+            {" · "}
+            {VAT_TREATMENT_LABELS[String(taxTreatment.vat_treatment)] ?? String(taxTreatment.vat_treatment)}
+          </p>
+          <p>Действует с {String(taxTreatment.effective_from)}</p>
         </section>
       )}
 

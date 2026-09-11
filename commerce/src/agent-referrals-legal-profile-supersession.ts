@@ -12,6 +12,7 @@ import { engagementsForPartner, type EngagementRow } from "./agent-referrals-eng
 import { currentEffectiveRewardSnapshot } from "./agent-referrals-reward-registry";
 import { zeroRewardClosureForEngagement } from "./agent-referrals-zero-reward-closure";
 import { settlementForEffectiveSnapshot, recoveryExposureEvidenceForEngagement } from "./agent-referrals-settlement";
+import { mintSystemDerivedNpdTaxTreatment } from "./agent-referrals-tax-treatment";
 // Type-only: erased at compile time, so this never becomes a runtime import
 // edge back to agent-referrals-partner-identity.ts, which itself imports
 // applyVerifiedLegalProfileForPartnerIdentity (a VALUE) from this module -
@@ -92,6 +93,17 @@ export const applyVerifiedLegalProfileForPartnerIdentity = (
       opf: input.opf, full_name: input.full_name, short_name: input.short_name, inn: input.inn,
       kpp: input.kpp, registration_number: input.registration_number, legal_address: input.legal_address,
     });
+
+    // PR-F: a legal profile freshly minted with tax_mode=NPD gets its NPD
+    // tax treatment atomically, in the SAME transaction - never a separate
+    // admin action. Only on an actual mint (never the idempotent same-
+    // semantic-profile no-op path, which reuses the EXISTING revision and
+    // therefore already has whatever treatment it already had), and only
+    // for NPD - any other tax_mode leaves this revision with zero treatment
+    // rows until an explicit admin-asserted one is recorded, by design.
+    if (result.minted && input.taxMode === "NPD") {
+      mintSystemDerivedNpdTaxTreatment(db, input.partnerIdentityId, result.revision_id);
+    }
 
     db.prepare(`UPDATE partner_identities SET legal_profile_revision_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
       .run(result.revision_id, input.partnerIdentityId);

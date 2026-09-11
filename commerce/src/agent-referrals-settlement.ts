@@ -7,6 +7,8 @@ import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
 import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
 import { correctEngagementEffectiveRewardSnapshot, currentEffectiveRewardSnapshot, type EffectiveRewardSnapshotRow } from "./agent-referrals-reward-registry";
 import { resolveCurrentLegalProfileBinding } from "./agent-referrals-legal-profile";
+import { resolveTaxTreatmentForLegalProfileAt } from "./agent-referrals-tax-treatment";
+import { canonicalizeSettlementTaxV1 } from "./agent-referrals-ord-canonical";
 import type { AdminPrincipal } from "./agent-referrals-partner-identity";
 
 /**
@@ -45,13 +47,18 @@ export type AgentReferralsSettlementRow = {
   legal_profile_revision_id_snapshot: string;
   supersedes_settlement_id: string | null;
   cancellation_reason: string | null;
+  tax_treatment_revision_id_snapshot: string;
+  tax_canonicalization_version: string;
+  tax_canonical_json: string;
+  tax_canonical_hash: string;
   prepared_at: string;
   created_by_admin_id: string;
 };
 
 const SETTLEMENT_COLUMNS = `id, agent_id, occurrence_id, amount_kopecks, status, settlement_flow, engagement_id, engagement_revision_id,
   base_registry_snapshot_id, reward_registry_hash, effective_reward_snapshot_id, partner_identity_id, payout_profile_revision_id, tax_mode_snapshot,
-  legal_profile_revision_id_snapshot, supersedes_settlement_id, cancellation_reason, prepared_at, created_by_admin_id`;
+  legal_profile_revision_id_snapshot, supersedes_settlement_id, cancellation_reason,
+  tax_treatment_revision_id_snapshot, tax_canonicalization_version, tax_canonical_json, tax_canonical_hash, prepared_at, created_by_admin_id`;
 
 export const agentReferralsSettlementById = (db: Database.Database, settlementId: string): AgentReferralsSettlementRow | null =>
   (db.prepare(`SELECT ${SETTLEMENT_COLUMNS} FROM reward_settlements WHERE id = ? AND settlement_flow = 'AGENT_REFERRALS'`)
@@ -87,6 +94,11 @@ type SettlementContext = {
   taxMode: "NPD" | "OTHER";
   legalProfileRevisionId: string;
   rewardRegistryHash: string;
+  taxTreatmentRevisionId: string;
+  taxCanonicalizationVersion: string;
+  taxCanonicalJson: string;
+  taxCanonicalHash: string;
+  preparedAt: string;
 };
 
 /**
@@ -150,10 +162,34 @@ const resolveSettlementContext = (db: Database.Database, effectiveRewardSnapshot
   const payoutProfile = currentPayoutProfile(db, partnerIdentity.id);
   if (!payoutProfile || payoutProfile.kind !== "ACTIVE_DESTINATION") throw new SettlementError("AGENT_REFERRALS_SETTLEMENT_PAYOUT_PROFILE_UNUSABLE", 409, partnerIdentity.id);
 
+  // PR-F: resolved as of an explicit operational instant, named for exactly
+  // what it is - NOT asserted as a legal VAT tax point (that determination
+  // depends on facts and NK RF rules this codebase does not model). For v1
+  // this is the settlement-preparation instant; a future revision may
+  // resolve against a different, more precisely-defined business instant
+  // without changing this function's own contract (one instant, resolved
+  // once, pinned forever - never re-resolved for an already-minted
+  // settlement).
+  //
+  // Captured EXACTLY once here (review round 1, P1.2) and reused below AND
+  // by mintAgentReferralsSettlement's own prepared_at - not a second,
+  // independent now() call there. Two separate clock reads could otherwise
+  // straddle a tax-treatment boundary (a treatment with effective_from
+  // falling between the two reads), leaving an immutable settlement whose
+  // own prepared_at is already past a treatment its own pinned snapshot
+  // does not reflect - silently contradicting this comment's own claim that
+  // the resolution instant IS the settlement-preparation instant.
+  const preparedAt = now();
+  const taxTreatment = resolveTaxTreatmentForLegalProfileAt(db, currentLegalProfile.id, preparedAt);
+  if (!taxTreatment) throw new SettlementError("AGENT_REFERRALS_TAX_TREATMENT_MISSING", 409, currentLegalProfile.id);
+  const taxCanonical = canonicalizeSettlementTaxV1(taxTreatment);
+
   return {
     effective, engagement, partnerIdentityId: partnerIdentity.id, agentId: partnerIdentity.agent_id, contractorType: currentLegalProfile.projected_contractor_type,
     payoutProfileRevisionId: payoutProfile.id, taxMode: currentLegalProfile.tax_mode, legalProfileRevisionId: currentLegalProfile.id,
     rewardRegistryHash: registry.source_state_hash,
+    taxTreatmentRevisionId: taxTreatment.id, taxCanonicalizationVersion: taxCanonical.version, taxCanonicalJson: taxCanonical.canonical_json, taxCanonicalHash: taxCanonical.canonical_hash,
+    preparedAt,
   };
 };
 
@@ -167,12 +203,14 @@ const mintAgentReferralsSettlement = (
   db.prepare(`INSERT INTO reward_settlements(
       id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id,
       settlement_flow, engagement_id, engagement_revision_id, base_registry_snapshot_id, reward_registry_hash, effective_reward_snapshot_id,
-      partner_identity_id, payout_profile_revision_id, tax_mode_snapshot, legal_profile_revision_id_snapshot, supersedes_settlement_id)
-    VALUES (?, ?, ?, ?, 'PAYOUT_PROFILE', 'PREPARED', ?, ?, ?, 'AGENT_REFERRALS', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      partner_identity_id, payout_profile_revision_id, tax_mode_snapshot, legal_profile_revision_id_snapshot, supersedes_settlement_id,
+      tax_treatment_revision_id_snapshot, tax_canonicalization_version, tax_canonical_json, tax_canonical_hash)
+    VALUES (?, ?, ?, ?, 'PAYOUT_PROFILE', 'PREPARED', ?, ?, ?, 'AGENT_REFERRALS', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(
-      settlementId, context.agentId, context.engagement.occurrence_id, context.effective.reward_total_kopecks, context.contractorType, now(), admin.admin_id,
+      settlementId, context.agentId, context.engagement.occurrence_id, context.effective.reward_total_kopecks, context.contractorType, context.preparedAt, admin.admin_id,
       context.effective.engagement_id, context.effective.engagement_revision_id, context.effective.base_registry_snapshot_id, context.rewardRegistryHash, context.effective.id,
       context.partnerIdentityId, context.payoutProfileRevisionId, context.taxMode, context.legalProfileRevisionId, supersedesSettlementId,
+      context.taxTreatmentRevisionId, context.taxCanonicalizationVersion, context.taxCanonicalJson, context.taxCanonicalHash,
     );
   return agentReferralsSettlementById(db, settlementId)!;
 };

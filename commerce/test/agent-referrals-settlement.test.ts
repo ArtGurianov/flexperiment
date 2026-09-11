@@ -1,12 +1,17 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import * as cryptoModule from "../src/crypto";
 import { AgentReferralsSuspensionPolicyError } from "../src/agent-referrals-suspension-policy";
 import { suspendAgentReferrals } from "../src/agent-referrals-feature-state";
 import { finalizeEngagementRewardRegistry, currentEffectiveRewardSnapshot } from "../src/agent-referrals-reward-registry";
 import { preparePartnerSettlement, correctPartnerRewardWithSettlement, recoveryExposure, recoveryExposureEvidenceForEngagement, SettlementError } from "../src/agent-referrals-settlement";
 import { beginPayment, recordPaymentMade } from "../src/agent-referrals-payment";
 import { CommerceDomain } from "../src/domain";
+import { canonicalizeSettlementTaxV1 } from "../src/agent-referrals-ord-canonical";
+import { resolveTaxTreatmentForLegalProfileAt } from "../src/agent-referrals-tax-treatment";
+import { submitLegalProfileSupersession, verifyLegalProfileSupersession } from "../src/agent-referrals-legal-profile-supersession";
+import { currentAgentReferralsLegalProfile } from "../src/agent-referrals-legal-profile";
 import {
   fresh, admin, readyPartner, seedOccurrence, nearTermTerms, offerAcceptActivate, purchaseAndPay, closeAndComplete,
   finalizedSettlement, acceptedAct, seedLegacyReferralReward,
@@ -64,9 +69,11 @@ describe("preparePartnerSettlement: F10, the amount is derived, never supplied",
     preparePartnerSettlement(db, admin, finalize.effective_snapshot_id);
     // A raw second attempt bypassing the application-level replay check entirely.
     expect(() => db.prepare(`INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id,
-        settlement_flow, engagement_id, engagement_revision_id, base_registry_snapshot_id, reward_registry_hash, effective_reward_snapshot_id, partner_identity_id, payout_profile_revision_id, tax_mode_snapshot, legal_profile_revision_id_snapshot)
+        settlement_flow, engagement_id, engagement_revision_id, base_registry_snapshot_id, reward_registry_hash, effective_reward_snapshot_id, partner_identity_id, payout_profile_revision_id, tax_mode_snapshot, legal_profile_revision_id_snapshot,
+        tax_treatment_revision_id_snapshot, tax_canonicalization_version, tax_canonical_json, tax_canonical_hash)
       SELECT ?, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id,
-        settlement_flow, engagement_id, engagement_revision_id, base_registry_snapshot_id, reward_registry_hash, effective_reward_snapshot_id, partner_identity_id, payout_profile_revision_id, tax_mode_snapshot, legal_profile_revision_id_snapshot
+        settlement_flow, engagement_id, engagement_revision_id, base_registry_snapshot_id, reward_registry_hash, effective_reward_snapshot_id, partner_identity_id, payout_profile_revision_id, tax_mode_snapshot, legal_profile_revision_id_snapshot,
+        tax_treatment_revision_id_snapshot, tax_canonicalization_version, tax_canonical_json, tax_canonical_hash
       FROM reward_settlements WHERE effective_reward_snapshot_id = ?`).run(randomUUID(), finalize.effective_snapshot_id)).toThrow(/UNIQUE constraint failed/);
   });
 
@@ -383,6 +390,109 @@ describe("legacy settlement regression: genuinely unchanged behavior", () => {
       VALUES (?, ?, ?, 4000, 'bank_transfer', 'PREPARED', 'SELF_EMPLOYED', datetime('now'), 'admin-1', 'LEGACY')`).run(settlementId, agentId, occurrenceId);
     domain.markSettlementPaymentMade(settlementId, "I confirm the money was transferred", "idem-legacy-historical-1");
     expect(db.prepare("SELECT status FROM reward_settlements WHERE id = ?").get(settlementId)).toEqual({ status: "PENDING_DOCUMENT" });
+  });
+});
+
+describe("PR-F: tax-treatment snapshot pinning", () => {
+  it("prepares a settlement whose tax snapshot byte-matches canonicalizeSettlementTaxV1's own output for the current treatment", () => {
+    const { db, domain } = fresh(); track(db);
+    const p1 = readyPartner(db);
+    const occ = seedOccurrence(db, p1.cityId, 100_000);
+    const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, nearTermTerms(1000, "PERCENT", 1000));
+    const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
+    purchaseAndPay(db, domain, occ, code.code, "settle-tax1@example.test", "idem-settle-tax1-0000001");
+    closeAndComplete(db, domain, occ);
+    const finalize = finalizeEngagementRewardRegistry(db, admin, engagementId, "occurrence completed");
+
+    const { settlement } = preparePartnerSettlement(db, admin, finalize.effective_snapshot_id);
+    const legalProfile = currentAgentReferralsLegalProfile(db, p1.agentId)!;
+    const treatment = db.prepare("SELECT * FROM agent_referrals_tax_treatment_revisions WHERE legal_profile_revision_id = ?").get(legalProfile.id) as
+      Parameters<typeof canonicalizeSettlementTaxV1>[0];
+    const expected = canonicalizeSettlementTaxV1(treatment);
+
+    expect(settlement.tax_treatment_revision_id_snapshot).toBe(treatment.id);
+    expect(settlement.tax_canonicalization_version).toBe(expected.version);
+    expect(settlement.tax_canonical_hash).toBe(expected.canonical_hash);
+    expect(settlement.tax_canonical_json).toBe(expected.canonical_json);
+  });
+
+  it("refuses AGENT_REFERRALS_TAX_TREATMENT_MISSING when the current legal profile has no tax treatment recorded yet", () => {
+    const { db, domain } = fresh(); track(db);
+    const p1 = readyPartner(db, "NPD");
+    const legalEntityRequisites = { opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" };
+    const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf" });
+    // Nothing outstanding blocks this supersession: readyPartner mints no engagement of its own.
+    const outcome = verifyLegalProfileSupersession(db, admin, request.id, "verify");
+    expect(outcome).toMatchObject({ outcome: "VERIFIED" });
+
+    const occ = seedOccurrence(db, p1.cityId, 100_000);
+    const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, nearTermTerms(1000, "PERCENT", 1000));
+    const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
+    purchaseAndPay(db, domain, occ, code.code, "settle-tax2@example.test", "idem-settle-tax2-0000001");
+    closeAndComplete(db, domain, occ);
+    const finalize = finalizeEngagementRewardRegistry(db, admin, engagementId, "occurrence completed");
+
+    expect(() => preparePartnerSettlement(db, admin, finalize.effective_snapshot_id)).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_MISSING/);
+  });
+
+  it("historical pin: a LATER tax-treatment correction leaves an already-prepared settlement's own snapshot byte-identical", () => {
+    const { db, domain } = fresh(); track(db);
+    const p1 = readyPartner(db);
+    const occ = seedOccurrence(db, p1.cityId, 100_000);
+    const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, nearTermTerms(1000, "PERCENT", 1000));
+    const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
+    purchaseAndPay(db, domain, occ, code.code, "settle-tax3@example.test", "idem-settle-tax3-0000001");
+    closeAndComplete(db, domain, occ);
+    const finalize = finalizeEngagementRewardRegistry(db, admin, engagementId, "occurrence completed");
+    const { settlement: before } = preparePartnerSettlement(db, admin, finalize.effective_snapshot_id);
+
+    // readyPartner's own fixture is NPD (SYSTEM_DERIVED); superseding to
+    // LEGAL_ENTITY/OTHER and recording a NEW tax treatment for the NEW
+    // revision must never reach back and mutate the settlement already
+    // prepared under the OLD revision/treatment.
+    const legalEntityRequisites = { opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" };
+    const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf" });
+    // BLOCKED (outstanding settlement) is expected here and is not the
+    // point of this test - it proves the historical row is untouched
+    // regardless of whether the supersession itself could even complete.
+    const blockedOutcome = verifyLegalProfileSupersession(db, admin, request.id, "verify");
+    expect(blockedOutcome).toMatchObject({ outcome: "BLOCKED" });
+
+    const after = db.prepare("SELECT tax_treatment_revision_id_snapshot, tax_canonicalization_version, tax_canonical_json, tax_canonical_hash FROM reward_settlements WHERE id = ?").get(before.id);
+    expect(after).toEqual({
+      tax_treatment_revision_id_snapshot: before.tax_treatment_revision_id_snapshot,
+      tax_canonicalization_version: before.tax_canonicalization_version,
+      tax_canonical_json: before.tax_canonical_json,
+      tax_canonical_hash: before.tax_canonical_hash,
+    });
+  });
+
+  it("reads the clock exactly once for both tax-treatment resolution and prepared_at (P1.2 single-clock-read)", () => {
+    const { db, domain } = fresh(); track(db);
+    const p1 = readyPartner(db);
+    const occ = seedOccurrence(db, p1.cityId, 100_000);
+    const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, nearTermTerms(1000, "PERCENT", 1000));
+    const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
+    purchaseAndPay(db, domain, occ, code.code, "settle-tax-clock@example.test", "idem-settle-tax-clock-01");
+    closeAndComplete(db, domain, occ);
+    const finalize = finalizeEngagementRewardRegistry(db, admin, engagementId, "occurrence completed");
+
+    // A second, distinct clock read here (the P1.2 defect) would make
+    // prepared_at diverge from the instant actually used to resolve the
+    // pinned tax treatment - proven by counting calls, not just comparing
+    // two timestamps that would usually match anyway at millisecond
+    // resolution.
+    const nowSpy = vi.spyOn(cryptoModule, "now");
+    const callsBefore = nowSpy.mock.calls.length;
+    const { settlement } = preparePartnerSettlement(db, admin, finalize.effective_snapshot_id);
+    const nowCallsDuringPrepare = nowSpy.mock.calls.length - callsBefore;
+    nowSpy.mockRestore();
+
+    expect(nowCallsDuringPrepare).toBe(1);
+    const legalProfile = currentAgentReferralsLegalProfile(db, p1.agentId)!;
+    const treatment = db.prepare("SELECT id FROM agent_referrals_tax_treatment_revisions WHERE legal_profile_revision_id = ?").get(legalProfile.id) as { id: string };
+    expect(settlement.tax_treatment_revision_id_snapshot).toBe(treatment.id);
+    expect(resolveTaxTreatmentForLegalProfileAt(db, legalProfile.id, settlement.prepared_at)?.id).toBe(treatment.id);
   });
 });
 
