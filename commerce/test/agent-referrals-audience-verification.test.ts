@@ -55,7 +55,9 @@ const verify = (db: Database.Database, partnerId: string, cityId: string, reason
   return currentAudienceVerification(db, partnerId, cityId)!;
 };
 const revoke = (db: Database.Database, partnerId: string, cityId: string, reason: string, evidenceRef: string) =>
-  revokeAudienceVerificationForPartnerCity(db, admin, partnerId, cityId, reason, evidenceRef);
+  // 0 when nothing is on file: the refusal under test fires on "nothing is
+  // VERIFIED", and the pin must not turn that into a TypeError first.
+  revokeAudienceVerificationForPartnerCity(db, admin, partnerId, cityId, reason, evidenceRef, currentAudienceVerification(db, partnerId, cityId)?.aggregate_revision ?? 0);
 
 describe("audience verification: append-only, VERIFIED | REVOKED, no SUPERSEDED state", () => {
   it("verifyAudienceForPartnerCity (the sole top-level production entry point for VERIFIED) mints VERIFIED as revision 1 with no supersedes_event_id", () => {
@@ -74,7 +76,7 @@ describe("audience verification: append-only, VERIFIED | REVOKED, no SUPERSEDED 
     expect(audienceVerificationModule).not.toHaveProperty("revokeAudience");
     // Neither top-level entry point (both in agent-referrals-engagement.ts) has an eventKind parameter at all - structurally VERIFIED-only / REVOKED-only.
     expect(verifyAudienceForPartnerCity.length).toBe(7); // (db, admin, partnerIdentityId, cityId, validUntil, reason, evidenceRef)
-    expect(revokeAudienceVerificationForPartnerCity.length).toBe(6); // (db, admin, partnerIdentityId, cityId, reason, evidenceRef)
+    expect(revokeAudienceVerificationForPartnerCity.length).toBe(7); // (db, admin, partnerIdentityId, cityId, reason, evidenceRef, expectedAggregateRevision)
   });
 
   it("refuses REVOKED when there is nothing currently VERIFIED", () => {

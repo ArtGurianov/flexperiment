@@ -49,10 +49,10 @@ const legalEntityRequisites = { opf: "OOO", full_name: "Romashka LLC", inn: "123
 const advanceToFrameworkAccepted = (db: Database.Database) => {
   activateFeature(db);
   const { partner_identity_id } = provision(db);
-  submitPartnerLegalProfile(db, asPartner(partner_identity_id), "INDIVIDUAL", "NPD", individualRequisites);
+  submitPartnerLegalProfile(db, asPartner(partner_identity_id), "INDIVIDUAL", "NPD", individualRequisites, 0);
   verifyPartnerLegalProfile(db, admin, partner_identity_id, "verified");
-  const fw = mintFrameworkAgreementRevision(db, Object.fromEntries(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES.map((k) => [k, `${k} v1`])) as Record<(typeof FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES)[number], string>);
-  const dt = mintDelegationTemplateRevision(db, Object.fromEntries(DELEGATION_TEMPLATE_REQUIRED_CLAUSES.map((k) => [k, `${k} v1`])) as Record<(typeof DELEGATION_TEMPLATE_REQUIRED_CLAUSES)[number], string>);
+  const fw = mintFrameworkAgreementRevision(db, Object.fromEntries(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES.map((k) => [k, `${k} v1`])) as Record<(typeof FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES)[number], string>, null);
+  const dt = mintDelegationTemplateRevision(db, Object.fromEntries(DELEGATION_TEMPLATE_REQUIRED_CLAUSES.map((k) => [k, `${k} v1`])) as Record<(typeof DELEGATION_TEMPLATE_REQUIRED_CLAUSES)[number], string>, null);
   issueFrameworkToPartner(db, admin, partner_identity_id, fw.id, dt.id, "issued");
   // Framework acceptance itself is covered by its own dedicated test file;
   // here we only need onboarding to reach FRAMEWORK_ACCEPTED, so advance the
@@ -98,7 +98,7 @@ describe("onboarding state authority", () => {
       const db = fresh();
       activateFeature(db);
       const { partner_identity_id } = provision(db);
-      submitPartnerLegalProfile(db, asPartner(partner_identity_id), "INDIVIDUAL", "NPD", individualRequisites);
+      submitPartnerLegalProfile(db, asPartner(partner_identity_id), "INDIVIDUAL", "NPD", individualRequisites, 0);
       const identity = getPartnerIdentity(db, partner_identity_id)!;
       expect(() => transitionOnboardingState(db, partner_identity_id, "INVITED", identity.onboarding_revision, "ADMIN", "backward"))
         .toThrow(/AGENT_REFERRALS_ONBOARDING_ILLEGAL_TRANSITION/);
@@ -117,7 +117,7 @@ describe("onboarding state authority", () => {
     const db = fresh();
     activateFeature(db);
     const { partner_identity_id } = provision(db);
-    submitPartnerLegalProfile(db, asPartner(partner_identity_id), "INDIVIDUAL", "NPD", individualRequisites);
+    submitPartnerLegalProfile(db, asPartner(partner_identity_id), "INDIVIDUAL", "NPD", individualRequisites, 0);
     const before = getPartnerIdentity(db, partner_identity_id)!;
     expect(() => transitionOnboardingState(db, partner_identity_id, "PROFILE_VERIFIED", 1 /* stale, real revision is 2 */, "ADMIN", "stale"))
       .toThrow(/AGENT_REFERRALS_ONBOARDING_REVISION_CONFLICT/);
@@ -129,7 +129,7 @@ describe("onboarding state authority", () => {
       const db = fresh();
       activateFeature(db);
       const { partner_identity_id } = provision(db);
-      submitPartnerLegalProfile(db, asPartner(partner_identity_id), "INDIVIDUAL", "NPD", individualRequisites);
+      submitPartnerLegalProfile(db, asPartner(partner_identity_id), "INDIVIDUAL", "NPD", individualRequisites, 0);
       expect(getPartnerIdentity(db, partner_identity_id)!.onboarding_state).toBe("PROFILE_SUBMITTED");
       // No partner-authority function verifies. Admin can:
       verifyPartnerLegalProfile(db, admin, partner_identity_id, "verified by admin");
@@ -147,9 +147,9 @@ describe("onboarding state authority", () => {
       const db = fresh();
       activateFeature(db);
       const { partner_identity_id } = provision(db);
-      submitPartnerLegalProfile(db, asPartner(partner_identity_id), "INDIVIDUAL", "NPD", individualRequisites);
+      submitPartnerLegalProfile(db, asPartner(partner_identity_id), "INDIVIDUAL", "NPD", individualRequisites, 0);
       verifyPartnerLegalProfile(db, admin, partner_identity_id, "verified");
-      expect(() => submitPartnerLegalProfile(db, asPartner(partner_identity_id), "LEGAL_ENTITY", "OTHER", legalEntityRequisites))
+      expect(() => submitPartnerLegalProfile(db, asPartner(partner_identity_id), "LEGAL_ENTITY", "OTHER", legalEntityRequisites, 0))
         .toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_SUBMISSION_LOCKED/);
     });
 
@@ -161,12 +161,12 @@ describe("onboarding state authority", () => {
       // PR-E: submitPartnerLegalProfile now runs the full matrix validator
       // before ever writing the draft - a rejected combination is refused
       // here, not deferred to verify() the way PR3/PR4 originally left it.
-      expect(() => submitPartnerLegalProfile(db, asPartner(partner_identity_id), "LEGAL_ENTITY", "NPD" as never, legalEntityRequisites))
+      expect(() => submitPartnerLegalProfile(db, asPartner(partner_identity_id), "LEGAL_ENTITY", "NPD" as never, legalEntityRequisites, 0))
         .toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_REJECTED_COMBINATION/);
       expect(getPartnerIdentity(db, partner_identity_id)!.submitted_legal_form).toBeNull();
       expect(getPartnerIdentity(db, partner_identity_id)!.onboarding_state).toBe("INVITED");
 
-      submitPartnerLegalProfile(db, asPartner(partner_identity_id), "LEGAL_ENTITY", "OTHER", legalEntityRequisites);
+      submitPartnerLegalProfile(db, asPartner(partner_identity_id), "LEGAL_ENTITY", "OTHER", legalEntityRequisites, 0);
       const verified = verifyPartnerLegalProfile(db, admin, partner_identity_id, "verify");
       expect(verified.onboarding_state).toBe("PROFILE_VERIFIED");
       const agentRow = db.prepare("SELECT contractor_type FROM agents WHERE id = ?").get(identity.agent_id) as { contractor_type: string };
@@ -189,12 +189,12 @@ describe("onboarding state authority", () => {
     const a = provision(db);
     const b = provision(db);
     const c = provision(db);
-    submitPartnerLegalProfile(db, asPartner(a.partner_identity_id), "INDIVIDUAL", "NPD", individualRequisites);
+    submitPartnerLegalProfile(db, asPartner(a.partner_identity_id), "INDIVIDUAL", "NPD", individualRequisites, 0);
     expect(getPartnerIdentity(db, a.partner_identity_id)!.onboarding_state).toBe("PROFILE_SUBMITTED");
     expect(getPartnerIdentity(db, b.partner_identity_id)!.onboarding_state).toBe("INVITED");
     expect(getPartnerIdentity(db, c.partner_identity_id)!.onboarding_state).toBe("INVITED");
     verifyPartnerLegalProfile(db, admin, a.partner_identity_id, "verify a");
-    submitPartnerLegalProfile(db, asPartner(b.partner_identity_id), "INDIVIDUAL_ENTREPRENEUR", "OTHER", individualEntrepreneurRequisites);
+    submitPartnerLegalProfile(db, asPartner(b.partner_identity_id), "INDIVIDUAL_ENTREPRENEUR", "OTHER", individualEntrepreneurRequisites, 0);
     expect(getPartnerIdentity(db, a.partner_identity_id)!.onboarding_state).toBe("PROFILE_VERIFIED");
     expect(getPartnerIdentity(db, b.partner_identity_id)!.onboarding_state).toBe("PROFILE_SUBMITTED");
     expect(getPartnerIdentity(db, c.partner_identity_id)!.onboarding_state).toBe("INVITED");
@@ -204,7 +204,7 @@ describe("onboarding state authority", () => {
     const db = fresh();
     activateFeature(db);
     const { partner_identity_id } = provision(db);
-    submitPartnerLegalProfile(db, asPartner(partner_identity_id), "INDIVIDUAL", "NPD", individualRequisites);
+    submitPartnerLegalProfile(db, asPartner(partner_identity_id), "INDIVIDUAL", "NPD", individualRequisites, 0);
     const identity = getPartnerIdentity(db, partner_identity_id)!;
 
     const winner = transitionOnboardingState(db, partner_identity_id, "PROFILE_VERIFIED", identity.onboarding_revision, "ADMIN", "winner");

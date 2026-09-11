@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { migrate, openDatabase } from "../src/db";
 import { activateAgentReferrals, suspendAgentReferrals } from "../src/agent-referrals-feature-state";
-import { mintOrdProviderProfile } from "../src/agent-referrals-ord-provider-profile";
+import { mintOrdProviderProfile, currentOrdProviderProfile } from "../src/agent-referrals-ord-provider-profile";
 import {
   openOrdProviderOperation, recordOrdProviderOperationSubmitted, confirmOrdProviderOperation, recordOrdProviderOperationErirReconciliation, lockOrdProviderOperation,
   currentOrdProviderOperation, OrdProviderOperationError,
@@ -37,8 +37,8 @@ const admin = "admin-1";
 describe("openOrdProviderOperation: provider-operation authority (revision chain)", () => {
   it("mints a DRAFT/MUTABLE revision-1 operation pinned to the CURRENT profile of that kind", () => {
     const db = fresh();
-    const profile = mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed");
-    const { operation, replayed } = openOrdProviderOperation(db, admin, "COUNTERPARTY");
+    const profile = mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed", currentOrdProviderProfile(db, "COUNTERPARTY")?.id ?? null);
+    const { operation, replayed } = openOrdProviderOperation(db, admin, "COUNTERPARTY", currentOrdProviderOperation(db, "COUNTERPARTY")?.id ?? null);
     expect(replayed).toBe(false);
     expect(operation.operation_kind).toBe("COUNTERPARTY");
     expect(operation.revision).toBe(1);
@@ -49,14 +49,14 @@ describe("openOrdProviderOperation: provider-operation authority (revision chain
 
   it("refuses when no profile of that kind exists yet", () => {
     const db = fresh();
-    expect(() => openOrdProviderOperation(db, admin, "PLATFORM")).toThrow(/AGENT_REFERRALS_ORD_PROVIDER_PROFILE_MISSING/);
+    expect(() => openOrdProviderOperation(db, admin, "PLATFORM", currentOrdProviderOperation(db, "PLATFORM")?.id ?? null)).toThrow(/AGENT_REFERRALS_ORD_PROVIDER_PROFILE_MISSING/);
   });
 
   it("is idempotent while still DRAFT", () => {
     const db = fresh();
-    mintOrdProviderProfile(db, admin, "CONTRACT", { ref: "C-1" }, "seed");
-    const first = openOrdProviderOperation(db, admin, "CONTRACT");
-    const second = openOrdProviderOperation(db, admin, "CONTRACT");
+    mintOrdProviderProfile(db, admin, "CONTRACT", { ref: "C-1" }, "seed", currentOrdProviderProfile(db, "CONTRACT")?.id ?? null);
+    const first = openOrdProviderOperation(db, admin, "CONTRACT", currentOrdProviderOperation(db, "CONTRACT")?.id ?? null);
+    const second = openOrdProviderOperation(db, admin, "CONTRACT", currentOrdProviderOperation(db, "CONTRACT")?.id ?? null);
     expect(second.replayed).toBe(true);
     expect(second.operation.id).toBe(first.operation.id);
   });
@@ -64,13 +64,13 @@ describe("openOrdProviderOperation: provider-operation authority (revision chain
   it("refuses under DORMANT", () => {
     const file = join(mkdtempSync(join(tmpdir(), "ord-provider-operation-dormant-")), "commerce.sqlite");
     const db = openDatabase(file); migrate(db); open.push(db);
-    expect(() => openOrdProviderOperation(db, admin, "COUNTERPARTY")).toThrow(/AGENT_REFERRALS_FEATURE_DORMANT/);
+    expect(() => openOrdProviderOperation(db, admin, "COUNTERPARTY", currentOrdProviderOperation(db, "COUNTERPARTY")?.id ?? null)).toThrow(/AGENT_REFERRALS_FEATURE_DORMANT/);
   });
 
   it("refuses under SUSPENDED, even completing an already-DRAFT operation", () => {
     const db = fresh();
-    mintOrdProviderProfile(db, admin, "MEDIA", { media_ref: "site" }, "seed");
-    const { operation } = openOrdProviderOperation(db, admin, "MEDIA");
+    mintOrdProviderProfile(db, admin, "MEDIA", { media_ref: "site" }, "seed", currentOrdProviderProfile(db, "MEDIA")?.id ?? null);
+    const { operation } = openOrdProviderOperation(db, admin, "MEDIA", currentOrdProviderOperation(db, "MEDIA")?.id ?? null);
     suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "pause" });
     expect(() => recordOrdProviderOperationSubmitted(db, operation.id, "vk-ext-1", "ev")).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
   });
@@ -79,8 +79,8 @@ describe("openOrdProviderOperation: provider-operation authority (revision chain
 describe("submit -> confirm -> CORRECTION_ONLY -> correction -> lock", () => {
   it("the full manual lifecycle", () => {
     const db = fresh();
-    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed");
-    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY");
+    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed", currentOrdProviderProfile(db, "COUNTERPARTY")?.id ?? null);
+    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY", currentOrdProviderOperation(db, "COUNTERPARTY")?.id ?? null);
     const submitted = recordOrdProviderOperationSubmitted(db, operation.id, "vk-ext-1", "ev-submit");
     expect(submitted.local_state).toBe("SUBMITTED");
     expect(submitted.lock_state).toBe("MUTABLE");
@@ -89,7 +89,7 @@ describe("submit -> confirm -> CORRECTION_ONLY -> correction -> lock", () => {
     expect(confirmed.lock_state).toBe("CORRECTION_ONLY");
 
     // A genuine correction: reopen mints revision 2.
-    const { operation: reopened, replayed } = openOrdProviderOperation(db, admin, "COUNTERPARTY");
+    const { operation: reopened, replayed } = openOrdProviderOperation(db, admin, "COUNTERPARTY", currentOrdProviderOperation(db, "COUNTERPARTY")?.id ?? null);
     expect(replayed).toBe(false);
     expect(reopened.revision).toBe(2);
     expect(reopened.supersedes_operation_id).toBe(operation.id);
@@ -103,15 +103,15 @@ describe("submit -> confirm -> CORRECTION_ONLY -> correction -> lock", () => {
 
   it("confirmOrdProviderOperation refuses before a real submission", () => {
     const db = fresh();
-    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed");
-    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY");
+    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed", currentOrdProviderProfile(db, "COUNTERPARTY")?.id ?? null);
+    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY", currentOrdProviderOperation(db, "COUNTERPARTY")?.id ?? null);
     expect(() => confirmOrdProviderOperation(db, operation.id)).toThrow(/AGENT_REFERRALS_ORD_PROVIDER_OPERATION_NOT_SUBMITTED/);
   });
 
   it("once CORRECTION_ONLY, no raw field edit is legal except the one-way transition to EXTERNALLY_LOCKED", () => {
     const db = fresh();
-    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed");
-    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY");
+    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed", currentOrdProviderProfile(db, "COUNTERPARTY")?.id ?? null);
+    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY", currentOrdProviderOperation(db, "COUNTERPARTY")?.id ?? null);
     recordOrdProviderOperationSubmitted(db, operation.id, "vk-ext-1", "ev");
     const confirmed = confirmOrdProviderOperation(db, operation.id);
     expect(() => db.prepare("UPDATE ord_provider_operations SET evidence_ref = 'x' WHERE id = ?").run(confirmed.id)).toThrow(/ORD_PROVIDER_OPERATION_CORRECTION_ONLY/);
@@ -119,8 +119,8 @@ describe("submit -> confirm -> CORRECTION_ONLY -> correction -> lock", () => {
 
   it("a raw INSERT of revision 2 naming a predecessor that was NOT itself CORRECTION_ONLY (still MUTABLE) is refused", () => {
     const db = fresh();
-    const profile = mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed");
-    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY"); // stays MUTABLE
+    const profile = mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed", currentOrdProviderProfile(db, "COUNTERPARTY")?.id ?? null);
+    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY", currentOrdProviderOperation(db, "COUNTERPARTY")?.id ?? null); // stays MUTABLE
     expect(() => db.prepare(`INSERT INTO ord_provider_operations(id, operation_kind, revision, supersedes_operation_id, provider_profile_revision_id, operation_key, local_state, vk_submission_state, vk_external_id, evidence_ref, lock_state, correction_reason, created_by_admin_id)
       VALUES (?, 'COUNTERPARTY', 2, ?, ?, 'op-badpred', 'CONFIRMED', 'SUBMITTED', 'x', 'ev', 'CORRECTION_ONLY', 'bad', 'admin')`)
       .run(randomUUID(), operation.id, profile.id)).toThrow(/ORD_PROVIDER_OPERATION_RELATIONAL_INCONSISTENT/);
@@ -128,38 +128,38 @@ describe("submit -> confirm -> CORRECTION_ONLY -> correction -> lock", () => {
 
   it("a raw INSERT pinning a STALE (superseded) provider profile revision is refused", () => {
     const db = fresh();
-    const v1 = mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "v1" }, "seed");
-    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "v2" }, "revision 2"); // now current
+    const v1 = mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "v1" }, "seed", currentOrdProviderProfile(db, "COUNTERPARTY")?.id ?? null);
+    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "v2" }, "revision 2", currentOrdProviderProfile(db, "COUNTERPARTY")?.id ?? null); // now current
     expect(() => db.prepare(`INSERT INTO ord_provider_operations(id, operation_kind, revision, provider_profile_revision_id, operation_key, created_by_admin_id)
       VALUES (?, 'COUNTERPARTY', 1, ?, 'op-stale', 'admin')`).run(randomUUID(), v1.id)).toThrow(/ORD_PROVIDER_OPERATION_RELATIONAL_INCONSISTENT/);
   });
 
   it("a provider-observed id, once set, can never be overwritten to a different value", () => {
     const db = fresh();
-    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed");
-    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY");
+    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed", currentOrdProviderProfile(db, "COUNTERPARTY")?.id ?? null);
+    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY", currentOrdProviderOperation(db, "COUNTERPARTY")?.id ?? null);
     recordOrdProviderOperationSubmitted(db, operation.id, "vk-ext-1", "ev");
     expect(() => db.prepare("UPDATE ord_provider_operations SET vk_external_id = 'vk-ext-REWRITTEN' WHERE id = ?").run(operation.id)).toThrow(/ORD_PROVIDER_OPERATION_OBSERVED_ID_IMMUTABLE/);
   });
 
   it("authority columns are DB-immutable even pre-lock", () => {
     const db = fresh();
-    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed");
-    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY");
+    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed", currentOrdProviderProfile(db, "COUNTERPARTY")?.id ?? null);
+    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY", currentOrdProviderOperation(db, "COUNTERPARTY")?.id ?? null);
     expect(() => db.prepare("UPDATE ord_provider_operations SET operation_key = 'different' WHERE id = ?").run(operation.id)).toThrow(/ORD_PROVIDER_OPERATION_AUTHORITY_COLUMNS_IMMUTABLE/);
   });
 
   it("delete is never legal", () => {
     const db = fresh();
-    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed");
-    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY");
+    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed", currentOrdProviderProfile(db, "COUNTERPARTY")?.id ?? null);
+    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY", currentOrdProviderOperation(db, "COUNTERPARTY")?.id ?? null);
     expect(() => db.prepare("DELETE FROM ord_provider_operations WHERE id = ?").run(operation.id)).toThrow(/ORD_PROVIDER_OPERATION_IMMUTABLE/);
   });
 
   it("once EXTERNALLY_LOCKED, no UPDATE of any kind is legal", () => {
     const db = fresh();
-    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed");
-    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY");
+    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed", currentOrdProviderProfile(db, "COUNTERPARTY")?.id ?? null);
+    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY", currentOrdProviderOperation(db, "COUNTERPARTY")?.id ?? null);
     recordOrdProviderOperationSubmitted(db, operation.id, "vk-ext-1", "ev");
     confirmOrdProviderOperation(db, operation.id);
     const locked = lockOrdProviderOperation(db, operation.id);
@@ -169,22 +169,22 @@ describe("submit -> confirm -> CORRECTION_ONLY -> correction -> lock", () => {
 
   it("refuses lockOrdProviderOperation on a still-MUTABLE operation", () => {
     const db = fresh();
-    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed");
-    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY");
+    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed", currentOrdProviderProfile(db, "COUNTERPARTY")?.id ?? null);
+    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY", currentOrdProviderOperation(db, "COUNTERPARTY")?.id ?? null);
     expect(() => lockOrdProviderOperation(db, operation.id)).toThrow(/AGENT_REFERRALS_ORD_PROVIDER_OPERATION_NOT_CORRECTABLE/);
   });
 
   it("round-3 P0.4: refuses to record ERIR on a still-DRAFT operation", () => {
     const db = fresh();
-    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed");
-    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY");
+    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed", currentOrdProviderProfile(db, "COUNTERPARTY")?.id ?? null);
+    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY", currentOrdProviderOperation(db, "COUNTERPARTY")?.id ?? null);
     expect(() => recordOrdProviderOperationErirReconciliation(db, operation.id, "erir-1", "ev")).toThrow(/AGENT_REFERRALS_ORD_PROVIDER_OPERATION_NOT_SUBMITTED/);
   });
 
   it("round-3 P0.4: an idempotent retry (same code + evidence) is a no-op; a GENUINELY different code is a real conflict", () => {
     const db = fresh();
-    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed");
-    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY");
+    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed", currentOrdProviderProfile(db, "COUNTERPARTY")?.id ?? null);
+    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY", currentOrdProviderOperation(db, "COUNTERPARTY")?.id ?? null);
     recordOrdProviderOperationSubmitted(db, operation.id, "vk-ext-1", "ev");
     const first = recordOrdProviderOperationErirReconciliation(db, operation.id, "erir-1", "ev-erir");
     const retry = recordOrdProviderOperationErirReconciliation(db, operation.id, "erir-1", "ev-erir");
@@ -194,8 +194,8 @@ describe("submit -> confirm -> CORRECTION_ONLY -> correction -> lock", () => {
 
   it("round-3 P0.4: a raw historical rewrite of erir_code is structurally impossible, even pre-lock", () => {
     const db = fresh();
-    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed");
-    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY");
+    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed", currentOrdProviderProfile(db, "COUNTERPARTY")?.id ?? null);
+    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY", currentOrdProviderOperation(db, "COUNTERPARTY")?.id ?? null);
     recordOrdProviderOperationSubmitted(db, operation.id, "vk-ext-1", "ev");
     recordOrdProviderOperationErirReconciliation(db, operation.id, "erir-1", "ev-erir");
     expect(() => db.prepare("UPDATE ord_provider_operations SET erir_code = 'erir-REWRITTEN' WHERE id = ?").run(operation.id))
@@ -204,8 +204,8 @@ describe("submit -> confirm -> CORRECTION_ONLY -> correction -> lock", () => {
 
   it("round-4 P1: a raw rewrite of erir_evidence_ref ALONE (erir_code left unchanged) is structurally impossible too - the (code, evidence) pair is immutable together", () => {
     const db = fresh();
-    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed");
-    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY");
+    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed", currentOrdProviderProfile(db, "COUNTERPARTY")?.id ?? null);
+    const { operation } = openOrdProviderOperation(db, admin, "COUNTERPARTY", currentOrdProviderOperation(db, "COUNTERPARTY")?.id ?? null);
     recordOrdProviderOperationSubmitted(db, operation.id, "vk-ext-1", "ev");
     recordOrdProviderOperationErirReconciliation(db, operation.id, "erir-1", "ev-erir");
     expect(() => db.prepare("UPDATE ord_provider_operations SET erir_evidence_ref = 'ev-erir-REWRITTEN' WHERE id = ?").run(operation.id))
@@ -214,11 +214,11 @@ describe("submit -> confirm -> CORRECTION_ONLY -> correction -> lock", () => {
 
   it("round-3 P1.4: refuses to lock a STALE (already-superseded) revision - only the CURRENT one may ever be locked", () => {
     const db = fresh();
-    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed");
-    const { operation: op1 } = openOrdProviderOperation(db, admin, "COUNTERPARTY");
+    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed", currentOrdProviderProfile(db, "COUNTERPARTY")?.id ?? null);
+    const { operation: op1 } = openOrdProviderOperation(db, admin, "COUNTERPARTY", currentOrdProviderOperation(db, "COUNTERPARTY")?.id ?? null);
     recordOrdProviderOperationSubmitted(db, op1.id, "vk-ext-1", "ev");
     confirmOrdProviderOperation(db, op1.id);
-    const { operation: op2 } = openOrdProviderOperation(db, admin, "COUNTERPARTY"); // reopen -> revision 2
+    const { operation: op2 } = openOrdProviderOperation(db, admin, "COUNTERPARTY", currentOrdProviderOperation(db, "COUNTERPARTY")?.id ?? null); // reopen -> revision 2
     expect(() => lockOrdProviderOperation(db, op1.id)).toThrow(/AGENT_REFERRALS_ORD_PROVIDER_OPERATION_STALE/);
     recordOrdProviderOperationSubmitted(db, op2.id, "vk-ext-2", "ev2");
     confirmOrdProviderOperation(db, op2.id);
@@ -227,11 +227,11 @@ describe("submit -> confirm -> CORRECTION_ONLY -> correction -> lock", () => {
 
   it("round-3 P1.4: a raw SQL attempt to lock a stale revision is refused at the DB level too", () => {
     const db = fresh();
-    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed");
-    const { operation: op1 } = openOrdProviderOperation(db, admin, "COUNTERPARTY");
+    mintOrdProviderProfile(db, admin, "COUNTERPARTY", { legal_name: "Flexperiment LLC" }, "seed", currentOrdProviderProfile(db, "COUNTERPARTY")?.id ?? null);
+    const { operation: op1 } = openOrdProviderOperation(db, admin, "COUNTERPARTY", currentOrdProviderOperation(db, "COUNTERPARTY")?.id ?? null);
     recordOrdProviderOperationSubmitted(db, op1.id, "vk-ext-1", "ev");
     confirmOrdProviderOperation(db, op1.id);
-    openOrdProviderOperation(db, admin, "COUNTERPARTY"); // reopen -> revision 2 exists now
+    openOrdProviderOperation(db, admin, "COUNTERPARTY", currentOrdProviderOperation(db, "COUNTERPARTY")?.id ?? null); // reopen -> revision 2 exists now
     expect(() => db.prepare("UPDATE ord_provider_operations SET lock_state = 'EXTERNALLY_LOCKED' WHERE id = ?").run(op1.id))
       .toThrow(/ORD_PROVIDER_OPERATION_LOCK_REQUIRES_CURRENT/);
   });

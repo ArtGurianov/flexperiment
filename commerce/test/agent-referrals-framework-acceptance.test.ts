@@ -6,7 +6,7 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import { activateAgentReferrals, suspendAgentReferrals } from "../src/agent-referrals-feature-state";
-import { FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES, mintFrameworkAgreementRevision, mintDelegationTemplateRevision } from "../src/agent-referrals-framework-delegation";
+import { FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES, mintFrameworkAgreementRevision, mintDelegationTemplateRevision, currentFrameworkAgreementRevision } from "../src/agent-referrals-framework-delegation";
 import { provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile, issueFrameworkToPartner, type AdminPrincipal, type PartnerPrincipal } from "../src/agent-referrals-partner-identity";
 import { getPartnerIdentity } from "../src/agent-referrals-onboarding";
 import { mintStepUpGrant } from "../src/agent-referrals-step-up";
@@ -36,11 +36,11 @@ const readyToAccept = (db: Database.Database) => {
   db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
     VALUES (?, ?, 'Agent', 'Agent Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId, `p-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
-  submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" });
+  submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);
   verifyPartnerLegalProfile(db, admin, partner_identity_id, "verified");
 
-  const fw = mintFrameworkAgreementRevision(db, framework());
-  const dt = mintDelegationTemplateRevision(db, delegation());
+  const fw = mintFrameworkAgreementRevision(db, framework(), null);
+  const dt = mintDelegationTemplateRevision(db, delegation(), null);
   issueFrameworkToPartner(db, admin, partner_identity_id, fw.id, dt.id, "issued");
 
   const sessionId = randomUUID();
@@ -113,7 +113,7 @@ describe("framework acceptance + effective ORD delegation: one atomic idempotent
       const grant1 = grantFor(db, partner, fw.id, dt.id);
       acceptFrameworkAndDelegation(db, partner, grant1, fw.id, dt.id);
 
-      const fw2 = mintFrameworkAgreementRevision(db, framework({ PARTNER_LEVY_OBLIGATION: "revised" }));
+      const fw2 = mintFrameworkAgreementRevision(db, framework({ PARTNER_LEVY_OBLIGATION: "revised" }), currentFrameworkAgreementRevision(db)!.id);
       const grant2 = grantFor(db, partner, fw2.id, dt.id);
       expect(() => acceptFrameworkAndDelegation(db, partner, grant2, fw2.id, dt.id)).toThrow(/AGENT_REFERRALS_FRAMEWORK_ACCEPTANCE_MISMATCHED_ISSUANCE/);
       expect(db.prepare("SELECT COUNT(*) AS n FROM framework_acceptances").get()).toEqual({ n: 1 });
@@ -132,8 +132,8 @@ describe("framework acceptance + effective ORD delegation: one atomic idempotent
       const sessionId = randomUUID();
       db.prepare(`INSERT INTO partner_sessions(id, partner_identity_id, token_hash, expires_at) VALUES (?, ?, ?, datetime('now', '+1 hour'))`).run(sessionId, partner_identity_id, randomUUID());
       const partner: PartnerPrincipal = { realm: "PARTNER", partner_identity_id, partner_session_id: sessionId };
-      const fw = mintFrameworkAgreementRevision(db, framework());
-      const dt = mintDelegationTemplateRevision(db, delegation());
+      const fw = mintFrameworkAgreementRevision(db, framework(), null);
+      const dt = mintDelegationTemplateRevision(db, delegation(), null);
       const grant = grantFor(db, partner, fw.id, dt.id);
       expect(() => acceptFrameworkAndDelegation(db, partner, grant, fw.id, dt.id)).toThrow(/AGENT_REFERRALS_FRAMEWORK_ACCEPTANCE_MISMATCHED_ISSUANCE/);
     });

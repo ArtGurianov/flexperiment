@@ -13,9 +13,9 @@ import { mintStepUpGrant } from "../src/agent-referrals-step-up";
 import { acceptFrameworkAndDelegation } from "../src/agent-referrals-framework-acceptance";
 import { createPartnerPromo } from "../src/agent-referrals-promo";
 import { mintEngagementStepUpGrant } from "../src/agent-referrals-engagement-step-up";
-import { offerEngagement, verifyAudienceForPartnerCity, acceptEngagement, activateEngagement, mintEngagementRevision, suspendEngagement, type EngagementRevisionTerms } from "../src/agent-referrals-engagement";
-import { mintCreativeRevision, authorizeCreative } from "../src/agent-referrals-creative";
-import { setAgentReferralsChannelPolicy } from "../src/agent-referrals-channel-policy";
+import { offerEngagement, verifyAudienceForPartnerCity, acceptEngagement, activateEngagement, mintEngagementRevision, suspendEngagement, type EngagementRevisionTerms, currentEngagementRevision, getEngagement } from "../src/agent-referrals-engagement";
+import { mintCreativeRevision, authorizeCreative, currentCreativeRevision, lastCreativeAuthorization } from "../src/agent-referrals-creative";
+import { setAgentReferralsChannelPolicy, currentAgentReferralsChannelPolicyRevision } from "../src/agent-referrals-channel-policy";
 import {
   DistributionError,
   claimRemoval,
@@ -27,8 +27,7 @@ import {
   markOverdueRemoval,
   markReviewCleared,
   reportDistribution,
-  requireRemoval,
-} from "../src/agent-referrals-distribution";
+  requireRemoval, currentDistributionRevision } from "../src/agent-referrals-distribution";
 
 const open: Database.Database[] = [];
 afterEach(() => { while (open.length) open.pop()!.close(); });
@@ -50,10 +49,10 @@ const readyPartner = (db: Database.Database) => {
   db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
     VALUES (?, ?, 'Agent', 'Agent Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
-  submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" });
+  submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
-  const fw = mintFrameworkAgreementRevision(db, clause(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES));
-  const dt = mintDelegationTemplateRevision(db, clause(DELEGATION_TEMPLATE_REQUIRED_CLAUSES));
+  const fw = mintFrameworkAgreementRevision(db, clause(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES), null);
+  const dt = mintDelegationTemplateRevision(db, clause(DELEGATION_TEMPLATE_REQUIRED_CLAUSES), null);
   issueFrameworkToPartner(db, admin, partnerIdentityId, fw.id, dt.id, "issued");
   const sessionId = randomUUID();
   db.prepare(`INSERT INTO partner_sessions(id, partner_identity_id, token_hash, expires_at) VALUES (?, ?, ?, datetime('now', '+1 hour'))`).run(sessionId, partnerIdentityId, randomUUID());
@@ -89,21 +88,21 @@ const readyEngagementWithCreative = (db: Database.Database) => {
   activateEngagement(db, admin, engagementId, revisionId);
   const creative = mintCreativeRevision(db, admin, engagementId, {
     format_kind: "post", media_ref: null, copy_text: "Buy now", cta_text: "Click", mandatory_labeling_text: "Реклама", creative_target_url: "https://flexperiment.ru/x?promo=ART",
-  });
-  const authorization = authorizeCreative(db, admin, engagementId, creative.id);
+  }, currentCreativeRevision(db, engagementId)?.id ?? null);
+  const authorization = authorizeCreative(db, admin, engagementId, creative.id, lastCreativeAuthorization(db, engagementId)?.id ?? null);
   return { ...p1, engagementId, revisionId, creativeId: creative.id, authorizationId: authorization.id, occurrenceId: occ };
 };
 
 /** Mints, accepts and activates a second engagement revision (and a second creative authorized to it), superseding the first authorization. */
 const supersedeAuthority = (db: Database.Database, engaged: ReturnType<typeof readyEngagementWithCreative>, overrides: Partial<EngagementRevisionTerms> = {}) => {
-  const revision2 = mintEngagementRevision(db, admin, engaged.engagementId, { ...terms1, ...overrides }, "material change");
+  const revision2 = mintEngagementRevision(db, admin, engaged.engagementId, { ...terms1, ...overrides }, "material change", currentEngagementRevision(db, engaged.engagementId)?.id ?? null);
   const grant2 = mintEngagementStepUpGrant(db, engaged.partner, "ENGAGEMENT_ACCEPTANCE", { engagement_id: engaged.engagementId, engagement_revision_id: revision2.id }).grant_id;
   acceptEngagement(db, engaged.partner, engaged.engagementId, revision2.id, grant2);
   activateEngagement(db, admin, engaged.engagementId, revision2.id);
   const creative2 = mintCreativeRevision(db, admin, engaged.engagementId, {
     format_kind: "post", media_ref: null, copy_text: "Buy now v2", cta_text: "Click", mandatory_labeling_text: "Реклама", creative_target_url: "https://flexperiment.ru/x?promo=ART",
-  });
-  authorizeCreative(db, admin, engaged.engagementId, creative2.id);
+  }, currentCreativeRevision(db, engaged.engagementId)?.id ?? null);
+  authorizeCreative(db, admin, engaged.engagementId, creative2.id, lastCreativeAuthorization(db, engaged.engagementId)?.id ?? null);
   return { revisionId: revision2.id, creativeId: creative2.id };
 };
 
@@ -126,7 +125,7 @@ describe("minimum actual-distribution facts: a reported distribution is ALWAYS p
   it("a BLOCKED channel is STILL PERSISTED, classified NONCOMPLIANT/REVIEW_REQUIRED - never rejected with a 4xx that loses the fact", () => {
     const db = fresh();
     const p1 = readyEngagementWithCreative(db);
-    setAgentReferralsChannelPolicy(db, { channel_key: "shady_platform", status: "BLOCKED", effective_from: "2020-01-01T00:00:00.000Z", reason: "not permitted" });
+    setAgentReferralsChannelPolicy(db, { channel_key: "shady_platform", status: "BLOCKED", effective_from: "2020-01-01T00:00:00.000Z", reason: "not permitted", expected_policy_revision: currentAgentReferralsChannelPolicyRevision(db, "shady_platform") });
     const before = db.prepare("SELECT COUNT(*) AS n FROM engagement_distributions").get() as { n: number };
     const result = report(db, p1.partner, p1.engagementId, { channel_key: "shady_platform" });
     const after = db.prepare("SELECT COUNT(*) AS n FROM engagement_distributions").get() as { n: number };
@@ -150,7 +149,7 @@ describe("minimum actual-distribution facts: a reported distribution is ALWAYS p
     const historical = report(db, p1.partner, p1.engagementId, { channel_key: "dzen", published_at: "2029-01-01T00:00:00.000Z" });
     expect(historical.revision.channel_policy_status).toBe("REVIEW_REQUIRED");
     // Admin reviews and clears "dzen" AFTER that publication.
-    setAgentReferralsChannelPolicy(db, { channel_key: "dzen", status: "ALLOWED", effective_from: "2030-01-01T00:00:00.000Z", reason: "reviewed" });
+    setAgentReferralsChannelPolicy(db, { channel_key: "dzen", status: "ALLOWED", effective_from: "2030-01-01T00:00:00.000Z", reason: "reviewed", expected_policy_revision: currentAgentReferralsChannelPolicyRevision(db, "dzen") });
     // The historical revision's classification is immutable evidence - it never changes retroactively.
     const stillHistorical = db.prepare("SELECT channel_policy_status FROM engagement_distribution_revisions WHERE id = ?").get(historical.revision.id) as { channel_policy_status: string };
     expect(stillHistorical.channel_policy_status).toBe("REVIEW_REQUIRED");
@@ -165,13 +164,13 @@ describe("correction lineage: a new revision with provenance, never an UPDATE ov
     const db = fresh();
     const p1 = readyEngagementWithCreative(db);
     const first = report(db, p1.partner, p1.engagementId, { distribution_resource_url: "https://t.me/art_channel/wrong" });
-    const corrected = correctDistribution(db, admin, first.distribution_id, { channel_key: "telegram", resource_kind: "channel", resource_identifier: "@art_channel", distribution_resource_url: "https://t.me/art_channel/right", published_at: "2030-09-10T00:00:00.000Z", ended_at: null, evidence_ref: "ev-2" }, "typo fix");
+    const corrected = correctDistribution(db, admin, first.distribution_id, { channel_key: "telegram", resource_kind: "channel", resource_identifier: "@art_channel", distribution_resource_url: "https://t.me/art_channel/right", published_at: "2030-09-10T00:00:00.000Z", ended_at: null, evidence_ref: "ev-2" }, "typo fix", currentDistributionRevision(db, first.distribution_id)!.id);
     expect(corrected.revision.revision).toBe(2);
     expect(corrected.revision.supersedes_revision_id).toBe(first.revision.id);
     const original = db.prepare("SELECT distribution_resource_url FROM engagement_distribution_revisions WHERE id = ?").get(first.revision.id) as { distribution_resource_url: string };
     expect(original.distribution_resource_url).toBe("https://t.me/art_channel/wrong"); // unchanged, kept for provenance
     // A second correction is a THIRD revision, not a uniqueness violation.
-    const secondCorrection = correctDistribution(db, admin, first.distribution_id, { channel_key: "telegram", resource_kind: "channel", resource_identifier: "@art_channel", distribution_resource_url: "https://t.me/art_channel/final", published_at: "2030-09-10T00:00:00.000Z", ended_at: null, evidence_ref: "ev-3" }, "second correction");
+    const secondCorrection = correctDistribution(db, admin, first.distribution_id, { channel_key: "telegram", resource_kind: "channel", resource_identifier: "@art_channel", distribution_resource_url: "https://t.me/art_channel/final", published_at: "2030-09-10T00:00:00.000Z", ended_at: null, evidence_ref: "ev-3" }, "second correction", currentDistributionRevision(db, first.distribution_id)!.id);
     expect(secondCorrection.revision.revision).toBe(3);
   });
 
@@ -179,7 +178,7 @@ describe("correction lineage: a new revision with provenance, never an UPDATE ov
     const db = fresh();
     const p1 = readyEngagementWithCreative(db);
     const first = report(db, p1.partner, p1.engagementId);
-    expect(() => correctDistribution(db, admin, first.distribution_id, { channel_key: "telegram", resource_kind: "channel", resource_identifier: "@x", distribution_resource_url: "https://t.me/x/2", published_at: "2030-09-10T00:00:00.000Z", ended_at: null, evidence_ref: "ev" }, "")).toThrow(DistributionError);
+    expect(() => correctDistribution(db, admin, first.distribution_id, { channel_key: "telegram", resource_kind: "channel", resource_identifier: "@x", distribution_resource_url: "https://t.me/x/2", published_at: "2030-09-10T00:00:00.000Z", ended_at: null, evidence_ref: "ev" }, "", currentDistributionRevision(db, first.distribution_id)!.id)).toThrow(DistributionError);
   });
 });
 
@@ -191,8 +190,8 @@ describe("removal lifecycle: per distribution, never an aggregate shortcut (§B-
     const d2 = report(db, p1.partner, p1.engagementId, { resource_identifier: "@c2", distribution_resource_url: "https://t.me/c2/1" });
     const d3 = report(db, p1.partner, p1.engagementId, { resource_identifier: "@c3", distribution_resource_url: "https://t.me/c3/1" });
 
-    requireRemoval(db, admin, d1.distribution_id, "manual review flagged");
-    confirmRemoval(db, admin, d1.distribution_id, "confirmed-evidence");
+    requireRemoval(db, admin, d1.distribution_id, "manual review flagged", distributionProjection(db, d1.distribution_id).event_sequence);
+    confirmRemoval(db, admin, d1.distribution_id, "confirmed-evidence", distributionProjection(db, d1.distribution_id).event_sequence);
     expect(distributionProjection(db, d1.distribution_id).removal_state).toBe("REMOVAL_CONFIRMED");
     expect(distributionProjection(db, d2.distribution_id).removal_state).toBeNull();
     expect(distributionProjection(db, d3.distribution_id).removal_state).toBeNull();
@@ -203,9 +202,9 @@ describe("removal lifecycle: per distribution, never an aggregate shortcut (§B-
     const db = fresh();
     const p1 = readyEngagementWithCreative(db);
     const d = report(db, p1.partner, p1.engagementId);
-    claimRemoval(db, p1.partner, d.distribution_id, "claim-evidence");
+    claimRemoval(db, p1.partner, d.distribution_id, "claim-evidence", distributionProjection(db, d.distribution_id).event_sequence);
     expect(distributionProjection(db, d.distribution_id).removal_state).toBe("REMOVAL_CLAIMED");
-    confirmRemoval(db, admin, d.distribution_id, "confirm-evidence");
+    confirmRemoval(db, admin, d.distribution_id, "confirm-evidence", distributionProjection(db, d.distribution_id).event_sequence);
     expect(distributionProjection(db, d.distribution_id).removal_state).toBe("REMOVAL_CONFIRMED");
     expect(distributionEvents(db, d.distribution_id).map((e) => e.event_kind)).toEqual(["DECLARED", "MARKED_REPORTABLE", "REMOVAL_CLAIMED", "REMOVAL_CONFIRMED"]);
   });
@@ -214,10 +213,10 @@ describe("removal lifecycle: per distribution, never an aggregate shortcut (§B-
     const db = fresh();
     const p1 = readyEngagementWithCreative(db);
     const d = report(db, p1.partner, p1.engagementId);
-    requireRemoval(db, admin, d.distribution_id, "manual review flagged");
-    markOverdueRemoval(db, admin, d.distribution_id, "still not removed");
+    requireRemoval(db, admin, d.distribution_id, "manual review flagged", distributionProjection(db, d.distribution_id).event_sequence);
+    markOverdueRemoval(db, admin, d.distribution_id, "still not removed", distributionProjection(db, d.distribution_id).event_sequence);
     expect(distributionProjection(db, d.distribution_id).removal_state).toBe("OVERDUE_REMOVAL");
-    confirmRemoval(db, admin, d.distribution_id, "finally confirmed");
+    confirmRemoval(db, admin, d.distribution_id, "finally confirmed", distributionProjection(db, d.distribution_id).event_sequence);
     expect(distributionProjection(db, d.distribution_id).removal_state).toBe("REMOVAL_CONFIRMED");
   });
 });
@@ -268,18 +267,18 @@ describe("partner ownership: a PARTNER may only write evidence for their own eng
     const real = report(db, engaged.partner, engaged.engagementId);
     expect(() => correctDistribution(db, otherPartner.partner, real.distribution_id,
       { channel_key: "telegram", resource_kind: "channel", resource_identifier: "@x", distribution_resource_url: "https://t.me/x/2", published_at: "2030-09-10T00:00:00.000Z", ended_at: null, evidence_ref: "ev" },
-      "not mine to correct")).toThrow(/AGENT_REFERRALS_DISTRIBUTION_WRONG_PARTNER/);
-    expect(() => claimRemoval(db, otherPartner.partner, real.distribution_id, "ev")).toThrow(/AGENT_REFERRALS_DISTRIBUTION_WRONG_PARTNER/);
+      "not mine to correct", currentDistributionRevision(db, real.distribution_id)!.id)).toThrow(/AGENT_REFERRALS_DISTRIBUTION_WRONG_PARTNER/);
+    expect(() => claimRemoval(db, otherPartner.partner, real.distribution_id, "ev", distributionProjection(db, real.distribution_id).event_sequence)).toThrow(/AGENT_REFERRALS_DISTRIBUTION_WRONG_PARTNER/);
     // The real owner still can.
-    expect(() => claimRemoval(db, engaged.partner, real.distribution_id, "ev")).not.toThrow();
+    expect(() => claimRemoval(db, engaged.partner, real.distribution_id, "ev", distributionProjection(db, real.distribution_id).event_sequence)).not.toThrow();
   });
 
   it("admin remains permitted for both engagement-scoped and distribution-scoped writes, regardless of which partner owns them", () => {
     const db = fresh();
     const engaged = readyEngagementWithCreative(db);
     const admin1 = reportDistribution(db, admin, engaged.engagementId, { channel_key: "telegram", resource_kind: "channel", resource_identifier: "@x", distribution_resource_url: "https://t.me/x/1", published_at: "2030-09-10T00:00:00.000Z", ended_at: null, evidence_ref: "ev" });
-    requireRemoval(db, admin, admin1.distribution_id, "manual review flagged");
-    expect(() => confirmRemoval(db, admin, admin1.distribution_id, "ev")).not.toThrow();
+    requireRemoval(db, admin, admin1.distribution_id, "manual review flagged", distributionProjection(db, admin1.distribution_id).event_sequence);
+    expect(() => confirmRemoval(db, admin, admin1.distribution_id, "ev", distributionProjection(db, admin1.distribution_id).event_sequence)).not.toThrow();
   });
 });
 
@@ -340,8 +339,8 @@ describe("historical authority (§B-5c/§B-5d): a distribution pins the creative
     activateEngagement(db, admin, engagementId, revisionId);
     const creative = mintCreativeRevision(db, admin, engagementId, {
       format_kind: "post", media_ref: null, copy_text: "Buy now", cta_text: "Click", mandatory_labeling_text: "Реклама", creative_target_url: "https://flexperiment.ru/x?promo=ART",
-    });
-    authorizeCreative(db, admin, engagementId, creative.id);
+    }, currentCreativeRevision(db, engagementId)?.id ?? null);
+    authorizeCreative(db, admin, engagementId, creative.id, lastCreativeAuthorization(db, engagementId)?.id ?? null);
 
     const result = reportDistribution(db, p1.partner, engagementId, {
       channel_key: "telegram", resource_kind: "channel", resource_identifier: "@art_channel", distribution_resource_url: "https://t.me/art_channel/1",
@@ -358,7 +357,7 @@ describe("historical authority (§B-5c/§B-5d): a distribution pins the creative
     const engaged = readyEngagementWithCreative(db);
     // Suspend the engagement: revokes the PROMO authorization (engagement_promo_authorizations.revoked_at)
     // but does NOT touch the creative authorization (engagement_creative_authorizations.revoked_at stays NULL) - the exact gap this check closes.
-    suspendEngagement(db, admin, engaged.engagementId, "manual pause");
+    suspendEngagement(db, admin, engaged.engagementId, "manual pause", getEngagement(db, engaged.engagementId)!.lifecycle_revision);
     await new Promise((resolve) => setTimeout(resolve, 50)); // guarantee millisecond separation from the feature's own ACTIVE transition timestamp, minted during fixture setup
     const publishedAfterSuspension = new Date().toISOString();
     const result = report(db, engaged.partner, engaged.engagementId, { published_at: publishedAfterSuspension });
@@ -402,7 +401,7 @@ describe("historical authority (§B-5c/§B-5d): a distribution pins the creative
     // Correct the SAME distribution's published_at into R2/C2's territory.
     const corrected = correctDistribution(db, engaged.partner, first.distribution_id,
       { channel_key: "telegram", resource_kind: "channel", resource_identifier: "@art_channel", distribution_resource_url: "https://t.me/art_channel/1", published_at: publishedDuringR2, ended_at: null, evidence_ref: "ev-corrected" },
-      "corrected the actual publish date");
+      "corrected the actual publish date", currentDistributionRevision(db, first.distribution_id)!.id);
     expect(corrected.distribution_id).toBe(first.distribution_id);
     expect(corrected.revision.engagement_revision_id).toBe(superseded.revisionId); // re-pinned to R2, not left on R1
     expect(corrected.revision.creative_revision_id).toBe(superseded.creativeId);
@@ -422,7 +421,7 @@ describe("projection folds only the CURRENT revision's own events, never the who
 
     const corrected = correctDistribution(db, engaged.partner, first.distribution_id,
       { channel_key: "telegram", resource_kind: "channel", resource_identifier: "@art_channel", distribution_resource_url: "https://t.me/art_channel/1", published_at: "2030-09-10T00:00:00.000Z", ended_at: null, evidence_ref: "ev-corrected" },
-      "corrected the actual publish date - it was really inside the window");
+      "corrected the actual publish date - it was really inside the window", currentDistributionRevision(db, first.distribution_id)!.id);
     expect(corrected.revision.engagement_revision_id).toBe(engaged.revisionId);
     const projection = distributionProjection(db, first.distribution_id);
     expect(projection.compliance_state).toBe("MARKED_REPORTABLE");
@@ -434,15 +433,15 @@ describe("projection folds only the CURRENT revision's own events, never the who
     const engaged = readyEngagementWithCreative(db);
     const first = report(db, engaged.partner, engaged.engagementId);
     expect(distributionProjection(db, first.distribution_id).compliance_state).toBe("MARKED_REPORTABLE");
-    requireRemoval(db, admin, first.distribution_id, "manual review flagged");
-    confirmRemoval(db, admin, first.distribution_id, "confirmed removed");
+    requireRemoval(db, admin, first.distribution_id, "manual review flagged", distributionProjection(db, first.distribution_id).event_sequence);
+    confirmRemoval(db, admin, first.distribution_id, "confirmed removed", distributionProjection(db, first.distribution_id).event_sequence);
     expect(distributionProjection(db, first.distribution_id).removal_state).toBe("REMOVAL_CONFIRMED");
 
     // A correction changes the actual facts on record (a different URL) -
     // the OLD confirmation was about the OLD facts, not these new ones.
     const corrected = correctDistribution(db, engaged.partner, first.distribution_id,
       { channel_key: "telegram", resource_kind: "channel", resource_identifier: "@art_channel_2", distribution_resource_url: "https://t.me/art_channel_2/1", published_at: "2030-09-10T00:00:00.000Z", ended_at: null, evidence_ref: "ev-corrected" },
-      "the actual channel handle was different");
+      "the actual channel handle was different", currentDistributionRevision(db, first.distribution_id)!.id);
     expect(corrected.distribution_id).toBe(first.distribution_id);
     // The new revision's own projection starts fresh - not REMOVAL_CONFIRMED for facts nobody has actually confirmed removed yet.
     expect(distributionProjection(db, first.distribution_id).removal_state).toBeNull();
@@ -458,39 +457,39 @@ describe("removal/compliance lifecycle transition matrix - fail-closed on illega
     const db = fresh();
     const engaged = readyEngagementWithCreative(db);
     const d = report(db, engaged.partner, engaged.engagementId);
-    expect(() => confirmRemoval(db, admin, d.distribution_id, "ev")).toThrow(/AGENT_REFERRALS_DISTRIBUTION_REMOVAL_ILLEGAL_TRANSITION/);
+    expect(() => confirmRemoval(db, admin, d.distribution_id, "ev", distributionProjection(db, d.distribution_id).event_sequence)).toThrow(/AGENT_REFERRALS_DISTRIBUTION_REMOVAL_ILLEGAL_TRANSITION/);
   });
 
   it("refuses REMOVAL_CLAIMED after REMOVAL_CONFIRMED", () => {
     const db = fresh();
     const engaged = readyEngagementWithCreative(db);
     const d = report(db, engaged.partner, engaged.engagementId);
-    requireRemoval(db, admin, d.distribution_id, "flagged");
-    confirmRemoval(db, admin, d.distribution_id, "confirmed");
-    expect(() => claimRemoval(db, engaged.partner, d.distribution_id, "late claim")).toThrow(/AGENT_REFERRALS_DISTRIBUTION_REMOVAL_ILLEGAL_TRANSITION/);
+    requireRemoval(db, admin, d.distribution_id, "flagged", distributionProjection(db, d.distribution_id).event_sequence);
+    confirmRemoval(db, admin, d.distribution_id, "confirmed", distributionProjection(db, d.distribution_id).event_sequence);
+    expect(() => claimRemoval(db, engaged.partner, d.distribution_id, "late claim", distributionProjection(db, d.distribution_id).event_sequence)).toThrow(/AGENT_REFERRALS_DISTRIBUTION_REMOVAL_ILLEGAL_TRANSITION/);
   });
 
   it("refuses a repeated REMOVAL_CONFIRMED", () => {
     const db = fresh();
     const engaged = readyEngagementWithCreative(db);
     const d = report(db, engaged.partner, engaged.engagementId);
-    requireRemoval(db, admin, d.distribution_id, "flagged");
-    confirmRemoval(db, admin, d.distribution_id, "confirmed");
-    expect(() => confirmRemoval(db, admin, d.distribution_id, "confirmed again")).toThrow(/AGENT_REFERRALS_DISTRIBUTION_REMOVAL_ILLEGAL_TRANSITION/);
+    requireRemoval(db, admin, d.distribution_id, "flagged", distributionProjection(db, d.distribution_id).event_sequence);
+    confirmRemoval(db, admin, d.distribution_id, "confirmed", distributionProjection(db, d.distribution_id).event_sequence);
+    expect(() => confirmRemoval(db, admin, d.distribution_id, "confirmed again", distributionProjection(db, d.distribution_id).event_sequence)).toThrow(/AGENT_REFERRALS_DISTRIBUTION_REMOVAL_ILLEGAL_TRANSITION/);
   });
 
   it("refuses OVERDUE_REMOVAL with nothing ever required for the current revision", () => {
     const db = fresh();
     const engaged = readyEngagementWithCreative(db);
     const d = report(db, engaged.partner, engaged.engagementId);
-    expect(() => markOverdueRemoval(db, admin, d.distribution_id, "overdue")).toThrow(/AGENT_REFERRALS_DISTRIBUTION_REMOVAL_ILLEGAL_TRANSITION/);
+    expect(() => markOverdueRemoval(db, admin, d.distribution_id, "overdue", distributionProjection(db, d.distribution_id).event_sequence)).toThrow(/AGENT_REFERRALS_DISTRIBUTION_REMOVAL_ILLEGAL_TRANSITION/);
   });
 
   it("a partner may proactively CLAIM removal with no prior admin REMOVAL_REQUIRED - a legitimate real sequence, not gated", () => {
     const db = fresh();
     const engaged = readyEngagementWithCreative(db);
     const d = report(db, engaged.partner, engaged.engagementId);
-    expect(() => claimRemoval(db, engaged.partner, d.distribution_id, "proactive takedown")).not.toThrow();
+    expect(() => claimRemoval(db, engaged.partner, d.distribution_id, "proactive takedown", distributionProjection(db, d.distribution_id).event_sequence)).not.toThrow();
     expect(distributionProjection(db, d.distribution_id).removal_state).toBe("REMOVAL_CLAIMED");
   });
 
@@ -499,11 +498,11 @@ describe("removal/compliance lifecycle transition matrix - fail-closed on illega
     const engaged = readyEngagementWithCreative(db);
     const compliant = report(db, engaged.partner, engaged.engagementId);
     expect(distributionProjection(db, compliant.distribution_id).compliance_state).toBe("MARKED_REPORTABLE");
-    expect(() => markReviewCleared(db, admin, compliant.distribution_id, "clearing something never under review")).toThrow(/AGENT_REFERRALS_DISTRIBUTION_COMPLIANCE_ILLEGAL_TRANSITION/);
+    expect(() => markReviewCleared(db, admin, compliant.distribution_id, "clearing something never under review", distributionProjection(db, compliant.distribution_id).event_sequence)).toThrow(/AGENT_REFERRALS_DISTRIBUTION_COMPLIANCE_ILLEGAL_TRANSITION/);
 
     const flagged = report(db, engaged.partner, engaged.engagementId, { channel_key: "totally_unknown_platform", resource_identifier: "@other" });
     expect(distributionProjection(db, flagged.distribution_id).compliance_state).toBe("REVIEW_REQUIRED");
-    expect(() => markReviewCleared(db, admin, flagged.distribution_id, "reviewed and cleared")).not.toThrow();
+    expect(() => markReviewCleared(db, admin, flagged.distribution_id, "reviewed and cleared", distributionProjection(db, flagged.distribution_id).event_sequence)).not.toThrow();
     expect(distributionProjection(db, flagged.distribution_id).compliance_state).toBe("REVIEW_CLEARED");
   });
 });
@@ -513,8 +512,8 @@ describe("event_sequence: explicit durable canonical fold order, not SQLite's im
     const db = fresh();
     const engaged = readyEngagementWithCreative(db);
     const d = report(db, engaged.partner, engaged.engagementId);
-    claimRemoval(db, engaged.partner, d.distribution_id, "ev-claim");
-    confirmRemoval(db, admin, d.distribution_id, "ev-confirm");
+    claimRemoval(db, engaged.partner, d.distribution_id, "ev-claim", distributionProjection(db, d.distribution_id).event_sequence);
+    confirmRemoval(db, admin, d.distribution_id, "ev-confirm", distributionProjection(db, d.distribution_id).event_sequence);
     const events = distributionEvents(db, d.distribution_id);
     expect(events.map((e) => e.event_sequence)).toEqual([1, 2, 3, 4]);
     expect(events.map((e) => e.event_kind)).toEqual(["DECLARED", "MARKED_REPORTABLE", "REMOVAL_CLAIMED", "REMOVAL_CONFIRMED"]);

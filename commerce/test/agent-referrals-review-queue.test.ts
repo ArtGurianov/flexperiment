@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { agentReferralsReviewQueue } from "../src/agent-referrals-review-queue";
-import { reportDistribution, claimRemoval, markRemovalUnverified } from "../src/agent-referrals-distribution";
-import { mintCreativeRevision, authorizeCreative } from "../src/agent-referrals-creative";
+import { reportDistribution, claimRemoval, markRemovalUnverified, distributionProjection, currentDistributionRevision } from "../src/agent-referrals-distribution";
+import { mintCreativeRevision, authorizeCreative, currentCreativeRevision, lastCreativeAuthorization } from "../src/agent-referrals-creative";
 import { generateSettlementAct } from "../src/agent-referrals-act";
 import { beginPayment, recordPayoutUnknown } from "../src/agent-referrals-payment";
 import { recordNpdStatusCheck } from "../src/agent-referrals-npd";
@@ -49,14 +49,14 @@ describe("agent-referrals-review-queue.ts: live-derived operator findings, never
     const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, nearTermTerms(1000, "PERCENT", 5000));
     const creative = mintCreativeRevision(db, admin, engagementId, {
       format_kind: "post", media_ref: null, copy_text: "copy", cta_text: null, mandatory_labeling_text: "Реклама", creative_target_url: "https://flexperiment.ru/city?promo=ART",
-    });
-    authorizeCreative(db, admin, engagementId, creative.id);
+    }, currentCreativeRevision(db, engagementId)?.id ?? null);
+    authorizeCreative(db, admin, engagementId, creative.id, lastCreativeAuthorization(db, engagementId)?.id ?? null);
     const { distribution_id: distributionId } = reportDistribution(db, admin, engagementId, {
       channel_key: "telegram", resource_kind: "channel", resource_identifier: "x", distribution_resource_url: "https://t.me/x/1",
       published_at: new Date().toISOString(), ended_at: null, evidence_ref: "ev-1",
     });
-    claimRemoval(db, p1.partner, distributionId, "claimed-evidence");
-    markRemovalUnverified(db, admin, distributionId, "cannot confirm removal");
+    claimRemoval(db, p1.partner, distributionId, "claimed-evidence", distributionProjection(db, distributionId).event_sequence);
+    markRemovalUnverified(db, admin, distributionId, "cannot confirm removal", distributionProjection(db, distributionId).event_sequence);
     const queue = agentReferralsReviewQueue(db, new Date().toISOString());
     expect(queue.distributions_removal_overdue).toEqual({ total: 1, items: [{ distribution_id: distributionId, engagement_id: engagementId }], truncated: false });
   });
@@ -120,7 +120,7 @@ describe("agent-referrals-review-queue.ts: live-derived operator findings, never
       VALUES (?, 'p1', 'A', 'A Legal', 'a@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId);
     const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
     const asPartner: PartnerPrincipal = { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" };
-    submitPartnerLegalProfile(db, asPartner, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" });
+    submitPartnerLegalProfile(db, asPartner, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);
 
     const submitted = agentReferralsReviewQueue(db, new Date().toISOString());
     expect(submitted.partners_profile_pending_verification).toEqual({ total: 1, items: [{ partner_identity_id: partnerIdentityId }], truncated: false });
@@ -131,8 +131,8 @@ describe("agent-referrals-review-queue.ts: live-derived operator findings, never
     expect(verified.partners_profile_pending_verification).toEqual({ total: 0, items: [], truncated: false });
     expect(verified.partners_framework_not_issued).toEqual({ total: 1, items: [{ partner_identity_id: partnerIdentityId }], truncated: false });
 
-    const fw = mintFrameworkAgreementRevision(db, clause(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES));
-    const dt = mintDelegationTemplateRevision(db, clause(DELEGATION_TEMPLATE_REQUIRED_CLAUSES));
+    const fw = mintFrameworkAgreementRevision(db, clause(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES), null);
+    const dt = mintDelegationTemplateRevision(db, clause(DELEGATION_TEMPLATE_REQUIRED_CLAUSES), null);
     issueFrameworkToPartner(db, admin, partnerIdentityId, fw.id, dt.id, "issued");
     const issued = agentReferralsReviewQueue(db, new Date().toISOString());
     expect(issued.partners_framework_not_issued).toEqual({ total: 0, items: [], truncated: false });

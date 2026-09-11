@@ -1,6 +1,7 @@
+import { useCallback, useRef, useState } from "react";
 import { useMutation, useQueryClient, type UseMutationOptions } from "@tanstack/react-query";
 import { type PartnerApiError } from "./partner-api";
-import { shouldRefreshAuthoritativeState } from "./idempotency";
+import { shouldRefreshAuthoritativeState, shouldRetainCommandIntent } from "./idempotency";
 import { partnerInvalidationKeysFor, type PartnerMutation, type PartnerMutationContext } from "./partner-invalidation";
 
 /**
@@ -18,12 +19,16 @@ import { partnerInvalidationKeysFor, type PartnerMutation, type PartnerMutationC
  * leaving the partner staring at an error for a command that may well have
  * committed.
  *
- * Note what this deliberately does NOT do: mint or retain an idempotency
- * key. Almost no agent-referrals route accepts one (see the audit in this
- * PR's description); partner commands are instead made safe by single-use
- * step-up grants and by state machines that refuse a second application.
- * Adding a key where the server ignores it would be decoration that reads
- * like a guarantee.
+ * What this does NOT do is mint a key. PR-C2 gave the partner realm four
+ * DURABLE_KEY routes (payout set/revoke, distribution reporting, NPD receipt
+ * evidence) and those components hold their own persistent key, per intent -
+ * a hook that dispatches many different commands cannot hold one key for all
+ * of them. Every other partner command is made safe by a monotone pin, a
+ * single-use step-up grant, or a state machine that refuses a second
+ * application. Adding a key where the server ignores it would be decoration
+ * that reads like a guarantee.
+ *
+ * It DOES retain command intent - see the retained-intent block below.
  */
 export function usePartnerMutation<TVariables, TData = unknown>(
   mutation: PartnerMutation,
@@ -34,21 +39,53 @@ export function usePartnerMutation<TVariables, TData = unknown>(
 ) {
   const queryClient = useQueryClient();
   const { context, onError, ...rest } = options;
+  // PR-C2 review round 2, P1: retained command intent. A ref as well as
+  // state, for the same reason usePersistentIdempotencyKey keeps both - the
+  // retained value must be readable synchronously by a retry issued in the
+  // same tick, while the notice offering that retry needs a render to
+  // appear.
+  const retainedRef = useRef<TVariables | null>(null);
+  const [retainedIntent, setRetainedIntent] = useState<TVariables | null>(null);
+  const retain = (variables: TVariables | null) => {
+    retainedRef.current = variables;
+    setRetainedIntent(variables);
+  };
   const invalidate = async (variables: TVariables, data?: TData) => {
     const ctx = context?.(variables, data) ?? {};
     const keys = partnerInvalidationKeysFor(mutation, ctx);
     await Promise.all(keys.map((key) => queryClient.invalidateQueries({ queryKey: key })));
   };
-  return useMutation<TData, PartnerApiError, TVariables>({
+  const command = useMutation<TData, PartnerApiError, TVariables>({
     ...rest,
     mutationFn,
     retry: 0,
     onSuccess: async (data, variables) => {
+      retain(null);
       await invalidate(variables, data);
     },
     onError: async (error, variables, onMutateResult, mutationContext) => {
+      // Retained BEFORE the refresh below, never after: that refresh is
+      // exactly what would otherwise let the next attempt read a NEWER pin
+      // and stop being a retry of this command at all.
+      retain(shouldRetainCommandIntent(error) ? variables : null);
       if (shouldRefreshAuthoritativeState(error)) await invalidate(variables);
       await onError?.(error, variables, onMutateResult, mutationContext);
     },
   });
+
+  /**
+   * Replays the retained variables EXACTLY - pin included. This is what
+   * makes "retry A" mean retry A after the authoritative refresh has already
+   * moved the screen on.
+   */
+  const retryRetainedIntent = useCallback(async () => {
+    const retained = retainedRef.current;
+    if (retained === null) return undefined;
+    return command.mutateAsync(retained).catch(() => undefined);
+  }, [command]);
+
+  /** The operator says this is a NEW action, not a retry: drop the snapshot so the next submit derives a fresh pin. */
+  const discardRetainedIntent = useCallback(() => retain(null), []);
+
+  return { ...command, retainedIntent, retryRetainedIntent, discardRetainedIntent };
 }

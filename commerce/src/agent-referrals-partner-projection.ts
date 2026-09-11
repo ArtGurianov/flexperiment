@@ -19,7 +19,7 @@ import { settlementActForSettlement, actAcceptanceForAct, actDisputeForAct } fro
 import { paymentAttemptsForSettlement } from "./agent-referrals-payment";
 import { latestNpdStatusCheck } from "./agent-referrals-npd";
 import { rewardForOrder, type RewardOrderFacts } from "./reward-calculation";
-import { pendingLegalProfileChangeRequestForPartner } from "./agent-referrals-legal-profile-supersession";
+import { pendingLegalProfileChangeRequestForPartner, legalProfileChangeRequestHeadForPartner } from "./agent-referrals-legal-profile-supersession";
 import { resolveTaxTreatmentForLegalProfileAt } from "./agent-referrals-tax-treatment";
 import { now } from "./crypto";
 
@@ -103,12 +103,16 @@ export type PartnerProfileProjection = {
   submitted_kpp: string | null;
   submitted_registration_number: string | null;
   submitted_legal_address: string | null;
+  /** PR-C2: the monotone draft counter the partner's own submission must be authored against (0 before the first submission). */
+  legal_profile_draft_revision: number;
   legal_profile: {
     legal_form: string; tax_mode: string; projected_contractor_type: string;
     opf: string | null; full_name: string; short_name: string | null; inn: string; kpp: string | null; registration_number: string | null; legal_address: string | null;
     revision: number; created_at: string;
   } | null;
   pending_legal_profile_change_request: PartnerPendingLegalProfileChangeRequestProjection | null;
+  /** PR-C2: the request-chain head a new supersession is pinned against - a count, never an internal id, so §B-11's allowlist discipline is unchanged. */
+  legal_profile_change_request_head: number;
   // PR-F: the tax treatment applicable right now - never assertion_source/
   // evidence_ref/created_by_admin_id (admin-only provenance, matching
   // §B-11's own discipline for pending_legal_profile_change_request above).
@@ -142,6 +146,7 @@ export const partnerProfileProjection = (db: Database.Database, partnerIdentityI
     submitted_kpp: identity.submitted_kpp,
     submitted_registration_number: identity.submitted_registration_number,
     submitted_legal_address: identity.submitted_legal_address,
+    legal_profile_draft_revision: identity.legal_profile_draft_revision,
     legal_profile: legalProfile
       ? {
           legal_form: legalProfile.legal_form, tax_mode: legalProfile.tax_mode, projected_contractor_type: legalProfile.projected_contractor_type,
@@ -149,6 +154,7 @@ export const partnerProfileProjection = (db: Database.Database, partnerIdentityI
           revision: legalProfile.revision, created_at: legalProfile.created_at,
         }
       : null,
+    legal_profile_change_request_head: legalProfileChangeRequestHeadForPartner(db, partnerIdentityId),
     pending_legal_profile_change_request: pendingChangeRequest
       ? {
           id: pendingChangeRequest.id, legal_form: pendingChangeRequest.legal_form, tax_mode: pendingChangeRequest.tax_mode,
@@ -297,6 +303,11 @@ export const partnerEngagementDetail = (db: Database.Database, partnerIdentityId
       current_revision: partnerDistributionRevisionDto(projection.current_revision),
       compliance_state: projection.compliance_state,
       removal_state: projection.removal_state,
+      // PR-C2: the monotone counter a removal claim is authored against.
+      // The removal STATE cannot serve - the lifecycle is cyclic, so
+      // required -> claimed -> required restores exactly the value a stale
+      // retry was authored against.
+      event_sequence: projection.event_sequence,
       reporting_periods: reports.map((report) => ({
         reporting_period_key: report.reporting_period_key, reporting_basis: report.reporting_basis,
         revision: report.revision, statistics_state: report.statistics_state, submission_state: report.submission_state,

@@ -10,7 +10,7 @@ import { beginPayment, recordPaymentMade } from "../src/agent-referrals-payment"
 import { CommerceDomain } from "../src/domain";
 import { canonicalizeSettlementTaxV1 } from "../src/agent-referrals-ord-canonical";
 import { resolveTaxTreatmentForLegalProfileAt } from "../src/agent-referrals-tax-treatment";
-import { submitLegalProfileSupersession, verifyLegalProfileSupersession } from "../src/agent-referrals-legal-profile-supersession";
+import { submitLegalProfileSupersession, verifyLegalProfileSupersession, currentLegalProfileRevisionForPartner, legalProfileChangeRequestHeadForPartner } from "../src/agent-referrals-legal-profile-supersession";
 import { currentAgentReferralsLegalProfile } from "../src/agent-referrals-legal-profile";
 import {
   fresh, admin, readyPartner, seedOccurrence, nearTermTerms, offerAcceptActivate, purchaseAndPay, closeAndComplete,
@@ -160,7 +160,7 @@ describe("correctPartnerRewardWithSettlement: §B-6 correction/supersession orch
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 10000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
       .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
 
-    const result = correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund, no settlement yet");
+    const result = correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund, no settlement yet", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(result.settlement_action).toBe("NONE");
   });
 
@@ -171,7 +171,7 @@ describe("correctPartnerRewardWithSettlement: §B-6 correction/supersession orch
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
       .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
 
-    const result = correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund");
+    const result = correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(result.settlement_action).toBe("SUPERSEDED");
     if (result.settlement_action !== "SUPERSEDED") throw new Error("unreachable");
     expect(result.cancelled_settlement_id).toBe(settlement.id);
@@ -193,7 +193,7 @@ describe("correctPartnerRewardWithSettlement: §B-6 correction/supersession orch
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, ?, 'full', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
       .run(randomUUID(), randomUUID(), order.id, order.payment_id, order.amount_kopecks, randomUUID());
 
-    const result = correctPartnerRewardWithSettlement(db, admin, engagementId, "fully refunded");
+    const result = correctPartnerRewardWithSettlement(db, admin, engagementId, "fully refunded", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(result.settlement_action).toBe("CANCELLED_ZERO");
     expect(result.correction.reward_total_kopecks).toBe(0);
     const oldSettlement = db.prepare("SELECT status FROM reward_settlements WHERE id = ?").get(settlement.id);
@@ -212,7 +212,7 @@ describe("correctPartnerRewardWithSettlement: §B-6 correction/supersession orch
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
       .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
 
-    const result = correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund after payment");
+    const result = correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund after payment", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(result.settlement_action).toBe("RECOVERY_EXPOSURE");
     if (result.settlement_action !== "RECOVERY_EXPOSURE") throw new Error("unreachable");
     expect(result.exposure.paid_net_kopecks).toBe(settlement.amount_kopecks);
@@ -243,14 +243,14 @@ describe("correctPartnerRewardWithSettlement: §B-6 correction/supersession orch
 
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 10000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
       .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
-    const first = correctPartnerRewardWithSettlement(db, admin, engagementId, "first late refund");
+    const first = correctPartnerRewardWithSettlement(db, admin, engagementId, "first late refund", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(first.settlement_action).toBe("RECOVERY_EXPOSURE");
     if (first.settlement_action !== "RECOVERY_EXPOSURE") throw new Error("unreachable");
 
     // A second, later refund - the paid settlement S1's own pinned E never changes, only the engagement's current E advances again.
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 5000, 'later', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
       .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
-    const second = correctPartnerRewardWithSettlement(db, admin, engagementId, "second later refund");
+    const second = correctPartnerRewardWithSettlement(db, admin, engagementId, "second later refund", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(second.settlement_action).toBe("RECOVERY_EXPOSURE");
     if (second.settlement_action !== "RECOVERY_EXPOSURE") throw new Error("unreachable");
 
@@ -280,7 +280,7 @@ describe("correctPartnerRewardWithSettlement: §B-6 correction/supersession orch
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
       .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
 
-    expect(() => correctPartnerRewardWithSettlement(db, admin, engagementId, "should be refused")).toThrow(/AGENT_REFERRALS_CORRECTION_BLOCKED_PAYMENT_IN_FLIGHT/);
+    expect(() => correctPartnerRewardWithSettlement(db, admin, engagementId, "should be refused", currentEffectiveRewardSnapshot(db, engagementId)!.id)).toThrow(/AGENT_REFERRALS_CORRECTION_BLOCKED_PAYMENT_IN_FLIGHT/);
     expect(db.prepare("SELECT status FROM reward_settlements WHERE id = ?").get(settlement.id)).toEqual({ status: "PREPARED" });
     expect(currentEffectiveRewardSnapshot(db, engagementId)!.sequence).toBe(1); // no correction minted
   });
@@ -295,7 +295,7 @@ describe("correctPartnerRewardWithSettlement: §B-6 correction/supersession orch
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, ?, 'full', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
       .run(randomUUID(), randomUUID(), order.id, order.payment_id, order.amount_kopecks, randomUUID());
 
-    const result = correctPartnerRewardWithSettlement(db, admin, engagementId, "fully refunded after payment");
+    const result = correctPartnerRewardWithSettlement(db, admin, engagementId, "fully refunded after payment", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(result.settlement_action).toBe("RECOVERY_EXPOSURE");
     if (result.settlement_action !== "RECOVERY_EXPOSURE") throw new Error("unreachable");
     expect(result.exposure.exposure_kopecks).toBe(settlement.amount_kopecks); // paid_net (full amount) - current (0)
@@ -420,7 +420,7 @@ describe("PR-F: tax-treatment snapshot pinning", () => {
     const { db, domain } = fresh(); track(db);
     const p1 = readyPartner(db, "NPD");
     const legalEntityRequisites = { opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" };
-    const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf" });
+    const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
     // Nothing outstanding blocks this supersession: readyPartner mints no engagement of its own.
     const outcome = verifyLegalProfileSupersession(db, admin, request.id, "verify");
     expect(outcome).toMatchObject({ outcome: "VERIFIED" });
@@ -451,7 +451,7 @@ describe("PR-F: tax-treatment snapshot pinning", () => {
     // revision must never reach back and mutate the settlement already
     // prepared under the OLD revision/treatment.
     const legalEntityRequisites = { opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" };
-    const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf" });
+    const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
     // BLOCKED (outstanding settlement) is expected here and is not the
     // point of this test - it proves the historical row is untouched
     // regardless of whether the supersession itself could even complete.

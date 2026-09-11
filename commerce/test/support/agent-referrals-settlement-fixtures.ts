@@ -72,7 +72,7 @@ export const readyPartner = (db: Database.Database, taxMode: "NPD" | "OTHER" = "
   submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, legalForm, taxMode,
     legalForm === "INDIVIDUAL"
       ? { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }
-      : { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012", registration_number: "123456789012345" });
+      : { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012", registration_number: "123456789012345" }, 0);
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
   // PR-F: NPD gets its tax treatment automatically, minted atomically with
   // the legal-profile revision above. OTHER (INDIVIDUAL_ENTREPRENEUR here)
@@ -83,8 +83,8 @@ export const readyPartner = (db: Database.Database, taxMode: "NPD" | "OTHER" = "
       taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2020-01-01", evidenceRef: "usn-exempt-fixture.pdf", reason: "fixture: USN exemption",
     }, randomUUID());
   }
-  const fw = mintFrameworkAgreementRevision(db, clause(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES));
-  const dt = mintDelegationTemplateRevision(db, clause(DELEGATION_TEMPLATE_REQUIRED_CLAUSES));
+  const fw = mintFrameworkAgreementRevision(db, clause(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES), null);
+  const dt = mintDelegationTemplateRevision(db, clause(DELEGATION_TEMPLATE_REQUIRED_CLAUSES), null);
   issueFrameworkToPartner(db, admin, partnerIdentityId, fw.id, dt.id, "issued");
   const sessionId = randomUUID();
   db.prepare(`INSERT INTO partner_sessions(id, partner_identity_id, token_hash, expires_at) VALUES (?, ?, ?, datetime('now', '+1 hour'))`).run(sessionId, partnerIdentityId, randomUUID());

@@ -5,6 +5,7 @@ import { useForm } from "react-hook-form";
 import { partnerApi, PartnerApiError } from "../../lib/partner-api";
 import { usePartnerMutation } from "../../lib/use-partner-mutation";
 import { partnerKeys } from "../../lib/query-keys";
+import { usePersistentIdempotencyKey } from "../../lib/use-persistent-idempotency-key";
 import type { Row } from "../../lib/partner-page";
 import { Loading } from "../ui/Loading";
 import { Notice } from "../ui/Notice";
@@ -32,24 +33,31 @@ export function Payout() {
   });
   const currentRevisionId = (payout.data as Row | null)?.id;
 
+  // PR-C2: the step-up grant does NOT make these retry-safe - a retry mints
+  // a fresh grant, and after the authoritative refresh that grant is
+  // legitimately bound to the revision the first attempt created. The
+  // command key is what stops a second revision; it is retained across a
+  // failure and rotated only after a genuine success.
+  const setKey = usePersistentIdempotencyKey();
+  const revokeKey = usePersistentIdempotencyKey();
   const set = usePartnerMutation("partner.payoutSet", async (values: Record<string, unknown>) => {
     const grantId = await mintPayoutStepUp(currentRevisionId ? String(currentRevisionId) : null);
     return partnerApi("/payout-profile", {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": setKey.acquire() },
       body: JSON.stringify({ step_up_grant_id: grantId, ...values }),
     });
   });
   const revokeDestination = usePartnerMutation("partner.payoutRevoke", async () => {
     const grantId = await mintPayoutStepUp(currentRevisionId ? String(currentRevisionId) : null);
     return partnerApi("/payout-profile/revoke", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ step_up_grant_id: grantId }),
+      method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": revokeKey.acquire() }, body: JSON.stringify({ step_up_grant_id: grantId }),
     });
   });
   const busy = set.isPending || revokeDestination.isPending;
   const error = set.error?.code ?? revokeDestination.error?.code ?? null;
 
-  const setDestination = handleSubmit(async (values) => { await set.mutateAsync(values).catch(() => undefined); });
-  const revoke = async () => { await revokeDestination.mutateAsync(undefined).catch(() => undefined); };
+  const setDestination = handleSubmit(async (values) => { await set.mutateAsync(values).then(() => setKey.clear()).catch(() => undefined); });
+  const revoke = async () => { await revokeDestination.mutateAsync(undefined).then(() => revokeKey.clear()).catch(() => undefined); };
 
   if (payout.isLoading) return <Loading />;
   if (payout.isError) return <Notice error={(payout.error as PartnerApiError).code} />;

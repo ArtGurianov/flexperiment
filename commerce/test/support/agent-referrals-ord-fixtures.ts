@@ -1,6 +1,7 @@
+import { currentOrdProviderProfile } from "../../src/agent-referrals-ord-provider-profile";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import { mintCreativeRevision, authorizeCreative, type CreativeFormatKind } from "../../src/agent-referrals-creative";
+import { mintCreativeRevision, authorizeCreative, type CreativeFormatKind, currentCreativeRevision, lastCreativeAuthorization } from "../../src/agent-referrals-creative";
 import { reportDistribution } from "../../src/agent-referrals-distribution";
 import { mintOrdProviderProfile } from "../../src/agent-referrals-ord-provider-profile";
 import { registerOrdCreative, recordOrdCreativeRegistrationSubmitted, confirmOrdCreativeRegistration } from "../../src/agent-referrals-ord-creative-registration";
@@ -15,10 +16,10 @@ import { admin, type PartnerPrincipal } from "./agent-referrals-settlement-fixtu
  */
 
 export const seedOrdProviderProfiles = (db: Database.Database) => {
-  const counterparty = mintOrdProviderProfile(db, admin.admin_id, "COUNTERPARTY", { legal_name: "Flexperiment LLC", inn: "7700000000" }, "seed");
-  const contract = mintOrdProviderProfile(db, admin.admin_id, "CONTRACT", { contract_ref: "VK-ORD-2026-1" }, "seed");
-  const platform = mintOrdProviderProfile(db, admin.admin_id, "PLATFORM", { platform: "flexperiment.ru" }, "seed");
-  const media = mintOrdProviderProfile(db, admin.admin_id, "MEDIA", { media_ref: "flexperiment-site" }, "seed");
+  const counterparty = mintOrdProviderProfile(db, admin.admin_id, "COUNTERPARTY", { legal_name: "Flexperiment LLC", inn: "7700000000" }, "seed", currentOrdProviderProfile(db, "COUNTERPARTY")?.id ?? null);
+  const contract = mintOrdProviderProfile(db, admin.admin_id, "CONTRACT", { contract_ref: "VK-ORD-2026-1" }, "seed", currentOrdProviderProfile(db, "CONTRACT")?.id ?? null);
+  const platform = mintOrdProviderProfile(db, admin.admin_id, "PLATFORM", { platform: "flexperiment.ru" }, "seed", currentOrdProviderProfile(db, "PLATFORM")?.id ?? null);
+  const media = mintOrdProviderProfile(db, admin.admin_id, "MEDIA", { media_ref: "flexperiment-site" }, "seed", currentOrdProviderProfile(db, "MEDIA")?.id ?? null);
   return { counterparty, contract, platform, media };
 };
 
@@ -35,8 +36,8 @@ export const readyCreative = (
 ): ReadyCreative => {
   const creative = mintCreativeRevision(db, admin, engagementId, {
     format_kind: formatKind, media_ref: null, copy_text: "Buy now", cta_text: "Click", mandatory_labeling_text: "Реклама", creative_target_url: targetUrl,
-  });
-  authorizeCreative(db, admin, engagementId, creative.id);
+  }, currentCreativeRevision(db, engagementId)?.id ?? null);
+  authorizeCreative(db, admin, engagementId, creative.id, lastCreativeAuthorization(db, engagementId)?.id ?? null);
   return { engagementId, creativeRevisionId: creative.id };
 };
 

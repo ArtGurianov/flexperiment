@@ -5,7 +5,7 @@ import { MockProvider } from "../src/provider";
 import { generateOpaqueToken, hashOpaqueToken } from "../src/agent-referrals-partner-auth";
 import { provisionPartnerOwner } from "../src/agent-referrals-partner-identity";
 import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
-import { mintCreativeRevision, authorizeCreative } from "../src/agent-referrals-creative";
+import { mintCreativeRevision, authorizeCreative, currentCreativeRevision, lastCreativeAuthorization } from "../src/agent-referrals-creative";
 import type { OtpSender } from "../src/agent-referrals-otp";
 import {
   fresh, admin, readyPartner, seedOccurrence, nearTermTerms, offerAcceptActivate, purchaseAndPay, finalizedSettlement, acceptedAct,
@@ -148,8 +148,8 @@ describe("/v1/partner/*: horizontal isolation and §B-11 projection allowlist", 
     acceptedAct(db, p1.partner, settlement1);
     const creative1 = mintCreativeRevision(db, admin, engagementId1, {
       format_kind: "post", media_ref: "media-ref-1", copy_text: "copy", cta_text: "cta", mandatory_labeling_text: "Реклама. ART", creative_target_url: "https://flexperiment.ru/city?promo=ART",
-    });
-    authorizeCreative(db, admin, engagementId1, creative1.id);
+    }, currentCreativeRevision(db, engagementId1)?.id ?? null);
+    authorizeCreative(db, admin, engagementId1, creative1.id, lastCreativeAuthorization(db, engagementId1)?.id ?? null);
 
     const p2 = readyPartner(db, "OTHER");
     const occ2 = seedOccurrence(db, p2.cityId, 100_000);
@@ -192,7 +192,10 @@ describe("/v1/partner/*: horizontal isolation and §B-11 projection allowlist", 
     const { p1, engagementId2 } = twoPartnersWithEngagements(db, domain);
     const cookieA = httpSessionCookie(db, p1.partnerIdentityId);
     const reportResponse = await app.request(`http://partner.flexperiment.ru/v1/partner/engagements/${engagementId2}/distributions`, {
-      method: "POST", headers: { Origin: PARTNER_ORIGIN, Cookie: cookieA, "Content-Type": "application/json" },
+      // PR-C2: the route now requires a command key. The key is supplied so
+      // this still tests what it says it tests - ownership - rather than
+      // passing on a 400 that never reaches the ownership proof.
+      method: "POST", headers: { Origin: PARTNER_ORIGIN, Cookie: cookieA, "Content-Type": "application/json", "Idempotency-Key": "partner-a-report-key-1" },
       body: JSON.stringify({ channel_key: "telegram", resource_kind: "channel", resource_identifier: "x", distribution_resource_url: "https://t.me/x/1", published_at: "2020-06-01T00:00:00.000Z", evidence_ref: "ev" }),
     });
     expect(reportResponse.status).toBe(403);
@@ -317,6 +320,10 @@ describe("/v1/partner/*: horizontal isolation and §B-11 projection allowlist", 
       method: "POST", headers: { Origin: PARTNER_ORIGIN, Cookie: cookie, "Content-Type": "application/json" },
       body: JSON.stringify({
         legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", reason: "became org",
+        // PR-C2: the verified profile this change is authored against - /me's
+        // own legal_profile.revision, echoed back.
+        expected_current_legal_profile_revision: 1,
+        expected_request_sequence: 0,
         opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow",
       }),
     });

@@ -13,9 +13,9 @@ import type { PartnerPrincipal } from "./agent-referrals-partner-identity";
 import { mintStepUpGrant, type StepUpAction } from "./agent-referrals-step-up";
 import { mintEngagementStepUpGrant, type EngagementStepUpAction } from "./agent-referrals-engagement-step-up";
 import { mintSettlementStepUpGrant, type SettlementStepUpAction } from "./agent-referrals-settlement-step-up";
-import { setPartnerPayoutDestination, revokePartnerPayoutDestination, type PayoutDestinationKind } from "./agent-referrals-payout-profile";
+import { setPartnerPayoutDestinationIdempotent, revokePartnerPayoutDestinationIdempotent, type PayoutDestinationKind } from "./agent-referrals-payout-profile";
 import { acceptEngagement } from "./agent-referrals-engagement";
-import { reportDistribution, correctDistribution, claimRemoval, type ResourceKind } from "./agent-referrals-distribution";
+import { reportDistributionByPartnerIdempotent, correctDistribution, claimRemoval, type ResourceKind } from "./agent-referrals-distribution";
 import { acceptSettlementAct, disputeSettlementAct, type DocumentDisputeReason } from "./agent-referrals-act";
 import { paymentAttemptById } from "./agent-referrals-payment";
 import { agentReferralsSettlementById } from "./agent-referrals-settlement";
@@ -25,6 +25,7 @@ import {
   PartnerProjectionError,
 } from "./agent-referrals-partner-projection";
 import { submitLegalProfileSupersession } from "./agent-referrals-legal-profile-supersession";
+import { PartnerCommandIdempotencyError, withPartnerCommandInTransaction } from "./agent-referrals-partner-command";
 import type { RawLegalRequisitesInput } from "./agent-referrals-legal-profile";
 
 /**
@@ -52,9 +53,27 @@ const jsonBody = async (request: Request) => {
   try { return await request.json(); } catch { throw new DomainError("INVALID_JSON", 400); }
 };
 const asRecord = (value: unknown): Record<string, unknown> => (value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {});
+/**
+ * PR-C2: the four partner commands that carry durable command identity
+ * REQUIRE a key - there is no "if the caller supplied one" path, because a
+ * command that is only sometimes replay-safe is not replay-safe. Mirrors
+ * api.ts's own IDEMPOTENCY_KEY_REQUIRED convention on the admin surface.
+ */
+const requireIdempotencyKey = (c: { req: { header: (name: string) => string | undefined } }): string => {
+  const key = c.req.header("Idempotency-Key");
+  if (!key) throw new PartnerCommandIdempotencyError("IDEMPOTENCY_KEY_REQUIRED", 400);
+  return key;
+};
+
 const requireString = (body: Record<string, unknown>, field: string): string => {
   const value = body[field];
   if (typeof value !== "string" || !value.trim()) throw new DomainError("AGENT_REFERRALS_PARTNER_FIELD_REQUIRED", 422, field);
+  return value;
+};
+/** Numeric body field, used for the monotone version pins PR-C2's STALE_BOUND commands are authored against. */
+const requireNumber = (body: Record<string, unknown>, field: string): number => {
+  const value = body[field];
+  if (typeof value !== "number" || !Number.isFinite(value)) throw new DomainError("AGENT_REFERRALS_PARTNER_FIELD_REQUIRED", 422, field);
   return value;
 };
 const optionalString = (body: Record<string, unknown>, field: string): string | undefined => {
@@ -159,7 +178,9 @@ export function createAgentReferralsPartnerRouter(sqlite: Database.Database, otp
     const body = asRecord(await jsonBody(c.req.raw));
     const legalForm = requireString(body, "legal_form") as "INDIVIDUAL" | "INDIVIDUAL_ENTREPRENEUR" | "LEGAL_ENTITY";
     const taxMode = requireString(body, "tax_mode") as "NPD" | "OTHER";
-    return c.json(submitPartnerLegalProfile(sqlite, c.var.partner, legalForm, taxMode, legalRequisitesFromBody(body)));
+    // PR-C2 STALE_BOUND: the draft revision the partner's form was rendered
+    // from (0 when nothing has been submitted yet).
+    return c.json(submitPartnerLegalProfile(sqlite, c.var.partner, legalForm, taxMode, legalRequisitesFromBody(body), requireNumber(body, "expected_draft_revision")));
   });
 
   /** D2 §9: post-onboarding legal-identity change, never a caller-supplied partner_identity_id - always the session's own. */
@@ -168,7 +189,10 @@ export function createAgentReferralsPartnerRouter(sqlite: Database.Database, otp
     const legalForm = requireString(body, "legal_form") as "INDIVIDUAL" | "INDIVIDUAL_ENTREPRENEUR" | "LEGAL_ENTITY";
     const taxMode = requireString(body, "tax_mode") as "NPD" | "OTHER";
     return c.json(submitLegalProfileSupersession(sqlite, c.var.partner, c.var.partner.partner_identity_id, {
-      legalForm, taxMode, reason: requireString(body, "reason"), ...legalRequisitesFromBody(body),
+      legalForm, taxMode, reason: requireString(body, "reason"),
+      expectedCurrentLegalProfileRevision: requireNumber(body, "expected_current_legal_profile_revision"),
+      expectedRequestSequence: requireNumber(body, "expected_request_sequence"),
+      ...legalRequisitesFromBody(body),
     }), 201);
   });
 
@@ -208,16 +232,18 @@ export function createAgentReferralsPartnerRouter(sqlite: Database.Database, otp
   protectedRouter.get("/payout-profile", (c) => c.json(partnerProfileProjection(sqlite, c.var.partner.partner_identity_id).payout_profile));
   protectedRouter.post("/payout-profile", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(setPartnerPayoutDestination(sqlite, c.var.partner, {
+    const outcome = setPartnerPayoutDestinationIdempotent(sqlite, c.var.partner, requireIdempotencyKey(c), {
       step_up_grant_id: requireString(body, "step_up_grant_id"),
       destination_kind: requireString(body, "destination_kind") as PayoutDestinationKind,
       destination_plaintext: requireString(body, "destination_plaintext"),
       destination_last4: requireString(body, "destination_last4"),
-    }));
+    });
+    return c.json(outcome.response, outcome.status as 200);
   });
   protectedRouter.post("/payout-profile/revoke", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(revokePartnerPayoutDestination(sqlite, c.var.partner, requireString(body, "step_up_grant_id")));
+    const outcome = revokePartnerPayoutDestinationIdempotent(sqlite, c.var.partner, requireIdempotencyKey(c), requireString(body, "step_up_grant_id"));
+    return c.json(outcome.response, outcome.status as 200);
   });
 
   protectedRouter.get("/engagements", (c) => c.json({ engagements: partnerEngagementSummaries(sqlite, c.var.partner.partner_identity_id) }));
@@ -231,17 +257,18 @@ export function createAgentReferralsPartnerRouter(sqlite: Database.Database, otp
 
   protectedRouter.post("/engagements/:id/distributions", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(reportDistribution(sqlite, c.var.partner, c.req.param("id"), distributionReportInput(body)), 201);
+    const outcome = reportDistributionByPartnerIdempotent(sqlite, c.var.partner, requireIdempotencyKey(c), c.req.param("id"), distributionReportInput(body));
+    return c.json(outcome.response, outcome.status as 201);
   });
 
   protectedRouter.post("/distributions/:id/correct", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(correctDistribution(sqlite, c.var.partner, c.req.param("id"), distributionReportInput(body), requireString(body, "correction_reason")));
+    return c.json(correctDistribution(sqlite, c.var.partner, c.req.param("id"), distributionReportInput(body), requireString(body, "correction_reason"), requireString(body, "expected_supersedes_revision_id")));
   });
 
   protectedRouter.post("/distributions/:id/removal-claim", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    claimRemoval(sqlite, c.var.partner, c.req.param("id"), requireString(body, "evidence_ref"));
+    claimRemoval(sqlite, c.var.partner, c.req.param("id"), requireString(body, "evidence_ref"), requireNumber(body, "expected_event_sequence"));
     return c.json({ ok: true });
   });
 
@@ -269,14 +296,26 @@ export function createAgentReferralsPartnerRouter(sqlite: Database.Database, otp
     const paymentAttemptId = requireString(body, "payment_attempt_id");
     const receiptReference = requireString(body, "receipt_reference");
     const evidenceRef = requireString(body, "evidence_ref");
-    const attempt = paymentAttemptById(sqlite, paymentAttemptId);
-    if (!attempt) throw new PartnerProjectionError("AGENT_REFERRALS_PAYMENT_ATTEMPT_NOT_FOUND", 404, paymentAttemptId);
-    const settlement = agentReferralsSettlementById(sqlite, attempt.settlement_id);
-    if (!settlement || settlement.partner_identity_id !== c.var.partner.partner_identity_id) {
-      throw new PartnerProjectionError("AGENT_REFERRALS_PAYMENT_ATTEMPT_NOT_FOUND", 404, paymentAttemptId);
-    }
-    recordPartnerIdentityEvent(sqlite, c.var.partner.partner_identity_id, "NPD_RECEIPT_EVIDENCE_SUBMITTED_BY_PARTNER", "PARTNER", { payment_attempt_id: paymentAttemptId, receipt_reference: receiptReference, evidence_ref: evidenceRef });
-    return c.json({ ok: true }, 201);
+    const idempotencyKey = requireIdempotencyKey(c);
+    // PR-C2: the ownership proof stays where it was - it must run on a fresh
+    // submission - but the whole command, proof included, now sits inside one
+    // transaction with its idempotency record, and a replay returns the
+    // original response without appending a second evidence event.
+    const outcome = sqlite.transaction(() => withPartnerCommandInTransaction<{ ok: true }>({
+      db: sqlite, partner: c.var.partner, command: "partner.npd-receipt.submit", idempotencyKey, successStatus: 201,
+      request: { payment_attempt_id: paymentAttemptId, receipt_reference: receiptReference, evidence_ref: evidenceRef },
+      execute: () => {
+        const attempt = paymentAttemptById(sqlite, paymentAttemptId);
+        if (!attempt) throw new PartnerProjectionError("AGENT_REFERRALS_PAYMENT_ATTEMPT_NOT_FOUND", 404, paymentAttemptId);
+        const settlement = agentReferralsSettlementById(sqlite, attempt.settlement_id);
+        if (!settlement || settlement.partner_identity_id !== c.var.partner.partner_identity_id) {
+          throw new PartnerProjectionError("AGENT_REFERRALS_PAYMENT_ATTEMPT_NOT_FOUND", 404, paymentAttemptId);
+        }
+        recordPartnerIdentityEvent(sqlite, c.var.partner.partner_identity_id, "NPD_RECEIPT_EVIDENCE_SUBMITTED_BY_PARTNER", "PARTNER", { payment_attempt_id: paymentAttemptId, receipt_reference: receiptReference, evidence_ref: evidenceRef });
+        return { ok: true as const };
+      },
+    })).immediate();
+    return c.json(outcome.response, outcome.status as 201);
   });
 
   app.route("/", publicRouter);

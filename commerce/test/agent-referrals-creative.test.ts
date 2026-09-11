@@ -13,9 +13,9 @@ import { mintStepUpGrant } from "../src/agent-referrals-step-up";
 import { acceptFrameworkAndDelegation } from "../src/agent-referrals-framework-acceptance";
 import { createPartnerPromo } from "../src/agent-referrals-promo";
 import { mintEngagementStepUpGrant } from "../src/agent-referrals-engagement-step-up";
-import { offerEngagement, verifyAudienceForPartnerCity, acceptEngagement, activateEngagement, mintEngagementRevision, type EngagementRevisionTerms } from "../src/agent-referrals-engagement";
+import { offerEngagement, verifyAudienceForPartnerCity, acceptEngagement, activateEngagement, mintEngagementRevision, type EngagementRevisionTerms, currentEngagementRevision } from "../src/agent-referrals-engagement";
 import { suspendAgentReferrals } from "../src/agent-referrals-feature-state";
-import { CreativeError, authorizeCreative, creativeHashOf, currentCreativeAuthorization, currentCreativeRevision, mintCreativeRevision, revokeCreativeAuthorization, type CreativeMaterialFields } from "../src/agent-referrals-creative";
+import { CreativeError, authorizeCreative, creativeHashOf, currentCreativeAuthorization, currentCreativeRevision, mintCreativeRevision, revokeCreativeAuthorization, type CreativeMaterialFields, lastCreativeAuthorization } from "../src/agent-referrals-creative";
 import { mintRetentionPolicyRevision, destroyPartnerIdentity } from "../src/agent-referrals-identity-retention";
 
 const open: Database.Database[] = [];
@@ -38,10 +38,10 @@ const readyPartner = (db: Database.Database) => {
   db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
     VALUES (?, ?, 'Agent', 'Agent Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
-  submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" });
+  submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
-  const fw = mintFrameworkAgreementRevision(db, clause(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES));
-  const dt = mintDelegationTemplateRevision(db, clause(DELEGATION_TEMPLATE_REQUIRED_CLAUSES));
+  const fw = mintFrameworkAgreementRevision(db, clause(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES), null);
+  const dt = mintDelegationTemplateRevision(db, clause(DELEGATION_TEMPLATE_REQUIRED_CLAUSES), null);
   issueFrameworkToPartner(db, admin, partnerIdentityId, fw.id, dt.id, "issued");
   const sessionId = randomUUID();
   db.prepare(`INSERT INTO partner_sessions(id, partner_identity_id, token_hash, expires_at) VALUES (?, ?, ?, datetime('now', '+1 hour'))`).run(sessionId, partnerIdentityId, randomUUID());
@@ -87,7 +87,7 @@ describe("creative: content revision vs authorization are two different things (
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);
     const engagementId = activatedEngagement(db, p1.partner, p1.partnerIdentityId, occ);
-    const revision = mintCreativeRevision(db, admin, engagementId, fields());
+    const revision = mintCreativeRevision(db, admin, engagementId, fields(), currentCreativeRevision(db, engagementId)?.id ?? null);
     expect(revision.revision).toBe(1);
     expect(revision.supersedes_creative_revision_id).toBeNull();
     expect(revision.creative_hash).toBe(creativeHashOf(p1.promo.promo_code_id, fields()));
@@ -98,10 +98,10 @@ describe("creative: content revision vs authorization are two different things (
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);
     const engagementId = activatedEngagement(db, p1.partner, p1.partnerIdentityId, occ);
-    const creative = mintCreativeRevision(db, admin, engagementId, fields());
-    authorizeCreative(db, admin, engagementId, creative.id);
+    const creative = mintCreativeRevision(db, admin, engagementId, fields(), currentCreativeRevision(db, engagementId)?.id ?? null);
+    authorizeCreative(db, admin, engagementId, creative.id, lastCreativeAuthorization(db, engagementId)?.id ?? null);
 
-    const newRevision = mintEngagementRevision(db, admin, engagementId, { ...terms1, reward_type: "FIXED", reward_value: 5000 }, "reward formula change");
+    const newRevision = mintEngagementRevision(db, admin, engagementId, { ...terms1, reward_type: "FIXED", reward_value: 5000 }, "reward formula change", currentEngagementRevision(db, engagementId)?.id ?? null);
     const grant = mintEngagementStepUpGrant(db, p1.partner, "ENGAGEMENT_ACCEPTANCE", { engagement_id: engagementId, engagement_revision_id: newRevision.id }).grant_id;
     acceptEngagement(db, p1.partner, engagementId, newRevision.id, grant);
     activateEngagement(db, admin, engagementId, newRevision.id);
@@ -116,8 +116,8 @@ describe("creative: content revision vs authorization are two different things (
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);
     const engagementId = activatedEngagement(db, p1.partner, p1.partnerIdentityId, occ);
-    const creative1 = mintCreativeRevision(db, admin, engagementId, fields());
-    const creative2 = mintCreativeRevision(db, admin, engagementId, fields({ copy_text: "New copy entirely" }));
+    const creative1 = mintCreativeRevision(db, admin, engagementId, fields(), currentCreativeRevision(db, engagementId)?.id ?? null);
+    const creative2 = mintCreativeRevision(db, admin, engagementId, fields({ copy_text: "New copy entirely" }), currentCreativeRevision(db, engagementId)?.id ?? null);
     expect(creative2.revision).toBe(2);
     expect(creative2.supersedes_creative_revision_id).toBe(creative1.id);
     expect(creative2.creative_hash).not.toBe(creative1.creative_hash);
@@ -128,8 +128,8 @@ describe("creative: content revision vs authorization are two different things (
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);
     const engagementId = activatedEngagement(db, p1.partner, p1.partnerIdentityId, occ);
-    const c1 = mintCreativeRevision(db, admin, engagementId, fields({ copy_text: "скидка 10%" }));
-    const c2 = mintCreativeRevision(db, admin, engagementId, fields({ copy_text: "скидка 15%" }));
+    const c1 = mintCreativeRevision(db, admin, engagementId, fields({ copy_text: "скидка 10%" }), currentCreativeRevision(db, engagementId)?.id ?? null);
+    const c2 = mintCreativeRevision(db, admin, engagementId, fields({ copy_text: "скидка 15%" }), currentCreativeRevision(db, engagementId)?.id ?? null);
     expect(c2.creative_hash).not.toBe(c1.creative_hash);
   });
 
@@ -138,9 +138,9 @@ describe("creative: content revision vs authorization are two different things (
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);
     const engagementId = activatedEngagement(db, p1.partner, p1.partnerIdentityId, occ);
-    const creative = mintCreativeRevision(db, admin, engagementId, fields({ copy_text: "Промокод ART" }));
-    authorizeCreative(db, admin, engagementId, creative.id);
-    const newRevision = mintEngagementRevision(db, admin, engagementId, { ...terms1, customer_discount_value: 1500 }, "discount change, not printed in creative");
+    const creative = mintCreativeRevision(db, admin, engagementId, fields({ copy_text: "Промокод ART" }), currentCreativeRevision(db, engagementId)?.id ?? null);
+    authorizeCreative(db, admin, engagementId, creative.id, lastCreativeAuthorization(db, engagementId)?.id ?? null);
+    const newRevision = mintEngagementRevision(db, admin, engagementId, { ...terms1, customer_discount_value: 1500 }, "discount change, not printed in creative", currentEngagementRevision(db, engagementId)?.id ?? null);
     const grant = mintEngagementStepUpGrant(db, p1.partner, "ENGAGEMENT_ACCEPTANCE", { engagement_id: engagementId, engagement_revision_id: newRevision.id }).grant_id;
     acceptEngagement(db, p1.partner, engagementId, newRevision.id, grant);
     activateEngagement(db, admin, engagementId, newRevision.id);
@@ -154,8 +154,8 @@ describe("creative authorization: canonical, at most one current, requires an AC
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);
     const { engagement_id: engagementId } = offerEngagement(db, admin, p1.partnerIdentityId, occ, terms1, "offer");
-    const creative = mintCreativeRevision(db, admin, engagementId, fields());
-    expect(() => authorizeCreative(db, admin, engagementId, creative.id)).toThrow(/AGENT_REFERRALS_CREATIVE_AUTHORIZATION_REQUIRES_ACTIVE_ENGAGEMENT/);
+    const creative = mintCreativeRevision(db, admin, engagementId, fields(), currentCreativeRevision(db, engagementId)?.id ?? null);
+    expect(() => authorizeCreative(db, admin, engagementId, creative.id, lastCreativeAuthorization(db, engagementId)?.id ?? null)).toThrow(/AGENT_REFERRALS_CREATIVE_AUTHORIZATION_REQUIRES_ACTIVE_ENGAGEMENT/);
   });
 
   it("a superseded creative revision may not back new authorized publication", () => {
@@ -163,9 +163,9 @@ describe("creative authorization: canonical, at most one current, requires an AC
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);
     const engagementId = activatedEngagement(db, p1.partner, p1.partnerIdentityId, occ);
-    const c1 = mintCreativeRevision(db, admin, engagementId, fields());
-    mintCreativeRevision(db, admin, engagementId, fields({ copy_text: "v2" })); // supersedes c1
-    expect(() => authorizeCreative(db, admin, engagementId, c1.id)).toThrow(/AGENT_REFERRALS_CREATIVE_REVISION_SUPERSEDED/);
+    const c1 = mintCreativeRevision(db, admin, engagementId, fields(), currentCreativeRevision(db, engagementId)?.id ?? null);
+    mintCreativeRevision(db, admin, engagementId, fields({ copy_text: "v2" }), currentCreativeRevision(db, engagementId)?.id ?? null); // supersedes c1
+    expect(() => authorizeCreative(db, admin, engagementId, c1.id, lastCreativeAuthorization(db, engagementId)?.id ?? null)).toThrow(/AGENT_REFERRALS_CREATIVE_REVISION_SUPERSEDED/);
   });
 
   it("authorizing a new revision supersedes the current authorization - at most one current, ever", () => {
@@ -173,10 +173,10 @@ describe("creative authorization: canonical, at most one current, requires an AC
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);
     const engagementId = activatedEngagement(db, p1.partner, p1.partnerIdentityId, occ);
-    const c1 = mintCreativeRevision(db, admin, engagementId, fields());
-    const auth1 = authorizeCreative(db, admin, engagementId, c1.id);
-    const c2 = mintCreativeRevision(db, admin, engagementId, fields({ copy_text: "v2" }));
-    const auth2 = authorizeCreative(db, admin, engagementId, c2.id);
+    const c1 = mintCreativeRevision(db, admin, engagementId, fields(), currentCreativeRevision(db, engagementId)?.id ?? null);
+    const auth1 = authorizeCreative(db, admin, engagementId, c1.id, lastCreativeAuthorization(db, engagementId)?.id ?? null);
+    const c2 = mintCreativeRevision(db, admin, engagementId, fields({ copy_text: "v2" }), currentCreativeRevision(db, engagementId)?.id ?? null);
+    const auth2 = authorizeCreative(db, admin, engagementId, c2.id, lastCreativeAuthorization(db, engagementId)?.id ?? null);
     expect(auth2.supersedes_authorization_id).toBe(auth1.id);
     const oldRow = db.prepare("SELECT revoked_at FROM engagement_creative_authorizations WHERE id = ?").get(auth1.id) as { revoked_at: string | null };
     expect(oldRow.revoked_at).not.toBeNull();
@@ -188,9 +188,9 @@ describe("creative authorization: canonical, at most one current, requires an AC
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);
     const engagementId = activatedEngagement(db, p1.partner, p1.partnerIdentityId, occ);
-    const creative = mintCreativeRevision(db, admin, engagementId, fields());
+    const creative = mintCreativeRevision(db, admin, engagementId, fields(), currentCreativeRevision(db, engagementId)?.id ?? null);
     suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "emergency" });
-    expect(() => authorizeCreative(db, admin, engagementId, creative.id)).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
+    expect(() => authorizeCreative(db, admin, engagementId, creative.id, lastCreativeAuthorization(db, engagementId)?.id ?? null)).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
   });
 
   it("integration-hardening round-2 #5b: refuses once the owning partner identity is destroyed, even though the engagement is already ACTIVE and the creative content already minted (authorizeCreative is itself NEW_PUBLICATION_AUTHORITY, and readiness cannot protect it since authorization must exist BEFORE readiness ever runs)", () => {
@@ -198,13 +198,13 @@ describe("creative authorization: canonical, at most one current, requires an AC
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);
     const engagementId = activatedEngagement(db, p1.partner, p1.partnerIdentityId, occ);
-    const creative = mintCreativeRevision(db, admin, engagementId, fields());
+    const creative = mintCreativeRevision(db, admin, engagementId, fields(), currentCreativeRevision(db, engagementId)?.id ?? null);
 
     mintRetentionPolicyRevision(db, admin, "test policy");
     destroyPartnerIdentity(db, admin, p1.partnerIdentityId, "erasure request");
     expect(getPartnerIdentity(db, p1.partnerIdentityId)!.onboarding_state).toBe("PARTNER_ACTIVE");
 
-    expect(() => authorizeCreative(db, admin, engagementId, creative.id)).toThrow(/AGENT_REFERRALS_CREATIVE_PARTNER_IDENTITY_DESTROYED/);
+    expect(() => authorizeCreative(db, admin, engagementId, creative.id, lastCreativeAuthorization(db, engagementId)?.id ?? null)).toThrow(/AGENT_REFERRALS_CREATIVE_PARTNER_IDENTITY_DESTROYED/);
   });
 
   it("explicit revocation works and refuses a second revocation of the same authorization", () => {
@@ -212,8 +212,8 @@ describe("creative authorization: canonical, at most one current, requires an AC
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);
     const engagementId = activatedEngagement(db, p1.partner, p1.partnerIdentityId, occ);
-    const creative = mintCreativeRevision(db, admin, engagementId, fields());
-    const auth = authorizeCreative(db, admin, engagementId, creative.id);
+    const creative = mintCreativeRevision(db, admin, engagementId, fields(), currentCreativeRevision(db, engagementId)?.id ?? null);
+    const auth = authorizeCreative(db, admin, engagementId, creative.id, lastCreativeAuthorization(db, engagementId)?.id ?? null);
     revokeCreativeAuthorization(db, admin, auth.id, "manual revoke");
     expect(currentCreativeAuthorization(db, engagementId)).toBeNull();
     expect(() => revokeCreativeAuthorization(db, admin, auth.id, "again")).toThrow(CreativeError);
@@ -226,13 +226,13 @@ describe("fault injection: authorization supersession is atomic", () => {
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);
     const engagementId = activatedEngagement(db, p1.partner, p1.partnerIdentityId, occ);
-    const c1 = mintCreativeRevision(db, admin, engagementId, fields());
-    const auth1 = authorizeCreative(db, admin, engagementId, c1.id);
-    const c2 = mintCreativeRevision(db, admin, engagementId, fields({ copy_text: "v2" }));
+    const c1 = mintCreativeRevision(db, admin, engagementId, fields(), currentCreativeRevision(db, engagementId)?.id ?? null);
+    const auth1 = authorizeCreative(db, admin, engagementId, c1.id, lastCreativeAuthorization(db, engagementId)?.id ?? null);
+    const c2 = mintCreativeRevision(db, admin, engagementId, fields({ copy_text: "v2" }), currentCreativeRevision(db, engagementId)?.id ?? null);
 
     db.exec(`CREATE TRIGGER poison_creative_authorization BEFORE INSERT ON engagement_creative_authorizations
       WHEN NEW.supersedes_authorization_id IS NOT NULL BEGIN SELECT RAISE(ABORT, 'INJECTED_AUTHORIZATION_FAILURE'); END;`);
-    expect(() => authorizeCreative(db, admin, engagementId, c2.id)).toThrow(/INJECTED_AUTHORIZATION_FAILURE/);
+    expect(() => authorizeCreative(db, admin, engagementId, c2.id, lastCreativeAuthorization(db, engagementId)?.id ?? null)).toThrow(/INJECTED_AUTHORIZATION_FAILURE/);
     db.exec("DROP TRIGGER poison_creative_authorization");
 
     expect(currentCreativeAuthorization(db, engagementId)!.id).toBe(auth1.id); // still current, not left revoked-with-nothing

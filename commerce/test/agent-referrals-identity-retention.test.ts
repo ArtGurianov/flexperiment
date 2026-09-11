@@ -243,7 +243,7 @@ describe("identity retention / legal holds / destruction evidence", () => {
       const db = fresh();
       withPolicy(db);
       const { partnerIdentityId, agentId } = provisionedPartner(db);
-      submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "LEGAL_ENTITY", "OTHER", legalEntityRequisites);
+      submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "LEGAL_ENTITY", "OTHER", legalEntityRequisites, 0);
       expect(getPartnerIdentity(db, partnerIdentityId)!.submitted_full_name).toBe("Romashka LLC");
 
       const result = destroyPartnerIdentity(db, admin, partnerIdentityId, "erasure request");
@@ -267,7 +267,7 @@ describe("identity retention / legal holds / destruction evidence", () => {
       const db = fresh();
       withPolicy(db);
       const { partnerIdentityId, agentId } = provisionedPartner(db);
-      submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "LEGAL_ENTITY", "OTHER", legalEntityRequisites);
+      submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "LEGAL_ENTITY", "OTHER", legalEntityRequisites, 0);
       verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
 
       const before = currentAgentReferralsLegalProfile(db, agentId);
@@ -301,13 +301,13 @@ describe("identity retention / legal holds / destruction evidence", () => {
       withPolicy(db);
       const { partnerIdentityId } = provisionedPartner(db);
       const stalePrincipal = { realm: "PARTNER" as const, partner_identity_id: partnerIdentityId, partner_session_id: "n/a" };
-      submitPartnerLegalProfile(db, stalePrincipal, "LEGAL_ENTITY", "OTHER", legalEntityRequisites);
+      submitPartnerLegalProfile(db, stalePrincipal, "LEGAL_ENTITY", "OTHER", legalEntityRequisites, 0);
       expect(getPartnerIdentity(db, partnerIdentityId)!.onboarding_state).toBe("PROFILE_SUBMITTED");
 
       destroyPartnerIdentity(db, admin, partnerIdentityId, "erasure request");
       const eventsBefore = db.prepare("SELECT COUNT(*) AS n FROM partner_identity_events WHERE partner_identity_id = ? AND event_kind = 'LEGAL_PROFILE_SUBMITTED'").get(partnerIdentityId);
 
-      expect(() => submitPartnerLegalProfile(db, stalePrincipal, "INDIVIDUAL", "NPD", { full_name: "Resurrected Name", inn: "123456789012" }))
+      expect(() => submitPartnerLegalProfile(db, stalePrincipal, "INDIVIDUAL", "NPD", { full_name: "Resurrected Name", inn: "123456789012" }, 0))
         .toThrow(/PARTNER_IDENTITY_NOT_FOUND/);
 
       const draft = db.prepare(`SELECT ${draftRequisitesColumns} FROM partner_identities WHERE id = ?`).get(partnerIdentityId);
@@ -322,7 +322,7 @@ describe("identity retention / legal holds / destruction evidence", () => {
       const db = fresh();
       withPolicy(db);
       const { partnerIdentityId } = provisionedPartner(db);
-      submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "LEGAL_ENTITY", "OTHER", legalEntityRequisites);
+      submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "LEGAL_ENTITY", "OTHER", legalEntityRequisites, 0);
       destroyPartnerIdentity(db, admin, partnerIdentityId, "erasure request");
 
       expect(() => verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verify")).toThrow(/PARTNER_IDENTITY_NOT_FOUND/);

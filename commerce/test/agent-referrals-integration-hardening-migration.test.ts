@@ -101,9 +101,15 @@ describe("0049 integration-hardening migration", () => {
     ]);
   });
 
-  it("ships no 0054+ migration file (PR-F's own 0053 is the current boundary)", () => {
+  it("ships no 0057+ migration file (PR-C2's own 0056 is the current boundary)", () => {
     const all = readdirSync(MIGRATIONS).filter((n) => n.endsWith(".sql"));
-    expect(all.filter((n) => n > "0053_agent_referrals_tax_treatment_ord_canonicalization.sql")).toEqual([]);
+    // 0055 and 0056 both add a monotone counter rather than rebuilding a
+    // table - ALTER TABLE ADD COLUMN with a NOT NULL DEFAULT - which is why
+    // neither appears in the rebuild list asserted above. 0056 additionally
+    // drops and recreates one 0051 trigger, because SQLite cannot alter a
+    // trigger in place and the new column belongs inside its immutability
+    // guard.
+    expect(all.filter((n) => n > "0056_legal_profile_change_request_sequence.sql")).toEqual([]);
   });
 
   it("introduces no new base table - every fix is a trigger/index on an existing 0043/0047 table, or pure application code", () => {

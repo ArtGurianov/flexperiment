@@ -9,6 +9,7 @@ import { agentReferralsKeys } from "../../lib/query-keys";
 import type { Row } from "../../lib/page";
 import { Loading } from "../ui/Loading";
 import { Notice } from "../ui/Notice";
+import { RetainedIntentNotice } from "../ui/RetainedIntentNotice";
 import { Panel } from "../ui/Panel";
 import { Badge } from "../ui/Badge";
 
@@ -42,9 +43,12 @@ export function ChannelPolicy() {
     defaultValues: { status: "ALLOWED" },
   });
 
+  // PR-C2: the policy_revision the operator was looking at for that channel
+  // (0 when it carries none yet) - a decision taken in between makes this
+  // one stale rather than a second decision on top of it.
   const setPolicy = useAdminMutation(
     "agentReferrals.channelPolicy",
-    (values: { channel_key: string; status: string; effective_from: string; reason: string }) =>
+    (values: { channel_key: string; status: string; effective_from: string; reason: string; expected_policy_revision: number }) =>
       api("/agent-referrals/channel-policy", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ ...values, effective_from: new Date(values.effective_from).toISOString() }),
@@ -52,11 +56,29 @@ export function ChannelPolicy() {
     { context: (values) => ({ channelKey: values.channel_key }) },
   );
 
+  // The pin can only come from a policy the operator has actually read, so
+  // the form asks for the lookup first rather than guessing a revision. A
+  // guessed 0 would meet a 409 for every channel that already has a policy,
+  // which is a worse answer than saying what is missing.
+  const [pinMissing, setPinMissing] = useState(false);
+  const observedRevisionOf = (channelKey: string): number | null => {
+    const lookup = lookups[KNOWN_CHANNELS.indexOf(channelKey)];
+    if (!lookup?.data) return null;
+    return Number(lookup.data.policy_revision ?? 0);
+  };
+
   const submit = handleSubmit(async (values) => {
+    const expected = observedRevisionOf(values.channel_key);
+    if (expected === null) {
+      setLookedUp((prev) => (prev.includes(values.channel_key) ? prev : [...prev, values.channel_key]));
+      setPinMissing(true);
+      return;
+    }
+    setPinMissing(false);
     // Show the channel just written, so the invalidation this command
     // declares actually lands somewhere the operator can see.
     setLookedUp((prev) => (prev.includes(values.channel_key) ? prev : [...prev, values.channel_key]));
-    await setPolicy.mutateAsync(values).then(() => reset()).catch(() => undefined);
+    await setPolicy.mutateAsync({ ...values, expected_policy_revision: expected }).then(() => reset()).catch(() => undefined);
   });
 
   return (
@@ -94,6 +116,13 @@ export function ChannelPolicy() {
           <label>Статус <select {...register("status")}><option value="ALLOWED">ALLOWED</option><option value="BLOCKED">BLOCKED</option><option value="REVIEW_REQUIRED">REVIEW_REQUIRED</option></select></label>
           <label>Действует с <input type="datetime-local" {...register("effective_from", { required: true })} /></label>
           <label>Причина <input {...register("reason", { required: true })} /></label>
+          {pinMissing && <p>Сначала нажмите «Проверить» для этого канала — решение принимается относительно текущей политики, а не вслепую.</p>}
+          <RetainedIntentNotice
+            retained={setPolicy.retainedIntent}
+            onRetry={() => void setPolicy.retryRetainedIntent()}
+            onDiscard={setPolicy.discardRetainedIntent}
+            busy={setPolicy.isPending}
+          />
           <Notice error={setPolicy.error?.code} />
           <button className="primary" disabled={setPolicy.isPending}>{setPolicy.isPending ? "…" : "Сохранить"}</button>
         </form>

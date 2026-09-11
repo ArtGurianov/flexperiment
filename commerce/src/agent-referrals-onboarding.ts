@@ -39,6 +39,8 @@ export type PartnerIdentityRow = {
   email_hash: string;
   onboarding_state: OnboardingState;
   onboarding_revision: number;
+  /** 0055: monotone count of accepted DRAFT submissions - the pin a draft submission is authored against. Never onboarding_revision, which does not move on a resubmission. */
+  legal_profile_draft_revision: number;
   submitted_legal_form: string | null;
   submitted_tax_mode: string | null;
   submitted_opf: string | null;
@@ -52,7 +54,7 @@ export type PartnerIdentityRow = {
   destroyed_at: string | null;
 };
 
-const PARTNER_IDENTITY_COLUMNS = `id, agent_id, email, email_hash, onboarding_state, onboarding_revision,
+const PARTNER_IDENTITY_COLUMNS = `id, agent_id, email, email_hash, onboarding_state, onboarding_revision, legal_profile_draft_revision,
   submitted_legal_form, submitted_tax_mode, submitted_opf, submitted_full_name, submitted_short_name, submitted_inn, submitted_kpp, submitted_registration_number, submitted_legal_address,
   legal_profile_revision_id, destroyed_at`;
 

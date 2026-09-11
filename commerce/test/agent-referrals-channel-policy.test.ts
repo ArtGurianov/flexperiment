@@ -9,8 +9,7 @@ import {
   RESERVED_CATCH_ALL_CHANNEL_KEYS,
   resolveAgentReferralsChannelPolicy,
   resolveAgentReferralsChannelPolicyNow,
-  setAgentReferralsChannelPolicy,
-} from "../src/agent-referrals-channel-policy";
+  setAgentReferralsChannelPolicy, currentAgentReferralsChannelPolicyRevision } from "../src/agent-referrals-channel-policy";
 
 const SEEDED_KEYS = ["telegram", "vk", "vk_video", "vk_clips", "youtube", "rutube", "tiktok", "likee", "twitch"];
 
@@ -48,7 +47,7 @@ describe("agent-referrals channel policy", () => {
   describe("reviewing and allowing dzen affects dzen only", () => {
     it("dzen reflects the new policy; another unknown key remains REVIEW_REQUIRED", () => {
       const db = fresh();
-      setAgentReferralsChannelPolicy(db, { channel_key: "dzen", status: "ALLOWED", effective_from: "2026-06-01T00:00:00.000Z", reason: "reviewed" });
+      setAgentReferralsChannelPolicy(db, { channel_key: "dzen", status: "ALLOWED", effective_from: "2026-06-01T00:00:00.000Z", reason: "reviewed", expected_policy_revision: currentAgentReferralsChannelPolicyRevision(db, "dzen") });
 
       expect(resolveAgentReferralsChannelPolicy(db, "dzen", "2026-06-02T00:00:00.000Z")).toMatchObject({ status: "ALLOWED", policy_revision: 1 });
       expect(resolveAgentReferralsChannelPolicyNow(db, "some-other-platform")).toMatchObject({ status: "REVIEW_REQUIRED" });
@@ -60,14 +59,14 @@ describe("agent-referrals channel policy", () => {
   describe("generic catch-all bucket can never be ALLOWED", () => {
     it.each(RESERVED_CATCH_ALL_CHANNEL_KEYS)("refuses to set %s ALLOWED via the writer", (key) => {
       const db = fresh();
-      expect(() => setAgentReferralsChannelPolicy(db, { channel_key: key, status: "ALLOWED", effective_from: "2026-01-01T00:00:00.000Z", reason: "attempt" }))
+      expect(() => setAgentReferralsChannelPolicy(db, { channel_key: key, status: "ALLOWED", effective_from: "2026-01-01T00:00:00.000Z", reason: "attempt", expected_policy_revision: currentAgentReferralsChannelPolicyRevision(db, key) }))
         .toThrow(AgentReferralsChannelPolicyError);
       expect(resolveAgentReferralsChannelPolicyNow(db, key)).toMatchObject({ status: "REVIEW_REQUIRED" });
     });
 
     it("still permits a reserved key to be explicitly BLOCKED or left REVIEW_REQUIRED", () => {
       const db = fresh();
-      expect(() => setAgentReferralsChannelPolicy(db, { channel_key: "other", status: "BLOCKED", effective_from: "2026-01-01T00:00:00.000Z", reason: "explicit block" }))
+      expect(() => setAgentReferralsChannelPolicy(db, { channel_key: "other", status: "BLOCKED", effective_from: "2026-01-01T00:00:00.000Z", reason: "explicit block", expected_policy_revision: currentAgentReferralsChannelPolicyRevision(db, "other") }))
         .not.toThrow();
       expect(resolveAgentReferralsChannelPolicyNow(db, "other")).toMatchObject({ status: "BLOCKED" });
     });
@@ -77,7 +76,7 @@ describe("agent-referrals channel policy", () => {
     it("returns the policy effective at a past instant, not today's status", () => {
       const db = fresh();
       // dzen: REVIEW_REQUIRED until 2026-06-01, then ALLOWED.
-      setAgentReferralsChannelPolicy(db, { channel_key: "dzen", status: "ALLOWED", effective_from: "2026-06-01T00:00:00.000Z", reason: "reviewed" });
+      setAgentReferralsChannelPolicy(db, { channel_key: "dzen", status: "ALLOWED", effective_from: "2026-06-01T00:00:00.000Z", reason: "reviewed", expected_policy_revision: currentAgentReferralsChannelPolicyRevision(db, "dzen") });
 
       expect(resolveAgentReferralsChannelPolicy(db, "dzen", "2026-01-01T00:00:00.000Z")).toMatchObject({ status: "REVIEW_REQUIRED", policy_revision: null });
       expect(resolveAgentReferralsChannelPolicy(db, "dzen", "2026-06-01T00:00:00.000Z")).toMatchObject({ status: "ALLOWED", policy_revision: 1 });
@@ -86,9 +85,9 @@ describe("agent-referrals channel policy", () => {
 
     it("a later revision does not retroactively change a historical resolution", () => {
       const db = fresh();
-      setAgentReferralsChannelPolicy(db, { channel_key: "dzen", status: "ALLOWED", effective_from: "2026-01-01T00:00:00.000Z", reason: "reviewed" });
+      setAgentReferralsChannelPolicy(db, { channel_key: "dzen", status: "ALLOWED", effective_from: "2026-01-01T00:00:00.000Z", reason: "reviewed", expected_policy_revision: currentAgentReferralsChannelPolicyRevision(db, "dzen") });
       // A later BLOCKED revision, effective from 2026-12-01.
-      setAgentReferralsChannelPolicy(db, { channel_key: "dzen", status: "BLOCKED", effective_from: "2026-12-01T00:00:00.000Z", reason: "later block" });
+      setAgentReferralsChannelPolicy(db, { channel_key: "dzen", status: "BLOCKED", effective_from: "2026-12-01T00:00:00.000Z", reason: "later block", expected_policy_revision: currentAgentReferralsChannelPolicyRevision(db, "dzen") });
 
       expect(resolveAgentReferralsChannelPolicy(db, "dzen", "2026-06-01T00:00:00.000Z")).toMatchObject({ status: "ALLOWED", policy_revision: 1 });
       expect(resolveAgentReferralsChannelPolicy(db, "dzen", "2027-01-01T00:00:00.000Z")).toMatchObject({ status: "BLOCKED", policy_revision: 2 });
@@ -96,8 +95,8 @@ describe("agent-referrals channel policy", () => {
 
     it("mixes historical lookups across two channels independently", () => {
       const db = fresh();
-      setAgentReferralsChannelPolicy(db, { channel_key: "dzen", status: "ALLOWED", effective_from: "2026-03-01T00:00:00.000Z", reason: "reviewed" });
-      setAgentReferralsChannelPolicy(db, { channel_key: "ok_ru", status: "BLOCKED", effective_from: "2026-02-01T00:00:00.000Z", reason: "blocked" });
+      setAgentReferralsChannelPolicy(db, { channel_key: "dzen", status: "ALLOWED", effective_from: "2026-03-01T00:00:00.000Z", reason: "reviewed", expected_policy_revision: currentAgentReferralsChannelPolicyRevision(db, "dzen") });
+      setAgentReferralsChannelPolicy(db, { channel_key: "ok_ru", status: "BLOCKED", effective_from: "2026-02-01T00:00:00.000Z", reason: "blocked", expected_policy_revision: currentAgentReferralsChannelPolicyRevision(db, "ok_ru") });
 
       expect(resolveAgentReferralsChannelPolicy(db, "dzen", "2026-02-15T00:00:00.000Z")).toMatchObject({ status: "REVIEW_REQUIRED" });
       expect(resolveAgentReferralsChannelPolicy(db, "ok_ru", "2026-02-15T00:00:00.000Z")).toMatchObject({ status: "BLOCKED" });

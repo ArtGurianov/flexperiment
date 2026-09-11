@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { generateSettlementAct, presentSettlementAct, acceptSettlementAct, disputeSettlementAct, settlementActById, actAcceptanceForAct, actDisputeForAct, SettlementActError } from "../src/agent-referrals-act";
 import { mintSettlementStepUpGrant } from "../src/agent-referrals-settlement-step-up";
 import { correctPartnerRewardWithSettlement } from "../src/agent-referrals-settlement";
-import { correctEngagementEffectiveRewardSnapshot } from "../src/agent-referrals-reward-registry";
+import { correctEngagementEffectiveRewardSnapshot, currentEffectiveRewardSnapshot } from "../src/agent-referrals-reward-registry";
 import {
   FAR_FUTURE, fresh, admin, readyPartner, seedOccurrence, nearTermTerms, offerAcceptActivate, purchaseAndPay, finalizedSettlement,
 } from "./support/agent-referrals-settlement-fixtures";
@@ -188,7 +188,7 @@ describe("act generation/presentation/acceptance rechecks the settlement is stil
     void p1;
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
       .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
-    correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund");
+    correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(db.prepare("SELECT status FROM reward_settlements WHERE id = ?").get(settlement.id)).toEqual({ status: "CANCELLED_BEFORE_PAYMENT" });
     expect(() => generateSettlementAct(db, admin, settlement.id)).toThrow(/AGENT_REFERRALS_SETTLEMENT_ACT_SETTLEMENT_NOT_PREPARED/);
   });
@@ -209,7 +209,7 @@ describe("act generation/presentation/acceptance rechecks the settlement is stil
     const { act } = generateSettlementAct(db, admin, settlement.id);
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
       .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
-    correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund");
+    correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(() => presentSettlementAct(db, admin, act.id)).toThrow(/AGENT_REFERRALS_SETTLEMENT_ACT_SETTLEMENT_NOT_PREPARED/);
   });
 
@@ -221,7 +221,7 @@ describe("act generation/presentation/acceptance rechecks the settlement is stil
     const grant = mintSettlementStepUpGrant(db, p1.partner, "ACT_ACCEPTANCE", { act_id: act.id, amount_kopecks: act.amount_kopecks, engagement_revision_id: act.engagement_revision_id });
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
       .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
-    correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund");
+    correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(() => acceptSettlementAct(db, p1.partner, act.id, grant.grant_id)).toThrow(/AGENT_REFERRALS_SETTLEMENT_ACT_SETTLEMENT_NOT_PREPARED/);
   });
 
@@ -232,7 +232,7 @@ describe("act generation/presentation/acceptance rechecks the settlement is stil
     presentSettlementAct(db, admin, act.id);
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
       .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
-    correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund");
+    correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(() => disputeSettlementAct(db, p1.partner, act.id, "AMOUNT_INCORRECT")).not.toThrow();
   });
 });

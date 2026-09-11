@@ -1,8 +1,9 @@
 import type Database from "better-sqlite3";
-import { id } from "./crypto";
+import { id, sha256 } from "./crypto";
 import { encryptPayoutDestination } from "./agent-referrals-payout-encryption";
 import { recordPartnerIdentityEvent } from "./agent-referrals-onboarding";
 import { consumeStepUpGrantInTransaction } from "./agent-referrals-step-up";
+import { withPartnerCommandInTransaction, type PartnerCommandResult } from "./agent-referrals-partner-command";
 import type { PartnerPrincipal } from "./agent-referrals-partner-identity";
 
 /**
@@ -54,8 +55,8 @@ export type SetPayoutDestinationInput = {
  * minted for "supersede current revision X" cannot be replayed after a
  * concurrent write has already advanced past X.
  */
-export const setPartnerPayoutDestination = (db: Database.Database, partner: PartnerPrincipal, input: SetPayoutDestinationInput): PayoutProfileReadModel => {
-  const run = db.transaction((): PayoutProfileReadModel => {
+export const setPartnerPayoutDestinationInTransaction = (db: Database.Database, partner: PartnerPrincipal, input: SetPayoutDestinationInput): PayoutProfileReadModel => {
+  {
     const current = db.prepare("SELECT id, revision FROM payout_profile_revisions WHERE partner_identity_id = ? ORDER BY revision DESC LIMIT 1")
       .get(partner.partner_identity_id) as { id: string; revision: number } | undefined;
 
@@ -70,13 +71,43 @@ export const setPartnerPayoutDestination = (db: Database.Database, partner: Part
 
     recordPartnerIdentityEvent(db, partner.partner_identity_id, "PAYOUT_PROFILE_REVISION_CREATED", "PARTNER", { revision_id: revisionId, revision: nextRevision, kind: "ACTIVE_DESTINATION" });
     return currentPayoutProfile(db, partner.partner_identity_id)!;
-  });
-  return run.immediate();
+  }
 };
 
+/** Transaction-owning wrapper for in-process callers. The HTTP surface never uses this - it goes through the idempotent entry point below, so a retry cannot mint a second revision. */
+export const setPartnerPayoutDestination = (db: Database.Database, partner: PartnerPrincipal, input: SetPayoutDestinationInput): PayoutProfileReadModel =>
+  db.transaction(() => setPartnerPayoutDestinationInTransaction(db, partner, input)).immediate();
+
+/**
+ * PR-C2: the route-facing command. The replay lookup, the payout write and
+ * the idempotency record all share this one BEGIN IMMEDIATE - and the lookup
+ * runs before the current-revision read inside the core, which is the whole
+ * point here: the first attempt advances the revision, so a retry validated
+ * against fresh state would legitimately supersede it.
+ *
+ * destination_plaintext is part of the request fingerprint but never of the
+ * stored response (currentPayoutProfile is redacted at the source), so the
+ * table holds no payout secret.
+ */
+export const setPartnerPayoutDestinationIdempotent = (
+  db: Database.Database,
+  partner: PartnerPrincipal,
+  idempotencyKey: string,
+  input: SetPayoutDestinationInput,
+): PartnerCommandResult<PayoutProfileReadModel> =>
+  db.transaction(() => withPartnerCommandInTransaction<PayoutProfileReadModel>({
+    db, partner, command: "partner.payout.set", idempotencyKey, successStatus: 200,
+    request: {
+      destination_kind: input.destination_kind,
+      destination_fingerprint: sha256(input.destination_plaintext),
+      destination_last4: input.destination_last4,
+    },
+    execute: () => setPartnerPayoutDestinationInTransaction(db, partner, input),
+  })).immediate();
+
 /** Revoke: closes the profile with a REVOKED-kind revision - no destination fields, no mutation of any prior row. */
-export const revokePartnerPayoutDestination = (db: Database.Database, partner: PartnerPrincipal, stepUpGrantId: string): PayoutProfileReadModel => {
-  const run = db.transaction((): PayoutProfileReadModel => {
+export const revokePartnerPayoutDestinationInTransaction = (db: Database.Database, partner: PartnerPrincipal, stepUpGrantId: string): PayoutProfileReadModel => {
+  {
     const current = db.prepare("SELECT id, revision FROM payout_profile_revisions WHERE partner_identity_id = ? ORDER BY revision DESC LIMIT 1")
       .get(partner.partner_identity_id) as { id: string; revision: number } | undefined;
 
@@ -90,6 +121,21 @@ export const revokePartnerPayoutDestination = (db: Database.Database, partner: P
 
     recordPartnerIdentityEvent(db, partner.partner_identity_id, "PAYOUT_PROFILE_REVISION_CREATED", "PARTNER", { revision_id: revisionId, revision: nextRevision, kind: "REVOKED" });
     return currentPayoutProfile(db, partner.partner_identity_id)!;
-  });
-  return run.immediate();
+  }
 };
+
+/** Transaction-owning wrapper for in-process callers; the HTTP surface uses the idempotent entry point below. */
+export const revokePartnerPayoutDestination = (db: Database.Database, partner: PartnerPrincipal, stepUpGrantId: string): PayoutProfileReadModel =>
+  db.transaction(() => revokePartnerPayoutDestinationInTransaction(db, partner, stepUpGrantId)).immediate();
+
+/** PR-C2: same contract as the setter - one transaction for the replay lookup, the revocation revision and the idempotency record. The step-up grant id is deliberately OUT of the fingerprint: a retry legitimately carries a fresh grant (the first one is spent), and keying on it would make every retry look like a different command. */
+export const revokePartnerPayoutDestinationIdempotent = (
+  db: Database.Database,
+  partner: PartnerPrincipal,
+  idempotencyKey: string,
+  stepUpGrantId: string,
+): PartnerCommandResult<PayoutProfileReadModel> =>
+  db.transaction(() => withPartnerCommandInTransaction<PayoutProfileReadModel>({
+    db, partner, command: "partner.payout.revoke", idempotencyKey, successStatus: 200, request: {},
+    execute: () => revokePartnerPayoutDestinationInTransaction(db, partner, stepUpGrantId),
+  })).immediate();

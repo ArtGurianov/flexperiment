@@ -6,10 +6,12 @@ import { useForm } from "react-hook-form";
 import { api, AdminApiError } from "../../lib/api";
 import { useAdminMutation } from "../../lib/use-admin-mutation";
 import { agentReferralsKeys } from "../../lib/query-keys";
+import { usePersistentIdempotencyKey } from "../../lib/use-persistent-idempotency-key";
 import { toLocalInput } from "../../lib/values";
 import type { Row } from "../../lib/page";
 import { Loading } from "../ui/Loading";
 import { Notice } from "../ui/Notice";
+import { RetainedIntentNotice } from "../ui/RetainedIntentNotice";
 import { Panel } from "../ui/Panel";
 import { Badge } from "../ui/Badge";
 
@@ -98,8 +100,19 @@ function EngagementDetail({ engagementId, onBack, focusDistributionId, focusRepo
 }) {
   const detail = useQuery({ queryKey: agentReferralsKeys.engagement(engagementId), queryFn: () => api<Row>(`/agent-referrals/engagements/${engagementId}`) });
   const command = useEngagementCommand(engagementId);
-  const busy = command.isPending;
-  const error = command.error?.code ?? null;
+  // PR-C2: activation carries durable command identity, so it gets its OWN
+  // key rather than sharing the generic dispatcher above - a key has to be
+  // per intent, and a hook that dispatches many different paths cannot hold
+  // one. Re-activating after a suspension is a legitimate separate command;
+  // only the key tells that from a lost-response retry.
+  const activateKey = usePersistentIdempotencyKey();
+  const activate = useAdminMutation("agentReferrals.engagementCommand", (engagementRevisionId: string) =>
+    api(`/agent-referrals/engagements/${engagementId}/activate`, {
+      method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": activateKey.acquire() },
+      body: JSON.stringify({ engagement_revision_id: engagementRevisionId }),
+    }), { context: () => ({ engagementId }) });
+  const busy = command.isPending || activate.isPending;
+  const error = command.error?.code ?? activate.error?.code ?? null;
 
   const post = async (path: string, body: Record<string, unknown> = {}) => {
     await command.mutateAsync({ path, body }).catch(() => undefined);
@@ -126,20 +139,29 @@ function EngagementDetail({ engagementId, onBack, focusDistributionId, focusRepo
       <Panel title={`Кампания: ${String(engagement.id)}`}>
         <p>Статус: <Badge>{lifecycleState}</Badge></p>
         {lifecycleState === "ACCEPTED" && latestRevision && (
-          <button disabled={busy} onClick={() => void post(`/agent-referrals/engagements/${engagementId}/activate`, { engagement_revision_id: latestRevision.id })}>
+          <button disabled={busy} onClick={() => void activate.mutateAsync(String(latestRevision.id)).then(() => activateKey.clear()).catch(() => undefined)}>
             {busy ? "…" : "Активировать (требует принятой редакции + подтверждённой аудитории/договора/делегирования/промокода)"}
           </button>
         )}
+        {/* PR-C2: expected_lifecycle_revision is the revision this screen was
+            rendered from - a reactivation in between makes this suspension a
+            stale command rather than a repeatable one. */}
         {lifecycleState === "ACTIVE" && (
-          <button disabled={busy} onClick={() => void post(`/agent-referrals/engagements/${engagementId}/suspend`, { reason: "suspended by operator" })}>{busy ? "…" : "Приостановить"}</button>
+          <button disabled={busy} onClick={() => void post(`/agent-referrals/engagements/${engagementId}/suspend`, { reason: "suspended by operator", expected_lifecycle_revision: Number(engagement.lifecycle_revision) })}>{busy ? "…" : "Приостановить"}</button>
         )}
         {(lifecycleState === "ACTIVE" || lifecycleState === "SUSPENDED") && (
           <button disabled={busy} onClick={() => void post(`/agent-referrals/engagements/${engagementId}/close`, { reason: "closed by operator" })}>{busy ? "…" : "Закрыть (требует завершённого события)"}</button>
         )}
+        <RetainedIntentNotice
+          retained={command.retainedIntent}
+          onRetry={() => void command.retryRetainedIntent()}
+          onDiscard={command.discardRetainedIntent}
+          busy={busy}
+        />
         <Notice error={error} />
       </Panel>
 
-      <CreativeSection engagementId={engagementId} creative={creative} />
+      <CreativeSection engagementId={engagementId} creative={creative} authorizationHeadId={data.creative_authorization_head ? String((data.creative_authorization_head as Row).id) : null} />
       <DistributionsSection engagementId={engagementId} distributions={distributions} focusDistributionId={focusDistributionId} focusReporting={focusReporting} />
       <RewardSection engagementId={engagementId} effective={effective} settlement={settlement} />
       {settlement && <ActPaymentSection engagementId={engagementId} settlement={settlement} act={act} actAcceptance={actAcceptance} actDispute={actDispute} paymentAttempts={paymentAttempts} />}
@@ -147,7 +169,7 @@ function EngagementDetail({ engagementId, onBack, focusDistributionId, focusRepo
   );
 }
 
-function CreativeSection({ engagementId, creative }: { engagementId: string; creative: Row | null }) {
+function CreativeSection({ engagementId, creative, authorizationHeadId }: { engagementId: string; creative: Row | null; authorizationHeadId: string | null }) {
   const { register, handleSubmit } = useForm<{ format_kind: string; media_ref: string; copy_text: string; cta_text: string; mandatory_labeling_text: string; creative_target_url: string }>({
     defaultValues: { format_kind: "post", mandatory_labeling_text: "Реклама." },
   });
@@ -173,8 +195,12 @@ function CreativeSection({ engagementId, creative }: { engagementId: string; cre
     await command.mutateAsync({ path, body }).catch(() => undefined);
   };
 
-  const mint = handleSubmit((values) => run(`/agent-referrals/engagements/${engagementId}/creative`, values));
-  const authorize = () => creative && run(`/agent-referrals/engagements/${engagementId}/creative/${creative.id}/authorize`);
+  // PR-C2 pins: a new creative revision supersedes the one on screen, and an
+  // authorization is authored against the chain head (live OR revoked) - the
+  // LIVE authorization returns to null on every revocation, so pinning it
+  // would let a stale retry through after authorize -> revoke.
+  const mint = handleSubmit((values) => run(`/agent-referrals/engagements/${engagementId}/creative`, { ...values, expected_current_revision_id: creative ? String(creative.id) : null }));
+  const authorize = () => creative && run(`/agent-referrals/engagements/${engagementId}/creative/${creative.id}/authorize`, { expected_authorization_head_id: authorizationHeadId });
 
   return (
     <Panel title="Креатив и регистрация в ОРД">
@@ -210,6 +236,12 @@ function CreativeSection({ engagementId, creative }: { engagementId: string; cre
         <label>CTA <input {...register("cta_text")} /></label>
         <label>Обязательная маркировка <input {...register("mandatory_labeling_text", { required: true })} /></label>
         <label>Целевая ссылка <input {...register("creative_target_url", { required: true })} /></label>
+        <RetainedIntentNotice
+          retained={command.retainedIntent}
+          onRetry={() => void command.retryRetainedIntent()}
+          onDiscard={command.discardRetainedIntent}
+          busy={busy}
+        />
         <Notice error={error} />
         <button className="primary" disabled={busy}>{busy ? "…" : "Подготовить новую редакцию креатива"}</button>
       </form>
@@ -267,14 +299,27 @@ function DistributionsSection({ engagementId, distributions, focusDistributionId
   const [reporting, setReporting] = useState<string | null>(() => (focusReporting && focusedDistributionExists ? focusDistributionId : null));
 
   const command = useEngagementCommand(engagementId);
-  const busy = command.isPending;
-  const error = command.error?.code ?? null;
+  // PR-C2: reporting a distribution carries durable command identity, so it
+  // needs its OWN key - the generic dispatcher above sends none, and a key
+  // has to be per intent anyway.
+  const reportKey = usePersistentIdempotencyKey();
+  const reportDistribution = useAdminMutation("agentReferrals.engagementCommand", (values: Record<string, unknown>) =>
+    api(`/agent-referrals/engagements/${engagementId}/distributions`, {
+      method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": reportKey.acquire() },
+      body: JSON.stringify(values),
+    }), { context: () => ({ engagementId }) });
+  const busy = command.isPending || reportDistribution.isPending;
+  const error = command.error?.code ?? reportDistribution.error?.code ?? null;
   const run = async (path: string, body: Record<string, unknown>) => {
     await command.mutateAsync({ path, body }).catch(() => undefined);
   };
 
   return (
     <Panel title="Размещения — приём фактов, коррекция, подтверждение снятия, отчётность">
+      {/* PR-C2: every command below carries the version the row was rendered
+          with - event_sequence for the removal/compliance lifecycle (cyclic,
+          so the STATE cannot serve as a pin) and the current revision id for
+          a correction. A stale click is refused rather than appended. */}
       <table>
         <thead><tr><th>Канал</th><th>Ссылка</th><th>Комплаенс</th><th>Снятие</th><th>Действия</th></tr></thead>
         <tbody>
@@ -296,17 +341,17 @@ function DistributionsSection({ engagementId, distributions, focusDistributionId
                     {reporting === distributionId ? "Скрыть отчётность" : "Отчётность"}
                   </button>
                   {row.removal_state === null && (
-                    <button disabled={busy} onClick={() => void run(`/agent-referrals/distributions/${distributionId}/require-removal`, { reason: "publication window ended" })}>Требовать снятия</button>
+                    <button disabled={busy} onClick={() => void run(`/agent-referrals/distributions/${distributionId}/require-removal`, { reason: "publication window ended", expected_event_sequence: Number(row.event_sequence) })}>Требовать снятия</button>
                   )}
                   {/* REMOVAL_CONFIRMED is legal from all four non-terminal removal states (agent-referrals-distribution.ts's own REMOVAL_LEGAL_FROM) - the confirmation form must be reachable from every one of them, not only the first two, or OVERDUE_REMOVAL/REMOVAL_UNVERIFIED become a dead end with no way back to REMOVAL_CONFIRMED. */}
                   {(row.removal_state === "REMOVAL_CLAIMED" || row.removal_state === "REMOVAL_REQUIRED" || row.removal_state === "OVERDUE_REMOVAL" || row.removal_state === "REMOVAL_UNVERIFIED") && (
-                    <ConfirmRemovalForm distributionId={distributionId} busy={busy} onSubmit={(evidenceRef) => run(`/agent-referrals/distributions/${distributionId}/confirm-removal`, { evidence_ref: evidenceRef })} />
+                    <ConfirmRemovalForm distributionId={distributionId} busy={busy} onSubmit={(evidenceRef) => run(`/agent-referrals/distributions/${distributionId}/confirm-removal`, { evidence_ref: evidenceRef, expected_event_sequence: Number(row.event_sequence) })} />
                   )}
                   {(row.removal_state === "REMOVAL_CLAIMED" || row.removal_state === "OVERDUE_REMOVAL") && (
-                    <button disabled={busy} onClick={() => void run(`/agent-referrals/distributions/${distributionId}/mark-unverified`, { reason: "cannot verify" })}>Не удалось подтвердить</button>
+                    <button disabled={busy} onClick={() => void run(`/agent-referrals/distributions/${distributionId}/mark-unverified`, { reason: "cannot verify", expected_event_sequence: Number(row.event_sequence) })}>Не удалось подтвердить</button>
                   )}
                   {row.compliance_state === "REVIEW_REQUIRED" && (
-                    <button disabled={busy} onClick={() => void run(`/agent-referrals/distributions/${distributionId}/review-cleared`, { reason: "reviewed by operator" })}>Снять с проверки</button>
+                    <button disabled={busy} onClick={() => void run(`/agent-referrals/distributions/${distributionId}/review-cleared`, { reason: "reviewed by operator", expected_event_sequence: Number(row.event_sequence) })}>Снять с проверки</button>
                   )}
                 </td>
               </tr>
@@ -320,18 +365,27 @@ function DistributionsSection({ engagementId, distributions, focusDistributionId
           requireCorrectionReason
           initial={(distributions.find((row) => String(row.distribution_id) === correcting)?.current_revision as Row) ?? undefined}
           busy={busy}
-          onSubmit={(values) => run(`/agent-referrals/distributions/${correcting}/correct`, values)}
+          onSubmit={(values) => run(`/agent-referrals/distributions/${correcting}/correct`, {
+            ...values,
+            expected_supersedes_revision_id: String(((distributions.find((row) => String(row.distribution_id) === correcting)?.current_revision) as Row).id),
+          })}
         />
       )}
       {reporting && (
         <DistributionReportingPanel
           reportingPeriods={(distributions.find((row) => String(row.distribution_id) === reporting)?.reporting_periods as Row[]) ?? []}
           busy={busy}
-          onFile={(values) => run(`/agent-referrals/distributions/${reporting}/reports`, values)}
-          onReconcile={(periodKey, values) => run(`/agent-referrals/distributions/${reporting}/reports/${periodKey}/reconciliation`, values)}
+          onFile={(values, expectedCurrentReportId) => run(`/agent-referrals/distributions/${reporting}/reports`, { ...values, expected_current_report_id: expectedCurrentReportId })}
+          onReconcile={(periodKey, values, expectedCurrentReportId) => run(`/agent-referrals/distributions/${reporting}/reports/${periodKey}/reconciliation`, { ...values, expected_current_report_id: expectedCurrentReportId })}
         />
       )}
-      <DistributionFactForm title="Сообщить о новом размещении" busy={busy} onSubmit={(values) => run(`/agent-referrals/engagements/${engagementId}/distributions`, values)} />
+      <DistributionFactForm title="Сообщить о новом размещении" busy={busy} onSubmit={(values) => reportDistribution.mutateAsync(values).then(() => reportKey.clear()).catch(() => undefined)} />
+      <RetainedIntentNotice
+        retained={command.retainedIntent}
+        onRetry={() => void command.retryRetainedIntent()}
+        onDiscard={command.discardRetainedIntent}
+        busy={busy}
+      />
       <Notice error={error} />
     </Panel>
   );
@@ -339,9 +393,19 @@ function DistributionsSection({ engagementId, distributions, focusDistributionId
 
 function DistributionReportingPanel({ reportingPeriods, busy, onFile, onReconcile }: {
   reportingPeriods: Row[]; busy: boolean;
-  onFile: (values: Record<string, unknown>) => void;
-  onReconcile: (periodKey: string, values: { vk_operation_external_id: string; erir_code: string; submission_evidence_ref: string }) => void;
+  onFile: (values: Record<string, unknown>, expectedCurrentReportId: string | null) => void;
+  onReconcile: (periodKey: string, values: { vk_operation_external_id: string; erir_code: string; submission_evidence_ref: string }, expectedCurrentReportId: string | null) => void;
 }) {
+  // PR-C2: the report revision THIS SCREEN rendered for that period - null
+  // when nothing is filed yet. Resolved from the list the panel is showing,
+  // which is precisely "the version the operator was looking at"; re-reading
+  // it server-side would prove nothing.
+  const currentReportIdFor = (periodKey: string): string | null => {
+    const forPeriod = reportingPeriods.filter((period) => String(period.reporting_period_key) === periodKey);
+    if (forPeriod.length === 0) return null;
+    return String(forPeriod.reduce((a, b) => (Number(a.revision) >= Number(b.revision) ? a : b)).id);
+  };
+
   return (
     <div className="form">
       <h3>Отчётность по размещению (ОРД)</h3>
@@ -361,8 +425,8 @@ function DistributionReportingPanel({ reportingPeriods, busy, onFile, onReconcil
           </tbody>
         </table>
       )}
-      <ReportFilingForm busy={busy} onSubmit={onFile} defaultReportingBasis={reportingPeriods.at(-1)?.reporting_basis === "PROVIDER_SPECIAL_PERIOD" ? "PROVIDER_SPECIAL_PERIOD" : "CALENDAR_MONTH"} />
-      <ReportReconciliationForm busy={busy} onSubmit={onReconcile} />
+      <ReportFilingForm busy={busy} onSubmit={(values) => onFile(values, currentReportIdFor(String(values.reporting_period_key)))} defaultReportingBasis={reportingPeriods.at(-1)?.reporting_basis === "PROVIDER_SPECIAL_PERIOD" ? "PROVIDER_SPECIAL_PERIOD" : "CALENDAR_MONTH"} />
+      <ReportReconciliationForm busy={busy} onSubmit={(periodKey, values) => onReconcile(periodKey, values, currentReportIdFor(periodKey))} />
     </div>
   );
 }
@@ -526,9 +590,15 @@ function RewardSection({ engagementId, effective, settlement }: { engagementId: 
         </button>
       )}
       {effective && (
-        <button disabled={busy} onClick={() => void post(`/agent-referrals/engagements/${engagementId}/reward-registry/correct`, { reason: "correction by operator" })}>{busy ? "…" : "Скорректировать вознаграждение"}</button>
+        <button disabled={busy} onClick={() => void post(`/agent-referrals/engagements/${engagementId}/reward-registry/correct`, { reason: "correction by operator", expected_current_effective_snapshot_id: String(effective.id) })}>{busy ? "…" : "Скорректировать вознаграждение"}</button>
       )}
       {settlement && <p>Расчёт: <Badge>{String(settlement.status)}</Badge> · {Number(settlement.amount_kopecks) / 100} ₽</p>}
+      <RetainedIntentNotice
+        retained={command.retainedIntent}
+        onRetry={() => void command.retryRetainedIntent()}
+        onDiscard={command.discardRetainedIntent}
+        busy={busy}
+      />
       <Notice error={error} />
     </Panel>
   );
@@ -544,8 +614,18 @@ function ActPaymentSection({ engagementId, settlement, act, actAcceptance, actDi
   const activeAttempt = paymentAttempts.find((attempt) => attempt.status !== "CONFIRMED_NOT_MADE") ?? null;
 
   const command = useEngagementCommand(engagementId);
-  const busy = command.isPending;
-  const error = command.error?.code ?? null;
+  // PR-C2: beginning a payment carries durable command identity, so it needs
+  // its OWN key rather than the generic dispatcher's - a key is per intent,
+  // and recording an attempt as CONFIRMED_NOT_MADE makes "begin again" a
+  // legitimate SECOND command with a byte-identical body.
+  const beginKey = usePersistentIdempotencyKey();
+  const beginPayment = useAdminMutation("agentReferrals.engagementCommand", () =>
+    api("/agent-referrals/payments/begin", {
+      method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": beginKey.acquire() },
+      body: JSON.stringify({ settlement_id: settlement.id }),
+    }), { context: () => ({ engagementId }) });
+  const busy = command.isPending || beginPayment.isPending;
+  const error = command.error?.code ?? beginPayment.error?.code ?? null;
   const run = async (path: string, body: Record<string, unknown> = {}) => {
     await command.mutateAsync({ path, body }).catch(() => undefined);
   };
@@ -571,7 +651,7 @@ function ActPaymentSection({ engagementId, settlement, act, actAcceptance, actDi
               payment_attempts_active_unique constraint would refuse a second concurrent begin, but the UI
               should not invite that click in the first place. */}
           {actAcceptance && settlement.status === "PREPARED" && !activeAttempt && (
-            <button disabled={busy} onClick={() => void run("/agent-referrals/payments/begin", { settlement_id: settlement.id })}>{busy ? "…" : "Начать выплату (требует принятого акта и, для НПД, свежей проверки)"}</button>
+            <button disabled={busy} onClick={() => void beginPayment.mutateAsync().then(() => beginKey.clear()).catch(() => undefined)}>{busy ? "…" : "Начать выплату (требует принятого акта и, для НПД, свежей проверки)"}</button>
           )}
         </>
       )}

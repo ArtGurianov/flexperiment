@@ -12,7 +12,7 @@ import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, FRAMEWO
 import { mintStepUpGrant } from "../src/agent-referrals-step-up";
 import { acceptFrameworkAndDelegation } from "../src/agent-referrals-framework-acceptance";
 import { mintEngagementStepUpGrant } from "../src/agent-referrals-engagement-step-up";
-import { offerEngagement, verifyAudienceForPartnerCity, acceptEngagement, activateEngagement, mintEngagementRevision, suspendEngagement, reactivateEngagement, type EngagementRevisionTerms } from "../src/agent-referrals-engagement";
+import { offerEngagement, verifyAudienceForPartnerCity, acceptEngagement, activateEngagement, mintEngagementRevision, suspendEngagement, reactivateEngagement, type EngagementRevisionTerms, currentEngagementRevision, getEngagement } from "../src/agent-referrals-engagement";
 import * as promoModule from "../src/agent-referrals-promo";
 import {
   AgentReferralsPromoError,
@@ -58,10 +58,10 @@ const readyPartner = (db: Database.Database) => {
   db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
     VALUES (?, ?, 'Agent', 'Agent Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
-  submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" });
+  submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
-  const fw = mintFrameworkAgreementRevision(db, clause(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES));
-  const dt = mintDelegationTemplateRevision(db, clause(DELEGATION_TEMPLATE_REQUIRED_CLAUSES));
+  const fw = mintFrameworkAgreementRevision(db, clause(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES), null);
+  const dt = mintDelegationTemplateRevision(db, clause(DELEGATION_TEMPLATE_REQUIRED_CLAUSES), null);
   issueFrameworkToPartner(db, admin, partnerIdentityId, fw.id, dt.id, "issued");
   const sessionId = randomUUID();
   db.prepare(`INSERT INTO partner_sessions(id, partner_identity_id, token_hash, expires_at) VALUES (?, ?, ?, datetime('now', '+1 hour'))`).run(sessionId, partnerIdentityId, randomUUID());
@@ -153,7 +153,7 @@ describe("per-occurrence promo authorization: no bare UNIQUE(promo_code_id), at 
     expect(currentEngagementPromoAuthorization(db, p1.promo.promo_code_id, occ3)!.id).toBe(e3.activation.promo_authorization_id);
 
     // Suspending one occurrence's engagement must not touch the other two.
-    suspendEngagement(db, admin, e2.engagementId, "manual pause");
+    suspendEngagement(db, admin, e2.engagementId, "manual pause", getEngagement(db, e2.engagementId)!.lifecycle_revision);
     expect(currentEngagementPromoAuthorization(db, p1.promo.promo_code_id, occ1)).not.toBeNull();
     expect(currentEngagementPromoAuthorization(db, p1.promo.promo_code_id, occ2)).toBeNull();
     expect(currentEngagementPromoAuthorization(db, p1.promo.promo_code_id, occ3)).not.toBeNull();
@@ -166,7 +166,7 @@ describe("per-occurrence promo authorization: no bare UNIQUE(promo_code_id), at 
     const e = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ);
     const a1Id = e.activation.promo_authorization_id;
 
-    const revision2 = mintEngagementRevision(db, admin, e.engagementId, { ...terms1, customer_discount_value: 1500 }, "material change");
+    const revision2 = mintEngagementRevision(db, admin, e.engagementId, { ...terms1, customer_discount_value: 1500 }, "material change", currentEngagementRevision(db, e.engagementId)?.id ?? null);
     const grant2 = mintEngagementStepUpGrant(db, p1.partner, "ENGAGEMENT_ACCEPTANCE", { engagement_id: e.engagementId, engagement_revision_id: revision2.id }).grant_id;
     acceptEngagement(db, p1.partner, e.engagementId, revision2.id, grant2);
     const activation2 = activateEngagement(db, admin, e.engagementId, revision2.id);
@@ -187,7 +187,7 @@ describe("per-occurrence promo authorization: no bare UNIQUE(promo_code_id), at 
     const e = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ);
     const a1Id = e.activation.promo_authorization_id;
 
-    suspendEngagement(db, admin, e.engagementId, "pause");
+    suspendEngagement(db, admin, e.engagementId, "pause", getEngagement(db, e.engagementId)!.lifecycle_revision);
     expect(currentEngagementPromoAuthorization(db, p1.promo.promo_code_id, occ)).toBeNull(); // nothing live between suspend and reactivate
 
     const reactivation = reactivateEngagement(db, admin, e.engagementId, e.revisionId);

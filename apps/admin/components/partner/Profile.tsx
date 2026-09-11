@@ -13,6 +13,7 @@ import {
 } from "../../../../lib/legal-profile-rules";
 import { Loading } from "../ui/Loading";
 import { Notice } from "../ui/Notice";
+import { RetainedIntentNotice } from "../ui/RetainedIntentNotice";
 import { PageTitle } from "../ui/PageTitle";
 import { Badge } from "../ui/Badge";
 
@@ -106,9 +107,23 @@ export function Profile() {
   // what to send. A failure is not swallowed here - it is rendered from the
   // hook's own error below, and an ambiguous one has already triggered an
   // authoritative refresh by the time it lands there.
-  const submitLegalProfile = handleSubmit(async (values) => { await submit.mutateAsync(values).catch(() => undefined); });
+  //
+  // PR-C2: both commands carry the version this screen was rendered from.
+  // The draft counter, not the draft's content: editing the draft and
+  // editing it back would restore a content pin to exactly what a stale
+  // retry was authored against, and the counter never goes backwards.
+  const submitLegalProfile = handleSubmit(async (values) => {
+    await submit.mutateAsync({ ...values, expected_draft_revision: Number(profile.data?.legal_profile_draft_revision ?? 0) }).catch(() => undefined);
+  });
   const submitChangeRequest = changeForm.handleSubmit(async (values) => {
-    await change.mutateAsync(values).then(() => changeForm.reset()).catch(() => undefined);
+    await change.mutateAsync({
+      ...values,
+      expected_current_legal_profile_revision: Number((profile.data?.legal_profile as Row | null)?.revision ?? 0),
+      // The second pin: a REJECTION of an earlier request moves no revision
+      // but frees the pending slot, so the revision alone cannot tell a
+      // retry from a deliberate re-application after a refusal.
+      expected_request_sequence: Number(profile.data?.legal_profile_change_request_head ?? 0),
+    }).then(() => changeForm.reset()).catch(() => undefined);
   });
 
   if (profile.isLoading) return <Loading />;
@@ -185,6 +200,12 @@ export function Profile() {
               </label>
               <LegalRequisitesFields legalForm={changeLegalForm} register={changeForm.register as unknown as UseFormRegister<LegalRequisitesFormFields>} />
               <label>Причина изменения <input {...changeForm.register("reason", { required: true })} /></label>
+              <RetainedIntentNotice
+                retained={change.retainedIntent}
+                onRetry={() => void change.retryRetainedIntent()}
+                onDiscard={change.discardRetainedIntent}
+                busy={busy}
+              />
               <Notice error={error} />
               <button className="primary" disabled={busy}>{busy ? "Отправляем…" : "Подать заявку на изменение"}</button>
             </form>
@@ -218,6 +239,21 @@ export function Profile() {
               </select>
             </label>
             <LegalRequisitesFields legalForm={submitLegalForm} register={register as unknown as UseFormRegister<LegalRequisitesFormFields>} />
+            {/* Its OWN notice, not shared with the supersession panel below.
+                They are different intents, and this one has to be reachable
+                from the state the initial submission actually leaves behind:
+                an ambiguous first submit moves onboarding INVITED ->
+                PROFILE_SUBMITTED, which keeps this form on screen and never
+                renders the PARTNER_ACTIVE section at all. Without a notice
+                here, the operator's only route back is an ordinary submit -
+                which would re-derive expected_draft_revision from the
+                refreshed profile and stop being a retry. */}
+            <RetainedIntentNotice
+              retained={submit.retainedIntent}
+              onRetry={() => void submit.retryRetainedIntent()}
+              onDiscard={submit.discardRetainedIntent}
+              busy={busy}
+            />
             <Notice error={error} />
             <button className="primary" disabled={busy}>{busy ? "Отправляем…" : "Отправить на проверку"}</button>
           </form>

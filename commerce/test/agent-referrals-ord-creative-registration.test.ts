@@ -6,7 +6,7 @@ import {
   admin, fresh, readyPartner, seedOccurrence, nearTermTerms, offerAcceptActivate,
 } from "./support/agent-referrals-settlement-fixtures";
 import { seedOrdProviderProfiles, readyCreative, canonicalTargetUrl, confirmedRegistration } from "./support/agent-referrals-ord-fixtures";
-import { mintOrdProviderProfile } from "../src/agent-referrals-ord-provider-profile";
+import { mintOrdProviderProfile, currentOrdProviderProfile } from "../src/agent-referrals-ord-provider-profile";
 import {
   registerOrdCreative, recordOrdCreativeRegistrationSubmitted, confirmOrdCreativeRegistration, correctOrdCreativeRegistration, recordOrdCreativeErirReconciliation, lockOrdCreativeRegistration,
   currentOrdCreativeRegistrationForCreativeRevision, ordCreativeRegistrationHistory, OrdCreativeRegistrationError,
@@ -146,7 +146,7 @@ describe("submit -> confirm -> CORRECTION_ONLY lifecycle", () => {
   it("refuses a raw INSERT pinning a STALE (superseded) provider profile revision", () => {
     const { db, creativeRevisionId, engagementId } = setup();
     const staleCounterparty = db.prepare("SELECT id FROM ord_provider_profile_revisions WHERE profile_kind = 'COUNTERPARTY'").get() as { id: string };
-    mintOrdProviderProfile(db, "admin", "COUNTERPARTY", { legal_name: "Flexperiment LLC v2" }, "revision 2");
+    mintOrdProviderProfile(db, "admin", "COUNTERPARTY", { legal_name: "Flexperiment LLC v2" }, "revision 2", currentOrdProviderProfile(db, "COUNTERPARTY")?.id ?? null);
     const contract = db.prepare("SELECT id FROM ord_provider_profile_revisions WHERE profile_kind = 'CONTRACT'").get() as { id: string };
     const creative = db.prepare("SELECT creative_target_url FROM engagement_creative_revisions WHERE id = ?").get(creativeRevisionId) as { creative_target_url: string };
     expect(() => db.prepare(`INSERT INTO ord_creative_registrations(id, creative_revision_id, engagement_id, revision, operation_key, provider_counterparty_profile_id, provider_contract_profile_id, registered_creative_target_url, created_by_admin_id)
@@ -186,7 +186,7 @@ describe("correctOrdCreativeRegistration: forward-only registration-level correc
     const { db, creativeRevisionId } = setup();
     const reg1 = confirmedRegistration(db, creativeRevisionId);
     const oldContract = reg1.provider_contract_profile_id;
-    const newContract = mintOrdProviderProfile(db, "admin", "CONTRACT", { ref: "C-2" }, "contract renewed");
+    const newContract = mintOrdProviderProfile(db, "admin", "CONTRACT", { ref: "C-2" }, "contract renewed", currentOrdProviderProfile(db, "CONTRACT")?.id ?? null);
     expect(newContract.id).not.toBe(oldContract);
 
     const reg2 = correctOrdCreativeRegistration(db, admin, reg1.id, { vk_object_id: "vk-obj-corrected", erid: "erid-corrected", evidence_ref: "correction evidence", reason: "ERID transcription error" });

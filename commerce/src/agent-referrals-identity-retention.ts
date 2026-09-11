@@ -2,6 +2,7 @@ import type Database from "better-sqlite3";
 import { id } from "./crypto";
 import { recordPartnerIdentityEvent } from "./agent-referrals-onboarding";
 import type { AdminPrincipal } from "./agent-referrals-partner-identity";
+import { withAdminCommandInTransaction, type AdminCommandResult } from "./agent-referrals-admin-command";
 
 /**
  * Phase 4 identity retention: a versioned policy, mutable legal-hold control
@@ -42,8 +43,8 @@ export type RetentionPolicyRow = { id: string; revision: number; reason: string;
 export const currentRetentionPolicy = (db: Database.Database): RetentionPolicyRow | null =>
   (db.prepare("SELECT id, revision, reason, supersedes_revision_id, created_at FROM partner_identity_retention_policies ORDER BY revision DESC LIMIT 1").get() as RetentionPolicyRow | undefined) ?? null;
 
-export const mintRetentionPolicyRevision = (db: Database.Database, admin: AdminPrincipal, reason: string): RetentionPolicyRow => {
-  const run = db.transaction((): RetentionPolicyRow => {
+export const mintRetentionPolicyRevisionInTransaction = (db: Database.Database, admin: AdminPrincipal, reason: string): RetentionPolicyRow => {
+  {
     const current = currentRetentionPolicy(db);
     const policyId = id();
     const nextRevision = (current?.revision ?? 0) + 1;
@@ -51,23 +52,84 @@ export const mintRetentionPolicyRevision = (db: Database.Database, admin: AdminP
       VALUES (?, ?, ?, ?)`)
       .run(policyId, nextRevision, reason, current?.id ?? null);
     return currentRetentionPolicy(db)!;
-  });
-  return run.immediate();
+  }
 };
+
+/** Transaction-owning wrapper for in-process callers; the HTTP surface uses the idempotent entry point below. */
+export const mintRetentionPolicyRevision = (db: Database.Database, admin: AdminPrincipal, reason: string): RetentionPolicyRow =>
+  db.transaction(() => mintRetentionPolicyRevisionInTransaction(db, admin, reason)).immediate();
+
+/** PR-C2: restating a policy is a governance act, so an identical reason can be a deliberate second revision - separated from a retry by the key, not by content. */
+export const mintRetentionPolicyRevisionIdempotent = (
+  db: Database.Database, admin: AdminPrincipal, idempotencyKey: string, reason: string,
+): AdminCommandResult<RetentionPolicyRow> =>
+  db.transaction(() => withAdminCommandInTransaction<RetentionPolicyRow>({
+    db, admin, command: "agent-referrals.retention-policy.mint", idempotencyKey, request: { reason },
+    entityIdOf: (result) => result.id,
+    execute: () => mintRetentionPolicyRevisionInTransaction(db, admin, reason),
+  })).immediate();
 
 export const isUnderLegalHold = (db: Database.Database, partnerIdentityId: string): boolean =>
   Boolean(db.prepare("SELECT 1 FROM partner_identity_legal_holds WHERE partner_identity_id = ? AND released_at IS NULL").get(partnerIdentityId));
 
-export const placeLegalHold = (db: Database.Database, admin: AdminPrincipal, partnerIdentityId: string, reason: string): { hold_id: string } => {
-  const run = db.transaction(() => {
+export const placeLegalHoldInTransaction = (db: Database.Database, admin: AdminPrincipal, partnerIdentityId: string, reason: string): { hold_id: string } => {
+  {
     const holdId = id();
     db.prepare(`INSERT INTO partner_identity_legal_holds(id, partner_identity_id, reason, placed_by_admin_id) VALUES (?, ?, ?, ?)`)
       .run(holdId, partnerIdentityId, reason, admin.admin_id);
     recordPartnerIdentityEvent(db, partnerIdentityId, "LEGAL_HOLD_PLACED", "ADMIN", { hold_id: holdId, reason });
     return { hold_id: holdId };
-  });
-  return run.immediate();
+  }
 };
+
+/** Transaction-owning wrapper for in-process callers; the HTTP surface uses the idempotent entry point below. */
+export const placeLegalHold = (db: Database.Database, admin: AdminPrincipal, partnerIdentityId: string, reason: string): { hold_id: string } =>
+  db.transaction(() => placeLegalHoldInTransaction(db, admin, partnerIdentityId, reason)).immediate();
+
+/**
+ * Names the refusal 0044's partner_identity_legal_holds_active_unique
+ * already enforces - a PARTIAL unique index on released_at IS NULL, so a
+ * partner carries at most one ACTIVE hold and a second attempt met a raw
+ * SqliteError (a 500 for "this partner is already on hold") before this
+ * existed. Correct and worth keeping on its own merits.
+ *
+ * It is NOT, however, a replay proof, and this classification has now moved
+ * twice: key -> name -> key. The partial predicate says exactly what the
+ * index does and does not cover - placing another hold AFTER a release is
+ * legal - so `place -> release -> retried place` creates a second hold and
+ * a release is entirely ordinary work. Under A -> B* -> retry A only a
+ * caller-supplied command key separates that retry from a deliberate
+ * re-hold, because an identical body means both.
+ */
+export const placeLegalHoldNamed = (db: Database.Database, admin: AdminPrincipal, partnerIdentityId: string, reason: string): { hold_id: string } => {
+  try {
+    return placeLegalHold(db, admin, partnerIdentityId, reason);
+  } catch (error) {
+    if (error instanceof Error && /UNIQUE constraint failed: partner_identity_legal_holds\.partner_identity_id/.test(error.message)) {
+      throw new RetentionError("AGENT_REFERRALS_LEGAL_HOLD_ALREADY_ACTIVE", 409, partnerIdentityId);
+    }
+    throw error;
+  }
+};
+
+/** PR-C2 DURABLE_KEY: the HTTP entry point. Keeps the named refusal above for the "already on hold" case and adds the command identity a re-hold after a release needs. */
+export const placeLegalHoldIdempotent = (
+  db: Database.Database, admin: AdminPrincipal, idempotencyKey: string, partnerIdentityId: string, reason: string,
+): AdminCommandResult<{ hold_id: string }> =>
+  db.transaction(() => withAdminCommandInTransaction<{ hold_id: string }>({
+    db, admin, command: "agent-referrals.legal-hold.place", idempotencyKey, request: { partner_identity_id: partnerIdentityId, reason },
+    entityIdOf: (result) => result.hold_id,
+    execute: () => {
+      try {
+        return placeLegalHoldInTransaction(db, admin, partnerIdentityId, reason);
+      } catch (error) {
+        if (error instanceof Error && /UNIQUE constraint failed: partner_identity_legal_holds\.partner_identity_id/.test(error.message)) {
+          throw new RetentionError("AGENT_REFERRALS_LEGAL_HOLD_ALREADY_ACTIVE", 409, partnerIdentityId);
+        }
+        throw error;
+      }
+    },
+  })).immediate();
 
 export const releaseLegalHold = (db: Database.Database, admin: AdminPrincipal, holdId: string, reason: string): void => {
   const run = db.transaction(() => {

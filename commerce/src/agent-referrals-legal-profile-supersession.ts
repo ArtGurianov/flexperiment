@@ -1,4 +1,5 @@
 import type Database from "better-sqlite3";
+import { requireObservedVersion } from "./agent-referrals-command-precondition";
 import { id } from "./crypto";
 import {
   agentReferralsLegalProfileRevisionById, applyAgentReferralsLegalProfile, canonicalLegalProfileEquals, currentAgentReferralsLegalProfile,
@@ -239,6 +240,8 @@ export type LegalProfileChangeRequestRow = LegalRequisites & {
   evidence_ref: string | null;
   reason: string;
   supersedes_revision_id: string;
+  /** 0056: monotone per partner - the request-chain head a later submit is pinned against. */
+  request_sequence: number;
   created_by: string;
   created_at: string;
   state: LegalProfileChangeRequestState;
@@ -248,7 +251,7 @@ export type LegalProfileChangeRequestRow = LegalRequisites & {
   resolution_reason: string | null;
 };
 
-const CHANGE_REQUEST_COLUMNS = `id, partner_identity_id, legal_form, tax_mode, opf, full_name, short_name, inn, kpp, registration_number, legal_address, assertion_source, evidence_ref, reason, supersedes_revision_id, created_by, created_at,
+const CHANGE_REQUEST_COLUMNS = `id, partner_identity_id, legal_form, tax_mode, opf, full_name, short_name, inn, kpp, registration_number, legal_address, assertion_source, evidence_ref, reason, supersedes_revision_id, request_sequence, created_by, created_at,
   state, resolved_legal_profile_revision_id, resolved_at, resolved_by, resolution_reason`;
 
 export const legalProfileChangeRequestById = (db: Database.Database, requestId: string): LegalProfileChangeRequestRow | null =>
@@ -258,6 +261,29 @@ export const legalProfileChangeRequestById = (db: Database.Database, requestId: 
 export const pendingLegalProfileChangeRequestForPartner = (db: Database.Database, partnerIdentityId: string): LegalProfileChangeRequestRow | null =>
   (db.prepare(`SELECT ${CHANGE_REQUEST_COLUMNS} FROM agent_referrals_legal_profile_change_requests WHERE partner_identity_id = ? AND state = 'PENDING'`)
     .get(partnerIdentityId) as LegalProfileChangeRequestRow | undefined) ?? null;
+
+/**
+ * The request-chain HEAD for a partner - how many change requests have ever
+ * been filed, 0 when none has. The SECOND half of a supersession's pin, and
+ * the half that actually covers a rejection: a rejection mints no revision,
+ * so the verified-revision pin below does not move, but it does free the
+ * "one PENDING per partner" slot. See 0056's header for the counterexample.
+ */
+export const legalProfileChangeRequestHeadForPartner = (db: Database.Database, partnerIdentityId: string): number =>
+  ((db.prepare("SELECT MAX(request_sequence) AS head FROM agent_referrals_legal_profile_change_requests WHERE partner_identity_id = ?")
+    .get(partnerIdentityId) as { head: number | null }).head) ?? 0;
+
+/**
+ * The revision NUMBER a supersession must be authored against - the same MAX
+ * the command itself pins, exposed so a caller can send back exactly what it
+ * saw. 0 only for an identity with no verified profile at all, which
+ * supersession refuses anyway.
+ */
+export const currentLegalProfileRevisionForPartner = (db: Database.Database, partnerIdentityId: string): number => {
+  const identity = getPartnerIdentity(db, partnerIdentityId);
+  if (!identity) return 0;
+  return currentAgentReferralsLegalProfile(db, identity.agent_id)?.revision ?? 0;
+};
 
 /** §9: relational authorization for admin routes carrying both :id and :requestId - matches ownedEngagement's exact shape (agent-referrals-partner-projection.ts). Knowing requestId alone is never authority. */
 export const ownedLegalProfileChangeRequest = (db: Database.Database, partnerIdentityId: string, requestId: string): LegalProfileChangeRequestRow => {
@@ -275,6 +301,21 @@ export type SubmitLegalProfileSupersessionInput = RawLegalRequisitesInput & {
   taxMode: TaxMode;
   reason: string;
   evidenceRef?: string | null;
+  /**
+   * PR-C2 STALE_BOUND: the legal-profile REVISION NUMBER the caller was
+   * changing from. The number rather than the id deliberately - it is
+   * monotone per agent, it is already in both realms' read models, and
+   * §B-11's partner projection does not expose internal revision ids.
+   */
+  expectedCurrentLegalProfileRevision: number;
+  /**
+   * The request-chain head the caller was filing AFTER. Required alongside
+   * the revision above, not instead of it: a rejection frees the pending
+   * slot without moving the revision, and a verification moves the revision
+   * without being the only way the slot reopens. Each pin covers the B* the
+   * other one misses.
+   */
+  expectedRequestSequence: number;
 };
 
 /**
@@ -322,6 +363,21 @@ export const submitLegalProfileSupersession = (
     const { requisites } = normalizeAndValidateLegalProfile(input.legalForm, input.taxMode, input);
 
     const current = resolveCurrentLegalProfileBinding(db, identity);
+    // PR-C2 STALE_BOUND. supersedes_revision_id is derived from MAX below,
+    // which on its own makes a retry DANGEROUS rather than safe: after the
+    // request A created is verified, MAX has moved, the ALREADY_PENDING
+    // slot is free again, and a retried A files a SECOND request - against
+    // the profile its own first attempt produced. Naming the profile the
+    // caller was changing FROM is what refuses that, and it is also the
+    // truthful shape of the command: a supersession is always "replace
+    // THIS identity", never "replace whatever is current when you read it".
+    requireObservedVersion("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_STALE", input.expectedCurrentLegalProfileRevision, current.revision);
+    // The half that covers a REJECTION - which mints no revision, so the pin
+    // above is unmoved by it, while the pending slot it occupied is free
+    // again. Without this, retrying A after its request was refused files a
+    // second request that is indistinguishable from a deliberate one.
+    const requestHead = legalProfileChangeRequestHeadForPartner(db, partnerIdentityId);
+    requireObservedVersion("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_STALE", input.expectedRequestSequence, requestHead);
     if (canonicalLegalProfileEquals({ legal_form: input.legalForm, tax_mode: input.taxMode, ...requisites }, current)) {
       throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_NO_CHANGE", 409, partnerIdentityId);
     }
@@ -344,11 +400,11 @@ export const submitLegalProfileSupersession = (
 
     const requestId = id();
     try {
-      db.prepare(`INSERT INTO agent_referrals_legal_profile_change_requests(id, partner_identity_id, legal_form, tax_mode, opf, full_name, short_name, inn, kpp, registration_number, legal_address, assertion_source, evidence_ref, reason, supersedes_revision_id, created_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      db.prepare(`INSERT INTO agent_referrals_legal_profile_change_requests(id, partner_identity_id, legal_form, tax_mode, opf, full_name, short_name, inn, kpp, registration_number, legal_address, assertion_source, evidence_ref, reason, supersedes_revision_id, request_sequence, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
         .run(requestId, partnerIdentityId, input.legalForm, input.taxMode,
           requisites.opf, requisites.full_name, requisites.short_name, requisites.inn, requisites.kpp, requisites.registration_number, requisites.legal_address,
-          assertionSource, evidenceRef, input.reason, current.id, createdBy);
+          assertionSource, evidenceRef, input.reason, current.id, requestHead + 1, createdBy);
     } catch (error) {
       if (error instanceof Error && /UNIQUE constraint failed: agent_referrals_legal_profile_change_requests\.partner_identity_id/.test(error.message)) {
         throw new AgentReferralsLegalProfileSupersessionError("AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_ALREADY_PENDING", 409, partnerIdentityId);
