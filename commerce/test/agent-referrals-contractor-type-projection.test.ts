@@ -95,6 +95,28 @@ describe("agents.contractor_type projection lock (integration-hardening #3)", ()
       .toEqual({ email: "moved@example.com", display_name: "Renamed" });
   });
 
+  // PR-B: the sanctioned writer updates agents.contractor_type in the same
+  // transaction that mints the revision, and 0049 forbids any later
+  // divergence - but the revisions table has no trigger of its own that
+  // writes agents.contractor_type, so a raw INSERT can still leave the two
+  // disagreeing. The read model must not smooth that over.
+  it("read model: agentList fails closed when agents.contractor_type contradicts the current projection", () => {
+    const { db, domain } = fresh();
+    const agentId = String(domain.createAgent({
+      slug: "diverged-agent", display_name: "Diverged", legal_name: "Diverged LLC", email: "diverged@example.com",
+      contractor_type: "SELF_EMPLOYED", inn: "7700000007", contract_reference: "ref-7", default_reward_type: "FIXED", default_reward_value: 100,
+    }).id);
+    db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions
+      (id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, opf, full_name, short_name, inn, kpp, registration_number, legal_address, reason, assertion_source)
+      VALUES ('lp-raw-diverged', ?, 1, 'LEGAL_ENTITY', 'OTHER', 'ORGANIZATION', 'OOO', 'Romashka LLC', NULL, '1234567890', '123456789', '1234567890123', 'Moscow', 'raw insert', 'PARTNER_ASSERTED')`)
+      .run(agentId);
+    expect((db.prepare("SELECT contractor_type FROM agents WHERE id = ?").get(agentId) as { contractor_type: string }).contractor_type).toBe("SELF_EMPLOYED");
+
+    let code = "NO_THROW";
+    try { domain.agentList(); } catch (error) { code = (error as DomainError).code; }
+    expect(code).toBe("AGENT_REFERRALS_CONTRACTOR_TYPE_PROJECTION_DIVERGED");
+  });
+
   it("read model: agentList reports the projection source and the current profile, resolved through MAX(revision)", () => {
     const { db, domain } = fresh();
     const governedId = String(domain.createAgent({

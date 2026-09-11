@@ -133,11 +133,12 @@ export type SupersessionBindingReason =
   | "CURRENT_SETTLEMENT_SETTLED"
   | "ZERO_REWARD_CLOSED"
   | "RECOVERY_EXPOSURE"
-  | "ZERO_EFFECTIVE";
+  | "ZERO_EFFECTIVE"
+  | "NO_ENGAGEMENT";
 
 export type SupersessionBindingDecision =
   | { blocked: true; reason: "ENGAGEMENT_NOT_CLOSED" | "OUTSTANDING_SETTLEMENT" | "POSITIVE_EFFECTIVE_UNSETTLED" | "UNCLASSIFIED"; engagementId: string }
-  | { blocked: false; reason: "CURRENT_SETTLEMENT_SETTLED" | "ZERO_REWARD_CLOSED" | "RECOVERY_EXPOSURE" | "ZERO_EFFECTIVE" };
+  | { blocked: false; reason: "CURRENT_SETTLEMENT_SETTLED" | "ZERO_REWARD_CLOSED" | "RECOVERY_EXPOSURE" | "ZERO_EFFECTIVE" | "NO_ENGAGEMENT" };
 
 /**
  * §3, per engagement. Terminality is proven by the CURRENT effective
@@ -201,12 +202,20 @@ const classifyEngagementForSupersession = (db: Database.Database, engagement: En
  * Partner-level aggregation: ANY blocking engagement blocks the whole
  * partner, first one found (short-circuit, no need to classify the rest).
  * A partner with zero engagements, or every engagement independently
- * terminal, is allowed - ZERO_EFFECTIVE is the reported reason when there
- * is nothing to represent (no engagements at all, same as "nothing owed").
+ * terminal, is allowed.
+ *
+ * PR-B: "no engagements at all" reports NO_ENGAGEMENT, not ZERO_EFFECTIVE.
+ * The two are different facts - ZERO_EFFECTIVE means an engagement exists
+ * and its CURRENT effective snapshot is worth zero, which is a proven
+ * terminal outcome; NO_ENGAGEMENT means there was never anything to prove.
+ * Reporting the former for the latter made the decision's own reason field
+ * (which is part of the tested contract, and the thing an operator or a log
+ * reads to understand WHY a supersession was allowed) claim evidence that
+ * does not exist.
  */
 export const supersessionBindingDecision = (db: Database.Database, partnerIdentityId: string): SupersessionBindingDecision => {
   const engagements = engagementsForPartner(db, partnerIdentityId);
-  let lastAllow: SupersessionBindingDecision = { blocked: false, reason: "ZERO_EFFECTIVE" };
+  let lastAllow: SupersessionBindingDecision = { blocked: false, reason: "NO_ENGAGEMENT" };
   for (const engagement of engagements) {
     const decision = classifyEngagementForSupersession(db, engagement);
     if (decision.blocked) return decision;

@@ -5,6 +5,10 @@ import { useEffect, useState } from "react";
 import { useForm, type UseFormRegister } from "react-hook-form";
 import { partnerApi, PartnerApiError } from "../../lib/partner-api";
 import type { Row } from "../../lib/partner-page";
+import {
+  INN_LENGTH, KPP_LENGTH, REGISTRATION_NUMBER_LENGTH, requisiteRule, taxModesForLegalForm,
+  type LegalForm, type RequisiteField, type TaxMode,
+} from "../../../../lib/legal-profile-rules";
 import { Loading } from "../ui/Loading";
 import { Notice } from "../ui/Notice";
 import { PageTitle } from "../ui/PageTitle";
@@ -26,40 +30,43 @@ const VAT_TREATMENT_LABELS: Record<string, string> = { NO_VAT: "Без НДС", 
 /** PR-E: the unified requisites tuple - present on every legal-profile submission (initial onboarding and D2 supersession alike). */
 type LegalRequisitesFormFields = { opf: string; full_name: string; short_name: string; inn: string; kpp: string; registration_number: string; legal_address: string };
 
-/** Mirrors the backend's frozen legal_form x tax_mode matrix (commerce/src/agent-referrals-legal-profile.ts's PROJECTION table) - only INDIVIDUAL_ENTREPRENEUR actually has a choice. */
-const TAX_MODE_OPTIONS: Record<string, Array<{ value: string; label: string }>> = {
-  INDIVIDUAL: [{ value: "NPD", label: "НПД (самозанятый)" }],
-  INDIVIDUAL_ENTREPRENEUR: [{ value: "NPD", label: "НПД (самозанятый)" }, { value: "OTHER", label: "Другой" }],
-  LEGAL_ENTITY: [{ value: "OTHER", label: "Другой" }],
-};
+/** This surface's wording for the tax modes; WHICH of them a legal_form admits comes from the shared projection table, never from a second copy of the matrix. */
+const TAX_MODE_LABELS: Record<TaxMode, string> = { NPD: "НПД (самозанятый)", OTHER: "Другой" };
+const taxModeOptions = (legalForm: string) => taxModesForLegalForm(legalForm as LegalForm).map((value) => ({ value, label: TAX_MODE_LABELS[value] }));
 
 /** Keeps tax_mode inside the set the selected legal_form actually allows - without this, switching legal_form silently leaves a now-invalid tax_mode selected and the submission fails REJECTED_COMBINATION for no reason visible in the form itself. */
 function useConstrainedTaxMode(legalForm: string, taxMode: string, setValue: (name: "tax_mode", value: string) => void) {
   useEffect(() => {
-    const allowed = TAX_MODE_OPTIONS[legalForm]?.map((o) => o.value) ?? [];
-    if (allowed.length && !allowed.includes(taxMode)) setValue("tax_mode", allowed[0]);
+    const allowed = taxModesForLegalForm(legalForm as LegalForm);
+    if (allowed.length && !allowed.includes(taxMode as TaxMode)) setValue("tax_mode", allowed[0]);
   }, [legalForm, taxMode, setValue]);
 }
 
+const REGISTRATION_NUMBER_LABELS: Partial<Record<LegalForm, string>> = { INDIVIDUAL_ENTREPRENEUR: "ОГРНИП", LEGAL_ENTITY: "ОГРН" };
+const digitsHint = (length: number | undefined) => (length === undefined ? undefined : `${length} цифр`);
+
 /**
- * Renders only the fields the selected legal_form actually requires -
- * matches normalizeAndValidateLegalProfile's own per-legal_form shape
- * matrix exactly (commerce/src/agent-referrals-legal-profile.ts), so a
- * partner is never shown a field the backend would refuse (or asked for
- * one it silently ignores).
+ * PR-B: WHICH fields exist for a legal_form is no longer restated here - it
+ * is read from the shared REQUISITE_SHAPE the domain validator itself uses
+ * (lib/legal-profile-rules.ts), so a partner can no longer be shown a field
+ * the backend forbids, or asked for one it requires, by drifting out of sync
+ * with a hand-copied condition. Only the wording is this surface's own.
  */
 function LegalRequisitesFields({ legalForm, register }: { legalForm: string; register: UseFormRegister<LegalRequisitesFormFields> }) {
+  const form = legalForm as LegalForm;
+  const shown = (field: RequisiteField) => requisiteRule(form, field) !== "FORBIDDEN";
+  const required = (field: RequisiteField) => requisiteRule(form, field) === "REQUIRED";
   return (
     <>
       <label>ФИО / полное наименование <input {...register("full_name", { required: true })} /></label>
-      {legalForm === "LEGAL_ENTITY" && <label>Сокращённое наименование <input {...register("short_name")} /></label>}
-      {legalForm === "LEGAL_ENTITY" && <label>ОПФ <input {...register("opf", { required: true })} placeholder="ООО" /></label>}
-      <label>ИНН <input {...register("inn", { required: true })} placeholder={legalForm === "LEGAL_ENTITY" ? "10 цифр" : "12 цифр"} /></label>
-      {legalForm === "LEGAL_ENTITY" && <label>КПП <input {...register("kpp", { required: true })} placeholder="9 цифр" /></label>}
-      {(legalForm === "INDIVIDUAL_ENTREPRENEUR" || legalForm === "LEGAL_ENTITY") && (
-        <label>{legalForm === "INDIVIDUAL_ENTREPRENEUR" ? "ОГРНИП" : "ОГРН"} <input {...register("registration_number", { required: true })} placeholder={legalForm === "INDIVIDUAL_ENTREPRENEUR" ? "15 цифр" : "13 цифр"} /></label>
+      {shown("short_name") && <label>Сокращённое наименование <input {...register("short_name", { required: required("short_name") })} /></label>}
+      {shown("opf") && <label>ОПФ <input {...register("opf", { required: required("opf") })} placeholder="ООО" /></label>}
+      <label>ИНН <input {...register("inn", { required: true })} placeholder={digitsHint(INN_LENGTH[form])} /></label>
+      {shown("kpp") && <label>КПП <input {...register("kpp", { required: required("kpp") })} placeholder={digitsHint(KPP_LENGTH)} /></label>}
+      {shown("registration_number") && (
+        <label>{REGISTRATION_NUMBER_LABELS[form] ?? "Регистрационный номер"} <input {...register("registration_number", { required: required("registration_number") })} placeholder={digitsHint(REGISTRATION_NUMBER_LENGTH[form])} /></label>
       )}
-      {legalForm === "LEGAL_ENTITY" && <label>Юридический адрес <input {...register("legal_address", { required: true })} /></label>}
+      {shown("legal_address") && <label>Юридический адрес <input {...register("legal_address", { required: required("legal_address") })} /></label>}
     </>
   );
 }
@@ -183,7 +190,7 @@ export function Profile() {
               <label>
                 Налоговый режим
                 <select {...changeForm.register("tax_mode", { required: true })}>
-                  {(TAX_MODE_OPTIONS[changeLegalForm] ?? []).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                  {taxModeOptions(changeLegalForm).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                 </select>
               </label>
               <LegalRequisitesFields legalForm={changeLegalForm} register={changeForm.register as unknown as UseFormRegister<LegalRequisitesFormFields>} />
@@ -217,7 +224,7 @@ export function Profile() {
             <label>
               Налоговый режим
               <select {...register("tax_mode")}>
-                {(TAX_MODE_OPTIONS[submitLegalForm] ?? []).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                {taxModeOptions(submitLegalForm).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </select>
             </label>
             <LegalRequisitesFields legalForm={submitLegalForm} register={register as unknown as UseFormRegister<LegalRequisitesFormFields>} />

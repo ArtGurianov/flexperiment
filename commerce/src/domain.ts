@@ -1990,18 +1990,34 @@ export class CommerceDomain {
       .map(({
         lp_id, lp_revision, lp_legal_form, lp_tax_mode, lp_projected_contractor_type, lp_opf, lp_full_name,
         lp_short_name, lp_inn, lp_kpp, lp_registration_number, lp_legal_address, ...agent
-      }): Row => ({
-        ...agent,
-        contractor_type_source: lp_id ? "LEGAL_PROFILE" : "LEGACY",
-        legal_profile: lp_id
-          ? {
-            id: lp_id, revision: lp_revision, legal_form: lp_legal_form, tax_mode: lp_tax_mode,
-            projected_contractor_type: lp_projected_contractor_type, opf: lp_opf, full_name: lp_full_name,
-            short_name: lp_short_name, inn: lp_inn, kpp: lp_kpp,
-            registration_number: lp_registration_number, legal_address: lp_legal_address,
-          }
-          : null,
-      }));
+      }): Row => {
+        // PR-B: the projection and its target must agree, and a read is not
+        // allowed to paper over it if they don't. The sanctioned writer
+        // updates agents.contractor_type in the same transaction that mints
+        // the revision, and 0049 forbids any later divergence - but nothing
+        // stops a raw INSERT of an otherwise-valid revision from leaving the
+        // two disagreeing, because the revisions table has no trigger that
+        // writes agents.contractor_type. Returning a correct-looking DTO for
+        // that state would hide structural corruption behind a read model;
+        // failing the whole list is the right trade, precisely BECAUSE the
+        // state is unreachable through every sanctioned path - if it ever
+        // appears, the agent roster is not the thing that needs looking at.
+        if (lp_id && agent.contractor_type !== lp_projected_contractor_type) {
+          throw new DomainError("AGENT_REFERRALS_CONTRACTOR_TYPE_PROJECTION_DIVERGED", 500, String(agent.id));
+        }
+        return {
+          ...agent,
+          contractor_type_source: lp_id ? "LEGAL_PROFILE" : "LEGACY",
+          legal_profile: lp_id
+            ? {
+              id: lp_id, revision: lp_revision, legal_form: lp_legal_form, tax_mode: lp_tax_mode,
+              projected_contractor_type: lp_projected_contractor_type, opf: lp_opf, full_name: lp_full_name,
+              short_name: lp_short_name, inn: lp_inn, kpp: lp_kpp,
+              registration_number: lp_registration_number, legal_address: lp_legal_address,
+            }
+            : null,
+        };
+      });
   }
 
   patchAgent(agentId: string, input: Record<string, unknown>) {
