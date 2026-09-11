@@ -10,6 +10,7 @@ import { usePersistentIdempotencyKey } from "../../lib/use-persistent-idempotenc
 import type { Row } from "../../lib/partner-page";
 import { Loading } from "../ui/Loading";
 import { Notice } from "../ui/Notice";
+import { RetainedIntentNotice } from "../ui/RetainedIntentNotice";
 import { PageTitle } from "../ui/PageTitle";
 import { Badge } from "../ui/Badge";
 
@@ -175,18 +176,26 @@ function DistributionsSection({ engagementId, distributions }: { engagementId: s
       method: "POST", headers: { "Content-Type": "application/json", "Idempotency-Key": reportKey.acquire() },
       body: JSON.stringify({ ...values, published_at: new Date(String(values.published_at)).toISOString(), ended_at: null }),
     }), { context: () => ({ engagementId }) });
-  const removalClaim = usePartnerMutation("partner.removalClaim", (distributionId: string) =>
-    partnerApi(`/distributions/${distributionId}/removal-claim`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ evidence_ref: "partner-portal-claim" }),
-    }), { context: () => ({ engagementId }) });
+  // PR-C2 STALE_BOUND. The pin travels in the mutation VARIABLES, not derived
+  // inside mutationFn: the removal lifecycle is cyclic (a take-down can be
+  // required again after it was claimed), so a retry authored against a
+  // re-derived sequence would append a second claim against state it never
+  // saw - and the retained-intent snapshot has to contain the pin to be
+  // replayable at all.
+  const removalClaim = usePartnerMutation("partner.removalClaim",
+    ({ distributionId, expectedEventSequence }: { distributionId: string; expectedEventSequence: number }) =>
+      partnerApi(`/distributions/${distributionId}/removal-claim`, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ evidence_ref: "partner-portal-claim", expected_event_sequence: expectedEventSequence }),
+      }), { context: () => ({ engagementId }) });
   const busy = reportDistribution.isPending || removalClaim.isPending;
   const error = reportDistribution.error?.code ?? removalClaim.error?.code ?? null;
 
   const report = handleSubmit(async (values) => {
     await reportDistribution.mutateAsync(values).then(() => { reportKey.clear(); reset(); }).catch(() => undefined);
   });
-  const claimRemoval = async (distributionId: string) => {
-    await removalClaim.mutateAsync(distributionId).catch(() => undefined);
+  const claimRemoval = async (distributionId: string, expectedEventSequence: number) => {
+    await removalClaim.mutateAsync({ distributionId, expectedEventSequence }).catch(() => undefined);
   };
 
   return (
@@ -205,7 +214,7 @@ function DistributionsSection({ engagementId, distributions }: { engagementId: s
                 <td><Badge>{String(row.removal_state ?? "—")}</Badge></td>
                 <td>
                   {row.removal_state === "REMOVAL_REQUIRED" && (
-                    <button disabled={busy} onClick={() => void claimRemoval(String(row.distribution_id))}>Заявить о снятии</button>
+                    <button disabled={busy} onClick={() => void claimRemoval(String(row.distribution_id), Number(row.event_sequence))}>Заявить о снятии</button>
                   )}
                 </td>
               </tr>
@@ -213,6 +222,17 @@ function DistributionsSection({ engagementId, distributions }: { engagementId: s
           })}
         </tbody>
       </table>
+
+      {/* Its own notice, next to the claim buttons it belongs to: a claim
+          whose outcome was ambiguous must be retried with the sequence it
+          was authored against, never re-derived from the refreshed table
+          above. */}
+      <RetainedIntentNotice
+        retained={removalClaim.retainedIntent}
+        onRetry={() => void removalClaim.retryRetainedIntent()}
+        onDiscard={removalClaim.discardRetainedIntent}
+        busy={busy}
+      />
 
       <h3>Сообщить о новом размещении</h3>
       <form onSubmit={report}>

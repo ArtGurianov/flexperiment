@@ -218,6 +218,28 @@ Every `STALE_BOUND` surface passes its pin **inside the mutation variables**,
 never derived inside `mutationFn` from a query the refresh may already have
 moved on — that is what makes the snapshot replayable at all.
 
+Two wiring rules the review round found by reading the surfaces rather than
+the hook, both of which the hook being correct did not save:
+
+- **The notice has to be reachable from the state the command actually
+  leaves behind.** An ambiguous first legal-profile submission commits:
+  onboarding moves `INVITED → PROFILE_SUBMITTED`, which keeps the initial
+  form on screen and never renders the `PARTNER_ACTIVE` section. A notice
+  living only in that section is unreachable exactly when it is needed, and
+  the operator's only route back is an ordinary submit — which re-derives the
+  pin and stops being a retry. Each command gets its own notice, beside its
+  own form.
+- **A route that gains a required pin has to gain it at every call site.**
+  The partner removal claim kept sending a body with no
+  `expected_event_sequence` after the route began requiring one, so the
+  button answered 422. That is a plain regression, not an unproven retry, and
+  it is the reason these two surfaces now carry DOM tests asserting the exact
+  HTTP body.
+
+`RetainedIntentNotice`'s buttons are `type="button"`: it renders inside the
+forms whose command it is about, and a bare `<button>` there would submit the
+form as well, issuing a freshly-pinned second command beside the replay.
+
 ### Three corrections found while closing
 
 **`placeLegalHold` moved key → name → key.** 0044's partial unique index on

@@ -303,6 +303,11 @@ export const partnerEngagementDetail = (db: Database.Database, partnerIdentityId
       current_revision: partnerDistributionRevisionDto(projection.current_revision),
       compliance_state: projection.compliance_state,
       removal_state: projection.removal_state,
+      // PR-C2: the monotone counter a removal claim is authored against.
+      // The removal STATE cannot serve - the lifecycle is cyclic, so
+      // required -> claimed -> required restores exactly the value a stale
+      // retry was authored against.
+      event_sequence: projection.event_sequence,
       reporting_periods: reports.map((report) => ({
         reporting_period_key: report.reporting_period_key, reporting_basis: report.reporting_basis,
         revision: report.revision, statistics_state: report.statistics_state, submission_state: report.submission_state,

@@ -201,9 +201,9 @@ export function Profile() {
               <LegalRequisitesFields legalForm={changeLegalForm} register={changeForm.register as unknown as UseFormRegister<LegalRequisitesFormFields>} />
               <label>Причина изменения <input {...changeForm.register("reason", { required: true })} /></label>
               <RetainedIntentNotice
-                retained={submit.retainedIntent ?? change.retainedIntent}
-                onRetry={() => void (submit.retainedIntent ? submit.retryRetainedIntent() : change.retryRetainedIntent())}
-                onDiscard={() => { submit.discardRetainedIntent(); change.discardRetainedIntent(); }}
+                retained={change.retainedIntent}
+                onRetry={() => void change.retryRetainedIntent()}
+                onDiscard={change.discardRetainedIntent}
                 busy={busy}
               />
               <Notice error={error} />
@@ -239,6 +239,21 @@ export function Profile() {
               </select>
             </label>
             <LegalRequisitesFields legalForm={submitLegalForm} register={register as unknown as UseFormRegister<LegalRequisitesFormFields>} />
+            {/* Its OWN notice, not shared with the supersession panel below.
+                They are different intents, and this one has to be reachable
+                from the state the initial submission actually leaves behind:
+                an ambiguous first submit moves onboarding INVITED ->
+                PROFILE_SUBMITTED, which keeps this form on screen and never
+                renders the PARTNER_ACTIVE section at all. Without a notice
+                here, the operator's only route back is an ordinary submit -
+                which would re-derive expected_draft_revision from the
+                refreshed profile and stop being a retry. */}
+            <RetainedIntentNotice
+              retained={submit.retainedIntent}
+              onRetry={() => void submit.retryRetainedIntent()}
+              onDiscard={submit.discardRetainedIntent}
+              busy={busy}
+            />
             <Notice error={error} />
             <button className="primary" disabled={busy}>{busy ? "Отправляем…" : "Отправить на проверку"}</button>
           </form>

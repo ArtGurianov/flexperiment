@@ -33,8 +33,13 @@ export function RetainedIntentNotice({ retained, onRetry, onDiscard, busy }: {
         Данные на экране уже обновлены, поэтому повторная отправка формы будет
         <strong> новой командой относительно нового состояния</strong>, а не повтором прежней.
       </p>
-      <button disabled={busy} onClick={onRetry}>Повторить прежнюю команду</button>
-      <button disabled={busy} onClick={onDiscard}>Это новое действие</button>
+      {/* type="button" is load-bearing: this notice renders INSIDE the forms
+          whose command it is about, and a bare <button> there defaults to
+          type="submit" - so "повторить прежнюю" would also fire the form's
+          own handler and issue a second, freshly-pinned command beside the
+          replay. */}
+      <button type="button" disabled={busy} onClick={onRetry}>Повторить прежнюю команду</button>
+      <button type="button" disabled={busy} onClick={onDiscard}>Это новое действие</button>
     </div>
   );
 }
