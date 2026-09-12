@@ -44,10 +44,29 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     c.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   });
 
+  /**
+   * A 5xx is a corruption signal, and production has nothing else that would
+   * notice one: the proxy runs without an access log or Prometheus metrics,
+   * no APM is configured, and there is no request-logging middleware here.
+   * Both typed branches below return BEFORE the console.error at the bottom,
+   * so an AGENT_REFERRALS_LEGAL_PROFILE_POINTER_DIVERGED or an
+   * ACTIVATION_BINDING_CORRUPTED reached the client and left no trace at all
+   * - the container stays healthy, so an uptime check stays green too.
+   *
+   * Only >= 500. A 409 or a 422 is the system refusing correctly and says
+   * nothing about integrity; logging those would bury the signal this exists
+   * for. The code is logged, never the message or any request content: these
+   * errors carry identifiers, and the log is not a place for them.
+   */
+  const noteServerFault = (code: string, status: number) => {
+    if (status >= 500) console.error("commerce server fault", code, status);
+  };
+
   app.onError((error, c) => {
     if (error instanceof ZodError) return c.json({ error: { code: "VALIDATION_ERROR" } }, 422);
     if (error instanceof DomainError) {
       if (error.code === "RATE_LIMITED") c.header("Retry-After", error.message);
+      noteServerFault(error.code, error.status);
       return c.json({ error: { code: error.code } }, error.status as 400);
     }
     // Every agent-referrals-*.ts module defines its own narrow Error
@@ -59,6 +78,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     // duck-typed branch handles every one of them uniformly instead of
     // importing and enumerating each class here.
     if (error instanceof Error && "code" in error && typeof (error as { code: unknown }).code === "string" && "status" in error && typeof (error as { status: unknown }).status === "number") {
+      noteServerFault((error as { code: string }).code, (error as { status: number }).status);
       return c.json({ error: { code: (error as { code: string }).code } }, (error as { status: number }).status as 400);
     }
     console.error("commerce request failed", error instanceof Error ? error.message : "unknown error");
