@@ -45,7 +45,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   });
 
   /**
-   * A 5xx is a corruption signal, and production has nothing else that would
+   * A 500 is a corruption signal, and production has nothing else that would
    * notice one: the proxy runs without an access log or Prometheus metrics,
    * no APM is configured, and there is no request-logging middleware here.
    * Both typed branches below return BEFORE the console.error at the bottom,
@@ -53,13 +53,28 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
    * ACTIVATION_BINDING_CORRUPTED reached the client and left no trace at all
    * - the container stays healthy, so an uptime check stays green too.
    *
-   * Only >= 500. A 409 or a 422 is the system refusing correctly and says
-   * nothing about integrity; logging those would bury the signal this exists
-   * for. The code is logged, never the message or any request content: these
-   * errors carry identifiers, and the log is not a place for them.
+   * Exactly 500, not >= 500. This API uses 503 for its ordinary "temporarily
+   * unavailable" states - SALES_TEMPORARILY_PAUSED, CAPTCHA_UNAVAILABLE,
+   * PROVIDER_RECONCILIATION_UNAVAILABLE, the unconfigured-webhook pair and
+   * more. Those are the system working as designed, and the first of them
+   * would emit this line on every single request while sales are paused.
+   * Mixing them into the one channel that exists for corruption would bury
+   * the signal at exactly the moment it matters.
+   *
+   * 500 rather than an allowlist of AGENT_REFERRALS_* codes on purpose: the
+   * D2 corruption codes already carry 500, and so does the untyped catch-all
+   * below, so the status alone is the predicate and no code registry has to
+   * be kept in sync with it.
+   *
+   * 4xx is left alone for the same reason as 503: a 409 or a 422 is the
+   * system refusing correctly and says nothing about integrity.
+   *
+   * The helper takes (code, status) and never the error or the request - the
+   * property that no message or request content can leak into the log is
+   * carried by this signature, not by a test.
    */
   const noteServerFault = (code: string, status: number) => {
-    if (status >= 500) console.error("commerce server fault", code, status);
+    if (status === 500) console.error("commerce server fault", code, status);
   };
 
   app.onError((error, c) => {
