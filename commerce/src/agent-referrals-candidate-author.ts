@@ -103,6 +103,28 @@ export type AuthoredCandidate = {
 /** Mirrors the verifier's own list: legal state is inherited from BASE unchanged. */
 const FORBIDDEN_PATH_PREFIXES = ["public/legal/", "commerce/legal/"] as const;
 
+/** The closed domains a manifest entry may use. Never inferred, never defaulted. */
+const OWNERSHIPS = ["WHOLE_FILE", "SHARED"] as const;
+const RESULT_SOURCES = ["source_main", "explicit", "delete"] as const;
+
+/**
+ * The verifier's own path predicate (controlled-candidate.ts), mirrored here
+ * because the author WRITES FILES and the verifier runs far too late to
+ * prevent that: `buildPatch` materializes content under a scratch directory,
+ * and `writeAuthoredCandidate` writes under the repository root, so a path
+ * escaping either one has already had its effect by the time any
+ * reconstruction could object.
+ *
+ * Deliberately a duplicate rather than an import: it guards a different act
+ * (writing) at a different moment (before any of it), and the two would have
+ * to be kept in agreement anyway.
+ */
+const assertSafeRepositoryPath = (path: string, code: string): void => {
+  if (!path || path.startsWith("/") || path.includes("..") || path.startsWith(".git/") || path === ".git") {
+    fail(`${code}:${path}`);
+  }
+};
+
 const fail = (code: string): never => { throw new ControlledCandidateError(code); };
 
 const sha256 = (content: Buffer): string => createHash("sha256").update(content).digest("hex");
@@ -184,8 +206,33 @@ export const authorAgentReferralsCandidate = (input: AuthorCandidateInput): Auth
   const { baseSha, sourceMainSha, manifest, patchDirectory, envelope } = input;
   if (manifest.length === 0) fail("AGENT_REFERRALS_CANDIDATE_AUTHOR_EMPTY_MANIFEST");
 
+  // Output locations are validated BEFORE anything is derived or written:
+  // both end up in `join(repositoryRoot, ...)`, so the same escape applies.
+  assertSafeRepositoryPath(patchDirectory, "AGENT_REFERRALS_CANDIDATE_AUTHOR_PATCH_DIRECTORY_UNSAFE");
+
   const seen = new Set<string>();
   for (const entry of manifest) {
+    // Path safety first, before treeEntry() or buildPatch() touch a
+    // filesystem: a refusal that arrives after the write is not a refusal.
+    assertSafeRepositoryPath(entry.path, "AGENT_REFERRALS_CANDIDATE_AUTHOR_PATH_UNSAFE");
+
+    // Closed-domain validation, not a pair of equality checks. The previous
+    // fence was fail-OPEN on a malformed classification: `ownership:
+    // "SHRAED"` with `from: "source_main"` matched neither arm and sailed
+    // through, importing the whole file - which is exactly the JSON/plain-JS
+    // case the runtime check exists for. Classification may be wrong only as
+    // a deliberate WHOLE_FILE judgement, never as a typo.
+    const declared = entry as { ownership: string; source: { from: string } };
+    if (!(OWNERSHIPS as readonly string[]).includes(declared.ownership)) {
+      fail(`AGENT_REFERRALS_CANDIDATE_AUTHOR_OWNERSHIP_INVALID:${entry.path}:${declared.ownership}`);
+    }
+    if (!declared.source || !(RESULT_SOURCES as readonly string[]).includes(declared.source.from)) {
+      fail(`AGENT_REFERRALS_CANDIDATE_AUTHOR_RESULT_SOURCE_INVALID:${entry.path}`);
+    }
+    if (declared.ownership === "SHARED" && declared.source.from === "source_main") {
+      fail(`AGENT_REFERRALS_CANDIDATE_AUTHOR_SHARED_PATH_REQUIRES_EXPLICIT_CONTENT:${entry.path}`);
+    }
+
     if (seen.has(entry.path)) fail(`AGENT_REFERRALS_CANDIDATE_AUTHOR_DUPLICATE_PATH:${entry.path}`);
     seen.add(entry.path);
     // Legal state is inherited from BASE unchanged, and the verifier refuses
@@ -194,16 +241,6 @@ export const authorAgentReferralsCandidate = (input: AuthorCandidateInput): Auth
     // patches were written and committed.
     if (FORBIDDEN_PATH_PREFIXES.some((prefix) => entry.path.startsWith(prefix))) {
       fail(`AGENT_REFERRALS_CANDIDATE_AUTHOR_FORBIDDEN_PATH:${entry.path}`);
-    }
-    // Checked at RUNTIME as well as in the type. TypeScript already makes
-    // this combination unrepresentable, which is why the widening cast is
-    // needed to ask the question at all - and why the check is worth having:
-    // a cast, plain JS, or a manifest deserialized from JSON walks straight
-    // past the union, and this is the one rule whose violation silently
-    // imports unrelated main-only work.
-    const declared = entry as { ownership: string; source: { from: string } };
-    if (declared.ownership === "SHARED" && declared.source.from === "source_main") {
-      fail(`AGENT_REFERRALS_CANDIDATE_AUTHOR_SHARED_PATH_REQUIRES_EXPLICIT_CONTENT:${entry.path}`);
     }
   }
 
@@ -387,6 +424,11 @@ const applyForTree = (entry: CertifiedPathEntry, baseSha: string, patch: Buffer)
 
 /** Writes an authored candidate into a repository tree: the certificate and every patch it names. */
 export const writeAuthoredCandidate = (repositoryRoot: string, certificateDirectory: string, authored: AuthoredCandidate): void => {
+  // Same escape surface as the manifest's own paths: this resolves under the
+  // repository root, and a refusal after the write would be worthless.
+  assertSafeRepositoryPath(certificateDirectory, "AGENT_REFERRALS_CANDIDATE_AUTHOR_CERTIFICATE_DIRECTORY_UNSAFE");
+  for (const path of authored.patches.keys()) assertSafeRepositoryPath(path, "AGENT_REFERRALS_CANDIDATE_AUTHOR_PATH_UNSAFE");
+
   const certificatePath = join(repositoryRoot, certificateDirectory, "certificate.json");
   mkdirSync(dirname(certificatePath), { recursive: true });
   writeFileSync(certificatePath, `${JSON.stringify(authored.certificate, null, 2)}\n`);

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -294,6 +294,65 @@ describe("authoring a controlled candidate", () => {
       const { baseSha, mainSha } = divergedFixture();
       expect(() => authorOne(baseSha, mainSha, [{ path: "feature.ts", ownership: "WHOLE_FILE", source: { from: "delete" } }]))
         .toThrow(/DELETE_PATH_ABSENT_IN_BASE/);
+    });
+
+    /**
+     * Review round 2, P1. The fence was two equality checks, so a MALFORMED
+     * classification matched neither arm and sailed through - importing the
+     * whole file. Classification may be wrong only as a deliberate
+     * WHOLE_FILE judgement, never as a typo.
+     */
+    it.each([
+      ["a misspelled ownership", { path: "shared.ts", ownership: "SHRAED", source: { from: "source_main" } }, /OWNERSHIP_INVALID/],
+      ["a missing ownership", { path: "shared.ts", source: { from: "source_main" } }, /OWNERSHIP_INVALID/],
+      ["an unknown transport", { path: "shared.ts", ownership: "SHARED", source: { from: "whole_file" } }, /RESULT_SOURCE_INVALID/],
+      ["a missing source", { path: "shared.ts", ownership: "SHARED" }, /RESULT_SOURCE_INVALID/],
+    ])("refuses %s rather than falling through the fence", (_label, entry, expected) => {
+      const { baseSha, mainSha } = divergedFixture();
+      expect(() => authorOne(baseSha, mainSha, [entry as unknown as AuthoredPath])).toThrow(expected);
+    });
+
+    /**
+     * The author WRITES FILES - scratch content in buildPatch, and the
+     * certificate and patches in writeAuthoredCandidate - so the verifier's
+     * own path predicate arrives far too late to prevent an escape. These
+     * assert the refusal AND that nothing was written.
+     */
+    it("refuses a manifest path that escapes the repository, before writing anything", () => {
+      const { baseSha, mainSha } = divergedFixture();
+      const sentinel = join(repo, "..", "candidate-author-sentinel");
+      expect(() => authorOne(baseSha, mainSha, [
+        { path: "../candidate-author-sentinel", ownership: "SHARED", source: { from: "explicit", content: Buffer.from("escaped\n") } },
+      ])).toThrow(/PATH_UNSAFE/);
+      expect(existsSync(sentinel)).toBe(false);
+    });
+
+    it.each([".git/config", "/etc/passwd", ""])("refuses the unsafe manifest path %j", (path) => {
+      const { baseSha, mainSha } = divergedFixture();
+      expect(() => authorOne(baseSha, mainSha, [
+        { path, ownership: "SHARED", source: { from: "explicit", content: Buffer.from("x\n") } },
+      ])).toThrow(/PATH_UNSAFE/);
+    });
+
+    it("refuses an escaping patchDirectory before deriving anything", () => {
+      const { baseSha, mainSha } = divergedFixture();
+      expect(() => authorAgentReferralsCandidate({
+        baseSha, sourceMainSha: mainSha,
+        manifest: [{ path: "feature.ts", ownership: "WHOLE_FILE", source: { from: "source_main" } }],
+        patchDirectory: "../../candidate-author-sentinel", envelope: ENVELOPE,
+      })).toThrow(/PATCH_DIRECTORY_UNSAFE/);
+    });
+
+    it("refuses an escaping certificateDirectory before writing anything", () => {
+      const { baseSha, mainSha } = divergedFixture();
+      const authored = authorAgentReferralsCandidate({
+        baseSha, sourceMainSha: mainSha,
+        manifest: [{ path: "feature.ts", ownership: "WHOLE_FILE", source: { from: "source_main" } }],
+        patchDirectory: `${CERTIFICATE_DIRECTORY}/patches`, envelope: ENVELOPE,
+      });
+      const sentinel = join(repo, "..", "candidate-author-sentinel");
+      expect(() => writeAuthoredCandidate(repo, "../candidate-author-sentinel", authored)).toThrow(/CERTIFICATE_DIRECTORY_UNSAFE/);
+      expect(existsSync(join(sentinel, "certificate.json"))).toBe(false);
     });
 
     it("refuses a legal path, which the verifier forbids by construction", () => {
