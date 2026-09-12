@@ -196,6 +196,6 @@ describe("candidate classification is a partition of the exact endpoint diff", (
     expect(certified).toBe((byCategory.WHOLE_FILE ?? 0) + (byCategory.SHARED ?? 0));
     // The one number worth pinning: certified paths are what a reviewer reads
     // line by line, so a change to that set must be deliberate.
-    expect(certified).toBe(61);
+    expect(certified).toBe(59);
   });
 });

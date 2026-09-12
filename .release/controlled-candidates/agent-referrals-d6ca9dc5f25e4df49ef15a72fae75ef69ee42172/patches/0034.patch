@@ -1,0 +1,71 @@
+diff --git a/commerce/src/agent-referrals-framework-delegation.ts b/commerce/src/agent-referrals-framework-delegation.ts
+index e7902a3..3491227 100644
+--- a/commerce/src/agent-referrals-framework-delegation.ts
++++ b/commerce/src/agent-referrals-framework-delegation.ts
+@@ -1,5 +1,6 @@
+ import { createHash } from "node:crypto";
+ import type Database from "better-sqlite3";
++import { requireObservedVersion } from "./agent-referrals-command-precondition";
+ import { id } from "./crypto";
+ 
+ /**
+@@ -86,13 +87,28 @@ export const frameworkAgreementRevisionById = (db: Database.Database, revisionId
+  * always over the complete, well-formed content this evidence claims to be.
+  * Forward-only: supersedes the current revision, never edits it.
+  */
+-export const mintFrameworkAgreementRevision = (db: Database.Database, clauses: Record<FrameworkAgreementClauseKey, string>): ContentRevision => {
++export const mintFrameworkAgreementRevision = (db: Database.Database, clauses: Record<FrameworkAgreementClauseKey, string>, expectedCurrentRevisionId: string | null): ContentRevision => {
+   assertComplete(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, clauses, "FRAMEWORK_AGREEMENT_INCOMPLETE_CONTENT");
+   const canonical = canonicalContent(FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, clauses);
+   const hash = contentHash(canonical);
+ 
+   const run = db.transaction((): ContentRevision => {
+     const current = currentFrameworkAgreementRevision(db);
++    // Content-addressed chain: an identical revision is never a meaningful
++    // second one, so re-minting the same clauses returns the existing
++    // revision instead of a superseding twin. Checked BEFORE the pin on
++    // purpose - this branch mutates nothing, so it is safe for a retry
++    // whatever its pin says, and letting it answer first is what keeps an
++    // ordinary lost-response retry a success rather than a 409.
++    if (current && current.content_hash === hash) return current;
++
++    // PR-C2 STALE_BOUND, guarding every actual mint. The no-change branch
++    // above is not a replay proof on its own: after a different revision B
++    // the candidate no longer equals the current row, so a retried A would
++    // mint a THIRD revision restoring A's clauses over B's. The pin refuses
++    // that, and it is the truthful shape of an edit - clauses are always
++    // authored against the text the author was reading.
++    requireObservedVersion("AGENT_REFERRALS_CONTENT_REVISION_STALE", expectedCurrentRevisionId, current?.id ?? null);
+     const revisionId = id();
+     const nextRevision = (current?.revision ?? 0) + 1;
+     db.prepare(`INSERT INTO framework_agreement_revisions(id, revision, content_json, content_hash, supersedes_revision_id)
+@@ -112,13 +128,28 @@ export const delegationTemplateRevisionById = (db: Database.Database, revisionId
+     FROM delegation_template_revisions WHERE id = ?`).get(revisionId) as (ContentRevision & { content_json: string }) | undefined) ?? null;
+ 
+ /** ord_reporting_mode is always 'FLEXPERIMENT_DELEGATED' per B-14 - the column CHECK enforces it structurally too. */
+-export const mintDelegationTemplateRevision = (db: Database.Database, clauses: Record<DelegationTemplateClauseKey, string>): ContentRevision => {
++export const mintDelegationTemplateRevision = (db: Database.Database, clauses: Record<DelegationTemplateClauseKey, string>, expectedCurrentRevisionId: string | null): ContentRevision => {
+   assertComplete(DELEGATION_TEMPLATE_REQUIRED_CLAUSES, clauses, "DELEGATION_TEMPLATE_INCOMPLETE_CONTENT");
+   const canonical = canonicalContent(DELEGATION_TEMPLATE_REQUIRED_CLAUSES, clauses);
+   const hash = contentHash(canonical);
+ 
+   const run = db.transaction((): ContentRevision => {
+     const current = currentDelegationTemplateRevision(db);
++    // Content-addressed chain: an identical revision is never a meaningful
++    // second one, so re-minting the same clauses returns the existing
++    // revision instead of a superseding twin. Checked BEFORE the pin on
++    // purpose - this branch mutates nothing, so it is safe for a retry
++    // whatever its pin says, and letting it answer first is what keeps an
++    // ordinary lost-response retry a success rather than a 409.
++    if (current && current.content_hash === hash) return current;
++
++    // PR-C2 STALE_BOUND, guarding every actual mint. The no-change branch
++    // above is not a replay proof on its own: after a different revision B
++    // the candidate no longer equals the current row, so a retried A would
++    // mint a THIRD revision restoring A's clauses over B's. The pin refuses
++    // that, and it is the truthful shape of an edit - clauses are always
++    // authored against the text the author was reading.
++    requireObservedVersion("AGENT_REFERRALS_CONTENT_REVISION_STALE", expectedCurrentRevisionId, current?.id ?? null);
+     const revisionId = id();
+     const nextRevision = (current?.revision ?? 0) + 1;
+     db.prepare(`INSERT INTO delegation_template_revisions(id, revision, ord_reporting_mode, content_json, content_hash, supersedes_revision_id)

@@ -1,0 +1,127 @@
+diff --git a/commerce/src/agent-referrals-partner-projection.ts b/commerce/src/agent-referrals-partner-projection.ts
+index 7b0e18b..bf680ad 100644
+--- a/commerce/src/agent-referrals-partner-projection.ts
++++ b/commerce/src/agent-referrals-partner-projection.ts
+@@ -19,6 +19,9 @@ import { settlementActForSettlement, actAcceptanceForAct, actDisputeForAct } fro
+ import { paymentAttemptsForSettlement } from "./agent-referrals-payment";
+ import { latestNpdStatusCheck } from "./agent-referrals-npd";
+ import { rewardForOrder, type RewardOrderFacts } from "./reward-calculation";
++import { pendingLegalProfileChangeRequestForPartner, legalProfileChangeRequestHeadForPartner } from "./agent-referrals-legal-profile-supersession";
++import { resolveTaxTreatmentForLegalProfileAt } from "./agent-referrals-tax-treatment";
++import { now } from "./crypto";
+ 
+ /**
+  * §B-11: the ONE explicit allowlist projection every `/v1/partner/*` read
+@@ -62,13 +65,58 @@ export const assertPartnerOwnsEngagement = (db: Database.Database, partnerIdenti
+   ownedEngagement(db, partnerIdentityId, engagementId);
+ };
+ 
++/**
++ * D2 §9, kept to §B-11's own allowlist discipline: never the raw
++ * LegalProfileChangeRequestRow (which also carries created_by,
++ * assertion_source, evidence_ref, supersedes_revision_id and the
++ * resolution-internals columns - none of it needed by, or safe to hand to,
++ * the partner realm). At most one, by the migration's own partial unique
++ * index, and always PENDING - a partner never sees a terminal request
++ * through this projection.
++ */
++export type PartnerPendingLegalProfileChangeRequestProjection = {
++  id: string;
++  legal_form: string;
++  tax_mode: string;
++  opf: string | null;
++  full_name: string;
++  short_name: string | null;
++  inn: string;
++  kpp: string | null;
++  registration_number: string | null;
++  legal_address: string | null;
++  reason: string;
++  state: "PENDING";
++  created_at: string;
++};
++
+ export type PartnerProfileProjection = {
+   partner_identity_id: string;
+   email: string;
+   onboarding_state: string;
+   submitted_legal_form: string | null;
+   submitted_tax_mode: string | null;
+-  legal_profile: { legal_form: string; tax_mode: string; projected_contractor_type: string; revision: number; created_at: string } | null;
++  submitted_opf: string | null;
++  submitted_full_name: string | null;
++  submitted_short_name: string | null;
++  submitted_inn: string | null;
++  submitted_kpp: string | null;
++  submitted_registration_number: string | null;
++  submitted_legal_address: string | null;
++  /** PR-C2: the monotone draft counter the partner's own submission must be authored against (0 before the first submission). */
++  legal_profile_draft_revision: number;
++  legal_profile: {
++    legal_form: string; tax_mode: string; projected_contractor_type: string;
++    opf: string | null; full_name: string; short_name: string | null; inn: string; kpp: string | null; registration_number: string | null; legal_address: string | null;
++    revision: number; created_at: string;
++  } | null;
++  pending_legal_profile_change_request: PartnerPendingLegalProfileChangeRequestProjection | null;
++  /** PR-C2: the request-chain head a new supersession is pinned against - a count, never an internal id, so §B-11's allowlist discipline is unchanged. */
++  legal_profile_change_request_head: number;
++  // PR-F: the tax treatment applicable right now - never assertion_source/
++  // evidence_ref/created_by_admin_id (admin-only provenance, matching
++  // §B-11's own discipline for pending_legal_profile_change_request above).
++  tax_treatment: { tax_system: string; vat_treatment: string; no_vat_basis: string | null; effective_from: string } | null;
+   payout_profile: ReturnType<typeof currentPayoutProfile>;
+   promo_code: string | null;
+   delegation_effective: boolean;
+@@ -83,14 +131,39 @@ export const partnerProfileProjection = (db: Database.Database, partnerIdentityI
+   const promoCode = partnerPromo
+     ? (db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(partnerPromo.promo_code_id) as { code: string } | undefined)
+     : undefined;
++  const pendingChangeRequest = pendingLegalProfileChangeRequestForPartner(db, partnerIdentityId);
++  const taxTreatment = legalProfile ? resolveTaxTreatmentForLegalProfileAt(db, legalProfile.id, now()) : null;
+   return {
+     partner_identity_id: identity.id,
+     email: identity.email,
+     onboarding_state: identity.onboarding_state,
+     submitted_legal_form: identity.submitted_legal_form,
+     submitted_tax_mode: identity.submitted_tax_mode,
++    submitted_opf: identity.submitted_opf,
++    submitted_full_name: identity.submitted_full_name,
++    submitted_short_name: identity.submitted_short_name,
++    submitted_inn: identity.submitted_inn,
++    submitted_kpp: identity.submitted_kpp,
++    submitted_registration_number: identity.submitted_registration_number,
++    submitted_legal_address: identity.submitted_legal_address,
++    legal_profile_draft_revision: identity.legal_profile_draft_revision,
+     legal_profile: legalProfile
+-      ? { legal_form: legalProfile.legal_form, tax_mode: legalProfile.tax_mode, projected_contractor_type: legalProfile.projected_contractor_type, revision: legalProfile.revision, created_at: legalProfile.created_at }
++      ? {
++          legal_form: legalProfile.legal_form, tax_mode: legalProfile.tax_mode, projected_contractor_type: legalProfile.projected_contractor_type,
++          opf: legalProfile.opf, full_name: legalProfile.full_name, short_name: legalProfile.short_name, inn: legalProfile.inn, kpp: legalProfile.kpp, registration_number: legalProfile.registration_number, legal_address: legalProfile.legal_address,
++          revision: legalProfile.revision, created_at: legalProfile.created_at,
++        }
++      : null,
++    legal_profile_change_request_head: legalProfileChangeRequestHeadForPartner(db, partnerIdentityId),
++    pending_legal_profile_change_request: pendingChangeRequest
++      ? {
++          id: pendingChangeRequest.id, legal_form: pendingChangeRequest.legal_form, tax_mode: pendingChangeRequest.tax_mode,
++          opf: pendingChangeRequest.opf, full_name: pendingChangeRequest.full_name, short_name: pendingChangeRequest.short_name, inn: pendingChangeRequest.inn, kpp: pendingChangeRequest.kpp, registration_number: pendingChangeRequest.registration_number, legal_address: pendingChangeRequest.legal_address,
++          reason: pendingChangeRequest.reason, state: "PENDING", created_at: pendingChangeRequest.created_at,
++        }
++      : null,
++    tax_treatment: taxTreatment
++      ? { tax_system: taxTreatment.tax_system, vat_treatment: taxTreatment.vat_treatment, no_vat_basis: taxTreatment.no_vat_basis, effective_from: taxTreatment.effective_from }
+       : null,
+     payout_profile: currentPayoutProfile(db, partnerIdentityId),
+     promo_code: promoCode?.code ?? null,
+@@ -230,6 +303,11 @@ export const partnerEngagementDetail = (db: Database.Database, partnerIdentityId
+       current_revision: partnerDistributionRevisionDto(projection.current_revision),
+       compliance_state: projection.compliance_state,
+       removal_state: projection.removal_state,
++      // PR-C2: the monotone counter a removal claim is authored against.
++      // The removal STATE cannot serve - the lifecycle is cyclic, so
++      // required -> claimed -> required restores exactly the value a stale
++      // retry was authored against.
++      event_sequence: projection.event_sequence,
+       reporting_periods: reports.map((report) => ({
+         reporting_period_key: report.reporting_period_key, reporting_basis: report.reporting_basis,
+         revision: report.revision, statistics_state: report.statistics_state, submission_state: report.submission_state,

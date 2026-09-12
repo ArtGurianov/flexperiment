@@ -1,0 +1,75 @@
+diff --git a/commerce/migrations/0054_partner_command_idempotency.sql b/commerce/migrations/0054_partner_command_idempotency.sql
+new file mode 100644
+index 0000000..2177dda
+--- /dev/null
++++ b/commerce/migrations/0054_partner_command_idempotency.sql
+@@ -0,0 +1,69 @@
++-- PR-C2 step 2b: durable command identity for the partner realm.
++--
++-- The admin realm already has one (admin_command_idempotency, 0002 + 0035's
++-- response_json). The partner realm had none, so its four remaining
++-- repeatable commands - payout set, payout revoke, distribution reporting
++-- and NPD receipt evidence - could only be made retry-safe by a
++-- caller-supplied key, because for each of them an identical body CAN be a
++-- legitimate second command and no content comparison can tell that from a
++-- lost-response retry (see docs/design/AGENT_REFERRALS_COMMAND_REPLAY_MATRIX.md).
++--
++-- Why a separate table rather than more rows in admin_command_idempotency:
++--
++-- 1. SCOPE. The admin table is keyed (command, key_hash) - one namespace
++--    shared by every admin, with admin_id folded into the request
++--    fingerprint so one admin reusing another's key meets a mismatch (409)
++--    rather than someone else's response. Admins share an operational
++--    realm; partners do not. Two partners picking the same random key must
++--    be two completely independent records, not a conflict, so
++--    partner_identity_id is part of the PRIMARY KEY rather than part of the
++--    hash.
++--
++-- 2. The scope is the IDENTITY, never the session. A retry has to survive a
++--    logout, a new login and a new session belonging to the same partner -
++--    that is precisely the situation a lost response leaves behind - while
++--    remaining unreachable to anyone else.
++--
++-- The raw Idempotency-Key is never stored. Only its sha256 lands here, the
++-- same discipline partner_invite_capabilities and partner_otp_challenges
++-- already apply to their own secrets.
++CREATE TABLE partner_command_idempotency (
++  partner_identity_id TEXT NOT NULL REFERENCES partner_identities(id),
++  -- A stable SEMANTIC command name ("partner.payout.set"), never a URL: a
++  -- route can be renamed without silently splitting a command's identity in
++  -- two, and two routes cannot accidentally share one.
++  command TEXT NOT NULL,
++  key_hash TEXT NOT NULL,
++  request_hash TEXT NOT NULL,
++  -- The contract this record was written under. admin V2 carries the same
++  -- fact implicitly, as a "v2:" prefix inside its fingerprint, which makes a
++  -- contract change look like an ordinary body mismatch (409
++  -- IDEMPOTENCY_CONFLICT). Naming it here lets a replay under a changed
++  -- contract fail as IDEMPOTENCY_CONTRACT_SUPERSEDED instead - the same code
++  -- the admin path already uses for its own "this record predates the
++  -- current contract" case.
++  contract_version TEXT NOT NULL,
++  -- A stored row means a COMMITTED command result. Validation failures,
++  -- suspension refusals and conflicts are not cached: they never reach the
++  -- INSERT, and the CHECK makes that structural rather than conventional.
++  response_status INTEGER NOT NULL CHECK (response_status BETWEEN 200 AND 299),
++  response_json TEXT NOT NULL,
++  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
++  PRIMARY KEY (partner_identity_id, command, key_hash)
++);
++
++-- Immutable by construction: a replay must return exactly what the original
++-- command returned, so nothing may edit a record after the fact. Without
++-- this, "durable command identity" would be durable only until the next
++-- UPDATE.
++CREATE TRIGGER partner_command_idempotency_immutable_guard
++BEFORE UPDATE ON partner_command_idempotency
++BEGIN SELECT RAISE(ABORT, 'PARTNER_COMMAND_IDEMPOTENCY_IMMUTABLE'); END;
++
++-- Deleting a record would silently turn a replay back into a second
++-- execution. Retention/erasure of a destroyed partner's rows, if it is ever
++-- wanted, has to be a deliberate migration that says so - not an incidental
++-- DELETE from application code.
++CREATE TRIGGER partner_command_idempotency_delete_guard
++BEFORE DELETE ON partner_command_idempotency
++BEGIN SELECT RAISE(ABORT, 'PARTNER_COMMAND_IDEMPOTENCY_IMMUTABLE'); END;

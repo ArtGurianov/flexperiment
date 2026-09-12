@@ -15,8 +15,10 @@ rules; the artifact is what a reviewer checks.
 ```text
 BASE            d6ca9dc5f25e4df49ef15a72fae75ef69ee42172   production-deploy, and the
                                                            image production actually runs
-source_main     7f6167277dcf429d3fdec52c2f55527680707fc6   main after the authoring
-                                                           machinery merged
+source_main     1047c75215ca7aced34ce13d7071a7663b35acfb   main after #107, which removed
+                                                           the one path that could not be
+                                                           certified (a raw NUL byte made
+                                                           it binary to git)
 ```
 
 `BASE` is a detached materialized candidate, **not an ancestor of main**, so
@@ -68,14 +70,25 @@ refuses one that does not. Two exist today:
 ## Totals
 
 ```text
-BASE..source_main                     417 paths
-  certified                            61      50 WHOLE_FILE + 11 SHARED
-  excluded: control plane             174
-  excluded: tests                     152
-  excluded: unrelated runtime          23
+BASE..source_main                     420 paths
+  certified                            59      50 WHOLE_FILE + 9 SHARED
+  excluded: control plane             176
+  excluded: tests                     153
+  excluded: unrelated runtime          25
   excluded: repository root             4
   forbidden by the certificate          3
 ```
+
+The total moved 417 -> 420 when the source advanced past #106: the three
+added paths are that PR's own classification artifact, its test and this
+document, all outside the certified set.
+
+Two paths left the certified set during authoring, on evidence rather than
+judgement: `agent-referrals-feature-state.ts` and `types.ts` are **unchanged
+between BASE's own source commit and the frozen source main**. The feature
+does not touch them at all, so their whole divergence is production-only and
+the candidate simply keeps BASE's version. A path the feature does not change
+does not belong in its manifest.
 
 ## SHARED - reviewed hunks only
 

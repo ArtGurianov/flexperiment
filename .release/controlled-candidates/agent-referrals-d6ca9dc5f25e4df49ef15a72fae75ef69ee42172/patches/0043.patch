@@ -1,0 +1,56 @@
+diff --git a/commerce/src/agent-referrals-ord-provider-operation.ts b/commerce/src/agent-referrals-ord-provider-operation.ts
+index 70e183e..ce74489 100644
+--- a/commerce/src/agent-referrals-ord-provider-operation.ts
++++ b/commerce/src/agent-referrals-ord-provider-operation.ts
+@@ -1,5 +1,6 @@
+ import type Database from "better-sqlite3";
+ import { id } from "./crypto";
++import { requireObservedVersion } from "./agent-referrals-command-precondition";
+ import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
+ import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
+ import { currentOrdProviderProfile, type OrdProviderProfileKind } from "./agent-referrals-ord-provider-profile";
+@@ -65,11 +66,20 @@ export type OpenOrdProviderOperationResult = { operation: OrdProviderOperationRo
+  * call after CONFIRMED must go through correctOrdProviderOperation
+  * instead, since a confirmed operation is no longer freely re-openable).
+  */
+-export const openOrdProviderOperation = (db: Database.Database, adminId: string, kind: OrdProviderProfileKind): OpenOrdProviderOperationResult => {
++export const openOrdProviderOperation = (db: Database.Database, adminId: string, kind: OrdProviderProfileKind, expectedCurrentOperationId: string | null): OpenOrdProviderOperationResult => {
+   const run = db.transaction((): OpenOrdProviderOperationResult => {
+     gate(db);
+     const existing = currentOrdProviderOperation(db, kind);
+     if (existing && existing.local_state === "DRAFT") return { operation: existing, replayed: true };
++
++    // PR-C2 STALE_BOUND, guarding the reopen. "Only idempotent while DRAFT"
++    // is not a proof: confirming moves the chain head to CORRECTION_ONLY,
++    // which is exactly the state this function is allowed to reopen from,
++    // so open -> submit -> confirm -> retried open would mint a whole extra
++    // correction revision nobody asked for. Naming the operation being
++    // corrected is also the truthful shape of a reopen.
++    requireObservedVersion("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_STALE", expectedCurrentOperationId, existing?.id ?? null);
++
+     const profile = currentOrdProviderProfile(db, kind);
+     if (!profile) throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_PROFILE_MISSING", 409, kind);
+     if (existing && existing.lock_state !== "CORRECTION_ONLY") throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_NOT_CORRECTABLE", 409, existing.id);
+@@ -92,6 +102,22 @@ export const recordOrdProviderOperationSubmitted = (db: Database.Database, opera
+     const operation = ordProviderOperationById(db, operationId);
+     if (!operation) throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_NOT_FOUND", 404, operationId);
+     if (operation.lock_state !== "MUTABLE") throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_NOT_MUTABLE", 409, operationId);
++    // PR-C2 MONOTONIC_REPLAY_SAFE, by the same first-writer-wins shape the
++    // ERIR branch below already uses - and for a structural reason: 0048's
++    // ord_provider_operations_observed_id_immutable_guard refuses any UPDATE
++    // that changes a non-null vk_external_id, so once a submission is on
++    // file no legal B* can replace it in place. A genuine correction goes
++    // through a new revision (openOrdProviderOperation), never this
++    // function.
++    //
++    // Only evidence_ref was left writable, which is the whole reason this
++    // branch is here rather than nothing: without it, A(vk1, ev-a) ->
++    // B(vk1, ev-b) -> retried A would put ev-a back over B's evidence. An
++    // exact restatement is a replay; anything else is a named conflict.
++    if (operation.vk_external_id !== null) {
++      if (operation.vk_external_id === vkExternalId && operation.evidence_ref === evidenceRef) return operation;
++      throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_SUBMISSION_CONFLICT", 409, operationId);
++    }
+     db.prepare(`UPDATE ord_provider_operations SET local_state = 'SUBMITTED', vk_submission_state = 'SUBMITTED', vk_external_id = ?, evidence_ref = ?
+       WHERE id = ? AND lock_state = 'MUTABLE'`).run(vkExternalId, evidenceRef, operationId);
+     return ordProviderOperationById(db, operationId)!;

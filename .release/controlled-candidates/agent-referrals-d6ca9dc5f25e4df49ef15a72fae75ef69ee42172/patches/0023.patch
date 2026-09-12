@@ -1,0 +1,35 @@
+diff --git a/commerce/migrations/0055_partner_legal_profile_draft_revision.sql b/commerce/migrations/0055_partner_legal_profile_draft_revision.sql
+new file mode 100644
+index 0000000..5b0ba9b
+--- /dev/null
++++ b/commerce/migrations/0055_partner_legal_profile_draft_revision.sql
+@@ -0,0 +1,29 @@
++-- PR-C2: a monotone version for the partner's own legal-profile DRAFT, so
++-- that submitting it can be proven replay-safe.
++--
++-- The draft lives in partner_identities.submitted_* and is rewritten in
++-- place on every submission, which under A -> B* -> retry A is a defect:
++--
++--   A submits draft X, its response is lost
++--   the partner (still on the same form) submits draft Y
++--   the lost A is retried
++--   -> Y is silently overwritten with X, and an admin verifying "the
++--      submitted profile" now verifies the one the partner replaced
++--
++-- Pinning the draft's CONTENT would not fix it: X -> Y -> X is a legal
++-- sequence of edits, and after it the retry's pin matches again. Only a
++-- counter that never goes backwards separates "authored against what I see"
++-- from "authored against something two edits ago", which is what this is.
++--
++-- Deliberately NOT reusing onboarding_revision: that counter tracks
++-- onboarding STATE transitions, and a resubmission inside PROFILE_SUBMITTED
++-- moves no state at all - every draft edit would share one value and the
++-- pin would prove nothing. Two different facts, two different counters.
++--
++-- DEFAULT 0 is the correct backfill for every existing row: 0 means "no
++-- draft submission has been counted yet", and the first submission after
++-- this migration writes 1. An existing PROFILE_SUBMITTED identity therefore
++-- reports 0 until it next submits, which is honest - we do not know how
++-- many times that draft was written before the counter existed, and
++-- inventing a number would be worse than starting from a known floor.
++ALTER TABLE partner_identities ADD COLUMN legal_profile_draft_revision INTEGER NOT NULL DEFAULT 0;

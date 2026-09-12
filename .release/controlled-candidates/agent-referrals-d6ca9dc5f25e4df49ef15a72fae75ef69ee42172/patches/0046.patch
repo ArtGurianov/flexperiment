@@ -1,0 +1,113 @@
+diff --git a/commerce/src/agent-referrals-partner-command.ts b/commerce/src/agent-referrals-partner-command.ts
+new file mode 100644
+index 0000000..c1b3949
+--- /dev/null
++++ b/commerce/src/agent-referrals-partner-command.ts
+@@ -0,0 +1,107 @@
++import type Database from "better-sqlite3";
++import { canonicalV2, sha256 } from "./crypto";
++import type { PartnerPrincipal } from "./agent-referrals-partner-identity";
++
++/**
++ * PR-C2 step 2b: durable command identity for the partner realm - the
++ * counterpart of domain.ts's own withAdminCommandV2Core, scoped to a partner
++ * identity instead of to a shared admin namespace.
++ *
++ * It exists for the four partner commands where an identical body can be a
++ * legitimate SECOND command (a new payout destination that happens to match
++ * the old one, another distribution report, another receipt): no content
++ * comparison can separate that from a lost-response retry, so only a
++ * caller-supplied key can.
++ *
++ * Three properties this file exists to keep:
++ *
++ * 1. The replay lookup happens BEFORE any business-state, gate or
++ *    current-revision read. A retry must not be re-validated against state
++ *    that moved on after the original command committed - for payout in
++ *    particular, the first attempt advances the revision the retry would
++ *    then legitimately supersede.
++ *
++ * 2. The business writes and the idempotency record share ONE transaction.
++ *    The caller passes a transaction BODY, never a function that opens its
++ *    own - a command that committed without its record, or a record without
++ *    its command, is worse than no mechanism at all.
++ *
++ * 3. Nothing that carries a non-persisted secret may use this. response_json
++ *    is stored, so a command whose response contains a raw token
++ *    (reissuePartnerInvite and anything else classified
++ *    SPECIAL_NON_REPLAYABLE_SECRET) is deliberately out of scope - it needs
++ *    its own recovery semantics, not this table.
++ */
++
++/** Bumped when the stored request/response shape changes meaning. A record written under another version replays as IDEMPOTENCY_CONTRACT_SUPERSEDED rather than masquerading as a body mismatch. */
++export const PARTNER_COMMAND_CONTRACT_VERSION = "p1";
++
++export type PartnerCommandName =
++  | "partner.payout.set"
++  | "partner.payout.revoke"
++  | "partner.distribution.report"
++  | "partner.npd-receipt.submit";
++
++export class PartnerCommandIdempotencyError extends Error {
++  constructor(readonly code: string, readonly status = 409, detail?: string) {
++    super(detail ? `${code}: ${detail}` : code);
++  }
++}
++
++export type PartnerCommandResult<T> = { response: T; status: number; replayed: boolean };
++
++type PartnerCommandInput<T> = {
++  db: Database.Database;
++  partner: PartnerPrincipal;
++  command: PartnerCommandName;
++  idempotencyKey: string;
++  /** Everything that determines the INTENT: the resource ids taken from the path plus the normalized body. partner_identity_id is deliberately absent - the primary key already scopes it, and repeating it would only let one fact fail in two different ways. */
++  request: Record<string, unknown>;
++  successStatus: number;
++  /** The command body. Must NOT open a transaction of its own - it already runs inside this one. */
++  execute: () => T;
++};
++
++const requireKey = (idempotencyKey: string): string => {
++  const trimmed = idempotencyKey.trim();
++  // Same shape rule the admin surface applies: a key must be long enough to
++  // actually be unique per intent, or "idempotency" silently degrades into
++  // "two different commands collided".
++  if (trimmed.length < 8 || trimmed.length > 200) {
++    throw new PartnerCommandIdempotencyError("IDEMPOTENCY_KEY_INVALID", 400, `${trimmed.length} chars`);
++  }
++  return trimmed;
++};
++
++/**
++ * Runs `execute` at most once per (partner, command, key). The caller is
++ * responsible for opening the transaction - see the ...InTransaction naming
++ * convention used throughout this codebase - so that the business writes and
++ * the record below cannot land separately.
++ */
++export const withPartnerCommandInTransaction = <T>(input: PartnerCommandInput<T>): PartnerCommandResult<T> => {
++  const { db, partner, command, request, successStatus, execute } = input;
++  const keyHash = sha256(requireKey(input.idempotencyKey));
++  const requestHash = sha256(canonicalV2({ command, ...request } as Record<string, unknown>));
++
++  const existing = db.prepare(`SELECT request_hash, contract_version, response_status, response_json
++    FROM partner_command_idempotency WHERE partner_identity_id = ? AND command = ? AND key_hash = ?`)
++    .get(partner.partner_identity_id, command, keyHash) as
++    { request_hash: string; contract_version: string; response_status: number; response_json: string } | undefined;
++
++  if (existing) {
++    if (existing.contract_version !== PARTNER_COMMAND_CONTRACT_VERSION) {
++      throw new PartnerCommandIdempotencyError("IDEMPOTENCY_CONTRACT_SUPERSEDED", 409, existing.contract_version);
++    }
++    if (existing.request_hash !== requestHash) {
++      throw new PartnerCommandIdempotencyError("IDEMPOTENCY_CONFLICT", 409, command);
++    }
++    return { response: JSON.parse(existing.response_json) as T, status: existing.response_status, replayed: true };
++  }
++
++  const response = execute();
++  db.prepare(`INSERT INTO partner_command_idempotency(partner_identity_id, command, key_hash, request_hash, contract_version, response_status, response_json)
++    VALUES (?, ?, ?, ?, ?, ?, ?)`)
++    .run(partner.partner_identity_id, command, keyHash, requestHash, PARTNER_COMMAND_CONTRACT_VERSION, successStatus, JSON.stringify(response));
++  return { response, status: successStatus, replayed: false };
++};

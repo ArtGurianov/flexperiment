@@ -1,0 +1,79 @@
+diff --git a/commerce/src/agent-referrals-ord-reporting.ts b/commerce/src/agent-referrals-ord-reporting.ts
+index 1997334..1229529 100644
+--- a/commerce/src/agent-referrals-ord-reporting.ts
++++ b/commerce/src/agent-referrals-ord-reporting.ts
+@@ -1,4 +1,5 @@
+ import type Database from "better-sqlite3";
++import { requireObservedVersion } from "./agent-referrals-command-precondition";
+ import { canonicalV2, id, sha256 } from "./crypto";
+ import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
+ import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
+@@ -240,6 +241,8 @@ const insertReport = (
+   input: FileDistributionPeriodReportInput,
+   distributionRevision: DistributionRevisionRow,
+   reportingBasis: ReportingBasis,
++  /** PR-C2 STALE_BOUND: the report revision this filing was authored against; null when nothing is filed for the period yet. */
++  expectedCurrentReportId: string | null,
+ ): OrdDistributionPeriodReportRow => {
+   const statisticsReason = input.statistics_reason ?? "ORDINARY";
+   let zeroRewardClosureId: string | null = null;
+@@ -316,6 +319,13 @@ const insertReport = (
+   );
+   if (statisticsAlreadyOnFile && submissionAlreadyOnFile) return current!; // exact semantic replay - idempotent, no new row
+ 
++  // PR-C2 STALE_BOUND, guarding every actual filing. The exact-replay
++  // branch above mutates nothing and answers first; what this refuses is a
++  // retry arriving after a genuine correction B, which would otherwise file
++  // a third revision restoring A's statistics - or, on the reconciliation
++  // path, attach ERIR evidence gathered for A's facts to B's.
++  requireObservedVersion("AGENT_REFERRALS_ORD_REPORTING_REPORT_STALE", expectedCurrentReportId, current?.id ?? null);
++
+   const nextRevision = (current?.revision ?? 0) + 1;
+   if (nextRevision > 1 && !input.correction_reason?.trim()) throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_CORRECTION_REASON_REQUIRED", 422);
+ 
+@@ -363,7 +373,7 @@ const insertReport = (
+  * recordOrdDistributionPeriodReportReconciliation instead, which pins the
+  * predecessor's own revision explicitly (P0.4).
+  */
+-export const fileOrdDistributionPeriodReport = (db: Database.Database, admin: AdminPrincipal, input: FileDistributionPeriodReportInput): OrdDistributionPeriodReportRow => {
++export const fileOrdDistributionPeriodReport = (db: Database.Database, admin: AdminPrincipal, input: FileDistributionPeriodReportInput, expectedCurrentReportId: string | null): OrdDistributionPeriodReportRow => {
+   const run = db.transaction((): OrdDistributionPeriodReportRow => {
+     gate(db);
+     const distribution = getDistribution(db, input.distribution_id);
+@@ -378,7 +388,7 @@ export const fileOrdDistributionPeriodReport = (db: Database.Database, admin: Ad
+         throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_SPECIAL_PERIOD_UNCONFIRMED", 409, formatKind);
+       }
+     }
+-    return insertReport(db, admin, input, distributionRevision, reportingBasis);
++    return insertReport(db, admin, input, distributionRevision, reportingBasis, expectedCurrentReportId);
+   });
+   return run.immediate();
+ };
+@@ -402,11 +412,17 @@ export const recordOrdDistributionPeriodReportReconciliation = (
+   vkOperationExternalId: string,
+   erirCode: string,
+   submissionEvidenceRef: string,
++  /** PR-C2 STALE_BOUND: the report revision the operator was reconciling. */
++  expectedCurrentReportId: string,
+ ): OrdDistributionPeriodReportRow => {
+   const run = db.transaction((): OrdDistributionPeriodReportRow => {
+     gate(db);
+     const current = currentOrdDistributionPeriodReport(db, distributionId, reportingPeriodKey);
+     if (!current) throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_REPORT_NOT_FOUND", 404, `${distributionId}:${reportingPeriodKey}`);
++    // Proven here as well as inside insertReport: this function re-derives
++    // its whole payload from `current`, so a stale caller must be refused
++    // before that derivation, not after it.
++    requireObservedVersion("AGENT_REFERRALS_ORD_REPORTING_REPORT_STALE", expectedCurrentReportId, current.id);
+     const pinnedRevision = distributionRevisionByIdForDistribution(db, distributionId, current.distribution_revision_id);
+     const statistics: ReportStatistics = current.statistics_state === "ACTUAL"
+       ? { statistics_state: "ACTUAL", statistics_json: JSON.parse(current.statistics_json!) }
+@@ -432,6 +448,9 @@ export const recordOrdDistributionPeriodReportReconciliation = (
+         submission: { vk_operation_external_id: vkOperationExternalId, erir_code: erirCode, submission_evidence_ref: submissionEvidenceRef },
+       },
+       pinnedRevision, current.reporting_basis,
++      // The evidence being recorded was gathered for THIS revision's facts;
++      // pinning it is what stops a retry attaching it to a later one.
++      current.id,
+     );
+   });
+   return run.immediate();

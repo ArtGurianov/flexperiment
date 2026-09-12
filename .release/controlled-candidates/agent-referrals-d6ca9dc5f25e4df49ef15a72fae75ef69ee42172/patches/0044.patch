@@ -1,0 +1,42 @@
+diff --git a/commerce/src/agent-referrals-ord-provider-profile.ts b/commerce/src/agent-referrals-ord-provider-profile.ts
+index 02478dc..3cf1b74 100644
+--- a/commerce/src/agent-referrals-ord-provider-profile.ts
++++ b/commerce/src/agent-referrals-ord-provider-profile.ts
+@@ -1,4 +1,5 @@
+ import type Database from "better-sqlite3";
++import { requireObservedVersion } from "./agent-referrals-command-precondition";
+ import { canonicalV2, id, sha256 } from "./crypto";
+ 
+ /**
+@@ -60,15 +61,30 @@ export const mintOrdProviderProfile = (
+   kind: OrdProviderProfileKind,
+   content: Record<string, unknown>,
+   reason: string,
++  expectedCurrentRevisionId: string | null,
+ ): OrdProviderProfileRevision => {
+   const run = db.transaction((): OrdProviderProfileRevision => {
+     const current = currentOrdProviderProfile(db, kind);
++    const contentHash = canonicalContentHash(content);
++    // PR-C2: an identical profile is never a meaningful second revision -
++    // the chain is content-addressed, so re-minting the same content only
++    // renumbers it. This is also what makes a lost-response retry harmless:
++    // it returns the revision the first attempt created instead of a
++    // superseding twin. (reason/actor are provenance, deliberately outside
++    // the comparison, exactly as canonicalLegalProfileEquals treats them.)
++    if (current && current.content_hash === contentHash) return current;
++
++    // PR-C2 STALE_BOUND, guarding every actual mint. The no-change branch
++    // above mutates nothing and so is safe for any retry; this pin is what
++    // stops a retried A, arriving after a different revision B, from
++    // minting a third revision that restores A's content over B's.
++    requireObservedVersion("AGENT_REFERRALS_CONTENT_REVISION_STALE", expectedCurrentRevisionId, current?.id ?? null);
+     const revisionId = id();
+     const nextRevision = (current?.revision ?? 0) + 1;
+     const contentJson = JSON.stringify(content);
+     db.prepare(`INSERT INTO ord_provider_profile_revisions(id, profile_kind, revision, content_json, content_hash, supersedes_revision_id, reason, created_by_admin_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+-      .run(revisionId, kind, nextRevision, contentJson, canonicalContentHash(content), current?.id ?? null, reason, adminId);
++      .run(revisionId, kind, nextRevision, contentJson, contentHash, current?.id ?? null, reason, adminId);
+     return currentOrdProviderProfile(db, kind)!;
+   });
+   return run.immediate();
