@@ -27,8 +27,6 @@ import {
  * by it. Everything here is re-derived independently by
  * reconstructAgentReferralsCandidateSha from the certificate alone; if this
  * author is wrong, the reconstruction fails rather than agreeing with it.
- * That asymmetry is the point, so this module calls the real reconstruction
- * at the end and refuses to emit a certificate that does not reconstruct.
  *
  * WHAT THIS MODULE MAY NOT DO, and why:
  *
@@ -61,10 +59,24 @@ export type AuthoredResultSource =
   /** Remove the path. Carries no patch - the certificate pins only the base blob. */
   | { readonly from: "delete" };
 
-export type AuthoredPath = {
-  readonly path: string;
-  readonly source: AuthoredResultSource;
-};
+/**
+ * Ownership is a PRODUCT judgement and stays human - machinery has no way to
+ * know whether a file belongs to this feature outright. What machinery can
+ * do, once the judgement is written down, is refuse the dangerous transport
+ * for it. Before this, `from: "source_main"` was available for any path and
+ * only manifest discipline kept it off shared files; a discipline is not a
+ * fence.
+ *
+ * WHOLE_FILE - the feature owns the path outright, so "the approved source's
+ *              version of this file" IS the intent and taking main's blob is
+ *              correct.
+ * SHARED     - the path diverges for reasons unrelated to this feature, so
+ *              its result must be bytes a human selected. `source_main` is
+ *              not expressible here, in the type AND at runtime.
+ */
+export type AuthoredPath =
+  | { readonly path: string; readonly ownership: "WHOLE_FILE"; readonly source: AuthoredResultSource }
+  | { readonly path: string; readonly ownership: "SHARED"; readonly source: Exclude<AuthoredResultSource, { from: "source_main" }> };
 
 export type AuthorCandidateInput = {
   readonly baseSha: string;
@@ -183,6 +195,16 @@ export const authorAgentReferralsCandidate = (input: AuthorCandidateInput): Auth
     if (FORBIDDEN_PATH_PREFIXES.some((prefix) => entry.path.startsWith(prefix))) {
       fail(`AGENT_REFERRALS_CANDIDATE_AUTHOR_FORBIDDEN_PATH:${entry.path}`);
     }
+    // Checked at RUNTIME as well as in the type. TypeScript already makes
+    // this combination unrepresentable, which is why the widening cast is
+    // needed to ask the question at all - and why the check is worth having:
+    // a cast, plain JS, or a manifest deserialized from JSON walks straight
+    // past the union, and this is the one rule whose violation silently
+    // imports unrelated main-only work.
+    const declared = entry as { ownership: string; source: { from: string } };
+    if (declared.ownership === "SHARED" && declared.source.from === "source_main") {
+      fail(`AGENT_REFERRALS_CANDIDATE_AUTHOR_SHARED_PATH_REQUIRES_EXPLICIT_CONTENT:${entry.path}`);
+    }
   }
 
   const paths: CertifiedPathEntry[] = [];
@@ -258,21 +280,41 @@ export const authorAgentReferralsCandidate = (input: AuthorCandidateInput): Auth
 };
 
 /**
- * The proof, and the only authoritative answer: the untouched verifier
- * re-derives everything from the certificate plus a controller tree that
- * really contains the patches. Returns undefined when the claim holds, or
- * the verifier's own failure code.
+ * The proof, and the only authoritative answer.
  *
- * Separate from authoring on purpose - see this module's header. Calling it
- * is not optional: an authored certificate is a proposal until this passes.
+ * It reads the certificate out of the COMMITTED controller tree - the same
+ * `git show <sha>:<path>` the production controller performs - rather than
+ * trusting the object this module returned. That distinction is the whole
+ * point: an earlier version verified the author's in-memory certificate
+ * while binding only the patches to the committed tree, so a certificate
+ * altered between authoring and commit would still have proved PASS while
+ * the controller later read something else entirely.
+ *
+ * Returns undefined when the committed artifacts really reconstruct to the
+ * claimed SHA, or a failure code. Calling it is not optional: an authored
+ * certificate is a proposal until this passes against a real commit.
  */
-export const proveAuthoredCandidate = (
-  authored: AuthoredCandidate,
-  trustedPatchSourceSha: string,
-): string | undefined =>
-  verifyControlledCandidateCertificate(authored.certificate, authored.claimedCandidateSha, {
-    trusted_patch_source_sha: trustedPatchSourceSha,
+export const proveAuthoredCandidate = (input: {
+  /** The controller commit whose tree holds both the certificate and its patches. */
+  readonly trustedPatchSourceSha: string;
+  /** Repository path of the certificate inside that tree. */
+  readonly certificatePath: string;
+  readonly claimedCandidateSha: string;
+}): string | undefined => {
+  const shown = spawnSync("git", ["show", `${input.trustedPatchSourceSha}:${input.certificatePath}`], { maxBuffer: 1024 * 1024 * 256 });
+  if (shown.status !== 0) return "AGENT_REFERRALS_CANDIDATE_AUTHOR_CERTIFICATE_NOT_COMMITTED";
+
+  let committed: ControlledCandidateCertificate;
+  try {
+    committed = JSON.parse(Buffer.from(shown.stdout ?? []).toString("utf8")) as ControlledCandidateCertificate;
+  } catch {
+    return "AGENT_REFERRALS_CANDIDATE_AUTHOR_CERTIFICATE_UNPARSEABLE";
+  }
+
+  return verifyControlledCandidateCertificate(committed, input.claimedCandidateSha, {
+    trusted_patch_source_sha: input.trustedPatchSourceSha,
   });
+};
 
 /** Derives the candidate commit from the envelope, exactly as the reconstruction does. */
 const deriveCandidateSha = (baseSha: string, treeSha: string, envelope: CandidateCommitEnvelope): string => {
