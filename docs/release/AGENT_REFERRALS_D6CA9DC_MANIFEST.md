@@ -171,10 +171,37 @@ are not required to reconstruct feature behaviour.
 `BASE` unchanged; the author and the verifier both refuse these by
 construction.
 
-## Still open
+## How WHOLE_FILE is actually proven
 
-Every remaining certified `WHOLE_FILE` **modification** has been machine-checked
-for dropped exports, which is a proxy for lost behaviour rather than a proof
-of its absence. A change that alters an existing export's body without
-changing its name is invisible to that check, and the OTP finding means the
-proxy has earned scrutiny rather than trust.
+Not by inspection, and no longer by a proxy. `BASE` pins its own provenance,
+which gives an exact oracle:
+
+```text
+O = the source commit BASE was materialized from   6ab81df
+B = production BASE                                d6ca9dc   O + production-only changes
+S = the frozen source main                         7f61672   O + ordinary main history
+
+for every CERTIFIED / WHOLE_FILE / M path:
+    R = three-way merge (current = B, base = O, other = S)
+    R == S bytewise  -> B held nothing extra; WHOLE_FILE is safe
+    R != S, or conflict -> B carries production-only content; SHARED
+```
+
+The first version of this guard compared exported NAMES and was not enough:
+`commerce/src/server.ts` exports nothing at all, so re-certifying it would
+have stayed green while the source version stopped passing an OTP sender to
+`createApp`. Comparing export bodies would have been a proxy too - a private
+helper, an import, a constant or one line of top-level wiring all slip past
+it. The three-way merge asks the only question that matters - does taking
+`S` whole DESTROY anything `B` carries - and does not care what kind of
+content it is.
+
+Falsified on all four cases the review named: certifying `otp.ts`,
+`server.ts` or `feature-state.ts` as WHOLE_FILE each turns the guard red,
+while `agent-referrals-api-admin.ts` stays green as the positive control.
+
+A second, cheaper fence pins the paths already ruled out - `candidate.ts`,
+`candidate-author.ts`, `activation.ts`, the activation/readiness/business-facts
+quartet, `otp.ts` and `server.ts` - because the generic control-plane
+predicate is prefix-based and would not catch release machinery that lives
+under a runtime root and is named like the feature.
