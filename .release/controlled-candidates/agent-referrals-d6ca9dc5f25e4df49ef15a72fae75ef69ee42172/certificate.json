@@ -255,9 +255,9 @@
       "path": "commerce/src/agent-referrals-api-admin.ts",
       "mode": "100644",
       "patch_path": ".release/controlled-candidates/agent-referrals-d6ca9dc5f25e4df49ef15a72fae75ef69ee42172/patches/0027.patch",
-      "patch_git_blob_sha": "ff6455c4e292eef2916505ee9bad1b95b1d02571",
-      "patch_sha256": "84b26f15b923129ae30d1ca1def48cf574c3e7266e02d3f66d1d85857260efb5",
-      "result_blob_sha": "c98c7ed97e48644df2dd401f792da556fe322a88",
+      "patch_git_blob_sha": "175d219cdfa9d863b7c4852b0501d8dcc4ad068b",
+      "patch_sha256": "ef0de1c3cfb614c08475a9a79368ede6dd2c239345405502936901968629cb49",
+      "result_blob_sha": "6e40b44a4a86b86ae7698e3d4edc0c812432abe2",
       "kind": "MODIFY",
       "base_blob_sha": "925012b530f778e0db2356ef76464b8cfa8552c6"
     },
@@ -590,6 +590,6 @@
     "extra_headers": "none",
     "signed": false,
     "parent_sha": "d6ca9dc5f25e4df49ef15a72fae75ef69ee42172",
-    "tree_sha": "e0dd71d370408957c484db7f4917cf56e215aec5"
+    "tree_sha": "13957ebad367abe74dc1040535d029103bbf0be0"
   }
 }
