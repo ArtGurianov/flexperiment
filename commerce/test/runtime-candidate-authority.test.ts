@@ -67,6 +67,56 @@ describe("runtime-candidate authority boundary", () => {
   });
 
   /**
+   * The CROSS-RUN half of the same authority boundary, and the reason the
+   * step-order test above is necessary but not sufficient.
+   *
+   * That test reads order inside ONE run: no step after the acquire step may
+   * re-resolve the pointer. A rerun, though, starts again at step one with
+   * ownership ALREADY held from a previous run - the exact shape produced by a
+   * response lost between acquire and pause. An unguarded pointer read sitting
+   * textually BEFORE the acquire step satisfies the order test and still
+   * executes while owned; if an ordinary promotion moved the ref in the
+   * meantime it refuses the very epoch it was invoked to finish, and the
+   * epoch is stranded with global sales still paused.
+   *
+   * So in any controller that models resumption of an owned epoch, every
+   * runtime-candidate read must be unreachable once ownership is held: guarded
+   * by the classified state, admitted only for FRESH, and never for an OWNED_
+   * state. Selection-time safety belongs to the fresh path alone.
+   *
+   * Scoped to controllers that actually classify owned resumption, because the
+   * property is meaningless without it - a controller with no resumable owned
+   * state has no run that begins already owned.
+   */
+  const resumableOwnedControllers = controllers.filter((file) =>
+    /DEPLOYMENT_STATE=OWNED/.test(readFileSync(`${directory}/${file}`, "utf8")));
+
+  it("covers every controller that models owned resumption", () => {
+    expect(resumableOwnedControllers.length).toBeGreaterThanOrEqual(5);
+  });
+
+  it.each(resumableOwnedControllers)("%s never resolves runtime-candidate in a resumed, already-owned run", (file) => {
+    const guardOf = (step: Step): string | undefined => /^\s{8}if:\s*(.*)$/m.exec(step.body)?.[1]?.trim();
+
+    const offenders = stepsOf(file)
+      .filter((step) => READS_POINTER.test(body(step)))
+      .filter((step) => {
+        const guard = guardOf(step);
+        // Unguarded, or guarded by something that does not exclude every
+        // owned state, means the read can happen in a resumed run.
+        return !guard || !/\bFRESH\b/.test(guard) || /OWNED_/.test(guard);
+      })
+      .map((step) => `${step.name} [if: ${guardOf(step) ?? "none"}]`);
+
+    expect(
+      offenders,
+      `${file} can resolve runtime-candidate in a run that already holds durable ownership. `
+      + `A rerun after a lost acquire response would then be refused for a pointer that legitimately `
+      + `moved on, stranding the epoch it was invoked to finish. Guard the read on the FRESH state.`,
+    ).toEqual([]);
+  });
+
+  /**
    * The break-glass repair controller was removed once the ordinary path could
    * replace a stale pointer. Its only unique capability was relaxing the
    * current-pointer assertions, and those no longer exist; keeping a second

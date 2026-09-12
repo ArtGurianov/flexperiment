@@ -211,12 +211,12 @@ jobs:
             [[ "$production_deploy" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_DC3_COMPLETED_POINTER_MISMATCH >&2; exit 1; }
             echo DEPLOYMENT_STATE=ALREADY_COMPLETE >> "$GITHUB_ENV"; exit 0
           fi
-          # runtime-candidate has authority only BEFORE acquire, so it is bound
-          # here, once, for every resumable state - and never read again after
-          # ownership is taken, where ordinary pointer staleness could strand an
-          # epoch already in flight (commerce/test/runtime-candidate-authority.test.ts).
-          git fetch --no-tags origin refs/heads/runtime-candidate:refs/remotes/origin/runtime-candidate
-          [[ "$(git rev-parse origin/runtime-candidate)" == "$INPUT_EXPECTED_CANDIDATE_SHA" && "$INPUT_EXPECTED_CANDIDATE_SHA" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_DC3_RUNTIME_CANDIDATE_MOVED >&2; exit 1; }
+          # runtime-candidate is deliberately NOT read here. Classification must
+          # come first: a resumed run whose epoch is already owned would
+          # otherwise be refused for a pointer that legitimately moved on after
+          # ownership was taken, stranding the epoch it is trying to finish.
+          # The ref is bound only on the path that still needs it - FRESH,
+          # immediately before acquire.
           if [[ "$production_deploy" == "$BASE_SHA" ]] && jq -e '.owner_release_id == null and .owner_mode == null and .sales_paused == false' status-before.json >/dev/null; then
             echo DEPLOYMENT_STATE=FRESH >> "$GITHUB_ENV"; exit 0
           fi
@@ -289,6 +289,19 @@ jobs:
         if: env.DEPLOYMENT_STATE == 'FRESH' || env.DEPLOYMENT_STATE == 'OWNED_ACQUIRED_UNPAUSED'
         run: |
           set -euo pipefail
+          # Pausing global sales is consequential, so the reviewed controller
+          # identity is bound here too - not only on the FRESH path through
+          # `Acquire owner`. A resumed run executes from whatever main is
+          # current, and proving `CONTROLLER_SHA == origin/main` alone says
+          # nothing about whether that main is the one this rollout was
+          # reviewed against. One semantics for both paths, deliberately:
+          # two different pre-mutation bindings is how the weaker one gets
+          # forgotten.
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$INPUT_EXPECTED_CONTROLLER_SHA" ]] || { echo AGENT_REFERRALS_DC3_CONTROLLER_SHA_MISMATCH >&2; exit 1; }
+          [[ "$(git rev-parse "${CONTROLLER_SHA}^{tree}")" == "$INPUT_EXPECTED_CONTROLLER_TREE" ]] || { echo AGENT_REFERRALS_DC3_CONTROLLER_TREE_MISMATCH >&2; exit 1; }
+          [[ "$(git rev-parse origin/main)" == "$INPUT_EXPECTED_CONTROLLER_SHA" ]] || { echo AGENT_REFERRALS_DC3_CONTROLLER_MAIN_MOVED >&2; exit 1; }
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$BASE_SHA" ]] || { echo AGENT_REFERRALS_DC3_PRODUCTION_POINTER_MOVED >&2; exit 1; }
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/pause" > paused.json
           jq -e '.sales_paused == true and .owner_release_id == env.RELEASE_ID' paused.json >/dev/null
