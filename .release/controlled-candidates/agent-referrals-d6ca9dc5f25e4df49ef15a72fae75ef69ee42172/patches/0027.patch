@@ -1,5 +1,5 @@
 diff --git a/commerce/src/agent-referrals-api-admin.ts b/commerce/src/agent-referrals-api-admin.ts
-index 925012b..c98c7ed 100644
+index 925012b..6e40b44 100644
 --- a/commerce/src/agent-referrals-api-admin.ts
 +++ b/commerce/src/agent-referrals-api-admin.ts
 @@ -2,25 +2,25 @@ import { Hono } from "hono";
@@ -71,7 +71,7 @@ index 925012b..c98c7ed 100644
  const requireString = (body: Record<string, unknown>, field: string): string => {
    const value = body[field];
    if (typeof value !== "string" || !value.trim()) throw new DomainError("AGENT_REFERRALS_ADMIN_FIELD_REQUIRED", 422, field);
-@@ -78,6 +96,20 @@ const requireNumber = (body: Record<string, unknown>, field: string): number =>
+@@ -78,20 +96,65 @@ const requireNumber = (body: Record<string, unknown>, field: string): number =>
    if (typeof value !== "number" || !Number.isFinite(value)) throw new DomainError("AGENT_REFERRALS_ADMIN_FIELD_REQUIRED", 422, field);
    return value;
  };
@@ -92,7 +92,54 @@ index 925012b..c98c7ed 100644
  
  export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
    const app = new Hono<AdminAppBindings>();
-@@ -112,18 +144,60 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
+   const adminOf = (c: { var: { adminId?: string } }): AdminPrincipal => ({ realm: "ADMIN", admin_id: c.var.adminId! });
+ 
+   // ---- Global feature state ------------------------------------------------
++  /**
++   * The operator is the ACTOR; the feature row itself holds the AUTHORITY.
++   *
++   * Passing `adminId` as `owner_id` conflated the two, and made the operator
++   * kill switch unreachable for exactly the states it exists to serve: the
++   * live owner is minted by the activation contour
++   * (`activateAgentReferralsIfReady` passes `input.activation_id`), never by
++   * an admin session, so `transitionInTransaction`'s owner check refused
++   * every suspend and every reactivate with OWNER_CONFLICT once the feature
++   * was ACTIVE. Found during the D-C3 cutover preflight against production,
++   * where the live owner is an `agent-referrals-activation-*` id and the only
++   * admin ids are `singleton-admin` and `release-control-operator`.
++   *
++   * So the transition PRESERVES the current owner rather than claiming it.
++   * The client never gets to choose an authority owner - taking it from the
++   * body would let any admin name any owner and defeat the check outright.
++   *
++   * The DORMANT fallback keeps today's behaviour: DORMANT is unowned, an
++   * unowned row passes the owner check by construction, and the only edge
++   * this adapter could aim at it - DORMANT -> SUSPENDED - stays refused by
++   * LEGAL_EDGES regardless of who asks.
++   *
++   * Reading the row outside the transaction is safe because it is not the
++   * proof: a concurrent writer that moves the owner is still caught by the
++   * owner check inside the CAS, and one that moves the revision is still
++   * caught by `expected_revision`. This read can only ever produce a refusal,
++   * never an unearned success.
++   */
++  const preservedOwner = (c: { var: { adminId?: string } }): string =>
++    agentReferralsFeatureState(sqlite).owner_id ?? c.var.adminId!;
++
+   app.get("/feature-state", (c) => c.json(agentReferralsFeatureState(sqlite)));
+   app.post("/feature-state/suspend", async (c) => {
+     const body = asRecord(await jsonBody(c.req.raw));
+-    return c.json(suspendAgentReferrals(sqlite, { expected_revision: requireNumber(body, "expected_revision"), owner_id: c.var.adminId!, reason: requireString(body, "reason") }));
++    return c.json(suspendAgentReferrals(sqlite, { expected_revision: requireNumber(body, "expected_revision"), owner_id: preservedOwner(c), reason: requireString(body, "reason") }));
+   });
+   app.post("/feature-state/reactivate", async (c) => {
+     const body = asRecord(await jsonBody(c.req.raw));
+-    return c.json(reactivateAgentReferrals(sqlite, { expected_revision: requireNumber(body, "expected_revision"), owner_id: c.var.adminId!, reason: requireString(body, "reason") }));
++    return c.json(reactivateAgentReferrals(sqlite, { expected_revision: requireNumber(body, "expected_revision"), owner_id: preservedOwner(c), reason: requireString(body, "reason") }));
+   });
+ 
+   /** §11 operator review reminders (round-2 fix): the same live-derived read the worker logs a summary of every cycle - see agent-referrals-review-queue.ts's own header. */
+@@ -112,18 +175,60 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
        identity,
        engagements: engagementsForPartner(sqlite, identity.id),
        invites: sqlite.prepare(`SELECT id, purpose, expires_at, consumed_at, revoked_at, superseded_by_id, created_at FROM partner_invite_capabilities WHERE partner_identity_id = ? ORDER BY created_at DESC`).all(identity.id),
@@ -154,7 +201,7 @@ index 925012b..c98c7ed 100644
    });
    app.post("/invites/:id/revoke", async (c) => {
      const body = asRecord(await jsonBody(c.req.raw));
-@@ -134,6 +208,52 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
+@@ -134,6 +239,52 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
      const body = asRecord(await jsonBody(c.req.raw));
      return c.json(verifyPartnerLegalProfile(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason")));
    });
@@ -207,7 +254,7 @@ index 925012b..c98c7ed 100644
    app.post("/partners/:id/framework/issue", async (c) => {
      const body = asRecord(await jsonBody(c.req.raw));
      return c.json(issueFrameworkToPartner(sqlite, adminOf(c), c.req.param("id"), requireString(body, "framework_agreement_revision_id"), requireString(body, "delegation_template_revision_id"), requireString(body, "reason")));
-@@ -150,11 +270,11 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
+@@ -150,11 +301,11 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
    });
    app.post("/partners/:id/audience/:cityId/verify", async (c) => {
      const body = asRecord(await jsonBody(c.req.raw));
@@ -221,7 +268,7 @@ index 925012b..c98c7ed 100644
    });
    app.post("/delegations/:id/revoke", async (c) => {
      const body = asRecord(await jsonBody(c.req.raw));
-@@ -162,18 +282,18 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
+@@ -162,18 +313,18 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
    });
    app.post("/partners/:id/npd-status", async (c) => {
      const body = asRecord(await jsonBody(c.req.raw));
@@ -243,7 +290,7 @@ index 925012b..c98c7ed 100644
    });
    app.post("/legal-holds/:id/release", async (c) => {
      const body = asRecord(await jsonBody(c.req.raw));
-@@ -189,12 +309,12 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
+@@ -189,12 +340,12 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
    app.get("/framework-agreement-revisions/current", (c) => c.json(currentFrameworkAgreementRevision(sqlite)));
    app.post("/framework-agreement-revisions", async (c) => {
      const body = asRecord(await jsonBody(c.req.raw));
@@ -258,7 +305,7 @@ index 925012b..c98c7ed 100644
    });
  
    // ---- Channel policy -------------------------------------------------------
-@@ -204,6 +324,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
+@@ -204,6 +355,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
      return c.json(setAgentReferralsChannelPolicy(sqlite, {
        channel_key: requireString(body, "channel_key"), status: requireString(body, "status") as ChannelPolicyStatus,
        effective_from: requireString(body, "effective_from"), reason: requireString(body, "reason"),
@@ -266,7 +313,7 @@ index 925012b..c98c7ed 100644
      }), 201);
    });
  
-@@ -247,6 +368,9 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
+@@ -247,6 +399,9 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
        active_revision: lastActivatedEngagementRevision(sqlite, engagementId),
        creative,
        creative_authorization: currentCreativeAuthorization(sqlite, engagementId),
@@ -276,7 +323,7 @@ index 925012b..c98c7ed 100644
        distributions: distributionsForEngagement(sqlite, engagementId).map((d) => ({
          ...distributionProjection(sqlite, d.id),
          reporting_periods: ordDistributionPeriodReportsForDistribution(sqlite, d.id),
-@@ -267,15 +391,15 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
+@@ -267,15 +422,15 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
    });
    app.post("/engagements/:id/revisions", async (c) => {
      const body = asRecord(await jsonBody(c.req.raw));
@@ -295,7 +342,7 @@ index 925012b..c98c7ed 100644
    });
    app.post("/engagements/:id/close", async (c) => {
      const body = asRecord(await jsonBody(c.req.raw));
-@@ -294,9 +418,14 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
+@@ -294,9 +449,14 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
        mandatory_labeling_text: requireString(body, "mandatory_labeling_text"),
        creative_target_url: requireString(body, "creative_target_url"),
      };
@@ -312,7 +359,7 @@ index 925012b..c98c7ed 100644
    app.post("/creative-authorizations/:id/revoke", async (c) => {
      const body = asRecord(await jsonBody(c.req.raw));
      revokeCreativeAuthorization(sqlite, adminOf(c), c.req.param("id"), requireString(body, "reason"));
-@@ -306,11 +435,15 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
+@@ -306,11 +466,15 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
    // ---- Distributions ------------------------------------------------------------
    app.post("/engagements/:id/distributions", async (c) => {
      const body = asRecord(await jsonBody(c.req.raw));
@@ -330,7 +377,7 @@ index 925012b..c98c7ed 100644
    });
    app.post("/distributions/:id/correct", async (c) => {
      const body = asRecord(await jsonBody(c.req.raw));
-@@ -318,31 +451,31 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
+@@ -318,31 +482,31 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
        channel_key: requireString(body, "channel_key"), resource_kind: requireString(body, "resource_kind") as ResourceKind,
        resource_identifier: requireString(body, "resource_identifier"), distribution_resource_url: requireString(body, "distribution_resource_url"),
        published_at: requireString(body, "published_at"), ended_at: optionalString(body, "ended_at") ?? null, evidence_ref: requireString(body, "evidence_ref"),
@@ -368,7 +415,7 @@ index 925012b..c98c7ed 100644
      return c.json({ ok: true });
    });
    app.get("/distributions/:id/reporting-tail", (c) => {
-@@ -357,11 +490,11 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
+@@ -357,11 +521,11 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
    app.get("/ord/provider-profile/:kind", (c) => c.json(currentOrdProviderProfile(sqlite, c.req.param("kind") as OrdProviderProfileKind)));
    app.post("/ord/provider-profile", async (c) => {
      const body = asRecord(await jsonBody(c.req.raw));
@@ -382,7 +429,7 @@ index 925012b..c98c7ed 100644
    });
    app.post("/ord/provider-operation/:id/submitted", async (c) => {
      const body = asRecord(await jsonBody(c.req.raw));
-@@ -413,11 +546,11 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
+@@ -413,11 +577,11 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
        correction_reason: optionalString(body, "correction_reason"), statistics_reason: optionalString(body, "statistics_reason") as "ZERO_REWARD_STATISTICS" | "CONTINUING_STATISTICS" | undefined,
        special_period_is_service_period: typeof body.special_period_is_service_period === "boolean" ? body.special_period_is_service_period : undefined,
        submission: body.submission ? { vk_operation_external_id: requireString(asRecord(body.submission), "vk_operation_external_id"), erir_code: requireString(asRecord(body.submission), "erir_code"), submission_evidence_ref: requireString(asRecord(body.submission), "submission_evidence_ref") } : undefined,
@@ -396,7 +443,7 @@ index 925012b..c98c7ed 100644
    });
  
    // ---- Reward registry / zero-reward closure -----------------------------------------
-@@ -427,7 +560,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
+@@ -427,7 +591,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
    });
    app.post("/engagements/:id/reward-registry/correct", async (c) => {
      const body = asRecord(await jsonBody(c.req.raw));
@@ -405,7 +452,7 @@ index 925012b..c98c7ed 100644
    });
    app.get("/engagements/:id/recovery-exposure", (c) => c.json(recoveryExposure(sqlite, c.req.param("id"))));
    app.post("/engagements/:id/zero-reward-closure", async (c) => {
-@@ -468,7 +601,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
+@@ -468,7 +632,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
    });
    app.post("/payments/begin", async (c) => {
      const body = asRecord(await jsonBody(c.req.raw));

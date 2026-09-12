@@ -116,14 +116,45 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   const adminOf = (c: { var: { adminId?: string } }): AdminPrincipal => ({ realm: "ADMIN", admin_id: c.var.adminId! });
 
   // ---- Global feature state ------------------------------------------------
+  /**
+   * The operator is the ACTOR; the feature row itself holds the AUTHORITY.
+   *
+   * Passing `adminId` as `owner_id` conflated the two, and made the operator
+   * kill switch unreachable for exactly the states it exists to serve: the
+   * live owner is minted by the activation contour
+   * (`activateAgentReferralsIfReady` passes `input.activation_id`), never by
+   * an admin session, so `transitionInTransaction`'s owner check refused
+   * every suspend and every reactivate with OWNER_CONFLICT once the feature
+   * was ACTIVE. Found during the D-C3 cutover preflight against production,
+   * where the live owner is an `agent-referrals-activation-*` id and the only
+   * admin ids are `singleton-admin` and `release-control-operator`.
+   *
+   * So the transition PRESERVES the current owner rather than claiming it.
+   * The client never gets to choose an authority owner - taking it from the
+   * body would let any admin name any owner and defeat the check outright.
+   *
+   * The DORMANT fallback keeps today's behaviour: DORMANT is unowned, an
+   * unowned row passes the owner check by construction, and the only edge
+   * this adapter could aim at it - DORMANT -> SUSPENDED - stays refused by
+   * LEGAL_EDGES regardless of who asks.
+   *
+   * Reading the row outside the transaction is safe because it is not the
+   * proof: a concurrent writer that moves the owner is still caught by the
+   * owner check inside the CAS, and one that moves the revision is still
+   * caught by `expected_revision`. This read can only ever produce a refusal,
+   * never an unearned success.
+   */
+  const preservedOwner = (c: { var: { adminId?: string } }): string =>
+    agentReferralsFeatureState(sqlite).owner_id ?? c.var.adminId!;
+
   app.get("/feature-state", (c) => c.json(agentReferralsFeatureState(sqlite)));
   app.post("/feature-state/suspend", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(suspendAgentReferrals(sqlite, { expected_revision: requireNumber(body, "expected_revision"), owner_id: c.var.adminId!, reason: requireString(body, "reason") }));
+    return c.json(suspendAgentReferrals(sqlite, { expected_revision: requireNumber(body, "expected_revision"), owner_id: preservedOwner(c), reason: requireString(body, "reason") }));
   });
   app.post("/feature-state/reactivate", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
-    return c.json(reactivateAgentReferrals(sqlite, { expected_revision: requireNumber(body, "expected_revision"), owner_id: c.var.adminId!, reason: requireString(body, "reason") }));
+    return c.json(reactivateAgentReferrals(sqlite, { expected_revision: requireNumber(body, "expected_revision"), owner_id: preservedOwner(c), reason: requireString(body, "reason") }));
   });
 
   /** §11 operator review reminders (round-2 fix): the same live-derived read the worker logs a summary of every cycle - see agent-referrals-review-queue.ts's own header. */
