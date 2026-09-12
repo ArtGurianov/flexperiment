@@ -198,9 +198,19 @@ const buildPatch = (path: string, baseContent: Buffer | undefined, resultContent
 };
 
 /**
- * Builds a certificate for an explicit manifest, then proves it by running
- * the real reconstruction. The returned candidate SHA is whatever that
- * reconstruction derives - this module never asserts a target of its own.
+ * Builds a certificate for an explicit manifest and derives a CLAIMED
+ * candidate SHA. **It does not prove the claim.**
+ *
+ * Proof is a separate act, performed by proveAuthoredCandidate() against the
+ * COMMITTED certificate and patches - it cannot happen here, because the
+ * reconstruction reads every patch from a controller tree that does not
+ * exist until the patches this function returns have been written and
+ * committed. Until that passes, everything below is a proposal.
+ *
+ * What is true here: this module never asserts a target of its own, and
+ * never reads one. The candidate SHA is derived from the certificate it just
+ * built, and the untouched verifier is what decides whether that derivation
+ * was right.
  */
 export const authorAgentReferralsCandidate = (input: AuthorCandidateInput): AuthoredCandidate => {
   const { baseSha, sourceMainSha, manifest, patchDirectory, envelope } = input;
