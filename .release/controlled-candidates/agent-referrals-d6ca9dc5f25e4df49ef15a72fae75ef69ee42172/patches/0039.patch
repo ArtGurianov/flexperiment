@@ -1,0 +1,49 @@
+diff --git a/commerce/src/agent-referrals-onboarding.ts b/commerce/src/agent-referrals-onboarding.ts
+index 905c069..1af1db2 100644
+--- a/commerce/src/agent-referrals-onboarding.ts
++++ b/commerce/src/agent-referrals-onboarding.ts
+@@ -39,19 +39,30 @@ export type PartnerIdentityRow = {
+   email_hash: string;
+   onboarding_state: OnboardingState;
+   onboarding_revision: number;
++  /** 0055: monotone count of accepted DRAFT submissions - the pin a draft submission is authored against. Never onboarding_revision, which does not move on a resubmission. */
++  legal_profile_draft_revision: number;
+   submitted_legal_form: string | null;
+   submitted_tax_mode: string | null;
++  submitted_opf: string | null;
++  submitted_full_name: string | null;
++  submitted_short_name: string | null;
++  submitted_inn: string | null;
++  submitted_kpp: string | null;
++  submitted_registration_number: string | null;
++  submitted_legal_address: string | null;
+   legal_profile_revision_id: string | null;
+   destroyed_at: string | null;
+ };
+ 
++const PARTNER_IDENTITY_COLUMNS = `id, agent_id, email, email_hash, onboarding_state, onboarding_revision, legal_profile_draft_revision,
++  submitted_legal_form, submitted_tax_mode, submitted_opf, submitted_full_name, submitted_short_name, submitted_inn, submitted_kpp, submitted_registration_number, submitted_legal_address,
++  legal_profile_revision_id, destroyed_at`;
++
+ export const getPartnerIdentity = (db: Database.Database, partnerIdentityId: string): PartnerIdentityRow | null =>
+-  (db.prepare(`SELECT id, agent_id, email, email_hash, onboarding_state, onboarding_revision, submitted_legal_form, submitted_tax_mode, legal_profile_revision_id, destroyed_at
+-    FROM partner_identities WHERE id = ?`).get(partnerIdentityId) as PartnerIdentityRow | undefined) ?? null;
++  (db.prepare(`SELECT ${PARTNER_IDENTITY_COLUMNS} FROM partner_identities WHERE id = ?`).get(partnerIdentityId) as PartnerIdentityRow | undefined) ?? null;
+ 
+ export const getPartnerIdentityByAgentId = (db: Database.Database, agentId: string): PartnerIdentityRow | null =>
+-  (db.prepare(`SELECT id, agent_id, email, email_hash, onboarding_state, onboarding_revision, submitted_legal_form, submitted_tax_mode, legal_profile_revision_id, destroyed_at
+-    FROM partner_identities WHERE agent_id = ?`).get(agentId) as PartnerIdentityRow | undefined) ?? null;
++  (db.prepare(`SELECT ${PARTNER_IDENTITY_COLUMNS} FROM partner_identities WHERE agent_id = ?`).get(agentId) as PartnerIdentityRow | undefined) ?? null;
+ 
+ /**
+  * Login-by-email lookup (Phase 9): a returning partner re-authenticates by
+@@ -63,8 +74,7 @@ export const getPartnerIdentityByAgentId = (db: Database.Database, agentId: stri
+  * response whether or not a row is found.
+  */
+ export const getPartnerIdentityByEmailHash = (db: Database.Database, emailHash: string): PartnerIdentityRow | null =>
+-  (db.prepare(`SELECT id, agent_id, email, email_hash, onboarding_state, onboarding_revision, submitted_legal_form, submitted_tax_mode, legal_profile_revision_id, destroyed_at
+-    FROM partner_identities WHERE email_hash = ? AND destroyed_at IS NULL`).get(emailHash) as PartnerIdentityRow | undefined) ?? null;
++  (db.prepare(`SELECT ${PARTNER_IDENTITY_COLUMNS} FROM partner_identities WHERE email_hash = ? AND destroyed_at IS NULL`).get(emailHash) as PartnerIdentityRow | undefined) ?? null;
+ 
+ export const recordPartnerIdentityEvent = (
+   db: Database.Database,

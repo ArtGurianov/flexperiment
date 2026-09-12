@@ -1,0 +1,59 @@
+diff --git a/apps/admin/components/agent-referrals/Overview.tsx b/apps/admin/components/agent-referrals/Overview.tsx
+index 7052bae..949269e 100644
+--- a/apps/admin/components/agent-referrals/Overview.tsx
++++ b/apps/admin/components/agent-referrals/Overview.tsx
+@@ -1,8 +1,10 @@
+ "use client";
+ 
+-import { useQuery, useQueryClient } from "@tanstack/react-query";
++import { useQuery } from "@tanstack/react-query";
+ import { Fragment, useState } from "react";
+ import { api, AdminApiError } from "../../lib/api";
++import { useAdminMutation } from "../../lib/use-admin-mutation";
++import { agentReferralsKeys } from "../../lib/query-keys";
+ import type { Row } from "../../lib/page";
+ import { Loading } from "../ui/Loading";
+ import { Notice } from "../ui/Notice";
+@@ -48,29 +50,23 @@ const navigationTarget = (categoryKey: string, item: Row): { tab: "partners" | "
+ 
+ /** §11 operator review reminders (Phase 9 round-2/3 fix): the same live-derived read the worker logs a summary of every cycle - true totals, a bounded navigable item page per category. */
+ export function Overview({ onNavigate }: { onNavigate: (tab: "partners" | "engagements", id: string, focus?: string, focusReporting?: boolean) => void }) {
+-  const featureState = useQuery({ queryKey: ["agent-referrals", "feature-state"], queryFn: () => api<Row>("/agent-referrals/feature-state") });
+-  const reviewQueue = useQuery({ queryKey: ["agent-referrals", "review-queue"], queryFn: () => api<ReviewQueue>("/agent-referrals/review-queue") });
+-  const queryClient = useQueryClient();
+-  const [error, setError] = useState<string | null>(null);
+-  const [busy, setBusy] = useState(false);
++  const featureState = useQuery({ queryKey: agentReferralsKeys.featureState(), queryFn: () => api<Row>("/agent-referrals/feature-state") });
++  const reviewQueue = useQuery({ queryKey: agentReferralsKeys.reviewQueue(), queryFn: () => api<ReviewQueue>("/agent-referrals/review-queue") });
+   const [expanded, setExpanded] = useState<string | null>(null);
+-
+-  const refresh = () => queryClient.invalidateQueries({ queryKey: ["agent-referrals", "feature-state"] });
++  // expected_revision is read at submit time, not captured at render: a
++  // stale revision is exactly what the backend's own CAS is there to refuse,
++  // and re-reading it here would defeat that refusal rather than surface it.
++  const featureStateTransition = useAdminMutation("agentReferrals.featureState", ({ action, expectedRevision }: { action: "suspend" | "reactivate"; expectedRevision: unknown }) =>
++    api(`/agent-referrals/feature-state/${action}`, {
++      method: "POST", headers: { "Content-Type": "application/json" },
++      body: JSON.stringify({ expected_revision: expectedRevision, reason: `admin console: ${action}` }),
++    }));
++  const busy = featureStateTransition.isPending;
++  const error = featureStateTransition.error?.code ?? null;
+ 
+   const transition = async (action: "suspend" | "reactivate") => {
+     if (!featureState.data) return;
+-    setBusy(true); setError(null);
+-    try {
+-      await api(`/agent-referrals/feature-state/${action}`, {
+-        method: "POST", headers: { "Content-Type": "application/json" },
+-        body: JSON.stringify({ expected_revision: featureState.data.revision, reason: `admin console: ${action}` }),
+-      });
+-      refresh();
+-    } catch (failure) {
+-      setError((failure as AdminApiError).code);
+-    } finally {
+-      setBusy(false);
+-    }
++    await featureStateTransition.mutateAsync({ action, expectedRevision: featureState.data.revision }).catch(() => undefined);
+   };
+ 
+   return (

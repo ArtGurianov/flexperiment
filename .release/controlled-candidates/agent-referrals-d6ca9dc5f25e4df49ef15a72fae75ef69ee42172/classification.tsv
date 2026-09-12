@@ -1,6 +1,6 @@
 # Agent Referrals candidate classification
 # base_sha	d6ca9dc5f25e4df49ef15a72fae75ef69ee42172
-# source_main_sha	7f6167277dcf429d3fdec52c2f55527680707fc6
+# source_main_sha	1047c75215ca7aced34ce13d7071a7663b35acfb
 # generated from: git diff --name-status <base_sha> <source_main_sha>
 # columns: status<TAB>disposition<TAB>category<TAB>path[<TAB>reconciliation]
 # reconciliation is REQUIRED on a CERTIFIED WHOLE_FILE M path that drops an
@@ -53,6 +53,7 @@ A	EXCLUDED	CONTROL_PLANE	.release/controlled-candidates/agent-referrals-activati
 A	EXCLUDED	CONTROL_PLANE	.release/controlled-candidates/agent-referrals-activation-f317c836635bfe3a86735ecda6a050c51d4dc924/patches/server.patch
 A	EXCLUDED	CONTROL_PLANE	.release/controlled-candidates/agent-referrals-activation-fa3b4aa5651956bb0a35f7a843e95423f057824b/certificate.json
 A	EXCLUDED	CONTROL_PLANE	.release/controlled-candidates/agent-referrals-activation-fa3b4aa5651956bb0a35f7a843e95423f057824b/patches/release-control-schema.patch
+A	EXCLUDED	CONTROL_PLANE	.release/controlled-candidates/agent-referrals-d6ca9dc5f25e4df49ef15a72fae75ef69ee42172/classification.tsv
 A	EXCLUDED	CONTROL_PLANE	.release/controlled-candidates/agent-referrals-f540b997d6d31a22293909ded7ce464c3f51732f/certificate.json
 A	EXCLUDED	CONTROL_PLANE	.release/controlled-candidates/agent-referrals-f540b997d6d31a22293909ded7ce464c3f51732f/patches/0001.patch
 A	EXCLUDED	CONTROL_PLANE	.release/controlled-candidates/agent-referrals-f540b997d6d31a22293909ded7ce464c3f51732f/patches/0002.patch
@@ -208,7 +209,7 @@ M	CERTIFIED	WHOLE_FILE	commerce/src/agent-referrals-creative.ts
 M	CERTIFIED	WHOLE_FILE	commerce/src/agent-referrals-distribution.ts
 D	EXCLUDED	CONTROL_PLANE	commerce/src/agent-referrals-dormant-readiness.ts
 M	CERTIFIED	WHOLE_FILE	commerce/src/agent-referrals-engagement.ts
-M	CERTIFIED	SHARED	commerce/src/agent-referrals-feature-state.ts
+M	EXCLUDED	UNRELATED_RUNTIME	commerce/src/agent-referrals-feature-state.ts
 M	CERTIFIED	WHOLE_FILE	commerce/src/agent-referrals-framework-delegation.ts
 M	CERTIFIED	WHOLE_FILE	commerce/src/agent-referrals-identity-retention.ts
 A	CERTIFIED	WHOLE_FILE	commerce/src/agent-referrals-legal-profile-supersession.ts
@@ -252,7 +253,7 @@ A	EXCLUDED	UNRELATED_RUNTIME	commerce/src/release-control-v2.ts
 M	EXCLUDED	UNRELATED_RUNTIME	commerce/src/release-control.ts
 M	EXCLUDED	UNRELATED_RUNTIME	commerce/src/release-expectation.ts
 M	EXCLUDED	UNRELATED_RUNTIME	commerce/src/server.ts
-M	CERTIFIED	SHARED	commerce/src/types.ts
+M	EXCLUDED	UNRELATED_RUNTIME	commerce/src/types.ts
 A	EXCLUDED	UNRELATED_RUNTIME	commerce/src/validate-release-control-v2-packet.ts
 A	EXCLUDED	UNRELATED_RUNTIME	commerce/src/verify-release-control-v2-materialization.ts
 A	EXCLUDED	TEST	commerce/test/0041-terminal-cleanup.test.ts
@@ -267,6 +268,7 @@ A	EXCLUDED	TEST	commerce/test/agent-referrals-attribution-destroyed-identity.tes
 A	EXCLUDED	TEST	commerce/test/agent-referrals-attribution-reward-migration.test.ts
 A	EXCLUDED	TEST	commerce/test/agent-referrals-audience-verification.test.ts
 A	EXCLUDED	TEST	commerce/test/agent-referrals-candidate-author.test.ts
+A	EXCLUDED	TEST	commerce/test/agent-referrals-candidate-classification.test.ts
 A	EXCLUDED	TEST	commerce/test/agent-referrals-candidate.test.ts
 A	EXCLUDED	TEST	commerce/test/agent-referrals-channel-policy.test.ts
 A	EXCLUDED	TEST	commerce/test/agent-referrals-checkout-partner-promo.test.ts
@@ -400,6 +402,7 @@ A	EXCLUDED	CONTROL_PLANE	docs/release/0041_OFFLINE_GEN1_TO_GEN2_BRIDGE.md
 A	EXCLUDED	CONTROL_PLANE	docs/release/0041_POST_BRIDGE_GEN2_EMAIL_RECOVERY.md
 A	EXCLUDED	CONTROL_PLANE	docs/release/0041_TERMINAL_CLEANUP.md
 A	EXCLUDED	CONTROL_PLANE	docs/release/AGENT_REFERRALS_BOUNDARY.md
+A	EXCLUDED	CONTROL_PLANE	docs/release/AGENT_REFERRALS_D6CA9DC_MANIFEST.md
 A	EXCLUDED	CONTROL_PLANE	docs/release/CONTROLLED_RELEASE_BOUNDARY.md
 M	EXCLUDED	CONTROL_PLANE	docs/release/DEPLOYMENT_INVARIANTS.md
 A	EXCLUDED	CONTROL_PLANE	docs/release/RELEASE_SEMANTICS_BOOTSTRAP.md

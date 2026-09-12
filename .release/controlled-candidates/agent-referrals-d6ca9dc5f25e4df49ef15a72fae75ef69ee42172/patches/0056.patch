@@ -1,0 +1,53 @@
+diff --git a/commerce/src/api.ts b/commerce/src/api.ts
+index c701416..f0f2d30 100644
+--- a/commerce/src/api.ts
++++ b/commerce/src/api.ts
+@@ -46,13 +46,48 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
+     c.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+   });
+ 
++  /**
++   * A 500 is a corruption signal, and production has nothing else that would
++   * notice one: the proxy runs without an access log or Prometheus metrics,
++   * no APM is configured, and there is no request-logging middleware here.
++   * Both typed branches below return BEFORE the console.error at the bottom,
++   * so an AGENT_REFERRALS_LEGAL_PROFILE_POINTER_DIVERGED or an
++   * ACTIVATION_BINDING_CORRUPTED reached the client and left no trace at all
++   * - the container stays healthy, so an uptime check stays green too.
++   *
++   * Exactly 500, not >= 500. This API uses 503 for its ordinary "temporarily
++   * unavailable" states - SALES_TEMPORARILY_PAUSED, CAPTCHA_UNAVAILABLE,
++   * PROVIDER_RECONCILIATION_UNAVAILABLE, the unconfigured-webhook pair and
++   * more. Those are the system working as designed, and the first of them
++   * would emit this line on every single request while sales are paused.
++   * Mixing them into the one channel that exists for corruption would bury
++   * the signal at exactly the moment it matters.
++   *
++   * 500 rather than an allowlist of AGENT_REFERRALS_* codes on purpose: the
++   * D2 corruption codes already carry 500, and so does the untyped catch-all
++   * below, so the status alone is the predicate and no code registry has to
++   * be kept in sync with it.
++   *
++   * 4xx is left alone for the same reason as 503: a 409 or a 422 is the
++   * system refusing correctly and says nothing about integrity.
++   *
++   * The helper takes (code, status) and never the error or the request - the
++   * property that no message or request content can leak into the log is
++   * carried by this signature, not by a test.
++   */
++  const noteServerFault = (code: string, status: number) => {
++    if (status === 500) console.error("commerce server fault", code, status);
++  };
++
+   app.onError((error, c) => {
+     if (error instanceof ZodError) return c.json({ error: { code: "VALIDATION_ERROR" } }, 422);
+     if (error instanceof DomainError) {
+       if (error.code === "RATE_LIMITED") c.header("Retry-After", error.message);
++      noteServerFault(error.code, error.status);
+       return c.json({ error: { code: error.code } }, error.status as 400);
+     }
+     if (error instanceof Error && "code" in error && typeof (error as { code: unknown }).code === "string" && "status" in error && typeof (error as { status: unknown }).status === "number") {
++      noteServerFault((error as { code: string }).code, (error as { status: number }).status);
+       return c.json({ error: { code: (error as { code: string }).code } }, (error as { status: number }).status as 400);
+     }
+     console.error("commerce request failed", error instanceof Error ? error.message : "unknown error");

@@ -1,0 +1,56 @@
+diff --git a/commerce/src/agent-referrals-payment.ts b/commerce/src/agent-referrals-payment.ts
+index 7b3c15c..1522554 100644
+--- a/commerce/src/agent-referrals-payment.ts
++++ b/commerce/src/agent-referrals-payment.ts
+@@ -1,4 +1,5 @@
+ import type Database from "better-sqlite3";
++import { withAdminCommandInTransaction, type AdminCommandResult } from "./agent-referrals-admin-command";
+ import { id, now } from "./crypto";
+ import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
+ import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
+@@ -93,8 +94,8 @@ export type BeginPaymentResult = { authorization: PaymentAuthorizationRow; attem
+  * collides on payment_attempts_active_unique and is refused, never
+  * silently ignored.
+  */
+-export const beginPayment = (db: Database.Database, admin: AdminPrincipal, settlementId: string): BeginPaymentResult => {
+-  const run = db.transaction((): BeginPaymentResult => {
++export const beginPaymentInTransaction = (db: Database.Database, admin: AdminPrincipal, settlementId: string): BeginPaymentResult => {
++  {
+     assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "PAYMENT_AUTHORIZATION");
+     assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "PAYMENT_EXECUTION");
+ 
+@@ -145,10 +146,32 @@ export const beginPayment = (db: Database.Database, admin: AdminPrincipal, settl
+       }
+       throw error;
+     }
+-  });
+-  return run.immediate();
++  }
+ };
+ 
++/** Transaction-owning wrapper for in-process callers; the HTTP surface uses the idempotent entry point below, exactly as retention and NPD do. */
++export const beginPayment = (db: Database.Database, admin: AdminPrincipal, settlementId: string): BeginPaymentResult =>
++  db.transaction(() => beginPaymentInTransaction(db, admin, settlementId)).immediate();
++
++/**
++ * PR-C2 DURABLE_KEY. payment_attempts_active_unique refuses a SECOND
++ * CONCURRENT attempt, which is not the same thing as refusing a retry:
++ * recording the first attempt as CONFIRMED_NOT_MADE frees that partial
++ * index, and beginning another payment after a failed one is exactly what
++ * an operator is supposed to do. The whole request body is one settlement
++ * id, so an identical body genuinely means both "retry my lost call" and
++ * "pay again" - only a caller-supplied command key can tell them apart, and
++ * this one moves money.
++ */
++export const beginPaymentIdempotent = (
++  db: Database.Database, admin: AdminPrincipal, idempotencyKey: string, settlementId: string,
++): AdminCommandResult<BeginPaymentResult> =>
++  db.transaction(() => withAdminCommandInTransaction<BeginPaymentResult>({
++    db, admin, command: "agent-referrals.payment.begin", idempotencyKey, request: { settlement_id: settlementId },
++    entityIdOf: (result) => result.attempt.id,
++    execute: () => beginPaymentInTransaction(db, admin, settlementId),
++  })).immediate();
++
+ const projectSettlementFromMadeAttempt = (db: Database.Database, settlementId: string): void => {
+   const settlement = agentReferralsSettlementById(db, settlementId)!;
+   if (settlement.tax_mode_snapshot === "OTHER") {

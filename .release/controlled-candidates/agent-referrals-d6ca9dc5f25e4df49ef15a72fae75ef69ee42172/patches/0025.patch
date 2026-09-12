@@ -1,0 +1,63 @@
+diff --git a/commerce/migrations/0057_partner_invite_capability_head.sql b/commerce/migrations/0057_partner_invite_capability_head.sql
+new file mode 100644
+index 0000000..b449c8e
+--- /dev/null
++++ b/commerce/migrations/0057_partner_invite_capability_head.sql
+@@ -0,0 +1,57 @@
++-- PR-C3 review round 2, P1: make the invite mint-chain HEAD structural, so
++-- that a rotation can be pinned against something monotone.
++--
++-- C3 pinned rotations to "the capability that is usable right now":
++--
++--   consumed_at IS NULL AND revoked_at IS NULL AND superseded_by_id IS NULL
++--
++-- which is CYCLIC. Revoking or consuming returns it to null, the next mint
++-- gives it a value, revoking returns it to null again - so:
++--
++--   T1 revoked, live = null
++--   A: rotate(expected = null) commits -> T2, response lost
++--   B: revoke T2 (ordinary, legal)      -> live = null AGAIN
++--   retry A(expected = null)            -> pin matches, T3 minted after B
++--
++-- which is precisely the violation the whole matrix exists to refuse, and
++-- precisely what agent-referrals-command-precondition.ts's own contract says
++-- a pin may never be: a state value that a legal B* can restore.
++--
++-- The fix needs no new counter. This table already carries the monotone
++-- axis: `superseded_by_id IS NULL` is the head of the mint chain, and a row
++-- once superseded is never un-superseded by anything in this domain. What
++-- was missing is that the head was not structural - 0044's partial unique
++-- index constrains "at most one USABLE capability", which is a different
++-- question:
++--
++--   consumed_at / revoked_at   -> is this token usable?
++--   superseded_by_id           -> which capability is last in the chain?
++--
++-- Conflating them is what produced the cyclic pin.
++--
++-- FAIL CLOSED FIRST. Before 0057, a rotation against a consumed or revoked
++-- capability minted WITHOUT superseding it, so a partner could legitimately
++-- have ended up with more than one row whose superseded_by_id IS NULL. The
++-- unique index below would refuse such data on its own, but with an opaque
++-- message; this names the condition instead. Agent Referrals is still behind
++-- the rollout gate, so the correct response to a hit here is to confirm the
++-- data and decide deliberately - never a migration that guesses which row
++-- was "really" the head.
++CREATE TABLE __partner_invite_capability_head_precondition (ok INTEGER NOT NULL CHECK (ok = 1));
++INSERT INTO __partner_invite_capability_head_precondition(ok)
++SELECT CASE WHEN COUNT(*) = 0 THEN 1 ELSE 0 END FROM (
++  SELECT partner_identity_id FROM partner_invite_capabilities
++  WHERE superseded_by_id IS NULL
++  GROUP BY partner_identity_id
++  HAVING COUNT(*) > 1
++);
++DROP TABLE __partner_invite_capability_head_precondition;
++
++-- The head is now structural, not merely the application's discipline.
++-- 0044's partner_invite_capabilities_active_unique is retained deliberately
++-- even though this index implies it: the two express different properties,
++-- and the older one is what readers of the consume path rely on for "at most
++-- one usable capability".
++CREATE UNIQUE INDEX partner_invite_capabilities_head_unique
++  ON partner_invite_capabilities(partner_identity_id)
++  WHERE superseded_by_id IS NULL;

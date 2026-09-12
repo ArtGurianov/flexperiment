@@ -1,0 +1,85 @@
+diff --git a/commerce/src/agent-referrals-ord-paid-invoice.ts b/commerce/src/agent-referrals-ord-paid-invoice.ts
+index 9c48a38..217ee9c 100644
+--- a/commerce/src/agent-referrals-ord-paid-invoice.ts
++++ b/commerce/src/agent-referrals-ord-paid-invoice.ts
+@@ -6,6 +6,8 @@ import { settlementActById } from "./agent-referrals-act";
+ import { agentReferralsSettlementById } from "./agent-referrals-settlement";
+ import { currentOrdProviderProfile } from "./agent-referrals-ord-provider-profile";
+ import { ordPaidInvoicePayloadOperationKey } from "./agent-referrals-ord-operation-key";
++import { agentReferralsLegalProfileRevisionById } from "./agent-referrals-legal-profile";
++import { canonicalizeOrdParticipantV1 } from "./agent-referrals-ord-canonical";
+ import type { AdminPrincipal } from "./agent-referrals-partner-identity";
+ 
+ /**
+@@ -44,12 +46,21 @@ export type OrdPaidInvoicePayloadRow = {
+   evidence_ref: string | null;
+   lock_state: "MUTABLE" | "EXTERNALLY_LOCKED";
+   canonical_hash: string;
++  tax_treatment_revision_id_snapshot: string;
++  ord_participant_canonicalization_version: string;
++  partner_participant_json: string;
++  partner_participant_hash: string;
++  tax_canonicalization_version: string;
++  tax_canonical_json: string;
++  tax_canonical_hash: string;
+   created_by_admin_id: string;
+   created_at: string;
+ };
+ 
+ const COLUMNS = `id, act_id, settlement_id, engagement_id, partner_identity_id, accepted_amount_kopecks, accepted_engagement_revision_id, tax_mode_snapshot,
+-  legal_profile_revision_id_snapshot, contractor_type_snapshot, provider_contract_profile_id, operation_key, submission_state, vk_operation_external_id, erir_code, evidence_ref, lock_state, canonical_hash, created_by_admin_id, created_at`;
++  legal_profile_revision_id_snapshot, contractor_type_snapshot, provider_contract_profile_id, operation_key, submission_state, vk_operation_external_id, erir_code, evidence_ref, lock_state, canonical_hash,
++  tax_treatment_revision_id_snapshot, ord_participant_canonicalization_version, partner_participant_json, partner_participant_hash,
++  tax_canonicalization_version, tax_canonical_json, tax_canonical_hash, created_by_admin_id, created_at`;
+ 
+ export const ordPaidInvoicePayloadById = (db: Database.Database, payloadId: string): OrdPaidInvoicePayloadRow | null =>
+   (db.prepare(`SELECT ${COLUMNS} FROM ord_paid_invoice_payloads WHERE id = ?`).get(payloadId) as OrdPaidInvoicePayloadRow | undefined) ?? null;
+@@ -95,23 +106,45 @@ export const mintOrdPaidInvoicePayload = (
+     const contract = providerContractProfileId ? { id: providerContractProfileId } : currentOrdProviderProfile(db, "CONTRACT");
+     if (!contract) throw new OrdPaidInvoiceError("AGENT_REFERRALS_ORD_PROVIDER_CONTRACT_PROFILE_MISSING", 409);
+ 
++    // PR-F: participant identity canonicalized from the settlement's own
++    // pinned legal-profile snapshot - never the agent's CURRENT profile,
++    // which may have superseded since this settlement was prepared. The
++    // tax canonical facts are not re-derived at all here: the settlement
++    // already canonicalized them once, at prepare time, and this payload
++    // simply copies that immutable snapshot forward - re-canonicalizing
++    // would only ever reproduce the same bytes (the pinned treatment
++    // revision is itself immutable), so doing it again here would be
++    // redundant work standing in for what should just be a copy.
++    const legalProfile = agentReferralsLegalProfileRevisionById(db, settlement.legal_profile_revision_id_snapshot)!;
++    const participantCanonical = canonicalizeOrdParticipantV1(legalProfile);
++
+     const operationKey = ordPaidInvoicePayloadOperationKey({
+       act_id: actId, settlement_id: settlement.id, accepted_amount_kopecks: acceptance.accepted_amount_kopecks, accepted_engagement_revision_id: acceptance.accepted_engagement_revision_id,
+       provider_contract_profile_id: contract.id,
+     });
++    // The outer hash pins version + pinned-authority-ids + the two inner
++    // canonical hashes - not the full nested JSON a second time (both are
++    // already durably stored, immutable evidence in their own right).
+     const canonicalHash = sha256(canonicalV2({
+       act_id: actId, settlement_id: settlement.id, engagement_id: act.engagement_id, partner_identity_id: act.partner_identity_id,
+       accepted_amount_kopecks: acceptance.accepted_amount_kopecks, accepted_engagement_revision_id: acceptance.accepted_engagement_revision_id,
+       tax_mode_snapshot: settlement.tax_mode_snapshot, legal_profile_revision_id_snapshot: settlement.legal_profile_revision_id_snapshot, contractor_type_snapshot: contractorType,
+       provider_contract_profile_id: contract.id,
++      ord_participant_canonicalization_version: participantCanonical.version, partner_participant_hash: participantCanonical.canonical_hash,
++      tax_treatment_revision_id_snapshot: settlement.tax_treatment_revision_id_snapshot,
++      tax_canonicalization_version: settlement.tax_canonicalization_version, tax_canonical_hash: settlement.tax_canonical_hash,
+     } as Record<string, unknown>));
+ 
+     const payloadId = id();
+     db.prepare(`INSERT INTO ord_paid_invoice_payloads(id, act_id, settlement_id, engagement_id, partner_identity_id, accepted_amount_kopecks, accepted_engagement_revision_id,
+-        tax_mode_snapshot, legal_profile_revision_id_snapshot, contractor_type_snapshot, provider_contract_profile_id, operation_key, canonical_hash, created_by_admin_id)
+-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
++        tax_mode_snapshot, legal_profile_revision_id_snapshot, contractor_type_snapshot, provider_contract_profile_id, operation_key, canonical_hash,
++        tax_treatment_revision_id_snapshot, ord_participant_canonicalization_version, partner_participant_json, partner_participant_hash,
++        tax_canonicalization_version, tax_canonical_json, tax_canonical_hash, created_by_admin_id)
++      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+       .run(payloadId, actId, settlement.id, act.engagement_id, act.partner_identity_id, acceptance.accepted_amount_kopecks, acceptance.accepted_engagement_revision_id,
+-        settlement.tax_mode_snapshot, settlement.legal_profile_revision_id_snapshot, contractorType, contract.id, operationKey, canonicalHash, admin.admin_id);
++        settlement.tax_mode_snapshot, settlement.legal_profile_revision_id_snapshot, contractorType, contract.id, operationKey, canonicalHash,
++        settlement.tax_treatment_revision_id_snapshot, participantCanonical.version, participantCanonical.canonical_json, participantCanonical.canonical_hash,
++        settlement.tax_canonicalization_version, settlement.tax_canonical_json, settlement.tax_canonical_hash, admin.admin_id);
+     return { payload: ordPaidInvoicePayloadById(db, payloadId)!, replayed: false };
+   });
+   return run.immediate();
