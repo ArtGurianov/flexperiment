@@ -111,12 +111,14 @@ describe("Agent Referrals Q7 controller capabilities", () => {
     expect(rebind.indexOf("status-before-consequence.json")).toBeLessThan(rebind.indexOf("set-production-deploy-ref.sh"));
   });
 
-  it("issues one Q7 activation POST at most, preserves a safe deterministic refusal, and reconciles UNKNOWN via GET", () => {
+  it("issues one Q7 activation POST at most and reconciles authoritative ACTIVE, NO_COMMIT, or anomaly evidence", () => {
     manualOnly(activation);
     for (const value of [Q7, RELEASE, ACTIVATION, PUBLICATION, "expected_feature_revision"]) expect(activation).toContain(value);
     expect(activation.match(/-X POST --data-binary @activation-request\.json/g)).toHaveLength(1);
     expect(activation).toContain("AGENT_REFERRALS_Q7_ACTIVATION_REFUSED_CODE=");
-    expect(activation).toContain("AGENT_REFERRALS_Q7_ACTIVATION_OUTCOME_UNKNOWN");
+    expect(activation).toContain("AGENT_REFERRALS_Q7_ACTIVATION_NO_COMMIT");
+    expect(activation).toContain("AGENT_REFERRALS_Q7_ACTIVATION_RECONCILIATION_ANOMALY");
+    expect(activation).toContain("AGENT_REFERRALS_Q7_ACTIVATION_RECONCILED_ACTIVE");
     expect(activation).toContain("ACTIVATION_MODE=EXACT_REPLAY");
     expect(activation).toContain("completion-after.json");
     expect(activation).not.toContain("agent-referrals-q4-dormant-");
