@@ -1,0 +1,430 @@
+name: Controlled Agent Referrals D to C3 deployment
+
+# One-time execution controller for the already-certified, already-published
+# detached candidate acfef97f (BASE d6ca9dc). It introduces no certificate
+# format, no classification and no generic detached-candidate framework: it
+# positively reconstructs the exact candidate from the certificate already in
+# this controller's tree, then adopts the ordinary controlled-cutover deploy
+# protocol. It never weakens generic ancestry admission.
+#
+# HOW THIS DIFFERS FROM controlled-agent-referrals-q5-deploy.yml
+#
+# Q5's candidate was boundary-CLEAN: it asserted, through the generic
+# production-deploy boundary script, that the change set crossed no generic
+# deploy boundary at all, and its certified-manifest guard forbade
+# `commerce/migrations/`. This candidate certifies eight migrations
+# (0050-0057), so both of those checks would refuse it - correctly, for Q5's
+# question, and irrelevantly for ours. Crossing the SCHEMA boundary is the
+# very thing that mandates a controlled cutover, and a controlled cutover is
+# what this is. So the admission proof is inverted into an explicit, positive
+# statement of exactly which boundary is crossed, plus explicit negatives for
+# every boundary that must NOT be.
+#
+# `genericProductionDeployBoundary()` is a PRIORITY classifier - it returns
+# SCHEMA first and would report SCHEMA even if a legal or surface-contract
+# path were also present - so its verdict is used only as a positive claim,
+# never as evidence about the other boundaries. Those are asserted separately.
+#
+# WHAT THIS CONTROLLER DOES NOT DO
+#
+# It never reactivates Agent Referrals. The feature fence (SUSPENDED,
+# revision 3) is set before this runs, is proven repeatedly during the run,
+# and is still SUSPENDED when the run ends. Reactivation is a separate
+# operator decision through the repaired admin route.
+#
+# The global sales pause it does take is a different, wider and transient
+# gate, and it is not optional: `scripts/controlled-production-readiness.sh`
+# asserts `sales_paused == true && owner_release_id == release_id` through
+# `assert-generic-production-deploy-ready.ts`, so without the durable
+# CONTROLLED_CUTOVER owner there is no readiness primitive to call at all.
+on:
+  workflow_dispatch:
+    inputs:
+      expected_candidate_sha:
+        description: Exact reviewed runtime-candidate SHA. Must equal the certified TARGET.
+        required: true
+        type: string
+      expected_controller_sha:
+        description: Exact reviewed controller main SHA.
+        required: true
+        type: string
+      expected_controller_tree:
+        description: Exact reviewed controller tree.
+        required: true
+        type: string
+      expected_production_deploy_sha:
+        description: Exact BASE production-deploy SHA to lease from.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
+    env:
+      CONTROLLER_SHA: ${{ github.sha }}
+      BASE_SHA: d6ca9dc5f25e4df49ef15a72fae75ef69ee42172
+      TARGET_SHA: acfef97f15b45995e0f98a8ac0c649802c2bca9c
+      TARGET_TREE: 13957ebad367abe74dc1040535d029103bbf0be0
+      PUBLISHED_REF: refs/heads/runtime/agent-referrals-dc3-1
+      RELEASE_ID: deploy-acfef97f15b45995e0f98a8ac0c649802c2bca9c
+      # The exact feature fence this rollout was authorised against. Pinned,
+      # never discovered: a controller that reads the fence and believes
+      # whatever it finds is not proving anything.
+      AR_EXPECTED_STATE: SUSPENDED
+      AR_EXPECTED_REVISION: "3"
+      AR_EXPECTED_OWNER: agent-referrals-activation-ce66d23fdcea5fc84018be43cf428270ea889ee8
+      AR_EXPECTED_REASON: "Controlled D->C3 production cutover: fence before deploying candidate acfef97f15b45995e0f98a8ac0c649802c2bca9c"
+      INPUT_EXPECTED_CANDIDATE_SHA: ${{ inputs.expected_candidate_sha }}
+      INPUT_EXPECTED_CONTROLLER_SHA: ${{ inputs.expected_controller_sha }}
+      INPUT_EXPECTED_CONTROLLER_TREE: ${{ inputs.expected_controller_tree }}
+      INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA: ${{ inputs.expected_production_deploy_sha }}
+      PRODUCTION_DEPLOY_REF_TOKEN: ${{ secrets.PRODUCTION_DEPLOY_REF_TOKEN }}
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+      COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL }}
+      PUBLIC_FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+      ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
+      POLL_ATTEMPTS: "30"
+      POLL_SECONDS: "10"
+      INITIAL_READINESS_DELAY_SECONDS: "60"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind dedicated production-deploy credential
+        run: |
+          set -euo pipefail
+          [[ -n "$PRODUCTION_DEPLOY_REF_TOKEN" ]] || { echo AGENT_REFERRALS_DC3_DEPLOY_REF_TOKEN_REQUIRED >&2; exit 1; }
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git remote set-url origin "https://x-access-token:${PRODUCTION_DEPLOY_REF_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - name: Bind initial current main controller
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == refs/heads/main ]] || { echo AGENT_REFERRALS_DC3_CONTROLLER_NOT_MAIN >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo AGENT_REFERRALS_DC3_CONTROLLER_MAIN_MOVED >&2; exit 1; }
+
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.29.3 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+
+      - name: Reconstruct exact certified TARGET from this controller tree
+        run: |
+          set -euo pipefail
+          git show "$GITHUB_SHA:.release/controlled-candidates/agent-referrals-$BASE_SHA/certificate.json" > candidate-certificate.json
+          SOURCE_MAIN_SHA="$(jq -er '.source_main_sha' candidate-certificate.json)"
+          git merge-base --is-ancestor "$SOURCE_MAIN_SHA" "$GITHUB_SHA" || { echo AGENT_REFERRALS_DC3_SOURCE_MAIN_NOT_ANCESTOR >&2; exit 1; }
+          jq -e --arg base "$BASE_SHA" '.base_sha == $base' candidate-certificate.json >/dev/null || { echo AGENT_REFERRALS_DC3_CERTIFICATE_BASE_MISMATCH >&2; exit 1; }
+          jq -e '.patch_source == "controller_tree"' candidate-certificate.json >/dev/null || { echo AGENT_REFERRALS_DC3_CERTIFICATE_PATCH_SOURCE_INVALID >&2; exit 1; }
+          RECONSTRUCTED_SHA="$(node --import tsx commerce/src/controlled-candidate-verify.ts candidate-certificate.json "$GITHUB_SHA")"
+          [[ "$RECONSTRUCTED_SHA" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_DC3_RECONSTRUCTION_MISMATCH="$RECONSTRUCTED_SHA" >&2; exit 1; }
+          [[ "$(git rev-parse "${RECONSTRUCTED_SHA}^")" == "$BASE_SHA" ]] || { echo AGENT_REFERRALS_DC3_PARENT_NOT_BASE >&2; exit 1; }
+          [[ "$(git rev-parse "${RECONSTRUCTED_SHA}^{tree}")" == "$TARGET_TREE" ]] || { echo AGENT_REFERRALS_DC3_TREE_MISMATCH >&2; exit 1; }
+          jq -r '.paths[].path' candidate-certificate.json | sort > certified-manifest.txt
+          git diff --name-only "$BASE_SHA" "$RECONSTRUCTED_SHA" | sort > actual-changed-paths.txt
+          diff certified-manifest.txt actual-changed-paths.txt || { echo AGENT_REFERRALS_DC3_MANIFEST_MISMATCH >&2; exit 1; }
+          # Narrower than Q5's deny list by exactly one entry: migrations are
+          # this candidate's substance, not contraband. Legal state is still
+          # inherited from BASE unchanged, and a candidate may never carry the
+          # control plane that deploys it.
+          ! grep -Eq '^(public/legal/|commerce/legal/|\.github/)' certified-manifest.txt || { echo AGENT_REFERRALS_DC3_FORBIDDEN_CANDIDATE_PATH >&2; exit 1; }
+
+      - name: Prove the crossed boundary is SCHEMA and exactly 0050-0057
+        run: |
+          set -euo pipefail
+          # The negatives are asserted against the boundary module itself
+          # rather than restated as a literal list here: a second copy of
+          # releaseSemanticsPaths in a workflow would silently go stale the
+          # first time the real list changed.
+          cat > dc3-boundary-check.ts <<'CHECK'
+          import { readFileSync } from "node:fs";
+          import {
+            genericProductionDeployBoundary, releaseSemanticsCategories,
+            releaseSemanticsPaths, controlPlanePaths,
+          } from "./commerce/src/generic-production-deploy-boundary";
+
+          const paths = readFileSync("actual-changed-paths.txt", "utf8").split("\n").filter(Boolean);
+          const fail = (code: string): never => { console.error(code); process.exit(1); };
+
+          // Positive: this candidate is a schema-carrying cutover, and saying
+          // so is the admission claim.
+          if (genericProductionDeployBoundary(paths) !== "SCHEMA") fail("AGENT_REFERRALS_DC3_BOUNDARY_NOT_SCHEMA");
+
+          // Negatives, each independent of the priority classifier above.
+          if (paths.some((path) => path.startsWith("public/legal/") || path.startsWith("commerce/legal/"))) fail("AGENT_REFERRALS_DC3_LEGAL_BOUNDARY_PRESENT");
+          if (paths.includes("release-surface-contract.json")) fail("AGENT_REFERRALS_DC3_SURFACE_CONTRACT_BOUNDARY_PRESENT");
+          if (releaseSemanticsCategories(paths).length !== 0) fail("AGENT_REFERRALS_DC3_RELEASE_SEMANTICS_BOUNDARY_PRESENT");
+          if (paths.some((path) => releaseSemanticsPaths.includes(path))) fail("AGENT_REFERRALS_DC3_RELEASE_SEMANTICS_PATH_PRESENT");
+          if (paths.some((path) => controlPlanePaths.includes(path))) fail("AGENT_REFERRALS_DC3_CONTROL_PLANE_PATH_PRESENT");
+
+          // The schema change is exact, not merely permitted.
+          const expected = [
+            "0050_agent_referrals_legal_profile_provenance_rebuild.sql",
+            "0051_agent_referrals_legal_profile_supersession.sql",
+            "0052_agent_referrals_unified_legal_requisites.sql",
+            "0053_agent_referrals_tax_treatment_ord_canonicalization.sql",
+            "0054_partner_command_idempotency.sql",
+            "0055_partner_legal_profile_draft_revision.sql",
+            "0056_legal_profile_change_request_sequence.sql",
+            "0057_partner_invite_capability_head.sql",
+          ];
+          const actual = paths.filter((path) => path.startsWith("commerce/migrations/"))
+            .map((path) => path.slice("commerce/migrations/".length)).sort();
+          if (JSON.stringify(actual) !== JSON.stringify(expected)) fail(`AGENT_REFERRALS_DC3_MIGRATION_SET_UNEXPECTED=${actual.join(",")}`);
+
+          console.log(`boundary=SCHEMA migrations=${actual.length} release_semantics=none control_plane=none legal=none surface_contract=unchanged`);
+          CHECK
+          node --import tsx dc3-boundary-check.ts
+
+      - name: Read durable baseline and classify resumable deployment state
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-before.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion-before.json
+          production_deploy="$(scripts/read-production-deploy-ref.sh)"
+          [[ "$production_deploy" == "$BASE_SHA" || "$production_deploy" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_DC3_PRODUCTION_POINTER_UNEXPECTED >&2; exit 1; }
+          inventory="$(git ls-tree -r --name-only "$TARGET_SHA" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
+          migration="inventory-sha256:$(printf %s "$inventory" | shasum -a 256 | awk '{print $1}')"
+          jq -e --arg id "$RELEASE_ID" --arg source "$TARGET_SHA" --arg migration "$migration" '.runtime as $r | {release_id:$id,mode:"CONTROLLED_CUTOVER",expected:{source_commit:$source,migration:$migration,legal_version:$r.legal_version,legal_manifest_sha256:$r.legal_manifest_sha256,legal_hashes:$r.legal_hashes}}' status-before.json > release.json
+          jq -e '.expected.legal_version != null and .expected.legal_manifest_sha256 != null and .expected.legal_hashes != null' release.json >/dev/null || { echo AGENT_REFERRALS_DC3_BASELINE_INVALID >&2; exit 1; }
+
+          if jq -e '.complete == true' completion-before.json >/dev/null; then
+            [[ "$production_deploy" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_DC3_COMPLETED_POINTER_MISMATCH >&2; exit 1; }
+            echo DEPLOYMENT_STATE=ALREADY_COMPLETE >> "$GITHUB_ENV"; exit 0
+          fi
+          # runtime-candidate has authority only BEFORE acquire, so it is bound
+          # here, once, for every resumable state - and never read again after
+          # ownership is taken, where ordinary pointer staleness could strand an
+          # epoch already in flight (commerce/test/runtime-candidate-authority.test.ts).
+          git fetch --no-tags origin refs/heads/runtime-candidate:refs/remotes/origin/runtime-candidate
+          [[ "$(git rev-parse origin/runtime-candidate)" == "$INPUT_EXPECTED_CANDIDATE_SHA" && "$INPUT_EXPECTED_CANDIDATE_SHA" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_DC3_RUNTIME_CANDIDATE_MOVED >&2; exit 1; }
+          if [[ "$production_deploy" == "$BASE_SHA" ]] && jq -e '.owner_release_id == null and .owner_mode == null and .sales_paused == false' status-before.json >/dev/null; then
+            echo DEPLOYMENT_STATE=FRESH >> "$GITHUB_ENV"; exit 0
+          fi
+          if jq -e --arg id "$RELEASE_ID" --slurpfile request release.json '.owner_release_id == $id and .owner_mode == "CONTROLLED_CUTOVER" and .expected == ($request[0].expected | del(.legal_hashes))' status-before.json >/dev/null; then
+            # acquire() and pause() are two separate transactions, and
+            # acquire() deliberately leaves sales_paused = 0 (its own WHERE
+            # clause requires it). A lost response between them leaves a real,
+            # reachable state that Q5's classifier matched neither as FRESH nor
+            # as any owned branch, and refused. It is owned, unpaused, and
+            # nothing consequential has happened yet: the correct resumption is
+            # to pause and continue, not to refuse.
+            if jq -e '.sales_paused == false' status-before.json >/dev/null; then
+              [[ "$production_deploy" == "$BASE_SHA" ]] || { echo AGENT_REFERRALS_DC3_ACQUIRED_UNPAUSED_POINTER_MISMATCH >&2; exit 1; }
+              echo DEPLOYMENT_STATE=OWNED_ACQUIRED_UNPAUSED >> "$GITHUB_ENV"; exit 0
+            fi
+            if [[ "$production_deploy" == "$BASE_SHA" ]]; then
+              echo DEPLOYMENT_STATE=OWNED_PRE_CAS >> "$GITHUB_ENV"
+            elif jq -e --arg target "$TARGET_SHA" '.runtime.source_commit == $target and .runtime.worker_source_commit == $target' status-before.json >/dev/null; then
+              echo DEPLOYMENT_STATE=OWNED_CONVERGED >> "$GITHUB_ENV"
+            else
+              # A protected pointer is desired source identity, not Coolify
+              # acceptance evidence. The held exact owner permits one retry.
+              echo DEPLOYMENT_STATE=OWNED_NEEDS_DEPLOY >> "$GITHUB_ENV"
+            fi
+            exit 0
+          fi
+          echo AGENT_REFERRALS_DC3_OWNER_STATE_UNEXPECTED >&2; exit 1
+
+      - name: Materialize exact surface-contract readiness inputs
+        run: |
+          set -euo pipefail
+          git show "$TARGET_SHA:release-surface-contract.json" > dc3-release-surface-contract.json
+          checkout_contract_version="$(jq -er '.checkout_contract_version | select(type == "string" and test("^[a-z0-9][a-z0-9.-]{0,63}$"))' dc3-release-surface-contract.json)"
+          admin_contract_version="$(jq -er '.admin_contract_version | select(type == "string" and test("^[a-z0-9][a-z0-9.-]{0,63}$"))' dc3-release-surface-contract.json)"
+          echo "CHECKOUT_CONTRACT_VERSION=$checkout_contract_version" >> "$GITHUB_ENV"
+          echo "ADMIN_CONTRACT_VERSION=$admin_contract_version" >> "$GITHUB_ENV"
+
+      - name: Prove the Agent Referrals fence before any mutation
+        if: env.DEPLOYMENT_STATE != 'ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          # The first consequential act of this run is pausing global sales,
+          # which stops real customers buying. The narrow feature fence must be
+          # proven to still hold BEFORE that, on every run - including a
+          # resumption after a lost acquire response.
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/activation-state" > ar-fence-before.json
+          jq -e --arg state "$AR_EXPECTED_STATE" --argjson revision "$AR_EXPECTED_REVISION" --arg owner "$AR_EXPECTED_OWNER" --arg reason "$AR_EXPECTED_REASON" '
+            .feature_state.state == $state and .feature_state.revision == $revision and .feature_state.owner_id == $owner
+            and .last_feature_state_event.from_state == "ACTIVE" and .last_feature_state_event.to_state == $state
+            and .last_feature_state_event.revision == $revision and .last_feature_state_event.owner_id == $owner
+            and .last_feature_state_event.reason == $reason' ar-fence-before.json >/dev/null \
+            || { echo AGENT_REFERRALS_DC3_FENCE_NOT_HELD_PRE_MUTATION >&2; jq -c '.feature_state' ar-fence-before.json >&2; exit 1; }
+
+      - name: Acquire owner
+        if: env.DEPLOYMENT_STATE == 'FRESH'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$INPUT_EXPECTED_CONTROLLER_SHA" ]] || { echo AGENT_REFERRALS_DC3_CONTROLLER_SHA_MISMATCH >&2; exit 1; }
+          [[ "$(git rev-parse "${CONTROLLER_SHA}^{tree}")" == "$INPUT_EXPECTED_CONTROLLER_TREE" ]] || { echo AGENT_REFERRALS_DC3_CONTROLLER_TREE_MISMATCH >&2; exit 1; }
+          [[ "$(git rev-parse origin/main)" == "$INPUT_EXPECTED_CONTROLLER_SHA" ]] || { echo AGENT_REFERRALS_DC3_CONTROLLER_MAIN_MOVED >&2; exit 1; }
+          git fetch --no-tags origin runtime-candidate
+          [[ "$(git rev-parse origin/runtime-candidate)" == "$INPUT_EXPECTED_CANDIDATE_SHA" && "$INPUT_EXPECTED_CANDIDATE_SHA" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_DC3_RUNTIME_CANDIDATE_MOVED >&2; exit 1; }
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" && "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" == "$BASE_SHA" ]] || { echo AGENT_REFERRALS_DC3_PRODUCTION_POINTER_MOVED >&2; exit 1; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/acquire" > /dev/null
+
+      - name: Pause registrations
+        if: env.DEPLOYMENT_STATE == 'FRESH' || env.DEPLOYMENT_STATE == 'OWNED_ACQUIRED_UNPAUSED'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/pause" > paused.json
+          jq -e '.sales_paused == true and .owner_release_id == env.RELEASE_ID' paused.json >/dev/null
+
+      - name: Prove public checkout pause
+        if: env.DEPLOYMENT_STATE != 'ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          code="$(curl --silent --show-error --connect-timeout 10 --max-time 30 --output paused-checkout.json --write-out '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: dc3-pause-proof-${GITHUB_RUN_ID}" --data '{}' "$PUBLIC_API_URL/v1/public/checkouts")"
+          [[ "$code" == 503 ]] && jq -e '.error.code == "SALES_TEMPORARILY_PAUSED"' paused-checkout.json >/dev/null
+
+      - name: Rebind same-owner authority, reprove the fence, and CAS production-deploy
+        if: env.DEPLOYMENT_STATE != 'ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-before-consequence.json
+          jq -e --arg id "$RELEASE_ID" --slurpfile request release.json '.owner_release_id == $id and .owner_mode == "CONTROLLED_CUTOVER" and .sales_paused == true and .expected == ($request[0].expected | del(.legal_hashes))' status-before-consequence.json >/dev/null || { echo AGENT_REFERRALS_DC3_HELD_OWNER_CHANGED >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$INPUT_EXPECTED_CONTROLLER_SHA" ]] || { echo AGENT_REFERRALS_DC3_CONTROLLER_SHA_MISMATCH >&2; exit 1; }
+          [[ "$(git rev-parse "${CONTROLLER_SHA}^{tree}")" == "$INPUT_EXPECTED_CONTROLLER_TREE" ]] || { echo AGENT_REFERRALS_DC3_CONTROLLER_TREE_MISMATCH >&2; exit 1; }
+          [[ "$(git rev-parse origin/main)" == "$INPUT_EXPECTED_CONTROLLER_SHA" ]] || { echo AGENT_REFERRALS_DC3_CONTROLLER_MAIN_MOVED >&2; exit 1; }
+          # runtime-candidate is deliberately NOT re-read here: ownership is
+          # already held, so the recorded expectation is the authority and the
+          # mutable ref no longer is. The immutable published ref still is.
+          published="$(git ls-remote --exit-code origin "$PUBLISHED_REF" | awk '{print $1}')" || { echo AGENT_REFERRALS_DC3_PUBLISHED_REF_UNAVAILABLE >&2; exit 1; }
+          [[ "$published" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_DC3_PUBLISHED_REF_MISMATCH="$published" >&2; exit 1; }
+          # Reproven immediately before the irreversible pointer move, for the
+          # same reason it was proven before the pause: the window between two
+          # checks is exactly where an unobserved change would hide.
+          api "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/activation-state" > ar-fence-pre-cas.json
+          jq -e --arg state "$AR_EXPECTED_STATE" --argjson revision "$AR_EXPECTED_REVISION" --arg owner "$AR_EXPECTED_OWNER" --arg reason "$AR_EXPECTED_REASON" '
+            .feature_state.state == $state and .feature_state.revision == $revision and .feature_state.owner_id == $owner
+            and .last_feature_state_event.from_state == "ACTIVE" and .last_feature_state_event.to_state == $state
+            and .last_feature_state_event.revision == $revision and .last_feature_state_event.owner_id == $owner
+            and .last_feature_state_event.reason == $reason' ar-fence-pre-cas.json >/dev/null \
+            || { echo AGENT_REFERRALS_DC3_FENCE_NOT_HELD_PRE_CAS >&2; jq -c '.feature_state' ar-fence-pre-cas.json >&2; exit 1; }
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" || "$(scripts/read-production-deploy-ref.sh)" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_DC3_PRODUCTION_POINTER_MOVED >&2; exit 1; }
+          # Coolify deploys whatever production-deploy names
+          # (scripts/controlled-coolify-deploy.sh refuses otherwise), so the
+          # pointer necessarily moves before the deploy, never after it.
+          if [[ "$(scripts/read-production-deploy-ref.sh)" == "$BASE_SHA" ]]; then scripts/set-production-deploy-ref.sh "$TARGET_SHA" "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA"; fi
+
+      - name: Deploy exact TARGET for fresh or not-yet-converged same-owner state
+        if: env.DEPLOYMENT_STATE == 'FRESH' || env.DEPLOYMENT_STATE == 'OWNED_ACQUIRED_UNPAUSED' || env.DEPLOYMENT_STATE == 'OWNED_PRE_CAS' || env.DEPLOYMENT_STATE == 'OWNED_NEEDS_DEPLOY'
+        run: |
+          set -euo pipefail
+          # Migrations 0050-0057 are not a step here: commerce/src/server.ts
+          # calls migrate() on boot, so the new container applies them itself.
+          # This controller proves them through convergence and the inventory
+          # expectation, it does not run them.
+          scripts/controlled-coolify-deploy.sh "$TARGET_SHA"
+          sleep "$INITIAL_READINESS_DELAY_SECONDS"
+          RUNTIME_ASSERT_DIR="$RUNNER_TEMP/dc3-runtime"; git worktree add --detach "$RUNTIME_ASSERT_DIR" "$TARGET_SHA"
+          (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile --ignore-scripts)
+          RUNTIME_ASSERT_DIR="$RUNTIME_ASSERT_DIR" scripts/controlled-production-readiness.sh release.json
+
+      - name: Prove already-converged runtime before guarded reopen
+        if: env.DEPLOYMENT_STATE == 'OWNED_CONVERGED'
+        run: |
+          set -euo pipefail
+          RUNTIME_ASSERT_DIR="$RUNNER_TEMP/dc3-runtime"; git worktree add --detach "$RUNTIME_ASSERT_DIR" "$TARGET_SHA"
+          (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile --ignore-scripts)
+          RUNTIME_ASSERT_DIR="$RUNTIME_ASSERT_DIR" scripts/controlled-production-readiness.sh release.json
+
+      - name: Prove the fence survived deploy and migrations, before reopening sales
+        if: env.DEPLOYMENT_STATE != 'ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          # Ordering is the point: reopening sales while it is still unproven
+          # that the narrow feature fence survived the deploy would leave a
+          # window where customers are served by a runtime whose Agent
+          # Referrals state nobody has checked.
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/activation-state" > ar-fence-post-deploy.json
+          jq -e --arg state "$AR_EXPECTED_STATE" --argjson revision "$AR_EXPECTED_REVISION" --arg owner "$AR_EXPECTED_OWNER" --arg reason "$AR_EXPECTED_REASON" '
+            .feature_state.state == $state and .feature_state.revision == $revision and .feature_state.owner_id == $owner
+            and .last_feature_state_event.from_state == "ACTIVE" and .last_feature_state_event.to_state == $state
+            and .last_feature_state_event.revision == $revision and .last_feature_state_event.owner_id == $owner
+            and .last_feature_state_event.reason == $reason' ar-fence-post-deploy.json >/dev/null \
+            || { echo AGENT_REFERRALS_DC3_FENCE_NOT_HELD_POST_DEPLOY >&2; jq -c '.feature_state' ar-fence-post-deploy.json >&2; exit 1; }
+
+      - name: Guarded reopen and completion proof
+        if: env.DEPLOYMENT_STATE != 'ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          # Reopens the GLOBAL sales gate only. The Agent Referrals fence is a
+          # different authority and is deliberately left SUSPENDED.
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/reopen" > reopened.json
+          jq -e '.sales_paused == false and .owner_release_id == null and .owner_mode == null' reopened.json >/dev/null
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion-after.json
+          jq -e --slurpfile release release.json '.complete == true and .expected == $release[0].expected' completion-after.json >/dev/null
+
+      - name: Prove terminal runtime, all production surfaces, and a still-fenced feature
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > terminal-status.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > terminal-completion.json
+          jq -e --arg target "$TARGET_SHA" '.owner_release_id == null and .owner_mode == null and .sales_paused == false and .runtime.source_commit == $target and .runtime.worker_source_commit == $target' terminal-status.json >/dev/null
+          jq -e --slurpfile release release.json '.complete == true and .expected == $release[0].expected' terminal-completion.json >/dev/null
+          curl --fail-with-body --silent --show-error "$PUBLIC_FRONTEND_URL/release.json" | jq -e --arg target "$TARGET_SHA" '.source_commit == $target' >/dev/null
+          curl --fail-with-body --silent --show-error "$ADMIN_RELEASE_URL" | jq -e --arg target "$TARGET_SHA" '.source_commit == $target' >/dev/null
+          curl --fail-with-body --silent --show-error "$PUBLIC_API_URL/v1/public/legal-config" > terminal-legal.json
+          jq -e --slurpfile release release.json '(.version == $release[0].expected.legal_version) and ({PUBLIC_OFFER:.manifest.documents.PUBLIC_OFFER.sha256,PRIVACY_POLICY:.manifest.documents.PRIVACY_POLICY.sha256,PD_CONSENT:.manifest.documents.PD_CONSENT.sha256,CHECKOUT_DISCLOSURE:.manifest.documents.CHECKOUT_DISCLOSURE.sha256} == $release[0].expected.legal_hashes)' terminal-legal.json >/dev/null
+          curl --fail-with-body --silent --show-error "$PUBLIC_API_URL/healthz" | jq -e '.ok' >/dev/null
+          curl --fail-with-body --silent --show-error "$PUBLIC_API_URL/readyz" | jq -e '.ok' >/dev/null
+
+          api "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/activation-state" > terminal-ar-fence.json
+          jq -e --arg state "$AR_EXPECTED_STATE" --argjson revision "$AR_EXPECTED_REVISION" --arg owner "$AR_EXPECTED_OWNER" '
+            .feature_state.state == $state and .feature_state.revision == $revision and .feature_state.owner_id == $owner' terminal-ar-fence.json >/dev/null \
+            || { echo AGENT_REFERRALS_DC3_FENCE_NOT_TERMINAL >&2; exit 1; }
+
+          # Evidence, never a gate. `.ready` is necessarily false here, and
+          # correctly so - its reason is FEATURE_STATE_NOT_DORMANT:SUSPENDED,
+          # which is the state this rollout deliberately ends in. The other
+          # axes are what is worth recording. The body differs from release.json
+          # in one field: this endpoint validates against completeRollingSchema,
+          # which is strict and requires mode ROLLING. It is a read-only
+          # evidence computation and changes nothing.
+          jq '.mode = "ROLLING"' release.json > dormant-readiness-request.json
+          api -X POST --data-binary @dormant-readiness-request.json "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/dormant-readiness" > terminal-dormant-readiness.json
+          jq -e '.feature_state == "SUSPENDED" and .business_facts_all_zero == true and .migration_inventory_exact == true
+            and .runtime_source_matches_expected == true and .worker_source_matches_expected == true
+            and .legal_expectation_matches == true and .surface_contract_matches_required == true' terminal-dormant-readiness.json >/dev/null \
+            || { echo AGENT_REFERRALS_DC3_TERMINAL_EVIDENCE_UNEXPECTED >&2; jq -c '{feature_state,business_facts_all_zero,migration_inventory_exact,runtime_source_matches_expected,worker_source_matches_expected,legal_expectation_matches,surface_contract_matches_required,reasons}' terminal-dormant-readiness.json >&2; exit 1; }
+
+          {
+            echo "## Agent Referrals D to C3 deployment"
+            echo "- Controller SHA: $CONTROLLER_SHA"
+            echo "- BASE: $BASE_SHA"
+            echo "- TARGET: $TARGET_SHA (tree $TARGET_TREE)"
+            echo "- Published ref: $PUBLISHED_REF"
+            echo "- Deployment state: ${DEPLOYMENT_STATE:-unknown}"
+            echo "- Migrations: 0050-0057, applied on boot"
+            echo "- Global sales gate: reopened"
+            echo "- Agent Referrals feature: SUSPENDED revision 3, owner unchanged - NOT reactivated by this controller"
+          } >> "$GITHUB_STEP_SUMMARY"

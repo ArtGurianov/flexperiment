@@ -257,6 +257,7 @@ describe("RECONSTRUCTION_BOUND: positive proof obligation for a detached candida
       "controlled-agent-referrals-activation-candidate.yml",
       "controlled-agent-referrals-activation-reconciliation-candidate.yml",
       "controlled-agent-referrals-candidate.yml",
+      "controlled-agent-referrals-dc3-deploy.yml",
       "controlled-agent-referrals-q4-dormant-deploy.yml",
       "controlled-agent-referrals-q5-deploy.yml",
       "controlled-agent-referrals-q6-deploy.yml",
@@ -336,6 +337,7 @@ describe("deployment target classification is exhaustive and mutually exclusive"
       if (
         name === "controlled-release-semantics-bootstrap.yml"
         || name === "controlled-agent-referrals.yml"
+        || name === "controlled-agent-referrals-dc3-deploy.yml"
         || name === "controlled-agent-referrals-q4-dormant-deploy.yml"
         || name === "controlled-agent-referrals-q5-deploy.yml"
         || name === "controlled-agent-referrals-q6-deploy.yml"
