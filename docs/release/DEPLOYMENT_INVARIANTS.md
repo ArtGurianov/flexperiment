@@ -712,6 +712,28 @@ same iteration.
    Any nonzero exit from it is fatal and preserves its own stderr; it must
    never be retried or reinterpreted as non-convergence.
 
+
+This is now implemented in the shared primitive itself, not only in one
+controller: `scripts/controlled-production-readiness.sh` polls **observable
+convergence only** (runtime and worker source commits, worker sweep evidence
+present, frontend/admin release descriptors, legal config, `/healthz`,
+`/readyz`) and runs the admission assertion exactly once, after convergence,
+outside the loop. The exit codes are distinct so a caller can never mistake one
+for the other:
+
+```text
+0  admitted
+1  READINESS_POLL_EXHAUSTED       observable state never converged  (retryable)
+2  configuration/usage error
+3  READINESS_ADMISSION_REFUSED    converged but inadmissible        (terminal)
+```
+
+A caller that re-deploys on a readiness failure **MUST** gate that retry on
+exit 1 alone. `commerce/test/controlled-production-readiness-script.test.ts`
+proves the execution topology rather than the formatting: a fake `node` records
+every invocation together with the number of status polls already completed, so
+"ran exactly once" and "ran only after convergence" are observed facts.
+
 ## A same-owner reopen must use the durable owner identity, never a deployment target SHA
 
 A preserved same-owner recovery lineage must reopen using the durable owner
@@ -885,3 +907,82 @@ production-deploy   680bdd3
 
 For comparison, the two Epoch A pauses were 12h09m and 11m32s. The difference
 is sequencing, not luck: everything provable was proved before acquiring.
+
+## Topology normalization is a one-shot repair, not an ancestry bypass
+
+Production ran a detached lineage for thirteen commits
+(`0ddc33d → … → d6ca9dc → acfef97`), each controlled candidate re-creating the
+detachment. CI stayed green only because `release-ref-topology.test.ts` admitted
+`acfef97f` through `isApprovedControlledCandidate`. That is a certificate
+exemption carrying a production runtime, not ordinary topology, and every
+further deploy failed closed at
+`RUNTIME_CANDIDATE_TARGET_NOT_DESCENDANT_OF_PRODUCTION`.
+
+`controlled-topology-normalization.yml` repaired it once, on 2026-09-13. Three
+properties make it a repair rather than a hole, and none of them generalize:
+
+**BASE is literal, TARGET is bound at dispatch.** The controller ships *in* the
+commit it deploys, so a hard-coded `TARGET_SHA` would be circular - writing it
+changes the tree, which changes the merge SHA, which invalidates what was
+written. TARGET therefore arrives as a required `workflow_dispatch` input and is
+bound by proof: `github.ref == refs/heads/main`, `target_sha == origin/main`
+(re-read again immediately before the CAS), `tree(target_sha) == target_tree`,
+and `github.sha == target_sha` as an independent confirmation. That last
+equality is a check, never a derivation - `TARGET_SHA="$(git rev-parse HEAD)"`
+remains forbidden, and `controller-not-older-than-target.test.ts` greps for it.
+
+**The excluded boundary classes are proved individually, never inferred from the
+classifier's single verdict.** `genericProductionDeployBoundary()` returns only
+the *first* crossing in priority order, so a `RELEASE_SEMANTICS` answer can hide
+a `COMPATIBILITY` category underneath it. The controller asserts all of:
+
+```text
+SCHEMA            0 changed paths under commerce/migrations
+LEGAL             0 changed paths under commerce/legal, public/legal, certification.sh
+SURFACE_CONTRACT  release-surface-contract.json unchanged
+COMPATIBILITY     0 paths in compatibilitySemanticsPaths
+then              boundary === RELEASE_SEMANTICS
+                  releaseSemanticsCategories === ["RELEASE_CONTROL"] exactly
+```
+
+`COMPATIBILITY` has no lane. Holding it byte-identical to the live production
+runtime is what keeps a one-shot controller from quietly becoming that lane.
+
+**The ancestry waiver is bound to two exact SHAs and expires with the run.** It
+does not weaken `RUNTIME_CANDIDATE_NOT_DESCENDANT_OF_PRODUCTION_DEPLOY` or the
+promotion primitive's own check, and it is not a precedent for a second use:
+a future repair writes its own controller with its own two SHAs.
+
+```text
+BASE                acfef97f  (detached production runtime)
+TARGET              2ae6a35   (frozen protected-main tip)
+admission           RELEASE_SEMANTICS / ["RELEASE_CONTROL"], four classes clean
+schema              identical at both SHAs, head 0057
+runtime closure     95 files at BASE, 95 at TARGET, none dropped
+Agent Referrals     ACTIVE revision 4, owner unchanged before and after
+post-state          main == production-deploy == runtime-candidate
+                         == runtime/topology-normalization-1 == 2ae6a35
+```
+
+The certificate exemption is no longer load-bearing: the fence now passes via
+plain `isAncestor(production-deploy, main)`. The next ordinary release proved
+it - PR #112's candidate is a direct single-parent child of `production-deploy`
+on `main`, needing no reconstruction certificate at all.
+
+### Semantics the normalization intentionally dropped
+
+Two changes existed on the old `main` and are **not** present in the current
+lineage. They are not production/main drift and there is nothing to reconcile;
+holding production's blobs is what made the cutover a topology-only repair:
+
+```text
+release-surface-contract.json   admin/partner agent-referrals-v1
+                                -> lineage carries sales-availability-v1
+certification-dispatch.ts       dispatched_after_unfence via strictlyAfter (>)
+                                -> lineage carries after (>=)
+```
+
+Do not restore either as ordinary cleanup, and do not read a future diff against
+old `main` as a lost line. If the change is still wanted it needs its own
+reviewed lane - `SURFACE_CONTRACT` for the first, and for the second a
+`COMPATIBILITY` evidence protocol that does not exist yet.

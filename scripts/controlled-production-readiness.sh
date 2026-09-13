@@ -1,6 +1,37 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Two questions, deliberately answered by two different mechanisms.
+#
+#   1. "Has observable production state converged yet?"  -> the poll loop.
+#      Surfaces legitimately lag a deployment: a container mid-restart returns
+#      a truncated body, the frontend image swaps after the API, the worker
+#      records its first successful sweep some seconds after it starts. These
+#      are retryable by construction, and only they may ever mean
+#      READINESS_POLL_EXHAUSTED.
+#
+#   2. "Is this runtime admissible?" -> one single-shot assertion, after
+#      convergence, outside the loop. Sales state, owner identity, migration
+#      expectation and legal evidence do not change by waiting, so re-running
+#      the assertion inside the poll would conflate a deterministic defect
+#      with ordinary Coolify delay - exactly the 2026-08-28 defect recorded in
+#      docs/release/DEPLOYMENT_INVARIANTS.md ("A read-only convergence loop
+#      must not collapse a parser exception into 'not converged yet'"), where
+#      a TypeError reproduced identically on all 30 attempts and still
+#      reported VERIFY_RUNTIME_NOT_CONVERGED_YET.
+#
+# Exit codes are distinct so a caller can tell the two apart and never treat
+# an admission failure as grounds to retry or redeploy:
+#
+#   0  admitted
+#   1  READINESS_POLL_EXHAUSTED       observable state never converged
+#   2  configuration/usage error
+#   3  READINESS_ADMISSION_REFUSED    converged, but not admissible (terminal)
+
+readonly READINESS_EXIT_CONVERGENCE=1
+readonly READINESS_EXIT_CONFIGURATION=2
+readonly READINESS_EXIT_ADMISSION=3
+
 request_path="${1:?Pass the durable release request JSON path.}"
 readiness_phase="${2:-promotion}"
 : "${PUBLIC_API_URL:?PUBLIC_API_URL is required}"
@@ -22,27 +53,17 @@ case "$readiness_phase" in
   candidate-pre-publication)
     : "${PREVIOUS_LEGAL_VERSION:?PREVIOUS_LEGAL_VERSION is required for candidate-pre-publication readiness}"
     ;;
-  *) echo "READINESS_PHASE_INVALID" >&2; exit 2 ;;
+  *) echo "READINESS_PHASE_INVALID" >&2; exit "$READINESS_EXIT_CONFIGURATION" ;;
 esac
 
 poll_connect_timeout="${POLL_CONNECT_TIMEOUT:-3}"
 poll_max_time="${POLL_MAX_TIME:-7}"
-[[ "$POLL_ATTEMPTS" =~ ^[1-9][0-9]*$ && "$POLL_SECONDS" =~ ^[0-9]+$ ]] || { echo "READINESS_POLL_CONFIGURATION_INVALID" >&2; exit 2; }
-[[ "$poll_connect_timeout" =~ ^[1-9][0-9]*$ && "$poll_max_time" =~ ^[1-9][0-9]*$ && "$poll_connect_timeout" -le "$poll_max_time" ]] || { echo "READINESS_POLL_TIMEOUT_CONFIGURATION_INVALID" >&2; exit 2; }
+[[ "$POLL_ATTEMPTS" =~ ^[1-9][0-9]*$ && "$POLL_SECONDS" =~ ^[0-9]+$ ]] || { echo "READINESS_POLL_CONFIGURATION_INVALID" >&2; exit "$READINESS_EXIT_CONFIGURATION"; }
+[[ "$poll_connect_timeout" =~ ^[1-9][0-9]*$ && "$poll_max_time" =~ ^[1-9][0-9]*$ && "$poll_connect_timeout" -le "$poll_max_time" ]] || { echo "READINESS_POLL_TIMEOUT_CONFIGURATION_INVALID" >&2; exit "$READINESS_EXIT_CONFIGURATION"; }
 
 workspace="$(mktemp -d "${TMPDIR:-/tmp}/flexperiment-readiness.XXXXXX")"
 last_attempt_dir=""
 trap 'rm -rf "$workspace"' EXIT
-
-run_runtime_readiness_parser() {
-  local status_path="$1" request_path="$2" sales_state="$3"
-  if [[ -n "${RUNTIME_ASSERT_DIR:-}" ]]; then
-    [[ -d "$RUNTIME_ASSERT_DIR" ]] || { echo "RUNTIME_ASSERT_WORKTREE_MISSING" >&2; return 1; }
-    (cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$status_path" "$request_path" "$sales_state")
-  else
-    node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$status_path" "$request_path" "$sales_state"
-  fi
-}
 
 fetch_json() {
   local label="$1" url="$2" destination="$3" authenticated="$4"
@@ -69,12 +90,66 @@ emit_observed() {
   [[ -f "$directory/frontend.json" ]] && jq -c '{frontend_source_commit: .source_commit}' "$directory/frontend.json" >&2 || true
   [[ -f "$directory/admin.json" ]] && jq -c '{admin_source_commit: .source_commit}' "$directory/admin.json" >&2 || true
   [[ -f "$directory/legal.json" ]] && jq -c '{legal_version: .version}' "$directory/legal.json" >&2 || true
-  [[ -s "$directory/runtime.stderr" ]] && {
-    echo "Runtime readiness diagnostic:" >&2
-    sed -n '1p' "$directory/runtime.stderr" >&2
+  [[ -s "$directory/admission.stderr" ]] && {
+    echo "Admission diagnostic:" >&2
+    cat "$directory/admission.stderr" >&2
   }
+  return 0
 }
 
+# Observable convergence only. Every reason this can return is a state that a
+# still-rolling deployment legitimately passes through on its way to the
+# target, so every one of them is retryable.
+converged_reason() {
+  local directory="$1"
+  if ! jq -e --arg sha "$TARGET_SHA" '.runtime.source_commit == $sha' "$directory/status.json" >/dev/null; then
+    echo "GENERIC_DEPLOY_RUNTIME_SOURCE_NOT_CONVERGED"; return 1
+  fi
+  if ! jq -e --arg sha "$TARGET_SHA" '.runtime.worker_source_commit == $sha' "$directory/status.json" >/dev/null; then
+    echo "GENERIC_DEPLOY_WORKER_SOURCE_NOT_CONVERGED"; return 1
+  fi
+  # Presence only. Whether the timestamps are *fresh enough* is an eligibility
+  # judgement and belongs to the one-shot admission below, not to this loop.
+  if ! jq -e '.runtime.worker_started_at != null and .runtime.worker_observed_at != null and .runtime.worker_last_successful_sweep_at != null' "$directory/status.json" >/dev/null; then
+    echo "GENERIC_DEPLOY_WORKER_SWEEP_NOT_OBSERVED"; return 1
+  fi
+  if ! jq -e --arg sha "$TARGET_SHA" --arg contract "$CHECKOUT_CONTRACT_VERSION" '.source_commit == $sha and .checkout_contract_version == $contract' "$directory/frontend.json" >/dev/null; then
+    echo "GENERIC_DEPLOY_FRONTEND_RELEASE_EVIDENCE_MISMATCH"; return 1
+  fi
+  if ! jq -e --arg sha "$TARGET_SHA" --arg contract "$ADMIN_CONTRACT_VERSION" '.source_commit == $sha and .admin_contract_version == $contract' "$directory/admin.json" >/dev/null; then
+    echo "GENERIC_DEPLOY_ADMIN_RELEASE_EVIDENCE_MISMATCH"; return 1
+  fi
+  if [[ "$readiness_phase" == "candidate-pre-publication" ]] && ! jq -e --arg previous "$PREVIOUS_LEGAL_VERSION" '.version == $previous' "$directory/legal.json" >/dev/null; then
+    echo "GENERIC_DEPLOY_PREVIOUS_LEGAL_EVIDENCE_MISMATCH"; return 1
+  fi
+  if [[ "$readiness_phase" == "promotion" ]] && ! jq -e --slurpfile request "$request_path" '(.version == $request[0].expected.legal_version) and ({PUBLIC_OFFER: .manifest.documents.PUBLIC_OFFER.sha256, PRIVACY_POLICY: .manifest.documents.PRIVACY_POLICY.sha256, PD_CONSENT: .manifest.documents.PD_CONSENT.sha256, CHECKOUT_DISCLOSURE: .manifest.documents.CHECKOUT_DISCLOSURE.sha256} == $request[0].expected.legal_hashes)' "$directory/legal.json" >/dev/null; then
+    echo "GENERIC_DEPLOY_PUBLIC_LEGAL_EVIDENCE_MISMATCH"; return 1
+  fi
+  if ! jq -e '.ok == true' "$directory/health.json" >/dev/null; then
+    echo "GENERIC_DEPLOY_HEALTHZ_NOT_READY"; return 1
+  fi
+  if ! jq -e '.ok == true' "$directory/ready.json" >/dev/null; then
+    echo "GENERIC_DEPLOY_READYZ_NOT_READY"; return 1
+  fi
+  return 0
+}
+
+# Runs at most once, only after convergence. Never inside the loop above.
+run_admission() {
+  local directory="$1"
+  if [[ "$readiness_phase" == "candidate-pre-publication" ]]; then
+    node --import tsx commerce/src/assert-candidate-runtime-ready.ts "$directory/status.json" "$TARGET_SHA" "$(jq -er '.expected.migration' "$request_path")" "$PREVIOUS_LEGAL_VERSION" >/dev/null 2>"$directory/admission.stderr"
+    return
+  fi
+  if [[ -n "${RUNTIME_ASSERT_DIR:-}" ]]; then
+    [[ -d "$RUNTIME_ASSERT_DIR" ]] || { echo "RUNTIME_ASSERT_WORKTREE_MISSING" >"$directory/admission.stderr"; return 1; }
+    (cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$directory/status.json" "$request_path" paused) >/dev/null 2>"$directory/admission.stderr"
+    return
+  fi
+  node --import tsx commerce/src/assert-generic-production-deploy-ready.ts "$directory/status.json" "$request_path" paused >/dev/null 2>"$directory/admission.stderr"
+}
+
+converged="no"
 for attempt in $(seq 1 "$POLL_ATTEMPTS"); do
   attempt_dir="$workspace/attempt-$attempt"
   mkdir "$attempt_dir"
@@ -115,32 +190,32 @@ for attempt in $(seq 1 "$POLL_ATTEMPTS"); do
       fi
     done
     reason="GENERIC_DEPLOY_READINESS_FETCH_FAILED:${fetch_reasons[*]}"
-  elif [[ "$readiness_phase" == "candidate-pre-publication" ]] && ! node --import tsx commerce/src/assert-candidate-runtime-ready.ts "$attempt_dir/status.json" "$TARGET_SHA" "$(jq -er '.expected.migration' "$request_path")" "$PREVIOUS_LEGAL_VERSION" >/dev/null 2>"$attempt_dir/runtime.stderr"; then
-    reason="GENERIC_DEPLOY_RUNTIME_EVIDENCE_NOT_READY"
-  elif [[ "$readiness_phase" == "promotion" ]] && ! run_runtime_readiness_parser "$attempt_dir/status.json" "$request_path" paused >/dev/null 2>"$attempt_dir/runtime.stderr"; then
-    reason="GENERIC_DEPLOY_RUNTIME_EVIDENCE_NOT_READY"
-  elif ! jq -e --arg sha "$TARGET_SHA" --arg contract "$CHECKOUT_CONTRACT_VERSION" '.source_commit == $sha and .checkout_contract_version == $contract' "$attempt_dir/frontend.json" >/dev/null; then
-    reason="GENERIC_DEPLOY_FRONTEND_RELEASE_EVIDENCE_MISMATCH"
-  elif ! jq -e --arg sha "$TARGET_SHA" --arg contract "$ADMIN_CONTRACT_VERSION" '.source_commit == $sha and .admin_contract_version == $contract' "$attempt_dir/admin.json" >/dev/null; then
-    reason="GENERIC_DEPLOY_ADMIN_RELEASE_EVIDENCE_MISMATCH"
-  elif [[ "$readiness_phase" == "candidate-pre-publication" ]] && ! jq -e --arg previous "$PREVIOUS_LEGAL_VERSION" '.version == $previous' "$attempt_dir/legal.json" >/dev/null; then
-    reason="GENERIC_DEPLOY_PREVIOUS_LEGAL_EVIDENCE_MISMATCH"
-  elif [[ "$readiness_phase" == "promotion" ]] && ! jq -e --slurpfile request "$request_path" '(.version == $request[0].expected.legal_version) and ({PUBLIC_OFFER: .manifest.documents.PUBLIC_OFFER.sha256, PRIVACY_POLICY: .manifest.documents.PRIVACY_POLICY.sha256, PD_CONSENT: .manifest.documents.PD_CONSENT.sha256, CHECKOUT_DISCLOSURE: .manifest.documents.CHECKOUT_DISCLOSURE.sha256} == $request[0].expected.legal_hashes)' "$attempt_dir/legal.json" >/dev/null; then
-    reason="GENERIC_DEPLOY_PUBLIC_LEGAL_EVIDENCE_MISMATCH"
-  elif ! jq -e '.ok == true' "$attempt_dir/health.json" >/dev/null; then
-    reason="GENERIC_DEPLOY_HEALTHZ_NOT_READY"
-  elif ! jq -e '.ok == true' "$attempt_dir/ready.json" >/dev/null; then
-    reason="GENERIC_DEPLOY_READYZ_NOT_READY"
   else
-    echo "Readiness attempt $attempt/$POLL_ATTEMPTS: PASS"
-    exit 0
+    reason=""
+    reason="$(converged_reason "$attempt_dir")" || true
+    if [[ -z "$reason" ]]; then
+      echo "Readiness attempt $attempt/$POLL_ATTEMPTS: CONVERGED"
+      converged="yes"
+      break
+    fi
   fi
   if [[ "$attempt" == "$POLL_ATTEMPTS" ]]; then
     echo "Readiness attempt $attempt/$POLL_ATTEMPTS: $reason"
     echo "READINESS_POLL_EXHAUSTED: $reason" >&2
     emit_observed "$last_attempt_dir"
-    exit 1
+    exit "$READINESS_EXIT_CONVERGENCE"
   fi
   echo "Readiness attempt $attempt/$POLL_ATTEMPTS: SURFACES_CONVERGING ($reason)"
   sleep "$POLL_SECONDS"
 done
+
+# Unreachable defensively: the loop either breaks converged or exits above.
+[[ "$converged" == "yes" ]] || { echo "READINESS_POLL_EXHAUSTED: GENERIC_DEPLOY_CONVERGENCE_UNRESOLVED" >&2; exit "$READINESS_EXIT_CONVERGENCE"; }
+
+if ! run_admission "$last_attempt_dir"; then
+  echo "READINESS_ADMISSION_REFUSED" >&2
+  emit_observed "$last_attempt_dir"
+  exit "$READINESS_EXIT_ADMISSION"
+fi
+echo "Readiness: ADMITTED"
+exit 0

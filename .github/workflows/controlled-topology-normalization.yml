@@ -284,7 +284,14 @@ jobs:
           # and admin webhooks were accepted. A failed full readiness proof
           # therefore authorizes one retry of the existing exact TARGET
           # webhook sequence while the same durable owner remains paused.
-          if RUNTIME_ASSERT_DIR="$RUNTIME_ASSERT_DIR" scripts/controlled-production-readiness.sh release.json; then exit 0; fi
+          readiness_status=0
+          RUNTIME_ASSERT_DIR="$RUNTIME_ASSERT_DIR" scripts/controlled-production-readiness.sh release.json || readiness_status=$?
+          if [[ "$readiness_status" == "0" ]]; then exit 0; fi
+          # Only an unconverged observable surface (exit 1) may be repaired by
+          # re-firing the exact TARGET webhook sequence. An admission refusal
+          # (exit 3) is deterministic evidence about a converged runtime, and
+          # redeploying the same source cannot change it.
+          if [[ "$readiness_status" != "1" ]]; then echo "TOPOLOGY_NORMALIZATION_READINESS_TERMINAL" >&2; exit "$readiness_status"; fi
           scripts/controlled-coolify-deploy.sh "$TARGET_SHA"
           RUNTIME_ASSERT_DIR="$RUNTIME_ASSERT_DIR" scripts/controlled-production-readiness.sh release.json
 
