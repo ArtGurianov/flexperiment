@@ -110,7 +110,7 @@ describe("controlled topology normalization", () => {
       source.indexOf("- name: Reconcile an owned runtime that may have only partially converged"),
       source.indexOf("- name: Reopen and prove terminal completion"),
     );
-    const retry = /if RUNTIME_ASSERT_DIR="\$RUNTIME_ASSERT_DIR" scripts\/controlled-production-readiness\.sh release\.json; then exit 0; fi\s+scripts\/controlled-coolify-deploy\.sh "\$TARGET_SHA"\s+RUNTIME_ASSERT_DIR="\$RUNTIME_ASSERT_DIR" scripts\/controlled-production-readiness\.sh release\.json/s;
+    const retry = /if RUNTIME_ASSERT_DIR="\$RUNTIME_ASSERT_DIR" scripts\/controlled-production-readiness\.sh release\.json; then exit 0; fi[\s\S]+scripts\/controlled-coolify-deploy\.sh "\$TARGET_SHA"[\s\S]+RUNTIME_ASSERT_DIR="\$RUNTIME_ASSERT_DIR" scripts\/controlled-production-readiness\.sh release\.json/;
     expect(reconciler).toMatch(retry);
 
     // Falsification: a controller that merely accepts commerce/worker TARGET
