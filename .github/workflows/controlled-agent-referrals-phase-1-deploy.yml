@@ -53,7 +53,11 @@ jobs:
     timeout-minutes: 120
     env:
       BASE_SHA: 2ae6a351669d2cc9d8cd42cf92d50436d64d08cd
-      EXPECTED_TARGET_SHA: b4e350f4ba6ecbaf110461dd5356c2293b3e5c2b
+      EXPECTED_TARGET_SHA: 1d7310883f4822945725a6ba95d7ff37a470f502
+      EXPECTED_TARGET_TREE: b53cdd72fdae633ad26ea5871d7b7b4f4d440342
+      # The exact reviewed range, asserted as a sequence rather than a count.
+      EXPECTED_RANGE: "b4e350f4ba6ecbaf110461dd5356c2293b3e5c2b 64b1c598f1525f7eece32f49cfc63146a2892067 1d7310883f4822945725a6ba95d7ff37a470f502"
+      EXPECTED_MIGRATION_SHA256: c8f711ace8ebf169fb492aa4b3cd5c745f98a8ed9be03ff1cf76d1ef6a184637
       EXPECTED_MIGRATION: 0058_agents_legal_identity_cleanup.sql
       CONTROLLER_SHA: ${{ github.sha }}
       TARGET_SHA: ${{ inputs.target_sha }}
@@ -112,12 +116,18 @@ jobs:
           # ancestor of main, not its tip, and requiring equality would force a
           # pointless re-cut every time governed control-plane work merges.
           [[ "$TARGET_SHA" == "$EXPECTED_TARGET_SHA" ]] || { echo PHASE_1_TARGET_NOT_REVIEWED_CANDIDATE >&2; exit 1; }
+          [[ "$TARGET_TREE" == "$EXPECTED_TARGET_TREE" ]] || { echo PHASE_1_TARGET_TREE_NOT_REVIEWED >&2; exit 1; }
           [[ "$(git rev-parse "${TARGET_SHA}^{tree}")" == "$TARGET_TREE" ]] || { echo PHASE_1_TARGET_TREE_MISMATCH >&2; exit 1; }
-          [[ "$(git rev-parse "${TARGET_SHA}^")" == "$BASE_SHA" ]] || { echo PHASE_1_TARGET_PARENT_NOT_BASE >&2; exit 1; }
           git merge-base --is-ancestor "$TARGET_SHA" "$(git rev-parse origin/main)" || { echo PHASE_1_TARGET_NOT_ON_MAIN >&2; exit 1; }
           git merge-base --is-ancestor "$TARGET_SHA" "$CONTROLLER_SHA" || { echo "PHASE_1_CONTROLLER_OLDER_THAN_TARGET" >&2; exit 1; }
           # Ordinary lineage: no ancestry waiver is claimed or needed here.
           git merge-base --is-ancestor "$BASE_SHA" "$TARGET_SHA" || { echo PHASE_1_TARGET_NOT_DESCENDANT_OF_BASE >&2; exit 1; }
+          # The reviewed range is three commits and is asserted as an exact
+          # sequence, not a count: Q, the governed CONTROL_PLANE commit that
+          # landed between candidate and cutover, and Q2. A count would admit
+          # any three commits; this admits only the ones that were reviewed.
+          actual_range="$(git rev-list --reverse "$BASE_SHA".."$TARGET_SHA" | tr '\n' ' ' | sed 's/ $//')"
+          [[ "$actual_range" == "$EXPECTED_RANGE" ]] || { echo "PHASE_1_RANGE_NOT_REVIEWED_SEQUENCE: $actual_range" >&2; exit 1; }
           [[ -z "$(git rev-list --min-parents=2 "$BASE_SHA".."$TARGET_SHA")" ]] || { echo PHASE_1_RANGE_CONTAINS_MERGE_COMMIT >&2; exit 1; }
           for commit in $(git rev-list "$BASE_SHA".."$TARGET_SHA"); do
             git cat-file -e "${commit}:.release/maintenance-only" 2>/dev/null && { echo PHASE_1_RANGE_CONTAINS_MAINTENANCE_COMMIT >&2; exit 1; } || true
@@ -132,6 +142,10 @@ jobs:
           git diff --name-status "$BASE_SHA" "$TARGET_SHA" -- commerce/migrations > migration-delta.txt
           printf 'A\t%s\n' "commerce/migrations/$EXPECTED_MIGRATION" > migration-delta-expected.txt
           diff -u migration-delta-expected.txt migration-delta.txt || { echo PHASE_1_UNEXPECTED_SCHEMA_DELTA >&2; exit 1; }
+          # The net delta names the file; this pins its exact bytes, which is
+          # what carries the in-transaction Gate 1/2 guards.
+          actual_migration_sha256="$(git show "$TARGET_SHA:commerce/migrations/$EXPECTED_MIGRATION" | shasum -a 256 | awk '{print $1}')"
+          [[ "$actual_migration_sha256" == "$EXPECTED_MIGRATION_SHA256" ]] || { echo "PHASE_1_MIGRATION_BYTES_NOT_REVIEWED: $actual_migration_sha256" >&2; exit 1; }
           node --import tsx -e '
             import { readFileSync } from "node:fs";
             import { compatibilitySemanticsPaths, genericProductionDeployBoundary, releaseSemanticsCategories } from "./commerce/src/generic-production-deploy-boundary";
@@ -147,13 +161,19 @@ jobs:
             if (genericProductionDeployBoundary(paths) !== "SCHEMA") fail("PHASE_1_BOUNDARY_NOT_SCHEMA");
           '
 
-      - name: Prove both read-only production gates before any effect
+      - name: Require the Gate 1/2 preflight provenance
         run: |
           set -euo pipefail
-          # STOP conditions. rows=0 is literal: a non-empty result can never be
-          # waved through, and this controller never repairs or re-queries its
-          # way past one. The SQL and its semantics live in
-          # docs/release/AGENT_REFERRALS_PHASE_1_RUNBOOK.md.
+          # Provenance, not authority. These inputs prove an operator ran the
+          # read-only queries and looked at the result; they do not make the
+          # cutover safe and must never be described as if they did. The BASE
+          # runtime can invalidate either gate after the query returns, so the
+          # authority is 0058's own in-transaction Gate 1/2 guards, which run
+          # under the same BEGIN IMMEDIATE as the DDL they protect.
+          #
+          # rows=0 is literal all the same: an operator who saw a non-empty
+          # result must not be able to dispatch. The SQL and the full semantics
+          # live in docs/release/AGENT_REFERRALS_PHASE_1_RUNBOOK.md.
           gate_shape='^rows=0;[^;]+;[^;]+$'
           [[ "$INPUT_GATE1_EVIDENCE" =~ $gate_shape ]] || { echo PHASE_1_GATE_1_EVIDENCE_NOT_ZERO >&2; exit 1; }
           [[ "$INPUT_GATE2_EVIDENCE" =~ $gate_shape ]] || { echo PHASE_1_GATE_2_EVIDENCE_NOT_ZERO >&2; exit 1; }
@@ -291,7 +311,19 @@ jobs:
           # never authorise another production deployment.
           if [[ "$readiness_status" != "$READINESS_EXIT_CONVERGENCE" ]]; then echo "PHASE_1_READINESS_TERMINAL: exit $readiness_status" >&2; exit "$readiness_status"; fi
           scripts/controlled-coolify-deploy.sh "$TARGET_SHA"
-          scripts/controlled-production-readiness.sh release.json
+          readiness_retry_status=0
+          scripts/controlled-production-readiness.sh release.json || readiness_retry_status=$?
+          if [[ "$readiness_retry_status" != "0" ]]; then
+            # One bounded retry, and no more. In particular a candidate that
+            # cannot boot because 0058's gates refused it looks exactly like a
+            # surface that never converged, and must not be treated as anything
+            # else: there is no schema-failure branch, no waiver, and no
+            # automatic redeploy of BASE from here. Recovering to BASE, if
+            # operationally required, is a separate controlled act - see
+            # docs/release/AGENT_REFERRALS_PHASE_1_RUNBOOK.md.
+            echo "PHASE_1_CANDIDATE_NOT_CONVERGED_AFTER_ONE_RETRY: exit $readiness_retry_status" >&2
+            exit "$readiness_retry_status"
+          fi
 
       - name: Reopen and prove terminal completion
         if: env.DEPLOYMENT_STATE != 'ALREADY_COMPLETE'

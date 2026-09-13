@@ -6,12 +6,22 @@ manual-only and must not be dispatched until its exact inputs are frozen.
 
 ```text
 BASE   = 2ae6a351669d2cc9d8cd42cf92d50436d64d08cd   (current production-deploy)
-TARGET = b4e350f4ba6ecbaf110461dd5356c2293b3e5c2b   (Q, the Phase 1 candidate)
+TARGET = 1d7310883f4822945725a6ba95d7ff37a470f502   (Q2, the Phase 1 candidate)
+tree   = b53cdd72fdae633ad26ea5871d7b7b4f4d440342
 ```
 
-`TARGET^ == BASE`, and `TARGET` is an ancestor of protected `main`. `main` being
-ahead of `TARGET` is **not** drift: the intervening commit is `CONTROL_PLANE`,
-governed by protected `main` plus required CI and never deployed.
+`BASE..TARGET` is an ordinary linear range of exactly three reviewed commits,
+asserted as a sequence rather than a count:
+
+```text
+b4e350f  Q    agent legal identity
+64b1c59       CONTROL_PLANE: readiness convergence/admission separation
+1d73108  Q2   Phase 1 in-transaction migration gates
+```
+
+The middle commit is `CONTROL_PLANE`, governed by protected `main` plus required
+CI and never deployed. Its presence in the range is expected and is not drift;
+the controller classifies it rather than rejecting it.
 
 ## The two production gates
 
@@ -93,27 +103,71 @@ non-empty result means onboarding those agents into a valid identity binding, or
 retiring the legacy route — **never** weakening the pin, synthesizing a
 historical binding, selecting an arbitrary revision, or backfilling production.
 
-## Recording the evidence
+## Authority: the migration, not the query
 
-Each gate is passed to the controller as a required dispatch input in this exact
-shape, which the controller validates before any production effect:
+```text
+operator Gate 1/2 query        = required preflight provenance
+0058 in-transaction guards     = cutover authority
+```
+
+This distinction is load-bearing, not bookkeeping. A query result is a
+point-in-time fact, and the BASE runtime can invalidate either gate after it
+returns: legacy `prepareSettlement()` writes `reward_settlements` rows without
+`settlement_flow` - so they read as LEGACY - and it is behind no fence.
+`assertNewOrdersOpen` appears only on the quote/checkout path, never in the
+settlement transaction, and `emergencySalesPaused` is read for display rather
+than enforced. Pausing sales does **not** stop settlement preparation.
+
+So 0058 proves both gates itself, before its first destructive statement, inside
+the same `BEGIN IMMEDIATE` transaction `applyFkOffMigration` uses for the DDL. A
+writer either lands before the lock and is counted, or cannot interleave at all.
+That closes the race; a freshness window on the operator evidence would only
+have narrowed it.
+
+The dispatch inputs remain mandatory and must still read exactly:
 
 ```text
 rows=0;<UTC timestamp>;<immutable evidence reference>
 ```
 
-`rows=0` is literal: the controller refuses any other count, so an operator
-cannot wave a non-empty result through. The controller cannot execute the SQL
-itself — GitHub Actions has no database access, and adding a gate endpoint would
-be a runtime change — so this mirrors the `base_integrity_check_evidence`
-precedent in `TOPOLOGY_NORMALIZATION_RUNBOOK.md`. What the controller *can*
-verify independently, it does: it reads the token-gated, read-only
-`agent-referrals/dormant-readiness` surface and records
-`business_facts_tables`, which covers `partner_identities` and
-`agent_referrals_legal_profile_revisions` from production's own runtime.
+`rows=0` is literal so that an operator who saw a non-empty result cannot
+dispatch. But validating that string is **not** what makes the cutover safe, and
+must not be described as if it were.
+
+The controller also records what production can prove about itself: it reads the
+token-gated read-only `agent-referrals/dormant-readiness` surface and logs
+`business_facts_tables`, covering `partner_identities` and
+`agent_referrals_legal_profile_revisions`.
+
+## If a guard refuses
+
+```text
+0058 guard violation
+  -> migration transaction rolls back
+  -> 0058 absent from the migration ledger
+  -> the old schema remains authoritative
+  -> the candidate fails to boot; readiness fails closed
+  -> STOP
+  -> separate controlled recovery to BASE, if operationally required
+```
+
+Nothing about this path is automatic. The controller performs **one** bounded
+redeploy of TARGET for an unconverged surface and then stops; it never redeploys
+BASE, has no schema-failure branch, and offers no waiver input. A candidate
+refused by its own gates is indistinguishable from a surface that never
+converged, and is deliberately treated the same: readiness exit `75` means
+"deployment failed to converge" and nothing else. Recovering production to BASE
+is a separate, deliberate, controlled act.
+
+Diagnose from the production rows before doing anything else. Neither gate may
+be waived, relabelled, weakened, or satisfied by backfill - `0047`'s
+`reward_settlements_authority_columns_immutable_guard` forbids relabelling an
+existing settlement anyway, and a historical settlement's provenance cannot be
+reconstructed from today's revisions.
 
 `commerce/test/agent-referrals-phase-1-gate-queries.test.ts` extracts both
-statements from this document and runs them against a real schema built from the
-production migration set, proving they are not vacuous: each detects its own
-violation, a live current binding clears Gate 2, and a destroyed identity or a
-superseded pointer does not.
+statements from this document - not a copy - and runs them against a schema
+built from the production migration set, proving they are not vacuous.
+`commerce/test/agent-referrals-phase-1-migration-gates.test.ts` executes the real
+loader and proves that a violation leaves the ledger, the schema and every
+trigger untouched.
