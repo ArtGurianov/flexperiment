@@ -1,21 +1,25 @@
 name: Controlled Agent Referrals Phase 1 deploy
 
 # One-shot controller for the Phase 1 legal-identity cleanup. Unlike the
-# topology normalization before it, this is ordinary lineage: TARGET is a
-# direct child of the current production-deploy and an ancestor of protected
-# main, so nothing here waives an ancestry rule. `main` being ahead of TARGET
-# is not drift - the intervening commit is CONTROL_PLANE, governed by
-# protected main plus required CI and never deployed.
+# topology normalization before it, this is ordinary lineage: TARGET is the
+# exact reviewed linear descendant of the current production-deploy and an
+# ancestor of protected main, so nothing here waives an ancestry rule. TARGET
+# is not BASE's direct child - a governed CONTROL_PLANE commit landed between
+# the candidate and its cutover - and the range is therefore asserted as a
+# literal three-SHA sequence rather than a parent relationship or a count.
+# `main` being ahead of TARGET is likewise not drift.
 #
-# The two production gates in docs/release/AGENT_REFERRALS_PHASE_1_RUNBOOK.md
-# prove existing eligibility and are STOP conditions. They are asserted before
-# any production effect, and this controller never repairs, backfills or
-# re-queries its way past one.
+# The Gate 1/2 dispatch inputs in
+# docs/release/AGENT_REFERRALS_PHASE_1_RUNBOOK.md are preflight provenance,
+# not authority: the cutover authority is 0058's own in-transaction guards,
+# which run under the same BEGIN IMMEDIATE as the DDL they protect. Both are
+# STOP conditions, and this controller never repairs, backfills or re-queries
+# its way past one.
 on:
   workflow_dispatch:
     inputs:
       target_sha:
-        description: Exact Phase 1 candidate commit (Q)
+        description: Exact Phase 1 candidate commit (Q2)
         required: true
         type: string
       target_tree:
