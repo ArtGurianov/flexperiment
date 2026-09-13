@@ -105,14 +105,17 @@ describe("test temp GC", () => {
     const stubs = mkdtempSync(join(tmpdir(), "temp-gc-stub-"));
     temporary.push(stubs);
     const stub = join(stubs, "find");
-    writeFileSync(stub, "#!/usr/bin/env bash\necho 'find: simulated failure' >&2\nexit 1\n");
+    // Exit 7, not 1: `if ! cmd` would report $? as 0, so a distinctive code
+    // is what proves the diagnostic carries the real failure status.
+    writeFileSync(stub, "#!/usr/bin/env bash\necho 'find: simulated failure' >&2\nexit 7\n");
     chmodSync(stub, 0o755);
     const result = spawnSync("bash", [SCRIPT], {
       encoding: "utf8",
       env: { ...process.env, TEST_TEMP_GC_ROOT: r, PATH: `${stubs}:${process.env.PATH}` },
     });
-    expect(result.status, "a broken scan must not exit 0").not.toBe(0);
+    expect(result.status, "a broken scan must not exit 0").toBe(2);
     expect(result.stdout).not.toContain("Removed 0 of 0");
+    expect(result.stderr).toContain("TEST_TEMP_GC_SCAN_FAILED: find exited 7");
   });
 
   it("ignores names that are not mkdtemp-shaped, including system temps", () => {

@@ -99,8 +99,13 @@ fi
 # That is the same silent no-op this script exists to prevent.
 candidates="$(mktemp "${TMPDIR:-/tmp}/test-temp-gc.XXXXXX")"
 trap 'rm -f "$candidates"' EXIT
-if ! "${find_prefix[@]}" -type d -mmin "+${minutes}" -regex "$shape" > "$candidates"; then
-  echo "TEST_TEMP_GC_SCAN_FAILED: find exited $? while scanning $root" >&2
+# Capture the status rather than testing with `!`: inside `if ! cmd; then`,
+# $? is the status of the negation, which is always 0 - so the diagnostic
+# would have reported "find exited 0" for every real failure.
+scan_status=0
+"${find_prefix[@]}" -type d -mmin "+${minutes}" -regex "$shape" > "$candidates" || scan_status=$?
+if (( scan_status != 0 )); then
+  echo "TEST_TEMP_GC_SCAN_FAILED: find exited $scan_status while scanning $root" >&2
   exit 2
 fi
 
