@@ -61,9 +61,9 @@ const tableNames = (db: Database.Database) =>
 // these tests prove the DATABASE enforces the invariant, independent of
 // any application-level check).
 
-const seedAgent = (db: Database.Database, agentId = "agent-1", contractorType = "SELF_EMPLOYED") =>
-  db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'M', 'M Legal', ?, ?, '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId, agentId, `${agentId}@example.test`, contractorType);
+const seedAgent = (db: Database.Database, agentId = "agent-1") =>
+  db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
+    VALUES (?, ?, 'M', ?, 'C-1', 'PERCENT', 1000)`).run(agentId, agentId, `${agentId}@example.test`);
 
 const seedPartnerIdentity = (db: Database.Database, partnerId = "partner-1", agentId = "agent-1", legalProfileRevisionId: string | null = null) =>
   db.prepare(`INSERT INTO partner_identities(id, agent_id, email, email_hash, legal_profile_revision_id, created_by_admin_id) VALUES (?, ?, 'a@example.test', 'h', ?, 'admin')`)
@@ -141,7 +141,7 @@ const seedRegistryAndEffective = (db: Database.Database, opts: {
 const seedFixture = (db: Database.Database, opts: { taxMode?: "NPD" | "OTHER"; total?: number; terminalStatus?: "COMPLETED" | "CANCELLED" } = {}) => {
   const { taxMode = "NPD", total = 9000, terminalStatus = "COMPLETED" } = opts;
   const contractorType = taxMode === "NPD" ? "SELF_EMPLOYED" : "INDIVIDUAL_ENTREPRENEUR";
-  seedAgent(db, "agent-1", contractorType);
+  seedAgent(db, "agent-1");
   const legalProfileRevisionId = seedLegalProfileRevision(db, "agent-1", "lp-1", taxMode);
   seedPartnerIdentity(db, "partner-1", "agent-1", legalProfileRevisionId);
   const taxTreatmentRevisionId = seedTaxTreatment(db, "partner-1", legalProfileRevisionId, taxMode);
@@ -275,16 +275,17 @@ describe("0047 act/payment/settlement migration", () => {
     expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
   });
 
-  it("is not FK-off, and the registry still contains only the exact 0042, 0050 and 0052 tuples", () => {
+  it("is not FK-off, while the later 0058 agents rebuild has its own reviewed FK-off tuple", () => {
     const db = at0046();
     const sql = readFileSync(join(MIGRATIONS, MIGRATION_FILE), "utf8");
     expect(isFkOffMigration(MIGRATION_FILE, createHash("sha256").update(sql).digest("hex"))).toBe(false);
     migrate(db);
-    expect(FK_OFF_MIGRATIONS).toHaveLength(3);
+    expect(FK_OFF_MIGRATIONS).toHaveLength(4);
     expect(FK_OFF_MIGRATIONS).toEqual([
       { filename: "0042_agent_referrals_agents_rebuild.sql", sha256: "d9b5ecbf496993669201b45440ea5213ba0e52af778e2094d569f772adfee6ab" },
       { filename: "0050_agent_referrals_legal_profile_provenance_rebuild.sql", sha256: "e1cbd9ce177546ea621fb4a9da861f63e69e999e8bf6a5c159d1c967761349f0" },
       { filename: "0052_agent_referrals_unified_legal_requisites.sql", sha256: "bcc44feaa37acb5930a8b9d7fe4a1bd4e711306e2640b9cb04ff78844cec9104" },
+      { filename: "0058_agents_legal_identity_cleanup.sql", sha256: "22f5f13bb2469ecd3110cc50f1d81549a458854e1c33daf392501aef447ac44b" },
     ]);
   });
 
@@ -388,7 +389,9 @@ describe("0047 act/payment/settlement migration", () => {
   describe("reward_settlements: settlement_flow partition and authority tuple", () => {
     it("historical NULL stays NULL forever - nullable, no default, never backfilled, mirroring 0046's referral_rewards.reward_authority_kind exactly", () => {
       const db = at0046();
-      seedAgent(db); seedOccurrence(db);
+      db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
+        VALUES ('agent-1', 'agent-1', 'M', 'M Legal', 'agent-1@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run();
+      seedOccurrence(db);
       db.prepare(`INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id)
         VALUES ('pre-1', 'agent-1', 'occ-1', 1000, 'bank', 'PREPARED', 'SELF_EMPLOYED', datetime('now'), 'admin')`).run();
       migrate(db);
@@ -399,8 +402,10 @@ describe("0047 act/payment/settlement migration", () => {
       const db = at0046();
       migrate(db);
       seedAgent(db); seedOccurrence(db);
-      expect(() => db.prepare(`INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id)
-        VALUES ('legacy-1', 'agent-1', 'occ-1', 1000, 'bank', 'PREPARED', 'SELF_EMPLOYED', datetime('now'), 'admin')`).run()).not.toThrow();
+      const legalProfileRevisionId = seedLegalProfileRevision(db);
+      seedPartnerIdentity(db, "partner-1", "agent-1", legalProfileRevisionId);
+      expect(() => db.prepare(`INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, legal_profile_revision_id_snapshot, prepared_at, created_by_admin_id)
+        VALUES ('legacy-1', 'agent-1', 'occ-1', 1000, 'bank', 'PREPARED', 'SELF_EMPLOYED', 'lp-1', datetime('now'), 'admin')`).run()).not.toThrow();
       const row = db.prepare("SELECT settlement_flow, engagement_id, effective_reward_snapshot_id FROM reward_settlements WHERE id = 'legacy-1'").get();
       expect(row).toEqual({ settlement_flow: null, engagement_id: null, effective_reward_snapshot_id: null });
     });
@@ -408,8 +413,10 @@ describe("0047 act/payment/settlement migration", () => {
     it("an EXPLICIT settlement_flow = 'LEGACY' row is also accepted (CHECK allows the literal, even though nothing in this codebase writes it)", () => {
       const db = at0046(); migrate(db);
       seedAgent(db); seedOccurrence(db);
-      expect(() => db.prepare(`INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id, settlement_flow)
-        VALUES ('legacy-explicit-1', 'agent-1', 'occ-1', 1000, 'bank', 'PREPARED', 'SELF_EMPLOYED', datetime('now'), 'admin', 'LEGACY')`).run()).not.toThrow();
+      const legalProfileRevisionId = seedLegalProfileRevision(db);
+      seedPartnerIdentity(db, "partner-1", "agent-1", legalProfileRevisionId);
+      expect(() => db.prepare(`INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, legal_profile_revision_id_snapshot, prepared_at, created_by_admin_id, settlement_flow)
+        VALUES ('legacy-explicit-1', 'agent-1', 'occ-1', 1000, 'bank', 'PREPARED', 'SELF_EMPLOYED', 'lp-1', datetime('now'), 'admin', 'LEGACY')`).run()).not.toThrow();
     });
 
     it("a well-formed AGENT_REFERRALS settlement succeeds", () => {
@@ -735,8 +742,10 @@ describe("0047 act/payment/settlement migration", () => {
     it("this FSM guard never fires for LEGACY (or historical-NULL) rows - legacy's own four-state machine is untouched", () => {
       const db = at0046(); migrate(db);
       seedAgent(db); seedOccurrence(db);
-      db.prepare(`INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id)
-        VALUES ('legacy-1', 'agent-1', 'occ-1', 1000, 'bank', 'PREPARED', 'SELF_EMPLOYED', datetime('now'), 'admin')`).run();
+      const legalProfileRevisionId = seedLegalProfileRevision(db);
+      seedPartnerIdentity(db, "partner-1", "agent-1", legalProfileRevisionId);
+      db.prepare(`INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, legal_profile_revision_id_snapshot, prepared_at, created_by_admin_id)
+        VALUES ('legacy-1', 'agent-1', 'occ-1', 1000, 'bank', 'PREPARED', 'SELF_EMPLOYED', 'lp-1', datetime('now'), 'admin')`).run();
       // The exact same "no evidence" transition that is illegal for AGENT_REFERRALS succeeds unconditionally for a LEGACY (NULL-flow) row.
       expect(() => db.prepare("UPDATE reward_settlements SET status = 'SETTLED' WHERE id = 'legacy-1'").run()).not.toThrow();
       expect(() => db.prepare("UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT' WHERE id = 'legacy-1'").run()).not.toThrow();

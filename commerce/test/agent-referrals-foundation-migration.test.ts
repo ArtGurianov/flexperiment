@@ -94,11 +94,12 @@ describe("0043 agent-referrals foundation migration", () => {
   });
 
   it("leaves the FK_OFF_MIGRATIONS registry containing only the exact 0042, 0050 and 0052 tuples", () => {
-    expect(FK_OFF_MIGRATIONS).toHaveLength(3);
+    expect(FK_OFF_MIGRATIONS).toHaveLength(4);
     expect(FK_OFF_MIGRATIONS).toEqual([
       { filename: "0042_agent_referrals_agents_rebuild.sql", sha256: "d9b5ecbf496993669201b45440ea5213ba0e52af778e2094d569f772adfee6ab" },
       { filename: "0050_agent_referrals_legal_profile_provenance_rebuild.sql", sha256: "e1cbd9ce177546ea621fb4a9da861f63e69e999e8bf6a5c159d1c967761349f0" },
       { filename: "0052_agent_referrals_unified_legal_requisites.sql", sha256: "bcc44feaa37acb5930a8b9d7fe4a1bd4e711306e2640b9cb04ff78844cec9104" },
+      { filename: "0058_agents_legal_identity_cleanup.sql", sha256: "22f5f13bb2469ecd3110cc50f1d81549a458854e1c33daf392501aef447ac44b" },
     ]);
   });
 
@@ -162,8 +163,8 @@ describe("0043 agent-referrals foundation migration", () => {
       // Revisions are immutable and undeletable (structurally, by trigger),
       // so each case gets its own agent rather than reusing revision 1 on
       // one agent - this test proves the CHECK, not the revision sequence.
-      const insertAgent = (agentId: string) => db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
-        VALUES (?, ?, 'M', 'M Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId, agentId, `${agentId}@example.test`);
+      const insertAgent = (agentId: string) => db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
+        VALUES (?, ?, 'M', ?, 'C-1', 'PERCENT', 1000)`).run(agentId, agentId, `${agentId}@example.test`);
 
       // PR-E: full_name/inn are mandatory for every legal_form, and
       // LEGAL_ENTITY additionally requires opf/kpp/registration_number/
@@ -228,8 +229,8 @@ describe("0043 agent-referrals foundation migration", () => {
       migrate(db);
       db.prepare(`INSERT INTO framework_agreement_revisions(id, revision, content_json, content_hash) VALUES ('f1', 1, '{}', 'h')`).run();
       db.prepare(`INSERT INTO delegation_template_revisions(id, revision, ord_reporting_mode, content_json, content_hash) VALUES ('d1', 1, 'FLEXPERIMENT_DELEGATED', '{}', 'h')`).run();
-      db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
-        VALUES ('agent-guard', 'guard-agent', 'G', 'G Legal', 'g@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run();
+      db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
+        VALUES ('agent-guard', 'guard-agent', 'G', 'g@example.test', 'C-1', 'PERCENT', 1000)`).run();
       db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, full_name, inn, reason, assertion_source)
         VALUES ('r1', 'agent-guard', 1, 'INDIVIDUAL', 'NPD', 'SELF_EMPLOYED', 'Ivanov Ivan Ivanovich', '123456789012', 'seed', 'PARTNER_ASSERTED')`).run();
 
@@ -243,8 +244,8 @@ describe("0043 agent-referrals foundation migration", () => {
       migrate(db);
       db.prepare(`INSERT INTO framework_agreement_revisions(id, revision, content_json, content_hash) VALUES ('f1', 1, '{}', 'h')`).run();
       db.prepare(`INSERT INTO delegation_template_revisions(id, revision, ord_reporting_mode, content_json, content_hash) VALUES ('d1', 1, 'FLEXPERIMENT_DELEGATED', '{}', 'h')`).run();
-      db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
-        VALUES ('agent-guard-2', 'guard-agent-2', 'G', 'G Legal', 'g2@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run();
+      db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
+        VALUES ('agent-guard-2', 'guard-agent-2', 'G', 'g2@example.test', 'C-1', 'PERCENT', 1000)`).run();
       db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, full_name, inn, reason, assertion_source)
         VALUES ('r1', 'agent-guard-2', 1, 'INDIVIDUAL', 'NPD', 'SELF_EMPLOYED', 'Ivanov Ivan Ivanovich', '123456789012', 'seed', 'PARTNER_ASSERTED')`).run();
 

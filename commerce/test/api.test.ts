@@ -9,6 +9,9 @@ import { CommerceDomain } from "../src/domain";
 import { decryptTicketCapability, sha256 } from "../src/crypto";
 import { releaseStateHash, type GenerationHead } from "../src/release-generation";
 import type { SmartCaptchaVerifier } from "../src/smartcaptcha";
+import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile, type AdminPrincipal } from "../src/agent-referrals-partner-identity";
+import { currentAgentReferralsLegalProfile } from "../src/agent-referrals-legal-profile";
 
 process.env.COMMERCE_SESSION_SECRET = "test-session-secret";
 process.env.COMMERCE_ADMIN_PASSWORD_SCRYPT = `salt:${scryptSync("correct horse", "salt", 64).toString("base64url")}`;
@@ -17,6 +20,15 @@ const { createApp } = await import("../src/api");
 const legalManifest = { documents: Object.fromEntries(["PUBLIC_OFFER", "PRIVACY_POLICY", "PD_CONSENT", "CHECKOUT_DISCLOSURE"].map((document) => [document, { document_id: document, version: "test-1", sha256: "0".repeat(64), current_url: `https://example.test/legal/${document}`, archive_url: `https://example.test/archive/${document}`, checkout_relevant: true }])) };
 
 const passingCaptcha: SmartCaptchaVerifier = { verify: async () => "PASS" };
+const settlementFixtureAdmin: AdminPrincipal = { realm: "ADMIN", admin_id: "settlement-fixture-admin" };
+
+function seedLegacySettlementAuthority(db: ReturnType<typeof openDatabase>, agentId: string, email: string) {
+  activateAgentReferrals(db, { expected_revision: 1, owner_id: "settlement-fixture-owner", reason: "test" });
+  const { partner_identity_id } = provisionPartnerOwner(db, settlementFixtureAdmin, agentId, email, "test");
+  submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Settlement Fixture", inn: "123456789012" }, 0);
+  verifyPartnerLegalProfile(db, settlementFixtureAdmin, partner_identity_id, "test");
+  return currentAgentReferralsLegalProfile(db, agentId)!.id;
+}
 
 function appFixture(smartCaptcha: SmartCaptchaVerifier = passingCaptcha) {
   const db = openDatabase(":memory:"); migrate(db);
@@ -480,8 +492,9 @@ describe("commerce HTTP boundary", () => {
     const { db, app } = appFixture();
     const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
     const agentId = randomUUID(); const settlementId = randomUUID();
-    db.prepare("INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, npd_status_checked_at, default_reward_type, default_reward_value) VALUES (?, 'settlement-api-agent', 'Settlement Agent', 'Settlement Agent Legal', 'settlement-agent@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', datetime('now'), 'FIXED', 100)").run(agentId);
-    db.prepare("INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id) VALUES (?, ?, ?, 100, 'TRANSFER', 'PREPARED', 'SELF_EMPLOYED', ?, 'admin')").run(settlementId, agentId, occurrenceId, new Date().toISOString());
+    db.prepare("INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value) VALUES (?, 'settlement-api-agent', 'Settlement Agent', 'settlement-agent@example.test', 'C-1', 'FIXED', 100)").run(agentId);
+    const legalProfileRevisionId = seedLegacySettlementAuthority(db, agentId, "settlement-agent@example.test");
+    db.prepare("INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, legal_profile_revision_id_snapshot, prepared_at, created_by_admin_id) VALUES (?, ?, ?, 100, 'TRANSFER', 'PREPARED', 'SELF_EMPLOYED', ?, ?, 'admin')").run(settlementId, agentId, occurrenceId, legalProfileRevisionId, new Date().toISOString());
     const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.57" }, body: JSON.stringify({ password: "correct horse" }) });
     const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
     const reviewCount = db.prepare("SELECT COUNT(*) AS count FROM settlement_prepared_reviews").get();
@@ -507,10 +520,11 @@ describe("commerce HTTP boundary", () => {
     const { db, app } = appFixture();
     const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
     const agentId = randomUUID(); const reviewedSettlementId = randomUUID(); const otherSettlementId = randomUUID();
-    db.prepare("INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, npd_status_checked_at, default_reward_type, default_reward_value) VALUES (?, 'filter-agent', 'Filter Agent', 'Filter Agent Legal', 'filter-agent@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', datetime('now'), 'FIXED', 100)").run(agentId);
-    const insertSettlement = db.prepare("INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id) VALUES (?, ?, ?, 100, 'TRANSFER', 'PREPARED', 'SELF_EMPLOYED', ?, 'admin')");
-    insertSettlement.run(reviewedSettlementId, agentId, occurrenceId, new Date(Date.now() - 25 * 60 * 60_000).toISOString());
-    insertSettlement.run(otherSettlementId, agentId, occurrenceId, new Date().toISOString());
+    db.prepare("INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value) VALUES (?, 'filter-agent', 'Filter Agent', 'filter-agent@example.test', 'C-1', 'FIXED', 100)").run(agentId);
+    const legalProfileRevisionId = seedLegacySettlementAuthority(db, agentId, "filter-agent@example.test");
+    const insertSettlement = db.prepare("INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, legal_profile_revision_id_snapshot, prepared_at, created_by_admin_id) VALUES (?, ?, ?, 100, 'TRANSFER', 'PREPARED', 'SELF_EMPLOYED', ?, ?, 'admin')");
+    insertSettlement.run(reviewedSettlementId, agentId, occurrenceId, legalProfileRevisionId, new Date(Date.now() - 25 * 60 * 60_000).toISOString());
+    insertSettlement.run(otherSettlementId, agentId, occurrenceId, legalProfileRevisionId, new Date().toISOString());
     db.prepare("INSERT INTO settlement_prepared_reviews(settlement_id) VALUES (?)").run(reviewedSettlementId);
     db.prepare("INSERT INTO operational_incidents(id, incident_key, kind, entity_type, entity_id, details_json, status) VALUES (?, 'open-filter-incident', 'VENUE_ANNOUNCEMENT_OVERDUE', 'occurrence', ?, '{}', 'OPEN')").run(randomUUID(), occurrenceId);
     db.prepare("INSERT INTO operational_incidents(id, incident_key, kind, entity_type, entity_id, details_json, status, resolution_note, resolved_at) VALUES (?, 'resolved-filter-incident', 'VENUE_ANNOUNCEMENT_OVERDUE', 'occurrence', ?, '{}', 'RESOLVED', 'fixed', datetime('now'))").run(randomUUID(), occurrenceId);

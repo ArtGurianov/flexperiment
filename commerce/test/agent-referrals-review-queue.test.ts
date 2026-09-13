@@ -116,8 +116,8 @@ describe("agent-referrals-review-queue.ts: live-derived operator findings, never
     track(db);
     activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
     const agentId = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
-      VALUES (?, 'p1', 'A', 'A Legal', 'a@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId);
+    db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
+      VALUES (?, 'p1', 'A', 'a@example.test', 'C-1', 'PERCENT', 1000)`).run(agentId);
     const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
     const asPartner: PartnerPrincipal = { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" };
     submitPartnerLegalProfile(db, asPartner, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);

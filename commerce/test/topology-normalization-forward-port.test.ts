@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
@@ -19,8 +20,13 @@ describe("topology normalization forward-port", () => {
     ]) {
       expect(readFileSync(path), path).toEqual(blob(production, path));
     }
-    expect(execFileSync("git", ["rev-parse", `${production}:commerce/migrations`], { encoding: "utf8" }).trim())
-      .toBe(execFileSync("git", ["rev-parse", "HEAD:commerce/migrations"], { encoding: "utf8" }).trim());
+    // Phase 1 is the one approved successor to the frozen topology cutover:
+    // preserve every production migration byte and admit only its reviewed
+    // FK-off rebuild, never a broad migration-tree waiver.
+    expect(execFileSync("git", ["diff", "--name-status", production, "HEAD", "--", "commerce/migrations"], { encoding: "utf8" }).trim())
+      .toBe("A\tcommerce/migrations/0058_agents_legal_identity_cleanup.sql");
+    expect(createHash("sha256").update(readFileSync("commerce/migrations/0058_agents_legal_identity_cleanup.sql")).digest("hex"))
+      .toBe("22f5f13bb2469ecd3110cc50f1d81549a458854e1c33daf392501aef447ac44b");
     expect(statSync("certification.sh").mode & 0o777).toBe(0o644);
   });
 

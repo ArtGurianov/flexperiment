@@ -39,9 +39,8 @@ export class AgentReferralsBusinessFactsSchemaIncompleteError extends Error {
  * explicit exclusion list: it is a pre-existing table (shared with the
  * unrelated promo/referral-rewards system) that 0042 only widens a CHECK
  * constraint on, and it never appears as a bare table name in
- * AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS - only its 0049 guard trigger
- * (`agents_contractor_type_projection_guard`) does, which `type = 'table'`
- * filters out. Real pre-existing rows in `agents` are expected and are not
+ * AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS. Real pre-existing rows in `agents`
+ * are expected and are not
  * an Agent Referrals business fact.
  *
  * `agent_referrals_feature_state` is excluded explicitly: it is the
