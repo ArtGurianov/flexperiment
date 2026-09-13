@@ -43,7 +43,8 @@
     "deploy:test:caddyfile": "bash deploy/test-caddyfile-topology.sh",
     "admin:dev": "pnpm --filter @flexperiment/admin dev",
     "test": "COMMERCE_TEST_DB_SNAPSHOT=1 vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:temp:gc": "bash scripts/test-temp-gc.sh"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.1",
