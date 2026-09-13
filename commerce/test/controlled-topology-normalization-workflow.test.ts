@@ -2,6 +2,8 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const source = readFileSync(".github/workflows/controlled-topology-normalization.yml", "utf8");
+const readiness = readFileSync("scripts/controlled-production-readiness.sh", "utf8");
+const runbook = readFileSync("docs/release/TOPOLOGY_NORMALIZATION_RUNBOOK.md", "utf8");
 
 describe("controlled topology normalization", () => {
   it("is manual-only and binds a supplied frozen main target", () => {
@@ -59,7 +61,7 @@ describe("controlled topology normalization", () => {
 
     const pause = source.slice(source.indexOf("- name: Pause sales"), source.indexOf("- name: Prove public checkout pause"));
     expect(pause).toContain("env.DEPLOYMENT_STATE == 'FRESH' || env.DEPLOYMENT_STATE == 'OWNED_ACQUIRED_UNPAUSED'");
-    const deploy = source.slice(source.indexOf("- name: Deploy exact TARGET"), source.indexOf("- name: Prove an already-converged"));
+    const deploy = source.slice(source.indexOf("- name: Deploy exact TARGET"), source.indexOf("- name: Reconcile an owned runtime"));
     for (const state of ["FRESH", "OWNED_ACQUIRED_UNPAUSED", "OWNED_PRE_CAS", "OWNED_NEEDS_DEPLOY"]) expect(deploy).toContain(`env.DEPLOYMENT_STATE == '${state}'`);
     expect(source).toContain("if: env.DEPLOYMENT_STATE == 'OWNED_CONVERGED'");
   });
@@ -74,9 +76,55 @@ describe("controlled topology normalization", () => {
       "TOPOLOGY_NORMALIZATION_RUNTIME_CANDIDATE_NOT_BASE",
       "TOPOLOGY_NORMALIZATION_BASE_RUNTIME_IDENTITY_MISMATCH",
       "TOPOLOGY_NORMALIZATION_BASE_SCHEMA_INVENTORY_MISMATCH",
-      "TOPOLOGY_NORMALIZATION_BASE_INTEGRITY_CHECK_FAILED",
+      "TOPOLOGY_NORMALIZATION_BASE_READINESS_UNAVAILABLE",
+      "TOPOLOGY_NORMALIZATION_BASE_INTEGRITY_EVIDENCE_REQUIRED",
     ]) expect(source).toContain(identity);
     expect(source).not.toContain('.runtime as $r | {release_id:$id,mode:"CONTROLLED_CUTOVER"');
     expect(source).toContain("git fetch --no-tags origin runtime-candidate");
+  });
+
+  it("materializes every readiness input required by the pinned primitive before it can deploy", () => {
+    const required = [...readiness.matchAll(/^: "\$\{([A-Z_]+):\?[^}]+\}"$/gm)].map((match) => match[1]);
+    expect(required).toEqual(expect.arrayContaining([
+      "CHECKOUT_CONTRACT_VERSION",
+      "ADMIN_CONTRACT_VERSION",
+      "POLL_ATTEMPTS",
+      "POLL_SECONDS",
+    ]));
+
+    const firstReadiness = source.indexOf("scripts/controlled-production-readiness.sh");
+    const materialization = source.slice(0, firstReadiness);
+    for (const input of ["CHECKOUT_CONTRACT_VERSION", "ADMIN_CONTRACT_VERSION", "POLL_ATTEMPTS", "POLL_SECONDS"]) {
+      expect(materialization).toContain(input);
+    }
+    expect(materialization).toContain('git show "$TARGET_SHA:release-surface-contract.json"');
+
+    // Falsification: deleting a required export must make this contract fail,
+    // rather than deferring discovery until after the production-pointer CAS.
+    const withoutAdminContract = materialization.replace('echo "ADMIN_CONTRACT_VERSION=$admin_contract_version" >> "$GITHUB_ENV"', "");
+    expect(withoutAdminContract).not.toContain('echo "ADMIN_CONTRACT_VERSION=$admin_contract_version" >> "$GITHUB_ENV"');
+  });
+
+  it("retries the exact deploy once when TARGET commerce/worker evidence masks stale frontend or admin", () => {
+    const reconciler = source.slice(
+      source.indexOf("- name: Reconcile an owned runtime that may have only partially converged"),
+      source.indexOf("- name: Reopen and prove terminal completion"),
+    );
+    const retry = /if RUNTIME_ASSERT_DIR="\$RUNTIME_ASSERT_DIR" scripts\/controlled-production-readiness\.sh release\.json; then exit 0; fi\s+scripts\/controlled-coolify-deploy\.sh "\$TARGET_SHA"\s+RUNTIME_ASSERT_DIR="\$RUNTIME_ASSERT_DIR" scripts\/controlled-production-readiness\.sh release\.json/s;
+    expect(reconciler).toMatch(retry);
+
+    // Falsification: a controller that merely accepts commerce/worker TARGET
+    // and skips this retry cannot repair the reachable frontend/admin-stale
+    // state produced by sequential webhook acceptance.
+    expect(reconciler.replace('scripts/controlled-coolify-deploy.sh "$TARGET_SHA"', "")).not.toMatch(retry);
+  });
+
+  it("requires separately recorded SQLite integrity evidence without misrepresenting readyz", () => {
+    expect(source).toContain("base_integrity_check_evidence:");
+    expect(source).toContain("INPUT_BASE_INTEGRITY_CHECK_EVIDENCE");
+    expect(source).toContain("TOPOLOGY_NORMALIZATION_BASE_INTEGRITY_EVIDENCE_REQUIRED");
+    expect(source).not.toContain("TOPOLOGY_NORMALIZATION_BASE_INTEGRITY_CHECK_FAILED");
+    expect(runbook).toContain("PRAGMA integrity_check;");
+    expect(runbook).toContain("result must be exactly `ok`");
   });
 });

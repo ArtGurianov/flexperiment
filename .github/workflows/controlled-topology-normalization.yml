@@ -20,6 +20,10 @@ on:
         description: Expected detached production-deploy BASE
         required: true
         type: string
+      base_integrity_check_evidence:
+        description: Immutable reference to the read-only PRAGMA integrity_check = ok evidence captured immediately before dispatch
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -39,6 +43,7 @@ jobs:
       TARGET_SHA: ${{ inputs.target_sha }}
       TARGET_TREE: ${{ inputs.target_tree }}
       INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA: ${{ inputs.expected_production_deploy_sha }}
+      INPUT_BASE_INTEGRITY_CHECK_EVIDENCE: ${{ inputs.base_integrity_check_evidence }}
       BASE_LEGAL_VERSION: "2026-08-28.1"
       BASE_LEGAL_MANIFEST_SHA256: fb879a80c48a50c41694d83118e5f8004a4fec5fbf36f954b15f4b678f4efe02
       BASE_LEGAL_SOURCE_MANIFEST_SHA256: f79ef3093999f0a845343b88cadc213412930fbd375d913bb9fc9453289edb00
@@ -56,6 +61,8 @@ jobs:
       PUBLIC_FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
       PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
       ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
+      POLL_ATTEMPTS: "30"
+      POLL_SECONDS: "10"
 
     steps:
       - uses: actions/checkout@v4
@@ -90,6 +97,7 @@ jobs:
           git merge-base --is-ancestor "$TARGET_SHA" "$CONTROLLER_SHA" || { echo "NORMALIZATION_CONTROLLER_OLDER_THAN_TARGET" >&2; exit 1; }
           initial_pointer="$(scripts/read-production-deploy-ref.sh)"
           [[ "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" == "$BASE_SHA" && ( "$initial_pointer" == "$BASE_SHA" || "$initial_pointer" == "$TARGET_SHA" ) ]] || { echo TOPOLOGY_NORMALIZATION_PRODUCTION_POINTER_MISMATCH >&2; exit 1; }
+          [[ -n "${INPUT_BASE_INTEGRITY_CHECK_EVIDENCE//[[:space:]]/}" ]] || { echo TOPOLOGY_NORMALIZATION_BASE_INTEGRITY_EVIDENCE_REQUIRED >&2; exit 1; }
 
       - name: Prove the excluded boundary classes and allowed normalization lane
         run: |
@@ -107,6 +115,15 @@ jobs:
             if (genericProductionDeployBoundary(paths) !== "RELEASE_SEMANTICS") fail("TOPOLOGY_NORMALIZATION_BOUNDARY_NOT_RELEASE_SEMANTICS");
             if (JSON.stringify(releaseSemanticsCategories(paths)) !== JSON.stringify(["RELEASE_CONTROL"])) fail("TOPOLOGY_NORMALIZATION_UNEXPECTED_RELEASE_SEMANTICS");
           '
+
+      - name: Materialize exact TARGET surface-contract readiness inputs
+        run: |
+          set -euo pipefail
+          git show "$TARGET_SHA:release-surface-contract.json" > topology-release-surface-contract.json
+          checkout_contract_version="$(jq -er '.checkout_contract_version | select(type == "string" and test("^[a-z0-9][a-z0-9.-]{0,63}$"))' topology-release-surface-contract.json)"
+          admin_contract_version="$(jq -er '.admin_contract_version | select(type == "string" and test("^[a-z0-9][a-z0-9.-]{0,63}$"))' topology-release-surface-contract.json)"
+          echo "CHECKOUT_CONTRACT_VERSION=$checkout_contract_version" >> "$GITHUB_ENV"
+          echo "ADMIN_CONTRACT_VERSION=$admin_contract_version" >> "$GITHUB_ENV"
 
       - name: Classify durable normalization state and prove the exact live BASE
         run: |
@@ -174,11 +191,11 @@ jobs:
           ' status-before.json >/dev/null || { echo TOPOLOGY_NORMALIZATION_BASE_RUNTIME_IDENTITY_MISMATCH >&2; exit 1; }
           jq -r '.runtime.migration_versions[]' status-before.json | sort > applied-migrations.txt
           diff -u base-migrations.txt applied-migrations.txt || { echo TOPOLOGY_NORMALIZATION_BASE_SCHEMA_INVENTORY_MISMATCH >&2; exit 1; }
-          # `readyz` is the BASE runtime's read-only database integrity seam:
-          # it fails if the migration table cannot be read. It is checked
-          # here, before the first durable mutation, not accepted as a
-          # post-deploy observation.
-          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/readyz" | jq -e '.ok == true' >/dev/null || { echo TOPOLOGY_NORMALIZATION_BASE_INTEGRITY_CHECK_FAILED >&2; exit 1; }
+          # BASE's /readyz proves only that its migration ledger is readable.
+          # It is deliberately not called an SQLite integrity check: the
+          # required read-only PRAGMA integrity_check = ok evidence is bound
+          # as a mandatory dispatch input and documented in the runbook.
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/readyz" | jq -e '.ok == true' >/dev/null || { echo TOPOLOGY_NORMALIZATION_BASE_READINESS_UNAVAILABLE >&2; exit 1; }
 
       - name: Prove the Agent Referrals fence before any mutation
         if: env.DEPLOYMENT_STATE != 'ALREADY_COMPLETE'
@@ -209,7 +226,7 @@ jobs:
           ' status-before-acquire.json >/dev/null || { echo TOPOLOGY_NORMALIZATION_BASE_RUNTIME_IDENTITY_MISMATCH >&2; exit 1; }
           jq -r '.runtime.migration_versions[]' status-before-acquire.json | sort > applied-migrations-before-acquire.txt
           diff -u base-migrations.txt applied-migrations-before-acquire.txt || { echo TOPOLOGY_NORMALIZATION_BASE_SCHEMA_INVENTORY_MISMATCH >&2; exit 1; }
-          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/readyz" | jq -e '.ok == true' >/dev/null || { echo TOPOLOGY_NORMALIZATION_BASE_INTEGRITY_CHECK_FAILED >&2; exit 1; }
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/readyz" | jq -e '.ok == true' >/dev/null || { echo TOPOLOGY_NORMALIZATION_BASE_READINESS_UNAVAILABLE >&2; exit 1; }
           jq -e --arg state "$AR_EXPECTED_STATE" --argjson revision "$AR_EXPECTED_REVISION" --arg owner "$AR_EXPECTED_OWNER" '
             .feature_state.state == $state and .feature_state.revision == $revision and .feature_state.owner_id == $owner
             and .last_feature_state_event.to_state == $state and .last_feature_state_event.revision == $revision and .last_feature_state_event.owner_id == $owner
@@ -256,13 +273,19 @@ jobs:
           (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile --ignore-scripts)
           RUNTIME_ASSERT_DIR="$RUNTIME_ASSERT_DIR" scripts/controlled-production-readiness.sh release.json
 
-      - name: Prove an already-converged owned runtime before reopening
+      - name: Reconcile an owned runtime that may have only partially converged
         if: env.DEPLOYMENT_STATE == 'OWNED_CONVERGED'
         run: |
           set -euo pipefail
           RUNTIME_ASSERT_DIR="$RUNNER_TEMP/topology-normalization-runtime"
           git worktree add --detach "$RUNTIME_ASSERT_DIR" "$TARGET_SHA"
           (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile --ignore-scripts)
+          # Commerce and worker source evidence alone cannot prove frontend
+          # and admin webhooks were accepted. A failed full readiness proof
+          # therefore authorizes one retry of the existing exact TARGET
+          # webhook sequence while the same durable owner remains paused.
+          if RUNTIME_ASSERT_DIR="$RUNTIME_ASSERT_DIR" scripts/controlled-production-readiness.sh release.json; then exit 0; fi
+          scripts/controlled-coolify-deploy.sh "$TARGET_SHA"
           RUNTIME_ASSERT_DIR="$RUNTIME_ASSERT_DIR" scripts/controlled-production-readiness.sh release.json
 
       - name: Reopen and prove terminal completion
