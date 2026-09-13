@@ -27,7 +27,11 @@ const fresh = () => {
 };
 
 const capturingSender = (): OtpSender & { lastCode?: string } => {
-  const sender = { lastCode: undefined as string | undefined, async send(input: { code: string }) { sender.lastCode = input.code; return "ACCEPTED" as const; } };
+  const sender = {
+    lastCode: undefined as string | undefined,
+    async send(input: { code: string }) { sender.lastCode = input.code; return "ACCEPTED" as const; },
+    deliveryCapability: () => ({ configured: true, provider_id: "unisender-go" as const }),
+  };
   return sender;
 };
 
