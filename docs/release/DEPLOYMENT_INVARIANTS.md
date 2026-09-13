@@ -722,17 +722,29 @@ outside the loop. The exit codes are distinct so a caller can never mistake one
 for the other:
 
 ```text
-0  admitted
-1  READINESS_POLL_EXHAUSTED       observable state never converged  (retryable)
-2  configuration/usage error
-3  READINESS_ADMISSION_REFUSED    converged but inadmissible        (terminal)
+0   admitted
+2   configuration/usage error                                     (terminal)
+3   READINESS_ADMISSION_REFUSED  converged but inadmissible        (terminal)
+75  READINESS_POLL_EXHAUSTED     never converged  -- THE ONLY RETRYABLE CODE
+1, and anything else: unexpected failure                          (terminal)
 ```
 
+**The retryable code must not be one the script can return by accident, and
+that rules out 1.** A caller is permitted to re-fire a production deployment on
+it, while in shell 1 is precisely the code `set -e` yields for an unbound
+`${VAR:?}`, a failed `mktemp`/`mkdir`/`cd`, or any future command added to the
+file. Granting 1 retryable status would let an unrelated latent defect
+authorise a redeploy. 75 is sysexits.h `EX_TEMPFAIL`, and only the exhaustion
+path produces it; missing inputs are classified as configuration (2) through
+`require_configuration` rather than left to `${VAR:?}`'s exit 1.
+
 A caller that re-deploys on a readiness failure **MUST** gate that retry on
-exit 1 alone. `commerce/test/controlled-production-readiness-script.test.ts`
+equality with 75, never on `!= 0`. `commerce/test/controlled-production-readiness-script.test.ts`
 proves the execution topology rather than the formatting: a fake `node` records
 every invocation together with the number of status polls already completed, so
-"ran exactly once" and "ran only after convergence" are observed facts.
+"ran exactly once" and "ran only after convergence" are observed facts. Two
+negative cases pin the exit-code contract from the other side: a missing
+required input and an injected `mktemp` failure must both land outside 75.
 
 ## A same-owner reopen must use the durable owner identity, never a deployment target SHA
 

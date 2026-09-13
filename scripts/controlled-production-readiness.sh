@@ -23,35 +23,51 @@ set -euo pipefail
 # Exit codes are distinct so a caller can tell the two apart and never treat
 # an admission failure as grounds to retry or redeploy:
 #
-#   0  admitted
-#   1  READINESS_POLL_EXHAUSTED       observable state never converged
-#   2  configuration/usage error
-#   3  READINESS_ADMISSION_REFUSED    converged, but not admissible (terminal)
+#   0   admitted
+#   2   configuration/usage error                                    (terminal)
+#   3   READINESS_ADMISSION_REFUSED  converged, not admissible       (terminal)
+#   75  READINESS_POLL_EXHAUSTED     never converged  -- THE ONLY RETRYABLE CODE
+#   1, and anything else: unexpected failure                         (terminal)
+#
+# 75 rather than 1 is deliberate, and it is the whole point of the contract.
+# A caller is allowed to re-fire a production deployment on the retryable code,
+# so that code must never be one this script can return by accident. In shell,
+# 1 is exactly that: `set -e` returns it for an unbound ${VAR:?}, a failed
+# mktemp/mkdir/cd, and any future command added to this file. Granting 1
+# retryable status would let an unrelated latent defect authorise a redeploy.
+# 75 is sysexits.h EX_TEMPFAIL - "temporary failure, the user is invited to
+# retry" - and nothing here produces it except the exhaustion path below.
+#
+# Callers MUST gate any retry on equality with 75, never on `!= 0`.
 
-readonly READINESS_EXIT_CONVERGENCE=1
 readonly READINESS_EXIT_CONFIGURATION=2
 readonly READINESS_EXIT_ADMISSION=3
+readonly READINESS_EXIT_CONVERGENCE=75
 
-request_path="${1:?Pass the durable release request JSON path.}"
+# ${VAR:?} would exit 1 under `set -e`, which this contract reserves for
+# unexpected failure. A missing input is a configuration error and says so.
+require_configuration() {
+  local name
+  for name in "$@"; do
+    [[ -n "${!name:-}" ]] || { echo "READINESS_REQUIRED_CONFIGURATION_MISSING: $name" >&2; exit "$READINESS_EXIT_CONFIGURATION"; }
+  done
+}
+
+[[ -n "${1:-}" ]] || { echo "READINESS_REQUEST_PATH_REQUIRED" >&2; exit "$READINESS_EXIT_CONFIGURATION"; }
+request_path="$1"
 readiness_phase="${2:-promotion}"
-: "${PUBLIC_API_URL:?PUBLIC_API_URL is required}"
-: "${PUBLIC_FRONTEND_URL:?PUBLIC_FRONTEND_URL is required}"
-: "${ADMIN_RELEASE_URL:?ADMIN_RELEASE_URL is required}"
-: "${COMMERCE_RELEASE_CONTROL_TOKEN:?COMMERCE_RELEASE_CONTROL_TOKEN is required}"
-: "${TARGET_SHA:?TARGET_SHA is required}"
-: "${CHECKOUT_CONTRACT_VERSION:?CHECKOUT_CONTRACT_VERSION is required}"
-: "${ADMIN_CONTRACT_VERSION:?ADMIN_CONTRACT_VERSION is required}"
-: "${POLL_ATTEMPTS:?POLL_ATTEMPTS is required}"
-: "${POLL_SECONDS:?POLL_SECONDS is required}"
+require_configuration PUBLIC_API_URL PUBLIC_FRONTEND_URL ADMIN_RELEASE_URL COMMERCE_RELEASE_CONTROL_TOKEN \
+  TARGET_SHA CHECKOUT_CONTRACT_VERSION ADMIN_CONTRACT_VERSION POLL_ATTEMPTS POLL_SECONDS
 
 # A pinned runtime parser runs from its own detached worktree, so the
 # controller-owned request must be resolved before that directory change.
+[[ -f "$request_path" ]] || { echo "READINESS_REQUEST_PATH_NOT_A_FILE: $request_path" >&2; exit "$READINESS_EXIT_CONFIGURATION"; }
 request_path="$(cd "$(dirname "$request_path")" && pwd)/$(basename "$request_path")"
 
 case "$readiness_phase" in
   promotion) ;;
   candidate-pre-publication)
-    : "${PREVIOUS_LEGAL_VERSION:?PREVIOUS_LEGAL_VERSION is required for candidate-pre-publication readiness}"
+    require_configuration PREVIOUS_LEGAL_VERSION
     ;;
   *) echo "READINESS_PHASE_INVALID" >&2; exit "$READINESS_EXIT_CONFIGURATION" ;;
 esac

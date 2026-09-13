@@ -34,9 +34,13 @@ type Options = {
   phase?: "promotion" | "candidate-pre-publication";
   pinRuntimeParser?: boolean;
   pollAttempts?: string;
+  /** Drop a required variable from the environment entirely. */
+  omitConfiguration?: string;
+  /** Make an ordinary shell primitive fail, the way a latent defect would. */
+  breakPrimitive?: "mktemp";
 };
 
-const runReadiness = ({ scenario = "ready", admissionFails = false, phase = "promotion", pinRuntimeParser = false, pollAttempts = "2" }: Options = {}) => {
+const runReadiness = ({ scenario = "ready", admissionFails = false, phase = "promotion", pinRuntimeParser = false, pollAttempts = "2", omitConfiguration, breakPrimitive }: Options = {}) => {
   const directory = mkdtempSync(join(tmpdir(), "flexperiment-readiness-test-"));
   temporaryDirectories.push(directory);
   const bin = join(directory, "bin");
@@ -122,14 +126,21 @@ const runReadiness = ({ scenario = "ready", admissionFails = false, phase = "pro
   ].join("\n"));
   writeFileSync(sleep, "#!/usr/bin/env bash\nexit 0\n");
   chmodSync(curl, 0o755); chmodSync(node, 0o755); chmodSync(sleep, 0o755);
-  const result = spawnSync("bash", [resolve(process.cwd(), "scripts/controlled-production-readiness.sh"), "release.json", phase], {
-    cwd: directory, encoding: "utf8", env: {
+  if (breakPrimitive) {
+    const broken = join(bin, breakPrimitive);
+    writeFileSync(broken, "#!/usr/bin/env bash\nexit 1\n");
+    chmodSync(broken, 0o755);
+  }
+  const environment: Record<string, string | undefined> = {
       ...process.env, PATH: `${bin}:${process.env.PATH}`, CURL_LOG: curlLog, NODE_LOG: nodeLog, STATUS_CALLS: statusCalls,
       NODE_POLL_LOG: nodePollLog, CONVERGED_RUNTIME: convergedRuntime, ROLLING_RUNTIME: rollingRuntime,
       READINESS_SCENARIO: scenario, READINESS_ADMISSION_FAILS: admissionFails ? "1" : "0", NODE_CWD_LOG: nodeCwdLog,
       PUBLIC_API_URL: "https://api.test", PUBLIC_FRONTEND_URL: "https://frontend.test", ADMIN_RELEASE_URL: "https://admin.test/release.json",
       COMMERCE_RELEASE_CONTROL_TOKEN: "test-token", TARGET_SHA: sourceCommit, CHECKOUT_CONTRACT_VERSION: "age-band-v2", ADMIN_CONTRACT_VERSION: "age-band-v2", PREVIOUS_LEGAL_VERSION: "2026-08-25.1", POLL_ATTEMPTS: pollAttempts, POLL_SECONDS: "0", POLL_CONNECT_TIMEOUT: "3", POLL_MAX_TIME: "7", ...(pinRuntimeParser ? { RUNTIME_ASSERT_DIR: runtimeAssertDir } : {}),
-    },
+  };
+  if (omitConfiguration) delete environment[omitConfiguration];
+  const result = spawnSync("bash", [resolve(process.cwd(), "scripts/controlled-production-readiness.sh"), "release.json", phase], {
+    cwd: directory, encoding: "utf8", env: environment as NodeJS.ProcessEnv,
   });
   const lines = (path: string) => (existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean) : []);
   return {
@@ -184,14 +195,14 @@ describe("controlled production readiness: convergence and admission are separat
 
   it("never runs the admission when observable state never converges", () => {
     const { result, admissionRuns } = runReadiness({ scenario: "never-converges" });
-    expect(result.status).toBe(1);
+    expect(result.status).toBe(75);
     expect(result.stderr).toContain("READINESS_POLL_EXHAUSTED: GENERIC_DEPLOY_RUNTIME_SOURCE_NOT_CONVERGED");
     expect(admissionRuns).toBe(0);
   });
 
   it("does not reuse a prior status file after the next attempt fetch fails", () => {
     const { result, admissionRuns } = runReadiness({ scenario: "rolling-then-status-fails", admissionFails: true });
-    expect(result.status).toBe(1);
+    expect(result.status).toBe(75);
     expect(result.stdout).toContain("Readiness attempt 1/2: SURFACES_CONVERGING (GENERIC_DEPLOY_RUNTIME_SOURCE_NOT_CONVERGED)");
     expect(result.stdout).toContain("Readiness attempt 2/2: GENERIC_DEPLOY_READINESS_FETCH_FAILED:status fetch failed (curl exit 28)");
     expect(result.stderr).toContain("READINESS_POLL_EXHAUSTED: GENERIC_DEPLOY_READINESS_FETCH_FAILED:status fetch failed (curl exit 28)");
@@ -218,5 +229,28 @@ describe("controlled production readiness: convergence and admission are separat
     const { result } = runReadiness({ phase: "bogus-phase" as unknown as "promotion" });
     expect(result.status).toBe(2);
     expect(result.stderr).toContain("READINESS_PHASE_INVALID");
+  });
+
+  /**
+   * 75 (EX_TEMPFAIL) is the only code a caller may re-fire a production
+   * deployment on, so nothing may reach it by accident. These two cases are
+   * the ways a shell script normally fails without meaning to, and both must
+   * land outside the retryable code.
+   */
+  it("reports a missing required input as configuration, never as retryable", () => {
+    const { result, admissionRuns } = runReadiness({ omitConfiguration: "TARGET_SHA" });
+    expect(result.status).toBe(2);
+    expect(result.status).not.toBe(75);
+    expect(result.stderr).toContain("READINESS_REQUIRED_CONFIGURATION_MISSING: TARGET_SHA");
+    expect(admissionRuns).toBe(0);
+  });
+
+  it("never returns the retryable code for an unexpected primitive failure", () => {
+    // A latent defect anywhere in the script surfaces as `set -e`'s exit 1.
+    // Were 1 the retryable code, this would authorise another deployment.
+    const { result, admissionRuns } = runReadiness({ breakPrimitive: "mktemp" });
+    expect(result.status).not.toBe(0);
+    expect(result.status).not.toBe(75);
+    expect(admissionRuns).toBe(0);
   });
 });

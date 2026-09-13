@@ -84,7 +84,13 @@ describe("controlled topology normalization", () => {
   });
 
   it("materializes every readiness input required by the pinned primitive before it can deploy", () => {
-    const required = [...readiness.matchAll(/^: "\$\{([A-Z_]+):\?[^}]+\}"$/gm)].map((match) => match[1]);
+    // Derived from the primitive itself, so the controller cannot drift away
+    // from what it actually requires. require_configuration replaced the
+    // ${VAR:?} form, which exits 1 - a code the retry contract reserves for
+    // unexpected failure rather than a missing input.
+    const required = [...readiness.matchAll(/^require_configuration ((?:[A-Z_]+[ \\\n]*)+)/gm)]
+      .flatMap((match) => match[1].split(/[\s\\]+/).filter(Boolean));
+    expect(required.length).toBeGreaterThan(4);
     expect(required).toEqual(expect.arrayContaining([
       "CHECKOUT_CONTRACT_VERSION",
       "ADMIN_CONTRACT_VERSION",
@@ -113,10 +119,12 @@ describe("controlled topology normalization", () => {
     const retry = /RUNTIME_ASSERT_DIR="\$RUNTIME_ASSERT_DIR" scripts\/controlled-production-readiness\.sh release\.json \|\| readiness_status=\$\?[\s\S]+scripts\/controlled-coolify-deploy\.sh "\$TARGET_SHA"[\s\S]+RUNTIME_ASSERT_DIR="\$RUNTIME_ASSERT_DIR" scripts\/controlled-production-readiness\.sh release\.json/;
     expect(reconciler).toMatch(retry);
 
-    // The retry is reachable only for an unconverged observable surface.
-    // A refused admission is deterministic about a converged runtime, so
-    // redeploying the same source could not change it - it must exit instead.
-    expect(reconciler).toContain('if [[ "$readiness_status" != "1" ]]; then echo "TOPOLOGY_NORMALIZATION_READINESS_TERMINAL" >&2; exit "$readiness_status"; fi');
+    // The retry is reachable for exactly one exit code, and it is not 1:
+    // `set -e` yields 1 for any unexpected failure, and a code that can arise
+    // by accident must never authorise another production deployment.
+    expect(source).toContain('READINESS_EXIT_CONVERGENCE: "75"');
+    expect(reconciler).toContain('if [[ "$readiness_status" != "$READINESS_EXIT_CONVERGENCE" ]]; then echo "TOPOLOGY_NORMALIZATION_READINESS_TERMINAL: exit $readiness_status" >&2; exit "$readiness_status"; fi');
+    expect(reconciler).not.toMatch(/readiness_status" (!=|==) "1"/);
 
     // Falsification: a controller that merely accepts commerce/worker TARGET
     // and skips this retry cannot repair the reachable frontend/admin-stale

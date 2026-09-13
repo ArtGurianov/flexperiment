@@ -63,6 +63,8 @@ jobs:
       ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
       POLL_ATTEMPTS: "30"
       POLL_SECONDS: "10"
+      # EX_TEMPFAIL: the readiness primitive's single retryable exit code.
+      READINESS_EXIT_CONVERGENCE: "75"
 
     steps:
       - uses: actions/checkout@v4
@@ -287,11 +289,14 @@ jobs:
           readiness_status=0
           RUNTIME_ASSERT_DIR="$RUNTIME_ASSERT_DIR" scripts/controlled-production-readiness.sh release.json || readiness_status=$?
           if [[ "$readiness_status" == "0" ]]; then exit 0; fi
-          # Only an unconverged observable surface (exit 1) may be repaired by
-          # re-firing the exact TARGET webhook sequence. An admission refusal
-          # (exit 3) is deterministic evidence about a converged runtime, and
-          # redeploying the same source cannot change it.
-          if [[ "$readiness_status" != "1" ]]; then echo "TOPOLOGY_NORMALIZATION_READINESS_TERMINAL" >&2; exit "$readiness_status"; fi
+          # Exactly one code may re-fire the TARGET webhook sequence: 75
+          # (EX_TEMPFAIL), which the readiness primitive returns only when an
+          # observable surface never converged. Everything else is terminal -
+          # an admission refusal (3) is deterministic evidence about a
+          # converged runtime, a configuration error (2) is ours, and 1 is the
+          # code `set -e` produces for any unexpected failure, which must
+          # never authorise another production deployment.
+          if [[ "$readiness_status" != "$READINESS_EXIT_CONVERGENCE" ]]; then echo "TOPOLOGY_NORMALIZATION_READINESS_TERMINAL: exit $readiness_status" >&2; exit "$readiness_status"; fi
           scripts/controlled-coolify-deploy.sh "$TARGET_SHA"
           RUNTIME_ASSERT_DIR="$RUNTIME_ASSERT_DIR" scripts/controlled-production-readiness.sh release.json
 
