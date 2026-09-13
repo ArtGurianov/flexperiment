@@ -42,17 +42,30 @@ root="${root%/}"
 shape='.*/[a-z][a-z0-9]*(-[a-z0-9]+)*-[A-Za-z0-9]{6,10}'
 minutes=$((older_than_hours * 60))
 
+# A nested directory does not match any pattern below, so it also means skip.
 only_sqlite_inside() {
-  local directory="$1" entry
-  while IFS= read -r entry; do
-    [[ -z "$entry" ]] && continue
-    case "$entry" in
+  local directory="$1" entry result=0
+  shopt -s nullglob dotglob
+  for entry in "$directory"/*; do
+    case "${entry##*/}" in
       *.sqlite|*.sqlite-wal|*.sqlite-shm|*.sqlite-journal|*.db) ;;
-      *) return 1 ;;
+      *) result=1; break ;;
     esac
-  done < <(find "$directory" -mindepth 1 -maxdepth 1 -exec basename {} \; 2>/dev/null)
-  return 0
+  done
+  shopt -u nullglob dotglob
+  return "$result"
 }
+
+# BSD find spells extended regex `find -E`; GNU find wants
+# `-regextype posix-extended` before -regex. Getting this wrong is silent:
+# GNU find without it treats the pattern as emacs regex and simply matches
+# nothing, which is how the first version of this script became a no-op on CI
+# while passing locally. Probe rather than assume, and fail loudly either way.
+if find -E . -maxdepth 0 -regex '.*' >/dev/null 2>&1; then
+  find_prefix=(find -E "$root" -maxdepth 1)
+else
+  find_prefix=(find "$root" -maxdepth 1 -regextype posix-extended)
+fi
 
 examined=0 removed=0 skipped=0 reclaimed_kb=0
 while IFS= read -r directory; do
@@ -69,7 +82,7 @@ while IFS= read -r directory; do
   else
     skipped=$((skipped + 1))
   fi
-done < <(find -E "$root" -maxdepth 1 -type d -mmin "+${minutes}" -regex "$shape" 2>/dev/null)
+done < <("${find_prefix[@]}" -type d -mmin "+${minutes}" -regex "$shape")
 
 printf '%s %d of %d fixture directories older than %dh under %s (%d skipped: foreign content), ~%d MiB\n' \
   "$( ((dry_run)) && echo 'Would remove' || echo 'Removed' )" \
