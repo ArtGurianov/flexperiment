@@ -998,3 +998,119 @@ Do not restore either as ordinary cleanup, and do not read a future diff against
 old `main` as a lost line. If the change is still wanted it needs its own
 reviewed lane - `SURFACE_CONTRACT` for the first, and for the second a
 `COMPATIBILITY` evidence protocol that does not exist yet.
+
+## Exceptional cutovers are not the ordinary release model
+
+Phase 1 (the `agents` legal-identity cleanup) needed a one-shot controller, an
+operator evidence packet, six frozen dispatch inputs, an exact commit-sequence
+assertion and its own runbook. It needed them because of conditions that were
+themselves exceptional: production had run a detached lineage, a second durable
+representation of legal identity was being removed, and there was a real race
+around migration eligibility. **None of that is a baseline release requirement**,
+and generalizing it would make the controlled cutover the only way to ship
+anything - the outcome "Enforcement lives in `sales-gate.ts`, not `domain.ts`"
+above already exists to prevent.
+
+The ordinary path stays ordinary:
+
+```text
+protected main + required CI -> select candidate -> generic boundary admission
+  -> guarded production-deploy CAS -> deploy exact candidate
+  -> readiness/convergence -> terminal completion
+```
+
+Do **not** institutionalize any of these for an ordinary release: manual gate
+attestations, a durable evidence file per deploy, six frozen workflow inputs, an
+operator-supplied tree SHA, literal commit-sequence declarations, a controller
+per migration, runbook-extracted SQL for every schema change, or a post-deploy
+forensic packet. Each was proportionate to a specific exceptional condition and
+is disproportionate without it.
+
+### Make the bad state impossible at the transition, rather than proving it absent beforehand
+
+This is the single largest thing Phase 1 produced, and it generalizes.
+
+Both Phase 1 gates began as operator queries run before dispatch. That could not
+bind the cutover: the runtime's legacy `prepareSettlement()` writes
+`reward_settlements` rows without `settlement_flow` - so they read as LEGACY -
+and sits behind no fence (`assertNewOrdersOpen` is only on the checkout path),
+so production could invalidate either gate between the query and the migration.
+A freshness window on the evidence would have narrowed that race, never closed
+it.
+
+Moving both predicates *into* `0058`, ahead of its first destructive statement
+and inside the `BEGIN IMMEDIATE` that `applyFkOffMigration` already holds, closed
+it outright: a writer either lands before the lock and is counted, or cannot
+interleave at all. Prefer
+
+```text
+BEGIN IMMEDIATE
+  assert invariant
+  perform the DDL / data transition
+COMMIT
+```
+
+over `operator query -> freshness window -> later migration`. External evidence
+remains useful provenance and is worth collecting - it finds violations while
+production is still open and the pointer unmoved - but it must never be the
+authority when a race is possible.
+
+**So before adding another external proof, check whether the bad state can be
+made impossible closer to the mutation boundary instead.** Ask:
+
+```text
+What concrete failure does this prevent?
+Is that failure already impossible nearer the transaction, CAS or state change?
+Does this check become authority, or is it only corroboration?
+If only corroboration, is it worth permanent CI and controller complexity?
+```
+
+Prefer one strong invariant at the real mutation boundary over several weaker
+corroborating checks spread across CI, markdown, shell and operator evidence.
+See "Prove the fact at the seam that consumes it" above: proof volume is not
+proof strength.
+
+### Corroboration must not be described as evidence it did not produce
+
+A check that participates in admission or authority fails closed. A best-effort
+probe that cannot change the decision is fine - but it may only be cited as
+evidence when its output was actually obtained and verified.
+
+Phase 1's controller carries a best-effort `dormant-readiness` probe intended to
+corroborate the gate evidence with production's own `business_facts_tables`. In
+run `34757128419` it returned `422 VALIDATION_ERROR`: its request body did not
+satisfy `releaseExpectedSchema`, carrying only `source_commit` instead of the
+full expectation, so it was rejected before the handler ran. It was `|| true`,
+never authority, never part of admission, and the gates that mattered were
+re-proved by `0058` under its own lock - so there is no safety consequence. But
+the controller comment and PR body claimed it recorded evidence, and it recorded
+none.
+
+**Never cite that probe as production evidence from run `34757128419`.** If that
+controller is reused as a template, either send the full `expected` object or
+delete the probe together with every claim depending on it. A best-effort call
+that is systematically DTO-rejected is worse than either: it reads as
+corroboration while producing nothing.
+
+### Phase 1 historical baseline
+
+```text
+Phase 1                    CLOSED / COMPLETE (2026-09-13)
+controller run             34757128419, zero retries
+production-deploy          1d7310883f4822945725a6ba95d7ff37a470f502
+runtime-candidate          2ae6a351669d2cc9d8cd42cf92d50436d64d08cd
+0058                       APPLIED
+legal identity authority   legal-profile revision contour only
+agents legal shadows       REMOVED
+Gate 1 / Gate 2            enforced and passed under the migration's own
+                           BEGIN IMMEDIATE, not by the operator queries alone
+```
+
+`runtime-candidate` staying at the old base is expected, not a defect - see
+"`runtime-candidate` is never an authority" above. It advances on the next
+ordinary promotion.
+
+Phase 1 is not blocked on anything. Three items remain, each independent of it
+and of each other: retention policy for the backup databases sharing the
+production volume, the `runtime-candidate` advance, and the probe defect above.
+
