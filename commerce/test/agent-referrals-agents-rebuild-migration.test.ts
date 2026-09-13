@@ -399,6 +399,33 @@ describe("0042 agent-referrals agents rebuild migration", () => {
       migrateThrough(db, MIGRATION_FILE);
       expect(db.prepare("SELECT contractor_type FROM agents WHERE id = ?").get(selfEmployedId)).toEqual({ contractor_type: "SELF_EMPLOYED" });
 
+      // 0058 proves both Phase 1 gates before its own DDL, so this legacy
+      // graph must clear them first. That is the precondition working, not an
+      // obstacle to route around, so assert each refusal on the way.
+      migrateThrough(db, "0057_partner_invite_capability_head.sql");
+      const agentColumns = () => (db.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>).map((row) => row.name);
+      const phase1Applied = () => db.prepare("SELECT 1 FROM schema_migrations WHERE version = '0058_agents_legal_identity_cleanup.sql'").get();
+
+      // Gate 1: the seeded LEGACY settlement. The immutable guard forbids
+      // relabelling it, so resolving it is the only remedy the gate admits.
+      expect(() => migrate(db)).toThrow(/PHASE_1_GATE_1_LEGACY_SETTLEMENTS_PRESENT/);
+      expect(phase1Applied()).toBeUndefined();
+      expect(agentColumns()).toContain("contractor_type");
+      db.prepare("DELETE FROM reward_settlements").run();
+
+      // Gate 2: the reward and adjustment exposure survives, and this agent
+      // still has no live identity to pin, so Phase 1 is still refused.
+      expect(() => migrate(db)).toThrow(/PHASE_1_GATE_2_UNBOUND_LEGACY_AGENT/);
+      expect(phase1Applied()).toBeUndefined();
+      expect(agentColumns()).toContain("legal_name");
+
+      // Onboard the exposed agent: a live identity whose pointer is its MAX
+      // revision - exactly the binding the rewritten authority tuple requires.
+      db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, full_name, inn, reason, assertion_source)
+        VALUES ('lp-0042', ?, 1, 'INDIVIDUAL', 'NPD', 'SELF_EMPLOYED', 'Ivan Ivanov', '123456789012', 'phase-1 onboarding', 'PARTNER_ASSERTED')`).run(selfEmployedId);
+      db.prepare(`INSERT INTO partner_identities(id, agent_id, email, email_hash, onboarding_state, onboarding_revision, legal_profile_revision_id, created_by_admin_id)
+        VALUES ('pi-0042', ?, 'self-employed-0042@example.test', 'hash-0042', 'PARTNER_ACTIVE', 1, 'lp-0042', 'admin-0042')`).run(selfEmployedId);
+
       migrate(db);
       const columns = (db.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>).map((row) => row.name);
       expect(columns).toEqual(["id", "slug", "display_name", "email", "contract_reference", "enabled", "default_reward_type", "default_reward_value", "created_at", "updated_at"]);

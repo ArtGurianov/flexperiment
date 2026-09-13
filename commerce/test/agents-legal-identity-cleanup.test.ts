@@ -94,7 +94,7 @@ describe("Phase 1 agents legal identity cleanup", () => {
       VALUES ('agent-1', 'agent-1', 'Agent', 'Legacy legal', 'agent@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', 1, 'FIXED', 500, '2026-01-01T00:00:00.000Z')`).run();
     migrate(db);
     const columns = (db.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>).map(({ name }) => name);
-    expect(MIGRATION_SHA256).toBe("22f5f13bb2469ecd3110cc50f1d81549a458854e1c33daf392501aef447ac44b");
+    expect(MIGRATION_SHA256).toBe("c8f711ace8ebf169fb492aa4b3cd5c745f98a8ed9be03ff1cf76d1ef6a184637");
     expect(columns).toEqual(["id", "slug", "display_name", "email", "contract_reference", "enabled", "default_reward_type", "default_reward_value", "created_at", "updated_at"]);
     expect(db.prepare("SELECT slug, display_name, email, contract_reference, default_reward_value FROM agents").get()).toEqual({ slug: "agent-1", display_name: "Agent", email: "agent@example.test", contract_reference: "C-1", default_reward_value: 500 });
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = 'agents_contractor_type_projection_guard'").get()).toBeUndefined();
