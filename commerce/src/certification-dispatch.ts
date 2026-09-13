@@ -78,12 +78,7 @@ export type CertificationDispatchEvidence = {
   dispatched_after_unfence: boolean;
 };
 
-/**
- * Exact, terminal provider-refusal evidence for the post-activation recovery
- * seam.  This is intentionally narrower than the normal dispatch proof: an
- * ACCEPTED attempt proves completion, whereas this object proves the one
- * observed UniSender refusal that justifies containing a broken ATTEMPT plane.
- */
+/** Exact terminal refusal evidence for the post-activation bridge seam. */
 export type PostActivationEmailProviderDefectEvidence = {
   release_id: string;
   order_id: string | null;
@@ -100,7 +95,6 @@ export type PostActivationEmailProviderDefectEvidence = {
     failure_code: string | null;
     provider_error_code: string | null;
   } | null;
-  /** True only for the exact evidence this recovery is permitted to record. */
   exact: boolean;
 };
 
@@ -136,7 +130,13 @@ const lastUnfenceAt = (db: Database.Database, releaseId: string): string | null 
   return row?.created_at ?? null;
 };
 
-/** This recovery needs a strict ordering, not the inclusive completion proof. */
+const after = (value: string | null, boundary: string | null): boolean => {
+  if (!value || !boundary) return false;
+  const at = parseUtcTimestamp(value);
+  const from = parseUtcTimestamp(boundary);
+  return at !== null && from !== null && at >= from;
+};
+
 const strictlyAfter = (value: string | null, boundary: string | null): boolean => {
   if (!value || !boundary) return false;
   const at = parseUtcTimestamp(value);
@@ -214,7 +214,7 @@ export const certificationDispatchEvidence = (db: Database.Database, releaseId: 
     message.attempt !== null && message.attempt.attempt_no === 1 && message.attempt.outcome === null
     && message.attempt.started_at === null && message.attempt.provider_request_started_at === null);
   const dispatched_after_unfence = live.length > 0
-    && live.some((message) => message.attempt?.outcome === "ACCEPTED" && strictlyAfter(message.attempt.started_at, unfencedAt))
+    && live.some((message) => message.attempt?.outcome === "ACCEPTED" && after(message.attempt.started_at, unfencedAt))
     // Nothing left behind: a partially dispatched backlog is not a proof.
     && live.every((message) => message.attempt !== null && message.attempt.started_at !== null);
 
@@ -222,24 +222,17 @@ export const certificationDispatchEvidence = (db: Database.Database, releaseId: 
 };
 
 /**
- * Recomputes the recovery evidence from durable order, outbox, attempt and
- * authority-event rows. No order, message, failure code or provider response
- * is accepted from a controller request.
+ * Recomputes the bridge evidence from durable release, outbox, attempt, and
+ * authority rows. No provider response or identity is accepted from a caller.
  */
 export const postActivationEmailProviderDefectEvidence = (db: Database.Database, releaseId: string): PostActivationEmailProviderDefectEvidence => {
   const orderId = certifiedOrderId(db, releaseId);
   const unfencedAt = lastUnfenceAt(db, releaseId);
-  const empty = {
-    release_id: releaseId, order_id: orderId, unfenced_at: unfencedAt,
-    ticket_attempt: null, exact: false,
-  };
+  const empty = { release_id: releaseId, order_id: orderId, unfenced_at: unfencedAt, ticket_attempt: null, exact: false };
   if (!orderId) return empty;
   const attemptStore = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'outbox_attempt'").get();
   if (!attemptStore) return empty;
 
-  // One order may create several messages, but the release proof target is its
-  // one live contractual TICKET. Multiple live TICKET rows are ambiguous, not
-  // an invitation to select whichever happened to be refused.
   const rows = db.prepare(`SELECT o.id AS outbox_id, o.status AS message_status, o.delivery_outcome AS message_delivery_outcome,
       (SELECT COUNT(*) FROM outbox_attempt attempts WHERE attempts.message_id = o.id) AS attempt_count,
       a.id AS attempt_id, a.attempt_no, a.outcome, a.started_at, a.failure_code, a.failure_detail
@@ -254,8 +247,6 @@ export const postActivationEmailProviderDefectEvidence = (db: Database.Database,
     outbox_id: String(row.outbox_id),
     message_status: String(row.message_status),
     message_delivery_outcome: row.message_delivery_outcome === null || row.message_delivery_outcome === undefined ? null : String(row.message_delivery_outcome),
-    // `1` proves both that the failed certification attempt is attempt #1 and
-    // that no later resend can have accepted or remain unsettled.
     attempt_count: Number(row.attempt_count),
     attempt_id: row.attempt_id === null || row.attempt_id === undefined ? null : String(row.attempt_id),
     attempt_no: row.attempt_no === null || row.attempt_no === undefined ? null : Number(row.attempt_no),
@@ -266,9 +257,7 @@ export const postActivationEmailProviderDefectEvidence = (db: Database.Database,
   };
   const exact = ticket_attempt.message_status === "FAILED" && ticket_attempt.message_delivery_outcome === "KNOWN_FAILED"
     && ticket_attempt.attempt_count === 1 && ticket_attempt.attempt_id !== null && ticket_attempt.attempt_no === 1
-    && strictlyAfter(ticket_attempt.started_at, unfencedAt)
-    && ticket_attempt.outcome === "KNOWN_FAILED"
-    && ticket_attempt.failure_code === "UNISENDER_HTTP_REJECTED"
-    && ticket_attempt.provider_error_code === "1588";
+    && strictlyAfter(ticket_attempt.started_at, unfencedAt) && ticket_attempt.outcome === "KNOWN_FAILED"
+    && ticket_attempt.failure_code === "UNISENDER_HTTP_REJECTED" && ticket_attempt.provider_error_code === "1588";
   return { release_id: releaseId, order_id: orderId, unfenced_at: unfencedAt, ticket_attempt, exact };
 };
