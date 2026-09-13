@@ -10,7 +10,9 @@ import { PromoPricingError, pricePromo } from "./promo-pricing";
 import { PartnerPromoPricingError, resolveCheckoutPromoTerms } from "./agent-referrals-partner-promo-pricing";
 import { isPromoPartnerOwned } from "./agent-referrals-promo";
 import { suspendEngagementsForOccurrenceMaterialChange } from "./agent-referrals-engagement";
-import { currentAgentReferralsLegalProfile } from "./agent-referrals-legal-profile";
+import { resolveCurrentLegalProfileBinding } from "./agent-referrals-legal-profile";
+import { getPartnerIdentityByAgentId } from "./agent-referrals-onboarding";
+import { currentUsableNpdCheck } from "./agent-referrals-npd";
 import { AgentReferralsAttributionError, resolveOrderAttribution, ATTRIBUTION_RULE_VERSION } from "./agent-referrals-attribution";
 import { rewardForOrder as computeRewardForOrder } from "./reward-calculation";
 import { findCityBySlug } from "../../lib/city-catalog";
@@ -1978,27 +1980,13 @@ export class CommerceDomain {
 
   createAgent(input: Record<string, unknown>) {
     const agentId = id();
-    this.db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, enabled, default_reward_type, default_reward_value)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(agentId, input.slug, input.display_name, input.legal_name, String(input.email).toLowerCase(), input.contractor_type, input.inn, input.contract_reference, input.enabled === false ? 0 : 1, input.default_reward_type, input.default_reward_value);
+    this.db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, enabled, default_reward_type, default_reward_value)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(agentId, input.slug, input.display_name, String(input.email).toLowerCase(), input.contract_reference, input.enabled === false ? 0 : 1, input.default_reward_type, input.default_reward_value);
     return one(this.db, "SELECT * FROM agents WHERE id = ?", agentId)!;
   }
 
-  /**
-   * PR-A read model. `contractor_type` is a PROJECTION for every agent an
-   * Agent Referrals legal profile governs, so the read side must say where
-   * the value came from and carry the profile it was projected from -
-   * otherwise the admin UI has to infer authority on its own, and the
-   * legacy editor goes on offering to write a field it is not allowed to
-   * write (`patchAgent` below refuses it).
-   *
-   * "Current profile" is resolved the one canonical way, MAX(revision) -
-   * never partner_identities.legal_profile_revision_id, which is a
-   * redundant relational pointer maintained for 0047's guard, not the
-   * semantic authority (see agent-referrals-legal-profile.ts). The join is
-   * 1:1 by construction: UNIQUE (agent_id, revision) lets at most one row
-   * match the correlated MAX, so it cannot multiply the promo-count group.
-   */
+  /** Current legal identity is a read-only projection of its revision chain. */
   agentList() {
     return many(this.db, `SELECT a.*, COUNT(p.id) AS promo_count,
         lp.id AS lp_id, lp.revision AS lp_revision, lp.legal_form AS lp_legal_form, lp.tax_mode AS lp_tax_mode,
@@ -2014,23 +2002,8 @@ export class CommerceDomain {
         lp_id, lp_revision, lp_legal_form, lp_tax_mode, lp_projected_contractor_type, lp_opf, lp_full_name,
         lp_short_name, lp_inn, lp_kpp, lp_registration_number, lp_legal_address, ...agent
       }): Row => {
-        // PR-B: the projection and its target must agree, and a read is not
-        // allowed to paper over it if they don't. The sanctioned writer
-        // updates agents.contractor_type in the same transaction that mints
-        // the revision, and 0049 forbids any later divergence - but nothing
-        // stops a raw INSERT of an otherwise-valid revision from leaving the
-        // two disagreeing, because the revisions table has no trigger that
-        // writes agents.contractor_type. Returning a correct-looking DTO for
-        // that state would hide structural corruption behind a read model;
-        // failing the whole list is the right trade, precisely BECAUSE the
-        // state is unreachable through every sanctioned path - if it ever
-        // appears, the agent roster is not the thing that needs looking at.
-        if (lp_id && agent.contractor_type !== lp_projected_contractor_type) {
-          throw new DomainError("AGENT_REFERRALS_CONTRACTOR_TYPE_PROJECTION_DIVERGED", 500, String(agent.id));
-        }
         return {
           ...agent,
-          contractor_type_source: lp_id ? "LEGAL_PROFILE" : "LEGACY",
           legal_profile: lp_id
             ? {
               id: lp_id, revision: lp_revision, legal_form: lp_legal_form, tax_mode: lp_tax_mode,
@@ -2046,24 +2019,7 @@ export class CommerceDomain {
   patchAgent(agentId: string, input: Record<string, unknown>) {
     const existing = one(this.db, "SELECT * FROM agents WHERE id = ?", agentId);
     if (!existing) throw new DomainError("AGENT_NOT_FOUND", 404);
-    // Integration-hardening #3, tightened by PR-A: an agent governed by an
-    // Agent Referrals legal profile has its contractor_type projected from
-    // that immutable chain, and (since PR-E) legal_name/inn are that same
-    // profile's own requisites. The legacy PATCH path may not write ANY of
-    // them once a profile exists - not even the value that currently
-    // happens to match, because "the caller sent the same value" is not
-    // authority, and accepting it keeps a second writer alive for a field
-    // that has exactly one. The DB carries the contractor_type half of this
-    // structurally (0049); these are the named, catchable app-level
-    // refusals, and they refuse the WHOLE command rather than silently
-    // dropping the offending field.
-    const legalProfile = currentAgentReferralsLegalProfile(this.db, agentId);
-    if (legalProfile) {
-      if (input.contractor_type !== undefined) throw new DomainError("AGENT_REFERRALS_CONTRACTOR_TYPE_PROJECTION_LOCKED", 409);
-      const projectedIdentity = (["legal_name", "inn"] as const).filter((field) => input[field] !== undefined);
-      if (projectedIdentity.length) throw new DomainError("AGENT_REFERRALS_LEGAL_IDENTITY_PROJECTION_LOCKED", 409, projectedIdentity.join(","));
-    }
-    const allowed = ["display_name", "legal_name", "email", "contractor_type", "inn", "contract_reference", "enabled", "default_reward_type", "default_reward_value", "npd_status_checked_at"];
+    const allowed = ["display_name", "email", "contract_reference", "enabled", "default_reward_type", "default_reward_value"];
     const fields = allowed.filter((field) => input[field] !== undefined);
     if (!fields.length) return existing;
     this.db.prepare(`UPDATE agents SET ${fields.map((field) => `${field} = ?`).join(", ")}, updated_at = ? WHERE id = ?`).run(...fields.map((field) => field === "enabled" ? Number(input[field]) : field === "email" ? String(input[field]).toLowerCase() : input[field]), now(), agentId);
@@ -2216,8 +2172,7 @@ export class CommerceDomain {
       FROM reward_settlements WHERE agent_id = ? AND occurrence_id = ? AND settlement_flow IS NOT 'AGENT_REFERRALS'`, agentId, occurrenceId)!;
     const recovered = Number(one(this.db, `SELECT COALESCE(SUM(sr.amount_recovered_kopecks), 0) AS amount FROM settlement_recoveries sr JOIN reward_settlements rs ON rs.id = sr.settlement_id WHERE rs.agent_id = ? AND rs.occurrence_id = ? AND rs.settlement_flow IS NOT 'AGENT_REFERRALS'`, agentId, occurrenceId)?.amount ?? 0);
     const allocated = Number(settlement.prepared) + Number(settlement.pending) + Number(settlement.settled);
-    const unallocatedMatured = Math.max(0, mature - allocated + recovered);
-    const blocked = agent.npd_status_checked_at ? 0 : unallocatedMatured;
+    const blocked = 0;
     const lateAdjustmentExposure = Math.max(0, allocated - mature - recovered);
     return { earned_total: earned, accrued_total: mature, payable_gross_total: mature, blocked_payable_total: blocked, prepared_total: Number(settlement.prepared), pending_document_total: Number(settlement.pending), settled_total: Number(settlement.settled), externally_recovered_total: recovered, late_adjustment_exposure: lateAdjustmentExposure, available_to_settle: Math.max(0, mature - blocked - allocated + recovered) };
   }
@@ -2233,14 +2188,22 @@ export class CommerceDomain {
       }
       const agent = one(this.db, "SELECT * FROM agents WHERE id = ?", input.agent_id);
       if (!agent) throw new DomainError("AGENT_NOT_FOUND", 404);
+      const partnerIdentity = getPartnerIdentityByAgentId(this.db, input.agent_id);
+      if (!partnerIdentity || partnerIdentity.destroyed_at !== null) throw new DomainError("AGENT_REFERRALS_LEGACY_SETTLEMENT_IDENTITY_MISSING", 409);
+      let legalProfile;
+      try { legalProfile = resolveCurrentLegalProfileBinding(this.db, partnerIdentity); }
+      catch { throw new DomainError("AGENT_REFERRALS_LEGACY_SETTLEMENT_LEGAL_BINDING_INVALID", 409); }
+      if (legalProfile.tax_mode === "NPD" && !currentUsableNpdCheck(this.db, partnerIdentity.id)) {
+        throw new DomainError("CONTRACTOR_STATUS_REVIEW", 409);
+      }
       const occurrence = one(this.db, "SELECT fulfillment_status FROM occurrences WHERE id = ?", input.occurrence_id);
       if (!occurrence || occurrence.fulfillment_status !== "COMPLETED") throw new DomainError("OCCURRENCE_NOT_COMPLETED", 409);
       const balance = this.rewardBalance(input.agent_id, input.occurrence_id);
-      if (balance.blocked_payable_total > 0) throw new DomainError("CONTRACTOR_STATUS_REVIEW", 409);
       if (input.amount_kopecks > balance.available_to_settle) throw new DomainError("SETTLEMENT_EXCEEDS_AVAILABLE", 409);
       const settlementId = id();
-      this.db.prepare(`INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id)
-        VALUES (?, ?, ?, ?, ?, 'PREPARED', ?, ?, ?)`).run(settlementId, input.agent_id, input.occurrence_id, input.amount_kopecks, input.method, agent.contractor_type, now(), adminId);
+      this.db.prepare(`INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, legal_profile_revision_id_snapshot, prepared_at, created_by_admin_id)
+        VALUES (?, ?, ?, ?, ?, 'PREPARED', ?, ?, ?, ?)`)
+        .run(settlementId, input.agent_id, input.occurrence_id, input.amount_kopecks, input.method, legalProfile.projected_contractor_type, legalProfile.id, now(), adminId);
       this.db.prepare("INSERT INTO reward_settlement_idempotency(idempotency_key_hash, canonical_request_hash, settlement_id) VALUES (?, ?, ?)").run(keyHash, payloadHash, settlementId);
       return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
     });

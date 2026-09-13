@@ -33,8 +33,8 @@ const fresh = () => {
 const seedPartner = (db: Database.Database): string => {
   const agentId = randomUUID();
   const partnerIdentityId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'A', 'A Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId, `p-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
+    VALUES (?, ?, 'A', ?, 'C-1', 'PERCENT', 1000)`).run(agentId, `p-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   db.prepare(`INSERT INTO partner_identities(id, agent_id, email, email_hash, created_by_admin_id) VALUES (?, ?, 'p@example.test', 'emailhash', 'admin')`).run(partnerIdentityId, agentId);
   return partnerIdentityId;
 };
@@ -231,8 +231,8 @@ describe("identity retention / legal holds / destruction evidence", () => {
     const provisionedPartner = (db: Database.Database): { partnerIdentityId: string; agentId: string } => {
       activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
       const agentId = randomUUID();
-      db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
-        VALUES (?, ?, 'A', 'A Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId, `p-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+      db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
+        VALUES (?, ?, 'A', ?, 'C-1', 'PERCENT', 1000)`).run(agentId, `p-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
       const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p2@example.test", "test");
       return { partnerIdentityId, agentId };
     };

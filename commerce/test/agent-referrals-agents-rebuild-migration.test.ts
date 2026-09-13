@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
-import { isFkOffMigration, migrate } from "../src/db";
+import { applyFkOffMigration, applyOrdinaryMigration, isFkOffMigration, migrate } from "../src/db";
 
 /**
  * 0042 rebuilds `agents` so `contractor_type` admits `ORGANIZATION`. It is
@@ -53,6 +53,17 @@ const at0041 = () => {
   db.pragma("busy_timeout = 5000");
   open.push(db);
   return { db, file };
+};
+
+/** Test-only historical boundary harness: it reads the committed files and
+ * delegates each one to the same registered migration primitive as runtime. */
+const migrateThrough = (db: Database.Database, boundary: string, migrationsDir = MIGRATIONS) => {
+  for (const name of readdirSync(migrationsDir).filter((name) => name.endsWith(".sql") && name <= boundary).sort()) {
+    const sql = readFileSync(join(migrationsDir, name), "utf8");
+    const hash = createHash("sha256").update(sql).digest("hex");
+    if (isFkOffMigration(name, hash)) applyFkOffMigration(db, name, sql);
+    else applyOrdinaryMigration(db, name, sql);
+  }
 };
 
 /**
@@ -133,7 +144,7 @@ describe("0042 agent-referrals agents rebuild migration", () => {
       const { db } = at0041();
       const { selfEmployedId } = seedLegacyRows(db);
       const before = agentRow(db, selfEmployedId);
-      migrate(db);
+      migrateThrough(db, MIGRATION_FILE);
       expect(agentRow(db, selfEmployedId)).toEqual(before);
       expect(before).toMatchObject({ contractor_type: "SELF_EMPLOYED" });
     });
@@ -142,7 +153,7 @@ describe("0042 agent-referrals agents rebuild migration", () => {
       const { db } = at0041();
       const { individualEntrepreneurId } = seedLegacyRows(db);
       const before = agentRow(db, individualEntrepreneurId);
-      migrate(db);
+      migrateThrough(db, MIGRATION_FILE);
       expect(agentRow(db, individualEntrepreneurId)).toEqual(before);
       expect(before).toMatchObject({ contractor_type: "INDIVIDUAL_ENTREPRENEUR" });
     });
@@ -151,7 +162,7 @@ describe("0042 agent-referrals agents rebuild migration", () => {
       const { db } = at0041();
       seedLegacyRows(db);
       const before = db.prepare("SELECT COUNT(*) AS n FROM agents").get();
-      migrate(db);
+      migrateThrough(db, MIGRATION_FILE);
       expect(db.prepare("SELECT COUNT(*) AS n FROM agents").get()).toEqual(before);
       expect(before).toEqual({ n: 2 });
     });
@@ -161,7 +172,7 @@ describe("0042 agent-referrals agents rebuild migration", () => {
       const { selfEmployedId, individualEntrepreneurId } = seedLegacyRows(db);
       const columns = "id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, enabled, default_reward_type, default_reward_value, npd_status_checked_at, created_at, updated_at";
       const before = db.prepare(`SELECT ${columns} FROM agents ORDER BY id`).all();
-      migrate(db);
+      migrateThrough(db, MIGRATION_FILE);
       expect(db.prepare(`SELECT ${columns} FROM agents ORDER BY id`).all()).toEqual(before);
       expect(before.map((row) => (row as { id: string }).id).sort()).toEqual([individualEntrepreneurId, selfEmployedId].sort());
     });
@@ -177,7 +188,7 @@ describe("0042 agent-referrals agents rebuild migration", () => {
 
     it("accepts ORGANIZATION after 0042 with otherwise-valid fields", () => {
       const { db } = at0041();
-      migrate(db);
+      migrateThrough(db, MIGRATION_FILE);
       const id = randomUUID();
       expect(() => db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
         VALUES (?, 'org-after-0042', 'Org', 'Org Legal', 'org-after@example.test', 'ORGANIZATION', '1234567890', 'C-ORG', 'FIXED', 0)`).run(id))
@@ -187,7 +198,7 @@ describe("0042 agent-referrals agents rebuild migration", () => {
 
     it("still rejects an unrelated value after 0042", () => {
       const { db } = at0041();
-      migrate(db);
+      migrateThrough(db, MIGRATION_FILE);
       expect(() => db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
         VALUES (?, 'invalid-after-0042', 'Invalid', 'Invalid Legal', 'invalid@example.test', 'SOME_OTHER_VALUE', '1234567890', 'C-INVALID', 'FIXED', 0)`).run(randomUUID()))
         .toThrow(/CHECK constraint failed/);
@@ -209,7 +220,7 @@ describe("0042 agent-referrals agents rebuild migration", () => {
     it("has all eight foreign_key_list entries pointing at agents(id), by exact table+column", () => {
       const { db } = at0041();
       seedLegacyRows(db);
-      migrate(db);
+      migrateThrough(db, MIGRATION_FILE);
       for (const { table, from } of expectedTopology) {
         const fks = (db.prepare(`PRAGMA foreign_key_list(${table})`).all() as { table: string; from: string; to: string }[])
           .filter((fk) => fk.from === from);
@@ -221,14 +232,14 @@ describe("0042 agent-referrals agents rebuild migration", () => {
     it("reports no violations via foreign_key_check", () => {
       const { db } = at0041();
       seedLegacyRows(db);
-      migrate(db);
+      migrateThrough(db, MIGRATION_FILE);
       expect(db.pragma("foreign_key_check")).toEqual([]);
     });
 
     it("keeps every eight-column FK functionally enforced against a nonexistent agent", () => {
       const { db } = at0041();
       const { occurrenceId, orderId, promoCodeId, quoteId, legalReleaseId } = seedLegacyRows(db);
-      migrate(db);
+      migrateThrough(db, MIGRATION_FILE);
       db.pragma("foreign_keys = ON");
       const bogus = "does-not-exist";
       // promo_codes.agent_id
@@ -253,10 +264,9 @@ describe("0042 agent-referrals agents rebuild migration", () => {
       db.prepare(`INSERT INTO orders(id, public_status_id, public_order_number, occurrence_id, customer_name, customer_email, customer_email_hash, amount_kopecks, occurrence_material_revision, venue_disclosure_snapshot, checkout_legal_release_id, legal_snapshot_json, eligibility_confirmed_at)
         VALUES (?, 'agents-rebuild-status-2', 'FX-AGENTSREBUILD00002', ?, 'Buyer 2', 'buyer2@example.test', 'hash2', 90, 1, 'Studio: Lenina 1', ?, '{}', datetime('now'))`)
         .run(secondOrderId, occurrenceId, legalReleaseId);
-      // reward_authority_kind = 'LEGACY' matches secondOrderId's own default
-      // (PR6/0046's referral_rewards_authority_kind_matches_order_guard),
-      // so this reaches the FK check on agent_id rather than that guard.
-      expect(() => db.prepare("INSERT INTO referral_rewards(id, order_id, agent_id, occurrence_id, amount_kopecks, reward_authority_kind) VALUES (?, ?, ?, ?, 1, 'LEGACY')")
+      // At the 0042 boundary referral_rewards has no later PR6 authority
+      // column yet, so this raw insert reaches the historical FK directly.
+      expect(() => db.prepare("INSERT INTO referral_rewards(id, order_id, agent_id, occurrence_id, amount_kopecks) VALUES (?, ?, ?, ?, 1)")
         .run(randomUUID(), secondOrderId, bogus, occurrenceId)).toThrow(/FOREIGN KEY constraint failed/);
       // reward_adjustments.agent_id
       expect(() => db.prepare("INSERT INTO reward_adjustments(id, order_id, agent_id, amount_kopecks, reason) VALUES (?, ?, ?, 1, 'r')")
@@ -272,7 +282,7 @@ describe("0042 agent-referrals agents rebuild migration", () => {
       const { db } = at0041();
       seedLegacyRows(db);
       expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
-      migrate(db);
+      migrateThrough(db, MIGRATION_FILE);
       expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
       expect(db.pragma("foreign_key_check")).toEqual([]);
     });
@@ -280,7 +290,7 @@ describe("0042 agent-referrals agents rebuild migration", () => {
     it("applies 0042 through the FK-off path, not the ordinary path", () => {
       const { db } = at0041();
       seedLegacyRows(db);
-      migrate(db);
+      migrateThrough(db, MIGRATION_FILE);
       expect(db.prepare("SELECT version FROM schema_migrations WHERE version = ?").get(MIGRATION_FILE)).toEqual({ version: MIGRATION_FILE });
       expect(isFkOffMigration(MIGRATION_FILE, M0042_SHA256)).toBe(true);
     });
@@ -288,11 +298,11 @@ describe("0042 agent-referrals agents rebuild migration", () => {
     it("replays as an exact no-op: FK remains ON, ledger unchanged, no re-execution", () => {
       const { db } = at0041();
       seedLegacyRows(db);
-      migrate(db);
+      migrateThrough(db, MIGRATION_FILE);
       const afterFirst = db.prepare("SELECT * FROM schema_migrations WHERE version = ?").get(MIGRATION_FILE);
       const rowCountAfterFirst = db.prepare("SELECT COUNT(*) AS n FROM agents").get();
 
-      expect(() => migrate(db)).not.toThrow();
+      expect(() => migrateThrough(db, MIGRATION_FILE)).not.toThrow();
 
       expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
       expect(db.prepare("SELECT * FROM schema_migrations WHERE version = ?").get(MIGRATION_FILE)).toEqual(afterFirst);
@@ -347,7 +357,7 @@ describe("0042 agent-referrals agents rebuild migration", () => {
       // because DROP TABLE agents is rejected while other tables still
       // reference it. No specific error code is asserted - only that it is
       // rejected and nothing changes.
-      expect(() => migrate(db, tamperedDir)).toThrow();
+      expect(() => migrateThrough(db, MIGRATION_FILE, tamperedDir)).toThrow();
 
       expect(db.prepare("SELECT version FROM schema_migrations WHERE version = ?").get(MIGRATION_FILE)).toBeUndefined();
       const afterCheckType = db.prepare("SELECT sql FROM sqlite_master WHERE name = 'agents'").get() as { sql: string };
@@ -371,14 +381,37 @@ describe("0042 agent-referrals agents rebuild migration", () => {
       // (db-migrate.test.ts): the correctness property under test is that
       // the second runner's ledger re-check happens inside its own acquired
       // BEGIN IMMEDIATE, not that the two calls are wall-clock simultaneous.
-      migrate(a);
-      expect(() => migrate(b)).not.toThrow();
+      migrateThrough(a, MIGRATION_FILE);
+      expect(() => migrateThrough(b, MIGRATION_FILE)).not.toThrow();
 
       expect(a.prepare("SELECT COUNT(*) AS n FROM schema_migrations WHERE version = ?").get(MIGRATION_FILE)).toEqual({ n: 1 });
       expect(a.prepare("SELECT sql FROM sqlite_master WHERE name = 'agents'").get()).toMatchObject({ sql: expect.stringContaining("ORGANIZATION") });
       expect(a.pragma("foreign_keys", { simple: true })).toBe(1);
       expect(a.pragma("foreign_key_check")).toEqual([]);
       expect(a.prepare("SELECT COUNT(*) AS n FROM agents").get()).toEqual({ n: 2 });
+    });
+  });
+
+  describe("H. Phase 1 successor boundary", () => {
+    it("keeps 0042's historical proof, then removes its legacy legal shadows at 0058", () => {
+      const { db } = at0041();
+      const { selfEmployedId } = seedLegacyRows(db);
+      migrateThrough(db, MIGRATION_FILE);
+      expect(db.prepare("SELECT contractor_type FROM agents WHERE id = ?").get(selfEmployedId)).toEqual({ contractor_type: "SELF_EMPLOYED" });
+
+      migrate(db);
+      const columns = (db.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>).map((row) => row.name);
+      expect(columns).toEqual(["id", "slug", "display_name", "email", "contract_reference", "enabled", "default_reward_type", "default_reward_value", "created_at", "updated_at"]);
+      expect(db.prepare("SELECT id, slug, display_name, email, contract_reference FROM agents WHERE id = ?").get(selfEmployedId)).toMatchObject({
+        id: selfEmployedId, slug: "self-employed-0042", display_name: "Self Employed Agent", email: "self-employed-0042@example.test", contract_reference: "C-SE-0042",
+      });
+      const triggers = db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name IN ('agents_contractor_type_projection_guard', 'reward_settlements_authority_tuple_consistency_guard', 'reward_settlements_authority_columns_immutable_guard', 'reward_settlements_contractor_type_projection_guard') ORDER BY name").all();
+      expect(triggers).toEqual([
+        { name: "reward_settlements_authority_columns_immutable_guard" },
+        { name: "reward_settlements_authority_tuple_consistency_guard" },
+        { name: "reward_settlements_contractor_type_projection_guard" },
+      ]);
+      expect(db.pragma("foreign_key_check")).toEqual([]);
     });
   });
 });

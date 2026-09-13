@@ -178,10 +178,7 @@ export const occurrenceCompleteSchema = z.object({ confirmation_text: z.string()
 export const agentSchema = z.object({
   slug: z.string().trim().transform((value) => value.toLowerCase()).pipe(z.string().regex(/^[a-z0-9-]{2,100}$/)),
   display_name: z.string().trim().min(2).max(200),
-  legal_name: z.string().trim().min(2).max(300),
   email: z.string().trim().email().max(320),
-  contractor_type: z.enum(["SELF_EMPLOYED", "INDIVIDUAL_ENTREPRENEUR"]),
-  inn: z.string().trim().regex(/^\d{10,12}$/),
   contract_reference: z.string().trim().min(2).max(500),
   enabled: z.boolean().default(true),
   default_reward_type: z.enum(["PERCENT", "FIXED"]),
@@ -189,15 +186,11 @@ export const agentSchema = z.object({
 }).strict();
 export const agentPatchSchema = z.object({
   display_name: z.string().trim().min(2).max(200).optional(),
-  legal_name: z.string().trim().min(2).max(300).optional(),
   email: z.string().trim().email().max(320).optional(),
-  contractor_type: z.enum(["SELF_EMPLOYED", "INDIVIDUAL_ENTREPRENEUR"]).optional(),
-  inn: z.string().trim().regex(/^\d{10}(\d{2})?$/).optional(),
   contract_reference: z.string().trim().min(2).max(500).optional(),
   enabled: z.boolean().optional(),
   default_reward_type: z.enum(["PERCENT", "FIXED"]).optional(),
   default_reward_value: z.number().int().nonnegative().optional(),
-  npd_status_checked_at: z.string().datetime().nullable().optional(),
 }).strict();
 export const promoCodeSchema = z.string().trim().transform((value) => value.toUpperCase()).pipe(z.string().regex(/^[A-Z0-9_-]{2,64}$/));
 const promoMutableShape = {

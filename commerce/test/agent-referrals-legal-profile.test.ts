@@ -36,16 +36,16 @@ const fresh = () => {
   return { db, file };
 };
 
-const seedAgent = (db: Database.Database, contractorType = "SELF_EMPLOYED") => {
+const seedAgent = (db: Database.Database) => {
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', 'Agent Legal', ?, ?, '123456789012', 'C-1', 'PERCENT', 1000)`)
-    .run(agentId, `agent-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`, contractorType);
+  db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
+    VALUES (?, ?, 'Agent', ?, 'C-1', 'PERCENT', 1000)`)
+    .run(agentId, `agent-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   return agentId;
 };
 
-const agentContractorType = (db: Database.Database, agentId: string) =>
-  (db.prepare("SELECT contractor_type FROM agents WHERE id = ?").get(agentId) as { contractor_type: string }).contractor_type;
+const currentProjectedContractorType = (db: Database.Database, agentId: string) =>
+  currentAgentReferralsLegalProfile(db, agentId)?.projected_contractor_type ?? null;
 
 describe("agent-referrals legal-profile revisions", () => {
   describe("6-case matrix, individually", () => {
@@ -65,20 +65,20 @@ describe("agent-referrals legal-profile revisions", () => {
       if (allowed) {
         const result = applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form, tax_mode, reason: "matrix test", assertion_source: "PARTNER_ASSERTED", ...requisitesFor(legal_form) });
         expect(result).toMatchObject({ revision: 1, projected_contractor_type: projected, minted: true });
-        expect(agentContractorType(db, agentId)).toBe(projected);
+        expect(currentProjectedContractorType(db, agentId)).toBe(projected);
         const current = currentAgentReferralsLegalProfile(db, agentId);
         expect(current).toMatchObject({ legal_form, tax_mode, projected_contractor_type: projected, revision: 1, supersedes_revision_id: null });
 
         // Historical revision unchanged: still exactly one row, unaltered.
         expect(allAgentReferralsLegalProfileRevisions(db, agentId)).toHaveLength(1);
       } else {
-        const before = agentContractorType(db, agentId);
+        const before = currentProjectedContractorType(db, agentId);
         const eventsBefore = db.prepare("SELECT COUNT(*) AS n FROM agent_referrals_legal_profile_revisions").get();
 
         expect(() => applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form, tax_mode, reason: "matrix test", assertion_source: "PARTNER_ASSERTED", ...requisitesFor(legal_form) }))
           .toThrow(AgentReferralsLegalProfileError);
 
-        expect(agentContractorType(db, agentId)).toBe(before);
+        expect(currentProjectedContractorType(db, agentId)).toBe(before);
         expect(db.prepare("SELECT COUNT(*) AS n FROM agent_referrals_legal_profile_revisions").get()).toEqual(eventsBefore);
         expect(currentAgentReferralsLegalProfile(db, agentId)).toBeNull();
       }
@@ -86,12 +86,12 @@ describe("agent-referrals legal-profile revisions", () => {
   });
 
   describe("transactional atomicity", () => {
-    it("a rejected combination leaves no revision, no agent projection change, no partial evidence", () => {
+    it("a rejected combination leaves no revision or partial legal evidence", () => {
       const { db } = fresh();
-      const agentId = seedAgent(db, "SELF_EMPLOYED");
+      const agentId = seedAgent(db);
       expect(() => applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "INDIVIDUAL", tax_mode: "OTHER", reason: "reject", assertion_source: "PARTNER_ASSERTED", ...requisitesFor("INDIVIDUAL") }))
         .toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_REJECTED_COMBINATION/);
-      expect(agentContractorType(db, agentId)).toBe("SELF_EMPLOYED");
+      expect(currentProjectedContractorType(db, agentId)).toBeNull();
       expect(allAgentReferralsLegalProfileRevisions(db, agentId)).toEqual([]);
     });
   });
@@ -114,7 +114,7 @@ describe("agent-referrals legal-profile revisions", () => {
       applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "INDIVIDUAL", tax_mode: "NPD", reason: "initial", assertion_source: "PARTNER_ASSERTED", ...requisitesFor("INDIVIDUAL") });
       const second = applyAgentReferralsLegalProfile(db, { agent_id: agentId, legal_form: "INDIVIDUAL_ENTREPRENEUR", tax_mode: "OTHER", reason: "became an IE", assertion_source: "PARTNER_ASSERTED", ...requisitesFor("INDIVIDUAL_ENTREPRENEUR") });
       expect(second).toMatchObject({ revision: 2, projected_contractor_type: "INDIVIDUAL_ENTREPRENEUR", minted: true });
-      expect(agentContractorType(db, agentId)).toBe("INDIVIDUAL_ENTREPRENEUR");
+      expect(currentProjectedContractorType(db, agentId)).toBe("INDIVIDUAL_ENTREPRENEUR");
 
       const all = allAgentReferralsLegalProfileRevisions(db, agentId);
       expect(all).toHaveLength(2);
@@ -205,7 +205,7 @@ describe("agent-referrals legal-profile revisions", () => {
       expect(second.minted).toBe(false);
       expect(second.revision_id).toBe(first.revision_id);
       expect(allAgentReferralsLegalProfileRevisions(a, agentId)).toHaveLength(1);
-      expect(agentContractorType(a, agentId)).toBe("ORGANIZATION");
+      expect(currentProjectedContractorType(a, agentId)).toBe("ORGANIZATION");
     });
 
     it("two different requests racing over the same agent each mint their own revision, serialized", () => {
@@ -219,19 +219,19 @@ describe("agent-referrals legal-profile revisions", () => {
       expect(first).toMatchObject({ revision: 1, minted: true });
       expect(second).toMatchObject({ revision: 2, minted: true });
       expect(allAgentReferralsLegalProfileRevisions(a, agentId)).toHaveLength(2);
-      expect(agentContractorType(a, agentId)).toBe("INDIVIDUAL_ENTREPRENEUR");
+      expect(currentProjectedContractorType(a, agentId)).toBe("INDIVIDUAL_ENTREPRENEUR");
     });
   });
 
-  describe("legacy API untouched", () => {
-    it("agentSchema/agentPatchSchema stay two-valued (unchanged by PR3, re-asserted here for locality)", () => {
+  describe("operational agent API", () => {
+    it("keeps legal identity out of agentSchema and agentPatchSchema", () => {
       const source = readFileSync(join(process.cwd(), "commerce", "src", "types.ts"), "utf8");
       const agentSchemaBlock = source.slice(source.indexOf("export const agentSchema"), source.indexOf("export const agentPatchSchema"));
       const agentPatchSchemaBlock = source.slice(source.indexOf("export const agentPatchSchema"), source.indexOf("export const agentPatchSchema") + 800);
-      expect(agentSchemaBlock).toContain('z.enum(["SELF_EMPLOYED", "INDIVIDUAL_ENTREPRENEUR"])');
-      expect(agentPatchSchemaBlock).toContain('z.enum(["SELF_EMPLOYED", "INDIVIDUAL_ENTREPRENEUR"])');
-      expect(agentSchemaBlock).not.toContain("ORGANIZATION");
-      expect(agentPatchSchemaBlock).not.toContain("ORGANIZATION");
+      for (const field of ["legal_name", "contractor_type", "inn", "npd_status_checked_at"]) {
+        expect(agentSchemaBlock).not.toContain(field);
+        expect(agentPatchSchemaBlock).not.toContain(field);
+      }
     });
   });
 });

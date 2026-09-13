@@ -40,8 +40,8 @@ const clause = (arr: readonly string[]) => Object.fromEntries(arr.map((k) => [k,
 const readyPartner = (db: Database.Database) => {
   activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', 'Agent Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
+    VALUES (?, ?, 'Agent', ?, 'C-1', 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
   submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
@@ -241,8 +241,8 @@ describe("checkout with a partner-owned promo: real §B-9 attribution now resolv
 describe("legacy isolation: the legacy fx_ref/discount-only/direct paths are unaffected, and a partner-owned agent can never receive attribution through them", () => {
   const seedLegacyAgent = (db: Database.Database, slug: string, defaultRewardValue = 500) => {
     const agentId = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
-      VALUES (?, ?, 'Legacy', 'Legacy Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-9', 'PERCENT', ?)`).run(agentId, slug, `${slug}@example.test`, defaultRewardValue);
+    db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
+      VALUES (?, ?, 'Legacy', ?, 'C-9', 'PERCENT', ?)`).run(agentId, slug, `${slug}@example.test`, defaultRewardValue);
     return agentId;
   };
 
@@ -255,8 +255,8 @@ describe("legacy isolation: the legacy fx_ref/discount-only/direct paths are una
 
     const agentId = randomUUID();
     const slug = `mid-onboarding-${agentId.slice(0, 8)}`;
-    db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
-      VALUES (?, ?, 'Agent', 'Agent Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 900)`).run(agentId, slug, `${slug}@example.test`);
+    db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
+      VALUES (?, ?, 'Agent', ?, 'C-1', 'PERCENT', 900)`).run(agentId, slug, `${slug}@example.test`);
     // A real partner_identity, admin-provisioned - but onboarding stops
     // here: no legal profile, no framework acceptance, and critically no
     // createPartnerPromo call, so partnerPromoByPartnerId(agentId) is null
@@ -377,8 +377,8 @@ describe("legacy promo endpoint hardening: PROMO_OWNED_BY_PARTNER", () => {
     const { db, domain } = fresh();
     const p1 = readyPartner(db);
     const otherAgent = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
-      VALUES (?, 'other', 'Other', 'Other Legal', 'other@example.test', 'SELF_EMPLOYED', '123456789012', 'C-2', 'PERCENT', 500)`).run(otherAgent);
+    db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
+      VALUES (?, 'other', 'Other', 'other@example.test', 'C-2', 'PERCENT', 500)`).run(otherAgent);
 
     for (const patch of [{ agent_id: otherAgent }, { discount_type: "PERCENT", discount_value: 500 }, { discount_value: 999 }]) {
       expect(() => domain.patchPromoCommand(p1.promo.promo_code_id, patch, `idem-refuse-${JSON.stringify(patch)}`, "admin-1")).toThrow(DomainError);
@@ -418,8 +418,8 @@ describe("legacy promo endpoint hardening: PROMO_OWNED_BY_PARTNER", () => {
   it("legacy discount-only promos are completely unaffected by this hardening", () => {
     const { db, domain } = fresh();
     const agentId = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
-      VALUES (?, 'legacy-agent', 'Legacy', 'Legacy Legal', 'legacy@example.test', 'SELF_EMPLOYED', '123456789012', 'C-3', 'PERCENT', 500)`).run(agentId);
+    db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
+      VALUES (?, 'legacy-agent', 'Legacy', 'legacy@example.test', 'C-3', 'PERCENT', 500)`).run(agentId);
     const legacyPromo = domain.createPromoCommand({ code: "LEGACY10", agent_id: agentId, status: "ACTIVE", discount_type: "PERCENT", discount_value: 1000 }, "idem-legacy-create", "admin-1");
     const patched = domain.patchPromoCommand(String(legacyPromo.id), { discount_value: 1500 }, "idem-legacy-patch", "admin-1");
     expect(patched.discount_value).toBe(1500); // freely repriceable - never PROMO_OWNED_BY_PARTNER

@@ -7,16 +7,9 @@ import {
 } from "../../lib/legal-profile-rules";
 
 /**
- * Agent Referrals immutable legal-profile revisions and their projection to
- * legacy agents.contractor_type.
- *
- * This is the ONE gated foundation function allowed to write
- * contractor_type = 'ORGANIZATION' (or, for that matter, any contractor_type
- * value on an agent already governed by this profile). It is not wired to
- * any HTTP route in PR3 - agentSchema/agentPatchSchema and the legacy
- * admin.post("/agents") / admin.patch("/agents/:id") surface stay exactly as
- * PR2 left them, two-valued, and remain the only thing a legacy caller can
- * reach.
+ * Agent Referrals immutable legal-profile revisions are the sole legal
+ * identity authority. Operational agents deliberately carry no mirrored
+ * legal identity or writable contractor projection.
  *
  * The four allowed / two rejected legal_form x tax_mode combinations are
  * enforced twice: here, before any write, and structurally by the combined
@@ -269,8 +262,7 @@ export type ApplyAgentReferralsLegalProfileResult = {
 };
 
 /**
- * Atomic: insert the new revision (if the semantic profile actually
- * changed) and project it onto agents.contractor_type in one transaction.
+ * Atomic: insert the new revision if the semantic profile actually changed.
  * The rejected-combination check happens BEFORE the transaction opens, so a
  * rejection leaves no partial evidence of any kind.
  */
@@ -293,8 +285,7 @@ export const applyAgentReferralsLegalProfile = (
     const current = currentAgentReferralsLegalProfile(db, input.agent_id);
 
     // Same semantic profile as already current: idempotent no-op, mints no
-    // new revision and leaves agents.contractor_type untouched (it is
-    // already correct). The existing revision's own provenance is kept -
+    // new revision. The existing revision's own provenance is kept -
     // immutable evidence is never rewritten by a later resubmission, even
     // one asserted from a different source.
     if (current && canonicalLegalProfileEquals(current, { legal_form: input.legal_form, tax_mode: input.tax_mode, ...requisites })) {
@@ -308,10 +299,6 @@ export const applyAgentReferralsLegalProfile = (
       .run(revisionId, input.agent_id, nextRevision, input.legal_form, input.tax_mode, projected,
         requisites.opf, requisites.full_name, requisites.short_name, requisites.inn, requisites.kpp, requisites.registration_number, requisites.legal_address,
         current?.id ?? null, input.reason, input.assertion_source, evidenceRef);
-
-    // agent_id's FK already refuses an unknown agent when the revision insert
-    // above runs, so this UPDATE only ever reaches an agent known to exist.
-    db.prepare("UPDATE agents SET contractor_type = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(projected, input.agent_id);
 
     return { revision_id: revisionId, revision: nextRevision, projected_contractor_type: projected, minted: true };
   });

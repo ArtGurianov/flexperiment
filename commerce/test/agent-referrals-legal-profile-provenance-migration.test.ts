@@ -79,8 +79,12 @@ const at0049 = () => {
 };
 
 const seedAgent = (db: Database.Database, agentId = `agent-${randomUUID()}`) => {
-  db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', 'Agent Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`)
+  const legacy = (db.prepare("PRAGMA table_info(agents)").all() as { name: string }[]).some(({ name }) => name === "legal_name");
+  db.prepare(legacy
+    ? `INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
+      VALUES (?, ?, 'Agent', 'Agent Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`
+    : `INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
+      VALUES (?, ?, 'Agent', ?, 'C-1', 'PERCENT', 1000)`)
     .run(agentId, agentId, `${agentId}@example.test`);
   return agentId;
 };

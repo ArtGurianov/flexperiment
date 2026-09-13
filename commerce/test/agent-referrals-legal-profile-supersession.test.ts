@@ -58,8 +58,8 @@ const legalEntityRequisites = { opf: "OOO", full_name: "Romashka LLC", inn: "123
 const readyPartner = (db: Database.Database) => {
   activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', 'Agent Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
+    VALUES (?, ?, 'Agent', ?, 'C-1', 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
   submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", individualRequisites, 0);
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
@@ -167,8 +167,8 @@ describe("D2: legal-profile supersession suspension-policy wiring", () => {
     const db = fresh();
     // DORMANT is the ship state - no activateAgentReferrals call at all.
     const agentId = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
-      VALUES (?, ?, 'Agent', 'Agent Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId, agentId, `${agentId}@example.test`);
+    db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
+      VALUES (?, ?, 'Agent', ?, 'C-1', 'PERCENT', 1000)`).run(agentId, agentId, `${agentId}@example.test`);
     expect(() => submitLegalProfileSupersession(db, admin, "does-not-matter", { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "x", expectedCurrentLegalProfileRevision: 1, expectedRequestSequence: 0 }))
       .toThrow(/AGENT_REFERRALS_FEATURE_DORMANT/);
   });
@@ -177,8 +177,8 @@ describe("D2: legal-profile supersession suspension-policy wiring", () => {
     const db = fresh();
     activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
     const agentId = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
-      VALUES (?, ?, 'Agent', 'Agent Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId, agentId, `${agentId}@example.test`);
+    db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
+      VALUES (?, ?, 'Agent', ?, 'C-1', 'PERCENT', 1000)`).run(agentId, agentId, `${agentId}@example.test`);
     const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
     submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", individualRequisites, 0);
 
@@ -216,8 +216,8 @@ describe("D2: submit()", () => {
   it("refuses submission for an identity that is not PARTNER_ACTIVE, and for one destroyed after becoming active", () => {
     const db = fresh();
     const p1 = readyPartner(db);
-    db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
-      VALUES ('agent-fresh', 'agent-fresh', 'A', 'A Legal', 'fresh@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run();
+    db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
+      VALUES ('agent-fresh', 'agent-fresh', 'A', 'fresh@example.test', 'C-1', 'PERCENT', 1000)`).run();
     const { partner_identity_id: freshPartnerId } = provisionPartnerOwner(db, admin, "agent-fresh", "fresh@example.test", "test");
     expect(() => submitLegalProfileSupersession(db, admin, freshPartnerId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "x", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, freshPartnerId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, freshPartnerId) }))
       .toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_INELIGIBLE_IDENTITY/);

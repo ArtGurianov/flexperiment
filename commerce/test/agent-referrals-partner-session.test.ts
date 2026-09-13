@@ -37,8 +37,8 @@ const capturingSender = (): OtpSender & { lastCode?: string } => {
 
 const loggedInPartner = async (db: Database.Database, email = `${randomUUID().slice(0, 8)}@example.test`) => {
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', 'Agent Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, email);
+  db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
+    VALUES (?, ?, 'Agent', ?, 'C-1', 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, email);
   const { partner_identity_id } = provisionPartnerOwner(db, admin, agentId, email, "test");
   const sender = capturingSender();
   const dispatched = await issueAndDispatchOtpChallenge(db, partner_identity_id, sender);

@@ -330,8 +330,8 @@ describe("STALE_BOUND: a retry that arrives after a legal B* is refused, not app
     // A fresh identity, still in the draft phase - readyPartner's own is
     // already verified and therefore locked.
     const agentId = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
-      VALUES (?, ?, 'Agent', 'Agent Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-2', 'PERCENT', 1000)`)
+    db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
+      VALUES (?, ?, 'Agent', ?, 'C-2', 'PERCENT', 1000)`)
       .run(agentId, `draft-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
     const { partner_identity_id: identityId } = provisionPartnerOwner(db, admin, agentId, `${agentId.slice(0, 8)}@example.test`, "test");
     const principal = { realm: "PARTNER" as const, partner_identity_id: identityId, partner_session_id: "n/a" };

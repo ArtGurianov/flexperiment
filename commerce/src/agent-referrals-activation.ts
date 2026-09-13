@@ -265,7 +265,6 @@ export const AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS = [
   "agent_referrals_feature_state_events_lineage_guard",
   "agent_referrals_activation_manifest_immutable_guard",
   "agent_referrals_activation_manifest_delete_guard",
-  "agents_contractor_type_projection_guard",
   "reward_settlements_contractor_type_projection_guard",
   // PR-D foundation (0050): a rebuild of agent_referrals_legal_profile_revisions
   // (assertion_source/evidence_ref provenance) - same table/index/trigger
@@ -306,6 +305,7 @@ const MIGRATIONS = [
   "0050_agent_referrals_legal_profile_provenance_rebuild.sql", "0051_agent_referrals_legal_profile_supersession.sql",
   "0052_agent_referrals_unified_legal_requisites.sql",
   "0053_agent_referrals_tax_treatment_ord_canonicalization.sql",
+  "0058_agents_legal_identity_cleanup.sql",
 ] as const;
 
 export class AgentReferralsActivationError extends Error {

@@ -14,9 +14,10 @@ import { withAdminCommandInTransaction, type AdminCommandResult } from "./agent-
 const gate = (db: Database.Database) => assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "NPD_STATUS_PROCESSING");
 
 /**
- * §B-6/Phase 7 NPD payout authority - never `agents.npd_status_checked_at`
- * (a bare nullable timestamp with no status and no freshness), which stays
- * exactly as it is for the LEGACY flow.
+ * §B-6/Phase 7 NPD payout authority - never the removed legacy
+ * `agents.npd_status_checked_at` timestamp. A bare timestamp had no status
+ * or freshness semantics; both settlement flows now use this evidence when
+ * their pinned legal revision requires NPD.
  *
  * No FNS adapter ships in this PR (plan: "если FNS adapter/network itself
  * не относится к PR7 frozen implementation, реализуй explicit

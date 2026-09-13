@@ -47,7 +47,15 @@ const promoCandidateHead = (releaseId = `promo-codes-v0:${randomUUID()}`) => ({
 });
 
 function promoter(setup: ReturnType<typeof fixture>, slug: string, rewardType: "PERCENT" | "FIXED" = "PERCENT", rewardValue = 1_000) {
-  return setup.domain.createAgent({ slug, display_name: slug, legal_name: `${slug} legal`, email: `${slug}@example.test`, contractor_type: "SELF_EMPLOYED", inn: "123456789012", contract_reference: `C-${slug}`, default_reward_type: rewardType, default_reward_value: rewardValue });
+  return setup.domain.createAgent({ slug, display_name: slug, email: `${slug}@example.test`, contract_reference: `C-${slug}`, default_reward_type: rewardType, default_reward_value: rewardValue });
+}
+
+function bindSettlementLegalIdentity(setup: ReturnType<typeof fixture>, agentId: string, email: string) {
+  const legalProfileId = randomUUID(); const partnerIdentityId = randomUUID();
+  setup.db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, full_name, inn, registration_number, reason, assertion_source)
+    VALUES (?, ?, 1, 'INDIVIDUAL_ENTREPRENEUR', 'OTHER', 'INDIVIDUAL_ENTREPRENEUR', 'Settlement Agent', '123456789012', '123456789012345', 'test', 'PARTNER_ASSERTED')`).run(legalProfileId, agentId);
+  setup.db.prepare(`INSERT INTO partner_identities(id, agent_id, email, email_hash, legal_profile_revision_id, created_by_admin_id)
+    VALUES (?, ?, ?, 'hash', ?, 'admin')`).run(partnerIdentityId, agentId, email, legalProfileId);
 }
 
 async function maturedReward(setup: ReturnType<typeof fixture>, slug: string, amount = 10_000) {
@@ -56,7 +64,7 @@ async function maturedReward(setup: ReturnType<typeof fixture>, slug: string, am
   const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), `settlement-${slug}-checkout`, "https://flexperiment.ru");
   const payment = setup.db.prepare("SELECT p.id FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?").get(result.status_id) as { id: string };
   setup.domain.markPaymentPaid(payment.id, 100_000, "settlement-provider");
-  setup.domain.patchAgent(String(agent.id), { npd_status_checked_at: new Date().toISOString() });
+  bindSettlementLegalIdentity(setup, String(agent.id), `${slug}-partner@example.test`);
   setup.db.prepare("UPDATE occurrences SET ends_at = '2020-01-01T00:00:00.000Z', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
   setup.domain.completeOccurrence(setup.occurrenceId);
   return agent;
@@ -1465,8 +1473,8 @@ describe("commerce domain", () => {
   it("does not mature a referral reward when the organizer cancels an occurrence", async () => {
     const setup = fixture(); databases.push(setup.db);
     const agentId = randomUUID();
-    setup.db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, enabled, default_reward_type, default_reward_value, npd_status_checked_at)
-      VALUES (?, 'cancelled-promoter', 'Promoter', 'Promoter Legal', 'promoter@example.test', 'SELF_EMPLOYED', '123456789012', 'C-2', 1, 'PERCENT', 1000, datetime('now'))`).run(agentId);
+    setup.db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, enabled, default_reward_type, default_reward_value)
+      VALUES (?, 'cancelled-promoter', 'Promoter', 'promoter@example.test', 'C-2', 1, 'PERCENT', 1000)`).run(agentId);
     // Attribution is pinned at checkout time (immutable thereafter as of
     // PR6/0046 - orders.attributed_agent_id/reward_type_snapshot/
     // reward_value_snapshot can no longer be attached retroactively via
@@ -1485,13 +1493,12 @@ describe("commerce domain", () => {
 
   it("replays the current settlement state for an idempotent prepare", async () => {
     const setup = fixture(); databases.push(setup.db);
-    const agentId = randomUUID();
-    setup.db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, enabled, default_reward_type, default_reward_value, npd_status_checked_at)
-      VALUES (?, 'promoter', 'Promoter', 'Promoter Legal', 'promoter@example.test', 'SELF_EMPLOYED', '123456789012', 'C-1', 1, 'PERCENT', 1000, datetime('now'))`).run(agentId);
+    const agentId = String(promoter(setup, "promoter").id);
     const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "promoter" });
     const result = await setup.domain.checkoutAsync({ quote_id: quote.quote_id, customer_email: "art@example.test", customer_adult_confirmed: true, participant_age_band: "ADULT", offer_accepted: true, pd_consent_accepted: true }, "8f3a27bc-77c6-47b1-b6d0-000000000008", "https://flexperiment.ru");
     const order = setup.db.prepare("SELECT o.id, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; payment_id: string };
     setup.domain.markPaymentPaid(order.payment_id, 100000, "provider-payment");
+    bindSettlementLegalIdentity(setup, agentId, "promoter-partner@example.test");
     setup.db.prepare("UPDATE occurrences SET ends_at = '2020-01-01T00:00:00.000Z' WHERE id = ?").run(setup.occurrenceId);
     setup.db.prepare("UPDATE occurrences SET sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
     setup.domain.completeOccurrence(setup.occurrenceId);
@@ -1816,7 +1823,7 @@ describe("commerce domain", () => {
     const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), "phase11-allocation-balance-001", "https://flexperiment.ru");
     const order = setup.db.prepare("SELECT o.id, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; payment_id: string };
     setup.domain.markPaymentPaid(order.payment_id, 100000, "provider");
-    setup.domain.patchAgent(String(agent.id), { npd_status_checked_at: new Date().toISOString() });
+    bindSettlementLegalIdentity(setup, String(agent.id), "allocation-promoter-partner@example.test");
     setup.db.prepare("UPDATE occurrences SET ends_at = '2020-01-01T00:00:00.000Z', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
     setup.domain.completeOccurrence(setup.occurrenceId);
     const initial = setup.domain.rewardBalance(String(agent.id), setup.occurrenceId);
@@ -1830,7 +1837,7 @@ describe("commerce domain", () => {
     expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ payable_gross_total: 0, prepared_total: 6000, late_adjustment_exposure: 6000, available_to_settle: 0 });
   });
 
-  it("blocks settlement availability until the contractor check is recorded, then unblocks the same matured evidence", async () => {
+  it("keeps rewardBalance arithmetic-only; NPD authority is checked only by preparation", async () => {
     const setup = fixture(); databases.push(setup.db);
     const agent = promoter(setup, "contractor-review-promoter", "FIXED", 10000);
     const quote = setup.domain.checkoutContext({ occurrenceId: setup.occurrenceId, referralSlug: "contractor-review-promoter" });
@@ -1839,8 +1846,6 @@ describe("commerce domain", () => {
     setup.domain.markPaymentPaid(payment.id, 100000, "provider");
     setup.db.prepare("UPDATE occurrences SET ends_at = '2020-01-01T00:00:00.000Z', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
     setup.domain.completeOccurrence(setup.occurrenceId);
-    expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ payable_gross_total: 10000, blocked_payable_total: 10000, available_to_settle: 0 });
-    setup.domain.patchAgent(String(agent.id), { npd_status_checked_at: new Date().toISOString() });
     expect(setup.domain.rewardBalance(String(agent.id), setup.occurrenceId)).toMatchObject({ payable_gross_total: 10000, blocked_payable_total: 0, available_to_settle: 10000 });
   });
 
@@ -1858,7 +1863,7 @@ describe("commerce domain", () => {
       const result = await setup.domain.checkoutAsync(checkoutPayload(quote.quote_id), `phase11-balance-table-${index}-00001`, "https://flexperiment.ru");
       const order = setup.db.prepare("SELECT o.id, p.id AS payment_id FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?").get(result.status_id) as { id: string; payment_id: string };
       setup.domain.markPaymentPaid(order.payment_id, 100000, "provider");
-      setup.domain.patchAgent(String(agent.id), { npd_status_checked_at: new Date().toISOString() });
+      bindSettlementLegalIdentity(setup, String(agent.id), `balance-table-${index}-partner@example.test`);
       setup.db.prepare("UPDATE occurrences SET ends_at = '2020-01-01T00:00:00.000Z', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
       setup.domain.completeOccurrence(setup.occurrenceId);
       let paidSettlementId: string | undefined;

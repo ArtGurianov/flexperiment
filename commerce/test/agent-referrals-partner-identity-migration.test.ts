@@ -49,9 +49,15 @@ const at0043 = () => {
 const tableNames = (db: Database.Database) =>
   (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as { name: string }[]).map((r) => r.name);
 
-const seedAgent = (db: Database.Database, agentId = "agent-migration-1") =>
-  db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'M', 'M Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId, agentId, `${agentId}@example.test`);
+const seedAgent = (db: Database.Database, agentId = "agent-migration-1") => {
+  const legacy = (db.prepare("PRAGMA table_info(agents)").all() as { name: string }[]).some(({ name }) => name === "legal_name");
+  return db.prepare(legacy
+    ? `INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
+      VALUES (?, ?, 'M', 'M Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`
+    : `INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
+      VALUES (?, ?, 'M', ?, 'C-1', 'PERCENT', 1000)`)
+    .run(agentId, agentId, `${agentId}@example.test`);
+};
 
 describe("0044 partner identity migration", () => {
   it("applies exactly once through the real migrate() runner, ordinarily (FK stays ON)", () => {
@@ -77,11 +83,12 @@ describe("0044 partner identity migration", () => {
     const sql = readFileSync(join(MIGRATIONS, MIGRATION_FILE), "utf8");
     expect(isFkOffMigration(MIGRATION_FILE, createHash("sha256").update(sql).digest("hex"))).toBe(false);
     migrate(db);
-    expect(FK_OFF_MIGRATIONS).toHaveLength(3);
+    expect(FK_OFF_MIGRATIONS).toHaveLength(4);
     expect(FK_OFF_MIGRATIONS).toEqual([
       { filename: "0042_agent_referrals_agents_rebuild.sql", sha256: "d9b5ecbf496993669201b45440ea5213ba0e52af778e2094d569f772adfee6ab" },
       { filename: "0050_agent_referrals_legal_profile_provenance_rebuild.sql", sha256: "e1cbd9ce177546ea621fb4a9da861f63e69e999e8bf6a5c159d1c967761349f0" },
       { filename: "0052_agent_referrals_unified_legal_requisites.sql", sha256: "bcc44feaa37acb5930a8b9d7fe4a1bd4e711306e2640b9cb04ff78844cec9104" },
+      { filename: "0058_agents_legal_identity_cleanup.sql", sha256: "22f5f13bb2469ecd3110cc50f1d81549a458854e1c33daf392501aef447ac44b" },
     ]);
   });
 

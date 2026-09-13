@@ -6,6 +6,7 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { currentAgentReferralsLegalProfile } from "../src/agent-referrals-legal-profile";
 import { currentPayoutProfile } from "../src/agent-referrals-payout-profile";
 import { DELEGATION_TEMPLATE_REQUIRED_CLAUSES, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, mintDelegationTemplateRevision, mintFrameworkAgreementRevision } from "../src/agent-referrals-framework-delegation";
 import {
@@ -32,8 +33,8 @@ const fresh = () => {
 
 const provision = (db: Database.Database) => {
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', 'Agent Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`).run(agentId, `p-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
+    VALUES (?, ?, 'Agent', ?, 'C-1', 'PERCENT', 1000)`).run(agentId, `p-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   return provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
 };
 
@@ -153,7 +154,7 @@ describe("onboarding state authority", () => {
         .toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_SUBMISSION_LOCKED/);
     });
 
-    it("the frozen 4/2 legal-form matrix is enforced at submit time (PR-E), and legacy contractor_type projection is preserved through verify", () => {
+    it("the frozen 4/2 legal-form matrix is enforced at submit time, and verify projects the current legal profile", () => {
       const db = fresh();
       activateFeature(db);
       const { partner_identity_id } = provision(db);
@@ -169,8 +170,7 @@ describe("onboarding state authority", () => {
       submitPartnerLegalProfile(db, asPartner(partner_identity_id), "LEGAL_ENTITY", "OTHER", legalEntityRequisites, 0);
       const verified = verifyPartnerLegalProfile(db, admin, partner_identity_id, "verify");
       expect(verified.onboarding_state).toBe("PROFILE_VERIFIED");
-      const agentRow = db.prepare("SELECT contractor_type FROM agents WHERE id = ?").get(identity.agent_id) as { contractor_type: string };
-      expect(agentRow.contractor_type).toBe("ORGANIZATION");
+      expect(currentAgentReferralsLegalProfile(db, identity.agent_id)).toMatchObject({ projected_contractor_type: "ORGANIZATION" });
     });
   });
 

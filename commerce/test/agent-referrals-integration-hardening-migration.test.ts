@@ -93,15 +93,16 @@ describe("0049 integration-hardening migration", () => {
     const sql = readFileSync(join(MIGRATIONS, MIGRATION_FILE), "utf8");
     expect(isFkOffMigration(MIGRATION_FILE, createHash("sha256").update(sql).digest("hex"))).toBe(false);
     migrate(db);
-    expect(FK_OFF_MIGRATIONS).toHaveLength(3);
+    expect(FK_OFF_MIGRATIONS).toHaveLength(4);
     expect(FK_OFF_MIGRATIONS).toEqual([
       { filename: "0042_agent_referrals_agents_rebuild.sql", sha256: "d9b5ecbf496993669201b45440ea5213ba0e52af778e2094d569f772adfee6ab" },
       { filename: "0050_agent_referrals_legal_profile_provenance_rebuild.sql", sha256: "e1cbd9ce177546ea621fb4a9da861f63e69e999e8bf6a5c159d1c967761349f0" },
       { filename: "0052_agent_referrals_unified_legal_requisites.sql", sha256: "bcc44feaa37acb5930a8b9d7fe4a1bd4e711306e2640b9cb04ff78844cec9104" },
+      { filename: "0058_agents_legal_identity_cleanup.sql", sha256: "22f5f13bb2469ecd3110cc50f1d81549a458854e1c33daf392501aef447ac44b" },
     ]);
   });
 
-  it("ships no 0058+ migration file (PR-C3's own 0057 is the current boundary)", () => {
+  it("ships no 0059+ migration file; Phase 1 owns the reviewed 0058 rebuild", () => {
     const all = readdirSync(MIGRATIONS).filter((n) => n.endsWith(".sql"));
     // 0055 and 0056 both add a monotone counter rather than rebuilding a
     // table - ALTER TABLE ADD COLUMN with a NOT NULL DEFAULT - which is why
@@ -109,7 +110,7 @@ describe("0049 integration-hardening migration", () => {
     // drops and recreates one 0051 trigger, because SQLite cannot alter a
     // trigger in place and the new column belongs inside its immutability
     // guard.
-    expect(all.filter((n) => n > "0057_partner_invite_capability_head.sql")).toEqual([]);
+    expect(all.filter((n) => n > "0058_agents_legal_identity_cleanup.sql")).toEqual([]);
   });
 
   it("introduces no new base table - every fix is a trigger/index on an existing 0043/0047 table, or pure application code", () => {
@@ -128,15 +129,15 @@ describe("0049 integration-hardening migration", () => {
     }
   });
 
-  describe("PR3-PR8's required-schema-object list now also proves 0049's own guards", () => {
+  describe("PR3-PR8's required-schema-object list retains 0049 guards that survive the 0058 agents rebuild", () => {
     const integrationHardeningObjects = [
       "agent_referrals_feature_state_events_immutable_guard", "agent_referrals_feature_state_events_delete_guard",
       "agent_referrals_feature_state_events_revision_unique", "agent_referrals_feature_state_events_lineage_guard",
       "agent_referrals_activation_manifest_immutable_guard", "agent_referrals_activation_manifest_delete_guard",
-      "agents_contractor_type_projection_guard", "reward_settlements_contractor_type_projection_guard",
+      "reward_settlements_contractor_type_projection_guard",
     ];
 
-    it("AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS includes every 0049 object, exhaustively, as one contiguous ordered block - not necessarily at the very end, since a later PR (D2/0051) legitimately appends its own objects after it", () => {
+    it("AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS includes every surviving 0049 object, exhaustively, as one contiguous ordered block", () => {
       for (const object of integrationHardeningObjects) expect(AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS, object).toContain(object);
       const startIndex = AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS.indexOf(integrationHardeningObjects[0] as (typeof AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS)[number]);
       const actualBlock = AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS.slice(startIndex, startIndex + integrationHardeningObjects.length);
