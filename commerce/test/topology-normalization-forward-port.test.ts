@@ -26,7 +26,7 @@ describe("topology normalization forward-port", () => {
     expect(execFileSync("git", ["diff", "--name-status", production, "HEAD", "--", "commerce/migrations"], { encoding: "utf8" }).trim())
       .toBe("A\tcommerce/migrations/0058_agents_legal_identity_cleanup.sql");
     expect(createHash("sha256").update(readFileSync("commerce/migrations/0058_agents_legal_identity_cleanup.sql")).digest("hex"))
-      .toBe("22f5f13bb2469ecd3110cc50f1d81549a458854e1c33daf392501aef447ac44b");
+      .toBe("c8f711ace8ebf169fb492aa4b3cd5c745f98a8ed9be03ff1cf76d1ef6a184637");
     expect(statSync("certification.sh").mode & 0o777).toBe(0o644);
   });
 

@@ -10,6 +10,67 @@
 -- reward_settlements_contractor_type_projection_guard here. They do not
 -- depend on agents and remain the historical/Agent Referrals backstops.
 
+-- The two Phase 1 production gates, re-proved here as executable
+-- preconditions rather than trusted from an operator snapshot.
+--
+-- An operator query is a point-in-time fact and cannot bind this migration:
+-- the BASE runtime's legacy prepareSettlement() writes reward_settlements
+-- rows without settlement_flow (so they read as LEGACY) and sits behind no
+-- sales gate, so it can invalidate either gate between the query and the
+-- cutover. applyFkOffMigration runs this whole file inside one
+-- BEGIN IMMEDIATE transaction, so a writer either lands before the lock and
+-- is counted below, or cannot interleave before the DDL at all. That closes
+-- the race instead of narrowing it.
+--
+-- Same fail-closed shape as 0052's _pr_e_zero_legacy_guard: a violation
+-- aborts the transaction with the constraint name as the reason and leaves
+-- the schema, the migration ledger and every trigger untouched. There is
+-- deliberately no repair, backfill or relabel path here - a non-zero gate is
+-- a design decision to make with production evidence in hand, not something
+-- to paper over inside a migration.
+--
+-- Top-level RAISE(ABORT) is not available: SQLite rejects it outside a
+-- trigger program ("RAISE() may only be used within a trigger-program").
+
+CREATE TEMP TABLE _phase_1_gate_1_guard (
+  row_count INTEGER NOT NULL,
+  CONSTRAINT PHASE_1_GATE_1_LEGACY_SETTLEMENTS_PRESENT CHECK (row_count = 0)
+);
+-- IS NOT is null-safe, so historical NULL rows count as LEGACY.
+INSERT INTO _phase_1_gate_1_guard(row_count)
+  SELECT COUNT(*) FROM reward_settlements WHERE settlement_flow IS NOT 'AGENT_REFERRALS';
+DROP TABLE _phase_1_gate_1_guard;
+
+CREATE TEMP TABLE _phase_1_gate_2_guard (
+  row_count INTEGER NOT NULL,
+  CONSTRAINT PHASE_1_GATE_2_UNBOUND_LEGACY_AGENT CHECK (row_count = 0)
+);
+-- Exactly the binding the rewritten LEGACY authority tuple below enforces at
+-- INSERT time: a live identity whose pointer is this agent's MAX revision.
+INSERT INTO _phase_1_gate_2_guard(row_count)
+  SELECT COUNT(*) FROM agents a
+  WHERE (
+        EXISTS (SELECT 1 FROM referral_rewards r
+                WHERE r.agent_id = a.id
+                  AND COALESCE(r.reward_authority_kind, 'LEGACY') = 'LEGACY')
+     OR EXISTS (SELECT 1 FROM reward_adjustments ra JOIN orders o ON o.id = ra.order_id
+                WHERE ra.agent_id = a.id AND o.reward_authority_kind = 'LEGACY')
+     OR EXISTS (SELECT 1 FROM reward_settlements rs
+                WHERE rs.agent_id = a.id AND rs.settlement_flow IS NOT 'AGENT_REFERRALS')
+    )
+    AND NOT EXISTS (
+      SELECT 1
+      FROM partner_identities pi
+      JOIN agent_referrals_legal_profile_revisions lp ON lp.id = pi.legal_profile_revision_id
+      WHERE pi.agent_id = a.id
+        AND pi.destroyed_at IS NULL
+        AND lp.agent_id = a.id
+        AND lp.revision = (SELECT MAX(lp2.revision)
+                           FROM agent_referrals_legal_profile_revisions lp2
+                           WHERE lp2.agent_id = a.id)
+    );
+DROP TABLE _phase_1_gate_2_guard;
+
 DROP TRIGGER agents_contractor_type_projection_guard;
 DROP TRIGGER reward_settlements_authority_tuple_consistency_guard;
 
