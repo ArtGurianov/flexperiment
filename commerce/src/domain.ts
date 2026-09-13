@@ -4,7 +4,7 @@ import { EmailProviderRejectedError, EventDumpCreateRejectedError, isEmailDelive
 import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
 import { LegalReleasePublishError, loadCanonicalLegalRelease, publishLegalRelease, verifyCurrentLegalSourceHashes, type CanonicalLegalRelease } from "./legal-release";
 import { providerErrorEvidence, type PaymentProvider } from "./provider";
-import { ReleaseControlError, ReleaseSalesGate, type CandidateAcquireRequest, type CandidateAdoptRequest, type CandidateAbortRequest, type CandidateCompleteRequest, type CandidateHeadSnapshot, type CandidatePhaseRequest, type CertificationEvidenceRequest, type CertificationLeaseRequest, type CertificationOrderContext, type CertificationRetryRequest, type DormantReadinessReader, type PostActivationEmailProviderDefectRequest, type PreActivationDefectRequest, type ReleaseControlRequest, type RuntimeReadinessDefectRequest, releaseRuntimeEvidence } from "./release-control";
+import { ReleaseControlError, ReleaseSalesGate, type AgentReferralsStrandedRollingSupersedeRequest, type CandidateAcquireRequest, type CandidateAdoptRequest, type CandidateAbortRequest, type CandidateCompleteRequest, type CandidateHeadSnapshot, type CandidatePhaseRequest, type CertificationEvidenceRequest, type CertificationLeaseRequest, type CertificationOrderContext, type CertificationRetryRequest, type DormantReadinessReader, type PostActivationEmailProviderDefectRequest, type PreActivationDefectRequest, type ReleaseControlRequest, type RuntimeReadinessDefectRequest, releaseRuntimeEvidence } from "./release-control";
 import { checkoutRequestSchema, promoMergedSchema, type CheckoutRequest, type ParticipantAgeBand } from "./types";
 import { PromoPricingError, pricePromo } from "./promo-pricing";
 import { PartnerPromoPricingError, resolveCheckoutPromoTerms } from "./agent-referrals-partner-promo-pricing";
@@ -22,6 +22,8 @@ import { claimForDispatch, deferAmbiguousObservation, deferAmbiguousSend, dispat
 import { ACTIVATION_REFUSAL_CODES, activateAttemptAuthority as runAttemptAuthorityActivation, activationEvidence } from "./outbox-activation";
 import { certificationDispatchEvidence, postActivationEmailProviderDefectEvidence } from "./certification-dispatch";
 import { OutboxAuthorityError, emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, lastAuthorityEvent, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations, type DispatchEpoch } from "./outbox-authority";
+import { activateAgentReferralsIfReady, type AgentReferralsActivationRequest } from "./agent-referrals-activation-readiness";
+import type { OtpDeliveryCapability } from "./agent-referrals-otp";
 
 type Row = Record<string, unknown>;
 const one = <T extends Row>(db: Database.Database, sql: string, ...params: unknown[]) => db.prepare(sql).get(...params) as T | undefined;
@@ -330,6 +332,7 @@ export class CommerceDomain {
     readonly provider: PaymentProvider,
     readonly emailProvider: EmailProvider = new UnconfiguredEmailProvider(),
     private readonly clock: () => number = Date.now,
+    private readonly otpDelivery: OtpDeliveryCapability = { configured: false, provider_id: null },
   ) {}
 
   /**
@@ -489,6 +492,14 @@ export class CommerceDomain {
 
   releaseControlStatus() { return this.releaseSalesGate().status(); }
   releaseControlCompletion(releaseId: string) { return this.releaseSalesGate().completion(releaseId); }
+  releaseControlResolution(releaseId: string) { return this.releaseSalesGate().resolution(releaseId); }
+  activateAgentReferralsIfReady(input: AgentReferralsActivationRequest) {
+    try { return activateAgentReferralsIfReady(this.db, () => this.releaseRuntimeEvidence(), this.releaseSalesGate(), () => this.otpDelivery, input); }
+    catch (error) {
+      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
+      throw error;
+    }
+  }
   promoCandidateHead(): CandidateHeadSnapshot {
     try { return this.releaseSalesGate().candidateHead(); }
     catch (error) { if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status); throw error; }
@@ -622,6 +633,18 @@ export class CommerceDomain {
   completeRolling(input: ReleaseControlRequest, dormantReady: DormantReadinessReader) {
     try { return this.releaseSalesGate().completeRolling(input, dormantReady); }
     catch (error) {
+      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
+      throw error;
+    }
+  }
+
+  supersedeAgentReferralsStrandedRolling(input: AgentReferralsStrandedRollingSupersedeRequest, replacementDormantReady: () => boolean) {
+    try {
+      return this.releaseSalesGate().supersedeStrandedAgentReferralsRolling(input, () => ({
+        runtime_source_commit: this.releaseRuntimeEvidence().source_commit,
+        replacement_dormant_ready: replacementDormantReady(),
+      }));
+    } catch (error) {
       if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
       throw error;
     }

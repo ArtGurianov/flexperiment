@@ -8,13 +8,13 @@ const runtimeBeforePromotion = parseCanonicalLegalRelease(JSON.parse(readFileSyn
 const publishedNotificationRelease = parseCanonicalLegalRelease(JSON.parse(readFileSync("commerce/legal/production-manifest.2026-08-28.1.draft.json", "utf8")));
 
 describe("occurrence notification legal capability", () => {
-  it("stays dormant before publication and after publication until runtime promotion", () => {
+  it("recognizes the forward-ported, already-published notification release", () => {
     expect(occurrenceNotificationsCapabilityActive({
       activeVersion: runtimeBeforePromotion.version,
       activeManifest: runtimeBeforePromotion.manifest,
       runtimeRelease: runtimeBeforePromotion,
       currentLegalCopiesMatch: true,
-    })).toBe(false);
+    })).toBe(true);
 
     expect(occurrenceNotificationsCapabilityActive({
       activeVersion: publishedNotificationRelease.version,

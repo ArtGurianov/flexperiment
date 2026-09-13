@@ -11,10 +11,12 @@ import { TochkaWebhookVerifier, webhookAmountKopecks } from "./tochka-webhook";
 import { verifyUnisenderWebhook } from "./unisender-webhook";
 import { type SmartCaptchaVerifier, UnconfiguredSmartCaptchaVerifier } from "./smartcaptcha";
 import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityInterestWithdrawalSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, emailAttentionAcknowledgeSchema, emergencySalesCommandSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrenceNotificationSchema, occurrencePatchSchema, outboxDispatchFenceSchema, postActivationEmailProviderDefectSchema, preActivationDefectSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
-import { completeRollingSchema, releaseControlSchema } from "./release-control-schema";
 import { createAgentReferralsPartnerRouter } from "./agent-referrals-api-partner";
 import { createAgentReferralsAdminRouter } from "./agent-referrals-api-admin";
 import { UnconfiguredOtpSender, type OtpSender } from "./agent-referrals-otp";
+import { agentReferralsActivationReconciliationEvidence } from "./agent-referrals-activation-reconciliation";
+import { agentReferralsDormantReady, agentReferralsDormantReadinessEvidence } from "./agent-referrals-dormant-readiness";
+import { agentReferralsActivationSchema, agentReferralsStrandedRollingSupersedeSchema, completeRollingSchema, releaseControlSchema } from "./release-control-schema";
 
 type AppBindings = { Variables: { adminId?: string; adminSessionId?: string } };
 const noStore = (headers: Headers) => headers.set("Cache-Control", "no-store");
@@ -32,7 +34,7 @@ const jsonBody = async (request: Request) => {
 
 export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvider: EmailProvider = new UnconfiguredEmailProvider(), smartCaptcha: SmartCaptchaVerifier = new UnconfiguredSmartCaptchaVerifier(), otpSender: OtpSender = new UnconfiguredOtpSender()) {
   const app = new Hono<AppBindings>();
-  const domain = new CommerceDomain(sqlite, provider, emailProvider);
+  const domain = new CommerceDomain(sqlite, provider, emailProvider, Date.now, otpSender.deliveryCapability());
   const tochkaVerifier = provider instanceof TochkaProvider ? new TochkaWebhookVerifier() : undefined;
   const unisenderConfig = emailProvider instanceof UnisenderGoProvider ? emailProvider.config : undefined;
 
@@ -574,6 +576,10 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     return c.json(domain.unfenceEmailDispatch(input, { release_id: input.release_id, generation: input.generation ?? null }));
   });
   releaseControl.get("/completion/:releaseId", (c) => c.json(domain.releaseControlCompletion(c.req.param("releaseId"))));
+  // Separate from completion so existing consumers retain their exact
+  // successful-completion contract while recovery controllers can prove the
+  // durable, non-success terminal resolution of the stranded Q2 owner.
+  releaseControl.get("/resolution/:releaseId", (c) => c.json(domain.releaseControlResolution(c.req.param("releaseId"))));
   releaseControl.post("/candidates/acquire", async (c) => c.json(domain.acquirePromoCandidate(await jsonBody(c.req.raw) as { head: import("./release-generation").GenerationHead })));
   releaseControl.post("/candidates/adopt", async (c) => c.json(domain.adoptPromoCandidate(await jsonBody(c.req.raw) as import("./release-control").CandidateAdoptRequest)));
   releaseControl.post("/candidates/phase", async (c) => c.json(domain.changePromoCandidatePhase(await jsonBody(c.req.raw) as import("./release-control").CandidatePhaseRequest)));
@@ -614,12 +620,52 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   releaseControl.post("/reopen", async (c) => c.json(domain.reopenNewOrders(releaseControlSchema.parse(await jsonBody(c.req.raw)))));
   releaseControl.post("/complete-rolling", async (c) => {
     const input = completeRollingSchema.parse(await jsonBody(c.req.raw));
-    // No DORMANT feature ships in PR1 for this predicate to check (Agent
-    // Referrals lands in PR3-PR9), so this wiring fails closed until a real
-    // feature-readiness reader replaces it - never treat "no feature yet" as
-    // "ready".
-    return c.json(domain.completeRolling(input, () => false));
+    // Agent Referrals (PR3-PR9) is the only ROLLING candidate that exists,
+    // so its own dormant-readiness evidence is the real readiness reader
+    // this predicate was always meant to become. Round-9 P1.2 fix: the
+    // reader now receives the request's own pinned `expected` object, so
+    // completion refuses on ANY mismatch between what actually deployed and
+    // what was pinned at acquire time - runtime/worker source, exact
+    // migration inventory, legal expectations, and surface-contract
+    // versions - never merely on runtime-vs-worker self-consistency while
+    // both silently disagree with the pinned target. This is the fail-
+    // closed authority itself, not merely a reflection of whatever a
+    // calling workflow separately checked beforehand - any caller of this
+    // route gets the same refusal a partially-checked workflow would. A
+    // future second ROLLING feature would need this predicate to become
+    // release_id-aware; nothing here forecloses that, it simply is not
+    // needed while Agent Referrals is the only caller.
+    return c.json(domain.completeRolling(input, () => agentReferralsDormantReady(sqlite, domain.releaseRuntimeEvidence(), input.expected)));
   });
+  releaseControl.post("/agent-referrals/stranded-rolling-supersede", async (c) => {
+    const input = agentReferralsStrandedRollingSupersedeSchema.parse(await jsonBody(c.req.raw));
+    return c.json(domain.supersedeAgentReferralsStrandedRolling(input, () =>
+      agentReferralsDormantReady(sqlite, domain.releaseRuntimeEvidence(), input.replacement_expected)));
+  });
+  // Phase 10B production-controller precondition, bearer-token gated like
+  // every other /v1/internal/release-control/* route - never the admin-
+  // session-gated surface, so a CI controller can read it without a browser
+  // session. Read-only: this route mutates nothing. Exposes the exact same
+  // evidence /complete-rolling's own predicate is fail-closed against, so a
+  // controller's own preflight/postflight checks can never disagree with
+  // what completion itself will actually enforce. POST, not GET (round-9
+  // fix): the full frozen predicate needs the exact pinned `expected`
+  // object to check against, so this accepts the same
+  // completeRollingSchema-shaped body /complete-rolling itself takes -
+  // never a second, looser evidence shape.
+  releaseControl.post("/agent-referrals/dormant-readiness", async (c) => {
+    const input = completeRollingSchema.parse(await jsonBody(c.req.raw));
+    return c.json(agentReferralsDormantReadinessEvidence(sqlite, domain.releaseRuntimeEvidence(), input.expected));
+  });
+  // Q5's only addition: a bearer-gated, parameterless, read-only snapshot of
+  // the exact durable evidence Q4's activation command seals.  It is solely
+  // for post-request reconciliation; it is not an activation authority.
+  releaseControl.get("/agent-referrals/activation-state", (c) => c.json(agentReferralsActivationReconciliationEvidence(sqlite)));
+  // Q4's only DORMANT -> ACTIVE surface.  It is deliberately internal and
+  // bearer-gated by the shared release-control middleware above: no browser
+  // or admin-session route can invoke the combined readiness/CAS authority.
+  releaseControl.post("/agent-referrals/activate", async (c) =>
+    c.json(domain.activateAgentReferralsIfReady(agentReferralsActivationSchema.parse(await jsonBody(c.req.raw)))));
   const releaseControlHead = new Hono();
   releaseControlHead.use("*", async (c, next) => {
     if (!verifyReleaseControlToken(c.req.header("Authorization"))) throw new DomainError("RELEASE_CONTROL_AUTH_REQUIRED", 401);

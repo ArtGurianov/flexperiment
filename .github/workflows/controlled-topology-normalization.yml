@@ -1,0 +1,155 @@
+name: Controlled topology normalization
+
+# One-shot controller for the documented acfef97f -> main normalization. It is
+# deliberately not a generic lane: BASE is the exact detached production
+# runtime, while TARGET is the frozen reviewed main tip supplied at dispatch.
+# It exists only to restore ordinary main-lineage topology; it does not change
+# Agent Referrals state or publish a candidate ref.
+on:
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: Exact frozen main commit to deploy
+        required: true
+        type: string
+      target_tree:
+        description: Exact tree of target_sha
+        required: true
+        type: string
+      expected_production_deploy_sha:
+        description: Expected detached production-deploy BASE
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 120
+    env:
+      BASE_SHA: acfef97f15b45995e0f98a8ac0c649802c2bca9c
+      CONTROLLER_SHA: ${{ github.sha }}
+      TARGET_SHA: ${{ inputs.target_sha }}
+      TARGET_TREE: ${{ inputs.target_tree }}
+      INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA: ${{ inputs.expected_production_deploy_sha }}
+      PRODUCTION_DEPLOY_REF_TOKEN: ${{ secrets.PRODUCTION_DEPLOY_REF_TOKEN }}
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+      COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL }}
+      PUBLIC_FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+      ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Bind dedicated production-deploy credential
+        run: |
+          set -euo pipefail
+          [[ -n "$PRODUCTION_DEPLOY_REF_TOKEN" ]] || { echo TOPOLOGY_NORMALIZATION_DEPLOY_REF_TOKEN_REQUIRED >&2; exit 1; }
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          git remote set-url origin "https://x-access-token:${PRODUCTION_DEPLOY_REF_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.29.3 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+
+      - name: Bind frozen main target and the one-time ancestry waiver
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo TOPOLOGY_NORMALIZATION_CONTROLLER_NOT_MAIN >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$TARGET_SHA" == "$(git rev-parse origin/main)" ]] || { echo TOPOLOGY_NORMALIZATION_TARGET_NOT_CURRENT_MAIN >&2; exit 1; }
+          [[ "$CONTROLLER_SHA" == "$TARGET_SHA" ]] || { echo TOPOLOGY_NORMALIZATION_CONTROLLER_TARGET_MISMATCH >&2; exit 1; }
+          [[ "$(git rev-parse "${TARGET_SHA}^{tree}")" == "$TARGET_TREE" ]] || { echo TOPOLOGY_NORMALIZATION_TARGET_TREE_MISMATCH >&2; exit 1; }
+          # The controller ships in TARGET, so equality is an independent
+          # confirmation, never a derivation of TARGET from HEAD.
+          git merge-base --is-ancestor "$TARGET_SHA" "$CONTROLLER_SHA" || { echo "NORMALIZATION_CONTROLLER_OLDER_THAN_TARGET" >&2; exit 1; }
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$BASE_SHA" && "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" == "$BASE_SHA" ]] || { echo TOPOLOGY_NORMALIZATION_PRODUCTION_POINTER_MISMATCH >&2; exit 1; }
+
+      - name: Prove the excluded boundary classes and allowed normalization lane
+        run: |
+          set -euo pipefail
+          git diff --name-only -z "$BASE_SHA" "$TARGET_SHA" > boundary-paths.bin
+          node --import tsx -e '
+            import { readFileSync } from "node:fs";
+            import { compatibilitySemanticsPaths, genericProductionDeployBoundary, releaseSemanticsCategories } from "./commerce/src/generic-production-deploy-boundary";
+            const paths = readFileSync("boundary-paths.bin").toString().split("\0").filter(Boolean);
+            const fail = (code) => { console.error(code); process.exit(1); };
+            if (paths.some((p) => p.startsWith("commerce/migrations/"))) fail("TOPOLOGY_NORMALIZATION_SCHEMA_CHANGED");
+            if (paths.some((p) => p.startsWith("commerce/legal/") || p.startsWith("public/legal/") || p === "certification.sh")) fail("TOPOLOGY_NORMALIZATION_LEGAL_CHANGED");
+            if (paths.includes("release-surface-contract.json")) fail("TOPOLOGY_NORMALIZATION_SURFACE_CONTRACT_CHANGED");
+            if (paths.some((p) => compatibilitySemanticsPaths.includes(p))) fail("TOPOLOGY_NORMALIZATION_COMPATIBILITY_CHANGED");
+            if (genericProductionDeployBoundary(paths) !== "RELEASE_SEMANTICS") fail("TOPOLOGY_NORMALIZATION_BOUNDARY_NOT_RELEASE_SEMANTICS");
+            if (JSON.stringify(releaseSemanticsCategories(paths)) !== JSON.stringify(["RELEASE_CONTROL"])) fail("TOPOLOGY_NORMALIZATION_UNEXPECTED_RELEASE_SEMANTICS");
+          '
+
+      - name: Derive immutable release expectations from TARGET
+        run: |
+          set -euo pipefail
+          release_id="deploy-${TARGET_SHA}"
+          inventory="$(git ls-tree -r --name-only "$TARGET_SHA" -- commerce/migrations | sed -n "s#^commerce/migrations/##p" | sort)"
+          migration="inventory-sha256:$(printf %s "$inventory" | shasum -a 256 | awk "{print \$1}")"
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-before.json
+          jq -e --arg id "$release_id" --arg source "$TARGET_SHA" --arg migration "$migration" '.runtime as $r | {release_id:$id,mode:"CONTROLLED_CUTOVER",expected:{source_commit:$source,migration:$migration,legal_version:$r.legal_version,legal_manifest_sha256:$r.legal_manifest_sha256,legal_hashes:$r.legal_hashes}}' status-before.json > release.json
+          jq -e '.expected.legal_version != null and .expected.legal_manifest_sha256 != null and .expected.legal_hashes != null' release.json >/dev/null || { echo TOPOLOGY_NORMALIZATION_BASELINE_INVALID >&2; exit 1; }
+          echo "RELEASE_ID=$release_id" >> "$GITHUB_ENV"
+
+      - name: Require an unowned, open durable baseline
+        run: |
+          set -euo pipefail
+          jq -e '.owner_release_id == null and .owner_mode == null and .sales_paused == false' status-before.json >/dev/null || { echo TOPOLOGY_NORMALIZATION_RELEASE_NOT_UNOWNED >&2; exit 1; }
+
+      - name: Acquire owner and pause sales
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$(git rev-parse origin/main)" == "$TARGET_SHA" && "$(scripts/read-production-deploy-ref.sh)" == "$BASE_SHA" ]] || { echo TOPOLOGY_NORMALIZATION_AUTHORITY_MOVED >&2; exit 1; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/acquire" > acquired.json
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/pause" > paused.json
+          jq -e --arg id "$RELEASE_ID" '.owner_release_id == $id and .owner_mode == "CONTROLLED_CUTOVER" and .sales_paused == true' paused.json >/dev/null || { echo TOPOLOGY_NORMALIZATION_PAUSE_NOT_HELD >&2; exit 1; }
+          code="$(curl --silent --show-error --connect-timeout 10 --max-time 30 --output checkout-paused.json --write-out '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: topology-normalization-pause-${GITHUB_RUN_ID}" --data '{}' "$PUBLIC_API_URL/v1/public/checkouts")"
+          [[ "$code" == 503 ]] && jq -e '.error.code == "SALES_TEMPORARILY_PAUSED"' checkout-paused.json >/dev/null || { echo TOPOLOGY_NORMALIZATION_CHECKOUT_NOT_PAUSED >&2; exit 1; }
+
+      - name: Rebind immediately before guarded production pointer CAS
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$(git rev-parse origin/main)" == "$TARGET_SHA" && "$(git rev-parse "${TARGET_SHA}^{tree}")" == "$TARGET_TREE" ]] || { echo TOPOLOGY_NORMALIZATION_TARGET_REBIND_FAILED >&2; exit 1; }
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$BASE_SHA" ]] || { echo TOPOLOGY_NORMALIZATION_PRODUCTION_POINTER_MOVED >&2; exit 1; }
+          scripts/set-production-deploy-ref.sh "$TARGET_SHA" "$BASE_SHA"
+
+      - name: Deploy exact TARGET and prove converged runtime surfaces
+        run: |
+          set -euo pipefail
+          scripts/controlled-coolify-deploy.sh "$TARGET_SHA"
+          RUNTIME_ASSERT_DIR="$RUNNER_TEMP/topology-normalization-runtime"
+          git worktree add --detach "$RUNTIME_ASSERT_DIR" "$TARGET_SHA"
+          (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile --ignore-scripts)
+          RUNTIME_ASSERT_DIR="$RUNTIME_ASSERT_DIR" scripts/controlled-production-readiness.sh release.json
+
+      - name: Reopen and prove terminal completion
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/reopen" > reopened.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
+          jq -e '.complete == true' completion.json >/dev/null || { echo TOPOLOGY_NORMALIZATION_COMPLETION_NOT_TERMINAL >&2; exit 1; }
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$TARGET_SHA" ]] || { echo TOPOLOGY_NORMALIZATION_PRODUCTION_POINTER_POSTCONDITION_FAILED >&2; exit 1; }

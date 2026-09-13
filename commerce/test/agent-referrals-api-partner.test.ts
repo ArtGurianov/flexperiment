@@ -24,6 +24,7 @@ afterEach(() => { while (open.length) open.pop()!.close(); });
 class RecordingOtpSender implements OtpSender {
   lastCode: string | null = null;
   async send(input: { code: string }): Promise<"ACCEPTED"> { this.lastCode = input.code; return "ACCEPTED"; }
+  deliveryCapability() { return { configured: true, provider_id: "unisender-go" as const }; }
 }
 
 /** A real, HTTP-authenticatable partner session - distinct from readyPartner()'s own PartnerPrincipal fixture, whose partner_sessions row stores an arbitrary token_hash never meant to be resolved from a raw cookie value (that fixture is for direct domain-function calls only). */
