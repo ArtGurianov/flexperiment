@@ -57,8 +57,10 @@ describe("release-semantics bootstrap committed B2 materialization", () => {
   });
 
   it("B2's release-control-schema.ts is byte-identical to the already-reviewed protected-main file it was adopted from", () => {
-    const controllerSha = git("rev-parse", "HEAD");
-    expect(git("rev-parse", `${TARGET_B2}:commerce/src/release-control-schema.ts`)).toBe(git("rev-parse", `${controllerSha}:commerce/src/release-control-schema.ts`));
+    // Historical materialization must remain bound to the protected-main
+    // source B2 actually adopted. Later reviewed main changes are unrelated
+    // to that immutable two-path candidate.
+    expect(git("rev-parse", `${TARGET_B2}:commerce/src/release-control-schema.ts`)).toBe(git("rev-parse", `${SOURCE_MAIN_SHA}:commerce/src/release-control-schema.ts`));
   });
 
   it("fails closed if the committed certificate's patch binding is corrupted", () => {

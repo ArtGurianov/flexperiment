@@ -43,12 +43,19 @@ const capturingSender = (): OtpSender & { lastCode?: string; lastEmail?: string 
       sender.lastEmail = input.recipientEmail;
       return "ACCEPTED" as const;
     },
+    deliveryCapability: () => ({ configured: true, provider_id: "unisender-go" as const }),
   };
   return sender;
 };
 
-const throwingSender = (): OtpSender => ({ send: async () => { throw new Error("network timeout"); } });
-const knownFailedSender = (): OtpSender => ({ send: async () => "KNOWN_FAILED" });
+const throwingSender = (): OtpSender => ({
+  send: async () => { throw new Error("network timeout"); },
+  deliveryCapability: () => ({ configured: true, provider_id: "unisender-go" }),
+});
+const knownFailedSender = (): OtpSender => ({
+  send: async () => "KNOWN_FAILED",
+  deliveryCapability: () => ({ configured: true, provider_id: "unisender-go" }),
+});
 
 describe("OTP challenge: unknown-outcome semantics", () => {
   it("no raw OTP code is ever durable - only secret_hash, on the challenge row or anywhere else", async () => {
@@ -81,6 +88,7 @@ describe("OTP challenge: unknown-outcome semantics", () => {
         hashWasPersistedBeforeSend = Boolean(row?.secret_hash);
         return "ACCEPTED";
       },
+      deliveryCapability: () => ({ configured: true, provider_id: "unisender-go" }),
     };
     await issueAndDispatchOtpChallenge(db, partnerIdentityId, sender);
     expect(hashWasPersistedBeforeSend).toBe(true);
@@ -181,6 +189,7 @@ describe("OTP challenge: unknown-outcome semantics", () => {
           attemptedAtWasSetBeforeSend = Boolean(row.send_attempted_at);
           return "ACCEPTED";
         },
+        deliveryCapability: () => ({ configured: true, provider_id: "unisender-go" }),
       };
       await issueAndDispatchOtpChallenge(db, partnerIdentityId, sender);
       expect(attemptedAtWasSetBeforeSend).toBe(true);

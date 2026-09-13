@@ -39,6 +39,14 @@ jobs:
       TARGET_SHA: ${{ inputs.target_sha }}
       TARGET_TREE: ${{ inputs.target_tree }}
       INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA: ${{ inputs.expected_production_deploy_sha }}
+      BASE_LEGAL_VERSION: "2026-08-28.1"
+      BASE_LEGAL_MANIFEST_SHA256: fb879a80c48a50c41694d83118e5f8004a4fec5fbf36f954b15f4b678f4efe02
+      BASE_LEGAL_SOURCE_MANIFEST_SHA256: f79ef3093999f0a845343b88cadc213412930fbd375d913bb9fc9453289edb00
+      BASE_LEGAL_PUBLISH_TIME: "2026-08-31T15:58:55Z"
+      BASE_LEGAL_HASHES_JSON: '{"PUBLIC_OFFER":"bd20b056a269ed1286c6ea35a728fbfd58e90a2f845b72ac112fe3544ec9ecaf","PRIVACY_POLICY":"642d11458733e8c1e5bfb28d0cde7f917a276dfcb3e32dc52adc34fac6326339","PD_CONSENT":"acdb8a31a846c1c697cfd977fb67f24e75d280ab72cb6fbce5bbf0146d4ba5b6","CHECKOUT_DISCLOSURE":"97f84fb7d8af72964e4c24f93223a99daf53002f7542cb9209608d1e5335902f"}'
+      AR_EXPECTED_STATE: ACTIVE
+      AR_EXPECTED_REVISION: "4"
+      AR_EXPECTED_OWNER: agent-referrals-activation-ce66d23fdcea5fc84018be43cf428270ea889ee8
       PRODUCTION_DEPLOY_REF_TOKEN: ${{ secrets.PRODUCTION_DEPLOY_REF_TOKEN }}
       COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
       COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
@@ -80,7 +88,8 @@ jobs:
           # The controller ships in TARGET, so equality is an independent
           # confirmation, never a derivation of TARGET from HEAD.
           git merge-base --is-ancestor "$TARGET_SHA" "$CONTROLLER_SHA" || { echo "NORMALIZATION_CONTROLLER_OLDER_THAN_TARGET" >&2; exit 1; }
-          [[ "$(scripts/read-production-deploy-ref.sh)" == "$BASE_SHA" && "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" == "$BASE_SHA" ]] || { echo TOPOLOGY_NORMALIZATION_PRODUCTION_POINTER_MISMATCH >&2; exit 1; }
+          initial_pointer="$(scripts/read-production-deploy-ref.sh)"
+          [[ "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" == "$BASE_SHA" && ( "$initial_pointer" == "$BASE_SHA" || "$initial_pointer" == "$TARGET_SHA" ) ]] || { echo TOPOLOGY_NORMALIZATION_PRODUCTION_POINTER_MISMATCH >&2; exit 1; }
 
       - name: Prove the excluded boundary classes and allowed normalization lane
         run: |
@@ -99,44 +108,146 @@ jobs:
             if (JSON.stringify(releaseSemanticsCategories(paths)) !== JSON.stringify(["RELEASE_CONTROL"])) fail("TOPOLOGY_NORMALIZATION_UNEXPECTED_RELEASE_SEMANTICS");
           '
 
-      - name: Derive immutable release expectations from TARGET
+      - name: Classify durable normalization state and prove the exact live BASE
         run: |
           set -euo pipefail
           release_id="deploy-${TARGET_SHA}"
           inventory="$(git ls-tree -r --name-only "$TARGET_SHA" -- commerce/migrations | sed -n "s#^commerce/migrations/##p" | sort)"
           migration="inventory-sha256:$(printf %s "$inventory" | shasum -a 256 | awk "{print \$1}")"
+          printf '%s\n' "$inventory" > target-migrations.txt
+          git ls-tree -r --name-only "$BASE_SHA" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort > base-migrations.txt
+          diff -u base-migrations.txt target-migrations.txt || { echo TOPOLOGY_NORMALIZATION_SCHEMA_INVENTORY_CHANGED >&2; exit 1; }
+          [[ "$(tail -n 1 base-migrations.txt)" == "0057_partner_invite_capability_head.sql" ]] || { echo TOPOLOGY_NORMALIZATION_BASE_SCHEMA_HEAD_UNEXPECTED >&2; exit 1; }
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-before.json
-          jq -e --arg id "$release_id" --arg source "$TARGET_SHA" --arg migration "$migration" '.runtime as $r | {release_id:$id,mode:"CONTROLLED_CUTOVER",expected:{source_commit:$source,migration:$migration,legal_version:$r.legal_version,legal_manifest_sha256:$r.legal_manifest_sha256,legal_hashes:$r.legal_hashes}}' status-before.json > release.json
-          jq -e '.expected.legal_version != null and .expected.legal_manifest_sha256 != null and .expected.legal_hashes != null' release.json >/dev/null || { echo TOPOLOGY_NORMALIZATION_BASELINE_INVALID >&2; exit 1; }
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$release_id" > completion-before.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/activation-state" > ar-fence-before.json
+          jq -n --arg id "$release_id" --arg source "$TARGET_SHA" --arg migration "$migration" --arg version "$BASE_LEGAL_VERSION" --arg manifest "$BASE_LEGAL_MANIFEST_SHA256" --argjson hashes "$BASE_LEGAL_HASHES_JSON" '{release_id:$id,mode:"CONTROLLED_CUTOVER",expected:{source_commit:$source,migration:$migration,legal_version:$version,legal_manifest_sha256:$manifest,legal_hashes:$hashes}}' > release.json
           echo "RELEASE_ID=$release_id" >> "$GITHUB_ENV"
 
-      - name: Require an unowned, open durable baseline
+          assert_ar_fence() {
+            jq -e --arg state "$AR_EXPECTED_STATE" --argjson revision "$AR_EXPECTED_REVISION" --arg owner "$AR_EXPECTED_OWNER" '
+              .feature_state.state == $state and .feature_state.revision == $revision and .feature_state.owner_id == $owner
+              and .last_feature_state_event.to_state == $state and .last_feature_state_event.revision == $revision and .last_feature_state_event.owner_id == $owner
+            ' "$1" >/dev/null || { echo TOPOLOGY_NORMALIZATION_AGENT_REFERRALS_FENCE_MISMATCH >&2; exit 1; }
+          }
+          production_deploy="$(scripts/read-production-deploy-ref.sh)"
+          [[ "$production_deploy" == "$BASE_SHA" || "$production_deploy" == "$TARGET_SHA" ]] || { echo TOPOLOGY_NORMALIZATION_PRODUCTION_POINTER_UNEXPECTED >&2; exit 1; }
+          if jq -e --slurpfile request release.json '.complete == true and .expected == $request[0].expected' completion-before.json >/dev/null; then
+            [[ "$production_deploy" == "$TARGET_SHA" ]] || { echo TOPOLOGY_NORMALIZATION_COMPLETED_POINTER_MISMATCH >&2; exit 1; }
+            jq -e --arg target "$TARGET_SHA" '.owner_release_id == null and .owner_mode == null and .sales_paused == false and .runtime.source_commit == $target and .runtime.worker_source_commit == $target' status-before.json >/dev/null || { echo TOPOLOGY_NORMALIZATION_COMPLETED_RUNTIME_MISMATCH >&2; exit 1; }
+            assert_ar_fence ar-fence-before.json
+            echo DEPLOYMENT_STATE=ALREADY_COMPLETE >> "$GITHUB_ENV"; exit 0
+          fi
+          if [[ "$production_deploy" == "$BASE_SHA" ]] && jq -e '.owner_release_id == null and .owner_mode == null and .sales_paused == false' status-before.json >/dev/null; then
+            assert_ar_fence ar-fence-before.json
+            echo DEPLOYMENT_STATE=FRESH >> "$GITHUB_ENV"; exit 0
+          fi
+          if jq -e --arg id "$release_id" --slurpfile request release.json '.owner_release_id == $id and .owner_mode == "CONTROLLED_CUTOVER" and .expected == ($request[0].expected | del(.legal_hashes))' status-before.json >/dev/null; then
+            assert_ar_fence ar-fence-before.json
+            if jq -e '.sales_paused == false' status-before.json >/dev/null; then
+              [[ "$production_deploy" == "$BASE_SHA" ]] || { echo TOPOLOGY_NORMALIZATION_ACQUIRED_UNPAUSED_POINTER_MISMATCH >&2; exit 1; }
+              echo DEPLOYMENT_STATE=OWNED_ACQUIRED_UNPAUSED >> "$GITHUB_ENV"; exit 0
+            fi
+            if [[ "$production_deploy" == "$BASE_SHA" ]]; then
+              echo DEPLOYMENT_STATE=OWNED_PRE_CAS >> "$GITHUB_ENV"
+            elif jq -e --arg target "$TARGET_SHA" '.runtime.source_commit == $target and .runtime.worker_source_commit == $target' status-before.json >/dev/null; then
+              echo DEPLOYMENT_STATE=OWNED_CONVERGED >> "$GITHUB_ENV"
+            else
+              echo DEPLOYMENT_STATE=OWNED_NEEDS_DEPLOY >> "$GITHUB_ENV"
+            fi
+            exit 0
+          fi
+          echo TOPOLOGY_NORMALIZATION_OWNER_STATE_UNEXPECTED >&2; exit 1
+
+      - name: Prove the exact live BASE before fresh acquire
+        if: env.DEPLOYMENT_STATE == 'FRESH'
         run: |
           set -euo pipefail
-          jq -e '.owner_release_id == null and .owner_mode == null and .sales_paused == false' status-before.json >/dev/null || { echo TOPOLOGY_NORMALIZATION_RELEASE_NOT_UNOWNED >&2; exit 1; }
+          git fetch --no-tags origin runtime-candidate
+          [[ "$(git rev-parse origin/runtime-candidate)" == "$BASE_SHA" ]] || { echo TOPOLOGY_NORMALIZATION_RUNTIME_CANDIDATE_NOT_BASE >&2; exit 1; }
+          jq -e --arg base "$BASE_SHA" --arg version "$BASE_LEGAL_VERSION" --arg manifest "$BASE_LEGAL_MANIFEST_SHA256" --arg source_manifest "$BASE_LEGAL_SOURCE_MANIFEST_SHA256" --arg publish_time "$BASE_LEGAL_PUBLISH_TIME" --argjson hashes "$BASE_LEGAL_HASHES_JSON" '
+            .runtime.source_commit == $base and .runtime.worker_source_commit == $base
+            and .runtime.legal_version == $version and .runtime.legal_manifest_sha256 == $manifest and .runtime.legal_hashes == $hashes
+            and .runtime.source_legal_manifest_sha256 == $source_manifest and .runtime.source_legal_publish_time == $publish_time
+            and .runtime.current_legal_copies_match == true
+          ' status-before.json >/dev/null || { echo TOPOLOGY_NORMALIZATION_BASE_RUNTIME_IDENTITY_MISMATCH >&2; exit 1; }
+          jq -r '.runtime.migration_versions[]' status-before.json | sort > applied-migrations.txt
+          diff -u base-migrations.txt applied-migrations.txt || { echo TOPOLOGY_NORMALIZATION_BASE_SCHEMA_INVENTORY_MISMATCH >&2; exit 1; }
+          # `readyz` is the BASE runtime's read-only database integrity seam:
+          # it fails if the migration table cannot be read. It is checked
+          # here, before the first durable mutation, not accepted as a
+          # post-deploy observation.
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/readyz" | jq -e '.ok == true' >/dev/null || { echo TOPOLOGY_NORMALIZATION_BASE_INTEGRITY_CHECK_FAILED >&2; exit 1; }
 
-      - name: Acquire owner and pause sales
+      - name: Prove the Agent Referrals fence before any mutation
+        if: env.DEPLOYMENT_STATE != 'ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
+          jq -e --arg state "$AR_EXPECTED_STATE" --argjson revision "$AR_EXPECTED_REVISION" --arg owner "$AR_EXPECTED_OWNER" '
+            .feature_state.state == $state and .feature_state.revision == $revision and .feature_state.owner_id == $owner
+            and .last_feature_state_event.to_state == $state and .last_feature_state_event.revision == $revision and .last_feature_state_event.owner_id == $owner
+          ' ar-fence-before.json >/dev/null || { echo TOPOLOGY_NORMALIZATION_AGENT_REFERRALS_FENCE_MISMATCH >&2; exit 1; }
+
+      - name: Acquire owner
+        if: env.DEPLOYMENT_STATE == 'FRESH'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$(git rev-parse origin/main)" == "$TARGET_SHA" && "$(scripts/read-production-deploy-ref.sh)" == "$BASE_SHA" ]] || { echo TOPOLOGY_NORMALIZATION_AUTHORITY_MOVED >&2; exit 1; }
+          git fetch --no-tags origin runtime-candidate
+          [[ "$(git rev-parse origin/runtime-candidate)" == "$BASE_SHA" ]] || { echo TOPOLOGY_NORMALIZATION_RUNTIME_CANDIDATE_MOVED >&2; exit 1; }
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-before-acquire.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/activation-state" > ar-fence-before-acquire.json
+          jq -e '.owner_release_id == null and .owner_mode == null and .sales_paused == false' status-before-acquire.json >/dev/null || { echo TOPOLOGY_NORMALIZATION_RELEASE_NOT_UNOWNED >&2; exit 1; }
+          jq -e --arg base "$BASE_SHA" --arg version "$BASE_LEGAL_VERSION" --arg manifest "$BASE_LEGAL_MANIFEST_SHA256" --arg source_manifest "$BASE_LEGAL_SOURCE_MANIFEST_SHA256" --arg publish_time "$BASE_LEGAL_PUBLISH_TIME" --argjson hashes "$BASE_LEGAL_HASHES_JSON" '
+            .runtime.source_commit == $base and .runtime.worker_source_commit == $base
+            and .runtime.legal_version == $version and .runtime.legal_manifest_sha256 == $manifest and .runtime.legal_hashes == $hashes
+            and .runtime.source_legal_manifest_sha256 == $source_manifest and .runtime.source_legal_publish_time == $publish_time
+            and .runtime.current_legal_copies_match == true
+          ' status-before-acquire.json >/dev/null || { echo TOPOLOGY_NORMALIZATION_BASE_RUNTIME_IDENTITY_MISMATCH >&2; exit 1; }
+          jq -r '.runtime.migration_versions[]' status-before-acquire.json | sort > applied-migrations-before-acquire.txt
+          diff -u base-migrations.txt applied-migrations-before-acquire.txt || { echo TOPOLOGY_NORMALIZATION_BASE_SCHEMA_INVENTORY_MISMATCH >&2; exit 1; }
+          curl --fail-with-body --silent --show-error --connect-timeout 10 --max-time 30 "$PUBLIC_API_URL/readyz" | jq -e '.ok == true' >/dev/null || { echo TOPOLOGY_NORMALIZATION_BASE_INTEGRITY_CHECK_FAILED >&2; exit 1; }
+          jq -e --arg state "$AR_EXPECTED_STATE" --argjson revision "$AR_EXPECTED_REVISION" --arg owner "$AR_EXPECTED_OWNER" '
+            .feature_state.state == $state and .feature_state.revision == $revision and .feature_state.owner_id == $owner
+            and .last_feature_state_event.to_state == $state and .last_feature_state_event.revision == $revision and .last_feature_state_event.owner_id == $owner
+          ' ar-fence-before-acquire.json >/dev/null || { echo TOPOLOGY_NORMALIZATION_AGENT_REFERRALS_FENCE_MISMATCH >&2; exit 1; }
+          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/acquire" > /dev/null
+
+      - name: Pause sales
+        if: env.DEPLOYMENT_STATE == 'FRESH' || env.DEPLOYMENT_STATE == 'OWNED_ACQUIRED_UNPAUSED'
         run: |
           set -euo pipefail
           git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
           [[ "$(git rev-parse origin/main)" == "$TARGET_SHA" && "$(scripts/read-production-deploy-ref.sh)" == "$BASE_SHA" ]] || { echo TOPOLOGY_NORMALIZATION_AUTHORITY_MOVED >&2; exit 1; }
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
-          api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/acquire" > acquired.json
           api -X POST --data-binary @release.json "$PUBLIC_API_URL/v1/internal/release-control/pause" > paused.json
           jq -e --arg id "$RELEASE_ID" '.owner_release_id == $id and .owner_mode == "CONTROLLED_CUTOVER" and .sales_paused == true' paused.json >/dev/null || { echo TOPOLOGY_NORMALIZATION_PAUSE_NOT_HELD >&2; exit 1; }
+
+      - name: Prove public checkout pause before deployment
+        if: env.DEPLOYMENT_STATE != 'ALREADY_COMPLETE'
+        run: |
+          set -euo pipefail
           code="$(curl --silent --show-error --connect-timeout 10 --max-time 30 --output checkout-paused.json --write-out '%{http_code}' -X POST -H 'Content-Type: application/json' -H "Idempotency-Key: topology-normalization-pause-${GITHUB_RUN_ID}" --data '{}' "$PUBLIC_API_URL/v1/public/checkouts")"
           [[ "$code" == 503 ]] && jq -e '.error.code == "SALES_TEMPORARILY_PAUSED"' checkout-paused.json >/dev/null || { echo TOPOLOGY_NORMALIZATION_CHECKOUT_NOT_PAUSED >&2; exit 1; }
 
-      - name: Rebind immediately before guarded production pointer CAS
+      - name: Rebind same-owner authority and guard production pointer CAS
+        if: env.DEPLOYMENT_STATE != 'ALREADY_COMPLETE'
         run: |
           set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > status-before-consequence.json
+          jq -e --arg id "$RELEASE_ID" --slurpfile request release.json '.owner_release_id == $id and .owner_mode == "CONTROLLED_CUTOVER" and .sales_paused == true and .expected == ($request[0].expected | del(.legal_hashes))' status-before-consequence.json >/dev/null || { echo TOPOLOGY_NORMALIZATION_HELD_OWNER_CHANGED >&2; exit 1; }
           git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
           [[ "$(git rev-parse origin/main)" == "$TARGET_SHA" && "$(git rev-parse "${TARGET_SHA}^{tree}")" == "$TARGET_TREE" ]] || { echo TOPOLOGY_NORMALIZATION_TARGET_REBIND_FAILED >&2; exit 1; }
-          [[ "$(scripts/read-production-deploy-ref.sh)" == "$BASE_SHA" ]] || { echo TOPOLOGY_NORMALIZATION_PRODUCTION_POINTER_MOVED >&2; exit 1; }
-          scripts/set-production-deploy-ref.sh "$TARGET_SHA" "$BASE_SHA"
+          pointer="$(scripts/read-production-deploy-ref.sh)"
+          [[ "$pointer" == "$BASE_SHA" || "$pointer" == "$TARGET_SHA" ]] || { echo TOPOLOGY_NORMALIZATION_PRODUCTION_POINTER_MOVED >&2; exit 1; }
+          if [[ "$pointer" == "$BASE_SHA" ]]; then scripts/set-production-deploy-ref.sh "$TARGET_SHA" "$BASE_SHA"; fi
 
-      - name: Deploy exact TARGET and prove converged runtime surfaces
+      - name: Deploy exact TARGET for fresh or not-yet-converged owned state
+        if: env.DEPLOYMENT_STATE == 'FRESH' || env.DEPLOYMENT_STATE == 'OWNED_ACQUIRED_UNPAUSED' || env.DEPLOYMENT_STATE == 'OWNED_PRE_CAS' || env.DEPLOYMENT_STATE == 'OWNED_NEEDS_DEPLOY'
         run: |
           set -euo pipefail
           scripts/controlled-coolify-deploy.sh "$TARGET_SHA"
@@ -145,7 +256,17 @@ jobs:
           (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile --ignore-scripts)
           RUNTIME_ASSERT_DIR="$RUNTIME_ASSERT_DIR" scripts/controlled-production-readiness.sh release.json
 
+      - name: Prove an already-converged owned runtime before reopening
+        if: env.DEPLOYMENT_STATE == 'OWNED_CONVERGED'
+        run: |
+          set -euo pipefail
+          RUNTIME_ASSERT_DIR="$RUNNER_TEMP/topology-normalization-runtime"
+          git worktree add --detach "$RUNTIME_ASSERT_DIR" "$TARGET_SHA"
+          (cd "$RUNTIME_ASSERT_DIR" && pnpm install --frozen-lockfile --ignore-scripts)
+          RUNTIME_ASSERT_DIR="$RUNTIME_ASSERT_DIR" scripts/controlled-production-readiness.sh release.json
+
       - name: Reopen and prove terminal completion
+        if: env.DEPLOYMENT_STATE != 'ALREADY_COMPLETE'
         run: |
           set -euo pipefail
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
@@ -153,3 +274,14 @@ jobs:
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
           jq -e '.complete == true' completion.json >/dev/null || { echo TOPOLOGY_NORMALIZATION_COMPLETION_NOT_TERMINAL >&2; exit 1; }
           [[ "$(scripts/read-production-deploy-ref.sh)" == "$TARGET_SHA" ]] || { echo TOPOLOGY_NORMALIZATION_PRODUCTION_POINTER_POSTCONDITION_FAILED >&2; exit 1; }
+
+      - name: Prove terminal runtime and the unchanged Agent Referrals fence
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > terminal-status.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > terminal-completion.json
+          api "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/activation-state" > terminal-ar-fence.json
+          jq -e --arg target "$TARGET_SHA" '.owner_release_id == null and .owner_mode == null and .sales_paused == false and .runtime.source_commit == $target and .runtime.worker_source_commit == $target' terminal-status.json >/dev/null || { echo TOPOLOGY_NORMALIZATION_TERMINAL_RUNTIME_MISMATCH >&2; exit 1; }
+          jq -e --slurpfile request release.json '.complete == true and .expected == $request[0].expected' terminal-completion.json >/dev/null || { echo TOPOLOGY_NORMALIZATION_TERMINAL_COMPLETION_MISMATCH >&2; exit 1; }
+          jq -e --arg state "$AR_EXPECTED_STATE" --argjson revision "$AR_EXPECTED_REVISION" --arg owner "$AR_EXPECTED_OWNER" '.feature_state.state == $state and .feature_state.revision == $revision and .feature_state.owner_id == $owner and .last_feature_state_event.to_state == $state and .last_feature_state_event.revision == $revision and .last_feature_state_event.owner_id == $owner' terminal-ar-fence.json >/dev/null || { echo TOPOLOGY_NORMALIZATION_AGENT_REFERRALS_FENCE_CHANGED >&2; exit 1; }
