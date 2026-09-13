@@ -1,5 +1,13 @@
 # Agent Referrals Phase 1 cutover: dispatch evidence
 
+> **EXECUTED 2026-09-13 — run `34757128419`, zero retries.** `production-deploy`
+> is `1d7310883f4822945725a6ba95d7ff37a470f502` and `0058` is applied. This
+> document is now history: it records how that cutover was authorized, not work
+> that is still pending. The gate SQL below remains live, because
+> `agent-referrals-phase-1-gate-queries.test.ts` extracts and executes it from
+> here. See "Exceptional cutovers are not the ordinary release model" in
+> DEPLOYMENT_INVARIANTS.md before reusing any of this shape.
+
 `controlled-agent-referrals-phase-1-deploy.yml` is a one-shot controller for the
 Phase 1 legal-identity cleanup (`0058_agents_legal_identity_cleanup.sql`). It is
 manual-only and must not be dispatched until its exact inputs are frozen.
