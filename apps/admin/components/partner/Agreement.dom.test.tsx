@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestQueryClient, QueryClientWrapper } from "../../lib/test-query-client";
@@ -31,9 +31,19 @@ describe("Agreement reacceptance", () => {
   beforeEach(() => { originalFetch = global.fetch; });
   afterEach(() => { global.fetch = originalFetch; vi.restoreAllMocks(); });
 
-  it("renders required B and an acceptance flow against current profile 8, never historical A evidence", async () => {
-    global.fetch = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+  it("renders required B and sends the exact B/profile-8 pair through step-up and accept, never historical A", async () => {
+    const posts: Array<{ url: string; body: Record<string, unknown> }> = [];
+    global.fetch = vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
+      if (init?.method === "POST") {
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        posts.push({ url, body });
+        if (url.includes("/step-up")) return { ok: true, status: 200, json: async () => ({ grant_id: "grant-B" }) } as Response;
+        if (url.includes("/framework/accept")) return { ok: true, status: 200, json: async () => ({ framework_acceptance_id: "acceptance-B" }) } as Response;
+        throw new Error(`unhandled POST: ${url}`);
+      }
+      // The successful mutation invalidates partner agreement/profile queries;
+      // serve their authoritative refetches without weakening POST assertions.
       if (url.includes("/agreements")) return { ok: true, status: 200, json: async () => reacceptanceAgreement } as Response;
       if (url.includes("/me")) return { ok: true, status: 200, json: async () => ({ legal_profile: currentProfile }) } as Response;
       throw new Error(`unhandled fetch: ${url}`);
@@ -50,5 +60,28 @@ describe("Agreement reacceptance", () => {
     await user.click(screen.getByRole("checkbox"));
     await user.click(screen.getByRole("button", { name: "Принять договор и делегирование" }));
     expect(await screen.findByText(/юридического профиля ред\. 8/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Подтвердить" }));
+
+    await waitFor(() => expect(posts).toHaveLength(2));
+    expect(posts).toEqual([
+      {
+        url: "/v1/partner/step-up",
+        body: {
+          action: "FRAMEWORK_ACCEPTANCE",
+          resource: { issuance_id: "issuance-B", legal_profile_revision_id: "profile-8" },
+        },
+      },
+      {
+        url: "/v1/partner/framework/accept",
+        body: {
+          step_up_grant_id: "grant-B",
+          issuance_id: "issuance-B",
+          legal_profile_revision_id: "profile-8",
+        },
+      },
+    ]);
+    const sent = JSON.stringify(posts);
+    expect(sent).not.toContain("issuance-A");
+    expect(sent).not.toContain("profile-7");
   });
 });
