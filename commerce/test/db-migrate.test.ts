@@ -98,27 +98,29 @@ describe("migrate(): ordinary path", () => {
   });
 });
 
-describe("FK-off registry: four reviewed production entries after Phase 1", () => {
+describe("FK-off registry: five reviewed production entries after Phase 1", () => {
   // PR1 shipped this empty. PR2 adds the agents-rebuild migration and this
   // entry in the same reviewed commit - see commerce/src/db.ts and
   // commerce/migrations/0042_agent_referrals_agents_rebuild.sql. The PR-D
   // foundation adds the second entry the same way - see
   // commerce/migrations/0050_agent_referrals_legal_profile_provenance_
   // rebuild.sql. PR-E adds the third - see commerce/migrations/0052_
-  // agent_referrals_unified_legal_requisites.sql. This asserts the current
-  // Phase 1 adds the fourth, 0058_agents_legal_identity_cleanup.sql. This
-  // asserts the reviewed scope (four production members), not a
+  // agent_referrals_unified_legal_requisites.sql. Phase 1 adds the fourth,
+  // 0058_agents_legal_identity_cleanup.sql. Reissuance and evidence
+  // authority adds the fifth, 0059_agents_contract_reference_removal.sql.
+  // This asserts the reviewed scope (five production members), not a
   // ceiling on a later PR ever adding another.
-  it("has exactly four entries", () => {
-    expect(FK_OFF_MIGRATIONS).toHaveLength(4);
+  it("has exactly five entries", () => {
+    expect(FK_OFF_MIGRATIONS).toHaveLength(5);
   });
 
-  it("is exactly the reviewed 0042, 0050, 0052, and 0058 tuples", () => {
+  it("is exactly the reviewed 0042, 0050, 0052, 0058, and 0059 tuples", () => {
     expect(FK_OFF_MIGRATIONS).toEqual([
       { filename: "0042_agent_referrals_agents_rebuild.sql", sha256: "d9b5ecbf496993669201b45440ea5213ba0e52af778e2094d569f772adfee6ab" },
       { filename: "0050_agent_referrals_legal_profile_provenance_rebuild.sql", sha256: "e1cbd9ce177546ea621fb4a9da861f63e69e999e8bf6a5c159d1c967761349f0" },
       { filename: "0052_agent_referrals_unified_legal_requisites.sql", sha256: "bcc44feaa37acb5930a8b9d7fe4a1bd4e711306e2640b9cb04ff78844cec9104" },
       { filename: "0058_agents_legal_identity_cleanup.sql", sha256: "c8f711ace8ebf169fb492aa4b3cd5c745f98a8ed9be03ff1cf76d1ef6a184637" },
+      { filename: "0059_agents_contract_reference_removal.sql", sha256: "f0c338922b8a09ea218be5fb26c0934a8689a8a7f424023396420c8d3c40777e" },
     ]);
   });
 

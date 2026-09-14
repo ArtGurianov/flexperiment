@@ -58,10 +58,10 @@ const tableNames = (db: Database.Database) =>
 const seedAgent = (db: Database.Database, agentId = "agent-engagement-1") => {
   const legacy = (db.prepare("PRAGMA table_info(agents)").all() as { name: string }[]).some(({ name }) => name === "legal_name");
   return db.prepare(legacy
-    ? `INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
-      VALUES (?, ?, 'M', 'M Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`
-    : `INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
-      VALUES (?, ?, 'M', ?, 'C-1', 'PERCENT', 1000)`)
+    ? `INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, default_reward_type, default_reward_value)
+      VALUES (?, ?, 'M', 'M Legal', ?, 'SELF_EMPLOYED', '123456789012', 'PERCENT', 1000)`
+    : `INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
+      VALUES (?, ?, 'M', ?, 'PERCENT', 1000)`)
     .run(agentId, agentId, `${agentId}@example.test`);
 };
 
@@ -108,12 +108,13 @@ describe("0045 engagement publication migration", () => {
     const sql = readFileSync(join(MIGRATIONS, MIGRATION_FILE), "utf8");
     expect(isFkOffMigration(MIGRATION_FILE, createHash("sha256").update(sql).digest("hex"))).toBe(false);
     migrate(db);
-    expect(FK_OFF_MIGRATIONS).toHaveLength(4);
+    expect(FK_OFF_MIGRATIONS).toHaveLength(5);
     expect(FK_OFF_MIGRATIONS).toEqual([
       { filename: "0042_agent_referrals_agents_rebuild.sql", sha256: "d9b5ecbf496993669201b45440ea5213ba0e52af778e2094d569f772adfee6ab" },
       { filename: "0050_agent_referrals_legal_profile_provenance_rebuild.sql", sha256: "e1cbd9ce177546ea621fb4a9da861f63e69e999e8bf6a5c159d1c967761349f0" },
       { filename: "0052_agent_referrals_unified_legal_requisites.sql", sha256: "bcc44feaa37acb5930a8b9d7fe4a1bd4e711306e2640b9cb04ff78844cec9104" },
       { filename: "0058_agents_legal_identity_cleanup.sql", sha256: "c8f711ace8ebf169fb492aa4b3cd5c745f98a8ed9be03ff1cf76d1ef6a184637" },
+      { filename: "0059_agents_contract_reference_removal.sql", sha256: "f0c338922b8a09ea218be5fb26c0934a8689a8a7f424023396420c8d3c40777e" },
     ]);
   });
 
@@ -190,7 +191,7 @@ describe("0045 engagement publication migration", () => {
       // way, in agent-referrals-attribution-reward-migration.test.ts) does
       // not need to touch this assertion at all - the exact precedent this
       // file's own prefix-slice pattern already set when PR5 itself landed.
-      const pr3Plus4Objects = 49; // 16 (PR3) + 33 (PR4), proven exhaustive by that PR's own migration test.
+      const pr3Plus4Objects = 53; // 16 (PR3) + 37 (PR4, now including the 4 reissuance-program consistency guards from 0060), proven exhaustive by that PR's own migration test.
       const prefix = [...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS].slice(0, pr3Plus4Objects + pr5Objects.length).sort();
       expect(prefix).toEqual([...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS.slice(0, pr3Plus4Objects), ...pr5Objects].sort());
     });
@@ -340,9 +341,12 @@ describe("0045 engagement publication migration", () => {
       seedPartner(db);
       db.prepare(`INSERT INTO framework_agreement_revisions(id, revision, content_json, content_hash) VALUES ('fw1', 1, '{}', 'h')`).run();
       db.prepare(`INSERT INTO delegation_template_revisions(id, revision, ord_reporting_mode, content_json, content_hash) VALUES ('dt1', 1, 'FLEXPERIMENT_DELEGATED', '{}', 'h')`).run();
+      db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, full_name, inn, reason, assertion_source)
+        VALUES ('lp1', 'agent-engagement-1', 1, 'INDIVIDUAL', 'NPD', 'SELF_EMPLOYED', 'Ivanov Ivan Ivanovich', '123456789012', 'seed', 'PARTNER_ASSERTED')`).run();
+      db.prepare(`INSERT INTO framework_issuances(id, partner_identity_id, sequence, framework_agreement_revision_id, delegation_template_revision_id, issued_by_admin_id, reason) VALUES ('iss1', 'partner-1', 1, 'fw1', 'dt1', 'admin', 'issued')`).run();
       db.prepare(`INSERT INTO partner_sessions(id, partner_identity_id, token_hash, expires_at) VALUES ('sess1', 'partner-1', 'th', datetime('now', '+1 hour'))`).run();
       db.prepare(`INSERT INTO step_up_grants(id, partner_session_id, partner_identity_id, action, resource_json, resource_hash, expires_at) VALUES ('sg1', 'sess1', 'partner-1', 'FRAMEWORK_ACCEPTANCE', '{}', 'h', datetime('now', '+5 minutes'))`).run();
-      db.prepare(`INSERT INTO framework_acceptances(id, partner_identity_id, framework_agreement_revision_id, delegation_template_revision_id, step_up_grant_id) VALUES ('fa1', 'partner-1', 'fw1', 'dt1', 'sg1')`).run();
+      db.prepare(`INSERT INTO framework_acceptances(id, partner_identity_id, issuance_id, legal_profile_revision_id, step_up_grant_id) VALUES ('fa1', 'partner-1', 'iss1', 'lp1', 'sg1')`).run();
       db.prepare(`INSERT INTO ord_reporting_delegations(id, partner_identity_id, framework_acceptance_id, delegation_template_revision_id, ord_reporting_mode) VALUES ('del1', 'partner-1', 'fa1', 'dt1', 'FLEXPERIMENT_DELEGATED')`).run();
 
       expect(() => db.prepare(`INSERT INTO ord_reporting_delegation_revocations(id, ord_reporting_delegation_id, partner_identity_id, revoked_by_realm, revoked_by_admin_id, reason)

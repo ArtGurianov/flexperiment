@@ -4,7 +4,8 @@ import { DomainError } from "./domain";
 import type { AdminPrincipal } from "./agent-referrals-partner-identity";
 import { provisionPartnerOwner, rotatePartnerInvite, inviteCapabilityHeadId, revokePartnerInvite, type InviteRotationReason, verifyPartnerLegalProfile, issueFrameworkToPartner } from "./agent-referrals-partner-identity";
 import { getPartnerIdentity, activatePartner } from "./agent-referrals-onboarding";
-import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, currentFrameworkAgreementRevision, currentDelegationTemplateRevision, type FrameworkAgreementClauseKey, type DelegationTemplateClauseKey } from "./agent-referrals-framework-delegation";
+import { partnerAgreementsProjection } from "./agent-referrals-partner-projection";
+import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, currentFrameworkAgreementRevision, currentDelegationTemplateRevision, allFrameworkAgreementRevisions, allDelegationTemplateRevisions, type FrameworkAgreementClauseKey, type DelegationTemplateClauseKey } from "./agent-referrals-framework-delegation";
 import { agentReferralsFeatureState, suspendAgentReferrals, reactivateAgentReferrals } from "./agent-referrals-feature-state";
 import { setAgentReferralsChannelPolicy, resolveAgentReferralsChannelPolicyNow, type ChannelPolicyStatus } from "./agent-referrals-channel-policy";
 import { verifyAudienceForPartnerCityIdempotent, revokeAudienceVerificationForPartnerCity } from "./agent-referrals-engagement";
@@ -191,6 +192,10 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
       // A rejection frees the pending slot above without moving the verified
       // revision, so the revision alone cannot carry that pin.
       legal_profile_change_request_head: legalProfileChangeRequestHeadForPartner(sqlite, identity.id),
+      // PR3 of the reissuance/evidence program: required issuance, effective
+      // acceptance and agreement_status - what the operator's issuance form
+      // and reissuance/reacceptance banners key off.
+      agreements: partnerAgreementsProjection(sqlite, identity.id),
       // PR-F: the tax treatment applicable right now for the CURRENT legal
       // profile - null if the profile has none recorded yet (a fresh
       // non-NPD supersession awaiting an explicit admin assertion).
@@ -338,11 +343,15 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
 
   // ---- Framework / delegation content -------------------------------------
   app.get("/framework-agreement-revisions/current", (c) => c.json(currentFrameworkAgreementRevision(sqlite)));
+  // PR3 of the reissuance/evidence program: backs the "issue an archived
+  // revision" disclosure in the admin issuance UI - never a bare UUID input.
+  app.get("/framework-agreement-revisions", (c) => c.json({ revisions: allFrameworkAgreementRevisions(sqlite) }));
   app.post("/framework-agreement-revisions", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
     return c.json(mintFrameworkAgreementRevision(sqlite, asRecord(body.clauses) as Record<FrameworkAgreementClauseKey, string>, nullableString(body, "expected_current_revision_id")), 201);
   });
   app.get("/delegation-template-revisions/current", (c) => c.json(currentDelegationTemplateRevision(sqlite)));
+  app.get("/delegation-template-revisions", (c) => c.json({ revisions: allDelegationTemplateRevisions(sqlite) }));
   app.post("/delegation-template-revisions", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
     return c.json(mintDelegationTemplateRevision(sqlite, asRecord(body.clauses) as Record<DelegationTemplateClauseKey, string>, nullableString(body, "expected_current_revision_id")), 201);

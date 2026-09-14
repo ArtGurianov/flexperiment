@@ -4,6 +4,10 @@ import { readFileSync, statSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 const production = "acfef97f15b45995e0f98a8ac0c649802c2bca9c";
+// This is the immutable Phase-1 forward-port target. The proof below is
+// historical: it must never turn into a standing migration-tree policy for
+// ordinary releases after Phase 1.
+const phase1ForwardPortTarget = "1d7310883f4822945725a6ba95d7ff37a470f502";
 
 const blob = (ref: string, path: string) =>
   execFileSync("git", ["show", `${ref}:${path}`], { encoding: "buffer" });
@@ -23,7 +27,7 @@ describe("topology normalization forward-port", () => {
     // Phase 1 is the one approved successor to the frozen topology cutover:
     // preserve every production migration byte and admit only its reviewed
     // FK-off rebuild, never a broad migration-tree waiver.
-    expect(execFileSync("git", ["diff", "--name-status", production, "HEAD", "--", "commerce/migrations"], { encoding: "utf8" }).trim())
+    expect(execFileSync("git", ["diff", "--name-status", production, phase1ForwardPortTarget, "--", "commerce/migrations"], { encoding: "utf8" }).trim())
       .toBe("A\tcommerce/migrations/0058_agents_legal_identity_cleanup.sql");
     expect(createHash("sha256").update(readFileSync("commerce/migrations/0058_agents_legal_identity_cleanup.sql")).digest("hex"))
       .toBe("c8f711ace8ebf169fb492aa4b3cd5c745f98a8ed9be03ff1cf76d1ef6a184637");

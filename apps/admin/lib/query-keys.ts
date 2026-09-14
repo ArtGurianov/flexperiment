@@ -99,6 +99,8 @@ export const agentReferralsKeys = {
   engagement: (engagementId: string) => ["agent-referrals", "engagement", engagementId] as const,
   creativeRegistrations: (creativeRevisionId: string) => ["agent-referrals", "creative-registrations", creativeRevisionId] as const,
   channelPolicy: (channelKey: string) => ["agent-referrals", "channel-policy", channelKey] as const,
+  frameworkAgreementRevisions: () => ["agent-referrals", "framework-agreement-revisions"] as const,
+  delegationTemplateRevisions: () => ["agent-referrals", "delegation-template-revisions"] as const,
 };
 
 /**

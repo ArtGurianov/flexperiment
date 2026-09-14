@@ -73,8 +73,8 @@ describe("/v1/admin/agent-referrals/*: authentication boundary", () => {
     expect(suspendBeforeActivation.status).toBe(409);
 
     const agentId = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
-      VALUES (?, 'p1', 'A', 'a@example.test', 'C-1', 'PERCENT', 1000)`).run(agentId);
+    db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
+      VALUES (?, 'p1', 'A', 'a@example.test', 'PERCENT', 1000)`).run(agentId);
 
     // Feature is still DORMANT (no HTTP route can activate it - see agent-referrals-partner-authorization.test.ts) - provisioning
     // therefore refuses, proving this route reaches the real suspension-policy gate rather than a stub that always succeeds.

@@ -217,9 +217,9 @@ export function createAgentReferralsPartnerRouter(sqlite: Database.Database, otp
   protectedRouter.post("/framework/accept", async (c) => {
     const body = asRecord(await jsonBody(c.req.raw));
     const stepUpGrantId = requireString(body, "step_up_grant_id");
-    const frameworkAgreementRevisionId = requireString(body, "framework_agreement_revision_id");
-    const delegationTemplateRevisionId = requireString(body, "delegation_template_revision_id");
-    return c.json(acceptFrameworkAndDelegation(sqlite, c.var.partner, stepUpGrantId, frameworkAgreementRevisionId, delegationTemplateRevisionId));
+    const issuanceId = requireString(body, "issuance_id");
+    const legalProfileRevisionId = requireString(body, "legal_profile_revision_id");
+    return c.json(acceptFrameworkAndDelegation(sqlite, c.var.partner, stepUpGrantId, issuanceId, legalProfileRevisionId));
   });
 
   protectedRouter.post("/delegation/:id/revoke", async (c) => {

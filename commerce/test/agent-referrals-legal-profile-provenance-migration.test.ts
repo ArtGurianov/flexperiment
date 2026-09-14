@@ -79,12 +79,17 @@ const at0049 = () => {
 };
 
 const seedAgent = (db: Database.Database, agentId = `agent-${randomUUID()}`) => {
-  const legacy = (db.prepare("PRAGMA table_info(agents)").all() as { name: string }[]).some(({ name }) => name === "legal_name");
+  const columns = (db.prepare("PRAGMA table_info(agents)").all() as { name: string }[]).map(({ name }) => name);
+  const legacy = columns.includes("legal_name");
+  const hasContractReference = columns.includes("contract_reference");
   db.prepare(legacy
     ? `INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
       VALUES (?, ?, 'Agent', 'Agent Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`
-    : `INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
-      VALUES (?, ?, 'Agent', ?, 'C-1', 'PERCENT', 1000)`)
+    : hasContractReference
+    ? `INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
+      VALUES (?, ?, 'Agent', ?, 'C-1', 'PERCENT', 1000)`
+    : `INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
+      VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`)
     .run(agentId, agentId, `${agentId}@example.test`);
   return agentId;
 };

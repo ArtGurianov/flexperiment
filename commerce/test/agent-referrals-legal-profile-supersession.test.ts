@@ -14,9 +14,10 @@ import {
   issueFrameworkToPartner, type AdminPrincipal, type PartnerPrincipal,
 } from "../src/agent-referrals-partner-identity";
 import { activatePartner, getPartnerIdentity } from "../src/agent-referrals-onboarding";
-import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES } from "../src/agent-referrals-framework-delegation";
+import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, currentFrameworkAgreementRevision, currentDelegationTemplateRevision, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES } from "../src/agent-referrals-framework-delegation";
 import { mintStepUpGrant } from "../src/agent-referrals-step-up";
 import { acceptFrameworkAndDelegation } from "../src/agent-referrals-framework-acceptance";
+import { requiredFrameworkIssuance } from "../src/agent-referrals-framework-issuance";
 import { createPartnerPromo } from "../src/agent-referrals-promo";
 import { mintEngagementStepUpGrant } from "../src/agent-referrals-engagement-step-up";
 import { offerEngagement, verifyAudienceForPartnerCity, acceptEngagement, activateEngagement, getEngagement, resolveActivatedLegalProfileBinding, type EngagementRevisionTerms } from "../src/agent-referrals-engagement";
@@ -58,8 +59,8 @@ const legalEntityRequisites = { opf: "OOO", full_name: "Romashka LLC", inn: "123
 const readyPartner = (db: Database.Database) => {
   activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', ?, 'C-1', 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
+    VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
   submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", individualRequisites, 0);
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
@@ -69,8 +70,10 @@ const readyPartner = (db: Database.Database) => {
   const sessionId = randomUUID();
   db.prepare(`INSERT INTO partner_sessions(id, partner_identity_id, token_hash, expires_at) VALUES (?, ?, ?, datetime('now', '+1 hour'))`).run(sessionId, partnerIdentityId, randomUUID());
   const partner: PartnerPrincipal = { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: sessionId };
-  const grant = mintStepUpGrant(db, partner, "FRAMEWORK_ACCEPTANCE", { framework_agreement_revision_id: fw.id, delegation_template_revision_id: dt.id }).grant_id;
-  acceptFrameworkAndDelegation(db, partner, grant, fw.id, dt.id);
+  const issuanceId = requiredFrameworkIssuance(db, partnerIdentityId)!.id;
+  const legalProfileRevisionId = currentAgentReferralsLegalProfile(db, agentId)!.id;
+  const grant = mintStepUpGrant(db, partner, "FRAMEWORK_ACCEPTANCE", { issuance_id: issuanceId, legal_profile_revision_id: legalProfileRevisionId }).grant_id;
+  acceptFrameworkAndDelegation(db, partner, grant, issuanceId, legalProfileRevisionId);
   activatePartner(db, partnerIdentityId, getPartnerIdentity(db, partnerIdentityId)!.onboarding_revision, "ADMIN", "onboarding complete");
   const cityId = randomUUID();
   db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, 'City')").run(cityId, `city-${cityId.slice(0, 8)}`);
@@ -167,8 +170,8 @@ describe("D2: legal-profile supersession suspension-policy wiring", () => {
     const db = fresh();
     // DORMANT is the ship state - no activateAgentReferrals call at all.
     const agentId = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
-      VALUES (?, ?, 'Agent', ?, 'C-1', 'PERCENT', 1000)`).run(agentId, agentId, `${agentId}@example.test`);
+    db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
+      VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, agentId, `${agentId}@example.test`);
     expect(() => submitLegalProfileSupersession(db, admin, "does-not-matter", { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "x", expectedCurrentLegalProfileRevision: 1, expectedRequestSequence: 0 }))
       .toThrow(/AGENT_REFERRALS_FEATURE_DORMANT/);
   });
@@ -177,8 +180,8 @@ describe("D2: legal-profile supersession suspension-policy wiring", () => {
     const db = fresh();
     activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
     const agentId = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
-      VALUES (?, ?, 'Agent', ?, 'C-1', 'PERCENT', 1000)`).run(agentId, agentId, `${agentId}@example.test`);
+    db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
+      VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, agentId, `${agentId}@example.test`);
     const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
     submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", individualRequisites, 0);
 
@@ -191,7 +194,14 @@ describe("D2: legal-profile supersession suspension-policy wiring", () => {
     const db = fresh();
     const p1 = readyPartner(db);
     suspendAgentReferrals(db, { expected_revision: agentReferralsFeatureState(db).revision, owner_id: "test-owner", reason: "suspend" });
-    submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
+    // INDIVIDUAL_ENTREPRENEUR (same INN as individualRequisites) rather than
+    // LEGAL_ENTITY: PR2's classifyLegalProfileChange refuses an INN change
+    // (a different legal party) at verify() with NEW_PARTNER_IDENTITY_
+    // REQUIRED, which this test's suspend/reactivate/verify mechanics are
+    // not about - individualEntrepreneurRequisites is this file's own
+    // established same-party contractual-change fixture (see D2: submit()
+    // above).
+    submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "INDIVIDUAL_ENTREPRENEUR", taxMode: "OTHER", ...individualEntrepreneurRequisites, reason: "became org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
     activateAgentReferrals(db, { expected_revision: agentReferralsFeatureState(db).revision, owner_id: "test-owner", reason: "resume" });
 
     const request = pendingLegalProfileChangeRequestForPartner(db, p1.partnerIdentityId)!;
@@ -216,8 +226,8 @@ describe("D2: submit()", () => {
   it("refuses submission for an identity that is not PARTNER_ACTIVE, and for one destroyed after becoming active", () => {
     const db = fresh();
     const p1 = readyPartner(db);
-    db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
-      VALUES ('agent-fresh', 'agent-fresh', 'A', 'fresh@example.test', 'C-1', 'PERCENT', 1000)`).run();
+    db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
+      VALUES ('agent-fresh', 'agent-fresh', 'A', 'fresh@example.test', 'PERCENT', 1000)`).run();
     const { partner_identity_id: freshPartnerId } = provisionPartnerOwner(db, admin, "agent-fresh", "fresh@example.test", "test");
     expect(() => submitLegalProfileSupersession(db, admin, freshPartnerId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "x", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, freshPartnerId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, freshPartnerId) }))
       .toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_INELIGIBLE_IDENTITY/);
@@ -305,7 +315,13 @@ describe("D2: seam test - blocked, unblocked, verified, replayed, activates the 
     const settlement = preparePartnerSettlement(db, admin, (db.prepare("SELECT id FROM engagement_effective_reward_snapshots WHERE engagement_id = ?").get(engagementId) as { id: string }).id).settlement;
     expect(settlement.status).toBe("PREPARED");
 
-    const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became an organization", evidenceRef: "egrul.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
+    // PR2 of the reissuance/evidence program fail-closes a supersession
+    // that crosses the natural-person/organization boundary (a different
+    // INN is always a different legal party) - so this seam test, whose
+    // whole point is the BLOCKED/VERIFIED/REPLAYED/activation-pinning
+    // mechanics (not entity-type classification), stays same-party:
+    // INDIVIDUAL/NPD -> INDIVIDUAL_ENTREPRENEUR/OTHER, same INN.
+    const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "INDIVIDUAL_ENTREPRENEUR", taxMode: "OTHER", ...individualEntrepreneurRequisites, reason: "left NPD", evidenceRef: "egrul.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
     expect(request.state).toBe("PENDING");
 
     // Still PREPARED (unsettled) -> BLOCKED, no revision minted, nothing changes.
@@ -322,7 +338,7 @@ describe("D2: seam test - blocked, unblocked, verified, replayed, activates the 
     outcome = verifyLegalProfileSupersession(db, admin, request.id, "verify again");
     expect(outcome).toMatchObject({ outcome: "VERIFIED", revision: 2 });
     const current = currentAgentReferralsLegalProfile(db, p1.agentId);
-    expect(current).toMatchObject({ revision: 2, legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", projected_contractor_type: "ORGANIZATION", assertion_source: "ADMIN_ASSERTED", evidence_ref: "egrul.pdf" });
+    expect(current).toMatchObject({ revision: 2, legal_form: "INDIVIDUAL_ENTREPRENEUR", tax_mode: "OTHER", projected_contractor_type: "INDIVIDUAL_ENTREPRENEUR", assertion_source: "ADMIN_ASSERTED", evidence_ref: "egrul.pdf" });
     const coherent = resolveCurrentLegalProfileBinding(db, getPartnerIdentity(db, p1.partnerIdentityId)!);
     expect(coherent.id).toBe(current!.id);
     // The historical activation still names the OLD revision - never replayed.
@@ -334,16 +350,28 @@ describe("D2: seam test - blocked, unblocked, verified, replayed, activates the 
     expect(replay).toMatchObject({ outcome: "REPLAYED", revision: 2, revision_id: current!.id });
     expect(db.prepare("SELECT COUNT(*) AS n FROM agent_referrals_legal_profile_revisions WHERE agent_id = ?").get(p1.agentId)).toEqual({ n: 2 });
 
+    // PR2 of the reissuance/evidence program: the supersession moved
+    // agreement_status off CURRENT (a CONTRACTUAL_REISSUANCE_REQUIRED
+    // change), and activation is an allowlist on agreement_status ===
+    // "CURRENT" alone - reissue the SAME template pair and reaccept under
+    // the new profile before the new engagement can activate.
+    const fw = currentFrameworkAgreementRevision(db)!;
+    const dt = currentDelegationTemplateRevision(db)!;
+    issueFrameworkToPartner(db, admin, p1.partnerIdentityId, fw.id, dt.id, "reissued after profile change");
+    const issuance2 = requiredFrameworkIssuance(db, p1.partnerIdentityId)!;
+    const grant2 = mintStepUpGrant(db, p1.partner, "FRAMEWORK_ACCEPTANCE", { issuance_id: issuance2.id, legal_profile_revision_id: current!.id }).grant_id;
+    acceptFrameworkAndDelegation(db, p1.partner, grant2, issuance2.id, current!.id);
+
     // A NEW engagement, activated now, pins the NEW revision.
     const occurrenceId2 = seedOccurrence(db, p1.cityId);
     const { engagementId: engagementId2, revisionId: revision2Id } = activatedEngagement(db, p1.partner, p1.partnerIdentityId, occurrenceId2, new Date(Date.now() + 400).toISOString());
     expect(resolveActivatedLegalProfileBinding(db, engagementId2).revision).toBe(2);
 
-    // PR-F: LEGAL_ENTITY/OTHER never auto-mints a tax treatment (unlike
+    // PR-F: a non-NPD profile never auto-mints a tax treatment (unlike
     // NPD) - an explicit admin-asserted one is required before a
     // settlement can be prepared under revision #2.
     recordVerifiedTaxTreatment(db, admin, p1.partnerIdentityId, {
-      taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2020-01-01", evidenceRef: "usn-exempt.pdf", reason: "became an organization, USN exemption",
+      taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2020-01-01", evidenceRef: "usn-exempt.pdf", reason: "left NPD, USN exemption",
     }, randomUUID());
 
     // A settlement prepared for post-supersession work carries tax_mode and contractor_type BOTH from #2, and 0047/0049's guards pass without a 500.
@@ -355,7 +383,7 @@ describe("D2: seam test - blocked, unblocked, verified, replayed, activates the 
     expect(settlement2).toMatchObject({ tax_mode_snapshot: "OTHER", legal_profile_revision_id_snapshot: current!.id });
     // contractor_type_snapshot is write-only in AgentReferralsSettlementRow's own column list - read it back raw.
     expect((db.prepare("SELECT contractor_type_snapshot FROM reward_settlements WHERE id = ?").get(settlement2.id) as { contractor_type_snapshot: string }).contractor_type_snapshot)
-      .toBe("ORGANIZATION");
+      .toBe("INDIVIDUAL_ENTREPRENEUR");
   });
 });
 
@@ -403,7 +431,11 @@ describe("D2: replay and terminal-state handling", () => {
   it("a REPLAYED verify does not re-check suspension or eligibility - only a PENDING verify does", () => {
     const db = fresh();
     const p1 = readyPartner(db);
-    const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "x", evidenceRef: "e.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
+    // INDIVIDUAL_ENTREPRENEUR (same INN): this test is about replay
+    // mechanics, not about the specific legal-form transition, and
+    // LEGAL_ENTITY's different INN now hits PR2's NEW_PARTNER_IDENTITY_
+    // REQUIRED gate at verify().
+    const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "INDIVIDUAL_ENTREPRENEUR", taxMode: "OTHER", ...individualEntrepreneurRequisites, reason: "x", evidenceRef: "e.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
     const first = verifyLegalProfileSupersession(db, admin, request.id, "verify");
     expect(first).toMatchObject({ outcome: "VERIFIED" });
     if (first.outcome !== "VERIFIED") throw new Error("unreachable");
@@ -422,7 +454,9 @@ describe("D2: replay and terminal-state handling", () => {
   it("reject on an already-VERIFIED or already-REJECTED request is refused", () => {
     const db = fresh();
     const p1 = readyPartner(db);
-    const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "x", evidenceRef: "e.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
+    // INDIVIDUAL_ENTREPRENEUR (same INN) - see the REPLAYED-verify test
+    // above for why LEGAL_ENTITY no longer works here.
+    const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "INDIVIDUAL_ENTREPRENEUR", taxMode: "OTHER", ...individualEntrepreneurRequisites, reason: "x", evidenceRef: "e.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
     verifyLegalProfileSupersession(db, admin, request.id, "verify");
     expect(() => rejectLegalProfileSupersession(db, admin, request.id, "too late")).toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_INVALID_STATE/);
   });
@@ -484,7 +518,11 @@ describe("D2: settlement binding mismatch (§5-Б) and preserved historical corr
     const settlement = preparePartnerSettlement(db, admin, effectiveId).settlement;
     payToSettled(db, p1.partner, p1.partnerIdentityId, settlement.id);
 
-    const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
+    // INDIVIDUAL_ENTREPRENEUR (same INN) - this test is about the
+    // settlement-binding mismatch after ANY supersession, not about the
+    // specific legal-form transition; LEGAL_ENTITY's different INN now
+    // hits PR2's NEW_PARTNER_IDENTITY_REQUIRED gate at verify().
+    const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "INDIVIDUAL_ENTREPRENEUR", taxMode: "OTHER", ...individualEntrepreneurRequisites, reason: "org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
     const outcome = verifyLegalProfileSupersession(db, admin, request.id, "verify");
     expect(outcome.outcome).toBe("VERIFIED");
 

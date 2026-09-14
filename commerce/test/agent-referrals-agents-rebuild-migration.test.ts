@@ -428,9 +428,9 @@ describe("0042 agent-referrals agents rebuild migration", () => {
 
       migrate(db);
       const columns = (db.prepare("PRAGMA table_info(agents)").all() as Array<{ name: string }>).map((row) => row.name);
-      expect(columns).toEqual(["id", "slug", "display_name", "email", "contract_reference", "enabled", "default_reward_type", "default_reward_value", "created_at", "updated_at"]);
-      expect(db.prepare("SELECT id, slug, display_name, email, contract_reference FROM agents WHERE id = ?").get(selfEmployedId)).toMatchObject({
-        id: selfEmployedId, slug: "self-employed-0042", display_name: "Self Employed Agent", email: "self-employed-0042@example.test", contract_reference: "C-SE-0042",
+      expect(columns).toEqual(["id", "slug", "display_name", "email", "enabled", "default_reward_type", "default_reward_value", "created_at", "updated_at"]);
+      expect(db.prepare("SELECT id, slug, display_name, email FROM agents WHERE id = ?").get(selfEmployedId)).toMatchObject({
+        id: selfEmployedId, slug: "self-employed-0042", display_name: "Self Employed Agent", email: "self-employed-0042@example.test",
       });
       const triggers = db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name IN ('agents_contractor_type_projection_guard', 'reward_settlements_authority_tuple_consistency_guard', 'reward_settlements_authority_columns_immutable_guard', 'reward_settlements_contractor_type_projection_guard') ORDER BY name").all();
       expect(triggers).toEqual([

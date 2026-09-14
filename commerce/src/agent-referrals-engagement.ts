@@ -11,6 +11,7 @@ import { partnerPromoByPartnerId, currentEngagementPromoAuthorization, revokeEng
 import type { AdminPrincipal, PartnerPrincipal } from "./agent-referrals-partner-identity";
 import { withAdminCommandInTransaction, type AdminCommandResult } from "./agent-referrals-admin-command";
 import { agentReferralsLegalProfileRevisionById, resolveCurrentLegalProfileBinding, type AgentReferralsLegalProfileRevision } from "./agent-referrals-legal-profile";
+import { agreementStatusForPartner, effectiveFrameworkAcceptance } from "./agent-referrals-framework-issuance";
 
 /**
  * Engagement identity, immutable revisions, partner acceptance and
@@ -384,12 +385,23 @@ export const activateEngagementInTransaction = (db: Database.Database, admin: Ad
       throw new EngagementError("AGENT_REFERRALS_ACTIVATION_AUDIENCE_VERIFICATION_EXPIRES_BEFORE_PUBLICATION_END", 409, `${audience.valid_until}<${revision.publication_end_at}`);
     }
 
-    const frameworkAcceptance = db.prepare("SELECT id FROM framework_acceptances WHERE partner_identity_id = ?").get(engagement.partner_identity_id) as { id: string } | undefined;
-    if (!frameworkAcceptance) throw new EngagementError("AGENT_REFERRALS_ACTIVATION_FRAMEWORK_NOT_ACCEPTED", 409);
-
+    // PR2 of the reissuance/evidence program: activation is an ALLOWLIST -
+    // agreement_status === "CURRENT", nothing else (not a denylist of the
+    // two intermediate states - a future sixth status, or a projection
+    // bug, must not silently re-open activation).
+    if (agreementStatusForPartner(db, partner.agent_id, partner.id) !== "CURRENT") {
+      throw new EngagementError("AGENT_REFERRALS_ACTIVATION_AGREEMENT_NOT_CURRENT", 409);
+    }
+    // Take the acceptance and delegation from the EFFECTIVE acceptance's
+    // own bundle - never an unqualified "any acceptance"/"any unrevoked
+    // delegation for this partner" lookup, which silently picked an
+    // arbitrary row once a second acceptance became possible (the
+    // historical defect this fixes; see agent-referrals-framework-
+    // issuance.ts's header).
+    const frameworkAcceptance = effectiveFrameworkAcceptance(db, engagement.partner_identity_id)!.acceptance;
     const delegation = db.prepare(`SELECT d.id FROM ord_reporting_delegations d
       LEFT JOIN ord_reporting_delegation_revocations r ON r.ord_reporting_delegation_id = d.id
-      WHERE d.partner_identity_id = ? AND r.id IS NULL`).get(engagement.partner_identity_id) as { id: string } | undefined;
+      WHERE d.framework_acceptance_id = ? AND r.id IS NULL`).get(frameworkAcceptance.id) as { id: string } | undefined;
     if (!delegation) throw new EngagementError("AGENT_REFERRALS_ACTIVATION_DELEGATION_NOT_EFFECTIVE", 409);
 
     const partnerPromo = partnerPromoByPartnerId(db, partner.agent_id);

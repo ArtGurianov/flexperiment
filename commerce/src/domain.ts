@@ -12,6 +12,8 @@ import { isPromoPartnerOwned } from "./agent-referrals-promo";
 import { suspendEngagementsForOccurrenceMaterialChange } from "./agent-referrals-engagement";
 import { resolveCurrentLegalProfileBinding } from "./agent-referrals-legal-profile";
 import { getPartnerIdentityByAgentId } from "./agent-referrals-onboarding";
+import { agreementStatusForPartner, effectiveFrameworkAcceptance } from "./agent-referrals-framework-issuance";
+import { frameworkAgreementRevisionById } from "./agent-referrals-framework-delegation";
 import { currentUsableNpdCheck } from "./agent-referrals-npd";
 import { AgentReferralsAttributionError, resolveOrderAttribution, ATTRIBUTION_RULE_VERSION } from "./agent-referrals-attribution";
 import { rewardForOrder as computeRewardForOrder } from "./reward-calculation";
@@ -1980,13 +1982,24 @@ export class CommerceDomain {
 
   createAgent(input: Record<string, unknown>) {
     const agentId = id();
-    this.db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, enabled, default_reward_type, default_reward_value)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(agentId, input.slug, input.display_name, String(input.email).toLowerCase(), input.contract_reference, input.enabled === false ? 0 : 1, input.default_reward_type, input.default_reward_value);
+    this.db.prepare(`INSERT INTO agents(id, slug, display_name, email, enabled, default_reward_type, default_reward_value)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(agentId, input.slug, input.display_name, String(input.email).toLowerCase(), input.enabled === false ? 0 : 1, input.default_reward_type, input.default_reward_value);
     return one(this.db, "SELECT * FROM agents WHERE id = ?", agentId)!;
   }
 
-  /** Current legal identity is a read-only projection of its revision chain. */
+  /**
+   * Current legal identity is a read-only projection of its revision chain.
+   *
+   * PR4 of the reissuance/evidence program: also joins required issuance +
+   * effective acceptance (agent-referrals-framework-issuance.ts) into an
+   * `agreement` projection for the admin "Договор" column - null for an
+   * agent with no partner_identities row at all (an operational-only
+   * agent, never a partner). Per-agent, not one bulk SQL join: these
+   * resolvers are the sole authority for "required"/"effective" (PR2's own
+   * rule - never a bare, unqualified lookup), and this list is an admin
+   * page at operator scale, not a customer-facing hot path.
+   */
   agentList() {
     return many(this.db, `SELECT a.*, COUNT(p.id) AS promo_count,
         lp.id AS lp_id, lp.revision AS lp_revision, lp.legal_form AS lp_legal_form, lp.tax_mode AS lp_tax_mode,
@@ -2012,14 +2025,24 @@ export class CommerceDomain {
               registration_number: lp_registration_number, legal_address: lp_legal_address,
             }
             : null,
+          agreement: this.agentAgreementProjection(String(agent.id)),
         };
       });
+  }
+
+  private agentAgreementProjection(agentId: string) {
+    const partner = getPartnerIdentityByAgentId(this.db, agentId);
+    if (!partner) return null;
+    const status = agreementStatusForPartner(this.db, agentId, partner.id);
+    const effective = effectiveFrameworkAcceptance(this.db, partner.id);
+    const acceptedRevision = effective ? frameworkAgreementRevisionById(this.db, effective.issuance.framework_agreement_revision_id)?.revision ?? null : null;
+    return { status, accepted_framework_agreement_revision: acceptedRevision, partner_identity_id: partner.id };
   }
 
   patchAgent(agentId: string, input: Record<string, unknown>) {
     const existing = one(this.db, "SELECT * FROM agents WHERE id = ?", agentId);
     if (!existing) throw new DomainError("AGENT_NOT_FOUND", 404);
-    const allowed = ["display_name", "email", "contract_reference", "enabled", "default_reward_type", "default_reward_value"];
+    const allowed = ["display_name", "email", "enabled", "default_reward_type", "default_reward_value"];
     const fields = allowed.filter((field) => input[field] !== undefined);
     if (!fields.length) return existing;
     this.db.prepare(`UPDATE agents SET ${fields.map((field) => `${field} = ?`).join(", ")}, updated_at = ? WHERE id = ?`).run(...fields.map((field) => field === "enabled" ? Number(input[field]) : field === "email" ? String(input[field]).toLowerCase() : input[field]), now(), agentId);

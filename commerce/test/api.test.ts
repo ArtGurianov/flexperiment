@@ -492,7 +492,7 @@ describe("commerce HTTP boundary", () => {
     const { db, app } = appFixture();
     const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
     const agentId = randomUUID(); const settlementId = randomUUID();
-    db.prepare("INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value) VALUES (?, 'settlement-api-agent', 'Settlement Agent', 'settlement-agent@example.test', 'C-1', 'FIXED', 100)").run(agentId);
+    db.prepare("INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value) VALUES (?, 'settlement-api-agent', 'Settlement Agent', 'settlement-agent@example.test', 'FIXED', 100)").run(agentId);
     const legalProfileRevisionId = seedLegacySettlementAuthority(db, agentId, "settlement-agent@example.test");
     db.prepare("INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, legal_profile_revision_id_snapshot, prepared_at, created_by_admin_id) VALUES (?, ?, ?, 100, 'TRANSFER', 'PREPARED', 'SELF_EMPLOYED', ?, ?, 'admin')").run(settlementId, agentId, occurrenceId, legalProfileRevisionId, new Date().toISOString());
     const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.57" }, body: JSON.stringify({ password: "correct horse" }) });
@@ -520,7 +520,7 @@ describe("commerce HTTP boundary", () => {
     const { db, app } = appFixture();
     const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
     const agentId = randomUUID(); const reviewedSettlementId = randomUUID(); const otherSettlementId = randomUUID();
-    db.prepare("INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value) VALUES (?, 'filter-agent', 'Filter Agent', 'filter-agent@example.test', 'C-1', 'FIXED', 100)").run(agentId);
+    db.prepare("INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value) VALUES (?, 'filter-agent', 'Filter Agent', 'filter-agent@example.test', 'FIXED', 100)").run(agentId);
     const legalProfileRevisionId = seedLegacySettlementAuthority(db, agentId, "filter-agent@example.test");
     const insertSettlement = db.prepare("INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, legal_profile_revision_id_snapshot, prepared_at, created_by_admin_id) VALUES (?, ?, ?, 100, 'TRANSFER', 'PREPARED', 'SELF_EMPLOYED', ?, ?, 'admin')");
     insertSettlement.run(reviewedSettlementId, agentId, occurrenceId, legalProfileRevisionId, new Date(Date.now() - 25 * 60 * 60_000).toISOString());
