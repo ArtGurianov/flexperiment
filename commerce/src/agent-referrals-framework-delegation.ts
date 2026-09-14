@@ -77,6 +77,11 @@ export const currentFrameworkAgreementRevision = (db: Database.Database): Conten
   (db.prepare(`SELECT id, revision, content_hash, supersedes_revision_id, created_at
     FROM framework_agreement_revisions ORDER BY revision DESC LIMIT 1`).get() as ContentRevision | undefined) ?? null;
 
+/** PR3 of the reissuance/evidence program: the data source for the "issue an archived revision" disclosure - never a bare UUID input with no listing behind it. */
+export const allFrameworkAgreementRevisions = (db: Database.Database): ContentRevision[] =>
+  db.prepare(`SELECT id, revision, content_hash, supersedes_revision_id, created_at
+    FROM framework_agreement_revisions ORDER BY revision DESC`).all() as ContentRevision[];
+
 export const frameworkAgreementRevisionById = (db: Database.Database, revisionId: string) =>
   (db.prepare(`SELECT id, revision, content_json, content_hash, supersedes_revision_id, created_at
     FROM framework_agreement_revisions WHERE id = ?`).get(revisionId) as (ContentRevision & { content_json: string }) | undefined) ?? null;
@@ -122,6 +127,11 @@ export const mintFrameworkAgreementRevision = (db: Database.Database, clauses: R
 export const currentDelegationTemplateRevision = (db: Database.Database): ContentRevision | null =>
   (db.prepare(`SELECT id, revision, content_hash, supersedes_revision_id, created_at
     FROM delegation_template_revisions ORDER BY revision DESC LIMIT 1`).get() as ContentRevision | undefined) ?? null;
+
+/** PR3 of the reissuance/evidence program: the data source for the "issue an archived revision" disclosure - never a bare UUID input with no listing behind it. */
+export const allDelegationTemplateRevisions = (db: Database.Database): ContentRevision[] =>
+  db.prepare(`SELECT id, revision, content_hash, supersedes_revision_id, created_at
+    FROM delegation_template_revisions ORDER BY revision DESC`).all() as ContentRevision[];
 
 export const delegationTemplateRevisionById = (db: Database.Database, revisionId: string) =>
   (db.prepare(`SELECT id, revision, content_json, content_hash, supersedes_revision_id, created_at

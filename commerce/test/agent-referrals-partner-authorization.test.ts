@@ -46,8 +46,8 @@ const fresh = () => {
 const provisionedActive = (db: Database.Database) => {
   activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'A', ?, 'C-1', 'PERCENT', 1000)`).run(agentId, `p-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
+    VALUES (?, ?, 'A', ?, 'PERCENT', 1000)`).run(agentId, `p-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   return provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
 };
 

@@ -330,8 +330,8 @@ describe("STALE_BOUND: a retry that arrives after a legal B* is refused, not app
     // A fresh identity, still in the draft phase - readyPartner's own is
     // already verified and therefore locked.
     const agentId = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
-      VALUES (?, ?, 'Agent', ?, 'C-2', 'PERCENT', 1000)`)
+    db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
+      VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`)
       .run(agentId, `draft-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
     const { partner_identity_id: identityId } = provisionPartnerOwner(db, admin, agentId, `${agentId.slice(0, 8)}@example.test`, "test");
     const principal = { realm: "PARTNER" as const, partner_identity_id: identityId, partner_session_id: "n/a" };
@@ -411,9 +411,14 @@ describe("STALE_BOUND: a retry that arrives after a legal B* is refused, not app
   it("legal-profile supersession: a VERIFICATION is the other half of the pin, and a retry after it is refused too", () => {
     const { db } = fresh();
     const p1 = readyPartner(db);
-    const requisites = { opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" };
+    // Same party as readyPartner's own INDIVIDUAL/NPD profile (same INN) -
+    // PR2 of the reissuance/evidence program fail-closes a supersession
+    // that crosses the natural-person/organization boundary, so this must
+    // stay same-party; this test's own point is the STALE_BOUND pin, not
+    // legal-identity classification.
+    const requisites = { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012", registration_number: "123456789012345" };
     const requestA = {
-      legalForm: "LEGAL_ENTITY" as const, taxMode: "OTHER" as const, ...requisites,
+      legalForm: "INDIVIDUAL_ENTREPRENEUR" as const, taxMode: "OTHER" as const, ...requisites,
       reason: "A: became org", evidenceRef: "ev.pdf",
       expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId),
       expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId),

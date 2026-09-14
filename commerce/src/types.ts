@@ -179,7 +179,6 @@ export const agentSchema = z.object({
   slug: z.string().trim().transform((value) => value.toLowerCase()).pipe(z.string().regex(/^[a-z0-9-]{2,100}$/)),
   display_name: z.string().trim().min(2).max(200),
   email: z.string().trim().email().max(320),
-  contract_reference: z.string().trim().min(2).max(500),
   enabled: z.boolean().default(true),
   default_reward_type: z.enum(["PERCENT", "FIXED"]),
   default_reward_value: z.number().int().nonnegative(),
@@ -187,7 +186,6 @@ export const agentSchema = z.object({
 export const agentPatchSchema = z.object({
   display_name: z.string().trim().min(2).max(200).optional(),
   email: z.string().trim().email().max(320).optional(),
-  contract_reference: z.string().trim().min(2).max(500).optional(),
   enabled: z.boolean().optional(),
   default_reward_type: z.enum(["PERCENT", "FIXED"]).optional(),
   default_reward_value: z.number().int().nonnegative().optional(),

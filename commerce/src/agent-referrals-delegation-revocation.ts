@@ -5,6 +5,7 @@ import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
 import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
 import { suspendEngagementLifecycle } from "./agent-referrals-engagement";
 import { consumeEngagementStepUpGrantInTransaction } from "./agent-referrals-engagement-step-up";
+import { effectiveFrameworkAcceptance } from "./agent-referrals-framework-issuance";
 import type { AdminPrincipal, PartnerPrincipal } from "./agent-referrals-partner-identity";
 
 /**
@@ -74,6 +75,21 @@ export const revokeDelegationAsPartner = (db: Database.Database, partner: Partne
   return run.immediate();
 };
 
-export const isDelegationEffective = (db: Database.Database, partnerIdentityId: string): boolean =>
-  Boolean(db.prepare(`SELECT 1 FROM ord_reporting_delegations d LEFT JOIN ord_reporting_delegation_revocations r ON r.ord_reporting_delegation_id = d.id
-    WHERE d.partner_identity_id = ? AND r.id IS NULL`).get(partnerIdentityId));
+/**
+ * PR2 of the reissuance/evidence program: "effective" is now "belongs to
+ * the EFFECTIVE acceptance" AND "not revoked" - never merely the absence
+ * of a revocation. Before reissuance was possible, a partner had at most
+ * one delegation ever, so "any unrevoked delegation" and "the effective
+ * one, unrevoked" were the same predicate; a second acceptance breaks that
+ * equivalence, and this is the concrete case the plan's audit names for
+ * why. Reissuance never auto-revokes the PREVIOUS acceptance's delegation
+ * (revocation stays a deliberate act) - this resolves which one is
+ * CURRENTLY authoritative rather than which ones merely still lack a
+ * revocation row.
+ */
+export const isDelegationEffective = (db: Database.Database, partnerIdentityId: string): boolean => {
+  const effective = effectiveFrameworkAcceptance(db, partnerIdentityId);
+  if (!effective) return false;
+  return Boolean(db.prepare(`SELECT 1 FROM ord_reporting_delegations d LEFT JOIN ord_reporting_delegation_revocations r ON r.ord_reporting_delegation_id = d.id
+    WHERE d.framework_acceptance_id = ? AND r.id IS NULL`).get(effective.acceptance.id));
+};

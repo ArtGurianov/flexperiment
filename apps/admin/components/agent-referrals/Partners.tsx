@@ -23,6 +23,12 @@ const ONBOARDING_LABELS: Record<string, string> = {
   FRAMEWORK_ISSUED: "Договор выдан", FRAMEWORK_ACCEPTED: "Договор принят", PARTNER_ACTIVE: "Активен",
 };
 
+/** PR2/PR3 of the reissuance/evidence program: agreement_status is orthogonal to onboarding_state - see agent-referrals-framework-issuance.ts. */
+const AGREEMENT_STATUS_LABELS: Record<string, string> = {
+  NOT_ISSUED: "не выдан", INITIAL_ACCEPTANCE_REQUIRED: "ожидает акцепта", CURRENT: "принят",
+  REISSUANCE_REQUIRED: "требуется перевыдача", REACCEPTANCE_REQUIRED: "требуется переакцепт",
+};
+
 /**
  * Every partner-scoped command in this file declares the same intent and the
  * same cache consequence, so they share one wrapper rather than repeating the
@@ -99,6 +105,12 @@ function PartnerDetail({ partnerId, onBack }: { partnerId: string; onBack: () =>
   if (detail.isError) return <Notice error={(detail.error as AdminApiError).code} />;
   const identity = detail.data!.identity as Row;
   const onboardingState = String(identity.onboarding_state);
+  const agreements = (detail.data!.agreements as Row | undefined) ?? { agreement_status: "NOT_ISSUED" };
+  const agreementStatus = String(agreements.agreement_status ?? "NOT_ISSUED");
+  // A verified legal profile is the only real precondition for issuance -
+  // PR2 permits reissuance from FRAMEWORK_ISSUED/FRAMEWORK_ACCEPTED/
+  // PARTNER_ACTIVE too, never only the original PROFILE_VERIFIED state.
+  const canIssueOrReissue = onboardingState !== "INVITED" && onboardingState !== "PROFILE_SUBMITTED";
 
   return (
     <>
@@ -106,13 +118,16 @@ function PartnerDetail({ partnerId, onBack }: { partnerId: string; onBack: () =>
       <Panel title={`Партнёр: ${String(identity.id)}`}>
         <p>Статус: <Badge>{ONBOARDING_LABELS[onboardingState] ?? onboardingState}</Badge></p>
         <p>Email: {String(identity.email)}</p>
+        {AGREEMENT_STATUS_LABELS[agreementStatus] && <p>Договор: <Badge>{AGREEMENT_STATUS_LABELS[agreementStatus]}</Badge></p>}
+        {agreementStatus === "REISSUANCE_REQUIRED" && <Notice><>Реквизиты партнёра изменились контрактно значимым образом - требуется новая редакция.</></Notice>}
+        {agreementStatus === "REACCEPTANCE_REQUIRED" && <Notice><>Выдана новая редакция договора - партнёр ещё не принял её.</></Notice>}
 
         {onboardingState === "PROFILE_SUBMITTED" && (
           <button disabled={busy} onClick={() => void runAction(`/agent-referrals/partners/${partnerId}/legal-profile/verify`, { reason: "verified by operator" })}>
             {busy ? "…" : "Проверить юридический профиль"}
           </button>
         )}
-        {onboardingState === "PROFILE_VERIFIED" && <IssueFrameworkForm partnerId={partnerId} />}
+        {canIssueOrReissue && <IssueFrameworkForm partnerId={partnerId} agreementStatus={agreementStatus} />}
         {onboardingState === "FRAMEWORK_ACCEPTED" && (
           <button disabled={busy} onClick={() => void runAction(`/agent-referrals/partners/${partnerId}/activate`, { expected_revision: identity.onboarding_revision, reason: "activated by operator" })}>
             {busy ? "…" : "Активировать партнёра (PARTNER_ACTIVE)"}
@@ -153,17 +168,41 @@ function PartnerDetail({ partnerId, onBack }: { partnerId: string; onBack: () =>
   );
 }
 
-function IssueFrameworkForm({ partnerId }: { partnerId: string }) {
-  const { register, handleSubmit } = useForm<{ framework_agreement_revision_id: string; delegation_template_revision_id: string }>();
+/**
+ * PR3 of the reissuance/evidence program: current-revision selectors fed by
+ * the real list endpoints, plus a real operator `reason` - never the two
+ * free-text UUID inputs with a hardcoded reason string this replaces.
+ * `agreementStatus` only changes the button label/copy - issuance itself is
+ * the same command whether it is the first-ever issuance or a reissuance.
+ */
+function IssueFrameworkForm({ partnerId, agreementStatus }: { partnerId: string; agreementStatus: string }) {
+  const frameworkRevisions = useQuery({ queryKey: agentReferralsKeys.frameworkAgreementRevisions(), queryFn: () => api<{ revisions: Row[] }>("/framework-agreement-revisions") });
+  const delegationRevisions = useQuery({ queryKey: agentReferralsKeys.delegationTemplateRevisions(), queryFn: () => api<{ revisions: Row[] }>("/delegation-template-revisions") });
+  const { register, handleSubmit, reset } = useForm<{ framework_agreement_revision_id: string; delegation_template_revision_id: string; reason: string }>();
   const issue = usePartnerScopedCommand(partnerId, (values: Record<string, unknown>) =>
-    api(`/agent-referrals/partners/${partnerId}/framework/issue`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...values, reason: "issued by operator" }) }));
-  const submit = handleSubmit(async (values) => { await issue.mutateAsync(values).catch(() => undefined); });
+    api(`/agent-referrals/partners/${partnerId}/framework/issue`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(values) }));
+  const submit = handleSubmit(async (values) => { await issue.mutateAsync(values).then(() => reset()).catch(() => undefined); });
+
+  if (frameworkRevisions.isLoading || delegationRevisions.isLoading) return <Loading />;
+  if (frameworkRevisions.isError || !frameworkRevisions.data?.revisions.length) return <Notice><>Нет ни одной редакции договора - создайте её сначала.</></Notice>;
+  if (delegationRevisions.isError || !delegationRevisions.data?.revisions.length) return <Notice><>Нет ни одной редакции делегирования - создайте её сначала.</></Notice>;
+
+  const label = agreementStatus === "NOT_ISSUED" ? "Выдать договор" : "Выдать новую редакцию (переиздать)";
   return (
     <form className="form" onSubmit={submit}>
-      <label>ID редакции договора <input {...register("framework_agreement_revision_id", { required: true })} /></label>
-      <label>ID редакции делегирования <input {...register("delegation_template_revision_id", { required: true })} /></label>
+      <label>Редакция договора
+        <select {...register("framework_agreement_revision_id", { required: true })} defaultValue={String(frameworkRevisions.data.revisions[0]!.id)}>
+          {frameworkRevisions.data.revisions.map((r) => <option key={String(r.id)} value={String(r.id)}>ред. {Number(r.revision)} · {String(r.content_hash).slice(0, 12)}…</option>)}
+        </select>
+      </label>
+      <label>Редакция делегирования
+        <select {...register("delegation_template_revision_id", { required: true })} defaultValue={String(delegationRevisions.data.revisions[0]!.id)}>
+          {delegationRevisions.data.revisions.map((r) => <option key={String(r.id)} value={String(r.id)}>ред. {Number(r.revision)} · {String(r.content_hash).slice(0, 12)}…</option>)}
+        </select>
+      </label>
+      <label>Причина <input {...register("reason", { required: true })} placeholder="например: контрактно значимое изменение реквизитов" /></label>
       <Notice error={issue.error?.code} />
-      <button className="primary" disabled={issue.isPending}>{issue.isPending ? "…" : "Выдать договор"}</button>
+      <button className="primary" disabled={issue.isPending}>{issue.isPending ? "…" : label}</button>
     </form>
   );
 }

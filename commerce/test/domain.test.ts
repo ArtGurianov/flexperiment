@@ -1473,8 +1473,8 @@ describe("commerce domain", () => {
   it("does not mature a referral reward when the organizer cancels an occurrence", async () => {
     const setup = fixture(); databases.push(setup.db);
     const agentId = randomUUID();
-    setup.db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, enabled, default_reward_type, default_reward_value)
-      VALUES (?, 'cancelled-promoter', 'Promoter', 'promoter@example.test', 'C-2', 1, 'PERCENT', 1000)`).run(agentId);
+    setup.db.prepare(`INSERT INTO agents(id, slug, display_name, email, enabled, default_reward_type, default_reward_value)
+      VALUES (?, 'cancelled-promoter', 'Promoter', 'promoter@example.test', 1, 'PERCENT', 1000)`).run(agentId);
     // Attribution is pinned at checkout time (immutable thereafter as of
     // PR6/0046 - orders.attributed_agent_id/reward_type_snapshot/
     // reward_value_snapshot can no longer be attached retroactively via

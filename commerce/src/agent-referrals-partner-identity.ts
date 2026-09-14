@@ -355,13 +355,28 @@ export const verifyPartnerLegalProfile = (db: Database.Database, admin: AdminPri
 };
 
 /**
- * Admin-only: pins the EXACT pair of template revisions being issued into
- * immutable framework_issuances, atomically with the onboarding transition.
- * This pinned pair is the authority acceptFrameworkAndDelegation() checks
- * against - without it, a partner could request step-up for and accept a
- * different pair than the one an admin actually issued, since the
- * onboarding state alone only gates WHEN acceptance may happen, never
- * WHICH revisions it may be for.
+ * Admin-only: appends a NEW immutable issuance row - never a single pinned
+ * pair (PR2 of the reissuance/evidence program removed that limit; see
+ * agent-referrals-framework-issuance.ts's header). `sequence` is minted as
+ * MAX(sequence) + 1 for this partner, inside this transaction's own
+ * BEGIN IMMEDIATE - the same CAS property `UNIQUE(partner_identity_id,
+ * sequence)` gives a concurrent second issuer: one commits sequence N, the
+ * loser's insert hits the unique index and its whole transaction rolls
+ * back, so a retry simply reads the new MAX and mints N+1.
+ *
+ * The onboarding FRAMEWORK_ISSUED transition only fires on the FIRST-ever
+ * issuance (from PROFILE_VERIFIED): PARTNER_ACTIVE is never moved
+ * backwards, so a reissuance to an already FRAMEWORK_ACCEPTED or
+ * PARTNER_ACTIVE partner appends the new issuance row without touching
+ * onboarding_state at all - agreement_status (agent-referrals-framework-
+ * issuance.ts) is the orthogonal projection that reflects it instead.
+ *
+ * Issuing before a legal profile has ever been verified is refused
+ * explicitly: without a verified profile there is nothing for an
+ * acceptance's legal_profile_revision_id to pin, and (unlike the original
+ * single-issuance design) the onboarding-transition attempt below no
+ * longer fails closed on that case by itself once reissuance is legal from
+ * more than one state.
  */
 export const issueFrameworkToPartner = (
   db: Database.Database,
@@ -374,13 +389,25 @@ export const issueFrameworkToPartner = (
   const run = db.transaction((): PartnerIdentityRow => {
     const identity = getPartnerIdentity(db, partnerIdentityId);
     if (!identity) throw new PartnerIdentityError("PARTNER_IDENTITY_NOT_FOUND", 404);
+    if (identity.legal_profile_revision_id === null) {
+      throw new PartnerIdentityError("AGENT_REFERRALS_LEGAL_PROFILE_NOT_VERIFIED", 409, identity.onboarding_state);
+    }
+
+    const currentMax = db.prepare(`SELECT MAX(sequence) AS seq FROM framework_issuances WHERE partner_identity_id = ?`)
+      .get(partnerIdentityId) as { seq: number | null };
+    const nextSequence = (currentMax.seq ?? 0) + 1;
+
     const issuanceId = id();
-    db.prepare(`INSERT INTO framework_issuances(id, partner_identity_id, framework_agreement_revision_id, delegation_template_revision_id, issued_by_admin_id)
-      VALUES (?, ?, ?, ?, ?)`)
-      .run(issuanceId, partnerIdentityId, frameworkAgreementRevisionId, delegationTemplateRevisionId, admin.admin_id);
-    transitionOnboardingStateInTransaction(db, partnerIdentityId, "FRAMEWORK_ISSUED", identity.onboarding_revision, "ADMIN", reason);
+    db.prepare(`INSERT INTO framework_issuances(id, partner_identity_id, sequence, framework_agreement_revision_id, delegation_template_revision_id, issued_by_admin_id, reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run(issuanceId, partnerIdentityId, nextSequence, frameworkAgreementRevisionId, delegationTemplateRevisionId, admin.admin_id, reason);
+
+    if (identity.onboarding_state === "PROFILE_VERIFIED") {
+      transitionOnboardingStateInTransaction(db, partnerIdentityId, "FRAMEWORK_ISSUED", identity.onboarding_revision, "ADMIN", reason);
+    }
+
     recordPartnerIdentityEvent(db, partnerIdentityId, "FRAMEWORK_ISSUED_TO_PARTNER", "ADMIN", {
-      issuance_id: issuanceId, framework_agreement_revision_id: frameworkAgreementRevisionId, delegation_template_revision_id: delegationTemplateRevisionId, reason,
+      issuance_id: issuanceId, sequence: nextSequence, framework_agreement_revision_id: frameworkAgreementRevisionId, delegation_template_revision_id: delegationTemplateRevisionId, reason,
     });
     return getPartnerIdentity(db, partnerIdentityId)!;
   });

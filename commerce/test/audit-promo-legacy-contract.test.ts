@@ -25,8 +25,8 @@ describe("promo legacy-contract audit", () => {
     db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, sales_status, venue_status, venue_name, venue_address)
       VALUES (?, ?, 'Overflow test', '2027-01-01T10:00:00.000Z', '2027-01-01T11:00:00.000Z', 'Asia/Omsk', ?, 1, 'HIDDEN', 'CLOSED', 'CONFIRMED', 'Studio', 'Street 1')`)
       .run(randomUUID(), cityId, Number.MAX_SAFE_INTEGER);
-    db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, enabled, default_reward_type, default_reward_value)
-      VALUES (?, 'percent-agent', 'Percent agent', 'percent@example.test', 'A-1', 1, 'PERCENT', 10001)`)
+    db.prepare(`INSERT INTO agents(id, slug, display_name, email, enabled, default_reward_type, default_reward_value)
+      VALUES (?, 'percent-agent', 'Percent agent', 'percent@example.test', 1, 'PERCENT', 10001)`)
       .run(agentId);
     db.close();
 

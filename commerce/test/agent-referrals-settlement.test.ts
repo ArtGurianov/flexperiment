@@ -12,6 +12,11 @@ import { canonicalizeSettlementTaxV1 } from "../src/agent-referrals-ord-canonica
 import { resolveTaxTreatmentForLegalProfileAt } from "../src/agent-referrals-tax-treatment";
 import { submitLegalProfileSupersession, verifyLegalProfileSupersession, currentLegalProfileRevisionForPartner, legalProfileChangeRequestHeadForPartner } from "../src/agent-referrals-legal-profile-supersession";
 import { currentAgentReferralsLegalProfile } from "../src/agent-referrals-legal-profile";
+import { currentFrameworkAgreementRevision, currentDelegationTemplateRevision } from "../src/agent-referrals-framework-delegation";
+import { issueFrameworkToPartner } from "../src/agent-referrals-partner-identity";
+import { requiredFrameworkIssuance } from "../src/agent-referrals-framework-issuance";
+import { mintStepUpGrant } from "../src/agent-referrals-step-up";
+import { acceptFrameworkAndDelegation } from "../src/agent-referrals-framework-acceptance";
 import {
   fresh, admin, readyPartner, seedOccurrence, nearTermTerms, offerAcceptActivate, purchaseAndPay, closeAndComplete,
   finalizedSettlement, acceptedAct, seedLegacyReferralReward,
@@ -339,11 +344,27 @@ describe("PR-F: tax-treatment snapshot pinning", () => {
   it("refuses AGENT_REFERRALS_TAX_TREATMENT_MISSING when the current legal profile has no tax treatment recorded yet", () => {
     const { db, domain } = fresh(); track(db);
     const p1 = readyPartner(db, "NPD");
-    const legalEntityRequisites = { opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" };
-    const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
+    const ieRequisites = { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012", registration_number: "123456789012345" };
+    const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "INDIVIDUAL_ENTREPRENEUR", taxMode: "OTHER", ...ieRequisites, reason: "became org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
     // Nothing outstanding blocks this supersession: readyPartner mints no engagement of its own.
     const outcome = verifyLegalProfileSupersession(db, admin, request.id, "verify");
     expect(outcome).toMatchObject({ outcome: "VERIFIED" });
+
+    // PR2 of the reissuance/evidence program: the supersession above moved
+    // agreement_status off CURRENT (a CONTRACTUAL_REISSUANCE_REQUIRED
+    // change), and activation is an allowlist on agreement_status ===
+    // "CURRENT" alone - so a NEW activation needs a fresh reissuance +
+    // reacceptance under the NEW profile first, exactly the real operator
+    // flow. The SAME (already-minted) template pair is reissued -
+    // re-offering an unchanged pair is legitimate; see
+    // agent-referrals-framework-reissuance.test.ts scenario 1.
+    const fw = currentFrameworkAgreementRevision(db)!;
+    const dt = currentDelegationTemplateRevision(db)!;
+    issueFrameworkToPartner(db, admin, p1.partnerIdentityId, fw.id, dt.id, "reissued after profile change");
+    const issuance = requiredFrameworkIssuance(db, p1.partnerIdentityId)!;
+    const newLegalProfileId = currentAgentReferralsLegalProfile(db, p1.agentId)!.id;
+    const grant = mintStepUpGrant(db, p1.partner, "FRAMEWORK_ACCEPTANCE", { issuance_id: issuance.id, legal_profile_revision_id: newLegalProfileId }).grant_id;
+    acceptFrameworkAndDelegation(db, p1.partner, grant, issuance.id, newLegalProfileId);
 
     const occ = seedOccurrence(db, p1.cityId, 100_000);
     const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, nearTermTerms(1000, "PERCENT", 1000));
@@ -367,11 +388,11 @@ describe("PR-F: tax-treatment snapshot pinning", () => {
     const { settlement: before } = preparePartnerSettlement(db, admin, finalize.effective_snapshot_id);
 
     // readyPartner's own fixture is NPD (SYSTEM_DERIVED); superseding to
-    // LEGAL_ENTITY/OTHER and recording a NEW tax treatment for the NEW
+    // INDIVIDUAL_ENTREPRENEUR/OTHER and recording a NEW tax treatment for the NEW
     // revision must never reach back and mutate the settlement already
     // prepared under the OLD revision/treatment.
-    const legalEntityRequisites = { opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" };
-    const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "became org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
+    const ieRequisites = { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012", registration_number: "123456789012345" };
+    const request = submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "INDIVIDUAL_ENTREPRENEUR", taxMode: "OTHER", ...ieRequisites, reason: "became org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
     // BLOCKED (outstanding settlement) is expected here and is not the
     // point of this test - it proves the historical row is untouched
     // regardless of whether the supersession itself could even complete.

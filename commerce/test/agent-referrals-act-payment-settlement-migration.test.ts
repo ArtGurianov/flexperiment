@@ -79,8 +79,8 @@ const tableNames = (db: Database.Database) =>
 // any application-level check).
 
 const seedAgent = (db: Database.Database, agentId = "agent-1") =>
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'M', ?, 'C-1', 'PERCENT', 1000)`).run(agentId, agentId, `${agentId}@example.test`);
+  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
+    VALUES (?, ?, 'M', ?, 'PERCENT', 1000)`).run(agentId, agentId, `${agentId}@example.test`);
 
 const seedPartnerIdentity = (db: Database.Database, partnerId = "partner-1", agentId = "agent-1", legalProfileRevisionId: string | null = null) =>
   db.prepare(`INSERT INTO partner_identities(id, agent_id, email, email_hash, legal_profile_revision_id, created_by_admin_id) VALUES (?, ?, 'a@example.test', 'h', ?, 'admin')`)
@@ -297,12 +297,13 @@ describe("0047 act/payment/settlement migration", () => {
     const sql = readFileSync(join(MIGRATIONS, MIGRATION_FILE), "utf8");
     expect(isFkOffMigration(MIGRATION_FILE, createHash("sha256").update(sql).digest("hex"))).toBe(false);
     migrate(db);
-    expect(FK_OFF_MIGRATIONS).toHaveLength(4);
+    expect(FK_OFF_MIGRATIONS).toHaveLength(5);
     expect(FK_OFF_MIGRATIONS).toEqual([
       { filename: "0042_agent_referrals_agents_rebuild.sql", sha256: "d9b5ecbf496993669201b45440ea5213ba0e52af778e2094d569f772adfee6ab" },
       { filename: "0050_agent_referrals_legal_profile_provenance_rebuild.sql", sha256: "e1cbd9ce177546ea621fb4a9da861f63e69e999e8bf6a5c159d1c967761349f0" },
       { filename: "0052_agent_referrals_unified_legal_requisites.sql", sha256: "bcc44feaa37acb5930a8b9d7fe4a1bd4e711306e2640b9cb04ff78844cec9104" },
       { filename: "0058_agents_legal_identity_cleanup.sql", sha256: "c8f711ace8ebf169fb492aa4b3cd5c745f98a8ed9be03ff1cf76d1ef6a184637" },
+      { filename: "0059_agents_contract_reference_removal.sql", sha256: "f0c338922b8a09ea218be5fb26c0934a8689a8a7f424023396420c8d3c40777e" },
     ]);
   });
 
@@ -362,7 +363,7 @@ describe("0047 act/payment/settlement migration", () => {
       // way, in agent-referrals-ord-reporting-migration.test.ts) does not
       // need to touch this assertion at all - the exact precedent already
       // set between PR5/PR6 and now PR6/PR7.
-      const pr3through6Objects = 104; // 92 (PR3-5) + 12 (PR6), each proven exhaustive by its own migration test.
+      const pr3through6Objects = 107; // 95 (PR3-5, now including the 3 reissuance-program partner-consistency guards from 0060) + 12 (PR6), each proven exhaustive by its own migration test.
       const prefix = [...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS].slice(0, pr3through6Objects + pr7Objects.length).sort();
       expect(prefix).toEqual([...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS.slice(0, pr3through6Objects), ...pr7Objects].sort());
     });

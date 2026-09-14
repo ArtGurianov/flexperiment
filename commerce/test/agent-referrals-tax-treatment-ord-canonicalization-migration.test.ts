@@ -58,12 +58,17 @@ const at0052 = () => {
 };
 
 const seedAgent = (db: Database.Database, agentId = `agent-${randomUUID()}`) => {
-  const legacy = (db.prepare("PRAGMA table_info(agents)").all() as { name: string }[]).some(({ name }) => name === "legal_name");
+  const columns = (db.prepare("PRAGMA table_info(agents)").all() as { name: string }[]).map(({ name }) => name);
+  const legacy = columns.includes("legal_name");
+  const hasContractReference = columns.includes("contract_reference");
   db.prepare(legacy
     ? `INSERT INTO agents(id, slug, display_name, legal_name, email, contractor_type, inn, contract_reference, default_reward_type, default_reward_value)
       VALUES (?, ?, 'Agent', 'Agent Legal', ?, 'SELF_EMPLOYED', '123456789012', 'C-1', 'PERCENT', 1000)`
-    : `INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
-      VALUES (?, ?, 'Agent', ?, 'C-1', 'PERCENT', 1000)`)
+    : hasContractReference
+    ? `INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
+      VALUES (?, ?, 'Agent', ?, 'C-1', 'PERCENT', 1000)`
+    : `INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
+      VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`)
     .run(agentId, agentId, `${agentId}@example.test`);
   return agentId;
 };
@@ -108,13 +113,14 @@ describe("0053 agent-referrals tax-treatment + ORD canonicalization migration", 
     expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
   });
 
-  it("the FK_OFF_MIGRATIONS registry retains the reviewed 0058 addition; 0053 is not among them", () => {
-    expect(FK_OFF_MIGRATIONS).toHaveLength(4);
+  it("the FK_OFF_MIGRATIONS registry retains the reviewed 0058 and 0059 additions; 0053 is not among them", () => {
+    expect(FK_OFF_MIGRATIONS).toHaveLength(5);
     expect(FK_OFF_MIGRATIONS.map((e) => e.filename)).toEqual([
       "0042_agent_referrals_agents_rebuild.sql",
       "0050_agent_referrals_legal_profile_provenance_rebuild.sql",
       "0052_agent_referrals_unified_legal_requisites.sql",
       "0058_agents_legal_identity_cleanup.sql",
+      "0059_agents_contract_reference_removal.sql",
     ]);
   });
 

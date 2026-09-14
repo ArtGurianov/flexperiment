@@ -23,8 +23,8 @@ const seedPartnerWithSession = (db: Database.Database): PartnerPrincipal => {
   const agentId = randomUUID();
   const partnerIdentityId = randomUUID();
   const sessionId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, contract_reference, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'A', ?, 'C-1', 'PERCENT', 1000)`).run(agentId, `p-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
+    VALUES (?, ?, 'A', ?, 'PERCENT', 1000)`).run(agentId, `p-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   db.prepare(`INSERT INTO partner_identities(id, agent_id, email, email_hash, created_by_admin_id) VALUES (?, ?, 'p@example.test', 'h', 'admin')`).run(partnerIdentityId, agentId);
   db.prepare(`INSERT INTO partner_sessions(id, partner_identity_id, token_hash, expires_at) VALUES (?, ?, ?, datetime('now', '+1 hour'))`).run(sessionId, partnerIdentityId, randomUUID());
   return { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: sessionId };

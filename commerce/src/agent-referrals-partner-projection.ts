@@ -1,7 +1,8 @@
 import type Database from "better-sqlite3";
 import { getPartnerIdentity } from "./agent-referrals-onboarding";
-import { currentAgentReferralsLegalProfile } from "./agent-referrals-legal-profile";
+import { currentAgentReferralsLegalProfile, agentReferralsLegalProfileRevisionById } from "./agent-referrals-legal-profile";
 import { frameworkAgreementRevisionById, delegationTemplateRevisionById } from "./agent-referrals-framework-delegation";
+import { requiredFrameworkIssuance, effectiveFrameworkAcceptance, agreementStatusForPartner } from "./agent-referrals-framework-issuance";
 import { currentPayoutProfile } from "./agent-referrals-payout-profile";
 import { partnerPromoByPartnerId } from "./agent-referrals-promo";
 import { isDelegationEffective } from "./agent-referrals-delegation-revocation";
@@ -171,34 +172,82 @@ export const partnerProfileProjection = (db: Database.Database, partnerIdentityI
   };
 };
 
-/** §B-11: "own agreements and accepted revisions". Never issued -> `{ issued: false }`, not an error - a partner mid-onboarding legitimately has nothing here yet. */
+/**
+ * §B-11: "own agreements and accepted revisions". Never issued ->
+ * `{ issued: false, agreement_status: "NOT_ISSUED" }`, not an error - a
+ * partner mid-onboarding legitimately has nothing here yet.
+ *
+ * PR2 of the reissuance/evidence program: rewritten around required
+ * (MAX(sequence)) / effective (the accepted issuance with the highest
+ * sequence) rather than a single pinned pair - see agent-referrals-
+ * framework-issuance.ts's header for both resolvers and the exact
+ * agreement_status state machine. Exposes both template content_hashes
+ * (the caller composes its own consent fingerprint over them, never a
+ * server-side rendered snapshot) and the accepted legal_profile_revision_id
+ * - "which requisites the partner signed", which the frontend must render
+ * for a HISTORICAL acceptance instead of the current MAX profile.
+ */
 export const partnerAgreementsProjection = (db: Database.Database, partnerIdentityId: string) => {
-  const issuance = db.prepare(`SELECT framework_agreement_revision_id, delegation_template_revision_id, issued_at FROM framework_issuances WHERE partner_identity_id = ?`)
-    .get(partnerIdentityId) as { framework_agreement_revision_id: string; delegation_template_revision_id: string; issued_at: string } | undefined;
-  if (!issuance) return { issued: false as const };
+  const identity = getPartnerIdentity(db, partnerIdentityId);
+  if (!identity) throw new PartnerProjectionError("PARTNER_IDENTITY_NOT_FOUND", 404, partnerIdentityId);
 
-  const agreement = frameworkAgreementRevisionById(db, issuance.framework_agreement_revision_id);
-  const delegationTemplate = delegationTemplateRevisionById(db, issuance.delegation_template_revision_id);
-  const acceptance = db.prepare(`SELECT id, created_at FROM framework_acceptances WHERE partner_identity_id = ? AND framework_agreement_revision_id = ? AND delegation_template_revision_id = ?`)
-    .get(partnerIdentityId, issuance.framework_agreement_revision_id, issuance.delegation_template_revision_id) as { id: string; created_at: string } | undefined;
-  const delegation = db.prepare(`SELECT d.id AS id, r.created_at AS revoked_at FROM ord_reporting_delegations d
-      LEFT JOIN ord_reporting_delegation_revocations r ON r.ord_reporting_delegation_id = d.id WHERE d.partner_identity_id = ?`)
-    .get(partnerIdentityId) as { id: string; revoked_at: string | null } | undefined;
+  const required = requiredFrameworkIssuance(db, partnerIdentityId);
+  if (!required) return { issued: false as const, agreement_status: "NOT_ISSUED" as const };
+
+  const effective = effectiveFrameworkAcceptance(db, partnerIdentityId);
+  const status = agreementStatusForPartner(db, identity.agent_id, partnerIdentityId);
+
+  const requiredAgreement = frameworkAgreementRevisionById(db, required.framework_agreement_revision_id);
+  const requiredDelegationTemplate = delegationTemplateRevisionById(db, required.delegation_template_revision_id);
+  const acceptedLegalProfile = effective ? agentReferralsLegalProfileRevisionById(db, effective.acceptance.legal_profile_revision_id) : null;
+  // What an UNACCEPTED document is rendered/accepted against - "current
+  // MAX profile", never the historical accepted one (that is
+  // accepted_legal_profile_revision_id below, populated only once effective
+  // exists). The step-up resource the partner composes to accept pins
+  // exactly this id.
+  const currentLegalProfile = currentAgentReferralsLegalProfile(db, identity.agent_id);
+  const delegation = effective
+    ? (db.prepare(`SELECT d.id AS id, r.created_at AS revoked_at FROM ord_reporting_delegations d
+        LEFT JOIN ord_reporting_delegation_revocations r ON r.ord_reporting_delegation_id = d.id WHERE d.framework_acceptance_id = ?`)
+        .get(effective.acceptance.id) as { id: string; revoked_at: string | null } | undefined)
+    : undefined;
 
   return {
     issued: true as const,
-    issued_at: issuance.issued_at,
+    agreement_status: status,
+    issuance_id: required.id,
+    issuance_sequence: required.sequence,
+    issuance_reason: required.reason,
+    issued_at: required.issued_at,
     // Pinned ids the partner portal must echo back verbatim when accepting
-    // (acceptFrameworkAndDelegation checks them against framework_issuances
-    // exactly - see that module's own header) - exposed at the top level,
-    // never only nested, so the client never has to assume framework_agreement.id
-    // happens to equal the issuance's own pin.
-    framework_agreement_revision_id: issuance.framework_agreement_revision_id,
-    delegation_template_revision_id: issuance.delegation_template_revision_id,
-    framework_agreement: agreement ? { revision: agreement.revision, content: JSON.parse(agreement.content_json) as unknown, created_at: agreement.created_at } : null,
-    delegation_template: delegationTemplate ? { revision: delegationTemplate.revision, content: JSON.parse(delegationTemplate.content_json) as unknown, created_at: delegationTemplate.created_at } : null,
-    accepted: !!acceptance,
-    accepted_at: acceptance?.created_at ?? null,
+    // (acceptFrameworkAndDelegation re-checks both against the CURRENT
+    // required issuance and legal profile - see that module's own header) -
+    // exposed at the top level, never only nested.
+    framework_agreement_revision_id: required.framework_agreement_revision_id,
+    delegation_template_revision_id: required.delegation_template_revision_id,
+    current_legal_profile_revision_id: currentLegalProfile?.id ?? null,
+    framework_agreement: requiredAgreement
+      ? { revision: requiredAgreement.revision, content_hash: requiredAgreement.content_hash, content: JSON.parse(requiredAgreement.content_json) as unknown, created_at: requiredAgreement.created_at }
+      : null,
+    delegation_template: requiredDelegationTemplate
+      ? { revision: requiredDelegationTemplate.revision, content_hash: requiredDelegationTemplate.content_hash, content: JSON.parse(requiredDelegationTemplate.content_json) as unknown, created_at: requiredDelegationTemplate.created_at }
+      : null,
+    accepted: !!effective,
+    accepted_at: effective?.acceptance.created_at ?? null,
+    accepted_issuance_id: effective?.issuance.id ?? null,
+    accepted_issuance_sequence: effective?.issuance.sequence ?? null,
+    // "With which requisites the partner signed" - the HISTORICAL pin, not
+    // the current MAX. A caller rendering an already-accepted agreement
+    // must use this, never legal_profile off partnerProfileProjection.
+    accepted_legal_profile_revision_id: effective?.acceptance.legal_profile_revision_id ?? null,
+    accepted_legal_profile: acceptedLegalProfile
+      ? {
+          revision: acceptedLegalProfile.revision, legal_form: acceptedLegalProfile.legal_form, tax_mode: acceptedLegalProfile.tax_mode,
+          opf: acceptedLegalProfile.opf, full_name: acceptedLegalProfile.full_name, short_name: acceptedLegalProfile.short_name,
+          inn: acceptedLegalProfile.inn, kpp: acceptedLegalProfile.kpp, registration_number: acceptedLegalProfile.registration_number,
+          legal_address: acceptedLegalProfile.legal_address, created_at: acceptedLegalProfile.created_at,
+        }
+      : null,
     delegation_id: delegation?.id ?? null,
     delegation_revoked: !!delegation?.revoked_at,
     delegation_revoked_at: delegation?.revoked_at ?? null,

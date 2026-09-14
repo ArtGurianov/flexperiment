@@ -182,6 +182,104 @@ export const canonicalLegalProfileEquals = (
   && a.opf === b.opf && a.full_name === b.full_name && a.short_name === b.short_name
   && a.inn === b.inn && a.kpp === b.kpp && a.registration_number === b.registration_number && a.legal_address === b.legal_address;
 
+/**
+ * PR2 of the reissuance/evidence program: classifies a legal-profile change
+ * by its effect on the framework/delegation agreement contour, never by
+ * whether it changed anything at all (canonicalLegalProfileEquals above
+ * already answers that). The comparison is ALWAYS baseline-vs-current,
+ * never adjacent-revision - see agreementStatusForPartner in
+ * agent-referrals-framework-issuance.ts for why comparing adjacent
+ * revisions is a silent bug here.
+ *
+ *   NOTICE_ONLY                      cosmetic/contact-detail fact, no
+ *                                     reissuance, no reacceptance
+ *   CONTRACTUAL_REISSUANCE_REQUIRED  same party, different contractual
+ *                                     terms an admin must reissue over
+ *   NEW_PARTNER_IDENTITY_REQUIRED    the INN changed - a different legal
+ *                                     party, never representable as a
+ *                                     revision of this one
+ *   IDENTITY_INCONSISTENT            same INN, but a fact that cannot
+ *                                     legitimately change for the same
+ *                                     party under an unchanged INN
+ *
+ * The contracting party is identified by INN, stated directly rather than
+ * inferred: crossing the natural-person/organization boundary always
+ * changes the INN (12 digits vs 10 - see INN_LENGTH), so NEW_PARTNER_
+ * IDENTITY_REQUIRED already covers that crossing without this classifier
+ * depending on it - see the boundary test in
+ * agent-referrals-legal-profile.test.ts.
+ */
+export type LegalProfileChangeEffect =
+  | "NOTICE_ONLY"
+  | "CONTRACTUAL_REISSUANCE_REQUIRED"
+  | "IDENTITY_INCONSISTENT"
+  | "NEW_PARTNER_IDENTITY_REQUIRED";
+
+const LEGAL_PROFILE_CHANGE_EFFECT_SEVERITY: Readonly<Record<LegalProfileChangeEffect, number>> = {
+  NOTICE_ONLY: 0,
+  CONTRACTUAL_REISSUANCE_REQUIRED: 1,
+  IDENTITY_INCONSISTENT: 2,
+  NEW_PARTNER_IDENTITY_REQUIRED: 3,
+};
+
+export type ComparableLegalProfile = { legal_form: LegalForm; tax_mode: TaxMode; projected_contractor_type: ProjectedContractorType } & LegalRequisites;
+
+/**
+ * Exhaustive by construction: TypeScript enforces every field of
+ * ComparableLegalProfile has an entry (AGENT_REFERRALS_OPERATION_POLICY's
+ * own idiom, agent-referrals-suspension-policy.ts) - a new requisite field
+ * does not compile in until someone decides its effect here.
+ * registration_number's entry is the DEFAULT for its change; the
+ * LEGAL_ENTITY/unchanged-INN exception is applied by
+ * classifyLegalProfileChange below, never folded into this map.
+ */
+const LEGAL_PROFILE_FIELD_EFFECT: Readonly<Record<keyof ComparableLegalProfile, LegalProfileChangeEffect>> = {
+  inn: "NEW_PARTNER_IDENTITY_REQUIRED",
+  legal_form: "CONTRACTUAL_REISSUANCE_REQUIRED",
+  tax_mode: "CONTRACTUAL_REISSUANCE_REQUIRED",
+  projected_contractor_type: "CONTRACTUAL_REISSUANCE_REQUIRED",
+  registration_number: "CONTRACTUAL_REISSUANCE_REQUIRED",
+  opf: "CONTRACTUAL_REISSUANCE_REQUIRED",
+  full_name: "NOTICE_ONLY",
+  short_name: "NOTICE_ONLY",
+  kpp: "NOTICE_ONLY",
+  legal_address: "NOTICE_ONLY",
+};
+
+/**
+ * baseline = what was actually accepted (or, at mint time, the profile
+ * about to be superseded); current = the profile change under evaluation.
+ * Returns the MOST SEVERE effect among every field that actually differs -
+ * never the first match, never the last - so a change that touches both an
+ * identity field and a notice-only field is never under-classified.
+ */
+export const classifyLegalProfileChange = (baseline: ComparableLegalProfile, current: ComparableLegalProfile): LegalProfileChangeEffect => {
+  let worst: LegalProfileChangeEffect = "NOTICE_ONLY";
+  const consider = (effect: LegalProfileChangeEffect) => {
+    if (LEGAL_PROFILE_CHANGE_EFFECT_SEVERITY[effect] > LEGAL_PROFILE_CHANGE_EFFECT_SEVERITY[worst]) worst = effect;
+  };
+
+  for (const field of Object.keys(LEGAL_PROFILE_FIELD_EFFECT) as (keyof ComparableLegalProfile)[]) {
+    if (field === "registration_number") continue; // exception handled below
+    if (baseline[field] !== current[field]) consider(LEGAL_PROFILE_FIELD_EFFECT[field]);
+  }
+
+  if (baseline.registration_number !== current.registration_number) {
+    // ОГРНИП is reassigned when an ИП deregisters and re-registers - same
+    // person, same INN, new registration fact the document names, so
+    // reissuance rather than a notice. For a LEGAL_ENTITY both ОГРН and ИНН
+    // are permanent, so the same INN with a different ОГРН is not a
+    // legitimate same-party transition.
+    if (baseline.legal_form === "LEGAL_ENTITY" && current.legal_form === "LEGAL_ENTITY" && baseline.inn === current.inn) {
+      consider("IDENTITY_INCONSISTENT");
+    } else {
+      consider("CONTRACTUAL_REISSUANCE_REQUIRED");
+    }
+  }
+
+  return worst;
+};
+
 export type AgentReferralsLegalProfileRevision = {
   id: string;
   agent_id: string;
@@ -290,6 +388,24 @@ export const applyAgentReferralsLegalProfile = (
     // one asserted from a different source.
     if (current && canonicalLegalProfileEquals(current, { legal_form: input.legal_form, tax_mode: input.tax_mode, ...requisites })) {
       return { revision_id: current.id, revision: current.revision, projected_contractor_type: current.projected_contractor_type, minted: false };
+    }
+
+    // Fail-closed on party change: this is the sole mint path (initial
+    // onboarding verification and every later supersession verify() both
+    // funnel through here), so this is the one place that can refuse a
+    // revision the framework/delegation agreement contour could never
+    // legitimately represent as a continuation of the same party.
+    if (current) {
+      const effect = classifyLegalProfileChange(
+        current,
+        { legal_form: input.legal_form, tax_mode: input.tax_mode, projected_contractor_type: projected, ...requisites },
+      );
+      if (effect === "NEW_PARTNER_IDENTITY_REQUIRED") {
+        throw new AgentReferralsLegalProfileError("LEGAL_PROFILE_PARTY_CHANGE_REQUIRES_NEW_IDENTITY", 422, `${current.inn}->${requisites.inn}`);
+      }
+      if (effect === "IDENTITY_INCONSISTENT") {
+        throw new AgentReferralsLegalProfileError("LEGAL_PROFILE_IDENTITY_INCONSISTENT", 422, `${current.registration_number ?? "null"}->${requisites.registration_number ?? "null"}`);
+      }
     }
 
     const nextRevision = (current?.revision ?? 0) + 1;

@@ -41,7 +41,9 @@ agent-referrals-foundation
 agent-referrals-foundation-template
 agent-referrals-framework-acceptance
 agent-referrals-framework-delegation
+agent-referrals-framework-reissuance
 agent-referrals-legal-profile
+agent-referrals-legal-profile-classification
 agent-referrals-legal-profile-supersession
 agent-referrals-onboarding
 agent-referrals-only-0043
@@ -101,6 +103,8 @@ flexperiment-release-topology
 flexperiment-runtime-candidate-topology
 flexperiment-settlement-lock
 flexperiment-stale-prepared
+framework-reissuance-migration
+framework-reissuance-migration-template
 http403
 integration-hardening-migration
 integration-hardening-only-0049

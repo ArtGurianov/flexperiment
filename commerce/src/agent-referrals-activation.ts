@@ -73,6 +73,14 @@ export const AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS = [
   "ord_reporting_delegations",
   "ord_reporting_delegations_immutable_guard",
   "ord_reporting_delegations_delete_guard",
+  // PR2 of the reissuance/evidence program (0060): the three cross-partner
+  // structural consistency guards added alongside the reissuance rebuild of
+  // the three tables just above. Named individually, same rationale as
+  // every other guard in this list - a dropped guard is unsound even though
+  // the base table (already named above) still exists.
+  "framework_acceptances_issuance_partner_consistency_guard",
+  "framework_acceptances_legal_profile_partner_consistency_guard",
+  "ord_reporting_delegations_acceptance_partner_consistency_guard",
   "payout_profile_revisions",
   "payout_profile_revisions_immutable_guard",
   "payout_profile_revisions_delete_guard",
@@ -306,6 +314,7 @@ const MIGRATIONS = [
   "0052_agent_referrals_unified_legal_requisites.sql",
   "0053_agent_referrals_tax_treatment_ord_canonicalization.sql",
   "0058_agents_legal_identity_cleanup.sql",
+  "0060_agent_referrals_framework_reissuance.sql",
 ] as const;
 
 export class AgentReferralsActivationError extends Error {
