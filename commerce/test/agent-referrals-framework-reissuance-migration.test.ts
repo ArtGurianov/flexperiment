@@ -119,6 +119,7 @@ describe("0060 framework reissuance migration", () => {
       "framework_acceptances_issuance_partner_consistency_guard", "framework_acceptances_legal_profile_partner_consistency_guard",
       "ord_reporting_delegations", "ord_reporting_delegations_immutable_guard", "ord_reporting_delegations_delete_guard",
       "ord_reporting_delegations_acceptance_partner_consistency_guard",
+      "ord_reporting_delegations_template_issuance_consistency_guard",
     ]) {
       expect(names.has(name)).toBe(true);
     }
@@ -195,6 +196,26 @@ describe("0060 framework reissuance migration", () => {
     expect(() => db.prepare(`INSERT INTO ord_reporting_delegations(id, partner_identity_id, framework_acceptance_id, delegation_template_revision_id, ord_reporting_mode)
       VALUES (?, ?, ?, ?, 'FLEXPERIMENT_DELEGATED')`).run(randomUUID(), a.partnerIdentityId, acceptanceBId, b.dtId))
       .toThrow(/ORD_REPORTING_DELEGATION_ACCEPTANCE_PARTNER_MISMATCH/);
+    expect(db.prepare("SELECT COUNT(*) AS n FROM ord_reporting_delegations").get()).toEqual({ n: 0 });
+  });
+
+  it("delegation template must equal the acceptance issuance's template, even for the same partner", () => {
+    const db = at0059();
+    const a = seedAncestry(db);
+    apply0060(db);
+    const issuanceId = randomUUID();
+    db.prepare(`INSERT INTO framework_issuances(id, partner_identity_id, sequence, framework_agreement_revision_id, delegation_template_revision_id, issued_by_admin_id, reason)
+      VALUES (?, ?, 1, ?, ?, 'admin-1', 'issued')`).run(issuanceId, a.partnerIdentityId, a.fwId, a.dtId);
+    const acceptanceId = randomUUID();
+    db.prepare(`INSERT INTO framework_acceptances(id, partner_identity_id, issuance_id, legal_profile_revision_id, step_up_grant_id)
+      VALUES (?, ?, ?, ?, ?)`).run(acceptanceId, a.partnerIdentityId, issuanceId, a.legalProfileId, insertStepUpGrant(db, a.sessionId, a.partnerIdentityId));
+    const otherTemplateId = randomUUID();
+    db.prepare(`INSERT INTO delegation_template_revisions(id, revision, ord_reporting_mode, content_json, content_hash)
+      VALUES (?, 2, 'FLEXPERIMENT_DELEGATED', '{}', 'other-template')`).run(otherTemplateId);
+
+    expect(() => db.prepare(`INSERT INTO ord_reporting_delegations(id, partner_identity_id, framework_acceptance_id, delegation_template_revision_id, ord_reporting_mode)
+      VALUES (?, ?, ?, ?, 'FLEXPERIMENT_DELEGATED')`).run(randomUUID(), a.partnerIdentityId, acceptanceId, otherTemplateId))
+      .toThrow(/ORD_REPORTING_DELEGATION_TEMPLATE_ISSUANCE_MISMATCH/);
     expect(db.prepare("SELECT COUNT(*) AS n FROM ord_reporting_delegations").get()).toEqual({ n: 0 });
   });
 });

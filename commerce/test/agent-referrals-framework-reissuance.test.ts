@@ -15,6 +15,7 @@ import { requiredFrameworkIssuance, effectiveFrameworkAcceptance, agreementStatu
 import { currentAgentReferralsLegalProfile } from "../src/agent-referrals-legal-profile";
 import { applyVerifiedLegalProfileForPartnerIdentity } from "../src/agent-referrals-legal-profile-supersession";
 import { isDelegationEffective, revokeDelegationAsAdmin } from "../src/agent-referrals-delegation-revocation";
+import { partnerAgreementsProjection } from "../src/agent-referrals-partner-projection";
 import { createPartnerPromo } from "../src/agent-referrals-promo";
 import { verifyAudienceForPartnerCity, offerEngagement, acceptEngagement, activateEngagement, type EngagementRevisionTerms } from "../src/agent-referrals-engagement";
 import { mintEngagementStepUpGrant } from "../src/agent-referrals-engagement-step-up";
@@ -257,6 +258,24 @@ describe("agent referrals: reissuance and evidence authority (PR2)", () => {
       full_name: "Ivanov Ivan Ivanovich", inn: "123456789012", registration_number: "123456789012345",
     });
     expect(agreementStatusForPartner(db, agentId, partnerIdentityId)).toBe("REACCEPTANCE_REQUIRED");
+  });
+
+  it("agreement projection separates effective evidence from required-issuance acceptance", () => {
+    const { db, agentId, partnerIdentityId, partner } = readyPartner();
+    const { fw: fwA, dt: dtA } = mintTemplatePair(db);
+    const issuanceA = issue(db, partnerIdentityId, fwA.id, dtA.id, "issuance A");
+    accept(db, partner, agentId);
+
+    const { fw: fwB, dt: dtB } = mintTemplatePair(db);
+    const issuanceB = issue(db, partnerIdentityId, fwB.id, dtB.id, "issuance B");
+    const projection = partnerAgreementsProjection(db, partnerIdentityId);
+
+    expect(projection).toMatchObject({
+      agreement_status: "REACCEPTANCE_REQUIRED",
+      issuance_id: issuanceB.id,
+      required_issuance_accepted: false,
+      effective_acceptance: { issuance_id: issuanceA.id },
+    });
   });
 
   it("7. delegation effectiveness is 'belongs to the effective acceptance' AND 'not revoked' - not merely the absence of a revocation", () => {

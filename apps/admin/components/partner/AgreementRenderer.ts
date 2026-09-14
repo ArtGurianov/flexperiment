@@ -49,6 +49,16 @@ export type AgreementLegalProfileLike = {
   revision: number;
 };
 
+/** Only displayed agreement-party facts belong in this comparison. IDs,
+ * revisions, timestamps, derived contractor type, and provenance are not
+ * legal requisites and must not manufacture a client-side divergence. */
+const AGREEMENT_PARTY_FACTS = [
+  "legal_form", "tax_mode", "opf", "full_name", "short_name", "inn", "kpp", "registration_number", "legal_address",
+] as const;
+
+export const sameAgreementPartyFacts = (a: AgreementLegalProfileLike, b: AgreementLegalProfileLike): boolean =>
+  AGREEMENT_PARTY_FACTS.every((field) => a[field] === b[field]);
+
 export type AgreementClauseView = { key: string; label: string; text: string };
 
 export type AgreementPartyView = {

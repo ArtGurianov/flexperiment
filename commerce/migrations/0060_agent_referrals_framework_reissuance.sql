@@ -150,3 +150,17 @@ WHEN NOT EXISTS (
   WHERE fa.id = NEW.framework_acceptance_id AND fa.partner_identity_id = NEW.partner_identity_id
 )
 BEGIN SELECT RAISE(ABORT, 'ORD_REPORTING_DELEGATION_ACCEPTANCE_PARTNER_MISMATCH'); END;
+
+-- A delegation is immutable evidence for the template actually accepted,
+-- not merely any template belonging to the same partner. Close the full
+-- delegation -> acceptance -> issuance binding structurally.
+CREATE TRIGGER ord_reporting_delegations_template_issuance_consistency_guard
+BEFORE INSERT ON ord_reporting_delegations
+WHEN NOT EXISTS (
+  SELECT 1
+  FROM framework_acceptances fa
+  JOIN framework_issuances fi ON fi.id = fa.issuance_id
+  WHERE fa.id = NEW.framework_acceptance_id
+    AND fi.delegation_template_revision_id = NEW.delegation_template_revision_id
+)
+BEGIN SELECT RAISE(ABORT, 'ORD_REPORTING_DELEGATION_TEMPLATE_ISSUANCE_MISMATCH'); END;

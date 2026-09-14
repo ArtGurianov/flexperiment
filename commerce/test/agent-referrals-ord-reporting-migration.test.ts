@@ -131,7 +131,7 @@ describe("0048 ord_reporting migration", () => {
       // suffix's own exhaustiveness proof, the identical technique PR6/PR7
       // established. Scoped to a prefix slice precisely so 0049 landing does
       // not need to touch this assertion at all.
-      const pr3through7Objects = 107 + 46; // 107 (PR3-6, now including the 3 reissuance-program partner-consistency guards from 0060, proven exhaustive by its own migration test) + 46 (PR7, proven exhaustive by agent-referrals-act-payment-settlement-migration.test.ts).
+      const pr3through7Objects = 108 + 46; // 108 (PR3-6, now including the 4 reissuance-program consistency guards from 0060, proven exhaustive by its own migration test) + 46 (PR7, proven exhaustive by agent-referrals-act-payment-settlement-migration.test.ts).
       const prefix = [...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS].slice(0, pr3through7Objects + pr8Objects.length);
       expect(prefix).toEqual([...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS.slice(0, pr3through7Objects), ...pr8Objects]);
     });

@@ -13,6 +13,7 @@ import { mintStepUpGrant } from "../src/agent-referrals-step-up";
 import { acceptFrameworkAndDelegation } from "../src/agent-referrals-framework-acceptance";
 import { requiredFrameworkIssuance } from "../src/agent-referrals-framework-issuance";
 import { currentAgentReferralsLegalProfile } from "../src/agent-referrals-legal-profile";
+import { applyVerifiedLegalProfileForPartnerIdentity } from "../src/agent-referrals-legal-profile-supersession";
 
 const open: Database.Database[] = [];
 afterEach(() => { while (open.length) open.pop()!.close(); });
@@ -129,6 +130,45 @@ describe("framework acceptance + effective ORD delegation: one atomic idempotent
       expect(db.prepare("SELECT consumed_at FROM step_up_grants WHERE id = ?").get(grant2)).toEqual({ consumed_at: null });
     });
 
+    it("A accepted -> B accepted -> replay A returns A's exact historical evidence, never B", () => {
+      const db = fresh();
+      const { agentId, partnerIdentityId, partner } = readyToAccept(db);
+      const a = requiredAcceptanceParams(db, partnerIdentityId, agentId);
+      const acceptedA = acceptFrameworkAndDelegation(db, partner, grantFor(db, partner, a.issuanceId, a.legalProfileRevisionId), a.issuanceId, a.legalProfileRevisionId);
+
+      const fwB = mintFrameworkAgreementRevision(db, framework({ PARTNER_LEVY_OBLIGATION: "B" }), currentFrameworkAgreementRevision(db)!.id);
+      const dtB = mintDelegationTemplateRevision(db, delegation(), currentDelegationTemplateRevision(db)!.id);
+      issueFrameworkToPartner(db, admin, partnerIdentityId, fwB.id, dtB.id, "B");
+      const b = requiredAcceptanceParams(db, partnerIdentityId, agentId);
+      const acceptedB = acceptFrameworkAndDelegation(db, partner, grantFor(db, partner, b.issuanceId, b.legalProfileRevisionId), b.issuanceId, b.legalProfileRevisionId);
+
+      const replayA = acceptFrameworkAndDelegation(db, partner, grantFor(db, partner, a.issuanceId, a.legalProfileRevisionId), a.issuanceId, a.legalProfileRevisionId);
+      expect(replayA).toEqual({ ...acceptedA, replayed: true });
+      expect(replayA.framework_acceptance_id).not.toBe(acceptedB.framework_acceptance_id);
+    });
+
+    it("a historical replay with a different caller legal-profile revision is refused, never replayed", () => {
+      const db = fresh();
+      const { agentId, partnerIdentityId, partner } = readyToAccept(db);
+      const a = requiredAcceptanceParams(db, partnerIdentityId, agentId);
+      acceptFrameworkAndDelegation(db, partner, grantFor(db, partner, a.issuanceId, a.legalProfileRevisionId), a.issuanceId, a.legalProfileRevisionId);
+
+      applyVerifiedLegalProfileForPartnerIdentity(db, {
+        partnerIdentityId, legalForm: "INDIVIDUAL", taxMode: "NPD", assertionSource: "ADMIN_ASSERTED", evidenceRef: "profile-8",
+        reason: "name correction", full_name: "Ivanov Ivan Petrovich", inn: "123456789012",
+      });
+      const fwB = mintFrameworkAgreementRevision(db, framework({ PARTNER_LEVY_OBLIGATION: "B" }), currentFrameworkAgreementRevision(db)!.id);
+      const dtB = mintDelegationTemplateRevision(db, delegation(), currentDelegationTemplateRevision(db)!.id);
+      issueFrameworkToPartner(db, admin, partnerIdentityId, fwB.id, dtB.id, "B");
+      const b = requiredAcceptanceParams(db, partnerIdentityId, agentId);
+      acceptFrameworkAndDelegation(db, partner, grantFor(db, partner, b.issuanceId, b.legalProfileRevisionId), b.issuanceId, b.legalProfileRevisionId);
+
+      const mismatchedReplayGrant = grantFor(db, partner, a.issuanceId, b.legalProfileRevisionId);
+      expect(() => acceptFrameworkAndDelegation(db, partner, mismatchedReplayGrant, a.issuanceId, b.legalProfileRevisionId))
+        .toThrow(/AGENT_REFERRALS_REPLAY_LEGAL_PROFILE_MISMATCH/);
+      expect(db.prepare("SELECT consumed_at FROM step_up_grants WHERE id = ?").get(mismatchedReplayGrant)).toEqual({ consumed_at: null });
+    });
+
     it("accepting an issuance that is not the one CURRENTLY required for this partner is refused outright, even a real issuance row that is otherwise valid (P0.4: admin issued to partner A, partner A cannot substitute partner B's real issuance)", () => {
       const db = fresh();
       const { agentId, partnerIdentityId, partner } = readyToAccept(db);
@@ -149,14 +189,13 @@ describe("framework acceptance + effective ORD delegation: one atomic idempotent
       expect(db.prepare("SELECT consumed_at FROM step_up_grants WHERE id = ?").get(grant2)).toEqual({ consumed_at: null });
     });
 
-    it("a STALE issuance (superseded by a later reissuance to the SAME partner) is refused the identical way", () => {
+    it("an unaccepted stale issuance is refused after a later reissuance to the SAME partner", () => {
       const db = fresh();
       const { agentId, partnerIdentityId, partner } = readyToAccept(db);
       const first = requiredAcceptanceParams(db, partnerIdentityId, agentId);
-      acceptFrameworkAndDelegation(db, partner, grantFor(db, partner, first.issuanceId, first.legalProfileRevisionId), first.issuanceId, first.legalProfileRevisionId);
 
       const fw2 = mintFrameworkAgreementRevision(db, framework({ PARTNER_LEVY_OBLIGATION: "revised" }), currentFrameworkAgreementRevision(db)!.id);
-      const dt = mintDelegationTemplateRevision(db, delegation(), null);
+      const dt = mintDelegationTemplateRevision(db, delegation(), currentDelegationTemplateRevision(db)!.id);
       issueFrameworkToPartner(db, admin, partnerIdentityId, fw2.id, dt.id, "reissued");
       const nowRequired = requiredFrameworkIssuance(db, partnerIdentityId)!;
       expect(nowRequired.id).not.toBe(first.issuanceId);
@@ -164,7 +203,7 @@ describe("framework acceptance + effective ORD delegation: one atomic idempotent
       // Partner tries to accept the now-STALE first issuance instead of the current one.
       const grant2 = grantFor(db, partner, first.issuanceId, first.legalProfileRevisionId);
       expect(() => acceptFrameworkAndDelegation(db, partner, grant2, first.issuanceId, first.legalProfileRevisionId)).toThrow(/AGENT_REFERRALS_AGREEMENT_ISSUANCE_SUPERSEDED/);
-      expect(db.prepare("SELECT COUNT(*) AS n FROM framework_acceptances").get()).toEqual({ n: 1 });
+      expect(db.prepare("SELECT COUNT(*) AS n FROM framework_acceptances").get()).toEqual({ n: 0 });
       expect(db.prepare("SELECT consumed_at FROM step_up_grants WHERE id = ?").get(grant2)).toEqual({ consumed_at: null });
     });
   });

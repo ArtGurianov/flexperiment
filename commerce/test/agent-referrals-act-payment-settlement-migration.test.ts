@@ -363,7 +363,7 @@ describe("0047 act/payment/settlement migration", () => {
       // way, in agent-referrals-ord-reporting-migration.test.ts) does not
       // need to touch this assertion at all - the exact precedent already
       // set between PR5/PR6 and now PR6/PR7.
-      const pr3through6Objects = 107; // 95 (PR3-5, now including the 3 reissuance-program partner-consistency guards from 0060) + 12 (PR6), each proven exhaustive by its own migration test.
+      const pr3through6Objects = 108; // 96 (PR3-5, now including the 4 reissuance-program consistency guards from 0060) + 12 (PR6), each proven exhaustive by its own migration test.
       const prefix = [...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS].slice(0, pr3through6Objects + pr7Objects.length).sort();
       expect(prefix).toEqual([...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS.slice(0, pr3through6Objects), ...pr7Objects].sort());
     });

@@ -232,22 +232,29 @@ export const partnerAgreementsProjection = (db: Database.Database, partnerIdenti
     delegation_template: requiredDelegationTemplate
       ? { revision: requiredDelegationTemplate.revision, content_hash: requiredDelegationTemplate.content_hash, content: JSON.parse(requiredDelegationTemplate.content_json) as unknown, created_at: requiredDelegationTemplate.created_at }
       : null,
-    accepted: !!effective,
-    accepted_at: effective?.acceptance.created_at ?? null,
-    accepted_issuance_id: effective?.issuance.id ?? null,
-    accepted_issuance_sequence: effective?.issuance.sequence ?? null,
-    // "With which requisites the partner signed" - the HISTORICAL pin, not
-    // the current MAX. A caller rendering an already-accepted agreement
-    // must use this, never legal_profile off partnerProfileProjection.
-    accepted_legal_profile_revision_id: effective?.acceptance.legal_profile_revision_id ?? null,
-    accepted_legal_profile: acceptedLegalProfile
+    // An effective acceptance is historical evidence. It is deliberately
+    // separate from whether THIS required issuance is accepted: during
+    // reacceptance, effective=A while required=B.
+    effective_acceptance: effective
       ? {
-          revision: acceptedLegalProfile.revision, legal_form: acceptedLegalProfile.legal_form, tax_mode: acceptedLegalProfile.tax_mode,
-          opf: acceptedLegalProfile.opf, full_name: acceptedLegalProfile.full_name, short_name: acceptedLegalProfile.short_name,
-          inn: acceptedLegalProfile.inn, kpp: acceptedLegalProfile.kpp, registration_number: acceptedLegalProfile.registration_number,
-          legal_address: acceptedLegalProfile.legal_address, created_at: acceptedLegalProfile.created_at,
+          framework_acceptance_id: effective.acceptance.id,
+          issuance_id: effective.issuance.id,
+          issuance_sequence: effective.issuance.sequence,
+          accepted_at: effective.acceptance.created_at,
+          legal_profile_revision_id: effective.acceptance.legal_profile_revision_id,
+          legal_profile: acceptedLegalProfile
+            ? {
+                revision: acceptedLegalProfile.revision, legal_form: acceptedLegalProfile.legal_form, tax_mode: acceptedLegalProfile.tax_mode,
+                opf: acceptedLegalProfile.opf, full_name: acceptedLegalProfile.full_name, short_name: acceptedLegalProfile.short_name,
+                inn: acceptedLegalProfile.inn, kpp: acceptedLegalProfile.kpp, registration_number: acceptedLegalProfile.registration_number,
+                legal_address: acceptedLegalProfile.legal_address, created_at: acceptedLegalProfile.created_at,
+              }
+            : null,
         }
       : null,
+    // The only boolean portal control flow may use to decide whether to show
+    // historical evidence or the required issuance's acceptance flow.
+    required_issuance_accepted: effective?.issuance.id === required.id,
     delegation_id: delegation?.id ?? null,
     delegation_revoked: !!delegation?.revoked_at,
     delegation_revoked_at: delegation?.revoked_at ?? null,

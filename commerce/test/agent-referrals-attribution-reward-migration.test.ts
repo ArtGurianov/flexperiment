@@ -207,7 +207,7 @@ describe("0046 attribution & reward migration", () => {
       // way, in agent-referrals-act-payment-settlement-migration.test.ts)
       // does not need to touch this assertion at all - the exact
       // precedent already set between PR5 and PR6.
-      const pr3through5Objects = 95; // 16 (PR3) + 36 (PR4, now including the 3 reissuance-program partner-consistency guards from 0060) + 43 (PR5), each proven exhaustive by its own migration test.
+      const pr3through5Objects = 96; // 16 (PR3) + 37 (PR4, now including the 4 reissuance-program consistency guards from 0060) + 43 (PR5), each proven exhaustive by its own migration test.
       const prefix = [...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS].slice(0, pr3through5Objects + pr6Objects.length).sort();
       expect(prefix).toEqual([...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS.slice(0, pr3through5Objects), ...pr6Objects].sort());
     });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildAgreementSemanticView, FRAMEWORK_AGREEMENT_CLAUSE_ORDER, DELEGATION_TEMPLATE_CLAUSE_ORDER, type BuildAgreementSemanticViewInput } from "./AgreementRenderer";
+import { buildAgreementSemanticView, FRAMEWORK_AGREEMENT_CLAUSE_ORDER, DELEGATION_TEMPLATE_CLAUSE_ORDER, sameAgreementPartyFacts, type BuildAgreementSemanticViewInput } from "./AgreementRenderer";
 
 /**
  * Golden test over the renderer's SEMANTIC section output (parties /
@@ -91,5 +91,12 @@ describe("buildAgreementSemanticView", () => {
     const a = buildAgreementSemanticView(baseInput);
     const b = buildAgreementSemanticView({ ...baseInput });
     expect(a).toEqual(b);
+  });
+
+  it("compares only displayed agreement-party facts, never projection metadata", () => {
+    const accepted = baseInput.party_profile;
+    const current = { ...accepted, revision: 9, created_at: "2026-03-01T00:00:00.000Z", projected_contractor_type: "INDIVIDUAL_ENTREPRENEUR" };
+    expect(sameAgreementPartyFacts(current, accepted)).toBe(true);
+    expect(sameAgreementPartyFacts({ ...current, legal_address: "Tomsk" }, accepted)).toBe(false);
   });
 });

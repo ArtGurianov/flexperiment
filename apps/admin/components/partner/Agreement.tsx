@@ -10,7 +10,7 @@ import { Loading } from "../ui/Loading";
 import { Notice } from "../ui/Notice";
 import { PageTitle } from "../ui/PageTitle";
 import { Dialog } from "../ui/Dialog";
-import { buildAgreementSemanticView, type AgreementLegalProfileLike, type AgreementSemanticView } from "./AgreementRenderer";
+import { buildAgreementSemanticView, sameAgreementPartyFacts, type AgreementLegalProfileLike, type AgreementSemanticView } from "./AgreementRenderer";
 
 /**
  * PR3 of the reissuance/evidence program: a semantic three-part renderer
@@ -34,10 +34,15 @@ export function Agreement() {
     return <PageTitle eyebrow="ДОГОВОР" title="Договор" text="Договор ещё не выдан администратором." />;
   }
 
-  const accepted = Boolean(data.accepted);
   const currentLegalProfile = profile.data!.legal_profile as (AgreementLegalProfileLike & { id?: string }) | null;
-  const acceptedLegalProfile = data.accepted_legal_profile as AgreementLegalProfileLike | null;
-  const partyProfile = accepted ? acceptedLegalProfile : currentLegalProfile;
+  const effectiveAcceptance = data.effective_acceptance as Row | null;
+  const effectiveLegalProfile = effectiveAcceptance?.legal_profile as AgreementLegalProfileLike | null;
+  const requiredIssuanceAccepted = data.required_issuance_accepted === true;
+  const agreementStatus = String(data.agreement_status ?? "");
+  // effective=A and required=B is REACCEPTANCE_REQUIRED: render B against
+  // the current profile and offer acceptance, never a synthetic A+B
+  // historical document.
+  const partyProfile = requiredIssuanceAccepted ? effectiveLegalProfile : currentLegalProfile;
 
   if (!partyProfile) {
     // Structural: an issuance always implies a verified legal profile, and
@@ -59,8 +64,8 @@ export function Agreement() {
       content_hash: String((data.delegation_template as Row | null)?.content_hash ?? ""),
       content: (data.delegation_template as Row | null)?.content,
     },
-    accepted,
-    accepted_at: data.accepted_at ? String(data.accepted_at) : null,
+    accepted: requiredIssuanceAccepted,
+    accepted_at: requiredIssuanceAccepted && effectiveAcceptance?.accepted_at ? String(effectiveAcceptance.accepted_at) : null,
     party_profile: partyProfile,
     // NOTICE_ONLY divergence: the agreement stays CURRENT even though the
     // current MAX profile differs from what was accepted by a non-
@@ -72,19 +77,23 @@ export function Agreement() {
     // agreement_status === "CURRENT" already proves any divergence here is
     // NOTICE_ONLY, since the server would have reported REISSUANCE_REQUIRED
     // otherwise).
-    notice_only_divergence_since_acceptance: accepted && currentLegalProfile !== null && acceptedLegalProfile !== null
-      && JSON.stringify(currentLegalProfile) !== JSON.stringify(acceptedLegalProfile),
+    notice_only_divergence_since_acceptance: requiredIssuanceAccepted
+      && agreementStatus === "CURRENT"
+      && currentLegalProfile !== null
+      && effectiveLegalProfile !== null
+      && !sameAgreementPartyFacts(currentLegalProfile, effectiveLegalProfile),
   });
 
   const issuanceId = String(data.issuance_id ?? "");
-  const legalProfileRevisionId = String((accepted ? data.accepted_legal_profile_revision_id : data.current_legal_profile_revision_id) ?? "");
-  const agreementStatus = String(data.agreement_status ?? "");
+  const legalProfileRevisionId = String((requiredIssuanceAccepted
+    ? effectiveAcceptance?.legal_profile_revision_id
+    : data.current_legal_profile_revision_id) ?? "");
 
   return (
     <>
       <PageTitle eyebrow="ДОГОВОР" title="Договор и делегирование ОРД" text="Ознакомьтесь и примите текущую редакцию." />
       <AgreementSections view={view} />
-      {accepted ? (
+      {requiredIssuanceAccepted ? (
         <AcceptedEvidencePanel view={view} />
       ) : (
         <AcceptFlow issuanceId={issuanceId} legalProfileRevisionId={legalProfileRevisionId} view={view} />

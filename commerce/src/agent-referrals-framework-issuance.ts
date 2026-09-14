@@ -132,5 +132,17 @@ export const agreementStatusForPartner = (db: Database.Database, agentId: string
   if (!acceptedProfile || !currentProfile) throw new Error("AGENT_REFERRALS_AGREEMENT_STATUS_LEGAL_PROFILE_MISSING");
 
   const effect = classifyLegalProfileChange(acceptedProfile, currentProfile);
-  return effect === "CONTRACTUAL_REISSUANCE_REQUIRED" ? "REISSUANCE_REQUIRED" : "CURRENT";
+  switch (effect) {
+    case "NOTICE_ONLY":
+      return "CURRENT";
+    case "CONTRACTUAL_REISSUANCE_REQUIRED":
+      return "REISSUANCE_REQUIRED";
+    // applyAgentReferralsLegalProfile rejects both before persistence. If
+    // corruption or a future writer nevertheless makes either visible here,
+    // this resolver is activation authority and must never fail open to
+    // CURRENT.
+    case "NEW_PARTNER_IDENTITY_REQUIRED":
+    case "IDENTITY_INCONSISTENT":
+      throw new Error(`AGENT_REFERRALS_AGREEMENT_STATUS_IDENTITY_INVALID:${effect}`);
+  }
 };

@@ -163,6 +163,7 @@ describe("0044 partner identity migration", () => {
         "framework_acceptances_issuance_partner_consistency_guard",
         "framework_acceptances_legal_profile_partner_consistency_guard",
         "ord_reporting_delegations_acceptance_partner_consistency_guard",
+        "ord_reporting_delegations_template_issuance_consistency_guard",
         "payout_profile_revisions", "payout_profile_revisions_immutable_guard", "payout_profile_revisions_delete_guard",
         "partner_identity_retention_policies", "partner_identity_retention_policies_immutable_guard", "partner_identity_retention_policies_delete_guard",
         "partner_identity_legal_holds", "partner_identity_legal_holds_active_unique",

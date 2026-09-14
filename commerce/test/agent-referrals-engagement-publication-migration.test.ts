@@ -191,7 +191,7 @@ describe("0045 engagement publication migration", () => {
       // way, in agent-referrals-attribution-reward-migration.test.ts) does
       // not need to touch this assertion at all - the exact precedent this
       // file's own prefix-slice pattern already set when PR5 itself landed.
-      const pr3Plus4Objects = 52; // 16 (PR3) + 36 (PR4, now including the 3 reissuance-program partner-consistency guards from 0060), proven exhaustive by that PR's own migration test.
+      const pr3Plus4Objects = 53; // 16 (PR3) + 37 (PR4, now including the 4 reissuance-program consistency guards from 0060), proven exhaustive by that PR's own migration test.
       const prefix = [...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS].slice(0, pr3Plus4Objects + pr5Objects.length).sort();
       expect(prefix).toEqual([...AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS.slice(0, pr3Plus4Objects), ...pr5Objects].sort());
     });

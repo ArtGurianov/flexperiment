@@ -60,17 +60,23 @@ export const acceptFrameworkAndDelegation = (
     const identity = getPartnerIdentity(db, partner.partner_identity_id);
     if (!identity) throw new FrameworkAcceptanceError("PARTNER_IDENTITY_NOT_FOUND", 404);
 
-    const required = requiredFrameworkIssuance(db, partner.partner_identity_id);
-    if (!required) throw new FrameworkAcceptanceError("AGENT_REFERRALS_FRAMEWORK_NOT_ISSUED", 409);
-
-    // Exact-parameter replay: same partner, same (required) issuance,
-    // already accepted - idempotent no-op, no new writes, no suspension
-    // gate (this is not new authority).
-    const existingAcceptance = frameworkAcceptanceByPartnerAndIssuance(db, partner.partner_identity_id, required.id);
+    // Historical exact replay is keyed by the caller's immutable issuance,
+    // not today's required issuance. Once B supersedes and is accepted after
+    // A, a retry for A must return A's evidence (and no new authority), never
+    // silently substitute B. This lookup intentionally precedes the current-
+    // requirement check below: old evidence remains replayable after a newer
+    // issuance exists.
+    const existingAcceptance = frameworkAcceptanceByPartnerAndIssuance(db, partner.partner_identity_id, issuanceId);
     if (existingAcceptance) {
+      if (existingAcceptance.legal_profile_revision_id !== legalProfileRevisionId) {
+        throw new FrameworkAcceptanceError("AGENT_REFERRALS_REPLAY_LEGAL_PROFILE_MISMATCH", 409, existingAcceptance.legal_profile_revision_id);
+      }
       const delegation = db.prepare("SELECT id FROM ord_reporting_delegations WHERE framework_acceptance_id = ?").get(existingAcceptance.id) as { id: string };
       return { framework_acceptance_id: existingAcceptance.id, ord_reporting_delegation_id: delegation.id, replayed: true };
     }
+
+    const required = requiredFrameworkIssuance(db, partner.partner_identity_id);
+    if (!required) throw new FrameworkAcceptanceError("AGENT_REFERRALS_FRAMEWORK_NOT_ISSUED", 409);
 
     assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "FRAMEWORK_ACCEPTANCE");
 
