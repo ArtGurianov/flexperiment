@@ -5,10 +5,11 @@ import { migrationInventoryExpectation } from "../src/release-control";
 
 const wrapper = readFileSync(".github/workflows/controlled-production-deploy.yml", "utf8");
 const primitive = readFileSync(".github/actions/controlled-production-deploy/action.yml", "utf8");
+const execution = readFileSync(".github/actions/controlled-production-deploy-execution/action.yml", "utf8");
 // The dispatch wrapper owns the environment gate; the shared composite action
 // owns the exact deploy primitive and is also what the v2 one-gate
 // coordinator invokes.
-const workflow = `${wrapper}\n${primitive}`;
+const workflow = `${wrapper}\n${primitive}\n${execution}`;
 const deployHelper = readFileSync("scripts/controlled-coolify-deploy.sh", "utf8");
 
 describe("generic controlled production deploy workflow", () => {

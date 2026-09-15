@@ -293,6 +293,8 @@ describe("Q4 activation capability: atomic DORMANT to ACTIVE authority", () => {
       ".github/workflows/controlled-agent-referrals-q7-candidate.yml",
       ".github/workflows/controlled-agent-referrals-q7-deploy.yml",
       ".github/workflows/controlled-release-control-v2-benign.yml",
+      ".github/workflows/controlled-schema-candidate-publication.yml",
+      ".github/workflows/controlled-schema-production-deploy.yml",
       ".github/workflows/controlled-topology-normalization.yml",
     ]);
   });
