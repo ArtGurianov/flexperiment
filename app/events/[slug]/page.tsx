@@ -84,8 +84,32 @@ export async function generateMetadata(
     // Spread rather than replaced — Next merges metadata shallowly, so a bare
     // object here would drop og:type, og:locale and og:site_name from this
     // route alone. Same for twitter's card.
-    openGraph: { ...OPEN_GRAPH_BASE, url: canonical, title, description },
-    twitter: { card: TWITTER_CARD, title, description },
+    // `images` is named explicitly on BOTH objects, and that is not redundant
+    // with the app/opengraph-image.png and app/twitter-image.png file
+    // conventions. Next injects those automatically only where a route has not
+    // declared the namespace itself; a route whose generateMetadata returns an
+    // `openGraph` or `twitter` object owns that namespace outright and gets no
+    // injection. These routes return both, so before this they emitted neither
+    // og:image nor twitter:image — shipped to production and caught only by
+    // probing the live page.
+    //
+    // The legal route hit the same behaviour earlier and was fixed only
+    // halfway: it declares `openGraph` alone, so naming `images` there restored
+    // og:image while twitter:image kept arriving by inheritance. That partial
+    // fix is why this looked solved.
+    openGraph: {
+      ...OPEN_GRAPH_BASE,
+      url: canonical,
+      title,
+      description,
+      images: ["/opengraph-image.png"],
+    },
+    twitter: {
+      card: TWITTER_CARD,
+      title,
+      description,
+      images: ["/twitter-image.png"],
+    },
   };
 }
 
