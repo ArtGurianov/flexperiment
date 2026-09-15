@@ -6,7 +6,7 @@ import { Occurrences } from "./Occurrences";
 
 const scheduledOccurrence = {
   id: "occ-1", title: "Мастер-класс", starts_at: "2026-10-01T10:00:00.000Z", price_kopecks: 100000,
-  availability: 5, capacity: 5, visibility: "PUBLISHED", sales_status: "CLOSED", fulfillment_status: "SCHEDULED",
+  availability: 5, capacity: 5, sold: 1, held: 2, reconciling: 1, admin_reserved_seats: 1, visibility: "PUBLISHED", sales_status: "CLOSED", fulfillment_status: "SCHEDULED",
   city_title: "Томск", city_slug: "tomsk", admin_revision: 1,
 };
 
@@ -40,6 +40,7 @@ describe("Occurrences", () => {
     render(<Occurrences />, { wrapper: (props) => <QueryClientWrapper client={client}>{props.children}</QueryClientWrapper> });
 
     await waitFor(() => expect(screen.getByText("Мастер-класс")).toBeInTheDocument());
+    expect(screen.getByText(/Продано 1.*В оплате 2.*На сверке 1.*Резерв 1.*Доступно 5/)).toBeInTheDocument();
     expect(screen.getByText("SCHEDULED")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Отменить событие" }));

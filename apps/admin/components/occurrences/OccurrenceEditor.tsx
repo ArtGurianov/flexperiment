@@ -16,7 +16,7 @@ import { MoneyInput } from "../ui/MoneyInput";
 const DEFAULT_VENUE_DISCLOSURE = "Точная площадка будет объявлена позже. Адрес придёт на email и появится в билете.";
 
 export function OccurrenceEditor({ occurrence, close, done, onRevisionConflict }: { occurrence: Row; close: () => void; done: () => void; onRevisionConflict: () => void }) {
-  const { control, register, handleSubmit, watch } = useForm({ shouldUnregister: true, defaultValues: {
+  const { control, register, handleSubmit, setValue, watch } = useForm({ shouldUnregister: true, defaultValues: {
     title: string(occurrence.title),
     starts_at: toLocalInput(occurrence.starts_at),
     duration: formatDurationBetween(occurrence.starts_at, occurrence.ends_at),
@@ -85,6 +85,11 @@ export function OccurrenceEditor({ occurrence, close, done, onRevisionConflict }
   const inventoryBelowMinimum = targetCapacity < minimumCapacity;
   const details = mutation.error?.details;
   const serverMinimum = typeof details?.minimum_capacity === "number" ? details.minimum_capacity : null;
+  const serverBreakdown = details?.breakdown && typeof details.breakdown === "object" ? details.breakdown as Record<string, unknown> : null;
+  const step = (field: "capacity" | "admin_reserved_seats", direction: 1 | -1) => {
+    const current = Number(watch(field));
+    setValue(field, String(Math.max(0, (Number.isFinite(current) ? current : 0) + direction)), { shouldDirty: true });
+  };
 
   return (
     <Dialog title="Редактировать событие" close={close} className="editor">
@@ -97,8 +102,8 @@ export function OccurrenceEditor({ occurrence, close, done, onRevisionConflict }
           <label>Начало<input type="datetime-local" {...register("starts_at", { required: true })} /></label>
           <label>Длительность мастер-класса<Controller control={control} name="duration" rules={{ required: true }} render={({ field }) => <DurationInput value={field.value} onChange={field.onChange} required />} /></label>
           <label>Цена, ₽<Controller control={control} name="price_kopecks" rules={{ required: true }} render={({ field }) => <MoneyInput value={field.value} onChange={field.onChange} required />} /></label>
-          <label>Вместимость<input type="number" min={0} {...register("capacity", { required: true })} /><small>Продано: {sold}; в оплате: {held}; на сверке: {reconciling}; резерв: {targetReserve}. Минимум — {minimumCapacity}.</small>{inventoryBelowMinimum && <small className="notice notice-error">Новая вместимость {targetCapacity}. Занято: {sold} оплачено + {held} в оплате + {reconciling} на сверке + {targetReserve} резерв. Минимум — {minimumCapacity}.</small>}</label>
-          <label>Резерв<input type="number" min={0} {...register("admin_reserved_seats", { required: true })} /><small>Места из резерва не продаются через сайт.</small></label>
+          <label>Вместимость<span><button type="button" onClick={() => step("capacity", -1)} aria-label="Уменьшить вместимость">−</button><input aria-label="Вместимость" type="number" min={0} {...register("capacity", { required: true })} /><button type="button" onClick={() => step("capacity", 1)} aria-label="Увеличить вместимость">+</button></span><small>Продано: {sold}; в оплате: {held}; на сверке: {reconciling}; резерв: {targetReserve}. Минимум — {minimumCapacity}.</small>{inventoryBelowMinimum && <small className="notice notice-error">Новая вместимость {targetCapacity}. Занято: {sold} оплачено + {held} в оплате + {reconciling} на сверке + {targetReserve} резерв. Минимум — {minimumCapacity}.</small>}</label>
+          <label>Резерв<span><button type="button" onClick={() => step("admin_reserved_seats", -1)} aria-label="Уменьшить резерв">−</button><input aria-label="Резерв" type="number" min={0} {...register("admin_reserved_seats", { required: true })} /><button type="button" onClick={() => step("admin_reserved_seats", 1)} aria-label="Увеличить резерв">+</button></span><small>Места из резерва не продаются через сайт.</small></label>
           <label className="wide">
             Площадка
             <select {...register("venue_status")}>
@@ -119,7 +124,7 @@ export function OccurrenceEditor({ occurrence, close, done, onRevisionConflict }
           )}
         </div>
         <Notice error={validationError ?? mutation.error?.code} />
-        {serverMinimum !== null && <p className="notice notice-error">Серверный минимум: {serverMinimum}.</p>}
+        {serverMinimum !== null && <p className="notice notice-error">Серверный минимум: {serverMinimum}.{serverBreakdown && <> Занято: {number(serverBreakdown.sold)} оплачено + {number(serverBreakdown.held)} в оплате + {number(serverBreakdown.reconciling)} на сверке + {number(serverBreakdown.admin_reserved)} резерв.</>}</p>}
         <div className="modal-actions">
           <button className="primary" disabled={mutation.isPending}>{mutation.isPending ? "Сохраняем…" : "Сохранить изменения"}</button>
         </div>

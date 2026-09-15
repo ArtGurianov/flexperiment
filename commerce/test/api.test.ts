@@ -786,6 +786,9 @@ describe("commerce HTTP boundary", () => {
     const unsafeSalesCreate = await app.request("http://admin.flexperiment.ru/v1/admin/occurrences", { method: "POST", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000008" }, body: JSON.stringify({ ...occurrencePayload, sales_status: "OPEN" }) });
     expect(unsafeSalesCreate.status).toBe(422);
 
+    const deprecatedInventoryPatch = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000009" }, body: JSON.stringify({ capacity: 1, expected_revision: 1 }) });
+    expect(deprecatedInventoryPatch.status).toBe(422);
+
     const published = await app.request(`http://admin.flexperiment.ru/v1/admin/occurrences/${created.id}`, { method: "PATCH", headers: { ...adminHeaders, "Idempotency-Key": "b6a8e45a-9334-4626-8041-000000000011" }, body: JSON.stringify({ price_kopecks: 100, inventory: { capacity: 1 }, visibility: "PUBLISHED", audit_context: "Tochka Phase 0 certification", expected_revision: 1 }) });
     expect(published.status).toBe(200);
     expect(await published.json()).toMatchObject({ id: created.id, visibility: "PUBLISHED", sales_status: "CLOSED" });
