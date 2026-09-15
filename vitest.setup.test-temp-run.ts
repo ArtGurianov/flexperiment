@@ -52,9 +52,17 @@ export default function setupTestTempRun() {
   // A second, third or fourth call for the same run: the root already exists.
   if (process.env[TEST_TEMP_ROOT_ENV]) return;
 
+  // Resolved HERE, in the controller, before anything is redirected: this is
+  // the only process that still sees the real temp directory. Deriving it in a
+  // worker from $TMPDIR instead reconstructs it wrongly wherever the variable
+  // is unset - on the Ubuntu CI runner os.tmpdir() correctly falls back to
+  // /tmp, but $TMPDIR is "" and realpathSync("") resolves to the working
+  // directory, which put the expected path inside the repository.
+  //
   // realpath so the recorded parent is canonical - on macOS $TMPDIR is a
   // symlinked /var/folders path, and the GC will compare canonical parents.
-  const container = join(realpathSync(tmpdir()), TEST_TEMP_CONTAINER);
+  const originalTmpdir = realpathSync(tmpdir());
+  const container = join(originalTmpdir, TEST_TEMP_CONTAINER);
   mkdirSync(container, { recursive: true, mode: 0o700 });
   const runRoot = mkdtempSync(join(container, "run-"));
 
@@ -85,11 +93,13 @@ export default function setupTestTempRun() {
   // that is set per worker, so the Vitest controller keeps the real TMPDIR and
   // its own scratch state stays outside what we delete.
   process.env[TEST_TEMP_ROOT_ENV] = runRoot;
+  process.env[TEST_TEMP_ORIGINAL_TMPDIR_ENV] = originalTmpdir;
 
   return () => {
     const before = footprintKb(runRoot);
     rmSync(runRoot, { recursive: true, force: true });
     delete process.env[TEST_TEMP_ROOT_ENV];
+    delete process.env[TEST_TEMP_ORIGINAL_TMPDIR_ENV];
 
     // The proof, not the log line. A reported "residual 0 B" that nobody
     // checks is exactly the kind of observational invariant that let the

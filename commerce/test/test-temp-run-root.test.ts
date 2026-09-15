@@ -92,17 +92,31 @@ describe("test temp run root", () => {
    * it runs in can see the variable, so a BARE `mktemp`/`mktemp -d` escapes the
    * namespace. Node and Python both honour $TMPDIR; only this one does not.
    *
+   * All five remove their own temporary state on a normal exit, so this is not
+   * a steady leak. What it costs is recoverability: anything they leave behind
+   * on an ABNORMAL exit lands outside the namespace, where a namespace-scoped
+   * collector will never see it.
+   *
    * Pinning the exact call sites keeps the gap visible and stops it growing:
    * a new bare mktemp fails here, and converting one to the template form
    * (P1) fails here too, which is the prompt to shorten this list.
    */
   it("pins the shell call sites that escape the namespace", () => {
-    expect(
-      spawnSync("bash", ["-c", 'TMPDIR="$1" mktemp -d', "_", "/nonexistent-probe-root"], { encoding: "utf8" })
-        .stdout.trim()
-        .startsWith("/nonexistent-probe-root"),
-      "if this ever becomes true, BSD mktemp started honouring TMPDIR and the list below can go",
-    ).toBe(false);
+    // This probe really does create a directory, and because the point of it is
+    // that the directory escapes the namespace, nothing else will ever collect
+    // it - so it has to remove its own. Leaving it behind made every full suite
+    // report exactly +1 top-level entry.
+    const escaped = spawnSync("bash", ["-c", 'TMPDIR="$1" mktemp -d', "_", "/nonexistent-probe-root"], {
+      encoding: "utf8",
+    }).stdout.trim();
+    try {
+      expect(
+        escaped.startsWith("/nonexistent-probe-root"),
+        "if this ever becomes true, mktemp started honouring TMPDIR and the list below can go",
+      ).toBe(false);
+    } finally {
+      if (escaped) rmSync(escaped, { recursive: true, force: true });
+    }
 
     const found = spawnSync(
       "bash",
