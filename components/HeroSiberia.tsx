@@ -10,7 +10,10 @@ export default function HeroSiberia() {
           3x the rendered width on a desktop screen. */}
       <Image
         src={hero}
-        alt="Сибирь осень 2026"
+        // The artwork is the poster, and the alt text is its description — not
+        // a slot for keyword copy the sighted visitor never sees. The old value
+        // asserted a season and a year nothing else on the page carries.
+        alt="Постер FLEXPERIMENT «Впервые в Сибири»"
         sizes="(min-width: 512px) 512px, 100vw"
         className="h-auto w-full -rotate-10 translate-x-2"
       />

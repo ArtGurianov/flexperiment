@@ -37,35 +37,36 @@ const geistMono = Geist_Mono({
 });
 
 const SITE_URL = "https://flexperiment.ru";
-const TITLE = "FLEXPERIMENT - мастер-классы по experimental и flexing в Сибири, 2026";
-const DESCRIPTION =
-  "Тур мастер-классов от Арта Гурьянова по EXPERIMENTAL через FLEXING: изоляции тела, иллюзии в танце, импровизация и поиск собственного стиля. Для новичков и танцоров с опытом, растяжка не нужна.";
 
+/**
+ * Only genuinely global metadata belongs here.
+ *
+ * Next merges metadata shallowly from the root layout down to the leaf, so any
+ * field this object declares is inherited verbatim by every route that does not
+ * override it. That is how `alternates: { canonical: "/" }` came to be emitted
+ * on /ticket, /payment/success, /refund and the 404 page, each of them
+ * declaring the home page as its canonical URL, together with the home page's
+ * description and og:url.
+ *
+ * The fix is ownership, not per-route patching: a page-specific fact is
+ * declared by the page that owns it (see app/page.tsx). What stays is what is
+ * true of every document on the site.
+ */
 export const metadata: Metadata = {
   // Without metadataBase, Next resolves relative OG/Twitter asset paths against
   // localhost in development and warns in production.
   metadataBase: new URL(SITE_URL),
-  title: TITLE,
-  description: DESCRIPTION,
-  alternates: { canonical: "/" },
   openGraph: {
     type: "website",
     locale: "ru_RU",
-    url: SITE_URL,
     siteName: "FLEXPERIMENT",
-    title: TITLE,
-    description: DESCRIPTION,
   },
   twitter: {
     // `summary` until there is an image to show. summary_large_image promises a
     // 1200x630 card, and with neither openGraph.images nor an
     // app/opengraph-image file the platform has nothing to fill it with — which
-    // renders worse than the text card this asks for. Add
-    // app/opengraph-image.png (Next wires it into both og:image and
-    // twitter:image) and switch this back.
+    // renders worse than the text card this asks for.
     card: "summary",
-    title: TITLE,
-    description: DESCRIPTION,
   },
 };
 

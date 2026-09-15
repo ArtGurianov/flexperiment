@@ -1,3 +1,5 @@
+import type { Metadata } from "next";
+
 import AssetPreloader from "@/components/AssetPreloader";
 import FaqSection from "@/components/FaqSection";
 import Footer from "@/components/Footer";
@@ -11,6 +13,33 @@ import ProgramSection from "@/components/ProgramSection";
 import Separator from "@/components/Separator";
 import TeacherSection from "@/components/TeacherSection";
 import WorkshopIntro from "@/components/WorkshopIntro";
+
+/**
+ * The home page's own title and description, which used to live in the root
+ * layout and were therefore inherited by every other route.
+ *
+ * Location-neutral on purpose. The tour's geography is a commercial fact owned
+ * by Commerce, not by the brand copy: a title that hardcodes "в Сибири" becomes
+ * a false claim the moment an occurrence is scheduled anywhere else, and no SEO
+ * text may assert a city, date or price that inventory has to agree with. The
+ * «ВПЕРВЫЕ В СИБИРИ» artwork stays — it is a poster, not a machine-readable
+ * claim.
+ *
+ * The title also now contains «флексинг» in Cyrillic, which the old one did
+ * not: that is the term the audience actually searches for.
+ */
+const TITLE = "Мастер-классы по флексингу и experimental dance | FLEXPERIMENT";
+const DESCRIPTION =
+  "Мастер-классы по флексингу и experimental dance от Арта Гурьянова: изоляции тела, иллюзии, импровизация и свой стиль. Для любого уровня, растяжка не нужна.";
+
+export const metadata: Metadata = {
+  title: TITLE,
+  description: DESCRIPTION,
+  // The home page is the only document for which "/" is the canonical URL.
+  alternates: { canonical: "/" },
+  openGraph: { url: "/", title: TITLE, description: DESCRIPTION },
+  twitter: { title: TITLE, description: DESCRIPTION },
+};
 
 export default function Home() {
   return (
@@ -39,9 +68,12 @@ export default function Home() {
       >
         {/* The hero is artwork end to end, so the page had no h1 at all and
             its first heading was an h2 halfway down. This names the page for
-            assistive tech and search without altering the composition. */}
+            assistive tech and search without altering the composition.
+
+            Location-neutral for the same reason the title above is: this is the
+            page's accessible name, not a claim about where the tour runs. */}
         <h1 className="sr-only">
-          FLEXPERIMENT - тур мастер-классов по флексингу по Сибири, 2026
+          FLEXPERIMENT — мастер-классы по флексингу и experimental dance
         </h1>
 
         <HeroTour />
