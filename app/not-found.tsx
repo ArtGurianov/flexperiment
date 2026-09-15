@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 
 import Footer from "@/components/Footer";
+import PaymentNotice from "@/components/PaymentNotice";
 import Section, { SectionLabel } from "@/components/Section";
 import { LEGAL_DOCUMENTS } from "@/lib/legal";
 import { SITE_LINKS } from "@/lib/navigation";
@@ -34,8 +35,10 @@ const LINK =
  * design (it gates on [data-hero-video]), and a 404 that sat behind a loading
  * overlay would be the worst version of this page.
  *
- * No <PaymentNotice /> is needed here because nothing on this page renders a
- * PaymentCta — except the Footer, which does. So it is mounted below.
+ * <PaymentNotice /> is mounted below because the Footer renders a PaymentCta.
+ * Without it, a visitor whose checkout-dialog chunk fails to load taps the
+ * footer's booking button and nothing happens at all — the shared store has no
+ * subscriber to surface the failure through.
  */
 export default function NotFound() {
   return (
@@ -84,6 +87,8 @@ export default function NotFound() {
       </main>
 
       <Footer />
+
+      <PaymentNotice />
     </>
   );
 }

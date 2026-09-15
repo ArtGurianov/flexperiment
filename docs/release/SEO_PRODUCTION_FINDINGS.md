@@ -163,7 +163,31 @@ subdomain, including `admin.` and `partner.`, and it survives a frontend
 redeploy.
 
 
-## 5. Things deliberately not done
+## 5. Open decision: the home page's editorial price
+
+`components/Price.tsx` states **3 800 ₽**, and **3 500 ₽** with a promo code, as
+editorial HTML under the label «Базовая стоимость участия». Those figures are
+not derived from inventory and deliberately never will be: an event page quotes
+its own occurrence's `price_kopecks`, and there is no fallback in either
+direction.
+
+That separation is correct, and it is also why nobody is currently forced to
+look at the numbers. **They should be confirmed before the next release.** The
+only occurrence in production carries 360000 kopecks (3 600 ₽), which matches
+neither figure — and since that record is acknowledged fixture data, it is not
+evidence that the editorial figures are wrong. It is only evidence that no
+current source agrees with them.
+
+Deriving the home page price from today's inventory would be worse: it would
+publish 3 600 ₽ from a garbage record. So the decision to make is narrow:
+
+**Are 3 800 ₽ and 3 500 ₽ the intended commercial prices?** If yes, nothing
+changes. If not, edit `components/Price.tsx` — it is ordinary editorial copy.
+
+Flagged here rather than left to disappear into a diff.
+
+
+## 6. Things deliberately not done
 
 - No `FAQPage` structured data. Google restricted FAQ rich results to
   government and health sites in August 2023, so the markup buys nothing. The

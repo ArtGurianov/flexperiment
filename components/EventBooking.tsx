@@ -24,25 +24,23 @@ import { canRequestCheckout, purchaseStatusAnnouncement, type PurchaseStatus } f
  * authoritative check, so an optimistic CTA can never sell a seat that is not
  * there. That keeps the primary action available immediately rather than behind
  * a spinner.
+ *
+ * That optimism is only safe for a date still in the public tour, which is why
+ * the event page mounts this ONLY for a live record. For a departed one — a
+ * WITHDRAWN tombstone especially, where the endpoint below is known to answer
+ * 404 — the swallowed failure would leave the CTA up permanently. Those render
+ * EventArchivalNotice instead.
  */
 type LiveState = {
   purchase_status: PurchaseStatus;
   fulfillment_status: "SCHEDULED" | "COMPLETED" | "CANCELLED";
 };
 
-export default function EventBooking({
-  occurrenceId,
-  cancelled,
-}: {
-  occurrenceId: string;
-  /** From the snapshot. A cancelled event never offers booking, live or not. */
-  cancelled: boolean;
-}) {
+export default function EventBooking({ occurrenceId }: { occurrenceId: string }) {
   const [live, setLive] = useState<LiveState | null>(null);
   const [notificationsAvailable, setNotificationsAvailable] = useState(false);
 
   useEffect(() => {
-    if (cancelled) return;
     let current = true;
     fetch(commerceApiUrl(`/v1/public/occurrences/${encodeURIComponent(occurrenceId)}`), { cache: "no-store" })
       .then((response) => (response.ok ? response.json() : Promise.reject(new Error("OCCURRENCE_UNAVAILABLE"))))
@@ -58,15 +56,7 @@ export default function EventBooking({
       })
       .catch(() => {});
     return () => { current = false; };
-  }, [cancelled, occurrenceId]);
-
-  if (cancelled) {
-    return (
-      <p role="status" className="mt-[6cqw] border border-bone/50 px-[4cqw] py-[3cqw] text-center text-[clamp(0.9rem,3.5cqw,1.1rem)] text-bone/80">
-        Мастер-класс отменён. Запись на эту дату закрыта.
-      </p>
-    );
-  }
+  }, [occurrenceId]);
 
   const bookable = live === null || canRequestCheckout(live);
 

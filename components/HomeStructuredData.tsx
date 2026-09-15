@@ -1,3 +1,4 @@
+import { serializeJsonLd } from "@/lib/seo/json-ld";
 import { SITE_ORIGIN } from "@/lib/seo/site";
 
 /**
@@ -66,15 +67,16 @@ const GRAPH = {
  * Server-rendered, so it is in the static HTML a crawler receives rather than
  * appearing after hydration.
  *
- * JSON.stringify of a literal built in this module — there is no user or
- * network input anywhere in `GRAPH`, so there is nothing for a `</script>`
- * sequence to arrive from.
+ * Every value in `GRAPH` is a literal in this file, so nothing here can carry a
+ * `</script>` sequence today. It still goes through serializeJsonLd: a
+ * serializer that is only safe at some call sites is one refactor away from
+ * being unsafe at all of them.
  */
 export default function HomeStructuredData() {
   return (
     <script
       type="application/ld+json"
-      dangerouslySetInnerHTML={{ __html: JSON.stringify(GRAPH) }}
+      dangerouslySetInnerHTML={{ __html: serializeJsonLd(GRAPH) }}
     />
   );
 }

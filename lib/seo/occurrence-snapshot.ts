@@ -83,6 +83,28 @@ export type SeoTombstone = SeoOccurrence & {
   readonly departed: SeoDeparture;
 };
 
+/**
+ * Anything that gets a page: a live occurrence or a tombstone.
+ *
+ * This union, and not a flattened `SeoOccurrence[]`, is what the rendering
+ * layer must receive. A tombstone IS structurally an occurrence — it is
+ * `SeoOccurrence & { departed }` — so widening it to the base type compiles
+ * cleanly and silently loses the one field that says the record is archival.
+ *
+ * Losing it is not cosmetic. A WITHDRAWN or PAST tombstone keeps
+ * `fulfillment_status: "SCHEDULED"` (that is the last state Commerce reported),
+ * so with `departed` discarded it is indistinguishable from an event happening
+ * next week: it would offer booking, claim a place in the sitemap, and emit
+ * EventScheduled markup for an occurrence Commerce may no longer serve at all.
+ *
+ * `isDeparted` is the narrowing gate. Every consumer that renders, lists, links
+ * to, or describes a record goes through it.
+ */
+export type PublishedRecord = SeoOccurrence | SeoTombstone;
+
+export const isDeparted = (record: PublishedRecord): record is SeoTombstone =>
+  "departed" in record;
+
 export type SeoSnapshot = {
   readonly schema_version: number;
   /** Currently in `/v1/public/tour`. Sorted by starts_at, then city, then id. */

@@ -139,6 +139,27 @@ describe("snapshot generation", () => {
     expect(withdrawn.tombstones[0].title).toBe(published.occurrences[0].title);
   });
 
+  it("refuses to invent a departure that was never recorded", () => {
+    const published = buildSnapshot({ source: source([publicOccurrence()]), previous: EMPTY_SNAPSHOT, nowMs: NOW });
+
+    // The occurrence is gone from the tour and NOTHING was recorded about it.
+    // That is not the same fact as "the endpoint answered 404", and treating it
+    // as one would manufacture a WITHDRAWN tombstone — a claim about production
+    // state — out of a gap in the input.
+    expect(() => buildSnapshot({ source: source([]), previous: published, nowMs: NOW }))
+      .toThrow(SourceContractError);
+    expect(() => buildSnapshot({ source: source([]), previous: published, nowMs: NOW }))
+      .toThrow("NOT_RECORDED");
+
+    // An EXPLICIT null is the recorded 404, and that does produce WITHDRAWN.
+    const withdrawn = buildSnapshot({
+      source: source([], { [publicOccurrence().id]: null }),
+      previous: published,
+      nowMs: NOW,
+    });
+    expect(withdrawn.tombstones[0].departed).toBe("WITHDRAWN");
+  });
+
   it("re-projects a tombstone from the live record, so a corrected venue still shows", () => {
     const published = buildSnapshot({
       source: source([publicOccurrence({ venue: { status: "TO_BE_ANNOUNCED", name: null, address: null, disclosure_text: "Скоро", announce_by: null } })]),

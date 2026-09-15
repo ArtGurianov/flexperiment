@@ -4,10 +4,10 @@ import path from "node:path";
 import {
   EMPTY_SNAPSHOT,
   parseSnapshot,
-  type SeoOccurrence,
+  type PublishedRecord,
   type SeoSnapshot,
 } from "@/lib/seo/occurrence-snapshot";
-import { publishableRecords } from "@/lib/seo/occurrence-publication";
+import { isUpcoming, publishableRecords } from "@/lib/seo/occurrence-publication";
 
 /**
  * Reads the committed snapshot at build time.
@@ -50,30 +50,43 @@ export function readCommittedSnapshot(): SeoSnapshot {
  * anything INVALID.
  *
  * Tombstones are included deliberately — a cancelled or finished event keeps
- * its URL. They are excluded from the sitemap instead (see app/sitemap.ts).
+ * its URL. They are excluded from the sitemap and from every "upcoming"
+ * surface instead, and the PublishedRecord union is what lets callers tell the
+ * difference. Do not widen this to SeoOccurrence[].
  */
-export const publishedRecords = (): readonly SeoOccurrence[] =>
+export const publishedRecords = (): readonly PublishedRecord[] =>
   publishableRecords(readCommittedSnapshot());
 
-export const findPublishedRecord = (slug: string): SeoOccurrence | undefined =>
+export const findPublishedRecord = (slug: string): PublishedRecord | undefined =>
   publishedRecords().find((entry) => entry.event_slug === slug);
 
 /**
  * The cities that get a page: exactly those with at least one publishable
- * occurrence.
+ * record.
  *
  * Never CITY_CATALOGUE, whose own doc comment says it is "intentionally broader
  * than the live tour". Generating 80 city pages for a tour that visits none of
  * them would be 80 thin pages asserting an event that does not exist.
+ *
+ * A city whose dates have all been cancelled or have all passed still gets a
+ * page, because its event pages link back to it and those URLs are permanent.
+ * What it does NOT get is a place on any "upcoming" surface — hence the split
+ * between `records` and `upcoming` below, which every caller must choose
+ * between deliberately rather than by default.
  */
 export type PublishedCity = {
   readonly slug: string;
   readonly title: string;
-  readonly records: readonly SeoOccurrence[];
+  /** Everything with a page in this city, live and archival, in order. */
+  readonly records: readonly PublishedRecord[];
+  /** The subset a visitor can still attend — see isUpcoming. */
+  readonly upcoming: readonly PublishedRecord[];
+  /** The rest: cancelled, completed, past, or withdrawn. */
+  readonly archived: readonly PublishedRecord[];
 };
 
 export function publishedCities(): readonly PublishedCity[] {
-  const byCity = new Map<string, SeoOccurrence[]>();
+  const byCity = new Map<string, PublishedRecord[]>();
   for (const record of publishedRecords()) {
     // Grouped by the record's CURRENT city, not the frozen slug component: the
     // page content follows an occurrence that moves, only the URL does not.
@@ -82,12 +95,29 @@ export function publishedCities(): readonly PublishedCity[] {
     else byCity.set(record.city, [record]);
   }
   return [...byCity.entries()]
-    .map(([slug, records]) => ({ slug, title: records[0].city_title, records }))
+    .map(([slug, records]) => ({
+      slug,
+      title: records[0].city_title,
+      records,
+      upcoming: records.filter(isUpcoming),
+      archived: records.filter((record) => !isUpcoming(record)),
+    }))
     .sort((a, b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
 }
 
 export const findPublishedCity = (slug: string): PublishedCity | undefined =>
   publishedCities().find((city) => city.slug === slug);
+
+/**
+ * The cities worth advertising as places the tour is going.
+ *
+ * What the home page links to and what the sitemap lists. A city whose only
+ * dates are archival keeps its page and its inbound links, but presenting it on
+ * the home page under a heading that means "we are coming here" would be a
+ * claim that is no longer true.
+ */
+export const citiesWithUpcomingDates = (): readonly PublishedCity[] =>
+  publishedCities().filter((city) => city.upcoming.length > 0);
 
 /**
  * The reserved param used when the snapshot has nothing to publish.

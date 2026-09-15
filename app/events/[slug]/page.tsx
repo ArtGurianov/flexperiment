@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
+import EventArchivalNotice from "@/components/EventArchivalNotice";
 import EventBooking from "@/components/EventBooking";
 import EventFacts from "@/components/EventFacts";
 import EventStructuredData from "@/components/EventStructuredData";
@@ -15,7 +16,8 @@ import practiceItem from "@/public/practice-item.webp";
 import practiceTitle from "@/public/practice-title.webp";
 import theoryItem from "@/public/theory-item.webp";
 import theoryTitle from "@/public/theory-title.webp";
-import { occurrenceDateLabelInZone } from "@/lib/occurrence-format";
+import { occurrenceDateLabelInZone, departureNotice } from "@/lib/occurrence-format";
+import { isDeparted } from "@/lib/seo/occurrence-snapshot";
 import { OPEN_GRAPH_BASE, TWITTER_CARD } from "@/lib/seo/site";
 import { findPublishedRecord, PLACEHOLDER_PARAM, publishedRecords } from "@/lib/seo/snapshot-source";
 
@@ -93,7 +95,13 @@ export default async function EventPage(props: PageProps<"/events/[slug]">) {
   if (!record) notFound();
 
   const date = occurrenceDateLabelInZone(record.starts_at, record.timezone);
-  const cancelled = record.fulfillment_status === "CANCELLED";
+  // A record that has left /v1/public/tour is archival whatever its
+  // fulfillment_status says. Testing only for CANCELLED was not enough: a PAST
+  // or WITHDRAWN tombstone still carries SCHEDULED, because that is the last
+  // state Commerce reported, so it would have rendered as an ordinary bookable
+  // date. isDeparted is the only reliable gate, and it narrows the union so the
+  // notice below can read `departed`.
+  const departed = isDeparted(record) ? record : null;
 
   return (
     <>
@@ -123,18 +131,27 @@ export default async function EventPage(props: PageProps<"/events/[slug]">) {
             </span>
           </h1>
 
-          {cancelled ? (
+          {departed ? (
             <p className="mt-[5cqw] border border-bone/50 px-[4cqw] py-[3cqw] text-[clamp(0.9rem,3.5cqw,1.1rem)] text-bone/80">
-              {/* The page stays live on a cancelled event rather than 404ing:
-                  this URL has been indexed, shared and linked, and a visitor
-                  arriving on it deserves an answer, not a dead end. */}
-              Этот мастер-класс отменён.
+              {/* The page stays live rather than 404ing: this URL has been
+                  indexed, shared and linked, and a visitor arriving on it
+                  deserves an answer, not a dead end. What it must not do is
+                  look like an event still on sale. */}
+              {departureNotice(departed.departed)}
             </p>
           ) : null}
 
           <EventFacts occurrence={record} />
 
-          <EventBooking occurrenceId={record.id} cancelled={cancelled} />
+          {/* The live booking panel is mounted only for a date that is still in
+              the public tour. A departed record gets a static notice instead —
+              see EventArchivalNotice for why hydrating one would be worse than
+              useless. */}
+          {departed ? (
+            <EventArchivalNotice record={departed} />
+          ) : (
+            <EventBooking occurrenceId={record.id} />
+          )}
         </Section>
 
         <Separator />

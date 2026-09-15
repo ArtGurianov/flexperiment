@@ -4,7 +4,7 @@ import {
   occurrenceDateLabelInZone,
   occurrenceTimeLabelInZone,
 } from "@/lib/occurrence-format";
-import type { SeoOccurrence } from "@/lib/seo/occurrence-snapshot";
+import type { PublishedRecord } from "@/lib/seo/occurrence-snapshot";
 
 /**
  * The commercial facts of one occurrence, server-rendered.
@@ -26,7 +26,7 @@ import type { SeoOccurrence } from "@/lib/seo/occurrence-snapshot";
 const TERM = "font-mono text-[clamp(0.7rem,2.7cqw,0.85rem)] uppercase tracking-wide text-bone/60";
 const VALUE = "mt-[1cqw] text-[clamp(1rem,4.2cqw,1.35rem)] leading-snug text-bone";
 
-export default function EventFacts({ occurrence }: { occurrence: SeoOccurrence }) {
+export default function EventFacts({ occurrence }: { occurrence: PublishedRecord }) {
   const date = occurrenceDateLabelInZone(occurrence.starts_at, occurrence.timezone);
   const time = occurrenceTimeLabelInZone(occurrence.starts_at, occurrence.timezone);
   const venueConfirmed =

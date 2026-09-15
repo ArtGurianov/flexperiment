@@ -2,6 +2,8 @@ import { findCityBySlug } from "@/lib/city-catalog";
 import { isOccurrenceId, parseEventSlug } from "@/lib/seo/event-slug";
 import {
   compareOccurrences,
+  isDeparted,
+  type PublishedRecord,
   type SeoOccurrence,
   type SeoSnapshot,
 } from "@/lib/seo/occurrence-snapshot";
@@ -125,13 +127,55 @@ export const eventStatusFor = (occurrence: SeoOccurrence): string =>
 /**
  * Whether a record belongs in the sitemap.
  *
- * Present-tense pages only: a cancelled or finished event keeps its URL (so an
- * indexed link and a printed ticket keep working) but stops being something to
- * offer a crawler as fresh content.
+ * Present-tense pages only. A record that has left `/v1/public/tour` keeps its
+ * URL — so an indexed link and a printed ticket keep working — but stops being
+ * something to offer a crawler as fresh content.
+ *
+ * The `isDeparted` test is load-bearing and not redundant with the status
+ * check. A PAST or WITHDRAWN tombstone still carries
+ * `fulfillment_status: "SCHEDULED"`, because that is the last state Commerce
+ * reported; on the status check alone both would be listed as upcoming events.
  */
-export const belongsInSitemap = (occurrence: SeoOccurrence): boolean =>
-  occurrence.fulfillment_status === "SCHEDULED" &&
-  judgeOccurrence(occurrence).outcome !== "INVALID";
+export const belongsInSitemap = (record: PublishedRecord): boolean =>
+  !isDeparted(record) &&
+  record.fulfillment_status === "SCHEDULED" &&
+  judgeOccurrence(record).outcome !== "INVALID";
+
+/**
+ * Whether a record may carry Event structured data.
+ *
+ * Two independent gates, and both must pass:
+ *
+ *   judgeOccurrence   the record is sound and has a real venue to name as
+ *                     `location`, which Google requires.
+ *   not WITHDRAWN     Commerce still acknowledges the occurrence exists.
+ *
+ * WITHDRAWN means `/v1/public/occurrences/{id}` answered 404: the snapshot is
+ * holding the last data it ever saw, and has no way to know whether any of it
+ * is still true. The page stays up so the URL keeps working, but asserting
+ * machine-readable facts about an event the authoritative system no longer
+ * serves would be publishing a claim nothing stands behind.
+ *
+ * CANCELLED, COMPLETED and PAST are different: for each of those the re-fetch
+ * succeeded and the record was re-projected from the live response, so its
+ * facts are current. They keep their markup — EventCancelled for the first,
+ * EventScheduled with a past date for the other two.
+ */
+export const mayEmitEventSchema = (record: PublishedRecord): boolean =>
+  judgeOccurrence(record).outcome === "PUBLISHABLE" &&
+  !(isDeparted(record) && record.departed === "WITHDRAWN");
+
+/**
+ * Whether a record is a real upcoming date a visitor can still act on.
+ *
+ * The gate for every "Ближайшие даты" surface: the home page's city links, the
+ * upcoming list on a city page, and whether an event page offers booking at
+ * all.
+ */
+export const isUpcoming = (record: PublishedRecord): boolean =>
+  !isDeparted(record) &&
+  record.fulfillment_status === "SCHEDULED" &&
+  judgeOccurrence(record).outcome !== "INVALID";
 
 export type SnapshotDefect = { readonly code: string; readonly detail: string };
 
@@ -230,8 +274,15 @@ export function findTransitionDefects(
   return defects;
 }
 
-/** Every tombstone reachable as a page, ordered for stable route generation. */
-export const publishableRecords = (snapshot: SeoSnapshot): readonly SeoOccurrence[] =>
+/**
+ * Every record reachable as a page — live and tombstoned — ordered for stable
+ * route generation.
+ *
+ * Returns the union, not `SeoOccurrence[]`. Flattening here is what previously
+ * erased the archival distinction for every consumer downstream; see
+ * PublishedRecord.
+ */
+export const publishableRecords = (snapshot: SeoSnapshot): readonly PublishedRecord[] =>
   [...snapshot.occurrences, ...snapshot.tombstones]
     .filter((entry) => judgeOccurrence(entry).outcome !== "INVALID")
     .sort(compareOccurrences);

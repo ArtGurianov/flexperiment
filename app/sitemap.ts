@@ -3,7 +3,7 @@ import type { MetadataRoute } from "next";
 import { LEGAL_DOCUMENTS } from "@/lib/legal";
 import { belongsInSitemap } from "@/lib/seo/occurrence-publication";
 import { siteUrl } from "@/lib/seo/site";
-import { publishedCities, publishedRecords } from "@/lib/seo/snapshot-source";
+import { citiesWithUpcomingDates, publishedRecords } from "@/lib/seo/snapshot-source";
 
 /**
  * There was no sitemap.xml either — the live URL 404ed.
@@ -44,10 +44,15 @@ import { publishedCities, publishedRecords } from "@/lib/seo/snapshot-source";
 export const dynamic = "force-static";
 
 export default function sitemap(): MetadataRoute.Sitemap {
+  // belongsInSitemap excludes every tombstone, not only the cancelled ones: a
+  // PAST or WITHDRAWN record still carries fulfillment_status SCHEDULED, so a
+  // status check alone would offer archival pages to a crawler as upcoming
+  // events.
   const events = publishedRecords().filter(belongsInSitemap);
-  // A city page is worth listing only while it has something to list. A city
-  // whose only occurrence was cancelled keeps its page and leaves the sitemap.
-  const cities = publishedCities().filter((city) => city.records.some(belongsInSitemap));
+  // A city page is worth listing only while it has an upcoming date. A city
+  // whose dates have all been cancelled or have all passed keeps its page — its
+  // event pages link back to it — and leaves the sitemap.
+  const cities = citiesWithUpcomingDates();
 
   return [
     { url: siteUrl("/") },

@@ -1,5 +1,6 @@
-import { judgeOccurrence, eventStatusFor } from "@/lib/seo/occurrence-publication";
-import type { SeoOccurrence } from "@/lib/seo/occurrence-snapshot";
+import { eventStatusFor, mayEmitEventSchema } from "@/lib/seo/occurrence-publication";
+import type { PublishedRecord } from "@/lib/seo/occurrence-snapshot";
+import { serializeJsonLd } from "@/lib/seo/json-ld";
 import { SITE_ORIGIN, siteUrl } from "@/lib/seo/site";
 
 /**
@@ -12,6 +13,12 @@ import { SITE_ORIGIN, siteUrl } from "@/lib/seo/site";
  * judgeOccurrence says NOT_SCHEMA_ELIGIBLE, this emits nothing and the page
  * still renders every fact it does know.
  *
+ * The second gate is WITHDRAWN. Commerce answered 404 for that occurrence, so
+ * the snapshot is holding the last data it ever saw with no way to know if any
+ * of it is still true — and the record's stale `fulfillment_status: SCHEDULED`
+ * would otherwise produce EventScheduled markup for an event the authoritative
+ * system no longer serves. See mayEmitEventSchema.
+ *
  * `eventStatus` comes from fulfillment_status alone (see eventStatusFor).
  * Sales state never enters: NOT_YET_OPEN, SOLD_OUT and a paused gate all
  * describe a scheduled event that is not currently selling, and reading any of
@@ -23,8 +30,8 @@ import { SITE_ORIGIN, siteUrl } from "@/lib/seo/site";
  * have gone hours ago. The price is on the page as text; it is not asserted as
  * a live, purchasable offer.
  */
-export default function EventStructuredData({ occurrence }: { occurrence: SeoOccurrence }) {
-  if (judgeOccurrence(occurrence).outcome !== "PUBLISHABLE") return null;
+export default function EventStructuredData({ occurrence }: { occurrence: PublishedRecord }) {
+  if (!mayEmitEventSchema(occurrence)) return null;
 
   const url = siteUrl(`/events/${occurrence.event_slug}`);
   const event = {
@@ -54,7 +61,10 @@ export default function EventStructuredData({ occurrence }: { occurrence: SeoOcc
   return (
     <script
       type="application/ld+json"
-      dangerouslySetInnerHTML={{ __html: JSON.stringify(event) }}
+      // serializeJsonLd, not JSON.stringify: name, city_title, venue.name and
+      // venue.address are Commerce-controlled strings, and `</script>` survives
+      // JSON escaping intact. See lib/seo/json-ld.ts.
+      dangerouslySetInnerHTML={{ __html: serializeJsonLd(event) }}
     />
   );
 }

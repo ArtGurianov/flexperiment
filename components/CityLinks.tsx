@@ -1,5 +1,5 @@
 import Section, { SectionLabel } from "@/components/Section";
-import { publishedCities } from "@/lib/seo/snapshot-source";
+import { citiesWithUpcomingDates } from "@/lib/seo/snapshot-source";
 
 /**
  * The home page's links into the city pages.
@@ -9,14 +9,19 @@ import { publishedCities } from "@/lib/seo/snapshot-source";
  * which is a hint rather than a path, and a crawler that never follows a link
  * to a page has little reason to treat it as part of the site.
  *
- * Renders nothing at all when the snapshot has no publishable occurrence, which
- * is today's state. An empty «Города» heading over an empty list would be a
+ * Driven by citiesWithUpcomingDates, not by every city with a page. A city
+ * whose dates have all been cancelled or have all passed keeps its page, so its
+ * event pages can link back to it, but listing it here under a heading that
+ * means "the tour is going here" would be a claim that is no longer true.
+ *
+ * Renders nothing at all when there is no upcoming date anywhere, which is
+ * today's state. An empty «Города» heading over an empty list would be a
  * worse page than no section, and — unlike the price section, which is an
  * editorial statement about the workshop — this one has no meaning without
  * inventory behind it.
  */
 export default function CityLinks() {
-  const cities = publishedCities();
+  const cities = citiesWithUpcomingDates();
   if (cities.length === 0) return null;
 
   return (
@@ -32,7 +37,7 @@ export default function CityLinks() {
             >
               <span>{city.title}</span>
               <span className="font-mono text-[clamp(0.7rem,2.7cqw,0.85rem)] text-bone/60">
-                {city.records.length}
+                {city.upcoming.length}
               </span>
             </a>
           </li>

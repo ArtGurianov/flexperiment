@@ -74,6 +74,22 @@ not as follow-up work.
 `commerce/test/seo-snapshot-generation.test.ts` regenerates a simulated day
 later and asserts byte identity.
 
+### A departure must be recorded, never inferred
+
+`PublicTourSource.departed` distinguishes three states for a previously
+published id, and the generator requires the first two:
+
+| | Meaning |
+|---|---|
+| present, a record | the occurrence still exists; its current state says how it left |
+| present, `null` | `/v1/public/occurrences/{id}` answered **404** → `WITHDRAWN` |
+| **absent** | nothing was looked up — **`SEO_SNAPSHOT_SOURCE_MALFORMED`** |
+
+Treating an absent entry as a 404 would manufacture a `WITHDRAWN` tombstone — a
+claim about production state — out of a gap in the input. The production
+`--source` path always records an entry for every previously published id
+missing from the tour, so this only ever fires on a malformed `--input`.
+
 
 ## Event URLs are permanent
 
@@ -108,10 +124,47 @@ A tombstoned occurrence keeps its page and its URL. An event URL that has been
 indexed, shared, and printed on a ticket must not start 404ing because a date
 passed. It leaves the sitemap instead.
 
+**A tombstone keeps whatever `fulfillment_status` Commerce last reported**, so
+PAST and WITHDRAWN records still read `SCHEDULED`. Nothing may infer "archival"
+from the status field. `PublishedRecord` (`SeoOccurrence | SeoTombstone`) and the
+`isDeparted` guard carry the distinction through the whole rendering layer, and
+widening that union back to `SeoOccurrence[]` silently reintroduces every one of
+these failures:
+
+| Surface | Rule |
+|---|---|
+| sitemap (`belongsInSitemap`) | live and `SCHEDULED` only — every tombstone excluded |
+| home page city links, city "Ближайшие даты" (`isUpcoming`) | live and `SCHEDULED` only |
+| city "Прошедшие и отменённые" | every tombstone, keeping its link |
+| event page booking panel | mounted only for a live record |
+| event page notice | `departureNotice(departed)` |
+| Event JSON-LD (`mayEmitEventSchema`) | withheld for `WITHDRAWN`; kept for `CANCELLED`/`COMPLETED`/`PAST` |
+
+`WITHDRAWN` is the one that withholds markup: `/v1/public/occurrences/{id}`
+answered 404, so the snapshot holds the last data it ever saw with no way to
+know whether any of it is still true. For the other three the re-fetch
+succeeded and the record was re-projected from the live response, so its facts
+are current.
+
+The booking panel is the sharpest case. `EventBooking` is optimistically
+bookable while its fetch is in flight and swallows failures — correct for a
+scheduled date, since the checkout dialog does its own authoritative check — but
+for a `WITHDRAWN` record that endpoint is *known* to 404, so the CTA would stay
+up permanently. Departed records render a static notice and never hydrate.
+
+A city whose dates are all archival keeps its page (its event pages link back to
+it) but leaves the home page and the sitemap.
+
 
 ## Eligibility
 
 `lib/seo/occurrence-publication.ts` is the single judge.
+
+All JSON-LD is written through `serializeJsonLd` (`lib/seo/json-ld.ts`), which
+escapes `<` as `\u003c`. `JSON.stringify` alone leaves `</script>` intact, and
+inside a `<script>` element the HTML parser ends the element there regardless of
+JSON context — so a Commerce-controlled title or venue name could close the
+JSON-LD block and open a real one.
 
 | Condition | Outcome |
 |---|---|
