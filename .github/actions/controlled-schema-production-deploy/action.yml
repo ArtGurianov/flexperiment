@@ -72,7 +72,12 @@ runs:
           owner="$(jq -r '.owner_release_id // empty' durable-before.json)"
           if ! jq -e '.complete' completion.json >/dev/null; then [[ -z "$owner" || "$owner" == "$RELEASE_ID" ]] || { echo "SCHEMA_DEPLOY_BLOCKED_BY_RELEASE_OWNER=$owner" >&2; exit 1; }; fi
           if [[ "$deploy_state" == PRE_CAS ]]; then
-            if ! jq -e '.complete' completion.json >/dev/null && [[ "$owner" == "$RELEASE_ID" ]] && jq -e --arg source "$TARGET_SHA" '.sales_paused and .expected.source_commit == $source' durable-before.json >/dev/null; then echo REUSING_PAUSED_OWNER=1 >> "$GITHUB_ENV"; else echo REUSING_PAUSED_OWNER=0 >> "$GITHUB_ENV"; fi
+            if ! jq -e '.complete' completion.json >/dev/null && [[ "$owner" == "$RELEASE_ID" ]] && jq -e --arg source "$TARGET_SHA" '.sales_paused and .expected.source_commit == $source' durable-before.json >/dev/null; then
+              jq -e --slurpfile request release.json '.expected == ($request[0].expected | del(.legal_hashes))' durable-before.json >/dev/null || { echo SCHEMA_DEPLOY_PRE_CAS_OWNER_EXPECTATION_MISMATCH >&2; exit 1; }
+              echo REUSING_PAUSED_OWNER=1 >> "$GITHUB_ENV"
+            else
+              echo REUSING_PAUSED_OWNER=0 >> "$GITHUB_ENV"
+            fi
           fi
           (cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/reconcile-generic-production-deploy.ts "$GITHUB_WORKSPACE/durable-before.json" "$GITHUB_WORKSPACE/completion.json" "$GITHUB_WORKSPACE/release.json") > reconciliation.json
           action="$(jq -er '.action' reconciliation.json)"; [[ "$action" != BLOCKED ]] || { jq -c . reconciliation.json >&2; exit 1; }; echo "DEPLOY_ACTION=$action" >> "$GITHUB_ENV"; echo "RUNTIME_ASSERT_DIR=$RUNTIME_ASSERT_DIR" >> "$GITHUB_ENV"
