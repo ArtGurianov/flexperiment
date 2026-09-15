@@ -65,6 +65,49 @@ describe("Event structured data", () => {
     expect((JSON.parse(payload) as { name: string }).name).toContain(HOSTILE);
   });
 
+  it("does not repeat the city when an occurrence is named after it", () => {
+    // Commerce may legitimately name an occurrence after its city, and the real
+    // Saint Petersburg record does: title and city_title are both
+    // "Санкт-Петербург". Composed naively that became
+    // "Санкт-Петербург — Санкт-Петербург".
+    //
+    // The venue is CONFIRMED here deliberately. With a TBA venue
+    // mayEmitEventSchema withholds the whole block, so the test would pass
+    // without ever reaching the name — which is exactly the state the live
+    // record is in today, and exactly why this defect was latent.
+    const markup = markupFor(
+      EventStructuredData({
+        occurrence: seoOccurrence({
+          title: "Санкт-Петербург",
+          city: "saint-petersburg",
+          city_title: "Санкт-Петербург",
+          timezone: "Europe/Moscow",
+          venue: { status: "CONFIRMED", name: "Площадка", address: "Невский проспект, 1" },
+        }),
+      }),
+    );
+    expect(markup).not.toBe("");
+    const payload = markup.slice(markup.indexOf(">") + 1, markup.lastIndexOf("</script>"));
+    expect((JSON.parse(payload) as { name: string }).name).toBe("Санкт-Петербург");
+  });
+
+  it("still composes title and city when they genuinely differ", () => {
+    const markup = markupFor(
+      EventStructuredData({
+        occurrence: seoOccurrence({
+          title: "Флексинг: базовый класс",
+          city: "saint-petersburg",
+          city_title: "Санкт-Петербург",
+          timezone: "Europe/Moscow",
+          venue: { status: "CONFIRMED", name: "Площадка", address: "Невский проспект, 1" },
+        }),
+      }),
+    );
+    const payload = markup.slice(markup.indexOf(">") + 1, markup.lastIndexOf("</script>"));
+    expect((JSON.parse(payload) as { name: string }).name)
+      .toBe("Флексинг: базовый класс — Санкт-Петербург");
+  });
+
   it("round-trips ordinary Cyrillic content untouched", () => {
     const markup = markupFor(EventStructuredData({ occurrence: seoOccurrence() }));
     const payload = markup.slice(markup.indexOf(">") + 1, markup.lastIndexOf("</script>"));

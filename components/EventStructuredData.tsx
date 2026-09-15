@@ -34,12 +34,25 @@ export default function EventStructuredData({ occurrence }: { occurrence: Publis
   if (!mayEmitEventSchema(occurrence)) return null;
 
   const url = siteUrl(`/events/${occurrence.event_slug}`);
+  // Commerce may legitimately name an occurrence after the city it is in — the
+  // Saint Petersburg record does exactly that, with title and city_title both
+  // "Санкт-Петербург" — which composed into "Санкт-Петербург — Санкт-Петербург".
+  //
+  // Exact equality on purpose. Anything fuzzier (case folding, trimming,
+  // normalising dashes) would start changing the name of legitimately distinct
+  // titles, which is a naming-semantics decision this has no business making;
+  // the defect being fixed is only ever the identical-strings case.
+  const eventName =
+    occurrence.title === occurrence.city_title
+      ? occurrence.title
+      : `${occurrence.title} — ${occurrence.city_title}`;
+
   const event = {
     "@context": "https://schema.org",
     "@type": "Event",
     "@id": url,
     url,
-    name: `${occurrence.title} — ${occurrence.city_title}`,
+    name: eventName,
     startDate: occurrence.starts_at,
     endDate: occurrence.ends_at,
     eventStatus: eventStatusFor(occurrence),
