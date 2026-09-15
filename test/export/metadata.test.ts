@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { readSnapshotFile } from "@/commerce/src/seo-snapshot-io";
+import { publishableRecords } from "@/lib/seo/occurrence-publication";
 import {
   canonicalOf,
   countIn,
@@ -101,25 +103,55 @@ describe("the legal pages", () => {
   });
 });
 
-describe("the social card", () => {
-  const routes = ["index.html", "404.html", ...LEGAL_SLUGS.map((slug) => `legal/${slug}.html`)];
+/**
+ * The routes that exist in every build, plus the ones the committed snapshot
+ * produces.
+ *
+ * Derived rather than hardcoded. The social-card assertions used to cover only
+ * the static routes, because when they were written the snapshot was empty and
+ * there were no event or city pages to cover — which is exactly how both routes
+ * reached production emitting neither og:image nor twitter:image. A list that
+ * cannot grow with the inventory cannot catch that class of defect twice.
+ */
+const STATIC_ROUTES = ["index.html", "404.html", ...LEGAL_SLUGS.map((slug) => `legal/${slug}.html`)];
 
-  it.each(routes)("%s emits both og:image and twitter:image", (route) => {
+const snapshotRoutes = (): readonly string[] => {
+  const records = publishableRecords(readSnapshotFile("data/seo/occurrences.v1.json"));
+  const events = records.map((record) => `events/${record.event_slug}.html`);
+  const cities = [...new Set(records.map((record) => record.city))].map((city) => `cities/${city}.html`);
+  return [...events, ...cities];
+};
+
+const ALL_ROUTES = [...STATIC_ROUTES, ...snapshotRoutes()];
+
+describe("the social card", () => {
+  it.each(ALL_ROUTES)("%s emits both og:image and twitter:image", (route) => {
     const html = readExport(route);
-    // Both files are needed. The opengraph-image convention alone emits only
-    // og:image; twitter:image comes from app/twitter-image.png. And the legal
-    // pages needed `images` named explicitly, because Next does not inject the
-    // file convention into an openGraph object returned from generateMetadata.
+    // Both files are needed, and on the dynamic routes both must be named
+    // explicitly. Next injects the app/opengraph-image.png and
+    // app/twitter-image.png file conventions only where a route has not
+    // declared the namespace itself — and a route whose generateMetadata
+    // returns an `openGraph` or `twitter` object owns that namespace outright.
+    // The event and city routes return both, so they got no injection at all.
     expect(metaProperty(html, "og:image")).toContain("opengraph-image.png");
     expect(metaName(html, "twitter:image")).toContain("twitter-image.png");
   });
 
-  it("promises a large card on every document, including the home page", () => {
-    for (const route of routes) {
-      // The home page is the one most likely to be shared, and it is the one
-      // that silently lost this to Next's shallow metadata merge.
-      expect(metaName(readExport(route), "twitter:card"), route).toBe("summary_large_image");
-    }
+  it.each(ALL_ROUTES)("%s promises a large card", (route) => {
+    // The home page is the one most likely to be shared, and it is the one
+    // that silently lost this to Next's shallow metadata merge.
+    expect(metaName(readExport(route), "twitter:card")).toBe("summary_large_image");
+  });
+
+  it("covers the dynamic routes whenever the snapshot has any", () => {
+    // Guards the guard: if snapshotRoutes() silently returned nothing, every
+    // it.each above would still pass while proving nothing about event and
+    // city pages. This fails instead.
+    const records = publishableRecords(readSnapshotFile("data/seo/occurrences.v1.json"));
+    expect(snapshotRoutes().length).toBe(
+      records.length + new Set(records.map((record) => record.city)).size,
+    );
+    for (const route of snapshotRoutes()) expect(exportExists(route), route).toBe(true);
   });
 
   it("ships both 1200x630 images", () => {
@@ -131,7 +163,9 @@ describe("the social card", () => {
 });
 
 describe("Open Graph inheritance", () => {
-  const routes = ["index.html", "ticket.html", "404.html", "legal/public-offer.html"];
+  // The same snapshot-derived set, so the dynamic routes prove these fields in
+  // generated HTML rather than having them inferred from the spread in source.
+  const routes = ["index.html", "ticket.html", "404.html", "legal/public-offer.html", ...snapshotRoutes()];
 
   it.each(routes)("%s keeps the site-wide og fields its own object could have dropped", (route) => {
     const html = readExport(route);
