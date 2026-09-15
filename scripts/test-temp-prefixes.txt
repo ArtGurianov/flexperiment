@@ -159,3 +159,4 @@ unified-legal-requisites
 unified-legal-requisites-only-0052
 unified-legal-requisites-tampered
 unified-legal-requisites-template
+seo-snapshot
