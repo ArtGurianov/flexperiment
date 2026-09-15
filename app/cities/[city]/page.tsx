@@ -14,6 +14,7 @@ import {
   occurrenceDateLabelInZone,
   occurrenceTimeLabelInZone,
 } from "@/lib/occurrence-format";
+import { cityPageCopy } from "@/lib/seo/city-page-copy";
 import { isDeparted, type PublishedRecord } from "@/lib/seo/occurrence-snapshot";
 import { OPEN_GRAPH_BASE, TWITTER_CARD } from "@/lib/seo/site";
 import { findPublishedCity, PLACEHOLDER_PARAM, publishedCities } from "@/lib/seo/snapshot-source";
@@ -47,10 +48,15 @@ export async function generateMetadata(
   const published = findPublishedCity(city);
   if (!published) return {};
 
-  const title = `Мастер-классы по флексингу в городе ${published.title} | FLEXPERIMENT`;
-  const description =
-    `Ближайшие мастер-классы FLEXPERIMENT по флексингу и experimental dance в городе ${published.title}: ` +
-    "даты, площадка и стоимость участия. Преподаватель — Арт Гурьянов.";
+  // Conditional on whether there is anything upcoming. An archive-only city
+  // still has a page — its event pages link back to it — but describing it as
+  // «Ближайшие мастер-классы … даты, площадка и стоимость участия» would be
+  // false, and the metadata is the version a search result shows. See
+  // lib/seo/city-page-copy.ts.
+  const { title, description } = cityPageCopy({
+    cityTitle: published.title,
+    hasUpcoming: published.upcoming.length > 0,
+  });
   const canonical = `/cities/${published.slug}`;
 
   return {
