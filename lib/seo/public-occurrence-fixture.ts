@@ -29,6 +29,7 @@ export const PUBLIC_OCCURRENCE_BASE: PublicOccurrence = {
   timezone: "Asia/Novosibirsk",
   price_kopecks: 380000,
   availability: 20,
+  availability_status: "AVAILABLE",
   sales_status: "OPEN",
   fulfillment_status: "SCHEDULED",
   purchase_status: "AVAILABLE",

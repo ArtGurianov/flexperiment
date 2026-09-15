@@ -12,8 +12,8 @@
  * changes it, and a change is expected to be accompanied by a regenerated
  * snapshot, a committed diff and a frontend release.
  *
- * Three fields of the public occurrence are deliberately excluded —
- * `availability`, `purchase_status` and `sales_status`. commerce/src/domain.ts
+ * Four fields of the public occurrence are deliberately excluded —
+ * `availability`, `availability_status`, `purchase_status` and `sales_status`. commerce/src/domain.ts
  * derives them from `this.clock()`, a live `COUNT(*)` over bookings and the
  * sales gate. They are correct for the instant they were computed and for no
  * other instant, so freezing them into static HTML would publish a claim about

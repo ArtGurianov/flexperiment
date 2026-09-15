@@ -18,7 +18,8 @@ import { currentUsableNpdCheck } from "./agent-referrals-npd";
 import { AgentReferralsAttributionError, resolveOrderAttribution, ATTRIBUTION_RULE_VERSION } from "./agent-referrals-attribution";
 import { rewardForOrder as computeRewardForOrder } from "./reward-calculation";
 import { findCityBySlug } from "../../lib/city-catalog";
-import { purchaseStatus, type PurchaseStatus } from "./purchase-status";
+import { availabilityStatus, purchaseStatus, type AvailabilityStatus, type PurchaseStatus } from "./purchase-status";
+import { assertInventoryTarget, availableSeatsSql, InventoryTargetError, occurrenceInventory, resolveInventoryTarget, seatCommitments } from "./occurrence-inventory";
 import { occurrenceNotificationsCapabilityActive } from "./occurrence-notification-capability";
 import { parseUtcTimestamp } from "./utc-timestamp";
 import { assertNewOrdersOpen as assertGateOpen, emergencySalesPaused as gateEmergencyPaused, newOrdersBlocked as gateBlocked } from "./sales-gate";
@@ -38,7 +39,7 @@ const legalManifest = (raw: unknown): LegalManifest => {
 };
 
 export class DomainError extends Error {
-  constructor(readonly code: string, readonly status = 400, message = code) { super(message); }
+  constructor(readonly code: string, readonly status = 400, message = code, readonly details?: Record<string, unknown>) { super(message); }
 }
 
 /** Event Dump is deliberately slow recovery, never a replacement send path. */
@@ -122,6 +123,7 @@ export type PublicOccurrence = {
   timezone: string;
   price_kopecks: number;
   availability: number;
+  availability_status: AvailabilityStatus;
   sales_status: "OPEN" | "PAUSED" | "CLOSED";
   fulfillment_status: "SCHEDULED" | "COMPLETED" | "CANCELLED";
   purchase_status: PurchaseStatus;
@@ -157,6 +159,7 @@ export const publicOccurrence = (occurrence: Row, newOrdersBlocked: boolean, now
     timezone: String(occurrence.timezone),
     price_kopecks: Number(occurrence.price_kopecks),
     availability: Number(occurrence.availability),
+    availability_status: availabilityStatus(Number(occurrence.availability)),
     sales_status: salesStatus,
     fulfillment_status: fulfillmentStatus,
     purchase_status: purchaseStatus({
@@ -662,7 +665,7 @@ export class CommerceDomain {
         o.timezone, o.price_kopecks, o.sales_status, o.fulfillment_status,
         o.venue_status, o.venue_name, o.venue_address, o.venue_public,
         o.venue_disclosure_text, o.venue_announce_by,
-        (o.capacity - (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = o.id AND b.status IN ('RESERVED', 'CONFIRMED'))) AS availability
+        ${availableSeatsSql("o")} AS availability
       FROM cities c
       JOIN occurrences o ON o.city_id = c.id
       WHERE o.visibility = 'PUBLISHED'
@@ -961,8 +964,7 @@ export class CommerceDomain {
   registerOccurrenceNotification(input: { email: string; occurrence_id: string }) {
     return withImmediateTransaction(this.db, () => {
       if (!this.occurrenceNotificationsAvailable()) throw new DomainError("NOTIFICATIONS_NOT_AVAILABLE", 503);
-      const occurrence = one(this.db, `SELECT o.*, o.capacity - (SELECT COUNT(*) FROM bookings b
-        WHERE b.occurrence_id = o.id AND b.status IN ('RESERVED', 'CONFIRMED')) AS availability
+      const occurrence = one(this.db, `SELECT o.*, ${availableSeatsSql("o")} AS availability
         FROM occurrences o WHERE o.id = ? AND o.visibility = 'PUBLISHED'`, input.occurrence_id);
       if (!occurrence || occurrence.fulfillment_status !== "SCHEDULED" || parseUtcTimestamp(String(occurrence.starts_at)) <= this.clock()) {
         throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
@@ -1068,7 +1070,7 @@ export class CommerceDomain {
       const release = one(this.db, "SELECT * FROM legal_releases WHERE active = 1");
       if (!release) throw new DomainError("LEGAL_RELEASE_NOT_ACTIVE", 503);
       const manifest = legalManifest(JSON.parse(String(release.manifest_json)));
-      const availability = Number(occurrence.capacity) - Number(one(this.db, "SELECT COUNT(*) AS occupied FROM bookings WHERE occurrence_id = ? AND status IN ('RESERVED', 'CONFIRMED')", occurrence.id)?.occupied ?? 0);
+      const availability = occurrenceInventory(this.db, occurrence as Row & { id: string }).available;
       if (availability <= 0) throw new DomainError("SOLD_OUT", 409);
       // The first-party landing capture owns the 30-day lifetime. Checkout only
       // revalidates the established marker's currently eligible promoter.
@@ -1158,8 +1160,7 @@ export class CommerceDomain {
       // (promo, occurrence) authorization on an ACTIVE engagement, pinning
       // the exact accepted revision, or refuses outright.
       const attribution = resolveAttribution(this.db, promo ? { id: String(promo.id), agent_id: promoAgentId } : undefined, String(occurrence.id), (referralAgent?.id as string | undefined) ?? null);
-      const occupied = Number(one(this.db, "SELECT COUNT(*) AS occupied FROM bookings WHERE occurrence_id = ? AND status IN ('RESERVED', 'CONFIRMED')", occurrence.id)?.occupied ?? 0);
-      if (occupied >= Number(occurrence.capacity)) throw new DomainError("SOLD_OUT", 409);
+      if (occurrenceInventory(this.db, occurrence as Row & { id: string }).available <= 0) throw new DomainError("SOLD_OUT", 409);
       const orderId = id(); const bookingId = id(); const paymentId = id(); const statusId = publicId();
       let orderNumber = publicOrderNumber();
       // The unique index is the authority; the lookup keeps the astronomically
@@ -1842,19 +1843,25 @@ export class CommerceDomain {
       const before = one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId);
       if (!before) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
       if (before.fulfillment_status !== "SCHEDULED") throw new DomainError("OCCURRENCE_TERMINAL", 409);
-      // HTTP callers always supply this value. The fallback keeps direct
-      // in-process fixtures compatible while the public Admin boundary stays
-      // compare-and-set based.
-      const expectedRevision = Number(input.expected_revision ?? before.admin_revision);
+      const expectedRevision = Number(input.expected_revision);
       if (!Number.isInteger(expectedRevision) || expectedRevision !== Number(before.admin_revision)) {
         throw new DomainError("OCCURRENCE_REVISION_CONFLICT", 409);
       }
-      const occupancy = Number(one(this.db, "SELECT COUNT(*) AS count FROM bookings WHERE occurrence_id = ? AND status IN ('RESERVED', 'CONFIRMED')", occurrenceId)?.count ?? 0);
-      if (input.capacity !== undefined && Number(input.capacity) < occupancy) throw new DomainError("CAPACITY_BELOW_OCCUPANCY", 409);
-      const fields = ["title", "starts_at", "ends_at", "timezone", "venue_status", "venue_name", "venue_address", "venue_public", "venue_disclosure_text", "venue_announce_by", "price_kopecks", "capacity", "sales_status", "visibility"] as const;
+      if (input.capacity !== undefined) throw new DomainError("VALIDATION_ERROR", 422);
+      const inventory = input.inventory;
+      if (inventory !== undefined && (!inventory || typeof inventory !== "object" || Array.isArray(inventory))) throw new DomainError("VALIDATION_ERROR", 422);
+      const normalizedInput = { ...input, ...(inventory as Record<string, unknown> | undefined) };
+      delete (normalizedInput as Record<string, unknown>).inventory;
+      const target = resolveInventoryTarget(before, normalizedInput);
+      try { assertInventoryTarget(seatCommitments(this.db, occurrenceId), target); }
+      catch (error) {
+        if (error instanceof InventoryTargetError) throw new DomainError(error.code, 409, error.code, error.details);
+        throw error;
+      }
+      const fields = ["title", "starts_at", "ends_at", "timezone", "venue_status", "venue_name", "venue_address", "venue_public", "venue_disclosure_text", "venue_announce_by", "price_kopecks", "capacity", "admin_reserved_seats", "sales_status", "visibility"] as const;
       const persistedPatch = Object.fromEntries(fields
-        .filter((field) => input[field] !== undefined)
-        .map((field) => [field, typeof input[field] === "boolean" ? Number(input[field]) : input[field]]));
+        .filter((field) => normalizedInput[field] !== undefined)
+        .map((field) => [field, typeof normalizedInput[field] === "boolean" ? Number(normalizedInput[field]) : normalizedInput[field]]));
       const changed = fields.filter((field) => persistedPatch[field] !== undefined && persistedPatch[field] !== before[field]);
       if (!changed.length) return before;
       const next = { ...before, ...Object.fromEntries(changed.map((field) => [field, persistedPatch[field]])) };
@@ -1892,7 +1899,8 @@ export class CommerceDomain {
         // and activated again, can restore it.
         suspendEngagementsForOccurrenceMaterialChange(this.db, occurrenceId, "OCCURRENCE_MATERIAL_REVISION_CHANGED");
       }
-      this.recordAdminCommandAudit(adminId, "OCCURRENCE_EDITED", "occurrence", occurrenceId, typeof input.audit_context === "string" ? input.audit_context : undefined, idempotencyKey, payload);
+      const inventoryDetails = Object.fromEntries(["capacity", "admin_reserved_seats"].filter((field) => changed.includes(field as typeof changed[number])).map((field) => [field, { from: before[field], to: after[field] }]));
+      this.recordAdminCommandAudit(adminId, "OCCURRENCE_EDITED", "occurrence", occurrenceId, typeof input.audit_context === "string" ? input.audit_context : undefined, idempotencyKey, payload, Object.keys(inventoryDetails).length ? { inventory: inventoryDetails } : undefined);
       return after;
     });
   }
@@ -3411,7 +3419,7 @@ export class CommerceDomain {
     const requests = many(this.db, `SELECT request.id, request.email_normalized, request.email_hash,
       o.id AS occurrence_id, o.title AS occurrence_title, o.starts_at, o.timezone, c.title AS city_title,
       o.sales_status, o.fulfillment_status,
-      o.capacity - (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = o.id AND b.status IN ('RESERVED', 'CONFIRMED')) AS availability
+      ${availableSeatsSql("o")} AS availability
       FROM occurrence_notification_requests request
       JOIN occurrences o ON o.id = request.occurrence_id
       JOIN cities c ON c.id = o.city_id
@@ -3419,7 +3427,7 @@ export class CommerceDomain {
         AND o.sales_status = 'OPEN'
         AND o.fulfillment_status = 'SCHEDULED'
         AND julianday(o.starts_at) > julianday(?)
-        AND o.capacity - (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = o.id AND b.status IN ('RESERVED', 'CONFIRMED')) > 0
+        AND ${availableSeatsSql("o")} > 0
         AND NOT EXISTS (SELECT 1 FROM occurrence_notification_intents intent
           WHERE intent.notification_request_id = request.id AND intent.superseded_at IS NULL)
       ORDER BY request.created_at, request.id LIMIT ?`, timestamp, limit)
@@ -3449,7 +3457,7 @@ export class CommerceDomain {
 
   private isActiveOccurrenceNotification(outboxId: string) {
     const request = one(this.db, `SELECT request.id, o.sales_status, o.fulfillment_status, o.starts_at,
-      o.capacity - (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = o.id AND b.status IN ('RESERVED', 'CONFIRMED')) AS availability
+      ${availableSeatsSql("o")} AS availability
       FROM occurrence_notification_intents intent JOIN occurrence_notification_requests request ON request.id = intent.notification_request_id
       JOIN occurrences o ON o.id = request.occurrence_id
       WHERE intent.outbox_id = ? AND intent.superseded_at IS NULL AND request.superseded_at IS NULL`, outboxId);
@@ -3602,12 +3610,13 @@ export class CommerceDomain {
     });
   }
 
-  private recordAdminCommandAudit(adminId: string, action: string, entityType: string, entityId: string, auditContext: string | undefined, idempotencyKey: string, payload: unknown) {
+  private recordAdminCommandAudit(adminId: string, action: string, entityType: string, entityId: string, auditContext: string | undefined, idempotencyKey: string, payload: unknown, details?: Record<string, unknown>) {
     this.db.prepare("INSERT INTO admin_audit_log(id, admin_id, action, entity_type, entity_id, details_json) VALUES (?, ?, ?, ?, ?, ?)")
       .run(id(), adminId, action, entityType, entityId, JSON.stringify({
         audit_context: auditContext ?? null,
         idempotency_key_hash: sha256(idempotencyKey),
         canonical_request_hash: sha256(canonical(payload)),
+        ...details,
       }));
   }
 

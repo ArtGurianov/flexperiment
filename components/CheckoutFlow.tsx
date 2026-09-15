@@ -143,6 +143,7 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
       setQuote(null);
       const code = error instanceof Error ? error.message : "QUOTE_UNAVAILABLE";
       if (["SOLD_OUT", "SALES_NOT_OPEN", "SALES_TEMPORARILY_PAUSED"].includes(code)) {
+        if (code === "SOLD_OUT") setMessage("Свободных мест больше нет. Данные о наличии обновились.");
         await refreshOccurrenceState(id);
         return false;
       }

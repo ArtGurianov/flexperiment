@@ -41,9 +41,11 @@ const PRESENTATIONS: Readonly<Record<string, AdminErrorPresentation>> = {
     message: "Событие изменилось у другого оператора.",
     hint: "Данные перечитаны. Сверьте изменения и повторите правку на актуальной версии.",
   },
-  CAPACITY_BELOW_OCCUPANCY: {
-    message: "Вместимость нельзя сделать меньше уже занятых мест.",
-    hint: "Укажите значение не меньше confirmed и reserved бронирований.",
+  CAPACITY_BELOW_COMMITTED_SEATS: {
+    message: "Вместимость нельзя сделать меньше мест, уже занятых покупателями.",
+  },
+  RESERVE_EXCEEDS_AVAILABLE_CAPACITY: {
+    message: "Резерв нельзя сделать больше свободной вместимости.",
   },
   CONFIRMATION_REQUIRED: { message: "Фраза подтверждения не совпадает." },
   VALIDATION_ERROR: { message: "Проверьте заполнение полей." },

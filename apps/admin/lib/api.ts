@@ -1,5 +1,5 @@
 export class AdminApiError extends Error {
-  constructor(readonly status: number, readonly code: string) {
+  constructor(readonly status: number, readonly code: string, readonly details?: Record<string, unknown>) {
     super(code);
   }
 }
@@ -15,8 +15,8 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
       headers: { Accept: "application/json", ...init.headers },
     });
     if (!response.ok) {
-      const body = (await response.json().catch(() => null)) as { error?: { code?: string } } | null;
-      throw new AdminApiError(response.status, body?.error?.code ?? `HTTP_${response.status}`);
+      const body = (await response.json().catch(() => null)) as { error?: { code?: string; details?: Record<string, unknown> } } | null;
+      throw new AdminApiError(response.status, body?.error?.code ?? `HTTP_${response.status}`, body?.error?.details);
     }
     return response.json() as Promise<T>;
   } catch (error) {
