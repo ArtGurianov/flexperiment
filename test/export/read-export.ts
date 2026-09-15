@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 
 /**
@@ -21,6 +21,10 @@ const OUT = path.join(process.cwd(), "out");
 export const outPath = (relative: string): string => path.join(OUT, relative);
 
 export const exportExists = (relative: string): boolean => existsSync(outPath(relative));
+
+/** Entries of a directory in the export, or [] when it does not exist. */
+export const listExport = (relative: string): readonly string[] =>
+  existsSync(outPath(relative)) ? readdirSync(outPath(relative)) : [];
 
 export function readExport(relative: string): string {
   const file = outPath(relative);

@@ -1,1 +1,1 @@
-{"occurrences":[],"schema_version":1,"tombstones":[]}
+{"occurrences":[{"city":"saint-petersburg","city_title":"Санкт-Петербург","ends_at":"2026-09-25T12:00:00.000Z","event_slug":"saint-petersburg-727b3860-598c-43a3-8739-fd70d2e9deae","fulfillment_status":"SCHEDULED","id":"727b3860-598c-43a3-8739-fd70d2e9deae","price_kopecks":380000,"starts_at":"2026-09-25T10:00:00.000Z","timezone":"Europe/Moscow","title":"Санкт-Петербург","venue":{"address":null,"name":null,"status":"TO_BE_ANNOUNCED"}}],"schema_version":1,"tombstones":[]}
