@@ -3,17 +3,20 @@
 **Status: operator report. This document does not authorize or execute a
 release, a production data change, a migration, or a deploy.**
 
-**Nothing in it has been deployed.** Steps 1–6 of the cutover sequence in §2
-have since been carried out — the occurrence was corrected in Commerce by an
-operator, and the snapshot was regenerated, reviewed and merged. Steps 7–11,
-which are the release itself, have not been.
+**The release described here has since been carried out**, together with one
+corrective release, and the sitemap has been submitted to both search engines.
+The full sequence is in the Release record below. This document still does not
+authorize anything; it records what was decided and what happened.
 
 The findings below were observed by read-only `GET` against public endpoints
-and by inspecting the built static export. No production data was mutated in
-the course of producing this document or the work it describes; the correction
-recorded in §1.1 was made separately, through the admin surface that owns
-occurrences. No deploy or ref promotion occurred, and no Coolify change was
-made.
+and by inspecting the built static export. **No production data was mutated in
+the course of this work**, and that remains true through both releases: the
+occurrence correction recorded in §1.1 was made separately by an operator,
+through the admin surface that owns occurrences.
+
+The two deploys and two ref promotions that did occur were the controlled
+releases recorded below, each dispatched through the ordinary generic lane with
+its own approval gate.
 
 This is a **historical findings record**. Sections are marked RESOLVED as they
 are addressed and the superseded observations are kept, labelled as what was
@@ -21,25 +24,116 @@ observed before remediation, so the reasoning behind each decision stays
 auditable. Nothing here is rewritten to match the present.
 
 
-## Current release status
+## Release record
 
-*As of 2026-09-15.*
+*Written 2026-09-15, after the corrective release. This is a record of what
+happened, not a status page — it is not expected to be updated as production
+moves on. The current deployed SHA is `production-deploy`, and asking git is
+always more reliable than asking a document.*
+
+### Initial SEO cutover
 
 | | |
 |---|---|
-| SEO implementation | **merged** — PR #120 |
-| First authoritative snapshot | **merged** — PR #121, `29abfefe583998193b04f4c355794d87590bd839` |
-| `main` CI on that SHA | green (run `34948839920`, all 17 steps) |
-| Production deployment | **NOT DEPLOYED** |
+| Implementation | PR #120 |
+| First authoritative snapshot | PR #121 |
+| Deployed SHA | `bd10b391592eff6bda9ee26115b0bb3f8d36d5de` |
+| Publication ref | `refs/heads/runtime/generic-bd10b391592eff6bda9ee26115b0bb3f8d36d5de` |
+| Promotion run | `34951783112` |
+| Deploy run | `34951912581` |
+| Converged | frontend, admin and commerce, all at that SHA |
 
-The running production container still serves the pre-SEO image. `robots.txt`
-and `sitemap.xml` therefore still 404 in production, and no event or city page
-is reachable yet. Everything in this document that describes *live* behaviour
-describes the pre-release state until that changes.
+### Post-deploy discovery: missing social images
 
-Remaining before release: §2 steps 7–11, plus a fresh
-`commerce:seo-snapshot:generate --source … --check` immediately beforehand to
-catch any last-minute Commerce drift.
+Probing the live pages after deployment found that `/events/…` and `/cities/…`
+emitted **neither `og:image` nor `twitter:image`**. The home page and the legal
+pages were correct.
+
+Next injects the `app/opengraph-image.png` and `app/twitter-image.png` file
+conventions only where a route has not declared the namespace itself; a route
+whose `generateMetadata` returns an `openGraph` or `twitter` object owns that
+namespace and gets no injection. Both dynamic routes return both objects.
+
+The legal route had hit the same behaviour earlier and was fixed only halfway,
+which is why it looked solved: it declares `openGraph` alone, so naming `images`
+there restored `og:image` while `twitter:image` kept arriving by inheritance.
+
+**Why no test caught it.** The export conformance suite asserted the social tags
+against a hardcoded list of static routes. That list was written while the
+snapshot was empty and there were no event or city pages to cover — so the first
+inventory that produced them produced them untested. The fix was not only to
+name `images`, but to derive the asserted route set from the committed snapshot,
+so the matrix grows with the inventory. A guard case asserts the derived set is
+neither empty nor smaller than the snapshot implies, so `it.each` cannot
+silently degrade into proving nothing.
+
+Impact was cosmetic: link previews were text-only. Indexing, canonicals,
+structured data and pricing were unaffected and had been verified correct.
+
+### Corrective release
+
+| | |
+|---|---|
+| Change | PR #123 |
+| Deployed SHA | `de196f74a3b17f9fc73453c5e8d2163b3d5d5a28` |
+| Publication ref | `refs/heads/runtime/generic-de196f74a3b17f9fc73453c5e8d2163b3d5d5a28` |
+| Promotion run | `34957149947` |
+| Deploy run | `34958392116` |
+| Converged | frontend, admin and commerce, all at that SHA |
+
+### Production verification at `de196f74…`
+
+    frontend release.json      de196f74…
+    admin release.json         de196f74…
+    commerce /healthz          {"ok":true}
+
+    /robots.txt                200, advertises the sitemap
+    /sitemap.xml               200, 7 entries
+    event page                 200, self-canonical, indexable
+      date/time                25 сентября 2026 г., 13:00  (Europe/Moscow from 10:00Z)
+      price                    3 800,00 ₽
+      venue                    «Площадка уточняется…»
+      Event JSON-LD            0 blocks — correctly withheld while venue is TBA
+    city page                  200, self-canonical, live-dates title branch
+    home page                  links the city
+    og:image + twitter:image   present on home, legal, event and city
+    twitter:card               summary_large_image everywhere
+    unknown URL                404 with the branded body, no nginx version
+    /index.txt                 200 + X-Robots-Tag: noindex (client router intact)
+    /_next/static/*            public, max-age=31536000, immutable
+    /robots.txt                no X-Robots-Tag
+
+### Search engine submission
+
+Both properties were created and verified by the operator on 2026-09-15; before
+that neither console had the site at all (see §4).
+
+| | |
+|---|---|
+| Yandex Webmaster | Submitted 15.09.2026. Status **«Очередь на обработку»** — queued, no error. Yandex states processing takes 1–2 weeks. |
+| Google Search Console | Submitted 15.09.2026. Status **«Не удалось обработать файл Sitemap»**, 0 pages discovered, last processed 15.09.2026. **Not queued — Google fetched it and failed.** |
+
+**The Google failure is open and unexplained.** What is known:
+
+- The sitemap serves correctly to a Googlebot user agent from outside:
+  `200`, `text/xml`, 616 bytes, well-formed. So do `/robots.txt` and the
+  home page.
+- Yandex queued the identical URL without complaint.
+- The submission landed close to the corrective deploy (`34958392116`,
+  10:35Z), which restarts all three Coolify services. A fetch during that
+  window would fail.
+
+That last point is the leading hypothesis but is **not confirmed** — Google's
+fetch log is not visible from here.
+
+Google retries a failed sitemap fetch automatically *for a few days*, which is
+its own documented wording rather than a specific interval. As an operator
+policy: re-check after 24–48 hours, and if the status is still failed, resubmit
+in Search Console. If it fails again after a resubmit, investigate whether the
+Traefik/Coolify edge is refusing Google's fetch IP ranges rather than assuming
+the origin is at fault — the origin has been verified good, serving
+`200 text/xml` to a Googlebot user agent while Yandex accepted the identical
+URL.
 
 
 ## 1. Production inventory is a fixture, and the snapshot rejects it — RESOLVED
@@ -181,8 +275,12 @@ operators to invent a distinct title.
 
 ## 2. Cutover sequence
 
-**Steps 1–6 are done** (see the status table at the top). Steps 7–11 remain, and
-**none of them has been executed.**
+> **COMPLETE — 2026-09-15.** Every step below was carried out, twice: once for
+> the initial cutover `bd10b391…` and once for the corrective release
+> `de196f74…`. The runs and evidence are in the Release record at the top.
+> Step 11 (search engine submission) is done, with one open item — Google
+> reports a sitemap processing failure. The sequence is kept as the runbook for
+> the next snapshot refresh.
 
 1. ~~Correct the occurrence in Commerce (timezone via its city; and decide on
    `title`, `ends_at`, `announce_by`, price).~~ Done — see §1.1.
@@ -247,20 +345,60 @@ correcting the apex block is a deployment-topology decision rather than an SEO
 one. Flagged so it is not mistaken for a description of production.
 
 
-## 4. Search Console / Webmaster verification
+## 4. Search Console / Webmaster verification — RESOLVED
 
-**The site is not claimed here to be unverified.** No HTML meta verification
-token exists in the repository, but DNS-based verification is invisible from a
-repository and may well already be in place. Check the property in each console
-before adding anything.
+> **RESOLVED — 2026-09-15.** The caution below was correct and the check was
+> made. Before submission, `flexperiment.ru` was absent from **both** consoles:
+> Google Search Console had no properties at all under the signed-in account,
+> and Yandex Webmaster held one site, which was a different domain. So the site
+> was genuinely unverified — but that was established by looking, not assumed.
+>
+> Both properties were created and verified by the operator on 2026-09-15. No
+> HTML meta token was added: `app/layout.tsx` still carries the note and no
+> placeholder, as below.
+
+
+### Original caution, before console verification
+
+> Written before anyone had looked in either console. Retained because the
+> caution was the right instinct and it is what prompted the check; the answer
+> it asked for is in the RESOLVED block above.
+>
+> **The site is not claimed here to be unverified.** No HTML meta verification
+> token exists in the repository, but DNS-based verification is invisible from a
+> repository and may well already be in place. Check the property in each
+> console before adding anything.
+
+### Verification method
 
 If a token is ever needed, `app/layout.tsx` can carry
 `verification: { google, yandex }` from build-time values. No placeholder is
 hardcoded, because a wrong verification token is worse than none.
 
-**Prefer DNS verification**: one TXT record covers the apex, `www`, and every
-subdomain, including `admin.` and `partner.`, and it survives a frontend
-redeploy.
+Neither console needed one. What is *verified* here is the negative: the
+deployed HTML carries no `google-site-verification` or `yandex-verification`
+meta tag, `app/layout.tsx` declares no `verification` field, and `public/`
+holds no verification file. So whichever method was used lay outside this
+repository, and the frontend artifact is unchanged by it. The exact method the
+operator chose in each console is not recorded here because it was not
+observed.
+
+**Prefer DNS verification**, but the two consoles do not mean the same thing by
+it, and an earlier draft of this document wrongly stated a single combined
+claim:
+
+- **Google Search Console** — a *Domain property* verified by DNS at
+  `flexperiment.ru` covers every protocol and every subdomain, `www.`, `admin.`
+  and `partner.` included. One record, one property.
+- **Yandex Webmaster** — URL variants and subdomains are *separate added
+  sites*: `https://flexperiment.ru`, `https://www.flexperiment.ru` and each
+  subdomain are distinct entries, and every one added must have its rights
+  verified. The primary site's verification code can be reused when verifying a
+  subdomain, but the site still has to be added and verified in its own right.
+
+DNS remains the preferable method for both, because it survives a frontend
+redeploy where an HTML file or meta tag does not. What it does not do is give
+Yandex the blanket coverage it gives Google.
 
 
 ## 5. The home page's editorial price
