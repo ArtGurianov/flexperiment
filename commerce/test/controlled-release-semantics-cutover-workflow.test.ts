@@ -8,6 +8,7 @@ import { releaseControlSemanticsPaths } from "../src/generic-production-deploy-b
 const workflow = readFileSync(".github/workflows/controlled-release-semantics-cutover.yml", "utf8");
 const generic = readFileSync(".github/workflows/controlled-production-deploy.yml", "utf8");
 const genericPrimitive = readFileSync(".github/actions/controlled-production-deploy/action.yml", "utf8");
+const genericExecution = readFileSync(".github/actions/controlled-production-deploy-execution/action.yml", "utf8");
 
 const assertBoundary = (paths: readonly string[]) => {
   const file = join(mkdtempSync(join(tmpdir(), "release-semantics-boundary-")), "paths.bin");
@@ -112,6 +113,9 @@ describe("controlled release-semantics cutover", () => {
     };
     const strip = (source: string) =>
       stripMaterializedCoverage(source)
+        .replace(/^ {6}- uses: \.\/\.github\/actions\/controlled-production-deploy-execution\n/gm, "")
+        .replace(/ {12}if \[\[ -n "\$\{INPUT_EXPECTED_PUBLISHED_REF:-\}" \]\]; then\n {14}\[\[ "\$\(git ls-remote --exit-code origin "\$INPUT_EXPECTED_PUBLISHED_REF" \| awk '\{print \$1\}'\)" == "\$TARGET_SHA" \]\] \|\| \{ echo "ORDINARY_DEPLOY_PUBLICATION_MOVED_SINCE_PREFLIGHT" >&2; exit 1; \}\n {12}fi\n/g, "")
+        .replace(/ {10}if \[\[ -n "\$\{INPUT_EXPECTED_PUBLISHED_REF:-\}" \]\]; then\n {12}\[\[ "\$\(git ls-remote --exit-code origin "\$INPUT_EXPECTED_PUBLISHED_REF" \| awk '\{print \$1\}'\)" == "\$TARGET_SHA" \]\] \|\| \{ echo "ORDINARY_DEPLOY_PUBLICATION_MOVED_SINCE_PREFLIGHT" >&2; exit 1; \}\n {10}fi\n/g, "")
         .split("\n")
         .filter((line) => line.trim() !== "" && !line.trim().startsWith("#"))
         .filter((line) => !line.startsWith("name: Controlled "))
@@ -128,7 +132,7 @@ describe("controlled release-semantics cutover", () => {
         .replace(/^\s*timeout-minutes: 12\n/gm, "")
         .replace(/commerce:(production-deploy|release-semantics-cutover):assert-boundary/g, "ASSERT_BOUNDARY");
     const cutoverPrimitive = workflow.slice(workflow.indexOf("      - name: Assert this controller is exact, current main"));
-    const genericSteps = genericPrimitive.slice(genericPrimitive.indexOf("      - name: Assert this controller is exact, current main"));
+    const genericSteps = `${genericPrimitive.slice(genericPrimitive.indexOf("      - name: Assert this controller is exact, current main"))}\n${genericExecution.slice(genericExecution.indexOf("      - name: Verify an already completed deployment"))}`;
     expect(cutoverPrimitive).not.toContain("INPUT_MATERIALIZED_RELEASE_PACKET");
     expect(genericSteps).toContain("INPUT_MATERIALIZED_RELEASE_PACKET");
     expect(strip(cutoverPrimitive)).toBe(strip(genericSteps));

@@ -1,0 +1,57 @@
+name: Controlled ordinary schema production deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      expected_candidate_sha:
+        description: Exact promoted runtime-candidate SHA.
+        required: true
+        type: string
+      expected_controller_sha:
+        description: Exact current main controller SHA.
+        required: true
+        type: string
+      expected_controller_tree:
+        description: Exact controller tree.
+        required: true
+        type: string
+      expected_production_deploy_sha:
+        description: Exact production-deploy CAS base.
+        required: true
+        type: string
+      expected_published_ref:
+        description: Immutable runtime/schema ref proving candidate provenance.
+        required: true
+        type: string
+
+permissions:
+  contents: write
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 45
+    env:
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+      COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_COMMERCE_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_FRONTEND_DEPLOY_WEBHOOK_URL }}
+      COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL: ${{ secrets.COOLIFY_ADMIN_DEPLOY_WEBHOOK_URL }}
+      PUBLIC_FRONTEND_URL: ${{ vars.PUBLIC_FRONTEND_URL }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+      ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
+      CONTROLLER_SHA: ${{ github.sha }}
+      INPUT_EXPECTED_CANDIDATE_SHA: ${{ inputs.expected_candidate_sha }}
+      INPUT_EXPECTED_CONTROLLER_SHA: ${{ inputs.expected_controller_sha }}
+      INPUT_EXPECTED_CONTROLLER_TREE: ${{ inputs.expected_controller_tree }}
+      INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA: ${{ inputs.expected_production_deploy_sha }}
+      INPUT_EXPECTED_PUBLISHED_REF: ${{ inputs.expected_published_ref }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - uses: ./.github/actions/controlled-schema-production-deploy

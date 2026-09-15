@@ -74,6 +74,7 @@ export const controlPlanePaths: readonly string[] = [
   "commerce/src/assert-release-semantics-cutover-boundary.ts",
   "commerce/src/assert-generic-production-deploy-ready.ts",
   "commerce/src/assert-candidate-runtime-ready.ts",
+  "commerce/src/ordinary-schema-release.ts",
   "commerce/src/reconcile-generic-production-deploy.ts",
   "commerce/src/reconcile-cutover.ts",
   // Release Control v2 Phase 1 packet construction/validation. These files

@@ -22,6 +22,7 @@
     "commerce:production-deploy:reconcile": "tsx commerce/src/reconcile-generic-production-deploy.ts",
     "commerce:production-deploy:assert-ready": "tsx commerce/src/assert-generic-production-deploy-ready.ts",
     "commerce:production-deploy:assert-boundary": "tsx commerce/src/assert-generic-production-deploy-boundary.ts",
+    "commerce:ordinary-schema:admit": "tsx commerce/src/ordinary-schema-release.ts",
     "commerce:release-semantics-cutover:assert-boundary": "tsx commerce/src/assert-release-semantics-cutover-boundary.ts",
     "commerce:release-control-v2:materialize": "tsx commerce/src/materialize-release-control-v2-candidate.ts",
     "commerce:promo:audit": "tsx commerce/src/audit-promo-legacy-contract.ts",

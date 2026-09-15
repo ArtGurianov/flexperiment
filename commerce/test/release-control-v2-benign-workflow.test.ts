@@ -6,6 +6,7 @@ const promotion = readFileSync(".github/workflows/controlled-runtime-candidate-p
 const deploy = readFileSync(".github/workflows/controlled-production-deploy.yml", "utf8");
 const promotionPrimitive = readFileSync(".github/actions/controlled-runtime-candidate-promotion/action.yml", "utf8");
 const deployPrimitive = readFileSync(".github/actions/controlled-production-deploy/action.yml", "utf8");
+const deployExecution = readFileSync(".github/actions/controlled-production-deploy-execution/action.yml", "utf8");
 
 function section(source: string, startMarker: string, endMarker: string): string {
   const start = source.indexOf(startMarker);
@@ -42,6 +43,7 @@ describe("Release Control v2 BENIGN orchestration", () => {
   it("keeps both shared production primitives valid composite actions", () => {
     assertCompositeMetadata(promotionPrimitive);
     assertCompositeMetadata(deployPrimitive);
+    assertCompositeMetadata(deployExecution);
     expect(deployPrimitive).not.toContain("timeout-minutes:");
   });
 
@@ -115,10 +117,10 @@ describe("Release Control v2 BENIGN orchestration", () => {
     expect(promotion).toContain("uses: ./.github/actions/controlled-runtime-candidate-promotion");
     expect(deploy).toContain("uses: ./.github/actions/controlled-production-deploy");
     expect(promotionPrimitive).not.toContain("controlled-production-deploy.yml");
-    expect(deployPrimitive).toContain("controlled-coolify-deploy.sh");
-    expect(deployPrimitive).toContain("set-production-deploy-ref.sh");
+    expect(deployExecution).toContain("controlled-coolify-deploy.sh");
+    expect(deployExecution).toContain("set-production-deploy-ref.sh");
     expect(promotionPrimitive).not.toContain("environment:");
-    expect(deployPrimitive).not.toContain("environment:");
+    expect(deployExecution).not.toContain("environment:");
     expect(workflow).not.toContain("/agent-referrals/activate");
     expect(promotion).toContain("workflow_dispatch:");
     expect(deploy).toContain("workflow_dispatch:");

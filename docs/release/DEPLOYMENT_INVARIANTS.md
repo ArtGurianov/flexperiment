@@ -819,6 +819,15 @@ release-semantics cutover   RELEASE_CONTROL only
 candidate protocol          SCHEMA or LEGAL
 ```
 
+Ordinary SCHEMA uses the smallest candidate protocol: append-only migration
+admission publishes immutable `refs/heads/runtime/schema-<target_sha>`
+provenance, the existing runtime-candidate promotion performs its sole CAS,
+and a schema admission adapter supplies the target migration-inventory
+expectation to the shared controlled deployment execution. Legal remains a
+separate authority and COMPATIBILITY remains fail-closed; neither can use the
+schema lane. No schema-specific durable state, certificate, generation ledger,
+or additional approval exists.
+
 `RELEASE_CONTROL` is the state machine and its enforcement, for which pause →
 deploy → convergence → reopen is sufficient proof. `COMPATIBILITY` — crypto,
 certification evidence, promo pricing, basis points, legal manifest shape,
@@ -1113,4 +1122,3 @@ ordinary promotion.
 Phase 1 is not blocked on anything. Three items remain, each independent of it
 and of each other: retention policy for the backup databases sharing the
 production volume, the `runtime-candidate` advance, and the probe defect above.
-
