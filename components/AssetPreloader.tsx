@@ -23,8 +23,31 @@ const IMAGE_ASSETS = [
   "/noize.webp",
 ];
 
-/** Hard ceiling on how long the loader may ever be shown. */
-const SAFETY_TIMEOUT_MS = 10000;
+/**
+ * What this deliberately does NOT wait for: the hero background video.
+ *
+ * The overlay used to hold the entire page behind `bg.webm` reaching `canplay`
+ * — a ~29MB remote file — with a 10s safety timeout as the only floor. That
+ * inverted the critical path: the two assets the overlay actually needs to hand
+ * over to a painted page are the 71KB of local backgrounds above, and every
+ * visitor paid a video's buffering time before seeing any content at all.
+ *
+ * The video now loads on its own schedule after first paint (see
+ * HeroBackgroundVideo) and simply appears when it is ready. Nothing on screen
+ * depends on it, so nothing needs to wait for it.
+ */
+
+/**
+ * Hard ceiling on how long the loader may ever be shown.
+ *
+ * This used to be 10s, because the gate also waited on a ~29MB remote
+ * `bg.webm` buffering over the network — which put a media-readiness race in
+ * front of the first paint of every visit, with a ten-second worst case. The
+ * video is no longer gated on (see the note above IMAGE_ASSETS), so the only
+ * thing left to wait for is two small same-origin images that the document head
+ * has already preloaded. The ceiling is sized for that, not for a video.
+ */
+const SAFETY_TIMEOUT_MS = 2500;
 /** Lets the bar reach 100% before the overlay fades, rather than cutting away. */
 const SETTLE_MS = 250;
 /** Announcement granularity for screen readers — see the live region below. */
@@ -32,26 +55,6 @@ const ANNOUNCE_STEP = 25;
 
 /** Fade duration of the overlay, mirrored from `duration-500` below. */
 const FADE_MS = 500;
-
-/**
- * `canplay` rather than `canplaythrough`, because browsers stop buffering once
- * playback is safe and waiting for the whole file would stall here.
- */
-const SETTLE_EVENTS = ["canplay", "error"] as const;
-
-/**
- * `suspend` is the escape hatch for iOS Low Power Mode, where the browser
- * declines to buffer a preload="auto" source until a user gesture — `canplay`
- * never fires and the loader would otherwise sit out the whole safety timeout
- * for every visitor in that mode.
- *
- * It is not iOS-specific though: desktop browsers fire it on any ordinary
- * "buffered enough for now" pause, which can land just before `canplay`. Hence
- * the grace period rather than settling outright — where `canplay` is coming it
- * arrives well inside this window and wins, so the strict gate is preserved
- * everywhere the browser is actually still loading.
- */
-const SUSPEND_GRACE_MS = 600;
 
 export default function AssetPreloader({
   children,
@@ -73,9 +76,9 @@ export default function AssetPreloader({
     let finished = false;
 
     // One slot per asset holding its own 0..1 fraction. Averaging fractions
-    // rather than summing bytes is what lets a 29MB video and a 21KB image
-    // share a bar without the image being invisible on it.
-    const TASK_COUNT = IMAGE_ASSETS.length + 1;
+    // rather than summing bytes is what keeps a 50KB and a 21KB image
+    // contributing equally to the bar.
+    const TASK_COUNT = IMAGE_ASSETS.length;
     const fraction = new Array<number>(TASK_COUNT).fill(0);
     const controller = new AbortController();
     // Declared up front so finish() can clear it whichever path gets there
@@ -149,73 +152,8 @@ export default function AssetPreloader({
       }
     };
 
-    // Reads the real <video> rather than fetching the URL again. A media
-    // element loads through range requests into its own cache, so a parallel
-    // fetch() would download all 29MB a second time instead of priming it.
-    const trackVideo = (slot: number) =>
-      new Promise<void>((resolve) => {
-        const video =
-          document.querySelector<HTMLVideoElement>("[data-hero-video]");
-        if (!video) {
-          fraction[slot] = 1;
-          report();
-          resolve();
-          return;
-        }
-
-        let suspendTimer = 0;
-
-        const settle = () => {
-          fraction[slot] = 1;
-          report();
-          window.clearTimeout(suspendTimer);
-          video.removeEventListener("progress", update);
-          video.removeEventListener("suspend", onSuspend);
-          for (const event of SETTLE_EVENTS) {
-            video.removeEventListener(event, settle);
-          }
-          resolve();
-        };
-
-        const onSuspend = () => {
-          window.clearTimeout(suspendTimer);
-          suspendTimer = window.setTimeout(settle, SUSPEND_GRACE_MS);
-        };
-
-        const update = () => {
-          // Data is arriving again, so the pause that armed the escape hatch is
-          // over — otherwise a browser that suspended and then resumed would
-          // still settle 600ms later, mid-download. A later `suspend` re-arms
-          // it, so the Low Power case stays covered.
-          window.clearTimeout(suspendTimer);
-
-          const { buffered, duration } = video;
-          if (duration > 0 && buffered.length > 0) {
-            fraction[slot] = Math.min(
-              1,
-              buffered.end(buffered.length - 1) / duration,
-            );
-            report();
-          }
-        };
-
-        // HAVE_FUTURE_DATA or better means it is already playable.
-        if (video.readyState >= 3) {
-          settle();
-          return;
-        }
-        video.addEventListener("progress", update);
-        video.addEventListener("suspend", onSuspend);
-        for (const event of SETTLE_EVENTS) {
-          video.addEventListener(event, settle);
-        }
-      });
-
     timeout = window.setTimeout(finish, SAFETY_TIMEOUT_MS);
-    void Promise.all([
-      ...IMAGE_ASSETS.map(loadImage),
-      trackVideo(IMAGE_ASSETS.length),
-    ]).then(finish, finish);
+    void Promise.all(IMAGE_ASSETS.map(loadImage)).then(finish, finish);
 
     return () => {
       cancelled = true;
@@ -282,7 +220,15 @@ export default function AssetPreloader({
             isHidden ? "pointer-events-none opacity-0" : "opacity-100"
           }`}
         >
-          {/* overflow-clip is belt-and-braces now that the fill is clipped in
+          {/* The three frames are `loading="eager"` but deliberately NOT
+              fetchPriority="high" any more. They were the only high-priority
+              imagery on the whole site, and 352KB of loader artwork at the head
+              of the queue outranked /background.webp — the actual LCP resource,
+              which paints the moment this overlay fades. Eager is enough: they
+              are in the initial markup, so they are discovered immediately and
+              simply queue behind the page's own critical image.
+
+              overflow-clip is belt-and-braces now that the fill is clipped in
               place; kept because it costs nothing and, unlike overflow-hidden,
               does not turn this into a scroll container. */}
           <div className="relative w-[min(18rem,70vw)] overflow-clip">
@@ -293,7 +239,6 @@ export default function AssetPreloader({
               alt=""
               aria-hidden="true"
               loading="eager"
-              fetchPriority="high"
               sizes="288px"
               className="h-auto w-full select-none"
             />
@@ -311,7 +256,6 @@ export default function AssetPreloader({
               alt=""
               aria-hidden="true"
               loading="eager"
-              fetchPriority="high"
               sizes="288px"
               className="absolute inset-0 h-full w-full select-none transition-[clip-path] duration-200 ease-out motion-reduce:transition-none"
               style={{ clipPath: `inset(0 ${(1 - progress) * 100}% 0 0)` }}
@@ -322,7 +266,6 @@ export default function AssetPreloader({
               alt=""
               aria-hidden="true"
               loading="eager"
-              fetchPriority="high"
               sizes="288px"
               className="pointer-events-none absolute inset-0 h-full w-full select-none"
             />
