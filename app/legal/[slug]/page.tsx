@@ -38,6 +38,13 @@ export async function generateMetadata(
       siteName: "FLEXPERIMENT",
       title: `${document.label} — FLEXPERIMENT`,
       description: document.description,
+      // Declared explicitly, unlike every other route. Next injects the
+      // app/opengraph-image.png file convention into og:image automatically
+      // for routes whose metadata is a static `export const metadata`, but not
+      // for one that returns an `openGraph` object from `generateMetadata` —
+      // these pages emitted twitter:image with no og:image beside it until
+      // this line was added. Resolved against metadataBase, so a bare path.
+      images: ["/opengraph-image.png"],
     },
   };
 }

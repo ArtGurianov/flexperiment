@@ -6,6 +6,7 @@ import Footer from "@/components/Footer";
 import HeroSiberia from "@/components/HeroSiberia";
 import HeroTour from "@/components/HeroTour";
 import HeroVideo from "@/components/HeroVideo";
+import HomeStructuredData from "@/components/HomeStructuredData";
 import Navbar from "@/components/Navbar";
 import PaymentNotice from "@/components/PaymentNotice";
 import { Price } from "@/components/Price";
@@ -13,6 +14,7 @@ import ProgramSection from "@/components/ProgramSection";
 import Separator from "@/components/Separator";
 import TeacherSection from "@/components/TeacherSection";
 import WorkshopIntro from "@/components/WorkshopIntro";
+import { OPEN_GRAPH_BASE, TWITTER_CARD } from "@/lib/seo/site";
 
 /**
  * The home page's own title and description, which used to live in the root
@@ -37,8 +39,13 @@ export const metadata: Metadata = {
   description: DESCRIPTION,
   // The home page is the only document for which "/" is the canonical URL.
   alternates: { canonical: "/" },
-  openGraph: { url: "/", title: TITLE, description: DESCRIPTION },
-  twitter: { title: TITLE, description: DESCRIPTION },
+  // Both objects spread their shared base rather than declaring only what is
+  // page-specific. Next's metadata merge is shallow: declaring `twitter: {
+  // title }` here REPLACES the root layout's twitter object outright, which is
+  // how this page lost `card: "summary_large_image"` and silently fell back to
+  // Twitter's `summary` default — visible only in the built HTML.
+  openGraph: { ...OPEN_GRAPH_BASE, url: "/", title: TITLE, description: DESCRIPTION },
+  twitter: { card: TWITTER_CARD, title: TITLE, description: DESCRIPTION },
 };
 
 export default function Home() {
@@ -102,6 +109,11 @@ export default function Home() {
           its own banner, which previously stacked two identical alerts — and
           announced them twice — when more than one failed inside the timeout. */}
       <PaymentNotice />
+
+      {/* Organization/Person/WebSite facts the footer already states in prose,
+          served to crawlers as machine-readable JSON-LD. Nothing commercial and
+          nothing invented — see the component. */}
+      <HomeStructuredData />
     </AssetPreloader>
   );
 }

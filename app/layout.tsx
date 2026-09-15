@@ -3,6 +3,7 @@ import { Geist_Mono, Monomakh as Shafarik } from "next/font/google";
 import { Suspense } from "react";
 import AnalyticsConsent from "@/components/AnalyticsConsent";
 import ReferralCapture from "@/components/ReferralCapture";
+import { OPEN_GRAPH_BASE, SITE_ORIGIN, TWITTER_CARD } from "@/lib/seo/site";
 
 import "./globals.css";
 
@@ -36,8 +37,6 @@ const geistMono = Geist_Mono({
   subsets: ["cyrillic", "latin"],
 });
 
-const SITE_URL = "https://flexperiment.ru";
-
 /**
  * Only genuinely global metadata belongs here.
  *
@@ -55,18 +54,14 @@ const SITE_URL = "https://flexperiment.ru";
 export const metadata: Metadata = {
   // Without metadataBase, Next resolves relative OG/Twitter asset paths against
   // localhost in development and warns in production.
-  metadataBase: new URL(SITE_URL),
-  openGraph: {
-    type: "website",
-    locale: "ru_RU",
-    siteName: "FLEXPERIMENT",
-  },
+  metadataBase: new URL(SITE_ORIGIN),
+  openGraph: OPEN_GRAPH_BASE,
   twitter: {
-    // `summary` until there is an image to show. summary_large_image promises a
-    // 1200x630 card, and with neither openGraph.images nor an
-    // app/opengraph-image file the platform has nothing to fill it with — which
-    // renders worse than the text card this asks for.
-    card: "summary",
+    // Now backed by real images. app/opengraph-image.png emits og:image and
+    // app/twitter-image.png emits twitter:image — the opengraph-image
+    // convention alone does NOT produce twitter:image, which is why both files
+    // exist (verified in the built HTML; see the export conformance test).
+    card: TWITTER_CARD,
   },
 };
 
