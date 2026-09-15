@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { readSnapshotFile } from "@/commerce/src/seo-snapshot-io";
-import { belongsInSitemap } from "@/lib/seo/occurrence-publication";
-import { exportExists, LEGAL_SLUGS, readExport } from "./read-export";
+import { belongsInSitemap, publishableRecords } from "@/lib/seo/occurrence-publication";
+import { exportExists, LEGAL_SLUGS, listExport, readExport } from "./read-export";
 
 /**
  * robots.txt, sitemap.xml and the shape of the published route set.
@@ -79,29 +79,58 @@ describe("the RSC payloads that are the client-side router", () => {
   });
 });
 
-describe("the empty-snapshot build", () => {
+describe("the build agrees with the committed snapshot", () => {
   const snapshot = readSnapshotFile("data/seo/occurrences.v1.json");
+  const records = publishableRecords(snapshot);
 
-  it("is what this repository currently commits", () => {
-    // Production's only occurrence is a saint-petersburg record carrying
-    // Asia/Novosibirsk, which judgeOccurrence rejects. Until that is corrected
-    // in Commerce and the snapshot regenerated, there is nothing to publish.
-    expect(snapshot.occurrences).toEqual([]);
-    expect(snapshot.tombstones).toEqual([]);
+  /**
+   * These assertions used to pin the snapshot as EMPTY, which held only while
+   * production's one occurrence was rejected on a timezone contradiction. That
+   * record has been corrected, so the emptiness assertion pinned a historical
+   * accident rather than a property.
+   *
+   * What replaces it is stronger in both directions: the export must contain a
+   * page for every publishable record and a record for every page. That is
+   * meaningful when the snapshot is empty (nothing may be emitted) and equally
+   * meaningful when it is not (nothing extra, nothing missing) — where the old
+   * version said nothing at all.
+   */
+  it("emits exactly one page per publishable record, and no others", () => {
+    const expected = records.map((record) => `${record.event_slug}.html`).sort();
+    const emitted = listExport("events").filter((entry) => entry.endsWith(".html")).sort();
+    expect(emitted).toEqual(expected);
   });
 
-  it("produces no event or city pages at all, placeholder included", () => {
+  it("emits exactly one page per city that has one", () => {
+    const expected = [...new Set(records.map((record) => record.city))]
+      .map((city) => `${city}.html`)
+      .sort();
+    const emitted = listExport("cities").filter((entry) => entry.endsWith(".html")).sort();
+    expect(emitted).toEqual(expected);
+  });
+
+  it("never ships the reserved placeholder, in either regime", () => {
     // Next refuses an empty generateStaticParams() under output: "export", so
-    // each route emits one reserved `__placeholder__` file that `pnpm build`
-    // then prunes. This asserts the prune actually ran: a URL answering 200
-    // with a 404 body is still a fabricated event URL on a public site.
-    expect(exportExists("events")).toBe(false);
-    expect(exportExists("cities")).toBe(false);
+    // each route emits one reserved `__placeholder__` file when there is
+    // nothing to publish, and `pnpm build` prunes it. A URL answering 200 with
+    // a 404 body is still a fabricated event URL on a public site.
     expect(exportExists("events/__placeholder__.html")).toBe(false);
     expect(exportExists("cities/__placeholder__.html")).toBe(false);
+    for (const segment of ["events", "cities"]) {
+      expect(listExport(segment).some((entry) => entry.startsWith("__placeholder__"))).toBe(false);
+    }
   });
 
-  it("still builds the home page and every legal page", () => {
+  it("leaves no route directory behind when there is nothing to publish", () => {
+    if (records.length > 0) {
+      expect(exportExists("events")).toBe(true);
+      return;
+    }
+    expect(exportExists("events")).toBe(false);
+    expect(exportExists("cities")).toBe(false);
+  });
+
+  it("builds the home page and every legal page regardless", () => {
     expect(exportExists("index.html")).toBe(true);
     expect(exportExists("404.html")).toBe(true);
     for (const slug of LEGAL_SLUGS) {

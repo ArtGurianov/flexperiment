@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { EMPTY_SNAPSHOT, parseSnapshot } from "../../lib/seo/occurrence-snapshot";
-import { eventStatusFor, findSnapshotDefects } from "../../lib/seo/occurrence-publication";
+import { eventStatusFor, findSnapshotDefects, judgeOccurrence } from "../../lib/seo/occurrence-publication";
 import { buildSnapshot, parsePublicTour, SourceContractError } from "../../lib/seo/public-occurrence";
 import { publicOccurrence } from "../../lib/seo/public-occurrence-fixture";
 import {
@@ -223,18 +223,28 @@ describe("the source contract", () => {
 });
 
 describe("the committed artifact", () => {
-  it("is valid, canonical and reflects that today's production inventory is rejected", () => {
+  it("is valid, canonical, and free of records the validator would reject", () => {
     const raw = readFileSync(SNAPSHOT_PATH, "utf8");
     const snapshot = parseSnapshot(JSON.parse(raw));
 
+    // Canonical bytes are part of validity, not formatting: a hand-edited file
+    // that happens to parse would make every regeneration produce a spurious
+    // diff.
     expect(raw).toBe(serializeSnapshot(snapshot));
     expect(findSnapshotDefects(snapshot)).toEqual([]);
-    // Production's only occurrence is a saint-petersburg record carrying
-    // Asia/Novosibirsk, which judgeOccurrence rejects outright — so the
-    // architecture is in place and publishes nothing. This assertion changes
-    // only when that record is corrected and the snapshot regenerated.
-    expect(snapshot.occurrences).toEqual([]);
-    expect(snapshot.tombstones).toEqual([]);
+
+    // This used to assert the snapshot was EMPTY, which was true only because
+    // production's one occurrence carried a timezone contradicting the city
+    // catalogue and judgeOccurrence rejected it. That record has been
+    // corrected, so pinning emptiness now pins a historical accident.
+    //
+    // The property actually worth holding is the one emptiness was standing in
+    // for, and it survives every future refresh: nothing INVALID is ever
+    // committed. It is also strictly stronger than the old assertion, which
+    // said nothing at all about a non-empty snapshot.
+    for (const record of [...snapshot.occurrences, ...snapshot.tombstones]) {
+      expect(judgeOccurrence(record).outcome, `${record.id}`).not.toBe("INVALID");
+    }
   });
 
   it("round-trips through write and read unchanged", () => {
