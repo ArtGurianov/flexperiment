@@ -3,6 +3,17 @@ description: Shared post-admission release execution. Admission must set the sea
 runs:
   using: composite
   steps:
+      - name: Initialize shared readiness configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "POLL_ATTEMPTS=${POLL_ATTEMPTS:-30}"
+            echo "POLL_SECONDS=${POLL_SECONDS:-10}"
+            echo "POLL_CONNECT_TIMEOUT=${POLL_CONNECT_TIMEOUT:-3}"
+            echo "POLL_MAX_TIME=${POLL_MAX_TIME:-7}"
+            echo "INITIAL_READINESS_DELAY_SECONDS=${INITIAL_READINESS_DELAY_SECONDS:-60}"
+          } >> "$GITHUB_ENV"
       - name: Verify an already completed deployment
         if: env.DEPLOY_ACTION == 'RELEASE_ALREADY_COMPLETE'
         shell: bash

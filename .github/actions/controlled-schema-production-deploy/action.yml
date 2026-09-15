@@ -13,14 +13,15 @@ runs:
           git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main refs/heads/runtime-candidate:refs/remotes/origin/runtime-candidate refs/heads/production-deploy:refs/remotes/origin/production-deploy "$INPUT_EXPECTED_CANDIDATE_SHA"
           [[ "$CONTROLLER_SHA" == "$INPUT_EXPECTED_CONTROLLER_SHA" && "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" && "$(git rev-parse "${CONTROLLER_SHA}^{tree}")" == "$INPUT_EXPECTED_CONTROLLER_TREE" ]] || { echo SCHEMA_DEPLOY_CONTROLLER_BINDING_MISMATCH >&2; exit 1; }
           [[ "$(git rev-parse origin/runtime-candidate)" == "$INPUT_EXPECTED_CANDIDATE_SHA" ]] || { echo SCHEMA_DEPLOY_RUNTIME_CANDIDATE_MISMATCH >&2; exit 1; }
-          [[ "$(git rev-parse origin/production-deploy)" == "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" ]] || { echo SCHEMA_DEPLOY_PRODUCTION_DEPLOY_MISMATCH >&2; exit 1; }
+          current_production_deploy_sha="$(git rev-parse origin/production-deploy)"
+          [[ "$current_production_deploy_sha" == "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" || "$current_production_deploy_sha" == "$INPUT_EXPECTED_CANDIDATE_SHA" ]] || { echo SCHEMA_DEPLOY_PRODUCTION_DEPLOY_STATE_INVALID >&2; exit 1; }
           [[ "$(git ls-remote --exit-code origin "$INPUT_EXPECTED_PUBLISHED_REF" | awk '{print $1}')" == "$INPUT_EXPECTED_CANDIDATE_SHA" ]] || { echo SCHEMA_DEPLOY_PUBLICATION_MISMATCH >&2; exit 1; }
           git merge-base --is-ancestor "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" "$INPUT_EXPECTED_CANDIDATE_SHA" || { echo SCHEMA_DEPLOY_TARGET_NOT_DESCENDANT_OF_PRODUCTION >&2; exit 1; }
           git merge-base --is-ancestor "$INPUT_EXPECTED_CANDIDATE_SHA" "$CONTROLLER_SHA" || { echo SCHEMA_DEPLOY_TARGET_NOT_COVERED_BY_CONTROLLER >&2; exit 1; }
           scripts/inspect-runtime-candidate-topology.sh --production-deploy "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" --candidate "$INPUT_EXPECTED_CANDIDATE_SHA" > topology.json
           jq -e '.candidate_is_descendant_of_production_deploy and (.merge_commits_in_range | length == 0) and (.maintenance_commits_in_range | length == 0)' topology.json >/dev/null
           {
-            echo "TARGET_SHA=$INPUT_EXPECTED_CANDIDATE_SHA"; echo "RELEASE_ID=deploy-$INPUT_EXPECTED_CANDIDATE_SHA"; echo "RECOVERY_MODE=0"; echo "CAS_EXPECTED_PRODUCTION_DEPLOY_SHA=$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA";
+            echo "TARGET_SHA=$INPUT_EXPECTED_CANDIDATE_SHA"; echo "RELEASE_ID=deploy-$INPUT_EXPECTED_CANDIDATE_SHA"; echo "RECOVERY_MODE=0";
           } >> "$GITHUB_ENV"
       - uses: pnpm/action-setup@v4
         with: { version: 10.29.3 }
@@ -32,8 +33,7 @@ runs:
         shell: bash
         run: |
           set -euo pipefail
-          node --import tsx commerce/src/ordinary-schema-release.ts "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" "$TARGET_SHA" > schema-admission.json
-          target_migration="$(jq -er '.targetMigrationExpectation' schema-admission.json)"
+          target_migration="$(node --import tsx commerce/src/ordinary-schema-release.ts target-expectation "$TARGET_SHA")"
           git show "$TARGET_SHA:release-surface-contract.json" > schema-release-surface-contract.json
           checkout_contract_version="$(jq -er '.checkout_contract_version' schema-release-surface-contract.json)"
           admin_contract_version="$(jq -er '.admin_contract_version' schema-release-surface-contract.json)"
@@ -45,15 +45,35 @@ runs:
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > durable-before.json
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion.json
-          jq -e --arg base "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" '.runtime as $r | $r.source_commit == $base and $r.current_legal_copies_match == true and ($r.migration_versions | type == "array") and ($r.legal_version | type == "string") and ($r.legal_manifest_sha256 | test("^[a-f0-9]{64}$")) and ($r.legal_hashes | type == "object")' durable-before.json >/dev/null || { echo SCHEMA_DEPLOY_PRODUCTION_RUNTIME_MISMATCH >&2; exit 1; }
-          production_inventory="$(jq -er '.runtime.migration_versions | sort | join("\n")' durable-before.json)"
-          base_inventory="$(git ls-tree -r --name-only "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
-          [[ "$production_inventory" == "$base_inventory" ]] || { echo SCHEMA_DEPLOY_PRODUCTION_MIGRATION_INVENTORY_MISMATCH >&2; exit 1; }
+          jq -e '.runtime as $r | $r.current_legal_copies_match == true and ($r.legal_version | type == "string") and ($r.legal_manifest_sha256 | test("^[a-f0-9]{64}$")) and ($r.legal_hashes | type == "object")' durable-before.json >/dev/null || { echo SCHEMA_DEPLOY_PRODUCTION_LEGAL_RUNTIME_INVALID >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/production-deploy:refs/remotes/origin/production-deploy
+          deploy_state="$(node --import tsx commerce/src/ordinary-schema-release.ts classify-deploy-state "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" "$TARGET_SHA" "$target_migration" durable-before.json completion.json)"
+          case "$deploy_state" in
+            PRE_CAS)
+              node --import tsx commerce/src/ordinary-schema-release.ts "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" "$TARGET_SHA" > schema-admission.json
+              [[ "$(jq -er '.targetMigrationExpectation' schema-admission.json)" == "$target_migration" ]] || { echo SCHEMA_DEPLOY_TARGET_MIGRATION_EXPECTATION_MISMATCH >&2; exit 1; }
+              jq -e --arg base "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" '.runtime as $r | $r.source_commit == $base and ($r.migration_versions | type == "array")' durable-before.json >/dev/null || { echo SCHEMA_DEPLOY_PRODUCTION_RUNTIME_MISMATCH >&2; exit 1; }
+              production_inventory="$(jq -er '.runtime.migration_versions | sort | join("\n")' durable-before.json)"
+              base_inventory="$(git ls-tree -r --name-only "$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" -- commerce/migrations | sed -n 's#^commerce/migrations/##p' | sort)"
+              [[ "$production_inventory" == "$base_inventory" ]] || { echo SCHEMA_DEPLOY_PRODUCTION_MIGRATION_INVENTORY_MISMATCH >&2; exit 1; }
+              echo "CAS_EXPECTED_PRODUCTION_DEPLOY_SHA=$INPUT_EXPECTED_PRODUCTION_DEPLOY_SHA" >> "$GITHUB_ENV"
+              ;;
+            POST_CAS_RESUME)
+              echo "CAS_EXPECTED_PRODUCTION_DEPLOY_SHA=$TARGET_SHA" >> "$GITHUB_ENV"
+              echo "REUSING_PAUSED_OWNER=1" >> "$GITHUB_ENV"
+              ;;
+            *) echo SCHEMA_DEPLOY_STATE_CLASSIFICATION_INVALID >&2; exit 1 ;;
+          esac
           jq -e --arg id "$RELEASE_ID" --arg source "$TARGET_SHA" --arg migration "$target_migration" '.runtime as $r | {release_id:$id,mode:"CONTROLLED_CUTOVER",expected:{source_commit:$source,migration:$migration,legal_version:$r.legal_version,legal_manifest_sha256:$r.legal_manifest_sha256,legal_hashes:$r.legal_hashes}}' durable-before.json > release.json
           jq -e '.expected.migration | test("^inventory-sha256:[a-f0-9]{64}$")' release.json >/dev/null
+          if [[ "$deploy_state" == POST_CAS_RESUME ]]; then
+            jq -e --slurpfile request release.json '.expected == ($request[0].expected | del(.legal_hashes))' durable-before.json >/dev/null || { echo SCHEMA_DEPLOY_POST_CAS_EXPECTATION_MISMATCH >&2; exit 1; }
+          fi
           owner="$(jq -r '.owner_release_id // empty' durable-before.json)"
           if ! jq -e '.complete' completion.json >/dev/null; then [[ -z "$owner" || "$owner" == "$RELEASE_ID" ]] || { echo "SCHEMA_DEPLOY_BLOCKED_BY_RELEASE_OWNER=$owner" >&2; exit 1; }; fi
-          if ! jq -e '.complete' completion.json >/dev/null && [[ "$owner" == "$RELEASE_ID" ]] && jq -e --arg source "$TARGET_SHA" '.sales_paused and .expected.source_commit == $source' durable-before.json >/dev/null; then echo REUSING_PAUSED_OWNER=1 >> "$GITHUB_ENV"; else echo REUSING_PAUSED_OWNER=0 >> "$GITHUB_ENV"; fi
+          if [[ "$deploy_state" == PRE_CAS ]]; then
+            if ! jq -e '.complete' completion.json >/dev/null && [[ "$owner" == "$RELEASE_ID" ]] && jq -e --arg source "$TARGET_SHA" '.sales_paused and .expected.source_commit == $source' durable-before.json >/dev/null; then echo REUSING_PAUSED_OWNER=1 >> "$GITHUB_ENV"; else echo REUSING_PAUSED_OWNER=0 >> "$GITHUB_ENV"; fi
+          fi
           (cd "$RUNTIME_ASSERT_DIR" && node --import tsx commerce/src/reconcile-generic-production-deploy.ts "$GITHUB_WORKSPACE/durable-before.json" "$GITHUB_WORKSPACE/completion.json" "$GITHUB_WORKSPACE/release.json") > reconciliation.json
           action="$(jq -er '.action' reconciliation.json)"; [[ "$action" != BLOCKED ]] || { jq -c . reconciliation.json >&2; exit 1; }; echo "DEPLOY_ACTION=$action" >> "$GITHUB_ENV"; echo "RUNTIME_ASSERT_DIR=$RUNTIME_ASSERT_DIR" >> "$GITHUB_ENV"
       - uses: ./.github/actions/controlled-production-deploy-execution
