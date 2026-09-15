@@ -55,4 +55,10 @@ describe("occurrence inventory commitments", () => {
     expect(domain.processOccurrenceNotificationLifecycle()).toEqual({ deleted: 0, intents_created: 1 });
     expect(() => domain.patchOccurrence(occurrenceId, { expected_revision: 3, capacity: 4 }, "inventory-deprecated-capacity", "admin")).toThrow("VALIDATION_ERROR");
   });
+
+  it("does not let unvalidated nested inventory fields alter an occurrence", () => {
+    const { db, occurrenceId, domain } = setup();
+    domain.patchOccurrence(occurrenceId, { expected_revision: 1, inventory: { sales_status: "CLOSED" } }, "inventory-domain-boundary", "admin");
+    expect(db.prepare("SELECT sales_status, admin_revision FROM occurrences WHERE id = ?").get(occurrenceId)).toEqual({ sales_status: "OPEN", admin_revision: 1 });
+  });
 });

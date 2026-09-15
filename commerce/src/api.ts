@@ -4,7 +4,7 @@ import type { Sqlite } from "./db";
 import { assertAdminOrigin, issueAdminSession, parseSession, verifyAdminPassword, verifyReleaseControlToken } from "./auth";
 import { emailHash, publicId, sha256 } from "./crypto";
 import { CommerceDomain, DomainError } from "./domain";
-import { availableSeatsSql } from "./occurrence-inventory";
+import { availableSeatsSql, seatCommitmentsSql } from "./occurrence-inventory";
 import { type EmailProvider, UnconfiguredEmailProvider, UnisenderGoProvider } from "./email-provider";
 import { TochkaProvider, type PaymentProvider } from "./provider";
 import { clientIpRateLimitKey, rateLimit, trustedClientIp } from "./rate-limit";
@@ -369,17 +369,13 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     const cityId = c.req.query("city_id");
     return c.json({ occurrences: sqlite.prepare(`SELECT o.*, c.slug AS city_slug, c.title AS city_title,
       ${availableSeatsSql("o")} AS availability,
-      (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = o.id AND b.status = 'CONFIRMED') AS sold,
-      (SELECT COUNT(*) FROM bookings b LEFT JOIN payments p ON p.order_id = b.order_id WHERE b.occurrence_id = o.id AND b.status = 'RESERVED' AND (p.state = 'CREATE_UNKNOWN' OR p.status IN ('RECONCILING', 'REVIEW_REQUIRED'))) AS reconciling,
-      (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = o.id AND b.status = 'RESERVED') - (SELECT COUNT(*) FROM bookings b LEFT JOIN payments p ON p.order_id = b.order_id WHERE b.occurrence_id = o.id AND b.status = 'RESERVED' AND (p.state = 'CREATE_UNKNOWN' OR p.status IN ('RECONCILING', 'REVIEW_REQUIRED'))) AS held
+      ${seatCommitmentsSql("o")}
       FROM occurrences o JOIN cities c ON c.id = o.city_id ${cityId ? "WHERE o.city_id = ?" : ""} ORDER BY o.starts_at DESC`).all(...(cityId ? [cityId] : [])) });
   });
   admin.get("/occurrences/:id", (c) => {
     const occurrence = sqlite.prepare(`SELECT o.*, c.slug AS city_slug, c.title AS city_title,
       ${availableSeatsSql("o")} AS availability,
-      (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = o.id AND b.status = 'CONFIRMED') AS sold,
-      (SELECT COUNT(*) FROM bookings b LEFT JOIN payments p ON p.order_id = b.order_id WHERE b.occurrence_id = o.id AND b.status = 'RESERVED' AND (p.state = 'CREATE_UNKNOWN' OR p.status IN ('RECONCILING', 'REVIEW_REQUIRED'))) AS reconciling,
-      (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = o.id AND b.status = 'RESERVED') - (SELECT COUNT(*) FROM bookings b LEFT JOIN payments p ON p.order_id = b.order_id WHERE b.occurrence_id = o.id AND b.status = 'RESERVED' AND (p.state = 'CREATE_UNKNOWN' OR p.status IN ('RECONCILING', 'REVIEW_REQUIRED'))) AS held
+      ${seatCommitmentsSql("o")}
       FROM occurrences o JOIN cities c ON c.id = o.city_id WHERE o.id = ?`).get(c.req.param("id"));
     if (!occurrence) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
     return c.json(occurrence);

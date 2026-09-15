@@ -114,14 +114,14 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
     return () => { current = false; };
   }, []);
 
-  const refreshOccurrenceState = useCallback(async (id: string) => {
+  const refreshOccurrenceState = useCallback(async (id: string, options?: { preserveMessage?: boolean }) => {
     setQuote(null); setCustomerAdult(false); setMinorRepresentative(false); setOffer(false); setConsent(false);
     try {
       const response = await fetch(commerceApiUrl(`/v1/public/occurrences/${encodeURIComponent(id)}`), { cache: "no-store" });
       if (!response.ok) throw new Error("OCCURRENCE_REFRESH_FAILED");
       const current = await response.json() as Occurrence;
       setOccurrences((items) => items.map((item) => item.id === id ? current : item));
-      setMessage(null);
+      if (!options?.preserveMessage) setMessage(null);
     } catch { setMessage("Не удалось обновить состояние даты. Проверьте соединение и повторите попытку."); }
   }, []);
 
@@ -144,7 +144,7 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
       const code = error instanceof Error ? error.message : "QUOTE_UNAVAILABLE";
       if (["SOLD_OUT", "SALES_NOT_OPEN", "SALES_TEMPORARILY_PAUSED"].includes(code)) {
         if (code === "SOLD_OUT") setMessage("Свободных мест больше нет. Данные о наличии обновились.");
-        await refreshOccurrenceState(id);
+        await refreshOccurrenceState(id, { preserveMessage: code === "SOLD_OUT" });
         return false;
       }
       setMessage(["SALES_NOT_OPEN", "SOLD_OUT", "SALES_TEMPORARILY_PAUSED"].includes(code) ? "Состояние записи изменилось. Обновляем дату…"
@@ -288,11 +288,11 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
         <label><input required type="checkbox" checked={consent} onChange={(event) => setConsent(event.target.checked)} /> Я даю согласие на обработку моих персональных данных как Заказчика.</label>
         {quote && <p className="text-bone/70">Версия legal release {quote.legal_release.version}: {(Object.keys(legalLabels) as (keyof typeof legalLabels)[]).map((id, index) => <span key={id}>{index > 0 ? " · " : ""}<a className="text-acid underline underline-offset-4" href={legalPagePaths[id]} target="_blank" rel="noopener noreferrer">{legalLabels[id]}</a></span>)}</p>}
       </div>
-      <p role="status" aria-live="polite" className={message ? "border border-acid px-3 py-2 text-acid" : "sr-only"}>{message ?? ""}</p>
       <label className="grid gap-1.5">Промокод <span className="flex gap-2"><input disabled={Boolean(appliedPromoCode)} value={appliedPromoCode ? `Промокод [${appliedPromoCode}] применен` : promoCode} onChange={(event) => setPromoCode(event.target.value)} className="min-w-0 flex-1 border border-bone/50 bg-ink px-3 py-2 text-bone focus:outline-2 focus:outline-acid disabled:cursor-not-allowed disabled:opacity-70" /><button type="button" disabled={loading} onClick={() => void (appliedPromoCode ? resetPromo() : applyPromo())} className="shrink-0 border border-acid px-3 py-2 font-display text-acid transition-colors hover:bg-acid hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid disabled:cursor-wait disabled:opacity-60">{appliedPromoCode ? "Сброс" : "Применить"}</button></span></label>
       {quote && <div className="grid gap-1 border border-acid/60 p-3 text-bone"><p>{selected?.city_title}</p><p>Исходная цена: {rub(quote.price_kopecks)}</p>{quote.discount_kopecks > 0 ? <p>Скидка{quote.promo ? ` (${quote.promo.code})` : ""}: −{rub(quote.discount_kopecks)}</p> : null}<p className="font-display text-lg text-acid">Итого: {rub(quote.final_amount_kopecks)}</p></div>}
       <button disabled={!quote || !participantAgeBand || submitting} className="w-full border-2 border-acid bg-acid px-4 py-3 font-display text-lg text-ink disabled:cursor-not-allowed disabled:opacity-60">{submitting ? "Создаём оплату…" : "Перейти к оплате"}</button>
       </form>}
+      <p role="status" aria-live="polite" className={message ? "border border-acid px-3 py-2 text-acid" : "sr-only"}>{message ?? ""}</p>
     </div>
     </>
   );
