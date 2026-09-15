@@ -43,6 +43,14 @@ catalog row or order evidence before deciding whether to replay the same key.
 No UI routes exist for force-changing payment, booking, ticket, or provider
 reference state.
 
+## Occurrence inventory
+
+An occurrence's available seats are capacity minus customer commitments and the
+admin reserve. Raising the reserve can therefore make sales sold out and make
+the availability waitlist eligible; lowering it can immediately release seats.
+The occurrence editor shows sold, in-payment, reconciling, and admin-reserved
+commitments, and the server is authoritative for the minimum allowed capacity.
+
 ## Emergency sales control
 
 The dashboard emergency control owns `emergency_sales_gate`, never

@@ -1,4 +1,5 @@
 export type PurchaseStatus = "AVAILABLE" | "SOLD_OUT" | "NOT_YET_OPEN" | "TEMPORARILY_PAUSED" | "UNAVAILABLE";
+export type AvailabilityStatus = "AVAILABLE" | "FEW_LEFT" | "SOLD_OUT";
 
 export const canRequestCheckout = (occurrence: { purchase_status: PurchaseStatus } | undefined) => occurrence?.purchase_status === "AVAILABLE";
 
@@ -7,3 +8,8 @@ export const purchaseStatusAnnouncement = (status: PurchaseStatus | undefined) =
     : status === "NOT_YET_OPEN" ? "Продажи пока закрыты."
       : status === "TEMPORARILY_PAUSED" ? "Продажи временно приостановлены."
         : "Запись на эту дату закрыта.";
+
+export const availabilityAnnouncement = (status: AvailabilityStatus | undefined) =>
+  status === "SOLD_OUT" ? "Мест нет."
+    : status === "FEW_LEFT" ? "Осталось мало мест."
+      : "Места есть.";

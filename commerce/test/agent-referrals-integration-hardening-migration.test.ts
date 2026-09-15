@@ -103,7 +103,7 @@ describe("0049 integration-hardening migration", () => {
     ]);
   });
 
-  it("ships no 0059+ migration file of its own; Phase 1 owns 0058 and reissuance/evidence-authority owns 0059-0060", () => {
+  it("keeps the later migration inventory explicit", () => {
     const all = readdirSync(MIGRATIONS).filter((n) => n.endsWith(".sql"));
     // 0055 and 0056 both add a monotone counter rather than rebuilding a
     // table - ALTER TABLE ADD COLUMN with a NOT NULL DEFAULT - which is why
@@ -115,6 +115,7 @@ describe("0049 integration-hardening migration", () => {
     expect(all.filter((n) => n > "0058_agents_legal_identity_cleanup.sql")).toEqual([
       "0059_agents_contract_reference_removal.sql",
       "0060_agent_referrals_framework_reissuance.sql",
+      "0061_occurrence_admin_reserved_seats.sql",
     ]);
   });
 

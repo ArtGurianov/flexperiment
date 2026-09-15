@@ -23,6 +23,7 @@ export function OccurrenceEditor({ occurrence, close, done, onRevisionConflict }
     timezone: string(occurrence.timezone),
     price_kopecks: String(number(occurrence.price_kopecks) / 100),
     capacity: String(number(occurrence.capacity)),
+    admin_reserved_seats: String(number(occurrence.admin_reserved_seats)),
     venue_status: string(occurrence.venue_status),
     venue_name: string(occurrence.venue_name),
     venue_address: string(occurrence.venue_address),
@@ -56,12 +57,11 @@ export function OccurrenceEditor({ occurrence, close, done, onRevisionConflict }
       setValidationError("VALIDATION_ERROR"); return;
     }
     const priceKopecks = parseRublesToKopecks(form.price_kopecks);
-    const occupied = Math.max(0, number(occurrence.capacity) - number(occurrence.availability));
-    if (priceKopecks === null || priceKopecks < 0 || Number(form.capacity) < occupied) {
-      setValidationError(priceKopecks === null ? "VALIDATION_ERROR" : "CAPACITY_BELOW_OCCUPANCY"); return;
+    if (priceKopecks === null || priceKopecks < 0 || !Number.isInteger(Number(form.capacity)) || !Number.isInteger(Number(form.admin_reserved_seats)) || Number(form.capacity) < 0 || Number(form.admin_reserved_seats) < 0) {
+      setValidationError("VALIDATION_ERROR"); return;
     }
     setValidationError(null);
-    const body: Row = { title: form.title, starts_at: startsAt, ends_at: new Date(startsAtMs + minutesToMilliseconds(durationMinutes)).toISOString(), timezone: form.timezone, price_kopecks: priceKopecks, capacity: Number(form.capacity), venue_status: form.venue_status };
+    const body: Row = { title: form.title, starts_at: startsAt, ends_at: new Date(startsAtMs + minutesToMilliseconds(durationMinutes)).toISOString(), timezone: form.timezone, price_kopecks: priceKopecks, inventory: { capacity: Number(form.capacity), admin_reserved_seats: Number(form.admin_reserved_seats) }, venue_status: form.venue_status };
     if (form.venue_status === "CONFIRMED") {
       body.venue_name = form.venue_name; body.venue_address = form.venue_address; body.venue_disclosure_text = null; body.venue_announce_by = null;
     } else {
@@ -74,9 +74,17 @@ export function OccurrenceEditor({ occurrence, close, done, onRevisionConflict }
       // error surfaced via mutation.error below
     }
   });
-  const occupied = Math.max(0, number(occurrence.capacity) - number(occurrence.availability));
+  const sold = number(occurrence.sold);
+  const held = number(occurrence.held);
+  const reconciling = number(occurrence.reconciling);
+  const committedCustomers = sold + held + reconciling;
+  const targetCapacity = Number(watch("capacity"));
+  const targetReserve = Number(watch("admin_reserved_seats"));
+  const minimumCapacity = committedCustomers + targetReserve;
   const venueStatus = watch("venue_status");
-  const capacityBelowOccupancy = Number(watch("capacity")) < occupied;
+  const inventoryBelowMinimum = targetCapacity < minimumCapacity;
+  const details = mutation.error?.details;
+  const serverMinimum = typeof details?.minimum_capacity === "number" ? details.minimum_capacity : null;
 
   return (
     <Dialog title="Редактировать событие" close={close} className="editor">
@@ -89,7 +97,8 @@ export function OccurrenceEditor({ occurrence, close, done, onRevisionConflict }
           <label>Начало<input type="datetime-local" {...register("starts_at", { required: true })} /></label>
           <label>Длительность мастер-класса<Controller control={control} name="duration" rules={{ required: true }} render={({ field }) => <DurationInput value={field.value} onChange={field.onChange} required />} /></label>
           <label>Цена, ₽<Controller control={control} name="price_kopecks" rules={{ required: true }} render={({ field }) => <MoneyInput value={field.value} onChange={field.onChange} required />} /></label>
-          <label>Вместимость<input type="number" min={occupied} {...register("capacity", { required: true })} /><small>Свободно: {number(occurrence.availability)} из {number(occurrence.capacity)}; занято (reserved + confirmed): {occupied}.</small>{capacityBelowOccupancy && <small className="notice notice-error">Новая вместимость ниже уже занятых мест.</small>}</label>
+          <label>Вместимость<input type="number" min={0} {...register("capacity", { required: true })} /><small>Продано: {sold}; в оплате: {held}; на сверке: {reconciling}; резерв: {targetReserve}. Минимум — {minimumCapacity}.</small>{inventoryBelowMinimum && <small className="notice notice-error">Новая вместимость {targetCapacity}. Занято: {sold} оплачено + {held} в оплате + {reconciling} на сверке + {targetReserve} резерв. Минимум — {minimumCapacity}.</small>}</label>
+          <label>Резерв<input type="number" min={0} {...register("admin_reserved_seats", { required: true })} /><small>Места из резерва не продаются через сайт.</small></label>
           <label className="wide">
             Площадка
             <select {...register("venue_status")}>
@@ -110,6 +119,7 @@ export function OccurrenceEditor({ occurrence, close, done, onRevisionConflict }
           )}
         </div>
         <Notice error={validationError ?? mutation.error?.code} />
+        {serverMinimum !== null && <p className="notice notice-error">Серверный минимум: {serverMinimum}.</p>}
         <div className="modal-actions">
           <button className="primary" disabled={mutation.isPending}>{mutation.isPending ? "Сохраняем…" : "Сохранить изменения"}</button>
         </div>

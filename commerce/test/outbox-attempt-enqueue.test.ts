@@ -58,7 +58,7 @@ describe("enqueueEmail creates a message and attempt #1 atomically", () => {
     db.prepare("UPDATE occurrences SET visibility = 'HIDDEN', sales_status = 'CLOSED'").run();
     enqueueViaCityInterest(domain, "atomic@example.test");
     const occurrenceId = (db.prepare("SELECT id FROM occurrences").get() as { id: string }).id;
-    domain.patchOccurrence(occurrenceId, { visibility: "PUBLISHED", reason: "publish" }, randomUUID(), "admin");
+    domain.patchOccurrence(occurrenceId, { visibility: "PUBLISHED", reason: "publish", expected_revision: 1 }, randomUUID(), "admin");
 
     const outbox = db.prepare("SELECT id, provider_idempotence_key FROM email_outbox").get() as { id: string; provider_idempotence_key: string };
     const attempts = db.prepare("SELECT message_id, attempt_no, provider_idempotence_key, outcome FROM outbox_attempt").all();
@@ -75,7 +75,7 @@ describe("enqueueEmail creates a message and attempt #1 atomically", () => {
     db.prepare("UPDATE occurrences SET visibility = 'HIDDEN', sales_status = 'CLOSED'").run();
     enqueueViaCityInterest(domain, "keys@example.test");
     const occurrenceId = (db.prepare("SELECT id FROM occurrences").get() as { id: string }).id;
-    domain.patchOccurrence(occurrenceId, { visibility: "PUBLISHED", reason: "publish" }, randomUUID(), "admin");
+    domain.patchOccurrence(occurrenceId, { visibility: "PUBLISHED", reason: "publish", expected_revision: 1 }, randomUUID(), "admin");
 
     const pair = db.prepare(`SELECT o.provider_idempotence_key AS message_key, a.provider_idempotence_key AS attempt_key
       FROM email_outbox o JOIN outbox_attempt a ON a.message_id = o.id`).get();
@@ -114,7 +114,7 @@ describe("enqueueEmail creates a message and attempt #1 atomically", () => {
     enqueueViaCityInterest(domain, "joined@example.test");
     const occurrenceId = (db.prepare("SELECT id FROM occurrences").get() as { id: string }).id;
 
-    expect(() => domain.patchOccurrence(occurrenceId, { visibility: "PUBLISHED", reason: "publish" }, randomUUID(), "admin")).not.toThrow();
+    expect(() => domain.patchOccurrence(occurrenceId, { visibility: "PUBLISHED", reason: "publish", expected_revision: 1 }, randomUUID(), "admin")).not.toThrow();
     expect(db.inTransaction).toBe(false);
     expect(db.prepare("SELECT COUNT(*) AS n FROM outbox_attempt").get()).toEqual({ n: 1 });
   });
@@ -130,7 +130,7 @@ describe("enqueueEmail creates a message and attempt #1 atomically", () => {
     db.exec(`CREATE TRIGGER test_break_attempt_insert BEFORE INSERT ON outbox_attempt
       BEGIN SELECT RAISE(ABORT, 'INJECTED_ATTEMPT_FAILURE'); END`);
 
-    expect(() => domain.patchOccurrence(occurrenceId, { visibility: "PUBLISHED", reason: "publish" }, randomUUID(), "admin"))
+    expect(() => domain.patchOccurrence(occurrenceId, { visibility: "PUBLISHED", reason: "publish", expected_revision: 1 }, randomUUID(), "admin"))
       .toThrow(/INJECTED_ATTEMPT_FAILURE/);
     expect(db.prepare("SELECT COUNT(*) AS n FROM email_outbox").get()).toEqual({ n: 0 });
     expect(db.prepare("SELECT COUNT(*) AS n FROM outbox_attempt").get()).toEqual({ n: 0 });

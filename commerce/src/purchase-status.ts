@@ -5,6 +5,11 @@ export type PurchaseStatus =
   | "TEMPORARILY_PAUSED"
   | "UNAVAILABLE";
 
+export type AvailabilityStatus = "AVAILABLE" | "FEW_LEFT" | "SOLD_OUT";
+export const FEW_LEFT_THRESHOLD = 5;
+export const availabilityStatus = (available: number): AvailabilityStatus =>
+  available <= 0 ? "SOLD_OUT" : available <= FEW_LEFT_THRESHOLD ? "FEW_LEFT" : "AVAILABLE";
+
 /**
  * Public purchase availability. This is intentionally pure: callers decide
  * whether the globally authoritative new-order gate is blocking once, then

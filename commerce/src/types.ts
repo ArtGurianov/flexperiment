@@ -92,11 +92,14 @@ export const occurrencePatchSchema = z.object({
   venue_disclosure_text: z.string().trim().min(1).max(2_000).nullable().optional(),
   venue_announce_by: z.string().datetime().nullable().optional(),
   price_kopecks: z.number().int().nonnegative().optional(),
-  capacity: z.number().int().nonnegative().optional(),
+  inventory: z.object({
+    capacity: z.number().int().nonnegative().optional(),
+    admin_reserved_seats: z.number().int().nonnegative().optional(),
+  }).strict().optional(),
   sales_status: z.enum(["OPEN", "PAUSED", "CLOSED"]).optional(),
   visibility: z.enum(["HIDDEN", "PUBLISHED"]).optional(),
   audit_context: z.string().trim().min(3).max(1_000).optional(),
-});
+}).strict();
 
 export const cityCreateSchema = z.object({
   city_slug: z.string().trim().regex(/^[a-z0-9-]{2,100}$/),

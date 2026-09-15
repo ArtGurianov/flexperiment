@@ -29,6 +29,7 @@ export type PublicOccurrence = {
   timezone: string;
   price_kopecks: number;
   availability: number;
+  availability_status: "AVAILABLE" | "FEW_LEFT" | "SOLD_OUT";
   sales_status: "OPEN" | "PAUSED" | "CLOSED";
   fulfillment_status: SeoFulfillmentStatus;
   purchase_status: "AVAILABLE" | "SOLD_OUT" | "NOT_YET_OPEN" | "TEMPORARILY_PAUSED" | "UNAVAILABLE";
@@ -88,6 +89,7 @@ export function parsePublicOccurrence(value: unknown, at: string): PublicOccurre
   if (!isObject(value.venue)) throw new SourceContractError(`${at}.venue`);
   if (typeof value.price_kopecks !== "number") throw new SourceContractError(`${at}.price_kopecks`);
   if (typeof value.availability !== "number") throw new SourceContractError(`${at}.availability`);
+  if (typeof value.availability_status !== "string") throw new SourceContractError(`${at}.availability_status`);
 
   const venue = value.venue;
   const nullable = (raw: unknown, key: string): string | null => {
@@ -106,6 +108,7 @@ export function parsePublicOccurrence(value: unknown, at: string): PublicOccurre
     timezone: str(value.timezone, `${at}.timezone`),
     price_kopecks: value.price_kopecks,
     availability: value.availability,
+    availability_status: oneOf(value.availability_status, ["AVAILABLE", "FEW_LEFT", "SOLD_OUT"] as const, `${at}.availability_status`),
     sales_status: oneOf(value.sales_status, ["OPEN", "PAUSED", "CLOSED"] as const, `${at}.sales_status`),
     fulfillment_status: oneOf(value.fulfillment_status, ["SCHEDULED", "COMPLETED", "CANCELLED"] as const, `${at}.fulfillment_status`),
     purchase_status: oneOf(value.purchase_status, ["AVAILABLE", "SOLD_OUT", "NOT_YET_OPEN", "TEMPORARILY_PAUSED", "UNAVAILABLE"] as const, `${at}.purchase_status`),

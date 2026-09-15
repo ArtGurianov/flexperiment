@@ -23,7 +23,7 @@ export function OccurrenceRow({ occurrence, expanded, onToggleExpand, onAction, 
       <div>
         <p className="eyebrow">{string(occurrence.city_title)} / {string(occurrence.city_slug)}</p>
         <h3>{string(occurrence.title)}</h3>
-        <p>{formatDate(occurrence.starts_at)} · {formatMoney(occurrence.price_kopecks)} · {number(occurrence.availability)} / {number(occurrence.capacity)} мест</p>
+        <p>{formatDate(occurrence.starts_at)} · {formatMoney(occurrence.price_kopecks)} · Вместимость {number(occurrence.capacity)} · Продано {number(occurrence.sold)} · В оплате {number(occurrence.held)} · На сверке {number(occurrence.reconciling)} · Резерв {number(occurrence.admin_reserved_seats)} · Доступно {number(occurrence.availability)}</p>
         <code>{string(occurrence.id)}</code>
       </div>
       <div className="state-stack">

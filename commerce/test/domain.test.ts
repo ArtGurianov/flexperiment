@@ -2081,13 +2081,13 @@ describe("commerce domain", () => {
 
     setup.db.exec(`CREATE TRIGGER fail_city_interest_outbox BEFORE INSERT ON email_outbox
       WHEN NEW.type = 'CITY_INTEREST_AVAILABLE' BEGIN SELECT RAISE(ABORT, 'test outbox failure'); END;`);
-    expect(() => domain.patchOccurrence(setup.occurrenceId, { visibility: "PUBLISHED", reason: "Publish schedule" }, "city-interest-publish", "admin")).toThrow("test outbox failure");
+    expect(() => domain.patchOccurrence(setup.occurrenceId, { visibility: "PUBLISHED", reason: "Publish schedule", expected_revision: 1 }, "city-interest-publish", "admin")).toThrow("test outbox failure");
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE city_slug = 'novosibirsk'").get()).toEqual({ count: 1 });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM email_outbox WHERE type = 'CITY_INTEREST_AVAILABLE'").get()).toEqual({ count: 0 });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_notification_intents").get()).toEqual({ count: 0 });
     setup.db.exec("DROP TRIGGER fail_city_interest_outbox");
 
-    domain.patchOccurrence(setup.occurrenceId, { visibility: "PUBLISHED", reason: "Publish schedule" }, "city-interest-publish", "admin");
+    domain.patchOccurrence(setup.occurrenceId, { visibility: "PUBLISHED", reason: "Publish schedule", expected_revision: 1 }, "city-interest-publish", "admin");
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE city_slug = 'novosibirsk'").get()).toEqual({ count: 1 });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE city_slug = 'tomsk'").get()).toEqual({ count: 1 });
     const outbox = setup.db.prepare("SELECT id, type, recipient_email, payload_snapshot FROM email_outbox WHERE type = 'CITY_INTEREST_AVAILABLE'").get() as { id: string; type: string; recipient_email: string; payload_snapshot: string };
@@ -2572,7 +2572,7 @@ describe("commerce domain", () => {
     const domain = new CommerceDomain(setup.db, new MockProvider(), email, () => timestamp);
     setup.db.prepare("UPDATE occurrences SET visibility = 'HIDDEN', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
     domain.registerCityInterest({ email: "dump-city@example.test", city: "novosibirsk" });
-    domain.patchOccurrence(setup.occurrenceId, { visibility: "PUBLISHED", reason: "Publish" }, "event-dump-city-interest", "admin");
+    domain.patchOccurrence(setup.occurrenceId, { visibility: "PUBLISHED", reason: "Publish", expected_revision: 1 }, "event-dump-city-interest", "admin");
     const row = setup.db.prepare("SELECT id, payload_ref FROM email_outbox WHERE type = 'CITY_INTEREST_AVAILABLE'").get() as { id: string; payload_ref: string };
     outboxId = row.id;
     await domain.processEmailOutbox();
@@ -2683,7 +2683,7 @@ describe("commerce domain", () => {
     const setup = fixture(); databases.push(setup.db);
     setup.db.prepare("UPDATE occurrences SET visibility = 'HIDDEN', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
     setup.domain.registerCityInterest({ email: "hard-bounce@example.test", city: "novosibirsk" });
-    setup.domain.patchOccurrence(setup.occurrenceId, { visibility: "PUBLISHED", reason: "Publish schedule" }, "hard-bounce-publish", "admin");
+    setup.domain.patchOccurrence(setup.occurrenceId, { visibility: "PUBLISHED", reason: "Publish schedule", expected_revision: 1 }, "hard-bounce-publish", "admin");
     const outbox = setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'CITY_INTEREST_AVAILABLE'").get() as { id: string };
     setup.domain.applyUnisenderDelivery({ outboxId: outbox.id, status: "BOUNCED", providerStatus: "hard_bounced", semanticKey: "city-interest-hard-bounced" });
     expect(setup.db.prepare("SELECT COUNT(*) AS count FROM city_interest_requests WHERE email_normalized = 'hard-bounce@example.test'").get()).toEqual({ count: 1 });
@@ -2806,7 +2806,7 @@ describe("commerce domain", () => {
     const setup = fixture(); databases.push(setup.db);
     setup.db.prepare("UPDATE occurrences SET visibility = 'HIDDEN', sales_status = 'CLOSED' WHERE id = ?").run(setup.occurrenceId);
     setup.domain.registerCityInterest({ email: "withdraw-pending@example.test", city: "novosibirsk" });
-    setup.domain.patchOccurrence(setup.occurrenceId, { visibility: "PUBLISHED", reason: "Publish schedule" }, "withdraw-pending-publish", "admin");
+    setup.domain.patchOccurrence(setup.occurrenceId, { visibility: "PUBLISHED", reason: "Publish schedule", expected_revision: 1 }, "withdraw-pending-publish", "admin");
     const pending = setup.db.prepare("SELECT id FROM email_outbox WHERE type = 'CITY_INTEREST_AVAILABLE'").get() as { id: string };
     setup.domain.withdrawCityInterest("withdraw-pending@example.test", "Consent withdrawal received", "admin");
     expect(setup.db.prepare("SELECT status, recipient_email, recipient_email_hash, payload_snapshot FROM email_outbox WHERE id = ?").get(pending.id)).toEqual({ status: "SKIPPED", recipient_email: "", recipient_email_hash: "", payload_snapshot: "{}" });
