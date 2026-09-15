@@ -168,6 +168,19 @@ describe("Organization structured data", () => {
     }
   });
 
+  it("cannot be broken out of by a `</script>` in any value", () => {
+    // The home page's graph is all literals, so this is the weaker half of the
+    // guarantee — components/structured-data-escaping.test.ts renders the event
+    // graph with a hostile title, city and venue. This asserts the escaping
+    // survives the real build rather than only the unit test.
+    const html = readExport("index.html");
+    const blocks = [...html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/g)];
+    expect(blocks.length).toBeGreaterThan(0);
+    for (const [, payload] of blocks) {
+      expect(payload).not.toContain("<");
+    }
+  });
+
   it("emits no FAQPage, while keeping the FAQ as content", () => {
     // Google restricted FAQ rich results to government and health sites in
     // August 2023, so the markup buys nothing. The questions stay because they

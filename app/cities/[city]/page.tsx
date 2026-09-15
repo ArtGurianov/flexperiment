@@ -10,9 +10,11 @@ import PaymentNotice from "@/components/PaymentNotice";
 import Section, { SectionLabel } from "@/components/Section";
 import { formatRubles } from "@/lib/money";
 import {
+  departureLabel,
   occurrenceDateLabelInZone,
   occurrenceTimeLabelInZone,
 } from "@/lib/occurrence-format";
+import { isDeparted, type PublishedRecord } from "@/lib/seo/occurrence-snapshot";
 import { OPEN_GRAPH_BASE, TWITTER_CARD } from "@/lib/seo/site";
 import { findPublishedCity, PLACEHOLDER_PARAM, publishedCities } from "@/lib/seo/snapshot-source";
 
@@ -60,6 +62,55 @@ export async function generateMetadata(
   };
 }
 
+/**
+ * One date in a city's list.
+ *
+ * Server-rendered, so the dates are in the HTML. Availability is not: it is
+ * clock-dependent and belongs to the event page's own client-side fetch. A list
+ * claiming "мест нет" from a build a week ago would be worse than saying
+ * nothing.
+ *
+ * The call-to-action wording is passed in rather than derived, because the two
+ * lists mean different things: an upcoming date offers booking, an archival one
+ * only offers the record.
+ */
+function DateCard({ record, action }: { record: PublishedRecord; action: string }) {
+  const date = occurrenceDateLabelInZone(record.starts_at, record.timezone);
+  const time = occurrenceTimeLabelInZone(record.starts_at, record.timezone);
+
+  return (
+    <DarkPanel className="px-[5cqw] py-[5cqw]">
+      <p className="font-display text-[clamp(1.15rem,5cqw,1.6rem)] leading-tight text-acid">
+        <time dateTime={record.starts_at}>
+          {date}
+          {time ? `, ${time}` : ""}
+        </time>
+      </p>
+      <p className="mt-[2cqw] text-[clamp(0.85rem,3.3cqw,1.05rem)] text-bone/85">
+        {record.venue.status === "CONFIRMED" && record.venue.name
+          ? record.venue.name
+          : "Площадка уточняется"}
+        {" · "}
+        {formatRubles(record.price_kopecks)}
+      </p>
+      {isDeparted(record) ? (
+        <p className="mt-[2cqw] text-[clamp(0.85rem,3.3cqw,1.05rem)] text-bone/70">
+          {departureLabel(record.departed)}
+        </p>
+      ) : null}
+      {/* A link, not a PaymentCta: the destination is a real page with its own
+          URL, so it must stay a navigable anchor rather than a button that
+          opens a modal. */}
+      <CtaButton
+        href={`/events/${record.event_slug}`}
+        className="mt-[4cqw] border-2 px-[4cqw] py-2 text-[clamp(0.95rem,4cqw,1.25rem)]"
+      >
+        {action}
+      </CtaButton>
+    </DarkPanel>
+  );
+}
+
 export default async function CityPage(props: PageProps<"/cities/[city]">) {
   const { city } = await props.params;
   const published = findPublishedCity(city);
@@ -92,52 +143,41 @@ export default async function CityPage(props: PageProps<"/cities/[city]">) {
             стиля. Для любого уровня подготовки — растяжка не нужна.
           </p>
 
+          {/* Two lists, not one. Merging them would put a cancelled or
+              already-past date under a heading that means "ближайшие" — and a
+              PAST or WITHDRAWN tombstone still carries
+              fulfillment_status SCHEDULED, so nothing in the record itself
+              would have given it away. */}
           <SectionLabel className="mt-[9cqw] mb-[4cqw]">Ближайшие даты</SectionLabel>
 
-          {/* Server-rendered, so the dates are in the HTML. Availability is
-              not: it is clock-dependent and belongs to the event page's own
-              client-side fetch. A list that claimed "мест нет" from a build a
-              week ago would be worse than saying nothing. */}
-          <ul className="grid gap-[4cqw]">
-            {published.records.map((record) => {
-              const date = occurrenceDateLabelInZone(record.starts_at, record.timezone);
-              const time = occurrenceTimeLabelInZone(record.starts_at, record.timezone);
-              const cancelled = record.fulfillment_status === "CANCELLED";
-              return (
+          {published.upcoming.length > 0 ? (
+            <ul className="grid gap-[4cqw]">
+              {published.upcoming.map((record) => (
                 <li key={record.id}>
-                  <DarkPanel className="px-[5cqw] py-[5cqw]">
-                    <p className="font-display text-[clamp(1.15rem,5cqw,1.6rem)] leading-tight text-acid">
-                      <time dateTime={record.starts_at}>
-                        {date}
-                        {time ? `, ${time}` : ""}
-                      </time>
-                    </p>
-                    <p className="mt-[2cqw] text-[clamp(0.85rem,3.3cqw,1.05rem)] text-bone/85">
-                      {record.venue.status === "CONFIRMED" && record.venue.name
-                        ? record.venue.name
-                        : "Площадка уточняется"}
-                      {" · "}
-                      {formatRubles(record.price_kopecks)}
-                    </p>
-                    {cancelled ? (
-                      <p className="mt-[2cqw] text-[clamp(0.85rem,3.3cqw,1.05rem)] text-bone/70">
-                        Отменён
-                      </p>
-                    ) : null}
-                    {/* A link, not a PaymentCta: the destination is a real page
-                        with its own URL, so it must stay a navigable anchor
-                        rather than a button that opens a modal. */}
-                    <CtaButton
-                      href={`/events/${record.event_slug}`}
-                      className="mt-[4cqw] border-2 px-[4cqw] py-2 text-[clamp(0.95rem,4cqw,1.25rem)]"
-                    >
-                      Подробности и запись
-                    </CtaButton>
-                  </DarkPanel>
+                  <DateCard record={record} action="Подробности и запись" />
                 </li>
-              );
-            })}
-          </ul>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-[clamp(0.9rem,3.5cqw,1.1rem)] text-bone/75">
+              Ближайшие даты в этом городе пока не объявлены.
+            </p>
+          )}
+
+          {published.archived.length > 0 ? (
+            <>
+              <SectionLabel className="mt-[9cqw] mb-[4cqw]">
+                Прошедшие и отменённые
+              </SectionLabel>
+              <ul className="grid gap-[4cqw]">
+                {published.archived.map((record) => (
+                  <li key={record.id}>
+                    <DateCard record={record} action="Подробности" />
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : null}
         </Section>
       </main>
 

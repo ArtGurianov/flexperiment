@@ -1,4 +1,5 @@
 import type { PurchaseStatus } from "@/lib/occurrence-sales";
+import type { SeoDeparture } from "@/lib/seo/occurrence-snapshot";
 
 /**
  * The live public occurrence as the browser sees it, and the formatters that
@@ -117,3 +118,29 @@ export const publicVenueDisclosure = (occurrence: Occurrence) => {
     : "";
   return `${venue.disclosure_text ?? "Площадка уточняется."}${deadline}`;
 };
+
+/**
+ * What to tell a visitor who has landed on a page for a date that is no longer
+ * in the public tour.
+ *
+ * Each string says only what the snapshot actually knows. WITHDRAWN is the
+ * careful one: `/v1/public/occurrences/{id}` answered 404, so the honest
+ * statement is that the date is no longer available — not that it was cancelled
+ * (which would assert a reason nothing confirmed) and not that it happened.
+ */
+export const departureNotice = (departed: SeoDeparture): string =>
+  departed === "CANCELLED"
+    ? "Этот мастер-класс отменён. Запись закрыта."
+    : departed === "COMPLETED"
+      ? "Этот мастер-класс уже прошёл."
+      : departed === "PAST"
+        ? "Эта дата уже прошла."
+        : "Эта дата больше не доступна.";
+
+/** The same thing as a short label, for a list item rather than a banner. */
+export const departureLabel = (departed: SeoDeparture): string =>
+  departed === "CANCELLED"
+    ? "Отменён"
+    : departed === "COMPLETED" || departed === "PAST"
+      ? "Прошёл"
+      : "Недоступен";

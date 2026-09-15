@@ -199,6 +199,20 @@ export function buildSnapshot({
   const tombstones: SeoTombstone[] = [];
   for (const previousEntry of [...previous.occurrences, ...previous.tombstones]) {
     if (live.has(previousEntry.id)) continue;
+    // `has` before `get`, and the distinction is the whole point of the source
+    // contract. An explicit `null` means the endpoint was queried and answered
+    // 404 — Commerce no longer exposes this occurrence. An ABSENT key means
+    // nothing was ever looked up, which is a different fact entirely and one
+    // this function cannot repair.
+    //
+    // `?? null` collapsed the two, so a fixture that simply forgot to record a
+    // re-fetch silently produced a WITHDRAWN tombstone — a claim about
+    // production state manufactured out of a gap in the input. The production
+    // --source path always records an entry for every previously published id
+    // missing from the tour, so this only ever fires on a malformed --input.
+    if (!source.departed.has(previousEntry.id)) {
+      throw new SourceContractError(`departed.${previousEntry.id}:NOT_RECORDED`);
+    }
     const current = source.departed.get(previousEntry.id) ?? null;
     // Re-projecting from the live record rather than carrying the previous one
     // forward verbatim: a cancelled event may have had its venue confirmed or
