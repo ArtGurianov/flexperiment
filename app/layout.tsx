@@ -56,6 +56,15 @@ export const metadata: Metadata = {
   // localhost in development and warns in production.
   metadataBase: new URL(SITE_ORIGIN),
   openGraph: OPEN_GRAPH_BASE,
+  // Search Console / Yandex Webmaster verification is deliberately absent
+  // rather than stubbed. No HTML meta token exists in this repository, but DNS
+  // verification is invisible from a repository and may already be in place —
+  // check each property's console before adding anything, and prefer a DNS TXT
+  // record, which covers the apex, www and every subdomain and survives a
+  // redeploy. If a meta token is ever genuinely needed, it goes here as
+  // `verification: { google, yandex }` read from build-time values; a
+  // hardcoded placeholder would be worse than nothing, because a wrong token
+  // fails verification silently.
   twitter: {
     // Now backed by real images. app/opengraph-image.png emits og:image and
     // app/twitter-image.png emits twitter:image — the opengraph-image

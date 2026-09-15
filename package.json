@@ -46,7 +46,8 @@
     "frontend:test:nginx": "bash deploy/test-frontend-nginx-routing.sh",
     "deploy:test:caddyfile": "bash deploy/test-caddyfile-topology.sh",
     "admin:dev": "pnpm --filter @flexperiment/admin dev",
-    "test": "COMMERCE_TEST_DB_SNAPSHOT=1 vitest run",
+    "test": "COMMERCE_TEST_DB_SNAPSHOT=1 vitest run --project '!export'",
+    "test:export": "vitest run --project export",
     "test:watch": "vitest",
     "test:temp:gc": "bash scripts/test-temp-gc.sh"
   },

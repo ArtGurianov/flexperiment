@@ -58,6 +58,27 @@ jobs:
       # invocation - without this, a type error in the operator UI ships.
       - run: pnpm admin:typecheck
       - run: pnpm test
+      # The committed SEO snapshot is validated on its own terms, without
+      # contacting Commerce. Production-versus-snapshot drift is a real thing
+      # to watch, but it is an operational check on its own schedule: gating
+      # builds on it would turn an unrelated frontend pull request red the
+      # moment an operator edits a date, which trains everyone to ignore the
+      # signal. See docs/release/SEO_SURFACE_SNAPSHOT.md.
+      - run: pnpm commerce:seo-snapshot:validate
+      # CI never built the frontend before this, so nothing ever checked what
+      # the static export actually contains - and under `output: "export"` that
+      # HTML is the authoritative SEO artifact. Every metadata defect this work
+      # fixed was invisible in the TypeScript source and visible only here.
+      #
+      # Must come after `pnpm exec next typegen` above, or PageProps<"/events/
+      # [slug]"> does not resolve. `pnpm build` refuses a SOURCE_COMMIT that is
+      # not exactly 40 lowercase hex characters; github.sha already is one.
+      - name: Build the static export
+        run: pnpm build
+        env:
+          SOURCE_COMMIT: ${{ github.sha }}
+      - name: Static-export conformance
+        run: pnpm test:export
       - name: Real-Nginx frontend static-export routing contract
         run: pnpm frontend:test:nginx
       - name: Real-Nginx admin/partner shared-frontend host routing config
