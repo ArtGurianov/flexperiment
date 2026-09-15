@@ -117,6 +117,7 @@ legal-profile-provenance-e2e-admin
 legal-profile-provenance-only-0050
 legal-profile-provenance-tampered
 legal-profile-provenance-template
+node-containment-probe
 observation
 observation-template
 ord-provider-operation
@@ -126,6 +127,8 @@ ord-reporting-migration
 ord-reporting-template
 outbox-attempt
 outbox-attempt-template
+outbox-authority
+outbox-authority-0040
 outbox-authority-template
 partner-identity
 partner-identity-template
