@@ -79,12 +79,41 @@ jobs:
           git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main runtime-candidate
           [[ "$CONTROLLER_SHA" == "$EXPECTED_CONTROLLER_SHA" && "$(git rev-parse "${CONTROLLER_SHA}^{tree}")" == "$EXPECTED_CONTROLLER_TREE" && "$(git rev-parse origin/main)" == "$EXPECTED_CONTROLLER_SHA" && "$(git rev-parse origin/runtime-candidate)" == "$TARGET_SHA" && "$(scripts/read-production-deploy-ref.sh)" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q7_ACTIVATION_AUTHORITY_REBIND_FAILED >&2; exit 1; }
           [[ "$(git ls-remote --exit-code origin "$EXPECTED_Q7_PUBLICATION_REF" | awk 'NF == 2 { print $1 }')" == "$TARGET_SHA" ]] || { echo AGENT_REFERRALS_Q7_ACTIVATION_PUBLICATION_MOVED >&2; exit 1; }
+          : > activation-post.json
           set +e
-          http_status="$(curl --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' --output activation-post.json --write-out '%{http_code}' -X POST --data-binary @activation-request.json "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/activate")"
+          curl_metadata="$(curl --silent --show-error --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" -H 'Content-Type: application/json' --output activation-post.json --write-out '%{http_code}\n%{content_type}' -X POST --data-binary @activation-request.json "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/activate")"
           curl_rc=$?
           set -e
-          if [[ "$curl_rc" -eq 0 && "$http_status" =~ ^4[0-9][0-9]$ ]]; then safe_code="$(jq -r '.error.code // .code // "UNPARSEABLE_4XX"' activation-post.json 2>/dev/null || printf UNPARSEABLE_4XX)"; [[ "$safe_code" =~ ^[A-Z0-9_]{1,120}$ ]] || safe_code=UNSAFE_4XX_CODE; echo "AGENT_REFERRALS_Q7_ACTIVATION_REFUSED_CODE=$safe_code" >&2; exit 1; fi
-          if [[ "$curl_rc" -ne 0 || ! "$http_status" =~ ^2[0-9][0-9]$ ]]; then echo AGENT_REFERRALS_Q7_ACTIVATION_OUTCOME_UNKNOWN >&2; fi
+          http_status="$(printf '%s\n' "$curl_metadata" | sed -n '1p')"
+          [[ "$http_status" =~ ^[0-9]{3}$ ]] || http_status=000
+          raw_content_type="$(printf '%s\n' "$curl_metadata" | sed -n '2p' | cut -d ';' -f 1 | tr '[:upper:]' '[:lower:]')"
+          if [[ "$raw_content_type" =~ ^[a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*$ ]]; then response_content_type="$raw_content_type"; else response_content_type=UNKNOWN; fi
+          if [[ -s activation-post.json ]]; then
+            response_body_empty=false
+            response_body_sha256="$(shasum -a 256 activation-post.json | awk '{print $1}')"
+            if jq -e . activation-post.json >/dev/null 2>&1; then
+              response_body_kind=JSON
+              safe_error_code="$(jq -er 'if type == "object" then (if (.error | type) == "object" then .error.code else null end) // .code // "NO_SAFE_CODE" else "NO_SAFE_CODE" end' activation-post.json 2>/dev/null || printf UNPARSEABLE_JSON)"
+              [[ "$safe_error_code" =~ ^[A-Z0-9_]{1,120}$ ]] || safe_error_code=UNSAFE_ERROR_CODE
+            else
+              response_body_kind=NON_JSON
+              safe_error_code=UNPARSEABLE_JSON
+            fi
+          else
+            response_body_empty=true
+            response_body_kind=EMPTY
+            response_body_sha256=EMPTY
+            safe_error_code=NO_SAFE_CODE
+          fi
+          {
+            echo "ACTIVATION_POST_CURL_RC=$curl_rc"
+            echo "ACTIVATION_POST_HTTP_STATUS=$http_status"
+            echo "ACTIVATION_POST_RESPONSE_CONTENT_TYPE=$response_content_type"
+            echo "ACTIVATION_POST_RESPONSE_BODY_EMPTY=$response_body_empty"
+            echo "ACTIVATION_POST_RESPONSE_KIND=$response_body_kind"
+            echo "ACTIVATION_POST_SAFE_ERROR_CODE=$safe_error_code"
+            echo "ACTIVATION_POST_RESPONSE_SHA256=$response_body_sha256"
+          } >> "$GITHUB_ENV"
 
       - name: Reconcile exact Q7 activation evidence
         run: |
@@ -93,4 +122,36 @@ jobs:
           api "$PUBLIC_API_URL/v1/internal/release-control/agent-referrals/activation-state" > activation-after.json
           api "$PUBLIC_API_URL/v1/internal/release-control/completion/$RELEASE_ID" > completion-after.json
           jq -e --slurpfile before completion-before.json '.complete == true and .expected == $before[0].expected' completion-after.json >/dev/null || { echo AGENT_REFERRALS_Q7_ACTIVATION_TERMINAL_CHANGED >&2; exit 1; }
-          scripts/release/assert-agent-referrals-q6-activation-evidence.sh activation-after.json completion-after.json "$ACTIVATION_ID" "$RELEASE_ID" "$TARGET_SHA" "$EXPECTED_FEATURE_REVISION"
+          emit_forensic_summary() {
+            [[ "$ACTIVATION_MODE" == FRESH ]] || return 0
+            [[ "${ACTIVATION_POST_CURL_RC:-}" =~ ^[0-9]+$ ]] || { echo AGENT_REFERRALS_Q7_ACTIVATION_FORENSIC_MISSING >&2; exit 1; }
+            [[ "${ACTIVATION_POST_HTTP_STATUS:-}" =~ ^[0-9]{3}$ ]] || { echo AGENT_REFERRALS_Q7_ACTIVATION_FORENSIC_MISSING >&2; exit 1; }
+            [[ "${ACTIVATION_POST_RESPONSE_CONTENT_TYPE:-}" =~ ^([a-z0-9][a-z0-9.+-]*/[a-z0-9][a-z0-9.+-]*|UNKNOWN)$ ]] || { echo AGENT_REFERRALS_Q7_ACTIVATION_FORENSIC_MISSING >&2; exit 1; }
+            [[ "${ACTIVATION_POST_RESPONSE_BODY_EMPTY:-}" =~ ^(true|false)$ ]] || { echo AGENT_REFERRALS_Q7_ACTIVATION_FORENSIC_MISSING >&2; exit 1; }
+            [[ "${ACTIVATION_POST_RESPONSE_KIND:-}" =~ ^(EMPTY|JSON|NON_JSON)$ ]] || { echo AGENT_REFERRALS_Q7_ACTIVATION_FORENSIC_MISSING >&2; exit 1; }
+            [[ "${ACTIVATION_POST_SAFE_ERROR_CODE:-}" =~ ^[A-Z0-9_]{1,120}$ ]] || { echo AGENT_REFERRALS_Q7_ACTIVATION_FORENSIC_MISSING >&2; exit 1; }
+            [[ "${ACTIVATION_POST_RESPONSE_SHA256:-}" == EMPTY || "${ACTIVATION_POST_RESPONSE_SHA256:-}" =~ ^[a-f0-9]{64}$ ]] || { echo AGENT_REFERRALS_Q7_ACTIVATION_FORENSIC_MISSING >&2; exit 1; }
+            echo "AGENT_REFERRALS_Q7_ACTIVATION_HTTP_CURL_RC=$ACTIVATION_POST_CURL_RC"
+            echo "AGENT_REFERRALS_Q7_ACTIVATION_HTTP_STATUS=$ACTIVATION_POST_HTTP_STATUS"
+            echo "AGENT_REFERRALS_Q7_ACTIVATION_RESPONSE_CONTENT_TYPE=$ACTIVATION_POST_RESPONSE_CONTENT_TYPE"
+            echo "AGENT_REFERRALS_Q7_ACTIVATION_RESPONSE_BODY_EMPTY=$ACTIVATION_POST_RESPONSE_BODY_EMPTY"
+            echo "AGENT_REFERRALS_Q7_ACTIVATION_RESPONSE_KIND=$ACTIVATION_POST_RESPONSE_KIND"
+            echo "AGENT_REFERRALS_Q7_ACTIVATION_SAFE_ERROR_CODE=$ACTIVATION_POST_SAFE_ERROR_CODE"
+            echo "AGENT_REFERRALS_Q7_ACTIVATION_RESPONSE_SHA256=$ACTIVATION_POST_RESPONSE_SHA256"
+          }
+          if scripts/release/assert-agent-referrals-q6-activation-evidence.sh activation-after.json completion-after.json "$ACTIVATION_ID" "$RELEASE_ID" "$TARGET_SHA" "$EXPECTED_FEATURE_REVISION" >/dev/null 2>&1; then
+            emit_forensic_summary
+            echo AGENT_REFERRALS_Q7_ACTIVATION_RECONCILED_ACTIVE
+            exit 0
+          fi
+          if jq -e --argjson revision "$EXPECTED_FEATURE_REVISION" '.feature_state.state == "DORMANT" and .feature_state.owner_id == null and .feature_state.revision == $revision and .last_feature_state_event == null and .activation_manifest == null' activation-after.json >/dev/null; then
+            emit_forensic_summary
+            if [[ "$ACTIVATION_MODE" == FRESH && "$ACTIVATION_POST_HTTP_STATUS" =~ ^4[0-9][0-9]$ ]]; then echo "AGENT_REFERRALS_Q7_ACTIVATION_REFUSED_CODE=$ACTIVATION_POST_SAFE_ERROR_CODE" >&2; fi
+            echo AGENT_REFERRALS_Q7_ACTIVATION_RECONCILIATION=NO_COMMIT
+            echo AGENT_REFERRALS_Q7_ACTIVATION_NO_COMMIT >&2
+            exit 1
+          fi
+          emit_forensic_summary
+          echo AGENT_REFERRALS_Q7_ACTIVATION_RECONCILIATION=ANOMALY
+          echo AGENT_REFERRALS_Q7_ACTIVATION_RECONCILIATION_ANOMALY >&2
+          exit 1
