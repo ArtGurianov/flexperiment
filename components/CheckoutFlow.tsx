@@ -9,29 +9,17 @@ import { storedReferralSlug } from "@/components/referral-marker";
 import CityInterestForm from "@/components/CityInterestForm";
 import OccurrenceNotifyForm from "@/components/OccurrenceNotifyForm";
 import { findCityBySlug, type CitySlug } from "@/lib/city-catalog";
-import { canRequestCheckout, purchaseStatusAnnouncement, type PurchaseStatus } from "@/lib/occurrence-sales";
+import { canRequestCheckout, purchaseStatusAnnouncement } from "@/lib/occurrence-sales";
 import { formatRubles as rub } from "@/lib/money";
+// Definitions moved to lib/occurrence-format.ts so a server component can use
+// them too; every call site below is unchanged.
+import {
+  occurrenceDateLabel,
+  occurrenceDateTimeLabel,
+  publicVenueDisclosure,
+  type Occurrence,
+} from "@/lib/occurrence-format";
 
-type Occurrence = {
-  id: string;
-  city: string;
-  city_title: string;
-  title: string;
-  starts_at: string;
-  timezone: string;
-  price_kopecks: number;
-  availability: number;
-  sales_status: "OPEN" | "PAUSED" | "CLOSED";
-  fulfillment_status: "SCHEDULED" | "COMPLETED" | "CANCELLED";
-  purchase_status: PurchaseStatus;
-  venue: {
-    status: "CONFIRMED" | "TO_BE_ANNOUNCED";
-    name: string | null;
-    address: string | null;
-    disclosure_text: string | null;
-    announce_by: string | null;
-  };
-};
 type Quote = {
   quote_id: string;
   price_kopecks: number;
@@ -55,34 +43,6 @@ type Props = {
 };
 
 const attemptKey = (quoteId: string) => `fx_checkout_attempt:v1:${quoteId}`;
-const occurrenceDateLabel = (startsAt: string) => {
-  const date = new Date(startsAt);
-  return Number.isNaN(date.getTime()) ? "Скоро" : date.toLocaleDateString("ru-RU");
-};
-const occurrenceDateTimeLabel = (startsAt: string, timeZone: string) => {
-  const date = new Date(startsAt);
-  if (Number.isNaN(date.getTime())) return "Время уточняется";
-  const options: Intl.DateTimeFormatOptions = {
-    day: "2-digit", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit",
-  };
-  try {
-    return new Intl.DateTimeFormat("ru-RU", { ...options, timeZone }).format(date);
-  } catch {
-    return new Intl.DateTimeFormat("ru-RU", options).format(date);
-  }
-};
-const publicVenueDisclosure = (occurrence: Occurrence) => {
-  const { venue } = occurrence;
-  if (venue.status === "CONFIRMED") {
-    return venue.name && venue.address
-      ? `${venue.name}: ${venue.address}`
-      : "Точное место проведения будет доступно при записи.";
-  }
-  const deadline = venue.announce_by
-    ? ` Сообщим адрес участникам на email не позднее ${occurrenceDateTimeLabel(venue.announce_by, occurrence.timezone)}.`
-    : "";
-  return `${venue.disclosure_text ?? "Площадка уточняется."}${deadline}`;
-};
 const legalPagePaths = {
   PUBLIC_OFFER: "/legal/public-offer",
   PRIVACY_POLICY: "/legal/privacy-policy",
