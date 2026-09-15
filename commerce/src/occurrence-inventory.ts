@@ -28,6 +28,8 @@ export class InventoryTargetError extends Error {
 }
 
 type InventoryRow = { capacity?: unknown; admin_reserved_seats?: unknown };
+const reconcilingBookingSql = (bookingAlias: string, paymentAlias: string) =>
+  `${bookingAlias}.status = 'RESERVED' AND (${paymentAlias}.state = 'CREATE_UNKNOWN' OR ${paymentAlias}.status IN ('RECONCILING', 'REVIEW_REQUIRED'))`;
 
 /**
  * The allocation predicate is deliberately centralized. It is used in read
@@ -37,11 +39,21 @@ type InventoryRow = { capacity?: unknown; admin_reserved_seats?: unknown };
 export const availableSeatsSql = (alias: string) =>
   `(${alias}.capacity - ${alias}.admin_reserved_seats - (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = ${alias}.id AND b.status IN ('RESERVED', 'CONFIRMED')))`;
 
+/**
+ * The admin projections must use the same reservation partition as
+ * seatCommitments(). Keeping this SQL here prevents a classification change
+ * from making an operator read disagree with target-state validation.
+ */
+export const seatCommitmentsSql = (alias: string) => `
+  (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = ${alias}.id AND b.status = 'CONFIRMED') AS sold,
+  (SELECT COUNT(*) FROM bookings b WHERE b.occurrence_id = ${alias}.id AND b.status = 'RESERVED') - (SELECT COUNT(*) FROM bookings b LEFT JOIN payments p ON p.order_id = b.order_id WHERE b.occurrence_id = ${alias}.id AND ${reconcilingBookingSql("b", "p")}) AS held,
+  (SELECT COUNT(*) FROM bookings b LEFT JOIN payments p ON p.order_id = b.order_id WHERE b.occurrence_id = ${alias}.id AND ${reconcilingBookingSql("b", "p")}) AS reconciling`;
+
 export const seatCommitments = (db: Database.Database, occurrenceId: string): SeatCommitments => {
   const row = db.prepare(`SELECT
     COUNT(*) FILTER (WHERE b.status = 'CONFIRMED') AS sold,
     COUNT(*) FILTER (WHERE b.status = 'RESERVED') AS reserved,
-    COUNT(*) FILTER (WHERE b.status = 'RESERVED' AND (p.state = 'CREATE_UNKNOWN' OR p.status IN ('RECONCILING', 'REVIEW_REQUIRED'))) AS reconciling
+    COUNT(*) FILTER (WHERE ${reconcilingBookingSql("b", "p")}) AS reconciling
     FROM bookings b
     LEFT JOIN payments p ON p.order_id = b.order_id
     WHERE b.occurrence_id = ?`).get(occurrenceId) as { sold: number; reserved: number; reconciling: number };
@@ -64,13 +76,13 @@ export const resolveInventoryTarget = (current: InventoryRow, patch: Record<stri
 
 export const assertInventoryTarget = (commitments: SeatCommitments, target: InventoryTarget): void => {
   const customerCommitted = commitments.sold + commitments.held + commitments.reconciling;
+  const committed = customerCommitted + target.adminReservedSeats;
   const breakdown = { sold: commitments.sold, held: commitments.held, reconciling: commitments.reconciling, admin_reserved: target.adminReservedSeats };
   if (target.capacity < customerCommitted) {
     throw new InventoryTargetError("CAPACITY_BELOW_COMMITTED_SEATS", {
-      requested_capacity: target.capacity, minimum_capacity: customerCommitted, breakdown,
+      requested_capacity: target.capacity, minimum_capacity: committed, breakdown,
     });
   }
-  const committed = customerCommitted + target.adminReservedSeats;
   if (target.capacity < committed) {
     throw new InventoryTargetError("RESERVE_EXCEEDS_AVAILABLE_CAPACITY", {
       requested_capacity: target.capacity, minimum_capacity: committed, breakdown,

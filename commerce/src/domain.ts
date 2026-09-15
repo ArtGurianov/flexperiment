@@ -1850,7 +1850,12 @@ export class CommerceDomain {
       if (input.capacity !== undefined) throw new DomainError("VALIDATION_ERROR", 422);
       const inventory = input.inventory;
       if (inventory !== undefined && (!inventory || typeof inventory !== "object" || Array.isArray(inventory))) throw new DomainError("VALIDATION_ERROR", 422);
-      const normalizedInput = { ...input, ...(inventory as Record<string, unknown> | undefined) };
+      const inventoryPatch = inventory as Record<string, unknown> | undefined;
+      const normalizedInput: Record<string, unknown> = {
+        ...input,
+        ...(inventoryPatch?.capacity !== undefined ? { capacity: inventoryPatch.capacity } : {}),
+        ...(inventoryPatch?.admin_reserved_seats !== undefined ? { admin_reserved_seats: inventoryPatch.admin_reserved_seats } : {}),
+      };
       delete (normalizedInput as Record<string, unknown>).inventory;
       const target = resolveInventoryTarget(before, normalizedInput);
       try { assertInventoryTarget(seatCommitments(this.db, occurrenceId), target); }
