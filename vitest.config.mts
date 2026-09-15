@@ -2,6 +2,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { configDefaults, defineConfig } from "vitest/config";
 
+// test/export/** is deliberately absent: those run in their own project, and
+// only after a build. See the `export` project below.
 const nodeInclude = [
   "commerce/test/**/*.test.ts",
   "apps/admin/**/*.test.ts",
@@ -32,6 +34,22 @@ export default defineConfig({
           // A .dom.test.tsx picked up by the widened admin glob above would
           // otherwise run in both environments.
           exclude: [...configDefaults.exclude, "apps/admin/**/*.dom.test.tsx", "components/**/*.dom.test.tsx"],
+        },
+      },
+      {
+        // Asserts against the BUILT EXPORT in out/, so it only makes sense
+        // after `pnpm build` — CI runs it immediately afterwards, and the
+        // helpers fail with that instruction rather than a bare ENOENT.
+        //
+        // It needs its own project because neither existing glob reaches the
+        // repo root: `node` covers commerce/, apps/admin/, components/ and
+        // lib/, and `jsdom` only *.dom.test.tsx. A conformance test placed
+        // anywhere else would belong to no project and silently never run.
+        extends: true,
+        test: {
+          name: "export",
+          environment: "node",
+          include: ["test/export/**/*.test.ts"],
         },
       },
       {

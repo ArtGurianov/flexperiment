@@ -24,6 +24,12 @@ trap cleanup EXIT INT TERM
 
 mkdir -p "$fixture_dir/payment/success" "$fixture_dir/legal/public-offer" "$fixture_dir/refund/confirm" "$fixture_dir/ticket" "$fixture_dir/_next/static/chunks"
 echo "ROOT_PAGE" > "$fixture_dir/index.html"
+# The branded not-found export, the raw legal Markdown a legal release verifies
+# over HTTPS, and robots.txt - which must NOT be caught by the .txt crawl-
+# suppression location below.
+echo "BRANDED_404_PAGE" > "$fixture_dir/404.html"
+echo "# Публичная оферта" > "$fixture_dir/legal/public-offer.md"
+printf 'User-Agent: *\nAllow: /\n' > "$fixture_dir/robots.txt"
 echo "PAYMENT_SUCCESS_PAGE" > "$fixture_dir/payment/success.html"
 echo "rsc-tree-payload" > "$fixture_dir/payment/success/__next._tree.txt"
 echo "LEGAL_PUBLIC_OFFER_PAGE" > "$fixture_dir/legal/public-offer.html"
@@ -73,6 +79,24 @@ assert_status() {
   [[ "$actual" == "$expected" ]] || { echo "MISMATCH at $path: got HTTP $actual, expected $expected" >&2; exit 1; }
 }
 
+# assert_body hard-pins status 200, so it cannot express "this 404 must carry
+# the branded body" - which is the whole point of the error_page directive.
+assert_status_and_body() {
+  local path="$1" expected_status="$2" expected="$3" actual status
+  status="$(curl --silent --location --output "$response_file" --write-out '%{http_code}' "$base$path")"
+  actual="$(cat "$response_file")"
+  [[ "$status" == "$expected_status" ]] || { echo "MISMATCH at $path: HTTP $status, expected $expected_status" >&2; exit 1; }
+  [[ "$actual" == "$expected" ]] || { echo "MISMATCH at $path: got '$actual', expected '$expected'" >&2; exit 1; }
+}
+
+# Same --write-out '%header{...}' idiom the redirect assertion below already
+# proves works. An empty expectation asserts the header is absent.
+assert_header() {
+  local path="$1" header="$2" expected="$3" actual
+  actual="$(curl --silent --location --output /dev/null --write-out "%header{$header}" "$base$path")"
+  [[ "$actual" == "$expected" ]] || { echo "MISMATCH at $path: $header was '$actual', expected '$expected'" >&2; exit 1; }
+}
+
 assert_body "/" "ROOT_PAGE"
 assert_body "/payment/success/" "PAYMENT_SUCCESS_PAGE"
 assert_body "/payment/success/?order=abc123" "PAYMENT_SUCCESS_PAGE"
@@ -91,5 +115,43 @@ redirect_status="$(curl --silent --output /dev/null --write-out '%{http_code}' "
 [[ "$redirect_status" == "301" ]] || { echo "MISMATCH: expected 301 for trailing-slash request, got $redirect_status" >&2; exit 1; }
 redirect_location="$(curl --silent --output /dev/null --write-out '%header{location}' "$base/payment/success/?order=abc123")"
 [[ "$redirect_location" == "/payment/success?order=abc123" ]] || { echo "MISMATCH: expected relative redirect to /payment/success?order=abc123, got '$redirect_location'" >&2; exit 1; }
+
+# An unknown URL must answer 404 with the site's own page, not nginx's stock
+# body - which announces the server version.
+assert_status_and_body "/nonexistent" 404 "BRANDED_404_PAGE"
+assert_status_and_body "/legal/does-not-exist" 404 "BRANDED_404_PAGE"
+# /404.html is `internal`, so it cannot be requested (and indexed) on a 200.
+assert_status "/404.html" 404
+
+# The RSC payloads and the raw legal Markdown must keep answering 200 - the
+# .txt requests ARE client-side navigation, and commerce/src/legal-release.ts
+# fetches the .md files over HTTPS to verify their sha256 - while being
+# suppressed from indexing by header.
+assert_body "/payment/success/__next._tree.txt" "rsc-tree-payload"
+assert_header "/payment/success/__next._tree.txt" "X-Robots-Tag" "noindex"
+assert_status_and_body "/legal/public-offer.md" 200 "# Публичная оферта"
+assert_header "/legal/public-offer.md" "X-Robots-Tag" "noindex"
+
+# nginx's add_header is not additive across levels: a location declaring any
+# add_header REPLACES the whole server-level set. These three prove the
+# re-declaration inside the .txt/.md location actually took.
+assert_header "/payment/success/__next._tree.txt" "X-Content-Type-Options" "nosniff"
+assert_header "/payment/success/__next._tree.txt" "X-Frame-Options" "DENY"
+assert_header "/payment/success/__next._tree.txt" "Referrer-Policy" "no-referrer"
+
+# An exact-match location outranks a regex one, which is what keeps robots.txt
+# out of the block above. A robots.txt served with X-Robots-Tag: noindex is
+# self-defeating.
+assert_status "/robots.txt" 200
+assert_header "/robots.txt" "X-Robots-Tag" ""
+assert_header "/robots.txt" "X-Content-Type-Options" "nosniff"
+
+# Content-hashed assets are immutable for a year; nothing outside that prefix is.
+assert_header "/_next/static/chunks/app-abc123.js" "Cache-Control" "public, max-age=31536000, immutable"
+assert_header "/_next/static/chunks/app-abc123.js" "X-Content-Type-Options" "nosniff"
+assert_header "/index.html" "Cache-Control" ""
+# A missing hashed asset is a build or deploy fault and must read as 404, not
+# fall through to a page.
+assert_status "/_next/static/chunks/absent-deadbeef.js" 404
 
 echo "Frontend nginx static-export routing: OK"

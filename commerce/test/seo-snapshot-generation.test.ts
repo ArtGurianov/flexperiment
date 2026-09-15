@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { EMPTY_SNAPSHOT, parseSnapshot } from "../../lib/seo/occurrence-snapshot";
-import { findSnapshotDefects } from "../../lib/seo/occurrence-publication";
+import { eventStatusFor, findSnapshotDefects } from "../../lib/seo/occurrence-publication";
 import { buildSnapshot, parsePublicTour, SourceContractError } from "../../lib/seo/public-occurrence";
 import { publicOccurrence } from "../../lib/seo/public-occurrence-fixture";
 import {
@@ -153,6 +153,28 @@ describe("snapshot generation", () => {
     expect(cancelledAtAKnownVenue.tombstones[0].venue).toEqual({
       status: "CONFIRMED", name: "Студия", address: "Красный проспект, 1",
     });
+  });
+
+  it("never lets a sales state reach the snapshot, let alone imply a cancellation", () => {
+    // The strongest form of "eventStatus comes from fulfillment only": the
+    // fields it could wrongly be derived from are not carried at all. A
+    // NOT_YET_OPEN, SOLD_OUT or gate-paused occurrence is a SCHEDULED event
+    // that is not currently selling, and marking it EventCancelled in search
+    // results would be a false public claim about a live event.
+    for (const sales of ["CLOSED", "PAUSED"] as const) {
+      for (const purchase of ["NOT_YET_OPEN", "SOLD_OUT", "TEMPORARILY_PAUSED", "UNAVAILABLE"] as const) {
+        const snapshot = buildSnapshot({
+          source: source([publicOccurrence({ sales_status: sales, purchase_status: purchase, availability: 0 })]),
+          previous: EMPTY_SNAPSHOT,
+          nowMs: NOW,
+        });
+        const [entry] = snapshot.occurrences;
+        expect(entry.fulfillment_status).toBe("SCHEDULED");
+        expect(eventStatusFor(entry)).toBe("https://schema.org/EventScheduled");
+        expect(serializeSnapshot(snapshot)).not.toContain(purchase);
+        expect(serializeSnapshot(snapshot)).not.toContain("availability");
+      }
+    }
   });
 
   it("produces zero records from an empty tour and stays structurally valid", () => {
