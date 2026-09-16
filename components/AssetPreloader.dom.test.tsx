@@ -112,7 +112,7 @@ describe("AssetPreloader loader gate", () => {
 
     await settleImages();
     // Registered and deliberately never released.
-    act(() => void vi.advanceTimersByTime(2500 + 300));
+    act(() => void vi.advanceTimersByTime(4000 + 300));
 
     expect(overlay()).toHaveClass("opacity-0");
   });
@@ -126,7 +126,7 @@ describe("loader gate and the hero backdrop together", () => {
       </AssetPreloader>,
     );
 
-  it("holds the handover until the player reports ready", async () => {
+  it("holds the handover until the backdrop is actually playing", async () => {
     renderHome();
     await settleImages();
     act(() => void vi.advanceTimersByTime(300));
@@ -136,10 +136,47 @@ describe("loader gate and the hero backdrop together", () => {
     expect(screen.getByTestId("kinescope-player")).toBeInTheDocument();
     expect(overlay()).toHaveClass("opacity-100");
 
-    const props = kinescope.props[0] as { onInit: () => void };
-    act(() => props.onInit());
+    const props = kinescope.props[0] as { onPlaying: () => void };
+    act(() => props.onPlaying());
     act(() => void vi.advanceTimersByTime(300));
     expect(overlay()).toHaveClass("opacity-0");
+  });
+
+  it("releases on the same event that reveals the backdrop, so neither can lead", async () => {
+    renderHome();
+    await settleImages();
+    act(() => void vi.advanceTimersByTime(300));
+
+    // The defect: the gate was released on init, which says a player object
+    // exists and nothing about pixels. Measured on the built export, that ran
+    // ~2.9s ahead of the reveal, so the page opened, sat on the still, and the
+    // video cut in afterwards. One event now drives both.
+    const props = kinescope.props[0] as { onPlaying: () => void };
+    const backdrop = screen.getByTestId("kinescope-player").parentElement!;
+    expect(backdrop).toHaveClass("opacity-0");
+
+    act(() => props.onPlaying());
+    expect(backdrop).toHaveClass("opacity-100");
+    act(() => void vi.advanceTimersByTime(300));
+    expect(overlay()).toHaveClass("opacity-0");
+  });
+
+  it("stops waiting for a player that reports it cannot run", async () => {
+    renderHome();
+    await settleImages();
+    act(() => void vi.advanceTimersByTime(300));
+    expect(overlay()).toHaveClass("opacity-100");
+
+    // A blocked script or a refused autoplay never reaches Playing. Without
+    // this the gate holds every such visitor for the full ceiling, which is
+    // the one case where the ceiling is pure cost and buys nothing.
+    const props = kinescope.props[0] as { onError: () => void };
+    act(() => props.onError());
+    act(() => void vi.advanceTimersByTime(300));
+    expect(overlay()).toHaveClass("opacity-0");
+
+    // And the still stays: an errored player must not be faded in over it.
+    expect(screen.getByTestId("kinescope-player").parentElement).toHaveClass("opacity-0");
   });
 
   it.each([

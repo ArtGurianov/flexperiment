@@ -30,13 +30,20 @@ const useIsClient = () =>
   );
 
 /**
- * Decorative hero backdrop. It always paints the local poster first, and the
- * video fades in over it once it is actually playing — so the player is never
- * on screen with nothing in it.
+ * Decorative hero backdrop. It always paints a local still first, and the video
+ * fades in over it once it is actually playing — so the player is never on
+ * screen with nothing in it.
  *
- * Kinescope is never mounted at all for people who requested reduced motion or
- * data saving. For everyone else it is mounted immediately and held by the
- * loader gate until the player reports ready.
+ * The still is frame 0 of this same video, which is what makes the arrangement
+ * work. It used to be /background.webp, the site's cloud texture, and that made
+ * the reveal a visible cut from clouds to a stage however well it was timed.
+ * With the video's own first frame underneath, the handover is invisible — and
+ * that is what lets the loader hand over on a ceiling without anybody noticing,
+ * and what reduced-motion and Save-Data visitors, who never get a player at
+ * all, are left looking at.
+ *
+ * Kinescope is never mounted for those visitors. For everyone else it is
+ * mounted immediately and held by the loader gate until it is playing.
  */
 export default function HeroBackgroundVideo({ videoId }: { videoId: string }) {
   const prefersReducedMotion = usePrefersReducedMotion();
@@ -74,9 +81,10 @@ export default function HeroBackgroundVideo({ videoId }: { videoId: string }) {
 
   return (
     <>
-      {/* Same local LCP-safe still the document head already preloads. */}
+      {/* Frame 0 of the video above it, and preloaded from the document head
+          so it is on screen before the player has anything to show. */}
       <Image
-        src="/background.webp"
+        src="/hero-backdrop.webp"
         alt=""
         aria-hidden="true"
         fill
@@ -107,13 +115,21 @@ export default function HeroBackgroundVideo({ videoId }: { videoId: string }) {
             controls={false}
             mainPlayButton={false}
             localStorage={false}
-            // Released on init — the player object exists and its iframe is up.
-            // Measured on a production build: this lands at ~0.4s warm and
-            // ~1.7s cold, where Ready did not arrive inside the 2.5s ceiling at
-            // all, so gating on it turned the loader into a flat 2.5s delay for
-            // everyone. Buffered video is not waited for either way.
-            onInit={() => releaseGate.current?.()}
-            onPlaying={() => setIsPlaying(true)}
+            // One event, two jobs: reveal this backdrop and let the page in.
+            // They have to be the same event. Releasing on init instead meant
+            // the loader lifted when a player object existed, which says
+            // nothing about pixels — measured on the built export, that ran
+            // 2.9s ahead of the reveal, so the page opened onto the still and
+            // the video cut in afterwards.
+            onPlaying={() => {
+              setIsPlaying(true);
+              releaseGate.current?.();
+            }}
+            // A blocked script or a stream this browser cannot play never
+            // reaches Playing, and the gate must not hold the page for
+            // something that is not coming. The still stays, which is the
+            // whole fallback.
+            onError={() => releaseGate.current?.()}
           />
         </div>
       ) : null}

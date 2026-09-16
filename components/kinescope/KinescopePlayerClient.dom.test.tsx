@@ -16,10 +16,17 @@ let create: ReturnType<typeof vi.fn>;
 let resolveCreate: ((player: Created) => void) | null;
 
 const newPlayer = (): Created => ({
-  Events: { Playing: "playing" },
+  Events: { Playing: "playing", Error: "error", Unsupported: "unsupported" },
   on: vi.fn(),
   destroy: vi.fn().mockResolvedValue(undefined),
 });
+
+/** The handler this player registered for one of its events. */
+const handlerFor = (player: Created, event: string): (() => void) => {
+  const call = player.on.mock.calls.find(([name]) => name === event);
+  if (!call) throw new Error(`no handler registered for ${event}`);
+  return call[1] as () => void;
+};
 
 beforeEach(() => {
   idsResolvedAtCreate = [];
@@ -86,19 +93,47 @@ describe("KinescopePlayerClient", () => {
     });
   });
 
-  it("reports init once the player exists, and playing from its event", async () => {
-    const onInit = vi.fn();
+  it("reports playing from the player's own event", async () => {
     const onPlaying = vi.fn();
-    render(<KinescopePlayerClient videoId="abc" onInit={onInit} onPlaying={onPlaying} />);
-
-    expect(onInit).not.toHaveBeenCalled();
+    render(<KinescopePlayerClient videoId="abc" onPlaying={onPlaying} />);
     await flush();
-    expect(onInit).toHaveBeenCalledOnce();
 
-    const [event, handler] = created[0].on.mock.calls[0];
-    expect(event).toBe("playing");
-    act(() => handler());
+    expect(onPlaying).not.toHaveBeenCalled();
+    act(() => handlerFor(created[0], "playing")());
     expect(onPlaying).toHaveBeenCalledOnce();
+  });
+
+  it.each(["error", "unsupported"])("reports %s as a failure", async (event) => {
+    const onError = vi.fn();
+    render(<KinescopePlayerClient videoId="abc" onError={onError} />);
+    await flush();
+
+    act(() => handlerFor(created[0], event)());
+    expect(onError).toHaveBeenCalledOnce();
+  });
+
+  it("reports a failure when the API never loads at all", async () => {
+    // The realistic case is a blocked script, and it is the one where nothing
+    // else can ever speak: create() is never reached, so no player event will
+    // arrive. Callers waiting on this player have to be told here or not at all.
+    create.mockRejectedValueOnce(new Error("blocked"));
+    const onError = vi.fn();
+    const onPlaying = vi.fn();
+    render(<KinescopePlayerClient videoId="abc" onError={onError} onPlaying={onPlaying} />);
+    await flush();
+
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onPlaying).not.toHaveBeenCalled();
+  });
+
+  it("stays silent about a failure that lands after unmount", async () => {
+    create.mockImplementationOnce(() => Promise.reject(new Error("blocked")));
+    const onError = vi.fn();
+    const { unmount } = render(<KinescopePlayerClient videoId="abc" onError={onError} />);
+    unmount();
+    await flush();
+
+    expect(onError).not.toHaveBeenCalled();
   });
 
   it("does not rebuild the player when only a callback identity changes", async () => {

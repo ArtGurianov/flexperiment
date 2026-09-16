@@ -40,6 +40,30 @@ done
 Expect `"videoFit":"cover"` in `ui`, and `"colors":{"primary":"#B7FF00"}` in
 `theme`, for both IDs.
 
+## The committed still must stay frame 0 of the backdrop video
+
+`public/hero-backdrop.webp` is frame 0 of `8ELYTMWXYgz19TjEzqK75J`, and
+`HeroBackgroundVideo` paints it under the player until the player is actually
+playing. The whole arrangement rests on the two images being the same picture:
+that is what lets the loader hand over on its ceiling, and what reduced-motion
+and Save-Data visitors — who never get a player — are left looking at.
+
+Replacing the backdrop video in the dashboard therefore silently invalidates a
+committed asset. Nothing in CI can catch it: the still is a binary blob and the
+video is behind a provider. Re-cut it in the same pass as the upload:
+
+```sh
+ffmpeg -i "https://kinescope.io/<video-uuid>/master.m3u8" -frames:v 1 frame0.png
+ffmpeg -i frame0.png -vf scale=1024:576 frame0-1024.png
+cwebp -q 80 frame0-1024.png -o public/hero-backdrop.webp
+```
+
+The `<video-uuid>` is not the embed ID; read it out of the embed document the
+same way as above. Keep the aspect ratio of the source: the square crops it
+with `object-cover`, which is the same crop `ui.videoFit: "cover"` applies to
+the video, so an image at a different aspect ratio would be framed differently
+from the video it is standing in for.
+
 ## Build evidence: the images are built in CI
 
 `Test` builds all three production images — `Dockerfile.frontend`,
