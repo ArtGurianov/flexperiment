@@ -1,7 +1,15 @@
 "use client";
 
 import Image from "next/image";
-import { useEffect, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 
 import loaderAcid from "@/public/loader-acid.webp";
 import loaderBack from "@/public/loader-back.webp";
@@ -24,28 +32,48 @@ const IMAGE_ASSETS = [
 ];
 
 /**
- * What this deliberately does NOT wait for: the hero background video.
+ * What this waits for beyond the images above: anything that registers itself
+ * through the gate below.
  *
  * The overlay used to hold the entire page behind `bg.webm` reaching `canplay`
  * — a ~29MB remote file — with a 10s safety timeout as the only floor. That
- * inverted the critical path: the two assets the overlay actually needs to hand
- * over to a painted page are the 71KB of local backgrounds above, and every
- * visitor paid a video's buffering time before seeing any content at all.
+ * inverted the critical path, and the gate is deliberately not a way back to
+ * it: what a registrant reports is that its player exists and is initialised,
+ * never that the video has buffered or started. The distinction is the whole
+ * reason this is safe, and SAFETY_TIMEOUT_MS is the ceiling either way.
  *
- * The video now loads on its own schedule after first paint (see
- * HeroBackgroundVideo) and simply appears when it is ready. Nothing on screen
- * depends on it, so nothing needs to wait for it.
+ * Nothing is waited for unless it registers, so pages without a registrant are
+ * unaffected — and a registrant that never releases costs the safety timeout,
+ * not the page.
  */
+
+type LoaderGate = {
+  /** Registers one slot. The returned callback releases it, and is idempotent. */
+  register: () => () => void;
+};
+
+const LoaderGateContext = createContext<LoaderGate | null>(null);
+
+/**
+ * Null outside AssetPreloader — which is the ordinary case, since the loader is
+ * home-page-only. Callers treat that as "nothing to wait for me".
+ */
+export function useLoaderGate() {
+  return useContext(LoaderGateContext);
+}
 
 /**
  * Hard ceiling on how long the loader may ever be shown.
  *
  * This used to be 10s, because the gate also waited on a ~29MB remote
  * `bg.webm` buffering over the network — which put a media-readiness race in
- * front of the first paint of every visit, with a ten-second worst case. The
- * video is no longer gated on (see the note above IMAGE_ASSETS), so the only
- * thing left to wait for is two small same-origin images that the document head
- * has already preloaded. The ceiling is sized for that, not for a video.
+ * front of the first paint of every visit, with a ten-second worst case.
+ *
+ * What is waited for now is two small same-origin images the document head has
+ * already preloaded, plus whatever registers through the gate — and a
+ * registrant reports initialisation, not buffering. The ceiling is sized for
+ * that. A slow connection that cannot get there in time simply hands over
+ * without it, which is the pre-gate behaviour rather than a failure.
  */
 const SAFETY_TIMEOUT_MS = 2500;
 /** Lets the bar reach 100% before the overlay fades, rather than cutting away. */
@@ -67,7 +95,34 @@ export default function AssetPreloader({
   const [isHidden, setIsHidden] = useState(false);
   const [isRemoved, setIsRemoved] = useState(false);
 
+  // Registrants are children, and a child's effect runs before its parent's, so
+  // everything that wants to be waited for is already in this set by the time
+  // the effect below reads it. Anything arriving later is deliberately ignored:
+  // the bar's denominator is fixed when the run starts, and a slot appearing
+  // mid-run would make it jump backwards.
+  const gateRef = useRef<{
+    pending: Set<object>;
+    onRelease: ((token: object) => void) | null;
+  }>({ pending: new Set(), onRelease: null });
+
+  const gate = useMemo<LoaderGate>(
+    () => ({
+      register: () => {
+        const token = {};
+        gateRef.current.pending.add(token);
+        return () => {
+          if (!gateRef.current.pending.delete(token)) return;
+          gateRef.current.onRelease?.(token);
+        };
+      },
+    }),
+    [],
+  );
+
   useEffect(() => {
+    // Captured once: the cleanup below must clear the callback on the same
+    // object this run installed it on, not on whatever the ref holds later.
+    const gateState = gateRef.current;
     let cancelled = false;
     // Latches on the first finish() so nothing can move the bar afterwards.
     // Without it the safety timeout could push the bar to 100% and a still-open
@@ -78,7 +133,13 @@ export default function AssetPreloader({
     // One slot per asset holding its own 0..1 fraction. Averaging fractions
     // rather than summing bytes is what keeps a 50KB and a 21KB image
     // contributing equally to the bar.
-    const TASK_COUNT = IMAGE_ASSETS.length;
+    // Snapshotted rather than read live, so a late registrant cannot change
+    // the denominator underneath a bar that is already moving.
+    const gated = new Set(gateState.pending);
+    const gateSlot = new Map<object, number>();
+    for (const token of gated) gateSlot.set(token, IMAGE_ASSETS.length + gateSlot.size);
+
+    const TASK_COUNT = IMAGE_ASSETS.length + gated.size;
     const fraction = new Array<number>(TASK_COUNT).fill(0);
     const controller = new AbortController();
     // Declared up front so finish() can clear it whichever path gets there
@@ -152,11 +213,30 @@ export default function AssetPreloader({
       }
     };
 
+    let imagesDone = false;
+    // The images and the gate finish independently and in either order, so
+    // neither may call finish() on its own.
+    const maybeFinish = () => {
+      if (imagesDone && gated.size === 0) finish();
+    };
+
+    gateState.onRelease = (token) => {
+      const slot = gateSlot.get(token);
+      if (slot === undefined || !gated.delete(token)) return;
+      fraction[slot] = 1;
+      report();
+      maybeFinish();
+    };
+
     timeout = window.setTimeout(finish, SAFETY_TIMEOUT_MS);
-    void Promise.all(IMAGE_ASSETS.map(loadImage)).then(finish, finish);
+    void Promise.all(IMAGE_ASSETS.map(loadImage)).then(
+      () => { imagesDone = true; maybeFinish(); },
+      () => { imagesDone = true; maybeFinish(); },
+    );
 
     return () => {
       cancelled = true;
+      gateState.onRelease = null;
       window.clearTimeout(timeout);
       window.clearTimeout(hideTimer);
       window.clearTimeout(removeTimer);
@@ -186,7 +266,9 @@ export default function AssetPreloader({
           all require JS already, so there is no working no-JS experience for
           this to degrade. */}
       <div className="contents" inert={!isHidden}>
-        {children}
+        <LoaderGateContext.Provider value={gate}>
+          {children}
+        </LoaderGateContext.Provider>
       </div>
 
       {/* Unmounted only after the fade finishes, so it can never intercept a

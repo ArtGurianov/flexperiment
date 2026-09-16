@@ -1,26 +1,15 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const kinescope = vi.hoisted(() => ({
   props: [] as Array<Record<string, unknown>>,
-  play: vi.fn().mockResolvedValue(undefined),
-  setFullscreen: vi.fn().mockResolvedValue(undefined),
 }));
 
 const motion = vi.hoisted(() => ({ reduced: false }));
 
 vi.mock("./kinescope/KinescopePlayer", () => ({
-  default: ({ forwardRef, ...props }: {
-    forwardRef?: { current: typeof kinescope.play | null };
-    [key: string]: unknown;
-  }) => {
+  default: (props: Record<string, unknown>) => {
     kinescope.props.push(props);
-    if (forwardRef) {
-      forwardRef.current = {
-        play: kinescope.play,
-        setFullscreen: kinescope.setFullscreen,
-      } as unknown as typeof kinescope.play;
-    }
     return <div data-testid="kinescope-player" />;
   },
 }));
@@ -46,18 +35,8 @@ type BackgroundProps = {
   onPlaying: () => void;
 };
 
-type ForegroundProps = {
-  videoId: string;
-  autoPlay: boolean;
-  controls: boolean;
-  preload: string;
-  onPlay: () => void;
-};
-
 afterEach(() => {
   kinescope.props.length = 0;
-  kinescope.play.mockClear();
-  kinescope.setFullscreen.mockClear();
   motion.reduced = false;
   vi.restoreAllMocks();
   Object.defineProperty(navigator, "userAgent", {
@@ -68,32 +47,27 @@ afterEach(() => {
 });
 
 describe("HeroVideo", () => {
-  it("uses the supplied Kinescope hero ID and keeps the custom watch affordance", () => {
-    render(<HeroVideo />);
+  it("leaves the press to the player's own button and covers nothing", () => {
+    const { container } = render(<HeroVideo />);
 
-    const props = kinescope.props[0] as ForegroundProps;
-    expect(props).toMatchObject({
+    expect(kinescope.props[0]).toMatchObject({
       videoId: "i7n65WzZnSd4bVUBE1mzi5",
       autoPlay: false,
       controls: true,
+      // The only control there is, so it must not be left to a library default.
+      mainPlayButton: true,
       preload: "metadata",
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Смотреть видео" }));
-    expect(kinescope.setFullscreen).toHaveBeenCalledWith(true);
-    expect(kinescope.play).toHaveBeenCalledOnce();
-
-    act(() => props.onPlay());
-    expect(screen.getByRole("button", { name: "Смотреть видео" })).toHaveAttribute("inert");
-  });
-
-  it("continues playback when fullscreen is rejected", () => {
-    kinescope.setFullscreen.mockRejectedValueOnce(new Error("denied"));
-    render(<HeroVideo />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Смотреть видео" }));
-    expect(kinescope.setFullscreen).toHaveBeenCalledWith(true);
-    expect(kinescope.play).toHaveBeenCalledOnce();
+    // Anything of ours in front of the player would swallow the gesture that
+    // has to reach the iframe to count as user activation there.
+    const section = container.querySelector("section")!;
+    expect(section.children).toHaveLength(1);
+    expect(screen.getByTestId("kinescope-player").parentElement).toBe(section);
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    // The iframe is transparent until the player paints; without this the page
+    // backdrop shows through the video well and through the rounded corners.
+    expect(section).toHaveClass("bg-black");
   });
 
   it("applies and restores Kinescope's iOS pseudo-fullscreen styles only for its iframe", () => {
@@ -130,27 +104,16 @@ describe("HeroVideo", () => {
 });
 
 describe("HeroBackgroundVideo", () => {
-  it("keeps the poster visible until idle playback and configures a silent decorative player", () => {
-    const idleCallbacks: IdleRequestCallback[] = [];
-    Object.defineProperty(window, "requestIdleCallback", {
-      configurable: true,
-      value: vi.fn((callback: IdleRequestCallback) => {
-        idleCallbacks.push(callback);
-        return 1;
-      }),
-    });
-    Object.defineProperty(window, "cancelIdleCallback", { configurable: true, value: vi.fn() });
+  const mountPlayer = () => render(<HeroBackgroundVideo videoId="background-id" />);
 
-    const { container } = render(<HeroBackgroundVideo videoId="background-id" />);
+  it("paints the local poster and configures a silent decorative player", () => {
+    const { container } = mountPlayer();
     expect(container.querySelector("img")).toHaveAttribute(
       "src",
       expect.stringContaining("background.webp"),
     );
-    expect(screen.queryByTestId("kinescope-player")).not.toBeInTheDocument();
 
-    act(() => idleCallbacks[0]({ didTimeout: false, timeRemaining: () => 50 }));
-    const props = kinescope.props[0] as BackgroundProps;
-    expect(props).toMatchObject({
+    expect(kinescope.props[0] as BackgroundProps).toMatchObject({
       videoId: "background-id",
       autoPlay: true,
       loop: true,
@@ -160,9 +123,15 @@ describe("HeroBackgroundVideo", () => {
       mainPlayButton: false,
       preload: false,
     });
+  });
 
-    act(() => props.onPlaying());
-    expect(screen.getByTestId("kinescope-player").parentElement).toHaveClass("opacity-100");
+  it("reveals the backdrop on the playing event", () => {
+    mountPlayer();
+    const wrapper = screen.getByTestId("kinescope-player").parentElement!;
+    expect(wrapper).toHaveClass("opacity-0");
+
+    act(() => (kinescope.props[0] as BackgroundProps).onPlaying());
+    expect(wrapper).toHaveClass("opacity-100");
   });
 
   it.each([
@@ -175,11 +144,7 @@ describe("HeroBackgroundVideo", () => {
     }],
   ])("never mounts Kinescope for %s visitors", (_label, prepare) => {
     prepare();
-    const idle = vi.fn();
-    Object.defineProperty(window, "requestIdleCallback", { configurable: true, value: idle });
-
     render(<HeroBackgroundVideo videoId="background-id" />);
-    expect(idle).not.toHaveBeenCalled();
     expect(screen.queryByTestId("kinescope-player")).not.toBeInTheDocument();
   });
 });

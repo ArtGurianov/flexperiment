@@ -1,10 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 
-import KinescopePlayer, {
-  type KinescopePlayerHandle,
-} from "@/components/kinescope/KinescopePlayer";
+import KinescopePlayer from "@/components/kinescope/KinescopePlayer";
 import { KINESCOPE_HERO_VIDEO_ID } from "@/components/kinescope/videoIds";
 
 const FULLSCREEN_CHANGE = "KINESCOPE_PLAYER_FULLSCREEN_CHANGE";
@@ -27,12 +25,7 @@ const isFullscreenMessage = (data: unknown): data is FullscreenMessage =>
   typeof data.value === "boolean";
 
 export default function HeroVideo() {
-  const playerRef = useRef<KinescopePlayerHandle>(null);
   const sectionRef = useRef<HTMLElement>(null);
-  // Latches on first play rather than tracking the live playback state. The
-  // overlay covers the whole player, so restoring it after pause would make
-  // Kinescope's controls inaccessible just when someone wants to use them.
-  const [hasStarted, setHasStarted] = useState(false);
 
   useEffect(() => {
     if (!isIOS()) return;
@@ -64,6 +57,8 @@ export default function HeroVideo() {
       }
       // Kinescope's documented iOS pseudo-fullscreen bridge preserves its
       // iframe controls without invoking the incompatible native fullscreen API.
+      // Verbatim from their docs; `position: fixed` resolves against the
+      // viewport here because no ancestor establishes a containing block.
       frame.style.cssText = "background:#000;border:none;position:fixed;z-index:9999;width:100%;height:100%;bottom:0;right:0;top:0;left:0";
     };
 
@@ -76,15 +71,26 @@ export default function HeroVideo() {
   }, []);
 
   return (
+    // bg-black stands in for the player while it has nothing to paint. The
+    // iframe is transparent until Kinescope has its poster, and with no cover
+    // over it any gap would show the page's own backdrop through the video
+    // well — which is also what fills the player's rounded corners.
     <section
       ref={sectionRef}
-      className="relative w-full aspect-video overflow-hidden shadow-[0_-10px_24px_rgb(202_255_86_/_0.3),0_10px_24px_rgb(202_255_86_/_0.3),0_-16px_48px_rgb(202_255_86_/_0.18),0_16px_48px_rgb(202_255_86_/_0.18)]"
+      className="relative w-full aspect-video overflow-hidden bg-black shadow-[0_-10px_24px_rgb(202_255_86_/_0.3),0_10px_24px_rgb(202_255_86_/_0.3),0_-16px_48px_rgb(202_255_86_/_0.18),0_16px_48px_rgb(202_255_86_/_0.18)]"
     >
+      {/* No cover and no watch button of our own any more. The press has to
+          land inside the iframe to count as a user gesture there: activation is
+          not propagated into a cross-origin frame, so anything handled out here
+          could not start an unmuted video on iOS, and proxying it through
+          player.play() is what used to fail silently. The player's own button
+          carries the brand colour from the Kinescope dashboard instead. */}
       <KinescopePlayer
-        forwardRef={playerRef}
         className="h-full w-full"
         videoId={KINESCOPE_HERO_VIDEO_ID}
         controls
+        // The only control there is now, so it must not be left to a default.
+        mainPlayButton
         preload="metadata"
         autoPlay={false}
         autoPause={false}
@@ -92,38 +98,7 @@ export default function HeroVideo() {
         muted={false}
         playsInline
         localStorage={false}
-        // Fullscreen belongs to the explicit watch gesture below. Doing it on
-        // every play would force a user back into fullscreen after an exit.
-        onPlay={() => setHasStarted(true)}
       />
-      <button
-        type="button"
-        aria-label="Смотреть видео"
-        // Faded out but still in the DOM, so without this it stays a tab stop
-        // and a screen-reader target sitting invisibly over the player.
-        inert={hasStarted}
-        onClick={() => {
-          const player = playerRef.current;
-          if (!player) return;
-          // These calls stay in the explicit watch gesture. The Kinescope
-          // iframe owns fullscreen now, including mobile-specific handling;
-          // a browser refusal is harmless because inline playback continues.
-          void player.setFullscreen(true).catch(() => {});
-          void player.play().catch(() => {});
-        }}
-        className={`group absolute inset-0 flex cursor-pointer items-center justify-center bg-black transition-opacity duration-500 motion-reduce:transition-none ${
-          hasStarted ? "pointer-events-none opacity-0" : "opacity-100"
-        }`}
-      >
-        <svg
-          className="h-32 w-32 text-acid-dim transition-colors duration-200 group-hover:text-acid motion-reduce:transition-none"
-          viewBox="0 0 24 24"
-          fill="currentColor"
-          aria-hidden="true"
-        >
-          <path d="M8 5v14l11-7z" />
-        </svg>
-      </button>
     </section>
   );
 }

@@ -1,0 +1,175 @@
+diff --git a/dist/player.js b/dist/player.js
+index 411e5eafc55d46e7449717f28dc41e4c3fe2d92a..b7794f15b8e0f1841b224843eb3c61711da90367 100644
+--- a/dist/player.js
++++ b/dist/player.js
+@@ -179,11 +179,20 @@ var Loader = /*#__PURE__*/function (_Component) {
+     _this = _Component.call(this, props) || this;
+ 
+     _this.loadJsNotLoad = function () {
++      var _w;
++
+       var el = document.getElementById(NODE_JS_ID);
+ 
+-      if (el) {
+-        el.addEventListener('load', _this.loadJs);
++      if (!el) {
++        return;
+       }
++
++      if ((_w = window) != null && _w.Kinescope != null && _w.Kinescope.IframePlayer) {
++        _this.handleJSLoad();
++        return;
++      }
++
++      el.addEventListener('load', _this.loadJs);
+     };
+ 
+     _this.loadJs = function () {
+@@ -232,13 +241,15 @@ var Loader = /*#__PURE__*/function (_Component) {
+       onJSLoadError && onJSLoadError(e);
+     };
+ 
+-    _this.jsLoading();
+-
+     return _this;
+   }
+ 
+   var _proto = Loader.prototype;
+ 
++  _proto.componentDidMount = function componentDidMount() {
++    this.jsLoading();
++  };
++
+   _proto.render = function render() {
+     var children = this.props.children;
+     return children;
+diff --git a/dist/player.module.js b/dist/player.module.js
+index cf486bfe45d96d1b99b0802e017e000d445030ca..1c315a6baf5caafe1320d95cb021d58cf83904dd 100644
+--- a/dist/player.module.js
++++ b/dist/player.module.js
+@@ -175,11 +175,20 @@ var Loader = /*#__PURE__*/function (_Component) {
+     _this = _Component.call(this, props) || this;
+ 
+     _this.loadJsNotLoad = function () {
++      var _w;
++
+       var el = document.getElementById(NODE_JS_ID);
+ 
+-      if (el) {
+-        el.addEventListener('load', _this.loadJs);
++      if (!el) {
++        return;
+       }
++
++      if ((_w = window) != null && _w.Kinescope != null && _w.Kinescope.IframePlayer) {
++        _this.handleJSLoad();
++        return;
++      }
++
++      el.addEventListener('load', _this.loadJs);
+     };
+ 
+     _this.loadJs = function () {
+@@ -228,13 +237,15 @@ var Loader = /*#__PURE__*/function (_Component) {
+       onJSLoadError && onJSLoadError(e);
+     };
+ 
+-    _this.jsLoading();
+-
+     return _this;
+   }
+ 
+   var _proto = Loader.prototype;
+ 
++  _proto.componentDidMount = function componentDidMount() {
++    this.jsLoading();
++  };
++
+   _proto.render = function render() {
+     var children = this.props.children;
+     return children;
+diff --git a/dist/player.umd.js b/dist/player.umd.js
+index 00c842e37cae0e8a531fcada5f40e250f20ec53c..3e649758da74014fac6767551fc537aaf4564854 100644
+--- a/dist/player.umd.js
++++ b/dist/player.umd.js
+@@ -182,11 +182,20 @@
+       _this = _Component.call(this, props) || this;
+ 
+       _this.loadJsNotLoad = function () {
++        var _w;
++
+         var el = document.getElementById(NODE_JS_ID);
+ 
+-        if (el) {
+-          el.addEventListener('load', _this.loadJs);
++        if (!el) {
++          return;
+         }
++
++        if ((_w = window) != null && _w.Kinescope != null && _w.Kinescope.IframePlayer) {
++          _this.handleJSLoad();
++          return;
++        }
++
++        el.addEventListener('load', _this.loadJs);
+       };
+ 
+       _this.loadJs = function () {
+@@ -235,13 +244,15 @@
+         onJSLoadError && onJSLoadError(e);
+       };
+ 
+-      _this.jsLoading();
+-
+       return _this;
+     }
+ 
+     var _proto = Loader.prototype;
+ 
++    _proto.componentDidMount = function componentDidMount() {
++      this.jsLoading();
++    };
++
+     _proto.render = function render() {
+       var children = this.props.children;
+       return children;
+diff --git a/src/loader.tsx b/src/loader.tsx
+index bf0ca16d3d3e6923bb7115ead533592498beee93..6bd86575cc6701e2bb82b926e88eee0b35d8f38d 100644
+--- a/src/loader.tsx
++++ b/src/loader.tsx
+@@ -11,16 +11,31 @@ type LoaderProps = {
+ };
+ 
+ class Loader extends Component<LoaderProps> {
+-	constructor(props: LoaderProps) {
+-		super(props);
++	/**
++	 * Local patch. This ran in the constructor, which is during render: when the
++	 * player script was already present — a second player on the page, or any
++	 * cached load — `jsLoading` reached `handleJSLoad` synchronously, before the
++	 * span this mounts into existed. `Player.create` then bailed on its null
++	 * `parentsRef` and latched `playerLoad`, so it was never retried and the
++	 * player never appeared at all. Children mount before their parent's
++	 * componentDidMount, so by here the ref is set.
++	 */
++	componentDidMount() {
+ 		this.jsLoading();
+ 	}
+ 
+ 	loadJsNotLoad = () => {
+ 		const el = document.getElementById(NODE_JS_ID);
+-		if (el) {
+-			el.addEventListener('load', this.loadJs);
++		if (!el) {
++			return;
++		}
++		// Local patch. A tag that has already executed will never fire `load`
++		// again, so waiting on it here stranded every later player permanently.
++		if (window?.Kinescope?.IframePlayer) {
++			this.handleJSLoad();
++			return;
+ 		}
++		el.addEventListener('load', this.loadJs);
+ 	};
+ 
+ 	loadJs = () => {
