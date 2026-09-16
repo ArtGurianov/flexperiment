@@ -6,7 +6,7 @@ settings:
 
 patchedDependencies:
   '@kinescope/react-kinescope-player@0.5.4':
-    hash: c7e88e971b4e3d9064a14d0f5e49b36f5562a5dd9bdfddb08d430cc45e818dd2
+    hash: b6924a2d351a6f3dbbf1bc9dd0462f990d07d976c7db7a6d00556e7250346184
     path: patches/@kinescope__react-kinescope-player@0.5.4.patch
 
 importers:
@@ -18,7 +18,7 @@ importers:
         version: 2.1.1(hono@4.13.3)
       '@kinescope/react-kinescope-player':
         specifier: ^0.5.4
-        version: 0.5.4(patch_hash=c7e88e971b4e3d9064a14d0f5e49b36f5562a5dd9bdfddb08d430cc45e818dd2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
+        version: 0.5.4(patch_hash=b6924a2d351a6f3dbbf1bc9dd0462f990d07d976c7db7a6d00556e7250346184)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       '@radix-ui/react-accordion':
         specifier: ^1.2.20
         version: 1.2.20(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -4223,7 +4223,7 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@kinescope/react-kinescope-player@0.5.4(patch_hash=c7e88e971b4e3d9064a14d0f5e49b36f5562a5dd9bdfddb08d430cc45e818dd2)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
+  '@kinescope/react-kinescope-player@0.5.4(patch_hash=b6924a2d351a6f3dbbf1bc9dd0462f990d07d976c7db7a6d00556e7250346184)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)':
     dependencies:
       react: 19.2.8
       react-dom: 19.2.8(react@19.2.8)

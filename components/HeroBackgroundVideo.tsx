@@ -95,12 +95,12 @@ export default function HeroBackgroundVideo({ videoId }: { videoId: string }) {
             muted
             playsInline
             preload={false}
-            // The square container and the 16:9 source used to be reconciled by
-            // object-fit on the element itself. That now lives inside a
-            // cross-origin iframe, so the player has to be told: without this it
-            // letterboxes and paints the bands opaque over the poster. Not
-            // surfaced by the React wrapper — see patches/.
-            videoFit="cover"
+            // Fit is not set here. The square container and the 16:9 source
+            // are reconciled by `ui.videoFit: "cover"`, which is configured
+            // account-wide in the Kinescope dashboard and arrives with the
+            // embed — object-fit itself is inside a cross-origin iframe and out
+            // of reach. Without that setting this letterboxes and paints the
+            // bands opaque over the poster.
             controls={false}
             mainPlayButton={false}
             localStorage={false}

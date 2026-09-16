@@ -125,17 +125,6 @@ describe("HeroBackgroundVideo", () => {
     });
   });
 
-  it("asks the player itself to cover the square container", () => {
-    mountPlayer();
-
-    // A square container and a 16:9 source. object-fit is inside the iframe and
-    // out of reach, so the fit has to be an option on the player. The React
-    // wrapper does not forward it; patches/ adds it, and this is what would
-    // catch that patch silently dropping out of the install.
-    expect(kinescope.props[0]).toHaveProperty("videoFit", "cover");
-    expect(screen.getByTestId("kinescope-player").parentElement).toHaveClass("inset-0");
-  });
-
   it("reveals the backdrop on the playing event", () => {
     mountPlayer();
     const wrapper = screen.getByTestId("kinescope-player").parentElement!;

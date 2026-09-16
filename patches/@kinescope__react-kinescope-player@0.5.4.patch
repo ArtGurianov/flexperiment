@@ -1,17 +1,5 @@
-diff --git a/dist/player.d.ts b/dist/player.d.ts
-index d4c7f378eec339b4429d5800a7a0bfff447dda08..ee3746e22748d7fd1ac722c969403c043751be1b 100644
---- a/dist/player.d.ts
-+++ b/dist/player.d.ts
-@@ -54,6 +54,7 @@ export type PlayerPropsTypes = {
-     language?: 'ru' | 'en';
-     controls?: boolean;
-     mainPlayButton?: boolean;
-+    videoFit?: 'contain' | 'cover';
-     playbackRateButton?: boolean;
-     /**
-      * Whether to include subtitles when loading the video.
 diff --git a/dist/player.js b/dist/player.js
-index 411e5eafc55d46e7449717f28dc41e4c3fe2d92a..fe4a4c78f94245039738086b3de8763c1cb988a6 100644
+index 411e5eafc55d46e7449717f28dc41e4c3fe2d92a..b7794f15b8e0f1841b224843eb3c61711da90367 100644
 --- a/dist/player.js
 +++ b/dist/player.js
 @@ -179,11 +179,20 @@ var Loader = /*#__PURE__*/function (_Component) {
@@ -55,24 +43,8 @@ index 411e5eafc55d46e7449717f28dc41e4c3fe2d92a..fe4a4c78f94245039738086b3de8763c
    _proto.render = function render() {
      var children = this.props.children;
      return children;
-@@ -699,6 +710,7 @@ var Player = /*#__PURE__*/function (_Component) {
-             language = _this$props5.language,
-             controls = _this$props5.controls,
-             mainPlayButton = _this$props5.mainPlayButton,
-+            videoFit = _this$props5.videoFit,
-             playbackRateButton = _this$props5.playbackRateButton,
-             textTrack = _this$props5.textTrack,
-             bookmarks = _this$props5.bookmarks,
-@@ -742,6 +754,7 @@ var Player = /*#__PURE__*/function (_Component) {
-             language: language,
-             controls: controls,
-             mainPlayButton: mainPlayButton,
-+            videoFit: videoFit,
-             playbackRateButton: playbackRateButton,
-             watermark: watermark
-           },
 diff --git a/dist/player.module.js b/dist/player.module.js
-index cf486bfe45d96d1b99b0802e017e000d445030ca..202a3ed200320f05d65c9be8e17313579a00a91b 100644
+index cf486bfe45d96d1b99b0802e017e000d445030ca..1c315a6baf5caafe1320d95cb021d58cf83904dd 100644
 --- a/dist/player.module.js
 +++ b/dist/player.module.js
 @@ -175,11 +175,20 @@ var Loader = /*#__PURE__*/function (_Component) {
@@ -116,24 +88,8 @@ index cf486bfe45d96d1b99b0802e017e000d445030ca..202a3ed200320f05d65c9be8e1731357
    _proto.render = function render() {
      var children = this.props.children;
      return children;
-@@ -695,6 +706,7 @@ var Player = /*#__PURE__*/function (_Component) {
-             language = _this$props5.language,
-             controls = _this$props5.controls,
-             mainPlayButton = _this$props5.mainPlayButton,
-+            videoFit = _this$props5.videoFit,
-             playbackRateButton = _this$props5.playbackRateButton,
-             textTrack = _this$props5.textTrack,
-             bookmarks = _this$props5.bookmarks,
-@@ -738,6 +750,7 @@ var Player = /*#__PURE__*/function (_Component) {
-             language: language,
-             controls: controls,
-             mainPlayButton: mainPlayButton,
-+            videoFit: videoFit,
-             playbackRateButton: playbackRateButton,
-             watermark: watermark
-           },
 diff --git a/dist/player.umd.js b/dist/player.umd.js
-index 00c842e37cae0e8a531fcada5f40e250f20ec53c..231965bfdb6fe0d1d1ec0b2a42df056f178aa31d 100644
+index 00c842e37cae0e8a531fcada5f40e250f20ec53c..3e649758da74014fac6767551fc537aaf4564854 100644
 --- a/dist/player.umd.js
 +++ b/dist/player.umd.js
 @@ -182,11 +182,20 @@
@@ -177,22 +133,6 @@ index 00c842e37cae0e8a531fcada5f40e250f20ec53c..231965bfdb6fe0d1d1ec0b2a42df056f
      _proto.render = function render() {
        var children = this.props.children;
        return children;
-@@ -702,6 +713,7 @@
-               language = _this$props5.language,
-               controls = _this$props5.controls,
-               mainPlayButton = _this$props5.mainPlayButton,
-+              videoFit = _this$props5.videoFit,
-               playbackRateButton = _this$props5.playbackRateButton,
-               textTrack = _this$props5.textTrack,
-               bookmarks = _this$props5.bookmarks,
-@@ -745,6 +757,7 @@
-               language: language,
-               controls: controls,
-               mainPlayButton: mainPlayButton,
-+              videoFit: videoFit,
-               playbackRateButton: playbackRateButton,
-               watermark: watermark
-             },
 diff --git a/src/loader.tsx b/src/loader.tsx
 index bf0ca16d3d3e6923bb7115ead533592498beee93..6bd86575cc6701e2bb82b926e88eee0b35d8f38d 100644
 --- a/src/loader.tsx
@@ -233,37 +173,3 @@ index bf0ca16d3d3e6923bb7115ead533592498beee93..6bd86575cc6701e2bb82b926e88eee0b
  	};
  
  	loadJs = () => {
-diff --git a/src/player.tsx b/src/player.tsx
-index 9686025372ff64209aefe33f1a431be0b0f851d8..be3e35c0068378882fb7eefeaf36d3ca3a4a4e6b 100644
---- a/src/player.tsx
-+++ b/src/player.tsx
-@@ -91,6 +91,13 @@ export type PlayerPropsTypes = {
- 	language?: 'ru' | 'en';
- 	controls?: boolean;
- 	mainPlayButton?: boolean;
-+	/**
-+	 * How the video is fitted into the player box. The iframe API accepts it
-+	 * (the official Vue wrapper passes it through as `ui.videoFit`) but this
-+	 * wrapper did not surface it, leaving `contain` as the only reachable
-+	 * behaviour. Local patch.
-+	 */
-+	videoFit?: 'contain' | 'cover';
- 	playbackRateButton?: boolean;
- 	/**
- 	 * Whether to include subtitles when loading the video.
-@@ -485,6 +492,7 @@ class Player extends Component<PlayerPropsTypes> {
- 			language,
- 			controls,
- 			mainPlayButton,
-+			videoFit,
- 			playbackRateButton,
- 			textTrack,
- 			bookmarks,
-@@ -529,6 +537,7 @@ class Player extends Component<PlayerPropsTypes> {
- 				language: language,
- 				controls: controls,
- 				mainPlayButton: mainPlayButton,
-+				videoFit: videoFit,
- 				playbackRateButton: playbackRateButton,
- 				watermark: watermark,
- 			},
