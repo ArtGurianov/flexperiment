@@ -44,9 +44,6 @@ type ForegroundProps = {
   onPlay: () => void;
 };
 
-/** The branded cover, which is decorative and so has no accessible name. */
-const cover = () => document.querySelector("section > div[aria-hidden]")!;
-
 afterEach(() => {
   kinescope.props.length = 0;
   motion.reduced = false;
@@ -59,61 +56,27 @@ afterEach(() => {
 });
 
 describe("HeroVideo", () => {
-  it("leaves the player's own play button reachable through the cover", () => {
-    render(<HeroVideo />);
+  it("leaves the press to the player's own button and covers nothing", () => {
+    const { container } = render(<HeroVideo />);
 
-    const props = kinescope.props[0] as ForegroundProps;
-    expect(props).toMatchObject({
+    expect(kinescope.props[0]).toMatchObject({
       videoId: "i7n65WzZnSd4bVUBE1mzi5",
       autoPlay: false,
       controls: true,
-      // Never inherited: this is the control that starts playback now.
+      // The only control there is, so it must not be left to a library default.
       mainPlayButton: true,
       preload: "metadata",
     });
 
-    // The gesture has to land inside the iframe to count as user activation
-    // there, so nothing in this document may sit in front of the player or
-    // offer a competing affordance.
-    expect(screen.queryByRole("button")).not.toBeInTheDocument();
-    expect(cover()).toHaveClass("pointer-events-none");
-    // Nothing between the section and the player: no bleed, no crop.
-    expect(screen.getByTestId("kinescope-player").parentElement!.tagName).toBe("SECTION");
-  });
-
-  it("fades the cover out on the play event", () => {
-    render(<HeroVideo />);
-    expect(cover()).toHaveClass("opacity-100");
-
-    act(() => (kinescope.props[0] as ForegroundProps).onPlay());
-    expect(cover()).toHaveClass("opacity-0");
-  });
-
-  it("fades the cover out on a press into the player when no play event arrives", () => {
-    const { container } = render(<HeroVideo />);
+    // Anything of ours in front of the player would swallow the gesture that
+    // has to reach the iframe to count as user activation there.
     const section = container.querySelector("section")!;
-    // The mock stands in for the player; the real one renders this iframe, and
-    // a press on its play button is only ever visible here as focus moving.
-    const frame = document.createElement("iframe");
-    section.append(frame);
-
-    act(() => {
-      frame.focus();
-      window.dispatchEvent(new Event("blur"));
-    });
-
-    expect(cover()).toHaveClass("opacity-0");
-  });
-
-  it("ignores a window blur that did not hand focus to the player", () => {
-    render(<HeroVideo />);
-
-    act(() => {
-      document.body.focus();
-      window.dispatchEvent(new Event("blur"));
-    });
-
-    expect(cover()).toHaveClass("opacity-100");
+    expect(section.children).toHaveLength(1);
+    expect(screen.getByTestId("kinescope-player").parentElement).toBe(section);
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    // The iframe is transparent until the player paints; without this the page
+    // backdrop shows through the video well and through the rounded corners.
+    expect(section).toHaveClass("bg-black");
   });
 
   it("applies and restores Kinescope's iOS pseudo-fullscreen styles only for its iframe", () => {
