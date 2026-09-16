@@ -1,0 +1,301 @@
+name: Controlled failed-deploy reconciliation
+
+# One incident, named in constants below, and no others.
+#
+# On 2026-09-16 the controlled deploy of a9ea010 acquired the release owner,
+# paused new orders, advanced `production-deploy`, and only then asked Coolify
+# to build. Every image failed to build. Nothing released the owner, nothing
+# reopened sales, and nothing corrected the pointer, so durable state has since
+# asserted a runtime that production has never run - while the shop stayed shut.
+#
+# The state is self-sealing. `reopen` requires the live runtime to match the
+# request's expectation and the request to match the durable one; those are
+# 3ab36fd and a9ea010, so no single request satisfies both. The gate is right to
+# refuse. This workflow restores the truth the gate needs in order to let go.
+#
+# It restores a deployment that did not happen. It never attempts one: no
+# Coolify webhook, no candidate, no promotion, no new target. The only SHA it
+# can ever write is the runtime already proved to be serving production.
+#
+# There is deliberately no compensating rollback anywhere in it. If a stage
+# fails, the shop stays paused under its existing owner and the run ends. That
+# is a safe intermediate state which can be re-classified and retried; undoing
+# a half-finished reconciliation is how a recovery turns into a second incident.
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type the confirmation phrase exactly to run this one-shot incident recovery.
+        required: true
+        type: string
+
+permissions:
+  # Only for the production-deploy pointer CAS in the reconcile stage. Every
+  # other stage is a read.
+  contents: write
+
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 20
+    env:
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      PRODUCTION_DEPLOY_REF_TOKEN: ${{ secrets.PRODUCTION_DEPLOY_REF_TOKEN }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+      FRONTEND_RELEASE_URL: https://flexperiment.ru/release.json
+      ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
+      CONTROLLER_SHA: ${{ github.sha }}
+      INPUT_CONFIRM: ${{ inputs.confirm }}
+      REQUIRED_CONFIRM_PHRASE: "RECONCILE-FAILED-DEPLOY-A9EA010-TO-3AB36FD"
+      # Immutable incident identity. Not inputs, and never derived at run time:
+      # this is the recovery of one recorded event, not a general authority to
+      # rewrite release state or move the pointer to an arbitrary SHA.
+      HELD_RELEASE_ID: "deploy-a9ea0107191b6e1abaeb8e7794c600646815faec"
+      FALSE_POINTER_SHA: "a9ea0107191b6e1abaeb8e7794c600646815faec"
+      PROVEN_RUNTIME_SHA: "3ab36fdff404dfa8d31207d221c32f93751d3bb4"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Authenticate the pointer CAS with its own dedicated credential
+        run: git remote set-url origin "https://x-access-token:${PRODUCTION_DEPLOY_REF_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+
+      - uses: pnpm/action-setup@v4
+        with: { version: 10.29.3 }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: pnpm }
+      - run: pnpm install --frozen-lockfile
+
+      - name: Refuse to run as a controller unless dispatched from exact, current main
+        run: |
+          set -euo pipefail
+          [[ "$INPUT_CONFIRM" == "$REQUIRED_CONFIRM_PHRASE" ]] || { echo "RECONCILE_CONFIRM_PHRASE_MISMATCH" >&2; exit 1; }
+          [[ "$GITHUB_REF" == "refs/heads/main" ]] || { echo "RECONCILE_CONTROLLER_NOT_MAIN" >&2; exit 1; }
+          git fetch --no-tags origin refs/heads/main:refs/remotes/origin/main
+          [[ "$CONTROLLER_SHA" == "$(git rev-parse origin/main)" ]] || { echo "RECONCILE_CONTROLLER_MAIN_MOVED" >&2; exit 1; }
+          # A controller must cover what it writes. Here the target is the
+          # runtime being restored rather than a new deployment, but the
+          # requirement is the same and the fence speaks of TARGET_SHA.
+          TARGET_SHA="$PROVEN_RUNTIME_SHA"
+          git merge-base --is-ancestor "$TARGET_SHA" "$CONTROLLER_SHA" || { echo "RECONCILE_TARGET_NOT_COVERED_BY_CONTROLLER" >&2; exit 1; }
+
+      - name: Seal the incident state, and refuse anything that is not it
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            '+refs/heads/production-deploy:refs/remotes/origin/production-deploy' \
+            '+refs/heads/runtime-candidate:refs/remotes/origin/runtime-candidate'
+          pointer="$(scripts/read-production-deploy-ref.sh)"
+          [[ "$pointer" == "$FALSE_POINTER_SHA" ]] || { echo "RECONCILE_POINTER_NOT_INCIDENT_STATE=$pointer" >&2; exit 1; }
+
+          for url in "$FRONTEND_RELEASE_URL" "$ADMIN_RELEASE_URL"; do
+            observed="$(curl --fail-with-body --silent --show-error --connect-timeout 5 --max-time 15 "$url" | jq -r '.source_commit')"
+            [[ "$observed" == "$PROVEN_RUNTIME_SHA" ]] || { echo "RECONCILE_SURFACE_NOT_PROVEN_RUNTIME=$url:$observed" >&2; exit 1; }
+          done
+
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > durable-before.json
+
+          # The whole incident, as one predicate. It admits the recorded state
+          # and nothing adjacent to it: a different owner, a released owner, an
+          # already-corrected expectation, an emergency pause, a runtime that
+          # has moved, or a worker that has not, are each a refusal.
+          jq -e --arg release_id "$HELD_RELEASE_ID" --arg false_sha "$FALSE_POINTER_SHA" --arg runtime_sha "$PROVEN_RUNTIME_SHA" '
+            .sales_paused == true
+            and .owner_release_id == $release_id
+            and .owner_mode == "CONTROLLED_CUTOVER"
+            and .emergency_sales_paused == false
+            and .expected.source_commit == $false_sha
+            and .runtime.source_commit == $runtime_sha
+            and .runtime.worker_source_commit == $runtime_sha
+            and .outbox_authority.email_dispatch_paused == false
+            and .outbox_authority.dispatch_owner_release_id == null
+          ' durable-before.json >/dev/null || { echo "RECONCILE_NOT_THE_RECORDED_INCIDENT" >&2; exit 1; }
+
+      - name: Prove only the source commit is untrue, before changing anything
+        run: |
+          set -euo pipefail
+          # The durable expectation and the live runtime must already agree on
+          # every field except the commit. If they do not, this is not a failed
+          # deploy that changed nothing - it is a different incident, and the
+          # single-field correction below would be the wrong repair.
+          #
+          # The migration expectation is judged by release-expectation.ts, the
+          # single owner of that grammar. Re-deriving it here in jq or shell is
+          # exactly the drift that module exists to prevent.
+          pnpm exec tsx -e '
+            import { readFileSync } from "node:fs";
+            import { migrationInventoryExpectation } from "./commerce/src/release-expectation";
+            const status = JSON.parse(readFileSync("durable-before.json", "utf8"));
+            const expected = status.expected?.migration;
+            const versions: string[] = status.runtime?.migration_versions ?? [];
+            const satisfied = expected === migrationInventoryExpectation(versions) || versions.includes(expected);
+            if (!satisfied) { console.error("RECONCILE_MIGRATION_EXPECTATION_NOT_SATISFIED_BY_RUNTIME"); process.exit(1); }
+          '
+
+          jq -e '
+            .expected.legal_version == .runtime.legal_version
+            and .expected.legal_manifest_sha256 == .runtime.legal_manifest_sha256
+            and .runtime.current_legal_copies_match == true
+            and (.runtime.legal_publish_time // "") != ""
+            and (.runtime.legal_publish_time // "") != "PENDING_AUTHORITATIVE_PUBLISH_TIMESTAMP"
+            and (.runtime.legal_hashes | type) == "object"
+            and (.runtime.legal_hashes.PUBLIC_OFFER // "") != ""
+            and (.runtime.legal_hashes.PRIVACY_POLICY // "") != ""
+            and (.runtime.legal_hashes.PD_CONSENT // "") != ""
+            and (.runtime.legal_hashes.CHECKOUT_DISCLOSURE // "") != ""
+            and (.runtime.worker_started_at // "") != ""
+            and (.runtime.worker_observed_at // "") != ""
+            and (.runtime.worker_last_successful_sweep_at // "") != ""
+          ' durable-before.json >/dev/null || { echo "RECONCILE_EXPECTATION_DELTA_IS_NOT_ONLY_SOURCE_COMMIT" >&2; exit 1; }
+
+          # The request body, built once and reused by both mutations so they
+          # cannot drift: the three durable fields are carried across unchanged
+          # and only source_commit becomes the proven runtime.
+          jq --arg release_id "$HELD_RELEASE_ID" --arg runtime_sha "$PROVEN_RUNTIME_SHA" '{
+            release_id: $release_id,
+            mode: "CONTROLLED_CUTOVER",
+            expected: {
+              source_commit: $runtime_sha,
+              migration: .expected.migration,
+              legal_version: .expected.legal_version,
+              legal_manifest_sha256: .expected.legal_manifest_sha256,
+              legal_hashes: .runtime.legal_hashes
+            }
+          }' durable-before.json > request.json
+          jq -e --arg runtime_sha "$PROVEN_RUNTIME_SHA" '.expected.source_commit == $runtime_sha' request.json >/dev/null
+
+      - name: Correct the durable expectation, and stop on any refusal
+        run: |
+          set -euo pipefail
+          # assertLegacyMutationAllowed runs inside this call's transaction and
+          # before its UPDATE, so a non-terminal schema_version 2 release is
+          # answered with RELEASE_CONTROL_V2_REQUIRED and nothing is written.
+          # That makes the one fact this recovery cannot read beforehand safe by
+          # construction rather than by assumption: the attempt is the probe.
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api -X POST --data-binary "@request.json" \
+            "$PUBLIC_API_URL/v1/internal/release-control/expectations" > expectations.json
+
+      - name: Prove the expectation moved, and only where it was meant to
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > durable-mid.json
+          jq -e --slurpfile before durable-before.json --arg release_id "$HELD_RELEASE_ID" --arg runtime_sha "$PROVEN_RUNTIME_SHA" '
+            .sales_paused == true
+            and .owner_release_id == $release_id
+            and .owner_mode == "CONTROLLED_CUTOVER"
+            and .expected.source_commit == $runtime_sha
+            and .expected.migration == $before[0].expected.migration
+            and .expected.legal_version == $before[0].expected.legal_version
+            and .expected.legal_manifest_sha256 == $before[0].expected.legal_manifest_sha256
+          ' durable-mid.json >/dev/null || { echo "RECONCILE_EXPECTATION_POSTCONDITION_FAILED" >&2; exit 1; }
+
+      - name: Correct the deployment pointer under its lease
+        run: |
+          set -euo pipefail
+          # Same CAS primitive every controlled deploy uses: it observes the
+          # remote tip, refuses unless it is still the incident value, pushes
+          # with --force-with-lease against exactly that observation, re-reads,
+          # and proves equality. Never a plain force.
+          scripts/set-production-deploy-ref.sh "$PROVEN_RUNTIME_SHA" "$FALSE_POINTER_SHA"
+
+      - name: Prove the control plane is consistent before anyone can buy again
+        run: |
+          set -euo pipefail
+          pointer="$(scripts/read-production-deploy-ref.sh)"
+          [[ "$pointer" == "$PROVEN_RUNTIME_SHA" ]] || { echo "RECONCILE_POINTER_POSTCONDITION_FAILED=$pointer" >&2; exit 1; }
+          for url in "$FRONTEND_RELEASE_URL" "$ADMIN_RELEASE_URL"; do
+            observed="$(curl --fail-with-body --silent --show-error --connect-timeout 5 --max-time 15 "$url" | jq -r '.source_commit')"
+            [[ "$observed" == "$PROVEN_RUNTIME_SHA" ]] || { echo "RECONCILE_SURFACE_MOVED=$url:$observed" >&2; exit 1; }
+          done
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > durable-prereopen.json
+          jq -e --slurpfile request request.json --arg release_id "$HELD_RELEASE_ID" --arg runtime_sha "$PROVEN_RUNTIME_SHA" '
+            .sales_paused == true
+            and .owner_release_id == $release_id
+            and .expected.source_commit == $runtime_sha
+            and .runtime.source_commit == $runtime_sha
+            and .runtime.worker_source_commit == $runtime_sha
+            and .runtime.current_legal_copies_match == true
+            and .runtime.legal_version == $request[0].expected.legal_version
+            and .runtime.legal_manifest_sha256 == $request[0].expected.legal_manifest_sha256
+            and .runtime.legal_hashes == $request[0].expected.legal_hashes
+          ' durable-prereopen.json >/dev/null || { echo "RECONCILE_REOPEN_EVIDENCE_CHANGED" >&2; exit 1; }
+
+      - name: Reopen new orders, as the last mutation
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api -X POST --data-binary "@request.json" \
+            "$PUBLIC_API_URL/v1/internal/release-control/reopen" > reopen.json
+
+      - name: Prove the incident is closed
+        run: |
+          set -euo pipefail
+          source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
+          api "$PUBLIC_API_URL/v1/internal/release-control/status" > durable-after.json
+
+          # Everything the seal required must still hold, now with the owner
+          # released. Proving less than was proved before the reopen would let
+          # a surface diverge after the commit and still finish green.
+          #
+          # reopened_at and paused_at are both datetime('now') strings, so
+          # lexicographic order is chronological order for this format.
+          jq -e --arg runtime_sha "$PROVEN_RUNTIME_SHA" '
+            .sales_paused == false
+            and .owner_release_id == null
+            and .owner_mode == null
+            and .emergency_sales_paused == false
+            and (.reopened_at // "") != ""
+            and (.paused_at // "") != ""
+            and .reopened_at > .paused_at
+            and .expected.source_commit == $runtime_sha
+            and .runtime.source_commit == $runtime_sha
+            and .runtime.worker_source_commit == $runtime_sha
+            and .outbox_authority.email_dispatch_paused == false
+            and .outbox_authority.dispatch_owner_release_id == null
+            and .outbox_authority.dispatch.drained == true
+          ' durable-after.json >/dev/null || { echo "RECONCILE_FINAL_POSTCONDITION_FAILED" >&2; exit 1; }
+
+          for url in "$FRONTEND_RELEASE_URL" "$ADMIN_RELEASE_URL"; do
+            observed="$(curl --fail-with-body --silent --show-error --connect-timeout 5 --max-time 15 "$url" | jq -r '.source_commit')"
+            [[ "$observed" == "$PROVEN_RUNTIME_SHA" ]] || { echo "RECONCILE_FINAL_SURFACE_DIVERGED=$url:$observed" >&2; exit 1; }
+          done
+
+          # The durable trace of the reopen, through the one endpoint that can
+          # see it. Documented limitation: /resolution reports that a REOPENED
+          # event carrying an expectation exists, but does not expose that
+          # event's expected.source_commit, so this proves the event happened
+          # for this release and not which commit it recorded.
+          api "$PUBLIC_API_URL/v1/internal/release-control/resolution/$HELD_RELEASE_ID" > resolution-after.json
+          jq -e --arg release_id "$HELD_RELEASE_ID" '
+            .release_id == $release_id
+            and .complete == true
+            and .resolution == "COMPLETED"
+            and (.resolved_at // "") != ""
+          ' resolution-after.json >/dev/null || { echo "RECONCILE_REOPEN_EVENT_NOT_RECORDED" >&2; exit 1; }
+
+          [[ "$(scripts/read-production-deploy-ref.sh)" == "$PROVEN_RUNTIME_SHA" ]] || { echo "RECONCILE_FINAL_POINTER_FAILED" >&2; exit 1; }
+          git fetch --no-tags origin '+refs/heads/runtime-candidate:refs/remotes/origin/runtime-candidate'
+          [[ "$(git rev-parse origin/runtime-candidate)" == "$FALSE_POINTER_SHA" ]] || { echo "RECONCILE_CANDIDATE_MOVED" >&2; exit 1; }
+
+          {
+            echo "## Incident closed"
+            echo '```'
+            printf 'production-deploy  %s\n' "$PROVEN_RUNTIME_SHA"
+            printf 'runtime-candidate  %s (untouched)\n' "$FALSE_POINTER_SHA"
+            jq -r '"sales_paused       \(.sales_paused)\nowner_release_id   \(.owner_release_id)\nreopened_at        \(.reopened_at)"' durable-after.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
