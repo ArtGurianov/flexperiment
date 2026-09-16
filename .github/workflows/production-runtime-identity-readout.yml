@@ -88,14 +88,39 @@ jobs:
             "$PUBLIC_API_URL/v1/internal/release-control/status")"
           [[ "$http" == "200" ]] || { echo "READOUT_STATUS_HTTP_$http" >&2; exit 1; }
 
+          # Still a whitelist, not a dump: every field is named. It now covers
+          # exactly what evaluateReopenGate and sameExpectations read, because
+          # a reopen is refused unless the durable expectation and the live
+          # runtime agree — and reconstructing the true expectation for the
+          # runtime that never moved is the whole point of reading this.
           summary="$(jq -r '{
-            sales_paused, owner_release_id, owner_mode,
-            acquired_at, paused_at, reopened_at,
-            expected_source_commit: (.expected.source_commit // null),
-            commerce_source_commit: (.runtime.source_commit // null),
-            worker_source_commit: (.runtime.worker_source_commit // null),
-            worker_started_at: (.runtime.worker_started_at // null),
-            worker_observed_at: (.runtime.worker_observed_at // null)
+            gate: {
+              sales_paused, owner_release_id, owner_mode,
+              acquired_at, paused_at, reopened_at,
+              emergency_sales_paused,
+              expected_source_commit: (.expected.source_commit // null),
+              expected_migration: (.expected.migration // null),
+              expected_legal_version: (.expected.legal_version // null),
+              expected_legal_manifest_sha256: (.expected.legal_manifest_sha256 // null)
+            },
+            runtime: {
+              source_commit: (.runtime.source_commit // null),
+              migration_versions: (.runtime.migration_versions // null),
+              required_migrations: (.runtime.required_migrations // null),
+              migration_source_hashes: (.runtime.migration_source_hashes // null),
+              legal_version: (.runtime.legal_version // null),
+              legal_manifest_sha256: (.runtime.legal_manifest_sha256 // null),
+              legal_publish_time: (.runtime.legal_publish_time // null),
+              legal_hashes: (.runtime.legal_hashes // null),
+              current_legal_copies_match: (.runtime.current_legal_copies_match // null),
+              source_legal_manifest_sha256: (.runtime.source_legal_manifest_sha256 // null),
+              source_legal_publish_time: (.runtime.source_legal_publish_time // null),
+              worker_source_commit: (.runtime.worker_source_commit // null),
+              worker_started_at: (.runtime.worker_started_at // null),
+              worker_observed_at: (.runtime.worker_observed_at // null),
+              worker_last_successful_sweep_at: (.runtime.worker_last_successful_sweep_at // null)
+            },
+            outbox_authority
           }' status.json)"
           rm -f status.json
 
@@ -104,6 +129,12 @@ jobs:
             echo '```json'
             echo "$summary"
             echo '```'
-            echo "_Reported, not asserted. Nothing here authorizes a promotion, a deploy or a ref move._"
+            echo "_Reported, not asserted. Nothing here authorizes a promotion, a deploy, a reopen or a ref move._"
+            echo
+            echo "**Not covered:** whether every schema_version 2 release is in a terminal"
+            echo "phase, which is what \`assertLegacyMutationAllowed\` requires before any"
+            echo "legacy \`/expectations\` or \`/reopen\` call. Release-control exposes v2 state"
+            echo "only per known release id, and nothing enumerates the ids, so this readout"
+            echo "cannot establish it. Treat its absence as unknown, never as satisfied."
           } >> "$GITHUB_STEP_SUMMARY"
           echo "$summary"
