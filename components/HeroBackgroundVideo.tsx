@@ -54,20 +54,23 @@ export default function HeroBackgroundVideo({ videoId }: { videoId: string }) {
   const shouldMountPlayer =
     isClient && !prefersReducedMotion && !prefersSavedData();
 
+  // Eligibility is re-derived here rather than read off shouldMountPlayer.
+  // That value depends on isClient, which is false for the hydration pass —
+  // the very pass whose effects run first and whose registrations are the only
+  // ones the loader will see. Deriving from it registered a slot and released
+  // it again in the same tick, every time, so the gate held nothing at all.
+  // Effects never run on the server, so no isClient guard is needed in here.
   useEffect(() => {
     if (!loaderGate) return;
+    if (prefersReducedMotion || prefersSavedData()) return;
+
     const release = loaderGate.register();
     releaseGate.current = release;
     return () => {
       release();
       releaseGate.current = null;
     };
-  }, [loaderGate]);
-
-  // Visitors who never get a player must not be held for the safety timeout.
-  useEffect(() => {
-    if (!shouldMountPlayer) releaseGate.current?.();
-  }, [shouldMountPlayer]);
+  }, [loaderGate, prefersReducedMotion]);
 
   return (
     <>
@@ -104,9 +107,12 @@ export default function HeroBackgroundVideo({ videoId }: { videoId: string }) {
             controls={false}
             mainPlayButton={false}
             localStorage={false}
-            // Releasing on ready, not on playing: the loader is waiting for a
-            // player that exists and can paint, never for buffered video.
-            onReady={() => releaseGate.current?.()}
+            // Released on init — the player object exists and its iframe is up.
+            // Measured on a production build: this lands at ~0.4s warm and
+            // ~1.7s cold, where Ready did not arrive inside the 2.5s ceiling at
+            // all, so gating on it turned the loader into a flat 2.5s delay for
+            // everyone. Buffered video is not waited for either way.
+            onInit={() => releaseGate.current?.()}
             onPlaying={() => setIsPlaying(true)}
           />
         </div>
