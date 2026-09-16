@@ -2,9 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import KinescopePlayer, {
-  type KinescopePlayerHandle,
-} from "@/components/kinescope/KinescopePlayer";
+import KinescopePlayer from "@/components/kinescope/KinescopePlayer";
 import { KINESCOPE_HERO_VIDEO_ID } from "@/components/kinescope/videoIds";
 
 const FULLSCREEN_CHANGE = "KINESCOPE_PLAYER_FULLSCREEN_CHANGE";
@@ -27,12 +25,28 @@ const isFullscreenMessage = (data: unknown): data is FullscreenMessage =>
   typeof data.value === "boolean";
 
 export default function HeroVideo() {
-  const playerRef = useRef<KinescopePlayerHandle>(null);
   const sectionRef = useRef<HTMLElement>(null);
-  // Latches on first play rather than tracking the live playback state. The
-  // overlay covers the whole player, so restoring it after pause would make
-  // Kinescope's controls inaccessible just when someone wants to use them.
+  // Purely decorative: it fades the branded cover out once playback has begun.
+  // Nothing about reaching the player depends on it — the cover never takes
+  // pointer events — so a signal that never arrives cannot lock anyone out.
   const [hasStarted, setHasStarted] = useState(false);
+
+  useEffect(() => {
+    const section = sectionRef.current;
+    if (!section) return;
+
+    // The press that starts playback happens inside the player's own iframe, so
+    // this document never sees the click. What it does see is focus leaving for
+    // that iframe, which is the one reliable local signal that someone has
+    // engaged with the player. `onPlay` below is preferred when it arrives, but
+    // it travels over Kinescope's message bridge and cannot be counted on.
+    const onBlur = () => {
+      if (section.contains(document.activeElement)) setHasStarted(true);
+    };
+
+    window.addEventListener("blur", onBlur);
+    return () => window.removeEventListener("blur", onBlur);
+  }, []);
 
   useEffect(() => {
     if (!isIOS()) return;
@@ -80,50 +94,53 @@ export default function HeroVideo() {
       ref={sectionRef}
       className="relative w-full aspect-video overflow-hidden shadow-[0_-10px_24px_rgb(202_255_86_/_0.3),0_10px_24px_rgb(202_255_86_/_0.3),0_-16px_48px_rgb(202_255_86_/_0.18),0_16px_48px_rgb(202_255_86_/_0.18)]"
     >
-      <KinescopePlayer
-        forwardRef={playerRef}
-        className="h-full w-full"
-        videoId={KINESCOPE_HERO_VIDEO_ID}
-        controls
-        preload="metadata"
-        autoPlay={false}
-        autoPause={false}
-        loop={false}
-        muted={false}
-        playsInline
-        localStorage={false}
-        // Fullscreen belongs to the explicit watch gesture below. Doing it on
-        // every play would force a user back into fullscreen after an exit.
-        onPlay={() => setHasStarted(true)}
-      />
-      <button
-        type="button"
-        aria-label="Смотреть видео"
-        // Faded out but still in the DOM, so without this it stays a tab stop
-        // and a screen-reader target sitting invisibly over the player.
-        inert={hasStarted}
-        onClick={() => {
-          const player = playerRef.current;
-          if (!player) return;
-          // These calls stay in the explicit watch gesture. The Kinescope
-          // iframe owns fullscreen now, including mobile-specific handling;
-          // a browser refusal is harmless because inline playback continues.
-          void player.setFullscreen(true).catch(() => {});
-          void player.play().catch(() => {});
-        }}
-        className={`group absolute inset-0 flex cursor-pointer items-center justify-center bg-black transition-opacity duration-500 motion-reduce:transition-none ${
-          hasStarted ? "pointer-events-none opacity-0" : "opacity-100"
+      {/* 14px of bleed on every edge, clipped away by the section. Kinescope's
+          player carries a 12px corner radius inside its iframe, which no rule
+          out here can reach; pushing the corners past the clipping boundary is
+          what makes this player read as sharp-cornered again.
+          The bleed also absorbs the letterboxing the wider box introduces: at
+          any size, a 16:9 source contained in a box grown by 28px on both axes
+          sits ((h+28) - (w+28)*9/16) / 2 = 6.125px short of the top and bottom
+          edges, well inside the 14px that is hidden. */}
+      <div className="absolute -inset-[14px]">
+        <KinescopePlayer
+          className="h-full w-full"
+          videoId={KINESCOPE_HERO_VIDEO_ID}
+          controls
+          // Explicit rather than inherited: this is the control that actually
+          // starts playback now, so it must not depend on a library default.
+          mainPlayButton
+          preload="metadata"
+          autoPlay={false}
+          autoPause={false}
+          loop={false}
+          muted={false}
+          playsInline
+          localStorage={false}
+          onPlay={() => setHasStarted(true)}
+        />
+      </div>
+      {/* Branded cover over the player's own play button. It is inert in every
+          sense: the click passes straight through to the iframe, where it still
+          counts as a user gesture. Proxying it through player.play() did not —
+          user activation is never propagated into a cross-origin frame, so iOS
+          refused the unmuted play outright and the call fell into a silent
+          catch. */}
+      <div
+        aria-hidden="true"
+        className={`pointer-events-none absolute inset-0 flex items-center justify-center bg-black transition-opacity duration-500 motion-reduce:transition-none ${
+          hasStarted ? "opacity-0" : "opacity-100"
         }`}
       >
         <svg
-          className="h-32 w-32 text-acid-dim transition-colors duration-200 group-hover:text-acid motion-reduce:transition-none"
+          className="h-32 w-32 text-acid-dim"
           viewBox="0 0 24 24"
           fill="currentColor"
           aria-hidden="true"
         >
           <path d="M8 5v14l11-7z" />
         </svg>
-      </button>
+      </div>
     </section>
   );
 }

@@ -1,26 +1,15 @@
-import { act, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { act, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const kinescope = vi.hoisted(() => ({
   props: [] as Array<Record<string, unknown>>,
-  play: vi.fn().mockResolvedValue(undefined),
-  setFullscreen: vi.fn().mockResolvedValue(undefined),
 }));
 
 const motion = vi.hoisted(() => ({ reduced: false }));
 
 vi.mock("./kinescope/KinescopePlayer", () => ({
-  default: ({ forwardRef, ...props }: {
-    forwardRef?: { current: typeof kinescope.play | null };
-    [key: string]: unknown;
-  }) => {
+  default: (props: Record<string, unknown>) => {
     kinescope.props.push(props);
-    if (forwardRef) {
-      forwardRef.current = {
-        play: kinescope.play,
-        setFullscreen: kinescope.setFullscreen,
-      } as unknown as typeof kinescope.play;
-    }
     return <div data-testid="kinescope-player" />;
   },
 }));
@@ -50,14 +39,16 @@ type ForegroundProps = {
   videoId: string;
   autoPlay: boolean;
   controls: boolean;
+  mainPlayButton: boolean;
   preload: string;
   onPlay: () => void;
 };
 
+/** The branded cover, which is decorative and so has no accessible name. */
+const cover = () => document.querySelector("section > div[aria-hidden]")!;
+
 afterEach(() => {
   kinescope.props.length = 0;
-  kinescope.play.mockClear();
-  kinescope.setFullscreen.mockClear();
   motion.reduced = false;
   vi.restoreAllMocks();
   Object.defineProperty(navigator, "userAgent", {
@@ -68,7 +59,7 @@ afterEach(() => {
 });
 
 describe("HeroVideo", () => {
-  it("uses the supplied Kinescope hero ID and keeps the custom watch affordance", () => {
+  it("leaves the player's own play button reachable through the cover", () => {
     render(<HeroVideo />);
 
     const props = kinescope.props[0] as ForegroundProps;
@@ -76,24 +67,59 @@ describe("HeroVideo", () => {
       videoId: "i7n65WzZnSd4bVUBE1mzi5",
       autoPlay: false,
       controls: true,
+      // Never inherited: this is the control that starts playback now.
+      mainPlayButton: true,
       preload: "metadata",
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Смотреть видео" }));
-    expect(kinescope.setFullscreen).toHaveBeenCalledWith(true);
-    expect(kinescope.play).toHaveBeenCalledOnce();
-
-    act(() => props.onPlay());
-    expect(screen.getByRole("button", { name: "Смотреть видео" })).toHaveAttribute("inert");
+    // The gesture has to land inside the iframe to count as user activation
+    // there, so nothing in this document may sit in front of the player or
+    // offer a competing affordance.
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
+    expect(cover()).toHaveClass("pointer-events-none");
   });
 
-  it("continues playback when fullscreen is rejected", () => {
-    kinescope.setFullscreen.mockRejectedValueOnce(new Error("denied"));
+  it("clips Kinescope's own corner radius by bleeding the player past the section", () => {
+    const { container } = render(<HeroVideo />);
+
+    const section = container.querySelector("section")!;
+    expect(section).toHaveClass("overflow-hidden");
+    expect(screen.getByTestId("kinescope-player").parentElement).toHaveClass("-inset-[14px]");
+  });
+
+  it("fades the cover out on the play event", () => {
+    render(<HeroVideo />);
+    expect(cover()).toHaveClass("opacity-100");
+
+    act(() => (kinescope.props[0] as ForegroundProps).onPlay());
+    expect(cover()).toHaveClass("opacity-0");
+  });
+
+  it("fades the cover out on a press into the player when no play event arrives", () => {
+    const { container } = render(<HeroVideo />);
+    const section = container.querySelector("section")!;
+    // The mock stands in for the player; the real one renders this iframe, and
+    // a press on its play button is only ever visible here as focus moving.
+    const frame = document.createElement("iframe");
+    section.append(frame);
+
+    act(() => {
+      frame.focus();
+      window.dispatchEvent(new Event("blur"));
+    });
+
+    expect(cover()).toHaveClass("opacity-0");
+  });
+
+  it("ignores a window blur that did not hand focus to the player", () => {
     render(<HeroVideo />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Смотреть видео" }));
-    expect(kinescope.setFullscreen).toHaveBeenCalledWith(true);
-    expect(kinescope.play).toHaveBeenCalledOnce();
+    act(() => {
+      document.body.focus();
+      window.dispatchEvent(new Event("blur"));
+    });
+
+    expect(cover()).toHaveClass("opacity-100");
   });
 
   it("applies and restores Kinescope's iOS pseudo-fullscreen styles only for its iframe", () => {
@@ -130,8 +156,11 @@ describe("HeroVideo", () => {
 });
 
 describe("HeroBackgroundVideo", () => {
-  it("keeps the poster visible until idle playback and configures a silent decorative player", () => {
-    const idleCallbacks: IdleRequestCallback[] = [];
+  const idleCallbacks: IdleRequestCallback[] = [];
+
+  beforeEach(() => {
+    idleCallbacks.length = 0;
+    vi.useFakeTimers();
     Object.defineProperty(window, "requestIdleCallback", {
       configurable: true,
       value: vi.fn((callback: IdleRequestCallback) => {
@@ -140,7 +169,19 @@ describe("HeroBackgroundVideo", () => {
       }),
     });
     Object.defineProperty(window, "cancelIdleCallback", { configurable: true, value: vi.fn() });
+  });
 
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const mountPlayer = () => {
+    const result = render(<HeroBackgroundVideo videoId="background-id" />);
+    act(() => idleCallbacks[0]({ didTimeout: false, timeRemaining: () => 50 }));
+    return result;
+  };
+
+  it("keeps the poster visible until idle and configures a silent decorative player", () => {
     const { container } = render(<HeroBackgroundVideo videoId="background-id" />);
     expect(container.querySelector("img")).toHaveAttribute(
       "src",
@@ -149,8 +190,7 @@ describe("HeroBackgroundVideo", () => {
     expect(screen.queryByTestId("kinescope-player")).not.toBeInTheDocument();
 
     act(() => idleCallbacks[0]({ didTimeout: false, timeRemaining: () => 50 }));
-    const props = kinescope.props[0] as BackgroundProps;
-    expect(props).toMatchObject({
+    expect(kinescope.props[0] as BackgroundProps).toMatchObject({
       videoId: "background-id",
       autoPlay: true,
       loop: true,
@@ -160,8 +200,35 @@ describe("HeroBackgroundVideo", () => {
       mainPlayButton: false,
       preload: false,
     });
+  });
 
-    act(() => props.onPlaying());
+  it("covers the square container with an oversized 16:9 box", () => {
+    mountPlayer();
+
+    // A square container and a 16:9 source: object-fit is inside the iframe and
+    // out of reach, so the box itself has to carry the cover geometry.
+    const wrapper = screen.getByTestId("kinescope-player").parentElement!;
+    expect(wrapper).toHaveClass("h-[calc(100%_+_28px)]");
+    expect(wrapper).toHaveClass("w-[calc((100%_+_28px)_*_16_/_9)]");
+    expect(wrapper).toHaveClass("-translate-x-1/2", "-translate-y-1/2");
+  });
+
+  it("reveals the backdrop on the playing event", () => {
+    mountPlayer();
+    const wrapper = screen.getByTestId("kinescope-player").parentElement!;
+    expect(wrapper).toHaveClass("opacity-0");
+
+    act(() => (kinescope.props[0] as BackgroundProps).onPlaying());
+    expect(wrapper).toHaveClass("opacity-100");
+  });
+
+  it("reveals the backdrop on a timer when the playing event never arrives", () => {
+    // Kinescope's message bridge has been seen to deliver its handshake and
+    // then nothing. Gated solely on onPlaying, the backdrop stayed invisible.
+    mountPlayer();
+    expect(screen.getByTestId("kinescope-player").parentElement).toHaveClass("opacity-0");
+
+    act(() => void vi.advanceTimersByTime(2000));
     expect(screen.getByTestId("kinescope-player").parentElement).toHaveClass("opacity-100");
   });
 
@@ -175,11 +242,8 @@ describe("HeroBackgroundVideo", () => {
     }],
   ])("never mounts Kinescope for %s visitors", (_label, prepare) => {
     prepare();
-    const idle = vi.fn();
-    Object.defineProperty(window, "requestIdleCallback", { configurable: true, value: idle });
-
     render(<HeroBackgroundVideo videoId="background-id" />);
-    expect(idle).not.toHaveBeenCalled();
+    expect(idleCallbacks).toHaveLength(0);
     expect(screen.queryByTestId("kinescope-player")).not.toBeInTheDocument();
   });
 });
