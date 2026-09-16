@@ -31,7 +31,7 @@ The embed document carries the resolved configuration, so it can be asserted
 from anywhere without credentials:
 
 ```sh
-for id in i7n65WzZnSd4bVUBE1mzi5 8ELYTMWXYgz19TjEzqK75J; do
+for id in i7n65WzZnSd4bVUBE1mzi5 keT1Wc9ozg7ejFBVYJmhLz; do
   curl -s "https://kinescope.io/embed/$id" \
     | grep -oE '"(theme|ui)":\{[^{}]*(\{[^{}]*\}[^{}]*)*\}'
 done
@@ -42,7 +42,7 @@ Expect `"videoFit":"cover"` in `ui`, and `"colors":{"primary":"#B7FF00"}` in
 
 ## The committed still must stay frame 0 of the backdrop video
 
-`public/hero-backdrop.webp` is frame 0 of `8ELYTMWXYgz19TjEzqK75J`, and
+`public/hero-backdrop.webp` is frame 0 of `keT1Wc9ozg7ejFBVYJmhLz`, and
 `HeroBackgroundVideo` paints it under the player until the player is actually
 playing. The whole arrangement rests on the two images being the same picture:
 that is what lets the loader hand over on its ceiling, and what reduced-motion
