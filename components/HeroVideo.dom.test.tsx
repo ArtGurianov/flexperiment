@@ -1,5 +1,5 @@
 import { act, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 const kinescope = vi.hoisted(() => ({
   props: [] as Array<Record<string, unknown>>,
@@ -33,15 +33,6 @@ type BackgroundProps = {
   mainPlayButton: boolean;
   preload: boolean;
   onPlaying: () => void;
-};
-
-type ForegroundProps = {
-  videoId: string;
-  autoPlay: boolean;
-  controls: boolean;
-  mainPlayButton: boolean;
-  preload: string;
-  onPlay: () => void;
 };
 
 afterEach(() => {
@@ -113,40 +104,15 @@ describe("HeroVideo", () => {
 });
 
 describe("HeroBackgroundVideo", () => {
-  const idleCallbacks: IdleRequestCallback[] = [];
+  const mountPlayer = () => render(<HeroBackgroundVideo videoId="background-id" />);
 
-  beforeEach(() => {
-    idleCallbacks.length = 0;
-    vi.useFakeTimers();
-    Object.defineProperty(window, "requestIdleCallback", {
-      configurable: true,
-      value: vi.fn((callback: IdleRequestCallback) => {
-        idleCallbacks.push(callback);
-        return 1;
-      }),
-    });
-    Object.defineProperty(window, "cancelIdleCallback", { configurable: true, value: vi.fn() });
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  const mountPlayer = () => {
-    const result = render(<HeroBackgroundVideo videoId="background-id" />);
-    act(() => idleCallbacks[0]({ didTimeout: false, timeRemaining: () => 50 }));
-    return result;
-  };
-
-  it("keeps the poster visible until idle and configures a silent decorative player", () => {
-    const { container } = render(<HeroBackgroundVideo videoId="background-id" />);
+  it("paints the local poster and configures a silent decorative player", () => {
+    const { container } = mountPlayer();
     expect(container.querySelector("img")).toHaveAttribute(
       "src",
       expect.stringContaining("background.webp"),
     );
-    expect(screen.queryByTestId("kinescope-player")).not.toBeInTheDocument();
 
-    act(() => idleCallbacks[0]({ didTimeout: false, timeRemaining: () => 50 }));
     expect(kinescope.props[0] as BackgroundProps).toMatchObject({
       videoId: "background-id",
       autoPlay: true,
@@ -179,16 +145,6 @@ describe("HeroBackgroundVideo", () => {
     expect(wrapper).toHaveClass("opacity-100");
   });
 
-  it("reveals the backdrop on a timer when the playing event never arrives", () => {
-    // Kinescope's message bridge has been seen to deliver its handshake and
-    // then nothing. Gated solely on onPlaying, the backdrop stayed invisible.
-    mountPlayer();
-    expect(screen.getByTestId("kinescope-player").parentElement).toHaveClass("opacity-0");
-
-    act(() => void vi.advanceTimersByTime(2000));
-    expect(screen.getByTestId("kinescope-player").parentElement).toHaveClass("opacity-100");
-  });
-
   it.each([
     ["reduced-motion", () => { motion.reduced = true; }],
     ["Save-Data", () => {
@@ -200,7 +156,6 @@ describe("HeroBackgroundVideo", () => {
   ])("never mounts Kinescope for %s visitors", (_label, prepare) => {
     prepare();
     render(<HeroBackgroundVideo videoId="background-id" />);
-    expect(idleCallbacks).toHaveLength(0);
     expect(screen.queryByTestId("kinescope-player")).not.toBeInTheDocument();
   });
 });

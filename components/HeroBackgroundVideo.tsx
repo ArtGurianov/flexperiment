@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import Image from "next/image";
 
+import { useLoaderGate } from "@/components/AssetPreloader";
 import KinescopePlayer from "@/components/kinescope/KinescopePlayer";
 import { usePrefersReducedMotion } from "@/hooks/usePrefersReducedMotion";
 
@@ -13,46 +14,59 @@ type SaveDataNavigator = Navigator & {
 const prefersSavedData = () =>
   (navigator as SaveDataNavigator).connection?.saveData === true;
 
-/**
- * How long after mounting the player the backdrop fades in without ever having
- * heard from it. `onPlaying` is the fast path, but it arrives over Kinescope's
- * iframe message bridge, which has been observed to deliver the initial
- * handshake and then nothing at all — and a backdrop gated solely on that event
- * stays invisible forever. Long enough for the player to have painted its own
- * poster over the local one, short enough not to read as a stall.
- */
-const REVEAL_FALLBACK_MS = 2000;
+const subscribeNever = () => () => {};
 
 /**
- * Decorative hero backdrop. It always paints the local poster first. Kinescope
- * is mounted only after the first-paint idle boundary, and never for people
- * who requested reduced motion or data saving.
+ * False while rendering on the server, true once running in the browser. The
+ * player touches browser APIs as it loads, so the decision to mount it cannot
+ * be made during the server pass — and expressing that as a snapshot rather
+ * than as state set from an effect keeps it out of a second render pass.
+ */
+const useIsClient = () =>
+  useSyncExternalStore(
+    subscribeNever,
+    () => true,
+    () => false,
+  );
+
+/**
+ * Decorative hero backdrop. It always paints the local poster first, and the
+ * video fades in over it once it is actually playing — so the player is never
+ * on screen with nothing in it.
+ *
+ * Kinescope is never mounted at all for people who requested reduced motion or
+ * data saving. For everyone else it is mounted immediately and held by the
+ * loader gate until the player reports ready.
  */
 export default function HeroBackgroundVideo({ videoId }: { videoId: string }) {
   const prefersReducedMotion = usePrefersReducedMotion();
-  const [shouldMountPlayer, setShouldMountPlayer] = useState(false);
-  const [isRevealed, setIsRevealed] = useState(false);
+  const isClient = useIsClient();
+  const loaderGate = useLoaderGate();
+  const releaseGate = useRef<(() => void) | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+
+  // Derived rather than held: the player is mounted immediately for everyone
+  // eligible. The idle deferral this replaces existed to keep it off the
+  // critical path, which is the opposite of what is wanted now that the loader
+  // waits for it — idle work does not run while the loader is fetching, so the
+  // wait would have been spent reaching the safety ceiling instead of loading
+  // the player.
+  const shouldMountPlayer =
+    isClient && !prefersReducedMotion && !prefersSavedData();
 
   useEffect(() => {
-    if (prefersReducedMotion || prefersSavedData()) return;
-
-    // Safari has no requestIdleCallback. A macrotask still runs after the first
-    // paint, keeping the same safe fallback as the previous native player.
-    const hasIdle = typeof window.requestIdleCallback === "function";
-    const handle = hasIdle
-      ? window.requestIdleCallback(() => setShouldMountPlayer(true), { timeout: 3000 })
-      : window.setTimeout(() => setShouldMountPlayer(true), 0);
-
+    if (!loaderGate) return;
+    const release = loaderGate.register();
+    releaseGate.current = release;
     return () => {
-      if (hasIdle) window.cancelIdleCallback(handle);
-      else window.clearTimeout(handle);
+      release();
+      releaseGate.current = null;
     };
-  }, [prefersReducedMotion]);
+  }, [loaderGate]);
 
+  // Visitors who never get a player must not be held for the safety timeout.
   useEffect(() => {
-    if (!shouldMountPlayer) return;
-    const handle = window.setTimeout(() => setIsRevealed(true), REVEAL_FALLBACK_MS);
-    return () => window.clearTimeout(handle);
+    if (!shouldMountPlayer) releaseGate.current?.();
   }, [shouldMountPlayer]);
 
   return (
@@ -69,7 +83,7 @@ export default function HeroBackgroundVideo({ videoId }: { videoId: string }) {
       {shouldMountPlayer ? (
         <div
           className={`pointer-events-none absolute inset-0 transition-opacity duration-300 motion-reduce:transition-none ${
-            isRevealed ? "opacity-100" : "opacity-0"
+            isPlaying ? "opacity-100" : "opacity-0"
           }`}
         >
           <KinescopePlayer
@@ -90,7 +104,10 @@ export default function HeroBackgroundVideo({ videoId }: { videoId: string }) {
             controls={false}
             mainPlayButton={false}
             localStorage={false}
-            onPlaying={() => setIsRevealed(true)}
+            // Releasing on ready, not on playing: the loader is waiting for a
+            // player that exists and can paint, never for buffered video.
+            onReady={() => releaseGate.current?.()}
+            onPlaying={() => setIsPlaying(true)}
           />
         </div>
       ) : null}

@@ -11,10 +11,51 @@ index d4c7f378eec339b4429d5800a7a0bfff447dda08..ee3746e22748d7fd1ac722c969403c04
      /**
       * Whether to include subtitles when loading the video.
 diff --git a/dist/player.js b/dist/player.js
-index 411e5eafc55d46e7449717f28dc41e4c3fe2d92a..7bc6c91a0dcb8ad3ada90c39833dde962b98fc5e 100644
+index 411e5eafc55d46e7449717f28dc41e4c3fe2d92a..fe4a4c78f94245039738086b3de8763c1cb988a6 100644
 --- a/dist/player.js
 +++ b/dist/player.js
-@@ -699,6 +699,7 @@ var Player = /*#__PURE__*/function (_Component) {
+@@ -179,11 +179,20 @@ var Loader = /*#__PURE__*/function (_Component) {
+     _this = _Component.call(this, props) || this;
+ 
+     _this.loadJsNotLoad = function () {
++      var _w;
++
+       var el = document.getElementById(NODE_JS_ID);
+ 
+-      if (el) {
+-        el.addEventListener('load', _this.loadJs);
++      if (!el) {
++        return;
+       }
++
++      if ((_w = window) != null && _w.Kinescope != null && _w.Kinescope.IframePlayer) {
++        _this.handleJSLoad();
++        return;
++      }
++
++      el.addEventListener('load', _this.loadJs);
+     };
+ 
+     _this.loadJs = function () {
+@@ -232,13 +241,15 @@ var Loader = /*#__PURE__*/function (_Component) {
+       onJSLoadError && onJSLoadError(e);
+     };
+ 
+-    _this.jsLoading();
+-
+     return _this;
+   }
+ 
+   var _proto = Loader.prototype;
+ 
++  _proto.componentDidMount = function componentDidMount() {
++    this.jsLoading();
++  };
++
+   _proto.render = function render() {
+     var children = this.props.children;
+     return children;
+@@ -699,6 +710,7 @@ var Player = /*#__PURE__*/function (_Component) {
              language = _this$props5.language,
              controls = _this$props5.controls,
              mainPlayButton = _this$props5.mainPlayButton,
@@ -22,7 +63,7 @@ index 411e5eafc55d46e7449717f28dc41e4c3fe2d92a..7bc6c91a0dcb8ad3ada90c39833dde96
              playbackRateButton = _this$props5.playbackRateButton,
              textTrack = _this$props5.textTrack,
              bookmarks = _this$props5.bookmarks,
-@@ -742,6 +743,7 @@ var Player = /*#__PURE__*/function (_Component) {
+@@ -742,6 +754,7 @@ var Player = /*#__PURE__*/function (_Component) {
              language: language,
              controls: controls,
              mainPlayButton: mainPlayButton,
@@ -31,10 +72,51 @@ index 411e5eafc55d46e7449717f28dc41e4c3fe2d92a..7bc6c91a0dcb8ad3ada90c39833dde96
              watermark: watermark
            },
 diff --git a/dist/player.module.js b/dist/player.module.js
-index cf486bfe45d96d1b99b0802e017e000d445030ca..a27d4bbae5174e2f573d276494e70d6985162b40 100644
+index cf486bfe45d96d1b99b0802e017e000d445030ca..202a3ed200320f05d65c9be8e17313579a00a91b 100644
 --- a/dist/player.module.js
 +++ b/dist/player.module.js
-@@ -695,6 +695,7 @@ var Player = /*#__PURE__*/function (_Component) {
+@@ -175,11 +175,20 @@ var Loader = /*#__PURE__*/function (_Component) {
+     _this = _Component.call(this, props) || this;
+ 
+     _this.loadJsNotLoad = function () {
++      var _w;
++
+       var el = document.getElementById(NODE_JS_ID);
+ 
+-      if (el) {
+-        el.addEventListener('load', _this.loadJs);
++      if (!el) {
++        return;
+       }
++
++      if ((_w = window) != null && _w.Kinescope != null && _w.Kinescope.IframePlayer) {
++        _this.handleJSLoad();
++        return;
++      }
++
++      el.addEventListener('load', _this.loadJs);
+     };
+ 
+     _this.loadJs = function () {
+@@ -228,13 +237,15 @@ var Loader = /*#__PURE__*/function (_Component) {
+       onJSLoadError && onJSLoadError(e);
+     };
+ 
+-    _this.jsLoading();
+-
+     return _this;
+   }
+ 
+   var _proto = Loader.prototype;
+ 
++  _proto.componentDidMount = function componentDidMount() {
++    this.jsLoading();
++  };
++
+   _proto.render = function render() {
+     var children = this.props.children;
+     return children;
+@@ -695,6 +706,7 @@ var Player = /*#__PURE__*/function (_Component) {
              language = _this$props5.language,
              controls = _this$props5.controls,
              mainPlayButton = _this$props5.mainPlayButton,
@@ -42,7 +124,7 @@ index cf486bfe45d96d1b99b0802e017e000d445030ca..a27d4bbae5174e2f573d276494e70d69
              playbackRateButton = _this$props5.playbackRateButton,
              textTrack = _this$props5.textTrack,
              bookmarks = _this$props5.bookmarks,
-@@ -738,6 +739,7 @@ var Player = /*#__PURE__*/function (_Component) {
+@@ -738,6 +750,7 @@ var Player = /*#__PURE__*/function (_Component) {
              language: language,
              controls: controls,
              mainPlayButton: mainPlayButton,
@@ -51,10 +133,51 @@ index cf486bfe45d96d1b99b0802e017e000d445030ca..a27d4bbae5174e2f573d276494e70d69
              watermark: watermark
            },
 diff --git a/dist/player.umd.js b/dist/player.umd.js
-index 00c842e37cae0e8a531fcada5f40e250f20ec53c..d32d7450af10ba647ab7248fd77ad686443017a5 100644
+index 00c842e37cae0e8a531fcada5f40e250f20ec53c..231965bfdb6fe0d1d1ec0b2a42df056f178aa31d 100644
 --- a/dist/player.umd.js
 +++ b/dist/player.umd.js
-@@ -702,6 +702,7 @@
+@@ -182,11 +182,20 @@
+       _this = _Component.call(this, props) || this;
+ 
+       _this.loadJsNotLoad = function () {
++        var _w;
++
+         var el = document.getElementById(NODE_JS_ID);
+ 
+-        if (el) {
+-          el.addEventListener('load', _this.loadJs);
++        if (!el) {
++          return;
+         }
++
++        if ((_w = window) != null && _w.Kinescope != null && _w.Kinescope.IframePlayer) {
++          _this.handleJSLoad();
++          return;
++        }
++
++        el.addEventListener('load', _this.loadJs);
+       };
+ 
+       _this.loadJs = function () {
+@@ -235,13 +244,15 @@
+         onJSLoadError && onJSLoadError(e);
+       };
+ 
+-      _this.jsLoading();
+-
+       return _this;
+     }
+ 
+     var _proto = Loader.prototype;
+ 
++    _proto.componentDidMount = function componentDidMount() {
++      this.jsLoading();
++    };
++
+     _proto.render = function render() {
+       var children = this.props.children;
+       return children;
+@@ -702,6 +713,7 @@
                language = _this$props5.language,
                controls = _this$props5.controls,
                mainPlayButton = _this$props5.mainPlayButton,
@@ -62,7 +185,7 @@ index 00c842e37cae0e8a531fcada5f40e250f20ec53c..d32d7450af10ba647ab7248fd77ad686
                playbackRateButton = _this$props5.playbackRateButton,
                textTrack = _this$props5.textTrack,
                bookmarks = _this$props5.bookmarks,
-@@ -745,6 +746,7 @@
+@@ -745,6 +757,7 @@
                language: language,
                controls: controls,
                mainPlayButton: mainPlayButton,
@@ -70,6 +193,46 @@ index 00c842e37cae0e8a531fcada5f40e250f20ec53c..d32d7450af10ba647ab7248fd77ad686
                playbackRateButton: playbackRateButton,
                watermark: watermark
              },
+diff --git a/src/loader.tsx b/src/loader.tsx
+index bf0ca16d3d3e6923bb7115ead533592498beee93..6bd86575cc6701e2bb82b926e88eee0b35d8f38d 100644
+--- a/src/loader.tsx
++++ b/src/loader.tsx
+@@ -11,16 +11,31 @@ type LoaderProps = {
+ };
+ 
+ class Loader extends Component<LoaderProps> {
+-	constructor(props: LoaderProps) {
+-		super(props);
++	/**
++	 * Local patch. This ran in the constructor, which is during render: when the
++	 * player script was already present — a second player on the page, or any
++	 * cached load — `jsLoading` reached `handleJSLoad` synchronously, before the
++	 * span this mounts into existed. `Player.create` then bailed on its null
++	 * `parentsRef` and latched `playerLoad`, so it was never retried and the
++	 * player never appeared at all. Children mount before their parent's
++	 * componentDidMount, so by here the ref is set.
++	 */
++	componentDidMount() {
+ 		this.jsLoading();
+ 	}
+ 
+ 	loadJsNotLoad = () => {
+ 		const el = document.getElementById(NODE_JS_ID);
+-		if (el) {
+-			el.addEventListener('load', this.loadJs);
++		if (!el) {
++			return;
++		}
++		// Local patch. A tag that has already executed will never fire `load`
++		// again, so waiting on it here stranded every later player permanently.
++		if (window?.Kinescope?.IframePlayer) {
++			this.handleJSLoad();
++			return;
+ 		}
++		el.addEventListener('load', this.loadJs);
+ 	};
+ 
+ 	loadJs = () => {
 diff --git a/src/player.tsx b/src/player.tsx
 index 9686025372ff64209aefe33f1a431be0b0f851d8..be3e35c0068378882fb7eefeaf36d3ca3a4a4e6b 100644
 --- a/src/player.tsx
