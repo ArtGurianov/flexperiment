@@ -55,24 +55,59 @@ Note what this does **not** need: polling Coolify's own deployment status,
 whose shape the invariants correctly say has never been verified here. Asking
 the deployed surfaces which commit they are is independent of the deployer.
 
-## The ordering this should have
+## What "successfully deployed" has to mean
 
-A pointer that means "last successfully deployed" cannot be advanced by an act
-that does not yet know whether the deployment succeeded. Two shapes work:
+Deployment success is a property of the runtime, not of the request that asked
+for it. An HTTP 2xx from a Coolify webhook says the enqueue was accepted; the
+invariants already say that, and this incident is what it looks like when the
+two are conflated. The surfaces above make the stronger statement available:
 
-1. **Advance after proof.** Trigger the deploy, prove convergence from the
-   surfaces above, then move the pointer under its lease. The failure mode is
-   a controller that times out after a slow-but-successful deployment, leaving
-   the pointer behind the runtime — recoverable by re-reading the surfaces,
-   and strictly safer than the current direction, which leaves it ahead.
-2. **Advance and reconcile.** Keep the current move, but make a failed or
-   unproven convergence restore the pointer to the SHA the surfaces report.
+```text
+production-deploy may equal TARGET only if every required production runtime
+surface has independently attested source_commit == TARGET.
+```
 
-Either way the invariant becomes true by construction rather than by luck.
-Whichever is chosen, the convergence check belongs in its own read-only,
-freely re-dispatchable step — the invariants already argue for that, since a
-combined submit-and-verify job that times out cannot be re-run without
-re-triggering the mutation it already performed.
+Attested by the surface itself, from the `SOURCE_COMMIT` baked into the
+artifact — not by the deployer reporting on its own work, and not by anything
+this repository infers about Coolify's internal state.
+
+## Why the pointer cannot simply move later
+
+The obvious fix is to advance the pointer only after that proof. It is not
+available as things stand, and the reason is worth stating plainly, because it
+is easy to propose the impossible version of this.
+
+`scripts/controlled-coolify-deploy.sh` fires webhooks that carry no SHA at
+all. Coolify builds whatever `refs/heads/production-deploy` points at; the
+script's only guard is asserting that the ref already equals the expected
+source commit:
+
+```sh
+configured_deploy_ref="$(git ls-remote origin refs/heads/production-deploy | ...)"
+[[ "$configured_deploy_ref" == "$expected_source_commit" ]] || fail
+```
+
+So the ref is the deployment source. It has to move before the deploy, by
+construction — which is exactly why it can end up asserting a runtime that was
+never built.
+
+That leaves two honest options:
+
+1. **Split the two roles.** One ref is what Coolify pulls; `production-deploy`
+   becomes the post-convergence attestation and is advanced only once every
+   surface reports the target. This makes the invariant above true by
+   construction, and is the only shape in which "advance after proof" means
+   anything. It requires re-pointing Coolify at the new source ref.
+2. **Keep one ref, and reconcile.** The move stays where it is, but a deploy
+   whose convergence is not proved restores the pointer to whatever the
+   surfaces report. The invariant then holds eventually rather than always,
+   and there is a window in which the ref asserts something untrue — the
+   window this incident has been sitting in.
+
+The first is cleaner and the second is cheaper. Either way, the convergence
+check belongs in its own read-only, freely re-dispatchable step: the
+invariants already argue for that, since a combined submit-and-verify job that
+times out cannot be re-run without re-triggering the mutation it performed.
 
 ## Before the next ordinary release
 
