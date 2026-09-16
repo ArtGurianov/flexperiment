@@ -109,6 +109,43 @@ check belongs in its own read-only, freely re-dispatchable step: the
 invariants already argue for that, since a combined submit-and-verify job that
 times out cannot be re-run without re-triggering the mutation it performed.
 
+## A failed deploy also holds the release open
+
+The pointer is the lesser half. The same failure leaves two things behind, and
+the second one is customer-facing.
+
+`controlled-production-deploy` acquires the release owner and pauses new orders
+before it asks Coolify for anything. When the build fails there is no path that
+releases either. On 2026-09-16 the `a9ea010` attempt left:
+
+```text
+sales_paused      true
+owner_release_id  deploy-a9ea0107191b6e1abaeb8e7794c600646815faec
+owner_mode        CONTROLLED_CUTOVER
+paused_at         2026-09-16 09:16:26
+```
+
+Sales stayed closed. Nothing timed out, nothing reconciled, and nothing said
+so: the refs looked merely wrong, while the shop was shut.
+
+Worse, the state is self-sealing. `reopen` requires the live runtime to match
+the request's expectation *and* the request to match the durable one. The
+runtime is `3ab36fd` and the durable expectation is `a9ea010`, so no single
+request satisfies both. That refusal is the gate working — it will not declare
+open a release it cannot account for — but it means a failed deploy can close
+the shop in a way that its own recovery path cannot reopen.
+
+So the missing piece is not only convergence semantics. A controller that can
+acquire an owner and pause sales **must** have a terminal failure path that
+releases both, and reopening must happen only after runtime convergence has
+been proved and the control plane reconciled — never as an independent act to
+get sales back.
+
+Ordering matters within that repair too. The pointer should be corrected
+before sales reopen, not after: otherwise there is a window in which customers
+can buy again while the release authority still publicly asserts a runtime
+that was never deployed.
+
 ## Before the next ordinary release
 
 `production-deploy` currently asserts a runtime that was never deployed. It
