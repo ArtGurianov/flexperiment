@@ -77,14 +77,8 @@ describe("HeroVideo", () => {
     // offer a competing affordance.
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
     expect(cover()).toHaveClass("pointer-events-none");
-  });
-
-  it("clips Kinescope's own corner radius by bleeding the player past the section", () => {
-    const { container } = render(<HeroVideo />);
-
-    const section = container.querySelector("section")!;
-    expect(section).toHaveClass("overflow-hidden");
-    expect(screen.getByTestId("kinescope-player").parentElement).toHaveClass("-inset-[14px]");
+    // Nothing between the section and the player: no bleed, no crop.
+    expect(screen.getByTestId("kinescope-player").parentElement!.tagName).toBe("SECTION");
   });
 
   it("fades the cover out on the play event", () => {
@@ -202,15 +196,15 @@ describe("HeroBackgroundVideo", () => {
     });
   });
 
-  it("covers the square container with an oversized 16:9 box", () => {
+  it("asks the player itself to cover the square container", () => {
     mountPlayer();
 
-    // A square container and a 16:9 source: object-fit is inside the iframe and
-    // out of reach, so the box itself has to carry the cover geometry.
-    const wrapper = screen.getByTestId("kinescope-player").parentElement!;
-    expect(wrapper).toHaveClass("h-[calc(100%_+_28px)]");
-    expect(wrapper).toHaveClass("w-[calc((100%_+_28px)_*_16_/_9)]");
-    expect(wrapper).toHaveClass("-translate-x-1/2", "-translate-y-1/2");
+    // A square container and a 16:9 source. object-fit is inside the iframe and
+    // out of reach, so the fit has to be an option on the player. The React
+    // wrapper does not forward it; patches/ adds it, and this is what would
+    // catch that patch silently dropping out of the install.
+    expect(kinescope.props[0]).toHaveProperty("videoFit", "cover");
+    expect(screen.getByTestId("kinescope-player").parentElement).toHaveClass("inset-0");
   });
 
   it("reveals the backdrop on the playing event", () => {

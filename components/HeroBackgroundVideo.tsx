@@ -67,19 +67,8 @@ export default function HeroBackgroundVideo({ videoId }: { videoId: string }) {
         className="object-cover"
       />
       {shouldMountPlayer ? (
-        // Cover geometry, computed rather than delegated. The container is a
-        // square and the source is 16:9, but object-fit lives inside a
-        // cross-origin iframe now: the player letterboxes to whatever box it is
-        // given and paints those bands opaque, which is what covered the poster
-        // with a light strip top and bottom. So the box itself is made 16:9 and
-        // oversized, then centred and clipped by the square.
-        //
-        // The +28px is 14px of bleed on every edge. It does double duty: it is
-        // what makes the box larger than the square in the first place, and it
-        // pushes Kinescope's own 12px corner radius — also unreachable from out
-        // here — past the clipping boundary, so the corners read as sharp.
         <div
-          className={`pointer-events-none absolute left-1/2 top-1/2 h-[calc(100%_+_28px)] w-[calc((100%_+_28px)_*_16_/_9)] -translate-x-1/2 -translate-y-1/2 transition-opacity duration-300 motion-reduce:transition-none ${
+          className={`pointer-events-none absolute inset-0 transition-opacity duration-300 motion-reduce:transition-none ${
             isRevealed ? "opacity-100" : "opacity-0"
           }`}
         >
@@ -92,6 +81,12 @@ export default function HeroBackgroundVideo({ videoId }: { videoId: string }) {
             muted
             playsInline
             preload={false}
+            // The square container and the 16:9 source used to be reconciled by
+            // object-fit on the element itself. That now lives inside a
+            // cross-origin iframe, so the player has to be told: without this it
+            // letterboxes and paints the bands opaque over the poster. Not
+            // surfaced by the React wrapper — see patches/.
+            videoFit="cover"
             controls={false}
             mainPlayButton={false}
             localStorage={false}

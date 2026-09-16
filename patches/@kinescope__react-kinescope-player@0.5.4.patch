@@ -1,0 +1,106 @@
+diff --git a/dist/player.d.ts b/dist/player.d.ts
+index d4c7f378eec339b4429d5800a7a0bfff447dda08..ee3746e22748d7fd1ac722c969403c043751be1b 100644
+--- a/dist/player.d.ts
++++ b/dist/player.d.ts
+@@ -54,6 +54,7 @@ export type PlayerPropsTypes = {
+     language?: 'ru' | 'en';
+     controls?: boolean;
+     mainPlayButton?: boolean;
++    videoFit?: 'contain' | 'cover';
+     playbackRateButton?: boolean;
+     /**
+      * Whether to include subtitles when loading the video.
+diff --git a/dist/player.js b/dist/player.js
+index 411e5eafc55d46e7449717f28dc41e4c3fe2d92a..7bc6c91a0dcb8ad3ada90c39833dde962b98fc5e 100644
+--- a/dist/player.js
++++ b/dist/player.js
+@@ -699,6 +699,7 @@ var Player = /*#__PURE__*/function (_Component) {
+             language = _this$props5.language,
+             controls = _this$props5.controls,
+             mainPlayButton = _this$props5.mainPlayButton,
++            videoFit = _this$props5.videoFit,
+             playbackRateButton = _this$props5.playbackRateButton,
+             textTrack = _this$props5.textTrack,
+             bookmarks = _this$props5.bookmarks,
+@@ -742,6 +743,7 @@ var Player = /*#__PURE__*/function (_Component) {
+             language: language,
+             controls: controls,
+             mainPlayButton: mainPlayButton,
++            videoFit: videoFit,
+             playbackRateButton: playbackRateButton,
+             watermark: watermark
+           },
+diff --git a/dist/player.module.js b/dist/player.module.js
+index cf486bfe45d96d1b99b0802e017e000d445030ca..a27d4bbae5174e2f573d276494e70d6985162b40 100644
+--- a/dist/player.module.js
++++ b/dist/player.module.js
+@@ -695,6 +695,7 @@ var Player = /*#__PURE__*/function (_Component) {
+             language = _this$props5.language,
+             controls = _this$props5.controls,
+             mainPlayButton = _this$props5.mainPlayButton,
++            videoFit = _this$props5.videoFit,
+             playbackRateButton = _this$props5.playbackRateButton,
+             textTrack = _this$props5.textTrack,
+             bookmarks = _this$props5.bookmarks,
+@@ -738,6 +739,7 @@ var Player = /*#__PURE__*/function (_Component) {
+             language: language,
+             controls: controls,
+             mainPlayButton: mainPlayButton,
++            videoFit: videoFit,
+             playbackRateButton: playbackRateButton,
+             watermark: watermark
+           },
+diff --git a/dist/player.umd.js b/dist/player.umd.js
+index 00c842e37cae0e8a531fcada5f40e250f20ec53c..d32d7450af10ba647ab7248fd77ad686443017a5 100644
+--- a/dist/player.umd.js
++++ b/dist/player.umd.js
+@@ -702,6 +702,7 @@
+               language = _this$props5.language,
+               controls = _this$props5.controls,
+               mainPlayButton = _this$props5.mainPlayButton,
++              videoFit = _this$props5.videoFit,
+               playbackRateButton = _this$props5.playbackRateButton,
+               textTrack = _this$props5.textTrack,
+               bookmarks = _this$props5.bookmarks,
+@@ -745,6 +746,7 @@
+               language: language,
+               controls: controls,
+               mainPlayButton: mainPlayButton,
++              videoFit: videoFit,
+               playbackRateButton: playbackRateButton,
+               watermark: watermark
+             },
+diff --git a/src/player.tsx b/src/player.tsx
+index 9686025372ff64209aefe33f1a431be0b0f851d8..be3e35c0068378882fb7eefeaf36d3ca3a4a4e6b 100644
+--- a/src/player.tsx
++++ b/src/player.tsx
+@@ -91,6 +91,13 @@ export type PlayerPropsTypes = {
+ 	language?: 'ru' | 'en';
+ 	controls?: boolean;
+ 	mainPlayButton?: boolean;
++	/**
++	 * How the video is fitted into the player box. The iframe API accepts it
++	 * (the official Vue wrapper passes it through as `ui.videoFit`) but this
++	 * wrapper did not surface it, leaving `contain` as the only reachable
++	 * behaviour. Local patch.
++	 */
++	videoFit?: 'contain' | 'cover';
+ 	playbackRateButton?: boolean;
+ 	/**
+ 	 * Whether to include subtitles when loading the video.
+@@ -485,6 +492,7 @@ class Player extends Component<PlayerPropsTypes> {
+ 			language,
+ 			controls,
+ 			mainPlayButton,
++			videoFit,
+ 			playbackRateButton,
+ 			textTrack,
+ 			bookmarks,
+@@ -529,6 +537,7 @@ class Player extends Component<PlayerPropsTypes> {
+ 				language: language,
+ 				controls: controls,
+ 				mainPlayButton: mainPlayButton,
++				videoFit: videoFit,
+ 				playbackRateButton: playbackRateButton,
+ 				watermark: watermark,
+ 			},

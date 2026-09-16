@@ -94,32 +94,22 @@ export default function HeroVideo() {
       ref={sectionRef}
       className="relative w-full aspect-video overflow-hidden shadow-[0_-10px_24px_rgb(202_255_86_/_0.3),0_10px_24px_rgb(202_255_86_/_0.3),0_-16px_48px_rgb(202_255_86_/_0.18),0_16px_48px_rgb(202_255_86_/_0.18)]"
     >
-      {/* 14px of bleed on every edge, clipped away by the section. Kinescope's
-          player carries a 12px corner radius inside its iframe, which no rule
-          out here can reach; pushing the corners past the clipping boundary is
-          what makes this player read as sharp-cornered again.
-          The bleed also absorbs the letterboxing the wider box introduces: at
-          any size, a 16:9 source contained in a box grown by 28px on both axes
-          sits ((h+28) - (w+28)*9/16) / 2 = 6.125px short of the top and bottom
-          edges, well inside the 14px that is hidden. */}
-      <div className="absolute -inset-[14px]">
-        <KinescopePlayer
-          className="h-full w-full"
-          videoId={KINESCOPE_HERO_VIDEO_ID}
-          controls
-          // Explicit rather than inherited: this is the control that actually
-          // starts playback now, so it must not depend on a library default.
-          mainPlayButton
-          preload="metadata"
-          autoPlay={false}
-          autoPause={false}
-          loop={false}
-          muted={false}
-          playsInline
-          localStorage={false}
-          onPlay={() => setHasStarted(true)}
-        />
-      </div>
+      <KinescopePlayer
+        className="h-full w-full"
+        videoId={KINESCOPE_HERO_VIDEO_ID}
+        controls
+        // Explicit rather than inherited: this is the control that actually
+        // starts playback now, so it must not depend on a library default.
+        mainPlayButton
+        preload="metadata"
+        autoPlay={false}
+        autoPause={false}
+        loop={false}
+        muted={false}
+        playsInline
+        localStorage={false}
+        onPlay={() => setHasStarted(true)}
+      />
       {/* Branded cover over the player's own play button. It is inert in every
           sense: the click passes straight through to the iframe, where it still
           counts as a user gesture. Proxying it through player.play() did not —
