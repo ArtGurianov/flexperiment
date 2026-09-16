@@ -5,5 +5,3 @@ ignoredBuiltDependencies:
   - sharp
   - unrs-resolver
 
-patchedDependencies:
-  '@kinescope/react-kinescope-player@0.5.4': patches/@kinescope__react-kinescope-player@0.5.4.patch

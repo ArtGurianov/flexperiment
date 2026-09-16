@@ -3,9 +3,6 @@ WORKDIR /app
 RUN corepack enable
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/admin/package.json ./apps/admin/package.json
-# The lockfile records a patched dependency, so pnpm hashes the patch file
-# during install. Without it the install fails before any source is copied.
-COPY patches ./patches
 RUN pnpm install --frozen-lockfile
 
 FROM dependencies AS build

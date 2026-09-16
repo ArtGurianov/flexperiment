@@ -1,12 +1,7 @@
 FROM node:22-bookworm-slim AS dependencies
 WORKDIR /app
 RUN corepack enable
-COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
-# pnpm-workspace.yaml above carries the patchedDependencies config and this
-# is the patch it names; a frozen install needs both, and fails with
-# ERR_PNPM_LOCKFILE_CONFIG_MISMATCH on the config alone. The workspace globs
-# match nothing in this image, which is not an error.
-COPY patches ./patches
+COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile
 
 FROM node:22-bookworm-slim

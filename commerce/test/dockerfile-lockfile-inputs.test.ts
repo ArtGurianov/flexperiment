@@ -36,13 +36,16 @@ const dockerfiles = readdirSync(REPO_ROOT)
   .filter((file) => file.installAt !== -1);
 
 describe("Dockerfiles carry every input a frozen pnpm install reads", () => {
-  it("finds the lockfile's patches and the images that install from it", () => {
-    // Guards the guard: a rename that silently emptied either list would make
-    // every assertion below vacuous.
-    expect(patchPaths.length).toBeGreaterThan(0);
+  it("finds the images that install from the lockfile", () => {
+    // Guards the guard: a rename that emptied this list would make every
+    // assertion below vacuous rather than failing.
     expect(dockerfiles.length).toBeGreaterThan(0);
   });
 
+  // There are no patched dependencies right now — the one this was written for
+  // was removed with the package that needed it. The check stays because the
+  // coupling is invisible until a deploy fails: adding a patch back without
+  // touching the Dockerfiles reproduces the same outage exactly.
   it.runIf(patchPaths.length > 0).each(dockerfiles.map((f) => [f.name, f] as const))(
     "%s copies the patch directory and the workspace config before installing",
     (_name, file) => {
