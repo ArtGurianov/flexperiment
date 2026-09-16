@@ -112,8 +112,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
             further down the body. Referenced only as CSS backgrounds
             otherwise, neither would be discovered until its rule matched.
             Together they are ~71KB, far cheaper than the delay of finding them
-            late. The preconnect opens the TLS connection to the video host in
-            parallel, so the <video> below does not pay for the handshake. */}
+            late. */}
         <link rel="preload" as="image" href="/noize.webp" fetchPriority="high" />
         <link
           rel="preload"
@@ -121,7 +120,6 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           href="/background.webp"
           fetchPriority="high"
         />
-        <link rel="preconnect" href="https://flexperiment.s3.cloud.ru" />
 
         {/* iOS Safari doesn't keep background-attachment: fixed pinned to the
             viewport the way desktop browsers do - it paints bg-cover against

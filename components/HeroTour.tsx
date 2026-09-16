@@ -1,6 +1,7 @@
 import Image, { type StaticImageData } from "next/image";
 
 import HeroBackgroundVideo from "@/components/HeroBackgroundVideo";
+import { KINESCOPE_BACKGROUND_VIDEO_ID } from "@/components/kinescope/videoIds";
 
 import hero1 from "@/public/hero1.webp";
 import hero2 from "@/public/hero2.webp";
@@ -78,7 +79,7 @@ export default function HeroTour() {
       </svg>
 
       <div className="relative w-full aspect-square overflow-hidden [clip-path:url(#hero-mask)]">
-        <HeroBackgroundVideo src="https://flexperiment.s3.cloud.ru/bg.webm" />
+        <HeroBackgroundVideo videoId={KINESCOPE_BACKGROUND_VIDEO_ID} />
       </div>
 
       {/* Covers exactly the square above, so a percentage here means the same
