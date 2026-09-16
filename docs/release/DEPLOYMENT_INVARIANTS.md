@@ -114,6 +114,15 @@ current `production-deploy` — and deliberately **not** from the current
 `runtime-candidate` with an exact lease. Candidate promotion never deploys
 production or mutates release-control state.
 
+An ordinary runtime target first receives a separate immutable provenance ref
+only through `controlled-generic-runtime-publication.yml`:
+`refs/heads/runtime/generic-<full target SHA>`. That publication controller
+has its own production-environment credential and may create or re-read only
+that ref. It MUST NOT move either mutable pointer, mutate release-control, or
+call Coolify; promotion may consume the ref only through its explicit
+`expected_published_ref` input. See
+[`GENERIC_RUNTIME_PUBLICATION.md`](GENERIC_RUNTIME_PUBLICATION.md).
+
 The candidate-promotion workflow binds the dedicated `production`
 environment secret `RUNTIME_CANDIDATE_REF_TOKEN` only to that lease-backed
 `runtime-candidate` CAS. It must not use or be replaced with
