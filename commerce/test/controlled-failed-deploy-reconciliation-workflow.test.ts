@@ -215,18 +215,75 @@ describe("controlled failed-deploy reconciliation: post-mutation proofs", () => 
     expect(jqAdmits(withRequest, { ...prereopen, sales_paused: false }, args)).toBe(false);
   });
 
-  it("proves the incident is closed only when the owner is released", () => {
+  const finalProgram = () => {
     const program = predicateBetween(
       `jq -e --arg runtime_sha "$PROVEN_RUNTIME_SHA" '\n            .sales_paused == false`,
       `' durable-after.json >/dev/null || { echo "RECONCILE_FINAL_POSTCONDITION_FAILED"`,
     );
-    const full = `.sales_paused == false${program}`;
-    const closed = { sales_paused: false, owner_release_id: null, owner_mode: null, reopened_at: "2026-09-16 11:30:00", expected: { source_commit: RUNTIME }, runtime: { source_commit: RUNTIME } };
-    const args = ["--arg", "runtime_sha", RUNTIME];
-    expect(jqAdmits(full, closed, args)).toBe(true);
-    expect(jqAdmits(full, { ...closed, owner_release_id: HELD }, args)).toBe(false);
-    expect(jqAdmits(full, { ...closed, owner_mode: "CONTROLLED_CUTOVER" }, args)).toBe(false);
-    expect(jqAdmits(full, { ...closed, sales_paused: true }, args)).toBe(false);
-    expect(jqAdmits(full, { ...closed, reopened_at: null }, args)).toBe(false);
+    return `.sales_paused == false${program}`;
+  };
+
+  const closed = {
+    sales_paused: false,
+    owner_release_id: null,
+    owner_mode: null,
+    emergency_sales_paused: false,
+    paused_at: "2026-09-16 09:16:26",
+    reopened_at: "2026-09-16 11:30:00",
+    expected: { source_commit: RUNTIME },
+    runtime: { source_commit: RUNTIME, worker_source_commit: RUNTIME },
+    outbox_authority: { email_dispatch_paused: false, dispatch_owner_release_id: null, dispatch: { drained: true } },
+  };
+  const finalArgs = ["--arg", "runtime_sha", RUNTIME];
+
+  it("proves the incident is closed only when the owner is released", () => {
+    expect(jqAdmits(finalProgram(), closed, finalArgs)).toBe(true);
+    expect(jqAdmits(finalProgram(), { ...closed, owner_release_id: HELD }, finalArgs)).toBe(false);
+    expect(jqAdmits(finalProgram(), { ...closed, owner_mode: "CONTROLLED_CUTOVER" }, finalArgs)).toBe(false);
+    expect(jqAdmits(finalProgram(), { ...closed, sales_paused: true }, finalArgs)).toBe(false);
+    expect(jqAdmits(finalProgram(), { ...closed, reopened_at: null }, finalArgs)).toBe(false);
+  });
+
+  it("requires the reopen to be newer than the pause it clears", () => {
+    // A stale reopened_at from the previous release would otherwise satisfy a
+    // non-null check while the pause this incident created still stands.
+    expect(jqAdmits(finalProgram(), { ...closed, reopened_at: "2026-09-16 04:36:45" }, finalArgs)).toBe(false);
+    expect(jqAdmits(finalProgram(), { ...closed, paused_at: null }, finalArgs)).toBe(false);
+  });
+
+  it.each([
+    ["an emergency pause", { emergency_sales_paused: true }],
+    ["a fenced outbox", { outbox_authority: { email_dispatch_paused: true, dispatch_owner_release_id: null, dispatch: { drained: true } } }],
+    ["an owned dispatcher", { outbox_authority: { email_dispatch_paused: false, dispatch_owner_release_id: "x", dispatch: { drained: true } } }],
+    ["an undrained queue", { outbox_authority: { email_dispatch_paused: false, dispatch_owner_release_id: null, dispatch: { drained: false } } }],
+  ])("refuses to call the incident closed with %s", (_name, overlay) => {
+    expect(jqAdmits(finalProgram(), { ...closed, ...overlay }, finalArgs)).toBe(false);
+  });
+
+  it.each([
+    ["a commerce runtime that diverged", { source_commit: "c".repeat(40) }],
+    ["a worker that diverged", { worker_source_commit: "c".repeat(40) }],
+  ])("refuses to call the incident closed with %s", (_name, overlay) => {
+    expect(jqAdmits(finalProgram(), { ...closed, runtime: { ...closed.runtime, ...overlay } }, finalArgs)).toBe(false);
+  });
+
+  it("re-reads the public surfaces after the reopen, not only before it", () => {
+    const final = workflow.slice(workflow.indexOf("Prove the incident is closed"));
+    expect(final).toContain("RECONCILE_FINAL_SURFACE_DIVERGED");
+    expect(final).toContain('for url in "$FRONTEND_RELEASE_URL" "$ADMIN_RELEASE_URL"');
+  });
+
+  it("proves a REOPENED event was recorded for this release", () => {
+    const program = predicateBetween(
+      `jq -e --arg release_id "$HELD_RELEASE_ID" '\n            .release_id == $release_id`,
+      `' resolution-after.json >/dev/null || { echo "RECONCILE_REOPEN_EVENT_NOT_RECORDED"`,
+    );
+    const full = `.release_id == $release_id${program}`;
+    const args = ["--arg", "release_id", HELD];
+    const recorded = { release_id: HELD, complete: true, resolution: "COMPLETED", resolved_at: "2026-09-16 11:30:00" };
+    expect(jqAdmits(full, recorded, args)).toBe(true);
+    expect(jqAdmits(full, { ...recorded, complete: false, resolution: "NONE" }, args)).toBe(false);
+    expect(jqAdmits(full, { ...recorded, resolution: "SUPERSEDED" }, args)).toBe(false);
+    expect(jqAdmits(full, { ...recorded, release_id: "deploy-other" }, args)).toBe(false);
   });
 });

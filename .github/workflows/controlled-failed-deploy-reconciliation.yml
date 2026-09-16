@@ -246,14 +246,46 @@ jobs:
           set -euo pipefail
           source "$GITHUB_WORKSPACE/scripts/release/release-api.sh"
           api "$PUBLIC_API_URL/v1/internal/release-control/status" > durable-after.json
+
+          # Everything the seal required must still hold, now with the owner
+          # released. Proving less than was proved before the reopen would let
+          # a surface diverge after the commit and still finish green.
+          #
+          # reopened_at and paused_at are both datetime('now') strings, so
+          # lexicographic order is chronological order for this format.
           jq -e --arg runtime_sha "$PROVEN_RUNTIME_SHA" '
             .sales_paused == false
             and .owner_release_id == null
             and .owner_mode == null
-            and .reopened_at != null
+            and .emergency_sales_paused == false
+            and (.reopened_at // "") != ""
+            and (.paused_at // "") != ""
+            and .reopened_at > .paused_at
             and .expected.source_commit == $runtime_sha
             and .runtime.source_commit == $runtime_sha
+            and .runtime.worker_source_commit == $runtime_sha
+            and .outbox_authority.email_dispatch_paused == false
+            and .outbox_authority.dispatch_owner_release_id == null
+            and .outbox_authority.dispatch.drained == true
           ' durable-after.json >/dev/null || { echo "RECONCILE_FINAL_POSTCONDITION_FAILED" >&2; exit 1; }
+
+          for url in "$FRONTEND_RELEASE_URL" "$ADMIN_RELEASE_URL"; do
+            observed="$(curl --fail-with-body --silent --show-error --connect-timeout 5 --max-time 15 "$url" | jq -r '.source_commit')"
+            [[ "$observed" == "$PROVEN_RUNTIME_SHA" ]] || { echo "RECONCILE_FINAL_SURFACE_DIVERGED=$url:$observed" >&2; exit 1; }
+          done
+
+          # The durable trace of the reopen, through the one endpoint that can
+          # see it. Documented limitation: /resolution reports that a REOPENED
+          # event carrying an expectation exists, but does not expose that
+          # event's expected.source_commit, so this proves the event happened
+          # for this release and not which commit it recorded.
+          api "$PUBLIC_API_URL/v1/internal/release-control/resolution/$HELD_RELEASE_ID" > resolution-after.json
+          jq -e --arg release_id "$HELD_RELEASE_ID" '
+            .release_id == $release_id
+            and .complete == true
+            and .resolution == "COMPLETED"
+            and (.resolved_at // "") != ""
+          ' resolution-after.json >/dev/null || { echo "RECONCILE_REOPEN_EVENT_NOT_RECORDED" >&2; exit 1; }
 
           [[ "$(scripts/read-production-deploy-ref.sh)" == "$PROVEN_RUNTIME_SHA" ]] || { echo "RECONCILE_FINAL_POINTER_FAILED" >&2; exit 1; }
           git fetch --no-tags origin '+refs/heads/runtime-candidate:refs/remotes/origin/runtime-candidate'
