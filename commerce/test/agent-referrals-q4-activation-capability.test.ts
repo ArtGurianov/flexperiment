@@ -292,7 +292,6 @@ describe("Q4 activation capability: atomic DORMANT to ACTIVE authority", () => {
       ".github/workflows/controlled-agent-referrals-q7-activation.yml",
       ".github/workflows/controlled-agent-referrals-q7-candidate.yml",
       ".github/workflows/controlled-agent-referrals-q7-deploy.yml",
-      ".github/workflows/controlled-failed-deploy-reconciliation.yml",
       ".github/workflows/controlled-generic-runtime-publication.yml",
       ".github/workflows/controlled-release-control-v2-benign.yml",
       ".github/workflows/controlled-schema-candidate-publication.yml",

@@ -146,15 +146,36 @@ before sales reopen, not after: otherwise there is a window in which customers
 can buy again while the release authority still publicly asserts a runtime
 that was never deployed.
 
-## Before the next ordinary release
+## What was done, and what was not
 
-`production-deploy` currently asserts a runtime that was never deployed. It
-must be restored to the SHA the surfaces report, through a defined recovery
-protocol and not a manual ref edit, before any promotion or deploy leases from
-it. After restoration every CAS input has to be re-read, and the topology of
-the full real delta — `3ab36fd → b331023` — proved rather than the fictitious
-one-commit range.
+The incident is closed. `production-deploy` was reconciled to the runtime that
+never moved, sales reopened, and `b3310238baa1f05229985cc1ab811dc6fc605a69`
+then reached production through the ordinary lane — publication, promotion,
+controlled deploy — with convergence proved on all four surfaces.
 
-Publication is unaffected: it creates an immutable ref, moves no authority, and
-takes `expected_production_deploy_sha` as a snapshot fence rather than as a
-claim that the pointer is semantically correct.
+Two things changed as a result, and both are in `main`:
+
+- `Test` builds all three deployable images from a clean checkout, so the
+  successful run that generic publication accepts as provenance now covers
+  buildability. The failure that started this could not have reached a deploy.
+- The evidence surfaces are written down in `KINESCOPE_PLAYER_SURFACE.md`, and
+  the readout workflow can report the durable and runtime state on demand
+  without anyone copying a credential out of the production environment.
+
+The one-shot workflow that performed the reconciliation was deleted with this
+document. It was hardcoded to `deploy-a9ea010`, `a9ea010` and `3ab36fd`, and a
+recovery tool that silently fits exactly one past incident is worse than none:
+the next operator would reach for it, and it would refuse at its first seal
+with no explanation of why it cannot help.
+
+Nothing else here has been implemented. The ordering, the split of the
+deployment source from the attestation, and a universal terminal failure path
+remain design record rather than code. That is deliberate — proving new release
+machinery is how a frontend fix turns into another week — but it means the
+defect is still live:
+
+**A controlled deploy still acquires the owner and pauses sales before Coolify
+builds, and still has no terminal failure path.** Another failed build will
+leave the shop closed, and there is no longer a recovery workflow for it.
+Recovering from the next one means classifying the durable state and composing
+the primitives by hand, as was done here. The steps are recorded above.
