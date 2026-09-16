@@ -21,12 +21,15 @@ export default function HeroSiberia() {
         // (measured 573x479 at 1440x900, 471px down a 900px viewport) — which
         // is exactly why the reasoning is recorded here.
         //
-        // The page's LCP element is not an <img> at all. It is /background.webp,
-        // which paints as the bg-site layer on desktop and as the hero video's
-        // poster on a phone, and it is already preloaded from the document head
-        // with fetchPriority="high" (app/layout.tsx) — the strongest hint
-        // available. `priority` here would emit a *second* head preload, for a
-        // 620KB file, competing with it: measured on a throttled profile, that
+        // The page's LCP element is not this <img>. On desktop it is
+        // /background.webp painting as the bg-site layer; on a phone it is
+        // /hero-backdrop.webp, the hero square's still, which is full-width
+        // there. Both are already preloaded from the document head with
+        // fetchPriority="high" — background.webp site-wide from
+        // app/layout.tsx, hero-backdrop.webp from app/page.tsx, since only
+        // this route has that square. That is the strongest hint available.
+        // `priority` here would emit a *third* head preload competing with
+        // them: measured on a throttled profile, an extra high-priority image
         // moved background.webp's request from 587ms to 1813ms into the load.
         //
         // The right treatment for the second-largest image is to leave the

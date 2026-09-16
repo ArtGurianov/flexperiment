@@ -57,6 +57,40 @@ export default function Home() {
     // waiting for a video that was never there. It wraps the page rather than
     // sitting beside it so it can inert what it covers.
     <AssetPreloader>
+      {/* React hoists these into <head>, so the preload scanner sees them while
+          the document is still parsing. They live on this page and not in the
+          root layout because this is the only route that mounts a player;
+          paying for a connection and a 60KB script on /refund would be a
+          straight loss.
+
+          The chain they shorten is strictly serial and starts only after
+          hydration: the dynamic player chunk, then the API script it imports,
+          then the embed iframe, then the stream. Measured on the built export
+          without these, the API script was first requested at 2.5s and the
+          backdrop did not start playing until 6.3s — and every hop above was a
+          fresh connection to an origin this document had never contacted.
+
+          The script is preloaded rather than executed here: components/
+          kinescope/iframeApi.ts must stay the only thing that creates the tag,
+          because a tag that has already run does not fire `load` again and a
+          second one is how the old wrapper lost its player entirely. This just
+          means the tag it creates finds the bytes already in the cache. */}
+      <link rel="preconnect" href="https://player.kinescope.io" />
+      <link rel="preconnect" href="https://kinescope.io" />
+      <link
+        rel="preload"
+        as="script"
+        href="https://player.kinescope.io/latest/iframe.player.js"
+      />
+      {/* Frame 0 of the backdrop video, and the largest thing in the hero until
+          the player starts. Home-only for the same reason as the hints above. */}
+      <link
+        rel="preload"
+        as="image"
+        href="/hero-backdrop.webp"
+        fetchPriority="high"
+      />
+
       {/* Outside <main> on purpose: a navigation landmark nested inside the
           main landmark is not reachable as a site-level nav. Still the first
           flex child of the column, so nothing moves. */}

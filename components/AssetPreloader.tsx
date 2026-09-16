@@ -29,6 +29,12 @@ const IMAGE_ASSETS = [
   "/background.webp",
   // bg-pattern
   "/noize.webp",
+  // The hero square's still. Not a CSS background — it is a real <img> in the
+  // static HTML — but it is the one thing in that square until the player
+  // starts, and for reduced-motion and Save-Data visitors it is the only thing
+  // that will ever be there. Handing over before it has painted shows a hole
+  // exactly where the page's largest element is.
+  "/hero-backdrop.webp",
 ];
 
 /**
@@ -37,10 +43,14 @@ const IMAGE_ASSETS = [
  *
  * The overlay used to hold the entire page behind `bg.webm` reaching `canplay`
  * — a ~29MB remote file — with a 10s safety timeout as the only floor. That
- * inverted the critical path, and the gate is deliberately not a way back to
- * it: what a registrant reports is that its player exists and is initialised,
- * never that the video has buffered or started. The distinction is the whole
- * reason this is safe, and SAFETY_TIMEOUT_MS is the ceiling either way.
+ * inverted the critical path, and this is not a way back to it: a registrant
+ * reports that its video is playing, which for a short muted loop is early in
+ * its stream and not "fully buffered", and SAFETY_TIMEOUT_MS bounds the wait
+ * whatever happens.
+ *
+ * A registrant must also report failure. Waiting on an event that can never
+ * arrive is the one case where the ceiling is pure cost, and a blocked player
+ * script is not a rare shape.
  *
  * Nothing is waited for unless it registers, so pages without a registrant are
  * unaffected — and a registrant that never releases costs the safety timeout,
@@ -67,15 +77,27 @@ export function useLoaderGate() {
  *
  * This used to be 10s, because the gate also waited on a ~29MB remote
  * `bg.webm` buffering over the network — which put a media-readiness race in
- * front of the first paint of every visit, with a ten-second worst case.
+ * front of the first paint of every visit, with a ten-second worst case. It
+ * then spent a while at 2.5s, sized for a registrant that reported only that
+ * its player had been constructed.
  *
- * What is waited for now is two small same-origin images the document head has
- * already preloaded, plus whatever registers through the gate — and a
- * registrant reports initialisation, not buffering. The ceiling is sized for
- * that. A slow connection that cannot get there in time simply hands over
- * without it, which is the pre-gate behaviour rather than a failure.
+ * A registrant now reports that its video is on screen and running, which is a
+ * later and much more variable event, so the old ceiling fired before it on
+ * every measured load and the gate held nothing. Raising it is what makes the
+ * wait mean something — and it is affordable only because handing over on the
+ * ceiling is no longer a visible failure: the hero square carries the video's
+ * own first frame underneath, so a visitor who times out sees the same picture
+ * as one who does not, just not yet moving.
+ *
+ * It is still a ceiling and not a target, and the margin is thin. Measured
+ * against the built export over three loads, cached and not, the backdrop
+ * reached Playing at 3.6s, 3.9s and 3.9s — inside this, but not by much, and
+ * almost all of it is the provider's own boot rather than anything this
+ * repository can shorten. A slower connection will reach the ceiling instead.
+ * That is the trade being made deliberately: up to four seconds of loader to
+ * open the page onto a moving backdrop, and the still when it cannot.
  */
-const SAFETY_TIMEOUT_MS = 2500;
+const SAFETY_TIMEOUT_MS = 4000;
 /** Lets the bar reach 100% before the overlay fades, rather than cutting away. */
 const SETTLE_MS = 250;
 /** Announcement granularity for screen readers — see the live region below. */

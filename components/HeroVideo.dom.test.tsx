@@ -106,9 +106,17 @@ describe("HeroVideo", () => {
 describe("HeroBackgroundVideo", () => {
   const mountPlayer = () => render(<HeroBackgroundVideo videoId="background-id" />);
 
-  it("paints the local poster and configures a silent decorative player", () => {
+  it("paints the video's own first frame as the stand-in, not the page backdrop", () => {
     const { container } = mountPlayer();
+    // /background.webp is the site's cloud texture and has nothing to do with
+    // this video, so the handover from still to video was a visible cut from
+    // clouds to a stage. This asset is frame 0 of the same video, which makes
+    // the reveal below invisible however late it lands.
     expect(container.querySelector("img")).toHaveAttribute(
+      "src",
+      expect.stringContaining("hero-backdrop.webp"),
+    );
+    expect(container.querySelector("img")).not.toHaveAttribute(
       "src",
       expect.stringContaining("background.webp"),
     );
