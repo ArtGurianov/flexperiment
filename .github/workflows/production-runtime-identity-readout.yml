@@ -1,0 +1,109 @@
+name: Production runtime identity readout
+
+# Answers one question and changes nothing: which commit is each production
+# runtime surface actually running, and what does durable release state say.
+#
+# It exists because `production-deploy` can assert a runtime that was never
+# deployed — see docs/release/DEPLOY_POINTER_CONVERGENCE.md. Establishing the
+# truth needs credentials that live here and must not be copied anywhere else,
+# so the read happens inside the production environment and only non-secret
+# derived facts are reported.
+#
+# This is not a controller. It acquires no owner, pauses nothing, moves no ref,
+# calls no Coolify webhook and writes nothing to SQLite. `contents: read` and a
+# single authenticated GET are the whole of its power. It authorizes nothing
+# either: it reports, and a human decides.
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+# Shares the cutover group so a readout cannot observe state halfway through a
+# controlled mutation. It queues behind one rather than racing it.
+concurrency:
+  group: flexperiment-production-controlled-cutover
+  cancel-in-progress: false
+
+jobs:
+  readout:
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    env:
+      COMMERCE_RELEASE_CONTROL_TOKEN: ${{ secrets.COMMERCE_RELEASE_CONTROL_TOKEN }}
+      PUBLIC_API_URL: ${{ vars.PUBLIC_API_URL }}
+      FRONTEND_RELEASE_URL: https://flexperiment.ru/release.json
+      ADMIN_RELEASE_URL: https://admin.flexperiment.ru/release.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Read the mutable authorities
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin \
+            '+refs/heads/main:refs/remotes/origin/main' \
+            '+refs/heads/production-deploy:refs/remotes/origin/production-deploy' \
+            '+refs/heads/runtime-candidate:refs/remotes/origin/runtime-candidate'
+          {
+            echo "## Refs"
+            echo '```'
+            printf 'main               %s\n' "$(git rev-parse origin/main)"
+            printf 'runtime-candidate  %s\n' "$(git rev-parse origin/runtime-candidate)"
+            printf 'production-deploy  %s\n' "$(git rev-parse origin/production-deploy)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Each deployable states its own provenance from the SOURCE_COMMIT baked
+      # into it at build time. That is the artifact speaking, not the deployer
+      # reporting on its own work.
+      - name: Read what the public surfaces attest
+        run: |
+          set -euo pipefail
+          read_surface() {
+            curl --fail-with-body --silent --show-error \
+              --connect-timeout 5 --max-time 15 "$1" | jq -r '.source_commit // "unavailable"'
+          }
+          frontend="$(read_surface "$FRONTEND_RELEASE_URL" || echo unreachable)"
+          admin="$(read_surface "$ADMIN_RELEASE_URL" || echo unreachable)"
+          {
+            echo "## Public surfaces"
+            echo '```'
+            printf 'frontend  %s\n' "$frontend"
+            printf 'admin     %s\n' "$admin"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # One plain read. The response is never printed whole: only the fields
+      # below are emitted, so nothing incidental in it can leak into a log.
+      - name: Read durable release state and the commerce runtime
+        run: |
+          set -euo pipefail
+          http="$(curl --silent --show-error --connect-timeout 5 --max-time 20 \
+            --output status.json --write-out '%{http_code}' \
+            -H "Authorization: Bearer $COMMERCE_RELEASE_CONTROL_TOKEN" \
+            "$PUBLIC_API_URL/v1/internal/release-control/status")"
+          [[ "$http" == "200" ]] || { echo "READOUT_STATUS_HTTP_$http" >&2; exit 1; }
+
+          summary="$(jq -r '{
+            sales_paused, owner_release_id, owner_mode,
+            acquired_at, paused_at, reopened_at,
+            expected_source_commit: (.expected.source_commit // null),
+            commerce_source_commit: (.runtime.source_commit // null),
+            worker_source_commit: (.runtime.worker_source_commit // null),
+            worker_started_at: (.runtime.worker_started_at // null),
+            worker_observed_at: (.runtime.worker_observed_at // null)
+          }' status.json)"
+          rm -f status.json
+
+          {
+            echo "## Durable release state and commerce runtime"
+            echo '```json'
+            echo "$summary"
+            echo '```'
+            echo "_Reported, not asserted. Nothing here authorizes a promotion, a deploy or a ref move._"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "$summary"
