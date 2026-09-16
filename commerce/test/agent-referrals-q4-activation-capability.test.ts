@@ -297,6 +297,11 @@ describe("Q4 activation capability: atomic DORMANT to ACTIVE authority", () => {
       ".github/workflows/controlled-schema-candidate-publication.yml",
       ".github/workflows/controlled-schema-production-deploy.yml",
       ".github/workflows/controlled-topology-normalization.yml",
+      // Not a controller, and listed here only because this fence counts every
+      // workflow added since the baseline. It is workflow_dispatch-only with
+      // contents: read, acquires nothing and mutates nothing — membership in
+      // this list must not be read as authority.
+      ".github/workflows/production-runtime-identity-readout.yml",
     ]);
   });
 });
