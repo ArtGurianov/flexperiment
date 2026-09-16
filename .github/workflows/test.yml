@@ -85,3 +85,67 @@ jobs:
         run: pnpm admin:test:nginx
       - name: Reference Caddy deployment topology
         run: pnpm deploy:test:caddyfile
+
+  # Until this existed, nothing in CI built a deployable artifact, and the
+  # first thing to ever attempt it was the production deploy itself. That is
+  # how a9ea010 reached production with three images that could not be built:
+  # a patched dependency is an input to `pnpm install`, so the patch file had
+  # to be inside the image before any source was copied, and no Dockerfile
+  # copied it. Every check above passed, because none of them build an image.
+  #
+  # The invariant is not about patches. It is that every deployable Docker
+  # artifact of this exact revision is buildable, proved from a clean checkout
+  # before the revision can be published as provenance. This job is part of
+  # `Test` on purpose: generic publication accepts a successful `Test` run for
+  # an exact SHA as its evidence, so the chain reads
+  #   exact SHA -> tests -> real production image builds -> Test success
+  # rather than leaving the artifact first proved in Coolify.
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+
+      # The three Dockerfiles Coolify builds, with Coolify's own context and
+      # no target, so what passes here is what it will run. No registry login,
+      # no push, no production secrets: buildability is the whole claim.
+      #
+      # Layer cache speeds this up without weakening it. A cache key covers
+      # the digests of the files an instruction copies, so a context missing a
+      # file cannot be served from a run that had it — the exact failure above
+      # reproduces here rather than being cached over. The context is always
+      # the clean checkout, never the cache.
+      - name: Frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.frontend
+          push: false
+          build-args: SOURCE_COMMIT=${{ github.sha }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      - name: Admin image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.admin
+          push: false
+          build-args: SOURCE_COMMIT=${{ github.sha }}
+          cache-from: type=gha,scope=admin
+          cache-to: type=gha,mode=max,scope=admin
+
+      # docker-compose.commerce.yml declares this same context and Dockerfile
+      # for both `commerce` and `commerce-worker`; they share one image and
+      # differ only in `command`, so one build covers both. Dockerfile.commerce
+      # declares no build args of its own — the ones Coolify injects are
+      # runtime configuration it appends, and none are needed to build.
+      - name: Commerce image (also runs the worker)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.commerce
+          push: false
+          cache-from: type=gha,scope=commerce
+          cache-to: type=gha,mode=max,scope=commerce

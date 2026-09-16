@@ -40,28 +40,29 @@ done
 Expect `"videoFit":"cover"` in `ui`, and `"colors":{"primary":"#B7FF00"}` in
 `theme`, for both IDs.
 
-## Build evidence: the dependency is patched
+## Build evidence: the images are built in CI
 
-`patches/@kinescope__react-kinescope-player@0.5.4.patch` fixes the library's
-`Loader`, which otherwise reaches `handleJSLoad` during render — before the
-element it mounts into exists — and latches, so the player is never created at
-all. A build that silently drops the patch produces a page with zero player
-iframes and no error.
+`Test` builds all three production images — `Dockerfile.frontend`,
+`Dockerfile.admin` and `Dockerfile.commerce`, each with Coolify's own context
+— from a clean checkout, without a registry or production secrets.
+`commerce` and `commerce-worker` share one image and differ only in `command`,
+so one build covers both.
 
-Two consequences for publication:
+That job exists because of how the `a9ea010` deploy failed: the wrapper this
+surface used to depend on needed a dependency patch, a patched dependency is
+an input to `pnpm install`, and no Dockerfile copied the patch into the image.
+Every other check passed, because none of them built an image, and the first
+thing ever to attempt it was the production deploy — which had already
+advanced `production-deploy`.
 
-- **A release build must not reuse a `.next` cache.** Webpack keys the chunk on
-  the package identity, not its contents, so a rebuild after a patch change
-  serves the previous chunk. Build from `rm -rf .next out`, and treat a build
-  that did not do so as no evidence at all.
-- **Assert the fix reached the bundle**, not just the working tree:
+The wrapper and its patch are gone now, but the gap they exposed is the point:
+the successful `Test` run that generic publication accepts as provenance for
+an exact SHA now covers buildability of every deployable artifact of that SHA,
+not just its tests.
 
-```sh
-grep -ho 'componentDidMount=function(){this\.jsLoading()}' \
-  out/_next/static/chunks/*.js | head -1
-```
-
-An empty result means the patch did not make it into what ships.
+A local `docker build` remains a debugging convenience. It is not release
+evidence, and neither is a local `next build`, which cannot see a Docker layer
+at all.
 
 ## Acceptance checks on the deployed page
 

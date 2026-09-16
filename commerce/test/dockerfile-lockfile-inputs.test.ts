@@ -12,8 +12,11 @@ import { describe, expect, it } from "vitest";
  *
  * That is exactly how the 2026-09-16 production deploy of a9ea010 failed, on
  * all three services at once, having already advanced `production-deploy`.
- * Nothing in CI builds these images, so this is the only place the coupling
- * between the lockfile and the Dockerfiles is checked at all.
+ *
+ * `Test` now builds those images, which is the real proof. This stays as the
+ * cheap structural one: it names the coupling and fails in milliseconds with a
+ * message that says what to add, where an image build fails minutes later with
+ * a pnpm stack trace.
  */
 const REPO_ROOT = join(import.meta.dirname, "..", "..");
 
