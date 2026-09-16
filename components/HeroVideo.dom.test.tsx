@@ -32,6 +32,8 @@ vi.mock("@/hooks/usePrefersReducedMotion", () => ({
 import HeroBackgroundVideo from "./HeroBackgroundVideo";
 import HeroVideo from "./HeroVideo";
 
+const originalUserAgent = navigator.userAgent;
+
 type BackgroundProps = {
   videoId: string;
   autoPlay: boolean;
@@ -58,6 +60,10 @@ afterEach(() => {
   kinescope.setFullscreen.mockClear();
   motion.reduced = false;
   vi.restoreAllMocks();
+  Object.defineProperty(navigator, "userAgent", {
+    configurable: true,
+    value: originalUserAgent,
+  });
   delete (navigator as Navigator & { connection?: unknown }).connection;
 });
 
@@ -79,6 +85,47 @@ describe("HeroVideo", () => {
 
     act(() => props.onPlay());
     expect(screen.getByRole("button", { name: "Смотреть видео" })).toHaveAttribute("inert");
+  });
+
+  it("continues playback when fullscreen is rejected", () => {
+    kinescope.setFullscreen.mockRejectedValueOnce(new Error("denied"));
+    render(<HeroVideo />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Смотреть видео" }));
+    expect(kinescope.setFullscreen).toHaveBeenCalledWith(true);
+    expect(kinescope.play).toHaveBeenCalledOnce();
+  });
+
+  it("applies and restores Kinescope's iOS pseudo-fullscreen styles only for its iframe", () => {
+    Object.defineProperty(navigator, "userAgent", {
+      configurable: true,
+      value: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)",
+    });
+    const { container } = render(<HeroVideo />);
+    const frame = document.createElement("iframe");
+    frame.style.cssText = "width:640px;height:360px";
+    container.querySelector("section")!.append(frame);
+
+    act(() => {
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { type: "KINESCOPE_PLAYER_FULLSCREEN_CHANGE", value: true },
+        source: frame.contentWindow!,
+      }));
+    });
+    expect(frame.style.position).toBe("fixed");
+    expect(frame.style.width).toBe("100%");
+    expect(frame.dataset.kinescopeOriginalStyles).toBe("width: 640px; height: 360px;");
+
+    act(() => {
+      window.dispatchEvent(new MessageEvent("message", {
+        data: { type: "KINESCOPE_PLAYER_FULLSCREEN_CHANGE", value: false },
+        source: frame.contentWindow!,
+      }));
+    });
+    expect(frame.style.position).toBe("");
+    expect(frame.style.width).toBe("640px");
+    expect(frame.style.height).toBe("360px");
+    expect(frame.dataset.kinescopeOriginalStyles).toBeUndefined();
   });
 });
 
