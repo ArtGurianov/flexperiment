@@ -4,7 +4,7 @@ import Link from "next/link";
 import Footer from "@/components/Footer";
 import Navbar from "@/components/Navbar";
 import PaymentNotice from "@/components/PaymentNotice";
-import ScheduleView from "@/components/ScheduleView";
+import LiveScheduleView from "@/components/LiveScheduleView";
 import Section, { SectionLabel } from "@/components/Section";
 import { OPEN_GRAPH_BASE, TWITTER_CARD } from "@/lib/seo/site";
 import { toScheduleViewModel } from "@/lib/seo/schedule-view-model";
@@ -88,7 +88,7 @@ export default function SchedulePage() {
 
           <SectionLabel className="mt-[9cqw] mb-[5cqw]">Расписание</SectionLabel>
 
-          <ScheduleView model={model} />
+          <LiveScheduleView initialModel={model} />
         </Section>
       </main>
 

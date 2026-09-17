@@ -83,6 +83,31 @@ export type ScheduleViewModel = {
   readonly upcomingCount: number;
 };
 
+/**
+ * The venue's two presentations, derived in one place.
+ *
+ * Exported because live reconciliation re-derives these from a fresh Commerce
+ * occurrence, and a second copy of the rule would let the same venue read one
+ * way before revalidation and another after — a visible flicker that is also a
+ * correctness question ("did the venue change, or just the wording?").
+ */
+export const venuePresentation = (venue: {
+  status: "CONFIRMED" | "TO_BE_ANNOUNCED";
+  name: string | null;
+  address: string | null;
+}): { venueLabel: string; venueDisclosure: string } =>
+  venue.status === "CONFIRMED" && venue.name
+    ? {
+        venueLabel: venue.name,
+        venueDisclosure: venue.address
+          ? `${venue.name}: ${venue.address}`
+          : "Площадка уточняется. Адрес сообщим участникам по email.",
+      }
+    : {
+        venueLabel: "Площадка уточняется",
+        venueDisclosure: "Площадка уточняется. Адрес сообщим участникам по email.",
+      };
+
 const toEventView = (record: PublishedRecord): ScheduleEventView => ({
   id: record.id,
   slug: record.event_slug,
@@ -91,17 +116,10 @@ const toEventView = (record: PublishedRecord): ScheduleEventView => ({
   startsAt: record.starts_at,
   dateLabel: occurrenceDateLabelInZone(record.starts_at, record.timezone),
   timeLabel: occurrenceTimeLabelInZone(record.starts_at, record.timezone),
-  venueLabel:
-    record.venue.status === "CONFIRMED" && record.venue.name
-      ? record.venue.name
-      : "Площадка уточняется",
+  ...venuePresentation(record.venue),
   priceLabel: formatRubles(record.price_kopecks),
   departedLabel: isDeparted(record) ? departureLabel(record.departed) : null,
   archivalNotice: isDeparted(record) ? departureNotice(record.departed) : null,
-  venueDisclosure:
-    record.venue.status === "CONFIRMED" && record.venue.name && record.venue.address
-      ? `${record.venue.name}: ${record.venue.address}`
-      : "Площадка уточняется. Адрес сообщим участникам по email.",
   // As built, everything published was in the tour. Hydration may downgrade it.
   listing: "ACTIONABLE",
 });

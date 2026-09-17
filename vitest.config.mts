@@ -33,7 +33,7 @@ export default defineConfig({
           include: nodeInclude,
           // A .dom.test.tsx picked up by the widened admin glob above would
           // otherwise run in both environments.
-          exclude: [...configDefaults.exclude, "apps/admin/**/*.dom.test.tsx", "components/**/*.dom.test.tsx"],
+          exclude: [...configDefaults.exclude, "apps/admin/**/*.dom.test.tsx", "components/**/*.dom.test.tsx", "hooks/**/*.dom.test.tsx"],
         },
       },
       {
@@ -57,7 +57,15 @@ export default defineConfig({
         test: {
           name: "jsdom",
           environment: "jsdom",
-          include: ["apps/admin/**/*.dom.test.tsx", "components/**/*.dom.test.tsx"],
+          // hooks/ is included because a client hook's test belongs beside it,
+          // and a *.dom.test.tsx outside every project's glob belongs to no
+          // project and silently never runs — the same trap that let the
+          // event/city social-image defect ship untested.
+          include: [
+            "apps/admin/**/*.dom.test.tsx",
+            "components/**/*.dom.test.tsx",
+            "hooks/**/*.dom.test.tsx",
+          ],
           setupFiles: ["./vitest.setup.test-temp-run-worker.ts", "./vitest.setup.test-db-snapshot-worker.ts", "./vitest.setup.dom.ts"],
         },
       },
