@@ -24,9 +24,16 @@ const VALUE = "mt-[1cqw] text-[clamp(1rem,4.2cqw,1.35rem)] leading-snug text-bon
 export default function EventView({
   event,
   headingLevel = "h1",
+  showHeading = true,
 }: {
   event: EventViewModel;
   headingLevel?: "h1" | "h2";
+  /**
+   * False inside the drawer, whose own title already names the event.
+   * Rendering both put «Санкт-Петербург, 25 сентября 2026 г.» on screen twice,
+   * once as the sheet title and again as the first line of its body.
+   */
+  showHeading?: boolean;
 }) {
   const Heading = headingLevel;
   const archived = event.archivalNotice !== null;
@@ -38,12 +45,14 @@ export default function EventView({
 
   return (
     <>
-      <Heading className="font-display text-[clamp(1.5rem,7cqw,2.4rem)] leading-tight text-acid [text-shadow:2px_3px_0_var(--color-shadow)]">
-        Мастер-класс FLEXPERIMENT
-        <span className="mt-[2cqw] block text-bone">
-          {event.cityTitle}, {event.dateLabel}
-        </span>
-      </Heading>
+      {showHeading ? (
+        <Heading className="font-display text-[clamp(1.5rem,7cqw,2.4rem)] leading-tight text-acid [text-shadow:2px_3px_0_var(--color-shadow)]">
+          Мастер-класс FLEXPERIMENT
+          <span className="mt-[2cqw] block text-bone">
+            {event.cityTitle}, {event.dateLabel}
+          </span>
+        </Heading>
+      ) : null}
 
       {archived || unavailable ? (
         <p

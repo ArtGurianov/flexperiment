@@ -271,6 +271,10 @@ export default function ModalRouteController({
       <DialogDrawer
         title={route.kind === "event" && event ? `${event.cityTitle}, ${event.dateLabel}` : "ГОРОДА × ДАТЫ"}
         isOpen={route.kind !== "none"}
+        // Identity of the content, so the shared shell resets its scroll when
+        // it swaps schedule <-> event instead of opening the new view at the
+        // old one's offset.
+        scrollResetKey={route.kind === "event" ? route.slug : route.kind}
         onClose={close}
         onBack={route.kind === "event" ? back : undefined}
       >
@@ -282,7 +286,7 @@ export default function ModalRouteController({
             // second data array rides in the home payload and no fetch precedes
             // first paint.
             event ? (
-              <EventView event={event} headingLevel="h2" />
+              <EventView event={event} headingLevel="h2" showHeading={false} />
             ) : (
               // The slug is not in the published set. Only reachable if the URL
               // was hand-edited; the real page for a published slug is always a

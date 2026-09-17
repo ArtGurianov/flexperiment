@@ -1,7 +1,7 @@
 "use client";
 
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { Drawer as DrawerPrimitive } from "vaul";
 
 import { useBreakpoint } from "@/hooks/useBreakpoint";
@@ -15,18 +15,44 @@ export interface DialogDrawerProps {
   onClose: () => void;
   /** Returns from a nested dialog view to its parent view. */
   onBack?: () => void;
+  /**
+   * Changes whenever the drawer swaps to different content.
+   *
+   * The shell is reused across schedule → event, so its scroll container
+   * persists: without this, opening an event after scrolling the schedule
+   * showed the event already scrolled to a position that belonged to a
+   * different document. Resetting on every change is the deliberate choice —
+   * restoring the schedule's own offset on the way back would be a nicety, but
+   * it needs per-route storage and is not what correctness requires.
+   */
+  scrollResetKey?: string;
   /** Blocks Escape, outside-click and drag dismissal — for use mid-payment,
    *  where an accidental tap shouldn't discard an in-flight transaction. */
   preventOutsideClose?: boolean;
 }
 
 const SURFACE = "flex flex-col bg-ink/90 text-bone";
-const TITLE = "text-center font-display text-[1.6rem] leading-none text-acid";
+/**
+ * px-12 is load-bearing, not decoration. Back (left-4) and Close (right-4) are
+ * absolutely positioned, so a centred title with no horizontal inset runs
+ * underneath them the moment it wraps — which it does for an event title like
+ * «Санкт-Петербург, 25 сентября 2026 г.». The inset reserves the control
+ * gutters on both sides; leading-tight replaces leading-none so a wrapped title
+ * does not collide with itself.
+ */
+const TITLE = "px-12 text-center font-display text-[1.6rem] leading-tight text-acid";
 const CLOSE =
   "absolute top-4 right-4 rounded-full p-1 text-acid transition-colors hover:bg-acid hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid";
 /** overscroll-contain stops a flick past the end of the body from chaining to
  *  the page behind the modal, which on iOS also drags the whole document. */
 const BODY = "min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain";
+
+/** Resets the drawer body's scroll whenever its content identity changes. */
+function useBodyScrollReset(scrollResetKey: string | undefined) {
+  const body = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (body.current) body.current.scrollTop = 0; }, [scrollResetKey]);
+  return body;
+}
 
 function CloseIcon() {
   return (
@@ -52,7 +78,9 @@ function DialogVariant({
   onClose,
   onBack,
   preventOutsideClose,
+  scrollResetKey,
 }: DialogDrawerProps) {
+  const bodyRef = useBodyScrollReset(scrollResetKey);
   const block = preventOutsideClose
     ? (event: Event | KeyboardEvent) => event.preventDefault()
     : undefined;
@@ -84,7 +112,7 @@ function DialogVariant({
             {`Диалог: ${title}`}
           </DialogPrimitive.Description>
 
-          <div className={BODY}>{children}</div>
+          <div ref={bodyRef} className={BODY}>{children}</div>
 
           <DialogPrimitive.Close aria-label="Закрыть" className={CLOSE}>
             <CloseIcon />
@@ -106,7 +134,9 @@ function DrawerVariant({
   onClose,
   onBack,
   preventOutsideClose,
+  scrollResetKey,
 }: DialogDrawerProps) {
+  const bodyRef = useBodyScrollReset(scrollResetKey);
   return (
     <DrawerPrimitive.Root
       open={isOpen}
@@ -144,7 +174,7 @@ function DrawerVariant({
 
           {/* data-vaul-no-drag keeps a scroll gesture inside the body from
               being read as a drag-to-dismiss. */}
-          <div data-vaul-no-drag className={cn("mt-4", BODY)}>
+          <div ref={bodyRef} data-vaul-no-drag className={cn("mt-4", BODY)}>
             {children}
           </div>
 
