@@ -117,9 +117,9 @@ const STATIC_ROUTES = ["index.html", "404.html", "schedule.html", ...LEGAL_SLUGS
 
 const snapshotRoutes = (): readonly string[] => {
   const records = publishableRecords(readSnapshotFile("data/seo/occurrences.v1.json"));
-  const events = records.map((record) => `events/${record.event_slug}.html`);
-  const cities = [...new Set(records.map((record) => record.city))].map((city) => `cities/${city}.html`);
-  return [...events, ...cities];
+  // Only event pages are dynamic now; /schedule is a fixed route and lives in
+  // STATIC_ROUTES, and the city layer is retired.
+  return records.map((record) => `events/${record.event_slug}.html`);
 };
 
 const ALL_ROUTES = [...STATIC_ROUTES, ...snapshotRoutes()];
@@ -148,9 +148,7 @@ describe("the social card", () => {
     // it.each above would still pass while proving nothing about event and
     // city pages. This fails instead.
     const records = publishableRecords(readSnapshotFile("data/seo/occurrences.v1.json"));
-    expect(snapshotRoutes().length).toBe(
-      records.length + new Set(records.map((record) => record.city)).size,
-    );
+    expect(snapshotRoutes().length).toBe(records.length);
     for (const route of snapshotRoutes()) expect(exportExists(route), route).toBe(true);
   });
 
