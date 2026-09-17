@@ -40,6 +40,18 @@ type ParticipantAgeBand = "ADULT" | "MINOR_14_17" | "MINOR_UNDER_14";
 type Props = {
   onViewChange: (view: "booking" | "city-interest") => void;
   onBookingTitle: (title: string) => void;
+  /**
+   * The occurrence the visitor has ALREADY chosen, by navigating to its own
+   * URL. When set, the catalogue is skipped and booking opens for exactly this
+   * id — never for any other.
+   *
+   * This is a second explicit-selection entry point, not an auto-selection.
+   * The catalogue path below still starts with an empty selection and waits for
+   * a click, which is the property commerce/test/email-templates.test.ts
+   * guards: it forbids picking the first *available* occurrence off a list
+   * nobody chose from. Arriving at /events/<slug> is a choice.
+   */
+  initialOccurrenceId?: string;
 };
 
 const attemptKey = (quoteId: string) => `fx_checkout_attempt:v1:${quoteId}`;
@@ -57,7 +69,7 @@ function useSafeSessionStorage() {
   };
 }
 
-export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
+export default function CheckoutFlow({ onViewChange, onBookingTitle, initialOccurrenceId }: Props) {
   const router = useRouter();
   const storage = useSafeSessionStorage();
   const [occurrences, setOccurrences] = useState<Occurrence[]>([]);
@@ -89,6 +101,28 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
     CHECKOUT_DISCLOSURE: "информации об участии",
   } as const;
 
+  /**
+   * The one way booking is entered, from either explicit-selection path: a
+   * click in the catalogue, or arrival at an occurrence's own URL. Hoisted
+   * above the tour effect so both call it rather than each resetting a
+   * slightly different subset of the form.
+   */
+  const openBooking = useCallback((occurrence: Occurrence) => {
+    setOccurrenceId(occurrence.id);
+    setPromoCode("");
+    setAppliedPromoCode(null);
+    setQuote(null);
+    setCustomerAdult(false);
+    setParticipantAgeBand("");
+    setMinorRepresentative(false);
+    setOffer(false);
+    setConsent(false);
+    setMessage(null);
+    onBookingTitle(`${occurrence.city_title} × ${occurrenceDateLabel(occurrence.starts_at)}`);
+    setView("booking");
+    onViewChange("booking");
+  }, [onBookingTitle, onViewChange]);
+
   useEffect(() => {
     let current = true;
     fetch(commerceApiUrl("/v1/public/tour"), { cache: "no-store" })
@@ -104,6 +138,28 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
           .map((city) => city.slug);
         setScheduledCitySlugs([...new Set(scheduledCities)]);
         setCatalogState("ready");
+        // Without an explicit initial selection nothing below runs, and the
+        // catalogue path stays exactly as it was: loaded list, empty selection,
+        // no quote until the visitor picks.
+        if (!initialOccurrenceId) return;
+        const chosen = available.find((item) => item.id === initialOccurrenceId);
+        if (chosen) { openBooking(chosen); return; }
+        // The chosen occurrence is not in the live tour. Do NOT fall back to the
+        // catalogue silently and do NOT substitute another occurrence — the
+        // visitor asked for this one. Say so, and ask Commerce about that exact
+        // id, which unlike tour() is not filtered to SCHEDULED-and-future.
+        setMessage("Актуальное состояние этой даты изменилось.");
+        fetch(commerceApiUrl(`/v1/public/occurrences/${encodeURIComponent(initialOccurrenceId)}`), { cache: "no-store" })
+          .then((response) => response.ok ? response.json() as Promise<Occurrence> : Promise.reject(new Error("OCCURRENCE_UNAVAILABLE")))
+          .then((occurrence) => {
+            if (!current || occurrence.id !== initialOccurrenceId) return;
+            setOccurrences((items) => items.some((item) => item.id === occurrence.id) ? items : [...items, occurrence]);
+            openBooking(occurrence);
+            setMessage("Актуальное состояние этой даты изменилось.");
+          })
+          // Still no substitution: the visitor stays in the catalogue with the
+          // message above, free to choose something else themselves.
+          .catch(() => {});
       })
       .catch(() => current && setCatalogState("error"))
       .finally(() => current && setLoading(false));
@@ -112,7 +168,7 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
       .then((data: { occurrence_notifications_available?: boolean }) => current && setOccurrenceNotificationsAvailable(data.occurrence_notifications_available === true))
       .catch(() => current && setOccurrenceNotificationsAvailable(false));
     return () => { current = false; };
-  }, []);
+  }, [initialOccurrenceId, openBooking]);
 
   const refreshOccurrenceState = useCallback(async (id: string, options?: { preserveMessage?: boolean }) => {
     setQuote(null); setCustomerAdult(false); setMinorRepresentative(false); setOffer(false); setConsent(false);
@@ -171,21 +227,7 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
     }
   };
 
-  const showBooking = (occurrence: Occurrence) => {
-    setOccurrenceId(occurrence.id);
-    setPromoCode("");
-    setAppliedPromoCode(null);
-    setQuote(null);
-    setCustomerAdult(false);
-    setParticipantAgeBand("");
-    setMinorRepresentative(false);
-    setOffer(false);
-    setConsent(false);
-    setMessage(null);
-    onBookingTitle(`${occurrence.city_title} × ${occurrenceDateLabel(occurrence.starts_at)}`);
-    setView("booking");
-    onViewChange("booking");
-  };
+  const showBooking = openBooking;
 
   const showCityInterest = () => {
     setView("city-interest");
@@ -245,6 +287,12 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle }: Props) {
 
   if (view === "catalog") return (
     <div className="flex w-full flex-col gap-4 font-mono text-sm">
+      {/* The catalogue had no way to say anything, so a message set while this
+          view is showing was invisible — which turned "the date you asked for
+          is not in the live tour" into a silent fallback to the list. Rendered
+          here, the visitor is told why they are looking at the catalogue
+          instead of the date they chose. */}
+      {message ? <p role="status" className="border border-acid px-4 py-3 text-acid">{message}</p> : null}
       {catalogState === "loading" ? <p role="status" className="border border-bone/50 px-4 py-5 text-bone/70 text-center">Загрузка списка</p> : null}
       {catalogState === "error" ? <p role="status" className="border border-bone/50 px-4 py-5 text-bone/70 text-center">Произошла ошибка. Перезагрузите страницу</p> : null}
       {catalogState === "ready" && !occurrences.length ? <p role="status" className="border border-bone/50 px-4 py-5 text-bone/70 text-center">Запись на ближайшие даты пока не открыта.</p> : null}

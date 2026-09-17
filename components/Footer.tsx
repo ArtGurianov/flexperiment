@@ -1,4 +1,4 @@
-import PaymentCta from "@/components/PaymentCta";
+import ScheduleLink from "@/components/ScheduleLink";
 import AnalyticsSettingsButton from "@/components/AnalyticsSettingsButton";
 import Link from "next/link";
 import { cn } from "@/lib/cn";
@@ -50,9 +50,9 @@ export default function Footer({ className }: { className?: string }) {
         >
           {/* text-[1em] rather than the CTA's own sizing so the button tracks
               the footer's clamp instead of introducing a third type step. */}
-          <PaymentCta className="mb-1 border-2 px-2 py-1.5 text-[1em]">
+          <ScheduleLink className="mb-1 border-2 px-2 py-1.5 text-[1em]">
             {BOOKING_LABEL}
-          </PaymentCta>
+          </ScheduleLink>
 
           {SITE_LINKS.map(({ label, href }) => (
             <a key={href} href={href} className={LINK}>

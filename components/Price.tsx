@@ -2,7 +2,7 @@ import Image from "next/image";
 
 import Section, { SectionLabel } from "@/components/Section";
 import price from "@/public/price.webp";
-import PaymentCta from "./PaymentCta";
+import ScheduleLink from "@/components/ScheduleLink";
 
 /**
  * The price section, restored to its original composition.
@@ -40,11 +40,13 @@ export const Price = () => {
       </p>
 
       <div className="flex justify-center">
-        {/* Deliberately not full width — the CTA's narrowness against the
-            near-edge-to-edge accordion below is what carries the composition. */}
-        <PaymentCta className="w-fit max-w-full px-[6cqw] text-[clamp(1.25rem,6cqw,2.25rem)] mt-6">
+        {/* A real <a href="/schedule">, intercepted into a drawer on the home
+            page and ordinary navigation everywhere else. Deliberately not full
+            width — the CTA's narrowness against the near-edge-to-edge accordion
+            below is what carries the composition. */}
+        <ScheduleLink className="w-fit max-w-full px-[6cqw] text-[clamp(1.25rem,6cqw,2.25rem)] mt-6">
           Забронировать место
-        </PaymentCta>
+        </ScheduleLink>
       </div>
     </Section>
   );

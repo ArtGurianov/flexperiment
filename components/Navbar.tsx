@@ -1,5 +1,5 @@
 import CtaButton from "@/components/CtaButton";
-import PaymentCta from "@/components/PaymentCta";
+import ScheduleLink from "@/components/ScheduleLink";
 import { BOOKING_LABEL, SITE_LINKS } from "@/lib/navigation";
 
 // The floor used to be 0.62rem, which resolved to 9.9px on a 320px phone —
@@ -35,9 +35,9 @@ export default function Navbar() {
           </CtaButton>
         ))}
 
-        <PaymentCta className={`w-auto border-2 px-2 ${NAV_TYPE}`}>
+        <ScheduleLink className={`w-auto border-2 px-2 ${NAV_TYPE}`}>
           {BOOKING_LABEL}
-        </PaymentCta>
+        </ScheduleLink>
       </nav>
     </div>
   );

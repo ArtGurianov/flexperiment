@@ -76,7 +76,12 @@ export default function EventBooking({ occurrenceId }: { occurrenceId: string })
         <>
           {live?.purchase_status === "AVAILABLE" && <p role="status" className="mb-[4cqw] border border-bone/50 px-[4cqw] py-[3cqw] text-center text-[clamp(0.9rem,3.5cqw,1.1rem)] text-bone/80">{availabilityAnnouncement(live.availability_status)}</p>}
           <div className="flex justify-center">
-            <PaymentCta className="w-fit max-w-full px-[6cqw] text-[clamp(1.2rem,5.5cqw,2rem)]">
+            {/* The occurrence is already chosen — this opens booking for it,
+                not the catalogue the visitor just came from. */}
+            <PaymentCta
+              occurrenceId={occurrenceId}
+              className="w-fit max-w-full px-[6cqw] text-[clamp(1.2rem,5.5cqw,2rem)]"
+            >
               Забронировать место
             </PaymentCta>
           </div>
