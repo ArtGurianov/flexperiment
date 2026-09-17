@@ -30,6 +30,11 @@ export default function EventView({
 }) {
   const Heading = headingLevel;
   const archived = event.archivalNotice !== null;
+  // A successful live read that did not return this occurrence. Distinct from
+  // archival: absence from tour() is ambiguous — it filters to SCHEDULED and
+  // future — so this says only that booking is not available right now, never
+  // that the event was cancelled.
+  const unavailable = !archived && event.listing === "NOT_IN_LIVE_TOUR";
 
   return (
     <>
@@ -40,12 +45,17 @@ export default function EventView({
         </span>
       </Heading>
 
-      {archived ? (
-        <p className="mt-[5cqw] border border-bone/50 px-[4cqw] py-[3cqw] text-[clamp(0.9rem,3.5cqw,1.1rem)] text-bone/80">
+      {archived || unavailable ? (
+        <p
+          role={unavailable ? "status" : undefined}
+          className="mt-[5cqw] border border-bone/50 px-[4cqw] py-[3cqw] text-[clamp(0.9rem,3.5cqw,1.1rem)] text-bone/80"
+        >
           {/* The page stays live rather than 404ing: this URL has been indexed,
               shared and linked, and a visitor arriving on it deserves an
               answer. What it must not do is look like an event still on sale. */}
-          {event.archivalNotice}
+          {archived
+            ? event.archivalNotice
+            : "Актуальное состояние этой даты изменилось. Запись сейчас недоступна."}
         </p>
       ) : null}
 
@@ -90,8 +100,11 @@ export default function EventView({
       {/* The live panel is mounted only for a date still in the tour. For an
           archived one the notice above is the whole answer, and hydrating a
           booking panel whose endpoint is known to 404 would leave a CTA up
-          permanently — see EventBooking. */}
-      {archived ? null : <EventBooking occurrenceId={event.id} />}
+          permanently — see EventBooking. The same applies once a successful
+          live read has stopped returning the occurrence: reconciliation already
+          decided it is not actionable, so offering a booking CTA would
+          contradict the model that produced this page. */}
+      {archived || unavailable ? null : <EventBooking occurrenceId={event.id} />}
     </>
   );
 }

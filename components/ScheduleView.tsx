@@ -66,7 +66,9 @@ export default function ScheduleView({ model }: { model: ScheduleViewModel }) {
 
   return (
     <div className="grid gap-[10cqw]">
-      {model.cities.map((city) => (
+      {model.cities.map((city) => {
+        const actionable = city.upcoming.filter((event) => event.listing === "ACTIONABLE");
+        return (
         <section key={city.slug} id={city.slug} className="scroll-mt-16">
           {/* The id is the anchor target for /schedule#<city>, which is where
               the retired /cities/<city> URLs redirect. */}
@@ -74,9 +76,17 @@ export default function ScheduleView({ model }: { model: ScheduleViewModel }) {
             {city.title}
           </h2>
 
-          {city.upcoming.length > 0 ? (
+          {/* Only ACTIONABLE dates are advertised. A record the live tour no
+              longer returns keeps its page and its permanent URL, but it has
+              stopped being a date anyone can book, so offering it here under
+              «Подробности и запись» would be an invitation the checkout cannot
+              honour. It is not moved to «Прошедшие и отменённые» either: the
+              reason for its absence is unknown, and calling it cancelled would
+              assert something only the generator's per-id re-fetch could
+              establish. */}
+          {actionable.length > 0 ? (
             <ul className="mt-[5cqw] grid gap-[4cqw]">
-              {city.upcoming.map((event) => (
+              {actionable.map((event) => (
                 <li key={event.id}>
                   <EventCard event={event} action="Подробности и запись" />
                 </li>
@@ -103,7 +113,8 @@ export default function ScheduleView({ model }: { model: ScheduleViewModel }) {
             </>
           ) : null}
         </section>
-      ))}
+        );
+      })}
     </div>
   );
 }

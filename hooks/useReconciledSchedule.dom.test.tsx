@@ -70,6 +70,33 @@ describe("useReconciledSchedule", () => {
     expect(models.at(-1)).toEqual(initial());
   });
 
+  it("preserves an earlier correction when a later read fails", async () => {
+    // The no-revert consequence, stated explicitly: "snapshot stands" is true
+    // only until the first success. Afterwards a failing read must not replace
+    // a value known to be newer with one known to be older.
+    const live = publicOccurrence({ id: seoOccurrence().id, price_kopecks: 999900 });
+    let succeed = true;
+    global.fetch = vi.fn(async () =>
+      succeed
+        ? ({ ok: true, json: async () => ({ cities: [live] }) } as Response)
+        : ({ ok: false, json: async () => ({}) } as Response),
+    ) as unknown as typeof fetch;
+
+    const models: { cities: { upcoming: { priceLabel: string }[] }[] }[] = [];
+    const flat = (value: string) => value.replace(/\s+/g, " ");
+    const { rerender } = render(<Probe enabled onModel={(m) => models.push(m as never)} />);
+    await waitFor(() => expect(flat(models.at(-1)!.cities[0].upcoming[0].priceLabel)).toContain("9 999"));
+
+    // Close, then reopen with Commerce now failing.
+    succeed = false;
+    rerender(<Probe enabled={false} onModel={(m) => models.push(m as never)} />);
+    await new Promise((r) => setTimeout(r, 10));
+    rerender(<Probe enabled onModel={(m) => models.push(m as never)} />);
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(flat(models.at(-1)!.cities[0].upcoming[0].priceLabel)).toContain("9 999");
+  });
+
   it("reads once per flow, not once per transition, and re-arms after a close", async () => {
     const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({ cities: [] }) }) as Response);
     global.fetch = fetchMock as unknown as typeof fetch;

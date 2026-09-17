@@ -22,9 +22,16 @@ import {
  * The published snapshot is rendered immediately and is never waited on: a
  * drawer opens from static data in the same frame as the click. A single
  * `/v1/public/tour` read then runs alongside, and if it succeeds the
- * presentation is reconciled. If it fails, or was never attempted, the snapshot
- * stands — see reconcileSchedule, where `null` means "no successful read"
- * rather than "the tour is empty".
+ * presentation is reconciled.
+ *
+ * A failed read leaves THE CURRENT PRESENTATION unchanged — which is the
+ * snapshot only until the first success. After a flow has been reconciled,
+ * closed and reopened, a failing second read preserves the correction the
+ * visitor has already seen rather than reverting to older published data.
+ * Reverting would be strictly worse: it would replace a value known to be
+ * newer with one known to be older, on the strength of a request that failed.
+ * See reconcileSchedule, where `null` means "no successful read" rather than
+ * "the tour is empty".
  *
  * The brief pre-reconciliation state is the intended contract, not a defect.
  * The snapshot is valid publication state; live Commerce corrects mutable
@@ -59,9 +66,10 @@ export function useReconciledSchedule(
 
   useEffect(() => {
     if (!enabled) {
-      // Flow closed: arm the next activation. The model itself is left alone —
-      // reverting to the snapshot on close would undo a correction the visitor
-      // has already seen.
+      // Flow closed: arm the next activation, and nothing else. The model is
+      // deliberately left where it is — reverting to the snapshot would undo a
+      // correction the visitor has already seen, and the re-arm concerns only
+      // the right to make a new request.
       attempted.current = false;
       return;
     }
