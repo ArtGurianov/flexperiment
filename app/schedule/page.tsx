@@ -69,7 +69,15 @@ export default function SchedulePage() {
         tabIndex={-1}
         className="flex flex-1 flex-col overflow-x-clip outline-none"
       >
-        <Section className="pb-[10cqw]">
+        {/* pt-14 clears the Navbar. That bar is a sticky ZERO-HEIGHT wrapper
+            (components/Navbar.tsx) — it reserves no strip and deliberately
+            floats over whatever follows, which is right for the home page's
+            hero artwork and wrong for a text page, where Section's default
+            py-10 left the back link sitting under it. 14 is the same 3.5rem
+            SECTION_SHELL already uses for `scroll-mt-14`, the constant this
+            codebase uses for exactly this clearance. The legal pages avoid the
+            problem only by rendering no Navbar at all. */}
+        <Section className="pt-14 pb-[10cqw]">
           <Link
             href="/"
             className="mb-[6cqw] inline-block text-[clamp(0.8rem,3cqw,1rem)] text-acid underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid"

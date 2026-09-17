@@ -138,8 +138,23 @@ export default function PaymentCta({
         <DialogDrawer
           title={view === "city-interest" ? "Не нашли свой город?" : view === "booking" ? bookingTitle ?? "ГОРОДА × ДАТЫ" : "ГОРОДА × ДАТЫ"}
           isOpen={isOpen}
+          // Opaque, unlike the shared bg-ink/90 surface. This dialog is the top
+          // of the stack: opened from an event drawer it sits on ANOTHER
+          // dialog, and at 90% the date, price and headings underneath read
+          // straight through a payment form as a double exposure. The overlay
+          // still dims what is behind, so "there is a page under this" survives
+          // — only the see-through does not.
+          className="bg-ink"
           onClose={close}
-          onBack={view ? backToCities : undefined}
+          // No Back for the single-occurrence entry. `backToCities` remounts
+          // CheckoutFlow, whose tour effect immediately re-opens booking for
+          // `initialOccurrenceId` — so the control rendered, was announced, and
+          // did nothing. There is no catalogue behind this entry point to
+          // return to: the visitor chose the date by navigating to its URL, and
+          // the way out is Close, which returns them to it. The catalogue is
+          // /schedule, reached by ScheduleLink, which is the whole point of
+          // splitting the two.
+          onBack={view && !(occurrenceId && view === "booking") ? backToCities : undefined}
         >
           <CheckoutFlow key={flowKey} onViewChange={setView} onBookingTitle={setBookingTitle} initialOccurrenceId={occurrenceId} />
         </DialogDrawer>
