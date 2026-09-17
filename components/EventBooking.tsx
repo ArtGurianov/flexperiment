@@ -18,7 +18,7 @@ import { availabilityAnnouncement, canRequestCheckout, purchaseStatusAnnouncemen
  * it after a cancellation freed a seat, and one that said "есть места" would
  * keep saying it after the last one went.
  *
- * So the page server-renders every durable fact (EventFacts) and this fetches
+ * So EventView server-renders every durable fact and this fetches
  * the volatile ones on mount. Until the answer arrives the booking CTA is shown
  * unconditionally — it opens the checkout dialog, which does its own
  * authoritative check, so an optimistic CTA can never sell a seat that is not
@@ -26,10 +26,10 @@ import { availabilityAnnouncement, canRequestCheckout, purchaseStatusAnnouncemen
  * a spinner.
  *
  * That optimism is only safe for a date still in the public tour, which is why
- * the event page mounts this ONLY for a live record. For a departed one — a
- * WITHDRAWN tombstone especially, where the endpoint below is known to answer
- * 404 — the swallowed failure would leave the CTA up permanently. Those render
- * EventArchivalNotice instead.
+ * EventView mounts this ONLY when the view model carries no archivalNotice. For
+ * a departed record — a WITHDRAWN tombstone especially, where the endpoint
+ * below is known to answer 404 — the swallowed failure would leave the CTA up
+ * permanently. Those render the archival banner and no booking panel.
  */
 type LiveState = {
   purchase_status: PurchaseStatus;

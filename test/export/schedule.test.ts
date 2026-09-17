@@ -93,3 +93,43 @@ describe("the home page's price section", () => {
     expect(priceImg).not.toContain("aria-hidden");
   });
 });
+
+describe("the home page's overlay boundary", () => {
+  const html = readExport("index.html");
+  const body = html.slice(html.indexOf("<body"), html.indexOf("</body>"));
+  /** The rendered DOM only — RSC payload scripts stripped. */
+  const dom = body.replace(/<script[\s\S]*?<\/script>/g, " ");
+
+  /**
+   * The line the whole architecture rests on.
+   *
+   * The home page carries the schedule as SERIALIZED PROPS for a client island,
+   * so the drawer opens instantly with no round trip. It must not carry it as
+   * DOM content: city names and event links in the home body would be the
+   * keyword-stuffed city section this redesign removed, and would duplicate
+   * /schedule's content on a second URL.
+   */
+  it("renders no city section and no event anchors in the body", () => {
+    expect(dom).not.toContain('href="/events/');
+    expect(dom).not.toContain('href="/cities/');
+    const text = dom.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ");
+    for (const city of model().cities) {
+      expect(text).not.toContain(city.title);
+    }
+  });
+
+  it("does carry the model in the RSC payload, which is where it belongs", () => {
+    for (const city of model().cities) {
+      for (const event of city.upcoming) {
+        expect(body).toContain(event.slug);
+      }
+    }
+  });
+
+  it("links the catalogue with real anchors from every booking CTA", () => {
+    // Navbar, intro, price and footer. Real <a href> is what a crawler follows
+    // and what a middle-click opens; the controller only intercepts the plain
+    // left-click.
+    expect([...dom.matchAll(/href="\/schedule"/g)]).toHaveLength(4);
+  });
+});

@@ -2,9 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-import EventArchivalNotice from "@/components/EventArchivalNotice";
-import EventBooking from "@/components/EventBooking";
-import EventFacts from "@/components/EventFacts";
+import EventView from "@/components/EventView";
 import EventStructuredData from "@/components/EventStructuredData";
 import Footer from "@/components/Footer";
 import Navbar from "@/components/Navbar";
@@ -16,8 +14,8 @@ import practiceItem from "@/public/practice-item.webp";
 import practiceTitle from "@/public/practice-title.webp";
 import theoryItem from "@/public/theory-item.webp";
 import theoryTitle from "@/public/theory-title.webp";
-import { occurrenceDateLabelInZone, departureNotice } from "@/lib/occurrence-format";
-import { isDeparted } from "@/lib/seo/occurrence-snapshot";
+import { occurrenceDateLabelInZone } from "@/lib/occurrence-format";
+import { toEventViewModel } from "@/lib/seo/event-view-model";
 import { OPEN_GRAPH_BASE, TWITTER_CARD } from "@/lib/seo/site";
 import { findPublishedRecord, PLACEHOLDER_PARAM, publishedRecords } from "@/lib/seo/snapshot-source";
 
@@ -118,14 +116,11 @@ export default async function EventPage(props: PageProps<"/events/[slug]">) {
   const record = findPublishedRecord(slug);
   if (!record) notFound();
 
-  const date = occurrenceDateLabelInZone(record.starts_at, record.timezone);
-  // A record that has left /v1/public/tour is archival whatever its
-  // fulfillment_status says. Testing only for CANCELLED was not enough: a PAST
-  // or WITHDRAWN tombstone still carries SCHEDULED, because that is the last
-  // state Commerce reported, so it would have rendered as an ordinary bookable
-  // date. isDeparted is the only reliable gate, and it narrows the union so the
-  // notice below can read `departed`.
-  const departed = isDeparted(record) ? record : null;
+  // Archival state, the heading, the facts and the booking panel all now live
+  // in EventView, driven by the view model's finished strings — including
+  // `archivalNotice`, which is non-null exactly when the record has left the
+  // public tour. A PAST or WITHDRAWN tombstone still reports SCHEDULED, so the
+  // page must never gate on fulfillment_status; the model does that once.
 
   return (
     <>
@@ -148,34 +143,11 @@ export default async function EventPage(props: PageProps<"/events/[slug]">) {
             ← {record.city_title}
           </Link>
 
-          <h1 className="font-display text-[clamp(1.5rem,7cqw,2.4rem)] leading-tight text-acid [text-shadow:2px_3px_0_var(--color-shadow)]">
-            Мастер-класс FLEXPERIMENT
-            <span className="mt-[2cqw] block text-bone">
-              {record.city_title}, {date}
-            </span>
-          </h1>
-
-          {departed ? (
-            <p className="mt-[5cqw] border border-bone/50 px-[4cqw] py-[3cqw] text-[clamp(0.9rem,3.5cqw,1.1rem)] text-bone/80">
-              {/* The page stays live rather than 404ing: this URL has been
-                  indexed, shared and linked, and a visitor arriving on it
-                  deserves an answer, not a dead end. What it must not do is
-                  look like an event still on sale. */}
-              {departureNotice(departed.departed)}
-            </p>
-          ) : null}
-
-          <EventFacts occurrence={record} />
-
-          {/* The live booking panel is mounted only for a date that is still in
-              the public tour. A departed record gets a static notice instead —
-              see EventArchivalNotice for why hydrating one would be worse than
-              useless. */}
-          {departed ? (
-            <EventArchivalNotice record={departed} />
-          ) : (
-            <EventBooking occurrenceId={record.id} />
-          )}
+          {/* The same component the drawer renders, so an indexed page and an
+              overlay cannot describe the same date differently. The programme
+              below stays page-only: it is identical for every occurrence and
+              belongs to the indexable document. */}
+          <EventView event={toEventViewModel(record)} />
         </Section>
 
         <Separator />
