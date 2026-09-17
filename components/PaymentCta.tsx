@@ -22,15 +22,32 @@ const CheckoutFlow = dynamic(() => import("@/components/CheckoutFlow"), { ssr: f
 
 const loadDialog = () => import("@/components/DialogDrawer");
 
-// Isolates the open state to this leaf so the sections that host the CTA stay
-// server components. Failure presentation is deliberately not local — see
-// paymentNoticeStore, which all three CTAs share.
+/**
+ * "Start checkout for this occurrence."
+ *
+ * After /schedule this is the component's ONLY meaning. It used to double as
+ * "show me the list of cities", which is now ScheduleLink — a real
+ * <a href="/schedule">. Conflating the two would make the booking button on an
+ * event page send the visitor back to the catalogue they just came from.
+ *
+ * `occurrenceId` is the occurrence the visitor has already chosen by
+ * navigating to its URL, and it is passed straight through to CheckoutFlow so
+ * booking opens on that date. The host (EventBooking) therefore does not need
+ * to know anything about how CheckoutFlow is structured.
+ *
+ * Isolates the open state to this leaf so the sections that host the CTA stay
+ * server components. Failure presentation is deliberately not local — see
+ * paymentNoticeStore, which every CTA shares.
+ */
 export default function PaymentCta({
   children,
   className,
+  occurrenceId,
 }: {
   children: React.ReactNode;
   className?: string;
+  /** Omitted only where the catalogue itself is the entry point. */
+  occurrenceId?: string;
 }) {
   const [isOpen, setIsOpen] = useState(false);
   // Latches on the first open. Rendering the dialog only from that point is
@@ -124,7 +141,7 @@ export default function PaymentCta({
           onClose={close}
           onBack={view ? backToCities : undefined}
         >
-          <CheckoutFlow key={flowKey} onViewChange={setView} onBookingTitle={setBookingTitle} />
+          <CheckoutFlow key={flowKey} onViewChange={setView} onBookingTitle={setBookingTitle} initialOccurrenceId={occurrenceId} />
         </DialogDrawer>
       )}
     </>

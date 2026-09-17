@@ -1,7 +1,7 @@
 import Image from "next/image";
 
 import DarkPanel from "@/components/DarkPanel";
-import PaymentCta from "@/components/PaymentCta";
+import ScheduleLink from "@/components/ScheduleLink";
 import Section from "@/components/Section";
 import body from "@/public/body.webp";
 
@@ -41,9 +41,9 @@ export default function WorkshopIntro() {
             как никто другой.
           </p>
 
-          <PaymentCta className="mt-[6cqw] min-h-[3.5rem] text-[clamp(1.15rem,4.8cqw,1.6rem)]">
+          <ScheduleLink className="mt-[6cqw] min-h-[3.5rem] text-[clamp(1.15rem,4.8cqw,1.6rem)]">
             Города × Даты
-          </PaymentCta>
+          </ScheduleLink>
         </DarkPanel>
       </div>
     </Section>
