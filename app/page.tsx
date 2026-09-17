@@ -1,5 +1,8 @@
 import type { Metadata } from "next";
 
+import { toScheduleViewModel } from "@/lib/seo/schedule-view-model";
+import { publishedRecords } from "@/lib/seo/snapshot-source";
+
 import AssetPreloader from "@/components/AssetPreloader";
 import FaqSection from "@/components/FaqSection";
 import Footer from "@/components/Footer";
@@ -7,6 +10,7 @@ import HeroSiberia from "@/components/HeroSiberia";
 import HeroTour from "@/components/HeroTour";
 import HeroVideo from "@/components/HeroVideo";
 import HomeStructuredData from "@/components/HomeStructuredData";
+import ModalRouteController from "@/components/ModalRouteController";
 import Navbar from "@/components/Navbar";
 import PaymentNotice from "@/components/PaymentNotice";
 import { Price } from "@/components/Price";
@@ -148,6 +152,10 @@ export default function Home() {
           served to crawlers as machine-readable JSON-LD. Nothing commercial and
           nothing invented — see the component. */}
       <HomeStructuredData />
+
+      {/* Serialized props for a client island — not DOM content. */}
+      <ModalRouteController scheduleModel={toScheduleViewModel(publishedRecords())} />
+
     </AssetPreloader>
   );
 }

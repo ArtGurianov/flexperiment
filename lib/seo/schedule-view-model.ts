@@ -1,6 +1,7 @@
 import { formatRubles } from "@/lib/money";
 import {
   departureLabel,
+  departureNotice,
   occurrenceDateLabelInZone,
   occurrenceTimeLabelInZone,
 } from "@/lib/occurrence-format";
@@ -51,6 +52,21 @@ export type ScheduleEventView = {
   readonly departedLabel: string | null;
   /** The full public venue sentence, for the event detail panel. */
   readonly venueDisclosure: string;
+  /**
+   * The full archival sentence for an event detail banner, or null while the
+   * occurrence is still in the tour.
+   *
+   * Separate from `departedLabel` because they are different registers, not
+   * different lengths of the same string: the label is a chip on a catalogue
+   * row («Отменён»), this is the sentence a visitor reads on the event itself
+   * («Этот мастер-класс уже прошёл.»). COMPLETED and PAST share a label and do
+   * not share a notice.
+   *
+   * Finished strings rather than the raw departure enum, keeping the rule that
+   * this model carries presentation and never asks the view to interpret
+   * domain values.
+   */
+  readonly archivalNotice: string | null;
   readonly listing: ScheduleListing;
 };
 
@@ -81,6 +97,7 @@ const toEventView = (record: PublishedRecord): ScheduleEventView => ({
       : "Площадка уточняется",
   priceLabel: formatRubles(record.price_kopecks),
   departedLabel: isDeparted(record) ? departureLabel(record.departed) : null,
+  archivalNotice: isDeparted(record) ? departureNotice(record.departed) : null,
   venueDisclosure:
     record.venue.status === "CONFIRMED" && record.venue.name && record.venue.address
       ? `${record.venue.name}: ${record.venue.address}`
