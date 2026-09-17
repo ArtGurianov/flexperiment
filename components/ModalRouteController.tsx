@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import DialogDrawer from "@/components/DialogDrawer";
 import EventView from "@/components/EventView";
 import ScheduleView from "@/components/ScheduleView";
+import { useReconciledSchedule } from "@/hooks/useReconciledSchedule";
 import { findEventInSchedule } from "@/lib/seo/event-view-model";
 import type { ScheduleViewModel } from "@/lib/seo/schedule-view-model";
 
@@ -248,7 +249,18 @@ export default function ModalRouteController({
     window.location.assign("/");
   }, []);
 
-  const event = route.kind === "event" ? findEventInSchedule(scheduleModel, route.slug) : null;
+  // Lazy by design: a landing visitor who never opens the catalogue issues no
+  // Commerce request at all. The read starts on first activation, and does not
+  // run again while the flow stays open — schedule -> event -> schedule is one
+  // flow, not three reasons to refetch. Closing re-arms it, because a visitor
+  // who comes back to the schedule later has earned a fresh read.
+  const modalActive = route.kind !== "none";
+  const currentScheduleModel = useReconciledSchedule(scheduleModel, modalActive);
+
+  // BOTH surfaces read the reconciled model, never the original prop. That is
+  // what keeps the row a visitor clicked and the detail they land on agreeing
+  // once a live read has moved a venue, date or price.
+  const event = route.kind === "event" ? findEventInSchedule(currentScheduleModel, route.slug) : null;
 
   return (
     <div data-modal-route={route.kind} data-modal-slug={route.kind === "event" ? route.slug : ""}>
@@ -264,16 +276,11 @@ export default function ModalRouteController({
       >
         <div data-testid="modal-drawer">
           {route.kind === "schedule" ? (
-            <ScheduleView model={scheduleModel} />
+            <ScheduleView model={currentScheduleModel} />
           ) : (
-            // Derived synchronously from the SAME model the schedule drawer
-            // renders, so the row a visitor clicked and the detail they land on
-            // agree — including after live reconciliation has updated both. No
-            // second data array in the payload and no fetch before first paint.
-            // Derived synchronously from the SAME model the schedule drawer
-            // renders, so the row a visitor clicked and the detail they land on
-            // agree — including after live reconciliation has updated both. No
-            // second data array in the payload and no fetch before first paint.
+            // Derived synchronously from the same reconciled model, so no
+            // second data array rides in the home payload and no fetch precedes
+            // first paint.
             event ? (
               <EventView event={event} headingLevel="h2" />
             ) : (
