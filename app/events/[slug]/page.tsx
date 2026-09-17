@@ -142,7 +142,7 @@ export default async function EventPage(props: PageProps<"/events/[slug]">) {
       >
         <Section className="pb-[8cqw]">
           <Link
-            href={`/cities/${record.city}`}
+            href={`/schedule#${record.city}`}
             className="mb-[6cqw] inline-block text-[clamp(0.8rem,3cqw,1rem)] text-acid underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid"
           >
             ← {record.city_title}

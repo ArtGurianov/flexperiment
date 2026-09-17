@@ -46,6 +46,8 @@ describe("sitemap.xml", () => {
       expect(location).not.toMatch(/\/(ticket|refund|payment)/);
       expect(location).not.toMatch(/\.(txt|md)$/);
       expect(location).not.toContain("/legal/archive/");
+      // The city layer is retired; its one published URL 308s instead.
+      expect(location).not.toContain("/cities/");
       expect(location).not.toContain("__placeholder__");
     }
   });
@@ -101,12 +103,16 @@ describe("the build agrees with the committed snapshot", () => {
     expect(emitted).toEqual(expected);
   });
 
-  it("emits exactly one page per city that has one", () => {
-    const expected = [...new Set(records.map((record) => record.city))]
-      .map((city) => `${city}.html`)
-      .sort();
-    const emitted = listExport("cities").filter((entry) => entry.endsWith(".html")).sort();
-    expect(emitted).toEqual(expected);
+  it("no longer emits a city layer at all", () => {
+    // /cities/[city] was retired in favour of /schedule. The one published city
+    // URL 308s at the nginx layer; nothing is built for it any more.
+    expect(exportExists("cities")).toBe(false);
+    expect(listExport("cities")).toEqual([]);
+  });
+
+  it("emits /schedule as the one catalogue, whatever the snapshot holds", () => {
+    // A fixed route, so unlike /events/[slug] it cannot go empty.
+    expect(exportExists("schedule.html")).toBe(true);
   });
 
   it("never ships the reserved placeholder, in either regime", () => {
@@ -115,8 +121,7 @@ describe("the build agrees with the committed snapshot", () => {
     // nothing to publish, and `pnpm build` prunes it. A URL answering 200 with
     // a 404 body is still a fabricated event URL on a public site.
     expect(exportExists("events/__placeholder__.html")).toBe(false);
-    expect(exportExists("cities/__placeholder__.html")).toBe(false);
-    for (const segment of ["events", "cities"]) {
+    for (const segment of ["events"]) {
       expect(listExport(segment).some((entry) => entry.startsWith("__placeholder__"))).toBe(false);
     }
   });
@@ -127,7 +132,6 @@ describe("the build agrees with the committed snapshot", () => {
       return;
     }
     expect(exportExists("events")).toBe(false);
-    expect(exportExists("cities")).toBe(false);
   });
 
   it("builds the home page and every legal page regardless", () => {

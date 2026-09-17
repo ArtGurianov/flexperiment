@@ -154,4 +154,15 @@ assert_header "/index.html" "Cache-Control" ""
 # fall through to a page.
 assert_status "/_next/static/chunks/absent-deadbeef.js" 404
 
+# The one published city URL is retired to /schedule. Exact match only: a
+# prefix or regex would turn every made-up city URL into a permanent redirect
+# to a valid page, which is a manufactured soft-404 surface.
+legacy_status="$(curl --silent --output /dev/null --write-out '%{http_code}' "$base/cities/saint-petersburg")"
+[[ "$legacy_status" == "308" ]] || { echo "MISMATCH: expected 308 for the retired city URL, got $legacy_status" >&2; exit 1; }
+legacy_location="$(curl --silent --output /dev/null --write-out '%header{location}' "$base/cities/saint-petersburg")"
+[[ "$legacy_location" == "/schedule#saint-petersburg" ]] || { echo "MISMATCH: expected /schedule#saint-petersburg, got '$legacy_location'" >&2; exit 1; }
+# An unknown city URL must still 404 with the branded body, not redirect.
+assert_status_and_body "/cities/nonsense" 404 "BRANDED_404_PAGE"
+assert_status_and_body "/cities" 404 "BRANDED_404_PAGE"
+
 echo "Frontend nginx static-export routing: OK"

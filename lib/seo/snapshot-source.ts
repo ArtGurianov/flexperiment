@@ -147,4 +147,7 @@ export const citiesWithUpcomingDates = (): readonly PublishedCity[] =>
 export const PLACEHOLDER_PARAM = "__placeholder__";
 
 /** The route segments that fall back to PLACEHOLDER_PARAM when empty. */
-export const PLACEHOLDER_ROUTE_SEGMENTS = ["events", "cities"] as const;
+// Only "events" remains a dynamic route family. /cities/[city] was retired in
+// favour of /schedule, which is a fixed route and so has no empty
+// generateStaticParams to work around.
+export const PLACEHOLDER_ROUTE_SEGMENTS = ["events"] as const;

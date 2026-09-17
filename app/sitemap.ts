@@ -3,7 +3,7 @@ import type { MetadataRoute } from "next";
 import { LEGAL_DOCUMENTS } from "@/lib/legal";
 import { belongsInSitemap } from "@/lib/seo/occurrence-publication";
 import { siteUrl } from "@/lib/seo/site";
-import { citiesWithUpcomingDates, publishedRecords } from "@/lib/seo/snapshot-source";
+import { publishedRecords } from "@/lib/seo/snapshot-source";
 
 /**
  * There was no sitemap.xml either — the live URL 404ed.
@@ -19,6 +19,9 @@ import { citiesWithUpcomingDates, publishedRecords } from "@/lib/seo/snapshot-so
  *       Not pages. Suppressed at the nginx layer with X-Robots-Tag.
  *   /legal/archive/**
  *       Superseded document versions, retained for evidence, never canonical.
+ *   /cities/**
+ *       Retired. /schedule is the one indexable catalogue now; the published
+ *       city URLs 308 to /schedule#<city> at the nginx layer.
  *   cancelled, completed and past event pages
  *       Their URLs stay live so an indexed link or a printed ticket keeps
  *       working, but they are not fresh content to offer a crawler.
@@ -49,10 +52,6 @@ export default function sitemap(): MetadataRoute.Sitemap {
   // status check alone would offer archival pages to a crawler as upcoming
   // events.
   const events = publishedRecords().filter(belongsInSitemap);
-  // A city page is worth listing only while it has an upcoming date. A city
-  // whose dates have all been cancelled or have all passed keeps its page — its
-  // event pages link back to it — and leaves the sitemap.
-  const cities = citiesWithUpcomingDates();
 
   return [
     { url: siteUrl("/") },
@@ -60,7 +59,6 @@ export default function sitemap(): MetadataRoute.Sitemap {
     // route that exists even with an empty snapshot, where it honestly says
     // nothing is announced yet.
     { url: siteUrl("/schedule") },
-    ...cities.map((city) => ({ url: siteUrl(`/cities/${city.slug}`) })),
     ...events.map((record) => ({ url: siteUrl(`/events/${record.event_slug}`) })),
     ...LEGAL_DOCUMENTS.map(({ slug }) => ({ url: siteUrl(`/legal/${slug}`) })),
   ];

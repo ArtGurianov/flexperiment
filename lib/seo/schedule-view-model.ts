@@ -28,6 +28,14 @@ import { isDeparted, type PublishedRecord } from "@/lib/seo/occurrence-snapshot"
  * representation — and it is never the source of truth for whether a seat can
  * be sold.
  */
+/**
+ * Whether an event can still be acted on.
+ *
+ * Always ACTIONABLE as built — the snapshot only publishes what was in the tour
+ * at generation time. Hydration may downgrade it; see schedule-reconciliation.
+ */
+export type ScheduleListing = "ACTIONABLE" | "NOT_IN_LIVE_TOUR";
+
 export type ScheduleEventView = {
   readonly id: string;
   readonly slug: string;
@@ -41,6 +49,9 @@ export type ScheduleEventView = {
   readonly priceLabel: string;
   /** Null while the occurrence is still in the public tour. */
   readonly departedLabel: string | null;
+  /** The full public venue sentence, for the event detail panel. */
+  readonly venueDisclosure: string;
+  readonly listing: ScheduleListing;
 };
 
 export type ScheduleCityView = {
@@ -70,6 +81,12 @@ const toEventView = (record: PublishedRecord): ScheduleEventView => ({
       : "Площадка уточняется",
   priceLabel: formatRubles(record.price_kopecks),
   departedLabel: isDeparted(record) ? departureLabel(record.departed) : null,
+  venueDisclosure:
+    record.venue.status === "CONFIRMED" && record.venue.name && record.venue.address
+      ? `${record.venue.name}: ${record.venue.address}`
+      : "Площадка уточняется. Адрес сообщим участникам по email.",
+  // As built, everything published was in the tour. Hydration may downgrade it.
+  listing: "ACTIONABLE",
 });
 
 /**

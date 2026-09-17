@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 
 import AssetPreloader from "@/components/AssetPreloader";
-import CityLinks from "@/components/CityLinks";
 import FaqSection from "@/components/FaqSection";
 import Footer from "@/components/Footer";
 import HeroSiberia from "@/components/HeroSiberia";
@@ -129,10 +128,6 @@ export default function Home() {
         <Separator />
         <Price />
         <Separator />
-        {/* Renders nothing while the snapshot is empty, so today the page is
-            unchanged. When there is inventory, this is what links the home page
-            to the city pages and through them to the event pages. */}
-        <CityLinks />
         <FaqSection />
       </main>
 
