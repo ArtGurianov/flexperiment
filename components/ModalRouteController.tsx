@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import DialogDrawer from "@/components/DialogDrawer";
 import EventView from "@/components/EventView";
 import ScheduleView from "@/components/ScheduleView";
 import { findEventInSchedule } from "@/lib/seo/event-view-model";
@@ -68,9 +69,40 @@ export const routeFromPath = (pathname: string): ModalRoute => {
   return event ? { kind: "event", slug: event[1] } : { kind: "none" };
 };
 
+/**
+ * Fully validates a history marker at runtime — every field, including the
+ * relationships between them.
+ *
+ * A TypeScript cast proves nothing here. This value comes out of the browser's
+ * history store: it can be restored from a previous session, written by an
+ * older build of this page, or simply absent. Since a valid marker authorises
+ * `history.go(-depth)`, a half-checked one would let a bad `depth` walk the
+ * session out of our own entries into somewhere arbitrary.
+ *
+ * So depth and route are checked against their literal sets, and against each
+ * other: the flow is home(0) → schedule(1) → event(2), and an event must name
+ * the slug it is showing. Anything that does not satisfy all of it is not a
+ * marker, and the caller takes the fail-safe path.
+ */
 const readMarker = (state: unknown): ModalMarker | null => {
-  const marker = (state as Record<string, unknown> | null)?.[MARKER] as ModalMarker | undefined;
-  return marker && marker.v === 1 && typeof marker.flowId === "string" ? marker : null;
+  const raw = (state as Record<string, unknown> | null)?.[MARKER];
+  if (typeof raw !== "object" || raw === null) return null;
+  const { v, flowId, depth, route, eventSlug } = raw as Record<string, unknown>;
+
+  if (v !== 1) return null;
+  if (typeof flowId !== "string" || flowId.length === 0) return null;
+  if (depth !== 0 && depth !== 1 && depth !== 2) return null;
+  if (route !== "home" && route !== "schedule" && route !== "event") return null;
+
+  // Depth and route are two views of one position; disagreeing means the entry
+  // was not written by this contract.
+  if (route === "home" && depth !== 0) return null;
+  if (route === "schedule" && depth !== 1) return null;
+  if (route === "event" && (depth !== 2 || typeof eventSlug !== "string" || eventSlug.length === 0)) {
+    return null;
+  }
+
+  return { v: 1, flowId, depth, route, eventSlug: typeof eventSlug === "string" ? eventSlug : undefined };
 };
 
 /** Fresh object, our namespace only — see the note on __NA above. */
@@ -182,6 +214,22 @@ export default function ModalRouteController({
    * marker belonging to this flow; anything else is a plain navigation, which
    * is always correct if less elegant.
    */
+  /**
+   * Event drawer → schedule drawer, by moving history rather than by setting
+   * local state. The popstate that results is what changes the URL and the UI
+   * together; a setRoute here would leave the address bar on /events/<slug>
+   * while the schedule was showing.
+   */
+  const back = useCallback(() => {
+    const marker = readMarker(window.history.state);
+    if (marker && marker.flowId === flowId.current && marker.route === "event") {
+      window.history.back();
+      return;
+    }
+    // eslint-disable-next-line @next/next/no-location-assign-relative-destination
+    window.location.assign("/");
+  }, []);
+
   const close = useCallback(() => {
     const marker = readMarker(window.history.state);
     if (marker && marker.flowId === flowId.current && marker.depth > 0) {
@@ -189,17 +237,32 @@ export default function ModalRouteController({
       return;
     }
     // Deliberately a HARD navigation, not router.push. This branch means the
-    // history marker is missing, corrupt, or from another flow — exactly the
-    // situation where a soft navigation would keep the untrusted entries we are
-    // trying to escape. Rare by construction and always correct.
+    // history marker is missing, corrupt, or from another flow, so we stop
+    // driving the modal router over state we no longer trust and get a fresh
+    // home document and router state instead.
+    //
+    // Note what this does NOT do: it does not remove the unknown entries. They
+    // stay in the session, and Back can still reach them. The guarantee is only
+    // that we stop interpreting them.
     // eslint-disable-next-line @next/next/no-location-assign-relative-destination
     window.location.assign("/");
   }, []);
 
+  const event = route.kind === "event" ? findEventInSchedule(scheduleModel, route.slug) : null;
+
   return (
     <div data-modal-route={route.kind} data-modal-slug={route.kind === "event" ? route.slug : ""}>
-      {route.kind !== "none" ? (
-        <div data-testid="modal-drawer" role="dialog" aria-modal="true">
+      {/* No local open state. History is the single authority: Escape, an
+          outside click, a drag-down and the X all reach onClose, which moves
+          history, and the resulting popstate is what sets `route` — which in
+          turn closes this. One direction of flow, one source of truth. */}
+      <DialogDrawer
+        title={route.kind === "event" && event ? `${event.cityTitle}, ${event.dateLabel}` : "ГОРОДА × ДАТЫ"}
+        isOpen={route.kind !== "none"}
+        onClose={close}
+        onBack={route.kind === "event" ? back : undefined}
+      >
+        <div data-testid="modal-drawer">
           {route.kind === "schedule" ? (
             <ScheduleView model={scheduleModel} />
           ) : (
@@ -207,24 +270,22 @@ export default function ModalRouteController({
             // renders, so the row a visitor clicked and the detail they land on
             // agree — including after live reconciliation has updated both. No
             // second data array in the payload and no fetch before first paint.
-            (() => {
-              const event = findEventInSchedule(scheduleModel, route.slug);
-              return event ? (
-                <EventView event={event} headingLevel="h2" />
-              ) : (
-                // The slug is not in the published set. Only reachable if the
-                // URL was hand-edited; the real page for a published slug is
-                // always a static document, so hand over to it rather than
-                // inventing an empty drawer.
-                <p data-testid="modal-body">Открываем страницу события…</p>
-              );
-            })()
+            // Derived synchronously from the SAME model the schedule drawer
+            // renders, so the row a visitor clicked and the detail they land on
+            // agree — including after live reconciliation has updated both. No
+            // second data array in the payload and no fetch before first paint.
+            event ? (
+              <EventView event={event} headingLevel="h2" />
+            ) : (
+              // The slug is not in the published set. Only reachable if the URL
+              // was hand-edited; the real page for a published slug is always a
+              // static document, so hand over to it rather than inventing an
+              // empty drawer.
+              <p data-testid="modal-body">Открываем страницу события…</p>
+            )
           )}
-          <button type="button" data-testid="modal-close" onClick={close}>
-            Закрыть
-          </button>
         </div>
-      ) : null}
+      </DialogDrawer>
     </div>
   );
 }
