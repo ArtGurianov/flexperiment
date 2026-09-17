@@ -37,14 +37,31 @@ import { seoOccurrence } from "@/lib/seo/public-occurrence-fixture";
  * It does not, on this version, and the tests below pin the parts that can be
  * checked without a browser.
  */
+// DialogDrawer picks dialog vs drawer through useBreakpoint -> matchMedia,
+// which jsdom does not implement. The breakpoint is irrelevant to the history
+// contract under test, so a stable "desktop" answer is enough.
+beforeEach(() => {
+  window.matchMedia = ((query: string) => ({
+    matches: false, media: query, onchange: null,
+    addEventListener: () => {}, removeEventListener: () => {},
+    addListener: () => {}, removeListener: () => {}, dispatchEvent: () => false,
+  })) as unknown as typeof window.matchMedia;
+});
+
 const model = () => toScheduleViewModel([seoOccurrence()]);
 const MARKER = "__fxModalRoute";
+
+// Anchors live in a container this file owns and removes. Clearing
+// document.body wholesale would destroy testing-library's own React container
+// before its cleanup() could unmount, which surfaces as
+// "NotFoundError: The node to be removed is not a child of this node".
+let sandbox: HTMLElement;
 
 const anchor = (href: string) => {
   const a = document.createElement("a");
   a.setAttribute("href", href);
   a.textContent = href;
-  document.body.appendChild(a);
+  sandbox.appendChild(a);
   return a;
 };
 
@@ -68,9 +85,10 @@ describe("routeFromPath", () => {
 describe("ModalRouteController history state", () => {
   beforeEach(() => {
     window.history.replaceState(null, "", "/");
-    document.body.innerHTML = "";
+    sandbox = document.createElement("div");
+    document.body.appendChild(sandbox);
   });
-  afterEach(() => { document.body.innerHTML = ""; });
+  afterEach(() => { sandbox.remove(); });
 
   it("marks the root entry and pushes a namespaced marker for the overlay", () => {
     render(<ModalRouteController scheduleModel={model()} />);
@@ -124,6 +142,29 @@ describe("ModalRouteController history state", () => {
     const ev = click(anchor("/schedule"), init);
     expect(ev.defaultPrevented).toBe(false);
     expect(window.location.pathname).toBe("/");
+  });
+
+  it.each([
+    ["no marker at all", {}],
+    ["wrong version", { [MARKER]: { v: 2, flowId: "f", depth: 1, route: "schedule" } }],
+    ["empty flowId", { [MARKER]: { v: 1, flowId: "", depth: 1, route: "schedule" } }],
+    ["depth out of range", { [MARKER]: { v: 1, flowId: "f", depth: 7, route: "schedule" } }],
+    ["unknown route", { [MARKER]: { v: 1, flowId: "f", depth: 1, route: "checkout" } }],
+    ["depth disagrees with route", { [MARKER]: { v: 1, flowId: "f", depth: 2, route: "schedule" } }],
+    ["event without a slug", { [MARKER]: { v: 1, flowId: "f", depth: 2, route: "event" } }],
+    ["event with an empty slug", { [MARKER]: { v: 1, flowId: "f", depth: 2, route: "event", eventSlug: "" } }],
+  ])("re-roots the flow when the existing state is %s", (_name, state) => {
+    // A valid marker authorises history.go(-depth), so anything short of fully
+    // valid must not be treated as one. Each of these should be rejected and a
+    // fresh root written, giving depth 1 for the first overlay — never a depth
+    // inherited from a marker we could not verify.
+    window.history.replaceState(state, "", "/");
+    render(<ModalRouteController scheduleModel={model()} />);
+    click(anchor("/schedule"));
+
+    const marker = (window.history.state as Record<string, { depth: number; route: string }>)[MARKER];
+    expect(marker.depth).toBe(1);
+    expect(marker.route).toBe("schedule");
   });
 
   it("ignores links that are not overlay routes", () => {
