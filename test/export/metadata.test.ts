@@ -50,12 +50,12 @@ describe("the home page", () => {
     expect(textOf(html)).toContain("ВПЕРВЫЕ В СИБИРИ");
   });
 
-  it("states the price as text a crawler can read, not only as artwork", () => {
-    const text = textOf(html);
-    expect(text).toContain("Базовая стоимость участия");
-    expect(text).toContain("3 800 ₽");
-    expect(text).toContain("3 500 ₽");
-  });
+  // The price assertions that used to live here asserted a section this project
+  // has since decided was a mistake: an SEO pass had added separately typeset
+  // «3 800 ₽» / «3 500 ₽» blocks, redesigning the section to make the figures
+  // crawlable. The composition is back to artwork plus one caption, and the
+  // readable equivalent lives in `alt`. Both directions of that are now
+  // asserted in test/export/schedule.test.ts, which owns the price section.
 
   it("is not marked noindex", () => {
     expect(metaName(html, "robots")).toBeNull();
@@ -113,7 +113,7 @@ describe("the legal pages", () => {
  * reached production emitting neither og:image nor twitter:image. A list that
  * cannot grow with the inventory cannot catch that class of defect twice.
  */
-const STATIC_ROUTES = ["index.html", "404.html", ...LEGAL_SLUGS.map((slug) => `legal/${slug}.html`)];
+const STATIC_ROUTES = ["index.html", "404.html", "schedule.html", ...LEGAL_SLUGS.map((slug) => `legal/${slug}.html`)];
 
 const snapshotRoutes = (): readonly string[] => {
   const records = publishableRecords(readSnapshotFile("data/seo/occurrences.v1.json"));

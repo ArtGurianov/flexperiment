@@ -56,6 +56,10 @@ export default function sitemap(): MetadataRoute.Sitemap {
 
   return [
     { url: siteUrl("/") },
+    // The canonical catalogue of cities and dates. Always listed: it is a fixed
+    // route that exists even with an empty snapshot, where it honestly says
+    // nothing is announced yet.
+    { url: siteUrl("/schedule") },
     ...cities.map((city) => ({ url: siteUrl(`/cities/${city.slug}`) })),
     ...events.map((record) => ({ url: siteUrl(`/events/${record.event_slug}`) })),
     ...LEGAL_DOCUMENTS.map(({ slug }) => ({ url: siteUrl(`/legal/${slug}`) })),

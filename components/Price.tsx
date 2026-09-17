@@ -5,22 +5,23 @@ import price from "@/public/price.webp";
 import PaymentCta from "./PaymentCta";
 
 /**
- * The price, as real HTML text.
+ * The price section, restored to its original composition.
  *
- * `price.webp` is 328KB — the second-heaviest asset on the site — and it used
- * to be the *only* representation of the price: the figure existed nowhere a
- * crawler, a screen reader or a text selection could reach it, and its alt text
- * said "3500р*", which is not what the base price is. The artwork stays as
- * decoration; the numbers below it are now the actual content.
+ * An earlier SEO pass replaced the artwork's caption with separate, visibly
+ * typeset «3 800 ₽» and «3 500 ₽» blocks so the figures would exist as crawlable
+ * text. That worked, and it also redesigned the section — which was not a
+ * change SEO had any business making. The artwork plus one caption is the
+ * design; it is back.
  *
- * These figures are editorial, not occurrence-derived, and that is deliberate.
- * Commerce remains the sole authority on what any given date actually costs —
- * a quote comes from /v1/public/checkout-context, never from here. This is the
- * headline «from» price the page has always advertised, labelled as such, and
- * it must never be used as a fallback for a real occurrence's price in an event
- * page, in checkout or in JSON-LD. Equally, this section is never hidden
- * because inventory is empty: it is a statement about the workshop, not about
- * today's availability.
+ * The readable-text requirement is met by `alt` instead, which is where it
+ * belonged. `price.webp` genuinely depicts those two figures, so the alt below
+ * is an honest text equivalent of the image — not keyword copy smuggled into an
+ * attribute. (Contrast HeroSiberia, whose alt once asserted a season and a year
+ * the artwork does not show; that one was keyword stuffing and stays fixed.)
+ *
+ * These figures are editorial. Commerce is the sole authority on what any given
+ * date costs — /schedule and /events/[slug] render each occurrence's own
+ * `price_kopecks`, and there is deliberately no fallback in either direction.
  */
 export const Price = () => {
   return (
@@ -29,26 +30,13 @@ export const Price = () => {
 
       <Image
         src={price}
-        // aria-hidden with an empty alt: the figures below say everything this
-        // says, and announcing them twice is worse than not announcing the
-        // artwork at all.
-        alt=""
-        aria-hidden="true"
+        alt="3500 ₽ с действующим промокодом; 3800 ₽ без промокода"
         sizes="(min-width: 512px) 512px, 100vw"
         className="h-auto w-full"
       />
 
-      <p className="mt-[4cqw] text-center text-[clamp(0.85rem,3.2cqw,1rem)] text-bone/70">
-        Базовая стоимость участия
-      </p>
-
-      <p className="mt-[1cqw] text-center font-display text-[clamp(1.6rem,7cqw,2.4rem)] leading-none text-acid [text-shadow:2px_3px_0_var(--color-shadow)]">
-        <strong className="font-normal">3 800 ₽</strong>
-      </p>
-
-      <p className="mt-[3cqw] text-center text-[clamp(0.9rem,3.5cqw,1.1rem)] leading-snug text-bone">
-        <strong className="font-normal text-acid">3 500 ₽</strong> при
-        применении действующего промокода
+      <p className="mt-[2cqw] text-center text-[clamp(0.9rem,3.5cqw,1.1rem)] text-bone">
+        *при применении действующего промокода или 3800р
       </p>
 
       <div className="flex justify-center">
