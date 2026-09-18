@@ -50,6 +50,29 @@ describe("useReconciledSchedule", () => {
     await waitFor(() => expect(flat(models.at(-1)!.cities[0].upcoming[0].priceLabel)).toContain("9 999"));
   });
 
+  it("moves BOTH date registers when a live read moves the date", async () => {
+    // The model carries the same instant twice — «25 сентября 2026 г.» for the
+    // headings and «25.09.2026» for the catalogue row. A liveFormat that
+    // rewrote one and not the other would leave the row a visitor clicks and
+    // the heading they land on naming different days, which is the exact class
+    // of drift this model exists to prevent.
+    const moved = publicOccurrence({
+      id: seoOccurrence().id,
+      starts_at: "2031-12-31T09:00:00.000Z",
+      ends_at: "2031-12-31T11:00:00.000Z",
+      timezone: "Europe/Moscow",
+    });
+    global.fetch = vi.fn(async () => ({ ok: true, json: async () => ({ cities: [moved] }) }) as Response) as unknown as typeof fetch;
+    const models: { cities: { upcoming: { dateLabel: string; compactDateLabel: string }[] }[] }[] = [];
+    render(<Probe enabled onModel={(m) => models.push(m as never)} />);
+
+    await waitFor(() => {
+      const event = models.at(-1)!.cities[0].upcoming[0];
+      expect(event.compactDateLabel).toBe("31.12.2031");
+      expect(event.dateLabel).toBe("31 декабря 2031 г.");
+    });
+  });
+
   it("keeps the snapshot when the read fails", async () => {
     global.fetch = vi.fn(async () => ({ ok: false, json: async () => ({}) }) as Response) as unknown as typeof fetch;
     const models: unknown[] = [];

@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { commerceApiUrl } from "@/lib/commerce-api";
 import { formatRubles } from "@/lib/money";
 import {
+  occurrenceCompactDateLabelInZone,
   occurrenceDateLabelInZone,
   occurrenceTimeLabelInZone,
 } from "@/lib/occurrence-format";
@@ -49,9 +50,14 @@ import {
  * reopening later — when the visitor has genuinely come back to the schedule —
  * reads again.
  */
+// EVERY derived label the live read can move has to be listed here. A date that
+// updated `dateLabel` and not `compactDateLabel` would leave the catalogue row
+// showing the old day and the event heading the new one — the same instant,
+// described two ways, on two surfaces one click apart.
 const liveFormat = (occurrence: PublicOccurrence): Partial<ScheduleEventView> => ({
   startsAt: occurrence.starts_at,
   dateLabel: occurrenceDateLabelInZone(occurrence.starts_at, occurrence.timezone),
+  compactDateLabel: occurrenceCompactDateLabelInZone(occurrence.starts_at, occurrence.timezone),
   timeLabel: occurrenceTimeLabelInZone(occurrence.starts_at, occurrence.timezone),
   priceLabel: formatRubles(occurrence.price_kopecks),
   ...venuePresentation(occurrence.venue),

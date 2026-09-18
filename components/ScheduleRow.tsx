@@ -113,13 +113,14 @@ function RowLabel({ left, right }: { left: ReactNode; right: ReactNode }) {
  * both duplicate the event surface and put a claim about bookability on a
  * statically built row that cannot know it.
  *
- * `dateLabel` reads «25.09.2026» — the golden file's compact form, restored.
- * It is NOT the golden file's `occurrenceDateLabel`, though: that one formats in
- * the ambient zone, which is the build machine's during `next build`. Correct
- * for a dialog that only ever rendered in the visitor's own browser; here it
- * would freeze CI's timezone into static HTML. The model's `dateLabel` is the
- * same format anchored to the occurrence's own zone — see occurrence-format.ts
- * for why every date on this site is numeric.
+ * `compactDateLabel`, not `dateLabel`. This is the ONLY surface on the compact
+ * register: «25.09.2026» is for scanning a list, and the long «25 сентября
+ * 2026 г.» stays on the headings, detail panels and confirmations that the
+ * same model feeds. The golden file's row was compact too — but via an
+ * ambient-zone formatter, which under `output: "export"` would freeze CI's
+ * timezone into static HTML, so the model derives both labels from the
+ * occurrence's own zone instead. See occurrence-format.ts for the two
+ * registers.
  */
 export default function ScheduleOccurrenceRow({
   event,
@@ -134,7 +135,7 @@ export default function ScheduleOccurrenceRow({
         left={event.cityTitle}
         // The separator travels with the date, so a wrap can never strand a
         // lone «×» at the end of the first line.
-        right={<>× <time dateTime={event.startsAt}>{event.dateLabel}</time></>}
+        right={<>× <time dateTime={event.startsAt}>{event.compactDateLabel}</time></>}
       />
       {/* Only on the archive, where «Отменён» and «Прошёл» are different facts a
           visitor needs and the section heading alone cannot distinguish. */}
