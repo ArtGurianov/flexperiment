@@ -54,30 +54,37 @@ const ROW_ARCHIVAL =
 /**
  * The label is TWO parts, «Санкт-Петербург» and «× 25.09.2026», not one string.
  *
- * At 390px the longest city name plus a date does not fit on one line at
- * text-2xl — and it did not in the golden file either, whose reference list
- * only ever held short names. Left as a single run, the browser broke it
- * wherever it ran out of room: «Санкт-Петербург ×» on the first line and the
- * bare date on the second, splitting the separator away from what it separates.
+ * At text-2xl the longest labels do not fit one line in the mobile drawer —
+ * 340px of text in a 314px row, measured — and they did not in the golden file
+ * either, whose reference list only ever held short names. Left as a single
+ * run the browser broke the line wherever it ran out of room, which put
+ * «Санкт-Петербург ×» on the first line and the bare date on the second,
+ * stranding the separator away from what it separates. Two flex items break at
+ * the seam instead.
  *
- * Two flex items wrap at the seam instead, so a row is either
+ * `justify-between` puts them on the row's outer edges when they share a line:
  *
- *     Санкт-Петербург        × 25.09.2026
+ *     Санкт-Петербург            × 25.09.2026
  *
- * or, when it cannot fit,
+ * and a wrapped row stacks to the left, which is where the row's own
+ * `text-left` already points:
  *
- *          Санкт-Петербург
- *           × 25.09.2026
+ *     Санкт-Петербург
+ *     × 25.09.2026
  *
- * `grow` is what makes the second case centre: alone on its line, a part fills
- * the width and `text-center` does the rest. It is also why there is no
- * `justify-*` here — with both parts growing there is never free space left for
- * one to distribute, so any justification would be dead CSS. The visual spread
- * on a single line comes from the two parts sharing the row, not from
- * `justify-between`.
+ * THAT SECOND CASE CANNOT ALSO BE CENTRED. Centring a part that is alone on its
+ * line needs it to fill that line (`flex-grow`), and a part that grows leaves no
+ * free space for `justify-between` to push anything to an edge — so the two
+ * behaviours are mutually exclusive, and CSS has no selector for "alone on a
+ * flex line" to switch between them. Edges won, because every row that fits is
+ * one, and only the long names wrap.
+ *
+ * Nor can the wrap be designed away by shrinking the type: 21px would fit
+ * «Санкт-Петербург × 25.09.2026», but city-catalog.ts also holds
+ * «Комсомольск-на-Амуре», and something will always be too long. The row has to
+ * wrap well rather than promise not to.
  */
-const LABEL = "flex w-full flex-wrap items-center gap-2 text-center font-display text-2xl";
-const LABEL_PART = "grow";
+const LABEL = "flex w-full flex-wrap items-center justify-between gap-2 font-display text-2xl";
 
 /**
  * The whitespace between the parts is deliberate and is NOT the `gap`.
@@ -91,8 +98,8 @@ const LABEL_PART = "grow";
 function RowLabel({ left, right }: { left: ReactNode; right: ReactNode }) {
   return (
     <span className={LABEL}>
-      <span className={LABEL_PART}>{left}</span>{" "}
-      <span className={LABEL_PART}>{right}</span>
+      <span>{left}</span>{" "}
+      <span>{right}</span>
     </span>
   );
 }
@@ -130,15 +137,13 @@ export default function ScheduleOccurrenceRow({
         right={<>× <time dateTime={event.startsAt}>{event.dateLabel}</time></>}
       />
       {/* Only on the archive, where «Отменён» and «Прошёл» are different facts a
-          visitor needs and the section heading alone cannot distinguish.
-          Centred with the label above it rather than left against the row's
-          `text-left`, which would read as a stray caption under a centred
-          title. */}
+          visitor needs and the section heading alone cannot distinguish. */}
       {tone === "archival" && event.departedLabel ? (
         // Same whitespace trick as inside RowLabel, for the same reason: it
         // keeps the link's text reading «… 10.08.2026 Отменён» instead of
-        // running the two together, and costs no layout.
-        <>{" "}<span className="text-center text-bone/60">{event.departedLabel}</span></>
+        // running the two together, and costs no layout. Alignment is left by
+        // inheritance, under the city part it belongs to.
+        <>{" "}<span className="text-bone/60">{event.departedLabel}</span></>
       ) : null}
     </a>
   );

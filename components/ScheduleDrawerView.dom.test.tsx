@@ -173,11 +173,13 @@ describe("the intercepted /schedule drawer", () => {
       "Санкт-Петербург",
       "× 25.09.2030",
     ]);
-    // `grow` is what centres a part that is alone on its line; `text-center`
-    // does the centring, `flex-wrap` allows the break at all.
-    for (const part of parts) expect(part.className).toContain("grow");
+    // `justify-between` sets the two parts on the row's outer edges whenever
+    // they share a line; `flex-wrap` is what lets them break apart at all.
+    expect(label.className).toContain("justify-between");
     expect(label.className).toContain("flex-wrap");
-    expect(label.className).toContain("text-center");
+    // No `grow`: a part that fills its line leaves `justify-between` no free
+    // space to distribute, so the edges would silently stop being edges.
+    for (const part of parts) expect(part.className).toBe("");
   });
 
   it("still reads as one sentence to a screen reader and a crawler", async () => {
