@@ -2,11 +2,19 @@ import { describe, expect, it } from "vitest";
 
 import { readSnapshotFile } from "@/commerce/src/seo-snapshot-io";
 import { publishableRecords } from "@/lib/seo/occurrence-publication";
+import {
+  actionableUpcomingEvents,
+  archivedEvents,
+} from "@/lib/seo/schedule-presentation";
 import { toScheduleViewModel } from "@/lib/seo/schedule-view-model";
-import { canonicalOf, metaName, metaProperty, readExport, textOf, titleOf } from "./read-export";
+import { canonicalOf, listExport, metaName, metaProperty, readExport, textOf, titleOf } from "./read-export";
 
 const model = () =>
   toScheduleViewModel(publishableRecords(readSnapshotFile("data/seo/occurrences.v1.json")));
+
+/** Event hrefs in the order the document actually renders them. */
+const eventHrefsInOrder = (html: string): string[] =>
+  [...html.matchAll(/href="(\/events\/[^"#]+)"/g)].map((match) => match[1]);
 
 describe("/schedule", () => {
   const html = readExport("schedule.html");
@@ -33,24 +41,41 @@ describe("/schedule", () => {
     expect([...new Set(linked)]).toEqual([...new Set(expected)]);
   });
 
-  it("renders each city's name and dates as text, not as an image or a script payload", () => {
-    // Intl.NumberFormat emits NBSP and narrow-NBSP inside a ruble amount, and
-    // textOf collapses every whitespace class to a plain space. Both sides have
-    // to be normalized or "3 800,00 ₽" never equals "3 800,00 ₽".
+  it("renders each row as CITY × DATE text, not as an image or a script payload", () => {
+    // textOf collapses every whitespace class to a plain space, and the date
+    // label has its own non-breaking spaces, so both sides are normalized.
     const flatten = (value: string) => value.replace(/\s+/g, " ");
     const text = flatten(textOf(html));
-    for (const city of model().cities) {
-      expect(text).toContain(flatten(city.title));
-      for (const event of city.upcoming) {
-        expect(text).toContain(flatten(event.dateLabel));
-        expect(text).toContain(flatten(event.priceLabel));
-      }
+    for (const event of [...actionableUpcomingEvents(model()), ...archivedEvents(model())]) {
+      expect(text).toContain(flatten(`${event.cityTitle} × ${event.dateLabel}`));
     }
   });
 
-  it("gives every city an anchor id, which is where retired /cities URLs will point", () => {
+  it("lists the upcoming dates in one global chronology", () => {
+    // Grouped by city, «Санкт-Петербург 25.09 / 18.10» then «Новосибирск 02.10»
+    // would satisfy every other assertion in this file and still be the wrong
+    // surface. This is the one that says the picker is chronological.
+    const expected = actionableUpcomingEvents(model()).map((event) => event.href);
+    expect(eventHrefsInOrder(html).slice(0, expected.length)).toEqual(expected);
+  });
+
+  it("carries no city anchor and no fragment navigation", () => {
+    // The `/schedule#<city>` contract is deleted, not relocated. There are no
+    // per-city sections to land on, and /cities/<city> now 308s to bare
+    // /schedule — so an id here would be a target nothing points at.
     for (const city of model().cities) {
-      expect(html).toContain(`id="${city.slug}"`);
+      expect(html).not.toContain(`id="${city.slug}"`);
+    }
+    expect(html).not.toContain('href="/schedule#');
+    expect(html).not.toContain('href="/cities/');
+  });
+
+  it("links the archive too, because those URLs are permanent", () => {
+    const archived = archivedEvents(model());
+    if (archived.length === 0) return;
+    expect(textOf(html)).toContain("Прошедшие и отменённые");
+    for (const event of archived) {
+      expect(html).toContain(`href="${event.href}"`);
     }
   });
 
@@ -131,5 +156,33 @@ describe("the home page's overlay boundary", () => {
     // and what a middle-click opens; the controller only intercepts the plain
     // left-click.
     expect([...dom.matchAll(/href="\/schedule"/g)]).toHaveLength(4);
+  });
+});
+
+describe("every published event page", () => {
+  const pages = listExport("events").filter((entry) => entry.endsWith(".html"));
+
+  it("returns to the catalogue through exactly one semantic backlink", () => {
+    // It used to be `/schedule#<city>` labelled «← Санкт-Петербург», which put
+    // the city in the navigation graph. The graph is / → /schedule →
+    // /events/<slug>, and this is the link that closes it for a visitor who
+    // arrived from search, a messenger or a new tab — where history.back()
+    // leads somewhere else entirely, or nowhere.
+    for (const page of pages) {
+      const html = readExport(`events/${page}`);
+      const backlink = /<a[^>]*href="([^"]*)"[^>]*>←\s*Города × Даты<\/a>/.exec(html);
+      expect(backlink, `no catalogue backlink in events/${page}`).not.toBeNull();
+      expect(backlink?.[1]).toBe("/schedule");
+    }
+  });
+
+  it("names no city as a destination and emits no fragment link", () => {
+    for (const page of pages) {
+      const html = readExport(`events/${page}`);
+      const body = html.slice(html.indexOf("<body"), html.indexOf("</body>"));
+      const dom = body.replace(/<script[\s\S]*?<\/script>/g, " ");
+      expect(dom).not.toContain('href="/schedule#');
+      expect(dom).not.toContain('href="/cities/');
+    }
   });
 });

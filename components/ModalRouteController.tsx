@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import DialogDrawer from "@/components/DialogDrawer";
 import EventView from "@/components/EventView";
-import ScheduleView from "@/components/ScheduleView";
+import ScheduleDrawerView, { type ScheduleDrawerSubview } from "@/components/ScheduleDrawerView";
 import { useReconciledSchedule } from "@/hooks/useReconciledSchedule";
 import { findEventInSchedule } from "@/lib/seo/event-view-model";
 import type { ScheduleViewModel } from "@/lib/seo/schedule-view-model";
@@ -144,6 +144,25 @@ export default function ModalRouteController({
   scheduleModel: ScheduleViewModel;
 }) {
   const [route, setRoute] = useState<ModalRoute>({ kind: "none" });
+  /**
+   * The schedule drawer's local subview — a panel inside /schedule, not a route.
+   *
+   * It lives here rather than inside ScheduleDrawerView because the chrome it
+   * has to agree with lives here: the dialog title and the Back control are
+   * DialogDrawer props, and a subview that could not change them would render a
+   * form under a heading that still said «ГОРОДА × ДАТЫ» with no way back to
+   * the list. This is the same arrangement the pre-SEO PaymentCta used for
+   * CheckoutFlow's catalogue → city-interest step.
+   *
+   * WHAT IS STORED IS THE ROUTE THE PANEL WAS OPENED ON, not a boolean. `route`
+   * is a fresh object on every transition, so `=== route` is true only while
+   * the visitor is still standing exactly where they opened it. Closing the
+   * drawer, stepping into an event, or any popstate therefore collapses the
+   * subview on its own — which is what "leaving the schedule resets it" has to
+   * mean for a panel that deliberately owns no history entry. Derived, so there
+   * is no reset effect and no cascading render to go with it.
+   */
+  const [cityInterestOn, setCityInterestOn] = useState<ModalRoute | null>(null);
   const flowId = useRef<string>("");
 
   useEffect(() => {
@@ -262,6 +281,9 @@ export default function ModalRouteController({
   // once a live read has moved a venue, date or price.
   const event = route.kind === "event" ? findEventInSchedule(currentScheduleModel, route.slug) : null;
 
+  const cityInterest = route.kind === "schedule" && cityInterestOn === route;
+  const scheduleSubview: ScheduleDrawerSubview = cityInterest ? "city-interest" : "list";
+
   return (
     <div data-modal-route={route.kind} data-modal-slug={route.kind === "event" ? route.slug : ""}>
       {/* No local open state. History is the single authority: Escape, an
@@ -269,18 +291,39 @@ export default function ModalRouteController({
           history, and the resulting popstate is what sets `route` — which in
           turn closes this. One direction of flow, one source of truth. */}
       <DialogDrawer
-        title={route.kind === "event" && event ? `${event.cityTitle}, ${event.dateLabel}` : "ГОРОДА × ДАТЫ"}
+        title={
+          route.kind === "event" && event
+            ? `${event.cityTitle}, ${event.dateLabel}`
+            : cityInterest
+              ? "Не нашли свой город?"
+              : "ГОРОДА × ДАТЫ"
+        }
         isOpen={route.kind !== "none"}
         // Identity of the content, so the shared shell resets its scroll when
-        // it swaps schedule <-> event instead of opening the new view at the
-        // old one's offset.
-        scrollResetKey={route.kind === "event" ? route.slug : route.kind}
+        // it swaps schedule <-> event — or list <-> city-interest — instead of
+        // opening the new view at the old one's offset.
+        scrollResetKey={route.kind === "event" ? route.slug : `${route.kind}:${scheduleSubview}`}
         onClose={close}
-        onBack={route.kind === "event" ? back : undefined}
+        // Two different Back mechanisms, deliberately. From an event it moves
+        // HISTORY, because /events/<slug> is a real entry and the address bar
+        // has to come back with the UI. From city-interest it is plain state,
+        // because that panel never created an entry — moving history there
+        // would leave /schedule and close the drawer.
+        onBack={
+          route.kind === "event"
+            ? back
+            : cityInterest
+              ? () => setCityInterestOn(null)
+              : undefined
+        }
       >
         <div data-testid="modal-drawer">
           {route.kind === "schedule" ? (
-            <ScheduleView model={currentScheduleModel} />
+            <ScheduleDrawerView
+              model={currentScheduleModel}
+              view={scheduleSubview}
+              onCityInterest={() => setCityInterestOn(route)}
+            />
           ) : (
             // Derived synchronously from the same reconciled model, so no
             // second data array rides in the home payload and no fetch precedes
