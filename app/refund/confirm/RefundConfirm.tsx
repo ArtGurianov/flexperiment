@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { commerceApiUrl } from "@/lib/commerce-api";
 import { formatRubles as rub } from "@/lib/money";
+import { occurrenceDateTimeLabel } from "@/lib/occurrence-format";
 
 type ConfirmationContext = {
   order_number: string;
@@ -44,7 +45,11 @@ export default function RefundConfirm() {
     } catch { setState("invalid"); }
   };
 
-  const formattedStart = context && new Intl.DateTimeFormat("ru-RU", { dateStyle: "long", timeStyle: "short", timeZone: context.occurrence.timezone }).format(new Date(context.occurrence.starts_at));
+  // The shared formatter rather than a fourth inline Intl call: this is the one
+  // public page that was still spelling the month out, so it read
+  // «25 сентября 2026 г. в 13:00» while the catalogue, the event page and the
+  // checkout panel all said «25.09.2026, 13:00» about the same occurrence.
+  const formattedStart = context && occurrenceDateTimeLabel(context.occurrence.starts_at, context.occurrence.timezone);
   const text = state === "loading" ? "Проверяем ссылку подтверждения…"
     : state === "confirmed" ? "Отмена участия подтверждена. Возврат передан в обработку."
       : state === "invalid" ? "Ссылка недействительна, истекла или условия автоматической отмены больше не выполняются. Напишите нам на art@flexperiment.ru."

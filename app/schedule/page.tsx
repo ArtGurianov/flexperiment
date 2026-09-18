@@ -34,9 +34,15 @@ import { publishedRecords } from "@/lib/seo/snapshot-source";
  * better answer than a 404.
  */
 const TITLE = "Города и даты мастер-классов | FLEXPERIMENT";
+// Says what the page contains and nothing more. It used to promise "площадки и
+// стоимость участия", which was true of the venue/price cards this catalogue
+// replaced and is not true of a CITY × DATE picker. Venue and price are stated,
+// with live state attached, on the /events/<slug> page each row links to — so
+// the description would have been a claim the body no longer supports and a
+// crawler could check.
 const DESCRIPTION =
   "Расписание мастер-классов FLEXPERIMENT по флексингу и experimental dance: " +
-  "города, даты, площадки и стоимость участия. Преподаватель — Арт Гурьянов.";
+  "ближайшие города и даты. Преподаватель — Арт Гурьянов.";
 
 export const metadata: Metadata = {
   title: TITLE,

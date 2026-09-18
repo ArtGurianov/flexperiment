@@ -115,10 +115,10 @@ describe("the intercepted /schedule drawer", () => {
     const drawer = await openSchedule();
 
     expect(rows(drawer)).toEqual([
-      "Санкт-Петербург × 25 сентября 2030 г.",
-      "Новосибирск × 02 октября 2030 г.",
-      "Санкт-Петербург × 18 октября 2030 г.",
-      "Томск × 25 октября 2030 г.",
+      "Санкт-Петербург × 25.09.2030",
+      "Новосибирск × 02.10.2030",
+      "Санкт-Петербург × 18.10.2030",
+      "Томск × 25.10.2030",
     ]);
     // Grouping would put both Petersburg dates together and print the city once
     // as a heading. Two separate rows naming it is the proof it did not.
@@ -192,7 +192,7 @@ describe("the intercepted /schedule drawer", () => {
     const drawer = await openSchedule();
 
     await waitFor(() => expect(rows(drawer)).toHaveLength(3));
-    expect(rows(drawer)?.[0]).toBe("Новосибирск × 02 октября 2030 г.");
+    expect(rows(drawer)?.[0]).toBe("Новосибирск × 02.10.2030");
     // Not relabelled as cancelled: absence from tour() is ambiguous.
     expect(drawer.textContent).not.toContain("Прошедшие и отменённые");
     expect(drawer.textContent).not.toMatch(/Отменён/);
@@ -220,10 +220,10 @@ describe("the intercepted /schedule drawer", () => {
 
     await waitFor(() =>
       expect(rows(drawer)).toEqual([
-        "Новосибирск × 02 октября 2030 г.",
-        "Санкт-Петербург × 18 октября 2030 г.",
-        "Томск × 25 октября 2030 г.",
-        "Санкт-Петербург × 01 ноября 2030 г.",
+        "Новосибирск × 02.10.2030",
+        "Санкт-Петербург × 18.10.2030",
+        "Томск × 25.10.2030",
+        "Санкт-Петербург × 01.11.2030",
       ]),
     );
   });

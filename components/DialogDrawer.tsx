@@ -36,7 +36,7 @@ const SURFACE = "flex flex-col bg-ink/90 text-bone";
  * px-12 is load-bearing, not decoration. Back (left-4) and Close (right-4) are
  * absolutely positioned, so a centred title with no horizontal inset runs
  * underneath them the moment it wraps — which it does for an event title like
- * «Санкт-Петербург, 25 сентября 2026 г.». The inset reserves the control
+ * «Санкт-Петербург, 25.09.2026». The inset reserves the control
  * gutters on both sides; leading-tight replaces leading-none so a wrapped title
  * does not collide with itself.
  */

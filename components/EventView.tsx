@@ -30,7 +30,7 @@ export default function EventView({
   headingLevel?: "h1" | "h2";
   /**
    * False inside the drawer, whose own title already names the event.
-   * Rendering both put «Санкт-Петербург, 25 сентября 2026 г.» on screen twice,
+   * Rendering both put «Санкт-Петербург, 25.09.2026» on screen twice,
    * once as the sheet title and again as the first line of its body.
    */
   showHeading?: boolean;
