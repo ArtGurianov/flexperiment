@@ -4,12 +4,71 @@
 release, a production data change, or a deploy.**
 
 `data/seo/occurrences.v1.json` is a committed, build-time projection of
-Commerce's public tour. Static event and city pages are generated from it.
-Commerce remains authoritative for every commercial fact in it; this file is a
-copy, and the obligations below are what keep the copy honest.
+Commerce's public tour. The static `/schedule` catalogue and every
+`/events/<slug>` page are generated from it. Commerce remains authoritative for
+every commercial fact in it; this file is a copy, and the obligations below are
+what keep the copy honest.
 
 The snapshot is deliberately **not** under `public/`. It must not be web-served:
 it is a build input, not a published document.
+
+
+## The public surface this snapshot feeds
+
+As deployed in `726dc412` (2026-09-18), the whole navigation graph is:
+
+```text
+/  →  /schedule  →  /events/<slug>
+```
+
+**There is no city layer and no city destination, not even a fragment.**
+`/cities/[city]` was retired; the one URL it ever published answers a permanent
+exact-match redirect to the bare catalogue:
+
+```text
+GET /cities/saint-petersburg   →  308  Location: /schedule
+GET /cities/novosibirsk        →  404
+GET /cities/nonsense           →  404
+GET /cities                    →  404
+```
+
+The redirect is `location = /cities/saint-petersburg` in
+`deploy/frontend.nginx.conf` — an exact match, deliberately not a prefix or a
+regex. A wildcard would turn every invented city URL into a permanent redirect
+to a valid page, manufacturing a soft-404 surface out of nothing. It carries
+**no fragment**: `/schedule` is one global chronological list with no per-city
+section to land on, so `#<city>` would point at nothing.
+
+The city is content shown on the catalogue and on an event page. It is not a
+navigation layer, and nothing may reintroduce one — `deploy/test-frontend-nginx-routing.sh`
+and `test/export/schedule.test.ts` both fail on a `/schedule#` link or a
+`id="<city-slug>"` anchor.
+
+### Two surfaces, one model, two date registers
+
+`lib/seo/schedule-view-model.ts` is rendered by two deliberately different
+presentations — a compact picker in the intercepted drawer, and the standalone
+page — which share the model, the `ACTIONABLE` filter, the ordering and the row
+primitive, and share nothing else. See `lib/seo/schedule-presentation.ts`.
+
+Dates therefore exist in two registers, and the distinction is load-bearing:
+
+| field | reads | used by |
+|---|---|---|
+| `compactDateLabel` | `25.09.2026` | catalogue rows only |
+| `dateLabel` | `25 сентября 2026 г.` | event heading, `<title>`, detail panel |
+
+A row is scanned against its neighbours and competes for a line with a city
+name; a heading is read once and deliberately. Both are derived from the same
+instant in the occurrence's **own timezone** in one place, so a row and the page
+it links to cannot name different days — and `useReconciledSchedule` rewrites
+both on a live read for the same reason. Never reach for a formatter that takes
+no timezone: under `output: "export"` the ambient zone is the CI runner's, and
+it would be frozen into static HTML for every visitor.
+
+`/schedule` deliberately carries **no venue and no price**. Both are stated,
+with live state attached, on the event page each row links to. Its metadata
+description must not promise them either.
 
 
 ## What the snapshot carries, and what it must never carry
@@ -134,8 +193,9 @@ these failures:
 | Surface | Rule |
 |---|---|
 | sitemap (`belongsInSitemap`) | live and `SCHEDULED` only — every tombstone excluded |
-| home page city links, city "Ближайшие даты" (`isUpcoming`) | live and `SCHEDULED` only |
-| city "Прошедшие и отменённые" | every tombstone, keeping its link |
+| `/schedule` upcoming list (`isUpcoming`, then `ACTIONABLE`) | live and `SCHEDULED` only |
+| `/schedule` "Прошедшие и отменённые" | every tombstone, keeping its link |
+| the intercepted drawer | upcoming only — it shows no archive at all |
 | event page booking panel | mounted only for a live record |
 | event page notice | `departureNotice(departed)` |
 | Event JSON-LD (`mayEmitEventSchema`) | withheld for `WITHDRAWN`; kept for `CANCELLED`/`COMPLETED`/`PAST` |
@@ -152,8 +212,12 @@ scheduled date, since the checkout dialog does its own authoritative check — b
 for a `WITHDRAWN` record that endpoint is *known* to 404, so the CTA would stay
 up permanently. Departed records render a static notice and never hydrate.
 
-A city whose dates are all archival keeps its page (its event pages link back to
-it) but leaves the home page and the sitemap.
+A city whose dates are all archival no longer has a page to keep. Its
+occurrences keep theirs, they stay in `/schedule`'s archival section, and they
+leave the sitemap. Every event page links back to `/schedule` — one semantic
+`← Города × Даты`, never `history.back()`, because a direct visitor may have
+arrived from search, a messenger or a new tab where "back" is somewhere else
+entirely.
 
 
 ## Eligibility
@@ -224,15 +288,18 @@ build-reproducibility gate.
 
 ## Zero eligible occurrences is a supported state
 
-With an empty snapshot the build succeeds and emits no `out/events` and no
-`out/cities` at all. The home page and the legal pages are unaffected.
+With an empty snapshot the build succeeds and emits no `out/events` at all.
+`/schedule` is a fixed route, so unlike `/events/[slug]` it cannot go empty: it
+is still built, and says plainly that no dates are announced. The home page and
+the legal pages are unaffected.
 
 Expressing that required one workaround, because Next 16 refuses an empty
 `generateStaticParams()` under `output: "export"` — with no runtime there is
 nothing to defer a path to, so a dynamic route in the tree must emit at least
-one file even when the correct answer is none. Both routes fall back to a single
-reserved `__placeholder__` param whose page renders the branded 404 body, and
-`pnpm build` then deletes it via
+one file even when the correct answer is none. `/events/[slug]` — now the only
+dynamic route in this family — falls back to a single reserved `__placeholder__`
+param whose page renders the branded 404 body, and `pnpm build` then deletes it
+via
 `commerce/src/prune-seo-placeholder-routes.ts`. A URL answering 200 with a 404
 body is still a fabricated event URL on a public site.
 
