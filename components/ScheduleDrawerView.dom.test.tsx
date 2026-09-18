@@ -161,6 +161,38 @@ describe("the intercepted /schedule drawer", () => {
     expect(row.querySelector("span")?.className).toContain("font-display text-2xl");
   });
 
+  it("splits the label so a wrap breaks at the separator and centres", async () => {
+    const drawer = await openSchedule();
+    const label = drawer.querySelector('a[href^="/events/"] > span') as HTMLElement;
+    const parts = [...label.children] as HTMLElement[];
+
+    // Two parts, and the «×» travels with the date. As one text run the browser
+    // broke «Санкт-Петербург ×» onto the first line and left the bare date
+    // below it, stranding the separator away from what it separates.
+    expect(parts.map((part) => part.textContent)).toEqual([
+      "Санкт-Петербург",
+      "× 25.09.2030",
+    ]);
+    // `grow` is what centres a part that is alone on its line; `text-center`
+    // does the centring, `flex-wrap` allows the break at all.
+    for (const part of parts) expect(part.className).toContain("grow");
+    expect(label.className).toContain("flex-wrap");
+    expect(label.className).toContain("text-center");
+  });
+
+  it("still reads as one sentence to a screen reader and a crawler", async () => {
+    // The visible separation is `gap-2`, which contributes no text. The literal
+    // space between the two parts is what keeps the accessible name — and the
+    // crawlable text of the static export — from reading
+    // «Санкт-Петербург× 25.09.2030». It is easy to delete as stray JSX, so it
+    // is pinned here.
+    const drawer = await openSchedule();
+    expect(drawer.querySelector('a[href^="/events/"]')?.textContent).toBe(
+      "Санкт-Петербург × 25.09.2030",
+    );
+    expect(screen.getByRole("link", { name: "Санкт-Петербург × 25.09.2030" })).toBeInTheDocument();
+  });
+
   it("shows CITY × DATE and nothing a detail card would show", async () => {
     const drawer = await openSchedule();
     const text = drawer.textContent ?? "";

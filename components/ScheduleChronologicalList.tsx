@@ -63,9 +63,9 @@ export default function ScheduleChronologicalList({
           onClick={onCityInterest}
           aria-expanded={cityInterestExpanded}
           aria-controls={cityInterestControls}
-        >
-          Твой город × Скоро
-        </ScheduleRowButton>
+          left="Твой город"
+          right="× Скоро"
+        />
       ) : null}
     </div>
   );
