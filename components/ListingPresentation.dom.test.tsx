@@ -1,7 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import EventView from "./EventView";
-import ScheduleView from "./ScheduleView";
+import StandaloneScheduleView from "./StandaloneScheduleView";
 import { toEventViewModel } from "@/lib/seo/event-view-model";
 import { reconcileSchedule } from "@/lib/seo/schedule-reconciliation";
 import { toScheduleViewModel } from "@/lib/seo/schedule-view-model";
@@ -13,10 +13,12 @@ import { seoOccurrence } from "@/lib/seo/public-occurrence-fixture";
  * reconcileSchedule already decided such an occurrence is neither actionable
  * nor upcoming, and a unit test pinned that. But the two views ignored
  * `listing` entirely, so the decision died in the model: the catalogue still
- * offered «Подробности и запись» and the event surface still mounted a booking
- * CTA for a date the checkout could not honour.
+ * offered the date and the event surface still mounted a booking CTA for
+ * something the checkout could not honour.
  *
- * These are the behavioural half of that invariant.
+ * These are the behavioural half of that invariant. The catalogue half now runs
+ * against the chronological picker rather than the retired city-grouped view —
+ * the rule is unchanged, only the surface enforcing it is.
  */
 beforeEach(() => {
   global.fetch = vi.fn(async () => ({ ok: false, json: async () => ({}) }) as Response) as typeof fetch;
@@ -33,10 +35,11 @@ describe("a record the live tour no longer returns", () => {
     const reconciled = absentFromLiveTour();
     expect(reconciled.cities[0].upcoming[0].listing).toBe("NOT_IN_LIVE_TOUR");
 
-    render(<ScheduleView model={reconciled} />);
+    const { container } = render(<StandaloneScheduleView model={reconciled} />);
 
-    // Neither the booking affordance nor a link presented as an available date.
-    expect(screen.queryByText("Подробности и запись")).not.toBeInTheDocument();
+    // No row at all, not a row without an affordance: the picker's only filter
+    // is ACTIONABLE.
+    expect(container.querySelector('a[href^="/events/"]')).toBeNull();
     expect(screen.getByText(/пока не объявлены/)).toBeInTheDocument();
     // And it is NOT relabelled as archival — the reason for its absence is
     // unknown, so calling it cancelled would assert more than is known.
@@ -46,8 +49,8 @@ describe("a record the live tour no longer returns", () => {
   it("still renders the schedule's other dates normally", () => {
     // The gate must be per record, not a blanket suppression.
     const model = toScheduleViewModel([seoOccurrence()]);
-    render(<ScheduleView model={model} />);
-    expect(screen.getByText("Подробности и запись")).toBeInTheDocument();
+    const { container } = render(<StandaloneScheduleView model={model} />);
+    expect(container.querySelector(`a[href="/events/${seoOccurrence().event_slug}"]`)).not.toBeNull();
   });
 
   it("offers no booking CTA on the event surface", () => {

@@ -20,8 +20,11 @@ import { publishedRecords } from "@/lib/seo/snapshot-source";
  *   /legal/archive/**
  *       Superseded document versions, retained for evidence, never canonical.
  *   /cities/**
- *       Retired. /schedule is the one indexable catalogue now; the published
- *       city URLs 308 to /schedule#<city> at the nginx layer.
+ *       Retired. /schedule is the one indexable catalogue now; the one
+ *       published city URL 308s to /schedule — no fragment — at the nginx
+ *       layer. The city is content on the catalogue and the event page, not a
+ *       destination: the whole navigation graph is / -> /schedule ->
+ *       /events/<slug>.
  *   cancelled, completed and past event pages
  *       Their URLs stay live so an indexed link or a printed ticket keeps
  *       working, but they are not fresh content to offer a crawler.

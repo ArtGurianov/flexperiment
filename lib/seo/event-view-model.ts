@@ -1,7 +1,6 @@
 import type { PublishedRecord } from "@/lib/seo/occurrence-snapshot";
 import {
   toScheduleViewModel,
-  type ScheduleCityView,
   type ScheduleEventView,
   type ScheduleListing,
   type ScheduleViewModel,
@@ -23,7 +22,6 @@ import {
 export type EventViewModel = {
   readonly id: string;
   readonly slug: string;
-  readonly citySlug: string;
   readonly cityTitle: string;
   readonly startsAt: string;
   readonly dateLabel: string;
@@ -38,16 +36,16 @@ export type EventViewModel = {
  * The drawer's path: the visitor has already clicked a row, so every string is
  * formatted and simply moves across.
  *
- * Taking the city as well as the event is what supplies `citySlug`, which the
- * backlink needs and a row does not carry.
+ * It used to take the owning `ScheduleCityView` as well, purely to supply a
+ * `citySlug` for the `/schedule#<city>` backlink. That fragment is gone — the
+ * catalogue is one chronological list with no per-city section — so the city is
+ * no longer part of this model's identity, only of its content.
  */
 export const toEventViewModelFromSchedule = (
-  city: ScheduleCityView,
   event: ScheduleEventView,
 ): EventViewModel => ({
   id: event.id,
   slug: event.slug,
-  citySlug: city.slug,
   cityTitle: event.cityTitle,
   startsAt: event.startsAt,
   dateLabel: event.dateLabel,
@@ -70,7 +68,7 @@ export const toEventViewModelFromSchedule = (
 export const toEventViewModel = (record: PublishedRecord): EventViewModel => {
   const [city] = toScheduleViewModel([record]).cities;
   const [event] = [...city.upcoming, ...city.archived];
-  return toEventViewModelFromSchedule(city, event);
+  return toEventViewModelFromSchedule(event);
 };
 
 /** Finds an event in a (reconciled) schedule model and converts it. */
@@ -80,7 +78,7 @@ export const findEventInSchedule = (
 ): EventViewModel | null => {
   for (const city of model.cities) {
     const event = [...city.upcoming, ...city.archived].find((entry) => entry.slug === slug);
-    if (event) return toEventViewModelFromSchedule(city, event);
+    if (event) return toEventViewModelFromSchedule(event);
   }
   return null;
 };

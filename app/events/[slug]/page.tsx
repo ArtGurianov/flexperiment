@@ -144,11 +144,25 @@ export default async function EventPage(props: PageProps<"/events/[slug]">) {
             codebase uses for exactly this clearance. The legal pages avoid the
             problem only by rendering no Navbar at all. */}
         <Section className="pt-14 pb-[8cqw]">
+          {/* ONE catalogue backlink, to /schedule with no fragment.
+              It used to point at `/schedule#<city>` and read «← Санкт-Петербург»,
+              which made the city look like a destination in the navigation
+              graph. It is not one: the graph is / → /schedule → /events/<slug>,
+              and the city is content shown on those surfaces. The chronological
+              catalogue has no per-city section to land on either, so a fragment
+              would now be a link to nothing.
+
+              Semantic navigation, never history.back(): most visitors to this
+              URL arrive from search, a messenger or a new tab, where "back" is
+              somewhere else entirely or nowhere at all. Inside the drawer the
+              equivalent control IS history — see ModalRouteController, which
+              owns that one because there the previous entry really is
+              /schedule. */}
           <Link
-            href={`/schedule#${record.city}`}
+            href="/schedule"
             className="mb-[6cqw] inline-block text-[clamp(0.8rem,3cqw,1rem)] text-acid underline-offset-4 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid"
           >
-            ← {record.city_title}
+            ← Города × Даты
           </Link>
 
           {/* The same component the drawer renders, so an indexed page and an
