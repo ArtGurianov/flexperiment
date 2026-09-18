@@ -29,6 +29,36 @@ describe("/schedule", () => {
     expect(metaProperty(html, "og:site_name")).toBe("FLEXPERIMENT");
   });
 
+  it("describes what the page holds, and promises no venue or price", () => {
+    // The description used to end "города, даты, площадки и стоимость участия",
+    // which was true of the venue/price cards this catalogue replaced. The rows
+    // are CITY × DATE now, so that sentence would be a claim the document
+    // itself contradicts — and unlike most copy, this one a crawler can check
+    // against the body directly beneath it.
+    const description = metaName(html, "description") ?? "";
+    expect(description).toContain("ближайшие города и даты");
+    expect(description).not.toMatch(/площад|стоимост/i);
+    // Next duplicates the description across the social namespaces, so a
+    // half-corrected page would still ship the old promise to link previews.
+    expect(metaProperty(html, "og:description")).toBe(description);
+    expect(metaName(html, "twitter:description")).toBe(description);
+    // And the body genuinely carries neither, so the description is honest
+    // rather than merely vaguer.
+    const text = textOf(html);
+    expect(text).not.toContain("₽");
+    expect(text).not.toContain("Площадка уточняется");
+  });
+
+  it("dates every row in the compact Russian form", () => {
+    // DD.MM.YYYY, restored from c7d897b. A spelled-out month wraps the row to
+    // two lines at 390px, which is the difference between the picker this is
+    // and the page it briefly became.
+    for (const event of actionableUpcomingEvents(model())) {
+      expect(event.dateLabel).toMatch(/^\d{2}\.\d{2}\.\d{4}$/);
+      expect(textOf(html)).toContain(event.dateLabel);
+    }
+  });
+
   it("links every publishable event with a real anchor", () => {
     // This route exists because the catalogue used to live only inside a
     // client-only dialog, so no crawler ever saw a city, a date, or a path to

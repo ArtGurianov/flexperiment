@@ -52,9 +52,9 @@ describe("the standalone /schedule list", () => {
     const { container } = render(<StandaloneScheduleView model={model()} />);
 
     expect(upcomingRows(container)).toEqual([
-      "Санкт-Петербург × 25 сентября 2030 г.",
-      "Новосибирск × 02 октября 2030 г.",
-      "Санкт-Петербург × 18 октября 2030 г.",
+      "Санкт-Петербург × 25.09.2030",
+      "Новосибирск × 02.10.2030",
+      "Санкт-Петербург × 18.10.2030",
     ]);
     const row = container.querySelector('a[href^="/events/"]') as HTMLElement;
     expect(row.className).toContain("border-2 border-bone/50 bg-bone");

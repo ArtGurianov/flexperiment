@@ -40,6 +40,28 @@ export type Occurrence = {
 };
 
 /**
+ * WHY EVERY DATE BELOW IS NUMERIC — "25.09.2026", not "25 сентября 2026 г."
+ *
+ * These formatters serve one audience: visitors in Russia, where DD.MM.YYYY is
+ * the everyday written form and MM.DD.YYYY is not in use. The ambiguity that
+ * makes a numeric date risky in an international product does not exist here,
+ * and the compact form is what the surfaces need — a catalogue row reading
+ * «Санкт-Петербург × 25.09.2026» fits on one line at 390px where the long form
+ * wraps to two, which is the difference between a picker and a page.
+ *
+ * It also settles a split this codebase already had: `occurrenceDateLabel`
+ * below has always produced "25.09.2026" via toLocaleDateString, so the
+ * checkout dialog's own catalogue and the schedule catalogue were rendering the
+ * same kind of row in two different date dialects.
+ *
+ * NOT changed, and deliberately: the server-issued strings in commerce/ — the
+ * transactional emails, the fiscal receipt line items and the API's own
+ * `venue_disclosure`. Those are a different layer with its own audience and its
+ * own legal weight, and an email read hours later out of context is the one
+ * place a spelled-out month genuinely earns its length.
+ */
+
+/**
  * Short date, in the *viewer's* zone.
  *
  * DELIBERATELY not timezone-explicit, and only correct where it is used: the
@@ -48,6 +70,10 @@ export type Occurrence = {
  * would format in the build machine's zone and freeze that into static HTML —
  * so a server-rendered page must use `occurrenceDateLabelInZone` below, which
  * takes the occurrence's own zone.
+ *
+ * The two now agree on FORMAT and differ only in WHICH ZONE, so reaching for
+ * this one where a zone is available is a latent bug rather than a style
+ * choice. Prefer the zone-explicit version everywhere it is possible.
  */
 export const occurrenceDateLabel = (startsAt: string) => {
   const date = new Date(startsAt);
@@ -59,7 +85,7 @@ export const occurrenceDateTimeLabel = (startsAt: string, timeZone: string) => {
   const date = new Date(startsAt);
   if (Number.isNaN(date.getTime())) return "Время уточняется";
   const options: Intl.DateTimeFormatOptions = {
-    day: "2-digit", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit",
+    day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit",
   };
   try {
     return new Intl.DateTimeFormat("ru-RU", { ...options, timeZone }).format(date);
@@ -69,16 +95,16 @@ export const occurrenceDateTimeLabel = (startsAt: string, timeZone: string) => {
 };
 
 /**
- * Long date without a time, in the occurrence's own zone.
+ * Date without a time, in the occurrence's own zone.
  *
- * The one a prerendered page wants for a heading: "14 марта 2030 г." is the
- * same string on every machine that builds it, where `occurrenceDateLabel`
- * would bake in whatever zone the CI runner happened to have.
+ * The one a prerendered page wants: "14.03.2030" is the same string on every
+ * machine that builds it, where `occurrenceDateLabel` would bake in whatever
+ * zone the CI runner happened to have.
  */
 export const occurrenceDateLabelInZone = (startsAt: string, timeZone: string) => {
   const date = new Date(startsAt);
   if (Number.isNaN(date.getTime())) return "Дата уточняется";
-  const options: Intl.DateTimeFormatOptions = { day: "2-digit", month: "long", year: "numeric" };
+  const options: Intl.DateTimeFormatOptions = { day: "2-digit", month: "2-digit", year: "numeric" };
   try {
     return new Intl.DateTimeFormat("ru-RU", { ...options, timeZone }).format(date);
   } catch {
