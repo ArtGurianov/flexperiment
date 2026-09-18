@@ -2,6 +2,7 @@ import { formatRubles } from "@/lib/money";
 import {
   departureLabel,
   departureNotice,
+  occurrenceCompactDateLabelInZone,
   occurrenceDateLabelInZone,
   occurrenceTimeLabelInZone,
 } from "@/lib/occurrence-format";
@@ -19,9 +20,10 @@ import { isDeparted, type PublishedRecord } from "@/lib/seo/occurrence-snapshot"
  * those places and break in the other.
  *
  * Formatting therefore happens exactly once, here, in the occurrence's own
- * timezone. It must not happen in the view: `occurrenceDateLabel` uses the
- * ambient zone, which is the viewer's in a browser and the CI runner's during a
- * build, and those two disagreeing is precisely the bug this avoids.
+ * timezone. It must not happen in the view, and it must not reach for a
+ * formatter that takes no zone: the ambient one is the viewer's in a browser
+ * and the CI runner's during a build, and those two disagreeing is precisely
+ * the bug this avoids.
  *
  * What is NOT in here: availability, sales state, purchase eligibility, promo
  * and quote. Those are live Commerce facts. The snapshot is the publication
@@ -44,7 +46,23 @@ export type ScheduleEventView = {
   readonly cityTitle: string;
   /** Machine-readable, for <time dateTime>. */
   readonly startsAt: string;
+  /**
+   * The long date, «25 сентября 2026 г.» — for a heading, a detail panel, a
+   * dialog title: anything read once and deliberately.
+   */
   readonly dateLabel: string;
+  /**
+   * The same instant as «25.09.2026», for a catalogue row.
+   *
+   * A second FIELD, not a second FORMAT: the two are different presentation
+   * registers for different surfaces, and carrying both here is what keeps the
+   * choice at the call site instead of in a formatter that has to guess. Both
+   * are derived from the same instant in the same zone, in one place, so a
+   * catalogue row and the heading it links to cannot name different days — and
+   * live reconciliation must rewrite BOTH, which is asserted in
+   * useReconciledSchedule's tests.
+   */
+  readonly compactDateLabel: string;
   readonly timeLabel: string;
   readonly venueLabel: string;
   readonly priceLabel: string;
@@ -115,6 +133,7 @@ const toEventView = (record: PublishedRecord): ScheduleEventView => ({
   cityTitle: record.city_title,
   startsAt: record.starts_at,
   dateLabel: occurrenceDateLabelInZone(record.starts_at, record.timezone),
+  compactDateLabel: occurrenceCompactDateLabelInZone(record.starts_at, record.timezone),
   timeLabel: occurrenceTimeLabelInZone(record.starts_at, record.timezone),
   ...venuePresentation(record.venue),
   priceLabel: formatRubles(record.price_kopecks),

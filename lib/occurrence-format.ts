@@ -40,44 +40,56 @@ export type Occurrence = {
 };
 
 /**
- * WHY EVERY DATE BELOW IS NUMERIC — "25.09.2026", not "25 сентября 2026 г."
+ * TWO DATE REGISTERS, AND THE DIFFERENCE IS THE SURFACE, NOT THE TASTE.
  *
- * These formatters serve one audience: visitors in Russia, where DD.MM.YYYY is
- * the everyday written form and MM.DD.YYYY is not in use. The ambiguity that
- * makes a numeric date risky in an international product does not exist here,
- * and the compact form is what the surfaces need — a catalogue row reading
- * «Санкт-Петербург × 25.09.2026» fits on one line at 390px where the long form
- * wraps to two, which is the difference between a picker and a page.
+ *   compact   25.09.2026            a catalogue row — a picker, scanned
+ *   long      25 сентября 2026 г.   a heading, a detail panel, a confirmation
  *
- * It also settles a split this codebase already had: `occurrenceDateLabel`
- * below has always produced "25.09.2026" via toLocaleDateString, so the
- * checkout dialog's own catalogue and the schedule catalogue were rendering the
- * same kind of row in two different date dialects.
+ * A row's job is to be scanned against its neighbours and clicked; it carries
+ * no other information, it sits at text-2xl, and it competes for a line with a
+ * city name. A heading, an event page's «Дата и время», a checkout panel and a
+ * refund confirmation are read once and deliberately — there the spelled-out
+ * month is easier to take in and much harder to misread at a glance.
  *
- * NOT changed, and deliberately: the server-issued strings in commerce/ — the
+ * The compact form is safe HERE and would not be everywhere: the audience is
+ * Russia only, where DD.MM.YYYY is the everyday written form and MM.DD.YYYY is
+ * not in use, so a numeric date carries no ambiguity to resolve.
+ *
+ * An earlier pass made everything numeric, which is how the long register ended
+ * up removed from surfaces that had nothing to do with the catalogue. Two
+ * registers is not the same as two competing formats: each one names the job it
+ * is for, and the picker is the only caller of the compact one.
+ *
+ * NOT part of this at all: the server-issued strings in commerce/ — the
  * transactional emails, the fiscal receipt line items and the API's own
- * `venue_disclosure`. Those are a different layer with its own audience and its
- * own legal weight, and an email read hours later out of context is the one
- * place a spelled-out month genuinely earns its length.
+ * `venue_disclosure`. Those are a different layer with its own audience and
+ * legal weight, they spell the month out, and they should.
  */
 
 /**
- * Short date, in the *viewer's* zone.
+ * The picker's date: numeric, compact, in the occurrence's own zone.
  *
- * DELIBERATELY not timezone-explicit, and only correct where it is used: the
- * checkout dialog's catalogue list and dialog title, which render in a browser
- * belonging to the person reading them. Prerendering this during `next build`
- * would format in the build machine's zone and freeze that into static HTML —
- * so a server-rendered page must use `occurrenceDateLabelInZone` below, which
- * takes the occurrence's own zone.
+ * Zone-explicit like every other formatter here, and for the reason that
+ * governs the whole file: under `output: "export"` the ambient zone is the CI
+ * runner's, so a date formatted without one is frozen into static HTML for
+ * every visitor. This replaced an ambient-zone helper that produced the same
+ * string and was correct only in a browser.
  *
- * The two now agree on FORMAT and differ only in WHICH ZONE, so reaching for
- * this one where a zone is available is a latent bug rather than a style
- * choice. Prefer the zone-explicit version everywhere it is possible.
+ * It does NOT promise to fit on one line. It shortens the row — «Новосибирск ×
+ * 02.10.2026» fits at 390px where the long form did not — but a browser smoke
+ * measured «Санкт-Петербург × 25.09.2026» at 340px in a 314px drawer row, and
+ * city-catalog.ts holds longer names still. ScheduleRow is built to wrap well
+ * rather than to rely on not wrapping.
  */
-export const occurrenceDateLabel = (startsAt: string) => {
+export const occurrenceCompactDateLabelInZone = (startsAt: string, timeZone: string) => {
   const date = new Date(startsAt);
-  return Number.isNaN(date.getTime()) ? "Скоро" : date.toLocaleDateString("ru-RU");
+  if (Number.isNaN(date.getTime())) return "Дата уточняется";
+  const options: Intl.DateTimeFormatOptions = { day: "2-digit", month: "2-digit", year: "numeric" };
+  try {
+    return new Intl.DateTimeFormat("ru-RU", { ...options, timeZone }).format(date);
+  } catch {
+    return new Intl.DateTimeFormat("ru-RU", options).format(date);
+  }
 };
 
 /** Full date and time in the occurrence's own zone — safe to prerender. */
@@ -85,7 +97,7 @@ export const occurrenceDateTimeLabel = (startsAt: string, timeZone: string) => {
   const date = new Date(startsAt);
   if (Number.isNaN(date.getTime())) return "Время уточняется";
   const options: Intl.DateTimeFormatOptions = {
-    day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit",
+    day: "2-digit", month: "long", year: "numeric", hour: "2-digit", minute: "2-digit",
   };
   try {
     return new Intl.DateTimeFormat("ru-RU", { ...options, timeZone }).format(date);
@@ -95,16 +107,15 @@ export const occurrenceDateTimeLabel = (startsAt: string, timeZone: string) => {
 };
 
 /**
- * Date without a time, in the occurrence's own zone.
+ * The long date, without a time, in the occurrence's own zone.
  *
- * The one a prerendered page wants: "14.03.2030" is the same string on every
- * machine that builds it, where `occurrenceDateLabel` would bake in whatever
- * zone the CI runner happened to have.
+ * The one a prerendered heading wants: "14 марта 2030 г." is the same string on
+ * every machine that builds it.
  */
 export const occurrenceDateLabelInZone = (startsAt: string, timeZone: string) => {
   const date = new Date(startsAt);
   if (Number.isNaN(date.getTime())) return "Дата уточняется";
-  const options: Intl.DateTimeFormatOptions = { day: "2-digit", month: "2-digit", year: "numeric" };
+  const options: Intl.DateTimeFormatOptions = { day: "2-digit", month: "long", year: "numeric" };
   try {
     return new Intl.DateTimeFormat("ru-RU", { ...options, timeZone }).format(date);
   } catch {

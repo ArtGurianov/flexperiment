@@ -49,13 +49,18 @@ describe("/schedule", () => {
     expect(text).not.toContain("Площадка уточняется");
   });
 
-  it("dates every row in the compact Russian form", () => {
-    // DD.MM.YYYY, restored from c7d897b. A spelled-out month wraps the row to
-    // two lines at 390px, which is the difference between the picker this is
-    // and the page it briefly became.
+  it("dates every row in the compact register, and only the catalogue does", () => {
+    // DD.MM.YYYY, restored from c7d897b. The catalogue is the ONE surface on
+    // this register: a row is scanned against its neighbours, so it is short.
+    // The long form belongs to the headings and detail panels the same model
+    // feeds, and the event-page assertions below pin that other half.
+    const text = textOf(html);
     for (const event of actionableUpcomingEvents(model())) {
-      expect(event.dateLabel).toMatch(/^\d{2}\.\d{2}\.\d{4}$/);
-      expect(textOf(html)).toContain(event.dateLabel);
+      expect(event.compactDateLabel).toMatch(/^\d{2}\.\d{2}\.\d{4}$/);
+      expect(text).toContain(event.compactDateLabel);
+      // And the long form does NOT leak onto the catalogue.
+      expect(event.dateLabel).not.toBe(event.compactDateLabel);
+      expect(text).not.toContain(event.dateLabel);
     }
   });
 
@@ -77,7 +82,7 @@ describe("/schedule", () => {
     const flatten = (value: string) => value.replace(/\s+/g, " ");
     const text = flatten(textOf(html));
     for (const event of [...actionableUpcomingEvents(model()), ...archivedEvents(model())]) {
-      expect(text).toContain(flatten(`${event.cityTitle} × ${event.dateLabel}`));
+      expect(text).toContain(flatten(`${event.cityTitle} × ${event.compactDateLabel}`));
     }
   });
 
@@ -203,6 +208,19 @@ describe("every published event page", () => {
       const backlink = /<a[^>]*href="([^"]*)"[^>]*>←\s*Города × Даты<\/a>/.exec(html);
       expect(backlink, `no catalogue backlink in events/${page}`).not.toBeNull();
       expect(backlink?.[1]).toBe("/schedule");
+    }
+  });
+
+  it("dates its heading and title in the long register, not the catalogue's", () => {
+    // The other half of the split. An event page is read once and
+    // deliberately — «25 сентября 2026 г.» is easier to take in there, and is
+    // what a search result should show. Making everything numeric is exactly
+    // the over-correction this guards.
+    for (const event of [...actionableUpcomingEvents(model()), ...archivedEvents(model())]) {
+      const html = readExport(`events/${event.slug}.html`);
+      expect(textOf(html)).toContain(event.dateLabel.replace(/\s+/g, " "));
+      expect(titleOf(html)).toContain(event.dateLabel);
+      expect(titleOf(html)).not.toContain(event.compactDateLabel);
     }
   });
 

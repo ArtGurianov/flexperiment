@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  occurrenceCompactDateLabelInZone,
   occurrenceDateLabelInZone,
   occurrenceDateTimeLabel,
   occurrenceTimeLabelInZone,
@@ -9,56 +10,57 @@ import {
 } from "@/lib/occurrence-format";
 
 /**
- * The public site's date format, pinned.
+ * Two registers, and the boundary between them.
  *
- * Two independent properties, and both have already been the site of a defect:
+ * An earlier pass made every date numeric, which is how the long form
+ * disappeared from headings, detail panels and a refund confirmation that had
+ * nothing to do with the catalogue. These tests pin both forms AND the fact
+ * that they are different, so a future "let's unify the date format" reads as a
+ * decision rather than as tidying.
  *
- *   FORM — numeric DD.MM.YYYY. The catalogue rows restored from c7d897b are a
- *   compact picker, and «Санкт-Петербург × 25 сентября 2026 г.» wraps to two
- *   lines at 390px where «Санкт-Петербург × 25.09.2026» does not. The audience
- *   is Russia only, where DD.MM is the written form and MM.DD is not in use, so
- *   the ambiguity that would forbid this internationally does not apply.
- *
- *   ZONE — the occurrence's own, never the ambient one. This is the harder half
- *   and the reason `occurrenceDateLabel` may not be reused on a prerendered
- *   surface: under `output: "export"` the ambient zone is the CI runner's, and
- *   it would be frozen into static HTML for every visitor.
+ * Both are zone-explicit, which is the harder property and the one with real
+ * consequences: under `output: "export"` a formatter without a zone would bake
+ * the CI runner's timezone into static HTML for every visitor.
  */
-describe("occurrenceDateLabelInZone", () => {
-  it("is numeric and compact, never a spelled-out month", () => {
-    expect(occurrenceDateLabelInZone("2026-09-25T10:00:00.000Z", "Europe/Moscow")).toBe("25.09.2026");
-    expect(occurrenceDateLabelInZone("2030-03-14T11:00:00.000Z", "Asia/Novosibirsk")).toBe("14.03.2030");
+const INSTANT = "2026-09-25T10:00:00.000Z";
+
+describe("the compact register — catalogue rows", () => {
+  it("is numeric, and the only form allowed to be", () => {
+    expect(occurrenceCompactDateLabelInZone(INSTANT, "Europe/Moscow")).toBe("25.09.2026");
+    expect(occurrenceCompactDateLabelInZone("2030-03-14T11:00:00.000Z", "Asia/Novosibirsk")).toBe("14.03.2030");
   });
 
   it("answers in the occurrence's zone, not the machine's", () => {
     // One instant, two zones, two calendar days. A formatter reading the
     // ambient zone could not tell these apart, and a build would freeze
     // whichever one CI happened to be in.
-    const instant = "2026-09-25T20:00:00.000Z";
-    expect(occurrenceDateLabelInZone(instant, "Europe/Moscow")).toBe("25.09.2026");
-    expect(occurrenceDateLabelInZone(instant, "Asia/Novosibirsk")).toBe("26.09.2026");
+    const evening = "2026-09-25T20:00:00.000Z";
+    expect(occurrenceCompactDateLabelInZone(evening, "Europe/Moscow")).toBe("25.09.2026");
+    expect(occurrenceCompactDateLabelInZone(evening, "Asia/Novosibirsk")).toBe("26.09.2026");
   });
 
   it("says so plainly rather than rendering Invalid Date", () => {
-    expect(occurrenceDateLabelInZone("not a date", "Europe/Moscow")).toBe("Дата уточняется");
+    expect(occurrenceCompactDateLabelInZone("not a date", "Europe/Moscow")).toBe("Дата уточняется");
   });
 });
 
-describe("occurrenceDateTimeLabel", () => {
-  it("carries the same numeric date, with the time of day", () => {
-    expect(occurrenceDateTimeLabel("2026-09-25T10:00:00.000Z", "Europe/Moscow")).toBe("25.09.2026, 13:00");
+describe("the long register — headings, detail panels, confirmations", () => {
+  it("spells the month out", () => {
+    expect(occurrenceDateLabelInZone(INSTANT, "Europe/Moscow")).toBe("25 сентября 2026 г.");
+    expect(occurrenceDateTimeLabel(INSTANT, "Europe/Moscow")).toBe("25 сентября 2026 г. в 13:00");
   });
 
-  it("and its date half agrees with the date-only label", () => {
-    // The two are shown on the same screens — the event page's «Дата и время»
-    // beside a catalogue row — so a divergence in format would read as a
-    // divergence in fact.
-    const instant = "2026-10-02T04:00:00.000Z";
-    const zone = "Asia/Novosibirsk";
-    expect(occurrenceDateTimeLabel(instant, zone).startsWith(occurrenceDateLabelInZone(instant, zone))).toBe(true);
+  it("is the same zone-explicit instant as the compact one, said differently", () => {
+    // The guarantee that matters: a catalogue row and the heading it links to
+    // cannot name different days, however differently they spell the month.
+    const evening = "2026-09-25T20:00:00.000Z";
+    for (const zone of ["Europe/Moscow", "Asia/Novosibirsk"]) {
+      const day = occurrenceCompactDateLabelInZone(evening, zone).slice(0, 2);
+      expect(occurrenceDateLabelInZone(evening, zone).startsWith(day)).toBe(true);
+    }
   });
 
-  it("reaches the venue disclosure's announcement deadline too", () => {
+  it("reaches the venue disclosure's announcement deadline", () => {
     const occurrence = {
       timezone: "Europe/Moscow",
       venue: {
@@ -69,15 +71,25 @@ describe("occurrenceDateTimeLabel", () => {
         announce_by: "2026-09-20T14:00:00.000Z",
       },
     } as Occurrence;
+    // A sentence a visitor reads once, and the mirror of one Commerce issues
+    // server-side — which also spells the month out.
     expect(publicVenueDisclosure(occurrence)).toBe(
-      "Площадка уточняется. Сообщим адрес участникам на email не позднее 20.09.2026, 17:00.",
+      "Площадка уточняется. Сообщим адрес участникам на email не позднее 20 сентября 2026 г. в 17:00.",
     );
+  });
+
+  it("stays plainly distinct from the compact register", () => {
+    expect(occurrenceDateLabelInZone(INSTANT, "Europe/Moscow")).not.toBe(
+      occurrenceCompactDateLabelInZone(INSTANT, "Europe/Moscow"),
+    );
+    expect(occurrenceDateLabelInZone(INSTANT, "Europe/Moscow")).not.toMatch(/\d\.\d/);
+    expect(occurrenceCompactDateLabelInZone(INSTANT, "Europe/Moscow")).not.toMatch(/[а-я]/i);
   });
 });
 
 describe("occurrenceTimeLabelInZone", () => {
   it("is unchanged, and empty rather than wrong for a bad instant", () => {
-    expect(occurrenceTimeLabelInZone("2026-09-25T10:00:00.000Z", "Europe/Moscow")).toBe("13:00");
+    expect(occurrenceTimeLabelInZone(INSTANT, "Europe/Moscow")).toBe("13:00");
     expect(occurrenceTimeLabelInZone("nonsense", "Europe/Moscow")).toBe("");
   });
 });

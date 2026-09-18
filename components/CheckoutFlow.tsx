@@ -14,7 +14,7 @@ import { formatRubles as rub } from "@/lib/money";
 // Definitions moved to lib/occurrence-format.ts so a server component can use
 // them too; every call site below is unchanged.
 import {
-  occurrenceDateLabel,
+  occurrenceCompactDateLabelInZone,
   occurrenceDateTimeLabel,
   publicVenueDisclosure,
   type Occurrence,
@@ -118,7 +118,10 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle, initialOccu
     setOffer(false);
     setConsent(false);
     setMessage(null);
-    onBookingTitle(`${occurrence.city_title} × ${occurrenceDateLabel(occurrence.starts_at)}`);
+    // Reads back the row the visitor just tapped, so it is formatted the way
+    // that row was — and in the occurrence's zone, which the ambient-zone
+    // helper this replaced could not do.
+    onBookingTitle(`${occurrence.city_title} × ${occurrenceCompactDateLabelInZone(occurrence.starts_at, occurrence.timezone)}`);
     setView("booking");
     onViewChange("booking");
   }, [onBookingTitle, onViewChange]);
@@ -297,7 +300,7 @@ export default function CheckoutFlow({ onViewChange, onBookingTitle, initialOccu
       {catalogState === "error" ? <p role="status" className="border border-bone/50 px-4 py-5 text-bone/70 text-center">Произошла ошибка. Перезагрузите страницу</p> : null}
       {catalogState === "ready" && !occurrences.length ? <p role="status" className="border border-bone/50 px-4 py-5 text-bone/70 text-center">Запись на ближайшие даты пока не открыта.</p> : null}
       {occurrences.map((occurrence) => <button key={occurrence.id} type="button" onClick={() => showBooking(occurrence)} className="flex w-full flex-col gap-4 border-2 border-bone/50 bg-bone px-4 py-5 text-left text-ink transition-colors hover:border-acid hover:bg-acid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid">
-        <span className="font-display text-2xl">{occurrence.city_title} × {occurrenceDateLabel(occurrence.starts_at)}</span>
+        <span className="font-display text-2xl">{occurrence.city_title} × {occurrenceCompactDateLabelInZone(occurrence.starts_at, occurrence.timezone)}</span>
       </button>)}
       <button type="button" onClick={showCityInterest} className="flex w-full flex-col gap-4 border-2 border-bone/50 bg-bone px-4 py-5 text-left text-ink transition-colors hover:border-acid hover:bg-acid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid">
         <span className="font-display text-2xl">Твой город × Скоро</span>
