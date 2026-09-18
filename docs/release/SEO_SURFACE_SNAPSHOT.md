@@ -46,10 +46,19 @@ and `test/export/schedule.test.ts` both fail on a `/schedule#` link or a
 
 ### Two surfaces, one model, two date registers
 
-`lib/seo/schedule-view-model.ts` is rendered by two deliberately different
-presentations — a compact picker in the intercepted drawer, and the standalone
-page — which share the model, the `ACTIONABLE` filter, the ordering and the row
-primitive, and share nothing else. See `lib/seo/schedule-presentation.ts`.
+`lib/seo/schedule-view-model.ts` feeds two deliberately different outer
+presentations — a compact picker in the intercepted drawer and the standalone
+page. Both render the shared `components/ScheduleChronologicalList.tsx` for
+upcoming dates, which centralizes the `ACTIONABLE` filter, the chronological
+ordering (`lib/seo/schedule-presentation.ts`) and the row primitive
+(`components/ScheduleRow.tsx`). Around that shared list the surfaces
+deliberately diverge: the drawer has dialog/subview behaviour and no archive,
+while the standalone page owns the page chrome, the inline city-interest
+disclosure and the archival section.
+
+The split is at the SHELL, not at the list. Sharing the whole renderer is what
+put a page of venue/price cards inside the drawer; sharing only the model would
+have let the two lists drift apart. The line is drawn where it is on purpose.
 
 Dates therefore exist in two registers, and the distinction is load-bearing:
 
