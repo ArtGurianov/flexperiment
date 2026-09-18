@@ -1,4 +1,4 @@
-import type { ComponentPropsWithoutRef } from "react";
+import type { ComponentPropsWithoutRef, ReactNode } from "react";
 
 import { cn } from "@/lib/cn";
 import type { ScheduleEventView } from "@/lib/seo/schedule-view-model";
@@ -51,7 +51,51 @@ const ROW =
 const ROW_ARCHIVAL =
   "flex w-full flex-col gap-2 border border-bone/50 bg-ink/90 px-4 py-5 text-left text-bone/70 transition-colors hover:border-acid hover:text-acid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-acid";
 
-const LABEL = "font-display text-2xl";
+/**
+ * The label is TWO parts, «Санкт-Петербург» and «× 25.09.2026», not one string.
+ *
+ * At 390px the longest city name plus a date does not fit on one line at
+ * text-2xl — and it did not in the golden file either, whose reference list
+ * only ever held short names. Left as a single run, the browser broke it
+ * wherever it ran out of room: «Санкт-Петербург ×» on the first line and the
+ * bare date on the second, splitting the separator away from what it separates.
+ *
+ * Two flex items wrap at the seam instead, so a row is either
+ *
+ *     Санкт-Петербург        × 25.09.2026
+ *
+ * or, when it cannot fit,
+ *
+ *          Санкт-Петербург
+ *           × 25.09.2026
+ *
+ * `grow` is what makes the second case centre: alone on its line, a part fills
+ * the width and `text-center` does the rest. It is also why there is no
+ * `justify-*` here — with both parts growing there is never free space left for
+ * one to distribute, so any justification would be dead CSS. The visual spread
+ * on a single line comes from the two parts sharing the row, not from
+ * `justify-between`.
+ */
+const LABEL = "flex w-full flex-wrap items-center gap-2 text-center font-display text-2xl";
+const LABEL_PART = "grow";
+
+/**
+ * The whitespace between the parts is deliberate and is NOT the `gap`.
+ *
+ * `gap-2` is the visual separation; this text node is what keeps
+ * `textContent` — and therefore the accessible name, and the crawlable text of
+ * the static export — reading «Санкт-Петербург × 25.09.2026» rather than
+ * «Санкт-Петербург× 25.09.2026». CSS ignores it: an anonymous flex item holding
+ * only white space is not rendered (CSS Flexbox §4), so it costs no layout.
+ */
+function RowLabel({ left, right }: { left: ReactNode; right: ReactNode }) {
+  return (
+    <span className={LABEL}>
+      <span className={LABEL_PART}>{left}</span>{" "}
+      <span className={LABEL_PART}>{right}</span>
+    </span>
+  );
+}
 
 /**
  * `CITY × DATE` and nothing else.
@@ -79,13 +123,22 @@ export default function ScheduleOccurrenceRow({
 }) {
   return (
     <a href={event.href} className={tone === "archival" ? ROW_ARCHIVAL : ROW}>
-      <span className={LABEL}>
-        {event.cityTitle} × <time dateTime={event.startsAt}>{event.dateLabel}</time>
-      </span>
+      <RowLabel
+        left={event.cityTitle}
+        // The separator travels with the date, so a wrap can never strand a
+        // lone «×» at the end of the first line.
+        right={<>× <time dateTime={event.startsAt}>{event.dateLabel}</time></>}
+      />
       {/* Only on the archive, where «Отменён» and «Прошёл» are different facts a
-          visitor needs and the section heading alone cannot distinguish. */}
+          visitor needs and the section heading alone cannot distinguish.
+          Centred with the label above it rather than left against the row's
+          `text-left`, which would read as a stray caption under a centred
+          title. */}
       {tone === "archival" && event.departedLabel ? (
-        <span className="text-bone/60">{event.departedLabel}</span>
+        // Same whitespace trick as inside RowLabel, for the same reason: it
+        // keeps the link's text reading «… 10.08.2026 Отменён» instead of
+        // running the two together, and costs no layout.
+        <>{" "}<span className="text-center text-bone/60">{event.departedLabel}</span></>
       ) : null}
     </a>
   );
@@ -99,13 +152,18 @@ export default function ScheduleOccurrenceRow({
  * would find nothing. It looks identical because it belongs to the same list.
  */
 export function ScheduleRowButton({
-  children,
+  left,
+  right,
   className,
   ...props
-}: ComponentPropsWithoutRef<"button">) {
+}: ComponentPropsWithoutRef<"button"> & { left: ReactNode; right: ReactNode }) {
   return (
     <button type="button" className={cn(ROW, className)} {...props}>
-      <span className={LABEL}>{children}</span>
+      {/* Two parts like every other row, not one string. «Твой город × Скоро»
+          sits in the same list and has the same shape — subject, separator,
+          when — so it must wrap and centre the same way or it would be the one
+          row that breaks the column. */}
+      <RowLabel left={left} right={right} />
     </button>
   );
 }
