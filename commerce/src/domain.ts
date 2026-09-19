@@ -2,9 +2,8 @@ import type Database from "better-sqlite3";
 import { canonical, canonicalV2, decryptTicketCapability, emailHash, encryptTicketCapability, id, now, publicId, publicOrderNumber, sha256 } from "./crypto";
 import { EmailProviderRejectedError, EventDumpCreateRejectedError, isEmailDeliveryEvidenceProvider, type EmailProvider, type UnisenderDumpEvent, UNISENDER_EVENT_DUMP_EVENT_LIMIT, UnconfiguredEmailProvider } from "./email-provider";
 import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
-import { LegalReleasePublishError, loadCanonicalLegalRelease, publishLegalRelease, verifyCurrentLegalSourceHashes, type CanonicalLegalRelease } from "./legal-release";
+import { loadCanonicalLegalRelease, verifyCurrentLegalSourceHashes, type CanonicalLegalRelease } from "./legal-release";
 import { providerErrorEvidence, type PaymentProvider } from "./provider";
-import { ReleaseControlError, ReleaseSalesGate, type AgentReferralsStrandedRollingSupersedeRequest, type CandidateAcquireRequest, type CandidateAdoptRequest, type CandidateAbortRequest, type CandidateCompleteRequest, type CandidateHeadSnapshot, type CandidatePhaseRequest, type CertificationEvidenceRequest, type CertificationLeaseRequest, type CertificationOrderContext, type CertificationRetryRequest, type DormantReadinessReader, type PostActivationEmailProviderDefectRequest, type PreActivationDefectRequest, type ReleaseControlRequest, type RuntimeReadinessDefectRequest, releaseRuntimeEvidence } from "./release-control";
 import { checkoutRequestSchema, promoMergedSchema, type CheckoutRequest, type ParticipantAgeBand } from "./types";
 import { PromoPricingError, pricePromo } from "./promo-pricing";
 import { PartnerPromoPricingError, resolveCheckoutPromoTerms } from "./agent-referrals-partner-promo-pricing";
@@ -22,12 +21,9 @@ import { availabilityStatus, purchaseStatus, type AvailabilityStatus, type Purch
 import { assertInventoryTarget, availableSeatsSql, InventoryTargetError, occurrenceInventory, resolveInventoryTarget, seatCommitments } from "./occurrence-inventory";
 import { occurrenceNotificationsCapabilityActive } from "./occurrence-notification-capability";
 import { parseUtcTimestamp } from "./utc-timestamp";
-import { assertNewOrdersOpen as assertGateOpen, emergencySalesPaused as gateEmergencyPaused, newOrdersBlocked as gateBlocked } from "./sales-gate";
-import { claimForDispatch, deferAmbiguousObservation, deferAmbiguousSend, dispatchCandidates, failExhaustedAmbiguous, providerLookupIdentity, recordProviderAcceptance, recordProviderRefusal, applyProviderObservation, claimedAttemptRef, reconcileHistoricalHttp403, resolveAttemptRef, skipObsoletePendingMessage, supersedeQueuedMessage, suppressMessageDispatch, sendTryCount, staleLeasedSends, type AttemptRef } from "./outbox-attempt-store";
-import { ACTIVATION_REFUSAL_CODES, activateAttemptAuthority as runAttemptAuthorityActivation, activationEvidence } from "./outbox-activation";
-import { certificationDispatchEvidence, postActivationEmailProviderDefectEvidence } from "./certification-dispatch";
+import { emergencySalesPaused } from "./emergency-sales-gate";
+import { claimForDispatch, deferAmbiguousObservation, deferAmbiguousSend, dispatchCandidates, failExhaustedAmbiguous, providerLookupIdentity, recordProviderAcceptance, recordProviderRefusal, applyProviderObservation, claimedAttemptRef, resolveAttemptRef, skipObsoletePendingMessage, supersedeQueuedMessage, suppressMessageDispatch, sendTryCount, staleLeasedSends, type AttemptRef } from "./outbox-attempt-store";
 import { OutboxAuthorityError, emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, lastAuthorityEvent, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations, type DispatchEpoch } from "./outbox-authority";
-import { activateAgentReferralsIfReady, type AgentReferralsActivationRequest } from "./agent-referrals-activation-readiness";
 import type { OtpDeliveryCapability } from "./agent-referrals-otp";
 
 type Row = Record<string, unknown>;
@@ -62,7 +58,7 @@ export function withImmediateTransaction<T>(db: Database.Database, operation: ()
 
 const isPromoEligible = (promo: Row | undefined) => Boolean(promo && promo.status === "ACTIVE" && (promo.agent_id === null || promo.agent_enabled === 1));
 const activeAgentBySlug = (db: Database.Database, slug: string | undefined) => slug
-  ? one(db, "SELECT id, slug, default_reward_type, default_reward_value FROM agents WHERE slug = ? AND enabled = 1", slug)
+  ? one(db, "SELECT id, slug FROM agents WHERE slug = ? AND enabled = 1", slug)
   : undefined;
 const promoPrice = (price: number, type: unknown, value: unknown) => {
   try { return pricePromo(price, type, value); }
@@ -355,18 +351,11 @@ export class CommerceDomain {
     return this.db.inTransaction ? run() : run.immediate();
   }
 
-  private releaseSalesGate() { return new ReleaseSalesGate(this.db); }
-
-  // Enforcement itself lives in sales-gate.ts so the release-sensitive surface
-  // stays nameable: this file changes for ordinary work, that one does not.
   /**
-   * Read-only, and public so the release controller can observe the operator's
-   * emergency latch without holding admin credentials. Latching stays an admin
-   * action: a release controller able to stop sales would also be able to
-   * refund, cancel and mutate, which is far wider authority than driving a
-   * release needs. Observation is enough to refuse to complete into open sales.
+   * Read-only operator-owned absolute latch. Deployment-session persistence is
+   * intentionally not wired until P9, but this emergency authority stays live.
    */
-  emergencySalesPaused() { return gateEmergencyPaused(this.db); }
+  emergencySalesPaused() { return emergencySalesPaused(this.db); }
 
   /**
    * Outbox authority control. Fencing email dispatch is a deployment-mechanism
@@ -379,19 +368,13 @@ export class CommerceDomain {
    */
   /**
    * The whole outbox control surface a cutover controller needs, in one read:
-   * the durable selector, drain evidence, the last authority transition, and
-   * store convergence.
-   *
-   * `attempts` is null on a runtime without the attempt table, and that is
-   * load-bearing - before the 0041-aware candidate is live, the field's absence
-   * is what proves the old runtime is still answering.
+ * the durable fence, drain evidence, and last fence transition.
    */
   outboxAuthority() {
     return {
       ...outboxAuthority(this.db),
       dispatch: emailDispatchDrained(this.db),
       last_event: lastAuthorityEvent(this.db),
-      attempts: activationEvidence(this.db),
     };
   }
 
@@ -416,165 +399,11 @@ export class CommerceDomain {
       withImmediateTransaction(this.db, () => ({ ...fenceEmailDispatch(this.db, input, epoch), dispatch: emailDispatchDrained(this.db) })));
   }
 
-  /**
-   * The one-way LEGACY -> ATTEMPT transfer. Held by release control, like the
-   * fence, and for the same reason: it is a deployment-mechanism act, not a
-   * business one.
-   */
-  /**
-   * Identity-bound proof that the certified order's own mail moved under
-   * attempt authority. Read-only, and the order id comes from the durable
-   * ledger rather than from a caller who could otherwise name a different one.
-   */
-  /** One exact release's head, terminal phases included. See releaseHead(). */
-  releaseCandidateHead(releaseId: string) {
-    try { return this.releaseSalesGate().releaseHead(releaseId); }
-    catch (error) { if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status); throw error; }
-  }
-
-  certificationDispatchEvidence(releaseId: string) {
-    return certificationDispatchEvidence(this.db, releaseId);
-  }
-
-  postActivationEmailProviderDefectEvidence(releaseId: string) {
-    return postActivationEmailProviderDefectEvidence(this.db, releaseId);
-  }
-
-  markPostActivationEmailProviderDefect(input: PostActivationEmailProviderDefectRequest) {
-    try {
-      return this.releaseSalesGate().markPostActivationEmailProviderDefect(input, () => {
-        const authority = outboxAuthority(this.db);
-        return { ...authority, drained: emailDispatchDrained(this.db).drained };
-      }, () => postActivationEmailProviderDefectEvidence(this.db, input.release_id));
-    } catch (error) {
-      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
-      throw error;
-    }
-  }
-
-  /**
-   * Recovery for a defect found after certification and before activation.
-   *
-   * The defect code is bound to the vocabulary the activation transaction
-   * actually returns, so a recovery cannot be justified by an invented reason.
-   */
-  markPreActivationDefect(input: PreActivationDefectRequest) {
-    if (input.defect_class === "ACTIVATION_REFUSAL") {
-      // The exact code the activation transaction returned, and nothing else.
-      if (!(ACTIVATION_REFUSAL_CODES as readonly string[]).includes(input.defect_code)) {
-        throw new DomainError("PRE_ACTIVATION_DEFECT_CODE_UNKNOWN", 422);
-      }
-    }
-    try {
-      return this.releaseSalesGate().markPreActivationDefect(input, () => this.releaseRuntimeEvidence(), () => {
-        const authority = outboxAuthority(this.db);
-        return {
-          attempt_authority: authority.attempt_authority,
-          email_dispatch_paused: authority.email_dispatch_paused,
-          dispatch_owner_release_id: authority.dispatch_owner_release_id,
-        };
-      }, () => {
-        // Read inside release-control's transaction, and the code is derived
-        // here rather than accepted: a caller able to name the reason could
-        // record a truthful-looking edge for an untrue cause.
-        const evidence = certificationDispatchEvidence(this.db, input.release_id);
-        if (!evidence.order_id) throw new DomainError("PRE_ACTIVATION_DEFECT_NO_CERTIFIED_ORDER", 409);
-        return evidence.target_defect;
-      });
-    } catch (error) {
-      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
-      throw error;
-    }
-  }
-
-  activateAttemptAuthority(input: { expected_revision: number; reason: string }, epoch: DispatchEpoch) {
-    return this.mapOutboxAuthority(() => withImmediateTransaction(this.db, () => runAttemptAuthorityActivation(this.db, epoch, input)));
-  }
-
   unfenceEmailDispatch(input: { expected_revision: number; reason: string }, epoch: DispatchEpoch) {
     return this.mapOutboxAuthority(() =>
       withImmediateTransaction(this.db, () => ({ ...unfenceEmailDispatch(this.db, input, epoch), dispatch: emailDispatchDrained(this.db) })));
   }
-  private newOrdersBlocked() { return gateBlocked(this.db); }
-
-  releaseControlStatus() { return this.releaseSalesGate().status(); }
-  releaseControlCompletion(releaseId: string) { return this.releaseSalesGate().completion(releaseId); }
-  releaseControlResolution(releaseId: string) { return this.releaseSalesGate().resolution(releaseId); }
-  activateAgentReferralsIfReady(input: AgentReferralsActivationRequest) {
-    try { return activateAgentReferralsIfReady(this.db, () => this.releaseRuntimeEvidence(), this.releaseSalesGate(), () => this.otpDelivery, input); }
-    catch (error) {
-      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
-      throw error;
-    }
-  }
-  promoCandidateHead(): CandidateHeadSnapshot {
-    try { return this.releaseSalesGate().candidateHead(); }
-    catch (error) { if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status); throw error; }
-  }
-
-  acquireReleaseControl(input: ReleaseControlRequest) {
-    try { return this.releaseSalesGate().acquire(input); }
-    catch (error) {
-      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
-      throw error;
-    }
-  }
-
-  acquirePromoCandidate(input: CandidateAcquireRequest) {
-    try { return this.releaseSalesGate().acquireCandidate(input); }
-    catch (error) { if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status); throw error; }
-  }
-
-  adoptPromoCandidate(input: CandidateAdoptRequest) {
-    try { return this.releaseSalesGate().adoptCandidate(input); }
-    catch (error) { if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status); throw error; }
-  }
-
-  changePromoCandidatePhase(input: CandidatePhaseRequest) {
-    try { return this.releaseSalesGate().changeCandidatePhase(input); }
-    catch (error) { if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status); throw error; }
-  }
-
-  markPromoCandidateRuntimeReadinessDefect(input: RuntimeReadinessDefectRequest) {
-    try { return this.releaseSalesGate().markRuntimeReadinessDefect(input, () => this.releaseRuntimeEvidence()); }
-    catch (error) { if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status); throw error; }
-  }
-
-  abortPromoCandidate(input: CandidateAbortRequest) {
-    try { return this.releaseSalesGate().abortCandidate(input, () => this.releaseRuntimeEvidence()); }
-    catch (error) {
-      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
-      throw error;
-    }
-  }
-
-  completePromoCandidate(input: CandidateCompleteRequest) {
-    try { return this.releaseSalesGate().completeCandidate(input, () => this.releaseRuntimeEvidence()); }
-    catch (error) { if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status); throw error; }
-  }
-
-  activatePromoCertificationLease(input: CertificationLeaseRequest) {
-    try { return this.releaseSalesGate().activateCertificationLease(input); }
-    catch (error) { if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status); throw error; }
-  }
-
-  certifyPromoCandidate(input: CertificationEvidenceRequest) {
-    try { return this.releaseSalesGate().certifyCandidate(input); }
-    catch (error) { if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status); throw error; }
-  }
-
-  retryPromoCertification(input: CertificationRetryRequest) {
-    try { return this.releaseSalesGate().retryCertification(input); }
-    catch (error) { if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status); throw error; }
-  }
-
-  pauseNewOrders(input: ReleaseControlRequest) {
-    try { return this.releaseSalesGate().pause(input); }
-    catch (error) {
-      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
-      throw error;
-    }
-  }
+  private newOrdersBlocked() { return this.emergencySalesPaused(); }
 
   replayCheckout(input: unknown, idempotencyKey: string) {
     if (idempotencyKey.length < 16 || idempotencyKey.length > 200) throw new DomainError("IDEMPOTENCY_KEY_INVALID", 400);
@@ -589,72 +418,8 @@ export class CommerceDomain {
     return this.checkoutResult(replay);
   }
 
-  updateReleaseControlExpectations(input: ReleaseControlRequest) {
-    try { return this.releaseSalesGate().updateExpectations(input); }
-    catch (error) {
-      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
-      throw error;
-    }
-  }
-
-  publishCandidateLegalRelease(input: ReleaseControlRequest) {
-    try {
-      this.releaseSalesGate().assertPausedOwner(input);
-      const filename = `commerce/legal/production-manifest.${input.expected.legal_version}.draft.json`;
-      const candidate = loadCanonicalLegalRelease(filename);
-      if (candidate.version !== input.expected.legal_version) throw new DomainError("LEGAL_CANDIDATE_VERSION_MISMATCH", 409);
-      const result = publishLegalRelease(this.db, candidate, { expectedManifestSha256: input.expected.legal_manifest_sha256 });
-      return { ...result, release_id: input.release_id };
-    } catch (error) {
-      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
-      if (error instanceof LegalReleasePublishError) throw new DomainError(error.code, 409);
-      throw error;
-    }
-  }
-
-  assertNewOrdersOpen(context?: CertificationOrderContext) {
-    try { return assertGateOpen(this.db, context); }
-    catch (error) {
-      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
-      throw error;
-    }
-  }
-
-  releaseRuntimeEvidence() {
-    return releaseRuntimeEvidence(this.db, {
-      sourceCommit: process.env.SOURCE_COMMIT,
-      currentLegalCopiesMatch: (manifest) => {
-        try { verifyCurrentLegalSourceHashes(manifest); return true; } catch { return false; }
-      },
-    });
-  }
-
-  reopenNewOrders(input: ReleaseControlRequest) {
-    try { return this.releaseSalesGate().reopen(input, this.releaseRuntimeEvidence()); }
-    catch (error) {
-      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
-      throw error;
-    }
-  }
-
-  completeRolling(input: ReleaseControlRequest, dormantReady: DormantReadinessReader) {
-    try { return this.releaseSalesGate().completeRolling(input, dormantReady); }
-    catch (error) {
-      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
-      throw error;
-    }
-  }
-
-  supersedeAgentReferralsStrandedRolling(input: AgentReferralsStrandedRollingSupersedeRequest, replacementDormantReady: () => boolean) {
-    try {
-      return this.releaseSalesGate().supersedeStrandedAgentReferralsRolling(input, () => ({
-        runtime_source_commit: this.releaseRuntimeEvidence().source_commit,
-        replacement_dormant_ready: replacementDormantReady(),
-      }));
-    } catch (error) {
-      if (error instanceof ReleaseControlError) throw new DomainError(error.code, error.status);
-      throw error;
-    }
+  assertNewOrdersOpen() {
+    if (this.emergencySalesPaused()) throw new DomainError("SALES_TEMPORARILY_PAUSED", 503);
   }
 
   private publicOccurrences(where: string, options: { catalogue: boolean }, ...params: unknown[]) {
@@ -718,13 +483,9 @@ export class CommerceDomain {
   salesControl() {
     const emergency = one(this.db, `SELECT sales_paused, revision, paused_at, paused_reason, paused_by_admin_id
       FROM emergency_sales_gate WHERE singleton = 1`)!;
-    let releasePaused: boolean;
-    try { this.releaseSalesGate().assertNewOrdersOpen(); releasePaused = false; }
-    catch (error) { if (error instanceof ReleaseControlError) releasePaused = true; else throw error; }
     return {
-      id: "emergency-sales-gate", effective_status: this.emergencySalesPaused() || releasePaused ? "PAUSED" : "OPEN",
+      id: "emergency-sales-gate", effective_status: this.emergencySalesPaused() ? "PAUSED" : "OPEN",
       emergency: { sales_paused: Boolean(emergency.sales_paused), revision: Number(emergency.revision), paused_at: emergency.paused_at, paused_reason: emergency.paused_reason, paused_by_admin_id: emergency.paused_by_admin_id },
-      release_paused: releasePaused,
     };
   }
 
@@ -1058,15 +819,12 @@ export class CommerceDomain {
         promo = one(this.db, `SELECT p.*, a.enabled AS agent_enabled FROM promo_codes p
           LEFT JOIN agents a ON a.id = p.agent_id WHERE p.normalized_code = ?`, input.promoCode.trim().toUpperCase());
       }
-      // During the global pause the gate is intentionally consulted before
-      // revealing fixture-specific errors; it only receives opaque IDs.
-      const certificationLease = this.assertNewOrdersOpen({ occurrence_id: occurrence ? String(occurrence.id) : input.occurrenceId, promo_id: promo?.id ? String(promo.id) : null });
+      this.assertNewOrdersOpen();
       if (!occurrence) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
       if (input.promoCode && !promo) throw new DomainError("PROMO_NOT_FOUND", 404);
       if (promo && !isPromoEligible(promo)) throw new DomainError("PROMO_NOT_ELIGIBLE", 409);
-      if (!certificationLease && occurrence.visibility !== "PUBLISHED") throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
-      if (!certificationLease && (occurrence.sales_status !== "OPEN" || occurrence.fulfillment_status !== "SCHEDULED")) throw new DomainError("SALES_NOT_OPEN", 409);
-      if (certificationLease && occurrence.fulfillment_status !== "SCHEDULED") throw new DomainError("SALES_NOT_OPEN", 409);
+      if (occurrence.visibility !== "PUBLISHED") throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
+      if (occurrence.sales_status !== "OPEN" || occurrence.fulfillment_status !== "SCHEDULED") throw new DomainError("SALES_NOT_OPEN", 409);
       const release = one(this.db, "SELECT * FROM legal_releases WHERE active = 1");
       if (!release) throw new DomainError("LEGAL_RELEASE_NOT_ACTIVE", 503);
       const manifest = legalManifest(JSON.parse(String(release.manifest_json)));
@@ -1115,7 +873,7 @@ export class CommerceDomain {
       if (!quote) { this.assertNewOrdersOpen(); throw new DomainError("QUOTE_EXPIRED", 409); }
       const occurrence = one(this.db, "SELECT o.*, c.title AS city_title FROM occurrences o JOIN cities c ON c.id = o.city_id WHERE o.id = ?", quote.occurrence_id);
       if (!occurrence) { this.assertNewOrdersOpen(); throw new DomainError("QUOTE_STALE", 409); }
-      const certificationLease = this.assertNewOrdersOpen({ occurrence_id: String(occurrence.id), promo_id: quote.promo_id ? String(quote.promo_id) : null, idempotency_key_hash: keyHash });
+      this.assertNewOrdersOpen();
       if (new Date(String(quote.expires_at)).getTime() < Date.now()) throw new DomainError("QUOTE_EXPIRED", 409);
       if (occurrence.material_revision !== quote.material_revision) throw new DomainError("QUOTE_STALE", 409);
       if (checkoutInput.customer_adult_confirmed !== true) throw new DomainError("CUSTOMER_ADULT_CONFIRMATION_REQUIRED", 422);
@@ -1144,8 +902,7 @@ export class CommerceDomain {
         promoTerms = resolvePromoTerms(this.db, { id: String(promo.id), discount_type: String(promo.discount_type), discount_value: Number(promo.discount_value) }, String(occurrence.id), "PROMO_NO_LONGER_ELIGIBLE");
         if (promoTerms.discount_type !== quote.discount_type_snapshot || Number(promoTerms.discount_value) !== Number(quote.discount_value_snapshot) || (promo.agent_id ?? null) !== (quote.promo_agent_id_snapshot ?? null)) throw new DomainError("QUOTE_STALE", 409);
       }
-      if (!certificationLease && (occurrence.sales_status !== "OPEN" || occurrence.fulfillment_status !== "SCHEDULED")) throw new DomainError("SALES_NOT_OPEN", 409);
-      if (certificationLease && occurrence.fulfillment_status !== "SCHEDULED") throw new DomainError("SALES_NOT_OPEN", 409);
+      if (occurrence.sales_status !== "OPEN" || occurrence.fulfillment_status !== "SCHEDULED") throw new DomainError("SALES_NOT_OPEN", 409);
       // Attribution is decided now, inside the checkout transaction. Quotes are
       // intentionally not eligibility authority: a promoter can be disabled
       // after context creation without entering a new order.
@@ -1188,7 +945,6 @@ export class CommerceDomain {
       this.db.prepare(`INSERT INTO payments(id, order_id, state, status, provider_idempotency_key, creation_started_at) VALUES (?, ?, 'CREATING', 'PENDING', ?, ?)`)
         .run(paymentId, orderId, publicId(), timestamp);
       this.db.prepare("INSERT INTO checkout_idempotency(idempotency_key_hash, canonical_request_hash, order_id) VALUES (?, ?, ?)").run(keyHash, requestHash, orderId);
-      if (certificationLease) this.releaseSalesGate().consumeCertificationLease({ occurrence_id: String(occurrence.id), promo_id: quote.promo_id ? String(quote.promo_id) : null, idempotency_key_hash: keyHash }, orderId);
       return { replay: false, order_id: orderId, payment_id: paymentId, status_id: statusId, amount_kopecks: Number(quote.final_amount_kopecks) };
     });
     if ("replay" in result && result.replay) return this.checkoutResult(result);
@@ -1995,9 +1751,11 @@ export class CommerceDomain {
 
   createAgent(input: Record<string, unknown>) {
     const agentId = id();
+    // The P9 baseline drops these legacy NOT NULL columns. Until then, new
+    // agents write a neutral value without exposing it as an API capability.
     this.db.prepare(`INSERT INTO agents(id, slug, display_name, email, enabled, default_reward_type, default_reward_value)
-      VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .run(agentId, input.slug, input.display_name, String(input.email).toLowerCase(), input.enabled === false ? 0 : 1, input.default_reward_type, input.default_reward_value);
+      VALUES (?, ?, ?, ?, ?, 'PERCENT', 0)`)
+      .run(agentId, input.slug, input.display_name, String(input.email).toLowerCase(), input.enabled === false ? 0 : 1);
     return one(this.db, "SELECT * FROM agents WHERE id = ?", agentId)!;
   }
 
@@ -2014,7 +1772,8 @@ export class CommerceDomain {
    * page at operator scale, not a customer-facing hot path.
    */
   agentList() {
-    return many(this.db, `SELECT a.*, COUNT(p.id) AS promo_count,
+    return many(this.db, `SELECT a.id, a.slug, a.display_name, a.email, a.enabled, a.created_at, a.updated_at,
+        COUNT(p.id) AS promo_count,
         lp.id AS lp_id, lp.revision AS lp_revision, lp.legal_form AS lp_legal_form, lp.tax_mode AS lp_tax_mode,
         lp.projected_contractor_type AS lp_projected_contractor_type, lp.opf AS lp_opf, lp.full_name AS lp_full_name,
         lp.short_name AS lp_short_name, lp.inn AS lp_inn, lp.kpp AS lp_kpp,
@@ -2055,7 +1814,7 @@ export class CommerceDomain {
   patchAgent(agentId: string, input: Record<string, unknown>) {
     const existing = one(this.db, "SELECT * FROM agents WHERE id = ?", agentId);
     if (!existing) throw new DomainError("AGENT_NOT_FOUND", 404);
-    const allowed = ["display_name", "email", "enabled", "default_reward_type", "default_reward_value"];
+    const allowed = ["display_name", "email", "enabled"];
     const fields = allowed.filter((field) => input[field] !== undefined);
     if (!fields.length) return existing;
     this.db.prepare(`UPDATE agents SET ${fields.map((field) => `${field} = ?`).join(", ")}, updated_at = ? WHERE id = ?`).run(...fields.map((field) => field === "enabled" ? Number(input[field]) : field === "email" ? String(input[field]).toLowerCase() : input[field]), now(), agentId);
@@ -2700,7 +2459,6 @@ export class CommerceDomain {
         // SKIPPED is terminal and deliberately not an email-provider failure.
         if (this.skipObsoleteRefundConfirmationOutbox(String(outbox.id))) continue;
       }
-      if (isUnknown && this.reconcileLegacyUnisenderHttp403(String(outbox.id))) continue;
       // A known provider job is always reconciled before another send. It is
       // never considered proof that the original request was not dispatched.
       // Identity and try count are resolved ONCE, in one transaction, and
@@ -3118,16 +2876,6 @@ export class CommerceDomain {
 
   private failExhaustedUnknownEmail(outboxId: string, ref: AttemptRef) {
     withImmediateTransaction(this.db, () => failExhaustedAmbiguous(this.db, { id: outboxId }, ref, "SEND_UNKNOWN"));
-  }
-
-  /**
-   * Old deployments represented every send exception as SEND_UNKNOWN. This
-   * exact historical 403 signature is deterministic provider rejection, not
-   * transport ambiguity. Keep the predicate intentionally narrow so unrelated
-   * historical unknowns retain their original recovery semantics.
-   */
-  private reconcileLegacyUnisenderHttp403(outboxId?: string) {
-    return this.atomically(() => reconcileHistoricalHttp403(this.db, outboxId ?? null));
   }
 
   private deferOrFailUnknownEmail(outboxId: string, attempts: number, ref: AttemptRef) {
@@ -3678,7 +3426,6 @@ export class CommerceDomain {
     const timestamp = now();
     this.db.prepare("UPDATE payments SET state = 'CREATE_UNKNOWN', updated_at = ? WHERE state = 'CREATING' AND creation_started_at < datetime('now', '-120 seconds')").run(timestamp);
     this.db.prepare("UPDATE refunds SET status = 'SUBMIT_UNKNOWN' WHERE status = 'SUBMITTING' AND submission_started_at < datetime('now', '-120 seconds')").run();
-    this.reconcileLegacyUnisenderHttp403();
     // A superseded in-flight send must never be retried, but a crashed worker
     // cannot leave it claiming SENDING forever. Record the honest ambiguous
     // outcome and retain supersession as the permanent no-retry guard.

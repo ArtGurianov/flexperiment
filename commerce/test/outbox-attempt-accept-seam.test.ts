@@ -70,29 +70,7 @@ afterEach(() => {
 });
 
 describe("acceptance seam", () => {
-  describe("under LEGACY", () => {
-    it("records acceptance on the message and leaves the shadow attempt alone", () => {
-      const db = fixture({ authority: "LEGACY" });
-      const c = claimed(db);
-      const before = attempt(db);
-      db.transaction(() => recordProviderAcceptance(db, { id: "m1" }, c, "job-1")).immediate();
-
-      expect(message(db)).toEqual({ status: "ACCEPTED", delivery_outcome: null });
-      expect(legacyAttemptFacts(db)).toMatchObject({ job_id: "job-1", lease_owner: null, last_error: null });
-      expect(attempt(db)).toEqual(before);
-    });
-
-    it("records a deterministic refusal on the message", () => {
-      const db = fixture({ authority: "LEGACY" });
-      const c = claimed(db);
-      db.transaction(() => recordProviderRefusal(db, { id: "m1" }, c, { providerCode: "550", providerMessage: "nope" })).immediate();
-
-      expect(message(db)).toEqual({ status: "FAILED", delivery_outcome: "KNOWN_FAILED" });
-      expect(legacyAttemptFacts(db)).toMatchObject({ last_error: "UNISENDER_HTTP_REJECTED", provider_error_code: "550" });
-    });
-  });
-
-  describe("under ATTEMPT", () => {
+  describe("attempt authority", () => {
     it("settles the attempt ACCEPTED and touches no legacy column", () => {
       const db = fixture({ authority: "ATTEMPT" });
       const c = claimed(db);
@@ -175,13 +153,7 @@ describe("acceptance seam", () => {
   });
 
   describe("SEND_UNKNOWN lookup identity", () => {
-    it("uses the message's identity under LEGACY", () => {
-      const db = fixture({ authority: "LEGACY", legacy: "UPDATE email_outbox SET job_id = 'legacy-job' WHERE id = 'm1'" });
-      expect(providerLookupIdentity(db, { id: "m1", job_id: "legacy-job", provider_idempotence_key: "shared-key" }))
-        .toEqual({ jobId: "legacy-job", idempotencyKey: "shared-key" });
-    });
-
-    it("uses the attempt's identity under ATTEMPT, not the frozen message fields", () => {
+    it("uses the attempt's identity, not the frozen message fields", () => {
       // The reader defect no trigger can catch: reconciling under the message's
       // frozen job_id asks the provider about attempt #1 while attempt #2 is
       // the one in flight.

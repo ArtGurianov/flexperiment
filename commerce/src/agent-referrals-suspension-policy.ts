@@ -134,16 +134,15 @@ export class AgentReferralsSuspensionPolicyError extends Error {
 }
 
 /**
- * DORMANT permits nothing - the feature has not activated, so no production
- * Agent Referrals authority of any class exists yet. ACTIVE permits every
- * class. SUSPENDED permits only MATURATION_RECOVERY_REPORTING_TAIL classes.
+ * ACTIVE permits every class. SUSPENDED permits only
+ * MATURATION_RECOVERY_REPORTING_TAIL classes. DORMANT is a historical schema
+ * value and is normalized to ACTIVE by the feature-state reader.
  */
 export const isAgentReferralsOperationPermitted = (
   state: AgentReferralsFeatureStateName,
   operationClass: AgentReferralsOperationClass,
 ): boolean => {
-  if (state === "DORMANT") return false;
-  if (state === "ACTIVE") return true;
+  if (state !== "SUSPENDED") return true;
   return AGENT_REFERRALS_OPERATION_POLICY[operationClass] === "MATURATION_RECOVERY_REPORTING_TAIL";
 };
 
@@ -152,6 +151,5 @@ export const assertAgentReferralsOperationPermitted = (
   operationClass: AgentReferralsOperationClass,
 ): void => {
   if (isAgentReferralsOperationPermitted(state, operationClass)) return;
-  const code = state === "DORMANT" ? "AGENT_REFERRALS_FEATURE_DORMANT" : "AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY";
-  throw new AgentReferralsSuspensionPolicyError(code, 409, operationClass);
+  throw new AgentReferralsSuspensionPolicyError("AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY", 409, operationClass);
 };

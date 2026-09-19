@@ -9,10 +9,9 @@ import { id } from "./crypto";
  * revision, a CAS UPDATE restating every precondition, and a sub-second
  * audit event in the same transaction.
  *
- * DORMANT is the unowned default - like outbox's unpaused state - and owner
- * conflict is checked only once the singleton is owned (state != DORMANT).
- * The legal graph never re-admits DORMANT: it exists only as PR3's shipped
- * starting point, never as a transition target.
+ * The runtime has one operational lifecycle: ACTIVE <-> SUSPENDED. The
+ * historical DORMANT value remains in the pre-baseline schema until P9, but is
+ * interpreted as ACTIVE so it no longer gates real business actions.
  */
 
 export type AgentReferralsFeatureStateName = "DORMANT" | "ACTIVE" | "SUSPENDED";
@@ -37,24 +36,27 @@ export class AgentReferralsFeatureError extends Error {
   }
 }
 
-/** Fail closed: a missing control row means DORMANT and unowned, never ACTIVE. */
-export const agentReferralsFeatureState = (db: Database.Database): AgentReferralsFeatureStateRow => {
+/** Reads the pre-baseline physical state without granting it operational meaning. */
+const storedFeatureState = (db: Database.Database): AgentReferralsFeatureStateRow | null => {
   const row = db.prepare("SELECT state, owner_id, revision FROM agent_referrals_feature_state WHERE singleton = 1").get() as
     Record<string, unknown> | undefined;
-  if (!row) return { state: "DORMANT", owner_id: null, revision: 0 };
+  if (!row) return null;
   return {
-    state: row.state === "ACTIVE" || row.state === "SUSPENDED" ? row.state : "DORMANT",
+    state: String(row.state) as AgentReferralsFeatureStateName,
     owner_id: row.owner_id === null || row.owner_id === undefined ? null : String(row.owner_id),
     revision: Number(row.revision ?? 0),
   };
 };
 
-/**
- * The only legal edges. DORMANT never appears as a value: nothing may
- * transition back to it, and PR3 ships it only as the initial row.
- */
-const LEGAL_EDGES: Record<AgentReferralsFeatureStateName, ReadonlySet<AgentReferralsFeatureStateName>> = {
-  DORMANT: new Set(["ACTIVE"]),
+/** A missing or DORMANT historical row is operationally ACTIVE until P9. */
+export const agentReferralsFeatureState = (db: Database.Database): AgentReferralsFeatureStateRow => {
+  const stored = storedFeatureState(db);
+  if (!stored) return { state: "ACTIVE", owner_id: null, revision: 0 };
+  return { ...stored, state: stored.state === "SUSPENDED" ? "SUSPENDED" : "ACTIVE" };
+};
+
+/** The only operational edges. DORMANT remains only in the physical schema. */
+const LEGAL_EDGES: Record<Exclude<AgentReferralsFeatureStateName, "DORMANT">, ReadonlySet<AgentReferralsFeatureStateName>> = {
   ACTIVE: new Set(["SUSPENDED"]),
   SUSPENDED: new Set(["ACTIVE"]),
 };
@@ -80,11 +82,13 @@ export const transitionAgentReferralsFeatureInTransaction = (
   to: AgentReferralsFeatureStateName,
   input: AgentReferralsFeatureTransitionInput,
 ): AgentReferralsFeatureStateRow => {
-  const current = agentReferralsFeatureState(db);
+  let stored = storedFeatureState(db);
+  if (!stored) throw new AgentReferralsFeatureError("AGENT_REFERRALS_FEATURE_STATE_MISSING", 409);
+  let current = agentReferralsFeatureState(db);
 
   // A state held by another owner is never touched, in either direction -
   // the case CAS cannot cover, exactly as in outbox-authority.ts.
-  if (current.state !== "DORMANT" && current.owner_id !== input.owner_id) {
+  if (current.owner_id !== null && current.owner_id !== input.owner_id) {
     throw new AgentReferralsFeatureError("AGENT_REFERRALS_FEATURE_OWNER_CONFLICT", 409);
   }
 
@@ -92,20 +96,41 @@ export const transitionAgentReferralsFeatureInTransaction = (
   // is reconciliation, not a conflict, and must not consume a revision.
   if (current.state === to && current.owner_id === input.owner_id) return current;
 
-  if (!LEGAL_EDGES[current.state].has(to)) {
+  if (input.expected_revision !== stored.revision) {
+    throw new AgentReferralsFeatureError("AGENT_REFERRALS_FEATURE_REVISION_CONFLICT", 409);
+  }
+
+  // P9 drops DORMANT from the schema. Before then, a first suspension has to
+  // materialize the old row as ACTIVE so the existing lineage trigger can
+  // record the real ACTIVE -> SUSPENDED lifecycle. This is a physical-schema
+  // compatibility step, not an operational DORMANT decision.
+  if (stored.state === "DORMANT") {
+    if (to === "ACTIVE") return current;
+    const materialized = db.prepare(`UPDATE agent_referrals_feature_state
+      SET state = 'ACTIVE', owner_id = ?, revision = revision + 1, updated_at = CURRENT_TIMESTAMP
+      WHERE singleton = 1 AND revision = ?`).run(input.owner_id, stored.revision);
+    if (materialized.changes !== 1) throw new AgentReferralsFeatureError("AGENT_REFERRALS_FEATURE_REVISION_CONFLICT", 409);
+    stored = storedFeatureState(db)!;
+    db.prepare(`INSERT INTO agent_referrals_feature_state_events(id, from_state, to_state, owner_id, reason, revision, created_at)
+      VALUES (?, 'DORMANT', 'ACTIVE', ?, ?, ?, ${FEATURE_STATE_EVENT_NOW})`)
+      .run(id(), input.owner_id, "P5_PREBASELINE_ACTIVE", stored.revision);
+    current = agentReferralsFeatureState(db);
+  }
+
+  if (!LEGAL_EDGES[current.state as "ACTIVE" | "SUSPENDED"].has(to)) {
     throw new AgentReferralsFeatureError("AGENT_REFERRALS_FEATURE_ILLEGAL_TRANSITION", 409, `${current.state}->${to}`);
   }
 
   const changed = db.prepare(`UPDATE agent_referrals_feature_state
     SET state = ?, owner_id = ?, revision = revision + 1, updated_at = CURRENT_TIMESTAMP
     WHERE singleton = 1 AND revision = ?`)
-    .run(to, input.owner_id, input.expected_revision);
+    .run(to, input.owner_id, stored.revision);
   if (changed.changes !== 1) throw new AgentReferralsFeatureError("AGENT_REFERRALS_FEATURE_REVISION_CONFLICT", 409);
 
   const next = agentReferralsFeatureState(db);
   db.prepare(`INSERT INTO agent_referrals_feature_state_events(id, from_state, to_state, owner_id, reason, revision, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ${FEATURE_STATE_EVENT_NOW})`)
-    .run(id(), current.state, to, input.owner_id, input.reason, next.revision);
+    .run(id(), stored.state, to, input.owner_id, input.reason, next.revision);
   return next;
 };
 
@@ -113,20 +138,20 @@ const transition = (db: Database.Database, to: AgentReferralsFeatureStateName, i
   db.transaction(() => transitionAgentReferralsFeatureInTransaction(db, to, input)).immediate();
 
 /**
- * DORMANT -> ACTIVE only. PR3 ships DORMANT and calls this from nowhere -
- * activation is gated behind a future readiness assertion
- * (assert-agent-referrals-activation-ready) that does not exist yet, and
- * this function is deliberately not wired to any HTTP route.
+ * Historical compatibility helper for databases that still store DORMANT.
  */
 export const activateAgentReferrals = (db: Database.Database, input: AgentReferralsFeatureTransitionInput) =>
-  transition(db, "ACTIVE", input);
+  agentReferralsFeatureState(db).state === "ACTIVE"
+    ? agentReferralsFeatureState(db)
+    : transition(db, "ACTIVE", input);
 
 /**
- * Narrow building block for the activation command. Callers establish their
- * complete readiness predicate in the same transaction before this CAS.
+ * Historical compatibility helper for pre-baseline databases.
  */
 export const activateAgentReferralsInTransaction = (db: Database.Database, input: AgentReferralsFeatureTransitionInput) =>
-  transitionAgentReferralsFeatureInTransaction(db, "ACTIVE", input);
+  agentReferralsFeatureState(db).state === "ACTIVE"
+    ? agentReferralsFeatureState(db)
+    : transitionAgentReferralsFeatureInTransaction(db, "ACTIVE", input);
 
 export const suspendAgentReferrals = (db: Database.Database, input: AgentReferralsFeatureTransitionInput) =>
   transition(db, "SUSPENDED", input);
@@ -145,16 +170,15 @@ export const reactivateAgentReferrals = (db: Database.Database, input: AgentRefe
  * corrected - NEW_PUBLICATION_AUTHORITY must be judged against the state
  * that actually held at that instant, not the state now. julianday() -
  * never a raw TEXT comparison - matches every other historical-instant
- * comparison in this schema. DORMANT never has an event (PR3 ships it as
- * the unowned starting point with no event row), so "no event at or
- * before atIso" correctly resolves to DORMANT.
+ * comparison in this schema. Before the first historical event, the canonical
+ * operational state is ACTIVE.
  */
 export const agentReferralsFeatureStateAt = (db: Database.Database, atIso: string): AgentReferralsFeatureStateName => {
   const row = db.prepare(`SELECT to_state FROM agent_referrals_feature_state_events
     WHERE julianday(created_at) <= julianday(?) ORDER BY julianday(created_at) DESC, revision DESC LIMIT 1`)
     .get(atIso) as { to_state: string } | undefined;
-  if (!row) return "DORMANT";
-  return row.to_state === "ACTIVE" || row.to_state === "SUSPENDED" ? row.to_state : "DORMANT";
+  if (!row) return "ACTIVE";
+  return row.to_state === "SUSPENDED" ? "SUSPENDED" : "ACTIVE";
 };
 
 export const lastAgentReferralsFeatureStateEvent = (db: Database.Database) =>

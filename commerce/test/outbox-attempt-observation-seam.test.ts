@@ -3,12 +3,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
-import { applyProviderObservation, reconcileHistoricalHttp403 } from "../src/outbox-attempt-store";
-import { CommerceDomain } from "../src/domain";
-import { MockProvider } from "../src/provider";
+import { applyProviderObservation } from "../src/outbox-attempt-store";
 
 /**
- * Seam 5 of 5: provider observation, and the activation race.
+ * Seam 5 of 5: provider observation.
  *
  * INVENTORY, before conversion:
  *
@@ -22,8 +20,8 @@ import { MockProvider } from "../src/provider";
  *             applies at all; a spam callback after DELIVERED is rejected and
  *             must not settle anything on its way past.
  *
- * This is the writer that races the activation CAS: it runs in the API process
- * from a provider callback and continues while dispatch is fenced.
+ * This writer runs in the API process from a provider callback and continues
+ * while dispatch is fenced.
  */
 
 const MIGRATIONS = join(process.cwd(), "commerce", "migrations");
@@ -79,17 +77,7 @@ const tx = <T>(d: Database.Database, fn: () => T) => d.transaction(fn).immediate
 afterEach(() => { while (open.length) open.pop()!.close(); });
 
 describe("observation seam", () => {
-  describe("under LEGACY", () => {
-    it("applies delivery to the message and leaves the shadow attempt alone", () => {
-      const { db } = fixture({ authority: "LEGACY" });
-      const before = attempt(db);
-      tx(db, () => applyProviderObservation(db, "m1", { status: "DELIVERED", jobId: "job-1" }, TS));
-      expect(message(db)).toMatchObject({ status: "DELIVERED", delivered_at: TS });
-      expect(attempt(db)).toEqual(before);
-    });
-  });
-
-  describe("under ATTEMPT", () => {
+  describe("attempt authority", () => {
     it("settles an unsettled attempt ACCEPTED on positive evidence, touching no legacy column", () => {
       // The lost-acceptance case: the first positive evidence is a later
       // provider event, and it may settle a still-unsettled attempt.
@@ -197,63 +185,6 @@ describe("observation seam", () => {
     });
   });
 
-  /**
-   * The activation race, on two real connections against one on-disk database.
-   *
-   * This is the argument the whole authority-selector design rests on: a
-   * callback either commits its LEGACY projection before activation and is seen
-   * by the backfill, or it waits and then observes ATTEMPT. There is no
-   * interleaving in which a legacy write lands after the snapshot meant to
-   * capture it.
-   */
-  describe("activation race, both directions", () => {
-    const activate = (db: Database.Database) =>
-      db.exec("UPDATE outbox_authority SET attempt_authority = 'ATTEMPT' WHERE singleton = 1");
-
-    it("callback first: writes LEGACY, and activation sees it", () => {
-      const { db, callback } = fixture({ authority: "LEGACY", status: "SENDING" });
-
-      // The callback wins BEGIN IMMEDIATE and commits under LEGACY.
-      tx(callback, () => applyProviderObservation(callback, "m1", { status: "SENT", jobId: "job-1" }, TS));
-
-      // Activation then observes the committed legacy fact and can back-fill it.
-      tx(db, () => activate(db));
-
-      expect((message(db) as { status: string }).status).toBe("SENT");
-      expect(legacyFacts(db)).toMatchObject({ job_id: "job-1", lease_owner: null });
-      // The attempt was NOT advanced under LEGACY - activation refreshes it.
-      expect(attempt(db)).toMatchObject({ outcome: null, lease_owner: "w1" });
-    });
-
-    it("activation first: callback then reads ATTEMPT and leaves legacy untouched", () => {
-      const { db, callback } = fixture({ authority: "LEGACY", status: "SENDING" });
-      const legacyBefore = legacyFacts(db);
-
-      tx(db, () => activate(db));
-
-      // The callback begins afterwards and must observe the new authority.
-      tx(callback, () => applyProviderObservation(callback, "m1", { status: "SENT", jobId: "job-1" }, TS));
-
-      expect((message(db) as { status: string }).status).toBe("SENT");
-      expect(attempt(db)).toMatchObject({ outcome: "ACCEPTED", lease_owner: null });
-      // Byte-identical: had the callback cached the selector, this would have
-      // aborted on the 0040 freeze trigger instead.
-      expect(legacyFacts(db)).toEqual(legacyBefore);
-    });
-
-    it("does not cache the selector between transactions", () => {
-      // The same connection observes both authorities in sequence.
-      const { db, callback } = fixture({ authority: "LEGACY", status: "SENDING" });
-      tx(callback, () => applyProviderObservation(callback, "m1", { status: "ACCEPTED", jobId: "job-1" }, TS));
-      expect(attempt(db)).toMatchObject({ outcome: null });
-
-      tx(db, () => activate(db));
-      db.exec("UPDATE email_outbox SET status = 'SENDING' WHERE id = 'm1'");
-
-      tx(callback, () => applyProviderObservation(callback, "m1", { status: "DELIVERED", jobId: "job-1" }, TS));
-      expect(attempt(db)).toMatchObject({ outcome: "ACCEPTED" });
-    });
-  });
 });
 
 /**
@@ -279,75 +210,5 @@ describe("no legacy attempt-fact writer remains in the domain", () => {
       if (touched.length) offenders.push(`line ${source.slice(0, match.index!).split("\n").length}: ${touched.join(", ")}`);
     }
     expect(offenders, `unconverted legacy attempt-fact writers:\n  ${offenders.join("\n  ")}`).toEqual([]);
-  });
-});
-
-/**
- * The historical HTTP 403 repair is evidence about SEND #1, not about the
- * message's lifecycle - so unlike the observation path, the attempt CAS gates
- * the message projection.
- *
- * The frozen 403 signature stays on the message forever by design, and the
- * repair runs before ordinary identity resolution on every SEND_UNKNOWN. So
- * after a resend the predicate matches again, and binding to "whatever is
- * unsettled" would settle the successor on the predecessor's evidence.
- */
-describe("historical 403 repair is bound to attempt #1", () => {
-  const historical = ({ authority }: { authority: "LEGACY" | "ATTEMPT" }) => {
-    const file = join(mkdtempSync(join(tmpdir(), "http403-")), "commerce.sqlite");
-    copyFileSync(template, file);
-    const db = new Database(file);
-    db.pragma("foreign_keys = ON");
-    open.push(db);
-    db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template,
-      payload_snapshot, status, provider_idempotence_key, attempts, job_id, last_error)
-      VALUES ('m1', 'TEST', 'a@b.invalid', 'h', 'tpl', '{}', 'SEND_UNKNOWN', 'first-key', 5251, NULL,
-        'Unisender send was not accepted (HTTP 403).')`).run();
-    db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key)
-      VALUES ('a1', 'm1', 1, 'first-key')`).run();
-    if (authority === "ATTEMPT") db.exec("UPDATE outbox_authority SET attempt_authority = 'ATTEMPT' WHERE singleton = 1");
-    return db;
-  };
-
-  it("settles the historical attempt and projects the message", () => {
-    const db = historical({ authority: "ATTEMPT" });
-    expect(tx(db, () => reconcileHistoricalHttp403(db, null))).toBe(true);
-    expect(message(db)).toMatchObject({ status: "FAILED", delivery_outcome: "KNOWN_FAILED" });
-    expect(attempt(db, "a1")).toMatchObject({ outcome: "KNOWN_FAILED" });
-  });
-
-  it("never consumes a successor once attempt #1 is repaired", async () => {
-    // Driven through processEmailOutbox, because the dangerous property is
-    // specifically that the legacy repair runs BEFORE ordinary a2 identity
-    // resolution on every SEND_UNKNOWN.
-    const db = historical({ authority: "ATTEMPT" });
-    db.exec("UPDATE outbox_attempt SET outcome = 'KNOWN_FAILED' WHERE id = 'a1'");
-    db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key)
-      VALUES ('a2', 'm1', 2, 'resend-key')`).run();
-    const successorBefore = attempt(db, "a2");
-
-    await new CommerceDomain(db, new MockProvider()).processEmailOutbox();
-
-    expect((message(db) as { status: string }).status).toBe("SEND_UNKNOWN");
-    expect(attempt(db, "a2")).toEqual(successorBefore);
-  });
-
-  it("leaves message and attempt alone when attempt #1 already settled otherwise", () => {
-    // A lost CAS must not move the message and then find nothing to settle -
-    // the seam-2 split-brain shape.
-    const db = historical({ authority: "ATTEMPT" });
-    db.exec("UPDATE outbox_attempt SET outcome = 'ACCEPTED' WHERE id = 'a1'");
-    const before = { message: message(db), attempt: attempt(db, "a1") };
-
-    expect(tx(db, () => reconcileHistoricalHttp403(db, null))).toBe(false);
-
-    expect(message(db)).toEqual(before.message);
-    expect(attempt(db, "a1")).toEqual(before.attempt);
-  });
-
-  it("still repairs under LEGACY", () => {
-    const db = historical({ authority: "LEGACY" });
-    expect(tx(db, () => reconcileHistoricalHttp403(db, null))).toBe(true);
-    expect(message(db)).toMatchObject({ status: "FAILED", delivery_outcome: "KNOWN_FAILED" });
   });
 });

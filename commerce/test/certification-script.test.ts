@@ -47,9 +47,10 @@ function helperOutput(name: string, ...args: string[]) {
 }
 
 describe("production certification runbook checkpoints", () => {
-  it("defaults to the current migration head while allowing an explicit override", () => {
+  it("requires an explicit certification target", () => {
     const source = readFileSync(certificationScript, "utf8");
-    expect(source).toContain('EXPECTED_MIGRATION="${EXPECTED_MIGRATION:-0034_worker_sweep_evidence.sql}"');
+    expect(source).toContain('"${EXPECTED_MIGRATION:?EXPECTED_MIGRATION is required}"');
+    expect(source).toContain('"${EXPECTED_PUBLIC_OFFER_SHA256:?EXPECTED_PUBLIC_OFFER_SHA256 is required}"');
   });
 
   it("keeps the pre-dispatch checkout identity and distinct crash checkpoints", () => {

@@ -1,29 +1,23 @@
 import type Database from "better-sqlite3";
-import { outboxAuthority } from "./outbox-authority";
 
 /**
- * The selector-aware seam for attempt facts.
+ * The authoritative seam for attempt facts.
  *
  * Every function here MUST be called from inside the transaction that performs
- * the write it governs. The selector is read there, never cached and never read
- * before the transaction opens: a provider callback continues while dispatch is
- * fenced and can genuinely race the activation CAS, so a selector read outside
- * the governing transaction reintroduces exactly the interleaving that
- * BEGIN IMMEDIATE exists to remove.
- *
- * The split is by AUTHORITY, not by table:
+ * the write it governs. Attempt records are the only authoritative attempt
+ * store; the legacy email_outbox attempt columns remain historical evidence
+ * until P9 removes them physically.
  *
  *   message facts    status, delivery_outcome, sent_at, delivered_at,
  *                    bounced_at, suppression, supersession, ops acknowledgement
- *                    -> always email_outbox, in both authority states
+ *                    -> always email_outbox
  *
  *   attempt facts    lease, retry scheduling, provider job id, send try count,
  *                    per-send error, settlement
- *                    -> email_outbox legacy columns under LEGACY
- *                    -> outbox_attempt under ATTEMPT
+ *                    -> outbox_attempt
  *
- * Several legacy statements mix both in one UPDATE. Under ATTEMPT those become
- * two writes in one transaction rather than one rewritten statement.
+ * The legacy email_outbox attempt columns remain immutable historical
+ * evidence until P9 removes them physically.
  */
 
 export class OutboxAttemptError extends Error {
@@ -31,10 +25,6 @@ export class OutboxAttemptError extends Error {
     super(code);
   }
 }
-
-/** Read inside the governing transaction. Never hoisted, never cached. */
-export const attemptAuthorityIsActive = (db: Database.Database): boolean =>
-  outboxAuthority(db).attempt_authority === "ATTEMPT";
 
 /**
  * Executable, not documentary. The ATTEMPT claim moves the message and then
@@ -47,8 +37,6 @@ const requireTransaction = (db: Database.Database) => {
 };
 
 /**
- * Candidate scan, authority-aware.
- *
  * Retry eligibility is an attempt fact. Under ATTEMPT the legacy
  * next_attempt_at is frozen and stale, so scanning on it both hides due retries
  * and admits early ones - and the freeze trigger is silent, because reading a
@@ -56,32 +44,21 @@ const requireTransaction = (db: Database.Database) => {
  * eligibility inside its own transaction, which stays the authority.
  */
 export const dispatchCandidates = (db: Database.Database, timestamp: string, limit: number) =>
-  attemptAuthorityIsActive(db)
-    ? db.prepare(`SELECT o.* FROM email_outbox o
-        WHERE o.superseded_at IS NULL AND (
-          o.status = 'PENDING'
-          OR (o.status = 'SEND_UNKNOWN' AND EXISTS (
-            SELECT 1 FROM outbox_attempt a
-            WHERE a.message_id = o.id AND a.outcome IS NULL
-              AND (a.next_retry_at IS NULL OR a.next_retry_at <= ?)))
-        )
-        ORDER BY o.created_at LIMIT ?`).all(timestamp, limit)
-    : db.prepare(`SELECT * FROM email_outbox
-        WHERE superseded_at IS NULL AND (
-          status = 'PENDING'
-          OR (status = 'SEND_UNKNOWN' AND (next_attempt_at IS NULL OR next_attempt_at <= ?))
-        )
-        ORDER BY created_at LIMIT ?`).all(timestamp, limit);
+  db.prepare(`SELECT o.* FROM email_outbox o
+    WHERE o.superseded_at IS NULL AND (
+      o.status = 'PENDING'
+      OR (o.status = 'SEND_UNKNOWN' AND EXISTS (
+        SELECT 1 FROM outbox_attempt a
+        WHERE a.message_id = o.id AND a.outcome IS NULL
+          AND (a.next_retry_at IS NULL OR a.next_retry_at <= ?)))
+    )
+    ORDER BY o.created_at LIMIT ?`).all(timestamp, limit);
 
 /**
- * Discriminated so a later seam cannot mistake a LEGACY placeholder for a real
- * attempt identity. Under LEGACY there is no attempt row to name, and
- * send_try_count is the message's own counter AFTER the claim - reporting a
- * constant there would be a latent exhaustion bug the moment seam 3 trusts it.
+ * The claim carries a real immutable attempt identity across the provider call.
  */
 export type ClaimedAttempt =
-  | { authority: "LEGACY"; attempt_id: null; attempt_no: 1; provider_idempotence_key: string; send_try_count: number }
-  | { authority: "ATTEMPT"; attempt_id: string; attempt_no: number; provider_idempotence_key: string; send_try_count: number };
+  { authority: "ATTEMPT"; attempt_id: string; attempt_no: number; provider_idempotence_key: string; send_try_count: number };
 
 /**
  * The unsettled attempt a dispatchable message must have.
@@ -113,9 +90,7 @@ export const requireUnsettledAttempt = (db: Database.Database, messageId: string
  * Claim a message for dispatch, returning the AUTHORITATIVE attempt identity.
  *
  * The provider key comes from the claim rather than from the pre-claim message
- * snapshot. Under LEGACY those are the same value, so using the snapshot would
- * be accidentally correct for attempt #1 and wrong the moment a resend creates
- * attempt #2 with its own key.
+ * snapshot, so retries always preserve their own provider idempotency key.
  *
  * Returns undefined when the message was not claimable, matching the previous
  * `changes === 0` contract.
@@ -128,26 +103,7 @@ export const claimForDispatch = (
 ): ClaimedAttempt | undefined => {
   requireTransaction(db);
 
-  if (!attemptAuthorityIsActive(db)) {
-    const claimed = db.prepare(`UPDATE email_outbox SET status = 'SENDING', lease_owner = ?, lease_expires_at = datetime('now', '+120 seconds'), send_started_at = COALESCE(send_started_at, ?), provider_request_started_at = ?, next_attempt_at = NULL, attempts = attempts + 1
-      WHERE id = ? AND status IN ('PENDING', 'SEND_UNKNOWN')
-        AND superseded_at IS NULL
-        AND (status = 'PENDING' OR next_attempt_at IS NULL OR next_attempt_at <= ?)`)
-      .run(leaseOwner, timestamp, timestamp, message.id, timestamp);
-    if (!claimed.changes) return undefined;
-    // The message row is the authority under LEGACY, including its own try
-    // counter - reporting a constant here would be a latent exhaustion bug.
-    const attempts = db.prepare("SELECT attempts FROM email_outbox WHERE id = ?").get(message.id) as { attempts: number };
-    return {
-      authority: "LEGACY",
-      attempt_id: null,
-      attempt_no: 1,
-      provider_idempotence_key: message.provider_idempotence_key,
-      send_try_count: Number(attempts.attempts),
-    };
-  }
-
-  // Under ATTEMPT, claimability is decided WITHOUT reading a frozen legacy
+  // Claimability is decided WITHOUT reading a frozen legacy
   // column. next_attempt_at is stale after activation, and reading it writes
   // nothing - so the freeze trigger stays silent while the decision is wrong in
   // both directions: hiding due retries and admitting early ones.
@@ -160,9 +116,8 @@ export const claimForDispatch = (
   const due = current.status === "PENDING" || attempt.next_retry_at === null || attempt.next_retry_at <= timestamp;
   if (!due) return undefined;
 
-  // The message transition is performed in both authority states, so the
-  // production-proven 0040 dispatch fence remains the exclusion mechanism on
-  // both sides of the authority CAS.
+  // The message transition is paired with the attempt claim, so the
+  // production-proven 0040 dispatch fence remains the exclusion mechanism.
   const claimed = db.prepare(`UPDATE email_outbox SET status = 'SENDING'
     WHERE id = ? AND status IN ('PENDING', 'SEND_UNKNOWN') AND superseded_at IS NULL`).run(message.id);
   if (!claimed.changes) return undefined;
@@ -191,8 +146,8 @@ export type SettlementResult = { attempt_settled: boolean; message_updated: bool
 /**
  * Provider acceptance.
  *
- * Message facts stay on email_outbox in both authority states: status is
- * message lifecycle, not attempt state. What moves is the per-send evidence -
+ * Message facts stay on email_outbox: status is message lifecycle, not attempt
+ * state. Per-send evidence lives on the attempt -
  * the provider job id, the lease, the cleared error and retry scheduling.
  *
  * Returns false when the message was no longer acceptable, which happens when
@@ -207,19 +162,6 @@ export const recordProviderAcceptance = (
   jobId: string,
 ): SettlementResult => {
   requireTransaction(db);
-
-  if (claimed.authority === "LEGACY") {
-    const accepted = db.prepare(`UPDATE email_outbox
-      SET status = 'ACCEPTED', job_id = ?, lease_owner = NULL, lease_expires_at = NULL,
-          next_attempt_at = NULL, last_error = NULL, provider_error_code = NULL, provider_error_message = NULL
-      WHERE id = ? AND status = 'SENDING' AND suppressed_at IS NULL AND superseded_at IS NULL`).run(jobId, message.id);
-    if (accepted.changes) return { attempt_settled: true, message_updated: true };
-    db.prepare(`UPDATE email_outbox SET job_id = COALESCE(job_id, ?), lease_owner = NULL, lease_expires_at = NULL
-      WHERE id = ? AND (suppressed_at IS NOT NULL OR superseded_at IS NOT NULL)`).run(jobId, message.id);
-    // Under LEGACY the message IS the authority, so its refusal is the
-    // settlement's refusal.
-    return { attempt_settled: false, message_updated: false };
-  }
 
   // The attempt settlement is the AUTHORITY CAS and therefore goes first. With
   // the message projected first, a late contradictory settlement moved the
@@ -257,14 +199,6 @@ export const recordProviderRefusal = (
 ): SettlementResult => {
   requireTransaction(db);
 
-  if (claimed.authority === "LEGACY") {
-    const failed = db.prepare(`UPDATE email_outbox
-      SET status = 'FAILED', delivery_outcome = 'KNOWN_FAILED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
-          last_error = 'UNISENDER_HTTP_REJECTED', provider_error_code = ?, provider_error_message = ?
-      WHERE id = ? AND status = 'SENDING'`).run(refusal.providerCode ?? null, refusal.providerMessage ?? null, message.id);
-    return { attempt_settled: failed.changes > 0, message_updated: failed.changes > 0 };
-  }
-
   // Attempt settlement first, for the same reason as acceptance: it is the
   // authority CAS, not an immutability convenience applied after the message
   // has already moved.
@@ -294,12 +228,6 @@ export const providerLookupIdentity = (
   db: Database.Database,
   message: { id: string; job_id: unknown; provider_idempotence_key: unknown },
 ): { jobId: string | null; idempotencyKey: string } => {
-  if (!attemptAuthorityIsActive(db)) {
-    return {
-      jobId: message.job_id === null || message.job_id === undefined ? null : String(message.job_id),
-      idempotencyKey: String(message.provider_idempotence_key),
-    };
-  }
   const attempt = requireUnsettledAttempt(db, message.id);
   return { jobId: attempt.provider_job_id, idempotencyKey: attempt.provider_idempotence_key };
 };
@@ -308,20 +236,17 @@ export const providerLookupIdentity = (
  * A resolved attempt identity, carried across an external provider call.
  *
  * Identity is resolved once, inside a transaction, and then passed forward -
- * never rediscovered from message_id after the call returns. Between the two,
- * authority can flip and the current attempt can change, so evidence retrieved
- * for one attempt must never be applied to another.
+ * never rediscovered from message_id after the call returns, so evidence
+ * retrieved for one attempt can never be applied to another.
  */
-export type AttemptRef =
-  | { authority: "LEGACY" }
-  | { authority: "ATTEMPT"; attempt_id: string };
+export type AttemptRef = { authority: "ATTEMPT"; attempt_id: string };
 
 export const resolveAttemptRef = (db: Database.Database, messageId: string): AttemptRef =>
-  attemptAuthorityIsActive(db) ? { authority: "ATTEMPT", attempt_id: requireUnsettledAttempt(db, messageId).attempt_id } : { authority: "LEGACY" };
+  ({ authority: "ATTEMPT", attempt_id: requireUnsettledAttempt(db, messageId).attempt_id });
 
-/** The try count the exhaustion decision is made against, per authority. */
+/** The try count the exhaustion decision is made against. */
 export const sendTryCount = (db: Database.Database, message: { id: string; attempts: unknown }): number =>
-  attemptAuthorityIsActive(db) ? requireUnsettledAttempt(db, message.id).send_try_count : Number(message.attempts);
+  requireUnsettledAttempt(db, message.id).send_try_count;
 
 const AMBIGUOUS = "UNISENDER_TRANSPORT_AMBIGUOUS";
 /**
@@ -330,11 +255,6 @@ const AMBIGUOUS = "UNISENDER_TRANSPORT_AMBIGUOUS";
  * provider said. A re-typed literal there would stop matching the day this
  * changes.
  */
-export const LEGACY_EXHAUSTION_ERROR = "UNISENDER_SEND_UNKNOWN_ATTEMPT_LIMIT_REACHED";
-const EXHAUSTED_ERROR = LEGACY_EXHAUSTION_ERROR;
-const EXHAUSTED_CODE = "SEND_UNKNOWN_ATTEMPT_LIMIT";
-const EXHAUSTED_MESSAGE = "Ambiguous email dispatch retry limit reached.";
-
 /**
  * Which supersession category this write is allowed to act on.
  *
@@ -364,7 +284,6 @@ const guardClause = ({ supersession, requireUnsuppressed }: WriteGuard) =>
  * the same split seam 2 fixed on the settlement paths.
  */
 const carriedRefIsCurrent = (db: Database.Database, messageId: string, ref: AttemptRef): boolean => {
-  if (ref.authority === "LEGACY") return true;
   return Boolean(db.prepare(`SELECT 1 FROM outbox_attempt
     WHERE id = ? AND message_id = ? AND outcome IS NULL`).get(ref.attempt_id, messageId));
 };
@@ -377,10 +296,6 @@ export const deferAmbiguousObservation = (
   retryAt: string,
 ) => {
   requireTransaction(db);
-  if (ref.authority === "LEGACY") {
-    db.prepare(`UPDATE email_outbox SET next_attempt_at = ? WHERE id = ? AND status = 'SEND_UNKNOWN'`).run(retryAt, message.id);
-    return;
-  }
   db.prepare(`UPDATE outbox_attempt SET next_retry_at = ? WHERE id = ? AND outcome IS NULL`).run(retryAt, ref.attempt_id);
 };
 
@@ -403,13 +318,6 @@ export const failExhaustedAmbiguous = (
   if (!carriedRefIsCurrent(db, message.id, ref)) return;
   const clause = guardClause(guard);
 
-  if (ref.authority === "LEGACY") {
-    db.prepare(`UPDATE email_outbox
-      SET status = 'FAILED', delivery_outcome = 'UNRESOLVED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
-          last_error = ?, provider_error_code = ?, provider_error_message = ?
-      WHERE id = ? AND status = ?${clause}`).run(EXHAUSTED_ERROR, EXHAUSTED_CODE, EXHAUSTED_MESSAGE, message.id, fromStatus);
-    return;
-  }
   const moved = db.prepare(`UPDATE email_outbox SET status = 'FAILED', delivery_outcome = 'UNRESOLVED'
     WHERE id = ? AND status = ?${clause}`).run(message.id, fromStatus);
   if (!moved.changes) return;
@@ -431,13 +339,6 @@ export const deferAmbiguousSend = (
   if (!carriedRefIsCurrent(db, message.id, ref)) return;
   const clause = guardClause(guard);
 
-  if (ref.authority === "LEGACY") {
-    db.prepare(`UPDATE email_outbox
-      SET status = 'SEND_UNKNOWN', lease_owner = NULL, lease_expires_at = NULL,
-          next_attempt_at = ?, last_error = ?, provider_error_code = NULL, provider_error_message = NULL
-      WHERE id = ? AND status = 'SENDING'${clause}`).run(retryAt, AMBIGUOUS, message.id);
-    return;
-  }
   const moved = db.prepare(`UPDATE email_outbox SET status = 'SEND_UNKNOWN'
     WHERE id = ? AND status = 'SENDING'${clause}`).run(message.id);
   if (!moved.changes) return;
@@ -448,25 +349,21 @@ export const deferAmbiguousSend = (
 
 /** The attempt a claim actually took, for carrying across the send() call. */
 export const claimedAttemptRef = (claimed: ClaimedAttempt): AttemptRef =>
-  claimed.authority === "ATTEMPT" ? { authority: "ATTEMPT", attempt_id: claimed.attempt_id } : { authority: "LEGACY" };
+  ({ authority: "ATTEMPT", attempt_id: claimed.attempt_id });
 
 /**
- * Sends whose lease has expired, per authority.
+ * Sends whose lease has expired.
  *
- * Another reader no trigger protects: under ATTEMPT the lease lives on the
+ * Another reader no trigger protects: the lease lives on the
  * attempt, so scanning email_outbox.lease_expires_at would return nothing and
  * crashed sends would never be recovered - silently, forever.
  */
 export const staleLeasedSends = (db: Database.Database, timestamp: string, superseded: boolean) => {
   const supersededClause = superseded ? "IS NOT NULL" : "IS NULL";
-  return attemptAuthorityIsActive(db)
-    ? db.prepare(`SELECT o.id, a.send_try_count AS attempts FROM email_outbox o
-        JOIN outbox_attempt a ON a.message_id = o.id AND a.outcome IS NULL
-        WHERE o.status = 'SENDING' AND o.suppressed_at IS NULL AND o.superseded_at ${supersededClause}
-          AND a.lease_expires_at < ?`).all(timestamp) as Array<{ id: string; attempts: number }>
-    : db.prepare(`SELECT id, attempts FROM email_outbox
-        WHERE status = 'SENDING' AND suppressed_at IS NULL AND superseded_at ${supersededClause}
-          AND lease_expires_at < ?`).all(timestamp) as Array<{ id: string; attempts: number }>;
+  return db.prepare(`SELECT o.id, a.send_try_count AS attempts FROM email_outbox o
+      JOIN outbox_attempt a ON a.message_id = o.id AND a.outcome IS NULL
+      WHERE o.status = 'SENDING' AND o.suppressed_at IS NULL AND o.superseded_at ${supersededClause}
+        AND a.lease_expires_at < ?`).all(timestamp) as Array<{ id: string; attempts: number }>;
 };
 
 /**
@@ -486,7 +383,6 @@ export const staleLeasedSends = (db: Database.Database, timestamp: string, super
  */
 export const clearActiveAttemptDispatch = (db: Database.Database, messageId: string) => {
   requireTransaction(db);
-  if (!attemptAuthorityIsActive(db)) return;
   db.prepare(`UPDATE outbox_attempt
     SET lease_owner = NULL, lease_expires_at = NULL, next_retry_at = NULL
     WHERE message_id = ? AND outcome IS NULL`).run(messageId);
@@ -495,9 +391,7 @@ export const clearActiveAttemptDispatch = (db: Database.Database, messageId: str
 /** A stale PENDING snapshot must never relabel a newer provider outcome. */
 export const skipObsoletePendingMessage = (db: Database.Database, messageId: string): number => {
   requireTransaction(db);
-  const skipped = attemptAuthorityIsActive(db)
-    ? db.prepare("UPDATE email_outbox SET status = 'SKIPPED' WHERE id = ? AND status = 'PENDING'").run(messageId)
-    : db.prepare("UPDATE email_outbox SET status = 'SKIPPED', lease_owner = NULL, lease_expires_at = NULL, last_error = NULL WHERE id = ? AND status = 'PENDING'").run(messageId);
+  const skipped = db.prepare("UPDATE email_outbox SET status = 'SKIPPED' WHERE id = ? AND status = 'PENDING'").run(messageId);
   if (skipped.changes) clearActiveAttemptDispatch(db, messageId);
   return skipped.changes;
 };
@@ -518,22 +412,11 @@ export const supersedeQueuedMessage = (
 ): number => {
   requireTransaction(db);
   const wasPending = Boolean(db.prepare("SELECT 1 FROM email_outbox WHERE id = ? AND status = 'PENDING'").get(messageId));
-  const updated = attemptAuthorityIsActive(db)
-    ? db.prepare(`UPDATE email_outbox
-        SET status = CASE WHEN status = 'PENDING' THEN 'SKIPPED' ELSE status END,
-            superseded_at = ?, superseded_reason = ?
-        WHERE id = ? AND status IN ('PENDING', 'SENDING', 'ACCEPTED', 'SEND_UNKNOWN')
-          AND superseded_at IS NULL`).run(timestamp, reason, messageId)
-    : db.prepare(`UPDATE email_outbox
-        SET status = CASE WHEN status = 'PENDING' THEN 'SKIPPED' ELSE status END,
-            superseded_at = ?, superseded_reason = ?,
-            lease_owner = CASE WHEN status = 'PENDING' THEN NULL ELSE lease_owner END,
-            lease_expires_at = CASE WHEN status = 'PENDING' THEN NULL ELSE lease_expires_at END,
-            next_attempt_at = CASE WHEN status = 'PENDING' THEN NULL ELSE next_attempt_at END
-        WHERE id = ? AND status IN ('PENDING', 'SENDING', 'ACCEPTED', 'SEND_UNKNOWN')
-          AND superseded_at IS NULL`).run(timestamp, reason, messageId);
-  // Only a PENDING row had its scheduling cleared under LEGACY, so the ATTEMPT
-  // branch mirrors that exactly rather than clearing a live in-flight lease.
+  const updated = db.prepare(`UPDATE email_outbox
+      SET status = CASE WHEN status = 'PENDING' THEN 'SKIPPED' ELSE status END,
+          superseded_at = ?, superseded_reason = ?
+      WHERE id = ? AND status IN ('PENDING', 'SENDING', 'ACCEPTED', 'SEND_UNKNOWN')
+        AND superseded_at IS NULL`).run(timestamp, reason, messageId);
   if (updated.changes && wasPending) clearActiveAttemptDispatch(db, messageId);
   return updated.changes;
 };
@@ -545,17 +428,15 @@ export const supersedeQueuedMessage = (
  * dispatch fact, and an in-flight provider call cannot be recalled - but its
  * PII is still removed.
  *
- * `legacyReason` is exactly that: it exists to populate last_error under LEGACY,
- * where that column is the only place available. It is NOT stored under
- * ATTEMPT. Suppression is identified there by `type` plus `suppressed_at`, and
- * writing the reason as the attempt's failure_code would record a consent
+ * `reason` is not recorded as a provider failure. Suppression is identified by
+ * `type` plus `suppressed_at`; writing it as a failure would misstate a consent
  * action as something the provider did.
  */
 export const suppressMessageDispatch = (
   db: Database.Database,
   messageId: string,
   type: string,
-  legacyReason: string,
+  _reason: string,
   timestamp: string,
 ): number => {
   requireTransaction(db);
@@ -567,19 +448,11 @@ export const suppressMessageDispatch = (
     { status: string } | undefined;
   if (!target) return 0;
 
-  const updated = attemptAuthorityIsActive(db)
-    ? db.prepare(`UPDATE email_outbox
-        SET status = CASE WHEN status = 'DELIVERED' THEN status ELSE 'SKIPPED' END,
-            suppressed_at = CASE WHEN status = 'DELIVERED' THEN suppressed_at ELSE COALESCE(suppressed_at, ?) END,
-            recipient_email = '', recipient_email_hash = '', payload_snapshot = '{}'
-        WHERE id = ? AND type = ?`).run(timestamp, messageId, type)
-    : db.prepare(`UPDATE email_outbox
-        SET status = CASE WHEN status = 'DELIVERED' THEN status ELSE 'SKIPPED' END,
-            lease_owner = NULL, lease_expires_at = NULL,
-            last_error = CASE WHEN status = 'DELIVERED' THEN last_error ELSE ? END,
-            suppressed_at = CASE WHEN status = 'DELIVERED' THEN suppressed_at ELSE COALESCE(suppressed_at, ?) END,
-            recipient_email = '', recipient_email_hash = '', payload_snapshot = '{}'
-        WHERE id = ? AND type = ?`).run(legacyReason, timestamp, messageId, type);
+  const updated = db.prepare(`UPDATE email_outbox
+      SET status = CASE WHEN status = 'DELIVERED' THEN status ELSE 'SKIPPED' END,
+          suppressed_at = CASE WHEN status = 'DELIVERED' THEN suppressed_at ELSE COALESCE(suppressed_at, ?) END,
+          recipient_email = '', recipient_email_hash = '', payload_snapshot = '{}'
+      WHERE id = ? AND type = ?`).run(timestamp, messageId, type);
 
   // Attempt cleanup is a CONSEQUENCE of a successful message command, never an
   // independent act.
@@ -593,8 +466,8 @@ export const suppressMessageDispatch = (
  * INVENTORY, before conversion:
  *
  *   READS     the decision reads only external evidence and two MESSAGE facts -
- *             status and suppressed_at - both correct in either authority. No
- *             attempt-fact reader, so no reader defect exists here.
+ *             status and suppressed_at. No attempt-fact reader, so no reader
+ *             defect exists here.
  *
  *   ORDERING  the message guard gates the attempt, which is the OPPOSITE of
  *             seams 2 and 3 and worth stating. There, settlement was a fact
@@ -618,7 +491,7 @@ const attemptForObservation = (
 ): { id: string; outcome: string | null } | undefined => {
   // An identity carried across our own provider call is the strongest evidence
   // available and beats rediscovery entirely.
-  if (known?.authority === "ATTEMPT") {
+  if (known) {
     return db.prepare("SELECT id, outcome FROM outbox_attempt WHERE id = ? AND message_id = ?")
       .get(known.attempt_id, messageId) as { id: string; outcome: string | null } | undefined;
   }
@@ -663,14 +536,6 @@ export const applyProviderObservation = (
   const stamp = timestamps ? [timestamp] : [];
   const jobId = observed.jobId ?? null;
 
-  if (!attemptAuthorityIsActive(db)) {
-    return db.prepare(`UPDATE email_outbox SET status = ?, delivery_outcome = CASE WHEN ? = 'FAILED' THEN 'KNOWN_FAILED' END, job_id = COALESCE(job_id, ?), lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL${timestamps}
-      WHERE id = ?
-        AND NOT (status = 'DELIVERED' AND ? != 'DELIVERED')
-        AND NOT (suppressed_at IS NOT NULL AND ? != 'DELIVERED')`)
-      .run(observed.status, observed.status, jobId, ...stamp, messageId, observed.status, observed.status).changes > 0;
-  }
-
   // The message guard decides whether this evidence applies at all.
   const applied = db.prepare(`UPDATE email_outbox SET status = ?, delivery_outcome = CASE WHEN ? = 'FAILED' THEN 'KNOWN_FAILED' END${timestamps}
     WHERE id = ?
@@ -688,70 +553,4 @@ export const applyProviderObservation = (
     WHERE id = ? AND outcome IS NULL`)
     .run(observed.status === "FAILED" ? "KNOWN_FAILED" : "ACCEPTED", timestamp, jobId, attempt.id);
   return true;
-};
-
-/**
- * Historical repair: an old deployment recorded every send exception as
- * SEND_UNKNOWN, and this exact signature is deterministic provider rejection.
- *
- * Its predicate reads legacy columns - attempts, job_id, last_error - and that
- * is CORRECT rather than a stale read, which makes it the one exception in this
- * module. The rows it identifies are pre-0041 history whose provenance lives
- * nowhere else; frozen is exactly what those values should be. Only the WRITE
- * needed splitting.
- *
- * Such a row backfills to an unsettled attempt, so the repair settles it
- * KNOWN_FAILED: a received HTTP 403 is evidence of refusal, not ambiguity.
- */
-export const reconcileHistoricalHttp403 = (db: Database.Database, messageId: string | null): boolean => {
-  requireTransaction(db);
-  const predicate = `status = 'SEND_UNKNOWN'
-      AND attempts > 5250
-      AND job_id IS NULL
-      AND last_error = 'Unisender send was not accepted (HTTP 403).'
-      AND (? IS NULL OR id = ?)`;
-
-  if (!attemptAuthorityIsActive(db)) {
-    return db.prepare(`UPDATE email_outbox
-      SET status = 'FAILED', delivery_outcome = 'KNOWN_FAILED', lease_owner = NULL, lease_expires_at = NULL, next_attempt_at = NULL,
-          last_error = 'UNISENDER_HTTP_REJECTED_LEGACY',
-          provider_error_code = 'HTTP_403_LEGACY',
-          provider_error_message = 'Legacy deterministic Unisender HTTP 403 rejection.'
-      WHERE ${predicate}`).run(messageId, messageId).changes > 0;
-  }
-
-  const targets = db.prepare(`SELECT id, provider_idempotence_key FROM email_outbox WHERE ${predicate}`)
-    .all(messageId, messageId) as Array<{ id: string; provider_idempotence_key: string }>;
-  let repaired = false;
-
-  for (const target of targets) {
-    // Bound to attempt #1, never to "whatever is unsettled". The frozen 403
-    // signature stays on the message forever by design, so after a resend this
-    // predicate matches again - and resolving by outcome IS NULL would settle
-    // the successor on the strength of the predecessor's evidence.
-    //
-    // The key is matched too: it is the same value attempt #1 was created with,
-    // so it distinguishes the historical send from anything later.
-    const historical = db.prepare(`SELECT id FROM outbox_attempt
-      WHERE message_id = ? AND attempt_no = 1 AND provider_idempotence_key = ? AND outcome IS NULL`)
-      .get(target.id, target.provider_idempotence_key) as { id: string } | undefined;
-    if (!historical) continue;
-
-    // Attempt CAS first, and the message only if it wins - the opposite of the
-    // observation path above. This evidence is a deterministic refusal of send
-    // #1, not a report about the message's lifecycle, so a lost CAS must leave
-    // the message alone rather than move it and find nothing to settle.
-    const settled = db.prepare(`UPDATE outbox_attempt
-      SET outcome = 'KNOWN_FAILED', completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP),
-          lease_owner = NULL, lease_expires_at = NULL, next_retry_at = NULL,
-          failure_code = 'UNISENDER_HTTP_REJECTED_LEGACY', failure_detail = ?
-      WHERE id = ? AND outcome IS NULL`)
-      .run(JSON.stringify({ provider_error_code: "HTTP_403_LEGACY", provider_error_message: "Legacy deterministic Unisender HTTP 403 rejection." }), historical.id);
-    if (!settled.changes) continue;
-
-    db.prepare(`UPDATE email_outbox SET status = 'FAILED', delivery_outcome = 'KNOWN_FAILED'
-      WHERE id = ? AND status = 'SEND_UNKNOWN'`).run(target.id);
-    repaired = true;
-  }
-  return repaired;
 };

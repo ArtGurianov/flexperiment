@@ -82,40 +82,18 @@ afterEach(() => {
 });
 
 describe("claim seam", () => {
-  it.each([["LEGACY"], ["ATTEMPT"]] as const)("refuses to run outside a transaction under %s", (authority) => {
+  it("refuses to run outside a transaction", () => {
     // Executable, not documentary. The ATTEMPT path moves the message and then
     // requires an attempt; outside a transaction a missing attempt would throw
     // with the message durably left in SENDING.
-    const db = fixture({ authority });
+    const db = fixture({ authority: "ATTEMPT" });
     expect(() => claimForDispatch(db, { id: "m1", provider_idempotence_key: "shared-key" }, "worker-1", TS))
       .toThrow(/OUTBOX_ATTEMPT_TRANSACTION_REQUIRED/);
     expect(messageStatus(db)).toBe("PENDING");
     expect(attempt(db)).toMatchObject({ lease_owner: null, send_try_count: 0 });
   });
 
-  describe("under LEGACY", () => {
-    it("takes the lease on the message and leaves the shadow attempt alone", () => {
-      const db = fixture({ authority: "LEGACY" });
-      const before = attempt(db);
-
-      const claimed = claim(db);
-
-      expect(messageStatus(db)).toBe("SENDING");
-      expect(legacyAttemptFacts(db)).toMatchObject({ lease_owner: "worker-1", attempts: 1, send_started_at: TS });
-      // The shadow is not advanced under LEGACY: activation refreshes it from
-      // authoritative legacy state. Advancing it here would be dual-write.
-      expect(attempt(db)).toEqual(before);
-      expect(claimed).toMatchObject({ authority: "LEGACY", attempt_id: null, provider_idempotence_key: "shared-key" });
-    });
-
-    it("reports the post-claim try count truthfully", () => {
-      // Nothing consumes this yet, which is exactly why a constant here would
-      // survive until seam 3 trusted it and produced a silent exhaustion bug.
-      const db = fixture({ authority: "LEGACY", legacy: "UPDATE email_outbox SET attempts = 3 WHERE id = 'm1'" });
-      const claimed = claim(db);
-      expect(claimed).toMatchObject({ authority: "LEGACY", attempt_id: null, send_try_count: 4 });
-    });
-
+  describe("attempt authority", () => {
     it("refuses a message that is not claimable", () => {
       const db = fixture({ authority: "LEGACY" });
       db.exec("UPDATE email_outbox SET superseded_at = '2026-08-30T00:00:00Z' WHERE id = 'm1'");

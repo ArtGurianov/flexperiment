@@ -4,7 +4,6 @@ import { migrate, openDatabase } from "./db";
 import { providerFromEnvironment } from "./provider";
 import { emailProviderFromEnvironment } from "./email-provider";
 import { smartCaptchaVerifierFromEnvironment } from "./smartcaptcha";
-import { recordRuntimeStartupEvidence } from "./runtime-release-evidence";
 import { otpSenderFromEnvironment } from "./agent-referrals-otp";
 
 const sqlite = openDatabase();
@@ -13,7 +12,6 @@ const provider = providerFromEnvironment();
 const emailProvider = emailProviderFromEnvironment();
 const smartCaptchaVerifier = smartCaptchaVerifierFromEnvironment();
 const otpSender = otpSenderFromEnvironment();
-recordRuntimeStartupEvidence(sqlite, "COMMERCE", process.env.SOURCE_COMMIT?.trim() || "UNAVAILABLE");
 const app = createApp(sqlite, provider, emailProvider, smartCaptchaVerifier, otpSender);
 const port = Number(process.env.PORT ?? 3001);
 

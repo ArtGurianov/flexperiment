@@ -71,11 +71,11 @@ afterEach(() => { while (open.length) open.pop()!.close(); });
 
 describe("ambiguity seam", () => {
   describe("exhaustion never settles the attempt", () => {
-    it.each([["LEGACY"], ["ATTEMPT"]] as const)("records UNRESOLVED on the message under %s", (authority) => {
+    it("records UNRESOLVED on the message", () => {
       // The whole point of UNRESOLVED: nothing was established. Settling the
       // attempt would make later evidence unable to resolve it, which is the
       // contradiction 0039 was built to remove.
-      const db = fixture({ authority, legacy: "UPDATE email_outbox SET status = 'SEND_UNKNOWN' WHERE id = 'm1'" });
+      const db = fixture({ authority: "ATTEMPT", legacy: "UPDATE email_outbox SET status = 'SEND_UNKNOWN' WHERE id = 'm1'" });
       tx(db, () => failExhaustedAmbiguous(db, { id: "m1" }, resolveAttemptRef(db, "m1"), "SEND_UNKNOWN"));
 
       expect(message(db)).toEqual({ status: "FAILED", delivery_outcome: "UNRESOLVED" });
@@ -94,14 +94,7 @@ describe("ambiguity seam", () => {
   });
 
   describe("deferral", () => {
-    it("reschedules on the message under LEGACY", () => {
-      const db = fixture({ authority: "LEGACY", legacy: "UPDATE email_outbox SET status = 'SEND_UNKNOWN' WHERE id = 'm1'" });
-      tx(db, () => deferAmbiguousObservation(db, { id: "m1" }, { authority: "LEGACY" }, RETRY_AT));
-      expect(legacyFacts(db)).toMatchObject({ next_attempt_at: RETRY_AT });
-      expect((attempt(db) as { next_retry_at: string | null }).next_retry_at).toBeNull();
-    });
-
-    it("reschedules on the attempt under ATTEMPT, touching no legacy column", () => {
+    it("reschedules on the attempt, touching no legacy column", () => {
       const db = fixture({ authority: "ATTEMPT", legacy: "UPDATE email_outbox SET status = 'SEND_UNKNOWN' WHERE id = 'm1'" });
       const legacyBefore = legacyFacts(db);
       tx(db, () => deferAmbiguousObservation(db, { id: "m1" }, resolveAttemptRef(db, "m1"), RETRY_AT));
@@ -120,7 +113,7 @@ describe("ambiguity seam", () => {
   });
 
   describe("readers no trigger protects", () => {
-    it("counts tries from the attempt under ATTEMPT", () => {
+    it("counts tries from the attempt", () => {
       // Legacy says exhausted, the attempt says one try in. Reading the wrong
       // one abandons a send that has barely started.
       const db = fixture({ authority: "ATTEMPT", legacy: "UPDATE email_outbox SET attempts = 99 WHERE id = 'm1'" });
@@ -128,26 +121,13 @@ describe("ambiguity seam", () => {
       expect(sendTryCount(db, { id: "m1", attempts: 99 })).toBe(1);
     });
 
-    it("counts tries from the message under LEGACY", () => {
-      const db = fixture({ authority: "LEGACY", legacy: "UPDATE email_outbox SET attempts = 4 WHERE id = 'm1'" });
-      expect(sendTryCount(db, { id: "m1", attempts: 4 })).toBe(4);
-    });
-
-    it("finds stale leases on the attempt under ATTEMPT", () => {
+    it("finds stale leases on the attempt", () => {
       // The message carries no lease after activation, so scanning it would
       // find nothing and crashed sends would never be recovered - silently.
       const db = fixture({ authority: "ATTEMPT" });
       db.exec("UPDATE outbox_attempt SET lease_owner = 'w1', lease_expires_at = '2026-08-30T00:00:00.000Z', send_try_count = 2 WHERE id = 'a1'");
       const stale = staleLeasedSends(db, "2026-08-30T00:05:00.000Z", false);
       expect(stale).toEqual([{ id: "m1", attempts: 2 }]);
-    });
-
-    it("finds stale leases on the message under LEGACY", () => {
-      const db = fixture({
-        authority: "LEGACY",
-        legacy: "UPDATE email_outbox SET lease_owner = 'w1', lease_expires_at = '2026-08-30T00:00:00.000Z', attempts = 2 WHERE id = 'm1'",
-      });
-      expect(staleLeasedSends(db, "2026-08-30T00:05:00.000Z", false)).toEqual([{ id: "m1", attempts: 2 }]);
     });
 
     it("does not mistake a live attempt lease for a stale one", () => {

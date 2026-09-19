@@ -6,23 +6,14 @@ import { id } from "./crypto";
 /**
  * Outbox authority control.
  *
- * Two capabilities, and deliberately not a third:
+ * One operational capability: fence or unfence email dispatch.
  *
- *   fence / unfence email dispatch   here
- *   observe the control state        here
- *   LEGACY -> ATTEMPT activation     ./outbox-activation.ts
- *
- * The separation is not tidiness. 0040 shipped to production alone, with the
- * activation transition deliberately absent and `attempt_authority` structurally
- * pinned to LEGACY, so that the fence could be proven against the worker already
- * running there before any authority could move. Activation arrived only with
- * the attempt table and the attempt-aware writers that can receive it, and it
- * stays out of this module so that reviewing the fence never means reviewing the
- * flip.
+ * Attempt records are the sole dispatch authority. The historical selector
+ * remains physically present until P9's baseline schema cutover, but it is no
+ * longer exposed or read by runtime code.
  */
 
 export type OutboxAuthorityState = {
-  attempt_authority: "LEGACY" | "ATTEMPT";
   email_dispatch_paused: boolean;
   dispatch_owner_release_id: string | null;
   dispatch_owner_generation: number | null;
@@ -62,13 +53,12 @@ export class OutboxAuthorityError extends Error {
 
 /** Fail closed: a missing control row means dispatch is fenced, never open. */
 export const outboxAuthority = (db: Database.Database): OutboxAuthorityState => {
-  const row = db.prepare(`SELECT attempt_authority, email_dispatch_paused, dispatch_owner_release_id,
+  const row = db.prepare(`SELECT email_dispatch_paused, dispatch_owner_release_id,
     dispatch_owner_generation, revision FROM outbox_authority WHERE singleton = 1`).get() as Record<string, unknown> | undefined;
   // Fail closed, and identically to the database trigger, which COALESCEs a
   // missing row to fenced for exactly the same reason.
-  if (!row) return { attempt_authority: "LEGACY", email_dispatch_paused: true, dispatch_owner_release_id: null, dispatch_owner_generation: null, revision: 0 };
+  if (!row) return { email_dispatch_paused: true, dispatch_owner_release_id: null, dispatch_owner_generation: null, revision: 0 };
   return {
-    attempt_authority: row.attempt_authority === "ATTEMPT" ? "ATTEMPT" : "LEGACY",
     email_dispatch_paused: Number(row.email_dispatch_paused ?? 1) === 1,
     dispatch_owner_release_id: row.dispatch_owner_release_id === null || row.dispatch_owner_release_id === undefined ? null : String(row.dispatch_owner_release_id),
     dispatch_owner_generation: row.dispatch_owner_generation === null || row.dispatch_owner_generation === undefined ? null : Number(row.dispatch_owner_generation),

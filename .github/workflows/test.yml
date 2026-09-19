@@ -22,20 +22,12 @@ jobs:
           # without this the ancestry fence silently skips in the one place it
           # is meant to run.
           fetch-depth: 0
-      - name: Fetch durable release refs the topology fence judges
-        # Required, not best-effort. A missing canonical ref must fail loudly:
-        # a masked fetch is how the ancestry fence silently skipped in the one
-        # place it is meant to run. runtime/agent-referrals-dc3-1 is the only
-        # ref still holding the acfef97f production runtime that
-        # topology-normalization-forward-port.test.ts compares against, now
-        # that production-deploy has advanced past it - the test must not
-        # depend on actions/checkout happening to fetch every branch.
+      - name: Fetch durable deployment refs
         run: |
           set -euo pipefail
           git fetch --no-tags origin \
             '+refs/heads/production-deploy:refs/remotes/origin/production-deploy' \
-            '+refs/heads/main:refs/remotes/origin/main' \
-            '+refs/heads/runtime/agent-referrals-dc3-1:refs/remotes/origin/runtime/agent-referrals-dc3-1'
+            '+refs/heads/main:refs/remotes/origin/main'
       - uses: pnpm/action-setup@v4
         with:
           version: 10.29.3

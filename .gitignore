@@ -2,6 +2,11 @@
 commerce-data/
 .certification-state/
 artifacts/certification/
+.phase0-abandon-recovery.env
+.phase0-checkout-state.env
+artifacts/phase0-backport-30d2201e.patch
+.release/controlled-candidates/
+public/release.json
 
 # dependencies
 /node_modules

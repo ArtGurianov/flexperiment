@@ -25,8 +25,6 @@ const operationalAgent = (overrides: Record<string, unknown> = {}) => ({
   slug: `agent-${randomUUID().slice(0, 8)}`,
   display_name: "Operational agent",
   email: `agent-${randomUUID().slice(0, 8)}@example.test`,
-  default_reward_type: "FIXED",
-  default_reward_value: 5000,
   ...overrides,
 });
 

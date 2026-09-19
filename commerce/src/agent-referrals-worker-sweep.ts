@@ -2,7 +2,6 @@ import type Database from "better-sqlite3";
 import { lastActivatedEngagementRevision } from "./agent-referrals-engagement";
 import { distributionsForEngagement, distributionProjection, requireRemoval, markOverdueRemoval, DistributionError } from "./agent-referrals-distribution";
 import { recoverStuckPaymentAttempts } from "./agent-referrals-payment";
-import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
 import { agentReferralsReviewQueue, agentReferralsReviewQueueTotals, type AgentReferralsReviewQueueTotals } from "./agent-referrals-review-queue";
 import type { AdminPrincipal } from "./agent-referrals-partner-identity";
 
@@ -57,12 +56,6 @@ export type AgentReferralsWorkerSweepResult = {
    * a stored queue table.
    */
   review_queue_totals: AgentReferralsReviewQueueTotals;
-};
-
-const ZERO_REVIEW_QUEUE_TOTALS: AgentReferralsReviewQueueTotals = {
-  distributions_review_required: 0, distributions_removal_overdue: 0, distributions_reporting_tail_incomplete: 0,
-  acts_awaiting_presentation: 0, payment_attempts_payout_unknown: 0, npd_reconciliation_needed: 0,
-  partners_profile_pending_verification: 0, partners_framework_not_issued: 0,
 };
 
 const engagementIdsWithEndedPublication = (db: Database.Database): string[] =>
@@ -125,21 +118,7 @@ const sweepRemovalOverdue = (db: Database.Database, atMs: number): number => {
   return marked;
 };
 
-/**
- * DORMANT short-circuits to an all-zero no-op before touching any of the
- * three gated commands below - `dormant-ready` requires zero Agent
- * Referrals business records to exist at all, so there is provably nothing
- * for any of them to find, and each one's own suspension-policy gate would
- * otherwise throw AGENT_REFERRALS_FEATURE_DORMANT on every single tick
- * (MATURATION_RECOVERY_REPORTING_TAIL classes are permitted under ACTIVE
- * and SUSPENDED, refused only under DORMANT). Checked once here rather than
- * relying on each command's own internal gate to no-op, so a DORMANT
- * deployment's worker log stays silent instead of one exception per cycle.
- */
 export const runAgentReferralsWorkerSweep = (db: Database.Database, atMs = Date.now()): AgentReferralsWorkerSweepResult => {
-  if (agentReferralsFeatureState(db).state === "DORMANT") {
-    return { removal_required_marked: 0, removal_overdue_marked: 0, payment_attempts_recovered: 0, review_queue_totals: ZERO_REVIEW_QUEUE_TOTALS };
-  }
   return {
     removal_required_marked: sweepRemovalRequired(db, atMs),
     removal_overdue_marked: sweepRemovalOverdue(db, atMs),

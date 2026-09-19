@@ -38,22 +38,19 @@ describe("Agents", () => {
     await user.type(screen.getByLabelText("Slug"), "agent-one");
     await user.type(screen.getByLabelText("Отображаемое имя"), "Agent One");
     await user.type(screen.getByLabelText("Email"), "agent@example.test");
-    const percent = screen.getByDisplayValue("0,00");
-    await user.clear(percent);
-    await user.type(percent, "10");
     await user.click(screen.getByRole("button", { name: "Сохранить" }));
 
     await waitFor(() => expect(requests).toHaveLength(1));
     expect(requests[0]).toMatchObject({ method: "POST" });
-    expect(Object.keys(requests[0].body).sort()).toEqual(["default_reward_type", "default_reward_value", "display_name", "email", "enabled", "slug"]);
-    for (const field of ["contractor_type", "inn", "legal_name", "npd_status_checked_at", "percent", "fixedRubles"]) expect(requests[0].body).not.toHaveProperty(field);
+    expect(Object.keys(requests[0].body).sort()).toEqual(["display_name", "email", "enabled", "slug"]);
+    for (const field of ["contractor_type", "default_reward_type", "default_reward_value", "inn", "legal_name", "npd_status_checked_at"]) expect(requests[0].body).not.toHaveProperty(field);
   });
 
   it("renders the legal profile read-only and patches only operational fields", async () => {
     const requests: Array<{ method: string; body: Record<string, unknown> }> = [];
     const agent = {
       id: "agent-2", slug: "org-agent", display_name: "Org Agent", email: "org@example.test",
-      enabled: 1, default_reward_type: "PERCENT", default_reward_value: 1000, created_at: "old", updated_at: "new", promo_count: 0,
+      enabled: 1, created_at: "old", updated_at: "new", promo_count: 0,
       legal_profile: { revision: 2, projected_contractor_type: "ORGANIZATION", opf: "ООО" },
     };
     global.fetch = vi.fn().mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -76,8 +73,8 @@ describe("Agents", () => {
 
     await waitFor(() => expect(requests).toHaveLength(1));
     expect(requests[0]).toMatchObject({ method: "PATCH" });
-    expect(Object.keys(requests[0].body).sort()).toEqual(["default_reward_type", "default_reward_value", "display_name", "email", "enabled"]);
-    for (const field of ["contractor_type", "inn", "legal_name", "npd_status_checked_at", "slug"]) expect(requests[0].body).not.toHaveProperty(field);
+    expect(Object.keys(requests[0].body).sort()).toEqual(["display_name", "email", "enabled"]);
+    for (const field of ["contractor_type", "default_reward_type", "default_reward_value", "inn", "legal_name", "npd_status_checked_at", "slug"]) expect(requests[0].body).not.toHaveProperty(field);
     expect(requests[0].body.email).toBe("moved@example.test");
   });
 });
