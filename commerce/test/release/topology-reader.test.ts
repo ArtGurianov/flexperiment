@@ -9,6 +9,7 @@ const COMMIT = "a".repeat(40);
 const OTHER = "b".repeat(40);
 const NOW = new Date("2026-09-20T12:00:00.000Z");
 const at = (offsetMs: number) => new Date(NOW.getTime() + offsetMs).toISOString();
+const appliedVersions = () => (db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as { version: string }[]).map((row) => row.version);
 
 let db: Database.Database;
 let servers: Server[] = [];
@@ -136,7 +137,9 @@ describe("reading the evidence readiness judges", () => {
     expect(await evidence({ version: "2026-08-28.1", manifestSha256: "f".repeat(64) }).read()).toMatchObject({
       commerce: { sourceCommit: COMMIT, lastSuccessfulSweepAt: null },
       worker: { sourceCommit: COMMIT, lastSuccessfulSweepAt: at(-30_000) },
-      schema: { lineage: "SUPPORTED", versions: ["0001_launch_baseline.sql"] },
+      // Whatever the ledger actually holds: the point is that the reader
+      // reports it, not that the repository has exactly one migration.
+      schema: { lineage: "SUPPORTED", versions: appliedVersions() },
       legal: { version: "2026-08-28.1" },
     });
   });

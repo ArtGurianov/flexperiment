@@ -32,7 +32,14 @@ export interface DeploymentDriver {
   deploy(targetSha: string): Promise<void>;
 }
 
-/** Issues the one-shot capability and performs the real-money certification with it. */
+/**
+ * The two halves of certification, and they are deliberately not one call.
+ *
+ * Issuing a capability and creating a run are internal durable facts: nothing
+ * has left the system, and the old lineage is still a truthful destination. The
+ * external effect begins at the payment page, which is why arming sits between
+ * them and not before both.
+ */
 export interface CertificationDriver {
   issueCapability(sessionId: string): Promise<CertificationCapability>;
   certify(capability: CertificationCapability): Promise<void>;
@@ -72,6 +79,14 @@ export type ReleaseRequest = {
 
 export type ReleaseOutcome =
   | { readonly kind: "SUCCEEDED"; readonly session: DeploySession }
+  /**
+   * Converged, admitted, and holding a capability nobody has spent. The fence
+   * is still shut, the old lineage is still a legal destination, and the next
+   * step needs a person. It is not a success and not a failure - it is a
+   * handoff, and a caller that read it as either would be wrong in a way that
+   * costs either an open shop or an unnecessary rollback.
+   */
+  | { readonly kind: "AWAITING_OPERATOR"; readonly session: DeploySession; readonly capability: CertificationCapability }
   | { readonly kind: "SAFE_ABORTED"; readonly session: DeploySession; readonly code: string }
   | { readonly kind: "ROLLED_BACK"; readonly session: DeploySession; readonly code: string }
   | { readonly kind: "RECOVERY_REQUIRED"; readonly session: DeploySession; readonly code: string };
@@ -165,12 +180,36 @@ export class ReleaseOrchestrator {
     const admitted = await this.requireReadiness(sessionId, request);
     if (admitted) return admitted;
 
+    // Issued, not spent. A capability and a run are records this system keeps
+    // about itself; nothing has left it, so the archived database is still a
+    // truthful account of what happened and a rollback is still legal. Arming
+    // here would burn that for a step the operator may never start.
+    let capability: CertificationCapability;
+    try {
+      capability = await this.ports.certification.issueCapability(sessionId);
+    } catch (error) {
+      // Still before any external effect, so this is an ordinary failure and
+      // the session keeps every exit it had.
+      return this.recovery(sessionId, request.ownerId, `CERTIFICATION_NOT_ISSUED:${failureCode(error)}`);
+    }
+    return { kind: "AWAITING_OPERATOR", session: this.ports.sessions.read(sessionId)!, capability };
+  }
+
+  /**
+   * The attended half: arm, certify, prove convergence again, settle.
+   *
+   * Arming is the first thing, immediately before the capability can be spent
+   * on a real payment - that is the point of no return, and it is reached only
+   * because a person decided to start. Everything after it is forward-only.
+   */
+  async certifyAndComplete(sessionId: string, request: ReleaseRequest, capability: CertificationCapability): Promise<ReleaseOutcome> {
+    if (!this.ports.certification) throw new ReleaseOrchestrationError("CUTOVER_REQUIRES_CERTIFICATION_DRIVER");
+
     // ---- last reversible point -------------------------------------------
     this.ports.sessions.armExternalEffects(sessionId, request.ownerId);
     // ----------------------------------------------------------------------
 
     try {
-      const capability = await this.ports.certification.issueCapability(sessionId);
       await this.ports.certification.certify(capability);
     } catch (error) {
       // Past the boundary there is no safe abort and no rollback: the archived

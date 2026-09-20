@@ -70,8 +70,13 @@ describe("the launch baseline is frozen", () => {
     migrate(db);
     expect(db.prepare("SELECT lineage FROM schema_identity WHERE singleton = 1").get())
       .toEqual({ lineage: LAUNCH_SCHEMA_LINEAGE });
+    // The ledger is whatever the directory holds, applied in order, with the
+    // baseline first. Asserted as that rule rather than as a literal list,
+    // because the list was what broke when a legitimate 0002 arrived - and a
+    // legitimate 0002 is the thing this freeze is designed to allow.
     expect(db.prepare("SELECT version FROM schema_migrations ORDER BY version").all())
-      .toEqual([{ version: BASELINE }]);
+      .toEqual(migrationNames().map((version) => ({ version })));
+    expect(migrationNames()[0]).toBe(BASELINE);
     db.close();
   });
 
@@ -90,7 +95,7 @@ describe("the launch baseline is frozen", () => {
     migrate(db, dir);
 
     expect(db.prepare("SELECT version FROM schema_migrations ORDER BY version").all())
-      .toEqual([{ version: BASELINE }, { version: "0002_example_next_migration.sql" }]);
+      .toEqual([...migrationNames(), "0002_example_next_migration.sql"].sort().map((version) => ({ version })));
     expect(db.prepare("SELECT name FROM sqlite_master WHERE name = 'a_later_table'").get())
       .toEqual({ name: "a_later_table" });
     // The baseline itself was not touched by any of that.

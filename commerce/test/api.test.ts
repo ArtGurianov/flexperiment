@@ -44,8 +44,10 @@ function appendV2Event(db: ReturnType<typeof openDatabase>, releaseId: string, a
 }
 
 /** Release-control state, not a fixture: pinning it breaks on every migration. */
-const migrationHead = () =>
-  readdirSync(join(process.cwd(), "commerce", "migrations")).filter((name) => name.endsWith(".sql")).sort().at(-1)!;
+const migrationNames = () =>
+  readdirSync(join(process.cwd(), "commerce", "migrations")).filter((name) => name.endsWith(".sql")).sort();
+const migrationHead = () => migrationNames().at(-1)!;
+const migrationVersions = () => migrationNames().map((version) => ({ version }));
 
 describe("commerce HTTP boundary", () => {
   it("allows the configured public browser origin and required checkout headers", async () => {
@@ -789,7 +791,7 @@ describe("commerce HTTP boundary", () => {
     const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")! };
     const system = await app.request("http://admin.flexperiment.ru/v1/admin/system/evidence", { headers });
     expect(system.headers.get("cache-control")).toBe("no-store");
-    expect(await system.json()).toMatchObject({ source_commit: process.env.SOURCE_COMMIT, migration_head: { version: migrationHead() }, migration_versions: [{ version: "0001_launch_baseline.sql" }], active_legal_release: { version: "test" } });
+    expect(await system.json()).toMatchObject({ source_commit: process.env.SOURCE_COMMIT, migration_head: { version: migrationHead() }, migration_versions: migrationVersions(), active_legal_release: { version: "test" } });
       const evidence = await app.request(`http://admin.flexperiment.ru/v1/admin/orders/${order.id}/evidence`, { headers });
       const body = await evidence.json() as { order: { currency: string } } & Record<string, unknown>;
     expect(body).toMatchObject({

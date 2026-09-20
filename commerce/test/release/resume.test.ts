@@ -122,7 +122,7 @@ describe("takeover after a runner dies", () => {
 });
 
 describe("continuing a session that was taken over", () => {
-  it("finishes a converged session through readiness, arming and certification", async () => {
+  it("carries a converged session through readiness to the operator handoff", async () => {
     const { advance, log, orchestrator } = abandoned({ at: "pickup", observes: topology(target), afterDeploy: true });
     advance(120_000);
     const resumed = await orchestrator.resume("pickup", "new-runner");
@@ -130,11 +130,14 @@ describe("continuing a session that was taken over", () => {
 
     const outcome = await orchestrator.continueSession("pickup", "new-runner", "PROVE_READINESS");
 
-    expect(outcome).toMatchObject({ kind: "SUCCEEDED" });
     // The same ordering the live path uses, not a copy of it: no second deploy,
-    // and certification still sits between readiness and completion.
+    // readiness before the capability, and the attended step still ahead.
+    expect(outcome).toMatchObject({ kind: "AWAITING_OPERATOR" });
     expect(log).not.toContain("deploy");
-    expect(log.indexOf("readiness")).toBeLessThan(log.indexOf("certify"));
+    expect(log.indexOf("readiness")).toBeLessThan(log.indexOf("capability"));
+    expect(log).not.toContain("certify");
+    // A resumed session that has not been certified is still rollback-legal.
+    expect(outcome.session.rollbackAuthority).toBe("OLD_LINEAGE_ALLOWED");
   });
 
   it("re-fires the deployment only when the topology still says nothing moved", async () => {
@@ -146,7 +149,7 @@ describe("continuing a session that was taken over", () => {
 
     const outcome = await orchestrator.continueSession("retry", "new-runner", "RETRY_DEPLOY");
 
-    expect(outcome).toMatchObject({ kind: "SUCCEEDED" });
+    expect(outcome).toMatchObject({ kind: "AWAITING_OPERATOR" });
     expect(log.filter((entry) => entry === "deploy")).toHaveLength(1);
   });
 

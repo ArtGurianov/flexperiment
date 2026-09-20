@@ -69,26 +69,51 @@ const cutoverRequest = { ownerId: "owner", candidate: candidateFor("LAUNCH_BASEL
 const rollingRequest = { ownerId: "owner", candidate: candidateFor("ROLLING_COMPATIBLE") } as const;
 
 describe("maintenance cutover ordering", () => {
-  it("fences before deploying and arms only after convergence and readiness", async () => {
+  it("fences, deploys, proves readiness and then stops for the operator", async () => {
     const { log, store, orchestrator } = harness({ topologies: [topology(old), topology(target), topology(target)] });
-    const outcome = await orchestrator.runMaintenanceCutover(cutoverRequest);
+    const prepared = await orchestrator.runMaintenanceCutover(cutoverRequest);
+
+    expect(prepared.kind).toBe("AWAITING_OPERATOR");
+    expect(log).toEqual([`observe:${old}`, `deploy:${target}`, `observe:${target}`, "readiness", "capability-issued"]);
+    // Issuing a capability is a record this system keeps about itself. Nothing
+    // has left it, so the archived database is still a truthful account and a
+    // rollback is still legal - which is exactly what a run the operator never
+    // starts must not have destroyed.
+    expect(prepared.session).toMatchObject({ state: "DEPLOYING", rollbackAuthority: "OLD_LINEAGE_ALLOWED" });
+    expect(store.deploymentGate().closed).toBe(true);
+    expect(log).not.toContain("certify");
+  });
+
+  it("arms only when the operator actually starts certification", async () => {
+    const { log, store, orchestrator } = harness({ topologies: [topology(old), topology(target), topology(target), topology(target)] });
+    const prepared = await orchestrator.runMaintenanceCutover(cutoverRequest);
+    if (prepared.kind !== "AWAITING_OPERATOR") throw new Error(`expected a handoff, got ${prepared.kind}`);
+
+    const outcome = await orchestrator.certifyAndComplete(prepared.session.id, cutoverRequest, prepared.capability);
 
     expect(outcome.kind).toBe("SUCCEEDED");
-    // The whole contract, read top to bottom: nothing can be certified before
-    // the fence is up, the target is proved and readiness has admitted it.
+    // The whole contract, read top to bottom: nothing is certified before the
+    // fence is up, the target is proved and readiness has admitted it, and the
+    // point of no return is crossed immediately before the payment, not before
+    // the capability that might never be spent.
     expect(log).toEqual([
-      `observe:${old}`,
-      `deploy:${target}`,
-      `observe:${target}`,
-      "readiness",
-      "capability-issued",
-      "certify",
-      `observe:${target}`,
+      `observe:${old}`, `deploy:${target}`, `observe:${target}`, "readiness",
+      "capability-issued", "certify", `observe:${target}`,
     ]);
     expect(outcome.session).toMatchObject({ state: "SUCCEEDED", rollbackAuthority: "NEW_LINEAGE_ONLY" });
     // Settling the session and reopening the gate is one operation, so a
     // terminal session can never coexist with sales still shut.
     expect(store.deploymentGate().closed).toBe(false);
+  });
+
+  it("still permits a rollback while the operator has not begun", async () => {
+    // The reason arming moved: a prepared cutover nobody certified is still
+    // undoable, and a release that armed at preparation would have thrown that
+    // away for a step that never happened.
+    const { orchestrator } = harness({ topologies: [topology(old), topology(target), topology(target)] });
+    const prepared = await orchestrator.runMaintenanceCutover(cutoverRequest);
+
+    expect(prepared.session.rollbackAuthority).toBe("OLD_LINEAGE_ALLOWED");
   });
 
   it("safe-aborts and reopens sales when the build fails before any surface moves", async () => {
@@ -128,8 +153,10 @@ describe("maintenance cutover ordering", () => {
   });
 
   it("leaves sales closed for recovery when certification fails past the boundary", async () => {
-    const { log, store, orchestrator } = harness({ topologies: [topology(old), topology(target), topology(target)], certifyFails: "REFUND_NOT_OBSERVED" });
-    const outcome = await orchestrator.runMaintenanceCutover(cutoverRequest);
+    const { store, orchestrator } = harness({ topologies: [topology(old), topology(target), topology(target)], certifyFails: "REFUND_NOT_OBSERVED" });
+    const prepared = await orchestrator.runMaintenanceCutover(cutoverRequest);
+    if (prepared.kind !== "AWAITING_OPERATOR") throw new Error(`expected a handoff, got ${prepared.kind}`);
+    const outcome = await orchestrator.certifyAndComplete(prepared.session.id, cutoverRequest, prepared.capability);
 
     expect(outcome).toMatchObject({ kind: "RECOVERY_REQUIRED", code: "CERTIFICATION_FAILED:REFUND_NOT_OBSERVED" });
     // Past the boundary the archived database can no longer account for what
@@ -142,7 +169,9 @@ describe("maintenance cutover ordering", () => {
     // them must not be closed over by the snapshot taken before arming.
     const drifted = withSurface(topology(target), "admin", old);
     const { log, store, orchestrator } = harness({ topologies: [topology(old), topology(target), drifted, drifted] });
-    const outcome = await orchestrator.runMaintenanceCutover(cutoverRequest);
+    const prepared = await orchestrator.runMaintenanceCutover(cutoverRequest);
+    if (prepared.kind !== "AWAITING_OPERATOR") throw new Error(`expected a handoff, got ${prepared.kind}`);
+    const outcome = await orchestrator.certifyAndComplete(prepared.session.id, cutoverRequest, prepared.capability);
 
     expect(outcome).toMatchObject({ kind: "RECOVERY_REQUIRED", code: "TARGET_TOPOLOGY_NOT_CONVERGED" });
     expect(outcome.session).toMatchObject({ state: "RECOVERY_REQUIRED", rollbackAuthority: "NEW_LINEAGE_ONLY" });
