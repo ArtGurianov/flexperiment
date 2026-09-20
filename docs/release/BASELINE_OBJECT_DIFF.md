@@ -146,7 +146,8 @@ onward.
 | `schema_identity` | Singleton; `lineage` CHECKed to the launch value; no UPDATE, no DELETE. |
 | `deploy_sessions` | At most one non-terminal session (partial unique index). `pre_deploy_topology` is `NOT NULL`: both entry points take it as a required argument, so a session without the snapshot a safe abort is decided from cannot exist. A terminal state with the gate shut, a `ROLLING_SAFE` session with the gate shut, `SAFE_ABORTED` beside an observed mutation, and a half-adopted handoff are all CHECK-refused. **Frozen, not write-once**: the snapshot and all four adoption fields arrive in `AcquireInput` and appear nowhere in `DeploySessionPatch`, so after acquisition they have no legal path of change at all - a write-once rule would be weaker than the contract. `observed_topology` deliberately **not** frozen, because it is the reading. `mutation_observed` and `rollback_authority` one-way; a terminal session admits no update at all. |
 | `certification_runs` | `revision` advances by exactly one; phase and cleanup direction never move backwards; `run_id`, `release_sha`, `started_at` immutable; a recorded failure never rewritten or cleared; `pending_command` A→B structurally refused; `superseded_command` write-once; eleven evidence identifiers write-once. |
-| `certification_capabilities` | Slot as a **stored** fact - `UNIQUE(deployment_session_id) WHERE consumed_at IS NULL AND retired_at IS NULL` - because a partial index cannot express "unexpired" and an expired capability would otherwise block its own replacement. `consumed_at`/`retired_at` mutually exclusive and one-way; scope columns frozen. A **retirement guard** is what makes the slot safe: retiring is what frees it, so without one a raw `UPDATE` could retire a live capability early and issue a second beside it, defeating the partial index rather than passing it. Retirement is only for a capability never spent, and only at or after `expires_at`. |
+| `certification_capabilities` | Slot as a **stored** fact - `UNIQUE(deployment_session_id) WHERE consumed_at IS NULL AND retired_at IS NULL` - because a partial index cannot express "unexpired" and an expired capability would otherwise block its own replacement. `consumed_at`/`retired_at` mutually exclusive and one-way; scope columns frozen. A **retirement guard** is what makes the slot safe: retiring is what frees it, so without one a raw `UPDATE` could retire a live capability early and issue a second beside it, defeating the partial index rather than passing it. Retirement is only for a capability never spent, and only where `expires_at <= retired_at <= now` by the database's own clock - comparing the two columns alone would accept `SET retired_at = '9999-01-01...'`, which reads as after expiry but has not happened. |
+| DELETE, on all of the above | `deploy_sessions`, `certification_runs`, `certification_capabilities` and `schema_identity` refuse `DELETE`. No store exposes one, and without the guards the slot model is bypassed by removing the row instead of retiring it. |
 | `runtime_instance_evidence` | Keyed by instance, not unit; a second row per unit is expected. Instance identity frozen. |
 | `orders.certification_run_id` | The only certification discriminator. `NULL` is an ordinary order. No `order_purpose`. |
 
@@ -211,10 +212,17 @@ retirement, run CAS and monotonicity, armed-command replacement, the eleven
 write-once evidence identifiers, and the tax-snapshot defect.
 
 Each guard, CHECK and partial predicate was removed in turn and the suite
-re-run. Every one of them kills at least one case. That sweep is the reason the
-file is worth having: it found a CHECK - "spent or replaced, never both" - that
-nothing tested, because the retirement guard was answering first in the only
-direction being exercised.
+re-run. Every one of them kills at least one case, with one recorded exception:
+the retirement guard's `now < expires_at` term is implied by the two that
+follow it (`expires_at <= retired_at <= now`), so no test can kill it alone. It
+is kept and marked, because it states the rule the other two only imply.
+
+**What that sweep cannot do is name a guard that was never written.** It asks
+whether an existing protection is load-bearing, not which protection is
+missing - which is why `DELETE` went unnoticed until it was looked for
+directly. The sweep did earn its keep on the first kind of question: it found a
+CHECK - "spent or replaced, never both" - that nothing tested, because the
+retirement guard was answering first in the only direction being exercised.
 
 ## What is not in the delta, and why
 

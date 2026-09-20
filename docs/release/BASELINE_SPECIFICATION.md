@@ -297,8 +297,32 @@ Retirement is only for a capability that was never spent, and only where
 reissue is permitted - after expiry, **and a trigger has to say so**. Retiring
 is what frees the slot, so without that guard a raw `UPDATE` could retire a
 live capability early and issue a second one beside it - defeating the partial
-index rather than passing it. `retired_at` and `expires_at` are both
-`toISOString()`, so they are fixed width, UTC, and compare correctly as text.
+index rather than passing it.
+
+**The condition is about the clock, not about the columns.** Comparing
+`retired_at` to `expires_at` alone only proves the written value *reads* as
+later than expiry; it says nothing about when the update happened, so
+`SET retired_at = '9999-01-01...'` would free a live capability's slot today.
+The guard admits a retirement only when the row was never consumed and
+
+```text
+expires_at <= retired_at <= now
+```
+
+where `now` is the database's own clock. `retired_at` and `expires_at` are
+`toISOString()` and `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')` has the same
+fixed-width UTC shape, so all three compare as text.
+
+### Nothing durable is deleted
+
+`ReleaseAuthorityStore`, `CertificationRunStore` and
+`CertificationCapabilityStore` expose no delete, and the schema has to say so
+too. A raw `DELETE` of a live capability bypasses the slot model entirely -
+the partial index never participates - and the same statement would destroy a
+running deployment's authority or a run's recovery evidence before anything
+references it. `deploy_sessions`, `certification_runs`,
+`certification_capabilities` and `schema_identity` each refuse `DELETE`
+outright. Ending a thing is a recorded transition, never a removal.
 
 And because the slot is now a stored fact rather than a computed one,
 **`authorizationDefect()` gains a retired case**: without it, retiring a capability would free the index slot while the

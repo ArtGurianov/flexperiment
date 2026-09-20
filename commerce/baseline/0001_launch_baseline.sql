@@ -3336,15 +3336,53 @@ BEGIN SELECT RAISE(ABORT, 'CERTIFICATION_CAPABILITY_ENDING_IMMUTABLE'); END;
 
 -- Retiring is what frees the slot, so without this a raw UPDATE could retire a
 -- live capability early and issue a second one beside it - defeating the
--- partial unique index rather than passing it. Retirement is only for a
--- capability that was never spent, and only once it has actually expired.
--- `retired_at` and `expires_at` are both `toISOString()`, so they are fixed
--- width, UTC, and compare correctly as text.
+-- partial unique index rather than passing it.
+--
+-- The condition has to be about the clock, not about the columns. Comparing
+-- `NEW.retired_at` to `OLD.expires_at` alone only proves the written value
+-- reads as later than expiry; it says nothing about when the UPDATE happened,
+-- so `SET retired_at = '9999-01-01...'` would free the slot of a live
+-- capability today. So the guard asks three things: the capability was never
+-- spent, the database's own clock is past expiry *now*, and the stamp being
+-- written is neither before expiry nor in the future.
+--
+-- `expires_at` and `retired_at` are written as `toISOString()`, and
+-- `strftime('%Y-%m-%dT%H:%M:%fZ', 'now')` produces the same fixed-width UTC
+-- shape, so all three compare correctly as text.
+--
+-- The `now < expires_at` term is deliberately redundant and is recorded as
+-- such: the last two terms already admit only `expires_at <= retired_at <=
+-- now`, which implies it, so no test can kill that term alone. It stays
+-- because it states the rule the other two only imply, and because weakening
+-- either of them would otherwise silently restore the bypass.
 CREATE TRIGGER certification_capabilities_retirement_guard
 BEFORE UPDATE ON certification_capabilities
 WHEN OLD.retired_at IS NULL AND NEW.retired_at IS NOT NULL
-  AND (OLD.consumed_at IS NOT NULL OR NEW.retired_at < OLD.expires_at)
+  AND (
+    OLD.consumed_at IS NOT NULL
+    OR strftime('%Y-%m-%dT%H:%M:%fZ', 'now') < OLD.expires_at
+    OR NEW.retired_at < OLD.expires_at
+    OR NEW.retired_at > strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
+  )
 BEGIN SELECT RAISE(ABORT, 'CERTIFICATION_CAPABILITY_RETIREMENT_PREMATURE'); END;
+
+-- No store exposes a delete, and every one of these rows is the authority
+-- something else is decided from. Without these, the slot model is trivially
+-- bypassed - delete the live capability, insert another - and the partial
+-- index never participates. The same raw DELETE would destroy a running
+-- deployment's authority, or a run's recovery evidence before anything
+-- references it. Ending a thing is a recorded transition here, never a removal.
+CREATE TRIGGER certification_capabilities_delete_guard
+BEFORE DELETE ON certification_capabilities
+BEGIN SELECT RAISE(ABORT, 'CERTIFICATION_CAPABILITY_IMMUTABLE'); END;
+
+CREATE TRIGGER certification_runs_delete_guard
+BEFORE DELETE ON certification_runs
+BEGIN SELECT RAISE(ABORT, 'CERTIFICATION_RUN_IMMUTABLE'); END;
+
+CREATE TRIGGER deploy_sessions_delete_guard
+BEFORE DELETE ON deploy_sessions
+BEGIN SELECT RAISE(ABORT, 'DEPLOY_SESSION_IMMUTABLE'); END;
 
 -- The ledger the runtime keeps for 0002 and onward. The baseline creates it so
 -- that a database built from this file alone is already a database the migrator

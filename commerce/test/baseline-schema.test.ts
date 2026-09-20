@@ -130,56 +130,121 @@ describe("deploy_sessions", () => {
 describe("certification_capabilities", () => {
   const run = `INSERT INTO certification_runs(run_id,revision,release_sha,phase,direction,started_at)
     VALUES ('r1',1,'sha','NEW','NORMAL','2026-01-01T00:00:00.000Z')`;
-  const capability = (id: string, nonce: string, expires = "2026-01-01T00:10:00.000Z") =>
+  /** Expiry is a wall-clock fact here, so the fixtures straddle the real clock. */
+  const EXPIRED = "2020-01-01T00:00:00.000Z";
+  const LIVE = "2099-01-01T00:00:00.000Z";
+  const capability = (id: string, nonce: string, expires: string) =>
     `INSERT INTO certification_capabilities(id,run_id,deployment_session_id,release_sha,max_amount_kopecks,expires_at,nonce)
      VALUES ('${id}','r1','d1','sha',100,'${expires}','${nonce}')`;
 
   beforeEach(() => { db.exec(session("d1")); db.exec(run); });
 
   it("holds the slot against a second live capability", () => {
-    db.exec(capability("c1", "n1"));
-    expect(() => db.exec(capability("c2", "n2"))).toThrow(/UNIQUE constraint failed/);
+    db.exec(capability("c1", "n1", LIVE));
+    expect(() => db.exec(capability("c2", "n2", LIVE))).toThrow(/UNIQUE constraint failed/);
   });
 
-  it("refuses retirement before the capability has actually expired", () => {
-    db.exec(capability("c1", "n1"));
-    refuses("UPDATE certification_capabilities SET retired_at = '2026-01-01T00:05:00.000Z' WHERE id = 'c1'",
+  it("refuses to retire a capability that has not expired yet", () => {
+    db.exec(capability("c1", "n1", LIVE));
+    refuses(`UPDATE certification_capabilities SET retired_at = '${new Date().toISOString()}' WHERE id = 'c1'`,
       "CERTIFICATION_CAPABILITY_RETIREMENT_PREMATURE");
-    // Without this the slot could be freed under a live capability, which
-    // defeats the partial index rather than satisfying it.
-    expect(() => db.exec(capability("c2", "n2"))).toThrow(/UNIQUE constraint failed/);
   });
 
-  it("allows reissue once the old one has expired, and keeps the history", () => {
-    db.exec(capability("c1", "n1"));
-    db.exec("UPDATE certification_capabilities SET retired_at = '2026-01-01T00:10:00.000Z' WHERE id = 'c1'");
-    db.exec(capability("c2", "n2"));
+  it("cannot be freed early by stamping the retirement in the future", () => {
+    // Comparing `retired_at` to `expires_at` alone would accept this: the
+    // written value does read as later than expiry. What it is not is a
+    // retirement that has happened, and the slot would be free today.
+    db.exec(capability("c1", "n1", LIVE));
+    refuses("UPDATE certification_capabilities SET retired_at = '9999-01-01T00:00:00.000Z' WHERE id = 'c1'",
+      "CERTIFICATION_CAPABILITY_RETIREMENT_PREMATURE");
+    expect(() => db.exec(capability("c2", "n2", LIVE))).toThrow(/UNIQUE constraint failed/);
+  });
+
+  it("refuses a retirement stamped ahead of the database's own clock", () => {
+    db.exec(capability("c1", "n1", EXPIRED));
+    refuses("UPDATE certification_capabilities SET retired_at = '2099-06-01T00:00:00.000Z' WHERE id = 'c1'",
+      "CERTIFICATION_CAPABILITY_RETIREMENT_PREMATURE");
+  });
+
+  it("refuses a retirement stamped before the expiry it claims to follow", () => {
+    db.exec(capability("c1", "n1", EXPIRED));
+    refuses("UPDATE certification_capabilities SET retired_at = '2019-01-01T00:00:00.000Z' WHERE id = 'c1'",
+      "CERTIFICATION_CAPABILITY_RETIREMENT_PREMATURE");
+  });
+
+  it("allows reissue once the old one has really expired, and keeps the history", () => {
+    db.exec(capability("c1", "n1", EXPIRED));
+    db.exec(`UPDATE certification_capabilities SET retired_at = '${new Date().toISOString()}' WHERE id = 'c1'`);
+    db.exec(capability("c2", "n2", LIVE));
     expect(db.prepare("SELECT COUNT(*) AS n FROM certification_capabilities").get()).toEqual({ n: 2 });
   });
 
   it("keeps spent and replaced as different endings, and both one-way", () => {
-    db.exec(capability("c1", "n1"));
+    db.exec(capability("c1", "n1", EXPIRED));
     db.exec("UPDATE certification_capabilities SET consumed_at = '2026-01-01T00:01:00.000Z' WHERE id = 'c1'");
     // Retiring what was already spent is refused by the guard before the CHECK
     // ever sees it; both say the same thing, and the guard says it first.
-    refuses("UPDATE certification_capabilities SET retired_at = '2026-01-01T00:20:00.000Z' WHERE id = 'c1'",
+    refuses(`UPDATE certification_capabilities SET retired_at = '${new Date().toISOString()}' WHERE id = 'c1'`,
       "CERTIFICATION_CAPABILITY_RETIREMENT_PREMATURE");
     refuses("UPDATE certification_capabilities SET consumed_at = '2026-01-01T00:02:00.000Z' WHERE id = 'c1'",
       "CERTIFICATION_CAPABILITY_ENDING_IMMUTABLE");
   });
 
   it("refuses to spend a capability that was replaced instead", () => {
-    db.exec(capability("c1", "n1"));
-    db.exec("UPDATE certification_capabilities SET retired_at = '2026-01-01T00:10:00.000Z' WHERE id = 'c1'");
+    db.exec(capability("c1", "n1", EXPIRED));
+    db.exec(`UPDATE certification_capabilities SET retired_at = '${new Date().toISOString()}' WHERE id = 'c1'`);
     // Only the CHECK stands here: the row was never consumed, so the one-way
     // guard has nothing to compare, and it is no longer being retired.
     refuses("UPDATE certification_capabilities SET consumed_at = '2026-01-01T00:11:00.000Z' WHERE id = 'c1'", "CHECK constraint failed");
   });
 
   it("refuses any edit to the scope it was issued within", () => {
-    db.exec(capability("c1", "n1"));
-    for (const column of ["release_sha = 'other'", "max_amount_kopecks = 999999", "expires_at = '2099-01-01T00:00:00.000Z'", "nonce = 'n9'"]) {
+    db.exec(capability("c1", "n1", LIVE));
+    for (const column of ["release_sha = 'other'", "max_amount_kopecks = 999999", "expires_at = '2098-01-01T00:00:00.000Z'", "nonce = 'n9'"]) {
       refuses(`UPDATE certification_capabilities SET ${column} WHERE id = 'c1'`, "CERTIFICATION_CAPABILITY_SCOPE_IMMUTABLE");
+    }
+  });
+});
+
+describe("durable authority is never deleted", () => {
+  // No store exposes a delete. Without these guards the slot model is bypassed
+  // outright: remove the live capability and the partial index never gets a
+  // say. A mutation sweep cannot find this class of defect - it asks whether an
+  // existing guard is needed, not which guard was never written.
+  it("refuses to delete a live deploy session", () => {
+    db.exec(session("d1"));
+    refuses("DELETE FROM deploy_sessions WHERE id = 'd1'", "DEPLOY_SESSION_IMMUTABLE");
+  });
+
+  it("refuses to delete a finished deploy session", () => {
+    db.exec(session("d1", { state: "SUCCEEDED" }));
+    refuses("DELETE FROM deploy_sessions WHERE id = 'd1'", "DEPLOY_SESSION_IMMUTABLE");
+  });
+
+  it("refuses to delete a run nothing references yet", () => {
+    db.exec(`INSERT INTO certification_runs(run_id,revision,release_sha,phase,direction,started_at)
+      VALUES ('r1',1,'sha','NEW','NORMAL','2026-01-01T00:00:00.000Z')`);
+    // Nothing points at it, so a foreign key would not object. The guard must.
+    expect(db.prepare("SELECT COUNT(*) AS n FROM certification_capabilities WHERE run_id = 'r1'").get()).toEqual({ n: 0 });
+    refuses("DELETE FROM certification_runs WHERE run_id = 'r1'", "CERTIFICATION_RUN_IMMUTABLE");
+  });
+
+  it("refuses to delete a live capability, so the slot cannot be freed that way", () => {
+    db.exec(session("d1"));
+    db.exec(`INSERT INTO certification_runs(run_id,revision,release_sha,phase,direction,started_at)
+      VALUES ('r1',1,'sha','NEW','NORMAL','2026-01-01T00:00:00.000Z')`);
+    db.exec(`INSERT INTO certification_capabilities(id,run_id,deployment_session_id,release_sha,max_amount_kopecks,expires_at,nonce)
+      VALUES ('c1','r1','d1','sha',100,'2099-01-01T00:00:00.000Z','n1')`);
+    refuses("DELETE FROM certification_capabilities WHERE id = 'c1'", "CERTIFICATION_CAPABILITY_IMMUTABLE");
+    expect(() => db.exec(`INSERT INTO certification_capabilities(id,run_id,deployment_session_id,release_sha,max_amount_kopecks,expires_at,nonce)
+      VALUES ('c2','r1','d1','sha',100,'2099-01-01T00:00:00.000Z','n2')`)).toThrow(/UNIQUE constraint failed/);
+  });
+
+  it("guards every durable authority table, not only the ones remembered", () => {
+    for (const table of ["deploy_sessions", "certification_runs", "certification_capabilities", "schema_identity"]) {
+      const guards = db.prepare(
+        "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'trigger' AND tbl_name = ? AND sql LIKE '%BEFORE DELETE%'").get(table);
+      expect(guards, `${table} has no delete guard`).toEqual({ n: 1 });
     }
   });
 });
