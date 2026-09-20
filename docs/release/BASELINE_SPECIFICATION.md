@@ -234,11 +234,20 @@ fact.
 
 **`deploy_sessions`.** Frozen after the session is acquired: `id`, `mode`,
 `target_sha`, `created_at`, `candidate_id`, `adopted_cutover_id`,
-`adopted_envelope_sha256`, `predecessor_database_ref` and
-`predecessor_database_sha256`. One-way once moved: `mutation_observed` from
-false, `rollback_authority` from `OLD_LINEAGE_ALLOWED` to `NEW_LINEAGE_ONLY`,
-`bootstrap_rollback_id` from null to a value, and a terminal state, which
-nothing leaves.
+`adopted_envelope_sha256`, `predecessor_database_ref`,
+`predecessor_database_sha256` and **`pre_deploy_topology`**. One-way once
+moved: `mutation_observed` from false, `rollback_authority` from
+`OLD_LINEAGE_ALLOWED` to `NEW_LINEAGE_ONLY`, `bootstrap_rollback_id` from null
+to a value, and a terminal state, which nothing leaves.
+
+The topology snapshot belongs on that list for the same reason as the database
+digest, and it is easy to miss because it looks like a reading rather than a
+fact. `planResume` decides between a safe abort, a forced direction and proving
+readiness by comparing what production serves now against that snapshot - so
+anything able to edit it can make a production that moved look untouched, and
+obtain a safe abort for a deploy that already changed something.
+`observed_topology` is deliberately not frozen: it is the reading, and readings
+are meant to be retaken.
 
 **`certification_capabilities`.** Frozen for the life of the row: `id`,
 `run_id`, `deployment_session_id`, `release_sha`, `max_amount_kopecks`,
@@ -253,6 +262,47 @@ fact rather than a computed one, **`authorizationDefect()` gains a retired
 case**: without it, retiring a capability would free the index slot while the
 old row, still unconsumed, would go on satisfying P7's own predicate. That is
 a code change the baseline brings with it, not a schema detail.
+
+### A run's recovery evidence is written once
+
+`certification_runs` needs the same treatment, and for a sharper reason. The
+recovery planner does not reconstruct what to do: it returns the stored
+`pending_command`, and the machine re-issues that command with the saved
+idempotency key, the saved expected revision and the saved request digest,
+deriving nothing from what production looks like now. That is the property that
+makes an interrupted run safe to resume - and it means the stored command *is*
+the external effect a recovery will perform.
+
+So the schema fixes what an adapter is not asked to police:
+
+```text
+pending_command
+  NULL    -> command    arming, which the adapter decides
+  command -> NULL       settling or retiring, likewise
+  command -> command    refused, structurally
+
+superseded_command
+  NULL -> value, once; never rewritten, never cleared
+```
+
+Replacing one armed command with another is the case worth naming: it is not a
+state the adapter has a transition for, it changes what a later resume will
+send to the outside world, and nothing else in the system would notice.
+
+The same rule covers the identifiers of things that already exist, because
+recovery follows them to find real objects to cancel, refund and verify:
+
+`occurrence_id`, `quote_id`, `status_id`, `order_id`, `payment_id`,
+`booking_id`, `ticket_id`, `refund_obligation_id`, `refund_id`,
+`human_ticket_verified_at`, `completed_at`.
+
+Each may go from null to a value once, and after that may be neither replaced
+nor cleared. Rewriting `order_id` or `booking_id` would not corrupt anything the
+run can detect - it would simply send the recovery, working correctly, at a
+different customer's purchase.
+
+The boundary is unchanged: **the adapter decides when a field may be set, and
+the schema refuses to let a fact already written be rewritten.**
 
 ### The bindings are foreign keys, not conventions
 
