@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { certifyProduction, type CertifyPorts } from "../../src/certification/machine";
+import { ensureCatalogueClean } from "../../src/certification/cleanup";
 import { InMemoryCertificationCapabilityStore, issueCapability } from "../../src/certification/capability";
 import { InMemoryCertificationCheckoutAuthority, InMemoryCertificationOrderLedger, isReplay } from "../../src/certification/checkout-authority";
+import { InMemoryCertificationCatalogueAuthority } from "../../src/certification/catalogue-authority";
 import { InMemoryCertificationRunStore, type CertificationRun } from "../../src/certification/run";
 import type { OccurrenceView, OrderEvidence } from "../../src/certification/evidence";
 import { schemaInventoryExpectation } from "../../src/release/expectation";
@@ -68,6 +70,10 @@ const production = (options: Options = {}) => {
   const orders = new InMemoryCertificationOrderLedger();
   const authority = new InMemoryCertificationCheckoutAuthority(capabilities, runs, orders);
 
+  // The real catalogue authority, so what the machine can get away with is
+  // decided by the contract production will use rather than by the fake.
+  const catalogue = new InMemoryCertificationCatalogueAuthority(runs);
+
   let minted = 0;
   const ports: CertifyPorts = {
     runs, clock: () => now,
@@ -82,8 +88,16 @@ const production = (options: Options = {}) => {
         };
       },
       async cityIdBySlug() { return "city"; },
-      async createOccurrence(_body, key) { calls.push({ kind: "create", key }); return occurrence; },
+      async runCatalogueCommand(runId, command, body) {
+        return catalogue.admit(runId, command, async () => {
+          if (command.kind === "CREATE_OCCURRENCE") { calls.push({ kind: "create", key: command.idempotencyKey }); return occurrence; }
+          calls.push({ kind: `patch:${Object.keys(body)[0]}=${Object.values(body)[0]}`, key: command.idempotencyKey, revision: command.expectedRevision });
+          occurrence = { ...occurrence, ...body, admin_revision: Number(occurrence.admin_revision) + 1 };
+          return occurrence;
+        });
+      },
       async occurrence() { return occurrence; },
+      async occurrenceForCommand(key) { return catalogue.resultFor(key); },
       async patchOccurrence(_id, patch, revision, _reason, key) {
         calls.push({ kind: `patch:${Object.keys(patch)[0]}=${Object.values(patch)[0]}`, key, revision });
         occurrence = { ...occurrence, ...patch, admin_revision: Number(occurrence.admin_revision) + 1 };
@@ -124,7 +138,7 @@ const production = (options: Options = {}) => {
   };
 
   const input = { runId: created.runId, candidate, capability, scope, citySlug: "kemerovo", timeouts: { paymentMs: 1000, emailMs: 1000, refundMs: 1000 } };
-  return { calls, log, ports, input, runs, capabilities, capability, orders };
+  return { calls, log, ports, input, runs, capabilities, capability, orders, catalogue, authority, occurrenceNow: () => occurrence };
 };
 
 describe("certifying production", () => {
@@ -207,6 +221,101 @@ describe("certifying production", () => {
     const settled = runs.load("run")!;
     expect(settled.direction).toBe("CATALOGUE_CLEAN");
     expect(settled.pendingCommand ?? null).toBeNull();
+  });
+
+  it("refuses a request armed before cleanup that arrives after it", async () => {
+    // Compare-and-set on the run protects the run, not production: this
+    // request left the process before cleanup began, and nothing on the
+    // runner's side can call it back. The server is where it is stopped.
+    const { ports, runs, catalogue, occurrenceNow } = production({ startAt: { phase: "OCCURRENCE_CREATED", occurrenceId: "occ" } });
+    const armedCommand = { kind: "PUBLISH_OCCURRENCE" as const, idempotencyKey: "in-flight", occurrenceId: "occ", expectedRevision: 1 };
+    const run = runs.update("run", runs.load("run")!.revision, { pendingCommand: armedCommand });
+
+    // Cleanup wins the race: the intent is retired and the catalogue, already
+    // hidden and closed, needs no patch at all - so its revision never moves.
+    await ensureCatalogueClean(runs, ports.admin, run);
+
+    await expect(ports.admin.runCatalogueCommand("run", armedCommand, { visibility: "PUBLISHED" }, "late"))
+      .rejects.toThrow("CERTIFICATION_COMMAND_NOT_ARMED");
+    expect(occurrenceNow().visibility).toBe("HIDDEN");
+    expect(runs.load("run")?.direction).toBe("CATALOGUE_CLEAN");
+    expect(catalogue.resultFor("in-flight")).toBeUndefined();
+  });
+
+  it("closes a catalogue command that won the race before cleanup reached it", async () => {
+    // The opposite ordering, and it is equally correct: the command landed, so
+    // cleanup sees what it did and shuts it.
+    const { ports, runs, occurrenceNow } = production({ startAt: { phase: "OCCURRENCE_CREATED", occurrenceId: "occ" } });
+    const armedCommand = { kind: "PUBLISH_OCCURRENCE" as const, idempotencyKey: "in-flight", occurrenceId: "occ", expectedRevision: 1 };
+    const run = runs.update("run", runs.load("run")!.revision, { pendingCommand: armedCommand });
+
+    await ports.admin.runCatalogueCommand("run", armedCommand, { visibility: "PUBLISHED" }, "first");
+    expect(occurrenceNow().visibility).toBe("PUBLISHED");
+
+    const cleaned = await ensureCatalogueClean(runs, ports.admin, run);
+
+    expect(occurrenceNow().visibility).toBe("HIDDEN");
+    expect(cleaned.direction).toBe("CATALOGUE_CLEAN");
+  });
+
+  it("recovers the order an ambiguous checkout already created", async () => {
+    // The order exists and the capability is spent; only the response was
+    // lost. Retiring the command would strand the run with no way to learn its
+    // own status id, so it survives cleanup and is re-issued as a lookup.
+    const { ports, input, runs, capabilities, capability, orders } = production({
+      startAt: { phase: "CHECKOUT_SUBMITTING", direction: "FINANCIAL_EFFECT_POSSIBLE", occurrenceId: "occ", quoteId: "quote" },
+    });
+    const command = { kind: "CREATE_CHECKOUT" as const, idempotencyKey: "checkout-key", quoteId: "quote", requestSha256: "d".repeat(64) };
+    let run = runs.update("run", runs.load("run")!.revision, { pendingCommand: command });
+
+    // The request got through: order created, capability spent, response lost.
+    await ports.publicApi.createCheckout("{}", command.idempotencyKey, { capabilityId: capability.id, runId: "run", nonce: capability.nonce });
+    const spentAt = capabilities.get(capability.id)?.consumedAt;
+    run = await ensureCatalogueClean(runs, ports.admin, runs.load("run")!);
+    expect(run.pendingCommand).toEqual(command);
+
+    const outcome = await certifyProduction(ports, input);
+
+    expect(outcome).toEqual({ kind: "FAILED", code: "CERTIFICATION_CLEANUP_REQUIRED" });
+    expect(runs.load("run")?.statusId).toBe("status");
+    // Spent once, by the request that created the order.
+    expect(capabilities.get(capability.id)?.consumedAt).toBe(spentAt);
+    expect(orders.find("checkout-key")?.orderId).toBe("order");
+  });
+
+  it("proves a checkout absent when re-issuing it after cleanup is refused", async () => {
+    // The mirror case: the request never got through. The refusal is the
+    // answer, and the command is retired rather than left pending forever.
+    const { ports, input, runs, capabilities, capability } = production({
+      startAt: { phase: "CHECKOUT_SUBMITTING", direction: "FINANCIAL_EFFECT_POSSIBLE", occurrenceId: "occ", quoteId: "quote" },
+    });
+    const command = { kind: "CREATE_CHECKOUT" as const, idempotencyKey: "checkout-key", quoteId: "quote", requestSha256: "d".repeat(64) };
+    runs.update("run", runs.load("run")!.revision, { pendingCommand: command });
+    await ensureCatalogueClean(runs, ports.admin, runs.load("run")!);
+
+    const outcome = await certifyProduction(ports, input);
+
+    expect(outcome).toEqual({ kind: "FAILED", code: "CERTIFICATION_CHECKOUT_PROVED_ABSENT" });
+    const settled = runs.load("run")!;
+    expect(settled.pendingCommand ?? null).toBeNull();
+    expect(settled.supersededCommand).toEqual({ command, reason: "CLEANUP_PROVED_CHECKOUT_ABSENT" });
+    expect(capabilities.get(capability.id)?.consumedAt).toBeNull();
+  });
+
+  it("does not leave a hidden orphan when a creation response is lost", async () => {
+    const { ports, input, runs, catalogue } = production();
+    const command = { kind: "CREATE_OCCURRENCE" as const, idempotencyKey: "create-key", draft: { cityId: "city", startsAt: "s", endsAt: "e", venueDisclosureText: "v", venueAnnounceBy: "a" } };
+    runs.update("run", runs.load("run")!.revision, { pendingCommand: command });
+    // The creation landed; the runner never saw the answer.
+    await ports.admin.runCatalogueCommand("run", command, {}, "create");
+    expect(catalogue.resultFor("create-key")?.id).toBe("occ");
+    runs.update("run", runs.load("run")!.revision, { direction: "CLEANUP_STARTED", pendingCommand: null, supersededCommand: { command, reason: "CLEANUP_SUPERSEDED_CATALOGUE_OPENING" } });
+
+    await certifyProduction(ports, input);
+
+    // The id is recovered from the key rather than lost with the response.
+    expect(runs.load("run")?.occurrenceId).toBe("occ");
+    expect(runs.load("run")?.direction).toBe("CATALOGUE_CLEAN");
   });
 
   it("does not resolve an unresolved payment by trying again", async () => {

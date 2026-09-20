@@ -22,6 +22,12 @@ export const cleanupKey = (runId: string, step: "close-sales" | "hide-occurrence
 
 export interface CatalogueCleanupPorts {
   occurrence(occurrenceId: string): Promise<OccurrenceView>;
+  /**
+   * What a catalogue command's key already did, without doing anything. A run
+   * whose creation response was lost does not know the occurrence it may have
+   * made; without this it would leave one nobody can find.
+   */
+  occurrenceForCommand(idempotencyKey: string): Promise<OccurrenceView | undefined>;
   patchOccurrence(occurrenceId: string, patch: Record<string, unknown>, expectedRevision: number, reason: string, idempotencyKey: string): Promise<OccurrenceView>;
   occurrenceIsPubliclyVisible(occurrenceId: string): Promise<boolean>;
   tourIncludes(occurrenceId: string): Promise<boolean>;
@@ -46,9 +52,13 @@ export const ensureCatalogueClean = async (
   ports: CatalogueCleanupPorts,
   run: CertificationRun,
 ): Promise<CertificationRun> => {
-  let current = enterCleanup(store, run);
+  let current = await reconcileOccurrenceId(store, ports, enterCleanup(store, run));
   const occurrenceId = current.occurrenceId;
-  if (!occurrenceId) throw new CatalogueCleanupError("CERTIFICATION_CLEANUP_OCCURRENCE_UNKNOWN");
+  if (!occurrenceId) {
+    // Reconciliation proved the creation never landed, so there is nothing to
+    // shut. Saying so is different from not knowing.
+    return current.direction === "CATALOGUE_CLEAN" ? current : store.update(current.runId, current.revision, { direction: "CATALOGUE_CLEAN" });
+  }
   const reason = `Production E2E certification ${current.runId}`;
 
   const sales = await ports.occurrence(occurrenceId);
@@ -64,6 +74,28 @@ export const ensureCatalogueClean = async (
   await assertCatalogueClean(ports, occurrenceId);
   if (current.direction !== "CATALOGUE_CLEAN") current = store.update(current.runId, current.revision, { direction: "CATALOGUE_CLEAN" });
   return current;
+};
+
+/**
+ * Recovers the occurrence a lost creation response may have produced.
+ *
+ * The command carries its own key, and the server can say what that key
+ * already did. Skipping this is how a failed run leaves a hidden orphan whose
+ * id exists only in a response nobody received.
+ */
+export const reconcileOccurrenceId = async (
+  store: CertificationRunStore,
+  ports: CatalogueCleanupPorts,
+  run: CertificationRun,
+): Promise<CertificationRun> => {
+  if (run.occurrenceId) return run;
+  const pending = run.pendingCommand?.kind === "CREATE_OCCURRENCE" ? run.pendingCommand : undefined;
+  const superseded = run.supersededCommand?.command.kind === "CREATE_OCCURRENCE" ? run.supersededCommand.command : undefined;
+  const command = pending ?? superseded;
+  if (!command) return run;
+
+  const occurrence = await ports.occurrenceForCommand(command.idempotencyKey);
+  return occurrence ? store.update(run.runId, run.revision, { occurrenceId: occurrence.id }) : run;
 };
 
 /** Read live, never from the record: an external reopen after a crash must be caught here. */

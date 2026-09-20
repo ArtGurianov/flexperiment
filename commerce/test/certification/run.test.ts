@@ -82,7 +82,16 @@ describe("what a run is permitted to do", () => {
   it("closes the catalogue direction permanently once cleanup has begun", () => {
     const cleaning = { ...base, direction: "CLEANUP_STARTED" as const, phase: "OCCURRENCE_PUBLISHED" as const };
     expect(commandPermitted(cleaning, "OPEN_SALES")).toBe("CERTIFICATION_CATALOGUE_REOPEN_FORBIDDEN");
-    expect(commandPermitted({ ...cleaning, phase: "CHECKOUT_SUBMITTING" }, "CREATE_CHECKOUT")).toBe("CERTIFICATION_CATALOGUE_REOPEN_FORBIDDEN");
+    expect(commandPermitted({ ...cleaning, phase: "OCCURRENCE_CREATED" }, "PUBLISH_OCCURRENCE")).toBe("CERTIFICATION_CATALOGUE_REOPEN_FORBIDDEN");
+  });
+
+  it("still lets a checkout be re-issued after cleanup, as a lookup", () => {
+    // By the time it was armed the request may already have created an order
+    // and spent the capability, with only the response lost. Re-issuing it is
+    // how the run finds out which; the server refuses to create a new one, and
+    // that refusal is itself the answer.
+    const cleaning = { ...base, direction: "CLEANUP_STARTED" as const, phase: "CHECKOUT_SUBMITTING" as const };
+    expect(commandPermitted(cleaning, "CREATE_CHECKOUT")).toBeUndefined();
   });
 
   it("still permits finishing the money after cleanup has begun", () => {

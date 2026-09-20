@@ -1,6 +1,7 @@
 import { readinessExpectation, type ReleaseCandidate } from "../release/candidate";
 import { evaluateReadiness, type ReleaseReadinessEvidence } from "../release/readiness";
 import type { CertificationCapability, CertificationClaim } from "./capability";
+import type { CertificationCatalogueCommand } from "./catalogue-authority";
 import { assertCatalogueClean, ensureCatalogueClean, type CatalogueCleanupPorts } from "./cleanup";
 import {
   emailEvidence, manifestDefect, occurrenceIdentityDefect, orderIdentityDefect, refundConvergenceDefect, refundPollAction,
@@ -40,7 +41,13 @@ export type CertifyOutcome =
 export interface AdminPort extends CatalogueCleanupPorts {
   systemEvidence(): Promise<ReleaseReadinessEvidence>;
   cityIdBySlug(slug: string): Promise<string | undefined>;
-  createOccurrence(body: Record<string, unknown>, idempotencyKey: string): Promise<OccurrenceView>;
+  /**
+   * Catalogue commands carry the run and the exact command, because the server
+   * is the only place that can serialise them against cleanup: a request armed
+   * before cleanup began can arrive after it finished, and nothing on this
+   * side can stop it. See catalogue-authority.ts.
+   */
+  runCatalogueCommand(runId: string, command: CertificationCatalogueCommand, body: Record<string, unknown>, reason: string): Promise<OccurrenceView>;
   orderIdsForCheckoutStatus(statusId: string): Promise<readonly string[]>;
   orderEvidence(orderId: string): Promise<OrderEvidence>;
   cancelBookingCustomerInitiated(bookingId: string, idempotencyKey: string): Promise<void>;
@@ -114,6 +121,9 @@ export const certifyProduction = async (ports: CertifyPorts, input: CertifyInput
 
 const reasonFor = (runId: string) => `Production E2E certification ${runId}`;
 
+const isReopenRefusal = (error: unknown): boolean =>
+  error instanceof Error && error.message.includes("CERTIFICATION_CATALOGUE_REOPEN_FORBIDDEN");
+
 class CertificationMachine {
   constructor(private readonly ports: CertifyPorts, private readonly input: CertifyInput) {}
 
@@ -122,13 +132,15 @@ class CertificationMachine {
     let run = this.load();
     const action = planRecovery(run, true);
     if (action.kind === "BLOCKED_BASELINE") throw new CertificationFailed("CERTIFICATION_BASELINE_NOT_VERIFIED");
-    if (action.kind === "CLEAN_CATALOGUE" && run.direction === "CLEANUP_STARTED") {
-      // A run that entered cleanup has one thing left to do, whatever phase it
-      // reached first. It never becomes a PASS.
-      await ensureCatalogueClean(this.ports.runs, this.ports.admin, run);
+    // A pending command is re-issued first even here, because that is how the
+    // run learns what its own interrupted request did.
+    if (action.kind === "REPLAY_PENDING") run = await this.execute(run, action.command);
+    if (directionAtLeast(run.direction, "CLEANUP_STARTED")) {
+      // A run that turned to cleanup finishes the catalogue and reports what
+      // it reconciled. It never becomes a PASS.
+      await ensureCatalogueClean(this.ports.runs, this.ports.admin, this.load());
       throw new CertificationFailed("CERTIFICATION_CLEANUP_REQUIRED");
     }
-    if (action.kind === "REPLAY_PENDING") run = await this.execute(run, action.command);
 
     while (run.phase !== "COMPLETE") {
       const before = run.phase;
@@ -185,7 +197,7 @@ class CertificationMachine {
 
     switch (command.kind) {
       case "CREATE_OCCURRENCE": {
-        const occurrence = await this.ports.admin.createOccurrence(this.occurrenceBody(command.draft), command.idempotencyKey);
+        const occurrence = await this.ports.admin.runCatalogueCommand(run.runId, command, this.occurrenceBody(command.draft), reason);
         if (occurrence.visibility !== "HIDDEN" || occurrence.sales_status !== "CLOSED") throw new CertificationFailed("CERTIFICATION_OCCURRENCE_BORN_SELLABLE");
         const defect = occurrenceIdentityDefect(occurrence, this.input.scope);
         if (defect) throw new CertificationFailed(defect);
@@ -194,7 +206,7 @@ class CertificationMachine {
       case "PUBLISH_OCCURRENCE":
       case "OPEN_SALES": {
         const patch = command.kind === "PUBLISH_OCCURRENCE" ? { visibility: "PUBLISHED" } : { sales_status: "OPEN" };
-        await this.ports.admin.patchOccurrence(command.occurrenceId, patch, command.expectedRevision, reason, command.idempotencyKey);
+        await this.ports.admin.runCatalogueCommand(run.runId, command, patch, reason);
         return this.commit(run, { pendingCommand: null, phase: command.kind === "PUBLISH_OCCURRENCE" ? "OCCURRENCE_PUBLISHED" : "OCCURRENCE_OPEN" });
       }
       case "CREATE_CHECKOUT": {
@@ -203,7 +215,14 @@ class CertificationMachine {
         // proves the re-entered data before a second checkout could exist.
         if (command.requestSha256 !== request.sha256) throw new CertificationFailed("CERTIFICATION_CHECKOUT_REQUEST_CHANGED");
         const claim: CertificationClaim = { capabilityId: this.input.capability.id, runId: run.runId, nonce: this.input.capability.nonce };
-        const checkout = await this.ports.publicApi.createCheckout(request.body, command.idempotencyKey, claim);
+        const checkout = await this.ports.publicApi.createCheckout(request.body, command.idempotencyKey, claim).catch((error: unknown) => {
+          // Re-issued after cleanup and refused. That refusal is the answer:
+          // the key created no order, so the command is retired here rather
+          // than left pending forever.
+          if (!isReopenRefusal(error) || !directionAtLeast(run.direction, "CLEANUP_STARTED")) throw error;
+          this.commit(run, { pendingCommand: null, supersededCommand: { command, reason: "CLEANUP_PROVED_CHECKOUT_ABSENT" } });
+          throw new CertificationFailed("CERTIFICATION_CHECKOUT_PROVED_ABSENT");
+        });
         if (run.statusId && checkout.statusId !== run.statusId) throw new CertificationFailed("CERTIFICATION_CHECKOUT_REPLAY_DIVERGED");
         const next = this.commit(run, { pendingCommand: null, statusId: checkout.statusId, phase: "CHECKOUT_CREATED" });
         if (checkout.paymentUrl) await this.ports.operator.openPaymentPage(checkout.paymentUrl);
@@ -407,7 +426,14 @@ class CertificationMachine {
   async shutCatalogueAfterFailure(): Promise<void> {
     try {
       const run = this.ports.runs.load(this.input.runId);
-      if (!run?.occurrenceId || run.direction === "CATALOGUE_CLEAN") return;
+      if (!run || run.direction === "CATALOGUE_CLEAN") return;
+      // Not conditioned on knowing the occurrence: a lost creation response is
+      // exactly the case where the id has to be recovered rather than assumed
+      // absent.
+      const createdSomething = run.occurrenceId
+        || run.pendingCommand?.kind === "CREATE_OCCURRENCE"
+        || run.supersededCommand?.command.kind === "CREATE_OCCURRENCE";
+      if (!createdSomething) return;
       await ensureCatalogueClean(this.ports.runs, this.ports.admin, run);
     } catch {
       // Best effort by construction, but the direction is armed inside

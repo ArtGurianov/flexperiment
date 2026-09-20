@@ -90,12 +90,20 @@ export type BusinessCommand =
 export type BusinessCommandKind = BusinessCommand["kind"];
 
 /**
- * Commands that would put something sellable in front of the public or spend
- * money on it. Once cleanup has begun they may never execute again - but their
- * record is kept, because the key they were armed with is how a reconciliation
- * finds out whether the request got through.
+ * Commands that only ever put something sellable in front of the public. Once
+ * cleanup has begun they may never execute again - but their record is kept,
+ * because the key they were armed with is how a reconciliation finds out
+ * whether the request got through.
+ *
+ * A checkout is deliberately not among them. By the time one is armed the
+ * request may already have created an order and spent the capability, with
+ * only the response lost; retiring the command would leave a run stuck in
+ * CHECKOUT_SUBMITTING with no way to learn its own status id. It survives
+ * cleanup like a cancellation does, and the server decides what re-issuing it
+ * means: an existing order is returned, and a new one is refused - which is
+ * itself the proof that no checkout exists.
  */
-const SUPERSEDED_BY_CLEANUP = new Set<BusinessCommandKind>(["CREATE_OCCURRENCE", "PUBLISH_OCCURRENCE", "OPEN_SALES", "CREATE_CHECKOUT"]);
+const SUPERSEDED_BY_CLEANUP = new Set<BusinessCommandKind>(["CREATE_OCCURRENCE", "PUBLISH_OCCURRENCE", "OPEN_SALES"]);
 
 /** The phase each command belongs to. Offered at any other, its effect has already been consumed. */
 const COMMAND_PHASE: Record<BusinessCommandKind, CertificationPhase> = {
@@ -108,7 +116,11 @@ const COMMAND_PHASE: Record<BusinessCommandKind, CertificationPhase> = {
 
 export type SupersededCommand = {
   readonly command: BusinessCommand;
-  readonly reason: "CLEANUP_SUPERSEDED_CATALOGUE_OPENING";
+  readonly reason:
+    /** Retired when cleanup began: it would only reopen the catalogue. */
+    | "CLEANUP_SUPERSEDED_CATALOGUE_OPENING"
+    /** Re-issued after cleanup and refused, which proves no order was ever created. */
+    | "CLEANUP_PROVED_CHECKOUT_ABSENT";
 };
 
 export type CertificationRun = {
@@ -171,6 +183,10 @@ export const commandPermitted = (run: CertificationRun, kind: BusinessCommandKin
   if (COMMAND_PHASE[kind] !== run.phase) return "CERTIFICATION_COMMAND_PHASE_INVALID";
   return undefined;
 };
+
+/** Two commands are the same command when every field of them agrees. */
+export const sameCommand = (left: BusinessCommand | null | undefined, right: BusinessCommand): boolean =>
+  Boolean(left) && JSON.stringify(left) === JSON.stringify(right);
 
 /**
  * Turns the run cleanup-only in one write, retiring an intent that must not
