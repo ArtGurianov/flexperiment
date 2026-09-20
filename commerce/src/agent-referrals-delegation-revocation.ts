@@ -9,8 +9,8 @@ import { effectiveFrameworkAcceptance } from "./agent-referrals-framework-issuan
 import type { AdminPrincipal, PartnerPrincipal } from "./agent-referrals-partner-identity";
 
 /**
- * Delegation revocation, layered on 0044's ord_reporting_delegations
- * without editing that migration (see 0045's file header). One
+ * Delegation revocation, layered on `ord_reporting_delegations` rather than
+ * editing it: a delegation is evidence and evidence is not revised. One
  * transaction: set revoked_for_new_activity_at (the
  * ord_reporting_delegation_revocations row itself), preserve every
  * reporting-tail authority (nothing here touches distribution/reporting
@@ -23,7 +23,7 @@ import type { AdminPrincipal, PartnerPrincipal } from "./agent-referrals-partner
  *
  * DELEGATION_REVOCATION is classified MATURATION_RECOVERY_REPORTING_TAIL
  * (agent-referrals-suspension-policy.ts, already shipped in PR3) - it
- * remains permitted under SUSPENDED, blocked only under DORMANT.
+ * remains permitted under SUSPENDED.
  */
 
 export class DelegationRevocationError extends Error {
@@ -52,7 +52,7 @@ const revokeDelegationInTransaction = (
   const revocationId = id();
   db.prepare(`INSERT INTO ord_reporting_delegation_revocations(id, ord_reporting_delegation_id, partner_identity_id, revoked_by_realm, revoked_by_admin_id, reason)
     VALUES (?, ?, ?, ?, ?, ?)`)
-    .run(revocationId, delegationId, delegation.partner_identity_id, realm, adminId, reason);
+.run(revocationId, delegationId, delegation.partner_identity_id, realm, adminId, reason);
 
   const affected = db.prepare("SELECT id FROM engagements WHERE partner_identity_id = ? AND lifecycle_state = 'ACTIVE'").all(delegation.partner_identity_id) as { id: string }[];
   for (const row of affected) suspendEngagementLifecycle(db, row.id, `DELEGATION_REVOKED:${reason}`);

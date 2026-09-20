@@ -77,7 +77,6 @@ export function Overview({ onNavigate }: { onNavigate: (tab: "partners" | "engag
             <p>Статус: <Badge>{String(featureState.data!.state)}</Badge></p>
             {featureState.data!.state === "ACTIVE" && <button disabled={busy} onClick={() => void transition("suspend")}>{busy ? "…" : "Приостановить (SUSPENDED)"}</button>}
             {featureState.data!.state === "SUSPENDED" && <button disabled={busy} onClick={() => void transition("reactivate")}>{busy ? "…" : "Возобновить (ACTIVE)"}</button>}
-            {featureState.data!.state === "DORMANT" && <p>Активация выполняется только через контролируемый релизный процесс (Phase 10B), не из этой консоли.</p>}
             <Notice error={error} />
           </>
         )}

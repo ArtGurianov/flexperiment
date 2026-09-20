@@ -24,7 +24,7 @@ import { provisionPartnerOwner, rotatePartnerInvite, inviteCapabilityHeadId } fr
  * defect was simpler and worse than "recovery is undefined": the ORDINARY
  * reissue read whatever was live and superseded it, so a retried reissue
  * minted a third capability and destroyed the second, whose raw token nobody
- * held either. Exactly one capability was live at every instant, so 0044's
+ * held either. Exactly one capability was live at every instant, so the schema's
  * partial unique index was satisfied and nothing looked wrong.
  *
  * One invariant fixes it - a rotation must NAME the capability it replaces -
@@ -41,7 +41,7 @@ const invitedPartner = (db: Database.Database) => {
   const agentId = randomUUID();
   db.prepare(`INSERT INTO partners(id, slug, display_name, email)
     VALUES (?, ?, 'Agent', ?)`)
-    .run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+.run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const provisioned = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
   return { partnerIdentityId: provisioned.partner_identity_id, inviteId: provisioned.invite_id };
 };
@@ -49,7 +49,7 @@ const invitedPartner = (db: Database.Database) => {
 const liveIds = (db: Database.Database, partnerIdentityId: string) =>
   (db.prepare(`SELECT id FROM partner_invite_capabilities
     WHERE partner_identity_id = ? AND consumed_at IS NULL AND revoked_at IS NULL AND superseded_by_id IS NULL`)
-    .all(partnerIdentityId) as { id: string }[]).map((row) => row.id);
+.all(partnerIdentityId) as { id: string }[]).map((row) => row.id);
 
 const countCapabilities = (db: Database.Database, partnerIdentityId: string) =>
   (db.prepare("SELECT COUNT(*) AS n FROM partner_invite_capabilities WHERE partner_identity_id = ?").get(partnerIdentityId) as { n: number }).n;
@@ -63,7 +63,7 @@ const expectStale = (run: () => unknown) => {
   let thrown: unknown;
   try { run(); } catch (error) { thrown = error; }
   expect((thrown as { code?: string } | undefined)?.code, `expected a stale refusal, got ${String(thrown)}`)
-    .toBe("AGENT_REFERRALS_INVITE_CAPABILITY_STALE");
+.toBe("AGENT_REFERRALS_INVITE_CAPABILITY_STALE");
 };
 
 describe("invite rotation is predecessor-bound, and recovery is a reason on it", () => {
@@ -143,7 +143,7 @@ describe("invite rotation is predecessor-bound, and recovery is a reason on it",
     const t3 = rotate(db, partnerIdentityId, t2.invite_id, "LOST_RESPONSE_RECOVERY", "response lost");
 
     const rotations = (db.prepare("SELECT details_json FROM partner_identity_events WHERE partner_identity_id = ? AND event_kind = 'INVITE_ROTATED' ORDER BY rowid").all(partnerIdentityId) as { details_json: string }[])
-      .map((event) => JSON.parse(event.details_json) as Record<string, unknown>);
+.map((event) => JSON.parse(event.details_json) as Record<string, unknown>);
     expect(rotations).toHaveLength(2);
     expect(rotations[0]).toMatchObject({ invite_id: t2.invite_id, superseded_invite_id: t1, rotation_reason: "MANUAL_REISSUE" });
     expect(rotations[1]).toMatchObject({ invite_id: t3.invite_id, superseded_invite_id: t2.invite_id, rotation_reason: "LOST_RESPONSE_RECOVERY" });
@@ -158,9 +158,9 @@ describe("invite rotation is predecessor-bound, and recovery is a reason on it",
     expect(rotated.raw_invite_token.length).toBeGreaterThan(16);
 
     expect(JSON.stringify(db.prepare("SELECT * FROM partner_invite_capabilities WHERE partner_identity_id = ?").all(partnerIdentityId)))
-      .not.toContain(rotated.raw_invite_token);
+.not.toContain(rotated.raw_invite_token);
     expect(JSON.stringify(db.prepare("SELECT details_json FROM partner_identity_events WHERE partner_identity_id = ?").all(partnerIdentityId)))
-      .not.toContain(rotated.raw_invite_token);
+.not.toContain(rotated.raw_invite_token);
   });
 
   /**
@@ -218,14 +218,14 @@ describe("invite rotation is predecessor-bound, and recovery is a reason on it",
 
   /**
    * Review round 3, P2. The first version of this case inserted a USABLE
-   * second capability, which 0044's older
+   * second capability, which the schema's older
    * partner_invite_capabilities_active_unique already refuses on its own -
    * so it passed without 0057 and proved nothing about the head index.
    *
    * This form keeps every row out of that older index entirely: the head is
    * revoked first, and the row being inserted is revoked too. Nothing here
    * is usable, so `active_unique` has no opinion - and the only thing that
-   * can refuse a second `superseded_by_id IS NULL` row is 0057's
+   * can refuse a second `superseded_by_id IS NULL` row is the schema's
    * partner_invite_capabilities_head_unique.
    */
   it("at most one mint-chain head per partner, enforced by 0057 rather than by the older usable-uniqueness index", () => {
@@ -234,13 +234,13 @@ describe("invite rotation is predecessor-bound, and recovery is a reason on it",
     const { partnerIdentityId, inviteId: t1 } = invitedPartner(db);
     db.prepare("UPDATE partner_invite_capabilities SET revoked_at = CURRENT_TIMESTAMP WHERE id = ?").run(t1);
 
-    // Revoked, unsuperseded - a second chain head and nothing more. 0044's
+    // Revoked, unsuperseded - a second chain head and nothing more. the schema's
     // predicate excludes it (revoked_at IS NOT NULL), so a refusal here can
     // only come from the head index.
     expect(() => db.prepare(`INSERT INTO partner_invite_capabilities(id, partner_identity_id, purpose, verifier_hash, expires_at, revoked_at, created_by_admin_id)
       VALUES (?, ?, 'ONBOARDING', ?, ?, CURRENT_TIMESTAMP, 'admin-1')`)
-      .run(randomUUID(), partnerIdentityId, randomUUID(), new Date(Date.now() + 3600_000).toISOString()))
-      .toThrow(/partner_invite_capabilities_head_unique|UNIQUE constraint failed/);
+.run(randomUUID(), partnerIdentityId, randomUUID(), new Date(Date.now() + 3600_000).toISOString()))
+.toThrow(/partner_invite_capabilities_head_unique|UNIQUE constraint failed/);
 
     expect(countCapabilities(db, partnerIdentityId)).toBe(1);
     expect(inviteCapabilityHeadId(db, partnerIdentityId)).toBe(t1);

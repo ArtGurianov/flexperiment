@@ -30,7 +30,7 @@ import type { PartnerPrincipal } from "./agent-referrals-partner-identity";
  * on framework_acceptances is what makes this a correct idempotency key
  * without a second "did anything change" branch.
  *
- * Global SUSPENDED/DORMANT blocks new framework acceptance (plan section
+ * Global SUSPENDED blocks new framework acceptance (plan section
  * B-8), checked inside this same transaction, after the idempotent-replay
  * short-circuit - a replay is re-confirming evidence that already existed
  * before suspension, not new authority, so it must not spuriously fail a
@@ -100,12 +100,12 @@ export const acceptFrameworkAndDelegation = (
     const acceptanceId = id();
     db.prepare(`INSERT INTO framework_acceptances(id, partner_identity_id, issuance_id, legal_profile_revision_id, step_up_grant_id)
       VALUES (?, ?, ?, ?, ?)`)
-      .run(acceptanceId, partner.partner_identity_id, required.id, legalProfileRevisionId, stepUpGrantId);
+.run(acceptanceId, partner.partner_identity_id, required.id, legalProfileRevisionId, stepUpGrantId);
 
     const delegationId = id();
     db.prepare(`INSERT INTO ord_reporting_delegations(id, partner_identity_id, framework_acceptance_id, delegation_template_revision_id, ord_reporting_mode)
       VALUES (?, ?, ?, ?, 'FLEXPERIMENT_DELEGATED')`)
-      .run(delegationId, partner.partner_identity_id, acceptanceId, required.delegation_template_revision_id);
+.run(delegationId, partner.partner_identity_id, acceptanceId, required.delegation_template_revision_id);
 
     recordPartnerIdentityEvent(db, partner.partner_identity_id, "FRAMEWORK_ACCEPTED", "PARTNER", {
       framework_acceptance_id: acceptanceId, ord_reporting_delegation_id: delegationId, issuance_id: required.id,
@@ -113,7 +113,7 @@ export const acceptFrameworkAndDelegation = (
 
     db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot)
       VALUES (?, 'AGENT_REFERRALS_FRAMEWORK_CONFIRMATION', ?, ?, 'agent-referrals-framework-confirmation', ?)`)
-      .run(id(), identity.email, identity.email_hash, JSON.stringify({ framework_acceptance_id: acceptanceId }));
+.run(id(), identity.email, identity.email_hash, JSON.stringify({ framework_acceptance_id: acceptanceId }));
 
     // PARTNER_ACTIVE is never moved backwards, and the onboarding state
     // machine has no self-loop or backward edge for FRAMEWORK_ACCEPTED/

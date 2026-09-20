@@ -296,7 +296,7 @@ describe("legacy promo endpoint hardening: PROMO_OWNED_BY_PARTNER", () => {
   });
 });
 
-describe("occurrence material revision (§ Phase 5 review note 6): occurrence date/time is itself material engagement authority", () => {
+describe("occurrence material revision: an occurrence's date and time are themselves material engagement authority", () => {
   it("a real schedule change (via the legacy patchOccurrence path) suspends the already-ACTIVE engagement and revokes its promo authorization", () => {
     const { db, domain } = fresh();
     const p1 = readyPartner(db);

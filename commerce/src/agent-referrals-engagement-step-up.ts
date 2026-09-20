@@ -4,10 +4,10 @@ import { recordPartnerIdentityEvent } from "./agent-referrals-onboarding";
 import type { PartnerPrincipal } from "./agent-referrals-partner-identity";
 
 /**
- * Phase 5's own step-up-grant table (engagement_step_up_grants), parallel
- * to PR4's step_up_grants but entirely separate storage - see the 0045
- * migration's file header for why 0044's table could not simply admit new
- * action values. Same contract: the grant pins the exact action AND the
+ * The engagement step-up grant table, parallel to `step_up_grants` but
+ * entirely separate storage: that table's action CHECK enumerates its own
+ * actions, and widening it would let one grant authorise the other's
+ * mutations. Same contract: the grant pins the exact action AND the
  * exact resource/revision it authorizes, consumed atomically with the
  * protected mutation via CAS, no separate bearer secret (authority comes
  * from the caller also presenting the exact partner_session_id that

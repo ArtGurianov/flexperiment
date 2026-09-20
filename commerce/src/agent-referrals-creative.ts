@@ -52,7 +52,7 @@ const REVISION_COLUMNS = "id, engagement_id, revision, partner_id, promo_code_id
 /** "Current" resolves by `revision` (monotonic), never by created_at - see the migration's comment on why. */
 export const currentCreativeRevision = (db: Database.Database, engagementId: string): CreativeRevisionRow | null =>
   (db.prepare(`SELECT ${REVISION_COLUMNS} FROM engagement_creative_revisions WHERE engagement_id = ? ORDER BY revision DESC LIMIT 1`)
-    .get(engagementId) as CreativeRevisionRow | undefined) ?? null;
+.get(engagementId) as CreativeRevisionRow | undefined) ?? null;
 
 export const creativeRevisionById = (db: Database.Database, revisionId: string): CreativeRevisionRow | null =>
   (db.prepare(`SELECT ${REVISION_COLUMNS} FROM engagement_creative_revisions WHERE id = ?`).get(revisionId) as CreativeRevisionRow | undefined) ?? null;
@@ -65,12 +65,12 @@ export const creativeRevisionById = (db: Database.Database, revisionId: string):
  * authority, never accepted as independent caller arguments - the earlier
  * shape (both as free parameters) let a caller mint immutable creative
  * evidence for engagement A binding promo B's code, an evidence-integrity
- * defect no later check could safely paper over (Phase 5 review note 5).
+ * defect no later check could safely paper over.
  */
 export const mintCreativeRevision = (db: Database.Database, admin: AdminPrincipal, engagementId: string, fields: CreativeMaterialFields, expectedCurrentRevisionId: string | null): CreativeRevisionRow => {
   const run = db.transaction((): CreativeRevisionRow => {
     const owner = db.prepare(`SELECT pi.agent_id AS agent_id FROM engagements e JOIN partner_identities pi ON pi.id = e.partner_identity_id WHERE e.id = ?`)
-      .get(engagementId) as { agent_id: string } | undefined;
+.get(engagementId) as { agent_id: string } | undefined;
     if (!owner) throw new CreativeError("AGENT_REFERRALS_ENGAGEMENT_NOT_FOUND", 404, engagementId);
     const partnerPromo = partnerPromoByPartnerId(db, owner.agent_id);
     if (!partnerPromo) throw new CreativeError("AGENT_REFERRALS_CREATIVE_PARTNER_HAS_NO_PROMO", 409, engagementId);
@@ -90,7 +90,7 @@ export const mintCreativeRevision = (db: Database.Database, admin: AdminPrincipa
     const nextRevision = (current?.revision ?? 0) + 1;
     db.prepare(`INSERT INTO engagement_creative_revisions(id, engagement_id, revision, partner_id, promo_code_id, format_kind, media_ref, copy_text, cta_text, mandatory_labeling_text, creative_target_url, creative_hash, supersedes_creative_revision_id, created_by_admin_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(revisionId, engagementId, nextRevision, owner.agent_id, partnerPromo.promo_code_id, fields.format_kind, fields.media_ref, fields.copy_text, fields.cta_text, fields.mandatory_labeling_text, fields.creative_target_url,
+.run(revisionId, engagementId, nextRevision, owner.agent_id, partnerPromo.promo_code_id, fields.format_kind, fields.media_ref, fields.copy_text, fields.cta_text, fields.mandatory_labeling_text, fields.creative_target_url,
         creativeHash, current?.id ?? null, admin.admin_id);
     return currentCreativeRevision(db, engagementId)!;
   });
@@ -115,7 +115,7 @@ const AUTHORIZATION_COLUMNS = "id, engagement_id, engagement_revision_id, promo_
 /** "Canonical" per B-5e: at most one current (unrevoked) authorization per engagement, enforced structurally by the partial unique index. */
 export const currentCreativeAuthorization = (db: Database.Database, engagementId: string): CreativeAuthorizationRow | null =>
   (db.prepare(`SELECT ${AUTHORIZATION_COLUMNS} FROM engagement_creative_authorizations WHERE engagement_id = ? AND revoked_at IS NULL`)
-    .get(engagementId) as CreativeAuthorizationRow | undefined) ?? null;
+.get(engagementId) as CreativeAuthorizationRow | undefined) ?? null;
 
 /**
  * The newest authorization for an engagement whether or not it is still
@@ -127,7 +127,7 @@ export const currentCreativeAuthorization = (db: Database.Database, engagementId
  */
 export const lastCreativeAuthorization = (db: Database.Database, engagementId: string): CreativeAuthorizationRow | null =>
   (db.prepare(`SELECT ${AUTHORIZATION_COLUMNS} FROM engagement_creative_authorizations WHERE engagement_id = ? ORDER BY rowid DESC LIMIT 1`)
-    .get(engagementId) as CreativeAuthorizationRow | undefined) ?? null;
+.get(engagementId) as CreativeAuthorizationRow | undefined) ?? null;
 
 /**
  * Admin-only, gated as NEW_PUBLICATION_AUTHORITY. Always binds to the
@@ -151,7 +151,7 @@ export const authorizeCreative = (db: Database.Database, admin: AdminPrincipal, 
     // destroyed identity rather than rely on readiness (assessCreative
     // ReadyToPublish), which only runs AFTER authorization already exists.
     const owningIdentity = db.prepare(`SELECT pi.destroyed_at AS destroyed_at FROM engagements e JOIN partner_identities pi ON pi.id = e.partner_identity_id WHERE e.id = ?`)
-      .get(engagementId) as { destroyed_at: string | null } | undefined;
+.get(engagementId) as { destroyed_at: string | null } | undefined;
     if (owningIdentity?.destroyed_at) throw new CreativeError("AGENT_REFERRALS_CREATIVE_PARTNER_IDENTITY_DESTROYED", 409, engagementId);
 
     const promoAuthorization = currentEngagementPromoAuthorizationForEngagement(db, engagementId);
@@ -195,7 +195,7 @@ export const authorizeCreative = (db: Database.Database, admin: AdminPrincipal, 
     const authorizationId = id();
     db.prepare(`INSERT INTO engagement_creative_authorizations(id, engagement_id, engagement_revision_id, promo_authorization_id, creative_revision_id, supersedes_authorization_id)
       VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(authorizationId, engagementId, promoAuthorization.engagement_revision_id, promoAuthorization.id, creativeRevisionId, existingCurrent?.id ?? null);
+.run(authorizationId, engagementId, promoAuthorization.engagement_revision_id, promoAuthorization.id, creativeRevisionId, existingCurrent?.id ?? null);
     return currentCreativeAuthorization(db, engagementId)!;
   });
   return run.immediate();

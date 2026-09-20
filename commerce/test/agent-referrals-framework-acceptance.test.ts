@@ -166,7 +166,7 @@ describe("framework acceptance + effective ORD delegation: one atomic idempotent
 
       const mismatchedReplayGrant = grantFor(db, partner, a.issuanceId, b.legalProfileRevisionId);
       expect(() => acceptFrameworkAndDelegation(db, partner, mismatchedReplayGrant, a.issuanceId, b.legalProfileRevisionId))
-        .toThrow(/AGENT_REFERRALS_REPLAY_LEGAL_PROFILE_MISMATCH/);
+.toThrow(/AGENT_REFERRALS_REPLAY_LEGAL_PROFILE_MISMATCH/);
       expect(db.prepare("SELECT consumed_at FROM step_up_grants WHERE id = ?").get(mismatchedReplayGrant)).toEqual({ consumed_at: null });
     });
 

@@ -19,7 +19,7 @@ const track = (db: Database.Database) => { open.push(db); return db; };
 const clause = (arr: readonly string[]) => Object.fromEntries(arr.map((k) => [k, `${k} v1`])) as Record<string, string>;
 
 describe("agent-referrals-review-queue.ts: live-derived operator findings, never a stored table", () => {
-  it("returns every category empty (total 0, no items, not truncated) on a fresh, all-DORMANT database", () => {
+  it("returns every category empty (total 0, no items, not truncated) on a fresh, freshly seeded database", () => {
     const { db } = fresh();
     track(db);
     const queue = agentReferralsReviewQueue(db, new Date().toISOString());

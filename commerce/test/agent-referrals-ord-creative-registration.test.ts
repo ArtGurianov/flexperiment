@@ -79,7 +79,7 @@ describe("registerOrdCreative: creative-registration authority (revision chain)"
       FROM ord_creative_registrations WHERE creative_revision_id = ?`).run(randomUUID(), creativeRevisionId)).toThrow(/UNIQUE constraint failed/);
   });
 
-  it("pre-baseline DORMANT reaches ordinary creative validation", () => {
+  it("a freshly seeded feature state reaches ordinary creative validation", () => {
     const { db } = fresh(); open.push(db);
     expect(() => registerOrdCreative(db, admin, "nonexistent")).toThrow(/AGENT_REFERRALS_ORD_CREATIVE_REVISION_NOT_FOUND/);
   });

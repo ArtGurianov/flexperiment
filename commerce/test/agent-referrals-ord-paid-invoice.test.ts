@@ -190,7 +190,7 @@ describe("round-2 P0.6: exact submission/lock CHECK shape", () => {
     const { db, act } = readyAcceptedAct();
     const { payload } = mintOrdPaidInvoicePayload(db, admin, act.id);
     expect(() => db.prepare("UPDATE ord_paid_invoice_payloads SET submission_state = 'SUBMITTED', vk_operation_external_id = 'vk-op-1', evidence_ref = 'ev', erir_code = 'erir-fabricated' WHERE id = ?").run(payload.id))
-      .toThrow(/CHECK constraint failed/);
+.toThrow(/CHECK constraint failed/);
   });
 
   it("round-3 P1.1: the four legal exact shapes (NOT_SUBMITTED, SUBMIT_FAILED, MUTABLE+SUBMITTED, EXTERNALLY_LOCKED) are each individually satisfiable", () => {
@@ -209,8 +209,8 @@ describe("cross-authority structural backstops (raw SQL)", () => {
     const contract = db.prepare("SELECT id FROM ord_provider_profile_revisions WHERE profile_kind = 'CONTRACT'").get() as { id: string };
     expect(() => db.prepare(`INSERT INTO ord_paid_invoice_payloads(id, act_id, settlement_id, engagement_id, partner_identity_id, accepted_amount_kopecks, accepted_engagement_revision_id, tax_mode_snapshot, legal_profile_revision_id_snapshot, contractor_type_snapshot, provider_contract_profile_id, operation_key, canonical_hash, created_by_admin_id)
       VALUES ('fabricated-payload', ?, ?, ?, ?, 1, ?, ?, ?, 'SELF_EMPLOYED', ?, 'op-1', 'h', 'admin')`)
-      .run(act.id, settlement.id, act.engagement_id, p1.partnerIdentityId, act.engagement_revision_id, settlement.tax_mode_snapshot, settlement.legal_profile_revision_id_snapshot, contract.id))
-      .toThrow(/ORD_PAID_INVOICE_PAYLOAD_RELATIONAL_INCONSISTENT/);
+.run(act.id, settlement.id, act.engagement_id, p1.partnerIdentityId, act.engagement_revision_id, settlement.tax_mode_snapshot, settlement.legal_profile_revision_id_snapshot, contract.id))
+.toThrow(/ORD_PAID_INVOICE_PAYLOAD_RELATIONAL_INCONSISTENT/);
   });
 
   it("refuses a payload naming a wrong act/settlement pairing", () => {
@@ -219,8 +219,8 @@ describe("cross-authority structural backstops (raw SQL)", () => {
     const acceptance = db.prepare("SELECT accepted_amount_kopecks, accepted_engagement_revision_id FROM settlement_act_acceptances WHERE act_id = ?").get(act.id) as { accepted_amount_kopecks: number; accepted_engagement_revision_id: string };
     expect(() => db.prepare(`INSERT INTO ord_paid_invoice_payloads(id, act_id, settlement_id, engagement_id, partner_identity_id, accepted_amount_kopecks, accepted_engagement_revision_id, tax_mode_snapshot, legal_profile_revision_id_snapshot, contractor_type_snapshot, provider_contract_profile_id, operation_key, canonical_hash, created_by_admin_id)
       VALUES ('fabricated-payload-2', ?, 'wrong-settlement-id', ?, ?, ?, ?, 'OTHER', 'x', 'SELF_EMPLOYED', ?, 'op-2', 'h', 'admin')`)
-      .run(act.id, act.engagement_id, p1.partnerIdentityId, acceptance.accepted_amount_kopecks, acceptance.accepted_engagement_revision_id, contract.id))
-      .toThrow();
+.run(act.id, act.engagement_id, p1.partnerIdentityId, acceptance.accepted_amount_kopecks, acceptance.accepted_engagement_revision_id, contract.id))
+.toThrow();
   });
 
   it("refuses a payload whose tax_canonical_hash disagrees with the settlement's own pinned snapshot (P1.5: verbatim propagation, not just IS NOT NULL)", () => {
@@ -240,13 +240,13 @@ describe("cross-authority structural backstops (raw SQL)", () => {
         ?, ?, 'SELF_EMPLOYED', ?, 'op-tax-corrupt', 'h', 'admin',
         ?, ?, ?, ?,
         ?, ?, 'CORRUPTED_HASH_NOT_THE_SETTLEMENTS_OWN')`)
-      .run(
+.run(
         act.id, settlement.id, act.engagement_id, p1.partnerIdentityId, acceptance.accepted_amount_kopecks, acceptance.accepted_engagement_revision_id,
         settlement.tax_mode_snapshot, settlement.legal_profile_revision_id_snapshot, contract.id,
         settlement.tax_treatment_revision_id_snapshot, ordParticipant.version, ordParticipant.canonical_json, ordParticipant.canonical_hash,
         settlement.tax_canonicalization_version, settlement.tax_canonical_json,
       ))
-      .toThrow(/ORD_PAID_INVOICE_PAYLOAD_RELATIONAL_INCONSISTENT/);
+.toThrow(/ORD_PAID_INVOICE_PAYLOAD_RELATIONAL_INCONSISTENT/);
   });
 
   it("delete is never legal, even pre-lock", () => {

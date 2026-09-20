@@ -31,7 +31,7 @@ describe("classifyLegalProfileChange", () => {
 
   it("самозанятый -> ИП, same INN, ОГРНИП appears: CONTRACTUAL_REISSUANCE_REQUIRED, never a new identity", () => {
     const current: ComparableLegalProfile = {
-      ...base, legal_form: "INDIVIDUAL_ENTREPRENEUR", projected_contractor_type: "INDIVIDUAL_ENTREPRENEUR", registration_number: "123456789012345",
+...base, legal_form: "INDIVIDUAL_ENTREPRENEUR", projected_contractor_type: "INDIVIDUAL_ENTREPRENEUR", registration_number: "123456789012345",
     };
     expect(classifyLegalProfileChange(base, current)).toBe("CONTRACTUAL_REISSUANCE_REQUIRED");
   });

@@ -7,14 +7,14 @@ import { withAdminCommandInTransaction, type AdminCommandResult } from "./agent-
 
 // Integration-hardening #6: NPD_STATUS_PROCESSING is already classified in
 // AGENT_REFERRALS_OPERATION_POLICY (MATURATION_RECOVERY_REPORTING_TAIL -
-// permitted under SUSPENDED, blocked under DORMANT), but recordNpdStatusCheck
+// permitted under SUSPENDED), but recordNpdStatusCheck
 // never called the gate that classification exists to enforce - matching
 // every other authority writer in this codebase (see e.g. ord-reporting.ts's
 // own `gate`), rather than re-deciding the policy locally.
 const gate = (db: Database.Database) => assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "NPD_STATUS_PROCESSING");
 
 /**
- * §B-6/Phase 7 NPD payout authority - never the removed legacy
+ * NPD payout authority - never the removed legacy
  * `agents.npd_status_checked_at` timestamp. A bare timestamp had no status
  * or freshness semantics; both settlement flows now use this evidence when
  * their pinned legal revision requires NPD.
@@ -53,7 +53,7 @@ export class NpdStatusError extends Error {
  * indistinguishable from a genuinely current INACTIVE one until re-checked,
  * and BEGIN_PAYMENT must never trust an old answer.
  *
- * Mirrored as a literal (14400000) inside 0047's own
+ * Mirrored as a literal (14400000) inside the schema's own
  * payment_authorizations_relational_consistency_guard trigger - the DB
  * enforces this window structurally, not merely in application code, and
  * the two must be changed together (see calculate-legal-manifest-hashes.ts
@@ -92,7 +92,7 @@ export const recordNpdStatusCheckInTransaction = (
     const checkId = id();
     db.prepare(`INSERT INTO npd_status_checks(id, partner_identity_id, sequence, status, checked_at, evidence_ref, created_by_admin_id)
       VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .run(checkId, partnerIdentityId, nextSequence, status, checkedAtIso, evidenceRef, admin.admin_id);
+.run(checkId, partnerIdentityId, nextSequence, status, checkedAtIso, evidenceRef, admin.admin_id);
     return db.prepare(`SELECT ${CHECK_COLUMNS} FROM npd_status_checks WHERE id = ?`).get(checkId) as NpdStatusCheckRow;
   }
 };
@@ -123,7 +123,7 @@ export const recordNpdStatusCheckIdempotent = (
 /** The current (MAX sequence) fact on file for this partner - not necessarily fresh or ACTIVE; freshness/status are judged separately below. */
 export const latestNpdStatusCheck = (db: Database.Database, partnerIdentityId: string): NpdStatusCheckRow | null =>
   (db.prepare(`SELECT ${CHECK_COLUMNS} FROM npd_status_checks WHERE partner_identity_id = ? ORDER BY sequence DESC LIMIT 1`)
-    .get(partnerIdentityId) as NpdStatusCheckRow | undefined) ?? null;
+.get(partnerIdentityId) as NpdStatusCheckRow | undefined) ?? null;
 
 /**
  * Normalized time arithmetic (julianday), never raw TEXT comparison - the

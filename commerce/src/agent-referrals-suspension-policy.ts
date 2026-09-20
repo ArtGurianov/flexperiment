@@ -86,8 +86,7 @@ export const AGENT_REFERRALS_OPERATION_POLICY: Readonly<Record<AgentReferralsOpe
   // creative with the ORD provider is still minting authority that does not
   // yet exist as a filed fact - the same class as authorizeCreative itself.
   // SUSPENDED must not let an in-progress registration silently complete
-  // into a locked, ERID-bearing fact (plan Phase 8 / §B-4: "the first real
-  // VK/ERIR business fact stays prohibited before global ACTIVE").
+  // into a locked, ERID-bearing fact .
   ORD_CREATIVE_REGISTRATION: "NEW_AUTHORITY",
   INITIAL_LEGAL_PROFILE_VERIFICATION: "NEW_AUTHORITY",
   LEGAL_PROFILE_CHANGE_VERIFICATION: "NEW_AUTHORITY",
@@ -135,8 +134,7 @@ export class AgentReferralsSuspensionPolicyError extends Error {
 
 /**
  * ACTIVE permits every class. SUSPENDED permits only
- * MATURATION_RECOVERY_REPORTING_TAIL classes. DORMANT is a historical schema
- * value and is normalized to ACTIVE by the feature-state reader.
+ * MATURATION_RECOVERY_REPORTING_TAIL classes. There is no third state.
  */
 export const isAgentReferralsOperationPermitted = (
   state: AgentReferralsFeatureStateName,

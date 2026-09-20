@@ -10,7 +10,7 @@ import { currentEffectiveRewardSnapshot } from "./agent-referrals-reward-registr
 import type { AdminPrincipal } from "./agent-referrals-partner-identity";
 
 /**
- * §B-6/Phase 7 payment authority.
+ * payment authority.
  *
  * PaymentAuthorization is a capability, not a status field: beginPayment()
  * re-resolves and rechecks every load-bearing prerequisite in the SAME
@@ -75,7 +75,7 @@ export const paymentAttemptById = (db: Database.Database, attemptId: string): Pa
 /** The one attempt currently occupying the "active" slot for a settlement (not CONFIRMED_NOT_MADE) - at most one, by the migration's partial UNIQUE index. */
 export const activePaymentAttempt = (db: Database.Database, settlementId: string): PaymentAttemptRow | null =>
   (db.prepare(`SELECT ${ATTEMPT_COLUMNS} FROM payment_attempts WHERE settlement_id = ? AND status != 'CONFIRMED_NOT_MADE'`)
-    .get(settlementId) as PaymentAttemptRow | undefined) ?? null;
+.get(settlementId) as PaymentAttemptRow | undefined) ?? null;
 
 export const paymentAttemptsForSettlement = (db: Database.Database, settlementId: string): PaymentAttemptRow[] =>
   db.prepare(`SELECT ${ATTEMPT_COLUMNS} FROM payment_attempts WHERE settlement_id = ? ORDER BY started_at ASC, id ASC`).all(settlementId) as PaymentAttemptRow[];
@@ -133,11 +133,11 @@ export const beginPaymentInTransaction = (db: Database.Database, admin: AdminPri
     try {
       db.prepare(`INSERT INTO payment_authorizations(id, settlement_id, act_id, amount_kopecks, payout_profile_revision_id, npd_status_check_id, created_by_admin_id)
         VALUES (?, ?, ?, ?, ?, ?, ?)`)
-        .run(authorizationId, settlementId, act.id, settlement.amount_kopecks, settlement.payout_profile_revision_id, npdStatusCheckId, admin.admin_id);
+.run(authorizationId, settlementId, act.id, settlement.amount_kopecks, settlement.payout_profile_revision_id, npdStatusCheckId, admin.admin_id);
 
       const attemptId = id();
       db.prepare(`INSERT INTO payment_attempts(id, payment_authorization_id, settlement_id, status, amount_kopecks) VALUES (?, ?, ?, 'IN_PROGRESS', ?)`)
-        .run(attemptId, authorizationId, settlementId, settlement.amount_kopecks);
+.run(attemptId, authorizationId, settlementId, settlement.amount_kopecks);
 
       return { authorization: paymentAuthorizationById(db, authorizationId)!, attempt: paymentAttemptById(db, attemptId)! };
     } catch (error) {
@@ -239,7 +239,7 @@ export const recordConfirmedNotMade = (db: Database.Database, admin: AdminPrinci
     if (!before) throw new PaymentError("AGENT_REFERRALS_PAYMENT_ATTEMPT_NOT_FOUND", 404, attemptId);
     if (before.status === "CONFIRMED_NOT_MADE") return { attempt: before, replayed: true };
     const changed = db.prepare("UPDATE payment_attempts SET status = 'CONFIRMED_NOT_MADE', confirmed_not_made_at = ?, evidence_ref = ? WHERE id = ? AND status IN ('IN_PROGRESS', 'PAYOUT_UNKNOWN')")
-      .run(now(), evidenceRef, attemptId);
+.run(now(), evidenceRef, attemptId);
     if (!changed.changes) throw new PaymentError("AGENT_REFERRALS_PAYMENT_ATTEMPT_TRANSITION_ILLEGAL", 409, `${before.status}->CONFIRMED_NOT_MADE`);
     return { attempt: paymentAttemptById(db, attemptId)!, replayed: false };
   });
@@ -277,7 +277,7 @@ export type NpdReceiptRow = { id: string; payment_attempt_id: string; settlement
 
 export const npdReceiptForAttempt = (db: Database.Database, attemptId: string): NpdReceiptRow | null =>
   (db.prepare("SELECT id, payment_attempt_id, settlement_id, receipt_reference, evidence_ref, created_by_admin_id, created_at FROM npd_receipts WHERE payment_attempt_id = ?")
-    .get(attemptId) as NpdReceiptRow | undefined) ?? null;
+.get(attemptId) as NpdReceiptRow | undefined) ?? null;
 
 /**
  * MADE -> PENDING_DOCUMENT -> valid receipt -> SETTLED (NPD only). A
@@ -306,10 +306,10 @@ export const recordNpdReceipt = (
     const receiptId = id();
     db.prepare(`INSERT INTO npd_receipts(id, payment_attempt_id, settlement_id, receipt_reference, evidence_ref, created_by_admin_id)
       VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(receiptId, paymentAttemptId, attempt.settlement_id, receiptReference, evidenceRef, admin.admin_id);
+.run(receiptId, paymentAttemptId, attempt.settlement_id, receiptReference, evidenceRef, admin.admin_id);
     db.prepare(`UPDATE reward_settlements SET status = 'SETTLED', document_confirmed = 1, document_reference = ?, document_confirmed_at = ?, settled_at = ?
       WHERE id = ? AND status = 'PENDING_DOCUMENT'`)
-      .run(receiptReference, now(), now(), attempt.settlement_id);
+.run(receiptReference, now(), now(), attempt.settlement_id);
     return { receipt: npdReceiptForAttempt(db, paymentAttemptId)!, replayed: false };
   });
   return run.immediate();

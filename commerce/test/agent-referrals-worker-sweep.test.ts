@@ -40,7 +40,7 @@ const reportSampleDistribution = (db: Database.Database, engagementId: string) =
   return (db.prepare("SELECT id FROM engagement_distributions WHERE engagement_id = ?").get(engagementId) as { id: string }).id;
 };
 
-describe("Agent Referrals worker sweep (Phase 9 §11): deterministic, idempotent, no VK network call of any kind", () => {
+describe("Agent Referrals worker sweep : deterministic, idempotent, no VK network call of any kind", () => {
   it("is a silent all-zero no-op on the retained pre-baseline physical row", () => {
     const { db } = fresh();
     track(db);
@@ -107,7 +107,7 @@ describe("Agent Referrals worker sweep (Phase 9 §11): deterministic, idempotent
     const backdated = new Date(Date.now() - REMOVAL_OVERDUE_GRACE_MS - 60_000).toISOString();
     db.prepare(`INSERT INTO engagement_distribution_events(id, distribution_id, event_sequence, event_kind, actor_realm, evidence_ref, reason, occurred_at)
       VALUES (?, ?, (SELECT COALESCE(MAX(event_sequence), 0) + 1 FROM engagement_distribution_events WHERE distribution_id = ?), 'REMOVAL_REQUIRED', 'ADMIN', NULL, 'backdated for test', ?)`)
-      .run(randomUUID(), distributionId, distributionId, backdated);
+.run(randomUUID(), distributionId, distributionId, backdated);
     expect(distributionProjection(db, distributionId).removal_state).toBe("REMOVAL_REQUIRED");
 
     const swept = runAgentReferralsWorkerSweep(db, publicationEndAtMs + 1);
@@ -123,7 +123,7 @@ describe("Agent Referrals worker sweep (Phase 9 §11): deterministic, idempotent
     const backdated = new Date(Date.now() - REMOVAL_OVERDUE_GRACE_MS - 60_000).toISOString();
     db.prepare(`INSERT INTO engagement_distribution_events(id, distribution_id, event_sequence, event_kind, actor_realm, evidence_ref, reason, occurred_at)
       VALUES (?, ?, (SELECT COALESCE(MAX(event_sequence), 0) + 1 FROM engagement_distribution_events WHERE distribution_id = ?), 'REMOVAL_REQUIRED', 'ADMIN', NULL, 'backdated for test', ?)`)
-      .run(randomUUID(), distributionId, distributionId, backdated);
+.run(randomUUID(), distributionId, distributionId, backdated);
     claimRemoval(db, p1.partner, distributionId, "evidence-of-takedown", distributionProjection(db, distributionId).event_sequence);
     confirmRemoval(db, admin, distributionId, "confirmed-evidence", distributionProjection(db, distributionId).event_sequence);
     expect(distributionProjection(db, distributionId).removal_state).toBe("REMOVAL_CONFIRMED");

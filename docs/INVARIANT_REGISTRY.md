@@ -18,14 +18,13 @@ A row is one of two kinds, and they are held to different standards:
   a surviving behavioural proof.
 - **RETIRED** — the surface it governed no longer exists. It needs no test; it
   needs a reason and evidence that the surface is genuinely gone. Without this
-  distinction a closed epoch survives forever merely so that its row has a file
+  distinction a dead surface survives forever merely so that its row has a file
   to point at, which is the outcome this cleanup exists to avoid.
-- **ACTIVE_BASELINE_REWRITE** — active, and proved now against the trigger as it
-  is written today, but the baseline will restate that trigger without the
-  pre-launch discriminator its condition currently names. The row stays open
-  until the rewritten form is proved to carry the same invariant. It exists so
-  that a guard proved only in its conditional form is not mistaken for one that
-  has been carried across.
+- **(retired status)** `ACTIVE_BASELINE_REWRITE` meant active, but proved only
+  in the conditional form the guard had before the baseline restated it. It
+  existed so that such a guard could not be mistaken for one already carried
+  across. The baseline has since restated every one of them, and their rows are
+  plain `ACTIVE`.
 
 ## Data invariants enforced by the schema
 
@@ -35,15 +34,15 @@ straight against the database as well as against a defect in the domain.
 
 | Invariant | Enforced by | Guarded by |
 |---|---|---|
-| A venue cannot be announced later than it is disclosed | `0008` `VENUE_ANNOUNCEMENT_TOO_LATE` | `api.test.ts` |
-| Hidden implies not sellable | `0010` `OCCURRENCE_HIDDEN_SALES_MUST_BE_CLOSED` | `api.test.ts` |
-| Terminal fulfilment implies sales closed | `0011` `OCCURRENCE_TERMINAL_SALES_MUST_BE_CLOSED` | `api.test.ts` |
-| `FAILED` if and only if a delivery outcome is recorded | `0039` `EMAIL_OUTBOX_DELIVERY_OUTCOME_INVARIANT` | `email-delivery-outcome.test.ts` |
-| At most one unsettled attempt per message | `0041` partial UNIQUE | `outbox-attempt-constraints.test.ts` |
-| An attempt's identity never changes after it is written | `0041` `OUTBOX_ATTEMPT_IDENTITY_IMMUTABLE` | `outbox-attempt-constraints.test.ts` |
-| A settled attempt is never rewritten | `0041` `OUTBOX_ATTEMPT_SETTLED_IMMUTABLE` | `outbox-attempt-constraints.test.ts` |
-| An attempt is never deleted, but a purged message takes its own | `0041` `OUTBOX_ATTEMPT_DELETE_FORBIDDEN` | `outbox-attempt-constraints.test.ts` |
-| Dispatch stops when an operator pauses it | `0041` `EMAIL_DISPATCH_PAUSED` | `outbox-attempt-claim-seam.test.ts` |
+| A venue cannot be announced later than it is disclosed | `VENUE_ANNOUNCEMENT_TOO_LATE` | `api.test.ts` |
+| Hidden implies not sellable | `OCCURRENCE_HIDDEN_SALES_MUST_BE_CLOSED` | `api.test.ts` |
+| Terminal fulfilment implies sales closed | `OCCURRENCE_TERMINAL_SALES_MUST_BE_CLOSED` | `api.test.ts` |
+| `FAILED` if and only if a delivery outcome is recorded | `EMAIL_OUTBOX_DELIVERY_OUTCOME_INVARIANT` | `email-delivery-outcome.test.ts` |
+| At most one unsettled attempt per message | partial UNIQUE | `outbox-attempt-constraints.test.ts` |
+| An attempt's identity never changes after it is written | `OUTBOX_ATTEMPT_IDENTITY_IMMUTABLE` | `outbox-attempt-constraints.test.ts` |
+| A settled attempt is never rewritten | `OUTBOX_ATTEMPT_SETTLED_IMMUTABLE` | `outbox-attempt-constraints.test.ts` |
+| An attempt is never deleted, but a purged message takes its own | `OUTBOX_ATTEMPT_DELETE_FORBIDDEN` | `outbox-attempt-constraints.test.ts` |
+| Dispatch stops when an operator pauses it | `EMAIL_DISPATCH_PAUSED` | `outbox-attempt-claim-seam.test.ts` |
 | Exactly one legal release is active | `one_active_legal_release` UNIQUE | `legal-release.test.ts` |
 | A payment's idempotency key is unique | `checkout_idempotency` UNIQUE | `api.test.ts`, `domain.test.ts` |
 
@@ -161,10 +160,10 @@ are tried against documents the domain issued.
 
 | Invariant | Enforced by | Guarded by | Status |
 |---|---|---|---|
-| A settlement's authority columns are frozen | `REWARD_SETTLEMENT_AUTHORITY_COLUMNS_IMMUTABLE` | `agent-referrals-settlement-constraints.test.ts` | ACTIVE_BASELINE_REWRITE |
-| A settlement's authority tuple holds together | `REWARD_SETTLEMENT_AUTHORITY_TUPLE_INCONSISTENT` | `agent-referrals-settlement-constraints.test.ts` | ACTIVE_BASELINE_REWRITE |
-| A terminal settlement is never reopened | `REWARD_SETTLEMENT_TERMINAL_IMMUTABLE` | `agent-referrals-settlement-constraints.test.ts` | ACTIVE_BASELINE_REWRITE |
-| A settlement's status moves only along the permitted path | `REWARD_SETTLEMENT_TRANSITION_ILLEGAL` | `agent-referrals-settlement-constraints.test.ts` | ACTIVE_BASELINE_REWRITE |
+| A settlement's authority columns are frozen | `REWARD_SETTLEMENT_AUTHORITY_COLUMNS_IMMUTABLE` | `agent-referrals-settlement-constraints.test.ts` | ACTIVE |
+| A settlement's authority tuple holds together | `REWARD_SETTLEMENT_AUTHORITY_TUPLE_INCONSISTENT` | `agent-referrals-settlement-constraints.test.ts` | ACTIVE |
+| A terminal settlement is never reopened | `REWARD_SETTLEMENT_TERMINAL_IMMUTABLE` | `agent-referrals-settlement-constraints.test.ts` | ACTIVE |
+| A settlement's status moves only along the permitted path | `REWARD_SETTLEMENT_TRANSITION_ILLEGAL` | `agent-referrals-settlement-constraints.test.ts` | ACTIVE |
 | A settlement act cannot be deleted | `SETTLEMENT_ACT_IMMUTABLE` | `agent-referrals-settlement-constraints.test.ts` | ACTIVE |
 | An act's identifying fields are frozen | `SETTLEMENT_ACT_FIELDS_IMMUTABLE` | `agent-referrals-settlement-constraints.test.ts` | ACTIVE |
 | A presented act cannot be changed at all | `SETTLEMENT_ACT_ALREADY_PRESENTED` | `agent-referrals-settlement-constraints.test.ts` | ACTIVE |
@@ -187,12 +186,12 @@ rather than against rows the test invented.
 
 | Invariant | Enforced by | Guarded by | Status |
 |---|---|---|---|
-| An order's attribution columns are frozen after checkout | `0046` `ORDER_AUTHORITY_COLUMNS_IMMUTABLE` | `agent-referrals-attribution-constraints.test.ts` | ACTIVE_BASELINE_REWRITE |
-| An order's attribution tuple holds together | `0046` `ORDER_AUTHORITY_TUPLE_INCONSISTENT` | `agent-referrals-attribution-constraints.test.ts` | ACTIVE_BASELINE_REWRITE |
-| A finalized reward registry snapshot is immutable | `0046` `ENGAGEMENT_REWARD_REGISTRY_SNAPSHOT_IMMUTABLE` | `agent-referrals-attribution-constraints.test.ts` | ACTIVE |
-| A registry snapshot agrees with the engagement and occurrence it names | `0046` `ENGAGEMENT_REWARD_REGISTRY_SNAPSHOT_RELATIONAL_INCONSISTENT` | `agent-referrals-attribution-constraints.test.ts` | ACTIVE |
-| An effective reward snapshot is immutable | `0046` `ENGAGEMENT_EFFECTIVE_REWARD_SNAPSHOT_IMMUTABLE` | `agent-referrals-attribution-constraints.test.ts` | ACTIVE |
-| An effective snapshot restates its base, unless it supersedes a predecessor | `0046` `ENGAGEMENT_EFFECTIVE_REWARD_SNAPSHOT_RELATIONAL_INCONSISTENT` | `agent-referrals-attribution-constraints.test.ts` | ACTIVE |
+| An order's attribution columns are frozen after checkout | `ORDER_AUTHORITY_COLUMNS_IMMUTABLE` | `agent-referrals-attribution-constraints.test.ts` | ACTIVE |
+| An order's attribution tuple holds together | `ORDER_AUTHORITY_TUPLE_INCONSISTENT` | `agent-referrals-attribution-constraints.test.ts` | ACTIVE |
+| A finalized reward registry snapshot is immutable | `ENGAGEMENT_REWARD_REGISTRY_SNAPSHOT_IMMUTABLE` | `agent-referrals-attribution-constraints.test.ts` | ACTIVE |
+| A registry snapshot agrees with the engagement and occurrence it names | `ENGAGEMENT_REWARD_REGISTRY_SNAPSHOT_RELATIONAL_INCONSISTENT` | `agent-referrals-attribution-constraints.test.ts` | ACTIVE |
+| An effective reward snapshot is immutable | `ENGAGEMENT_EFFECTIVE_REWARD_SNAPSHOT_IMMUTABLE` | `agent-referrals-attribution-constraints.test.ts` | ACTIVE |
+| An effective snapshot restates its base, unless it supersedes a predecessor | `ENGAGEMENT_EFFECTIVE_REWARD_SNAPSHOT_RELATIONAL_INCONSISTENT` | `agent-referrals-attribution-constraints.test.ts` | ACTIVE |
 | The suite runs for pull requests, `main` and manual dispatch only | `test.yml` | `release/deploy-workflow-contract.test.ts` |
 
 ## Retired
@@ -203,7 +202,7 @@ lost, and each names the evidence that the surface is gone.
 
 | Invariant | Retired because |
 |---|---|
-| Candidate publication refs use the flat `runtime/release-semantics-bootstrap-*` shape | The epoch and its refs are gone. `git grep` finds no reference to that namespace anywhere outside the test that asserted it. |
+| Candidate publication refs use a flat `runtime/*` naming shape | That release model and its refs are gone. `git grep` finds no reference to that namespace anywhere outside the test that asserted it. |
 | Candidate publication refs use the flat `runtime/agent-referrals-<generation>` shape | Generation semantics were deleted with the release controller; the namespace has no remaining reference either. |
 | A candidate pointer is adopted over a stale one, and read as a lease | The test named no file in this repository: it ran `git` against temporary repositories and asserted git's own ancestry and lease behaviour. The controller it was written for is gone, and what survives - the runtime identity readout and `inspect-runtime-candidate-topology.sh` - it never exercised. The lease property itself is now owned by `release/deploy-session.ts` and proved in `release/resume.test.ts`. |
 | A referral reward's authority kind never changes, and matches its order's | `reward_authority_kind` is the pre-launch discriminator, and the guard's condition is the column itself. When the baseline removes it there is nothing left for either `REFERRAL_REWARD_AUTHORITY_KIND_IMMUTABLE` or `REFERRAL_REWARD_AUTHORITY_KIND_MISMATCH` to compare. |
@@ -280,9 +279,9 @@ surviving test by design, so a search for "guards no surviving test names"
 counted them as remaining, while the subsumed one is named in a comment and
 counted as covered. The counts above separate those.
 
-Of the 45 rehoused, six carry `ACTIVE_BASELINE_REWRITE`: they are proved in the
-conditional form they have today, and the baseline will restate them without the
-discriminator their condition names.
+Of the 45 rehoused, six were held open while their guards still named a
+pre-launch discriminator. The baseline restated all six without it, and their
+tests were rewritten against the restated form.
 
 Five families: attribution and reward snapshots; settlements and acts; payments,
 receipts and exposure; identity, legal basis and framework; and publication,

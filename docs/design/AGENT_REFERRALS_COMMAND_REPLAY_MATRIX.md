@@ -1,7 +1,8 @@
 # Agent Referrals: command replay matrix
 
-Produced by the PR-C idempotency audit, corrected twice in review. It is the
-input to **PR-C2**, which is a rollout blocker.
+The classification every partner-facing command is held to, and the input to
+`agent-referrals-command-precondition.ts`. `agent-referrals-command-replay-registry.test.ts`
+checks the routes against it, so a route added without a classification fails.
 
 ## The criterion
 
@@ -256,9 +257,9 @@ the hook, both of which the hook being correct did not save:
   HTTP body.
 
 **A DROP + CREATE must restate the CURRENT definition of a trigger, never
-the one in the migration that first created it.** 0056 recreated this
-table's request-fields immutability guard from 0051's text and so silently
-dropped the seven requisite columns 0052 had already added to it. The other
+the one that first created it.** A guard recreated from an older version of
+its own text silently dropped seven columns that had been added to it in
+between; the columns were still there, and nothing was freezing them. The other
 two guards do not cover the gap — they block `PENDING → PENDING` and updates
 to an already-terminal row, while a resolution is
 `PENDING → VERIFIED/REJECTED/STALE`, which both ignore by design. For the one

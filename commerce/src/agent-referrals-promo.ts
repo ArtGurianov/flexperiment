@@ -9,8 +9,7 @@ import type { AdminPrincipal } from "./agent-referrals-partner-identity";
  * agent-referrals-engagement.ts - that module imports this one instead.
  *
  * This module exports NO function capable of MINTING a new promo
- * authorization, at any visibility level (Phase 5 holistic review, P0
- * finding 3) - a promo authorization's mere existence IS authority (it is
+ * authorization, at any visibility level - a promo authorization's mere existence IS authority (it is
  * what activation snapshots and what CREATIVE_READY_TO_PUBLISH checks), so
  * a bare, importable "mint" primitive would let a future module grant that
  * authority without going through activateEngagement's full prerequisite
@@ -66,7 +65,7 @@ export const createPartnerPromo = (db: Database.Database, admin: AdminPrincipal,
     try {
       db.prepare(`INSERT INTO promo_codes(id, agent_id, code, normalized_code, status, discount_type, discount_value)
         VALUES (?, ?, ?, ?, 'ACTIVE', 'NONE', 0)`)
-        .run(promoCodeId, input.partner_id, normalized, normalized);
+.run(promoCodeId, input.partner_id, normalized, normalized);
     } catch (error) {
       // PR-C idempotency audit, same defect class as provisionPartnerOwner:
       // this command carries no durable key, so a retry after an ambiguous
@@ -83,7 +82,7 @@ export const createPartnerPromo = (db: Database.Database, admin: AdminPrincipal,
     const partnerPromoId = id();
     try {
       db.prepare(`INSERT INTO partner_promos(id, promo_code_id, partner_id, created_by_admin_id) VALUES (?, ?, ?, ?)`)
-        .run(partnerPromoId, promoCodeId, input.partner_id, admin.admin_id);
+.run(partnerPromoId, promoCodeId, input.partner_id, admin.admin_id);
     } catch (error) {
       // A DIFFERENT code for a partner who already has one: the promo_codes
       // insert above succeeds (the code is free), and only partner_promos'
@@ -123,11 +122,11 @@ const AUTHORIZATION_COLUMNS = "id, promo_code_id, partner_id, occurrence_id, eng
 /** The current (unrevoked) authorization for this exact (promo, occurrence) pair - structurally at most one, per the partial unique index. */
 export const currentEngagementPromoAuthorization = (db: Database.Database, promoCodeId: string, occurrenceId: string): EngagementPromoAuthorizationRow | null =>
   (db.prepare(`SELECT ${AUTHORIZATION_COLUMNS} FROM engagement_promo_authorizations WHERE promo_code_id = ? AND occurrence_id = ? AND revoked_at IS NULL`)
-    .get(promoCodeId, occurrenceId) as EngagementPromoAuthorizationRow | undefined) ?? null;
+.get(promoCodeId, occurrenceId) as EngagementPromoAuthorizationRow | undefined) ?? null;
 
 export const currentEngagementPromoAuthorizationForEngagement = (db: Database.Database, engagementId: string): EngagementPromoAuthorizationRow | null =>
   (db.prepare(`SELECT ${AUTHORIZATION_COLUMNS} FROM engagement_promo_authorizations WHERE engagement_id = ? AND revoked_at IS NULL`)
-    .get(engagementId) as EngagementPromoAuthorizationRow | undefined) ?? null;
+.get(engagementId) as EngagementPromoAuthorizationRow | undefined) ?? null;
 
 /** Nestable: revokes the current authorization for an engagement, if one exists. A no-op (returns null) if none is currently live - suspending/closing an engagement that never activated must not throw. */
 export const revokeEngagementPromoAuthorizationInTransaction = (db: Database.Database, engagementId: string, reason: string): EngagementPromoAuthorizationRow | null => {

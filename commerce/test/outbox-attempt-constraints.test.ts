@@ -6,11 +6,11 @@ import { openUnmigratedTestDatabase } from "./support/test-database";
 /**
  * The structural half of "never send a customer the same email twice".
  *
- * These are constraints of the live schema, not facts about the migration that
- * introduced them. They were only asserted through that migration's own test,
- * which meant the strongest protection against a duplicate ticket was guarded
- * by a file whose whole purpose is to stop existing once the ledger collapses.
- * They live here instead, phrased against the schema as it is, so the ledger can
+ * These are constraints of the live schema, and they are phrased against the
+ * schema as it is. They used to be asserted only through the test of the
+ * migration that introduced them, which meant the strongest protection against
+ * a duplicate ticket was guarded by a file whose whole purpose was to stop
+ * existing once the ledger collapsed. They live here instead, so the ledger could
  * go without taking them with it.
  */
 const migrations = join(process.cwd(), "commerce", "migrations");

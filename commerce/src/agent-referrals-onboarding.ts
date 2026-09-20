@@ -10,7 +10,7 @@ import { id } from "./crypto";
  * counter, so partners advance independently and concurrently by
  * construction (a CAS on one row can never contend with a CAS on another).
  *
- * No edge skips a state, and DORMANT-style "no path back" applies here too:
+ * No edge skips a state, and a "no path back" applies here too:
  * the edge map has no entry that returns to an earlier state.
  */
 
@@ -65,7 +65,7 @@ export const getPartnerIdentityByAgentId = (db: Database.Database, agentId: stri
   (db.prepare(`SELECT ${PARTNER_IDENTITY_COLUMNS} FROM partner_identities WHERE agent_id = ?`).get(agentId) as PartnerIdentityRow | undefined) ?? null;
 
 /**
- * Login-by-email lookup (Phase 9): a returning partner re-authenticates by
+ * Login-by-email lookup: a returning partner re-authenticates by
  * email rather than by a one-time invite token (which is single-use and
  * already spent after onboarding). email_hash is unindexed by design at
  * this table's pilot scale - a full scan of a small identity table is not a
@@ -85,7 +85,7 @@ export const recordPartnerIdentityEvent = (
 ): void => {
   db.prepare(`INSERT INTO partner_identity_events(id, partner_identity_id, event_kind, actor_realm, details_json, created_at)
     VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%d %H:%M:%f', 'now'))`)
-    .run(id(), partnerIdentityId, eventKind, actorRealm, JSON.stringify(details));
+.run(id(), partnerIdentityId, eventKind, actorRealm, JSON.stringify(details));
 };
 
 /**
@@ -111,7 +111,7 @@ export const transitionOnboardingStateInTransaction = (
   const changed = db.prepare(`UPDATE partner_identities
     SET onboarding_state = ?, onboarding_revision = onboarding_revision + 1, updated_at = CURRENT_TIMESTAMP
     WHERE id = ? AND onboarding_revision = ?`)
-    .run(to, partnerIdentityId, expectedRevision);
+.run(to, partnerIdentityId, expectedRevision);
   if (changed.changes !== 1) throw new OnboardingError("AGENT_REFERRALS_ONBOARDING_REVISION_CONFLICT", 409);
 
   recordPartnerIdentityEvent(db, partnerIdentityId, "ONBOARDING_STATE_TRANSITIONED", actorRealm, { from_state: current.onboarding_state, to_state: to, reason });

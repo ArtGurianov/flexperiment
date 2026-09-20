@@ -62,7 +62,7 @@ describe("beginPayment: full recheck in one transaction", () => {
     const orderId = (JSON.parse(registry.source_order_ids_json) as string[])[0];
     const payment = db.prepare("SELECT id FROM payments WHERE order_id = ?").get(orderId) as { id: string };
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 10000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
-      .run(randomUUID(), randomUUID(), orderId, payment.id, randomUUID());
+.run(randomUUID(), randomUUID(), orderId, payment.id, randomUUID());
     correctPartnerRewardWithSettlement(db, admin, engagementId, "test cancellation", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(() => beginPayment(db, admin, settlement.id)).toThrow(/AGENT_REFERRALS_PAYMENT_SETTLEMENT_NOT_PAYABLE/);
   });
@@ -139,7 +139,7 @@ describe("beginPayment: full recheck in one transaction", () => {
     expect(() => beginPayment(db, admin, settlement.id)).toThrow(/PAYMENT_AUTHORIZATION_RELATIONAL_INCONSISTENT/);
   });
 
-  it("pre-baseline DORMANT reaches ordinary settlement validation", () => {
+  it("a freshly seeded feature state reaches ordinary settlement validation", () => {
     const { db } = fresh(); track(db);
     expect(() => beginPayment(db, admin, "no-such-settlement")).toThrow();
   });
@@ -161,7 +161,7 @@ describe("beginPayment: full recheck in one transaction", () => {
     acceptedAct(db, p1.partner, settlement);
 
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+.run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
     // The official orchestrator (correctPartnerRewardWithSettlement) would have cancelled `settlement` before minting the new E - this call
     // deliberately bypasses it, reaching a state only possible via direct use of the raw PR6 primitive.
     const correction = correctEngagementEffectiveRewardSnapshot(db, admin, engagementId, "direct correction, bypassing settlement orchestration");
@@ -342,7 +342,7 @@ describe("zero-reward closure", () => {
     const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
     const order = purchaseAndPay(db, domain, occ, code.code, "zero1@example.test", "idem-zero1-0000001");
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, ?, 'full', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, order.amount_kopecks, randomUUID());
+.run(randomUUID(), randomUUID(), order.id, order.payment_id, order.amount_kopecks, randomUUID());
     closeAndComplete(db, domain, occ);
     const finalize = finalizeEngagementRewardRegistry(db, admin, engagementId, "x");
     expect(finalize.reward_total_kopecks).toBe(0);
@@ -366,7 +366,7 @@ describe("zero-reward closure", () => {
     db.prepare("UPDATE occurrences SET fulfillment_status = 'CANCELLED', sales_status = 'CLOSED', cancelled_at = CURRENT_TIMESTAMP, cancellation_reason = 'test' WHERE id = ?").run(occ);
     db.prepare("UPDATE bookings SET status = 'CANCELLED', cancelled_at = CURRENT_TIMESTAMP, cancellation_reason = 'OCCURRENCE_CANCELLED' WHERE order_id = ?").run(order.id);
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, ?, 'occurrence cancelled', 'REFUND_OBLIGATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, order.amount_kopecks, randomUUID());
+.run(randomUUID(), randomUUID(), order.id, order.payment_id, order.amount_kopecks, randomUUID());
 
     const finalize = finalizeEngagementRewardRegistry(db, admin, engagementId, "x");
     expect(finalize.reward_total_kopecks).toBe(0);
@@ -404,7 +404,7 @@ describe("zero-reward closure", () => {
     expect(db.prepare("SELECT status FROM reward_settlements WHERE id = ?").get(settlement.id)).toEqual({ status: "SETTLED" });
 
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, ?, 'full', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, order.amount_kopecks, randomUUID());
+.run(randomUUID(), randomUUID(), order.id, order.payment_id, order.amount_kopecks, randomUUID());
     const result = correctPartnerRewardWithSettlement(db, admin, engagementId, "fully refunded after payment", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(result.settlement_action).toBe("RECOVERY_EXPOSURE");
     expect(result.correction.reward_total_kopecks).toBe(0);
@@ -420,7 +420,7 @@ describe("zero-reward closure", () => {
     const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
     const order = purchaseAndPay(db, domain, occ, code.code, "zero3@example.test", "idem-zero3-0000001");
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, ?, 'full', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, order.amount_kopecks, randomUUID());
+.run(randomUUID(), randomUUID(), order.id, order.payment_id, order.amount_kopecks, randomUUID());
     closeAndComplete(db, domain, occ);
     finalizeEngagementRewardRegistry(db, admin, engagementId, "x");
     closeEngagementZeroReward(db, admin, engagementId, "FULLY_REFUNDED", "cmd-1");

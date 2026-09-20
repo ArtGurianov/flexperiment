@@ -3,10 +3,10 @@ import { requireObservedVersion } from "./agent-referrals-command-precondition";
 import { canonicalV2, id, sha256 } from "./crypto";
 
 /**
- * Immutable VK ORD provider profile families (plan Phase 8): COUNTERPARTY,
- * PLATFORM, CONTRACT, MEDIA. Configuration, not a business fact - DORMANT
- * readiness explicitly distinguishes seeded static configuration from
- * production business records, so this module calls
+ * Immutable VK ORD provider profile families: COUNTERPARTY, PLATFORM,
+ * CONTRACT, MEDIA. Configuration, not a business fact - seeded static
+ * configuration is a different thing from a production business record, so
+ * this module calls
  * assertAgentReferralsOperationPermitted nowhere: an admin may record which
  * VK counterparty/platform/contract/media profile Flexperiment operates
  * under long before activation, exactly as ad_channel_policy and the
@@ -40,7 +40,7 @@ const COLUMNS = "id, profile_kind, revision, content_json, content_hash, superse
 /** "Current" is always MAX(revision) for the exact kind - never a stored pointer. */
 export const currentOrdProviderProfile = (db: Database.Database, kind: OrdProviderProfileKind): OrdProviderProfileRevision | null =>
   (db.prepare(`SELECT ${COLUMNS} FROM ord_provider_profile_revisions WHERE profile_kind = ? ORDER BY revision DESC LIMIT 1`)
-    .get(kind) as OrdProviderProfileRevision | undefined) ?? null;
+.get(kind) as OrdProviderProfileRevision | undefined) ?? null;
 
 export const ordProviderProfileById = (db: Database.Database, revisionId: string): OrdProviderProfileRevision | null =>
   (db.prepare(`SELECT ${COLUMNS} FROM ord_provider_profile_revisions WHERE id = ?`).get(revisionId) as OrdProviderProfileRevision | undefined) ?? null;
@@ -84,7 +84,7 @@ export const mintOrdProviderProfile = (
     const contentJson = JSON.stringify(content);
     db.prepare(`INSERT INTO ord_provider_profile_revisions(id, profile_kind, revision, content_json, content_hash, supersedes_revision_id, reason, created_by_admin_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(revisionId, kind, nextRevision, contentJson, contentHash, current?.id ?? null, reason, adminId);
+.run(revisionId, kind, nextRevision, contentJson, contentHash, current?.id ?? null, reason, adminId);
     return currentOrdProviderProfile(db, kind)!;
   });
   return run.immediate();

@@ -88,7 +88,7 @@ describe("preparePartnerSettlement: F10, the amount is derived, never supplied",
     const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
     const order = purchaseAndPay(db, domain, occ, code.code, "settlezero@example.test", "idem-settlezero-0000001");
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, ?, 'full', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, order.amount_kopecks, randomUUID());
+.run(randomUUID(), randomUUID(), order.id, order.payment_id, order.amount_kopecks, randomUUID());
     closeAndComplete(db, domain, occ);
     const finalize = finalizeEngagementRewardRegistry(db, admin, engagementId, "x");
     expect(finalize.reward_total_kopecks).toBe(0);
@@ -108,10 +108,10 @@ describe("preparePartnerSettlement: F10, the amount is derived, never supplied",
     expect(() => preparePartnerSettlement(db, admin, finalize.effective_snapshot_id)).not.toThrow();
   });
 
-  it("pre-baseline DORMANT is operationally ACTIVE, so settlement lookup remains the next gate", () => {
+  it("a freshly seeded feature state is ACTIVE, so settlement lookup remains the next gate", () => {
     const { db } = fresh(); track(db);
     expect(() => preparePartnerSettlement(db, admin, "no-such-snapshot"))
-      .toThrow(/AGENT_REFERRALS_SETTLEMENT_EFFECTIVE_SNAPSHOT_NOT_FOUND/);
+.toThrow(/AGENT_REFERRALS_SETTLEMENT_EFFECTIVE_SNAPSHOT_NOT_FOUND/);
   });
 });
 
@@ -136,7 +136,7 @@ describe("correctPartnerRewardWithSettlement: §B-6 correction/supersession orch
     closeAndComplete(db, domain, occ);
     finalizeEngagementRewardRegistry(db, admin, engagementId, "x");
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 10000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+.run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
 
     const result = correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund, no settlement yet", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(result.settlement_action).toBe("NONE");
@@ -147,7 +147,7 @@ describe("correctPartnerRewardWithSettlement: §B-6 correction/supersession orch
     const { engagementId, order, settlement } = setup(db, domain);
 
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+.run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
 
     const result = correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(result.settlement_action).toBe("SUPERSEDED");
@@ -169,7 +169,7 @@ describe("correctPartnerRewardWithSettlement: §B-6 correction/supersession orch
     // Refund the FULL net captured amount (order.amount_kopecks), not merely the reward amount - reward is a percentage of net captured, so only
     // refunding the entire captured amount drives it to exactly zero.
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, ?, 'full', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, order.amount_kopecks, randomUUID());
+.run(randomUUID(), randomUUID(), order.id, order.payment_id, order.amount_kopecks, randomUUID());
 
     const result = correctPartnerRewardWithSettlement(db, admin, engagementId, "fully refunded", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(result.settlement_action).toBe("CANCELLED_ZERO");
@@ -188,7 +188,7 @@ describe("correctPartnerRewardWithSettlement: §B-6 correction/supersession orch
     recordPaymentMade(db, admin, authorization.attempt.id, "manual-transfer-1");
 
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+.run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
 
     const result = correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund after payment", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(result.settlement_action).toBe("RECOVERY_EXPOSURE");
@@ -220,14 +220,14 @@ describe("correctPartnerRewardWithSettlement: §B-6 correction/supersession orch
     recordPaymentMade(db, admin, authorization.attempt.id, "manual-transfer-1");
 
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 10000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+.run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
     const first = correctPartnerRewardWithSettlement(db, admin, engagementId, "first late refund", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(first.settlement_action).toBe("RECOVERY_EXPOSURE");
     if (first.settlement_action !== "RECOVERY_EXPOSURE") throw new Error("unreachable");
 
     // A second, later refund - the paid settlement S1's own pinned E never changes, only the engagement's current E advances again.
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 5000, 'later', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+.run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
     const second = correctPartnerRewardWithSettlement(db, admin, engagementId, "second later refund", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(second.settlement_action).toBe("RECOVERY_EXPOSURE");
     if (second.settlement_action !== "RECOVERY_EXPOSURE") throw new Error("unreachable");
@@ -256,7 +256,7 @@ describe("correctPartnerRewardWithSettlement: §B-6 correction/supersession orch
     beginPayment(db, admin, settlement.id); // stays IN_PROGRESS
 
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+.run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
 
     expect(() => correctPartnerRewardWithSettlement(db, admin, engagementId, "should be refused", currentEffectiveRewardSnapshot(db, engagementId)!.id)).toThrow(/AGENT_REFERRALS_CORRECTION_BLOCKED_PAYMENT_IN_FLIGHT/);
     expect(db.prepare("SELECT status FROM reward_settlements WHERE id = ?").get(settlement.id)).toEqual({ status: "PREPARED" });
@@ -271,7 +271,7 @@ describe("correctPartnerRewardWithSettlement: §B-6 correction/supersession orch
     recordPaymentMade(db, admin, authorization.attempt.id, "manual-transfer-1");
     // Refund the FULL net captured amount so the correction lands at exactly zero (reward is a percentage of net captured, not of the paid amount).
     db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, succeeded_at) VALUES (?, ?, ?, ?, ?, 'full', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))")
-      .run(randomUUID(), randomUUID(), order.id, order.payment_id, order.amount_kopecks, randomUUID());
+.run(randomUUID(), randomUUID(), order.id, order.payment_id, order.amount_kopecks, randomUUID());
 
     const result = correctPartnerRewardWithSettlement(db, admin, engagementId, "fully refunded after payment", currentEffectiveRewardSnapshot(db, engagementId)!.id);
     expect(result.settlement_action).toBe("RECOVERY_EXPOSURE");
@@ -287,7 +287,7 @@ describe("correctPartnerRewardWithSettlement: §B-6 correction/supersession orch
     expect(afterFull.exposure_kopecks).toBe(0);
 
     expect(() => domain.addSettlementRecovery(settlement.id, { amount_recovered_kopecks: 1, recovered_at: new Date().toISOString(), method: "bank_transfer", evidence_reference: "rec-3" }, "idem-recover-3"))
-      .toThrow(/SETTLEMENT_RECOVERY_EXCEEDS_REMAINING/);
+.toThrow(/SETTLEMENT_RECOVERY_EXCEEDS_REMAINING/);
   });
 });
 

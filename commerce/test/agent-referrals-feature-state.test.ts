@@ -42,8 +42,8 @@ describe("agent referrals feature state", () => {
   });
 
   it("records the first suspension as one transition, not two", () => {
-    // It used to take two: a physical DORMANT -> ACTIVE materialisation, then
-    // the suspension itself. The seeded row removes the first half entirely.
+    // It used to take two: the row had to be brought to ACTIVE first, then
+    // suspended. The seeded row removes the first half entirely.
     const db = fresh();
     const suspended = suspendAgentReferrals(db, { expected_revision: 1, owner_id: "op-1", reason: "incident" });
 

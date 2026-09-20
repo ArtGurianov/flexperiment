@@ -62,7 +62,7 @@ describe("openOrdProviderOperation: provider-operation authority (revision chain
     expect(second.operation.id).toBe(first.operation.id);
   });
 
-  it("pre-baseline DORMANT reaches ordinary provider-profile validation", () => {
+  it("a freshly seeded feature state reaches ordinary provider-profile validation", () => {
     const file = join(mkdtempSync(join(tmpdir(), "ord-provider-operation-dormant-")), "commerce.sqlite");
     const db = openDatabase(file); migrate(db); open.push(db);
     expect(() => openOrdProviderOperation(db, admin, "COUNTERPARTY", currentOrdProviderOperation(db, "COUNTERPARTY")?.id ?? null))

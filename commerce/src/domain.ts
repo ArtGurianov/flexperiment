@@ -47,7 +47,7 @@ import { cancelCustomerBooking, confirmCustomerRefund, createCompensationRefund,
 import { parseUtcTimestamp } from "./utc-timestamp";
 import { emergencySalesPaused } from "./emergency-sales-gate";
 import { claimForDispatch, deferAmbiguousObservation, deferAmbiguousSend, dispatchCandidates, failExhaustedAmbiguous, providerLookupIdentity, recordProviderAcceptance, recordProviderRefusal, applyProviderObservation, claimedAttemptRef, resolveAttemptRef, skipObsoletePendingMessage, supersedeQueuedMessage, sendTryCount, staleLeasedSends, type AttemptRef } from "./outbox-attempt-store";
-import { OutboxAuthorityError, emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, lastAuthorityEvent, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations, type DispatchEpoch } from "./outbox-authority";
+import { OutboxAuthorityError, emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, lastAuthorityEvent, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations, type DispatchOwner } from "./outbox-authority";
 import type { OtpDeliveryCapability } from "./agent-referrals-otp";
 import {
   CITY_INTEREST_SWEEP_BATCH_SIZE,
@@ -251,7 +251,7 @@ export class CommerceDomain {
    */
   outboxAuthority() {
     return {
-      ...outboxAuthority(this.db),
+...outboxAuthority(this.db),
       dispatch: emailDispatchDrained(this.db),
       last_event: lastAuthorityEvent(this.db),
     };
@@ -273,14 +273,14 @@ export class CommerceDomain {
     }
   }
 
-  fenceEmailDispatch(input: { expected_revision: number; reason: string }, epoch: DispatchEpoch) {
+  fenceEmailDispatch(input: { expected_revision: number; reason: string }, owner: DispatchOwner) {
     return this.mapOutboxAuthority(() =>
-      withImmediateTransaction(this.db, () => ({ ...fenceEmailDispatch(this.db, input, epoch), dispatch: emailDispatchDrained(this.db) })));
+      withImmediateTransaction(this.db, () => ({ ...fenceEmailDispatch(this.db, input, owner), dispatch: emailDispatchDrained(this.db) })));
   }
 
-  unfenceEmailDispatch(input: { expected_revision: number; reason: string }, epoch: DispatchEpoch) {
+  unfenceEmailDispatch(input: { expected_revision: number; reason: string }, owner: DispatchOwner) {
     return this.mapOutboxAuthority(() =>
-      withImmediateTransaction(this.db, () => ({ ...unfenceEmailDispatch(this.db, input, epoch), dispatch: emailDispatchDrained(this.db) })));
+      withImmediateTransaction(this.db, () => ({ ...unfenceEmailDispatch(this.db, input, owner), dispatch: emailDispatchDrained(this.db) })));
   }
   newOrdersBlocked() { return this.emergencySalesPaused(); }
 
@@ -307,8 +307,8 @@ export class CommerceDomain {
         ${options.catalogue ? "AND o.fulfillment_status = 'SCHEDULED'" : ""}
         AND ${where}
       ORDER BY c.title, o.starts_at`, ...params)
-      .map((entry) => publicOccurrence(entry, newOrdersBlocked, nowMs))
-      .filter((entry) => !options.catalogue || parseUtcTimestamp(entry.starts_at) > nowMs);
+.map((entry) => publicOccurrence(entry, newOrdersBlocked, nowMs))
+.filter((entry) => !options.catalogue || parseUtcTimestamp(entry.starts_at) > nowMs);
   }
 
   tour() {
@@ -500,7 +500,7 @@ export class CommerceDomain {
       status = 'OPEN', details_json = excluded.details_json,
       resolution_note = NULL, resolved_at = NULL
     WHERE operational_incidents.kind = 'OCCURRENCE_NOTIFICATION_PAYLOAD_CORRUPT'`)
-      .run(id(), incidentKey, input.occurrenceId, details);
+.run(id(), incidentKey, input.occurrenceId, details);
   }
 
   resolveOperationalIncidents(entityType: "refund" | "order" | "occurrence", entityId: string, note: string) {
@@ -670,8 +670,8 @@ export class CommerceDomain {
     const refunds: Row[] = many<Row>(this.db, `SELECT id, public_id, payment_id, amount_kopecks,
       source, status, provider_reference, created_at, succeeded_at, failed_at
       FROM refunds WHERE order_id = ? ORDER BY created_at`, orderId)
-      .map((refund): Row => ({
-        ...refund,
+.map((refund): Row => ({
+...refund,
         // A payment can have both an obligation-driven refund and an
         // independent administrator compensation refund.  Only the former is
         // evidence of satisfying this payment's refund obligation.
@@ -708,9 +708,9 @@ export class CommerceDomain {
       if (row.payment_status === "PAID" || Number(row.captured_amount_kopecks) > 0) throw new DomainError("PAYMENT_ALREADY_SUCCEEDED", 409);
       const abandonmentId = id();
       this.db.prepare("UPDATE bookings SET status = 'CANCELLED', cancelled_at = ?, cancellation_reason = ? WHERE id = ? AND status = 'RESERVED'")
-        .run(now(), "TECHNICAL_RESERVATION_ABANDONED", row.id);
+.run(now(), "TECHNICAL_RESERVATION_ABANDONED", row.id);
       this.db.prepare("INSERT INTO reservation_abandonments(id, order_id, booking_id, payment_id, admin_id, reason, status) VALUES (?, ?, ?, ?, ?, ?, 'ABANDONED')")
-        .run(abandonmentId, orderId, row.id, row.payment_id, adminId, input.reason);
+.run(abandonmentId, orderId, row.id, row.payment_id, adminId, input.reason);
       const booking = one(this.db, "SELECT * FROM bookings WHERE id = ?", row.id)!;
       this.recordAdminCommandAudit(adminId, "RESERVATION_ABANDONED", "booking", String(row.id), input.reason, idempotencyKey, payload);
       return booking;
@@ -1204,7 +1204,7 @@ export class CommerceDomain {
         SET create_lease_owner = ?, create_lease_expires_at = ?
         WHERE singleton = 1 AND (create_lease_expires_at IS NULL OR create_lease_expires_at < ?)
           AND (next_create_probe_at IS NULL OR next_create_probe_at <= ?)`)
-        .run(lease, new Date(this.clock() + 120_000).toISOString(), timestamp, timestamp);
+.run(lease, new Date(this.clock() + 120_000).toISOString(), timestamp, timestamp);
       if (!locked.changes) return undefined;
       const attempts = Number(one(this.db, `SELECT COUNT(*) AS count FROM unisender_event_dump_create_attempts
         WHERE started_at >= ?`, new Date(this.clock() - 8 * 60 * 60 * 1_000).toISOString())?.count ?? 0);
@@ -1298,7 +1298,7 @@ export class CommerceDomain {
       this.db.prepare(`INSERT INTO unisender_event_dump_runs
         (id, state, start_time, end_time, create_started_at, next_attempt_at, requested_limit, job_id_filter, lease_owner, lease_expires_at)
         VALUES (?, 'CREATE_IN_FLIGHT', ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(runId, this.unisenderDumpTime(new Date(earliest - 60_000)), this.unisenderDumpTime(new Date(this.clock() + 60_000)), timestamp, timestamp, UNISENDER_EVENT_DUMP_EVENT_LIMIT, jobIdFilter, lease, new Date(this.clock() + 120_000).toISOString());
+.run(runId, this.unisenderDumpTime(new Date(earliest - 60_000)), this.unisenderDumpTime(new Date(this.clock() + 60_000)), timestamp, timestamp, UNISENDER_EVENT_DUMP_EVENT_LIMIT, jobIdFilter, lease, new Date(this.clock() + 120_000).toISOString());
       if (targeted) this.db.prepare(`UPDATE unisender_event_dump_targets
         SET state = 'NO_LONGER_NEEDED', updated_at = ? WHERE id = ? AND state = 'RETRY_WAIT'`).run(timestamp, targeted.retry_target_id);
       const target = this.db.prepare(`INSERT INTO unisender_event_dump_targets(id, run_id, outbox_id, job_id, state, recovery_mode)
@@ -1329,7 +1329,7 @@ export class CommerceDomain {
         SET create_lease_owner = NULL, create_lease_expires_at = NULL,
             next_create_probe_at = ?, create_probe_failures = ?, last_create_probe_error = ?
         WHERE singleton = 1 AND create_lease_owner = ?`)
-        .run(new Date(this.clock() + delay).toISOString(), failures, code, lease);
+.run(new Date(this.clock() + delay).toISOString(), failures, code, lease);
     });
   }
 
@@ -1356,7 +1356,7 @@ export class CommerceDomain {
           SET state = 'POLL_READY', dump_id = ?, next_attempt_at = ?, lease_owner = NULL,
               lease_expires_at = NULL, last_error_code = NULL, updated_at = ?
           WHERE id = ? AND state = 'CREATE_IN_FLIGHT' AND lease_owner = ?`)
-          .run(dump.dumpId, new Date(this.clock() + UNISENDER_EVENT_DUMP_POLL_MS).toISOString(), timestamp, run.id, run.lease);
+.run(dump.dumpId, new Date(this.clock() + UNISENDER_EVENT_DUMP_POLL_MS).toISOString(), timestamp, run.id, run.lease);
         this.releaseUnisenderEventDumpCreateLease(run.lease);
       });
     } catch (error) {
@@ -1384,7 +1384,7 @@ export class CommerceDomain {
       SET state = 'EXHAUSTED', lease_owner = NULL, lease_expires_at = NULL,
           last_error_code = ?, updated_at = ?
       WHERE id = ? AND state = 'CREATE_IN_FLIGHT' AND lease_owner = ?`)
-      .run(code, timestamp, runId, lease);
+.run(code, timestamp, runId, lease);
     this.releaseUnisenderEventDumpCreateLease(lease);
   }
 
@@ -1399,7 +1399,7 @@ export class CommerceDomain {
       SET lease_owner = ?, lease_expires_at = ?, updated_at = ?
       WHERE id = ? AND state IN ('POLL_READY', 'POLL_RETRY')
         AND (lease_expires_at IS NULL OR lease_expires_at < ?)`)
-      .run(lease, new Date(this.clock() + 120_000).toISOString(), timestamp, run.id, timestamp);
+.run(lease, new Date(this.clock() + 120_000).toISOString(), timestamp, run.id, timestamp);
     return claimed.changes ? { ...run, lease } : undefined;
   }
 
@@ -1439,7 +1439,7 @@ export class CommerceDomain {
       SET state = 'POLL_RETRY', next_attempt_at = ?, poll_attempts = ?,
           last_error_code = ?, lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
       WHERE id = ? AND lease_owner = ?`)
-      .run(new Date(this.clock() + delay).toISOString(), attempts, code, timestamp, runId, lease);
+.run(new Date(this.clock() + delay).toISOString(), attempts, code, timestamp, runId, lease);
   }
 
   private finishUnisenderEventDumpRun(
@@ -1478,7 +1478,7 @@ export class CommerceDomain {
       SET state = ?, dump_id = NULL, next_attempt_at = ?, last_error_code = ?,
           lease_owner = NULL, lease_expires_at = NULL, updated_at = ?
       WHERE id = ? AND lease_owner = ?`)
-      .run(outcome === "READY" ? "CONSUMED" : "EXHAUSTED", timestamp, outcome === "READY" ? null : outcome, timestamp, runId, lease);
+.run(outcome === "READY" ? "CONSUMED" : "EXHAUSTED", timestamp, outcome === "READY" ? null : outcome, timestamp, runId, lease);
   }
 
   private applyUnisenderDumpEvent(runId: string, event: UnisenderDumpEvent) {
@@ -1595,7 +1595,7 @@ export class CommerceDomain {
           supersedeQueuedMessage(this.db, String(notification.outbox_id), timestamp, reason)) };
       if (updated.changes) this.db.prepare(`UPDATE occurrence_update_notifications
         SET superseded_at = ?, superseded_reason = ? WHERE id = ? AND superseded_at IS NULL`)
-        .run(timestamp, reason, notification.id);
+.run(timestamp, reason, notification.id);
     }
   }
 
@@ -1782,11 +1782,11 @@ export class CommerceDomain {
 
   recordAdminCommandAudit(adminId: string, action: string, entityType: string, entityId: string, auditContext: string | undefined, idempotencyKey: string, payload: unknown, details?: Record<string, unknown>) {
     this.db.prepare("INSERT INTO admin_audit_log(id, admin_id, action, entity_type, entity_id, details_json) VALUES (?, ?, ?, ?, ?, ?)")
-      .run(id(), adminId, action, entityType, entityId, JSON.stringify({
+.run(id(), adminId, action, entityType, entityId, JSON.stringify({
         audit_context: auditContext ?? null,
         idempotency_key_hash: sha256(idempotencyKey),
         canonical_request_hash: sha256(canonical(payload)),
-        ...details,
+...details,
       }));
   }
 
@@ -1830,7 +1830,7 @@ export class CommerceDomain {
     }
     this.recordAdminCommandAudit(adminId, action, entityType, String(created.id), auditContext, idempotencyKey, { command, resource_id: resourceId, body });
     this.db.prepare("INSERT INTO admin_command_idempotency(command, idempotency_key_hash, canonical_request_hash, entity_id, response_json) VALUES (?, ?, ?, ?, ?)")
-      .run(command, keyHash, fingerprint, created.id, JSON.stringify(created));
+.run(command, keyHash, fingerprint, created.id, JSON.stringify(created));
     return { row: created, disposition: "CREATED" };
   }
 

@@ -4,10 +4,10 @@ import { recordPartnerIdentityEvent } from "./agent-referrals-onboarding";
 import type { PartnerPrincipal } from "./agent-referrals-partner-identity";
 
 /**
- * Phase 7's own step-up-grant table (settlement_step_up_grants), parallel to
- * 0044's step_up_grants and 0045's engagement_step_up_grants - see 0045's
- * migration header for why an existing action-CHECK table cannot simply
- * admit a new value without an FK-off rebuild. Same contract: the grant
+ * The settlement step-up grant table, parallel to `step_up_grants` and
+ * `engagement_step_up_grants` but entirely separate storage: each table's
+ * action CHECK enumerates its own actions, and widening one would let a grant
+ * authorise another surface's mutations. Same contract: the grant
  * pins the exact action AND the exact resource (here, the exact act id plus
  * its amount/revision) it authorizes, consumed atomically with the
  * protected mutation via CAS.

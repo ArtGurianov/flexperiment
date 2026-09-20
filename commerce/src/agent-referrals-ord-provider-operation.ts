@@ -7,8 +7,7 @@ import { currentOrdProviderProfile, type OrdProviderProfileKind } from "./agent-
 import { ordProviderOperationKey } from "./agent-referrals-ord-operation-key";
 
 /**
- * Provider-operation authority for the four profile kinds (plan Phase 8;
- * round-2 P0.1 fix): the durable MANUAL fact that Flexperiment actually
+ * Provider-operation authority for the four profile kinds : the durable MANUAL fact that Flexperiment actually
  * submitted/maintains its own counterparty/platform/contract/media
  * registration with VK ORD - never confused with the immutable CONTENT the
  * profile revisions describe (agent-referrals-ord-provider-profile.ts).
@@ -51,7 +50,7 @@ const COLUMNS = `id, operation_kind, revision, supersedes_operation_id, provider
 /** "Current" is always MAX(revision) for the exact kind. */
 export const currentOrdProviderOperation = (db: Database.Database, kind: OrdProviderProfileKind): OrdProviderOperationRow | null =>
   (db.prepare(`SELECT ${COLUMNS} FROM ord_provider_operations WHERE operation_kind = ? ORDER BY revision DESC LIMIT 1`)
-    .get(kind) as OrdProviderOperationRow | undefined) ?? null;
+.get(kind) as OrdProviderOperationRow | undefined) ?? null;
 
 export const ordProviderOperationById = (db: Database.Database, operationId: string): OrdProviderOperationRow | null =>
   (db.prepare(`SELECT ${COLUMNS} FROM ord_provider_operations WHERE id = ?`).get(operationId) as OrdProviderOperationRow | undefined) ?? null;
@@ -89,7 +88,7 @@ export const openOrdProviderOperation = (db: Database.Database, adminId: string,
     const operationKey = ordProviderOperationKey({ operation_kind: kind, revision: nextRevision, provider_profile_revision_id: profile.id });
     db.prepare(`INSERT INTO ord_provider_operations(id, operation_kind, revision, supersedes_operation_id, provider_profile_revision_id, operation_key, correction_reason, created_by_admin_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(operationId, kind, nextRevision, existing?.id ?? null, profile.id, operationKey, existing ? "reopened for correction" : null, adminId);
+.run(operationId, kind, nextRevision, existing?.id ?? null, profile.id, operationKey, existing ? "reopened for correction" : null, adminId);
     return { operation: currentOrdProviderOperation(db, kind)!, replayed: false };
   });
   return run.immediate();
@@ -103,7 +102,7 @@ export const recordOrdProviderOperationSubmitted = (db: Database.Database, opera
     if (!operation) throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_NOT_FOUND", 404, operationId);
     if (operation.lock_state !== "MUTABLE") throw new OrdProviderOperationError("AGENT_REFERRALS_ORD_PROVIDER_OPERATION_NOT_MUTABLE", 409, operationId);
     // PR-C2 MONOTONIC_REPLAY_SAFE, by the same first-writer-wins shape the
-    // ERIR branch below already uses - and for a structural reason: 0048's
+    // ERIR branch below already uses - and for a structural reason: the schema's
     // ord_provider_operations_observed_id_immutable_guard refuses any UPDATE
     // that changes a non-null vk_external_id, so once a submission is on
     // file no legal B* can replace it in place. A genuine correction goes

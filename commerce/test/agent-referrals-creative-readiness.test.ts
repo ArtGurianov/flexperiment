@@ -169,7 +169,7 @@ describe("CREATIVE_READY_TO_PUBLISH, local half (§B-5e)", () => {
     });
   });
 
-  describe("global SUSPENDED blocks readiness entirely (Phase 5 holistic review, P0 finding 1) - it is itself an assertion of NEW_PUBLICATION_AUTHORITY", () => {
+  describe("global SUSPENDED blocks readiness entirely - it is itself an assertion of NEW_PUBLICATION_AUTHORITY", () => {
     it("refuses even when every per-engagement prerequisite still holds", () => {
       const db = fresh();
       const p1 = readyPartner(db);
@@ -180,13 +180,13 @@ describe("CREATIVE_READY_TO_PUBLISH, local half (§B-5e)", () => {
       expect(() => assessCreativeReadyToPublish(db, engagementId)).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
     });
 
-    it("pre-baseline DORMANT reaches ordinary engagement validation", () => {
+    it("a freshly seeded feature state reaches ordinary engagement validation", () => {
       const db = fresh();
       expect(() => assessCreativeReadyToPublish(db, "nonexistent")).toThrow(/AGENT_REFERRALS_ENGAGEMENT_NOT_FOUND/);
     });
   });
 
-  it("a simple admin DRAFT (minted, never accepted or activated) does not break publication readiness for the still-live activated revision (Phase 5 review note 7)", () => {
+  it("a simple admin DRAFT (minted, never accepted or activated) does not break publication readiness for the still-live activated revision", () => {
     const db = fresh();
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);

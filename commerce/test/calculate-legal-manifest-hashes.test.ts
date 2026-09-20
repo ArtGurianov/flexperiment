@@ -7,9 +7,8 @@ import { describe, expect, it } from "vitest";
 /**
  * Direct failure-behavior coverage for the checked-in legal-manifest hash
  * calculator (commerce/src/calculate-legal-manifest-hashes.ts) - the same
- * executable the Epoch A prepare preflight workflow and
- * verify-epoch-a-prepare-preflight-workflow.test.ts both run. Every case
- * here must exit nonzero and print nothing to stdout; the workflow's own
+ * executable the legal release preflight runs. Every case here must exit
+ * nonzero and print nothing to stdout; the preflight's own
  * `|| blocked LEGAL_MANIFEST_HASH_CALCULATION_FAILED` depends on exactly
  * that fail-closed contract.
  */

@@ -109,7 +109,7 @@ describe("agent referrals: reissuance and evidence authority (PR2)", () => {
     const occurrenceId = randomUUID();
     db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, sales_status, fulfillment_status, venue_status, venue_name, venue_address)
       VALUES (?, ?, 'FLEXPERIMENT', '2030-10-01T10:00:00.000Z', '2030-10-01T13:00:00.000Z', 'Asia/Novosibirsk', 100000, 5, 'PUBLISHED', 'OPEN', 'SCHEDULED', 'CONFIRMED', 'Studio', 'Lenina 1')`)
-      .run(occurrenceId, cityId);
+.run(occurrenceId, cityId);
     const terms: EngagementRevisionTerms = {
       reward_type: "PERCENT", reward_value: 1000, customer_discount_type: "PERCENT", customer_discount_value: 1000,
       publication_start_at: "2020-01-01T00:00:00.000Z", publication_end_at: "2035-01-01T00:00:00.000Z", terms: { note: "v1" },
@@ -188,7 +188,7 @@ describe("agent referrals: reissuance and evidence authority (PR2)", () => {
     const occurrenceId = randomUUID();
     db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, sales_status, fulfillment_status, venue_status, venue_name, venue_address)
       VALUES (?, ?, 'FLEXPERIMENT', '2030-10-01T10:00:00.000Z', '2030-10-01T13:00:00.000Z', 'Asia/Novosibirsk', 100000, 5, 'PUBLISHED', 'OPEN', 'SCHEDULED', 'CONFIRMED', 'Studio', 'Lenina 1')`)
-      .run(occurrenceId, cityId);
+.run(occurrenceId, cityId);
     const terms: EngagementRevisionTerms = {
       reward_type: "PERCENT", reward_value: 1000, customer_discount_type: "PERCENT", customer_discount_value: 1000,
       publication_start_at: "2020-01-01T00:00:00.000Z", publication_end_at: "2035-01-01T00:00:00.000Z", terms: { note: "v1" },

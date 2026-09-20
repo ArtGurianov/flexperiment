@@ -39,7 +39,7 @@ const activated = (db: Database.Database) => activateAgentReferrals(db, { expect
 
 describe("partner provisioning", () => {
   describe("gated on the global feature-state authority", () => {
-    it("treats the retained pre-baseline DORMANT value as ACTIVE", () => {
+    it("starts ACTIVE, with no genesis transition to perform", () => {
       const { db } = fresh();
       const agentId = seedAgent(db);
       expect(() => provisionPartnerOwner(db, admin, agentId, "partner@example.test", "test")).not.toThrow();

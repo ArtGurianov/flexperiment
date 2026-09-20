@@ -62,7 +62,7 @@ const seedOccurrence = (db: Database.Database, cityId: string) => {
   const occurrenceId = randomUUID();
   db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, venue_status, venue_name, venue_address)
     VALUES (?, ?, 'FLEXPERIMENT', '2030-10-01T10:00:00.000Z', '2030-10-01T13:00:00.000Z', 'Asia/Novosibirsk', 100000, 5, 'PUBLISHED', 'CONFIRMED', 'Studio', 'Lenina 1')`)
-    .run(occurrenceId, cityId);
+.run(occurrenceId, cityId);
   return occurrenceId;
 };
 
@@ -155,7 +155,7 @@ describe("engagement closure (§B-7): forward-authority-only, one-time, dependen
     expect(resolver).not.toHaveBeenCalled();
   });
 
-  it("resolves the authorization this engagement most recently minted (by sequence) even after a suspend/reactivate cycle re-minted a fresh one - never SQLite's storage order (Phase 5 holistic review, P1 finding 6)", async () => {
+  it("resolves the authorization this engagement most recently minted (by sequence) even after a suspend/reactivate cycle re-minted a fresh one - never SQLite's storage order", async () => {
     const db = fresh();
     const { engagementId, occurrenceId } = activatedEngagement(db, new Date(Date.now() + 500).toISOString());
     const firstAuthId = (db.prepare("SELECT id FROM engagement_promo_authorizations WHERE engagement_id = ?").get(engagementId) as { id: string }).id;

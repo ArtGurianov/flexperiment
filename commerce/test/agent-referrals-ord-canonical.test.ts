@@ -20,12 +20,12 @@ const baseProfile: AgentReferralsLegalProfileRevision = {
 };
 
 const legalEntityProfile: AgentReferralsLegalProfileRevision = {
-  ...baseProfile, id: "lp-2", legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", projected_contractor_type: "ORGANIZATION",
+...baseProfile, id: "lp-2", legal_form: "LEGAL_ENTITY", tax_mode: "OTHER", projected_contractor_type: "ORGANIZATION",
   opf: "OOO", full_name: "Romashka LLC", short_name: "OOO Romashka", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow",
 };
 
 const ieProfile: AgentReferralsLegalProfileRevision = {
-  ...baseProfile, id: "lp-3", legal_form: "INDIVIDUAL_ENTREPRENEUR", tax_mode: "OTHER", projected_contractor_type: "INDIVIDUAL_ENTREPRENEUR",
+...baseProfile, id: "lp-3", legal_form: "INDIVIDUAL_ENTREPRENEUR", tax_mode: "OTHER", projected_contractor_type: "INDIVIDUAL_ENTREPRENEUR",
   registration_number: "123456789012345",
 };
 
@@ -87,7 +87,7 @@ const npdTreatment: TaxTreatmentRevisionRow = {
 };
 
 const usnTreatment: TaxTreatmentRevisionRow = {
-  ...npdTreatment, id: "tt-2", legal_profile_revision_id: "lp-2", tax_system: "USN", vat_treatment: "VAT_5", no_vat_basis: null,
+...npdTreatment, id: "tt-2", legal_profile_revision_id: "lp-2", tax_system: "USN", vat_treatment: "VAT_5", no_vat_basis: null,
   assertion_source: "ADMIN_ASSERTED", evidence_ref: "ev.pdf", created_by_admin_id: "admin-1",
 };
 

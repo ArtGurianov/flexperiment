@@ -4,10 +4,9 @@ import { canonicalLegalManifest, parseLegalManifest } from "./legal-manifest";
 
 /**
  * The one checked-in executable for the legal-manifest hash pair
- * ("<source_sha256> <canonical_sha256>") - used identically by the Epoch A
- * prepare preflight workflow and by its own regression test, so there is
- * exactly one implementation of this calculation, not a workflow copy and
- * a test copy.
+ * ("<source_sha256> <canonical_sha256>") - used identically by the legal
+ * release preflight and by its own regression test, so there is exactly one
+ * implementation of this calculation, not a workflow copy and a test copy.
  *
  * Replaces a fragile inline `node --import tsx --input-type=module -e
  * '...'` ESM eval whose named import of canonicalLegalManifest/

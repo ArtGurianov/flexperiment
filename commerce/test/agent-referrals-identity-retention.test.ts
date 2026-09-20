@@ -109,7 +109,7 @@ describe("identity retention / legal holds / destruction evidence", () => {
       const partnerIdentityId = seedPartner(db);
       const first = placeLegalHold(db, admin, partnerIdentityId, "first");
       expect(() => db.prepare(`INSERT INTO partner_identity_legal_holds(id, partner_identity_id, reason, placed_by_admin_id) VALUES (?, ?, 'second', 'admin-1')`).run(randomUUID(), partnerIdentityId))
-        .toThrow(/UNIQUE constraint failed/);
+.toThrow(/UNIQUE constraint failed/);
       releaseLegalHold(db, admin, first.hold_id, "done");
       expect(() => placeLegalHold(db, admin, partnerIdentityId, "second, after release")).not.toThrow();
     });
@@ -129,9 +129,9 @@ describe("identity retention / legal holds / destruction evidence", () => {
         const partnerIdentityId = seedPartner(db);
         const hold = placeLegalHold(db, admin, partnerIdentityId, "original reason");
         expect(() => db.exec(`UPDATE partner_identity_legal_holds SET reason = 'rewritten' WHERE id = '${hold.hold_id}'`))
-          .toThrow(/PARTNER_IDENTITY_LEGAL_HOLD_PLACEMENT_IMMUTABLE/);
+.toThrow(/PARTNER_IDENTITY_LEGAL_HOLD_PLACEMENT_IMMUTABLE/);
         expect(() => db.exec(`UPDATE partner_identity_legal_holds SET placed_by_admin_id = 'someone-else' WHERE id = '${hold.hold_id}'`))
-          .toThrow(/PARTNER_IDENTITY_LEGAL_HOLD_PLACEMENT_IMMUTABLE/);
+.toThrow(/PARTNER_IDENTITY_LEGAL_HOLD_PLACEMENT_IMMUTABLE/);
       });
 
       it("release is one-way: an already-released hold's release metadata cannot be rewritten", () => {
@@ -140,7 +140,7 @@ describe("identity retention / legal holds / destruction evidence", () => {
         const hold = placeLegalHold(db, admin, partnerIdentityId, "reason");
         releaseLegalHold(db, admin, hold.hold_id, "released");
         expect(() => db.exec(`UPDATE partner_identity_legal_holds SET released_reason = 'rewritten' WHERE id = '${hold.hold_id}'`))
-          .toThrow(/PARTNER_IDENTITY_LEGAL_HOLD_ALREADY_RELEASED/);
+.toThrow(/PARTNER_IDENTITY_LEGAL_HOLD_ALREADY_RELEASED/);
       });
 
       it("the legitimate release UPDATE itself still succeeds (only released_at/released_by_admin_id/released_reason change, from NULL)", () => {
@@ -161,7 +161,7 @@ describe("identity retention / legal holds / destruction evidence", () => {
           const partnerIdentityId = seedPartner(db);
           const hold = placeLegalHold(db, admin, partnerIdentityId, "reason");
           expect(() => db.exec(`UPDATE partner_identity_legal_holds SET released_at = CURRENT_TIMESTAMP WHERE id = '${hold.hold_id}'`))
-            .toThrow(/CHECK constraint failed/);
+.toThrow(/CHECK constraint failed/);
           expect(isUnderLegalHold(db, partnerIdentityId)).toBe(true);
         });
 
@@ -170,7 +170,7 @@ describe("identity retention / legal holds / destruction evidence", () => {
           const partnerIdentityId = seedPartner(db);
           const hold = placeLegalHold(db, admin, partnerIdentityId, "reason");
           expect(() => db.exec(`UPDATE partner_identity_legal_holds SET released_by_admin_id = 'forger' WHERE id = '${hold.hold_id}'`))
-            .toThrow(/CHECK constraint failed/);
+.toThrow(/CHECK constraint failed/);
           expect(isUnderLegalHold(db, partnerIdentityId)).toBe(true);
         });
 
@@ -179,7 +179,7 @@ describe("identity retention / legal holds / destruction evidence", () => {
           const partnerIdentityId = seedPartner(db);
           const hold = placeLegalHold(db, admin, partnerIdentityId, "reason");
           expect(() => db.exec(`UPDATE partner_identity_legal_holds SET released_reason = 'forged' WHERE id = '${hold.hold_id}'`))
-            .toThrow(/CHECK constraint failed/);
+.toThrow(/CHECK constraint failed/);
           expect(isUnderLegalHold(db, partnerIdentityId)).toBe(true);
         });
 
@@ -190,7 +190,7 @@ describe("identity retention / legal holds / destruction evidence", () => {
           const eventsBefore = db.prepare("SELECT COUNT(*) AS n FROM partner_identity_events WHERE event_kind = 'LEGAL_HOLD_RELEASED'").get();
 
           expect(() => db.exec(`UPDATE partner_identity_legal_holds SET released_at = CURRENT_TIMESTAMP, released_by_admin_id = 'forger', released_reason = 'forged' WHERE id = '${hold.hold_id}'`))
-            .not.toThrow();
+.not.toThrow();
 
           expect(isUnderLegalHold(db, partnerIdentityId)).toBe(false);
           // No matching audit event was ever written for this forged write -
@@ -198,7 +198,7 @@ describe("identity retention / legal holds / destruction evidence", () => {
           expect(db.prepare("SELECT COUNT(*) AS n FROM partner_identity_events WHERE event_kind = 'LEGAL_HOLD_RELEASED'").get()).toEqual(eventsBefore);
           // And the one-way guard still applies from here on: even the forger cannot re-release it.
           expect(() => db.exec(`UPDATE partner_identity_legal_holds SET released_reason = 'again' WHERE id = '${hold.hold_id}'`))
-            .toThrow(/PARTNER_IDENTITY_LEGAL_HOLD_ALREADY_RELEASED/);
+.toThrow(/PARTNER_IDENTITY_LEGAL_HOLD_ALREADY_RELEASED/);
         });
       });
     });
@@ -308,7 +308,7 @@ describe("identity retention / legal holds / destruction evidence", () => {
       const eventsBefore = db.prepare("SELECT COUNT(*) AS n FROM partner_identity_events WHERE partner_identity_id = ? AND event_kind = 'LEGAL_PROFILE_SUBMITTED'").get(partnerIdentityId);
 
       expect(() => submitPartnerLegalProfile(db, stalePrincipal, "INDIVIDUAL", "NPD", { full_name: "Resurrected Name", inn: "123456789012" }, 0))
-        .toThrow(/PARTNER_IDENTITY_NOT_FOUND/);
+.toThrow(/PARTNER_IDENTITY_NOT_FOUND/);
 
       const draft = db.prepare(`SELECT ${draftRequisitesColumns} FROM partner_identities WHERE id = ?`).get(partnerIdentityId);
       expect(draft).toEqual({
@@ -335,9 +335,9 @@ describe("identity retention / legal holds / destruction evidence", () => {
       const partnerIdentityId = seedPartner(db);
       const result = destroyPartnerIdentity(db, admin, partnerIdentityId, "destroy");
       expect(() => db.exec(`UPDATE partner_identity_destruction_events SET requested_by_admin_id = 'other' WHERE id = '${result.destruction_event_id}'`))
-        .toThrow(/PARTNER_IDENTITY_DESTRUCTION_EVENT_IMMUTABLE/);
+.toThrow(/PARTNER_IDENTITY_DESTRUCTION_EVENT_IMMUTABLE/);
       expect(() => db.exec(`DELETE FROM partner_identity_destruction_events WHERE id = '${result.destruction_event_id}'`))
-        .toThrow(/PARTNER_IDENTITY_DESTRUCTION_EVENT_IMMUTABLE/);
+.toThrow(/PARTNER_IDENTITY_DESTRUCTION_EVENT_IMMUTABLE/);
     });
 
     it("replay of a completed destruction is idempotent - same event, no duplicate destructive effect", () => {

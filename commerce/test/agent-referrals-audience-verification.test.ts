@@ -43,8 +43,7 @@ const seedPartnerAndCity = (db: Database.Database, partnerId = randomUUID(), cit
  * revokeAudienceVerificationForPartnerCity (REVOKED), both from
  * agent-referrals-engagement.ts - never a low-level primitive, because
  * agent-referrals-audience-verification.ts exports none, at any
- * visibility level, for either event kind (Phase 5 holistic review,
- * final pass). Both cascade functions return only
+ * visibility level, for either event kind. Both cascade functions return only
  * `{ verification_event_id, suspended_engagement_ids }`, not the full
  * event row, so these helpers fetch the row separately via the exported
  * read-only currentAudienceVerification - exactly what production code

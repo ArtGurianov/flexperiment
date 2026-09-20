@@ -405,7 +405,7 @@ describe("lastActivatedEngagementRevision (P1.1): resolves by the maximum ACTIVA
   });
 });
 
-describe("re-verification cascade (Phase 5 holistic review, P0 finding 2): a replacement VERIFIED with a NARROWER valid_until must not leave an ACTIVE engagement with audience authority that no longer covers its own publication window", () => {
+describe("re-verification cascade: a replacement VERIFIED with a NARROWER valid_until must not leave an ACTIVE engagement with audience authority that no longer covers its own publication window", () => {
   it("suspends an ACTIVE engagement (and revokes its promo authorization) when the replacement valid_until no longer reaches the engagement's publication_end_at", () => {
     const db = fresh();
     const p1 = readyPartner(db);
@@ -489,7 +489,7 @@ describe("integration-hardening #5: a destroyed identity cannot receive NEW comm
   });
 });
 
-describe("structural authority bypass surfaces (Phase 5 holistic review, P0 finding 3): no generic exported primitive can grant or transition authority outside its one privileged caller", () => {
+describe("structural authority bypass surfaces: no generic exported primitive can grant or transition authority outside its one privileged caller", () => {
   it("this module exports no generic transitionEngagementLifecycle capable of targeting CLOSED - only a SUSPENDED-only primitive", () => {
     expect(engagementModule).not.toHaveProperty("transitionEngagementLifecycle");
     expect(engagementModule).toHaveProperty("suspendEngagementLifecycle");

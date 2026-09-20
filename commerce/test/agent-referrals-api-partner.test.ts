@@ -31,7 +31,7 @@ class RecordingOtpSender implements OtpSender {
 const httpSessionCookie = (db: Database.Database, partnerIdentityId: string): string => {
   const rawToken = generateOpaqueToken();
   db.prepare(`INSERT INTO partner_sessions(id, partner_identity_id, token_hash, expires_at) VALUES (?, ?, ?, datetime('now', '+1 hour'))`)
-    .run(randomUUID(), partnerIdentityId, hashOpaqueToken(rawToken));
+.run(randomUUID(), partnerIdentityId, hashOpaqueToken(rawToken));
   return `fx_partner_session=${rawToken}`;
 };
 

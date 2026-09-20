@@ -113,13 +113,13 @@ export const transitionAgentReferralsFeatureInTransaction = (
   const changed = db.prepare(`UPDATE agent_referrals_feature_state
     SET state = ?, owner_id = ?, revision = revision + 1, updated_at = CURRENT_TIMESTAMP
     WHERE singleton = 1 AND revision = ?`)
-    .run(to, input.owner_id, stored.revision);
+.run(to, input.owner_id, stored.revision);
   if (changed.changes !== 1) throw new AgentReferralsFeatureError("AGENT_REFERRALS_FEATURE_REVISION_CONFLICT", 409);
 
   const next = agentReferralsFeatureState(db);
   db.prepare(`INSERT INTO agent_referrals_feature_state_events(id, from_state, to_state, owner_id, reason, revision, created_at)
     VALUES (?, ?, ?, ?, ?, ?, ${FEATURE_STATE_EVENT_NOW})`)
-    .run(id(), stored.state, to, input.owner_id, input.reason, next.revision);
+.run(id(), stored.state, to, input.owner_id, input.reason, next.revision);
   return next;
 };
 
@@ -136,8 +136,7 @@ export const reactivateAgentReferrals = (db: Database.Database, input: AgentRefe
 /**
  * The global feature state AS OF a given instant - resolved from
  * agent_referrals_feature_state_events, never the current live row. Used
- * by distribution's historical-authority resolver (Phase 5 holistic
- * review, P0 finding 1): a publication's `published_at` may fall inside a
+ * by distribution's historical-authority resolver : a publication's `published_at` may fall inside a
  * window where the feature was globally SUSPENDED at the time, even
  * though the feature is ACTIVE again by the time the fact is reported or
  * corrected - NEW_PUBLICATION_AUTHORITY must be judged against the state
@@ -149,7 +148,7 @@ export const reactivateAgentReferrals = (db: Database.Database, input: AgentRefe
 export const agentReferralsFeatureStateAt = (db: Database.Database, atIso: string): AgentReferralsFeatureStateName => {
   const row = db.prepare(`SELECT to_state FROM agent_referrals_feature_state_events
     WHERE julianday(created_at) <= julianday(?) ORDER BY julianday(created_at) DESC, revision DESC LIMIT 1`)
-    .get(atIso) as { to_state: string } | undefined;
+.get(atIso) as { to_state: string } | undefined;
   if (!row) return "ACTIVE";
   return row.to_state === "SUSPENDED" ? "SUSPENDED" : "ACTIVE";
 };

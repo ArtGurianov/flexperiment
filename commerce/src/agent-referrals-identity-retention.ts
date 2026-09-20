@@ -5,7 +5,7 @@ import type { AdminPrincipal } from "./agent-referrals-partner-identity";
 import { withAdminCommandInTransaction, type AdminCommandResult } from "./agent-referrals-admin-command";
 
 /**
- * Phase 4 identity retention: a versioned policy, mutable legal-hold control
+ * Identity retention: a versioned policy, mutable legal-hold control
  * rows (released_at set to lift one, never deleted), and immutable
  * destruction evidence. Destruction never hard-deletes partner_identities -
  * that would break every FK evidence chain (framework_acceptances,
@@ -50,7 +50,7 @@ export const mintRetentionPolicyRevisionInTransaction = (db: Database.Database, 
     const nextRevision = (current?.revision ?? 0) + 1;
     db.prepare(`INSERT INTO partner_identity_retention_policies(id, revision, reason, supersedes_revision_id)
       VALUES (?, ?, ?, ?)`)
-      .run(policyId, nextRevision, reason, current?.id ?? null);
+.run(policyId, nextRevision, reason, current?.id ?? null);
     return currentRetentionPolicy(db)!;
   }
 };
@@ -76,7 +76,7 @@ export const placeLegalHoldInTransaction = (db: Database.Database, admin: AdminP
   {
     const holdId = id();
     db.prepare(`INSERT INTO partner_identity_legal_holds(id, partner_identity_id, reason, placed_by_admin_id) VALUES (?, ?, ?, ?)`)
-      .run(holdId, partnerIdentityId, reason, admin.admin_id);
+.run(holdId, partnerIdentityId, reason, admin.admin_id);
     recordPartnerIdentityEvent(db, partnerIdentityId, "LEGAL_HOLD_PLACED", "ADMIN", { hold_id: holdId, reason });
     return { hold_id: holdId };
   }
@@ -87,7 +87,7 @@ export const placeLegalHold = (db: Database.Database, admin: AdminPrincipal, par
   db.transaction(() => placeLegalHoldInTransaction(db, admin, partnerIdentityId, reason)).immediate();
 
 /**
- * Names the refusal 0044's partner_identity_legal_holds_active_unique
+ * Names the refusal the schema's partner_identity_legal_holds_active_unique
  * already enforces - a PARTIAL unique index on released_at IS NULL, so a
  * partner carries at most one ACTIVE hold and a second attempt met a raw
  * SqliteError (a 500 for "this partner is already on hold") before this
@@ -173,12 +173,12 @@ export const destroyPartnerIdentity = (db: Database.Database, admin: AdminPrinci
         submitted_opf = NULL, submitted_full_name = NULL, submitted_short_name = NULL, submitted_inn = NULL, submitted_kpp = NULL, submitted_registration_number = NULL, submitted_legal_address = NULL,
         destroyed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?`)
-      .run(DESTROYED_EMAIL_SENTINEL, DESTROYED_EMAIL_HASH_SENTINEL, partnerIdentityId);
+.run(DESTROYED_EMAIL_SENTINEL, DESTROYED_EMAIL_HASH_SENTINEL, partnerIdentityId);
 
     const eventId = id();
     db.prepare(`INSERT INTO partner_identity_destruction_events(id, partner_identity_id, destroyed_fields_json, retention_policy_revision_id, requested_by_admin_id)
       VALUES (?, ?, ?, ?, ?)`)
-      .run(eventId, partnerIdentityId, JSON.stringify(destroyedFields), policy.id, admin.admin_id);
+.run(eventId, partnerIdentityId, JSON.stringify(destroyedFields), policy.id, admin.admin_id);
 
     recordPartnerIdentityEvent(db, partnerIdentityId, "IDENTITY_DESTROYED", "ADMIN", { destruction_event_id: eventId, reason });
     return { destruction_event_id: eventId, replayed: false };

@@ -115,11 +115,11 @@ const seedRegistryAndEffective = (db: Database.Database, engagementId: string, r
   const registryId = randomUUID();
   db.prepare(`INSERT INTO engagement_reward_registry_snapshot(id, engagement_id, engagement_revision_id, occurrence_id, terminal_status, reward_total_kopecks, formula_version, source_order_ids_json, source_state_hash, watermark, finalized_by_admin_id, reason)
     VALUES (?, ?, ?, ?, 'COMPLETED', ?, 1, '[]', ?, CURRENT_TIMESTAMP, 'admin', 'seed')`)
-    .run(registryId, engagementId, revisionId, occurrenceId, rewardTotal, `hash-${registryId}`);
+.run(registryId, engagementId, revisionId, occurrenceId, rewardTotal, `hash-${registryId}`);
   const effectiveId = randomUUID();
   db.prepare(`INSERT INTO engagement_effective_reward_snapshots(id, engagement_id, engagement_revision_id, base_registry_snapshot_id, sequence, kind, reward_total_kopecks, source_state_hash, reason, created_by_admin_id, canonical_hash)
     VALUES (?, ?, ?, ?, 1, 'INITIAL', ?, ?, 'seed', 'admin', ?)`)
-    .run(effectiveId, engagementId, revisionId, registryId, rewardTotal, `hash-${registryId}`, `canonical-${effectiveId}`);
+.run(effectiveId, engagementId, revisionId, registryId, rewardTotal, `hash-${registryId}`, `canonical-${effectiveId}`);
   return { registryId, effectiveId };
 };
 
@@ -167,14 +167,14 @@ describe("D2: legal-profile supersession suspension-policy wiring", () => {
     expect(() => rejectLegalProfileSupersession(db, admin, request.id, "rejecting")).not.toThrow();
   });
 
-  it("submit is refused under DORMANT", () => {
+  it("submit is refused while suspended", () => {
     const db = fresh();
     // The retained physical baseline is operationally ACTIVE - no fixture materialization is needed.
     const agentId = randomUUID();
     db.prepare(`INSERT INTO partners(id, slug, display_name, email)
       VALUES (?, ?, 'Agent', ?)`).run(agentId, agentId, `${agentId}@example.test`);
     expect(() => submitLegalProfileSupersession(db, admin, "does-not-matter", { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "x", expectedCurrentLegalProfileRevision: 1, expectedRequestSequence: 0 }))
-      .toThrow(/PARTNER_IDENTITY_NOT_FOUND/);
+.toThrow(/PARTNER_IDENTITY_NOT_FOUND/);
   });
 
   it("initial onboarding verification (verifyPartnerLegalProfile) is now also gated as NEW_AUTHORITY - closes the pre-D2 gap", () => {
@@ -220,7 +220,7 @@ describe("D2: submit()", () => {
     const db = fresh();
     const p1 = readyPartner(db);
     expect(() => submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "INDIVIDUAL", taxMode: "NPD", ...individualRequisites, reason: "no real change", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) }))
-      .toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_NO_CHANGE/);
+.toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_NO_CHANGE/);
     expect(pendingLegalProfileChangeRequestForPartner(db, p1.partnerIdentityId)).toBeNull();
   });
 
@@ -231,12 +231,12 @@ describe("D2: submit()", () => {
       VALUES ('agent-fresh', 'agent-fresh', 'A', 'fresh@example.test')`).run();
     const { partner_identity_id: freshPartnerId } = provisionPartnerOwner(db, admin, "agent-fresh", "fresh@example.test", "test");
     expect(() => submitLegalProfileSupersession(db, admin, freshPartnerId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "x", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, freshPartnerId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, freshPartnerId) }))
-      .toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_INELIGIBLE_IDENTITY/);
+.toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_INELIGIBLE_IDENTITY/);
 
     mintRetentionPolicyRevision(db, admin, "test policy");
     destroyPartnerIdentity(db, admin, p1.partnerIdentityId, "erasure request");
     expect(() => submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "x", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) }))
-      .toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_INELIGIBLE_IDENTITY/);
+.toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_INELIGIBLE_IDENTITY/);
   });
 
   it("a second submit while one is PENDING is refused - pre-check", () => {
@@ -244,7 +244,7 @@ describe("D2: submit()", () => {
     const p1 = readyPartner(db);
     submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "first", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
     expect(() => submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "INDIVIDUAL_ENTREPRENEUR", taxMode: "OTHER", ...individualEntrepreneurRequisites, reason: "second", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) }))
-      .toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_ALREADY_PENDING/);
+.toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_SUPERSESSION_ALREADY_PENDING/);
   });
 
   it("two sequential submits for the same identity (serialized by better-sqlite3's synchronous execution): exactly one succeeds, the other gets ALREADY_PENDING via the pre-check, never 500", () => {
@@ -285,8 +285,8 @@ describe("D2: submit()", () => {
     const current = currentAgentReferralsLegalProfile(db, p1.agentId)!;
     expect(() => db.prepare(`INSERT INTO agent_referrals_legal_profile_change_requests(id, partner_identity_id, legal_form, tax_mode, full_name, inn, registration_number, assertion_source, reason, supersedes_revision_id, created_by)
       VALUES (?, ?, 'INDIVIDUAL_ENTREPRENEUR', 'OTHER', 'Ivanov Ivan Ivanovich', '123456789012', '123456789012345', 'PARTNER_ASSERTED', 'A', ?, ?)`)
-      .run(randomUUID(), p1.partnerIdentityId, current.id, p1.partnerIdentityId))
-      .toThrow(/UNIQUE constraint failed: agent_referrals_legal_profile_change_requests\.partner_identity_id/);
+.run(randomUUID(), p1.partnerIdentityId, current.id, p1.partnerIdentityId))
+.toThrow(/UNIQUE constraint failed: agent_referrals_legal_profile_change_requests\.partner_identity_id/);
   });
 
   it("assertion_source and created_by are derived from the principal's own realm, never accepted from the caller", () => {
@@ -304,7 +304,7 @@ describe("D2: submit()", () => {
     const db = fresh();
     const p1 = readyPartner(db);
     expect(() => submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "admin claim", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) }))
-      .toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_EVIDENCE_REF_REQUIRED/);
+.toThrow(/AGENT_REFERRALS_LEGAL_PROFILE_EVIDENCE_REF_REQUIRED/);
   });
 });
 
@@ -375,7 +375,7 @@ describe("D2: seam test - blocked, unblocked, verified, replayed, activates the 
       taxSystem: "USN", vatTreatment: "NO_VAT", noVatBasis: "USN_EXEMPT", effectiveFrom: "2020-01-01", evidenceRef: "usn-exempt.pdf", reason: "left NPD, USN exemption",
     }, randomUUID());
 
-    // A settlement prepared for post-supersession work carries tax_mode and contractor_type BOTH from #2, and 0047/0049's guards pass without a 500.
+    // A settlement prepared for post-supersession work carries tax_mode and contractor_type BOTH from #2, and 0047/the schema's guards pass without a 500.
     completeOccurrence(db, occurrenceId2);
     await sleep(600);
     const { effectiveId: effective2 } = seedRegistryAndEffective(db, engagementId2, revision2Id, occurrenceId2, 5000);
@@ -384,7 +384,7 @@ describe("D2: seam test - blocked, unblocked, verified, replayed, activates the 
     expect(settlement2).toMatchObject({ tax_mode_snapshot: "OTHER", legal_profile_revision_id_snapshot: current!.id });
     // contractor_type_snapshot is write-only in AgentReferralsSettlementRow's own column list - read it back raw.
     expect((db.prepare("SELECT contractor_type_snapshot FROM reward_settlements WHERE id = ?").get(settlement2.id) as { contractor_type_snapshot: string }).contractor_type_snapshot)
-      .toBe("INDIVIDUAL_ENTREPRENEUR");
+.toBe("INDIVIDUAL_ENTREPRENEUR");
   });
 });
 
@@ -401,7 +401,7 @@ describe("D2: STALE is committed, not thrown (white-box invariant test)", () => 
     const identity = getPartnerIdentity(db, p1.partnerIdentityId)!;
     db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, full_name, inn, registration_number, supersedes_revision_id, reason, assertion_source)
       VALUES ('lp-out-of-band', ?, 2, 'INDIVIDUAL_ENTREPRENEUR', 'OTHER', 'INDIVIDUAL_ENTREPRENEUR', 'Ivanov Ivan Ivanovich', '123456789012', '123456789012345', ?, 'out of band', 'PARTNER_ASSERTED')`)
-      .run(p1.agentId, identity.legal_profile_revision_id);
+.run(p1.agentId, identity.legal_profile_revision_id);
     db.prepare("UPDATE partner_identities SET legal_profile_revision_id = 'lp-out-of-band' WHERE id = ?").run(p1.partnerIdentityId);
 
     const outcome = verifyLegalProfileSupersession(db, admin, request.id, "verify");
@@ -416,7 +416,7 @@ describe("D2: STALE is committed, not thrown (white-box invariant test)", () => 
 
     // Partial index is free again - a new request can be filed.
     expect(() => submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "retry", evidenceRef: "ev2.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) }))
-      .not.toThrow();
+.not.toThrow();
   });
 });
 
@@ -500,11 +500,11 @@ describe("D2: activation binding without a temporal heuristic", () => {
     // it - a state no sanctioned path can produce.
     db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, full_name, inn, registration_number, supersedes_revision_id, reason, assertion_source)
       VALUES ('lp-corrupt', ?, 2, 'INDIVIDUAL_ENTREPRENEUR', 'OTHER', 'INDIVIDUAL_ENTREPRENEUR', 'Ivanov Ivan Ivanovich', '123456789012', '123456789012345', ?, 'corrupt', 'PARTNER_ASSERTED')`)
-      .run(p1.agentId, currentAgentReferralsLegalProfile(db, p1.agentId)!.id);
+.run(p1.agentId, currentAgentReferralsLegalProfile(db, p1.agentId)!.id);
     const original = db.prepare("SELECT * FROM engagement_activation_events WHERE engagement_id = ?").get(engagementId) as Record<string, unknown>;
     db.prepare(`INSERT INTO engagement_activation_events(id, engagement_id, engagement_revision_id, audience_verification_event_id, legal_profile_revision_id, framework_acceptance_id, ord_reporting_delegation_id, promo_authorization_id, occurrence_id, activated_by_admin_id)
       VALUES (?, ?, ?, ?, 'lp-corrupt', ?, ?, ?, ?, ?)`)
-      .run(randomUUID(), engagementId, revisionId, original.audience_verification_event_id, original.framework_acceptance_id, original.ord_reporting_delegation_id, original.promo_authorization_id, occurrenceId, "admin-1");
+.run(randomUUID(), engagementId, revisionId, original.audience_verification_event_id, original.framework_acceptance_id, original.ord_reporting_delegation_id, original.promo_authorization_id, occurrenceId, "admin-1");
 
     expect(() => resolveActivatedLegalProfileBinding(db, engagementId)).toThrow(/AGENT_REFERRALS_ACTIVATION_BINDING_CORRUPTED/);
   });
@@ -541,11 +541,11 @@ describe("D2: settlement binding mismatch (§5-Б) and preserved historical corr
     // positive correction row directly (same engagement_revision/registry as
     // the RECOVERY_EXPOSURE correction, sequenced above it) to reach it.
     const priorE = db.prepare("SELECT engagement_revision_id, base_registry_snapshot_id, sequence FROM engagement_effective_reward_snapshots WHERE engagement_id = ? ORDER BY sequence DESC LIMIT 1")
-      .get(engagementId) as { engagement_revision_id: string; base_registry_snapshot_id: string; sequence: number };
+.get(engagementId) as { engagement_revision_id: string; base_registry_snapshot_id: string; sequence: number };
     const newEffectiveId = randomUUID();
     db.prepare(`INSERT INTO engagement_effective_reward_snapshots(id, engagement_id, engagement_revision_id, base_registry_snapshot_id, supersedes_effective_snapshot_id, sequence, kind, reward_total_kopecks, source_state_hash, reason, created_by_admin_id, canonical_hash)
       VALUES (?, ?, ?, ?, ?, ?, 'CORRECTION', 3000, 'hash-positive-correction', 'white-box positive correction', 'admin-1', ?)`)
-      .run(newEffectiveId, engagementId, priorE.engagement_revision_id, priorE.base_registry_snapshot_id, correction.correction.effective_snapshot_id, priorE.sequence + 1, `canonical-${newEffectiveId}`);
+.run(newEffectiveId, engagementId, priorE.engagement_revision_id, priorE.base_registry_snapshot_id, correction.correction.effective_snapshot_id, priorE.sequence + 1, `canonical-${newEffectiveId}`);
     expect(newEffectiveId).not.toBe(effectiveId);
 
     // Minting a NEW payable settlement for this same engagement - old work,
@@ -716,7 +716,7 @@ describe("D2: activateEngagement mints from proven MAX, never trusts the pointer
     const staleId = getPartnerIdentity(db, p1.partnerIdentityId)!.legal_profile_revision_id!;
     db.prepare(`INSERT INTO agent_referrals_legal_profile_revisions(id, agent_id, revision, legal_form, tax_mode, projected_contractor_type, full_name, inn, registration_number, supersedes_revision_id, reason, assertion_source)
       VALUES ('lp-out-of-band-2', ?, 2, 'INDIVIDUAL_ENTREPRENEUR', 'OTHER', 'INDIVIDUAL_ENTREPRENEUR', 'Ivanov Ivan Ivanovich', '123456789012', '123456789012345', ?, 'out of band', 'PARTNER_ASSERTED')`)
-      .run(p1.agentId, staleId);
+.run(p1.agentId, staleId);
     // partner_identities.legal_profile_revision_id deliberately left at #1.
 
     const before = getEngagement(db, engagementId)!;
@@ -749,11 +749,11 @@ describe("D2: submit() proves a PARTNER principal is authority only for its own 
     const pointerBefore = getPartnerIdentity(db, partnerB.partnerIdentityId)!.legal_profile_revision_id;
 
     expect(() => submitLegalProfileSupersession(db, partnerA.partner, partnerB.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "x", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, partnerB.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, partnerB.partnerIdentityId) }))
-      .toThrow(/PARTNER_IDENTITY_NOT_FOUND/);
+.toThrow(/PARTNER_IDENTITY_NOT_FOUND/);
 
     expect(pendingLegalProfileChangeRequestForPartner(db, partnerB.partnerIdentityId)).toBeNull();
     expect(db.prepare("SELECT COUNT(*) AS n FROM partner_identity_events WHERE partner_identity_id = ? AND event_kind = 'LEGAL_PROFILE_CHANGE_ASSERTED_BY_PARTNER'").get(partnerB.partnerIdentityId))
-      .toEqual({ n: 0 });
+.toEqual({ n: 0 });
     expect(currentAgentReferralsLegalProfile(db, partnerB.agentId)).toEqual(maxBefore);
     expect(getPartnerIdentity(db, partnerB.partnerIdentityId)!.legal_profile_revision_id).toBe(pointerBefore);
   });
@@ -762,7 +762,7 @@ describe("D2: submit() proves a PARTNER principal is authority only for its own 
     const db = fresh();
     const p1 = readyPartner(db);
     expect(() => submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "x", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) }))
-      .not.toThrow();
+.not.toThrow();
   });
 
   it("a partner submitting for its own identity is unaffected by this check", () => {

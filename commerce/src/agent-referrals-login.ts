@@ -4,7 +4,7 @@ import { getPartnerIdentityByEmailHash } from "./agent-referrals-onboarding";
 import { issueAndDispatchOtpChallenge, type OtpSender } from "./agent-referrals-otp";
 
 /**
- * Returning-partner login (Phase 9): the admin-minted invite is single-use
+ * Returning-partner login: the admin-minted invite is single-use
  * (consumePartnerInvite) and exists only to bootstrap the FIRST session, so
  * a partner whose session has expired needs a second way back in. This
  * mirrors /v1/public/refunds/request's own anti-enumeration shape exactly

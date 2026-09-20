@@ -49,7 +49,7 @@ const clause = (arr: readonly string[]) => Object.fromEntries(arr.map((k) => [k,
  * city, through the real production onboarding path - the per-occurrence
  * authorization tests below exercise mint/supersede/revoke ONLY through
  * activateEngagement/suspendEngagement/reactivateEngagement, never a raw
- * "mint" primitive (Phase 5 holistic review, P0 finding 3): promo.ts
+ * "mint" primitive: promo.ts
  * exports no function capable of minting a new authorization at any
  * visibility level, since a bare mint primitive is itself unearned
  * publication authority - see that module's own header.
@@ -208,7 +208,7 @@ describe("AgentReferralsPromoError export", () => {
   });
 });
 
-describe("structural authority bypass surface (Phase 5 holistic review, P0 finding 3): this module exports no function capable of MINTING a promo authorization", () => {
+describe("structural authority bypass surface: this module exports no function capable of MINTING a promo authorization", () => {
   it("has no mint primitive at any visibility level - only read accessors and the revoke primitive", () => {
     expect(promoModule).not.toHaveProperty("mintEngagementPromoAuthorization");
     expect(promoModule).not.toHaveProperty("mintEngagementPromoAuthorizationInTransaction");

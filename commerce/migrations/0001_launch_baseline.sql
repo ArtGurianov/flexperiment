@@ -2896,7 +2896,7 @@ CREATE UNIQUE INDEX agent_referrals_legal_profile_change_requests_sequence_uniqu
 CREATE TRIGGER agent_referrals_legal_profile_change_requests_request_fields_immutable_guard
 BEFORE UPDATE ON agent_referrals_legal_profile_change_requests
 -- id joins the group too, and it was missing from every version of this
--- guard including 0052's. A TEXT PRIMARY KEY is not an immutable one:
+-- guard the ledger ever shipped. A TEXT PRIMARY KEY is not an immutable one:
 -- SQLite permits updating a PK as long as the new value does not collide,
 -- so the same resolution statement that may not rewrite a filed INN could
 -- still have rewritten WHICH filed request it was resolving. The row's

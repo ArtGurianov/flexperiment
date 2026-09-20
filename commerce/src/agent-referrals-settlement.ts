@@ -59,12 +59,12 @@ const SETTLEMENT_COLUMNS = `id, agent_id, occurrence_id, amount_kopecks, status,
 
 export const agentReferralsSettlementById = (db: Database.Database, settlementId: string): AgentReferralsSettlementRow | null =>
   (db.prepare(`SELECT ${SETTLEMENT_COLUMNS} FROM reward_settlements WHERE id = ?`)
-    .get(settlementId) as AgentReferralsSettlementRow | undefined) ?? null;
+.get(settlementId) as AgentReferralsSettlementRow | undefined) ?? null;
 
 /** At most one, by the migration's own partial UNIQUE index - the settlement (if any) currently live for this exact effective snapshot. */
 export const settlementForEffectiveSnapshot = (db: Database.Database, effectiveRewardSnapshotId: string): AgentReferralsSettlementRow | null =>
   (db.prepare(`SELECT ${SETTLEMENT_COLUMNS} FROM reward_settlements WHERE effective_reward_snapshot_id = ?`)
-    .get(effectiveRewardSnapshotId) as AgentReferralsSettlementRow | undefined) ?? null;
+.get(effectiveRewardSnapshotId) as AgentReferralsSettlementRow | undefined) ?? null;
 
 /**
  * The engagement's PAID settlement, found independent of which E it
@@ -79,7 +79,7 @@ export const settlementForEffectiveSnapshot = (db: Database.Database, effectiveR
  */
 export const paidSettlementForEngagement = (db: Database.Database, engagementId: string): AgentReferralsSettlementRow | null =>
   (db.prepare(`SELECT ${SETTLEMENT_COLUMNS} FROM reward_settlements WHERE engagement_id = ? AND status IN ('PENDING_DOCUMENT', 'SETTLED')`)
-    .get(engagementId) as AgentReferralsSettlementRow | undefined) ?? null;
+.get(engagementId) as AgentReferralsSettlementRow | undefined) ?? null;
 
 type SettlementContext = {
   effective: EffectiveRewardSnapshotRow;
@@ -128,7 +128,7 @@ const resolveSettlementContext = (db: Database.Database, effectiveRewardSnapshot
   if (occurrence.fulfillment_status !== "COMPLETED") throw new SettlementError("AGENT_REFERRALS_SETTLEMENT_OCCURRENCE_NOT_COMPLETED", 409, occurrence.fulfillment_status);
 
   const registry = db.prepare("SELECT id, source_state_hash FROM engagement_reward_registry_snapshot WHERE id = ?")
-    .get(effective.base_registry_snapshot_id) as { id: string; source_state_hash: string };
+.get(effective.base_registry_snapshot_id) as { id: string; source_state_hash: string };
 
   const partnerIdentity = getPartnerIdentity(db, engagement.partner_identity_id);
   if (!partnerIdentity) throw new SettlementError("AGENT_REFERRALS_PARTNER_IDENTITY_NOT_FOUND", 404, engagement.partner_identity_id);
@@ -203,7 +203,7 @@ const mintAgentReferralsSettlement = (
       partner_identity_id, payout_profile_revision_id, tax_mode_snapshot, legal_profile_revision_id_snapshot, supersedes_settlement_id,
       tax_treatment_revision_id_snapshot, tax_canonicalization_version, tax_canonical_json, tax_canonical_hash)
     VALUES (?, ?, ?, ?, 'PAYOUT_PROFILE', 'PREPARED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-    .run(
+.run(
       settlementId, context.agentId, context.engagement.occurrence_id, context.effective.reward_total_kopecks, context.contractorType, context.preparedAt, admin.admin_id,
       context.effective.engagement_id, context.effective.engagement_revision_id, context.effective.base_registry_snapshot_id, context.rewardRegistryHash, context.effective.id,
       context.partnerIdentityId, context.payoutProfileRevisionId, context.taxMode, context.legalProfileRevisionId, supersedesSettlementId,
@@ -336,7 +336,7 @@ export const correctPartnerRewardWithSettlement = (
       // correction mints its own distinct E and therefore its own row).
       db.prepare(`INSERT INTO engagement_recovery_exposure_evidence(id, engagement_id, settlement_id, effective_reward_snapshot_id, paid_net_kopecks, exposure_kopecks)
         VALUES (?, ?, ?, ?, ?, ?)`)
-        .run(id(), engagementId, paidSettlement.id, correction.effective_snapshot_id, exposure.paid_net_kopecks, exposure.exposure_kopecks);
+.run(id(), engagementId, paidSettlement.id, correction.effective_snapshot_id, exposure.paid_net_kopecks, exposure.exposure_kopecks);
       return { correction, settlement_action: "RECOVERY_EXPOSURE", exposure };
     }
 

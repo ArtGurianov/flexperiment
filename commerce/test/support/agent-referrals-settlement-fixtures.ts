@@ -30,7 +30,7 @@ import { recordVerifiedTaxTreatment } from "../../src/agent-referrals-tax-treatm
  * agent-referrals-reward-registry.test.ts's local helper set exactly
  * (readyPartner/seedOccurrence/nearTermTerms/offerAcceptActivate/
  * purchaseAndPay/closeAndComplete/checkoutInput/wait) plus the additional
- * steps Phase 7 needs on top (payout profile, NPD status check, settlement/
+ * the settlement path needs on top (payout profile, NPD status check, settlement/
  * act). Factored out here (commerce/test/support/, precedent:
  * concurrency-fixture.ts) rather than duplicated four times across the
  * PR7 test files, since the full chain from a fresh database to an

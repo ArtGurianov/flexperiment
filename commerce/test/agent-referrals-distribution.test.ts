@@ -417,7 +417,7 @@ describe("historical authority (§B-5c/§B-5d): a distribution pins the creative
   });
 });
 
-describe("projection folds only the CURRENT revision's own events, never the whole distribution history (Phase 5 holistic review, P0 finding 4)", () => {
+describe("projection folds only the CURRENT revision's own events, never the whole distribution history", () => {
   it("a correction that fixes an INVALID_AUTHORITY report into an AUTHORIZED one clears the stale REMOVAL_REQUIRED - it does not linger from the superseded revision", () => {
     const db = fresh();
     const engaged = readyEngagementWithCreative(db); // publication_start_at = 2020-01-01, publication_end_at = 2035-01-01
@@ -457,7 +457,7 @@ describe("projection folds only the CURRENT revision's own events, never the who
   });
 });
 
-describe("removal/compliance lifecycle transition matrix - fail-closed on illegal sequences (Phase 5 holistic review, P1 finding 5)", () => {
+describe("removal/compliance lifecycle transition matrix - fail-closed on illegal sequences", () => {
   it("refuses REMOVAL_CONFIRMED with no REMOVAL_REQUIRED/CLAIMED/OVERDUE/UNVERIFIED ever recorded for the current revision", () => {
     const db = fresh();
     const engaged = readyEngagementWithCreative(db);
@@ -524,6 +524,6 @@ describe("event_sequence: explicit durable canonical fold order, not SQLite's im
     expect(events.map((e) => e.event_kind)).toEqual(["DECLARED", "MARKED_REPORTABLE", "REMOVAL_CLAIMED", "REMOVAL_CONFIRMED"]);
     // Structural backstop: no two events for the same distribution can ever share a sequence number.
     expect(() => db.prepare(`INSERT INTO engagement_distribution_events(id, distribution_id, event_sequence, event_kind, actor_realm) VALUES (?, ?, 1, 'DECLARED', 'SYSTEM')`).run(randomUUID(), d.distribution_id))
-      .toThrow(/UNIQUE constraint failed/);
+.toThrow(/UNIQUE constraint failed/);
   });
 });

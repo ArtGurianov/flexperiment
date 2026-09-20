@@ -246,7 +246,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
       // supersession against the revision its own first attempt produced.
       expectedCurrentLegalProfileRevision: requireNumber(body, "expected_current_legal_profile_revision"),
       expectedRequestSequence: requireNumber(body, "expected_request_sequence"),
-      ...legalRequisitesFromBody(body),
+...legalRequisitesFromBody(body),
     }), 201);
   });
   app.post("/partners/:id/legal-profile/change/:requestId/verify", async (c) => {
@@ -402,7 +402,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
       // back to null on every revocation and so cannot be pinned against.
       creative_authorization_head: lastCreativeAuthorization(sqlite, engagementId),
       distributions: distributionsForEngagement(sqlite, engagementId).map((d) => ({
-        ...distributionProjection(sqlite, d.id),
+...distributionProjection(sqlite, d.id),
         reporting_periods: ordDistributionPeriodReportsForDistribution(sqlite, d.id),
       })),
       reward_registry: rewardRegistrySnapshot(sqlite, engagementId),

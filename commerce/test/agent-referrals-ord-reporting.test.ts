@@ -120,7 +120,7 @@ describe("fileOrdDistributionPeriodReport: ordinary CALENDAR_MONTH reporting", (
     const revision = db.prepare("SELECT id FROM engagement_distribution_revisions WHERE distribution_id = ?").get(distributionId) as { id: string };
     expect(() => db.prepare(`INSERT INTO ord_distribution_period_reports(id, distribution_id, distribution_revision_id, reporting_basis, reporting_period_key, revision, statistics_state, statistics_json, operation_key, evidence_ref, canonical_hash, created_by_admin_id)
       VALUES (?, ?, ?, 'CALENDAR_MONTH', '2026-09', 1, 'REPORTING_DATA_UNAVAILABLE', '{"impressions":0}', 'op-1', 'ev', 'h', 'admin')`)
-      .run(randomUUID(), distributionId, revision.id)).toThrow(/CHECK constraint failed/);
+.run(randomUUID(), distributionId, revision.id)).toThrow(/CHECK constraint failed/);
   });
 
   it("ACTUAL requires statistics_json (CHECK)", () => {
@@ -128,7 +128,7 @@ describe("fileOrdDistributionPeriodReport: ordinary CALENDAR_MONTH reporting", (
     const revision = db.prepare("SELECT id FROM engagement_distribution_revisions WHERE distribution_id = ?").get(distributionId) as { id: string };
     expect(() => db.prepare(`INSERT INTO ord_distribution_period_reports(id, distribution_id, distribution_revision_id, reporting_basis, reporting_period_key, revision, statistics_state, statistics_json, operation_key, evidence_ref, canonical_hash, created_by_admin_id)
       VALUES (?, ?, ?, 'CALENDAR_MONTH', '2026-09', 1, 'ACTUAL', NULL, 'op-1', 'ev', 'h', 'admin')`)
-      .run(randomUUID(), distributionId, revision.id)).toThrow(/CHECK constraint failed/);
+.run(randomUUID(), distributionId, revision.id)).toThrow(/CHECK constraint failed/);
   });
 
   it("evidence_ref (the general fact evidence) is always required, even for a NOT_SUBMITTED report", () => {
@@ -136,7 +136,7 @@ describe("fileOrdDistributionPeriodReport: ordinary CALENDAR_MONTH reporting", (
     const revision = db.prepare("SELECT id FROM engagement_distribution_revisions WHERE distribution_id = ?").get(distributionId) as { id: string };
     expect(() => db.prepare(`INSERT INTO ord_distribution_period_reports(id, distribution_id, distribution_revision_id, reporting_basis, reporting_period_key, revision, statistics_state, operation_key, canonical_hash, created_by_admin_id)
       VALUES (?, ?, ?, 'CALENDAR_MONTH', '2026-09', 1, 'REPORTING_DATA_UNAVAILABLE', 'op-1', 'h', 'admin')`)
-      .run(randomUUID(), distributionId, revision.id)).toThrow(/NOT NULL constraint failed/);
+.run(randomUUID(), distributionId, revision.id)).toThrow(/NOT NULL constraint failed/);
   });
 
   it("review_required is a mechanically-derived generated column: 1 for REPORTING_DATA_UNAVAILABLE, 0 for ACTUAL - never settable directly", () => {
@@ -294,7 +294,7 @@ describe("round-2 P0.6: exact submission/reconciliation evidence shape", () => {
     const revision = db.prepare("SELECT id FROM engagement_distribution_revisions WHERE distribution_id = ?").get(distributionId) as { id: string };
     expect(() => db.prepare(`INSERT INTO ord_distribution_period_reports(id, distribution_id, distribution_revision_id, reporting_basis, reporting_period_key, revision, statistics_state, statistics_json, operation_key, evidence_ref, vk_operation_external_id, canonical_hash, created_by_admin_id)
       VALUES (?, ?, ?, 'CALENDAR_MONTH', '2026-09', 1, 'ACTUAL', '{}', 'op-1', 'ev', 'vk-op-fabricated', 'h', 'admin')`)
-      .run(randomUUID(), distributionId, revision.id)).toThrow(/CHECK constraint failed/);
+.run(randomUUID(), distributionId, revision.id)).toThrow(/CHECK constraint failed/);
   });
 
   it("SUBMITTED requires vk_operation_external_id AND erir_code AND a non-empty submission_evidence_ref together - none alone is sufficient (P0.6's exact counterexample)", () => {
@@ -303,7 +303,7 @@ describe("round-2 P0.6: exact submission/reconciliation evidence shape", () => {
     // The exact fabricable state the round-1 review flagged: submission_state = SUBMITTED with everything else NULL.
     expect(() => db.prepare(`INSERT INTO ord_distribution_period_reports(id, distribution_id, distribution_revision_id, reporting_basis, reporting_period_key, revision, statistics_state, statistics_json, operation_key, evidence_ref, submission_state, canonical_hash, created_by_admin_id)
       VALUES (?, ?, ?, 'CALENDAR_MONTH', '2026-09', 1, 'ACTUAL', '{}', 'op-1', 'ev', 'SUBMITTED', 'h', 'admin')`)
-      .run(randomUUID(), distributionId, revision.id)).toThrow(/CHECK constraint failed/);
+.run(randomUUID(), distributionId, revision.id)).toThrow(/CHECK constraint failed/);
   });
 
   it("SUBMITTED with an empty-string submission_evidence_ref is refused - '' passes IS NOT NULL but is not real evidence", () => {
@@ -311,7 +311,7 @@ describe("round-2 P0.6: exact submission/reconciliation evidence shape", () => {
     const revision = db.prepare("SELECT id FROM engagement_distribution_revisions WHERE distribution_id = ?").get(distributionId) as { id: string };
     expect(() => db.prepare(`INSERT INTO ord_distribution_period_reports(id, distribution_id, distribution_revision_id, reporting_basis, reporting_period_key, revision, statistics_state, statistics_json, operation_key, evidence_ref, submission_state, vk_operation_external_id, erir_code, submission_evidence_ref, canonical_hash, created_by_admin_id)
       VALUES (?, ?, ?, 'CALENDAR_MONTH', '2026-09', 1, 'ACTUAL', '{}', 'op-1', 'ev', 'SUBMITTED', 'vk-op-1', 'erir-1', '', 'h', 'admin')`)
-      .run(randomUUID(), distributionId, revision.id)).toThrow(/CHECK constraint failed/);
+.run(randomUUID(), distributionId, revision.id)).toThrow(/CHECK constraint failed/);
   });
 
   it("a well-formed SUBMITTED row (all three fields present) is legal", () => {
@@ -334,7 +334,7 @@ describe("round-2 P0.6: exact submission/reconciliation evidence shape", () => {
     const revision = db.prepare("SELECT id FROM engagement_distribution_revisions WHERE distribution_id = ?").get(distributionId) as { id: string };
     expect(() => db.prepare(`INSERT INTO ord_distribution_period_reports(id, distribution_id, distribution_revision_id, reporting_basis, reporting_period_key, revision, statistics_state, statistics_json, operation_key, evidence_ref, submission_state, canonical_hash, created_by_admin_id)
       VALUES (?, ?, ?, 'CALENDAR_MONTH', '2026-09', 1, 'ACTUAL', '{}', 'op-1', 'ev', 'SUBMIT_FAILED', 'h', 'admin')`)
-      .run(randomUUID(), distributionId, revision.id)).not.toThrow();
+.run(randomUUID(), distributionId, revision.id)).not.toThrow();
   });
 });
 
@@ -352,7 +352,7 @@ describe("round-2 P1.3: exact-replay idempotency for ordinary filings", () => {
     const { db, distributionId } = setupWithDistribution();
     fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.reporting_period_key)?.id ?? null);
     expect(() => fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 11 } }, evidence_ref: "ev2" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 11 } }, evidence_ref: "ev2" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 11 } }, evidence_ref: "ev2" }.reporting_period_key)?.id ?? null))
-      .toThrow(/AGENT_REFERRALS_ORD_REPORTING_CORRECTION_REASON_REQUIRED/);
+.toThrow(/AGENT_REFERRALS_ORD_REPORTING_CORRECTION_REASON_REQUIRED/);
   });
 });
 
@@ -388,7 +388,7 @@ describe("correction lineage: revision 1 -> 2 -> 3", () => {
     const { db, distributionId } = setupWithDistribution();
     const r1 = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }.reporting_period_key)?.id ?? null);
     expect(() => fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev2" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev2" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev2" }.reporting_period_key)?.id ?? null))
-      .toThrow(/AGENT_REFERRALS_ORD_REPORTING_CORRECTION_REASON_REQUIRED/);
+.toThrow(/AGENT_REFERRALS_ORD_REPORTING_CORRECTION_REASON_REQUIRED/);
     const r2 = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev2", correction_reason: "data arrived" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev2", correction_reason: "data arrived" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev2", correction_reason: "data arrived" }.reporting_period_key)?.id ?? null);
     expect(r2.revision).toBe(2);
     expect(r2.supersedes_report_id).toBe(r1.id);
@@ -407,8 +407,8 @@ describe("correction lineage: revision 1 -> 2 -> 3", () => {
     const revision = db.prepare("SELECT id FROM engagement_distribution_revisions WHERE distribution_id = ?").get(distributionId) as { id: string };
     expect(() => db.prepare(`INSERT INTO ord_distribution_period_reports(id, distribution_id, distribution_revision_id, reporting_basis, reporting_period_key, revision, supersedes_report_id, statistics_state, correction_reason, operation_key, canonical_hash, created_by_admin_id)
       VALUES (?, ?, ?, 'CALENDAR_MONTH', '2026-09', 2, ?, 'REPORTING_DATA_UNAVAILABLE', 'x', 'op-wrong', 'h', 'admin')`)
-      .run(randomUUID(), distributionId, revision.id, randomUUID())) // a nonexistent predecessor id
-      .toThrow(/ORD_DISTRIBUTION_PERIOD_REPORT_RELATIONAL_INCONSISTENT/);
+.run(randomUUID(), distributionId, revision.id, randomUUID())) // a nonexistent predecessor id
+.toThrow(/ORD_DISTRIBUTION_PERIOD_REPORT_RELATIONAL_INCONSISTENT/);
   });
 
   it("a raw cross-distribution supersession is refused", () => {
@@ -418,8 +418,8 @@ describe("correction lineage: revision 1 -> 2 -> 3", () => {
     const otherRevision = db.prepare("SELECT id FROM engagement_distribution_revisions WHERE distribution_id = ?").get(otherDistributionId) as { id: string };
     expect(() => db.prepare(`INSERT INTO ord_distribution_period_reports(id, distribution_id, distribution_revision_id, reporting_basis, reporting_period_key, revision, supersedes_report_id, statistics_state, correction_reason, operation_key, canonical_hash, created_by_admin_id)
       VALUES (?, ?, ?, 'CALENDAR_MONTH', '2026-09', 2, ?, 'REPORTING_DATA_UNAVAILABLE', 'x', 'op-cross', 'h', 'admin')`)
-      .run(randomUUID(), otherDistributionId, otherRevision.id, first.id)) // predecessor belongs to a DIFFERENT distribution
-      .toThrow(/ORD_DISTRIBUTION_PERIOD_REPORT_RELATIONAL_INCONSISTENT/);
+.run(randomUUID(), otherDistributionId, otherRevision.id, first.id)) // predecessor belongs to a DIFFERENT distribution
+.toThrow(/ORD_DISTRIBUTION_PERIOD_REPORT_RELATIONAL_INCONSISTENT/);
   });
 
   it("a raw cross-period supersession is refused", () => {
@@ -428,8 +428,8 @@ describe("correction lineage: revision 1 -> 2 -> 3", () => {
     const revision = db.prepare("SELECT id FROM engagement_distribution_revisions WHERE distribution_id = ?").get(distributionId) as { id: string };
     expect(() => db.prepare(`INSERT INTO ord_distribution_period_reports(id, distribution_id, distribution_revision_id, reporting_basis, reporting_period_key, revision, supersedes_report_id, statistics_state, correction_reason, operation_key, canonical_hash, created_by_admin_id)
       VALUES (?, ?, ?, 'CALENDAR_MONTH', '${M1}', 2, ?, 'REPORTING_DATA_UNAVAILABLE', 'x', 'op-crossperiod', 'h', 'admin')`)
-      .run(randomUUID(), distributionId, revision.id, sep.id)) // predecessor is for a DIFFERENT period
-      .toThrow(/ORD_DISTRIBUTION_PERIOD_REPORT_RELATIONAL_INCONSISTENT/);
+.run(randomUUID(), distributionId, revision.id, sep.id)) // predecessor is for a DIFFERENT period
+.toThrow(/ORD_DISTRIBUTION_PERIOD_REPORT_RELATIONAL_INCONSISTENT/);
   });
 
   it("a report naming a distribution_revision_id that belongs to a DIFFERENT distribution is refused", () => {
@@ -438,7 +438,7 @@ describe("correction lineage: revision 1 -> 2 -> 3", () => {
     const otherRevision = db.prepare("SELECT id FROM engagement_distribution_revisions WHERE distribution_id = ?").get(otherDistributionId) as { id: string };
     expect(() => db.prepare(`INSERT INTO ord_distribution_period_reports(id, distribution_id, distribution_revision_id, reporting_basis, reporting_period_key, revision, statistics_state, operation_key, canonical_hash, created_by_admin_id)
       VALUES (?, ?, ?, 'CALENDAR_MONTH', '2026-09', 1, 'REPORTING_DATA_UNAVAILABLE', 'op-x', 'h', 'admin')`)
-      .run(randomUUID(), distributionId, otherRevision.id)).toThrow(/ORD_DISTRIBUTION_PERIOD_REPORT_RELATIONAL_INCONSISTENT/);
+.run(randomUUID(), distributionId, otherRevision.id)).toThrow(/ORD_DISTRIBUTION_PERIOD_REPORT_RELATIONAL_INCONSISTENT/);
   });
 });
 
@@ -446,7 +446,7 @@ describe("PROVIDER_SPECIAL_PERIOD fail-closed (L5)", () => {
   it("an ACTUAL report on a PROVIDER_SPECIAL_PERIOD format is refused until confirmed - never silently falls back to CALENDAR_MONTH", () => {
     const { db, distributionId } = setupWithDistribution("long_video");
     expect(() => fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev" }.distribution_id, { distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev" }.reporting_period_key)?.id ?? null))
-      .toThrow(/AGENT_REFERRALS_ORD_REPORTING_SPECIAL_PERIOD_UNCONFIRMED/);
+.toThrow(/AGENT_REFERRALS_ORD_REPORTING_SPECIAL_PERIOD_UNCONFIRMED/);
   });
 
   it("REPORTING_DATA_UNAVAILABLE remains legal on PROVIDER_SPECIAL_PERIOD regardless of confirmation - it asserts nothing about the VK field mapping", () => {
@@ -722,8 +722,8 @@ describe("ZERO_REWARD_STATISTICS vs CONTINUING_STATISTICS (plan §B-3)", () => {
     const revision = db.prepare("SELECT id FROM engagement_distribution_revisions WHERE distribution_id = ?").get(distributionId) as { id: string };
     expect(() => db.prepare(`INSERT INTO ord_distribution_period_reports(id, distribution_id, distribution_revision_id, reporting_basis, reporting_period_key, revision, statistics_state, statistics_json, statistics_reason, zero_reward_closure_id, operation_key, canonical_hash, created_by_admin_id)
       VALUES (?, ?, ?, 'CALENDAR_MONTH', ?, 1, 'ACTUAL', '{}', 'ZERO_REWARD_STATISTICS', ?, 'op-foreign', 'h', 'admin')`)
-      .run(randomUUID(), distributionId, revision.id, serviceMonth, randomUUID()))
-      .toThrow();
+.run(randomUUID(), distributionId, revision.id, serviceMonth, randomUUID()))
+.toThrow();
   });
 
   it("mutual exclusion: a live/paid AGENT_REFERRALS settlement for the engagement blocks ZERO_REWARD_STATISTICS/CONTINUING_STATISTICS filing", async () => {

@@ -64,7 +64,7 @@ const ADMIN: Readonly<Record<string, Classification>> = {
   "/partners/:id/legal-profile/verify": "MONOTONIC_REPLAY_SAFE", // onboarding graph is one-way; PROFILE_SUBMITTED is never re-entered
   "/partners/:id/legal-profile/change": "STALE_BOUND", // pins the verified revision it changes FROM
   "/partners/:id/legal-profile/change/:requestId/verify": "STALE_BOUND", // pins supersedes_revision_id; a stale retry resolves STALE
-  "/partners/:id/legal-profile/change/:requestId/reject": "MONOTONIC_REPLAY_SAFE", // PENDING -> REJECTED is terminal; 0051's transition guard never re-admits PENDING
+  "/partners/:id/legal-profile/change/:requestId/reject": "MONOTONIC_REPLAY_SAFE", // PENDING -> REJECTED is terminal; the schema's transition guard never re-admits PENDING
   "/partners/:id/tax-treatment": "DURABLE_KEY", // admin_command_idempotency (PR-F)
   "/partners/:id/framework/issue": "MONOTONIC_REPLAY_SAFE", // one-way edge out of PROFILE_VERIFIED
   "/partners/:id/activate": "MONOTONIC_REPLAY_SAFE", // PARTNER_ACTIVE is terminal
@@ -97,7 +97,7 @@ const ADMIN: Readonly<Record<string, Classification>> = {
   "/distributions/:id/review-cleared": "STALE_BOUND", // pins event_sequence; a correction re-opens review
   "/ord/provider-profile": "STALE_BOUND", // pins the revision it supersedes
   "/ord/provider-operation": "STALE_BOUND", // pins the operation being reopened; CORRECTION_ONLY is a reopenable state
-  "/ord/provider-operation/:id/submitted": "MONOTONIC_REPLAY_SAFE", // 0048's observed-id guard makes vk_external_id unchangeable once set; first-writer-wins on evidence_ref
+  "/ord/provider-operation/:id/submitted": "MONOTONIC_REPLAY_SAFE", // the schema's observed-id guard makes vk_external_id unchangeable once set; first-writer-wins on evidence_ref
   "/ord/provider-operation/:id/confirm": "MONOTONIC_REPLAY_SAFE", // SUBMITTED is never re-entered for that row id
   "/ord/provider-operation/:id/erir": "MONOTONIC_REPLAY_SAFE", // observed-id guard; erir_code is never cleared
   "/ord/provider-operation/:id/lock": "MONOTONIC_REPLAY_SAFE", // EXTERNALLY_LOCKED is terminal
@@ -289,7 +289,7 @@ describe("agent-referrals command replay classification is exhaustive over the p
     ]);
 
     const provenTotal = [...Object.values(ADMIN), ...Object.values(PARTNER)]
-      .filter((value) => value === "DURABLE_KEY" || value === "STALE_BOUND" || value === "MONOTONIC_REPLAY_SAFE").length;
+.filter((value) => value === "DURABLE_KEY" || value === "STALE_BOUND" || value === "MONOTONIC_REPLAY_SAFE").length;
     expect(provenTotal).toBe(81);
   });
 

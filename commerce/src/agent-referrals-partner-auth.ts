@@ -17,7 +17,7 @@ const partnerOrigin = process.env.COMMERCE_PARTNER_ORIGIN ?? "https://partner.fl
 
 /**
  * Mirrors auth.ts's assertAdminOrigin exactly, for the SEPARATE partner
- * realm/hostname (Phase 9 shared-frontend topology). admin.flexperiment.ru
+ * realm/hostname . admin.flexperiment.ru
  * and partner.flexperiment.ru are different browser origins even though
  * both are served by the same frontend container, so an admin-origin
  * browser request can never satisfy this check and vice versa - the origin

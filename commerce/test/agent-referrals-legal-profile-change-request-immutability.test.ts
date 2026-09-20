@@ -7,9 +7,9 @@ import {
 } from "../src/agent-referrals-legal-profile-supersession";
 
 /**
- * Review round 3, P1: 0056 recreated this table's request-fields
- * immutability guard and restored 0051's ORIGINAL column list, silently
- * dropping the seven requisite columns 0052 had already added to it.
+ * A guard recreated from an older version of its own text silently dropped
+ * seven columns that had been added to it in between. The columns were still
+ * there; nothing was freezing them.
  *
  * The other two guards do not cover the gap. They block
  * PENDING -> PENDING and any update to an already-terminal row, but a
@@ -60,8 +60,8 @@ const pendingRequest = (db: Database.Database) => {
 
 describe("legal-profile change requests: filed evidence is immutable through its own resolution", () => {
   // The columns whose rewrite would be most damaging and least visible -
-  // every requisite 0052 added, the provenance 0051 already had, the counter
-  // 0056 adds, and the row's own identity. This table is deliberately NOT
+  // every requisite, the provenance, the counter, and the row's own
+  // identity. This table is deliberately NOT
   // exhaustive over the request group (partner_identity_id,
   // supersedes_revision_id and created_at are absent): the structural test
   // below covers the whole group mechanically, and duplicating it by hand
@@ -118,7 +118,7 @@ describe("legal-profile change requests: filed evidence is immutable through its
   });
 
   /**
-   * The test that would have caught 0056's own defect, and that catches the
+   * The test that would have caught the schema's own defect, and that catches the
    * next one: it reads the LIVE trigger out of sqlite_master and the LIVE
    * column list out of the table, and requires every request-group column to
    * be named in the guard. A DROP + CREATE that restates a stale definition

@@ -95,8 +95,8 @@ const computeRewardTotal = (orders: readonly OrderFacts[]): number =>
 const stateHash = (orders: readonly OrderFacts[]): string =>
   sha256(canonicalV2({
     orders: [...orders]
-      .map((order) => ({ id: order.id, captured: order.captured_amount_kopecks, refunded: order.refunded_amount_kopecks, booking_status: order.booking_status }))
-      .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
+.map((order) => ({ id: order.id, captured: order.captured_amount_kopecks, refunded: order.refunded_amount_kopecks, booking_status: order.booking_status }))
+.sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)),
   }));
 
 export type FinalizeRewardRegistryResult = { registry_snapshot_id: string; effective_snapshot_id: string; reward_total_kopecks: number; replayed: boolean };
@@ -122,12 +122,12 @@ const EFFECTIVE_COLUMNS = "id, engagement_id, engagement_revision_id, base_regis
 /** "Current" is always the row with MAX(sequence) - never a mutable pointer, matching every other revision-chain table in this schema. */
 export const currentEffectiveRewardSnapshot = (db: Database.Database, engagementId: string): EffectiveRewardSnapshotRow | null =>
   (db.prepare(`SELECT ${EFFECTIVE_COLUMNS} FROM engagement_effective_reward_snapshots WHERE engagement_id = ? ORDER BY sequence DESC LIMIT 1`)
-    .get(engagementId) as EffectiveRewardSnapshotRow | undefined) ?? null;
+.get(engagementId) as EffectiveRewardSnapshotRow | undefined) ?? null;
 
 /** The original INITIAL snapshot (sequence 1) - distinct from currentEffectiveRewardSnapshot, which may have moved on to a later CORRECTION. Finalization's own idempotent replay must return this one, never "whatever is current". */
 const initialEffectiveRewardSnapshot = (db: Database.Database, engagementId: string): EffectiveRewardSnapshotRow | null =>
   (db.prepare(`SELECT ${EFFECTIVE_COLUMNS} FROM engagement_effective_reward_snapshots WHERE engagement_id = ? AND sequence = 1`)
-    .get(engagementId) as EffectiveRewardSnapshotRow | undefined) ?? null;
+.get(engagementId) as EffectiveRewardSnapshotRow | undefined) ?? null;
 
 export type RewardRegistrySnapshotRow = {
   id: string;
@@ -176,7 +176,7 @@ export const finalizeEngagementRewardRegistry = (
 
     // MATURATION_RECOVERY_REPORTING_TAIL: permitted while globally
     // SUSPENDED (§B-8 - suspension must never strand an obligation that
-    // arose before it), refused only while DORMANT.
+    // arose before it), refused only while the feature is suspended.
     assertAgentReferralsOperationPermitted(agentReferralsFeatureState(db).state, "REWARD_REGISTRY_FINALIZATION");
 
     const engagement = getEngagement(db, engagementId);
@@ -210,13 +210,13 @@ export const finalizeEngagementRewardRegistry = (
     const registryId = id();
     db.prepare(`INSERT INTO engagement_reward_registry_snapshot(id, engagement_id, engagement_revision_id, occurrence_id, terminal_status, reward_total_kopecks, formula_version, source_order_ids_json, source_state_hash, watermark, finalized_by_admin_id, reason)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(registryId, engagementId, revision.id, occurrence.id, occurrence.fulfillment_status, rewardTotal, REWARD_FORMULA_VERSION, JSON.stringify(orderIds), hash, watermark, admin.admin_id, reason);
+.run(registryId, engagementId, revision.id, occurrence.id, occurrence.fulfillment_status, rewardTotal, REWARD_FORMULA_VERSION, JSON.stringify(orderIds), hash, watermark, admin.admin_id, reason);
 
     const effectiveId = id();
     const canonicalHash = sha256(canonicalV2({ registry_id: registryId, kind: "INITIAL", sequence: 1, reward_total_kopecks: rewardTotal }));
     db.prepare(`INSERT INTO engagement_effective_reward_snapshots(id, engagement_id, engagement_revision_id, base_registry_snapshot_id, sequence, kind, reward_total_kopecks, source_state_hash, reason, created_by_admin_id, canonical_hash)
       VALUES (?, ?, ?, ?, 1, 'INITIAL', ?, ?, ?, ?, ?)`)
-      .run(effectiveId, engagementId, revision.id, registryId, rewardTotal, hash, reason, admin.admin_id, canonicalHash);
+.run(effectiveId, engagementId, revision.id, registryId, rewardTotal, hash, reason, admin.admin_id, canonicalHash);
 
     return { registry_snapshot_id: registryId, effective_snapshot_id: effectiveId, reward_total_kopecks: rewardTotal, replayed: false };
   });
@@ -298,7 +298,7 @@ export const correctEngagementEffectiveRewardSnapshot = (
     }));
     db.prepare(`INSERT INTO engagement_effective_reward_snapshots(id, engagement_id, engagement_revision_id, base_registry_snapshot_id, supersedes_effective_snapshot_id, sequence, kind, reward_total_kopecks, source_state_hash, reason, created_by_admin_id, canonical_hash)
       VALUES (?, ?, ?, ?, ?, ?, 'CORRECTION', ?, ?, ?, ?, ?)`)
-      .run(effectiveId, engagementId, current.engagement_revision_id, registry.id, current.id, nextSequence, newTotal, hash, reason, admin.admin_id, canonicalHash);
+.run(effectiveId, engagementId, current.engagement_revision_id, registry.id, current.id, nextSequence, newTotal, hash, reason, admin.admin_id, canonicalHash);
 
     return { effective_snapshot_id: effectiveId, reward_total_kopecks: newTotal, sequence: nextSequence };
   });

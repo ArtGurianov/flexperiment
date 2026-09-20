@@ -86,7 +86,7 @@ export const withPartnerCommandInTransaction = <T>(input: PartnerCommandInput<T>
 
   const existing = db.prepare(`SELECT request_hash, contract_version, response_status, response_json
     FROM partner_command_idempotency WHERE partner_identity_id = ? AND command = ? AND key_hash = ?`)
-    .get(partner.partner_identity_id, command, keyHash) as
+.get(partner.partner_identity_id, command, keyHash) as
     { request_hash: string; contract_version: string; response_status: number; response_json: string } | undefined;
 
   if (existing) {
@@ -102,6 +102,6 @@ export const withPartnerCommandInTransaction = <T>(input: PartnerCommandInput<T>
   const response = execute();
   db.prepare(`INSERT INTO partner_command_idempotency(partner_identity_id, command, key_hash, request_hash, contract_version, response_status, response_json)
     VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(partner.partner_identity_id, command, keyHash, requestHash, PARTNER_COMMAND_CONTRACT_VERSION, successStatus, JSON.stringify(response));
+.run(partner.partner_identity_id, command, keyHash, requestHash, PARTNER_COMMAND_CONTRACT_VERSION, successStatus, JSON.stringify(response));
   return { response, status: successStatus, replayed: false };
 };

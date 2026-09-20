@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 
 /**
  * Append-only audience verification authority (plan section B-9's
- * prerequisite, spec'd in Phase 5): VERIFIED | REVOKED, monotonic
+ * prerequisite, a prerequisite): VERIFIED | REVOKED, monotonic
  * aggregate revision per (partner, city). There is no SUPERSEDED state - a
  * replacement VERIFIED is simply the next revision, and "current" is
  * always the row with MAX(aggregate_revision) for that pair, read from
@@ -17,11 +17,7 @@ import type Database from "better-sqlite3";
  *
  * This module exports NO function capable of writing EITHER a VERIFIED OR
  * a REVOKED event, at any visibility level - not even a nestable
- * "InTransaction" primitive (Phase 5 holistic review, final pass: the
- * same standard already applied to REVOKED closes the identical bypass
- * that was still open for VERIFIED - a directly-exported mint, even a
- * cascade-aware wrapper's own doc comment saying "callers must use this
- * instead", is application convention, not structural enforcement). The
+ * "InTransaction" primitive. The
  * only way anything in this codebase can write EITHER event kind is
  * agent-referrals-engagement.ts's verifyAudienceForPartnerCity (VERIFIED)
  * and revokeAudienceVerificationForPartnerCity (REVOKED), which each
@@ -61,7 +57,7 @@ const EVENT_COLUMNS = "id, partner_identity_id, city_id, aggregate_revision, eve
 /** Current authority is the row with MAX(aggregate_revision) for this pair - never MAX(created_at), and never a stored pointer. */
 export const currentAudienceVerification = (db: Database.Database, partnerIdentityId: string, cityId: string): AudienceVerificationEventRow | null =>
   (db.prepare(`SELECT ${EVENT_COLUMNS} FROM partner_audience_verification_events WHERE partner_identity_id = ? AND city_id = ? ORDER BY aggregate_revision DESC LIMIT 1`)
-    .get(partnerIdentityId, cityId) as AudienceVerificationEventRow | undefined) ?? null;
+.get(partnerIdentityId, cityId) as AudienceVerificationEventRow | undefined) ?? null;
 
 /** VERIFIED only, and only when validUntil actually covers untilAtLeast (e.g. the engagement revision's publication_end_at) - the read side of the "valid through publication end" invariant. */
 export const isAudienceVerifiedThrough = (db: Database.Database, partnerIdentityId: string, cityId: string, untilAtLeast: string): boolean => {
@@ -76,4 +72,4 @@ export const isAudienceVerified = (db: Database.Database, partnerIdentityId: str
 
 export const allAudienceVerificationEvents = (db: Database.Database, partnerIdentityId: string, cityId: string): AudienceVerificationEventRow[] =>
   db.prepare(`SELECT ${EVENT_COLUMNS} FROM partner_audience_verification_events WHERE partner_identity_id = ? AND city_id = ? ORDER BY aggregate_revision ASC`)
-    .all(partnerIdentityId, cityId) as AudienceVerificationEventRow[];
+.all(partnerIdentityId, cityId) as AudienceVerificationEventRow[];

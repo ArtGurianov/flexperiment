@@ -4,11 +4,11 @@ import { isOrdReportingTailComplete, OrdReportingError } from "./agent-referrals
 import { currentUsableNpdCheck } from "./agent-referrals-npd";
 
 /**
- * Phase 9 amendment round-2 fix (finding #4), tightened again in round 3
+ * tightened again in round 3
  * (finding #4: totals must never be silently truncated, item ordering must
  * be deterministic, and every item must carry enough context to navigate to
  * it - not just a bare id an operator has no way to act on): the operator
- * review surface the original Phase 9 plan calls "reporting-tail queues,
+ * review surface the plan calls "reporting-tail queues,
  * missing-evidence sweeps, NPD reconciliation, operator review reminders".
  *
  * Every item here is a LIVE derived read, never a second stored queue table

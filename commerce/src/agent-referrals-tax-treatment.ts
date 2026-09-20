@@ -13,8 +13,7 @@ import type { AdminPrincipal } from "./agent-referrals-partner-identity";
  * (tax_treatment_revision) are two different facts that change on
  * different schedules and different authority. A legal-profile supersession
  * never carries a treatment forward; a treatment correction never implies a
- * legal-profile change. See 0053's own migration header for the full
- * rationale.
+ * legal-profile change.
  *
  * Deliberately no general Russian tax engine and no income-threshold
  * inference: NPD is the one tax_system this module derives automatically
@@ -69,14 +68,14 @@ export const resolveTaxTreatmentForLegalProfileAt = (db: Database.Database, lega
   (db.prepare(`SELECT ${COLUMNS} FROM agent_referrals_tax_treatment_revisions
     WHERE legal_profile_revision_id = ? AND effective_from <= ?
     ORDER BY effective_from DESC, sequence DESC LIMIT 1`)
-    .get(legalProfileRevisionId, atInstant) as TaxTreatmentRevisionRow | undefined) ?? null;
+.get(legalProfileRevisionId, atInstant) as TaxTreatmentRevisionRow | undefined) ?? null;
 
 export const taxTreatmentRevisionsForLegalProfile = (db: Database.Database, legalProfileRevisionId: string): TaxTreatmentRevisionRow[] =>
   db.prepare(`SELECT ${COLUMNS} FROM agent_referrals_tax_treatment_revisions WHERE legal_profile_revision_id = ? ORDER BY effective_from ASC, sequence ASC`)
-    .all(legalProfileRevisionId) as TaxTreatmentRevisionRow[];
+.all(legalProfileRevisionId) as TaxTreatmentRevisionRow[];
 
 /**
- * Application-level mirror of 0053's own tax_system x vat_treatment x
+ * Application-level mirror of the schema's own tax_system x vat_treatment x
  * no_vat_basis CHECK - proven identical by a dedicated test, same
  * discipline as resolveProjectedContractorType's own role for the
  * legal_form x tax_mode matrix. A caller that skips this and lets the DB
@@ -94,7 +93,7 @@ export const validateTaxTreatmentTuple = (taxSystem: TaxSystem, vatTreatment: Va
   // this schema does not model. The legal_form = INDIVIDUAL_ENTREPRENEUR
   // requirement is proven relationally (against the joined legal-profile
   // revision, which this pure function has no access to) - see
-  // recordVerifiedTaxTreatment's own explicit check and 0053's relational-
+  // recordVerifiedTaxTreatment's own explicit check and the schema's relational-
   // consistency trigger, both named PSN_REQUIRES_INDIVIDUAL_ENTREPRENEUR /
   // AGENT_REFERRALS_TAX_TREATMENT_RELATIONAL_INCONSISTENT respectively.
   const valid =
@@ -111,7 +110,7 @@ const EFFECTIVE_FROM_DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
 
 /**
  * ONE canonical sortable format, never a caller-chosen string (review
- * round 1, P1.1) - mirrors 0053's own strftime()-based CHECK exactly: a UTC
+ * round 1, P1.1) - mirrors the schema's own strftime()-based CHECK exactly: a UTC
  * instant, millisecond precision, always Z-suffixed (Date.prototype
  * .toISOString()'s own shape).
  *
@@ -119,7 +118,7 @@ const EFFECTIVE_FROM_DATE_ONLY = /^(\d{4})-(\d{2})-(\d{2})$/;
  * JS's own calendar-rollover behavior (`new Date("2026-02-30")` silently
  * becomes March 2nd), which would let an admin's asserted business date
  * drift to a DIFFERENT date without any error. This is exactly the kind of
- * silent corruption 0053's own effective_from CHECK exists to catch at the
+ * silent corruption the schema's own effective_from CHECK exists to catch at the
  * DB layer - the domain mirror must refuse it just as strictly, before a
  * transaction ever opens. Exactly two shapes are accepted, each proven by
  * an EXACT round-trip rather than "whatever Date can parse":
@@ -175,7 +174,7 @@ export const mintSystemDerivedNpdTaxTreatment = (
   db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions
       (id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, reason)
     VALUES (?, ?, ?, ?, 'NPD', 'NO_VAT', 'NPD', ?, 'SYSTEM_DERIVED', 'automatic NPD tax treatment, minted with the legal-profile revision')`)
-    .run(treatmentId, partnerIdentityId, legalProfileRevisionId, sequence, normalizeTaxEffectiveFrom(now()));
+.run(treatmentId, partnerIdentityId, legalProfileRevisionId, sequence, normalizeTaxEffectiveFrom(now()));
   return taxTreatmentRevisionById(db, treatmentId)!;
 };
 
@@ -245,7 +244,7 @@ export const recordVerifiedTaxTreatment = (
     // (suspension, destruction, a legal-profile supersession, a later
     // correction) can turn that into a failure or a different mutation.
     const existingCommand = db.prepare("SELECT canonical_request_hash, response_json FROM admin_command_idempotency WHERE command = ? AND idempotency_key_hash = ?")
-      .get(TAX_TREATMENT_COMMAND, keyHash) as { canonical_request_hash: string; response_json: string | null } | undefined;
+.get(TAX_TREATMENT_COMMAND, keyHash) as { canonical_request_hash: string; response_json: string | null } | undefined;
     if (existingCommand) {
       if (existingCommand.canonical_request_hash !== fingerprint) throw new TaxTreatmentError("IDEMPOTENCY_CONFLICT", 409);
       if (!existingCommand.response_json) throw new TaxTreatmentError("IDEMPOTENCY_CONTRACT_SUPERSEDED", 409);
@@ -279,7 +278,7 @@ export const recordVerifiedTaxTreatment = (
     // tax_system here (even a structurally valid one, like USN) for an
     // NPD profile is not a real admin decision this module ever
     // sanctions. Without this, such a request passed every check above
-    // and only failed at 0053's own relational-consistency trigger
+    // and only failed at the schema's own relational-consistency trigger
     // ((lp.tax_mode = 'NPD') = (NEW.tax_system = 'NPD')) as a raw
     // SqliteError/500 instead of a typed 422.
     if (currentLegalProfile.tax_mode === "NPD") {
@@ -287,7 +286,7 @@ export const recordVerifiedTaxTreatment = (
     }
 
     // PSN (review round 1, P1.4): an individual-entrepreneur-only regime -
-    // mirrors 0053's own relational-consistency trigger, checked here too
+    // mirrors the schema's own relational-consistency trigger, checked here too
     // for a typed 422 instead of a raw SqliteError.
     if (input.taxSystem === "PSN" && currentLegalProfile.legal_form !== "INDIVIDUAL_ENTREPRENEUR") {
       throw new TaxTreatmentError("AGENT_REFERRALS_TAX_TREATMENT_PSN_REQUIRES_INDIVIDUAL_ENTREPRENEUR", 422, currentLegalProfile.legal_form);
@@ -298,7 +297,7 @@ export const recordVerifiedTaxTreatment = (
     db.prepare(`INSERT INTO agent_referrals_tax_treatment_revisions
         (id, partner_identity_id, legal_profile_revision_id, sequence, tax_system, vat_treatment, no_vat_basis, effective_from, assertion_source, evidence_ref, created_by_admin_id, reason)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'ADMIN_ASSERTED', ?, ?, ?)`)
-      .run(treatmentId, partnerIdentityId, currentLegalProfile.id, sequence, input.taxSystem, input.vatTreatment, input.noVatBasis, effectiveFrom, evidenceRef, admin.admin_id, reason);
+.run(treatmentId, partnerIdentityId, currentLegalProfile.id, sequence, input.taxSystem, input.vatTreatment, input.noVatBasis, effectiveFrom, evidenceRef, admin.admin_id, reason);
 
     recordPartnerIdentityEvent(db, partnerIdentityId, "TAX_TREATMENT_RECORDED", "ADMIN", {
       tax_treatment_id: treatmentId, legal_profile_revision_id: currentLegalProfile.id, tax_system: input.taxSystem, vat_treatment: input.vatTreatment, reason,
@@ -306,7 +305,7 @@ export const recordVerifiedTaxTreatment = (
 
     const created = taxTreatmentRevisionById(db, treatmentId)!;
     db.prepare("INSERT INTO admin_command_idempotency(command, idempotency_key_hash, canonical_request_hash, entity_id, response_json) VALUES (?, ?, ?, ?, ?)")
-      .run(TAX_TREATMENT_COMMAND, keyHash, fingerprint, treatmentId, JSON.stringify(created));
+.run(TAX_TREATMENT_COMMAND, keyHash, fingerprint, treatmentId, JSON.stringify(created));
 
     return created;
   });

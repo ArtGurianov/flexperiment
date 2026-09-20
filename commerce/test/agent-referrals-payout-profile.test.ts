@@ -146,7 +146,7 @@ describe("payout-profile revisions", () => {
       const db = fresh();
       const partner = seedPartnerWithSession(db);
       expect(() => setPartnerPayoutDestination(db, partner, { step_up_grant_id: "nonexistent", destination_kind: "BANK_CARD", destination_plaintext: SENSITIVE_CARD, destination_last4: "1111" }))
-        .toThrow(/AGENT_REFERRALS_STEP_UP_GRANT_INVALID/);
+.toThrow(/AGENT_REFERRALS_STEP_UP_GRANT_INVALID/);
       expect(currentPayoutProfile(db, partner.partner_identity_id)).toBeNull();
     });
 
@@ -216,7 +216,7 @@ describe("payout-profile revisions", () => {
         BEGIN SELECT RAISE(ABORT, 'INJECTED_PAYOUT_FAILURE'); END;`);
 
       expect(() => setPartnerPayoutDestination(db, partner, { step_up_grant_id: grant, destination_kind: "BANK_CARD", destination_plaintext: SENSITIVE_CARD, destination_last4: "1111" }))
-        .toThrow(/INJECTED_PAYOUT_FAILURE/);
+.toThrow(/INJECTED_PAYOUT_FAILURE/);
       db.exec("DROP TRIGGER poison_payout_insert");
 
       expect(currentPayoutProfile(db, partner.partner_identity_id)).toBeNull();

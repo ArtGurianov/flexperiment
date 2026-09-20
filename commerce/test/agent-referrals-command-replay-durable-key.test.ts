@@ -14,7 +14,7 @@ import { mintStepUpGrant } from "../src/agent-referrals-step-up";
  * command and only a caller-supplied key separates that from a retry.
  *
  * A tenth was in this list when it was written. Placing a legal hold turned
- * out not to need a key at all: 0044's partial unique index on
+ * out not to need a key at all: the schema's partial unique index on
  * released_at IS NULL already refuses a second ACTIVE hold, so it needed a
  * NAME, not an identity. The matrix found that, not the review.
  *
@@ -92,7 +92,7 @@ describe("durable command identity: same key replays, new key commands", () => {
     // The live authorization the first call minted is still live: the old
     // path revoked it and minted a replacement on every retry.
     expect(db.prepare("SELECT revoked_at FROM engagement_promo_authorizations WHERE id = ?").get(first.response.promo_authorization_id))
-      .toEqual({ revoked_at: null });
+.toEqual({ revoked_at: null });
   });
 
   it("partner: payout - the scenario the whole mechanism exists for", () => {

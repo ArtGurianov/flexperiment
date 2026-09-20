@@ -6,7 +6,7 @@ import { agentReferralsReviewQueue, agentReferralsReviewQueueTotals, type AgentR
 import type { AdminPrincipal } from "./agent-referrals-partner-identity";
 
 /**
- * Worker deadline sweeps (Phase 9 amendment §11): deterministic, idempotent,
+ * Worker deadline sweeps (the plan): deterministic, idempotent,
  * NO VK network call of any kind, and no new commercial/provider authority
  * of its own - every write here calls an existing, already-reviewed admin
  * command (agent-referrals-distribution.ts / agent-referrals-payment.ts)
@@ -61,7 +61,7 @@ export type AgentReferralsWorkerSweepResult = {
 const engagementIdsWithEndedPublication = (db: Database.Database): string[] =>
   (db.prepare(`SELECT DISTINCT e.id FROM engagements e
     WHERE e.lifecycle_state IN ('ACTIVE', 'SUSPENDED', 'CLOSED')`).all() as { id: string }[])
-    .map((row) => row.id);
+.map((row) => row.id);
 
 /**
  * Every distribution belonging to an engagement whose ACTIVE (last-activated)
@@ -104,7 +104,7 @@ const sweepRemovalOverdue = (db: Database.Database, atMs: number): number => {
     const projection = distributionProjection(db, distributionId);
     if (projection.removal_state !== "REMOVAL_REQUIRED" && projection.removal_state !== "REMOVAL_CLAIMED") continue;
     const lastEvent = db.prepare(`SELECT occurred_at FROM engagement_distribution_events WHERE distribution_id = ? AND event_kind = ? ORDER BY event_sequence DESC LIMIT 1`)
-      .get(distributionId, projection.removal_state) as { occurred_at: string } | undefined;
+.get(distributionId, projection.removal_state) as { occurred_at: string } | undefined;
     if (!lastEvent) continue;
     const ageMs = atMs - new Date(lastEvent.occurred_at).getTime();
     if (ageMs < REMOVAL_OVERDUE_GRACE_MS) continue;

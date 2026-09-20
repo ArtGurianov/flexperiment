@@ -87,7 +87,7 @@ const REVISION_COLUMNS = "id, distribution_id, revision, supersedes_revision_id,
 
 export const currentDistributionRevision = (db: Database.Database, distributionId: string): DistributionRevisionRow | null =>
   (db.prepare(`SELECT ${REVISION_COLUMNS} FROM engagement_distribution_revisions WHERE distribution_id = ? ORDER BY revision DESC LIMIT 1`)
-    .get(distributionId) as DistributionRevisionRow | undefined) ?? null;
+.get(distributionId) as DistributionRevisionRow | undefined) ?? null;
 
 export type DistributionIdentityRow = { id: string; engagement_id: string; created_at: string };
 
@@ -101,13 +101,13 @@ export const distributionsForEngagement = (db: Database.Database, engagementId: 
   // stream (that is engagement_distribution_events, ordered by its own
   // explicit event_sequence below).
   db.prepare("SELECT id, engagement_id, created_at FROM engagement_distributions WHERE engagement_id = ? ORDER BY rowid ASC")
-    .all(engagementId) as DistributionIdentityRow[];
+.all(engagementId) as DistributionIdentityRow[];
 
 export type DistributionEventRow = { id: string; distribution_id: string; event_sequence: number; event_kind: string; actor_realm: string; evidence_ref: string | null; reason: string | null; occurred_at: string };
 
 export const distributionEvents = (db: Database.Database, distributionId: string): DistributionEventRow[] =>
   db.prepare("SELECT id, distribution_id, event_sequence, event_kind, actor_realm, evidence_ref, reason, occurred_at FROM engagement_distribution_events WHERE distribution_id = ? ORDER BY event_sequence ASC")
-    .all(distributionId) as DistributionEventRow[];
+.all(distributionId) as DistributionEventRow[];
 
 const REMOVAL_KINDS = new Set(["REMOVAL_REQUIRED", "REMOVAL_CLAIMED", "REMOVAL_CONFIRMED", "OVERDUE_REMOVAL", "REMOVAL_UNVERIFIED"]);
 const COMPLIANCE_KINDS = new Set(["MARKED_REPORTABLE", "REVIEW_REQUIRED", "REVIEW_CLEARED"]);
@@ -129,7 +129,7 @@ export type DistributionProjection = {
 /**
  * Folded from the event log, never a stored mutable column (B-5c/B-5d) -
  * and folded only from the CURRENT REVISION's own events, never the
- * distribution's entire history (Phase 5 holistic review, P0 finding 4).
+ * distribution's entire history.
  * classifyAndAppend always appends exactly one DECLARED event first, for
  * every reportDistribution AND every correctDistribution call - DECLARED
  * is never appended anywhere else - so the latest DECLARED event is
@@ -162,7 +162,7 @@ export const distributionProjection = (db: Database.Database, distributionId: st
 const appendEvent = (db: Database.Database, distributionId: string, eventKind: string, realm: "ADMIN" | "PARTNER" | "SYSTEM", evidenceRef: string | null, reason: string | null): void => {
   const next = (db.prepare("SELECT COALESCE(MAX(event_sequence), 0) AS m FROM engagement_distribution_events WHERE distribution_id = ?").get(distributionId) as { m: number }).m + 1;
   db.prepare(`INSERT INTO engagement_distribution_events(id, distribution_id, event_sequence, event_kind, actor_realm, evidence_ref, reason) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(id(), distributionId, next, eventKind, realm, evidenceRef, reason);
+.run(id(), distributionId, next, eventKind, realm, evidenceRef, reason);
 };
 
 type TemporalAuthorityState = "AUTHORIZED" | "INVALID_AUTHORITY" | "NO_AUTHORITY";
@@ -203,7 +203,7 @@ type HistoricalCreativeAuthority = { creative_revision_id: string | null; engage
  * publishedAt - never "whatever is current now". A distribution reported
  * days after the fact must pin the authority that was actually live when
  * the ad was really published, not one a later admin/partner action has
- * since superseded (Phase 5 review note 4). NEVER THROWS - a fact with no
+ * since superseded. NEVER THROWS - a fact with no
  * resolvable authority is still real evidence (§B-5e); the caller always
  * persists it, just with a null pin and NO_AUTHORITY classification.
  *
@@ -219,8 +219,7 @@ type HistoricalCreativeAuthority = { creative_revision_id: string | null; engage
  *   - the GLOBAL Agent Referrals feature state, AS OF publishedAt (never
  *     as of now), permitted NEW_PUBLICATION_AUTHORITY - a per-engagement
  *     authorization existing is not enough if the whole feature was
- *     globally SUSPENDED/DORMANT at that instant (Phase 5 holistic
- *     review, P0 finding 1)
+ *     globally SUSPENDED at that instant 
  *
  * "Most recently started by publishedAt" always resolves to a candidate as
  * long as ANY creative authorization existed for this engagement by then,
@@ -252,7 +251,7 @@ const resolveHistoricalCreativeAuthority = (db: Database.Database, engagementId:
   // A per-engagement authorization existing and unrevoked at publishedAt is
   // not enough on its own: NEW_PUBLICATION_AUTHORITY is also gated by the
   // GLOBAL feature state, and that state must be judged AS OF publishedAt,
-  // never as of now (Phase 5 holistic review, P0 finding 1). SUSPENDED
+  // never as of now. SUSPENDED
   // still permits DISTRIBUTION_FACT_REPORTING (the reporting tail) - a
   // partner may always report a fact - but it does not retroactively
   // authorize what was, at that instant, a NEW publication: a publish made
@@ -290,7 +289,7 @@ export const reportDistributionInTransaction = (db: Database.Database, actor: Di
     const revisionId = id();
     db.prepare(`INSERT INTO engagement_distribution_revisions(id, distribution_id, revision, supersedes_revision_id, engagement_revision_id, creative_revision_id, channel_key, channel_policy_status, channel_policy_revision, resource_kind, resource_identifier, distribution_resource_url, published_at, ended_at, reported_by, correction_reason, evidence_ref, canonical_hash)
       VALUES (?, ?, 1, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`)
-      .run(revisionId, distributionId, authority.engagement_revision_id, authority.creative_revision_id, input.channel_key, classification.status, classification.policy_revision, input.resource_kind, input.resource_identifier,
+.run(revisionId, distributionId, authority.engagement_revision_id, authority.creative_revision_id, input.channel_key, classification.status, classification.policy_revision, input.resource_kind, input.resource_identifier,
         input.distribution_resource_url, input.published_at, input.ended_at, actorRealm(actor), input.evidence_ref, canonicalRevisionHash(input));
 
     classifyAndAppend(db, distributionId, input.channel_key, input.published_at, authority.state, actorRealm(actor));
@@ -341,7 +340,7 @@ export const reportDistributionByPartnerIdempotent = (
  * A CORRECTION: a new revision with provenance, never an UPDATE over a
  * filed fact. Anything already submitted to the ORD keeps its original
  * revision's provenance. ALWAYS re-resolves authority against the
- * CORRECTED published_at (Phase 5 review note 4's fourth bullet) - a
+ * CORRECTED published_at - a
  * correction that moves published_at across an authority boundary (e.g.
  * from an old creative's authorized interval into a newer one's) must
  * re-pin, never silently retain the prior revision's now-wrong authority.
@@ -375,7 +374,7 @@ export const correctDistribution = (db: Database.Database, actor: DistributionAc
     const revisionId = id();
     db.prepare(`INSERT INTO engagement_distribution_revisions(id, distribution_id, revision, supersedes_revision_id, engagement_revision_id, creative_revision_id, channel_key, channel_policy_status, channel_policy_revision, resource_kind, resource_identifier, distribution_resource_url, published_at, ended_at, reported_by, correction_reason, evidence_ref, canonical_hash)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(revisionId, distributionId, current.revision + 1, current.id, authority.engagement_revision_id, authority.creative_revision_id, input.channel_key, classification.status, classification.policy_revision, input.resource_kind,
+.run(revisionId, distributionId, current.revision + 1, current.id, authority.engagement_revision_id, authority.creative_revision_id, input.channel_key, classification.status, classification.policy_revision, input.resource_kind,
         input.resource_identifier, input.distribution_resource_url, input.published_at, input.ended_at, actorRealm(actor), correctionReason, input.evidence_ref, canonicalHash);
 
     classifyAndAppend(db, distributionId, input.channel_key, input.published_at, authority.state, actorRealm(actor));
@@ -386,8 +385,7 @@ export const correctDistribution = (db: Database.Database, actor: DistributionAc
 
 /**
  * Explicit legal-predecessor matrices for the removal and (admin-writable
- * half of the) compliance lifecycles (Phase 5 holistic review, P1 finding
- * 5) - append-only events with no prior validation let REMOVAL_CONFIRMED
+ * half of the) compliance lifecycles  - append-only events with no prior validation let REMOVAL_CONFIRMED
  * fire with no REMOVAL_REQUIRED/CLAIMED ever recorded, REMOVAL_CLAIMED
  * fire again after REMOVAL_CONFIRMED, or REMOVAL_CONFIRMED repeat. `null`
  * in a set means "legal when nothing has been recorded yet for the

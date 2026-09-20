@@ -23,7 +23,7 @@ import type { AdminPrincipal, PartnerPrincipal } from "./agent-referrals-partner
 
 /**
  * PR-D2: legal-profile supersession & binding semantics. Builds on the
- * PR-D foundation (0050's assertion_source/evidence_ref) and the immutable
+ * PR-D foundation (the schema's assertion_source/evidence_ref) and the immutable
  * revision chain (0043) to make a post-onboarding change of legal identity
  * an achievable, atomic operation between engagement epochs - never a live
  * substitution of contractor inside one engagement.
@@ -107,7 +107,7 @@ export const applyVerifiedLegalProfileForPartnerIdentity = (
     }
 
     db.prepare(`UPDATE partner_identities SET legal_profile_revision_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
-      .run(result.revision_id, input.partnerIdentityId);
+.run(result.revision_id, input.partnerIdentityId);
 
     // Postcondition proves the REAL identity row, re-read fresh (never the
     // caller's own inputs echoed back) - the same coherence proof every
@@ -162,7 +162,7 @@ const classifyEngagementForSupersession = (db: Database.Database, engagement: En
   // SETTLED); it is a named political decision to block here, not an
   // oversight.
   const outstanding = db.prepare(`SELECT 1 FROM reward_settlements WHERE engagement_id = ? AND status IN ('PREPARED', 'PENDING_DOCUMENT') LIMIT 1`)
-    .get(engagement.id);
+.get(engagement.id);
   if (outstanding) return { blocked: true, reason: "OUTSTANDING_SETTLEMENT", engagementId: engagement.id };
 
   const currentEffective = currentEffectiveRewardSnapshot(db, engagement.id);
@@ -176,7 +176,7 @@ const classifyEngagementForSupersession = (db: Database.Database, engagement: En
 
   if (currentEffective) {
     const hasRecoveryExposureForCurrent = recoveryExposureEvidenceForEngagement(db, engagement.id)
-      .some((evidence) => evidence.effective_reward_snapshot_id === currentEffective.id);
+.some((evidence) => evidence.effective_reward_snapshot_id === currentEffective.id);
     if (hasRecoveryExposureForCurrent) return { blocked: false, reason: "RECOVERY_EXPOSURE" };
   }
 
@@ -256,22 +256,23 @@ const CHANGE_REQUEST_COLUMNS = `id, partner_identity_id, legal_form, tax_mode, o
 
 export const legalProfileChangeRequestById = (db: Database.Database, requestId: string): LegalProfileChangeRequestRow | null =>
   (db.prepare(`SELECT ${CHANGE_REQUEST_COLUMNS} FROM agent_referrals_legal_profile_change_requests WHERE id = ?`)
-    .get(requestId) as LegalProfileChangeRequestRow | undefined) ?? null;
+.get(requestId) as LegalProfileChangeRequestRow | undefined) ?? null;
 
 export const pendingLegalProfileChangeRequestForPartner = (db: Database.Database, partnerIdentityId: string): LegalProfileChangeRequestRow | null =>
   (db.prepare(`SELECT ${CHANGE_REQUEST_COLUMNS} FROM agent_referrals_legal_profile_change_requests WHERE partner_identity_id = ? AND state = 'PENDING'`)
-    .get(partnerIdentityId) as LegalProfileChangeRequestRow | undefined) ?? null;
+.get(partnerIdentityId) as LegalProfileChangeRequestRow | undefined) ?? null;
 
 /**
  * The request-chain HEAD for a partner - how many change requests have ever
  * been filed, 0 when none has. The SECOND half of a supersession's pin, and
  * the half that actually covers a rejection: a rejection mints no revision,
  * so the verified-revision pin below does not move, but it does free the
- * "one PENDING per partner" slot. See 0056's header for the counterexample.
+ * "one PENDING per partner" slot, which the verified-revision pin alone
+ * would miss.
  */
 export const legalProfileChangeRequestHeadForPartner = (db: Database.Database, partnerIdentityId: string): number =>
   ((db.prepare("SELECT MAX(request_sequence) AS head FROM agent_referrals_legal_profile_change_requests WHERE partner_identity_id = ?")
-    .get(partnerIdentityId) as { head: number | null }).head) ?? 0;
+.get(partnerIdentityId) as { head: number | null }).head) ?? 0;
 
 /**
  * The revision NUMBER a supersession must be authored against - the same MAX
@@ -402,7 +403,7 @@ export const submitLegalProfileSupersession = (
     try {
       db.prepare(`INSERT INTO agent_referrals_legal_profile_change_requests(id, partner_identity_id, legal_form, tax_mode, opf, full_name, short_name, inn, kpp, registration_number, legal_address, assertion_source, evidence_ref, reason, supersedes_revision_id, request_sequence, created_by)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(requestId, partnerIdentityId, input.legalForm, input.taxMode,
+.run(requestId, partnerIdentityId, input.legalForm, input.taxMode,
           requisites.opf, requisites.full_name, requisites.short_name, requisites.inn, requisites.kpp, requisites.registration_number, requisites.legal_address,
           assertionSource, evidenceRef, input.reason, current.id, requestHead + 1, createdBy);
     } catch (error) {
@@ -510,7 +511,7 @@ export const verifyLegalProfileSupersession = (
       db.prepare(`UPDATE agent_referrals_legal_profile_change_requests
         SET state = 'STALE', resolved_at = CURRENT_TIMESTAMP, resolved_by = ?, resolution_reason = ?
         WHERE id = ? AND state = 'PENDING'`)
-        .run(admin.admin_id, `expected supersedes_revision_id ${request.supersedes_revision_id}, current is ${current.id}`, requestId);
+.run(admin.admin_id, `expected supersedes_revision_id ${request.supersedes_revision_id}, current is ${current.id}`, requestId);
       recordPartnerIdentityEvent(db, identity.id, "LEGAL_PROFILE_CHANGE_STALE", "ADMIN", {
         request_id: requestId, expected_supersedes_revision_id: request.supersedes_revision_id, actual_current_revision_id: current.id,
       });

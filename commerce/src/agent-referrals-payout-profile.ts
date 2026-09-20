@@ -34,11 +34,11 @@ const REDACTED_COLUMNS = "id, partner_identity_id, revision, kind, destination_k
 
 export const currentPayoutProfile = (db: Database.Database, partnerIdentityId: string): PayoutProfileReadModel | null =>
   (db.prepare(`SELECT ${REDACTED_COLUMNS} FROM payout_profile_revisions WHERE partner_identity_id = ? ORDER BY revision DESC LIMIT 1`)
-    .get(partnerIdentityId) as PayoutProfileReadModel | undefined) ?? null;
+.get(partnerIdentityId) as PayoutProfileReadModel | undefined) ?? null;
 
 export const allPayoutProfileRevisions = (db: Database.Database, partnerIdentityId: string): PayoutProfileReadModel[] =>
   db.prepare(`SELECT ${REDACTED_COLUMNS} FROM payout_profile_revisions WHERE partner_identity_id = ? ORDER BY revision ASC`)
-    .all(partnerIdentityId) as PayoutProfileReadModel[];
+.all(partnerIdentityId) as PayoutProfileReadModel[];
 
 export type SetPayoutDestinationInput = {
   step_up_grant_id: string;
@@ -58,7 +58,7 @@ export type SetPayoutDestinationInput = {
 export const setPartnerPayoutDestinationInTransaction = (db: Database.Database, partner: PartnerPrincipal, input: SetPayoutDestinationInput): PayoutProfileReadModel => {
   {
     const current = db.prepare("SELECT id, revision FROM payout_profile_revisions WHERE partner_identity_id = ? ORDER BY revision DESC LIMIT 1")
-      .get(partner.partner_identity_id) as { id: string; revision: number } | undefined;
+.get(partner.partner_identity_id) as { id: string; revision: number } | undefined;
 
     consumeStepUpGrantInTransaction(db, partner, input.step_up_grant_id, "PAYOUT_PROFILE_SUPERSESSION", { supersedes_revision_id: current?.id ?? null });
 
@@ -67,7 +67,7 @@ export const setPartnerPayoutDestinationInTransaction = (db: Database.Database, 
     const nextRevision = (current?.revision ?? 0) + 1;
     db.prepare(`INSERT INTO payout_profile_revisions(id, partner_identity_id, revision, kind, key_id, ciphertext, nonce, destination_kind, destination_last4, supersedes_revision_id, step_up_grant_id)
       VALUES (?, ?, ?, 'ACTIVE_DESTINATION', ?, ?, ?, ?, ?, ?, ?)`)
-      .run(revisionId, partner.partner_identity_id, nextRevision, encrypted.key_id, encrypted.ciphertext, encrypted.nonce, input.destination_kind, input.destination_last4, current?.id ?? null, input.step_up_grant_id);
+.run(revisionId, partner.partner_identity_id, nextRevision, encrypted.key_id, encrypted.ciphertext, encrypted.nonce, input.destination_kind, input.destination_last4, current?.id ?? null, input.step_up_grant_id);
 
     recordPartnerIdentityEvent(db, partner.partner_identity_id, "PAYOUT_PROFILE_REVISION_CREATED", "PARTNER", { revision_id: revisionId, revision: nextRevision, kind: "ACTIVE_DESTINATION" });
     return currentPayoutProfile(db, partner.partner_identity_id)!;
@@ -109,7 +109,7 @@ export const setPartnerPayoutDestinationIdempotent = (
 export const revokePartnerPayoutDestinationInTransaction = (db: Database.Database, partner: PartnerPrincipal, stepUpGrantId: string): PayoutProfileReadModel => {
   {
     const current = db.prepare("SELECT id, revision FROM payout_profile_revisions WHERE partner_identity_id = ? ORDER BY revision DESC LIMIT 1")
-      .get(partner.partner_identity_id) as { id: string; revision: number } | undefined;
+.get(partner.partner_identity_id) as { id: string; revision: number } | undefined;
 
     consumeStepUpGrantInTransaction(db, partner, stepUpGrantId, "PAYOUT_PROFILE_SUPERSESSION", { supersedes_revision_id: current?.id ?? null });
 
@@ -117,7 +117,7 @@ export const revokePartnerPayoutDestinationInTransaction = (db: Database.Databas
     const nextRevision = (current?.revision ?? 0) + 1;
     db.prepare(`INSERT INTO payout_profile_revisions(id, partner_identity_id, revision, kind, supersedes_revision_id, step_up_grant_id)
       VALUES (?, ?, ?, 'REVOKED', ?, ?)`)
-      .run(revisionId, partner.partner_identity_id, nextRevision, current?.id ?? null, stepUpGrantId);
+.run(revisionId, partner.partner_identity_id, nextRevision, current?.id ?? null, stepUpGrantId);
 
     recordPartnerIdentityEvent(db, partner.partner_identity_id, "PAYOUT_PROFILE_REVISION_CREATED", "PARTNER", { revision_id: revisionId, revision: nextRevision, kind: "REVOKED" });
     return currentPayoutProfile(db, partner.partner_identity_id)!;
