@@ -19,10 +19,13 @@ const world = (options: {
   lineage?: "LEGACY" | "SUPPORTED";
   predecessorGateOpen?: boolean;
   armed?: boolean;
+  installedSha256?: string;
 } = {}) => {
   const log: string[] = [];
   let gateClosed = !options.predecessorGateOpen;
   let observed = afterCutover;
+  /** Digest of the database file at rest, as a restore would actually change it. */
+  let installed = options.installedSha256 ?? "0".repeat(64);
   const receipts = new InMemoryBootstrapRollbackReceiptStore();
   const store = new InMemoryReleaseAuthorityStore();
   const sessions = new DeploySessions(store, () => now);
@@ -47,13 +50,13 @@ const world = (options: {
       },
     },
     restorer: {
-      async stopSuccessorRuntimes() { log.push("stop-successor"); },
-      async restoreDatabase(archive) { log.push(`restore-db:${archive.ref}`); },
-      async restoreTopology() { log.push("restore-topology"); observed = options.restoredTopology ?? before; },
-      async startPredecessorRuntime() { log.push("start-predecessor"); },
+      async ensureSuccessorRuntimesStopped() { log.push("stop-successor"); },
+      async ensurePredecessorDatabaseRestored(archive) { log.push(`restore-db:${archive.ref}`); installed = options.restoredSha256 ?? predecessorDatabase.sha256; },
+      async ensurePreDeployTopologyRestored() { log.push("restore-topology"); observed = options.restoredTopology ?? before; },
+      async ensurePredecessorRuntimeRunning() { log.push("start-predecessor"); },
     },
     identity: {
-      async restedFileSha256() { return options.restoredSha256 ?? predecessorDatabase.sha256; },
+      async restedFileSha256() { return installed; },
       async runningLineage() { return options.lineage ?? "LEGACY"; },
     },
     predecessorGate: {
@@ -63,7 +66,7 @@ const world = (options: {
     topology: { async observe() { return observed; } },
   };
   return {
-    log, receipts, store, sessions, session,
+    log, receipts, store, sessions, session, portsFor: () => ports,
     gate: () => store.deploymentGate(),
     rollback: new BootstrapRollback(ports),
     prepare: () => new BootstrapRollback(ports).prepare(store, session.id, { rollbackId: "rb-1", nonce: "n-1", expiresAt: "2026-09-20T06:00:00.000Z" }),
@@ -144,6 +147,73 @@ describe("bootstrap reverse handoff", () => {
 
     expect(log.filter((entry) => entry.startsWith("restore-db")).length).toBe(restoresBefore);
     expect(receipts.read("rb-1")!.stage).toBe("COMPLETED");
+  });
+
+  it("closes the arming race by reserving the direction before the successor is archived", async () => {
+    // The successor database is about to be archived and lost, so which way
+    // recovery goes has to be decided in it first. Otherwise another runner
+    // arms external effects - and takes a real payment - behind a rollback
+    // that already committed to restoring the predecessor.
+    const { prepare, sessions, session, store } = world();
+    await prepare();
+
+    expect(store.get(session.id)!.bootstrapRollbackId).toBe("rb-1");
+    expect(() => sessions.armExternalEffects(session.id, "owner")).toThrow("BOOTSTRAP_ROLLBACK_RESERVED");
+    expect(() => sessions.completeTarget(session.id, "owner", afterCutover)).toThrow("BOOTSTRAP_ROLLBACK_RESERVED");
+  });
+
+  it("refuses a second reverse handoff over the first", async () => {
+    const { prepare, sessions, session } = world();
+    await prepare();
+    expect(() => sessions.reserveBootstrapRollback(session.id, "owner", "rb-2")).toThrow("BOOTSTRAP_ROLLBACK_ALREADY_RESERVED");
+    // The same one again is simply the same decision, so it is a no-op.
+    expect(sessions.reserveBootstrapRollback(session.id, "owner", "rb-1").bootstrapRollbackId).toBe("rb-1");
+  });
+
+  it("does not restore over a database that is already the right one", async () => {
+    // The crash this models: the file was replaced, the RESTORED marker was
+    // not written. A replay must not write over it a second time.
+    const { prepare, rollback, log } = world({ installedSha256: predecessorDatabase.sha256 });
+    const { envelope } = await prepare();
+
+    await rollback.execute("rb-1", envelope);
+
+    expect(log).not.toContain(`restore-db:${predecessorDatabase.ref}`);
+    expect(log).toContain("start-predecessor");
+  });
+
+  it("marks the restore durable before the predecessor is ever started", async () => {
+    // A marker written after startup would let a replay restore the database
+    // out from under a predecessor that was already running and writing.
+    const { prepare, rollback, receipts, log } = world({ lineage: "SUPPORTED" });
+    const { envelope } = await prepare();
+
+    await expect(rollback.execute("rb-1", envelope)).rejects.toThrow("PREDECESSOR_LINEAGE_NOT_RESTORED");
+    expect(receipts.read("rb-1")!.stage).toBe("RESTORED");
+    expect(log.indexOf("restore-topology")).toBeLessThan(log.indexOf("start-predecessor"));
+  });
+
+  it("refuses a receipt that skips straight from prepared to completed", async () => {
+    // Each stage is the proof the next rests on; skipping records a finished
+    // rollback that never restored anything.
+    const { prepare, receipts } = world();
+    await prepare();
+    expect(() => receipts.advance("rb-1", "COMPLETED")).toThrow("BOOTSTRAP_ROLLBACK_STAGE_SKIP");
+  });
+
+  it("refuses an expiry that has already passed, but never lets one cancel a started rollback", async () => {
+    const expired = world();
+    await expect(
+      new BootstrapRollback({ ...expired.portsFor(), clock: () => now })
+        .prepare(expired.store, expired.session.id, { rollbackId: "rb-expired", nonce: "n", expiresAt: "2026-09-19T00:00:00.000Z" }),
+    ).rejects.toThrow("BOOTSTRAP_ROLLBACK_EXPIRY_INVALID");
+
+    // Once PREPARED is durable the window no longer matters: the operation has
+    // begun, and the only safe direction is to finish it.
+    const started = world();
+    const { envelope } = await started.prepare();
+    const late = new BootstrapRollback({ ...started.portsFor(), clock: () => new Date("2026-09-21T00:00:00.000Z") });
+    expect((await late.execute("rb-1", envelope)).stage).toBe("COMPLETED");
   });
 
   it("refuses a rollback id whose envelope is a different rollback", async () => {

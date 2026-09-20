@@ -90,9 +90,12 @@ export class InMemoryBootstrapRollbackReceiptStore implements BootstrapRollbackR
   advance(rollbackId: string, stage: BootstrapRollbackStage): BootstrapRollbackReceipt {
     const receipt = this.#receipts.get(rollbackId);
     if (!receipt) throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_RECEIPT_NOT_FOUND", rollbackId);
-    if (STAGE_ORDER.indexOf(stage) < STAGE_ORDER.indexOf(receipt.stage)) {
-      throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_STAGE_REGRESSION", `${receipt.stage} -> ${stage}`);
-    }
+    const from = STAGE_ORDER.indexOf(receipt.stage);
+    const to = STAGE_ORDER.indexOf(stage);
+    if (to < from) throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_STAGE_REGRESSION", `${receipt.stage} -> ${stage}`);
+    // Each stage is the proof the next one rests on, so skipping one would let
+    // a caller record a finished rollback that never restored anything.
+    if (to > from + 1) throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_STAGE_SKIP", `${receipt.stage} -> ${stage}`);
     const next = { ...receipt, stage };
     this.#receipts.set(rollbackId, next);
     return next;
@@ -123,11 +126,17 @@ export interface SuccessorArchiver {
   quiesceAndArchive(): Promise<DatabaseArchive>;
 }
 
+/**
+ * Every operation is an `ensure`, and every one is idempotent. A crash can land
+ * between any two of them, and a replay must be able to run the whole sequence
+ * again without asking what the last attempt got through - "make it so" is
+ * replayable, "do it" is not.
+ */
 export interface PredecessorRestorer {
-  stopSuccessorRuntimes(): Promise<void>;
-  restoreDatabase(archive: DatabaseArchive): Promise<void>;
-  restoreTopology(topology: PreDeployTopology): Promise<void>;
-  startPredecessorRuntime(): Promise<void>;
+  ensureSuccessorRuntimesStopped(): Promise<void>;
+  ensurePredecessorDatabaseRestored(archive: DatabaseArchive): Promise<void>;
+  ensurePreDeployTopologyRestored(topology: PreDeployTopology): Promise<void>;
+  ensurePredecessorRuntimeRunning(): Promise<void>;
 }
 
 /**
@@ -179,14 +188,26 @@ export class BootstrapRollback {
     if (!session) throw new BootstrapRollbackError("DEPLOY_SESSION_NOT_FOUND", sessionId);
     assertReversible(session, authority.deploymentGate());
     const now = (this.ports.clock ?? (() => new Date()))();
+    if (Date.parse(input.expiresAt) <= now.getTime()) throw new BootstrapRollbackError("BOOTSTRAP_ROLLBACK_EXPIRY_INVALID", input.expiresAt);
+
+    // Direction is chosen in the successor's own authority before that database
+    // can be archived and lost. From here arming is refused, so no external
+    // effect can appear behind a rollback that has already committed to
+    // restoring the predecessor. A failure after this leaves a rollback intent
+    // and sales closed - safe, resumable, and deliberately not cleared
+    // automatically, since clearing it would reopen the very race it closes.
+    const rollbackId = input.rollbackId ?? randomUUID();
+    authority.reserveBootstrapRollback(sessionId, session.ownerId, now, rollbackId);
 
     const successorDatabase = await this.ports.archiver.quiesceAndArchive();
+    if (!successorDatabase.ref.trim()) throw new BootstrapRollbackError("SUCCESSOR_ARCHIVE_REF_INVALID");
+    if (!/^[a-f0-9]{64}$/.test(successorDatabase.sha256)) throw new BootstrapRollbackError("SUCCESSOR_ARCHIVE_DIGEST_INVALID");
     // Read after quiescing: the vector recorded is the one the successor was
     // actually serving when it stopped, not one observed earlier and hoped for.
     const successorTopology = await this.ports.topology.observe();
 
     const envelope: BootstrapRollbackEnvelope = {
-      rollbackId: input.rollbackId ?? randomUUID(),
+      rollbackId,
       cutoverId: session.adoptedCutoverId!,
       successorSessionId: session.id,
       predecessorDatabase: { ref: session.predecessorDatabaseRef!, sha256: session.predecessorDatabaseSha256! },
@@ -227,25 +248,35 @@ export class BootstrapRollback {
     return current;
   }
 
+  /**
+   * RESTORED means the predecessor database and topology are in place and the
+   * digest checked, and deliberately that nothing has been started yet. Marking
+   * it after startup instead left a window where a crash would replay the
+   * restore over a predecessor that was already running and writing.
+   */
   private async restore(receipt: BootstrapRollbackReceipt): Promise<BootstrapRollbackReceipt> {
     const { envelope } = receipt;
-    await this.ports.restorer.stopSuccessorRuntimes();
-    await this.ports.restorer.restoreDatabase(envelope.predecessorDatabase);
+    await this.ports.restorer.ensureSuccessorRuntimesStopped();
 
-    // Verified while nothing is running: once writers start, the file legitimately
-    // diverges from the archive and this digest could never match again.
-    const restoredSha256 = await this.ports.identity.restedFileSha256();
-    if (restoredSha256 !== envelope.predecessorDatabase.sha256) {
-      throw new BootstrapRollbackError("PREDECESSOR_DATABASE_DIGEST_MISMATCH", restoredSha256);
+    // A replay may find the file already in place. Overwriting it blindly would
+    // be a second restore nobody asked for, so the digest decides.
+    if (await this.ports.identity.restedFileSha256() !== envelope.predecessorDatabase.sha256) {
+      await this.ports.restorer.ensurePredecessorDatabaseRestored(envelope.predecessorDatabase);
+      const restoredSha256 = await this.ports.identity.restedFileSha256();
+      // Checked while nothing runs: once writers start, the file legitimately
+      // diverges from the archive and this could never be checked again.
+      if (restoredSha256 !== envelope.predecessorDatabase.sha256) {
+        throw new BootstrapRollbackError("PREDECESSOR_DATABASE_DIGEST_MISMATCH", restoredSha256);
+      }
     }
 
-    await this.ports.restorer.restoreTopology(envelope.preDeployTopology);
-    await this.ports.restorer.startPredecessorRuntime();
+    await this.ports.restorer.ensurePreDeployTopologyRestored(envelope.preDeployTopology);
     return this.ports.receipts.advance(envelope.rollbackId, "RESTORED");
   }
 
   private async complete(receipt: BootstrapRollbackReceipt): Promise<BootstrapRollbackReceipt> {
     const { envelope } = receipt;
+    await this.ports.restorer.ensurePredecessorRuntimeRunning();
     const lineage = await this.ports.identity.runningLineage();
     if (lineage !== "LEGACY") throw new BootstrapRollbackError("PREDECESSOR_LINEAGE_NOT_RESTORED", lineage);
 

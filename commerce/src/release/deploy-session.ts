@@ -43,9 +43,19 @@ export type DeploySession = {
   readonly predecessorDatabaseSha256?: string;
   /** Digest of every immutable field of the adopted envelope; see canonicalEnvelopeSha256. */
   readonly adoptedEnvelopeSha256?: string;
+  /**
+   * Set once a bootstrap reverse handoff is reserved, and never cleared.
+   *
+   * Preparing one archives the successor and then loses the ability to consult
+   * this database at all, so the direction of recovery has to be chosen here,
+   * atomically, before that happens. Without it another runner could arm
+   * external effects - and take a real payment - while a rollback already
+   * committed to restoring the predecessor.
+   */
+  readonly bootstrapRollbackId?: string;
 };
 
-export type DeploySessionPatch = Partial<Pick<DeploySession, "ownerId" | "state" | "rollbackAuthority" | "mutationObserved" | "leaseExpiresAt" | "preDeployTopology" | "observedTopology">>;
+export type DeploySessionPatch = Partial<Pick<DeploySession, "ownerId" | "state" | "rollbackAuthority" | "mutationObserved" | "leaseExpiresAt" | "preDeployTopology" | "observedTopology" | "bootstrapRollbackId">>;
 
 /**
  * Session state and the deployment sales gate are one operational fact, so one
@@ -84,6 +94,8 @@ export interface ReleaseAuthorityStore {
   renewOwnedLease(id: string, ownerId: string, now: Date, leaseExpiresAt: string): DeploySession;
   /** Ownership moves only when the lease has actually lapsed, decided inside the write. */
   takeOverExpiredLease(id: string, newOwnerId: string, now: Date, leaseExpiresAt: string): DeploySession;
+  /** Chooses recovery direction once and for all, in the same write that checks it may be chosen. */
+  reserveBootstrapRollback(id: string, ownerId: string, now: Date, rollbackId: string): DeploySession;
   /** Shaped like SalesGateState's own view, so a capability can be bound to the owning session. */
   deploymentGate(): DeploymentGateView;
 }
@@ -178,6 +190,21 @@ export class InMemoryReleaseAuthorityStore implements ReleaseAuthorityStore {
 
   renewOwnedLease(id: string, ownerId: string, now: Date, leaseExpiresAt: string): DeploySession {
     return this.write(id, ownerId, now, NON_TERMINAL, { leaseExpiresAt });
+  }
+
+  reserveBootstrapRollback(id: string, ownerId: string, now: Date, rollbackId: string): DeploySession {
+    const session = this.required(id);
+    // Idempotent for the same rollback, refused for a different one: a second
+    // reverse handoff over the first would archive the successor twice and
+    // leave two receipts each believing it owns the restore.
+    if (session.bootstrapRollbackId) {
+      if (session.bootstrapRollbackId !== rollbackId) throw new Error("BOOTSTRAP_ROLLBACK_ALREADY_RESERVED");
+      return session;
+    }
+    if (!session.adoptedCutoverId) throw new Error("BOOTSTRAP_ROLLBACK_NOT_A_CUTOVER_SESSION");
+    if (session.rollbackAuthority !== "OLD_LINEAGE_ALLOWED") throw new Error("OLD_LINEAGE_ROLLBACK_FORBIDDEN");
+    if (this.#gateOwnerSessionId !== id) throw new Error("DEPLOYMENT_GATE_NOT_OWNED");
+    return this.write(id, ownerId, now, NON_TERMINAL, { bootstrapRollbackId: rollbackId });
   }
 
   takeOverExpiredLease(id: string, newOwnerId: string, now: Date, leaseExpiresAt: string): DeploySession {
@@ -348,6 +375,10 @@ export class DeploySessions {
   armExternalEffects(id: string, ownerId: string): DeploySession {
     const session = this.owned(id, ownerId);
     if (session.mode !== "MAINTENANCE_CUTOVER") throw new Error("ROLLING_SAFE_ARMS_NO_EXTERNAL_EFFECTS");
+    // The reverse handoff may already have archived the successor and be about
+    // to replace this database. Letting a payment through now would make the
+    // predecessor archive an untrue account of what happened.
+    if (session.bootstrapRollbackId) throw new Error("BOOTSTRAP_ROLLBACK_RESERVED");
     // Readiness stays the orchestrator's job, but arming certification on a
     // knowingly partial deployment is the one misuse worth making impossible
     // here rather than trusting a call order.
@@ -372,6 +403,10 @@ export class DeploySessions {
     return this.store.renewOwnedLease(id, ownerId, this.clock(), new Date(this.clock().getTime() + this.leaseMs).toISOString());
   }
 
+  reserveBootstrapRollback(id: string, ownerId: string, rollbackId: string): DeploySession {
+    return this.store.reserveBootstrapRollback(id, ownerId, this.clock(), rollbackId);
+  }
+
   takeOverExpiredLease(id: string, ownerId: string): DeploySession {
     return this.store.takeOverExpiredLease(id, ownerId, this.clock(), new Date(this.clock().getTime() + this.leaseMs).toISOString());
   }
@@ -386,6 +421,7 @@ export class DeploySessions {
    */
   completeTarget(id: string, ownerId: string, topology: PreDeployTopology): DeploySession {
     const observed = this.observeTopology(id, ownerId, topology);
+    if (observed.bootstrapRollbackId) throw new Error("BOOTSTRAP_ROLLBACK_RESERVED");
     if (!topologyIsTarget(topology, observed.targetSha)) throw new Error("TARGET_TOPOLOGY_NOT_CONVERGED");
     if (observed.mode === "MAINTENANCE_CUTOVER" && observed.rollbackAuthority !== "NEW_LINEAGE_ONLY") {
       throw new Error("MAINTENANCE_CUTOVER_EXTERNAL_EFFECTS_NOT_ARMED");
