@@ -86,6 +86,10 @@ cutover-volume
 db-migrate
 db-migrate-fixtures
 deploy-classification
+deploy-ref-clone
+deploy-ref-origin
+deployment-clone
+deployment-origin
 engagement-publication
 engagement-publication-template
 epoch-b-request-builders

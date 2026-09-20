@@ -108,6 +108,19 @@ export class CoolifyClient {
     return deploymentUuid;
   }
 
+  /**
+   * Restores a retained image for one application, and returns the deployment
+   * to follow. It is not a deploy of a commit: the image already exists or the
+   * call has nothing to restore, which is why `rollbackImages` is checked
+   * first rather than this being allowed to improvise a rebuild.
+   */
+  async rollback(uuid: string, commit: string): Promise<string> {
+    const body = await this.request("POST", `/applications/${encodeURIComponent(uuid)}/rollback`, { commit });
+    const deploymentUuid = String(body.deployment_uuid ?? body.uuid ?? "");
+    if (!deploymentUuid) throw new CoolifyError("COOLIFY_ROLLBACK_NOT_QUEUED", `${uuid} -> ${commit}`);
+    return deploymentUuid;
+  }
+
   async deployment(uuid: string): Promise<CoolifyDeployment> {
     const body = await this.request("GET", `/deployments/${encodeURIComponent(uuid)}`);
     return {
