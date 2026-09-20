@@ -92,10 +92,31 @@ The rest have no successor by design.
 ### The pre-launch discriminators
 
 `orders.reward_authority_kind`, `referral_rewards.reward_authority_kind` and
-`reward_settlements.settlement_flow` go, and every guard whose condition names
-them is restated unconditionally. Two guards retire with them outright, because
-the column is their entire subject; the rest freeze or relate a dozen columns of
-which the discriminator is one, and lose only their condition.
+`reward_settlements.settlement_flow` go. Two guards retire with them outright,
+because the column is their entire subject. Most of the rest freeze or relate a
+dozen columns of which the discriminator is one, and lose only that conjunct.
+
+**The two tuple guards are the exception, and they do not restate the same
+way.** Implementation showed that "unconditionally" is right for one and wrong
+for the other, and the difference is not a detail:
+
+- `reward_settlements`: a settlement without an engagement has no path to
+  appear from a real business action on a clean database - it *is* the deleted
+  slug model. Its arm is not restated, it is removed, and the engagement-scoped
+  arm becomes the whole guard.
+- `orders`: an ordinary order is a real thing, so an unconditional
+  engagement-scoped guard would demand a partner on every sale. Both arms
+  survive, keyed on `resolution_reason` (`DIRECT` / `DISCOUNT_PROMO` /
+  `EXPLICIT_PARTNER_PROMO`), which the domain already decides and which says
+  nothing about when a row was created. The direct arm is deliberately
+  *stronger* than the `LEGACY` arm it replaces: it pins `attributed_agent_id`,
+  `reward_type_snapshot` and `reward_value_snapshot` to null, so the deleted
+  slug model becomes unrepresentable rather than merely unused.
+
+The rule the baseline actually obeys is therefore not "restate every condition
+unconditionally" but: **no surviving condition may mean "this row predates a
+feature"**. Where the remaining branch is a real distinction in today's data, it
+stays and is keyed on something today's domain decides.
 
 `agent_referrals_feature_state` loses `DORMANT` from its CHECK, and the baseline
 seeds `ACTIVE`.
@@ -273,9 +294,14 @@ capability was issued within, and an editable scope is not a scope.
 capability is spent or replaced, never both, and a CHECK says so.
 
 Retirement is only for a capability that was never spent, and only where
-reissue is permitted - after expiry. And because the slot is now a stored
-fact rather than a computed one, **`authorizationDefect()` gains a retired
-case**: without it, retiring a capability would free the index slot while the
+reissue is permitted - after expiry, **and a trigger has to say so**. Retiring
+is what frees the slot, so without that guard a raw `UPDATE` could retire a
+live capability early and issue a second one beside it - defeating the partial
+index rather than passing it. `retired_at` and `expires_at` are both
+`toISOString()`, so they are fixed width, UTC, and compare correctly as text.
+
+And because the slot is now a stored fact rather than a computed one,
+**`authorizationDefect()` gains a retired case**: without it, retiring a capability would free the index slot while the
 old row, still unconsumed, would go on satisfying P7's own predicate. That is
 a code change the baseline brings with it, not a schema detail.
 
@@ -320,6 +346,27 @@ different customer's purchase.
 The boundary is unchanged: **the adapter decides when a field may be set, and
 the schema refuses to let a fact already written be rewritten.**
 
+### The dispatch fence's owner is a deploy session
+
+`(release_id, generation)` is not dead weight: `sameEpoch` uses it to stop a
+second controller unfencing in the middle of the first one's migration, so it
+cannot simply be dropped. But `generation` is the release-generation model this
+change dismantles, and `Domain` already states that the fence belongs to
+release control rather than to an operator's business surface. With
+`deploy_sessions` in the schema the successor is the session itself:
+
+```text
+outbox_authority.dispatch_owner_release_id + dispatch_owner_generation
+    -> dispatch_owner_session_id  REFERENCES deploy_sessions(id)
+outbox_authority_events.owner_release_id + owner_generation
+    -> owner_session_id           REFERENCES deploy_sessions(id)
+```
+
+Ownership is now a real foreign key rather than a pair of free strings, and the
+epoch concept disappears rather than being preserved in a new place. If an
+independent manual mail fence is ever wanted, it deserves its own explicit
+authority - not a legacy epoch shape kept alive in case.
+
 ### The bindings are foreign keys, not conventions
 
 ```text
@@ -344,6 +391,7 @@ enforces what the code currently humours:
 |---|---|---|
 | Feature state `DORMANT` | The CHECK admits it and the dev row is it | The member goes, the CHECK narrows, the seed is `ACTIVE` |
 | Discriminator partitions | Triggers check the partition on insert | The column goes and the triggers become unconditional |
+| Partner reward defaults | `createAgent` writes `'PERCENT', 0`; nothing reads them back, because a reward is decided by the engagement revision that authorises it | `partners.default_reward_type` and `default_reward_value` go, and `createAgent` stops naming them. Both columns are `NOT NULL` with no default, so the code half cannot land before the schema half - this is exactly the coupling the "nullable?" column of the schema-debt list exists for |
 | Outbox attempt authority | Eleven message-level columns remain, one of them read | They go; `emailDispatchDrained` loses its dead term, and `sendTryCount`, `claimForDispatch` and `providerLookupIdentity` lose the parameters they never read |
 
 ### `agents` becomes `partners`
@@ -359,10 +407,28 @@ actually holds - `orders.resolved_partner_id`,
 referencing a table called `agents` is the confusion this removes.
 
 The cost is bounded and measured: fourteen foreign keys, fifteen SQL statements
-in the runtime, fifty-three files mentioning the word. `partner_identities`
+in the runtime, fifty-three files mentioning the word. Thirteen of the fourteen
+are repointed; the fourteenth was `reward_adjustments.agent_id`, and it leaves
+with its table. `partner_identities`
 stays a separate table - authentication and personal data are a different
 bounded concept from the operational partner, and a one-to-one relationship
 does not make them one thing.
+
+## Genesis, and what is not genesis
+
+The baseline creates the zero state of the schema itself: `schema_identity`,
+the `outbox_authority`, `emergency_sales_gate` and
+`unisender_event_dump_control` singletons, `agent_referrals_feature_state` at
+`ACTIVE`, and the two immutable advertising policy tables (nine channels, ten
+formats - and the reporting basis genuinely differs per format, so a uniform
+seed would be wrong). Each is a row whose absence a runtime reads as *fail
+closed* rather than as *empty*: dispatch stays fenced, the ORD path has no
+policy to resolve against, and lineage is unanswerable.
+
+The catalogue is **not** here. Cities, occurrences and operational settings
+belong to `launch-seed.ts`, which runs against a database this file has already
+made trustworthy. The legal release is not seeded at all - it is republished
+through `commerce:legal-release:publish`, so the publication ledger is real.
 
 ## What the baseline is not
 

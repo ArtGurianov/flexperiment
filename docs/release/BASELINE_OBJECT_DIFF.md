@@ -21,7 +21,7 @@ from the dumped effective schema is object-for-object identical to the
 own, which is the only reason each one is reviewable in isolation.
 
 ```
-SUMMARY tables -8 +6; objects -60 +35
+SUMMARY tables -8 +6; objects -65 +40
 ```
 
 ## 1. Removals with no successor
@@ -122,8 +122,19 @@ One table renamed; thirteen foreign keys repointed
 `engagement_promo_authorizations.partner_id`,
 `engagement_creative_revisions.partner_id`).
 
+The specification measured **fourteen**; thirteen are repointed. The fourteenth
+was `reward_adjustments.agent_id`, and it leaves with its table in group 1.
+Both documents now say so.
+
 The `agent_id` **columns keep their names**. Renaming them is a separate change
 with a separate cost, and it is not what made the table's name wrong.
+
+`default_reward_type` and `default_reward_value` do not survive the rename.
+`createAgent` writes `'PERCENT', 0` and nothing reads them back - a reward is
+decided by the engagement revision that authorises it. Both are `NOT NULL` with
+no default, so **the code half cannot land in this batch**: narrowing the
+`INSERT` while the ledger is still the live schema breaks `createAgent` against
+it. The probe is in the report; the two halves move together in the swap.
 
 ## 7. The additions
 
@@ -133,9 +144,9 @@ onward.
 | Object | Structural contract, proved by probe |
 |---|---|
 | `schema_identity` | Singleton; `lineage` CHECKed to the launch value; no UPDATE, no DELETE. |
-| `deploy_sessions` | At most one non-terminal session (partial unique index). A terminal state with the gate shut, a `ROLLING_SAFE` session with the gate shut, and `SAFE_ABORTED` beside an observed mutation are all CHECK-refused. Identity frozen; `pre_deploy_topology` and the predecessor digests write-once; `observed_topology` deliberately **not** frozen, because it is the reading. `mutation_observed` and `rollback_authority` one-way; a terminal session admits no update at all. |
+| `deploy_sessions` | At most one non-terminal session (partial unique index). `pre_deploy_topology` is `NOT NULL`: both entry points take it as a required argument, so a session without the snapshot a safe abort is decided from cannot exist. A terminal state with the gate shut, a `ROLLING_SAFE` session with the gate shut, `SAFE_ABORTED` beside an observed mutation, and a half-adopted handoff are all CHECK-refused. **Frozen, not write-once**: the snapshot and all four adoption fields arrive in `AcquireInput` and appear nowhere in `DeploySessionPatch`, so after acquisition they have no legal path of change at all - a write-once rule would be weaker than the contract. `observed_topology` deliberately **not** frozen, because it is the reading. `mutation_observed` and `rollback_authority` one-way; a terminal session admits no update at all. |
 | `certification_runs` | `revision` advances by exactly one; phase and cleanup direction never move backwards; `run_id`, `release_sha`, `started_at` immutable; a recorded failure never rewritten or cleared; `pending_command` A→B structurally refused; `superseded_command` write-once; eleven evidence identifiers write-once. |
-| `certification_capabilities` | Slot as a **stored** fact - `UNIQUE(deployment_session_id) WHERE consumed_at IS NULL AND retired_at IS NULL` - because a partial index cannot express "unexpired" and an expired capability would otherwise block its own replacement. `consumed_at`/`retired_at` mutually exclusive and one-way; scope columns frozen. |
+| `certification_capabilities` | Slot as a **stored** fact - `UNIQUE(deployment_session_id) WHERE consumed_at IS NULL AND retired_at IS NULL` - because a partial index cannot express "unexpired" and an expired capability would otherwise block its own replacement. `consumed_at`/`retired_at` mutually exclusive and one-way; scope columns frozen. A **retirement guard** is what makes the slot safe: retiring is what frees it, so without one a raw `UPDATE` could retire a live capability early and issue a second beside it, defeating the partial index rather than passing it. Retirement is only for a capability never spent, and only at or after `expires_at`. |
 | `runtime_instance_evidence` | Keyed by instance, not unit; a second row per unit is expected. Instance identity frozen. |
 | `orders.certification_run_id` | The only certification discriminator. `NULL` is an ordinary order. No `order_purpose`. |
 
@@ -143,7 +154,37 @@ Bindings are foreign keys: `certification_capabilities.run_id →
 certification_runs.run_id`, `.deployment_session_id → deploy_sessions.id`,
 `orders.certification_run_id → certification_runs.run_id`.
 
-## 8. One defect closed, not carried forward
+## 7a. The dispatch fence's owner
+
+`outbox_authority.dispatch_owner_release_id` + `dispatch_owner_generation`
+become one `dispatch_owner_session_id REFERENCES deploy_sessions(id)`, and
+`outbox_authority_events` likewise gains `owner_session_id`. The pair really
+does protect ownership today - `sameEpoch` stops a second controller unfencing
+mid-migration - so it could not simply be dropped; but `generation` belongs to
+the release-generation model being dismantled, and the fence belongs to release
+control. Ownership becomes a real foreign key, and the epoch concept
+disappears instead of being preserved somewhere new.
+
+## 8. Genesis rows
+
+The baseline creates the schema's own zero state, and **this is new**: an
+earlier draft of this document said "the baseline seeds `ACTIVE`" while the SQL
+contained no `INSERT` at all.
+
+`schema_identity`; the `outbox_authority`, `emergency_sales_gate` and
+`unisender_event_dump_control` singletons; `agent_referrals_feature_state` at
+`ACTIVE`; nine `ad_channel_policy` rows and ten `ord_reporting_period_policy`
+rows. Each is a row whose absence a runtime reads as *fail closed* rather than
+*empty*. The policy tables are append-only and immutable, and their
+`reporting_basis` differs per format - three of the ten are
+`PROVIDER_SPECIAL_PERIOD` - so they are generated from the ledger rather than
+retyped.
+
+The catalogue is deliberately **not** here: cities, occurrences and operational
+settings belong to `launch-seed.ts`, and the legal release is republished
+rather than seeded.
+
+## 9. One defect closed, not carried forward
 
 `0053` added four tax snapshot fields validated on INSERT by the settlement
 tuple guard; `0058` reinstalled
@@ -159,6 +200,21 @@ Both sides were run in one process, the ledger as the negative control:
 ledger    UPDATE ACCEPTED -> status=PREPARED hash=rewritten
 baseline  UPDATE REFUSED  -> REWARD_SETTLEMENT_AUTHORITY_COLUMNS_IMMUTABLE
 ```
+
+## How the guards stay proved after the ledger is deleted
+
+`commerce/test/baseline-schema.test.ts` builds a database from this file and
+asserts behaviour, not text. Thirty cases: genesis, the single-live-session
+index, every refused gate/state combination, the adoption tuple, freezing vs
+retaking topology, the monotonic bits, the capability slot and premature
+retirement, run CAS and monotonicity, armed-command replacement, the eleven
+write-once evidence identifiers, and the tax-snapshot defect.
+
+Each guard, CHECK and partial predicate was removed in turn and the suite
+re-run. Every one of them kills at least one case. That sweep is the reason the
+file is worth having: it found a CHECK - "spent or replaced, never both" - that
+nothing tested, because the retirement guard was answering first in the only
+direction being exercised.
 
 ## What is not in the delta, and why
 

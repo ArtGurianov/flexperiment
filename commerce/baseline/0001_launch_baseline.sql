@@ -850,18 +850,16 @@ END;
 CREATE TABLE outbox_authority (
   singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
   email_dispatch_paused INTEGER NOT NULL DEFAULT 0 CHECK (email_dispatch_paused IN (0, 1)),
-  dispatch_owner_release_id TEXT,
-  dispatch_owner_generation INTEGER,
+  dispatch_owner_session_id TEXT REFERENCES deploy_sessions(id),
   revision INTEGER NOT NULL DEFAULT 1,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  CHECK ((email_dispatch_paused = 1) = (dispatch_owner_release_id IS NOT NULL))
+  CHECK ((email_dispatch_paused = 1) = (dispatch_owner_session_id IS NOT NULL))
 );
 
 CREATE TABLE outbox_authority_events (
   id TEXT PRIMARY KEY,
   action TEXT NOT NULL CHECK (action IN ('DISPATCH_FENCED', 'DISPATCH_UNFENCED')),
-  owner_release_id TEXT NOT NULL,
-  owner_generation INTEGER,
+  owner_session_id TEXT NOT NULL REFERENCES deploy_sessions(id),
   reason TEXT NOT NULL,
   revision INTEGER NOT NULL,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -2991,8 +2989,6 @@ CREATE TABLE partners (
   display_name TEXT NOT NULL,
   email TEXT NOT NULL,
   enabled INTEGER NOT NULL DEFAULT 1 CHECK (enabled IN (0, 1)),
-  default_reward_type TEXT NOT NULL CHECK (default_reward_type IN ('PERCENT', 'FIXED')),
-  default_reward_value INTEGER NOT NULL CHECK (default_reward_value >= 0),
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
@@ -3119,7 +3115,7 @@ CREATE TABLE deploy_sessions (
   deployment_gate_closed INTEGER NOT NULL DEFAULT 0 CHECK (deployment_gate_closed IN (0, 1)),
   created_at TEXT NOT NULL,
   lease_expires_at TEXT NOT NULL,
-  pre_deploy_topology TEXT,
+  pre_deploy_topology TEXT NOT NULL,
   observed_topology TEXT,
   adopted_cutover_id TEXT UNIQUE,
   adopted_envelope_sha256 TEXT,
@@ -3131,7 +3127,18 @@ CREATE TABLE deploy_sessions (
   -- A rolling release does not fence; that is what makes it rolling.
   CHECK (NOT (mode = 'ROLLING_SAFE' AND deployment_gate_closed = 1)),
   -- A safe abort claims production was never touched, so the two cannot coexist.
-  CHECK (NOT (state = 'SAFE_ABORTED' AND mutation_observed = 1))
+  CHECK (NOT (state = 'SAFE_ABORTED' AND mutation_observed = 1)),
+  -- Adoption is one fact with four parts. `cutover-handoff` writes them
+  -- together and `bootstrap-rollback` reads them together, so a session
+  -- carrying an archive digest but no cutover id - or a cutover id with no
+  -- archive to return to - is not a partial handoff, it is a corrupt one.
+  CHECK (
+    (adopted_cutover_id IS NULL AND adopted_envelope_sha256 IS NULL
+      AND predecessor_database_ref IS NULL AND predecessor_database_sha256 IS NULL)
+    OR
+    (adopted_cutover_id IS NOT NULL AND adopted_envelope_sha256 IS NOT NULL
+      AND predecessor_database_ref IS NOT NULL AND predecessor_database_sha256 IS NOT NULL)
+  )
 );
 
 -- At most one session may be live. The indexed expression is constant per row;
@@ -3149,23 +3156,22 @@ WHEN NEW.id IS NOT OLD.id
   OR NEW.target_sha IS NOT OLD.target_sha
   OR NEW.candidate_id IS NOT OLD.candidate_id
   OR NEW.created_at IS NOT OLD.created_at
+  -- Every one of these arrives in `AcquireInput` and none appears in
+  -- `DeploySessionPatch`, so after acquisition they have no legal path of
+  -- change at all - not even null to a value. A write-once rule would be
+  -- weaker than the contract it is meant to enforce.
+  OR NEW.pre_deploy_topology IS NOT OLD.pre_deploy_topology
+  OR NEW.adopted_cutover_id IS NOT OLD.adopted_cutover_id
+  OR NEW.adopted_envelope_sha256 IS NOT OLD.adopted_envelope_sha256
+  OR NEW.predecessor_database_ref IS NOT OLD.predecessor_database_ref
+  OR NEW.predecessor_database_sha256 IS NOT OLD.predecessor_database_sha256
 BEGIN SELECT RAISE(ABORT, 'DEPLOY_SESSION_IDENTITY_IMMUTABLE'); END;
 
--- The topology snapshot is on this list for the same reason as the archive
--- digest, and it is the easy one to miss because it looks like a reading.
--- `planResume` compares production against it to decide whether a safe abort is
--- available, so anything able to edit it can make a production that moved look
--- untouched. `observed_topology` is deliberately absent: it IS the reading, and
--- readings are meant to be retaken.
-CREATE TRIGGER deploy_sessions_evidence_write_once_guard
-BEFORE UPDATE ON deploy_sessions
-WHEN (OLD.pre_deploy_topology IS NOT NULL AND NEW.pre_deploy_topology IS NOT OLD.pre_deploy_topology)
-  OR (OLD.adopted_cutover_id IS NOT NULL AND NEW.adopted_cutover_id IS NOT OLD.adopted_cutover_id)
-  OR (OLD.adopted_envelope_sha256 IS NOT NULL AND NEW.adopted_envelope_sha256 IS NOT OLD.adopted_envelope_sha256)
-  OR (OLD.predecessor_database_ref IS NOT NULL AND NEW.predecessor_database_ref IS NOT OLD.predecessor_database_ref)
-  OR (OLD.predecessor_database_sha256 IS NOT NULL AND NEW.predecessor_database_sha256 IS NOT OLD.predecessor_database_sha256)
-BEGIN SELECT RAISE(ABORT, 'DEPLOY_SESSION_EVIDENCE_IMMUTABLE'); END;
-
+-- `observed_topology` is deliberately absent from the frozen list above: it IS
+-- the reading, and readings are meant to be retaken. `pre_deploy_topology` is
+-- the fact, and it is easy to confuse the two - `planResume` compares
+-- production against the snapshot to decide whether a safe abort is available,
+-- so anything able to edit it can make a production that moved look untouched.
 CREATE TRIGGER deploy_sessions_monotonicity_guard
 BEFORE UPDATE ON deploy_sessions
 WHEN OLD.state IN ('SAFE_ABORTED', 'SUCCEEDED', 'ROLLED_BACK')
@@ -3328,6 +3334,18 @@ WHEN (OLD.consumed_at IS NOT NULL AND NEW.consumed_at IS NOT OLD.consumed_at)
   OR (OLD.retired_at IS NOT NULL AND NEW.retired_at IS NOT OLD.retired_at)
 BEGIN SELECT RAISE(ABORT, 'CERTIFICATION_CAPABILITY_ENDING_IMMUTABLE'); END;
 
+-- Retiring is what frees the slot, so without this a raw UPDATE could retire a
+-- live capability early and issue a second one beside it - defeating the
+-- partial unique index rather than passing it. Retirement is only for a
+-- capability that was never spent, and only once it has actually expired.
+-- `retired_at` and `expires_at` are both `toISOString()`, so they are fixed
+-- width, UTC, and compare correctly as text.
+CREATE TRIGGER certification_capabilities_retirement_guard
+BEFORE UPDATE ON certification_capabilities
+WHEN OLD.retired_at IS NULL AND NEW.retired_at IS NOT NULL
+  AND (OLD.consumed_at IS NOT NULL OR NEW.retired_at < OLD.expires_at)
+BEGIN SELECT RAISE(ABORT, 'CERTIFICATION_CAPABILITY_RETIREMENT_PREMATURE'); END;
+
 -- The ledger the runtime keeps for 0002 and onward. The baseline creates it so
 -- that a database built from this file alone is already a database the migrator
 -- recognises.
@@ -3335,3 +3353,55 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
   version TEXT PRIMARY KEY,
   applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+
+-- ---------------------------------------------------------------------------
+-- Genesis
+--
+-- The zero state of the schema itself, not launch content. Each row is a
+-- singleton or an immutable policy revision whose absence a runtime reads as
+-- "fail closed" rather than "empty": dispatch stays fenced, the ORD path has
+-- no policy to resolve, and lineage is unanswerable. The catalogue - cities,
+-- occurrences, operational settings - is NOT here; it belongs to
+-- `launch-seed.ts`, which runs against a database this file has already made
+-- trustworthy.
+-- ---------------------------------------------------------------------------
+
+INSERT INTO schema_identity(singleton, lineage, baseline_version) VALUES (1, 'flexperiment-launch', '0001_launch_baseline');
+
+INSERT INTO outbox_authority(singleton) VALUES (1);
+
+INSERT INTO emergency_sales_gate(singleton) VALUES (1);
+
+INSERT INTO unisender_event_dump_control(singleton) VALUES (1);
+
+-- ACTIVE, because there is no longer a state meaning "before the feature
+-- existed" to start from.
+INSERT INTO agent_referrals_feature_state(singleton, state, owner_id, revision) VALUES (1, 'ACTIVE', NULL, 1);
+
+-- Contractually permitted channels and the reporting basis for each format.
+-- Both tables are append-only and immutable: a revision is a new row, never an
+-- edit. `effective_from` predates any engagement on purpose - it means "in
+-- force from before anything this schema can describe".
+INSERT INTO ad_channel_policy(id, channel_key, policy_revision, status, effective_from, reason) VALUES
+  (lower(hex(randomblob(16))), 'likee', 1, 'ALLOWED', '2020-01-01T00:00:00.000Z', 'Launch baseline.'),
+  (lower(hex(randomblob(16))), 'rutube', 1, 'ALLOWED', '2020-01-01T00:00:00.000Z', 'Launch baseline.'),
+  (lower(hex(randomblob(16))), 'telegram', 1, 'ALLOWED', '2020-01-01T00:00:00.000Z', 'Launch baseline.'),
+  (lower(hex(randomblob(16))), 'tiktok', 1, 'ALLOWED', '2020-01-01T00:00:00.000Z', 'Launch baseline.'),
+  (lower(hex(randomblob(16))), 'twitch', 1, 'ALLOWED', '2020-01-01T00:00:00.000Z', 'Launch baseline.'),
+  (lower(hex(randomblob(16))), 'vk', 1, 'ALLOWED', '2020-01-01T00:00:00.000Z', 'Launch baseline.'),
+  (lower(hex(randomblob(16))), 'vk_clips', 1, 'ALLOWED', '2020-01-01T00:00:00.000Z', 'Launch baseline.'),
+  (lower(hex(randomblob(16))), 'vk_video', 1, 'ALLOWED', '2020-01-01T00:00:00.000Z', 'Launch baseline.'),
+  (lower(hex(randomblob(16))), 'youtube', 1, 'ALLOWED', '2020-01-01T00:00:00.000Z', 'Launch baseline.');
+
+INSERT INTO ord_reporting_period_policy(id, format_kind, policy_revision, reporting_basis, effective_from, reason) VALUES
+  (lower(hex(randomblob(16))), 'audio', 1, 'CALENDAR_MONTH', '2020-01-01T00:00:00.000Z', 'Launch baseline.'),
+  (lower(hex(randomblob(16))), 'graphic', 1, 'CALENDAR_MONTH', '2020-01-01T00:00:00.000Z', 'Launch baseline.'),
+  (lower(hex(randomblob(16))), 'long_video', 1, 'PROVIDER_SPECIAL_PERIOD', '2020-01-01T00:00:00.000Z', 'Launch baseline.'),
+  (lower(hex(randomblob(16))), 'native_authored', 1, 'PROVIDER_SPECIAL_PERIOD', '2020-01-01T00:00:00.000Z', 'Launch baseline.'),
+  (lower(hex(randomblob(16))), 'post', 1, 'CALENDAR_MONTH', '2020-01-01T00:00:00.000Z', 'Launch baseline.'),
+  (lower(hex(randomblob(16))), 'short_video', 1, 'CALENDAR_MONTH', '2020-01-01T00:00:00.000Z', 'Launch baseline.'),
+  (lower(hex(randomblob(16))), 'story', 1, 'CALENDAR_MONTH', '2020-01-01T00:00:00.000Z', 'Launch baseline.'),
+  (lower(hex(randomblob(16))), 'stream', 1, 'PROVIDER_SPECIAL_PERIOD', '2020-01-01T00:00:00.000Z', 'Launch baseline.'),
+  (lower(hex(randomblob(16))), 'text', 1, 'CALENDAR_MONTH', '2020-01-01T00:00:00.000Z', 'Launch baseline.'),
+  (lower(hex(randomblob(16))), 'text_graphic', 1, 'CALENDAR_MONTH', '2020-01-01T00:00:00.000Z', 'Launch baseline.');
