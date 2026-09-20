@@ -30,6 +30,18 @@ const abandoned = (options: { at: string; observes: PreDeployTopology; afterDepl
 };
 
 describe("takeover after a runner dies", () => {
+  it("resumes a runner that died after fencing but before deploying", async () => {
+    // The gap between closing the gate and starting the deploy is an ordinary
+    // crash point, and the session sits in FENCED when it happens.
+    const { store, session, advance, orchestrator } = abandoned({ at: "fenced", observes: topology(old) });
+    advance(120_000);
+
+    const resumed = await orchestrator.resume("fenced", "new-runner");
+
+    expect(resumed.plan).toEqual({ kind: "RETRY_DEPLOY" });
+    expect(store.deploymentGate()).toEqual({ closed: true, deploymentSessionId: session.id });
+  });
+
   it("refuses to take a session whose owner is still alive", async () => {
     const { orchestrator } = abandoned({ at: "live", observes: topology(old), afterDeploy: true });
     // A live lease is a live deploy. Stealing it puts two runners on one

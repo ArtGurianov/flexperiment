@@ -41,6 +41,8 @@ export type DeploySession = {
    */
   readonly predecessorDatabaseRef?: string;
   readonly predecessorDatabaseSha256?: string;
+  /** Digest of every immutable field of the adopted envelope; see canonicalEnvelopeSha256. */
+  readonly adoptedEnvelopeSha256?: string;
 };
 
 export type DeploySessionPatch = Partial<Pick<DeploySession, "ownerId" | "state" | "rollbackAuthority" | "mutationObserved" | "leaseExpiresAt" | "preDeployTopology" | "observedTopology">>;
@@ -67,12 +69,21 @@ export interface ReleaseAuthorityStore {
    * lets a caller ask for either.
    */
   acquire(session: DeploySession): DeploySession;
-  recordTopology(id: string, kind: "PRE_DEPLOY" | "OBSERVED", topology: PreDeployTopology): DeploySession;
+  /**
+   * Every mutation carries the owner and the instant, and the store checks both
+   * in the same operation that writes. Reading the lease and then acting on it
+   * is two steps, and two runners can both pass the read: production SQL makes
+   * this one guarded UPDATE whose `changes === 1` is the only proof of
+   * ownership, so the contract has to demand it here too.
+   */
+  recordTopology(id: string, ownerId: string, now: Date, kind: "PRE_DEPLOY" | "OBSERVED", topology: PreDeployTopology): DeploySession;
   /** Ordinary progress. Terminal states are unreachable here by construction. */
-  transitionNonTerminal(id: string, from: readonly DeploySessionState[], patch: DeploySessionPatch): DeploySession;
+  transitionNonTerminal(id: string, ownerId: string, now: Date, from: readonly DeploySessionState[], patch: DeploySessionPatch): DeploySession;
   /** The only way to a terminal state, and it releases the gate in the same operation. */
-  settle(id: string, from: readonly DeploySessionState[], state: TerminalState): DeploySession;
-  renewLease(id: string, ownerId: string, leaseExpiresAt: string): DeploySession;
+  settle(id: string, ownerId: string, now: Date, from: readonly DeploySessionState[], state: TerminalState): DeploySession;
+  renewOwnedLease(id: string, ownerId: string, now: Date, leaseExpiresAt: string): DeploySession;
+  /** Ownership moves only when the lease has actually lapsed, decided inside the write. */
+  takeOverExpiredLease(id: string, newOwnerId: string, now: Date, leaseExpiresAt: string): DeploySession;
   /** Shaped like SalesGateState's own view, so a capability can be bound to the owning session. */
   deploymentGate(): DeploymentGateView;
 }
@@ -84,6 +95,7 @@ export type DeploymentGateView = {
 
 export type TerminalState = Extract<DeploySessionState, "SAFE_ABORTED" | "SUCCEEDED" | "ROLLED_BACK">;
 const TERMINAL = new Set<DeploySessionState>(["SAFE_ABORTED", "SUCCEEDED", "ROLLED_BACK"]);
+const NON_TERMINAL: readonly DeploySessionState[] = ["ACQUIRED", "FENCED", "DEPLOYING", "RECOVERY_REQUIRED"];
 const surfaces: readonly DeploySurface[] = ["frontend", "admin", "commerce", "worker"];
 
 export const topologyEquals = (left: PreDeployTopology, right: PreDeployTopology): boolean =>
@@ -135,13 +147,13 @@ export class InMemoryReleaseAuthorityStore implements ReleaseAuthorityStore {
     return undefined;
   }
 
-  settle(id: string, from: readonly DeploySessionState[], state: TerminalState): DeploySession {
+  settle(id: string, ownerId: string, now: Date, from: readonly DeploySessionState[], state: TerminalState): DeploySession {
     if (this.#activeSessionId !== id) throw new Error("DEPLOY_SESSION_NOT_ACTIVE");
     const session = this.required(id);
     const ownsGate = session.mode === "MAINTENANCE_CUTOVER";
     if (ownsGate && this.#gateOwnerSessionId !== id) throw new Error("DEPLOYMENT_GATE_NOT_OWNED");
     if (!ownsGate && this.#gateOwnerSessionId === id) throw new Error("ROLLING_SESSION_OWNS_NO_GATE");
-    const settled = this.write(id, from, { state });
+    const settled = this.write(id, ownerId, now, from, { state });
     if (ownsGate) this.#gateOwnerSessionId = null;
     this.#activeSessionId = null;
     return settled;
@@ -151,31 +163,39 @@ export class InMemoryReleaseAuthorityStore implements ReleaseAuthorityStore {
     return { closed: this.#gateOwnerSessionId !== null, deploymentSessionId: this.#gateOwnerSessionId };
   }
 
-  recordTopology(id: string, kind: "PRE_DEPLOY" | "OBSERVED", topology: PreDeployTopology): DeploySession {
-    const session = this.required(id);
+  recordTopology(id: string, ownerId: string, now: Date, kind: "PRE_DEPLOY" | "OBSERVED", topology: PreDeployTopology): DeploySession {
+    const session = this.write(id, ownerId, now, NON_TERMINAL, {});
     if (kind === "PRE_DEPLOY" && session.preDeployTopology) throw new Error("PRE_DEPLOY_TOPOLOGY_ALREADY_RECORDED");
     const next = kind === "PRE_DEPLOY" ? { ...session, preDeployTopology: topology } : { ...session, observedTopology: topology };
     this.#sessions.set(id, next);
     return next;
   }
 
-  transitionNonTerminal(id: string, from: readonly DeploySessionState[], patch: DeploySessionPatch): DeploySession {
+  transitionNonTerminal(id: string, ownerId: string, now: Date, from: readonly DeploySessionState[], patch: DeploySessionPatch): DeploySession {
     if (patch.state && TERMINAL.has(patch.state)) throw new Error("TERMINAL_STATE_REQUIRES_SETTLE");
-    return this.write(id, from, patch);
+    return this.write(id, ownerId, now, from, patch);
   }
 
-  private write(id: string, from: readonly DeploySessionState[], patch: DeploySessionPatch): DeploySession {
+  renewOwnedLease(id: string, ownerId: string, now: Date, leaseExpiresAt: string): DeploySession {
+    return this.write(id, ownerId, now, NON_TERMINAL, { leaseExpiresAt });
+  }
+
+  takeOverExpiredLease(id: string, newOwnerId: string, now: Date, leaseExpiresAt: string): DeploySession {
     const session = this.required(id);
-    if (!from.includes(session.state)) throw new Error(`DEPLOY_SESSION_TRANSITION_INVALID:${session.state}`);
-    const next = { ...session, ...patch };
+    if (TERMINAL.has(session.state)) throw new Error("DEPLOY_SESSION_TERMINAL");
+    // The lapse is decided here, not by a caller that read the row earlier.
+    if (Date.parse(session.leaseExpiresAt) > now.getTime()) throw new Error("DEPLOY_SESSION_LEASE_NOT_EXPIRED");
+    const next = { ...session, ownerId: newOwnerId, leaseExpiresAt };
     this.#sessions.set(id, next);
     return next;
   }
 
-  renewLease(id: string, ownerId: string, leaseExpiresAt: string): DeploySession {
+  private write(id: string, ownerId: string, now: Date, from: readonly DeploySessionState[], patch: DeploySessionPatch): DeploySession {
     const session = this.required(id);
-    if (TERMINAL.has(session.state)) throw new Error("DEPLOY_SESSION_TERMINAL");
-    const next = { ...session, ownerId, leaseExpiresAt };
+    if (session.ownerId !== ownerId) throw new Error("DEPLOY_SESSION_NOT_OWNER");
+    if (Date.parse(session.leaseExpiresAt) <= now.getTime()) throw new Error("DEPLOY_SESSION_LEASE_EXPIRED");
+    if (!from.includes(session.state)) throw new Error(`DEPLOY_SESSION_TRANSITION_INVALID:${session.state}`);
+    const next = { ...session, ...patch };
     this.#sessions.set(id, next);
     return next;
   }
@@ -235,6 +255,7 @@ export type AcquireInput = {
    */
   readonly predecessorDatabaseRef?: string;
   readonly predecessorDatabaseSha256?: string;
+  readonly adoptedEnvelopeSha256?: string;
 };
 
 export class DeploySessions {
@@ -265,7 +286,7 @@ export class DeploySessions {
 
   beginDeploying(id: string, ownerId: string): DeploySession {
     this.owned(id, ownerId);
-    return this.store.transitionNonTerminal(id, ["FENCED"], { state: "DEPLOYING" });
+    return this.store.transitionNonTerminal(id, ownerId, this.clock(), ["FENCED"], { state: "DEPLOYING" });
   }
 
   private blank(input: AcquireInput): DeploySession {
@@ -279,6 +300,7 @@ export class DeploySessions {
       adoptedCutoverId: input.adoptedCutoverId,
       predecessorDatabaseRef: input.predecessorDatabaseRef,
       predecessorDatabaseSha256: input.predecessorDatabaseSha256,
+      adoptedEnvelopeSha256: input.adoptedEnvelopeSha256,
     };
   }
 
@@ -286,18 +308,18 @@ export class DeploySessions {
     const session = this.owned(id, ownerId);
     if (!session.preDeployTopology) throw new Error("PRE_DEPLOY_TOPOLOGY_REQUIRED");
     assertTopology(topology);
-    this.store.recordTopology(id, "OBSERVED", topology);
+    this.store.recordTopology(id, ownerId, this.clock(), "OBSERVED", topology);
     const mutationObserved = session.mutationObserved || !topologyEquals(topology, session.preDeployTopology);
-    return this.store.transitionNonTerminal(id, ["DEPLOYING", "RECOVERY_REQUIRED"], { mutationObserved });
+    return this.store.transitionNonTerminal(id, ownerId, this.clock(), ["DEPLOYING", "RECOVERY_REQUIRED"], { mutationObserved });
   }
 
   classifyFailure(id: string, ownerId: string, topology: PreDeployTopology): DeploySession {
     const observed = this.observeTopology(id, ownerId, topology);
     if (!observed.preDeployTopology) throw new Error("PRE_DEPLOY_TOPOLOGY_REQUIRED");
     if (!observed.mutationObserved) {
-      return this.store.settle(id, ["DEPLOYING", "RECOVERY_REQUIRED"], "SAFE_ABORTED");
+      return this.store.settle(id, ownerId, this.clock(), ["DEPLOYING", "RECOVERY_REQUIRED"], "SAFE_ABORTED");
     }
-    return this.store.transitionNonTerminal(id, ["DEPLOYING", "RECOVERY_REQUIRED"], { state: "RECOVERY_REQUIRED" });
+    return this.store.transitionNonTerminal(id, ownerId, this.clock(), ["DEPLOYING", "RECOVERY_REQUIRED"], { state: "RECOVERY_REQUIRED" });
   }
 
   /**
@@ -333,7 +355,7 @@ export class DeploySessions {
       throw new Error("TARGET_TOPOLOGY_NOT_OBSERVED");
     }
     if (session.rollbackAuthority === "NEW_LINEAGE_ONLY") return session;
-    return this.store.transitionNonTerminal(id, ["DEPLOYING", "RECOVERY_REQUIRED"], { rollbackAuthority: "NEW_LINEAGE_ONLY" });
+    return this.store.transitionNonTerminal(id, ownerId, this.clock(), ["DEPLOYING", "RECOVERY_REQUIRED"], { rollbackAuthority: "NEW_LINEAGE_ONLY" });
   }
 
   /**
@@ -343,20 +365,15 @@ export class DeploySessions {
    */
   enterRecoveryRequired(id: string, ownerId: string): DeploySession {
     this.owned(id, ownerId);
-    return this.store.transitionNonTerminal(id, ["DEPLOYING", "RECOVERY_REQUIRED"], { state: "RECOVERY_REQUIRED" });
+    return this.store.transitionNonTerminal(id, ownerId, this.clock(), ["DEPLOYING", "RECOVERY_REQUIRED"], { state: "RECOVERY_REQUIRED" });
   }
 
   renewLease(id: string, ownerId: string): DeploySession {
-    this.owned(id, ownerId);
-    return this.store.renewLease(id, ownerId, new Date(this.clock().getTime() + this.leaseMs).toISOString());
+    return this.store.renewOwnedLease(id, ownerId, this.clock(), new Date(this.clock().getTime() + this.leaseMs).toISOString());
   }
 
   takeOverExpiredLease(id: string, ownerId: string): DeploySession {
-    const session = this.store.get(id);
-    if (!session) throw new Error("DEPLOY_SESSION_NOT_FOUND");
-    if (TERMINAL.has(session.state)) throw new Error("DEPLOY_SESSION_TERMINAL");
-    if (Date.parse(session.leaseExpiresAt) > this.clock().getTime()) throw new Error("DEPLOY_SESSION_LEASE_NOT_EXPIRED");
-    return this.store.renewLease(id, ownerId, new Date(this.clock().getTime() + this.leaseMs).toISOString());
+    return this.store.takeOverExpiredLease(id, ownerId, this.clock(), new Date(this.clock().getTime() + this.leaseMs).toISOString());
   }
 
   /**
@@ -373,7 +390,7 @@ export class DeploySessions {
     if (observed.mode === "MAINTENANCE_CUTOVER" && observed.rollbackAuthority !== "NEW_LINEAGE_ONLY") {
       throw new Error("MAINTENANCE_CUTOVER_EXTERNAL_EFFECTS_NOT_ARMED");
     }
-    return this.store.settle(id, ["DEPLOYING", "RECOVERY_REQUIRED"], "SUCCEEDED");
+    return this.store.settle(id, ownerId, this.clock(), ["DEPLOYING", "RECOVERY_REQUIRED"], "SUCCEEDED");
   }
 
   /** Production was put back on the pre-deploy topology. Only legal while the old lineage is still a truthful destination. */
@@ -382,8 +399,8 @@ export class DeploySessions {
     if (session.rollbackAuthority !== "OLD_LINEAGE_ALLOWED") throw new Error("OLD_LINEAGE_ROLLBACK_FORBIDDEN");
     if (!session.preDeployTopology || !topologyEquals(topology, session.preDeployTopology)) throw new Error("ROLLBACK_TOPOLOGY_NOT_CONVERGED");
     assertTopology(topology);
-    this.store.recordTopology(id, "OBSERVED", topology);
-    return this.store.settle(id, ["DEPLOYING", "RECOVERY_REQUIRED"], "ROLLED_BACK");
+    this.store.recordTopology(id, ownerId, this.clock(), "OBSERVED", topology);
+    return this.store.settle(id, ownerId, this.clock(), ["DEPLOYING", "RECOVERY_REQUIRED"], "ROLLED_BACK");
   }
 
   private owned(id: string, ownerId: string): DeploySession {

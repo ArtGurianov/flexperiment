@@ -88,7 +88,33 @@ describe("cutover handoff across the lineage boundary", () => {
     impostor.write(envelope({ predecessorDatabase: { ...predecessorDatabase, sha256: "d".repeat(64) } }));
 
     expect(() => adoptCutover(sessions, store, impostor, "cutover-1", context))
-      .toThrow("CUTOVER_ADOPTION_IDENTITY_MISMATCH: predecessorDatabase.sha256");
+      .toThrow("CUTOVER_ADOPTION_IDENTITY_MISMATCH");
+  });
+
+  it("refuses a second envelope that differs only by its adoption nonce", () => {
+    const { store, envelopes, sessions } = successor();
+    envelopes.write(envelope());
+    adoptCutover(sessions, store, envelopes, "cutover-1", context);
+
+    // Everything else matches, so a field-by-field comparison would have called
+    // this the same handoff. The canonical digest covers the nonce too.
+    const reissued = new InMemoryCutoverEnvelopeStore();
+    reissued.write(envelope({ adoptionNonce: "nonce-2" }));
+    expect(() => adoptCutover(sessions, store, reissued, "cutover-1", { ...context, adoptionNonce: "nonce-2" }))
+      .toThrow("CUTOVER_ADOPTION_IDENTITY_MISMATCH");
+  });
+
+  it("treats a consumed envelope with no adoption as corruption, not a fresh handoff", () => {
+    // Consumed means the database committed, by the protocol's own ordering. A
+    // missing session is a successor authority that has gone missing, and
+    // adopting again would paper over the loss.
+    const { store, envelopes, sessions } = successor();
+    envelopes.write(envelope());
+    envelopes.markConsumed("cutover-1");
+
+    expect(() => adoptCutover(sessions, store, envelopes, "cutover-1", context))
+      .toThrow("CUTOVER_ENVELOPE_CONSUMED_WITHOUT_ADOPTION");
+    expect(store.deploymentGate().closed).toBe(false);
   });
 
   it("refuses a first adoption on an expired envelope or an unsupported lineage", () => {

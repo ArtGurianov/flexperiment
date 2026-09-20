@@ -183,7 +183,12 @@ export class ReleaseOrchestrator {
    * anything, so the next crash finds the conclusion already written down.
    */
   async resume(sessionId: string, ownerId: string): Promise<{ session: DeploySession; plan: ResumePlan }> {
-    this.ports.sessions.takeOverExpiredLease(sessionId, ownerId);
+    const taken = this.ports.sessions.takeOverExpiredLease(sessionId, ownerId);
+    // A runner can die between closing the gate and starting the deploy, which
+    // leaves FENCED - a perfectly ordinary crash point that the observation path
+    // does not accept. Advancing it first matches the live flow, where DEPLOYING
+    // is set before the deployment driver is ever called.
+    if (taken.state === "FENCED") this.ports.sessions.beginDeploying(sessionId, ownerId);
     const observed = await this.ports.topology.observe();
     const session = this.ports.sessions.observeTopology(sessionId, ownerId, observed);
     const plan = planResume(session, observed);

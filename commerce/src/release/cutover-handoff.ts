@@ -1,9 +1,7 @@
 import {
-  assessCutoverAdoption, type CutoverEnvelope, type CutoverEnvelopeStore,
+  assessCutoverAdoption, canonicalEnvelopeSha256, type CutoverEnvelopeStore,
 } from "./cutover-envelope";
-import {
-  topologyEquals, type DeploySession, type DeploySessions, type ReleaseAuthorityStore,
-} from "./deploy-session";
+import type { DeploySession, DeploySessions, ReleaseAuthorityStore } from "./deploy-session";
 import type { SchemaLineage } from "./schema-identity";
 
 /**
@@ -43,20 +41,6 @@ export type AdoptionResult = {
   readonly reconciled: boolean;
 };
 
-/**
- * What must match for a leftover envelope to be the same handoff as a session
- * already committed. A cutover id alone is not enough: an id can be reused, and
- * the whole point of the check is to tell a resumed handoff apart from a
- * different one that happens to collide.
- */
-const identityMismatch = (session: DeploySession, envelope: CutoverEnvelope): string | undefined => {
-  if (session.targetSha !== envelope.targetSha) return "targetSha";
-  if (session.mode !== envelope.mode) return "mode";
-  if (!session.preDeployTopology || !topologyEquals(session.preDeployTopology, envelope.preDeployTopology)) return "preDeployTopology";
-  if (session.predecessorDatabaseRef !== envelope.predecessorDatabase.ref) return "predecessorDatabase.ref";
-  if (session.predecessorDatabaseSha256 !== envelope.predecessorDatabase.sha256) return "predecessorDatabase.sha256";
-  return undefined;
-};
 
 export const adoptCutover = (
   sessions: DeploySessions,
@@ -70,19 +54,25 @@ export const adoptCutover = (
 
   // Look for a completed adoption first. If the database already committed, the
   // handoff happened; all that can be missing is the filesystem half.
+  const digest = canonicalEnvelopeSha256(envelope);
   const existing = store.findByAdoptedCutover(cutoverId);
   if (existing) {
-    const mismatch = identityMismatch(existing, envelope);
     // A mismatch is corruption, not something to reconcile: two different
     // handoffs claim one cutover id, and guessing which is authoritative is
     // exactly the decision no automated recovery should make.
-    if (mismatch) throw new CutoverHandoffError("CUTOVER_ADOPTION_IDENTITY_MISMATCH", mismatch);
+    if (existing.adoptedEnvelopeSha256 !== digest) throw new CutoverHandoffError("CUTOVER_ADOPTION_IDENTITY_MISMATCH", cutoverId);
     // Expiry deliberately does not apply here. The adoption already happened,
     // in time; a runner that crashed and came back late must not be told the
     // envelope expired and leave the filesystem half dangling forever.
     if (!envelopes.isConsumed(cutoverId)) envelopes.markConsumed(cutoverId);
     return { session: existing, reconciled: true };
   }
+
+  // Consumed means the database committed, by the protocol's own ordering. A
+  // consumed envelope with no session is therefore not an invitation to adopt
+  // again - it is a successor authority that has gone missing, and adopting a
+  // second time would paper over the loss.
+  if (envelopes.isConsumed(cutoverId)) throw new CutoverHandoffError("CUTOVER_ENVELOPE_CONSUMED_WITHOUT_ADOPTION", cutoverId);
 
   const refusal = assessCutoverAdoption(envelope, {
     sourceCommit: context.sourceCommit,
@@ -102,6 +92,7 @@ export const adoptCutover = (
     adoptedCutoverId: envelope.cutoverId,
     predecessorDatabaseRef: envelope.predecessorDatabase.ref,
     predecessorDatabaseSha256: envelope.predecessorDatabase.sha256,
+    adoptedEnvelopeSha256: digest,
   }, envelope.preDeployTopology);
 
   envelopes.markConsumed(cutoverId);

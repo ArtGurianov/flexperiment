@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { DeployMode, PreDeployTopology } from "./deploy-session";
 import { isSourceCommit } from "./runtime-identity";
 
@@ -44,6 +44,22 @@ export const createCutoverEnvelope = (input: Omit<CutoverEnvelope, "cutoverId" |
   if (!/^[a-f0-9]{64}$/.test(input.predecessorDatabase.sha256)) throw new Error("CUTOVER_ENVELOPE_PREDECESSOR_DIGEST_INVALID");
   return { ...input, cutoverId: input.cutoverId ?? randomUUID(), adoptionNonce: input.adoptionNonce ?? randomUUID() };
 };
+
+/**
+ * One digest over everything immutable about the handoff. Comparing a growing
+ * list of fields by hand means every new immutable field is a field someone has
+ * to remember to add to the comparison; this cannot be forgotten, and it closes
+ * the hole where a second envelope with the same cutover id but a different
+ * nonce read as the same handoff.
+ */
+export const canonicalEnvelopeSha256 = (envelope: CutoverEnvelope): string =>
+  createHash("sha256").update(JSON.stringify([
+    envelope.cutoverId, envelope.targetSha, envelope.mode,
+    envelope.preDeployTopology.frontend, envelope.preDeployTopology.admin,
+    envelope.preDeployTopology.commerce, envelope.preDeployTopology.worker,
+    envelope.predecessorDatabase.ref, envelope.predecessorDatabase.sha256,
+    envelope.adoptionNonce, envelope.createdAt, envelope.expiresAt,
+  ])).digest("hex");
 
 export const assessCutoverAdoption = (envelope: CutoverEnvelope, adoption: CutoverAdoption): string | undefined => {
   if (envelope.mode !== "MAINTENANCE_CUTOVER") return "CUTOVER_ENVELOPE_MODE_INVALID";

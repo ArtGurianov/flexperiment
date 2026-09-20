@@ -146,7 +146,8 @@ describe("deploy sessions", () => {
 
     // A settle aimed at a session that is not the active one cannot release
     // the gate on its behalf, whatever state it claims to be in.
-    expect(() => store.settle("someone-else", ["DEPLOYING"], "SUCCEEDED")).toThrow("DEPLOY_SESSION_NOT_ACTIVE");
+    expect(() => store.settle("someone-else", "owner", new Date("2026-09-20T00:00:00.000Z"), ["DEPLOYING"], "SUCCEEDED"))
+      .toThrow("DEPLOY_SESSION_NOT_ACTIVE");
     expect(store.deploymentGate().closed).toBe(true);
   });
 
@@ -158,7 +159,7 @@ describe("deploy sessions", () => {
     const session = sessions.acquireFenced({ id: "terminal-bypass", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
     sessions.beginDeploying(session.id, "owner");
 
-    expect(() => store.transitionNonTerminal(session.id, ["DEPLOYING"], { state: "SUCCEEDED" }))
+    expect(() => store.transitionNonTerminal(session.id, "owner", new Date("2026-09-20T00:00:00.000Z"), ["DEPLOYING"], { state: "SUCCEEDED" }))
       .toThrow("TERMINAL_STATE_REQUIRES_SETTLE");
     expect(store.deploymentGate()).toEqual({ closed: true, deploymentSessionId: session.id });
   });
@@ -177,5 +178,37 @@ describe("deploy sessions", () => {
     expect(() => store.acquire({ ...blank, mode: "ROLLING_SAFE", state: "FENCED" }))
       .toThrow("DEPLOY_SESSION_INITIAL_STATE_INVALID");
     expect(store.deploymentGate()).toEqual({ closed: false, deploymentSessionId: null });
+  });
+
+  it("settles ownership inside the write, so two runners cannot both win a takeover", () => {
+    // Reading the lease and then acting on it is two steps, and both readers
+    // pass the read. Production SQL makes this one guarded UPDATE whose
+    // changes === 1 is the only proof, so the contract demands it here too.
+    let clock = new Date("2026-09-20T00:00:00.000Z");
+    const store = new InMemoryReleaseAuthorityStore();
+    const sessions = new DeploySessions(store, () => clock, 60_000);
+    const session = sessions.acquireFenced({ id: "contended", ownerId: "first", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
+    clock = new Date(clock.getTime() + 120_000);
+
+    expect(sessions.takeOverExpiredLease(session.id, "second").ownerId).toBe("second");
+    // The lease is live again, so the loser of the race is refused rather than
+    // silently becoming a second owner of the same production topology.
+    expect(() => sessions.takeOverExpiredLease(session.id, "third")).toThrow("DEPLOY_SESSION_LEASE_NOT_EXPIRED");
+  });
+
+  it("refuses a write from the runner whose lease was taken away", () => {
+    let clock = new Date("2026-09-20T00:00:00.000Z");
+    const store = new InMemoryReleaseAuthorityStore();
+    const sessions = new DeploySessions(store, () => clock, 60_000);
+    const session = sessions.acquireFenced({ id: "displaced", ownerId: "first", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
+    sessions.beginDeploying(session.id, "first");
+    clock = new Date(clock.getTime() + 120_000);
+    sessions.takeOverExpiredLease(session.id, "second");
+
+    // The displaced runner may still be alive and mid-sequence. Every mutation
+    // it attempts has to fail, not just the ones a caller remembered to guard.
+    expect(() => sessions.observeTopology(session.id, "first", topology(old))).toThrow("DEPLOY_SESSION_NOT_OWNER");
+    expect(() => sessions.armExternalEffects(session.id, "first")).toThrow("DEPLOY_SESSION_NOT_OWNER");
+    expect(() => sessions.completeTarget(session.id, "first", topology(target))).toThrow("DEPLOY_SESSION_NOT_OWNER");
   });
 });
