@@ -201,4 +201,25 @@ describe("production legal-release publisher", () => {
     await expect(verifyLegalArchiveHashes(active, async () => new Response("changed", { status: 200 }))).rejects.toThrow("Archive hash does not match");
     await expect(verifyLegalArchiveHashes(active, async () => new Response(null, { status: 404 }))).rejects.toThrow("returned HTTP 404");
   });
+
+  it("refuses a second active legal release, even through direct SQL", () => {
+    // The publisher promotes by deactivating the incumbent and activating the
+    // successor, so the application path never produces two. This index is what
+    // holds when the writer is not the application - a restore, a repair, a
+    // hand-run UPDATE - because two active releases means two different sets of
+    // terms are simultaneously the ones a customer agreed to.
+    const db = openDatabase(":memory:"); databases.push(db); migrate(db);
+    const insert = (id: string, version: string, active: number) => db
+      .prepare("INSERT INTO legal_releases(id, version, effective_at, manifest_json, active) VALUES (?, ?, '2026-09-20T00:00:00Z', '{}', ?)")
+      .run(id, version, active);
+
+    insert("first", "2026-09-20.1", 1);
+    expect(() => insert("second", "2026-09-20.2", 1)).toThrow(/UNIQUE constraint failed: legal_releases.active/);
+    // An inactive successor is fine; it is only ever one at a time that is live.
+    expect(() => insert("second", "2026-09-20.2", 0)).not.toThrow();
+
+    // Deactivating the incumbent is the only way the successor becomes active.
+    db.prepare("UPDATE legal_releases SET active = 0 WHERE id = 'first'").run();
+    expect(() => db.prepare("UPDATE legal_releases SET active = 1 WHERE id = 'second'").run()).not.toThrow();
+  });
 });

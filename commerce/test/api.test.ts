@@ -660,6 +660,27 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
+  it("refuses to leave a completed or cancelled occurrence sellable, even through direct SQL", () => {
+    // The domain closes sales in the same statement that ends fulfilment, so
+    // this trigger exists for the path the domain is not on: maintenance run
+    // straight against the database. An event that has already happened, or
+    // been cancelled, must not be purchasable by anyone.
+    const { db } = appFixture();
+    const cityId = (db.prepare("SELECT id FROM cities WHERE slug = 'tomsk'").get() as { id: string }).id;
+    db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, sales_status, venue_status, venue_name, venue_address)
+      VALUES ('occ-terminal-sales', ?, 'Terminal sales invariant', '2027-03-01T11:00:00.000Z', '2027-03-01T13:00:00.000Z', 'Asia/Tomsk', 100000, 10, 'PUBLISHED', 'OPEN', 'CONFIRMED', 'Studio', 'Lenina 1')`).run(cityId);
+
+    for (const [terminal, stamp] of [["COMPLETED", "completed_at"], ["CANCELLED", "cancelled_at"]] as const) {
+      for (const sales of ["OPEN", "PAUSED"]) {
+        expect(() => db.prepare(`UPDATE occurrences SET fulfillment_status = ?, sales_status = ?, ${stamp} = CURRENT_TIMESTAMP WHERE id = 'occ-terminal-sales'`).run(terminal, sales))
+          .toThrow(/OCCURRENCE_TERMINAL_SALES_MUST_BE_CLOSED/);
+      }
+    }
+    // Ending fulfilment and closing sales together is the only way through.
+    expect(() => db.prepare("UPDATE occurrences SET fulfillment_status = 'CANCELLED', sales_status = 'CLOSED', cancelled_at = CURRENT_TIMESTAMP, cancellation_reason = 'maintenance' WHERE id = 'occ-terminal-sales'").run()).not.toThrow();
+    db.close();
+  });
+
   it("rejects legacy hidden sellable occurrences instead of repairing them through the API", async () => {
     const { db, app } = appFixture();
     const cityId = (db.prepare("SELECT id FROM cities WHERE slug = 'tomsk'").get() as { id: string }).id;
