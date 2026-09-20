@@ -11,6 +11,7 @@ const afterCutover: PreDeployTopology = { frontend: target, admin: target, comme
 const predecessorDatabase: DatabaseArchive = { ref: "prelaunch-2026-09-20.sqlite", sha256: "e".repeat(64) };
 const successorDatabase: DatabaseArchive = { ref: "successor-2026-09-20.sqlite", sha256: "f".repeat(64) };
 const now = new Date("2026-09-20T00:00:00.000Z");
+let clock = now;
 
 const world = (options: {
   archiveFails?: string;
@@ -26,9 +27,10 @@ const world = (options: {
   let observed = afterCutover;
   /** Digest of the database file at rest, as a restore would actually change it. */
   let installed = options.installedSha256 ?? "0".repeat(64);
+  clock = now;
   const receipts = new InMemoryBootstrapRollbackReceiptStore();
   const store = new InMemoryReleaseAuthorityStore();
-  const sessions = new DeploySessions(store, () => now);
+  const sessions = new DeploySessions(store, () => clock, 60_000);
   const session = sessions.acquireFenced({
     id: "successor", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target,
     adoptedCutoverId: "cutover-1",
@@ -41,7 +43,7 @@ const world = (options: {
   }
 
   const ports: BootstrapRollbackPorts = {
-    receipts, clock: () => now,
+    receipts, clock: () => clock,
     archiver: {
       async quiesceAndArchive() {
         log.push("archive-successor");
@@ -67,9 +69,10 @@ const world = (options: {
   };
   return {
     log, receipts, store, sessions, session, portsFor: () => ports,
+    advance: (ms: number) => { clock = new Date(clock.getTime() + ms); },
     gate: () => store.deploymentGate(),
     rollback: new BootstrapRollback(ports),
-    prepare: () => new BootstrapRollback(ports).prepare(store, session.id, { rollbackId: "rb-1", nonce: "n-1", expiresAt: "2026-09-20T06:00:00.000Z" }),
+    prepare: (owner = "owner") => new BootstrapRollback(ports).prepare(store, session.id, owner, { rollbackId: "rb-1", nonce: "n-1", expiresAt: "2026-09-20T06:00:00.000Z" }),
   };
 };
 
@@ -162,6 +165,51 @@ describe("bootstrap reverse handoff", () => {
     expect(() => sessions.completeTarget(session.id, "owner", afterCutover)).toThrow("BOOTSTRAP_ROLLBACK_RESERVED");
   });
 
+  it("refuses a displaced runner even when it repeats the very same rollback id", async () => {
+    // Idempotent is not unauthenticated: the same id from a runner that lost
+    // its lease must fail, or it reads success and carries on archiving.
+    const { prepare, sessions, session, advance } = world();
+    await prepare();
+    advance(120_000);
+    sessions.takeOverExpiredLease(session.id, "new-runner");
+
+    expect(() => sessions.reserveBootstrapRollback(session.id, "owner", "rb-1")).toThrow("DEPLOY_SESSION_NOT_OWNER");
+    expect(sessions.reserveBootstrapRollback(session.id, "new-runner", "rb-1").bootstrapRollbackId).toBe("rb-1");
+  });
+
+  it("refuses to prepare as an owner it is not, and archives nothing", async () => {
+    const { store, session, sessions, advance, portsFor, log } = world();
+    advance(120_000);
+    sessions.takeOverExpiredLease(session.id, "new-runner");
+
+    // The dead runner comes back and tries to prepare. It must not be able to
+    // act as whoever currently holds the lease.
+    await expect(new BootstrapRollback(portsFor()).prepare(store, session.id, "owner", { rollbackId: "rb-1", nonce: "n", expiresAt: "2026-09-20T06:00:00.000Z" }))
+      .rejects.toThrow("DEPLOY_SESSION_NOT_OWNER");
+    expect(log).toEqual([]);
+  });
+
+  it("writes no receipt when the lease lapses while the successor is being archived", async () => {
+    // Archiving is a long external step. A runner that lost ownership during it
+    // must not leave a durable receipt outside the database.
+    const { store, session, sessions, portsFor, receipts, advance } = world();
+    const ports = portsFor();
+    const stealing = {
+      ...ports,
+      archiver: {
+        async quiesceAndArchive() {
+          advance(120_000);
+          sessions.takeOverExpiredLease(session.id, "new-runner");
+          return successorDatabase;
+        },
+      },
+    };
+
+    await expect(new BootstrapRollback(stealing).prepare(store, session.id, "owner", { rollbackId: "rb-1", nonce: "n", expiresAt: "2026-09-20T06:00:00.000Z" }))
+      .rejects.toThrow("DEPLOY_SESSION_NOT_OWNER");
+    expect(receipts.read("rb-1")).toBeUndefined();
+  });
+
   it("refuses a second reverse handoff over the first", async () => {
     const { prepare, sessions, session } = world();
     await prepare();
@@ -205,7 +253,7 @@ describe("bootstrap reverse handoff", () => {
     const expired = world();
     await expect(
       new BootstrapRollback({ ...expired.portsFor(), clock: () => now })
-        .prepare(expired.store, expired.session.id, { rollbackId: "rb-expired", nonce: "n", expiresAt: "2026-09-19T00:00:00.000Z" }),
+        .prepare(expired.store, expired.session.id, "owner", { rollbackId: "rb-expired", nonce: "n", expiresAt: "2026-09-19T00:00:00.000Z" }),
     ).rejects.toThrow("BOOTSTRAP_ROLLBACK_EXPIRY_INVALID");
 
     // Once PREPARED is durable the window no longer matters: the operation has

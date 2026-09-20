@@ -176,7 +176,7 @@ export class BootstrapRollback {
    * discarded - a failure before this point leaves the successor untouched and
    * the rollback simply not started.
    */
-  async prepare(authority: ReleaseAuthorityStore, sessionId: string, input: {
+  async prepare(authority: ReleaseAuthorityStore, sessionId: string, ownerId: string, input: {
     readonly rollbackId?: string;
     readonly nonce?: string;
     readonly expiresAt: string;
@@ -184,6 +184,9 @@ export class BootstrapRollback {
     // Read here rather than accept a snapshot: a caller holding a session
     // captured before arming would otherwise pass the reversibility check with
     // an answer that stopped being true.
+    // The caller's own identity, never the session's. Reading the owner out of
+    // the row and then acting as it means any caller acts as whoever holds the
+    // lease - including a runner that was displaced a moment ago.
     const session = authority.get(sessionId);
     if (!session) throw new BootstrapRollbackError("DEPLOY_SESSION_NOT_FOUND", sessionId);
     assertReversible(session, authority.deploymentGate());
@@ -197,7 +200,7 @@ export class BootstrapRollback {
     // and sales closed - safe, resumable, and deliberately not cleared
     // automatically, since clearing it would reopen the very race it closes.
     const rollbackId = input.rollbackId ?? randomUUID();
-    authority.reserveBootstrapRollback(sessionId, session.ownerId, now, rollbackId);
+    authority.reserveBootstrapRollback(sessionId, ownerId, now, rollbackId);
 
     const successorDatabase = await this.ports.archiver.quiesceAndArchive();
     if (!successorDatabase.ref.trim()) throw new BootstrapRollbackError("SUCCESSOR_ARCHIVE_REF_INVALID");
@@ -218,6 +221,11 @@ export class BootstrapRollback {
       expiresAt: input.expiresAt,
       nonce: input.nonce ?? randomUUID(),
     };
+    // Archiving is a long external step, and a lease can lapse while it runs.
+    // Re-prove ownership before writing anything durable outside the database,
+    // or a displaced runner leaves a receipt the real owner never made.
+    authority.assertBootstrapRollbackOwned(sessionId, ownerId, now, rollbackId);
+
     const receipt: BootstrapRollbackReceipt = { envelope, stage: "PREPARED" };
     this.ports.receipts.write(receipt);
     return receipt;

@@ -96,6 +96,8 @@ export interface ReleaseAuthorityStore {
   takeOverExpiredLease(id: string, newOwnerId: string, now: Date, leaseExpiresAt: string): DeploySession;
   /** Chooses recovery direction once and for all, in the same write that checks it may be chosen. */
   reserveBootstrapRollback(id: string, ownerId: string, now: Date, rollbackId: string): DeploySession;
+  /** Re-proves ownership of a reservation across a long external step. Guarded no-op. */
+  assertBootstrapRollbackOwned(id: string, ownerId: string, now: Date, rollbackId: string): DeploySession;
   /** Shaped like SalesGateState's own view, so a capability can be bound to the owning session. */
   deploymentGate(): DeploymentGateView;
 }
@@ -199,12 +201,21 @@ export class InMemoryReleaseAuthorityStore implements ReleaseAuthorityStore {
     // leave two receipts each believing it owns the restore.
     if (session.bootstrapRollbackId) {
       if (session.bootstrapRollbackId !== rollbackId) throw new Error("BOOTSTRAP_ROLLBACK_ALREADY_RESERVED");
-      return session;
+      // Idempotent is not unauthenticated. Returning early here let a runner
+      // that had already lost its lease repeat the same id, read success, and
+      // carry on archiving the successor.
+      return this.write(id, ownerId, now, NON_TERMINAL, {});
     }
     if (!session.adoptedCutoverId) throw new Error("BOOTSTRAP_ROLLBACK_NOT_A_CUTOVER_SESSION");
     if (session.rollbackAuthority !== "OLD_LINEAGE_ALLOWED") throw new Error("OLD_LINEAGE_ROLLBACK_FORBIDDEN");
     if (this.#gateOwnerSessionId !== id) throw new Error("DEPLOYMENT_GATE_NOT_OWNED");
     return this.write(id, ownerId, now, NON_TERMINAL, { bootstrapRollbackId: rollbackId });
+  }
+
+  assertBootstrapRollbackOwned(id: string, ownerId: string, now: Date, rollbackId: string): DeploySession {
+    const session = this.write(id, ownerId, now, NON_TERMINAL, {});
+    if (session.bootstrapRollbackId !== rollbackId) throw new Error("BOOTSTRAP_ROLLBACK_NOT_RESERVED");
+    return session;
   }
 
   takeOverExpiredLease(id: string, newOwnerId: string, now: Date, leaseExpiresAt: string): DeploySession {
