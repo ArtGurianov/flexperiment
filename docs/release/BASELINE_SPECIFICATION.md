@@ -95,7 +95,7 @@ being read is not being relied on:
 
 | Column | Written | Read | Verdict |
 |---|---|---|---|
-| `provider_idempotence_key` | yes, at enqueue | attempt #1 copies it byte for byte | **keep** |
+| `provider_idempotence_key` | yes, at enqueue | nothing reads it; see below | drop |
 | `job_id` | never | nothing but a comment | drop |
 | `lease_owner` | never | `emailDispatchDrained` counts it | drop, and simplify the reader |
 | `lease_expires_at` | never | nothing but comments | drop |
@@ -106,6 +106,31 @@ being read is not being relied on:
 | `provider_error_code` | never | nothing | drop |
 | `provider_error_message` | never | nothing | drop |
 | `next_attempt_at` | never | nothing | drop |
+
+**All eleven go, including the provider key.** The code says why itself: under
+LEGACY the message-level key was authoritative and the attempt held a shadow;
+under ATTEMPT the attempt is authoritative and the message holds a "write-once
+shadow". The baseline has no LEGACY, so the shadow has no reader - and it
+already has none today. `claimForDispatch` takes
+`{ id, provider_idempotence_key }` and refers to the second field zero times;
+`providerLookupIdentity` takes `{ id, job_id, provider_idempotence_key }` and
+refers to neither. Both resolve the authoritative identity from
+`requireUnsettledAttempt`.
+
+So the final shape is one key, minted once, in one place:
+
+```text
+email_outbox        no provider_idempotence_key
+outbox_attempt #1   provider_idempotence_key, authoritative and unique
+
+enqueue, one transaction:
+  mint the key once
+  insert the message
+  insert attempt #1 carrying the key
+```
+
+and both signatures lose the fields they never read, so nothing can pass a
+message-level key that looks significant and is not.
 
 `lease_owner` is the one worth stating plainly. `emailDispatchDrained()` reports
 `{ drained: sending === 0 && leased === 0 }`, and nothing has written
@@ -148,9 +173,63 @@ Names are not a specification. What the baseline has to enforce:
 |---|---|
 | `schema_identity` | Singleton. Carries the launch lineage exactly; its absence is what makes a pre-launch database legacy rather than unknown. |
 | `deploy_sessions` | At most one non-terminal session. Owner and lease moved only by guarded update, so `changes === 1` is the proof of ownership. `adopted_cutover_id` unique, so a handoff is adopted once. The deployment gate's owning session lives in the same row, because a gate closed by a session that does not exist is the state this merge exists to forbid. |
-| `certification_capabilities` | At most one live capability per deployment session, as a partial unique index. Bound to run, session, release and an amount ceiling. Consumed once, by a guarded update inside the checkout's own transaction. |
-| `certification_runs` | Revision compare-and-set on every write. Phase and cleanup direction monotonic, as CHECKs. Release immutable. Failure write-once. |
+| `certification_capabilities` | At most one capability occupying a session's slot, as a partial unique index over an explicit state - see below. Bound by foreign key to its run and its deployment session, and carrying the release and the amount ceiling. Consumed once, by a guarded update inside the checkout's own transaction. |
+| `certification_runs` | Revision compare-and-set on every write, and separately a transition guard on every update - see below. |
 | `runtime_instance_evidence` | Keyed by instance, carrying unit, source commit, start, heartbeat and last successful sweep. A second row for the same unit is expected, not a conflict - that is the whole reason it replaces the singleton. |
+
+### The capability's slot has to be a stored fact
+
+"One live capability per fence" is the rule, and P7 defines live as unconsumed
+**and** unexpired. A partial unique index cannot express the second half: SQLite
+evaluates the index predicate against the row, not against the clock, so
+
+```sql
+UNIQUE(deployment_session_id) WHERE consumed_at IS NULL
+```
+
+would let an expired, unconsumed capability block its own replacement forever -
+and reissuing after expiry is exactly what P7 permits.
+
+So the slot is materialised rather than computed. A capability carries both
+`consumed_at` and `retired_at`, and occupies the slot while both are null:
+
+```sql
+UNIQUE(deployment_session_id) WHERE consumed_at IS NULL AND retired_at IS NULL
+```
+
+Reissuing after expiry retires the old capability and inserts the new one in one
+transaction. This keeps "expired" and "spent" as different facts - which they
+are, and which a single nullable column would blur - and it keeps the history,
+because neither ending deletes the row.
+
+### Monotonicity is a trigger's job, not a CHECK's
+
+A row-level `CHECK` cannot see `OLD`. It can prove that a phase is one of the
+phases and that a direction is one of the directions, and nothing more. The
+properties that make a certification run an authority are all comparisons
+against the previous row, so they belong to `BEFORE UPDATE` guards:
+
+| Enforced by | Property |
+|---|---|
+| `CHECK` | phase, direction, kind and status are legal values |
+| `BEFORE UPDATE` guard | `revision` advances by exactly one |
+| | phase never moves backwards |
+| | cleanup direction never moves backwards |
+| | `release_sha`, `run_id` and `started_at` are immutable |
+| | a recorded failure is never rewritten or cleared |
+| The adapter's own statement | `UPDATE ... WHERE run_id = ? AND revision = ?`, where `changes === 1` is the proof this caller is the one that advanced it |
+
+Compare-and-set and transition validation are different protections and the
+baseline needs both: the first decides *who* wrote, the second decides *whether
+that write was legal*.
+
+### The bindings are foreign keys, not conventions
+
+```text
+certification_capabilities.run_id                → certification_runs.run_id
+certification_capabilities.deployment_session_id → deploy_sessions.id
+orders.certification_run_id                      → certification_runs.run_id
+```
 
 **Where the certification replay binding lives.** P7's admission contract needs a
 permanent record that a checkout key already created an order, resolved before
@@ -168,7 +247,7 @@ enforces what the code currently humours:
 |---|---|---|
 | Feature state `DORMANT` | The CHECK admits it and the dev row is it | The member goes, the CHECK narrows, the seed is `ACTIVE` |
 | Discriminator partitions | Triggers check the partition on insert | The column goes and the triggers become unconditional |
-| Outbox attempt authority | Ten frozen columns remain, one of them read | They go; `emailDispatchDrained` loses its dead term and `sendTryCount` its vestigial parameter |
+| Outbox attempt authority | Eleven message-level columns remain, one of them read | They go; `emailDispatchDrained` loses its dead term, and `sendTryCount`, `claimForDispatch` and `providerLookupIdentity` lose the parameters they never read |
 
 ### `agents` becomes `partners`
 
