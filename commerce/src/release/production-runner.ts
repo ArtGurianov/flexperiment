@@ -4,11 +4,13 @@ import { dirname } from "node:path";
 import { CoolifyClient } from "./coolify";
 import { CoolifyDeploymentDriver, CoolifyRecoveryDriver } from "./coolify-deployment";
 import { FileCutoverEnvelopeStore } from "./cutover-envelope-file-store";
-import { ProductionDeployRefStore } from "./deploy-ref";
+import { defaultGit, ProductionDeployRefStore, ProductionDeployRefViewer } from "./deploy-ref";
 import { DeploySessions } from "./deploy-session";
 import { SqliteReleaseAuthorityStore } from "./deploy-session-store";
 import { ReleaseOrchestrator, type CertificationDriver, type ReleasePorts } from "./orchestrator";
-import { describeConfig, ReleaseConfigError, type ProductionReleaseConfig } from "./production-config";
+import { describeConfig, ReleaseConfigError, type CandidatePublicationConfig, type ProductionReleaseConfig, type ReadOnlyReleaseConfig } from "./production-config";
+import { FileReleaseCandidateStore } from "./candidate-store";
+import { GitCommitTreeReader, type CommitTreeReader } from "./candidate-publication";
 import { activeLegalBinding } from "./legal-binding";
 import { DatabaseRuntimeEvidenceReader, ProductionTopologyReader } from "./topology-reader";
 
@@ -125,6 +127,79 @@ export class ReleaseJournal {
   }
 }
 
+/**
+ * Everything needed to look at production, and nothing that could change it.
+ *
+ * There is no lock, no journal and no orchestrator here - not because they are
+ * unnecessary for a read, but because a composition that holds none of them
+ * cannot be talked into a write by any argument. The `observe` command is safe
+ * because of what this object does not contain.
+ */
+export type ReadOnlyRelease = {
+  readonly topology: ProductionTopologyReader;
+  readonly evidence: DatabaseRuntimeEvidenceReader;
+  close(): void;
+};
+
+export const buildReadOnlyRelease = (config: ReadOnlyReleaseConfig, options: BuildOptions = {}): ReadOnlyRelease => {
+  const now = options.now ?? (() => new Date());
+  if (!existsSync(config.databasePath)) throw new ReleaseConfigError("RELEASE_RUNNER_PATH_MISSING", `database: ${config.databasePath}`);
+
+  // Opened read-only, so even a defect in a reader cannot write to the file the
+  // release authority lives in.
+  const db = new Database(config.databasePath, { readonly: true });
+  try {
+    return {
+      topology: new ProductionTopologyReader({
+        frontendReleaseUrl: config.topology.frontendReleaseUrl,
+        adminReleaseUrl: config.topology.adminReleaseUrl,
+        db, now, fetch: options.fetch,
+        // A viewer, not the store: this composition has no object that can move
+        // the pointer, and no credential that would let one.
+        deployRef: new ProductionDeployRefViewer({
+          remote: config.deployRef.remote, ref: config.deployRef.ref,
+          cwd: config.deployRef.worktree, git: options.git,
+        }),
+      }),
+      evidence: new DatabaseRuntimeEvidenceReader({ db, now, legal: () => activeLegalBinding(db) }),
+      close() { db.close(); },
+    };
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+};
+
+/**
+ * Publishing a candidate deploys nothing, and this composition is why.
+ *
+ * It holds a reader for the commit's tree and a write-once directory, and
+ * nothing else: no database, no Coolify client, no deploy-ref writer. The
+ * expectation it records is derived from the commit rather than accepted from
+ * whoever asked for the publication.
+ */
+export type CandidatePublisher = {
+  readonly tree: CommitTreeReader;
+  readonly candidates: FileReleaseCandidateStore;
+  /** Makes the commit locally resolvable before its tree is read. */
+  fetch(sha: string): Promise<void>;
+};
+
+export const buildCandidatePublisher = (config: CandidatePublicationConfig, options: BuildOptions = {}): CandidatePublisher => {
+  if (!existsSync(config.deployRef.worktree)) {
+    throw new ReleaseConfigError("RELEASE_RUNNER_PATH_MISSING", `deploy ref worktree: ${config.deployRef.worktree}`);
+  }
+  const git = options.git ?? defaultGit;
+  return {
+    tree: new GitCommitTreeReader(config.deployRef.worktree, git),
+    candidates: new FileReleaseCandidateStore(config.candidateDirectory),
+    async fetch(sha: string) {
+      await git(["fetch", "--no-tags", config.deployRef.remote, sha], config.deployRef.worktree);
+      await git(["fetch", "--no-tags", config.deployRef.remote, "main:refs/remotes/origin/main"], config.deployRef.worktree);
+    },
+  };
+};
+
 export type ProductionRelease = {
   readonly ports: ReleasePorts;
   /** The durable authority itself, for the gate and for resuming a session by id. */
@@ -134,6 +209,7 @@ export type ProductionRelease = {
   readonly envelopes: FileCutoverEnvelopeStore;
   readonly deployRef: ProductionDeployRefStore;
   readonly deployment: CoolifyDeploymentDriver;
+  readonly candidates: FileReleaseCandidateStore;
   readonly journal: ReleaseJournal;
   readonly lock: ReleaseRunnerLock;
   close(): void;
@@ -196,8 +272,13 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
     const opened = db;
     const authority = new SqliteReleaseAuthorityStore(opened);
     const sessions = new DeploySessions(authority, now);
+    // Read, never written, by a deploy. Publication is a separate composition
+    // with no database and no credential, so a deploy cannot mint the candidate
+    // it is about to deploy.
+    const candidates = new FileReleaseCandidateStore(config.candidateDirectory);
     const ports: ReleasePorts = {
       sessions,
+      candidates,
       clock: now,
       topology: new ProductionTopologyReader({
         frontendReleaseUrl: config.topology.frontendReleaseUrl,
@@ -211,7 +292,7 @@ export const buildProductionRelease = (config: ProductionReleaseConfig, options:
     };
 
     return {
-      ports, sessions, journal, lock, deployRef, authority,
+      ports, sessions, journal, lock, deployRef, authority, candidates,
       deployment: ports.deployment as CoolifyDeploymentDriver,
       envelopes: new FileCutoverEnvelopeStore(config.envelopeDirectory),
       orchestrator: new ReleaseOrchestrator(ports),

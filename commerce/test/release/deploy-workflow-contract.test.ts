@@ -97,11 +97,22 @@ describe("production workflow contract", () => {
   });
 
   it("classifies the P2 publication as a launch baseline without dispatch input", () => {
-    const candidate = workflow("release-candidate.yml");
-    const publication = Object.values(candidate.jobs).flatMap((job) => job.steps ?? [])
-      .find((step) => step.run === "pnpm exec tsx scripts/release/release-candidate.ts");
+    const publication = Object.values(workflow("release-candidate.yml").jobs).flatMap((job) => job.steps ?? [])
+      .find((step) => (step.run ?? "").includes("publish-candidate"));
     expect(publication?.env?.RELEASE_CLASS).toBe("LAUNCH_BASELINE");
     expect(publication?.env?.RELEASE_CLASS).not.toContain("inputs.release_class");
+  });
+
+  it("publishes the candidate on the release host, from the commit's own tree", () => {
+    // A candidate assembled in the CI job and copied over would be an
+    // expectation that job asserted, not one the tree has. The publication runs
+    // where the deploy will later read it, through the same entry point.
+    const script = scriptOf("release-candidate.yml");
+    expect(script).toMatch(/\bssh\b/);
+    expect(script).toContain("flexperiment-release publish-candidate");
+    expect(script).toMatch(/StrictHostKeyChecking=yes/);
+    // Publication deploys nothing, so the job never invokes the deploy verb.
+    expect(script).not.toContain("flexperiment-release deploy");
   });
 
   it("gives no operator a way to choose the deploy mode", () => {

@@ -113,6 +113,7 @@ export const harness = async (root: string): Promise<Harness> => {
       envelopeDirectory: join(root, "cutover"),
       lockPath: join(root, "locks", "release.lock"),
       journalPath: join(root, "journal", "release.jsonl"),
+      candidateDirectory: join(root, "candidates"),
       coolify: { apiUrl: `${coolifyUrl}/api/v1`, token: "test-token" },
       applications: APPLICATIONS.map((application) => ({ ...application, surfaces: [...application.surfaces] })),
       topology: {

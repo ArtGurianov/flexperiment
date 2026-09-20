@@ -151,6 +151,7 @@ q6-activation-terminal-identity
 q7-activation-http-schema
 q7-release-semantics
 r5-compat
+release-candidates
 release-control-v2-index
 release-control-v2-materializer
 release-control-v2-materializer-rename

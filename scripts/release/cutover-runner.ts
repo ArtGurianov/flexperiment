@@ -9,8 +9,10 @@
  * database and the envelope directory, and the workflow's whole job is to start
  * it and wait for its exit.
  *
- *   observe            read both layers and the readiness evidence; mutates nothing
- *   deploy  <file>     run the release for the candidate in that JSON file
+ *   observe                  read both layers and the readiness evidence; mutates nothing
+ *   publish-candidate <sha> <class>
+ *                            derive and publish a candidate; deploys nothing
+ *   deploy  <candidate>      run the release for that published candidate
  *   resume  <session>  take over a session whose lease expired and report the plan
  *   rollback <session> restore the pre-deploy vector for a same-lineage deploy
  *
@@ -22,51 +24,13 @@
  *   20  refused before any mutation (configuration, lock, unwired port)
  *   130 interrupted; the session and the gate are left exactly as they were
  */
-import { readFileSync } from "node:fs";
 import { hostname } from "node:os";
-import type { ReleaseCandidate, ReleaseClass } from "../../commerce/src/release/candidate";
-import { loadProductionReleaseConfig } from "../../commerce/src/release/production-config";
-import { buildProductionRelease, holdSalesOnSignal, type ProductionRelease } from "../../commerce/src/release/production-runner";
+import type { ReleaseClass } from "../../commerce/src/release/candidate";
+import { loadCandidatePublicationConfig, loadProductionReleaseConfig, loadReadOnlyReleaseConfig } from "../../commerce/src/release/production-config";
+import { buildCandidatePublisher, buildProductionRelease, buildReadOnlyRelease, holdSalesOnSignal, type ProductionRelease } from "../../commerce/src/release/production-runner";
+import { deriveCandidate } from "../../commerce/src/release/candidate-publication";
 
 const RELEASE_CLASSES: readonly ReleaseClass[] = ["LAUNCH_BASELINE", "ROLLING_COMPATIBLE", "MAINTENANCE_REQUIRED"];
-const SHA = /^[a-f0-9]{40}$/;
-const SHA256 = /^[a-f0-9]{64}$/;
-
-/**
- * The candidate is read as one fact from one file.
- *
- * Nothing here is defaulted or inferred. A candidate missing its release class
- * must not become a rolling deploy because rolling is the cheaper branch, and a
- * candidate missing its expectation must not become one that readiness cannot
- * refuse.
- */
-const readCandidate = (path: string): ReleaseCandidate => {
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
-  } catch (error) {
-    throw new Error(`RELEASE_CANDIDATE_UNREADABLE: ${path}: ${error instanceof Error ? error.message : "unknown error"}`);
-  }
-  const expectation = (parsed.expectation ?? {}) as Record<string, unknown>;
-  const problems: string[] = [];
-  if (typeof parsed.id !== "string" || !parsed.id.trim()) problems.push("id");
-  if (typeof parsed.sha !== "string" || !SHA.test(parsed.sha)) problems.push("sha");
-  if (!RELEASE_CLASSES.includes(parsed.releaseClass as ReleaseClass)) problems.push("releaseClass");
-  if (typeof expectation.schemaInventory !== "string" || !expectation.schemaInventory.trim()) problems.push("expectation.schemaInventory");
-  if (typeof expectation.legalVersion !== "string" || !expectation.legalVersion.trim()) problems.push("expectation.legalVersion");
-  if (typeof expectation.legalManifestSha256 !== "string" || !SHA256.test(expectation.legalManifestSha256)) problems.push("expectation.legalManifestSha256");
-  if (problems.length) throw new Error(`RELEASE_CANDIDATE_INVALID: ${problems.join(", ")}`);
-  return {
-    id: parsed.id as string,
-    sha: parsed.sha as string,
-    releaseClass: parsed.releaseClass as ReleaseClass,
-    expectation: {
-      schemaInventory: expectation.schemaInventory as string,
-      legalVersion: expectation.legalVersion as string,
-      legalManifestSha256: expectation.legalManifestSha256 as string,
-    },
-  };
-};
 
 const EXIT_BY_OUTCOME: Record<string, number> = { SUCCEEDED: 0, SAFE_ABORTED: 10, ROLLED_BACK: 11, RECOVERY_REQUIRED: 12 };
 
@@ -75,16 +39,14 @@ const say = (payload: Record<string, unknown>) => process.stdout.write(`${JSON.s
 const run = async (release: ProductionRelease, argv: readonly string[], ownerId: string): Promise<number> => {
   const [command, argument] = argv;
   switch (command) {
-    case "observe": {
-      const observation = await release.ports.topology.observe();
-      const evidence = await release.ports.evidence.read();
-      release.journal.record("observe", { observation });
-      say({ command, observation, evidence, gate: release.authority.deploymentGate() });
-      return 0;
-    }
     case "deploy": {
-      if (!argument) throw new Error("RELEASE_CANDIDATE_FILE_REQUIRED");
-      const candidate = readCandidate(argument);
+      if (!argument) throw new Error("RELEASE_CANDIDATE_REQUIRED");
+      // Resolved out of the write-once store by its commit. A deploy cannot be
+      // handed a candidate body: that would be a second way to say what is
+      // being released, and the two could disagree.
+      const candidate = release.candidates.get(argument);
+      if (!candidate) throw new Error(`RELEASE_CANDIDATE_NOT_PUBLISHED: ${argument}`);
+      assertCutoverExecutable(candidate.releaseClass);
       release.journal.record("deploy.start", { candidate: candidate.id, sha: candidate.sha, releaseClass: candidate.releaseClass });
       const outcome = candidate.releaseClass === "ROLLING_COMPATIBLE"
         ? await release.orchestrator.runRolling({ ownerId, candidate })
@@ -123,19 +85,59 @@ const run = async (release: ProductionRelease, argv: readonly string[], ownerId:
  * would refuse on its own first line anyway, but refusing here means a dispatch
  * against production does not even open the database or take the lock.
  */
-const assertCutoverExecutable = (candidate: ReleaseCandidate) => {
-  if (candidate.releaseClass === "ROLLING_COMPATIBLE") return;
+const assertCutoverExecutable = (releaseClass: ReleaseClass) => {
+  if (releaseClass === "ROLLING_COMPATIBLE") return;
   throw new Error("RELEASE_PRODUCTION_ADAPTERS_UNAVAILABLE: the certification driver has no production adapter, so a "
     + "maintenance cutover cannot be executed; the ordering is proved in commerce/test/release/orchestrator.test.ts and "
     + "the composition root in commerce/test/release/production-runner.test.ts.");
 };
 
+/**
+ * Looking at production is a different program from changing it.
+ *
+ * It builds the read-only composition, which has no lock, no journal, no
+ * Coolify client, no write credential and no orchestrator. That is the whole
+ * safety argument: `observe` cannot deploy because nothing it holds can, not
+ * because a branch above declined to.
+ */
+/**
+ * Publishing a candidate deploys nothing, and the composition is why: a tree
+ * reader and a write-once directory, no database and no credential that could
+ * change production. The expectation is derived from the commit's own tree, so
+ * a candidate cannot claim one its tree does not have.
+ */
+const publishCandidate = async (sha: string, named: string | undefined): Promise<number> => {
+  const releaseClass = (named ?? "").trim() as ReleaseClass;
+  if (!RELEASE_CLASSES.includes(releaseClass)) throw new Error(`RELEASE_CLASS_INVALID: ${releaseClass || "absent"}`);
+  const publisher = buildCandidatePublisher(loadCandidatePublicationConfig());
+  await publisher.fetch(sha);
+  const derived = await deriveCandidate(publisher.tree, { sha, releaseClass });
+  const { candidate, republished } = publisher.candidates.publish(derived);
+  say({ command: "publish-candidate", candidate: candidate.id, releaseClass: candidate.releaseClass, republished, expectation: candidate.expectation });
+  return 0;
+};
+
+const observe = async (): Promise<number> => {
+  const release = buildReadOnlyRelease(loadReadOnlyReleaseConfig());
+  try {
+    say({ command: "observe", observation: await release.topology.observe(), evidence: await release.evidence.read() });
+    return 0;
+  } finally {
+    release.close();
+  }
+};
+
 const main = async (): Promise<number> => {
+  const [command, argument] = process.argv.slice(2);
+  if (command === "observe") return observe();
+  if (command === "publish-candidate") {
+    if (!argument) throw new Error("RELEASE_CANDIDATE_SHA_REQUIRED");
+    return publishCandidate(argument, process.argv[4]);
+  }
   // Read before anything is built, so a configuration problem is a plain named
   // refusal rather than a stack trace out of an adapter constructor.
   const config = loadProductionReleaseConfig();
-  const [command, argument] = process.argv.slice(2);
-  if (command === "deploy" && argument) assertCutoverExecutable(readCandidate(argument));
+
   const ownerId = (process.env.FLEXPERIMENT_RELEASE_OWNER ?? `${hostname()}:${process.pid}`).trim();
   const release = buildProductionRelease(config);
   holdSalesOnSignal(release);

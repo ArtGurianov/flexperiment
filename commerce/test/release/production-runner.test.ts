@@ -3,8 +3,9 @@ import { dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { loadProductionReleaseConfig, ReleaseConfigError } from "../../src/release/production-config";
-import { buildProductionRelease, holdSalesOnSignal, ReleaseRunnerError, ReleaseRunnerLock } from "../../src/release/production-runner";
+import { loadProductionReleaseConfig, loadReadOnlyReleaseConfig, ReleaseConfigError } from "../../src/release/production-config";
+import { buildProductionRelease, buildReadOnlyRelease, holdSalesOnSignal, ReleaseRunnerLock } from "../../src/release/production-runner";
+import Database from "better-sqlite3";
 import { harness, recordInstance, type Harness } from "../support/production-runner-harness";
 
 const NOW = new Date("2026-09-20T12:00:00.000Z");
@@ -101,6 +102,7 @@ describe("what the runner refuses to start without", () => {
     FLEXPERIMENT_RELEASE_ENVELOPE_DIR: vps.config.envelopeDirectory,
     FLEXPERIMENT_RELEASE_LOCK: vps.config.lockPath,
     FLEXPERIMENT_RELEASE_JOURNAL: vps.config.journalPath,
+    FLEXPERIMENT_RELEASE_CANDIDATE_DIR: vps.config.candidateDirectory,
     COOLIFY_API_URL: vps.config.coolify.apiUrl,
     COOLIFY_TOKEN: "test-token",
     COOLIFY_APPLICATION_FRONTEND: "app-frontend",
@@ -216,6 +218,62 @@ describe("what a signal may and may not do", () => {
     } finally {
       process.removeListener("SIGTERM", handler);
       process.removeListener("SIGINT", handler);
+    }
+  });
+});
+
+describe("looking at production is a different program from changing it", () => {
+  const readOnlyEnv = () => ({
+    FLEXPERIMENT_RELEASE_DATABASE: vps.config.databasePath,
+    FLEXPERIMENT_FRONTEND_RELEASE_URL: vps.config.topology.frontendReleaseUrl,
+    FLEXPERIMENT_ADMIN_RELEASE_URL: vps.config.topology.adminReleaseUrl,
+    FLEXPERIMENT_DEPLOY_REF_REMOTE: vps.config.deployRef.remote,
+    FLEXPERIMENT_DEPLOY_REF_WORKTREE: vps.config.deployRef.worktree,
+  });
+
+  it("observes both layers with no writer in the composition at all", async () => {
+    recordInstance(vps.db, "COMMERCE", "api-1", vps.preSha, NOW);
+    recordInstance(vps.db, "WORKER", "worker-1", vps.preSha, NOW, NOW.toISOString());
+
+    const release = buildReadOnlyRelease(loadReadOnlyReleaseConfig(readOnlyEnv() as unknown as NodeJS.ProcessEnv), { now });
+    try {
+      expect(await release.topology.observe()).toEqual({
+        runtime: { frontend: vps.preSha, admin: vps.preSha, commerce: vps.preSha, worker: vps.preSha },
+        controlPlane: { productionDeployRefSha: vps.preSha },
+      });
+      // Safety by construction: there is no object here that could deploy,
+      // roll back, move the pointer, issue a capability or rename a database.
+      expect(Object.keys(release).sort()).toEqual(["close", "evidence", "topology"]);
+      expect("compareAndSet" in (release.topology as unknown as Record<string, unknown>)).toBe(false);
+    } finally {
+      release.close();
+    }
+  });
+
+  it("needs none of the writer configuration to start", () => {
+    // Every Coolify variable, the archive directory, the lock and the journal
+    // are absent, and the read side still loads. If it needed them, an operator
+    // would have to put a deploy token on the host to run a read.
+    const config = loadReadOnlyReleaseConfig(readOnlyEnv() as unknown as NodeJS.ProcessEnv);
+    expect(Object.keys(config).sort()).toEqual(["databasePath", "deployRef", "topology"]);
+    expect(JSON.stringify(config)).not.toContain("token");
+  });
+
+  it("ignores writer variables that happen to be exported", () => {
+    // Picking up a token that is merely present in the environment is how a
+    // read-only command quietly becomes one that could have written.
+    const polluted = { ...readOnlyEnv(), COOLIFY_TOKEN: "leaked", COOLIFY_API_URL: vps.config.coolify.apiUrl };
+    expect(JSON.stringify(loadReadOnlyReleaseConfig(polluted as unknown as NodeJS.ProcessEnv))).not.toContain("leaked");
+  });
+
+  it("opens the database read-only, so a defect in a reader cannot write", () => {
+    const release = buildReadOnlyRelease(loadReadOnlyReleaseConfig(readOnlyEnv() as unknown as NodeJS.ProcessEnv), { now });
+    try {
+      const write = () => new Database(vps.config.databasePath, { readonly: true })
+        .prepare("INSERT INTO schema_migrations(version, applied_at) VALUES ('x', 'y')").run();
+      expect(write).toThrow(/readonly/i);
+    } finally {
+      release.close();
     }
   });
 });

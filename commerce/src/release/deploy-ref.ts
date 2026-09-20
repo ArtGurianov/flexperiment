@@ -33,7 +33,7 @@ export type DeployRefOptions = {
 
 const SHA = /^[a-f0-9]{40}$/;
 
-const defaultGit = async (args: readonly string[], cwd: string): Promise<string> => {
+export const defaultGit = async (args: readonly string[], cwd: string): Promise<string> => {
   try {
     const { stdout } = await run("git", [...args], { cwd, maxBuffer: 4 * 1024 * 1024 });
     return stdout;
@@ -43,7 +43,19 @@ const defaultGit = async (args: readonly string[], cwd: string): Promise<string>
   }
 };
 
-export class ProductionDeployRefStore {
+/**
+ * Reading where the deployment system would deploy from.
+ *
+ * Separate from the store that can move it, so a composition that must not
+ * write has no object capable of writing rather than a flag that says it may
+ * not. A read-only runner is proved by what it was built out of.
+ */
+export interface DeployRefReader {
+  read(): Promise<string>;
+}
+
+/** Reads the pointer and nothing else: no lease, no push, no credential to write with. */
+export class ProductionDeployRefViewer implements DeployRefReader {
   readonly #remote: string;
   readonly #ref: string;
   readonly #cwd: string;
@@ -56,7 +68,6 @@ export class ProductionDeployRefStore {
     this.#git = options.git ?? defaultGit;
   }
 
-  /** Where the deployment system would deploy from right now. */
   async read(): Promise<string> {
     const output = await this.#git(["ls-remote", this.#remote, this.#ref], this.#cwd);
     const [line] = output.split("\n").filter(Boolean);
@@ -64,6 +75,30 @@ export class ProductionDeployRefStore {
     const sha = line.split(/\s+/)[0];
     if (!SHA.test(sha)) throw new DeployRefError("DEPLOY_REF_MALFORMED", sha);
     return sha;
+  }
+}
+
+export class ProductionDeployRefStore implements DeployRefReader {
+  readonly #remote: string;
+  readonly #ref: string;
+  readonly #cwd: string;
+  readonly #git: (args: readonly string[], cwd: string) => Promise<string>;
+  readonly #viewer: ProductionDeployRefViewer;
+
+  constructor(options: DeployRefOptions = {}) {
+    this.#remote = options.remote ?? "origin";
+    this.#ref = options.ref ?? "refs/heads/production-deploy";
+    this.#cwd = options.cwd ?? process.cwd();
+    this.#git = options.git ?? defaultGit;
+    // Delegated rather than duplicated: two spellings of "where does the
+    // pointer point" are two things that can drift, and this one decides a
+    // lease and a safe abort.
+    this.#viewer = new ProductionDeployRefViewer(options);
+  }
+
+  /** Where the deployment system would deploy from right now. */
+  read(): Promise<string> {
+    return this.#viewer.read();
   }
 
   /**

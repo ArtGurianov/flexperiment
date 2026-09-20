@@ -24,6 +24,27 @@ export type SurfaceApplicationConfig = {
   readonly surfaces: readonly ("frontend" | "admin" | "commerce" | "worker")[];
 };
 
+/**
+ * What it takes to look at production and nothing more.
+ *
+ * It is a separate type, not a subset picked out at the call site, because the
+ * read-only runner's safety comes from what it was built out of. A composition
+ * that never receives a Coolify token, a write credential or an archive
+ * directory cannot deploy, roll back, issue a capability or rename a database -
+ * and that is a stronger statement than a flag inside a runner that could.
+ */
+export type CandidatePublicationConfig = {
+  /** Published candidates, write-once. Read by the deploy, written by the publication. */
+  readonly candidateDirectory: string;
+  readonly deployRef: { readonly remote: string; readonly worktree: string };
+};
+
+export type ReadOnlyReleaseConfig = {
+  readonly databasePath: string;
+  readonly topology: { readonly frontendReleaseUrl: string; readonly adminReleaseUrl: string };
+  readonly deployRef: { readonly remote: string; readonly ref: string; readonly worktree: string };
+};
+
 export type ProductionReleaseConfig = {
   /** The live SQLite file the runner reads the release authority out of. */
   readonly databasePath: string;
@@ -35,6 +56,8 @@ export type ProductionReleaseConfig = {
   readonly lockPath: string;
   /** Append-only, secret-free record of what this run did. */
   readonly journalPath: string;
+  /** Published candidates. The deploy reads them; it never writes one. */
+  readonly candidateDirectory: string;
   readonly coolify: { readonly apiUrl: string; readonly token: string };
   readonly applications: readonly SurfaceApplicationConfig[];
   readonly topology: { readonly frontendReleaseUrl: string; readonly adminReleaseUrl: string };
@@ -56,12 +79,21 @@ const APPLICATIONS: readonly (readonly [string, string, SurfaceApplicationConfig
   ["COOLIFY_APPLICATION_COMMERCE", "commerce", ["commerce", "worker"]],
 ];
 
+const READ_ONLY_REQUIRED = [
+  "FLEXPERIMENT_RELEASE_DATABASE",
+  "FLEXPERIMENT_FRONTEND_RELEASE_URL",
+  "FLEXPERIMENT_ADMIN_RELEASE_URL",
+  "FLEXPERIMENT_DEPLOY_REF_REMOTE",
+  "FLEXPERIMENT_DEPLOY_REF_WORKTREE",
+] as const;
+
 const REQUIRED = [
   "FLEXPERIMENT_RELEASE_DATABASE",
   "FLEXPERIMENT_RELEASE_ARCHIVE_DIR",
   "FLEXPERIMENT_RELEASE_ENVELOPE_DIR",
   "FLEXPERIMENT_RELEASE_LOCK",
   "FLEXPERIMENT_RELEASE_JOURNAL",
+  "FLEXPERIMENT_RELEASE_CANDIDATE_DIR",
   "COOLIFY_API_URL",
   "COOLIFY_TOKEN",
   ...APPLICATIONS.map(([variable]) => variable),
@@ -87,11 +119,59 @@ const httpUrl = (value: string, variable: string, problems: string[]) => {
   }
 };
 
-export const loadProductionReleaseConfig = (env: NodeJS.ProcessEnv = process.env): ProductionReleaseConfig => {
-  const missing = REQUIRED.filter((variable) => !(env[variable] ?? "").trim());
+const demand = (env: NodeJS.ProcessEnv, variables: readonly string[]) => {
+  const missing = variables.filter((variable) => !(env[variable] ?? "").trim());
   if (missing.length) throw new ReleaseConfigError("RELEASE_RUNNER_CONFIGURATION_INCOMPLETE", `missing: ${missing.join(", ")}`);
+  return (variable: string) => (env[variable] as string).trim();
+};
 
-  const value = (variable: string) => (env[variable] as string).trim();
+const deployRefName = (env: NodeJS.ProcessEnv, problems: string[]) => {
+  const ref = (env.FLEXPERIMENT_DEPLOY_REF_NAME ?? "refs/heads/production-deploy").trim();
+  if (!/^refs\/heads\/[A-Za-z0-9][A-Za-z0-9._\/-]*$/.test(ref)) problems.push("FLEXPERIMENT_DEPLOY_REF_NAME is not a branch ref");
+  return ref;
+};
+
+/**
+ * The read-side configuration, which deliberately refuses to read the writer
+ * variables even when they are present in the environment. Picking up a token
+ * that happens to be exported is how a read-only command quietly becomes one
+ * that could have written.
+ */
+export const loadReadOnlyReleaseConfig = (env: NodeJS.ProcessEnv = process.env): ReadOnlyReleaseConfig => {
+  const value = demand(env, READ_ONLY_REQUIRED);
+  const problems: string[] = [];
+  httpUrl(value("FLEXPERIMENT_FRONTEND_RELEASE_URL"), "FLEXPERIMENT_FRONTEND_RELEASE_URL", problems);
+  httpUrl(value("FLEXPERIMENT_ADMIN_RELEASE_URL"), "FLEXPERIMENT_ADMIN_RELEASE_URL", problems);
+  const ref = deployRefName(env, problems);
+  if (problems.length) throw new ReleaseConfigError("RELEASE_RUNNER_CONFIGURATION_INVALID", problems.join("; "));
+  return {
+    databasePath: value("FLEXPERIMENT_RELEASE_DATABASE"),
+    topology: {
+      frontendReleaseUrl: value("FLEXPERIMENT_FRONTEND_RELEASE_URL"),
+      adminReleaseUrl: value("FLEXPERIMENT_ADMIN_RELEASE_URL"),
+    },
+    deployRef: { remote: value("FLEXPERIMENT_DEPLOY_REF_REMOTE"), ref, worktree: value("FLEXPERIMENT_DEPLOY_REF_WORKTREE") },
+  };
+};
+
+/**
+ * What it takes to publish a candidate: a repository to read the commit's tree
+ * out of, and a directory to write the artifact into.
+ *
+ * No database, no Coolify token, no write credential. Publishing a candidate
+ * changes nothing about production, and a composition that could would make
+ * "publishing deploys nothing" a promise instead of a fact.
+ */
+export const loadCandidatePublicationConfig = (env: NodeJS.ProcessEnv = process.env): CandidatePublicationConfig => {
+  const value = demand(env, ["FLEXPERIMENT_RELEASE_CANDIDATE_DIR", "FLEXPERIMENT_DEPLOY_REF_REMOTE", "FLEXPERIMENT_DEPLOY_REF_WORKTREE"]);
+  return {
+    candidateDirectory: value("FLEXPERIMENT_RELEASE_CANDIDATE_DIR"),
+    deployRef: { remote: value("FLEXPERIMENT_DEPLOY_REF_REMOTE"), worktree: value("FLEXPERIMENT_DEPLOY_REF_WORKTREE") },
+  };
+};
+
+export const loadProductionReleaseConfig = (env: NodeJS.ProcessEnv = process.env): ProductionReleaseConfig => {
+  const value = demand(env, REQUIRED);
   const problems: string[] = [];
 
   for (const [variable] of APPLICATIONS) {
@@ -101,8 +181,7 @@ export const loadProductionReleaseConfig = (env: NodeJS.ProcessEnv = process.env
   httpUrl(value("FLEXPERIMENT_FRONTEND_RELEASE_URL"), "FLEXPERIMENT_FRONTEND_RELEASE_URL", problems);
   httpUrl(value("FLEXPERIMENT_ADMIN_RELEASE_URL"), "FLEXPERIMENT_ADMIN_RELEASE_URL", problems);
 
-  const ref = (env.FLEXPERIMENT_DEPLOY_REF_NAME ?? "refs/heads/production-deploy").trim();
-  if (!/^refs\/heads\/[A-Za-z0-9][A-Za-z0-9._\/-]*$/.test(ref)) problems.push("FLEXPERIMENT_DEPLOY_REF_NAME is not a branch ref");
+  const ref = deployRefName(env, problems);
 
   const uuids = APPLICATIONS.map(([variable]) => value(variable));
   if (new Set(uuids).size !== uuids.length) {
@@ -120,6 +199,7 @@ export const loadProductionReleaseConfig = (env: NodeJS.ProcessEnv = process.env
     envelopeDirectory: value("FLEXPERIMENT_RELEASE_ENVELOPE_DIR"),
     lockPath: value("FLEXPERIMENT_RELEASE_LOCK"),
     journalPath: value("FLEXPERIMENT_RELEASE_JOURNAL"),
+    candidateDirectory: value("FLEXPERIMENT_RELEASE_CANDIDATE_DIR"),
     coolify: { apiUrl: value("COOLIFY_API_URL"), token: value("COOLIFY_TOKEN") },
     applications: APPLICATIONS.map(([variable, name, surfaces]) => ({ name, uuid: value(variable), surfaces })),
     topology: {
@@ -156,6 +236,7 @@ export const describeConfig = (config: ProductionReleaseConfig): Record<string, 
   return {
     database: config.databasePath,
     archiveDirectory: config.archiveDirectory,
+    candidateDirectory: config.candidateDirectory,
     envelopeDirectory: config.envelopeDirectory,
     coolifyApiUrl: config.coolify.apiUrl,
     applications: config.applications.map((application) => ({ name: application.name, surfaces: application.surfaces })),

@@ -59,19 +59,29 @@ jobs:
               || { echo "CANDIDATE_CHECK_NOT_SUCCESS: ${check}=${conclusion:-missing}" >&2; exit 1; }
           done
 
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10.29.3
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-
-      - name: Publish the candidate
+      - name: Open the connection to the release host
         env:
-          RELEASE_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          SSH_KEY: ${{ secrets.RELEASE_RUNNER_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.RELEASE_RUNNER_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          [[ -n "$SSH_KEY" && -n "$SSH_KNOWN_HOSTS" ]] || { echo "RELEASE_RUNNER_SSH_UNCONFIGURED" >&2; exit 1; }
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_release && chmod 600 ~/.ssh/id_release
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts
+
+      # Published where the deploy will read it, by the same entry point, from
+      # the commit's own tree. A candidate assembled here and copied over would
+      # be an expectation this job asserted rather than one the tree has.
+      - name: Publish the candidate on the release host
+        env:
+          RELEASE_HOST: ${{ secrets.RELEASE_RUNNER_HOST }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
           # Launch publication is the only P2 classifier. Future rolling
           # publication must come from a compatibility proof, never dispatch.
           RELEASE_CLASS: LAUNCH_BASELINE
-        run: pnpm exec tsx scripts/release/release-candidate.ts
+        run: |
+          set -euo pipefail
+          [[ -n "$RELEASE_HOST" ]] || { echo "RELEASE_RUNNER_HOST_UNCONFIGURED" >&2; exit 1; }
+          ssh -i ~/.ssh/id_release -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            "$RELEASE_HOST" flexperiment-release publish-candidate "$CANDIDATE_SHA" "$RELEASE_CLASS"
