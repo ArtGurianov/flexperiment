@@ -223,6 +223,37 @@ Compare-and-set and transition validation are different protections and the
 baseline needs both: the first decides *who* wrote, the second decides *whether
 that write was legal*.
 
+### What neither authority may have rewritten underneath it
+
+The adapters own which transitions are legal. What the schema owes is narrower
+and harder to recover from if it is missing: a raw `UPDATE` must not be able to
+rewrite the identity and the evidence those decisions are made from. A rollback
+is chosen by reading `rollback_authority` and the archived database digest; if
+either can be edited, the decision is made from a record rather than from a
+fact.
+
+**`deploy_sessions`.** Frozen after the session is acquired: `id`, `mode`,
+`target_sha`, `created_at`, `candidate_id`, `adopted_cutover_id`,
+`adopted_envelope_sha256`, `predecessor_database_ref` and
+`predecessor_database_sha256`. One-way once moved: `mutation_observed` from
+false, `rollback_authority` from `OLD_LINEAGE_ALLOWED` to `NEW_LINEAGE_ONLY`,
+`bootstrap_rollback_id` from null to a value, and a terminal state, which
+nothing leaves.
+
+**`certification_capabilities`.** Frozen for the life of the row: `id`,
+`run_id`, `deployment_session_id`, `release_sha`, `max_amount_kopecks`,
+`expires_at` and `nonce` - every one of them is part of the scope the
+capability was issued within, and an editable scope is not a scope.
+`consumed_at` and `retired_at` are each one-way, and mutually exclusive: a
+capability is spent or replaced, never both, and a CHECK says so.
+
+Retirement is only for a capability that was never spent, and only where
+reissue is permitted - after expiry. And because the slot is now a stored
+fact rather than a computed one, **`authorizationDefect()` gains a retired
+case**: without it, retiring a capability would free the index slot while the
+old row, still unconsumed, would go on satisfying P7's own predicate. That is
+a code change the baseline brings with it, not a schema detail.
+
 ### The bindings are foreign keys, not conventions
 
 ```text
