@@ -88,6 +88,25 @@ straight against the database as well as against a defect in the domain.
 | A foreign database lineage fails closed | `release/schema-identity.ts` | `release/schema-identity.test.ts` |
 | A cutover envelope is adopted exactly once | `release/cutover-handoff.ts` | `release/cutover-handoff.test.ts` |
 
+## Identity, legal basis and framework
+
+Rehoused out of the partner identity, legal profile, tax treatment and
+framework reissuance migration tests. These rows answer "on what authority was
+this person paid", and they are append-only for the reason a ledger is: an edit
+does not correct history, it replaces it with a version nobody agreed to.
+
+| Invariant | Enforced by | Guarded by | Status |
+|---|---|---|---|
+| An identity event is never edited or erased | `PARTNER_IDENTITY_EVENT_IMMUTABLE` | `agent-referrals-identity-constraints.test.ts` | ACTIVE |
+| An audience verification event is never edited or erased | `PARTNER_AUDIENCE_VERIFICATION_EVENT_IMMUTABLE` | `agent-referrals-identity-constraints.test.ts` | ACTIVE |
+| A legal profile revision is never edited or erased | `AGENT_REFERRALS_LEGAL_PROFILE_REVISION_IMMUTABLE` | `agent-referrals-identity-constraints.test.ts` | ACTIVE |
+| A tax treatment revision is never edited or erased | `AGENT_REFERRALS_TAX_TREATMENT_REVISION_IMMUTABLE` | `agent-referrals-identity-constraints.test.ts` | ACTIVE |
+| A tax treatment agrees with the legal profile it derives from | `AGENT_REFERRALS_TAX_TREATMENT_RELATIONAL_INCONSISTENT` | `agent-referrals-identity-constraints.test.ts` | ACTIVE |
+| An acceptance answers an issuance made out to the same partner | `FRAMEWORK_ACCEPTANCE_ISSUANCE_PARTNER_MISMATCH` | `agent-referrals-identity-constraints.test.ts` | ACTIVE |
+| An acceptance cites that partner's own legal profile | `FRAMEWORK_ACCEPTANCE_LEGAL_PROFILE_PARTNER_MISMATCH` | `agent-referrals-identity-constraints.test.ts` | ACTIVE |
+| A retention policy revision is never edited or erased | `PARTNER_IDENTITY_RETENTION_POLICY_IMMUTABLE` | `agent-referrals-identity-constraints.test.ts` | ACTIVE |
+| An ad channel policy revision is never edited | `AD_CHANNEL_POLICY_REVISION_IMMUTABLE` | `agent-referrals-identity-constraints.test.ts` | ACTIVE |
+
 ## Payments, receipts and recovery exposure
 
 Rehoused out of `agent-referrals-act-payment-settlement-migration.test.ts`. The
@@ -228,21 +247,20 @@ protections, which is why each is read.
 
 | | Count |
 |---|---:|
-| Rehoused and proved at predicate level | 25 |
+| Rehoused and proved at predicate level | 34 |
 | Retired with the pre-launch discriminator | 2 |
 | Subsumed: no independently reachable branch | 1 |
-| Still held only by a migration test | 21 |
+| Still held only by a migration test | 12 |
 
 Of the 25 rehoused, six carry `ACTIVE_BASELINE_REWRITE`: they are proved in the
 conditional form they have today, and the baseline will restate them without the
 discriminator their condition names.
 
-The three families done so far are attribution and reward snapshots, settlements
-and acts, and payments, receipts and exposure. What remains is partner identity
-and legal profile, framework acceptance, engagement publication and promo
-authorization, ORD reporting, ad-channel policy, the public order number, and
-the two `REFERRAL_REWARD_AUTHORITY_KIND_*` guards already classified as retiring
-with their column. Before that: six rehoused and two retired, which empties
+Four families are done: attribution and reward snapshots; settlements and acts;
+payments, receipts and exposure; and identity, legal basis and framework. What
+remains is engagement publication and promo authorization, ORD reporting, the
+public order number, and the two `REFERRAL_REWARD_AUTHORITY_KIND_*` guards
+already classified as retiring with their column. Before that: six rehoused and two retired, which empties
 `agent-referrals-attribution-reward-migration.test.ts` of guards it alone held;
 forty remain. Its own constraints travelled with them - the registry's uniqueness
 per engagement, its terminal-status domain, the rule that a cancelled occurrence
