@@ -224,8 +224,25 @@ So 46 of the 48 need a surviving proof before the file asserting them can go,
 not 42. Classifying by proximity to a doomed column would have retired four real
 protections, which is why each is read.
 
-**Progress.** Eleven more rehoused from the payment, receipt and exposure
-family, leaving twenty. Before that: nine from the settlement and act family. Before that: six rehoused and two retired, which empties
+**Progress**, counted rather than estimated - 21 of the 48 remain:
+
+| | Count |
+|---|---:|
+| Rehoused and proved at predicate level | 25 |
+| Retired with the pre-launch discriminator | 2 |
+| Subsumed: no independently reachable branch | 1 |
+| Still held only by a migration test | 21 |
+
+Of the 25 rehoused, six carry `ACTIVE_BASELINE_REWRITE`: they are proved in the
+conditional form they have today, and the baseline will restate them without the
+discriminator their condition names.
+
+The three families done so far are attribution and reward snapshots, settlements
+and acts, and payments, receipts and exposure. What remains is partner identity
+and legal profile, framework acceptance, engagement publication and promo
+authorization, ORD reporting, ad-channel policy, the public order number, and
+the two `REFERRAL_REWARD_AUTHORITY_KIND_*` guards already classified as retiring
+with their column. Before that: six rehoused and two retired, which empties
 `agent-referrals-attribution-reward-migration.test.ts` of guards it alone held;
 forty remain. Its own constraints travelled with them - the registry's uniqueness
 per engagement, its terminal-status domain, the rule that a cancelled occurrence
@@ -273,6 +290,36 @@ eleven columns is not carried across by a test that edits six of them. Each
 rehoused guard is confirmed by disabling its own `RAISE`, and then by deleting
 individual predicates from its condition: a case that survives the second kind
 of mutation was passing for the wrong reason.
+
+## Blocks the baseline
+
+Found by reading the schema the migrations produce, and confirmed by running it.
+
+**A settlement's tax snapshot is not frozen.** `0053` added four load-bearing
+fields to `reward_settlements` - `tax_treatment_revision_id_snapshot`,
+`tax_canonicalization_version`, `tax_canonical_json`, `tax_canonical_hash` - and
+the tuple guard validates all of them on INSERT, including the
+`SETTLEMENT_TAX_V1` version and the link from the tax treatment to the legal
+profile. The columns-immutable guard was never extended to cover them, and
+`0058` reinstalled the tuple guard while leaving it alone.
+
+So for a `PREPARED` or `PENDING_DOCUMENT` settlement this succeeds today, with
+nothing raised:
+
+```sql
+UPDATE reward_settlements SET tax_canonical_hash = 'rewritten' WHERE id = ...;
+```
+
+Confirmed against a real settlement: the statement did not throw, the row stayed
+`PREPARED`, and the hash changed. The terminal guard only protects rows that
+have already settled, so the window is the whole life of the settlement up to
+payment - and the payment and ORD paths consume that snapshot as though it were
+fixed at settlement time.
+
+It is not patched here. Amending `0053` after the fact is the compatibility
+archaeology this work exists to remove, and P8 adds no migrations. **The baseline
+must fold these four fields into the final, unconditional settlement authority
+guard, and prove them in the steady-state suite.**
 
 ## Open rows
 

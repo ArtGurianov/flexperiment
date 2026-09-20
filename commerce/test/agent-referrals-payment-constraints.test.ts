@@ -165,6 +165,75 @@ describe("an NPD receipt evidences a payment that was actually made", () => {
   });
 });
 
+describe("a settlement's status follows what the payment actually did", () => {
+  // The transition guard is where the settlement state machine and the payment
+  // state machine meet, and every branch of it is a claim about money. These
+  // are the branches, driven by real attempts rather than by UPDATEs chosen to
+  // make a trigger fire.
+  const preparedWithoutPayment = (db: Database.Database, domain: CommerceDomain, taxMode: "NPD" | "OTHER") => {
+    const partner = readyPartner(db, taxMode);
+    const occurrenceId = seedOccurrence(db, partner.cityId, 100_000);
+    const engagementId = offerAcceptActivate(db, partner.partner, partner.partnerIdentityId, occurrenceId, nearTermTerms(1000, "PERCENT", 5000));
+    const { code } = query<{ code: string }>(db, "SELECT code FROM promo_codes WHERE id = ?", partner.promo.promo_code_id);
+    purchaseAndPay(db, domain, occurrenceId, code, `${randomUUID()}@example.test`, `idem-${randomUUID()}`);
+    const settlement = finalizedSettlement(db, domain, occurrenceId, engagementId);
+    acceptedAct(db, partner.partner, settlement);
+    if (taxMode === "NPD") activeNpdCheck(db, partner.partnerIdentityId);
+    return { partner, settlement, engagementId };
+  };
+
+  it.each(["OTHER", "NPD"] as const)("refuses to settle a %s partner before a payment was made", (taxMode) => {
+    const { db, domain } = setup();
+    const { settlement } = preparedWithoutPayment(db, domain, taxMode);
+    const next = taxMode === "OTHER" ? "SETTLED" : "PENDING_DOCUMENT";
+
+    expect(() => db.prepare(`UPDATE reward_settlements SET status = '${next}' WHERE id = ?`).run(settlement.id))
+      .toThrow(/REWARD_SETTLEMENT_TRANSITION_ILLEGAL/);
+
+    // The same transition is permitted once an attempt actually reports MADE.
+    const begun = beginPayment(db, admin, settlement.id);
+    recordPaymentMade(db, admin, begun.attempt.id, "bank-evidence");
+    expect(query<{ status: string }>(db, "SELECT status FROM reward_settlements WHERE id = ?", settlement.id).status).toBe(next);
+  });
+
+  it("refuses to close an NPD settlement before its receipt exists", () => {
+    // PENDING_DOCUMENT is exactly the state of "paid, but the receipt the tax
+    // regime requires has not been produced".
+    const { db, domain } = setup();
+    const context = paid(db, domain, "NPD");
+    expect(query<{ status: string }>(db, "SELECT status FROM reward_settlements WHERE id = ?", context.settlement.id).status).toBe("PENDING_DOCUMENT");
+
+    expect(() => db.prepare("UPDATE reward_settlements SET status = 'SETTLED' WHERE id = ?").run(context.settlement.id))
+      .toThrow(/REWARD_SETTLEMENT_TRANSITION_ILLEGAL/);
+
+    db.prepare(`INSERT INTO npd_receipts(id, payment_attempt_id, settlement_id, receipt_reference, evidence_ref, created_by_admin_id)
+      VALUES (?, ?, ?, 'fns-settle', 'ev-settle', ?)`).run(randomUUID(), context.attemptId, context.settlement.id, admin.admin_id);
+    expect(() => db.prepare("UPDATE reward_settlements SET status = 'SETTLED' WHERE id = ?").run(context.settlement.id)).not.toThrow();
+  });
+
+  it("refuses to cancel a settlement whose payment is in flight or already made", () => {
+    // Cancelling a settlement beside a live payment is how a partner is paid
+    // for something the ledger says was abandoned.
+    const { db, domain } = setup();
+    const { settlement } = preparedWithoutPayment(db, domain, "OTHER");
+    const begun = beginPayment(db, admin, settlement.id);
+    expect(query<{ status: string }>(db, "SELECT status FROM payment_attempts WHERE id = ?", begun.attempt.id).status).toBe("IN_PROGRESS");
+
+    expect(() => db.prepare("UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT', cancellation_reason = 'SUPERSEDED_BY_REWARD_CORRECTION' WHERE id = ?").run(settlement.id))
+      .toThrow(/REWARD_SETTLEMENT_TRANSITION_ILLEGAL/);
+  });
+
+  it("freezes a settlement that reached SETTLED", () => {
+    // The other terminal state, and it has to be as final as cancellation.
+    const { db, domain } = setup();
+    const context = paid(db, domain, "OTHER");
+    expect(query<{ status: string }>(db, "SELECT status FROM reward_settlements WHERE id = ?", context.settlement.id).status).toBe("SETTLED");
+
+    expect(() => db.prepare("UPDATE reward_settlements SET settled_at = '2030-01-01T00:00:00Z' WHERE id = ?").run(context.settlement.id))
+      .toThrow(/REWARD_SETTLEMENT_TERMINAL_IMMUTABLE/);
+  });
+});
+
 describe("a zero-reward closure records an engagement that earned nothing", () => {
   /** A cancelled occurrence: the registry finalizes, and the reward is zero. */
   const zeroRewarded = (db: Database.Database, domain: CommerceDomain) => {

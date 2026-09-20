@@ -257,19 +257,20 @@ describe("a settlement act is a document, not a record that can be tidied", () =
   });
 
   it.each([
-    ["a settlement it does not belong to", { settlement_id: randomUUID() }],
-    ["an engagement its settlement does not name", { engagement_id: randomUUID() }],
-    ["a revision its settlement does not name", { engagement_revision_id: randomUUID() }],
-    ["a snapshot its settlement does not name", { effective_reward_snapshot_id: randomUUID() }],
-    ["a partner identity its settlement does not name", { partner_identity_id: randomUUID() }],
-    ["an amount its settlement does not carry", { amount_kopecks: 4_999 }],
-  ])("refuses an act naming %s", (_label, changes) => {
+    ["a settlement it does not belong to", "settlement_id"],
+    ["an engagement its settlement does not name", "engagement_id"],
+    ["a revision its settlement does not name", "engagement_revision_id"],
+    ["a snapshot its settlement does not name", "effective_reward_snapshot_id"],
+    ["a partner identity its settlement does not name", "partner_identity_id"],
+    ["an amount its settlement does not carry", "amount_kopecks"],
+  ] as const)("refuses an act naming %s", (_label, column) => {
     const { db, domain } = setup();
     const { partner, settlement } = settled(db, domain);
     const act = acceptedAct(db, partner.partner, settlement);
     // A second settlement with no act of its own, so the act's unique key is
-    // free and the relational guard is what decides.
-    const second = settled(db, domain, partner);
+    // free and the relational guard is what decides. A different partner, so
+    // its identity really is a different value.
+    const second = settled(db, domain);
     const template = { ...rowOf(db, "SELECT * FROM settlement_acts WHERE id = ?", act.id), presented_at: null };
     const forSecond = {
       ...template, settlement_id: second.settlement.id, engagement_id: second.settlement.engagement_id,
@@ -286,8 +287,13 @@ describe("a settlement act is a document, not a record that can be tidied", () =
       effective_reward_snapshot_id: third.settlement.effective_reward_snapshot_id,
       partner_identity_id: third.settlement.partner_identity_id, amount_kopecks: third.settlement.amount_kopecks,
     };
-    expect(insertVariant(db, "settlement_acts", forThird, changes))
-      .toThrow(/SETTLEMENT_ACT_RELATIONAL_INCONSISTENT|FOREIGN KEY/);
+    // The wrong value is a real one belonging to another settlement, so the
+    // foreign key is satisfied and only the relational predicate can refuse it.
+    // With a random id the case would pass whether the guard existed or not.
+    const wrong = column === "amount_kopecks" ? Number(forThird.amount_kopecks) + 1 : forSecond[column];
+    expect(wrong).not.toEqual(forThird[column]);
+    expect(insertVariant(db, "settlement_acts", forThird, { [column]: wrong }))
+      .toThrow(/SETTLEMENT_ACT_RELATIONAL_INCONSISTENT/);
   });
 
   it("freezes an acceptance once it is recorded", () => {
@@ -300,6 +306,9 @@ describe("a settlement act is a document, not a record that can be tidied", () =
     expect(acceptance).toBeTruthy();
 
     expect(() => db.prepare("UPDATE settlement_act_acceptances SET accepted_amount_kopecks = 1 WHERE id = ?").run(acceptance.id))
+      .toThrow(/SETTLEMENT_ACT_ACCEPTANCE_IMMUTABLE/);
+    // Erasing a signature is not a lesser act than editing one.
+    expect(() => db.prepare("DELETE FROM settlement_act_acceptances WHERE id = ?").run(acceptance.id))
       .toThrow(/SETTLEMENT_ACT_ACCEPTANCE_IMMUTABLE/);
   });
 });
