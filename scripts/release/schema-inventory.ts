@@ -11,6 +11,10 @@
  * Usage:
  *   tsx scripts/release/schema-inventory.ts ledger   # from every migration
  *   tsx scripts/release/schema-inventory.ts <file>   # from one SQL file
+ *
+ * `schema_migrations` is created here in both modes because `db.ts` creates it
+ * before applying anything. It therefore appears in every inventory whether or
+ * not the schema under test defines it, and cancels out of any diff.
  */
 import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
