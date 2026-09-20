@@ -18,12 +18,28 @@ The current ledger produces:
 | | |
 |---|---:|
 | Tables | 112 |
-| Columns | 1,145 |
+| Columns | 1,146 |
+| Foreign keys | 219 |
 | Triggers | 156 |
-| Indexes | 279 |
+| Indexes, explicitly created | 87 |
+| Indexes, implied by `PRIMARY KEY` / `UNIQUE` | 192 |
 
 Everything below is measured against that schema - the one the migrations
 actually produce - rather than against what any individual migration says.
+
+The index split matters for the review. An earlier revision of this document
+said "279 indexes", which is what `sqlite_master` reports and is misleading:
+192 of those are created by SQLite itself to back a `PRIMARY KEY` or a
+`UNIQUE`, and only 87 are written by hand. A baseline that declares the same
+constraints produces the same 192 without anyone typing them, so the number to
+compare when reviewing is 87 - while the artifact still prints all 279, because
+a lost `UNIQUE` shows up there as a missing implied index.
+
+The artifact is produced by `scripts/release/schema-inventory.ts`, which prints
+every object grouped under the table it belongs to, in a stable order, with
+partial-index predicates and trigger bodies normalised. It runs against the
+ledger or against a single SQL file, so the baseline is reviewed by diffing one
+against the other rather than by reading either.
 
 ## Acceptance criteria
 
