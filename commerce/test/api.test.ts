@@ -660,7 +660,7 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
-  it("allows only close-sales recovery from legacy hidden sellable occurrences", async () => {
+  it("rejects legacy hidden sellable occurrences instead of repairing them through the API", async () => {
     const { db, app } = appFixture();
     const cityId = (db.prepare("SELECT id FROM cities WHERE slug = 'tomsk'").get() as { id: string }).id;
     const openId = randomUUID(); const pausedId = randomUUID();
@@ -686,16 +686,16 @@ describe("commerce HTTP boundary", () => {
     expect(await openPublish.json()).toEqual({ error: { code: "OCCURRENCE_STATE_TRANSITION_FORBIDDEN" } });
     const openWithEdit = await patch(openId, "e81172c2-25a5-4f15-80e5-000000000002", { sales_status: "CLOSED", title: "Not allowed during recovery" });
     expect(openWithEdit.status).toBe(409);
-    expect((await patch(openId, "e81172c2-25a5-4f15-80e5-000000000003", { sales_status: "CLOSED" })).status).toBe(200);
+    expect((await patch(openId, "e81172c2-25a5-4f15-80e5-000000000003", { sales_status: "CLOSED" })).status).toBe(409);
 
     const pausedOpen = await patch(pausedId, "e81172c2-25a5-4f15-80e5-000000000004", { sales_status: "OPEN" });
     expect(pausedOpen.status).toBe(409);
     expect(await pausedOpen.json()).toEqual({ error: { code: "OCCURRENCE_STATE_TRANSITION_FORBIDDEN" } });
-    expect((await patch(pausedId, "e81172c2-25a5-4f15-80e5-000000000005", { sales_status: "CLOSED" })).status).toBe(200);
+    expect((await patch(pausedId, "e81172c2-25a5-4f15-80e5-000000000005", { sales_status: "CLOSED" })).status).toBe(409);
 
-    expect(db.prepare("SELECT visibility, sales_status FROM occurrences WHERE id = ?").get(openId)).toMatchObject({ visibility: "HIDDEN", sales_status: "CLOSED" });
-    expect(db.prepare("SELECT visibility, sales_status FROM occurrences WHERE id = ?").get(pausedId)).toMatchObject({ visibility: "HIDDEN", sales_status: "CLOSED" });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM admin_audit_log WHERE entity_type = 'occurrence' AND entity_id IN (?, ?)").get(openId, pausedId)).toMatchObject({ count: 2 });
+    expect(db.prepare("SELECT visibility, sales_status FROM occurrences WHERE id = ?").get(openId)).toMatchObject({ visibility: "HIDDEN", sales_status: "OPEN" });
+    expect(db.prepare("SELECT visibility, sales_status FROM occurrences WHERE id = ?").get(pausedId)).toMatchObject({ visibility: "HIDDEN", sales_status: "PAUSED" });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM admin_audit_log WHERE entity_type = 'occurrence' AND entity_id IN (?, ?)").get(openId, pausedId)).toMatchObject({ count: 0 });
     db.close();
   });
 

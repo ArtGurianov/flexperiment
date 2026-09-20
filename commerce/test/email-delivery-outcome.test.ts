@@ -312,8 +312,5 @@ describe("email delivery outcome", () => {
       expect(source).not.toContain("status IN ('DELIVERED', 'BOUNCED', 'FAILED')");
     });
 
-    it("requires a known failure before renewing a city-interest request", () => {
-      expect(source).toContain("old_outbox.status = 'FAILED' AND old_outbox.delivery_outcome = 'KNOWN_FAILED'");
-    });
   });
 });

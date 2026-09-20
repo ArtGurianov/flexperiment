@@ -16,20 +16,27 @@ import { frameworkAgreementRevisionById } from "./agent-referrals-framework-dele
 import { currentUsableNpdCheck } from "./agent-referrals-npd";
 import { AgentReferralsAttributionError, physicalRewardAuthorityKind, resolveOrderAttribution, ATTRIBUTION_RULE_VERSION } from "./agent-referrals-attribution";
 import { rewardForOrder as computeRewardForOrder } from "./reward-calculation";
-import { findCityBySlug } from "../../lib/city-catalog";
 import { availabilityStatus, purchaseStatus, type AvailabilityStatus, type PurchaseStatus } from "./purchase-status";
 import { assertInventoryTarget, availableSeatsSql, InventoryTargetError, occurrenceInventory, resolveInventoryTarget, seatCommitments } from "./occurrence-inventory";
 import { occurrenceNotificationsCapabilityActive } from "./occurrence-notification-capability";
+import { normalizeUnisenderReconciliationEvent, type UnisenderReconciliationEvent } from "./email-provider-reconciliation";
+import { processCityInterestLifecycle, registerCityInterest } from "./domain/city-interest";
+import { addSettlementRecovery } from "./domain/settlements";
+import { createCity, patchCity } from "./domain/admin-catalog";
+import { cancellationFinancialOverview } from "./domain/occurrences";
+import { checkoutStatus } from "./domain/checkout";
+import { reconcilePendingPayments } from "./domain/payments";
+import { reconcilePendingRefunds } from "./domain/refunds";
 import { parseUtcTimestamp } from "./utc-timestamp";
 import { emergencySalesPaused } from "./emergency-sales-gate";
 import { claimForDispatch, deferAmbiguousObservation, deferAmbiguousSend, dispatchCandidates, failExhaustedAmbiguous, providerLookupIdentity, recordProviderAcceptance, recordProviderRefusal, applyProviderObservation, claimedAttemptRef, resolveAttemptRef, skipObsoletePendingMessage, supersedeQueuedMessage, suppressMessageDispatch, sendTryCount, staleLeasedSends, type AttemptRef } from "./outbox-attempt-store";
 import { OutboxAuthorityError, emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, lastAuthorityEvent, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations, type DispatchEpoch } from "./outbox-authority";
 import type { OtpDeliveryCapability } from "./agent-referrals-otp";
 
-type Row = Record<string, unknown>;
-const one = <T extends Row>(db: Database.Database, sql: string, ...params: unknown[]) => db.prepare(sql).get(...params) as T | undefined;
-const many = <T extends Row>(db: Database.Database, sql: string, ...params: unknown[]) => db.prepare(sql).all(...params) as T[];
-const legalManifest = (raw: unknown): LegalManifest => {
+export type Row = Record<string, unknown>;
+export const one = <T extends Row>(db: Database.Database, sql: string, ...params: unknown[]) => db.prepare(sql).get(...params) as T | undefined;
+export const many = <T extends Row>(db: Database.Database, sql: string, ...params: unknown[]) => db.prepare(sql).all(...params) as T[];
+export const legalManifest = (raw: unknown): LegalManifest => {
   try { return parseLegalManifest(raw); }
   catch { throw new DomainError("LEGAL_RELEASE_INVALID", 503); }
 };
@@ -186,9 +193,6 @@ export const publicOccurrence = (occurrence: Row, newOrdersBlocked: boolean, now
 
 const occurrenceState = (occurrence: Row) => `${occurrence.visibility}:${occurrence.sales_status}`;
 const allowedOccurrenceStateTransitions = new Set([
-  // One-way recovery for legacy rows written before the SQLite invariant.
-  "HIDDEN:OPEN->HIDDEN:CLOSED",
-  "HIDDEN:PAUSED->HIDDEN:CLOSED",
   "HIDDEN:CLOSED->PUBLISHED:CLOSED",
   "PUBLISHED:CLOSED->PUBLISHED:OPEN",
   "PUBLISHED:CLOSED->HIDDEN:CLOSED",
@@ -334,12 +338,6 @@ const emailAttentionSql = (where: string) => `SELECT
   LEFT JOIN orders refund_order ON refund_order.id = refund.order_id
   WHERE ${where}
   ORDER BY e.ops_acknowledged_at IS NULL DESC, e.created_at DESC, e.id DESC`;
-
-const cityInterestExpiry = (timestamp: string) => {
-  const date = new Date(timestamp);
-  date.setUTCFullYear(date.getUTCFullYear() + 1);
-  return date.toISOString();
-};
 
 export class CommerceDomain {
   constructor(
@@ -680,58 +678,7 @@ export class CommerceDomain {
   }
 
   registerCityInterest(input: { email: string; city: string }) {
-    return withImmediateTransaction(this.db, () => {
-      const city = findCityBySlug(input.city);
-      if (!city) throw new DomainError("CITY_SLUG_UNKNOWN", 400);
-      const release = one(this.db, "SELECT manifest_json FROM legal_releases WHERE active = 1");
-      if (!release) throw new DomainError("LEGAL_RELEASE_NOT_ACTIVE", 503);
-      const manifest = legalManifest(JSON.parse(String(release.manifest_json)));
-      const timestamp = new Date(this.clock()).toISOString();
-      const expiresAt = cityInterestExpiry(timestamp);
-      const normalizedEmailHash = emailHash(input.email);
-      const existing = one(this.db, `SELECT id FROM city_interest_requests
-        WHERE email_hash = ? AND city_slug = ? AND superseded_at IS NULL`, normalizedEmailHash, city.slug);
-
-      if (existing && this.canRenewCityInterestNotification(String(existing.id))) {
-        // The replacement and redaction are one transaction: a failed epoch
-        // cannot remain current after its successor becomes visible. The old
-        // row remains solely as a non-PII anchor for immutable outbox/event
-        // evidence and its superseded intent relation.
-        const replacementId = id();
-        this.db.prepare(`UPDATE city_interest_notification_intents
-          SET superseded_at = ?
-          WHERE city_interest_request_id = ? AND superseded_at IS NULL`).run(timestamp, existing.id);
-        this.db.prepare(`UPDATE city_interest_requests
-          SET email_normalized = '', email_hash = '', superseded_at = ?,
-              superseded_by_request_id = ?
-          WHERE id = ? AND superseded_at IS NULL`).run(timestamp, replacementId, existing.id);
-        this.insertCityInterestRequest({
-          requestId: replacementId, email: input.email, emailHash: normalizedEmailHash,
-          citySlug: city.slug, manifest, timestamp, expiresAt,
-        });
-      } else if (existing) {
-        // An active, indeterminate, suppressed, or already-completed intent
-        // is never turned into a new epoch by a re-submit. Refresh only the
-        // explicit consent evidence on its still-current source request.
-        this.db.prepare(`UPDATE city_interest_requests
-          SET email_normalized = ?, privacy_policy_version = ?,
-              privacy_policy_sha256 = ?, pd_consent_version = ?,
-              pd_consent_sha256 = ?, consent_accepted_at = ?, created_at = ?,
-              expires_at = ?
-          WHERE id = ? AND superseded_at IS NULL`).run(
-          input.email, manifest.documents.PRIVACY_POLICY.version, manifest.documents.PRIVACY_POLICY.sha256,
-          manifest.documents.PD_CONSENT.version, manifest.documents.PD_CONSENT.sha256,
-          timestamp, timestamp, expiresAt, existing.id,
-        );
-      } else {
-        this.insertCityInterestRequest({
-          requestId: id(), email: input.email, emailHash: normalizedEmailHash,
-          citySlug: city.slug, manifest, timestamp, expiresAt,
-        });
-      }
-      this.consumeEligibleCityInterests(city.slug, CITY_INTEREST_SWEEP_BATCH_SIZE);
-      return { accepted: true };
-    });
+    return registerCityInterest(this, input);
   }
 
   registerOccurrenceNotification(input: { email: string; occurrence_id: string }) {
@@ -793,15 +740,7 @@ export class CommerceDomain {
 
   /** Applies expiry before scanning for newly eligible requests. */
   processCityInterestLifecycle() {
-    return withImmediateTransaction(this.db, () => {
-      const timestamp = new Date(this.clock()).toISOString();
-      const expired = many(this.db, `SELECT id FROM city_interest_requests
-        WHERE superseded_at IS NULL AND expires_at <= ?
-        ORDER BY expires_at LIMIT ?`, timestamp, CITY_INTEREST_SWEEP_BATCH_SIZE);
-      for (const row of expired) this.purgeCityInterestRequest(String(row.id));
-      const intentsCreated = this.consumeEligibleCityInterests(undefined, CITY_INTEREST_SWEEP_BATCH_SIZE, timestamp);
-      return { expired_deleted: expired.length, intents_created: intentsCreated };
-    });
+    return processCityInterestLifecycle(this);
   }
 
   withdrawNotificationConsent(email: string, reason: string, adminId: string) {
@@ -989,9 +928,7 @@ export class CommerceDomain {
   }
 
   checkoutStatus(statusId: string) {
-    const payment = one(this.db, `SELECT p.state, p.status, p.payment_url FROM orders o JOIN payments p ON p.order_id = o.id WHERE o.public_status_id = ?`, statusId);
-    if (!payment) throw new DomainError("CHECKOUT_NOT_FOUND", 404);
-    return this.checkoutResult({ status_id: statusId, ...payment });
+    return checkoutStatus(this, statusId);
   }
 
   markPaymentPaid(paymentId: string, capturedAmount: number, providerPaymentId?: string) {
@@ -1507,60 +1444,15 @@ export class CommerceDomain {
   }
 
   cancellationFinancialOverview(occurrenceId: string) {
-    const occurrence = one(this.db, "SELECT fulfillment_status FROM occurrences WHERE id = ?", occurrenceId);
-    if (!occurrence) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
-    if (occurrence.fulfillment_status !== "CANCELLED") throw new DomainError("OCCURRENCE_NOT_CANCELLED", 409);
-    return one(this.db, `WITH payment_totals AS (
-      SELECT p.id, p.captured_amount_kopecks AS captured,
-        COALESCE((SELECT SUM(r.amount_kopecks) FROM refunds r WHERE r.payment_id = p.id AND r.status = 'SUCCEEDED'), 0) AS refund_succeeded,
-        COALESCE((SELECT COUNT(*) FROM refunds r WHERE r.payment_id = p.id AND r.status = 'REVIEW_REQUIRED'), 0) AS refund_review_count,
-        CASE WHEN ro.status = 'REVIEW_REQUIRED' THEN 1 ELSE 0 END AS obligation_review
-      FROM payments p JOIN orders o ON o.id = p.order_id
-      LEFT JOIN refund_obligations ro ON ro.payment_id = p.id
-      WHERE o.occurrence_id = ? AND p.captured_amount_kopecks > 0
-    ) SELECT
-      COUNT(*) AS paid_orders,
-      COALESCE(SUM(captured), 0) AS captured_kopecks,
-      COALESCE(SUM(captured), 0) AS refund_target_kopecks,
-      COALESCE(SUM(refund_succeeded), 0) AS refund_succeeded_kopecks,
-      COALESCE(SUM(CASE WHEN captured > refund_succeeded THEN captured - refund_succeeded ELSE 0 END), 0) AS refund_outstanding_kopecks,
-      COALESCE(SUM(CASE WHEN refund_review_count > 0 OR obligation_review = 1 THEN CASE WHEN captured > refund_succeeded THEN captured - refund_succeeded ELSE 0 END ELSE 0 END), 0) AS refund_needs_attention_kopecks,
-      COALESCE(SUM(CASE WHEN refund_review_count > 0 OR obligation_review = 1 THEN 1 ELSE 0 END), 0) AS refund_needs_attention_count
-      FROM payment_totals`, occurrenceId)!;
+    return cancellationFinancialOverview(this, occurrenceId);
   }
 
   createCity(input: { city_slug: string; audit_context?: string }, idempotencyKey: string, adminId: string) {
-    return this.withAdminCommand("city-create", idempotencyKey, input, "cities", () => {
-      const canonicalCity = findCityBySlug(input.city_slug);
-      if (!canonicalCity) throw new DomainError("CITY_SLUG_UNKNOWN", 400);
-      if (one(this.db, "SELECT id FROM cities WHERE slug = ?", canonicalCity.slug)) throw new DomainError("CITY_SLUG_CONFLICT", 409);
-      const cityId = id();
-      this.db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, ?)").run(cityId, canonicalCity.slug, canonicalCity.title);
-      const city = one(this.db, "SELECT * FROM cities WHERE id = ?", cityId)!;
-      this.recordAdminCommandAudit(adminId, "CITY_CREATED", "city", cityId, input.audit_context, idempotencyKey, input);
-      return city;
-    });
+    return createCity(this, input, idempotencyKey, adminId);
   }
 
   patchCity(cityId: string, input: { city_slug: string; audit_context?: string }, idempotencyKey: string, adminId: string) {
-    const payload = { city_id: cityId, ...input };
-    return this.withAdminCommand("city-patch", idempotencyKey, payload, "cities", () => {
-      const before = one(this.db, "SELECT * FROM cities WHERE id = ?", cityId);
-      if (!before) throw new DomainError("CITY_NOT_FOUND", 404);
-      const canonicalCity = findCityBySlug(input.city_slug);
-      if (!canonicalCity) throw new DomainError("CITY_SLUG_UNKNOWN", 400);
-      const slugChanges = before.slug !== canonicalCity.slug;
-      const titleChanges = before.title !== canonicalCity.title;
-      if (!slugChanges && !titleChanges) return before;
-      if (slugChanges && Number(one(this.db, "SELECT COUNT(*) AS count FROM occurrences WHERE city_id = ?", cityId)?.count ?? 0) > 0) {
-        throw new DomainError("CITY_HAS_OCCURRENCES", 409);
-      }
-      if (one(this.db, "SELECT id FROM cities WHERE slug = ? AND id <> ?", canonicalCity.slug, cityId)) throw new DomainError("CITY_SLUG_CONFLICT", 409);
-      this.db.prepare("UPDATE cities SET slug = ?, title = ? WHERE id = ?").run(canonicalCity.slug, canonicalCity.title, cityId);
-      const city = one(this.db, "SELECT * FROM cities WHERE id = ?", cityId)!;
-      this.recordAdminCommandAudit(adminId, "CITY_EDITED", "city", cityId, input.audit_context, idempotencyKey, payload);
-      return city;
-    });
+    return patchCity(this, cityId, input, idempotencyKey, adminId);
   }
 
   private createOccurrenceRecord(input: {
@@ -1918,29 +1810,7 @@ export class CommerceDomain {
    * carries no authority discriminator of its own.
    */
   addSettlementRecovery(settlementId: string, input: { amount_recovered_kopecks: number; recovered_at: string; method: string; evidence_reference: string; note?: string }, idempotencyKey: string) {
-    const create = () => {
-      const settlement = one(this.db, "SELECT id, status, amount_kopecks FROM reward_settlements WHERE id = ?", settlementId);
-      if (!settlement) throw new DomainError("SETTLEMENT_NOT_FOUND", 404);
-      if (settlement.status !== "PENDING_DOCUMENT" && settlement.status !== "SETTLED") throw new DomainError("SETTLEMENT_RECOVERY_NOT_PAID", 409);
-      const alreadyRecovered = Number(one(this.db, "SELECT COALESCE(SUM(amount_recovered_kopecks), 0) AS amount FROM settlement_recoveries WHERE settlement_id = ?", settlementId)?.amount ?? 0);
-      const remainingRecoverable = Number(settlement.amount_kopecks) - alreadyRecovered;
-      if (input.amount_recovered_kopecks > remainingRecoverable) throw new DomainError("SETTLEMENT_RECOVERY_EXCEEDS_REMAINING", 409);
-      const recoveryId = id();
-      this.db.prepare("INSERT INTO settlement_recoveries(id, settlement_id, amount_recovered_kopecks, recovered_at, method, evidence_reference, note) VALUES (?, ?, ?, ?, ?, ?, ?)").run(recoveryId, settlementId, input.amount_recovered_kopecks, input.recovered_at, input.method, input.evidence_reference, input.note ?? null);
-      return one(this.db, "SELECT * FROM settlement_recoveries WHERE id = ?", recoveryId)!;
-    };
-    const keyHash = sha256(idempotencyKey); const payloadHash = sha256(canonical({ settlement_id: settlementId, ...input }));
-    return this.settlementTransaction(() => {
-      const replay = one(this.db, "SELECT canonical_request_hash, recovery_id FROM reward_settlement_command_idempotency WHERE command = 'RECOVERY' AND idempotency_key_hash = ?", keyHash);
-      if (replay) {
-        if (replay.canonical_request_hash !== payloadHash) throw new DomainError("IDEMPOTENCY_CONFLICT", 409);
-        return one(this.db, "SELECT * FROM settlement_recoveries WHERE id = ?", replay.recovery_id)!;
-      }
-      if (!Number.isInteger(input.amount_recovered_kopecks) || input.amount_recovered_kopecks <= 0) throw new DomainError("SETTLEMENT_RECOVERY_AMOUNT_INVALID", 422);
-      const recovery = create();
-      this.db.prepare("INSERT INTO reward_settlement_command_idempotency(command, idempotency_key_hash, canonical_request_hash, settlement_id, recovery_id) VALUES ('RECOVERY', ?, ?, ?, ?)").run(keyHash, payloadHash, settlementId, recovery.id);
-      return recovery;
-    });
+    return addSettlementRecovery(this, settlementId, input, idempotencyKey);
   }
 
   private settlementTransaction<T>(operation: () => T): T {
@@ -2071,36 +1941,12 @@ export class CommerceDomain {
     return true;
   }
 
-  /**
-   * Controlled local repair for a legacy state where provider-authoritative
-   * full refund evidence exists but fulfilment was not released. It never
-   * calls a payment provider or enqueues email.
-   */
-  repairFullRefundFulfillment(orderId: string) {
-    return withImmediateTransaction(this.db, () => {
-      const order = one(this.db, `SELECT p.id AS payment_id, p.status AS payment_status,
-        p.captured_amount_kopecks, b.status AS booking_status
-        FROM orders o JOIN payments p ON p.order_id = o.id
-        JOIN bookings b ON b.order_id = o.id WHERE o.id = ?`, orderId);
-      if (!order || order.payment_status !== "REFUNDED" || Number(order.captured_amount_kopecks) <= 0 || order.booking_status !== "CONFIRMED") return false;
-      const refunds = one(this.db, "SELECT COALESCE(SUM(amount_kopecks), 0) AS amount FROM refunds WHERE payment_id = ? AND status = 'SUCCEEDED'", order.payment_id)!;
-      if (Number(refunds.amount) < Number(order.captured_amount_kopecks)) return false;
-      return this.cancelConfirmedBookingForFullRefund(orderId);
-    });
-  }
-
   async reconcilePendingRefunds() {
-    const refunds = many(this.db, "SELECT id FROM refunds WHERE status IN ('RECONCILING', 'SUBMIT_UNKNOWN') ORDER BY created_at LIMIT 50");
-    for (const refund of refunds) {
-      try { await this.reconcileRefund(String(refund.id)); } catch { /* retain the durable refund command for admin reconciliation */ }
-    }
+    return reconcilePendingRefunds(this);
   }
 
   async reconcilePendingPayments() {
-    const payments = many(this.db, "SELECT id FROM payments WHERE provider_payment_id IS NOT NULL AND status = 'PENDING' AND state = 'CREATED' ORDER BY created_at LIMIT 50");
-    for (const payment of payments) {
-      try { await this.reconcilePayment(String(payment.id)); } catch { /* retain reservation until authoritative evidence arrives */ }
-    }
+    return reconcilePendingPayments(this);
   }
 
   /**
@@ -2685,12 +2531,11 @@ export class CommerceDomain {
     const target = one(this.db, `SELECT outbox_id, job_id FROM unisender_event_dump_targets
       WHERE run_id = ? AND outbox_id = ? AND job_id = ? AND state = 'ACTIVE'`, runId, outboxId, event.jobId);
     if (!target) return;
+    if (!event.eventTime || !event.deliveryStatus) return;
     const providerStatus = event.status.toLowerCase();
-    const status = providerStatus === "accepted" ? "ACCEPTED" : providerStatus === "sent" ? "SENT"
-      : providerStatus === "delivered" ? "DELIVERED" : ["soft_bounced", "hard_bounced", "spam"].includes(providerStatus) ? "BOUNCED" : undefined;
-    if (!status || !event.eventTime || !event.deliveryStatus) return;
     const semanticKey = `unisender:event-dump:${sha256(canonical({ outbox_id: target.outbox_id, job_id: event.jobId, status: providerStatus, delivery_status: event.deliveryStatus, event_time: event.eventTime }))}`;
-    this.applyUnisenderDelivery({ outboxId: String(target.outbox_id), status, providerStatus: providerStatus as "accepted" | "sent" | "delivered" | "soft_bounced" | "hard_bounced" | "spam", jobId: event.jobId, semanticKey });
+    const observation = normalizeUnisenderReconciliationEvent({ outboxId: String(target.outbox_id), providerStatus, jobId: event.jobId, semanticKey });
+    if (observation) this.applyUnisenderDelivery(observation);
   }
 
   private unisenderDumpTime(date: Date) {
@@ -3109,80 +2954,7 @@ export class CommerceDomain {
       WHERE id = ? AND type = 'OCCURRENCE_AVAILABLE'`).run(outboxId);
   }
 
-  /**
-   * Repairs one known historical orphan only when immutable outbox lineage and
-   * provider evidence independently prove that the city-interest purpose was
-   * completed. It deliberately does not infer cleanup from age or city alone.
-   */
-  repairDeliveredCityInterestOrphan(requestId: string) {
-    return withImmediateTransaction(this.db, () => {
-      const candidate = one(this.db, `SELECT request.id, outbox.id AS outbox_id
-        FROM city_interest_requests request
-        JOIN email_outbox outbox
-          ON outbox.payload_ref = 'city-interest:' || request.id
-        WHERE request.id = ?
-          AND outbox.type = 'CITY_INTEREST_AVAILABLE'
-          AND outbox.status = 'DELIVERED'
-          AND outbox.suppressed_at IS NULL
-          AND EXISTS (
-            SELECT 1 FROM email_provider_events event
-            WHERE event.outbox_id = outbox.id
-              AND event.status = 'DELIVERED'
-              AND event.provider_status = 'delivered'
-          )
-          AND NOT EXISTS (
-            SELECT 1 FROM city_interest_notification_intents intent
-            WHERE intent.city_interest_request_id = request.id
-          )`, requestId);
-      if (!candidate) return false;
-      const deleted = this.db.prepare("DELETE FROM city_interest_requests WHERE id = ?").run(requestId);
-      if (!deleted.changes) return false;
-      this.redactDeliveredCityInterestOutbox(String(candidate.outbox_id));
-      return true;
-    });
-  }
-
-  /**
-   * Repairs only a pre-0021 redaction omission. The durable successor link is
-   * written by the epoch transition itself; without it there is no safe way to
-   * infer that another request was the same email/city interest.
-   */
-  repairSupersededFailedCityInterestRequest(requestId: string) {
-    return withImmediateTransaction(this.db, () => {
-      const candidate = one(this.db, `SELECT previous.id
-        FROM city_interest_requests previous
-        JOIN city_interest_requests replacement
-          ON replacement.id = previous.superseded_by_request_id
-        JOIN city_interest_notification_intents old_intent
-          ON old_intent.city_interest_request_id = previous.id
-        JOIN email_outbox old_outbox ON old_outbox.id = old_intent.outbox_id
-        WHERE previous.id = ?
-          AND previous.superseded_at IS NOT NULL
-          AND previous.superseded_by_request_id IS NOT NULL
-          AND previous.email_normalized != ''
-          AND previous.email_hash != ''
-          AND replacement.superseded_at IS NULL
-          AND replacement.city_slug = previous.city_slug
-          AND old_intent.superseded_at IS NOT NULL
-          AND (
-            (old_outbox.status = 'FAILED' AND old_outbox.delivery_outcome = 'KNOWN_FAILED')
-            OR (
-              EXISTS (SELECT 1 FROM email_provider_events event
-                WHERE event.outbox_id = old_outbox.id
-                  AND event.provider_status = 'hard_bounced')
-              AND NOT EXISTS (SELECT 1 FROM email_provider_events event
-                WHERE event.outbox_id = old_outbox.id
-                  AND event.provider_status = 'delivered')
-            )
-          )`, requestId);
-      if (!candidate) return false;
-      return Boolean(this.db.prepare(`UPDATE city_interest_requests
-        SET email_normalized = '', email_hash = ''
-        WHERE id = ? AND email_normalized != '' AND email_hash != ''`).run(requestId).changes);
-    });
-  }
-
-  applyUnisenderDelivery(input: { outboxId: string; status: "ACCEPTED" | "SENT" | "DELIVERED" | "BOUNCED" | "FAILED"; providerStatus: "accepted" | "sent" | "delivered" | "soft_bounced" | "hard_bounced" | "spam"; jobId?: string; semanticKey: string }) {
+  applyUnisenderDelivery(input: UnisenderReconciliationEvent) {
     return withImmediateTransaction(this.db, () => {
       const outbox = one(this.db, "SELECT id FROM email_outbox WHERE id = ?", input.outboxId);
       if (!outbox) throw new DomainError("UNISENDER_OUTBOX_NOT_FOUND", 404);

@@ -10,6 +10,7 @@ import { TochkaProvider, type PaymentProvider } from "./provider";
 import { clientIpRateLimitKey, rateLimit, trustedClientIp } from "./rate-limit";
 import { TochkaWebhookVerifier, webhookAmountKopecks } from "./tochka-webhook";
 import { verifyUnisenderWebhook } from "./unisender-webhook";
+import { normalizeUnisenderReconciliationEvent } from "./email-provider-reconciliation";
 import { type SmartCaptchaVerifier, UnconfiguredSmartCaptchaVerifier } from "./smartcaptcha";
 import { adminReauthSchema, agentPatchSchema, agentSchema, checkoutContextSchema, checkoutRequestSchema, cityCreateSchema, cityInterestSchema, cityInterestWithdrawalSchema, cityPatchSchema, compensationRefundSchema, customerCancellationSchema, customerRefundRequestSchema, customerRefundTokenSchema, emailAttentionAcknowledgeSchema, emergencySalesCommandSchema, occurrenceCancelSchema, occurrenceCompleteSchema, occurrenceCreateSchema, occurrenceNotificationSchema, occurrencePatchSchema, promoPatchSchema, promoSchema, providerReferenceSchema, reservationAbandonSchema, settlementCancelSchema, settlementDocumentSchema, settlementPaymentMadeSchema, settlementPrepareSchema, settlementRecoverySchema } from "./types";
 import { createAgentReferralsPartnerRouter } from "./agent-referrals-api-partner";
@@ -269,13 +270,10 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
         if (eventRecord.event_name !== "transactional_email_status" || !eventRecord.event_data || typeof eventRecord.event_data !== "object") continue;
         const data = eventRecord.event_data as Record<string, unknown>;
         const metadata = data.metadata as Record<string, unknown> | undefined;
-        const outboxId = typeof metadata?.outbox_id === "string" ? metadata.outbox_id : undefined;
-        const providerStatus = typeof data.status === "string" ? data.status : undefined;
-        const status = providerStatus === "accepted" ? "ACCEPTED" : providerStatus === "sent" ? "SENT" : providerStatus === "delivered" ? "DELIVERED" : ["soft_bounced", "hard_bounced", "spam"].includes(providerStatus ?? "") ? "BOUNCED" : undefined;
-        if (!outboxId || !status || !providerStatus || !["accepted", "sent", "delivered", "soft_bounced", "hard_bounced", "spam"].includes(providerStatus)) continue;
-        const jobId = typeof data.job_id === "string" ? data.job_id : undefined;
         const semanticKey = `unisender:${sha256(canonicalWebhookPayload(data))}`;
-        try { domain.applyUnisenderDelivery({ outboxId, status, providerStatus: providerStatus as "accepted" | "sent" | "delivered" | "soft_bounced" | "hard_bounced" | "spam", jobId, semanticKey }); handled += 1; } catch (error) { if (!(error instanceof DomainError) || error.code !== "UNISENDER_OUTBOX_NOT_FOUND") throw error; }
+        const observation = normalizeUnisenderReconciliationEvent({ outboxId: metadata?.outbox_id, providerStatus: data.status, jobId: data.job_id, semanticKey });
+        if (!observation) continue;
+        try { domain.applyUnisenderDelivery(observation); handled += 1; } catch (error) { if (!(error instanceof DomainError) || error.code !== "UNISENDER_OUTBOX_NOT_FOUND") throw error; }
       }
     }
     return c.json({ accepted: true, handled }, 200);
