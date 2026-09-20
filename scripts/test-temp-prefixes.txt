@@ -12,7 +12,6 @@
 #   grep -rhoE 'mkdtempSync\(join\(tmpdir\(\), *"[^"]+"' --include='*.ts' commerce apps lib \
 #     | sed -E 's/.*"([^"]+)".*/\1/' | sed -E 's/-$//' | sort -u
 accept-seam
-accept-seam
 accept-seam-template
 act-payment-settlement
 act-payment-settlement-template
@@ -68,6 +67,7 @@ ambiguity-seam
 ambiguity-seam-template
 attribution-reward
 attribution-reward-template
+baseline-frozen
 bootstrap-promotion-compat
 candidate-author-fixture
 candidate-threeway
@@ -150,6 +150,7 @@ release-control-v2-materializer
 release-control-v2-materializer-rename
 release-control-v2-shadow
 release-semantics-boundary
+seo-snapshot
 suppression
 suppression-template
 tax-treatment-ord-canon
@@ -160,4 +161,3 @@ unified-legal-requisites
 unified-legal-requisites-only-0052
 unified-legal-requisites-tampered
 unified-legal-requisites-template
-seo-snapshot
