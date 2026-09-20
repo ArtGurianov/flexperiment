@@ -171,15 +171,46 @@ So 46 of the 48 need a surviving proof before the file asserting them can go,
 not 42. Classifying by proximity to a doomed column would have retired four real
 protections, which is why each is read.
 
-**Progress.** Six have been rehoused and two retired, which empties
-`agent-referrals-attribution-reward-migration.test.ts` of guards it alone held.
-Forty remain.
+**Progress.** Six rehoused and two retired, which empties
+`agent-referrals-attribution-reward-migration.test.ts` of guards it alone held;
+forty remain. Its own constraints travelled with them - the registry's uniqueness
+per engagement, its terminal-status domain, the rule that a cancelled occurrence
+mints nothing, and the effective chain's uniqueness, its INITIAL-to-sequence-one
+identity and its predecessor rule - because those carry no `RAISE` name and the
+census could not see them.
 
-**The rule this section exists to enforce:** no `*-migration.test.ts` file is
-deleted while any guard it asserts is still in this list. A guard leaves the
-list by being rehoused against the final schema - as the `outbox_attempt`
-constraints were - or by being retired with evidence that the object it protects
-is gone.
+Predicate-level mutation found three cases that were passing for the wrong
+reason and one predicate that cannot be reached at all: the guard's pin on a
+predecessor's engagement is implied by its pin on the base registry, which is
+unique per engagement. That is recorded in the test rather than asserted by a
+case contorted into covering it.
+
+**The rule this section exists to enforce.** A migration test may be deleted
+only when all four hold:
+
+1. no named guard is asserted by it alone;
+2. the live `CHECK`, `UNIQUE` and relational constraints it exercises are
+   rehoused - the census reads `RAISE` names, and a table's own constraints have
+   none, so counting guards is not enough;
+3. the application-facing schema contracts it proves are rehoused;
+4. what remains is migration mechanics - exactly-once application, replay as a
+   no-op, ordinary versus FK-off, rows that predate the migration - which have a
+   subject only while the migration file exists.
+
+Point 4 decides when: **no migration test is deleted in P8 at all.** While
+`0046` is still in the ledger, its mechanics are still a live subject. Those
+files go in P9, in the change that collapses the ledger they describe. What P8
+owes is that nothing else goes with them.
+
+A guard leaves the list by being rehoused against the schema as it is - as the
+`outbox_attempt` constraints were - or by being retired with evidence that the
+object it protects is gone.
+
+**And rehousing is measured by branches, not by names.** A guard that freezes
+eleven columns is not carried across by a test that edits six of them. Each
+rehoused guard is confirmed by disabling its own `RAISE`, and then by deleting
+individual predicates from its condition: a case that survives the second kind
+of mutation was passing for the wrong reason.
 
 ## Open rows
 
