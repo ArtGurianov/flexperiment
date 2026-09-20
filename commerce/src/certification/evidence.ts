@@ -137,13 +137,26 @@ export const emailEvidence = (evidence: OrderEvidence, type: string, payloadRef:
  *                mistake that files an incident while a real rouble is gone.
  *
  * `CREATE_UNKNOWN` is on the other axis and overrides all of it: the create
- * call itself was ambiguous, so even a PENDING status is not evidence that no
- * payment exists at the provider.
+ * call itself was ambiguous, so even a cancelled-looking payment is not
+ * evidence that none exists at the provider.
+ *
+ * And a captured amount outranks the label. Nothing in the schema ties
+ * `captured_amount_kopecks` to `status`, and the reconciler writes CANCELLED on
+ * a provider FAILED without requiring the capture to be zero - so a payment
+ * that was captured and then observed as failed reads as CANCELLED with money
+ * against it. Believing the label there would close an incident while a real
+ * rouble is still out, which is the one thing this recovery exists to prevent.
  */
 export type PaymentRecoveryDisposition = "NO_CAPTURE" | "CAPTURED" | "UNRESOLVED";
 
 export const paymentRecoveryDisposition = (payment: Record<string, unknown>): PaymentRecoveryDisposition => {
+  const captured = Number(payment.captured_amount_kopecks);
+  // Evidence we cannot read is not evidence that nothing was taken.
+  if (!Number.isSafeInteger(captured) || captured < 0) return "UNRESOLVED";
   if (payment.state === "CREATE_UNKNOWN") return "UNRESOLVED";
+  // Known captured money can never be classified as no-capture, whatever the
+  // status has since been set to.
+  if (captured > 0) return "CAPTURED";
   switch (payment.status) {
     case "CANCELLED":
     case "EXPIRED":

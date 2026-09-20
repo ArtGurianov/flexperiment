@@ -23,6 +23,7 @@ type Options = {
   paymentStatus?: string;
   paymentState?: string;
   paymentAbsent?: boolean;
+  capturedKopecks?: number;
   cancellationSticks?: boolean;
   refundAppears?: boolean;
   startAt?: Partial<CertificationRun>;
@@ -45,7 +46,14 @@ const production = (options: Options = {}) => {
 
   const evidence = (): OrderEvidence => ({
     order: { id: "order", public_status_id: "status", occurrence_id: "occ", amount_kopecks: 100, currency: "RUB" },
-    payment: options.paymentAbsent ? undefined : { id: "pay", status: options.paymentStatus ?? (cancelled ? "REFUNDED" : "PAID"), ...(options.paymentState ? { state: options.paymentState } : {}) },
+    payment: options.paymentAbsent ? undefined : {
+      id: "pay",
+      status: options.paymentStatus ?? (cancelled ? "REFUNDED" : "PAID"),
+      // Only a status that claims a capture carries one by default.
+      captured_amount_kopecks: options.capturedKopecks
+        ?? (["PAID", "PARTIALLY_REFUNDED", "REFUNDED"].includes(options.paymentStatus ?? (cancelled ? "REFUNDED" : "PAID")) ? 100 : 0),
+      ...(options.paymentState ? { state: options.paymentState } : {}),
+    },
     booking: { id: "booking", status: cancelled ? "CANCELLED" : "CONFIRMED" },
     ticket: { id: "ticket", status: cancelled ? "VOID" : "VALID" },
     refund_obligation: cancelled ? { id: "obligation", initial_source: "CUSTOMER_CANCELLATION_PARTIAL", target_refunded_amount_kopecks: 100, status: "FULFILLED" } : null,
@@ -474,6 +482,44 @@ describe("certifying production", () => {
     expect(outcome.kind).toBe("INCOMPLETE");
     expect((outcome as { code: string }).code).toContain("CERTIFICATION_RECOVERY_PAYMENT_UNRESOLVED");
     expect(runs.load("run")?.failure).toMatchObject({ code: "CERTIFICATION_PAYMENT_FAILED" });
+  });
+
+  it.each([
+    ["a cancelled payment", "CANCELLED"],
+    ["an expired payment", "EXPIRED"],
+  ])("will not let %s with money against it count as no capture", async (_label, paymentStatus) => {
+    // Nothing in the schema ties captured_amount_kopecks to status, and the
+    // reconciler writes CANCELLED on a provider FAILED without requiring the
+    // capture to be zero. Believing the label would close the incident with a
+    // real rouble still out.
+    const { ports, input, runs } = production({
+      paymentStatus, capturedKopecks: 100, refundAppears: false,
+      startAt: {
+        phase: "PAYMENT_PROVEN", direction: "FINANCIAL_EFFECT_POSSIBLE", occurrenceId: "occ",
+        orderId: "order", statusId: "status", paymentId: "pay", bookingId: "booking", ticketId: "ticket",
+        failure: { outcome: "FAILED", code: "CERTIFICATION_PAYMENT_FAILED", recordedAt: now.toISOString() },
+      },
+    });
+
+    const outcome = await certifyProduction(ports, input);
+
+    expect(outcome.kind).toBe("INCOMPLETE");
+    expect(runs.load("run")?.refundId ?? null).toBeNull();
+  });
+
+  it("will not read an unreadable captured amount as proof of no capture", async () => {
+    const { ports, input } = production({
+      paymentStatus: "CANCELLED", capturedKopecks: Number.NaN,
+      startAt: {
+        phase: "CHECKOUT_CREATED", direction: "FINANCIAL_EFFECT_POSSIBLE", occurrenceId: "occ",
+        orderId: "order", statusId: "status",
+        failure: { outcome: "FAILED", code: "CERTIFICATION_PAYMENT_FAILED", recordedAt: now.toISOString() },
+      },
+    });
+
+    const outcome = await certifyProduction(ports, input);
+
+    expect((outcome as { code: string }).code).toContain("CERTIFICATION_RECOVERY_PAYMENT_UNRESOLVED");
   });
 
   it("will not read missing payment evidence as proof that nothing was charged", async () => {
