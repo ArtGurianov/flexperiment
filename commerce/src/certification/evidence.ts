@@ -122,6 +122,41 @@ export const emailEvidence = (evidence: OrderEvidence, type: string, payloadRef:
   return { delivered: true, outboxId, jobId };
 };
 
+/**
+ * What a payment says about money that may need returning, which is not the
+ * same question as whether the checkout succeeded.
+ *
+ *   NO_CAPTURE   the provider refused or the window closed. `domain.ts` turns
+ *                both into a FAILED checkout and deliberately creates no refund
+ *                obligation, because nothing was taken.
+ *   CAPTURED     money exists at the provider. PARTIALLY_REFUNDED counts: some
+ *                of it is still out. REFUNDED counts too - it still has to be
+ *                proved by exactly one successful refund answering the
+ *                obligation, rather than believed.
+ *   UNRESOLVED   the provider has not said. Treating this as no-capture is the
+ *                mistake that files an incident while a real rouble is gone.
+ *
+ * `CREATE_UNKNOWN` is on the other axis and overrides all of it: the create
+ * call itself was ambiguous, so even a PENDING status is not evidence that no
+ * payment exists at the provider.
+ */
+export type PaymentRecoveryDisposition = "NO_CAPTURE" | "CAPTURED" | "UNRESOLVED";
+
+export const paymentRecoveryDisposition = (payment: Record<string, unknown>): PaymentRecoveryDisposition => {
+  if (payment.state === "CREATE_UNKNOWN") return "UNRESOLVED";
+  switch (payment.status) {
+    case "CANCELLED":
+    case "EXPIRED":
+      return "NO_CAPTURE";
+    case "PAID":
+    case "PARTIALLY_REFUNDED":
+    case "REFUNDED":
+      return "CAPTURED";
+    default:
+      return "UNRESOLVED";
+  }
+};
+
 export type RefundIdentifiers = {
   readonly paymentId: string;
   readonly obligationId: string;

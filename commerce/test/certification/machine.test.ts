@@ -20,6 +20,9 @@ const now = new Date("2026-09-20T00:00:00.000Z");
 
 type Options = {
   emailStatus?: string;
+  paymentStatus?: string;
+  paymentState?: string;
+  paymentAbsent?: boolean;
   cancellationSticks?: boolean;
   refundAppears?: boolean;
   startAt?: Partial<CertificationRun>;
@@ -42,7 +45,7 @@ const production = (options: Options = {}) => {
 
   const evidence = (): OrderEvidence => ({
     order: { id: "order", public_status_id: "status", occurrence_id: "occ", amount_kopecks: 100, currency: "RUB" },
-    payment: { id: "pay", status: cancelled ? "REFUNDED" : "PAID" },
+    payment: options.paymentAbsent ? undefined : { id: "pay", status: options.paymentStatus ?? (cancelled ? "REFUNDED" : "PAID"), ...(options.paymentState ? { state: options.paymentState } : {}) },
     booking: { id: "booking", status: cancelled ? "CANCELLED" : "CONFIRMED" },
     ticket: { id: "ticket", status: cancelled ? "VOID" : "VALID" },
     refund_obligation: cancelled ? { id: "obligation", initial_source: "CUSTOMER_CANCELLATION_PARTIAL", target_refunded_amount_kopecks: 100, status: "FULFILLED" } : null,
@@ -423,6 +426,72 @@ describe("certifying production", () => {
     expect(outcome).toEqual({ kind: "INCOMPLETE", code: "CERTIFICATION_RECOVERY_MONEY_UNRESOLVED" });
     expect(runs.load("run")?.refundId ?? null).toBeNull();
     expect(runs.load("run")?.failure).toMatchObject({ code: "CERTIFICATION_EMAIL_TERMINAL:TICKET:BOUNCED" });
+  });
+
+  it.each([
+    ["the provider refused the payment", { paymentStatus: "CANCELLED" }],
+    ["the payment window closed", { paymentStatus: "EXPIRED" }],
+  ])("finishes a failed run safely when %s", async (_label, override) => {
+    // Nothing was captured, so no refund obligation exists - and none should.
+    // Demanding one would leave the run unable to finish for the rest of its
+    // life over money that was never taken.
+    const { ports, input, calls } = production({
+      ...override,
+      startAt: {
+        phase: "CHECKOUT_CREATED", direction: "FINANCIAL_EFFECT_POSSIBLE", occurrenceId: "occ",
+        orderId: "order", statusId: "status",
+        failure: { outcome: "FAILED", code: "CERTIFICATION_PAYMENT_FAILED", recordedAt: now.toISOString() },
+      },
+    });
+
+    const outcome = await certifyProduction(ports, input);
+
+    expect(outcome).toEqual({ kind: "FAILED", code: "CERTIFICATION_PAYMENT_FAILED" });
+    expect(calls.some((call) => call.kind.startsWith("cancel:"))).toBe(false);
+  });
+
+  it.each([
+    ["the provider has not answered yet", { paymentStatus: "PENDING" }],
+    ["the payment is still reconciling", { paymentStatus: "RECONCILING" }],
+    ["the payment needs review", { paymentStatus: "REVIEW_REQUIRED" }],
+    // A cancelled-looking payment whose create call never got an answer is
+    // still not proof that no payment exists at the provider.
+    ["the create call itself was ambiguous", { paymentStatus: "CANCELLED", paymentState: "CREATE_UNKNOWN" }],
+  ])("refuses to finish a failed run while %s", async (_label, override) => {
+    // Not proven in either direction. Reading it as no-capture is the mistake
+    // that files the incident while a real rouble is gone.
+    const { ports, input, runs } = production({
+      ...override,
+      startAt: {
+        phase: "CHECKOUT_CREATED", direction: "FINANCIAL_EFFECT_POSSIBLE", occurrenceId: "occ",
+        orderId: "order", statusId: "status",
+        failure: { outcome: "FAILED", code: "CERTIFICATION_PAYMENT_FAILED", recordedAt: now.toISOString() },
+      },
+    });
+
+    const outcome = await certifyProduction(ports, input);
+
+    expect(outcome.kind).toBe("INCOMPLETE");
+    expect((outcome as { code: string }).code).toContain("CERTIFICATION_RECOVERY_PAYMENT_UNRESOLVED");
+    expect(runs.load("run")?.failure).toMatchObject({ code: "CERTIFICATION_PAYMENT_FAILED" });
+  });
+
+  it("will not read missing payment evidence as proof that nothing was charged", async () => {
+    // Checkout creates the order, the booking and a PENDING payment together,
+    // so an order without a payment is an inconsistent reading.
+    const { ports, input, runs } = production({
+      paymentAbsent: true,
+      startAt: {
+        phase: "CHECKOUT_CREATED", direction: "FINANCIAL_EFFECT_POSSIBLE", occurrenceId: "occ",
+        orderId: "order", statusId: "status",
+        failure: { outcome: "FAILED", code: "CERTIFICATION_PAYMENT_FAILED", recordedAt: now.toISOString() },
+      },
+    });
+
+    const outcome = await certifyProduction(ports, input);
+
+    expect(outcome).toEqual({ kind: "INCOMPLETE", code: "CERTIFICATION_RECOVERY_PAYMENT_EVIDENCE_ABSENT" });
+    expect(runs.load("run")?.failure).toMatchObject({ code: "CERTIFICATION_PAYMENT_FAILED" });
   });
 
   it("refuses to certify a release other than the one it is running against", async () => {

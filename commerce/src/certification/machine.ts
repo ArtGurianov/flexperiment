@@ -4,7 +4,7 @@ import type { CertificationCapability, CertificationClaim } from "./capability";
 import type { CertificationCatalogueCommand } from "./catalogue-authority";
 import { assertCatalogueClean, ensureCatalogueClean, type CatalogueCleanupPorts } from "./cleanup";
 import {
-  emailEvidence, manifestDefect, occurrenceIdentityDefect, orderIdentityDefect, refundConvergenceDefect, refundPollAction,
+  emailEvidence, manifestDefect, occurrenceIdentityDefect, orderIdentityDefect, paymentRecoveryDisposition, refundConvergenceDefect, refundPollAction,
   type CertificationScope, type OccurrenceView, type OrderEvidence, type RefundIdentifiers, type RunIdentifiers,
 } from "./evidence";
 import {
@@ -509,7 +509,10 @@ class CertificationMachine {
     const orderId = this.requireOrder(current);
     let evidence = await this.ports.admin.orderEvidence(orderId);
     const payment = evidence.payment ?? {};
-    if (!payment.id) return current;
+    // An order exists, so a payment row should too: checkout creates the order,
+    // the booking and a PENDING payment together. Missing evidence is an
+    // inconsistent reading, never a proof that nothing was charged.
+    if (!payment.id) throw new CertificationIncomplete("CERTIFICATION_RECOVERY_PAYMENT_EVIDENCE_ABSENT");
 
     if (!current.paymentId) {
       current = this.commit(current, {
@@ -518,6 +521,13 @@ class CertificationMachine {
         ticketId: String((evidence.ticket ?? {}).id ?? current.ticketId ?? ""),
       });
     }
+
+    const disposition = paymentRecoveryDisposition(payment);
+    // The provider refused, or the window closed. There is no obligation to
+    // find because there is nothing to give back, and demanding one would
+    // leave the run unable to finish for the rest of its life.
+    if (disposition === "NO_CAPTURE") return current;
+    if (disposition === "UNRESOLVED") throw new CertificationIncomplete(`CERTIFICATION_RECOVERY_PAYMENT_UNRESOLVED:${String(payment.status ?? "UNKNOWN")}`);
 
     if ((evidence.booking ?? {}).status === "CONFIRMED" && current.bookingId) {
       // Cancelling is what creates the refund obligation, so it comes first
