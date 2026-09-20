@@ -3,7 +3,9 @@ import { ZodError } from "zod";
 import type { Sqlite } from "./db";
 import { assertAdminOrigin, issueAdminSession, parseSession, verifyAdminPassword } from "./auth";
 import { emailHash, publicId, sha256 } from "./crypto";
+import { admitCertificationCheckout, CERTIFICATION_CLAIM_HEADER, parseCertificationClaim } from "./certification/checkout-admission";
 import { CommerceDomain, DomainError } from "./domain";
+import type { CertificationContext } from "./domain/checkout";
 import { availableSeatsSql, seatCommitmentsSql } from "./occurrence-inventory";
 import { type EmailProvider, UnconfiguredEmailProvider, UnisenderGoProvider } from "./email-provider";
 import { TochkaProvider, type PaymentProvider } from "./provider";
@@ -194,10 +196,25 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     const keyHash = sha256(idempotencyKey);
     const existing = sqlite.prepare("SELECT 1 FROM checkout_idempotency WHERE idempotency_key_hash = ?").get(keyHash);
     const raw = await jsonBody(c.req.raw);
+    // The claim rides in a header, never the query string: a query parameter
+    // lands in access logs, proxy logs and browser history, and this one opens
+    // a fence. It is read before the ordinary gate check, because the whole
+    // point of a certification is to pass a gate the release itself closed.
+    const claim = parseCertificationClaim(c.req.header(CERTIFICATION_CLAIM_HEADER));
     // Keep the operator-owned emergency stop ahead of request-schema validation.
-    if (!existing) domain.assertNewOrdersOpen();
-    if (existing) return c.json(domain.replayCheckout(raw, idempotencyKey), 200);
+    if (!existing && !claim) domain.assertNewOrdersOpen();
+    if (existing && !claim) return c.json(domain.replayCheckout(raw, idempotencyKey), 200);
     const input = checkoutRequestSchema.parse(raw);
+    if (claim) {
+      const origin = process.env.COMMERCE_PUBLIC_ORIGIN ?? "https://flexperiment.ru";
+      const admitted = admitCertificationCheckout(sqlite, claim, input.quote_id, idempotencyKey, new Date(), (certification: CertificationContext) =>
+        domain.checkout(input, idempotencyKey, { ip: trustedClientIp(c.req.raw.headers), userAgent: c.req.header("User-Agent") ?? undefined }, certification));
+      // A replayed certification returns the checkout its key already made,
+      // having spent nothing a second time. The payment creation that follows a
+      // fresh admission is idempotent at the provider by its own key.
+      if (admitted.kind === "REPLAY") return c.json(domain.checkoutStatus(admitted.statusId), 200);
+      return c.json(await domain.settleCheckoutPayment(String(admitted.result.status_id), origin), 201);
+    }
     rateLimit(clientIpRateLimitKey("checkout-new", c.req.raw.headers), 3, 10 * 60_000);
     const quoteForLimit = sqlite.prepare("SELECT occurrence_id FROM quotes WHERE id = ?").get(input.quote_id) as { occurrence_id: string } | undefined;
     rateLimit(`checkout-email:${emailHash(input.customer_email)}:${quoteForLimit?.occurrence_id ?? input.quote_id}`, 2, 30 * 60_000);

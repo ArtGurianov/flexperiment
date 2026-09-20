@@ -41,11 +41,13 @@ import {
   promoList,
 } from "./domain/admin-catalog";
 import { cancellationFinancialOverview, cancelOccurrence, completeOccurrence, createAdminReauth, createOccurrence, createOccurrenceRecord, patchOccurrence, type CorruptOccurrenceNotification, type OccurrenceCreateInput, type PendingOccurrenceUpdateBaseline } from "./domain/occurrences";
-import { checkout, checkoutAsync, checkoutContext, checkoutStatus, replayCheckout, type CheckoutInput } from "./domain/checkout";
+import { checkout, checkoutAsync, checkoutContext, checkoutStatus, replayCheckout, settleCheckoutPayment, type CertificationContext, type CheckoutInput } from "./domain/checkout";
 import { applyTochkaPaymentWebhook, markPaymentPaid, reconcilePayment, reconcilePendingPayments, type TochkaPaymentWebhook } from "./domain/payments";
 import { cancelCustomerBooking, confirmCustomerRefund, createCompensationRefund, createObligationRefunds, customerRefundConfirmationContext, ensureFullCapturedRefund, reconcilePendingRefunds, reconcileRefund, requestCustomerRefund, submitRequestedRefunds, upsertRefundObligation } from "./domain/refunds";
 import { parseUtcTimestamp } from "./utc-timestamp";
 import { emergencySalesPaused } from "./emergency-sales-gate";
+import { evaluateSalesGate, type PresentedCertificationCapability } from "./release/sales-gate";
+import { readSalesGateState } from "./release/sales-gate-state";
 import { claimForDispatch, deferAmbiguousObservation, deferAmbiguousSend, dispatchCandidates, failExhaustedAmbiguous, providerLookupIdentity, recordProviderAcceptance, recordProviderRefusal, applyProviderObservation, claimedAttemptRef, resolveAttemptRef, skipObsoletePendingMessage, supersedeQueuedMessage, sendTryCount, staleLeasedSends, type AttemptRef } from "./outbox-attempt-store";
 import { OutboxAuthorityError, emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, lastAuthorityEvent, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations, type DispatchOwner } from "./outbox-authority";
 import type { OtpDeliveryCapability } from "./agent-referrals-otp";
@@ -282,14 +284,39 @@ export class CommerceDomain {
     return this.mapOutboxAuthority(() =>
       withImmediateTransaction(this.db, () => ({ ...unfenceEmailDispatch(this.db, input, owner), dispatch: emailDispatchDrained(this.db) })));
   }
-  newOrdersBlocked() { return this.emergencySalesPaused(); }
+  /** What the public catalogue says about buying. It has to agree with the gate. */
+  newOrdersBlocked() {
+    const state = readSalesGateState(this.db);
+    return state.emergencyClosed || state.deploymentClosed || state.businessClosed;
+  }
 
   replayCheckout(input: unknown, idempotencyKey: string) {
     return replayCheckout(this, input, idempotencyKey);
   }
 
-  assertNewOrdersOpen() {
-    if (this.emergencySalesPaused()) throw new DomainError("SALES_TEMPORARILY_PAUSED", 503);
+  /**
+   * The one canonical sales gate, in the request path.
+   *
+   * It used to ask only the emergency gate, which meant a maintenance cutover
+   * recorded a closed deployment fence that nothing in the public checkout ever
+   * consulted - the session said sales were shut and customers could still buy.
+   * The session's state and what a customer experiences have to be one fact.
+   *
+   * A presented capability may open the deployment fence and nothing above it.
+   * The ordering lives in `evaluateSalesGate`, which is deliberately the only
+   * place that knows it.
+   */
+  assertNewOrdersOpen(presented?: PresentedCertificationCapability) {
+    const decision = evaluateSalesGate(readSalesGateState(this.db), new Date(this.clock()), presented);
+    if (decision.open) return;
+    if (decision.code === "EMERGENCY_SALES_GATE_CLOSED") throw new DomainError("SALES_TEMPORARILY_PAUSED", 503);
+    if (decision.code === "DEPLOYMENT_SALES_GATE_CLOSED" || decision.code === "BUSINESS_SALES_GATE_CLOSED") {
+      throw new DomainError("SALES_TEMPORARILY_PAUSED", 503);
+    }
+    // A capability that was presented and refused is not a paused shop; it is a
+    // rejected authorization, and saying so plainly is what makes a broken
+    // certification diagnosable instead of looking like an outage.
+    throw new DomainError(decision.code, 403);
   }
 
   private publicOccurrences(where: string, options: { catalogue: boolean }, ...params: unknown[]) {
@@ -568,13 +595,18 @@ export class CommerceDomain {
     return checkoutContext(this, input);
   }
 
-  checkout(input: CheckoutInput, idempotencyKey: string, acceptance: { ip?: string; userAgent?: string } = {}) {
-    return checkout(this, input, idempotencyKey, acceptance);
+  checkout(input: CheckoutInput, idempotencyKey: string, acceptance: { ip?: string; userAgent?: string } = {}, certification?: CertificationContext) {
+    return checkout(this, input, idempotencyKey, acceptance, certification);
   }
 
   /** Performs external payment creation only after checkout state has committed. */
-  async checkoutAsync(input: CheckoutInput, idempotencyKey: string, successBaseUrl: string, acceptance: { ip?: string; userAgent?: string } = {}) {
-    return checkoutAsync(this, input, idempotencyKey, successBaseUrl, acceptance);
+  /** The external half on its own, for an order a certification admission already committed. */
+  async settleCheckoutPayment(statusId: string, successBaseUrl: string) {
+    return settleCheckoutPayment(this, statusId, successBaseUrl);
+  }
+
+  async checkoutAsync(input: CheckoutInput, idempotencyKey: string, successBaseUrl: string, acceptance: { ip?: string; userAgent?: string } = {}, certification?: CertificationContext) {
+    return checkoutAsync(this, input, idempotencyKey, successBaseUrl, acceptance, certification);
   }
 
   checkoutResult(value: Row) {
