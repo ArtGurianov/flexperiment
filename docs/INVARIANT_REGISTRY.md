@@ -450,3 +450,29 @@ same request. Its encoding is asserted as exact text - key order at every depth,
 array order left alone, `undefined` omitted, non-finite and unsupported values
 refused - because that text is the identity, and a parser-based comparison would
 hide precisely the changes that matter.
+
+## The residual vocabulary sweep, classified
+
+Every pattern the plan named, with what survives and why. Counts exclude
+`public/` (base64 image data), `docs/history/PRE_LAUNCH.md` (the one page that
+is allowed to describe what is gone), and `scripts/test-temp-prefixes.txt`.
+
+| Pattern | Hits | What they are |
+|---|---:|---|
+| `\br[567]\b` | 0 | — |
+| `epoch.?[ab]` | 0 | — |
+| `\bq[2-7]\b` | 0 | — |
+| `gen[2-5]` | 0 | — |
+| `bootstrap-adopt` | 0 | — |
+| `stranded-rolling` | 0 | — |
+| `migration-compat-evidence` | 0 | — |
+| `phase0` | 2 | `.gitignore` and `.dockerignore`. Tombstones: the entries stop the rotated `.phase0-*.env` files being re-added. |
+| `DORMANT` | 3 files | `baseline-schema.test.ts` asserts the CHECK refuses it; `BASELINE_SPECIFICATION.md` and `BASELINE_OBJECT_DIFF.md` record its removal. All three assert its absence. |
+| `0052` | 0 | — (one entry remains in the GC prefix allowlist, where deleting it would strand directories on disk) |
+| `\bLEGACY\b` | ~30 | **All live.** `SchemaLineage`'s own member, `LEGACY_PRELAUNCH_DATABASE_NOT_SUPPORTED`, the classifier and every test of it. The last four historical uses - prose about the two-authority outbox - were rewritten. |
+| `cutover` | ~240 | **All live.** The `MAINTENANCE_CUTOVER` mode, the cutover envelope and its handoff across the lineage boundary, `adoptedCutoverId`, `bootstrap-rollback`. This is a current protocol, not a past one. |
+
+`epoch` survives in three unrelated senses, none of them the release model:
+Unix epoch milliseconds in the admin UI, the city-interest request/consent
+generation, and the release documents recording that the release-generation
+model was removed.

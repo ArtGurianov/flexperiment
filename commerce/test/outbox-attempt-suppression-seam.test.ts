@@ -83,9 +83,8 @@ describe("suppression seam", () => {
     });
 
     it("does not record consent withdrawal as a send failure", () => {
-      // Under LEGACY the reason is written into last_error because that column
-      // is the only place available. It is not a provider failure, so under
-      // ATTEMPT it stays on the message rather than becoming the attempt's
+      // A withdrawal is not a provider failure, so it stays on the message
+      // rather than becoming the attempt's
       // failure_code.
       const db = fixture({ status: "SENDING" });
       tx(db, () => suppressMessageDispatch(db, "m1", "CITY_INTEREST_AVAILABLE", "CITY_INTEREST_NO_LONGER_ACTIVE", TS));
@@ -141,9 +140,9 @@ describe("suppression seam", () => {
     });
 
     it("retains the status of an in-flight send and does not clear its lease", () => {
-      // Only PENDING had its scheduling cleared under LEGACY, because anything
-      // further may already be a real delivery attempt. The ATTEMPT branch
-      // mirrors that rather than clearing a live in-flight lease.
+      // Only PENDING has its scheduling cleared: anything further may already
+      // be a real delivery attempt, and clearing a live in-flight lease would
+      // invite a second one.
       const db = fixture({ status: "SENDING" });
       const attemptBefore = attempt(db);
       expect(tx(db, () => supersedeQueuedMessage(db, "m1", TS, "newer revision"))).toBe(1);

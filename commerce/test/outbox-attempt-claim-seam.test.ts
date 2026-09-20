@@ -11,11 +11,8 @@ import type { EmailProvider } from "../src/email-provider";
 /**
  * Seam 1 of 5: claim / lease / start.
  *
- * Every logical transition is run twice from the same starting fixture:
- *
- *   LEGACY    legacy columns change, the shadow attempt does NOT
- *   ATTEMPT   the attempt changes, legacy attempt columns are byte-identical,
- *             and message-level facts change where appropriate
+ * Every logical transition is checked from the same starting fixture: the
+ * attempt changes, and message-level facts change where appropriate.
  *
  * The second assertion is the one that matters. "The attempt row looks right"
  * is insufficient if the code also quietly updates legacy columns - and the

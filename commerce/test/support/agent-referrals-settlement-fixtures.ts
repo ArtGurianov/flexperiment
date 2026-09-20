@@ -147,10 +147,10 @@ export const closeAndComplete = (db: Database.Database, domain: CommerceDomain, 
 export const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /**
- * A minimal, genuinely LEGACY referral_rewards row: order_id is NOT NULL
- * UNIQUE REFERENCES orders(id), so a real (if minimal) order must exist
- * first - direct SQL only, since the point of the F9 partition tests is to
- * prove the DATABASE READ FILTER, not to exercise checkout again.
+ * A minimal referral_rewards row: order_id is NOT NULL UNIQUE REFERENCES
+ * orders(id), so a real (if minimal) order must exist first - direct SQL only,
+ * since the point is to prove the database read filter, not to exercise
+ * checkout again.
  */
 /** Closes sales, completes the occurrence, finalizes R/E1, and mints the PREPARED AGENT_REFERRALS settlement derived from E1. */
 export const finalizedSettlement = (db: Database.Database, domain: CommerceDomain, occurrenceId: string, engagementId: string): AgentReferralsSettlementRow => {

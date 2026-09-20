@@ -60,11 +60,17 @@ has already moved past with no way back to the commits between.
 
 ## The deploy mode is derived, never chosen
 
-`ROLLING_COMPATIBLE` earns a rolling deploy; everything else takes the
-maintenance path. The absence of a compatibility proof is not compatibility.
+`ROLLING_COMPATIBLE` earns `ROLLING_SAFE`; everything else takes
+`MAINTENANCE_CUTOVER`. The absence of a compatibility proof is not
+compatibility.
 An operator who could select the rolling path for a schema-incompatible release
 would skip the fence and the certification with it, so the choice belongs to
 whoever classified the candidate.
+
+The two differ in exactly one thing that matters here: `ROLLING_SAFE` never
+closes the deployment gate, and `MAINTENANCE_CUTOVER` always does. A rolling
+release that closed sales, and a maintenance cutover that did not, are both
+simply wrong, and the schema refuses to record either.
 
 ## Webhook acceptance is not deployment convergence
 
@@ -180,6 +186,17 @@ A database is classified before migration, not after: empty and bootstrappable,
 supported, legacy, or unknown. The last two fail closed. A runtime that
 silently accepts a database from a lineage it was not built for is how a
 restored backup becomes a corrupted production.
+
+An empty ledger table with nothing built beside it is a bootstrap that has not
+happened; a ledger that records versions is never one, whatever became of the
+tables it built. An unread count is not an empty one.
+
+**The reset window closed at the first real external evidence, not at the first
+payment.** A payment is only the most obvious example: a partner's acceptance,
+a legal consent, a submission to the advertising register, a real subscriber or
+lead each close it just as finally. Before that the database was disposable and
+the ledger could be replaced wholesale. After it, the schema is append-only
+from `0002`, and a database is brought forward by migration or not at all.
 
 ## Three things the incidents taught
 

@@ -132,9 +132,9 @@ describe("email delivery outcome", () => {
       const claiming = regions.filter((region) => /SET[\s\S]{0,200}delivery_outcome = 'KNOWN_FAILED'/.test(region));
       expect(claiming.length, "no KNOWN_FAILED writer found").toBeGreaterThan(0);
       for (const region of claiming) {
-        // Counted, not merely found. A function holding both a LEGACY and an
-        // ATTEMPT branch would otherwise be satisfied by one branch's
-        // provenance while the other claimed KNOWN_FAILED with none - verified
+        // Counted, not merely found. A function holding two branches would
+        // otherwise be satisfied by one branch's provenance while the other
+        // claimed KNOWN_FAILED with none - verified
         // by removing the ATTEMPT marker and watching a find-based check pass.
         const claims = region.match(/delivery_outcome = 'KNOWN_FAILED'/g)?.length ?? 0;
         const evidence = region.match(/(last_error|failure_code) = 'UNISENDER_HTTP_REJECTED(_LEGACY)?'/g)?.length ?? 0;

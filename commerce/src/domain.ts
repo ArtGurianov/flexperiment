@@ -1150,10 +1150,10 @@ export class CommerceDomain {
       if (!claimed) continue;
       try {
         const payload = this.emailPayload(outbox);
-        // The key comes from the claim, not from the pre-claim message snapshot.
-        // Under LEGACY they are the same value, so the snapshot would be
-        // accidentally correct for attempt #1 and wrong the moment a resend
-        // mints attempt #2 with its own key.
+        // The key comes from the claim, not from a pre-claim read. The two
+        // agree for attempt #1 and diverge the moment a resend mints attempt
+        // #2 with its own key, so reading it anywhere else is accidentally
+        // correct until it is silently wrong.
         const sent = await this.emailProvider.send({ recipientEmail: String(outbox.recipient_email), template: String(outbox.template), type: String(outbox.type), payload, idempotencyKey: claimed.provider_idempotence_key, outboxId: String(outbox.id) });
         withImmediateTransaction(this.db, () => {
           recordProviderAcceptance(this.db, { id: String(outbox.id) }, claimed, sent.jobId);
