@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 import { canonical, canonicalV2, decryptTicketCapability, emailHash, encryptTicketCapability, id, now, publicId, publicOrderNumber, sha256 } from "./crypto";
 import { EmailProviderRejectedError, EventDumpCreateRejectedError, isEmailDeliveryEvidenceProvider, type EmailProvider, type UnisenderDumpEvent, UNISENDER_EVENT_DUMP_EVENT_LIMIT, UnconfiguredEmailProvider } from "./email-provider";
-import { parseLegalManifest, type LegalManifest } from "./legal-manifest";
+import type { LegalManifest } from "./legal-manifest";
 import { loadCanonicalLegalRelease, verifyCurrentLegalSourceHashes, type CanonicalLegalRelease } from "./legal-release";
 import { providerErrorEvidence, type PaymentProvider } from "./provider";
 import { checkoutRequestSchema, promoMergedSchema, type CheckoutRequest, type ParticipantAgeBand } from "./types";
@@ -20,30 +20,61 @@ import { availabilityStatus, purchaseStatus, type AvailabilityStatus, type Purch
 import { assertInventoryTarget, availableSeatsSql, InventoryTargetError, occurrenceInventory, resolveInventoryTarget, seatCommitments } from "./occurrence-inventory";
 import { occurrenceNotificationsCapabilityActive } from "./occurrence-notification-capability";
 import { normalizeUnisenderReconciliationEvent, type UnisenderReconciliationEvent } from "./email-provider-reconciliation";
-import { processCityInterestLifecycle, registerCityInterest } from "./domain/city-interest";
+import {
+  canRenewCityInterestNotification,
+  consumeEligibleCityInterests,
+  insertCityInterestRequest,
+  isActiveCityInterestNotification,
+  isActiveOccurrenceNotification,
+  processCityInterestLifecycle,
+  processOccurrenceNotificationLifecycle,
+  purgeCityInterestRequest,
+  purgeOccurrenceNotificationRequest,
+  registerOccurrenceNotification,
+  registerCityInterest,
+  suppressCityInterestOutbox,
+  suppressOccurrenceNotificationOutbox,
+  withdrawNotificationConsent,
+} from "./domain/city-interest";
 import { addSettlementRecovery } from "./domain/settlements";
-import { createCity, patchCity } from "./domain/admin-catalog";
+import {
+  agentList,
+  createAgent,
+  createCity,
+  createPromo,
+  patchAgent,
+  patchCity,
+  patchPromo,
+  promoList,
+} from "./domain/admin-catalog";
 import { cancellationFinancialOverview } from "./domain/occurrences";
-import { checkoutStatus } from "./domain/checkout";
-import { reconcilePendingPayments } from "./domain/payments";
+import { checkoutAsync, checkoutStatus } from "./domain/checkout";
+import { reconcilePayment, reconcilePendingPayments } from "./domain/payments";
 import { reconcilePendingRefunds } from "./domain/refunds";
 import { parseUtcTimestamp } from "./utc-timestamp";
 import { emergencySalesPaused } from "./emergency-sales-gate";
 import { claimForDispatch, deferAmbiguousObservation, deferAmbiguousSend, dispatchCandidates, failExhaustedAmbiguous, providerLookupIdentity, recordProviderAcceptance, recordProviderRefusal, applyProviderObservation, claimedAttemptRef, resolveAttemptRef, skipObsoletePendingMessage, supersedeQueuedMessage, suppressMessageDispatch, sendTryCount, staleLeasedSends, type AttemptRef } from "./outbox-attempt-store";
 import { OutboxAuthorityError, emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, lastAuthorityEvent, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations, type DispatchEpoch } from "./outbox-authority";
 import type { OtpDeliveryCapability } from "./agent-referrals-otp";
+import {
+  CITY_INTEREST_SWEEP_BATCH_SIZE,
+  DomainError,
+  legalManifest,
+  many,
+  one,
+  type Row,
+  withImmediateTransaction,
+} from "./domain/shared";
 
-export type Row = Record<string, unknown>;
-export const one = <T extends Row>(db: Database.Database, sql: string, ...params: unknown[]) => db.prepare(sql).get(...params) as T | undefined;
-export const many = <T extends Row>(db: Database.Database, sql: string, ...params: unknown[]) => db.prepare(sql).all(...params) as T[];
-export const legalManifest = (raw: unknown): LegalManifest => {
-  try { return parseLegalManifest(raw); }
-  catch { throw new DomainError("LEGAL_RELEASE_INVALID", 503); }
-};
-
-export class DomainError extends Error {
-  constructor(readonly code: string, readonly status = 400, message = code, readonly details?: Record<string, unknown>) { super(message); }
-}
+export {
+  CITY_INTEREST_SWEEP_BATCH_SIZE,
+  DomainError,
+  legalManifest,
+  many,
+  one,
+  type Row,
+  withImmediateTransaction,
+} from "./domain/shared";
 
 /** Event Dump is deliberately slow recovery, never a replacement send path. */
 export const UNISENDER_EVENT_DUMP_GRACE_MS = 5 * 60 * 1_000;
@@ -68,12 +99,6 @@ const LATEST_ATTEMPT_JOIN = `LEFT JOIN outbox_attempt attempt ON attempt.id = (
     SELECT latest.id FROM outbox_attempt latest
     WHERE latest.message_id = outbox.id ORDER BY latest.attempt_no DESC LIMIT 1)`;
 const ATTEMPT_DISPATCH_AT = "COALESCE(attempt.provider_request_started_at, attempt.started_at, outbox.created_at)";
-
-export function withImmediateTransaction<T>(db: Database.Database, operation: () => T): T {
-  db.exec("BEGIN IMMEDIATE");
-  try { const result = operation(); db.exec("COMMIT"); return result; }
-  catch (error) { db.exec("ROLLBACK"); throw error; }
-}
 
 const isPromoEligible = (promo: Row | undefined) => Boolean(promo && promo.status === "ACTIVE" && (promo.agent_id === null || promo.agent_enabled === 1));
 const activeAgentBySlug = (db: Database.Database, slug: string | undefined) => slug
@@ -310,7 +335,6 @@ export function classifyOccurrenceRevision(beforeValue: Row, afterValue: Row): O
 // timeout-based cancellation. Keep this explicit and shared by the worker and
 // Admin read model.
 export const STALE_PREPARED_SETTLEMENT_MS = 30 * 60 * 1_000;
-export const CITY_INTEREST_SWEEP_BATCH_SIZE = 50;
 export const EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS = 8;
 export const EMAIL_SEND_UNKNOWN_INITIAL_BACKOFF_MS = 60 * 1_000;
 export const EMAIL_SEND_UNKNOWN_MAX_BACKOFF_MS = 60 * 60 * 1_000;
@@ -344,7 +368,7 @@ export class CommerceDomain {
     readonly db: Database.Database,
     readonly provider: PaymentProvider,
     readonly emailProvider: EmailProvider = new UnconfiguredEmailProvider(),
-    private readonly clock: () => number = Date.now,
+    readonly clock: () => number = Date.now,
     private readonly otpDelivery: OtpDeliveryCapability = { configured: false, provider_id: null },
   ) {}
 
@@ -356,7 +380,7 @@ export class CommerceDomain {
    * transaction" nor "the caller does not" is an invariant. Same shape as
    * enqueueEmail, for the same reason.
    */
-  private atomically<T>(operation: () => T): T {
+  atomically<T>(operation: () => T): T {
     const run = this.db.transaction(operation);
     return this.db.inTransaction ? run() : run.immediate();
   }
@@ -413,7 +437,7 @@ export class CommerceDomain {
     return this.mapOutboxAuthority(() =>
       withImmediateTransaction(this.db, () => ({ ...unfenceEmailDispatch(this.db, input, epoch), dispatch: emailDispatchDrained(this.db) })));
   }
-  private newOrdersBlocked() { return this.emergencySalesPaused(); }
+  newOrdersBlocked() { return this.emergencySalesPaused(); }
 
   replayCheckout(input: unknown, idempotencyKey: string) {
     if (idempotencyKey.length < 16 || idempotencyKey.length > 200) throw new DomainError("IDEMPOTENCY_KEY_INVALID", 400);
@@ -468,7 +492,7 @@ export class CommerceDomain {
     return { ...release, manifest, occurrence_notifications_available: this.occurrenceNotificationsAvailable(manifest, String(release.version)) };
   }
 
-  private occurrenceNotificationsAvailable(manifest?: LegalManifest, activeVersion?: string) {
+  occurrenceNotificationsAvailable(manifest?: LegalManifest, activeVersion?: string) {
     const active = manifest ?? (() => {
       const release = one(this.db, "SELECT manifest_json, version FROM legal_releases WHERE active = 1");
       if (release) activeVersion = String(release.version);
@@ -682,60 +706,11 @@ export class CommerceDomain {
   }
 
   registerOccurrenceNotification(input: { email: string; occurrence_id: string }) {
-    return withImmediateTransaction(this.db, () => {
-      if (!this.occurrenceNotificationsAvailable()) throw new DomainError("NOTIFICATIONS_NOT_AVAILABLE", 503);
-      const occurrence = one(this.db, `SELECT o.*, ${availableSeatsSql("o")} AS availability
-        FROM occurrences o WHERE o.id = ? AND o.visibility = 'PUBLISHED'`, input.occurrence_id);
-      if (!occurrence || occurrence.fulfillment_status !== "SCHEDULED" || parseUtcTimestamp(String(occurrence.starts_at)) <= this.clock()) {
-        throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
-      }
-      const status = purchaseStatus({
-        salesStatus: occurrence.sales_status === "PAUSED" ? "PAUSED" : occurrence.sales_status === "CLOSED" ? "CLOSED" : "OPEN",
-        fulfillmentStatus: "SCHEDULED", startsAtMs: parseUtcTimestamp(String(occurrence.starts_at)), nowMs: this.clock(),
-        availability: Number(occurrence.availability), newOrdersBlocked: this.newOrdersBlocked(),
-      });
-      if (status === "AVAILABLE") throw new DomainError("OCCURRENCE_ALREADY_AVAILABLE", 409);
-      const release = one(this.db, "SELECT manifest_json FROM legal_releases WHERE active = 1");
-      if (!release) throw new DomainError("LEGAL_RELEASE_NOT_ACTIVE", 503);
-      const manifest = legalManifest(JSON.parse(String(release.manifest_json)));
-      const timestamp = new Date(this.clock()).toISOString();
-      const hash = emailHash(input.email);
-      const existing = one(this.db, `SELECT id FROM occurrence_notification_requests
-        WHERE email_hash = ? AND occurrence_id = ? AND superseded_at IS NULL`, hash, input.occurrence_id);
-      if (existing && this.canRenewOccurrenceNotification(String(existing.id))) {
-        const replacementId = id();
-        this.db.prepare(`UPDATE occurrence_notification_intents SET superseded_at = ?
-          WHERE notification_request_id = ? AND superseded_at IS NULL`).run(timestamp, existing.id);
-        this.db.prepare(`UPDATE occurrence_notification_requests
-          SET email_normalized = '', email_hash = '', superseded_at = ?, superseded_by_request_id = ?
-          WHERE id = ? AND superseded_at IS NULL`).run(timestamp, replacementId, existing.id);
-        this.insertOccurrenceNotificationRequest({ requestId: replacementId, email: input.email, emailHash: hash, occurrenceId: input.occurrence_id, manifest, timestamp });
-      } else if (existing) {
-        this.db.prepare(`UPDATE occurrence_notification_requests SET email_normalized = ?, privacy_policy_version = ?,
-          privacy_policy_sha256 = ?, pd_consent_version = ?, pd_consent_sha256 = ?, consent_accepted_at = ?, created_at = ?
-          WHERE id = ? AND superseded_at IS NULL`).run(input.email,
-          manifest.documents.PRIVACY_POLICY.version, manifest.documents.PRIVACY_POLICY.sha256,
-          manifest.documents.PD_CONSENT.version, manifest.documents.PD_CONSENT.sha256, timestamp, timestamp, existing.id);
-      } else {
-        this.insertOccurrenceNotificationRequest({ requestId: id(), email: input.email, emailHash: hash, occurrenceId: input.occurrence_id, manifest, timestamp });
-      }
-      this.consumeEligibleOccurrenceNotifications(50);
-      return { accepted: true };
-    });
+    return registerOccurrenceNotification(this, input);
   }
 
   processOccurrenceNotificationLifecycle() {
-    return withImmediateTransaction(this.db, () => {
-      const timestamp = new Date(this.clock()).toISOString();
-      const terminated = many(this.db, `SELECT request.id, o.starts_at, o.fulfillment_status FROM occurrence_notification_requests request
-        JOIN occurrences o ON o.id = request.occurrence_id
-        WHERE request.superseded_at IS NULL
-          AND (o.fulfillment_status = 'CANCELLED' OR julianday(o.starts_at) <= julianday(?))
-        ORDER BY request.created_at LIMIT 50`, timestamp)
-        .filter((request) => request.fulfillment_status === "CANCELLED" || parseUtcTimestamp(String(request.starts_at)) <= this.clock());
-      for (const request of terminated) this.purgeOccurrenceNotificationRequest(String(request.id));
-      return { deleted: terminated.length, intents_created: this.consumeEligibleOccurrenceNotifications(50) };
-    });
+    return processOccurrenceNotificationLifecycle(this);
   }
 
   /** Applies expiry before scanning for newly eligible requests. */
@@ -744,16 +719,7 @@ export class CommerceDomain {
   }
 
   withdrawNotificationConsent(email: string, reason: string, adminId: string) {
-    return withImmediateTransaction(this.db, () => {
-      const requests = many(this.db, "SELECT id FROM city_interest_requests WHERE email_hash = ? AND superseded_at IS NULL", emailHash(email));
-      for (const request of requests) this.purgeCityInterestRequest(String(request.id));
-      const occurrenceRequests = many(this.db, "SELECT id FROM occurrence_notification_requests WHERE email_hash = ? AND superseded_at IS NULL", emailHash(email));
-      for (const request of occurrenceRequests) this.purgeOccurrenceNotificationRequest(String(request.id));
-      // Retain only aggregate operator evidence: never an email or its hash.
-      this.db.prepare("INSERT INTO admin_audit_log(id, admin_id, action, entity_type, entity_id, details_json) VALUES (?, ?, 'NOTIFICATION_CONSENT_WITHDRAWN', 'notification_consent', 'all-matching-requests', ?)")
-        .run(id(), adminId, JSON.stringify({ reason, city_interest_deleted: requests.length, occurrence_notification_deleted: occurrenceRequests.length }));
-      return { withdrawn: true, city_interest_deleted: requests.length, occurrence_notification_deleted: occurrenceRequests.length };
-    });
+    return withdrawNotificationConsent(this, email, reason, adminId);
   }
 
   /** Compatibility alias for existing operational runbooks and integrations. */
@@ -905,25 +871,10 @@ export class CommerceDomain {
 
   /** Performs external payment creation only after checkout state has committed. */
   async checkoutAsync(input: CheckoutInput, idempotencyKey: string, successBaseUrl: string, acceptance: { ip?: string; userAgent?: string } = {}) {
-    const first = this.checkout(input, idempotencyKey, acceptance);
-    const payment = one(this.db, `SELECT p.*, p.id AS payment_id, o.id AS order_id, o.amount_kopecks, o.customer_email, o.fiscal_purpose_snapshot, o.fiscal_item_name_snapshot
-      FROM payments p JOIN orders o ON o.id = p.order_id WHERE o.public_status_id = ?`, first.status_id);
-    if (!payment || payment.state !== "CREATING") return first;
-    try {
-      this.db.prepare("UPDATE payments SET provider_request_started_at = ?, updated_at = ? WHERE id = ? AND state = 'CREATING'").run(now(), now(), payment.payment_id);
-      if (!payment.fiscal_item_name_snapshot || !payment.fiscal_purpose_snapshot) throw new Error("Order has no immutable fiscal snapshot.");
-      const created = await this.provider.createPayment({ paymentId: String(payment.payment_id), paymentLinkId: String(payment.payment_id), amountKopecks: Number(payment.amount_kopecks), idempotencyKey: String(payment.provider_idempotency_key), successUrl: `${successBaseUrl}/payment/success?order=${first.status_id}`, customerEmail: String(payment.customer_email), purpose: String(payment.fiscal_purpose_snapshot), receiptItemName: String(payment.fiscal_item_name_snapshot) });
-      this.db.prepare("UPDATE payments SET state = 'CREATED', provider_payment_id = ?, payment_url = ?, updated_at = ? WHERE id = ? AND state = 'CREATING'").run(created.providerPaymentId, created.paymentUrl, now(), payment.payment_id);
-    } catch (error) {
-      const evidence = providerErrorEvidence(error);
-      this.db.prepare(`UPDATE payments
-        SET state = 'CREATE_UNKNOWN', provider_error_class = ?, provider_error_code = ?, updated_at = ?
-        WHERE id = ? AND state = 'CREATING'`).run(evidence.provider_error_class, evidence.provider_error_code, now(), payment.payment_id);
-    }
-    return this.checkoutStatus(String(first.status_id));
+    return checkoutAsync(this, input, idempotencyKey, successBaseUrl, acceptance);
   }
 
-  private checkoutResult(value: Row) {
+  checkoutResult(value: Row) {
     return { status_id: value.status_id, status: value.status === "PAID" ? "PAID" : value.state === "CREATE_FAILED" || value.status === "EXPIRED" || value.status === "CANCELLED" ? "FAILED" : "PROCESSING", payment_url: value.payment_url ?? null };
   }
 
@@ -1649,13 +1600,7 @@ export class CommerceDomain {
   }
 
   createAgent(input: Record<string, unknown>) {
-    const agentId = id();
-    // The P9 baseline drops these legacy NOT NULL columns. Until then, new
-    // agents write a neutral value without exposing it as an API capability.
-    this.db.prepare(`INSERT INTO agents(id, slug, display_name, email, enabled, default_reward_type, default_reward_value)
-      VALUES (?, ?, ?, ?, ?, 'PERCENT', 0)`)
-      .run(agentId, input.slug, input.display_name, String(input.email).toLowerCase(), input.enabled === false ? 0 : 1);
-    return one(this.db, "SELECT * FROM agents WHERE id = ?", agentId)!;
+    return createAgent(this, input);
   }
 
   /**
@@ -1671,37 +1616,10 @@ export class CommerceDomain {
    * page at operator scale, not a customer-facing hot path.
    */
   agentList() {
-    return many(this.db, `SELECT a.id, a.slug, a.display_name, a.email, a.enabled, a.created_at, a.updated_at,
-        COUNT(p.id) AS promo_count,
-        lp.id AS lp_id, lp.revision AS lp_revision, lp.legal_form AS lp_legal_form, lp.tax_mode AS lp_tax_mode,
-        lp.projected_contractor_type AS lp_projected_contractor_type, lp.opf AS lp_opf, lp.full_name AS lp_full_name,
-        lp.short_name AS lp_short_name, lp.inn AS lp_inn, lp.kpp AS lp_kpp,
-        lp.registration_number AS lp_registration_number, lp.legal_address AS lp_legal_address
-      FROM agents a
-      LEFT JOIN promo_codes p ON p.agent_id = a.id
-      LEFT JOIN agent_referrals_legal_profile_revisions lp ON lp.agent_id = a.id
-        AND lp.revision = (SELECT MAX(revision) FROM agent_referrals_legal_profile_revisions WHERE agent_id = a.id)
-      GROUP BY a.id ORDER BY a.created_at DESC, a.id DESC`)
-      .map(({
-        lp_id, lp_revision, lp_legal_form, lp_tax_mode, lp_projected_contractor_type, lp_opf, lp_full_name,
-        lp_short_name, lp_inn, lp_kpp, lp_registration_number, lp_legal_address, ...agent
-      }): Row => {
-        return {
-          ...agent,
-          legal_profile: lp_id
-            ? {
-              id: lp_id, revision: lp_revision, legal_form: lp_legal_form, tax_mode: lp_tax_mode,
-              projected_contractor_type: lp_projected_contractor_type, opf: lp_opf, full_name: lp_full_name,
-              short_name: lp_short_name, inn: lp_inn, kpp: lp_kpp,
-              registration_number: lp_registration_number, legal_address: lp_legal_address,
-            }
-            : null,
-          agreement: this.agentAgreementProjection(String(agent.id)),
-        };
-      });
+    return agentList(this);
   }
 
-  private agentAgreementProjection(agentId: string) {
+  agentAgreementProjection(agentId: string) {
     const partner = getPartnerIdentityByAgentId(this.db, agentId);
     if (!partner) return null;
     const status = agreementStatusForPartner(this.db, agentId, partner.id);
@@ -1711,21 +1629,11 @@ export class CommerceDomain {
   }
 
   patchAgent(agentId: string, input: Record<string, unknown>) {
-    const existing = one(this.db, "SELECT * FROM agents WHERE id = ?", agentId);
-    if (!existing) throw new DomainError("AGENT_NOT_FOUND", 404);
-    const allowed = ["display_name", "email", "enabled"];
-    const fields = allowed.filter((field) => input[field] !== undefined);
-    if (!fields.length) return existing;
-    this.db.prepare(`UPDATE agents SET ${fields.map((field) => `${field} = ?`).join(", ")}, updated_at = ? WHERE id = ?`).run(...fields.map((field) => field === "enabled" ? Number(input[field]) : field === "email" ? String(input[field]).toLowerCase() : input[field]), now(), agentId);
-    return one(this.db, "SELECT * FROM agents WHERE id = ?", agentId)!;
+    return patchAgent(this, agentId, input);
   }
 
   createPromo(input: Record<string, unknown>, promoId: string = id()) {
-    if (input.agent_id && !one(this.db, "SELECT id FROM agents WHERE id = ?", input.agent_id)) throw new DomainError("AGENT_NOT_FOUND", 404);
-    const normalized = String(input.code).trim().toUpperCase();
-    this.db.prepare("INSERT INTO promo_codes(id, agent_id, code, normalized_code, status, discount_type, discount_value) VALUES (?, ?, ?, ?, ?, ?, ?)")
-      .run(promoId, input.agent_id ?? null, normalized, normalized, input.status ?? "ACTIVE", input.discount_type, input.discount_value);
-    return one(this.db, "SELECT * FROM promo_codes WHERE id = ?", promoId)!;
+    return createPromo(this, input, promoId);
   }
 
   createCertificationFixture(input: {
@@ -1746,9 +1654,7 @@ export class CommerceDomain {
   }
 
   promoList() {
-    return many(this.db, `SELECT p.*, a.id AS agent_id, a.slug AS agent_slug, a.display_name AS agent_display_name, a.enabled AS agent_enabled
-      FROM promo_codes p LEFT JOIN agents a ON a.id = p.agent_id ORDER BY p.created_at DESC, p.id DESC`)
-      .map((promo) => ({ ...promo, agent: promo.agent_id ? { id: promo.agent_id, slug: promo.agent_slug, display_name: promo.agent_display_name, enabled: promo.agent_enabled } : null }));
+    return promoList(this);
   }
 
   createAgentCommand(input: Record<string, unknown>, idempotencyKey: string, adminId: string, auditContext?: string) {
@@ -1791,14 +1697,7 @@ export class CommerceDomain {
   }
 
   patchPromo(promoId: string, input: Record<string, unknown>) {
-    const existing = one(this.db, "SELECT * FROM promo_codes WHERE id = ?", promoId);
-    if (!existing) throw new DomainError("PROMO_NOT_FOUND", 404);
-    if (input.agent_id && !one(this.db, "SELECT id FROM agents WHERE id = ?", input.agent_id)) throw new DomainError("AGENT_NOT_FOUND", 404);
-    const allowed = ["agent_id", "status", "discount_type", "discount_value"];
-    const fields = allowed.filter((field) => input[field] !== undefined);
-    if (!fields.length) return existing;
-    this.db.prepare(`UPDATE promo_codes SET ${fields.map((field) => `${field} = ?`).join(", ")}, updated_at = ? WHERE id = ?`).run(...fields.map((field) => input[field]), now(), promoId);
-    return one(this.db, "SELECT * FROM promo_codes WHERE id = ?", promoId)!;
+    return patchPromo(this, promoId, input);
   }
 
   /** Delegates to the shared reward-calculation.ts formula - see that module for why it was extracted verbatim. */
@@ -1813,7 +1712,7 @@ export class CommerceDomain {
     return addSettlementRecovery(this, settlementId, input, idempotencyKey);
   }
 
-  private settlementTransaction<T>(operation: () => T): T {
+  settlementTransaction<T>(operation: () => T): T {
     try { return withImmediateTransaction(this.db, operation); }
     catch (error) {
       if (error instanceof Error && /SQLITE_BUSY|database is locked/i.test(error.message)) throw new DomainError("SETTLEMENT_BUSY", 409);
@@ -1837,23 +1736,7 @@ export class CommerceDomain {
   }
 
   async reconcilePayment(paymentId: string) {
-    const payment = one(this.db, "SELECT * FROM payments WHERE id = ?", paymentId);
-    if (!payment) throw new DomainError("PAYMENT_NOT_FOUND", 404);
-    if (!payment.provider_payment_id) throw new DomainError("PROVIDER_REFERENCE_REQUIRED", 422);
-    const observed = await this.provider.reconcilePayment({ providerPaymentId: String(payment.provider_payment_id) });
-    this.db.prepare("UPDATE payments SET last_reconcile_at = ?, updated_at = ? WHERE id = ?").run(now(), now(), paymentId);
-    if (observed.status === "PAID" && observed.capturedAmountKopecks !== undefined) return this.markPaymentPaid(paymentId, observed.capturedAmountKopecks, String(payment.provider_payment_id));
-    if (observed.status === "FAILED") {
-      return withImmediateTransaction(this.db, () => {
-        this.db.prepare("UPDATE payments SET status = 'CANCELLED', updated_at = ? WHERE id = ?").run(now(), paymentId);
-        this.db.prepare("UPDATE bookings SET status = 'CANCELLED', cancelled_at = ?, cancellation_reason = 'PAYMENT_PROVIDER_FAILED' WHERE order_id = ? AND status = 'RESERVED'").run(now(), payment.order_id);
-        return one(this.db, "SELECT * FROM payments WHERE id = ?", paymentId)!;
-      });
-    }
-    // Pending or unknown provider evidence is not a failure proof; retain the
-    // reservation and let a later reconciliation establish a terminal outcome.
-    this.db.prepare("UPDATE payments SET updated_at = ? WHERE id = ?").run(now(), paymentId);
-    return one(this.db, "SELECT * FROM payments WHERE id = ?", paymentId)!;
+    return reconcilePayment(this, paymentId);
   }
 
   async reconcileRefund(refundId: string) {
@@ -2724,7 +2607,7 @@ export class CommerceDomain {
    * is not authoritative until the activation CAS - so this is not dual-write,
    * it is creating the row that activation will later refresh and adopt.
    */
-  private enqueueEmail(type: string, recipientEmail: string, recipientEmailHash: string, template: string, payloadRef: string, payload: Record<string, unknown>) {
+  enqueueEmail(type: string, recipientEmail: string, recipientEmailHash: string, template: string, payloadRef: string, payload: Record<string, unknown>) {
     const write = () => {
       const outboxId = id();
       const providerKey = publicId();
@@ -2740,7 +2623,7 @@ export class CommerceDomain {
     return this.db.inTransaction ? atomicWrite() : atomicWrite.immediate();
   }
 
-  private insertCityInterestRequest(input: {
+  insertCityInterestRequest(input: {
     requestId: string;
     email: string;
     emailHash: string;
@@ -2748,170 +2631,31 @@ export class CommerceDomain {
     manifest: LegalManifest;
     timestamp: string;
     expiresAt: string;
-  }) {
-    this.db.prepare(`INSERT INTO city_interest_requests(
-      id, email_normalized, email_hash, city_slug,
-      privacy_policy_version, privacy_policy_sha256,
-      pd_consent_version, pd_consent_sha256, consent_accepted_at, created_at,
-      expires_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
-      input.requestId, input.email, input.emailHash, input.citySlug,
-      input.manifest.documents.PRIVACY_POLICY.version, input.manifest.documents.PRIVACY_POLICY.sha256,
-      input.manifest.documents.PD_CONSENT.version, input.manifest.documents.PD_CONSENT.sha256,
-      input.timestamp, input.timestamp, input.expiresAt,
-    );
+  }) { return insertCityInterestRequest(this, input); }
+
+  consumeEligibleCityInterests(citySlug?: string, limit = CITY_INTEREST_SWEEP_BATCH_SIZE, timestamp = new Date(this.clock()).toISOString()) {
+    return consumeEligibleCityInterests(this, citySlug, limit, timestamp);
   }
 
-  private consumeEligibleCityInterests(citySlug?: string, limit = CITY_INTEREST_SWEEP_BATCH_SIZE, timestamp = new Date(this.clock()).toISOString()) {
-    const interests = many(this.db, `SELECT ci.id, ci.email_normalized, ci.email_hash, ci.city_slug,
-        c.title AS city_title, o.id AS occurrence_id, o.title AS occurrence_title, o.starts_at
-      FROM city_interest_requests ci
-      JOIN cities c ON c.slug = ci.city_slug
-      JOIN occurrences o ON o.id = (
-        SELECT candidate.id FROM occurrences candidate
-        WHERE candidate.city_id = c.id
-          AND candidate.visibility = 'PUBLISHED'
-          AND candidate.fulfillment_status = 'SCHEDULED'
-          AND candidate.starts_at >= ?
-        ORDER BY candidate.starts_at, candidate.id
-        LIMIT 1
-      )
-      WHERE ci.superseded_at IS NULL
-        AND ci.expires_at > ?
-        AND NOT EXISTS (
-          SELECT 1 FROM city_interest_notification_intents intent
-          WHERE intent.city_interest_request_id = ci.id
-            AND intent.superseded_at IS NULL
-        ) ${citySlug ? "AND ci.city_slug = ?" : ""}
-      ORDER BY ci.created_at, ci.id
-      LIMIT ?`, timestamp, timestamp, ...(citySlug ? [citySlug] : []), limit);
-    for (const interest of interests) {
-      const outboxId = this.enqueueEmail("CITY_INTEREST_AVAILABLE", String(interest.email_normalized), String(interest.email_hash), "city-interest-available", `city-interest:${interest.id}`, {
-        city_title: interest.city_title,
-        occurrence_id: interest.occurrence_id,
-        occurrence_title: interest.occurrence_title,
-        starts_at: interest.starts_at,
-      });
-      this.db.prepare("INSERT INTO city_interest_notification_intents(id, city_interest_request_id, outbox_id) VALUES (?, ?, ?)").run(outboxId, interest.id, outboxId);
-    }
-    return interests.length;
-  }
-
-  private isActiveCityInterestNotification(outboxId: string) {
-    return Boolean(one(this.db, `SELECT request.id
-      FROM city_interest_notification_intents intent
-      JOIN city_interest_requests request ON request.id = intent.city_interest_request_id
-      WHERE intent.outbox_id = ?
-        AND intent.superseded_at IS NULL
-        AND request.superseded_at IS NULL
-        AND request.expires_at > ?`, outboxId, new Date(this.clock()).toISOString()));
-  }
+  private isActiveCityInterestNotification(outboxId: string) { return isActiveCityInterestNotification(this, outboxId); }
 
   /** A fresh CAPTCHA-protected submission may replace only a final failed intent. */
-  private canRenewCityInterestNotification(requestId: string) {
-    const current = one(this.db, `SELECT outbox.status,
-        EXISTS(SELECT 1 FROM email_provider_events
-          WHERE outbox_id = outbox.id AND provider_status = 'hard_bounced') AS has_hard_bounced,
-        EXISTS(SELECT 1 FROM email_provider_events
-          WHERE outbox_id = outbox.id AND provider_status = 'delivered') AS has_delivered
-      FROM city_interest_notification_intents intent
-      JOIN email_outbox outbox ON outbox.id = intent.outbox_id
-      WHERE intent.city_interest_request_id = ? AND intent.superseded_at IS NULL`, requestId);
-    return current?.status === "FAILED"
-      || (Boolean(current?.has_hard_bounced) && !Boolean(current?.has_delivered));
+  canRenewCityInterestNotification(requestId: string) {
+    return canRenewCityInterestNotification(this, requestId);
   }
 
   /** Stops future local dispatch and removes the now-unneeded local PII. An in-flight provider call cannot be recalled. */
-  private suppressCityInterestOutbox(outboxId: string) {
-    this.atomically(() =>
-      suppressMessageDispatch(this.db, outboxId, "CITY_INTEREST_AVAILABLE", "CITY_INTEREST_NO_LONGER_ACTIVE", now()));
+  private suppressCityInterestOutbox(outboxId: string) { return suppressCityInterestOutbox(this, outboxId); }
+
+  purgeCityInterestRequest(requestId: string) {
+    return purgeCityInterestRequest(this, requestId);
   }
 
-  private purgeCityInterestRequest(requestId: string) {
-    const outboxes = many(this.db, `SELECT intent.outbox_id
-      FROM city_interest_notification_intents intent
-      WHERE intent.city_interest_request_id = ?`, requestId);
-    for (const outbox of outboxes) this.suppressCityInterestOutbox(String(outbox.outbox_id));
-    this.db.prepare("DELETE FROM city_interest_requests WHERE id = ?").run(requestId);
-  }
+  private isActiveOccurrenceNotification(outboxId: string) { return isActiveOccurrenceNotification(this, outboxId); }
 
-  private insertOccurrenceNotificationRequest(input: { requestId: string; email: string; emailHash: string; occurrenceId: string; manifest: LegalManifest; timestamp: string }) {
-    this.db.prepare(`INSERT INTO occurrence_notification_requests(
-      id, email_normalized, email_hash, occurrence_id, privacy_policy_version, privacy_policy_sha256,
-      pd_consent_version, pd_consent_sha256, consent_accepted_at, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(input.requestId, input.email, input.emailHash, input.occurrenceId,
-        input.manifest.documents.PRIVACY_POLICY.version, input.manifest.documents.PRIVACY_POLICY.sha256,
-        input.manifest.documents.PD_CONSENT.version, input.manifest.documents.PD_CONSENT.sha256, input.timestamp, input.timestamp);
-  }
+  private suppressOccurrenceNotificationOutbox(outboxId: string) { return suppressOccurrenceNotificationOutbox(this, outboxId); }
 
-  private consumeEligibleOccurrenceNotifications(limit = 50) {
-    if (!this.occurrenceNotificationsAvailable() || this.newOrdersBlocked()) return 0;
-    const timestamp = new Date(this.clock()).toISOString();
-    const requests = many(this.db, `SELECT request.id, request.email_normalized, request.email_hash,
-      o.id AS occurrence_id, o.title AS occurrence_title, o.starts_at, o.timezone, c.title AS city_title,
-      o.sales_status, o.fulfillment_status,
-      ${availableSeatsSql("o")} AS availability
-      FROM occurrence_notification_requests request
-      JOIN occurrences o ON o.id = request.occurrence_id
-      JOIN cities c ON c.id = o.city_id
-      WHERE request.superseded_at IS NULL
-        AND o.sales_status = 'OPEN'
-        AND o.fulfillment_status = 'SCHEDULED'
-        AND julianday(o.starts_at) > julianday(?)
-        AND ${availableSeatsSql("o")} > 0
-        AND NOT EXISTS (SELECT 1 FROM occurrence_notification_intents intent
-          WHERE intent.notification_request_id = request.id AND intent.superseded_at IS NULL)
-      ORDER BY request.created_at, request.id LIMIT ?`, timestamp, limit)
-      .filter((request) => purchaseStatus({
-        salesStatus: request.sales_status === "PAUSED" ? "PAUSED" : request.sales_status === "CLOSED" ? "CLOSED" : "OPEN",
-        fulfillmentStatus: request.fulfillment_status === "COMPLETED" ? "COMPLETED" : request.fulfillment_status === "CANCELLED" ? "CANCELLED" : "SCHEDULED",
-        startsAtMs: parseUtcTimestamp(String(request.starts_at)), nowMs: this.clock(), availability: Number(request.availability), newOrdersBlocked: false,
-      }) === "AVAILABLE");
-    for (const request of requests) {
-      const outboxId = this.enqueueEmail("OCCURRENCE_AVAILABLE", String(request.email_normalized), String(request.email_hash), "occurrence-available", `occurrence-notification:${request.id}`, {
-        city_title: request.city_title, occurrence_id: request.occurrence_id, occurrence_title: request.occurrence_title, starts_at: request.starts_at, timezone: request.timezone,
-      });
-      this.db.prepare("INSERT INTO occurrence_notification_intents(id, notification_request_id, outbox_id) VALUES (?, ?, ?)").run(outboxId, request.id, outboxId);
-    }
-    return requests.length;
-  }
-
-  /** A fresh explicit submission can replace only a final failed epoch. */
-  private canRenewOccurrenceNotification(requestId: string) {
-    const current = one(this.db, `SELECT outbox.status,
-      EXISTS(SELECT 1 FROM email_provider_events WHERE outbox_id = outbox.id AND provider_status = 'hard_bounced') AS has_hard_bounced,
-      EXISTS(SELECT 1 FROM email_provider_events WHERE outbox_id = outbox.id AND provider_status = 'delivered') AS has_delivered
-      FROM occurrence_notification_intents intent JOIN email_outbox outbox ON outbox.id = intent.outbox_id
-      WHERE intent.notification_request_id = ? AND intent.superseded_at IS NULL`, requestId);
-    return current?.status === "FAILED" || (Boolean(current?.has_hard_bounced) && !Boolean(current?.has_delivered));
-  }
-
-  private isActiveOccurrenceNotification(outboxId: string) {
-    const request = one(this.db, `SELECT request.id, o.sales_status, o.fulfillment_status, o.starts_at,
-      ${availableSeatsSql("o")} AS availability
-      FROM occurrence_notification_intents intent JOIN occurrence_notification_requests request ON request.id = intent.notification_request_id
-      JOIN occurrences o ON o.id = request.occurrence_id
-      WHERE intent.outbox_id = ? AND intent.superseded_at IS NULL AND request.superseded_at IS NULL`, outboxId);
-    if (!request || !this.occurrenceNotificationsAvailable()) return false;
-    return purchaseStatus({
-      salesStatus: request.sales_status === "PAUSED" ? "PAUSED" : request.sales_status === "CLOSED" ? "CLOSED" : "OPEN",
-      fulfillmentStatus: request.fulfillment_status === "COMPLETED" ? "COMPLETED" : request.fulfillment_status === "CANCELLED" ? "CANCELLED" : "SCHEDULED",
-      startsAtMs: parseUtcTimestamp(String(request.starts_at)), nowMs: this.clock(), availability: Number(request.availability), newOrdersBlocked: this.newOrdersBlocked(),
-    }) === "AVAILABLE";
-  }
-
-  private suppressOccurrenceNotificationOutbox(outboxId: string) {
-    this.atomically(() =>
-      suppressMessageDispatch(this.db, outboxId, "OCCURRENCE_AVAILABLE", "OCCURRENCE_NOTIFICATION_NO_LONGER_ACTIVE", now()));
-    this.db.prepare("UPDATE occurrence_notification_intents SET superseded_at = COALESCE(superseded_at, ?) WHERE outbox_id = ?").run(now(), outboxId);
-  }
-
-  private purgeOccurrenceNotificationRequest(requestId: string) {
-    const outboxes = many(this.db, "SELECT outbox_id FROM occurrence_notification_intents WHERE notification_request_id = ?", requestId);
-    for (const outbox of outboxes) this.suppressOccurrenceNotificationOutbox(String(outbox.outbox_id));
-    this.db.prepare("DELETE FROM occurrence_notification_requests WHERE id = ?").run(requestId);
-  }
+  private purgeOccurrenceNotificationRequest(requestId: string) { return purgeOccurrenceNotificationRequest(this, requestId); }
 
   private recordProviderDrift(entityType: "PAYMENT" | "REFUND", entityId: string, observed: Record<string, unknown>) {
     const existing = one(this.db, "SELECT id FROM provider_drift_reviews WHERE entity_type = ? AND entity_id = ? AND status = 'OPEN'", entityType, entityId);
@@ -2969,7 +2713,7 @@ export class CommerceDomain {
     });
   }
 
-  private recordAdminCommandAudit(adminId: string, action: string, entityType: string, entityId: string, auditContext: string | undefined, idempotencyKey: string, payload: unknown, details?: Record<string, unknown>) {
+  recordAdminCommandAudit(adminId: string, action: string, entityType: string, entityId: string, auditContext: string | undefined, idempotencyKey: string, payload: unknown, details?: Record<string, unknown>) {
     this.db.prepare("INSERT INTO admin_audit_log(id, admin_id, action, entity_type, entity_id, details_json) VALUES (?, ?, ?, ?, ?, ?)")
       .run(id(), adminId, action, entityType, entityId, JSON.stringify({
         audit_context: auditContext ?? null,
@@ -2991,7 +2735,7 @@ export class CommerceDomain {
     return { row: created, disposition: "CREATED" };
   }
 
-  private withAdminCommand<T extends Row>(command: string, idempotencyKey: string, payload: unknown, table: "cities" | "occurrences" | "reward_settlements" | "bookings", operation: () => T) {
+  withAdminCommand<T extends Row>(command: string, idempotencyKey: string, payload: unknown, table: "cities" | "occurrences" | "reward_settlements" | "bookings", operation: () => T) {
     return withImmediateTransaction(this.db, () => this.withAdminCommandCore(command, idempotencyKey, payload, table, operation).row);
   }
 

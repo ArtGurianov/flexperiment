@@ -1,6 +1,10 @@
-import { many } from "../domain";
+import type Database from "better-sqlite3";
+import { many } from "./shared";
 
-type RefundsHost = any;
+interface RefundsHost {
+  readonly db: Database.Database;
+  reconcileRefund(refundId: string): Promise<unknown>;
+}
 
 /** Retains provider reconciliation as the authority for pending refund rows. */
 export const reconcilePendingRefunds = async (host: RefundsHost) => {

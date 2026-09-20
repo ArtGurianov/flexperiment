@@ -217,17 +217,19 @@ describe("the domain consumes the suppression helpers", () => {
     expect(attempt(db)).toMatchObject({ outcome: null, lease_owner: null, next_retry_at: null });
   });
 
-  it("leaves no inline legacy suppression SQL behind in the domain", () => {
+  it("leaves no inline legacy suppression SQL behind in the domain modules", () => {
     // A structural backstop for the two conversions without a natural
     // end-to-end path. It is not a substitute for the test above; it exists
     // because the failure mode is a silent no-op replacement.
     const domain = readFileSync("commerce/src/domain.ts", "utf8");
-    expect(domain).toContain("suppressMessageDispatch(this.db");
-    expect(domain).toContain("supersedeQueuedMessage(this.db");
-    expect(domain).toContain("skipObsoletePendingMessage(this.db");
-    expect(domain, "an inline legacy suppression UPDATE survived the conversion")
+    const cityInterest = readFileSync("commerce/src/domain/city-interest.ts", "utf8");
+    const implementation = `${domain}\n${cityInterest}`;
+    expect(implementation).toContain("suppressMessageDispatch(host.db");
+    expect(implementation).toContain("supersedeQueuedMessage(this.db");
+    expect(implementation).toContain("skipObsoletePendingMessage(this.db");
+    expect(implementation, "an inline legacy suppression UPDATE survived the conversion")
       .not.toMatch(/last_error = CASE WHEN status = 'DELIVERED'/);
-    expect(domain, "an inline legacy supersession UPDATE survived the conversion")
+    expect(implementation, "an inline legacy supersession UPDATE survived the conversion")
       .not.toMatch(/lease_owner = CASE WHEN status = 'PENDING'/);
   });
 });

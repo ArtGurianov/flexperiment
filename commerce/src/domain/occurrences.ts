@@ -1,6 +1,7 @@
-import { DomainError, one } from "../domain";
+import type Database from "better-sqlite3";
+import { DomainError, one } from "./shared";
 
-type OccurrencesHost = any;
+interface OccurrencesHost { readonly db: Database.Database; }
 
 export const cancellationFinancialOverview = (host: OccurrencesHost, occurrenceId: string) => {
   const occurrence = one(host.db, "SELECT fulfillment_status FROM occurrences WHERE id = ?", occurrenceId);

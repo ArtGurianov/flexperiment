@@ -1,7 +1,11 @@
+import type Database from "better-sqlite3";
 import { canonical, id, sha256 } from "../crypto";
-import { DomainError, one } from "../domain";
+import { DomainError, one } from "./shared";
 
-type SettlementsHost = any;
+interface SettlementsHost {
+  readonly db: Database.Database;
+  settlementTransaction<T>(operation: () => T): T;
+}
 
 export const addSettlementRecovery = (
   host: SettlementsHost,
