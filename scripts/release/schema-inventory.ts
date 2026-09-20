@@ -31,6 +31,30 @@ if (source === "ledger") {
 /** Comments and layout are not the contract; the statement is. */
 const normalise = (sql: string) => sql.replace(/--[^\n]*/g, " ").replace(/\s+/g, " ").trim();
 
+/**
+ * CHECK constraints have no PRAGMA, so they are read off the statement. Without
+ * this the diff is silent about them, and a narrowed or lost CHECK is exactly
+ * the kind of intentional-looking change the baseline has to prove.
+ */
+const checks = (sql: string): string[] => {
+  const body = sql.slice(sql.indexOf("(") + 1, sql.lastIndexOf(")"));
+  const parts: string[] = [];
+  let depth = 0, current = "";
+  for (const ch of body) {
+    if (ch === "(") depth += 1;
+    if (ch === ")") depth -= 1;
+    if (ch === "," && depth === 0) { parts.push(current); current = ""; continue; }
+    current += ch;
+  }
+  parts.push(current);
+  return parts.flatMap((part) => {
+    const text = normalise(part);
+    if (!/\bCHECK\s*\(/i.test(text)) return [];
+    const subject = /^(?:CONSTRAINT\s+\S+\s+)?CHECK\s*\(/i.test(text) ? "<table>" : text.split(/\s+/)[0];
+    return [`  check ${subject} ${text.slice(text.search(/\bCHECK\s*\(/i))}`];
+  }).sort();
+};
+
 type Row = { name: string; sql: string | null; tbl_name: string; type: string };
 const objects = db.prepare("SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all() as Row[];
 const tables = objects.filter((o) => o.type === "table").map((o) => o.name).sort();
@@ -42,6 +66,7 @@ for (const table of tables) {
     const flags = [c.notnull ? "NOT NULL" : "", c.pk ? `PK(${c.pk})` : "", c.hidden ? `HIDDEN(${c.hidden})` : "", c.dflt_value === null ? "" : `DEFAULT ${normalise(c.dflt_value)}`].filter(Boolean);
     out.push(`  column ${c.name} ${c.type || "ANY"}${flags.length ? " " + flags.join(" ") : ""}`);
   }
+  for (const c of checks(objects.find((o) => o.type === "table" && o.name === table)?.sql ?? "")) out.push(c);
   for (const f of (db.prepare(`PRAGMA foreign_key_list(${table})`).all() as { from: string; table: string; to: string | null; on_update: string; on_delete: string }[])
     .sort((a, b) => `${a.from}${a.table}`.localeCompare(`${b.from}${b.table}`))) {
     out.push(`  fk ${f.from} -> ${f.table}.${f.to ?? "rowid"} on_update=${f.on_update} on_delete=${f.on_delete}`);
