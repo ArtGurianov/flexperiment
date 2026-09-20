@@ -5,7 +5,7 @@ import {
   acceptedAct, activeNpdCheck, admin, finalizedSettlement, fresh, nearTermTerms,
   offerAcceptActivate, purchaseAndPay, readyPartner, seedOccurrence,
 } from "./support/agent-referrals-settlement-fixtures";
-import { beginPayment, recordPaymentMade } from "../src/agent-referrals-payment";
+import { beginPayment, recordConfirmedNotMade, recordPaymentMade, recordPayoutUnknown } from "../src/agent-referrals-payment";
 import { finalizeEngagementRewardRegistry } from "../src/agent-referrals-reward-registry";
 import { correctPartnerRewardWithSettlement } from "../src/agent-referrals-settlement";
 import type { CommerceDomain } from "../src/domain";
@@ -39,6 +39,19 @@ const setup = () => {
   const { db, domain } = fresh();
   open.push(db);
   return { db, domain: domain as CommerceDomain };
+};
+
+/** Everything a payment needs, stopping short of beginning one. */
+const preparedForPayment = (db: Database.Database, domain: CommerceDomain, taxMode: "NPD" | "OTHER" = "OTHER") => {
+  const partner = readyPartner(db, taxMode);
+  const occurrenceId = seedOccurrence(db, partner.cityId, 100_000);
+  const engagementId = offerAcceptActivate(db, partner.partner, partner.partnerIdentityId, occurrenceId, nearTermTerms(1000, "PERCENT", 5000));
+  const { code } = query<{ code: string }>(db, "SELECT code FROM promo_codes WHERE id = ?", partner.promo.promo_code_id);
+  const order = purchaseAndPay(db, domain, occurrenceId, code, `${randomUUID()}@example.test`, `idem-${randomUUID()}`);
+  const settlement = finalizedSettlement(db, domain, occurrenceId, engagementId);
+  acceptedAct(db, partner.partner, settlement);
+  if (taxMode === "NPD") activeNpdCheck(db, partner.partnerIdentityId);
+  return { partner, occurrenceId, engagementId, settlement, order };
 };
 
 /** A partner paid all the way through: settlement, accepted act, authorization, attempt MADE. */
@@ -84,6 +97,18 @@ describe("a payment attempt is the record that money moved", () => {
     expect(() => db.prepare("UPDATE payment_attempts SET status = 'IN_PROGRESS' WHERE id = ?").run(attemptId))
       .toThrow(/PAYMENT_ATTEMPT_TRANSITION_ILLEGAL|PAYMENT_ATTEMPT_TERMINAL_IMMUTABLE/);
     expect(() => db.prepare("UPDATE payment_attempts SET evidence_ref = 'rewritten' WHERE id = ?").run(attemptId))
+      .toThrow(/PAYMENT_ATTEMPT_TERMINAL_IMMUTABLE/);
+  });
+
+  it("freezes an attempt confirmed as not made, as firmly as one that was", () => {
+    // The guard has two terminal branches and this is the other one. A
+    // confirmed non-payment is as settled a fact as a payment.
+    const { db, domain } = setup();
+    const { settlement } = preparedForPayment(db, domain);
+    const begun = beginPayment(db, admin, settlement.id);
+    recordConfirmedNotMade(db, admin, begun.attempt.id, "bank returned it");
+
+    expect(() => db.prepare("UPDATE payment_attempts SET evidence_ref = 'rewritten' WHERE id = ?").run(begun.attempt.id))
       .toThrow(/PAYMENT_ATTEMPT_TERMINAL_IMMUTABLE/);
   });
 
@@ -175,11 +200,11 @@ describe("a settlement's status follows what the payment actually did", () => {
     const occurrenceId = seedOccurrence(db, partner.cityId, 100_000);
     const engagementId = offerAcceptActivate(db, partner.partner, partner.partnerIdentityId, occurrenceId, nearTermTerms(1000, "PERCENT", 5000));
     const { code } = query<{ code: string }>(db, "SELECT code FROM promo_codes WHERE id = ?", partner.promo.promo_code_id);
-    purchaseAndPay(db, domain, occurrenceId, code, `${randomUUID()}@example.test`, `idem-${randomUUID()}`);
+    const order = purchaseAndPay(db, domain, occurrenceId, code, `${randomUUID()}@example.test`, `idem-${randomUUID()}`);
     const settlement = finalizedSettlement(db, domain, occurrenceId, engagementId);
     acceptedAct(db, partner.partner, settlement);
     if (taxMode === "NPD") activeNpdCheck(db, partner.partnerIdentityId);
-    return { partner, settlement, engagementId };
+    return { partner, settlement, engagementId, order };
   };
 
   it.each(["OTHER", "NPD"] as const)("refuses to settle a %s partner before a payment was made", (taxMode) => {
@@ -211,16 +236,74 @@ describe("a settlement's status follows what the payment actually did", () => {
     expect(() => db.prepare("UPDATE reward_settlements SET status = 'SETTLED' WHERE id = ?").run(context.settlement.id)).not.toThrow();
   });
 
-  it("refuses to cancel a settlement whose payment is in flight or already made", () => {
-    // Cancelling a settlement beside a live payment is how a partner is paid
-    // for something the ledger says was abandoned.
+  it.each(["IN_PROGRESS", "PAYOUT_UNKNOWN"] as const)("refuses to supersede a settlement whose payment is %s", (attemptStatus) => {
+    // Cancelling a settlement beside a payment that may have left is how a
+    // partner is paid for something the ledger says was abandoned.
+    //
+    // The refusal arrives earlier than expected, and that is the finding. The
+    // transition guard also names the in-flight statuses, but its branch
+    // additionally requires a correction that supersedes this settlement's
+    // snapshot - and the schema will not let that correction be written while
+    // a payout is in flight, by the domain or by direct SQL. So the two can
+    // never coexist, and the transition guard's in-flight term is defence in
+    // depth behind this one.
+    const { db, domain } = setup();
+    const { settlement, engagementId, order } = preparedWithoutPayment(db, domain, "OTHER");
+    const begun = beginPayment(db, admin, settlement.id);
+    if (attemptStatus === "PAYOUT_UNKNOWN") recordPayoutUnknown(db, admin, begun.attempt.id, "provider timed out");
+    expect(query<{ status: string }>(db, "SELECT status FROM payment_attempts WHERE id = ?", begun.attempt.id).status).toBe(attemptStatus);
+
+    // The correction is built directly, because the domain refuses to mint one
+    // while a payout is in flight. That refusal is the first line; this guard
+    // is the second, and the only way to reach it is the way it exists for -
+    // someone writing to the database without going through the domain.
+    const current = rowOf(db, "SELECT * FROM engagement_effective_reward_snapshots WHERE id = ?", String(settlement.effective_reward_snapshot_id));
+    const correction = { ...current, id: randomUUID(), sequence: Number(current.sequence) + 1, kind: "CORRECTION",
+      supersedes_effective_snapshot_id: current.id, reward_total_kopecks: 1_000, canonical_hash: `canon-${randomUUID()}` };
+    const columns = Object.keys(correction);
+    void engagementId; void order;
+
+    expect(() => db.prepare(`INSERT INTO engagement_effective_reward_snapshots(${columns.join(", ")})
+      VALUES (${columns.map((c) => "@" + c).join(", ")})`).run(correction))
+      .toThrow(/AGENT_REFERRALS_CORRECTION_BLOCKED_PAYMENT_IN_FLIGHT/);
+    expect(query<{ status: string }>(db, "SELECT status FROM reward_settlements WHERE id = ?", settlement.id).status).toBe("PREPARED");
+  });
+
+  it("has already left PREPARED by the time a payment is made", () => {
+    // The guard's cancellation branch also names MADE, and that term has no
+    // independently reachable case: recording a payment advances the
+    // settlement in the same act, so a PREPARED settlement and a MADE attempt
+    // never coexist. What refuses the cancellation then is the terminal guard,
+    // one step further on. The term is defence in depth against a path that
+    // would have to bypass `recordPaymentMade` to exist.
     const { db, domain } = setup();
     const { settlement } = preparedWithoutPayment(db, domain, "OTHER");
     const begun = beginPayment(db, admin, settlement.id);
-    expect(query<{ status: string }>(db, "SELECT status FROM payment_attempts WHERE id = ?", begun.attempt.id).status).toBe("IN_PROGRESS");
+    recordPaymentMade(db, admin, begun.attempt.id, "bank-evidence");
 
+    expect(query<{ status: string }>(db, "SELECT status FROM reward_settlements WHERE id = ?", settlement.id).status).toBe("SETTLED");
     expect(() => db.prepare("UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT', cancellation_reason = 'SUPERSEDED_BY_REWARD_CORRECTION' WHERE id = ?").run(settlement.id))
-      .toThrow(/REWARD_SETTLEMENT_TRANSITION_ILLEGAL/);
+      .toThrow(/REWARD_SETTLEMENT_TERMINAL_IMMUTABLE/);
+  });
+
+  it("permits cancellation once the payment is resolved as not made", () => {
+    // The positive control the three refusals need: a confirmed non-payment is
+    // not an unresolved one, so a genuine correction may supersede the
+    // settlement. Without this the guard could simply forbid all cancellation
+    // and the cases above would still pass.
+    const { db, domain } = setup();
+    const { settlement, engagementId, order } = preparedWithoutPayment(db, domain, "OTHER");
+    const begun = beginPayment(db, admin, settlement.id);
+    recordConfirmedNotMade(db, admin, begun.attempt.id, "bank returned it");
+
+    db.prepare(`INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status,
+      idempotency_key_hash, canonical_request_hash, succeeded_at)
+      VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))`)
+      .run(randomUUID(), randomUUID(), order.id, order.payment_id, randomUUID());
+    correctPartnerRewardWithSettlement(db, admin, engagementId, "late refund", String(settlement.effective_reward_snapshot_id));
+
+    expect(query<{ status: string }>(db, "SELECT status FROM reward_settlements WHERE id = ?", settlement.id).status)
+      .toBe("CANCELLED_BEFORE_PAYMENT");
   });
 
   it("freezes a settlement that reached SETTLED", () => {
@@ -251,7 +334,7 @@ describe("a zero-reward closure records an engagement that earned nothing", () =
       service_period_start_at: "2026-09-01T00:00:00.000Z", service_period_end_at: "2026-09-30T00:00:00.000Z",
       reporting_policy_version: 1, command_id: randomUUID(), canonical_hash: "canon-z", closed_by_admin_id: admin.admin_id,
     };
-    return { engagementId, effective, closure, partner, occurrenceId };
+    return { engagementId, effective, closure, occurrenceId };
   };
 
   it("is accepted for an engagement that earned nothing and was never settled", () => {
@@ -286,6 +369,24 @@ describe("a zero-reward closure records an engagement that earned nothing", () =
     })).toThrow(/ENGAGEMENT_ZERO_REWARD_CLOSURE_RELATIONAL_INCONSISTENT/);
   });
 
+  it.each([
+    ["a snapshot belonging to another engagement", "effective_reward_snapshot_id"],
+    ["a revision the snapshot does not name", "engagement_revision_id"],
+    ["a registry the snapshot is not based on", "base_registry_snapshot_id"],
+  ] as const)("refuses a closure citing %s", (_label, column) => {
+    // Each pin is checked separately, against a real row of a second engagement
+    // that also earned nothing - so the foreign key is satisfied and only the
+    // relational predicate can refuse it.
+    const { db } = setup();
+    const first = zeroRewarded(db);
+    const second = zeroRewarded(db);
+    const wrong = column === "effective_reward_snapshot_id" ? second.effective.id : second.effective[column];
+    expect(wrong).not.toEqual(first.closure[column]);
+
+    expect(insertVariant(db, "engagement_zero_reward_closures", first.closure, { [column]: wrong }))
+      .toThrow(/ENGAGEMENT_ZERO_REWARD_CLOSURE_RELATIONAL_INCONSISTENT/);
+  });
+
   // Note: the guard's third branch - no live settlement may exist for the
   // engagement - has no independently reachable case here. A settlement is only
   // ever created for a snapshot that earned something, and the settlement
@@ -318,6 +419,46 @@ describe("a correction after payment records what is now owed back", () => {
       .toThrow(/ENGAGEMENT_RECOVERY_EXPOSURE_EVIDENCE_IMMUTABLE/);
     expect(() => db.prepare("DELETE FROM engagement_recovery_exposure_evidence WHERE id = ?").run(evidence.id))
       .toThrow(/ENGAGEMENT_RECOVERY_EXPOSURE_EVIDENCE_IMMUTABLE/);
+  });
+
+  it("refuses exposure for a settlement whose payment was never made", () => {
+    // Exposure is the amount a partner has to give back. Without a payment
+    // there is nothing to give back, and the row would assert a debt that
+    // never arose.
+    const { db, domain } = setup();
+    const { engagementId } = exposed(db, domain);
+    const evidence = rowOf(db, "SELECT * FROM engagement_recovery_exposure_evidence WHERE engagement_id = ?", engagementId);
+
+    // A second engagement corrected while its settlement was never paid: the
+    // settlement and the correction both exist and belong together, so only
+    // the payment predicate is unsatisfied.
+    const unpaid = preparedForPayment(db, domain, "OTHER");
+    // An attempt exists and resolved as not made, so the correction is
+    // permitted and the guard's payment predicate is the only one left
+    // unsatisfied.
+    const attempt = beginPayment(db, admin, unpaid.settlement.id);
+    recordConfirmedNotMade(db, admin, attempt.attempt.id, "bank returned it");
+    db.prepare(`INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status,
+      idempotency_key_hash, canonical_request_hash, succeeded_at)
+      VALUES (?, ?, ?, ?, 20000, 'late', 'ADMIN_COMPENSATION', 'SUCCEEDED', ?, 'h', datetime('now'))`)
+      .run(randomUUID(), randomUUID(), unpaid.order.id, unpaid.order.payment_id, randomUUID());
+    correctPartnerRewardWithSettlement(db, admin, unpaid.engagementId, "late refund", String(unpaid.settlement.effective_reward_snapshot_id));
+    const correction = rowOf(db, "SELECT * FROM engagement_effective_reward_snapshots WHERE engagement_id = ? AND kind = 'CORRECTION' LIMIT 1", unpaid.engagementId);
+
+    expect(insertVariant(db, "engagement_recovery_exposure_evidence", evidence, {
+      engagement_id: unpaid.engagementId, settlement_id: unpaid.settlement.id, effective_reward_snapshot_id: correction.id,
+    })).toThrow(/ENGAGEMENT_RECOVERY_EXPOSURE_EVIDENCE_RELATIONAL_INCONSISTENT/);
+  });
+
+  it("refuses exposure citing another engagement's correction", () => {
+    const { db, domain } = setup();
+    const first = exposed(db, domain);
+    const second = exposed(db, domain);
+    const evidence = rowOf(db, "SELECT * FROM engagement_recovery_exposure_evidence WHERE engagement_id = ?", first.engagementId);
+    const foreignCorrection = rowOf(db, "SELECT * FROM engagement_effective_reward_snapshots WHERE engagement_id = ? AND kind = 'CORRECTION' LIMIT 1", second.engagementId);
+
+    expect(insertVariant(db, "engagement_recovery_exposure_evidence", evidence, { effective_reward_snapshot_id: foreignCorrection.id }))
+      .toThrow(/ENGAGEMENT_RECOVERY_EXPOSURE_EVIDENCE_RELATIONAL_INCONSISTENT/);
   });
 
   it.each(["FOREIGN_SETTLEMENT", "NOT_A_CORRECTION"] as const)("refuses exposure naming %s", (variant) => {

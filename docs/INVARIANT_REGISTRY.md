@@ -216,7 +216,7 @@ subject: `REFERRAL_REWARD_AUTHORITY_KIND_IMMUTABLE` fires only when
 `reward_authority_kind` changes, and `REFERRAL_REWARD_AUTHORITY_KIND_MISMATCH`
 only cross-checks that column against the order's.
 
-**Active, rewritten without the discriminator — 7.** An earlier revision of this
+**Active, rewritten without the discriminator — 6.** An earlier revision of this
 section listed six guards as retiring with their column. Four of them do not,
 and the error is worth recording because it is the exact mistake the section
 warns about. `ORDER_AUTHORITY_COLUMNS_IMMUTABLE` and
@@ -226,10 +226,12 @@ invariant that an order's or a settlement's attribution cannot be rewritten
 after the fact. The two `_TUPLE_INCONSISTENT` guards use the discriminator to
 choose which shape to require, and after the baseline there is only one shape,
 so the requirement becomes unconditional rather than absent. The same is true of
-`REWARD_SETTLEMENT_TERMINAL_IMMUTABLE`, `REWARD_SETTLEMENT_TRANSITION_ILLEGAL`
-and `AGENT_REFERRALS_SETTLEMENT_CONTRACTOR_TYPE_PROJECTION_MISMATCH`, whose
-`WHEN settlement_flow = 'AGENT_REFERRALS'` is a condition on which rows to guard
-and not the thing being guarded.
+`REWARD_SETTLEMENT_TERMINAL_IMMUTABLE` and `REWARD_SETTLEMENT_TRANSITION_ILLEGAL`,
+whose `WHEN settlement_flow = 'AGENT_REFERRALS'` is a condition on which rows to
+guard and not the thing being guarded.
+`AGENT_REFERRALS_SETTLEMENT_CONTRACTOR_TYPE_PROJECTION_MISMATCH` was listed here
+too, and has since been found to have no independently reachable branch at all;
+it is recorded below as subsumed rather than rewritten.
 
 **Active, untouched — 39.** Immutability and relational-consistency guards on
 tables that survive unchanged: engagement revisions and their snapshots, promo
@@ -243,16 +245,22 @@ So 46 of the 48 need a surviving proof before the file asserting them can go,
 not 42. Classifying by proximity to a doomed column would have retired four real
 protections, which is why each is read.
 
-**Progress**, counted rather than estimated - 21 of the 48 remain:
+**Progress**, counted rather than estimated - 10 of the 48 remain:
 
 | | Count |
 |---|---:|
-| Rehoused and proved at predicate level | 34 |
+| Rehoused and proved at predicate level | 35 |
 | Retired with the pre-launch discriminator | 2 |
 | Subsumed: no independently reachable branch | 1 |
-| Still held only by a migration test | 12 |
+| Still held only by a migration test | 10 |
 
-Of the 25 rehoused, six carry `ACTIVE_BASELINE_REWRITE`: they are proved in the
+An earlier revision of this table said 25 / 2 / 1 / 21, which adds to 49. The
+error was in the measurement, not the arithmetic: the two retired guards have no
+surviving test by design, so a search for "guards no surviving test names"
+counted them as remaining, while the subsumed one is named in a comment and
+counted as covered. The counts above separate those.
+
+Of the 35 rehoused, six carry `ACTIVE_BASELINE_REWRITE`: they are proved in the
 conditional form they have today, and the baseline will restate them without the
 discriminator their condition names.
 
