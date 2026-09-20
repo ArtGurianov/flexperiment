@@ -220,9 +220,19 @@ export const cancelOccurrence = (
     });
 };
 
-export const patchOccurrence = (host: OccurrencesHost, occurrenceId: string, input: Record<string, unknown>, idempotencyKey: string, adminId: string) => {
-  const payload = { occurrence_id: occurrenceId, ...input };
-    return host.withAdminCommand("occurrence-patch", idempotencyKey, payload, "occurrences", () => {
+const patchOccurrenceCommandPayload = (occurrenceId: string, input: Record<string, unknown>) => ({ occurrence_id: occurrenceId, ...input });
+
+/**
+ * The patch itself, with no opinion about transactions.
+ *
+ * Named so that a caller already holding a `BEGIN IMMEDIATE` can run it - the
+ * certification catalogue seam must commit this mutation together with its own
+ * record of what the command did, and `withAdminCommand` opens a raw
+ * transaction that cannot nest.
+ */
+export const patchOccurrenceOperation = (host: OccurrencesHost, occurrenceId: string, input: Record<string, unknown>, idempotencyKey: string, adminId: string) => {
+  const payload = patchOccurrenceCommandPayload(occurrenceId, input);
+    {
       const before = one(host.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId);
       if (!before) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
       if (before.fulfillment_status !== "SCHEDULED") throw new DomainError("OCCURRENCE_TERMINAL", 409);
@@ -290,8 +300,12 @@ export const patchOccurrence = (host: OccurrencesHost, occurrenceId: string, inp
       const inventoryDetails = Object.fromEntries(["capacity", "admin_reserved_seats"].filter((field) => changed.includes(field as typeof changed[number])).map((field) => [field, { from: before[field], to: after[field] }]));
       host.recordAdminCommandAudit(adminId, "OCCURRENCE_EDITED", "occurrence", occurrenceId, typeof input.audit_context === "string" ? input.audit_context : undefined, idempotencyKey, payload, Object.keys(inventoryDetails).length ? { inventory: inventoryDetails } : undefined);
       return after;
-    });
+    }
 };
+
+export const patchOccurrence = (host: OccurrencesHost, occurrenceId: string, input: Record<string, unknown>, idempotencyKey: string, adminId: string) =>
+  host.withAdminCommand("occurrence-patch", idempotencyKey, patchOccurrenceCommandPayload(occurrenceId, input), "occurrences",
+    () => patchOccurrenceOperation(host, occurrenceId, input, idempotencyKey, adminId));
 
 /** Creates immutable customer notices and, only for materially adverse facts, refund rights. */
 const emitOccurrenceRevisionEffects = (host: OccurrencesHost, revisionId: string, before: Row, after: Row, classification: OccurrenceRevisionClassification) => {

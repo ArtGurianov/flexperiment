@@ -1,11 +1,20 @@
 import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import { migrate } from "../../src/db";
-import { InMemoryCertificationCatalogueAuthority, type CertificationCatalogueAuthority, type CertificationCatalogueCommand } from "../../src/certification/catalogue-authority";
+import type { CertificationCatalogueCommand } from "../../src/certification/catalogue-authority";
 import { SqliteCertificationCatalogueAuthority } from "../../src/certification/catalogue-authority-sqlite";
-import { InMemoryCertificationRunStore, type CertificationRun, type CertificationRunStore } from "../../src/certification/run";
+import type { CertificationRun, CertificationRunStore } from "../../src/certification/run";
 import { SqliteCertificationRunStore } from "../../src/certification/store-sqlite";
 import type { OccurrenceView } from "../../src/certification/evidence";
+
+/**
+ * The production catalogue authority admits, mutates and records in one
+ * transaction. The reference performs the command and then records it, and
+ * between those two a dying process leaves an occurrence in the production
+ * catalogue that nothing can attribute - during a cutover, with sales about to
+ * reopen.
+ */
 
 const SHA = "a".repeat(40);
 const startedAt = "2026-09-20T12:00:00.000Z";
@@ -15,107 +24,108 @@ const create: CertificationCatalogueCommand = { kind: "CREATE_OCCURRENCE", idemp
   venueDisclosureText: "Announced later", venueAnnounceBy: "2026-09-25T00:00:00.000Z",
 } };
 
-type Fixture = { readonly authority: CertificationCatalogueAuthority; readonly runs: CertificationRunStore };
+let db: Database.Database;
+let runs: CertificationRunStore;
+let authority: SqliteCertificationCatalogueAuthority;
 
-const seed = (runs: CertificationRunStore, over: Partial<CertificationRun> = {}) => runs.create({
+const seed = (over: Partial<CertificationRun> = {}) => runs.create({
   runId: "run", revision: 1, releaseSha: SHA, phase: "NEW", direction: "NORMAL", startedAt,
   pendingCommand: create, ...over,
 });
 
-const implementations: ReadonlyArray<readonly [string, () => Fixture]> = [
-  ["in-memory", () => {
-    const runs = new InMemoryCertificationRunStore();
-    return { runs, authority: new InMemoryCertificationCatalogueAuthority(runs) };
-  }],
-  ["sqlite", () => {
-    const db = new Database(":memory:");
-    db.pragma("foreign_keys = ON");
-    migrate(db);
-    const runs = new SqliteCertificationRunStore(db);
-    return { runs, authority: new SqliteCertificationCatalogueAuthority(db, runs) };
-  }],
-];
+/** Stands in for the catalogue: a real write the authority's transaction owns. */
+const mutate = (id = "occ") => () => {
+  db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, ?, 'Certification city')").run(id, id);
+  return { ...occurrence, id };
+};
 
-describe.each(implementations)("admitting a catalogue command (%s)", (_name, make) => {
-  let fixture: Fixture;
-  beforeEach(() => { fixture = make(); });
+beforeEach(() => {
+  db = new Database(":memory:");
+  db.pragma("foreign_keys = ON");
+  migrate(db);
+  runs = new SqliteCertificationRunStore(db);
+  authority = new SqliteCertificationCatalogueAuthority(db, runs);
+});
 
-  it("performs an armed command once and answers a repeat from the record", async () => {
-    seed(fixture.runs);
+describe("admitting a catalogue command", () => {
+  it("performs an armed command once and answers a repeat from the record", () => {
+    seed();
     let performed = 0;
-    const perform = async () => { performed += 1; return occurrence; };
+    const perform = () => { performed += 1; return mutate()(); };
 
-    expect(await fixture.authority.admit("run", create, perform)).toEqual(occurrence);
-    expect(await fixture.authority.admit("run", create, perform)).toEqual(occurrence);
+    expect(authority.admit("run", create, perform)).toEqual(occurrence);
+    expect(authority.admit("run", create, perform)).toEqual(occurrence);
 
-    // A run whose creation response was lost must learn the occurrence it made,
-    // not make a second one in the production catalogue.
+    // A run whose response was lost must learn the occurrence it made, not make
+    // a second one in the production catalogue.
     expect(performed).toBe(1);
-    expect(fixture.authority.resultFor("key-1")).toEqual(occurrence);
+    expect(authority.resultFor("key-1")).toEqual(occurrence);
   });
 
-  it("refuses a command the run is not holding", async () => {
+  it("commits the mutation and the record together, or neither", () => {
+    // The whole point. If the ledger write failed after the catalogue write
+    // committed, there would be an occurrence nothing can attribute to a run.
+    seed();
+    expect(() => authority.admit("run", create, () => {
+      db.prepare("INSERT INTO cities(id, slug, title) VALUES ('occ', 'occ', 'Certification city')").run();
+      throw new Error("LEDGER_WRITE_FAILED");
+    })).toThrow("LEDGER_WRITE_FAILED");
+
+    expect(db.prepare("SELECT id FROM cities WHERE id = 'occ'").get()).toBeUndefined();
+    expect(authority.resultFor("key-1")).toBeUndefined();
+  });
+
+  it("offers no asynchronous entry point at all", () => {
+    // An `await` in the middle of this would be the same gap with a different
+    // spelling: better-sqlite3 transactions cannot span one.
+    const source = readFileSync("commerce/src/certification/catalogue-authority-sqlite.ts", "utf8");
+    expect(source).not.toContain("async ");
+    expect(source).not.toContain("await ");
+    expect(source).toMatch(/admit\([^)]*perform: \(\) => OccurrenceView\): OccurrenceView/);
+  });
+
+  it("refuses a command the run is not holding", () => {
     // Not "a command like this one": a straggler whose intent has since been
     // retired is no longer armed.
-    seed(fixture.runs, { pendingCommand: { ...create, idempotencyKey: "other-key" } });
-    await expect(fixture.authority.admit("run", create, async () => occurrence)).rejects.toThrow("CERTIFICATION_COMMAND_NOT_ARMED");
-    expect(fixture.authority.resultFor("key-1")).toBeUndefined();
+    seed({ pendingCommand: { ...create, idempotencyKey: "other-key" } });
+    expect(() => authority.admit("run", create, mutate())).toThrow("CERTIFICATION_COMMAND_NOT_ARMED");
+    expect(authority.resultFor("key-1")).toBeUndefined();
   });
 
-  it("refuses a catalogue that has turned to cleanup", async () => {
-    seed(fixture.runs, { direction: "CLEANUP_STARTED" });
-    await expect(fixture.authority.admit("run", create, async () => occurrence)).rejects.toThrow("CERTIFICATION_CATALOGUE_REOPEN_FORBIDDEN");
+  it("refuses a catalogue that has turned to cleanup", () => {
+    seed({ direction: "CLEANUP_STARTED" });
+    expect(() => authority.admit("run", create, mutate())).toThrow("CERTIFICATION_CATALOGUE_REOPEN_FORBIDDEN");
   });
 
-  it("refuses a run that does not exist", async () => {
-    await expect(fixture.authority.admit("absent", create, async () => occurrence)).rejects.toThrow("CERTIFICATION_RUN_NOT_FOUND");
-  });
-
-  it("records nothing when the catalogue refused the command", async () => {
-    seed(fixture.runs);
-    await expect(fixture.authority.admit("run", create, async () => { throw new Error("CATALOGUE_REFUSED"); }))
-      .rejects.toThrow("CATALOGUE_REFUSED");
-    // Nothing happened, so a retry has to be able to happen.
-    expect(fixture.authority.resultFor("key-1")).toBeUndefined();
+  it("refuses a run that does not exist", () => {
+    expect(() => authority.admit("absent", create, mutate())).toThrow("CERTIFICATION_RUN_NOT_FOUND");
   });
 });
 
 describe("what only a durable ledger can say", () => {
-  const sqlite = () => {
-    const db = new Database(":memory:");
-    db.pragma("foreign_keys = ON");
-    migrate(db);
-    const runs = new SqliteCertificationRunStore(db);
-    return { db, runs, authority: new SqliteCertificationCatalogueAuthority(db, runs) };
-  };
-
-  it("survives the process that performed the command", async () => {
+  it("survives the process that performed the command", () => {
     // The failure this exists for is a runner that died between performing a
     // command and remembering it. An in-memory ledger's lifetime is exactly the
     // one that does not help.
-    const { db, runs, authority } = sqlite();
-    seed(runs);
-    await authority.admit("run", create, async () => occurrence);
+    seed();
+    authority.admit("run", create, mutate());
 
     const reopened = new SqliteCertificationCatalogueAuthority(db, new SqliteCertificationRunStore(db));
     expect(reopened.resultFor("key-1")).toEqual(occurrence);
   });
 
-  it("will not hand one run the catalogue another run's key made", async () => {
-    const { db, runs, authority } = sqlite();
-    seed(runs);
-    await authority.admit("run", create, async () => occurrence);
+  it("will not hand one run the catalogue another run's key made", () => {
+    seed();
+    authority.admit("run", create, mutate());
     runs.create({ runId: "other", revision: 1, releaseSha: SHA, phase: "NEW", direction: "NORMAL", startedAt, pendingCommand: create });
 
-    await expect(authority.admit("other", create, async () => occurrence))
-      .rejects.toThrow("CERTIFICATION_CATALOGUE_KEY_FOREIGN_RUN");
+    expect(() => authority.admit("other", create, mutate("other-occ")))
+      .toThrow("CERTIFICATION_CATALOGUE_KEY_FOREIGN_RUN");
   });
 
   it("refuses to rewrite or erase what a key already did", () => {
-    const { db, runs } = sqlite();
-    seed(runs);
-    db.prepare(`INSERT INTO certification_catalogue_mutations(idempotency_key, run_id, command_kind, occurrence_id, occurrence_json)
-      VALUES ('key-1', 'run', 'CREATE_OCCURRENCE', 'occ', '{"id":"occ"}')`).run();
+    seed();
+    authority.admit("run", create, mutate());
 
     // Rewriting it would let a replay be answered with a different past than
     // the one the key actually produced.

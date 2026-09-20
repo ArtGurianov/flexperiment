@@ -4,6 +4,9 @@ import type { Sqlite } from "./db";
 import { assertAdminOrigin, issueAdminSession, parseSession, verifyAdminPassword } from "./auth";
 import { emailHash, publicId, sha256 } from "./crypto";
 import { admitCertificationCheckout, CERTIFICATION_CLAIM_HEADER, parseCertificationClaim } from "./certification/checkout-admission";
+import { authenticateCertificationService, parseCatalogueCommandRequest, performCertificationCatalogueCommand } from "./certification/catalogue-endpoint";
+import { CERTIFICATION_ADMIN_ID, CERTIFICATION_OCCURRENCE_TITLE, CERTIFICATION_PRICE_KOPECKS, CERTIFICATION_TIMEZONE } from "./certification/scope";
+import type { OccurrenceView } from "./certification/evidence";
 import { CommerceDomain, DomainError } from "./domain";
 import type { CertificationContext } from "./domain/checkout";
 import { availableSeatsSql, seatCommitmentsSql } from "./occurrence-inventory";
@@ -560,6 +563,38 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
   // header. A logically separate surface from /v1/partner/* below, never a
   // shared handler with conditional field projection.
   admin.route("/agent-referrals", createAgentReferralsAdminRouter(sqlite));
+  /**
+   * The certification service surface: one route, its own machine credential,
+   * and no part of the admin session middleware.
+   *
+   * It is mounted beside `/v1/admin` rather than inside it on purpose. The
+   * admin router authenticates a person's browser session and carries every
+   * ordinary administrative route; a token that could reach those would be a
+   * second admin credential living on a release host. This one can do exactly
+   * what a certification needs and nothing else.
+   */
+  app.post("/v1/certification/catalogue-command", async (c) => {
+    rateLimit(clientIpRateLimitKey("certification-catalogue", c.req.raw.headers), 30, 60_000);
+    authenticateCertificationService(c.req.header("Authorization"), process.env.COMMERCE_CERTIFICATION_TOKEN_SHA256);
+    noStore(c.res.headers);
+    const request = parseCatalogueCommandRequest(await jsonBody(c.req.raw));
+    const occurrence = performCertificationCatalogueCommand({
+      db: sqlite,
+      now: () => new Date(),
+      runtimeReleaseSha: () => process.env.SOURCE_COMMIT?.trim() ?? "",
+      createOccurrence: (draft, commandId, reason) => domain.withAdminCommandCore("occurrence-create", commandId, { ...draft, audit_context: reason }, "occurrences", () =>
+        domain.createOccurrenceRecord({
+          city_id: draft.cityId, title: CERTIFICATION_OCCURRENCE_TITLE,
+          starts_at: draft.startsAt, ends_at: draft.endsAt, timezone: CERTIFICATION_TIMEZONE,
+          price_kopecks: CERTIFICATION_PRICE_KOPECKS, capacity: 1, venue_status: "TO_BE_ANNOUNCED",
+          venue_disclosure_text: draft.venueDisclosureText, venue_announce_by: draft.venueAnnounceBy,
+        })).row as unknown as OccurrenceView,
+      patchOccurrence: (occurrenceId, patch, expectedRevision, commandId, reason) =>
+        domain.patchOccurrenceCore(occurrenceId, { ...patch, expected_revision: expectedRevision, audit_context: reason }, commandId, CERTIFICATION_ADMIN_ID) as unknown as OccurrenceView,
+    }, request);
+    return c.json({ occurrence }, 200);
+  });
+
   app.route("/v1/admin", admin);
   // A structurally separate API surface from /v1/admin/* - its own origin
   // check (partner.flexperiment.ru, never admin.flexperiment.ru) and its

@@ -1,7 +1,6 @@
 import type Database from "better-sqlite3";
 import {
-  CatalogueAuthorityError, type CatalogueMutationLedger, type CertificationCatalogueAuthority,
-  type CertificationCatalogueCommand,
+  CatalogueAuthorityError, type CatalogueMutationLedger, type CertificationCatalogueCommand,
 } from "./catalogue-authority";
 import type { OccurrenceView } from "./evidence";
 import { directionAtLeast, sameCommand, type CertificationRunStore } from "./run";
@@ -35,44 +34,43 @@ export class SqliteCatalogueMutationLedger implements CatalogueMutationLedger {
 }
 
 /**
- * The production catalogue authority.
+ * The production catalogue authority: admission, mutation and record in one
+ * `BEGIN IMMEDIATE`.
  *
- * The ordering is the reference's, with one difference that only a database
- * can provide: the record of what a command did is written where a crash
- * cannot lose it. Everything else - the exact armed command, the refusal to
- * touch a catalogue that has turned to cleanup - is the same question asked of
- * durable state instead of a map.
+ * The reference performs the command and then records what it did. Between
+ * those two, a dying process leaves an occurrence in the production catalogue
+ * that nothing can attribute to any run - during a cutover, with sales about to
+ * reopen. So `perform` here is synchronous and runs inside the transaction that
+ * writes the ledger, and there is deliberately no asynchronous entry point: an
+ * `await` in the middle of this would be the same gap with a different spelling.
  */
-export class SqliteCertificationCatalogueAuthority implements CertificationCatalogueAuthority {
+export class SqliteCertificationCatalogueAuthority {
   constructor(
     private readonly db: Database.Database,
     private readonly runs: CertificationRunStore,
   ) {}
 
-  private ledgerFor(runId: string): SqliteCatalogueMutationLedger {
-    return new SqliteCatalogueMutationLedger(this.db, runId);
-  }
+  admit(runId: string, command: CertificationCatalogueCommand, perform: () => OccurrenceView): OccurrenceView {
+    const work = this.db.transaction(() => {
+      const ledger = new SqliteCatalogueMutationLedger(this.db, runId);
+      const existing = ledger.find(command.idempotencyKey);
+      // A repeat returns what the key already did. It must not mutate again:
+      // the catalogue is production's, and a second occurrence is one nobody
+      // asked for.
+      if (existing) return existing;
 
-  async admit(runId: string, command: CertificationCatalogueCommand, perform: () => Promise<OccurrenceView>): Promise<OccurrenceView> {
-    const ledger = this.ledgerFor(runId);
-    const existing = ledger.find(command.idempotencyKey);
-    if (existing) return existing;
+      const run = this.runs.load(runId);
+      if (!run) throw new CatalogueAuthorityError("CERTIFICATION_RUN_NOT_FOUND", runId);
+      // Not "a command like this one": the exact command the run is holding. A
+      // straggler whose intent has since been retired is no longer armed.
+      if (!sameCommand(run.pendingCommand, command)) throw new CatalogueAuthorityError("CERTIFICATION_COMMAND_NOT_ARMED", command.kind);
+      if (directionAtLeast(run.direction, "CLEANUP_STARTED")) throw new CatalogueAuthorityError("CERTIFICATION_CATALOGUE_REOPEN_FORBIDDEN", run.direction);
 
-    const run = this.runs.load(runId);
-    if (!run) throw new CatalogueAuthorityError("CERTIFICATION_RUN_NOT_FOUND", runId);
-    // Not "a command like this one": the exact command the run is holding. A
-    // straggler whose intent has since been retired is no longer armed.
-    if (!sameCommand(run.pendingCommand, command)) throw new CatalogueAuthorityError("CERTIFICATION_COMMAND_NOT_ARMED", command.kind);
-    if (directionAtLeast(run.direction, "CLEANUP_STARTED")) throw new CatalogueAuthorityError("CERTIFICATION_CATALOGUE_REOPEN_FORBIDDEN", run.direction);
-
-    // `perform` reaches the catalogue, so it cannot sit inside a transaction
-    // this ledger also writes in - and it must not. The record is written
-    // immediately after, and a crash in between is exactly what `find` on the
-    // next attempt is unable to answer: that gap is why the command carries its
-    // own key and why the catalogue itself is asked in `occurrenceForCommand`.
-    const occurrence = await perform();
-    ledger.record(command.idempotencyKey, occurrence, command.kind);
-    return occurrence;
+      const occurrence = perform();
+      ledger.record(command.idempotencyKey, occurrence, command.kind);
+      return occurrence;
+    });
+    return this.db.inTransaction ? work() : work.immediate();
   }
 
   resultFor(idempotencyKey: string): OccurrenceView | undefined {

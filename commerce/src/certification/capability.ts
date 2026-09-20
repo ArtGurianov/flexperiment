@@ -122,11 +122,21 @@ export const issueCapability = (store: CertificationCapabilityStore, input: Issu
  * run continues, while a runtime on a different revision means production
  * moved underneath the run and it must not continue at all.
  */
-export const authorizationDefect = (
+/**
+ * Possession, currency and fence: the part of a capability's authorisation that
+ * does not depend on there being a purchase.
+ *
+ * A catalogue command has no price and, on its first step, no occurrence yet,
+ * so it cannot answer the two checkout clauses below. Splitting them out is the
+ * alternative to inventing values for those fields at the catalogue seam, which
+ * would be a weaker copy of this check that quietly disagrees with it - exactly
+ * what the sales gate refuses to keep.
+ */
+export const capabilityBearerDefect = (
   capability: CertificationCapability | undefined,
   claim: CertificationClaim,
-  facts: TrustedCheckoutFacts,
-  expected: { readonly runId: string; readonly releaseSha: string; readonly occurrenceId?: string | null },
+  context: { readonly deploymentSessionId: string; readonly runtimeReleaseSha: string },
+  expected: { readonly runId: string; readonly releaseSha: string },
   now: Date,
 ): CapabilityDefect | undefined => {
   if (!capability || capability.id !== claim.capabilityId) return "CERTIFICATION_CAPABILITY_NOT_FOUND";
@@ -142,12 +152,24 @@ export const authorizationDefect = (
   // Three views of the release have to agree: what the capability was issued
   // against, what the runtime is actually serving, and what the run set out to
   // certify. Any disagreement means one of them moved.
-  if (capability.releaseSha !== facts.runtimeReleaseSha || capability.releaseSha !== expected.releaseSha) return "CERTIFICATION_CAPABILITY_RELEASE_MISMATCH";
-  if (!facts.deploymentSessionId || capability.deploymentSessionId !== facts.deploymentSessionId) return "CERTIFICATION_CAPABILITY_SESSION_MISMATCH";
+  if (capability.releaseSha !== context.runtimeReleaseSha || capability.releaseSha !== expected.releaseSha) return "CERTIFICATION_CAPABILITY_RELEASE_MISMATCH";
+  if (!context.deploymentSessionId || capability.deploymentSessionId !== context.deploymentSessionId) return "CERTIFICATION_CAPABILITY_SESSION_MISMATCH";
+  return undefined;
+};
+
+export const authorizationDefect = (
+  capability: CertificationCapability | undefined,
+  claim: CertificationClaim,
+  facts: TrustedCheckoutFacts,
+  expected: { readonly runId: string; readonly releaseSha: string; readonly occurrenceId?: string | null },
+  now: Date,
+): CapabilityDefect | undefined => {
+  const bearer = capabilityBearerDefect(capability, claim, facts, expected, now);
+  if (bearer) return bearer;
   // The occurrence being bought is the run's own fixture. Without this a
   // leaked capability could be spent on a real event priced under the ceiling.
   if (!expected.occurrenceId || facts.checkoutOccurrenceId !== expected.occurrenceId) return "CERTIFICATION_CAPABILITY_SESSION_MISMATCH";
-  if (!Number.isSafeInteger(facts.actualAmountKopecks) || facts.actualAmountKopecks <= 0 || facts.actualAmountKopecks > capability.maxAmountKopecks) return "CERTIFICATION_CAPABILITY_AMOUNT_EXCEEDED";
+  if (!Number.isSafeInteger(facts.actualAmountKopecks) || facts.actualAmountKopecks <= 0 || facts.actualAmountKopecks > capability!.maxAmountKopecks) return "CERTIFICATION_CAPABILITY_AMOUNT_EXCEEDED";
   return undefined;
 };
 

@@ -40,7 +40,7 @@ import {
   patchPromo,
   promoList,
 } from "./domain/admin-catalog";
-import { cancellationFinancialOverview, cancelOccurrence, completeOccurrence, createAdminReauth, createOccurrence, createOccurrenceRecord, patchOccurrence, type CorruptOccurrenceNotification, type OccurrenceCreateInput, type PendingOccurrenceUpdateBaseline } from "./domain/occurrences";
+import { cancellationFinancialOverview, cancelOccurrence, completeOccurrence, createAdminReauth, createOccurrence, createOccurrenceRecord, patchOccurrence, patchOccurrenceOperation, type CorruptOccurrenceNotification, type OccurrenceCreateInput, type PendingOccurrenceUpdateBaseline } from "./domain/occurrences";
 import { checkout, checkoutAsync, checkoutContext, checkoutStatus, replayCheckout, settleCheckoutPayment, type CertificationContext, type CheckoutInput } from "./domain/checkout";
 import { applyTochkaPaymentWebhook, markPaymentPaid, reconcilePayment, reconcilePendingPayments, type TochkaPaymentWebhook } from "./domain/payments";
 import { cancelCustomerBooking, confirmCustomerRefund, createCompensationRefund, createObligationRefunds, customerRefundConfirmationContext, ensureFullCapturedRefund, reconcilePendingRefunds, reconcileRefund, requestCustomerRefund, submitRequestedRefunds, upsertRefundObligation } from "./domain/refunds";
@@ -795,6 +795,12 @@ export class CommerceDomain {
 
   patchOccurrence(occurrenceId: string, input: Record<string, unknown>, idempotencyKey: string, adminId: string) {
     return patchOccurrence(this, occurrenceId, input, idempotencyKey, adminId);
+  }
+
+  /** The same patch for a caller that already holds a transaction. See `withAdminCommandCore`. */
+  patchOccurrenceCore(occurrenceId: string, input: Record<string, unknown>, idempotencyKey: string, adminId: string) {
+    return this.withAdminCommandCore("occurrence-patch", idempotencyKey, { occurrence_id: occurrenceId, ...input }, "occurrences",
+      () => patchOccurrenceOperation(this, occurrenceId, input, idempotencyKey, adminId)).row;
   }
 
   createAgent(input: Record<string, unknown>) {
@@ -1822,7 +1828,19 @@ export class CommerceDomain {
       }));
   }
 
-  private withAdminCommandCore<T extends Row>(command: string, idempotencyKey: string, payload: unknown, table: "cities" | "occurrences" | "reward_settlements" | "bookings", operation: () => T): { row: T; disposition: "CREATED" | "REPLAYED" } {
+  /**
+   * The admin command without its own transaction, for a caller that already
+   * holds one.
+   *
+   * `withAdminCommand` opens a raw `BEGIN IMMEDIATE`, which cannot nest. A
+   * caller that must commit this mutation together with a record of its own -
+   * the certification catalogue seam does - would otherwise have to run the
+   * mutation, commit, and write its record afterwards. That gap is exactly how
+   * a dead process leaves an occurrence in the production catalogue that
+   * nothing can attribute, so the seam gets a transaction-aware path instead of
+   * a reconciliation to paper over it.
+   */
+  withAdminCommandCore<T extends Row>(command: string, idempotencyKey: string, payload: unknown, table: "cities" | "occurrences" | "reward_settlements" | "bookings", operation: () => T): { row: T; disposition: "CREATED" | "REPLAYED" } {
     const keyHash = sha256(idempotencyKey); const payloadHash = sha256(canonical(payload));
     const existing = one(this.db, "SELECT canonical_request_hash, entity_id FROM admin_command_idempotency WHERE command = ? AND idempotency_key_hash = ?", command, keyHash);
     if (existing) {
