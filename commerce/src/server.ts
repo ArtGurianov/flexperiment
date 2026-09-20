@@ -1,6 +1,7 @@
 import { serve } from "@hono/node-server";
 import { createApp } from "./api";
 import { migrate, openDatabase } from "./db";
+import { startRuntimeInstance } from "./release/runtime-instance";
 import { providerFromEnvironment } from "./provider";
 import { emailProviderFromEnvironment } from "./email-provider";
 import { smartCaptchaVerifierFromEnvironment } from "./smartcaptcha";
@@ -8,6 +9,8 @@ import { otpSenderFromEnvironment } from "./agent-referrals-otp";
 
 const sqlite = openDatabase();
 migrate(sqlite);
+// What this process is, so readiness can see it rather than infer it.
+startRuntimeInstance(sqlite, "COMMERCE");
 const provider = providerFromEnvironment();
 const emailProvider = emailProviderFromEnvironment();
 const smartCaptchaVerifier = smartCaptchaVerifierFromEnvironment();

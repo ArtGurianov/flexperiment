@@ -2,12 +2,14 @@ import { assertSupportedDatabase, openDatabase } from "./db";
 import { CommerceDomain } from "./domain";
 import { emailProviderFromEnvironment } from "./email-provider";
 import { providerFromEnvironment } from "./provider";
+import { startRuntimeInstance } from "./release/runtime-instance";
 import { runWorkerCycle } from "./worker-cycle";
 
 const sqlite = openDatabase();
 // The worker never migrates - the API owns that - but it must not trust a
 // database whose lineage it has not checked.
 assertSupportedDatabase(sqlite);
+const instance = startRuntimeInstance(sqlite, "WORKER");
 const domain = new CommerceDomain(sqlite, providerFromEnvironment(), emailProviderFromEnvironment());
 let nextDriftSweepAt = 0;
 let sweeping = false;
@@ -33,8 +35,12 @@ const sweep = async () => {
 const runSweep = async () => {
   if (sweeping) return;
   sweeping = true;
-  try { await sweep(); }
-  catch (error) { console.error("Commerce worker sweep failed", error instanceof Error ? error.message : "unknown error"); }
+  try {
+    await sweep();
+    // Recorded only on success: readiness treats a stale sweep as not
+    // converged, and a sweep that threw has not proved the worker is working.
+    instance?.recorder.recordSuccessfulSweep();
+  } catch (error) { console.error("Commerce worker sweep failed", error instanceof Error ? error.message : "unknown error"); }
   finally { sweeping = false; }
 };
 
