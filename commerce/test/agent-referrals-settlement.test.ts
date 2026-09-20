@@ -39,7 +39,6 @@ describe("preparePartnerSettlement: F10, the amount is derived, never supplied",
     const { settlement, replayed } = preparePartnerSettlement(db, admin, finalize.effective_snapshot_id);
     expect(replayed).toBe(false);
     expect(settlement.amount_kopecks).toBe(finalize.reward_total_kopecks);
-    expect(settlement.settlement_flow).toBe("AGENT_REFERRALS");
     expect(settlement.status).toBe("PREPARED");
     expect(settlement.engagement_id).toBe(engagementId);
   });
@@ -73,10 +72,10 @@ describe("preparePartnerSettlement: F10, the amount is derived, never supplied",
     preparePartnerSettlement(db, admin, finalize.effective_snapshot_id);
     // A raw second attempt bypassing the application-level replay check entirely.
     expect(() => db.prepare(`INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id,
-        settlement_flow, engagement_id, engagement_revision_id, base_registry_snapshot_id, reward_registry_hash, effective_reward_snapshot_id, partner_identity_id, payout_profile_revision_id, tax_mode_snapshot, legal_profile_revision_id_snapshot,
+        engagement_id, engagement_revision_id, base_registry_snapshot_id, reward_registry_hash, effective_reward_snapshot_id, partner_identity_id, payout_profile_revision_id, tax_mode_snapshot, legal_profile_revision_id_snapshot,
         tax_treatment_revision_id_snapshot, tax_canonicalization_version, tax_canonical_json, tax_canonical_hash)
       SELECT ?, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id,
-        settlement_flow, engagement_id, engagement_revision_id, base_registry_snapshot_id, reward_registry_hash, effective_reward_snapshot_id, partner_identity_id, payout_profile_revision_id, tax_mode_snapshot, legal_profile_revision_id_snapshot,
+        engagement_id, engagement_revision_id, base_registry_snapshot_id, reward_registry_hash, effective_reward_snapshot_id, partner_identity_id, payout_profile_revision_id, tax_mode_snapshot, legal_profile_revision_id_snapshot,
         tax_treatment_revision_id_snapshot, tax_canonicalization_version, tax_canonical_json, tax_canonical_hash
       FROM reward_settlements WHERE effective_reward_snapshot_id = ?`).run(randomUUID(), finalize.effective_snapshot_id)).toThrow(/UNIQUE constraint failed/);
   });
@@ -105,7 +104,7 @@ describe("preparePartnerSettlement: F10, the amount is derived, never supplied",
     purchaseAndPay(db, domain, occ, code.code, "settlesuspend@example.test", "idem-settlesuspend-0000001");
     closeAndComplete(db, domain, occ);
     const finalize = finalizeEngagementRewardRegistry(db, admin, engagementId, "x");
-    suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "emergency" });
+    suspendAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "emergency" });
     expect(() => preparePartnerSettlement(db, admin, finalize.effective_snapshot_id)).not.toThrow();
   });
 

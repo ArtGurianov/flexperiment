@@ -51,8 +51,8 @@ const clause = (arr: readonly string[]) => Object.fromEntries(arr.map((k) => [k,
 const readyPartner = (db: Database.Database) => {
   activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'Agent', ?)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
   submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
@@ -308,7 +308,7 @@ describe("reward registry: SUSPENDED permits finalization (maturation)", () => {
     purchaseAndPay(db, domain, occ, code.code, "suspended@example.test", "idem-suspended-0000001");
     closeAndComplete(db, domain, occ);
 
-    suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "emergency" }); // readyPartner's own activateAgentReferrals already bumped the seeded revision 1 -> 2
+    suspendAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "emergency" }); // readyPartner's own activateAgentReferrals already bumped the seeded revision 1 -> 2
     expect(() => finalizeEngagementRewardRegistry(db, admin, engagementId, "x")).not.toThrow();
   });
 

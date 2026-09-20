@@ -15,8 +15,7 @@ import { id } from "./crypto";
 
 export type OutboxAuthorityState = {
   email_dispatch_paused: boolean;
-  dispatch_owner_release_id: string | null;
-  dispatch_owner_generation: number | null;
+  dispatch_owner_session_id: string | null;
   revision: number;
 };
 
@@ -26,7 +25,12 @@ export type OutboxAuthorityState = {
  * acquired it, and CAS does not help: a second controller can read the current
  * revision and unfence in the middle of the first one's migration.
  */
-export type DispatchEpoch = { release_id: string; generation: number | null };
+/**
+ * Who holds the fence. It used to be a release id and a generation, from the
+ * release-generation model this release dismantles; the fence belongs to
+ * release control, so its owner is now the deploy session itself.
+ */
+export type DispatchEpoch = { session_id: string };
 
 /**
  * Sub-second precision, deliberately not the column's CURRENT_TIMESTAMP default.
@@ -53,23 +57,21 @@ export class OutboxAuthorityError extends Error {
 
 /** Fail closed: a missing control row means dispatch is fenced, never open. */
 export const outboxAuthority = (db: Database.Database): OutboxAuthorityState => {
-  const row = db.prepare(`SELECT email_dispatch_paused, dispatch_owner_release_id,
-    dispatch_owner_generation, revision FROM outbox_authority WHERE singleton = 1`).get() as Record<string, unknown> | undefined;
+  const row = db.prepare(`SELECT email_dispatch_paused, dispatch_owner_session_id,
+    revision FROM outbox_authority WHERE singleton = 1`).get() as Record<string, unknown> | undefined;
   // Fail closed, and identically to the database trigger, which COALESCEs a
   // missing row to fenced for exactly the same reason.
-  if (!row) return { email_dispatch_paused: true, dispatch_owner_release_id: null, dispatch_owner_generation: null, revision: 0 };
+  if (!row) return { email_dispatch_paused: true, dispatch_owner_session_id: null, revision: 0 };
   return {
     email_dispatch_paused: Number(row.email_dispatch_paused ?? 1) === 1,
-    dispatch_owner_release_id: row.dispatch_owner_release_id === null || row.dispatch_owner_release_id === undefined ? null : String(row.dispatch_owner_release_id),
-    dispatch_owner_generation: row.dispatch_owner_generation === null || row.dispatch_owner_generation === undefined ? null : Number(row.dispatch_owner_generation),
+    dispatch_owner_session_id: row.dispatch_owner_session_id === null || row.dispatch_owner_session_id === undefined ? null : String(row.dispatch_owner_session_id),
     revision: Number(row.revision ?? 0),
   };
 };
 
 export type AuthorityEvent = {
   action: string;
-  owner_release_id: string;
-  owner_generation: number | null;
+  owner_session_id: string;
   reason: string;
   revision: number;
   created_at: string;
@@ -83,14 +85,13 @@ export type AuthorityEvent = {
  * is supposed to be verifying from outside.
  */
 export const lastAuthorityEvent = (db: Database.Database): AuthorityEvent | null =>
-  (db.prepare(`SELECT action, owner_release_id, owner_generation, reason, revision, created_at
+  (db.prepare(`SELECT action, owner_session_id, reason, revision, created_at
     FROM outbox_authority_events ORDER BY revision DESC, created_at DESC LIMIT 1`).get() as AuthorityEvent | undefined) ?? null;
 
 export const emailDispatchFenced = (db: Database.Database): boolean => outboxAuthority(db).email_dispatch_paused;
 
 const sameEpoch = (state: OutboxAuthorityState, epoch: DispatchEpoch) =>
-  state.dispatch_owner_release_id === epoch.release_id
-  && (state.dispatch_owner_generation ?? null) === (epoch.generation ?? null);
+  state.dispatch_owner_session_id === epoch.session_id;
 
 const setDispatchFence = (
   db: Database.Database,
@@ -114,16 +115,16 @@ const setDispatchFence = (
 
   const changed = db.prepare(`UPDATE outbox_authority
     SET email_dispatch_paused = ?,
-        dispatch_owner_release_id = ?, dispatch_owner_generation = ?,
+        dispatch_owner_session_id = ?,
         revision = revision + 1, updated_at = CURRENT_TIMESTAMP
     WHERE singleton = 1 AND revision = ?`)
-    .run(paused ? 1 : 0, paused ? epoch.release_id : null, paused ? epoch.generation ?? null : null, input.expected_revision);
+    .run(paused ? 1 : 0, paused ? epoch.session_id : null, input.expected_revision);
   if (changed.changes !== 1) throw new OutboxAuthorityError("OUTBOX_AUTHORITY_REVISION_CONFLICT", 409);
 
   const next = outboxAuthority(db);
-  db.prepare(`INSERT INTO outbox_authority_events(id, action, owner_release_id, owner_generation, reason, revision, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ${AUTHORITY_EVENT_NOW})`)
-    .run(id(), paused ? "DISPATCH_FENCED" : "DISPATCH_UNFENCED", epoch.release_id, epoch.generation ?? null, input.reason, next.revision);
+  db.prepare(`INSERT INTO outbox_authority_events(id, action, owner_session_id, reason, revision, created_at)
+    VALUES (?, ?, ?, ?, ?, ${AUTHORITY_EVENT_NOW})`)
+    .run(id(), paused ? "DISPATCH_FENCED" : "DISPATCH_UNFENCED", epoch.session_id, input.reason, next.revision);
   return next;
 };
 
@@ -140,10 +141,12 @@ export const unfenceEmailDispatch = (db: Database.Database, input: { expected_re
  * can start - that is what the database trigger establishes. Reporting them as
  * one fact is the mistake this pair exists to prevent.
  */
-export const emailDispatchDrained = (db: Database.Database): { drained: boolean; sending: number; leased: number } => {
+export const emailDispatchDrained = (db: Database.Database): { drained: boolean; sending: number } => {
+  // `leased` used to be counted here from `email_outbox.lease_owner`, a column
+  // with no writer at all - so the term was structurally always zero and the
+  // conjunction had one live half. The column is gone and so is the pretence.
   const sending = Number((db.prepare("SELECT COUNT(*) AS n FROM email_outbox WHERE status = 'SENDING'").get() as { n: number }).n);
-  const leased = Number((db.prepare("SELECT COUNT(*) AS n FROM email_outbox WHERE lease_owner IS NOT NULL").get() as { n: number }).n);
-  return { drained: sending === 0 && leased === 0, sending, leased };
+  return { drained: sending === 0, sending };
 };
 
 /**

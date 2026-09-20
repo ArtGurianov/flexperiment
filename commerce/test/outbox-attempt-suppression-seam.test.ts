@@ -27,12 +27,6 @@ import { MockProvider } from "../src/provider";
  */
 
 const MIGRATIONS = join(process.cwd(), "commerce", "migrations");
-const LEGACY_ATTEMPT_COLUMNS = [
-  "provider_idempotence_key", "job_id", "lease_owner", "lease_expires_at", "send_started_at",
-  "provider_request_started_at", "attempts", "last_error", "provider_error_code",
-  "provider_error_message", "next_attempt_at",
-] as const;
-
 const template = (() => {
   const file = join(mkdtempSync(join(tmpdir(), "suppression-template-")), "t.sqlite");
   const db = new Database(file);
@@ -49,24 +43,19 @@ const template = (() => {
 const open: Database.Database[] = [];
 const TS = "2026-08-30T00:00:00.000Z";
 
-const fixture = ({ authority, status = "PENDING", legacy }: { authority: "LEGACY" | "ATTEMPT"; status?: string; legacy?: string }) => {
+const fixture = ({ status = "PENDING", legacy }: { status?: string; legacy?: string } = {}) => {
   const file = join(mkdtempSync(join(tmpdir(), "suppression-")), "commerce.sqlite");
   copyFileSync(template, file);
   const db = new Database(file);
   db.pragma("foreign_keys = ON");
   open.push(db);
-  db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template,
-    payload_snapshot, status, provider_idempotence_key, attempts)
-    VALUES ('m1', 'CITY_INTEREST_AVAILABLE', 'a@b.invalid', 'h', 'tpl', '{}', ?, 'shared-key', 0)`).run(status);
+  db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status)
+    VALUES ('m1', 'CITY_INTEREST_AVAILABLE', 'a@b.invalid', 'h', 'tpl', '{}', ?)`).run(status);
   db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key, lease_owner, lease_expires_at, next_retry_at)
     VALUES ('a1', 'm1', 1, 'shared-key', 'w1', '2026-08-30T00:02:00Z', '2026-08-30T00:05:00Z')`).run();
-  if (legacy) db.exec(legacy);
-  if (authority === "ATTEMPT") db.exec("UPDATE outbox_authority SET attempt_authority = 'ATTEMPT' WHERE singleton = 1");
   return db;
 };
 
-const legacyFacts = (db: Database.Database) =>
-  db.prepare(`SELECT ${LEGACY_ATTEMPT_COLUMNS.join(", ")} FROM email_outbox WHERE id = 'm1'`).get();
 const message = (db: Database.Database) =>
   db.prepare("SELECT status, suppressed_at, superseded_at, recipient_email FROM email_outbox WHERE id = 'm1'").get();
 const attempt = (db: Database.Database) =>
@@ -77,8 +66,8 @@ afterEach(() => { while (open.length) open.pop()!.close(); });
 
 describe("suppression seam", () => {
   describe("suppression is a message command", () => {
-    it.each([["LEGACY"], ["ATTEMPT"]] as const)("skips and redacts under %s", (authority) => {
-      const db = fixture({ authority });
+    it("skips and redacts", () => {
+      const db = fixture();
       tx(db, () => suppressMessageDispatch(db, "m1", "CITY_INTEREST_AVAILABLE", "CITY_INTEREST_NO_LONGER_ACTIVE", TS));
       expect(message(db)).toMatchObject({ status: "SKIPPED", suppressed_at: TS, recipient_email: "" });
     });
@@ -87,12 +76,10 @@ describe("suppression seam", () => {
       // Suppression establishes nothing about whether the provider accepted the
       // send, and an in-flight call cannot be recalled, so later evidence must
       // still be able to settle the attempt.
-      const db = fixture({ authority: "ATTEMPT", status: "SENDING" });
-      const legacyBefore = legacyFacts(db);
+      const db = fixture({ status: "SENDING" });
       tx(db, () => suppressMessageDispatch(db, "m1", "CITY_INTEREST_AVAILABLE", "CITY_INTEREST_NO_LONGER_ACTIVE", TS));
 
       expect(attempt(db)).toEqual({ outcome: null, lease_owner: null, lease_expires_at: null, next_retry_at: null, failure_code: null });
-      expect(legacyFacts(db)).toEqual(legacyBefore);
     });
 
     it("does not record consent withdrawal as a send failure", () => {
@@ -100,7 +87,7 @@ describe("suppression seam", () => {
       // is the only place available. It is not a provider failure, so under
       // ATTEMPT it stays on the message rather than becoming the attempt's
       // failure_code.
-      const db = fixture({ authority: "ATTEMPT", status: "SENDING" });
+      const db = fixture({ status: "SENDING" });
       tx(db, () => suppressMessageDispatch(db, "m1", "CITY_INTEREST_AVAILABLE", "CITY_INTEREST_NO_LONGER_ACTIVE", TS));
       expect((attempt(db) as { failure_code: string | null }).failure_code).toBeNull();
       expect((message(db) as { suppressed_at: string }).suppressed_at).toBe(TS);
@@ -110,7 +97,7 @@ describe("suppression seam", () => {
       // The single-statement original guarded the message mutation and the
       // legacy cleanup together with `WHERE id = ? AND type = ?`. Splitting
       // them let the cleanup run against a message the command never matched.
-      const db = fixture({ authority: "ATTEMPT", status: "SENDING" });
+      const db = fixture({ status: "SENDING" });
       const attemptBefore = attempt(db);
       const messageBefore = message(db);
 
@@ -121,7 +108,7 @@ describe("suppression seam", () => {
     });
 
     it("leaves a DELIVERED message's lifecycle and attempt alone, while still redacting", () => {
-      const db = fixture({ authority: "ATTEMPT", status: "DELIVERED" });
+      const db = fixture({ status: "DELIVERED" });
       const attemptBefore = attempt(db);
       tx(db, () => suppressMessageDispatch(db, "m1", "CITY_INTEREST_AVAILABLE", "CITY_INTEREST_NO_LONGER_ACTIVE", TS));
       expect((message(db) as { status: string }).status).toBe("DELIVERED");
@@ -133,7 +120,7 @@ describe("suppression seam", () => {
     it("is not dropped when the active attempt changed underneath it", () => {
       // The decision this seam turns on: a consent withdrawal must never be
       // skipped because a successor attempt became current.
-      const db = fixture({ authority: "ATTEMPT", status: "SENDING" });
+      const db = fixture({ status: "SENDING" });
       db.exec("UPDATE outbox_attempt SET outcome = 'KNOWN_FAILED' WHERE id = 'a1'");
       db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key, lease_owner)
         VALUES ('a2', 'm1', 2, 'resend-key', 'w2')`).run();
@@ -147,8 +134,8 @@ describe("suppression seam", () => {
   });
 
   describe("supersession retains provider evidence", () => {
-    it.each([["LEGACY"], ["ATTEMPT"]] as const)("skips a PENDING notice under %s", (authority) => {
-      const db = fixture({ authority });
+    it("skips a PENDING notice", () => {
+      const db = fixture();
       expect(tx(db, () => supersedeQueuedMessage(db, "m1", TS, "newer revision"))).toBe(1);
       expect(message(db)).toMatchObject({ status: "SKIPPED", superseded_at: TS });
     });
@@ -157,7 +144,7 @@ describe("suppression seam", () => {
       // Only PENDING had its scheduling cleared under LEGACY, because anything
       // further may already be a real delivery attempt. The ATTEMPT branch
       // mirrors that rather than clearing a live in-flight lease.
-      const db = fixture({ authority: "ATTEMPT", status: "SENDING" });
+      const db = fixture({ status: "SENDING" });
       const attemptBefore = attempt(db);
       expect(tx(db, () => supersedeQueuedMessage(db, "m1", TS, "newer revision"))).toBe(1);
       expect(message(db)).toMatchObject({ status: "SENDING", superseded_at: TS });
@@ -165,13 +152,13 @@ describe("suppression seam", () => {
     });
 
     it("clears scheduling for a PENDING notice under ATTEMPT", () => {
-      const db = fixture({ authority: "ATTEMPT" });
+      const db = fixture();
       tx(db, () => supersedeQueuedMessage(db, "m1", TS, "newer revision"));
       expect(attempt(db)).toMatchObject({ lease_owner: null, next_retry_at: null, outcome: null });
     });
 
     it("refuses to supersede twice", () => {
-      const db = fixture({ authority: "ATTEMPT" });
+      const db = fixture();
       tx(db, () => supersedeQueuedMessage(db, "m1", TS, "first"));
       expect(tx(db, () => supersedeQueuedMessage(db, "m1", "2026-08-31T00:00:00Z", "second"))).toBe(0);
       expect((message(db) as { superseded_at: string }).superseded_at).toBe(TS);
@@ -179,15 +166,15 @@ describe("suppression seam", () => {
   });
 
   describe("obsolete pending skip", () => {
-    it.each([["LEGACY"], ["ATTEMPT"]] as const)("is a strict compare-and-set under %s", (authority) => {
-      const db = fixture({ authority, status: "SEND_UNKNOWN" });
+    it("is a strict compare-and-set", () => {
+      const db = fixture({ status: "SEND_UNKNOWN" });
       // A stale PENDING snapshot must never relabel a newer provider outcome.
       expect(tx(db, () => skipObsoletePendingMessage(db, "m1"))).toBe(0);
       expect((message(db) as { status: string }).status).toBe("SEND_UNKNOWN");
     });
 
     it("clears the active attempt when it does apply, under ATTEMPT", () => {
-      const db = fixture({ authority: "ATTEMPT" });
+      const db = fixture();
       expect(tx(db, () => skipObsoletePendingMessage(db, "m1"))).toBe(1);
       expect(attempt(db)).toMatchObject({ lease_owner: null, next_retry_at: null, outcome: null });
     });
@@ -206,7 +193,7 @@ describe("the domain consumes the suppression helpers", () => {
   it("suppresses an inactive notification through processEmailOutbox under ATTEMPT", async () => {
     // No intent rows exist, so isActiveCityInterestNotification is false and
     // the dispatch loop must suppress rather than send.
-    const db = fixture({ authority: "ATTEMPT", status: "PENDING" });
+    const db = fixture({ status: "PENDING" });
     db.exec(`UPDATE outbox_attempt SET lease_owner = 'w1', next_retry_at = '2026-08-30T00:05:00Z' WHERE id = 'a1'`);
 
     await new CommerceDomain(db, new MockProvider()).processEmailOutbox();

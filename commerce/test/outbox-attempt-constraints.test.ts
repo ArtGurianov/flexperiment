@@ -23,9 +23,8 @@ const seeded = () => {
   for (const name of readdirSync(migrations).filter((file) => file.endsWith(".sql")).sort()) {
     db.transaction(() => db.exec(readFileSync(join(migrations, name), "utf8")))();
   }
-  db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template,
-    payload_snapshot, status, provider_idempotence_key, attempts)
-    VALUES ('m1', 'TEST', 'a@b.invalid', 'h1', 'tpl', '{}', 'PENDING', 'k1', 0)`).run();
+  db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status)
+    VALUES ('m1', 'TEST', 'a@b.invalid', 'h1', 'tpl', '{}', 'PENDING')`).run();
   return db;
 };
 
@@ -95,9 +94,8 @@ describe("outbox attempt constraints", () => {
       // message: `IS NOT` compares values, so "changing" message_id to its own
       // value is not a change at all.
       const db = seeded();
-      db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template,
-        payload_snapshot, status, provider_idempotence_key, attempts)
-        VALUES ('m2', 'TEST', 'b@c.invalid', 'h2', 'tpl', '{}', 'PENDING', 'k2', 0)`).run();
+      db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status)
+        VALUES ('m2', 'TEST', 'b@c.invalid', 'h2', 'tpl', '{}', 'PENDING')`).run();
       insertAttempt(db, "a1", 1, null);
       expect(() => db.exec("UPDATE outbox_attempt SET message_id = 'm2' WHERE id = 'a1'"))
         .toThrow(/OUTBOX_ATTEMPT_IDENTITY_IMMUTABLE/);

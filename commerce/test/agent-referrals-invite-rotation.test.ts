@@ -39,8 +39,8 @@ afterEach(() => { while (open.length) open.pop()!.close(); });
 const invitedPartner = (db: Database.Database) => {
   activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`)
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'Agent', ?)`)
     .run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const provisioned = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
   return { partnerIdentityId: provisioned.partner_identity_id, inviteId: provisioned.invite_id };

@@ -3384,13 +3384,12 @@ CREATE TRIGGER deploy_sessions_delete_guard
 BEFORE DELETE ON deploy_sessions
 BEGIN SELECT RAISE(ABORT, 'DEPLOY_SESSION_IMMUTABLE'); END;
 
--- The ledger the runtime keeps for 0002 and onward. The baseline creates it so
--- that a database built from this file alone is already a database the migrator
--- recognises.
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  version TEXT PRIMARY KEY,
-  applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
+-- The ledger the runtime keeps for 0002 and onward, so that a database built
+-- from this file alone is already one the migrator recognises. `db.ts` creates
+-- it first, inside the same transaction as this file, so in the real path this
+-- statement is a no-op - it is spelled byte for byte like `LEDGER_DDL` there so
+-- that the two can never drift into two different tables.
+CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
 
 
 -- ---------------------------------------------------------------------------

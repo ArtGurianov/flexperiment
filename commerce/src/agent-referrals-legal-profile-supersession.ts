@@ -161,7 +161,7 @@ const classifyEngagementForSupersession = (db: Database.Database, engagement: En
   // not. PENDING_DOCUMENT is closable (recordNpdReceipt moves it to
   // SETTLED); it is a named political decision to block here, not an
   // oversight.
-  const outstanding = db.prepare(`SELECT 1 FROM reward_settlements WHERE settlement_flow = 'AGENT_REFERRALS' AND engagement_id = ? AND status IN ('PREPARED', 'PENDING_DOCUMENT') LIMIT 1`)
+  const outstanding = db.prepare(`SELECT 1 FROM reward_settlements WHERE engagement_id = ? AND status IN ('PREPARED', 'PENDING_DOCUMENT') LIMIT 1`)
     .get(engagement.id);
   if (outstanding) return { blocked: true, reason: "OUTSTANDING_SETTLEMENT", engagementId: engagement.id };
 

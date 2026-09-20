@@ -286,13 +286,11 @@ describe("commerce HTTP boundary", () => {
 
   it("reports and acknowledges operational email attention without changing delivery facts", async () => {
     const { db, app } = appFixture();
-    const insert = db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template,
-      payload_snapshot, status, provider_idempotence_key, attempts, sent_at, bounced_at,
-      provider_error_code, provider_error_message, delivery_outcome)
-      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?, ?, 2,
-      '2026-08-23T00:00:00.000Z', '2026-08-23T00:01:00.000Z', 'hard_bounced', 'Mailbox unavailable',
+    const insert = db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status, sent_at, bounced_at, delivery_outcome)
+      VALUES (?, 'TICKET', 'buyer@example.test', 'hash', 'ticket', '{}', ?,
+      '2026-08-23T00:00:00.000Z', '2026-08-23T00:01:00.000Z',
       CASE WHEN ? = 'FAILED' THEN 'KNOWN_FAILED' END)`);
-    for (const status of ["FAILED", "BOUNCED", "SEND_UNKNOWN", "DELIVERED"]) insert.run(`api-attention-${status}`, status, `api-attention-key-${status}`, status);
+    for (const status of ["FAILED", "BOUNCED", "SEND_UNKNOWN", "DELIVERED"]) insert.run(`api-attention-${status}`, status, status);
     const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.58" }, body: JSON.stringify({ password: "correct horse" }) });
     const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
 
@@ -762,8 +760,8 @@ describe("commerce HTTP boundary", () => {
       db.prepare("UPDATE bookings SET status = 'CONFIRMED' WHERE id = ?").run(booking.id);
       db.prepare("INSERT INTO tickets(id, booking_id, status, capability_hash, capability_ciphertext, capability_nonce, key_version) VALUES (?, ?, 'VALID', 'capability-hash', 'ciphertext', 'nonce', 1)").run(ticketId, booking.id);
       db.prepare("INSERT INTO provider_webhook_events(id, provider, semantic_key, payload_hash, status, entity_id, observed_json) VALUES (?, 'TOCHKA', 'operation-safe:APPROVED', 'payload-hash', 'APPLIED', ?, ?)").run(randomUUID(), payment.id, JSON.stringify({ raw_jwt: "must-not-leak" }));
-      const insertOutbox = db.prepare("INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_ref, payload_snapshot, status, provider_idempotence_key, job_id, delivered_at) VALUES (?, ?, 'certification@example.test', 'email-hash', 'test', ?, ?, 'DELIVERED', ?, ?, datetime('now'))");
-      insertOutbox.run(ticketOutboxId, "TICKET", ticketId, JSON.stringify({ customer_email: "certification@example.test", capability: "must-not-leak" }), randomUUID(), "ticket-job");
+      const insertOutbox = db.prepare("INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_ref, payload_snapshot, status, delivered_at) VALUES (?, ?, 'certification@example.test', 'email-hash', 'test', ?, ?, 'DELIVERED', datetime('now'))");
+      insertOutbox.run(ticketOutboxId, "TICKET", ticketId, JSON.stringify({ customer_email: "certification@example.test", capability: "must-not-leak" }));
       insertOutbox.run(bookingOutboxId, "BOOKING_CANCELLED", booking.id, JSON.stringify({ customer_name: "Certification Customer" }), randomUUID(), "booking-job");
       db.prepare("INSERT INTO email_provider_events(id, outbox_id, semantic_key, status, provider_status, job_id) VALUES (?, ?, ?, 'DELIVERED', 'delivered', ?)").run(randomUUID(), ticketOutboxId, "ticket-delivered", "ticket-job");
       db.prepare("INSERT INTO refund_obligations(id, payment_id, initial_source, target_refunded_amount_kopecks, status) VALUES (?, ?, 'CUSTOMER_CANCELLATION_PARTIAL', 100, 'FULFILLED')").run(obligationId, payment.id);
@@ -884,8 +882,8 @@ describe("commerce HTTP boundary", () => {
   it("authenticates and applies a documented batched Unisender status callback", async () => {
     const { db } = appFixture();
     const outboxId = randomUUID();
-    db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key)
-      VALUES (?, 'BOOKING_CANCELLED', 'buyer@example.test', 'hash', 'booking-cancelled', '{}', 'stable-key')`).run(outboxId);
+    db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot)
+      VALUES (?, 'BOOKING_CANCELLED', 'buyer@example.test', 'hash', 'booking-cancelled', '{}')`).run(outboxId);
     // enqueueEmail writes the attempt alongside the message; a fixture that
     // seeds email_outbox directly has to do the same, because the provider
     // observation settles the attempt, not the message.
@@ -927,8 +925,8 @@ describe("commerce HTTP boundary", () => {
   it("preserves the exact Unisender bounce outcome instead of collapsing provider evidence", async () => {
     const { db } = appFixture();
     const outboxId = randomUUID();
-    db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key)
-      VALUES (?, 'BOOKING_CANCELLED', 'buyer@example.test', 'hash', 'booking-cancelled', '{}', 'soft-bounce-key')`).run(outboxId);
+    db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot)
+      VALUES (?, 'BOOKING_CANCELLED', 'buyer@example.test', 'hash', 'booking-cancelled', '{}')`).run(outboxId);
     const apiKey = "test-api-key-not-a-secret";
     const app = createApp(db, new MockProvider(), new UnisenderGoProvider({ apiKey, fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async () => Response.json({ status: "success", job_id: "job" })));
     const unsigned = JSON.stringify({ auth: "pending", events_by_user: [{ user_id: 1, events: [{ event_name: "transactional_email_status", event_data: { job_id: "job-2", metadata: { outbox_id: outboxId }, status: "soft_bounced", event_time: "2026-08-20 00:00:00" } }] }] });

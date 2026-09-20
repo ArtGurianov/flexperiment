@@ -177,7 +177,7 @@ const emailAttentionStatusUnqualifiedSql = "status IN ('FAILED', 'BOUNCED', 'SEN
 const emailAttentionStatusSql = `e.${emailAttentionStatusUnqualifiedSql}`;
 const emailAttentionPredicateSql = `${emailAttentionStatusSql} AND e.ops_acknowledged_at IS NULL`;
 const emailAttentionSql = (where: string) => `SELECT
-    e.id, e.type, e.status, e.attempts, e.created_at, e.sent_at, e.delivered_at, e.bounced_at,
+    e.id, e.type, e.status, e.created_at, e.sent_at, e.delivered_at, e.bounced_at,
     e.provider_error_code, e.provider_error_message,
     e.ops_acknowledged_at, e.ops_acknowledged_reason,
     CASE WHEN ${emailAttentionPredicateSql} THEN 1 ELSE 0 END AS requires_attention,
@@ -807,7 +807,7 @@ export class CommerceDomain {
 
   patchAgentCommand(agentId: string, patch: Record<string, unknown>, idempotencyKey: string, adminId: string, auditContext?: string) {
     return this.withAdminCommandV2("agent.patch", idempotencyKey, adminId, agentId, patch, auditContext, "AGENT_EDITED", "agent", () => {
-      const existing = one(this.db, "SELECT * FROM agents WHERE id = ?", agentId);
+      const existing = one(this.db, "SELECT * FROM partners WHERE id = ?", agentId);
       if (!existing) throw new DomainError("AGENT_NOT_FOUND", 404);
       return this.patchAgent(agentId, patch);
     });
@@ -1078,9 +1078,9 @@ export class CommerceDomain {
       // attempt" afterwards would let evidence retrieved for one attempt be
       // applied to another if authority or the attempt changed in between.
       const { lookupIdentity, attemptRef, tryCount } = withImmediateTransaction(this.db, () => ({
-        lookupIdentity: providerLookupIdentity(this.db, outbox as { id: string; job_id: unknown; provider_idempotence_key: unknown }),
+        lookupIdentity: providerLookupIdentity(this.db, outbox as { id: string }),
         attemptRef: resolveAttemptRef(this.db, String(outbox.id)),
-        tryCount: sendTryCount(this.db, { id: String(outbox.id), attempts: outbox.attempts }),
+        tryCount: sendTryCount(this.db, { id: String(outbox.id) }),
       }));
       if (isUnknown && lookupIdentity.jobId) {
         try {
@@ -1120,7 +1120,7 @@ export class CommerceDomain {
         // never hoisted: a provider callback can race the activation CAS.
         return claimForDispatch(
           this.db,
-          { id: String(outbox.id), provider_idempotence_key: String(outbox.provider_idempotence_key) },
+          { id: String(outbox.id) },
           `worker-${process.pid}`,
           timestamp,
         );
@@ -1647,24 +1647,17 @@ export class CommerceDomain {
    * The property being established is not that two inserts sit next to each
    * other - it is that a newly created message without attempt #1 cannot exist.
    *
-   * The provider key is minted ONCE and copied byte-for-byte into both stores:
-   *
-   *   LEGACY    email_outbox.provider_idempotence_key   authoritative
-   *             outbox_attempt #1                       shadow
-   *   ATTEMPT   outbox_attempt.provider_idempotence_key authoritative
-   *             email_outbox                            write-once shadow
-   *
-   * No selector branch is needed here. Attempt #1 should exist in either
-   * authority state once an 0041-aware binary is running, and the attempt row
-   * is not authoritative until the activation CAS - so this is not dual-write,
-   * it is creating the row that activation will later refresh and adopt.
+   * The provider key is minted ONCE, into the attempt, which is the only place
+   * that holds it. The message used to carry a copy - the two were authoritative
+   * in turn, depending on a selector column - and the baseline removed both the
+   * copy and the selector.
    */
   enqueueEmail(type: string, recipientEmail: string, recipientEmailHash: string, template: string, payloadRef: string, payload: Record<string, unknown>) {
     const write = () => {
       const outboxId = id();
       const providerKey = publicId();
-      this.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_ref, payload_snapshot, provider_idempotence_key)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(outboxId, type, recipientEmail, recipientEmailHash, template, payloadRef, JSON.stringify(payload), providerKey);
+      this.db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_ref, payload_snapshot)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`).run(outboxId, type, recipientEmail, recipientEmailHash, template, payloadRef, JSON.stringify(payload));
       this.db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key)
         VALUES (?, ?, 1, ?)`).run(id(), outboxId, providerKey);
       return outboxId;
@@ -1847,7 +1840,7 @@ export class CommerceDomain {
       const id = String(outbox.id);
       withImmediateTransaction(this.db, () => {
         const ref = resolveAttemptRef(this.db, id);
-        const tries = sendTryCount(this.db, { id, attempts: outbox.attempts });
+        const tries = sendTryCount(this.db, { id });
         const guard = { supersession: "REQUIRE_UNSUPERSEDED" as const, requireUnsuppressed: true };
         if (tries >= EMAIL_SEND_UNKNOWN_MAX_ATTEMPTS) { failExhaustedAmbiguous(this.db, { id }, ref, "SENDING", guard); return; }
         deferAmbiguousSend(this.db, { id }, ref, this.unknownEmailRetryAt(Math.max(1, tries)), guard);

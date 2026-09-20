@@ -87,7 +87,7 @@ describe("registerOrdCreative: creative-registration authority (revision chain)"
   it("refuses under SUSPENDED, even completing an already-DRAFT registration", () => {
     const { db, creativeRevisionId } = setup();
     const { registration } = registerOrdCreative(db, admin, creativeRevisionId);
-    suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "pause" });
+    suspendAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "pause" });
     expect(() => recordOrdCreativeRegistrationSubmitted(db, registration.id, "vk-ext-1", "ev")).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
   });
 });

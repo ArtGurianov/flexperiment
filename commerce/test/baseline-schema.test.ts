@@ -13,7 +13,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
 
-const BASELINE = join(__dirname, "..", "baseline", "0001_launch_baseline.sql");
+const BASELINE = join(__dirname, "..", "migrations", "0001_launch_baseline.sql");
 const sql = readFileSync(BASELINE, "utf8");
 
 let db: Database.Database;

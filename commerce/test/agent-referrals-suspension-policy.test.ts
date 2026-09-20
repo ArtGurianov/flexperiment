@@ -88,10 +88,4 @@ describe("agent-referrals suspension policy", () => {
     });
   });
 
-  describe("pre-baseline DORMANT", () => {
-    it.each([...NEW_AUTHORITY_CLASSES, ...MATURATION_CLASSES])("is an operational alias for ACTIVE: %s is permitted", (operationClass) => {
-      expect(isAgentReferralsOperationPermitted("DORMANT", operationClass)).toBe(true);
-      expect(() => assertAgentReferralsOperationPermitted("DORMANT", operationClass)).not.toThrow();
-    });
-  });
 });

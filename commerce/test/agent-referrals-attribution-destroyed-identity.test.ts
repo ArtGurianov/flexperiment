@@ -47,8 +47,8 @@ const clause = (arr: readonly string[]) => Object.fromEntries(arr.map((k) => [k,
 const readyPartner = (db: Database.Database) => {
   activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'Agent', ?)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
   submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
@@ -97,7 +97,7 @@ describe("resolveOrderAttribution: destroyed identity refusal (integration-harde
     const occ = seedOccurrence(db, p1.cityId);
     activatedEngagement(db, p1.partner, p1.partnerIdentityId, occ);
     const attribution = resolveOrderAttribution(db, { id: p1.promo.promo_code_id, agent_id: p1.agentId }, occ);
-    expect(attribution.reward_authority_kind).toBe("ENGAGEMENT_SCOPED");
+    expect(attribution.resolution_reason).toBe("EXPLICIT_PARTNER_PROMO");
   });
 
   it("refuses once the owning partner identity is destroyed, even though the engagement remains ACTIVE with a live promo authorization", () => {

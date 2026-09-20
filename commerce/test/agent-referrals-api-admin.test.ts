@@ -72,8 +72,8 @@ describe("/v1/admin/agent-referrals/*: authentication boundary", () => {
     expect(suspendFromPrebaseline.status).toBe(200);
 
     const agentId = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-      VALUES (?, 'p1', 'A', 'a@example.test', 'PERCENT', 1000)`).run(agentId);
+    db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+      VALUES (?, 'p1', 'A', 'a@example.test')`).run(agentId);
 
     const provisionWhileSuspended = await app.request("http://admin.flexperiment.ru/v1/admin/agent-referrals/partners", {
       method: "POST", headers, body: JSON.stringify({ agent_id: agentId, email: "p@example.test", reason: "test" }),

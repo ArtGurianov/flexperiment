@@ -42,8 +42,8 @@ const clause = (arr: readonly string[]) => Object.fromEntries(arr.map((k) => [k,
 const readyPartner = (db: Database.Database) => {
   activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'Agent', ?)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
   submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
@@ -97,7 +97,7 @@ const checkoutInput = (quoteId: string, email: string) =>
   ({ quote_id: quoteId, customer_email: email, customer_adult_confirmed: true as const, participant_age_band: "ADULT", offer_accepted: true as const, pd_consent_accepted: true as const });
 
 const orderAuthorityRow = (db: Database.Database, orderId: string) =>
-  db.prepare(`SELECT reward_authority_kind, explicit_promo_id, resolved_partner_id, resolved_engagement_id, resolved_engagement_revision_id, resolved_promo_authorization_id, attribution_rule_version, resolution_reason, attributed_agent_id, reward_type_snapshot, reward_value_snapshot
+  db.prepare(`SELECT explicit_promo_id, resolved_partner_id, resolved_engagement_id, resolved_engagement_revision_id, resolved_promo_authorization_id, attribution_rule_version, resolution_reason, attributed_agent_id, reward_type_snapshot, reward_value_snapshot
     FROM orders WHERE id = ?`).get(orderId) as Record<string, unknown>;
 
 const latestOrder = (db: Database.Database) => (db.prepare("SELECT id FROM orders ORDER BY created_at DESC, rowid DESC LIMIT 1").get() as { id: string }).id;
@@ -117,7 +117,7 @@ describe("checkout with a partner-owned promo: real §B-9 attribution now resolv
     const auth1 = db.prepare("SELECT id FROM engagement_promo_authorizations WHERE engagement_id = ? AND revoked_at IS NULL").get(engagementId) as { id: string };
     const rev1 = db.prepare("SELECT id FROM engagement_revisions WHERE engagement_id = ? AND revision = 1").get(engagementId) as { id: string };
     expect(orderAuthorityRow(db, order1Id)).toMatchObject({
-      reward_authority_kind: "ENGAGEMENT_SCOPED", explicit_promo_id: p1.promo.promo_code_id, resolved_partner_id: p1.agentId,
+      explicit_promo_id: p1.promo.promo_code_id, resolved_partner_id: p1.agentId,
       resolved_engagement_id: engagementId, resolved_engagement_revision_id: rev1.id, resolved_promo_authorization_id: auth1.id,
       attribution_rule_version: 1, resolution_reason: "EXPLICIT_PARTNER_PROMO", attributed_agent_id: p1.agentId,
       reward_type_snapshot: "PERCENT", reward_value_snapshot: 1000,
@@ -136,7 +136,7 @@ describe("checkout with a partner-owned promo: real §B-9 attribution now resolv
     const auth2 = db.prepare("SELECT id FROM engagement_promo_authorizations WHERE engagement_id = ? AND revoked_at IS NULL").get(engagementId) as { id: string };
     expect(auth2.id).not.toBe(auth1.id); // the authorization was genuinely superseded
     expect(orderAuthorityRow(db, order2Id)).toMatchObject({
-      reward_authority_kind: "ENGAGEMENT_SCOPED", resolved_engagement_revision_id: revision2.id, resolved_promo_authorization_id: auth2.id,
+      resolved_engagement_revision_id: revision2.id, resolved_promo_authorization_id: auth2.id,
       reward_type_snapshot: "FIXED", reward_value_snapshot: 5_000,
     });
 
@@ -230,7 +230,7 @@ describe("checkout with a partner-owned promo: real §B-9 attribution now resolv
     const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
     const quote = domain.checkoutContext({ occurrenceId: occ, promoCode: code.code });
 
-    suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "emergency" }); // readyPartner's own activateAgentReferrals already bumped the seeded revision 1 -> 2
+    suspendAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "emergency" }); // readyPartner's own activateAgentReferrals already bumped the seeded revision 1 -> 2
 
     expect(() => domain.checkout(checkoutInput(quote.quote_id, "suspended@example.test"), "idem-global-suspend-0000001")).toThrow(DomainError);
     try {
@@ -247,8 +247,8 @@ describe("legacy promo endpoint hardening: PROMO_OWNED_BY_PARTNER", () => {
     const { db, domain } = fresh();
     const p1 = readyPartner(db);
     const otherAgent = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-      VALUES (?, 'other', 'Other', 'other@example.test', 'PERCENT', 500)`).run(otherAgent);
+    db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+      VALUES (?, 'other', 'Other', 'other@example.test')`).run(otherAgent);
 
     for (const patch of [{ agent_id: otherAgent }, { discount_type: "PERCENT", discount_value: 500 }, { discount_value: 999 }]) {
       expect(() => domain.patchPromoCommand(p1.promo.promo_code_id, patch, `idem-refuse-${JSON.stringify(patch)}`, "admin-1")).toThrow(DomainError);
@@ -288,8 +288,8 @@ describe("legacy promo endpoint hardening: PROMO_OWNED_BY_PARTNER", () => {
   it("legacy discount-only promos are completely unaffected by this hardening", () => {
     const { db, domain } = fresh();
     const agentId = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-      VALUES (?, 'legacy-agent', 'Legacy', 'legacy@example.test', 'PERCENT', 500)`).run(agentId);
+    db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+      VALUES (?, 'legacy-agent', 'Legacy', 'legacy@example.test')`).run(agentId);
     const legacyPromo = domain.createPromoCommand({ code: "LEGACY10", agent_id: agentId, status: "ACTIVE", discount_type: "PERCENT", discount_value: 1000 }, "idem-legacy-create", "admin-1");
     const patched = domain.patchPromoCommand(String(legacyPromo.id), { discount_value: 1500 }, "idem-legacy-patch", "admin-1");
     expect(patched.discount_value).toBe(1500); // freely repriceable - never PROMO_OWNED_BY_PARTNER

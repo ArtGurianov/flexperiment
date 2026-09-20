@@ -13,15 +13,12 @@ import { canonicalizeSettlementTaxV1 } from "./agent-referrals-ord-canonical";
 import type { AdminPrincipal } from "./agent-referrals-partner-identity";
 
 /**
- * §B-6/F10: the settlement authority. It is now the only one - the parallel
- * agent-level path in domain.ts is gone, so `reward_settlements` has a single
- * writer and `settlement_flow` no longer partitions anything. The column and
- * the guards that enforced the partition are removed by the launch baseline;
- * until then this module keeps writing its own value. The four-value status
- * enum (F5) is unchanged - the migration's own structural
- * guards are what make it impossible for this module to ever produce a
- * settlement whose amount disagrees with its pinned effective reward
- * snapshot (F10: derived, never caller input).
+ * §B-6/F10: the settlement authority, and the only one. A settlement without
+ * an engagement is the deleted slug model, so there is nothing left to
+ * partition and no discriminator to write. The four-value status enum (F5) is
+ * unchanged - the schema's own structural guards are what make it impossible
+ * for this module to ever produce a settlement whose amount disagrees with its
+ * pinned effective reward snapshot (F10: derived, never caller input).
  */
 
 export class SettlementError extends Error {
@@ -36,7 +33,6 @@ export type AgentReferralsSettlementRow = {
   occurrence_id: string;
   amount_kopecks: number;
   status: "PREPARED" | "PENDING_DOCUMENT" | "SETTLED" | "CANCELLED_BEFORE_PAYMENT";
-  settlement_flow: "AGENT_REFERRALS";
   engagement_id: string;
   engagement_revision_id: string;
   base_registry_snapshot_id: string;
@@ -56,18 +52,18 @@ export type AgentReferralsSettlementRow = {
   created_by_admin_id: string;
 };
 
-const SETTLEMENT_COLUMNS = `id, agent_id, occurrence_id, amount_kopecks, status, settlement_flow, engagement_id, engagement_revision_id,
+const SETTLEMENT_COLUMNS = `id, agent_id, occurrence_id, amount_kopecks, status, engagement_id, engagement_revision_id,
   base_registry_snapshot_id, reward_registry_hash, effective_reward_snapshot_id, partner_identity_id, payout_profile_revision_id, tax_mode_snapshot,
   legal_profile_revision_id_snapshot, supersedes_settlement_id, cancellation_reason,
   tax_treatment_revision_id_snapshot, tax_canonicalization_version, tax_canonical_json, tax_canonical_hash, prepared_at, created_by_admin_id`;
 
 export const agentReferralsSettlementById = (db: Database.Database, settlementId: string): AgentReferralsSettlementRow | null =>
-  (db.prepare(`SELECT ${SETTLEMENT_COLUMNS} FROM reward_settlements WHERE id = ? AND settlement_flow = 'AGENT_REFERRALS'`)
+  (db.prepare(`SELECT ${SETTLEMENT_COLUMNS} FROM reward_settlements WHERE id = ?`)
     .get(settlementId) as AgentReferralsSettlementRow | undefined) ?? null;
 
 /** At most one, by the migration's own partial UNIQUE index - the settlement (if any) currently live for this exact effective snapshot. */
 export const settlementForEffectiveSnapshot = (db: Database.Database, effectiveRewardSnapshotId: string): AgentReferralsSettlementRow | null =>
-  (db.prepare(`SELECT ${SETTLEMENT_COLUMNS} FROM reward_settlements WHERE effective_reward_snapshot_id = ? AND settlement_flow = 'AGENT_REFERRALS'`)
+  (db.prepare(`SELECT ${SETTLEMENT_COLUMNS} FROM reward_settlements WHERE effective_reward_snapshot_id = ?`)
     .get(effectiveRewardSnapshotId) as AgentReferralsSettlementRow | undefined) ?? null;
 
 /**
@@ -82,7 +78,7 @@ export const settlementForEffectiveSnapshot = (db: Database.Database, effectiveR
  * current E past it - exactly the P1.9a defect this query exists to avoid.
  */
 export const paidSettlementForEngagement = (db: Database.Database, engagementId: string): AgentReferralsSettlementRow | null =>
-  (db.prepare(`SELECT ${SETTLEMENT_COLUMNS} FROM reward_settlements WHERE engagement_id = ? AND settlement_flow = 'AGENT_REFERRALS' AND status IN ('PENDING_DOCUMENT', 'SETTLED')`)
+  (db.prepare(`SELECT ${SETTLEMENT_COLUMNS} FROM reward_settlements WHERE engagement_id = ? AND status IN ('PENDING_DOCUMENT', 'SETTLED')`)
     .get(engagementId) as AgentReferralsSettlementRow | undefined) ?? null;
 
 type SettlementContext = {
@@ -203,10 +199,10 @@ const mintAgentReferralsSettlement = (
   const settlementId = id();
   db.prepare(`INSERT INTO reward_settlements(
       id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id,
-      settlement_flow, engagement_id, engagement_revision_id, base_registry_snapshot_id, reward_registry_hash, effective_reward_snapshot_id,
+      engagement_id, engagement_revision_id, base_registry_snapshot_id, reward_registry_hash, effective_reward_snapshot_id,
       partner_identity_id, payout_profile_revision_id, tax_mode_snapshot, legal_profile_revision_id_snapshot, supersedes_settlement_id,
       tax_treatment_revision_id_snapshot, tax_canonicalization_version, tax_canonical_json, tax_canonical_hash)
-    VALUES (?, ?, ?, ?, 'PAYOUT_PROFILE', 'PREPARED', ?, ?, ?, 'AGENT_REFERRALS', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    VALUES (?, ?, ?, ?, 'PAYOUT_PROFILE', 'PREPARED', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
     .run(
       settlementId, context.agentId, context.engagement.occurrence_id, context.effective.reward_total_kopecks, context.contractorType, context.preparedAt, admin.admin_id,
       context.effective.engagement_id, context.effective.engagement_revision_id, context.effective.base_registry_snapshot_id, context.rewardRegistryHash, context.effective.id,
@@ -247,10 +243,10 @@ export type RecoveryExposure = { paid_net_kopecks: number; current_effective_tot
 export const recoveryExposure = (db: Database.Database, engagementId: string): RecoveryExposure => {
   const madeTotal = Number((db.prepare(`SELECT COALESCE(SUM(pat.amount_kopecks), 0) AS total FROM payment_attempts pat
     JOIN reward_settlements rs ON rs.id = pat.settlement_id
-    WHERE rs.engagement_id = ? AND rs.settlement_flow = 'AGENT_REFERRALS' AND pat.status = 'MADE'`).get(engagementId) as { total: number }).total);
+    WHERE rs.engagement_id = ? AND pat.status = 'MADE'`).get(engagementId) as { total: number }).total);
   const recoveredTotal = Number((db.prepare(`SELECT COALESCE(SUM(sr.amount_recovered_kopecks), 0) AS total FROM settlement_recoveries sr
     JOIN reward_settlements rs ON rs.id = sr.settlement_id
-    WHERE rs.engagement_id = ? AND rs.settlement_flow = 'AGENT_REFERRALS'`).get(engagementId) as { total: number }).total);
+    WHERE rs.engagement_id = ?`).get(engagementId) as { total: number }).total);
   const paidNet = madeTotal - recoveredTotal;
   const current = currentEffectiveRewardSnapshot(db, engagementId);
   const currentTotal = current?.reward_total_kopecks ?? 0;
@@ -351,7 +347,7 @@ export const correctPartnerRewardWithSettlement = (
 
       const correction = correctEngagementEffectiveRewardSnapshot(db, admin, engagementId, reason);
       const cancelled = db.prepare(`UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT', cancellation_reason = 'SUPERSEDED_BY_REWARD_CORRECTION', cancelled_before_payment_at = ?
-        WHERE id = ? AND status = 'PREPARED' AND settlement_flow = 'AGENT_REFERRALS'`).run(now(), existingSettlement.id);
+        WHERE id = ? AND status = 'PREPARED'`).run(now(), existingSettlement.id);
       if (cancelled.changes !== 1) throw new SettlementError("AGENT_REFERRALS_SETTLEMENT_SUPERSESSION_CONFLICT", 409, existingSettlement.id);
 
       if (correction.reward_total_kopecks > 0) {

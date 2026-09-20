@@ -49,8 +49,8 @@ const clause = (arr: readonly string[]) => Object.fromEntries(arr.map((k) => [k,
 const readyPartner = (db: Database.Database) => {
   activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'Agent', ?)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
   submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
@@ -375,11 +375,11 @@ describe("historical authority (§B-5c/§B-5d): a distribution pins the creative
   it("a publication reported with published_at inside a window where the feature was GLOBALLY SUSPENDED at that instant is INVALID_AUTHORITY, even though the feature is ACTIVE again by the time it is reported", async () => {
     const db = fresh();
     const engaged = readyEngagementWithCreative(db); // feature state revision 2 (ACTIVE)
-    suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "global pause" });
+    suspendAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "global pause" });
     await new Promise((resolve) => setTimeout(resolve, 50)); // guarantee millisecond separation from the SUSPENDED transition's own timestamp
     const publishedDuringSuspension = new Date().toISOString();
     await new Promise((resolve) => setTimeout(resolve, 50)); // guarantee millisecond separation before the REACTIVATE transition's own timestamp
-    reactivateAgentReferrals(db, { expected_revision: 3, owner_id: "test-owner", reason: "resume" });
+    reactivateAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "resume" });
 
     // The report itself is still permitted (DISTRIBUTION_FACT_REPORTING is a
     // reporting-tail class, permitted even under SUSPENDED) - it is the

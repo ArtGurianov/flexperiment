@@ -73,7 +73,7 @@ describe("openOrdProviderOperation: provider-operation authority (revision chain
     const db = fresh();
     mintOrdProviderProfile(db, admin, "MEDIA", { media_ref: "site" }, "seed", currentOrdProviderProfile(db, "MEDIA")?.id ?? null);
     const { operation } = openOrdProviderOperation(db, admin, "MEDIA", currentOrdProviderOperation(db, "MEDIA")?.id ?? null);
-    suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "pause" });
+    suspendAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "pause" });
     expect(() => recordOrdProviderOperationSubmitted(db, operation.id, "vk-ext-1", "ev")).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
   });
 });

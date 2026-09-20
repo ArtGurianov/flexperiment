@@ -14,7 +14,7 @@ import { id } from "./crypto";
  * interpreted as ACTIVE so it no longer gates real business actions.
  */
 
-export type AgentReferralsFeatureStateName = "DORMANT" | "ACTIVE" | "SUSPENDED";
+export type AgentReferralsFeatureStateName = "ACTIVE" | "SUSPENDED";
 
 export type AgentReferralsFeatureStateRow = {
   state: AgentReferralsFeatureStateName;
@@ -61,11 +61,11 @@ const storedFeatureState = (db: Database.Database): AgentReferralsFeatureStateRo
 export const agentReferralsFeatureState = (db: Database.Database): AgentReferralsFeatureStateRow => {
   const stored = storedFeatureState(db);
   if (!stored) throw new AgentReferralsFeatureError("AGENT_REFERRALS_FEATURE_STATE_MISSING", 500);
-  return { ...stored, state: stored.state === "SUSPENDED" ? "SUSPENDED" : "ACTIVE" };
+  return stored;
 };
 
-/** The only operational edges. DORMANT remains only in the physical schema. */
-const LEGAL_EDGES: Record<Exclude<AgentReferralsFeatureStateName, "DORMANT">, ReadonlySet<AgentReferralsFeatureStateName>> = {
+/** The only edges there are. The baseline seeds ACTIVE, so there is no genesis state to leave. */
+const LEGAL_EDGES: Record<AgentReferralsFeatureStateName, ReadonlySet<AgentReferralsFeatureStateName>> = {
   ACTIVE: new Set(["SUSPENDED"]),
   SUSPENDED: new Set(["ACTIVE"]),
 };
@@ -109,24 +109,7 @@ export const transitionAgentReferralsFeatureInTransaction = (
     throw new AgentReferralsFeatureError("AGENT_REFERRALS_FEATURE_REVISION_CONFLICT", 409);
   }
 
-  // P9 drops DORMANT from the schema. Before then, a first suspension has to
-  // materialize the old row as ACTIVE so the existing lineage trigger can
-  // record the real ACTIVE -> SUSPENDED lifecycle. This is a physical-schema
-  // compatibility step, not an operational DORMANT decision.
-  if (stored.state === "DORMANT") {
-    if (to === "ACTIVE") return current;
-    const materialized = db.prepare(`UPDATE agent_referrals_feature_state
-      SET state = 'ACTIVE', owner_id = ?, revision = revision + 1, updated_at = CURRENT_TIMESTAMP
-      WHERE singleton = 1 AND revision = ?`).run(input.owner_id, stored.revision);
-    if (materialized.changes !== 1) throw new AgentReferralsFeatureError("AGENT_REFERRALS_FEATURE_REVISION_CONFLICT", 409);
-    stored = storedFeatureState(db)!;
-    db.prepare(`INSERT INTO agent_referrals_feature_state_events(id, from_state, to_state, owner_id, reason, revision, created_at)
-      VALUES (?, 'DORMANT', 'ACTIVE', ?, ?, ?, ${FEATURE_STATE_EVENT_NOW})`)
-      .run(id(), input.owner_id, "P5_PREBASELINE_ACTIVE", stored.revision);
-    current = agentReferralsFeatureState(db);
-  }
-
-  if (!LEGAL_EDGES[current.state as "ACTIVE" | "SUSPENDED"].has(to)) {
+  if (!LEGAL_EDGES[current.state].has(to)) {
     throw new AgentReferralsFeatureError("AGENT_REFERRALS_FEATURE_ILLEGAL_TRANSITION", 409, `${current.state}->${to}`);
   }
 

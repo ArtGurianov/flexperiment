@@ -13,7 +13,7 @@
  * rather than deciding it locally.
  */
 
-export type AgentReferralsFeatureStateName = "DORMANT" | "ACTIVE" | "SUSPENDED";
+export type AgentReferralsFeatureStateName = "ACTIVE" | "SUSPENDED";
 
 export type AgentReferralsOperationClass =
   // NEW_AUTHORITY - blocked by SUSPENDED.

@@ -25,12 +25,6 @@ import { applyProviderObservation } from "../src/outbox-attempt-store";
  */
 
 const MIGRATIONS = join(process.cwd(), "commerce", "migrations");
-const LEGACY_ATTEMPT_COLUMNS = [
-  "provider_idempotence_key", "job_id", "lease_owner", "lease_expires_at", "send_started_at",
-  "provider_request_started_at", "attempts", "last_error", "provider_error_code",
-  "provider_error_message", "next_attempt_at",
-] as const;
-
 const template = (() => {
   const file = join(mkdtempSync(join(tmpdir(), "observation-template-")), "t.sqlite");
   const db = new Database(file);
@@ -48,7 +42,7 @@ const open: Database.Database[] = [];
 const TS = "2026-08-30T00:00:00.000Z";
 
 /** Two independent connections to one on-disk database. */
-const fixture = ({ authority, status = "ACCEPTED", legacy }: { authority: "LEGACY" | "ATTEMPT"; status?: string; legacy?: string }) => {
+const fixture = ({ status = "ACCEPTED", legacy }: { status?: string; legacy?: string } = {}) => {
   const file = join(mkdtempSync(join(tmpdir(), "observation-")), "commerce.sqlite");
   copyFileSync(template, file);
   const db = new Database(file);
@@ -56,18 +50,13 @@ const fixture = ({ authority, status = "ACCEPTED", legacy }: { authority: "LEGAC
   const callback = new Database(file);
   callback.pragma("foreign_keys = ON");
   open.push(db, callback);
-  db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template,
-    payload_snapshot, status, provider_idempotence_key, attempts, job_id)
-    VALUES ('m1', 'TEST', 'a@b.invalid', 'h', 'tpl', '{}', ?, 'shared-key', 1, 'job-1')`).run(status);
+  db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, status)
+    VALUES ('m1', 'TEST', 'a@b.invalid', 'h', 'tpl', '{}', ?)`).run(status);
   db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key, provider_job_id, lease_owner)
     VALUES ('a1', 'm1', 1, 'shared-key', 'job-1', 'w1')`).run();
-  if (legacy) db.exec(legacy);
-  if (authority === "ATTEMPT") db.exec("UPDATE outbox_authority SET attempt_authority = 'ATTEMPT' WHERE singleton = 1");
   return { db, callback };
 };
 
-const legacyFacts = (db: Database.Database) =>
-  db.prepare(`SELECT ${LEGACY_ATTEMPT_COLUMNS.join(", ")} FROM email_outbox WHERE id = 'm1'`).get();
 const message = (db: Database.Database) =>
   db.prepare("SELECT status, delivery_outcome, delivered_at, bounced_at FROM email_outbox WHERE id = 'm1'").get();
 const attempt = (db: Database.Database, id = "a1") =>
@@ -81,17 +70,15 @@ describe("observation seam", () => {
     it("settles an unsettled attempt ACCEPTED on positive evidence, touching no legacy column", () => {
       // The lost-acceptance case: the first positive evidence is a later
       // provider event, and it may settle a still-unsettled attempt.
-      const { db } = fixture({ authority: "ATTEMPT", status: "SENDING" });
-      const legacyBefore = legacyFacts(db);
+      const { db } = fixture({ status: "SENDING" });
       tx(db, () => applyProviderObservation(db, "m1", { status: "DELIVERED", jobId: "job-1" }, TS));
 
       expect(message(db)).toMatchObject({ status: "DELIVERED", delivered_at: TS });
       expect(attempt(db)).toMatchObject({ outcome: "ACCEPTED", lease_owner: null });
-      expect(legacyFacts(db)).toEqual(legacyBefore);
     });
 
     it("never rewrites a settled attempt when a bounce arrives later", () => {
-      const { db } = fixture({ authority: "ATTEMPT" });
+      const { db } = fixture();
       db.exec("UPDATE outbox_attempt SET outcome = 'ACCEPTED', lease_owner = NULL WHERE id = 'a1'");
       tx(db, () => applyProviderObservation(db, "m1", { status: "BOUNCED", jobId: "job-1" }, TS));
 
@@ -100,7 +87,7 @@ describe("observation seam", () => {
     });
 
     it("settles KNOWN_FAILED on received refusal", () => {
-      const { db } = fixture({ authority: "ATTEMPT", status: "SENDING" });
+      const { db } = fixture({ status: "SENDING" });
       tx(db, () => applyProviderObservation(db, "m1", { status: "FAILED", jobId: "job-1" }, TS));
       expect(message(db)).toMatchObject({ status: "FAILED", delivery_outcome: "KNOWN_FAILED" });
       expect(attempt(db)).toMatchObject({ outcome: "KNOWN_FAILED" });
@@ -109,7 +96,7 @@ describe("observation seam", () => {
     it("rejects a spam callback after delivery without settling anything", () => {
       // The message guard decides whether the evidence applies. It must not
       // settle an attempt on its way past a rejection.
-      const { db } = fixture({ authority: "ATTEMPT", status: "DELIVERED" });
+      const { db } = fixture({ status: "DELIVERED" });
       const before = attempt(db);
       expect(tx(db, () => applyProviderObservation(db, "m1", { status: "BOUNCED", jobId: "job-1" }, TS))).toBe(false);
       expect((message(db) as { status: string }).status).toBe("DELIVERED");
@@ -120,7 +107,7 @@ describe("observation seam", () => {
       // The dangerous branch, and the one the earlier test missed: it covered a
       // successful exact match only. Falling back to the current attempt would
       // settle whatever is in flight on the strength of someone else's job id.
-      const { db } = fixture({ authority: "ATTEMPT", status: "SENDING" });
+      const { db } = fixture({ status: "SENDING" });
       db.exec("UPDATE outbox_attempt SET outcome = 'KNOWN_FAILED' WHERE id = 'a1'");
       db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key, provider_job_id)
         VALUES ('a2', 'm1', 2, 'resend-key', 'job-2')`).run();
@@ -134,7 +121,7 @@ describe("observation seam", () => {
     it("settles nothing without a job id once the message has more than one attempt", () => {
       // The message is proven, the attempt is not. A settled predecessor is
       // exactly what such an event could belong to.
-      const { db } = fixture({ authority: "ATTEMPT", status: "SENDING" });
+      const { db } = fixture({ status: "SENDING" });
       db.exec("UPDATE outbox_attempt SET outcome = 'KNOWN_FAILED' WHERE id = 'a1'");
       db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key)
         VALUES ('a2', 'm1', 2, 'resend-key')`).run();
@@ -147,7 +134,7 @@ describe("observation seam", () => {
     it("still recovers a lost acceptance without a job id on a first send", () => {
       // The fix must not kill this: one attempt in the whole history means the
       // identity is unambiguous even with no job id.
-      const { db } = fixture({ authority: "ATTEMPT", status: "SENDING" });
+      const { db } = fixture({ status: "SENDING" });
       db.exec("UPDATE outbox_attempt SET provider_job_id = NULL WHERE id = 'a1'");
 
       tx(db, () => applyProviderObservation(db, "m1", { status: "DELIVERED" }, TS));
@@ -158,7 +145,7 @@ describe("observation seam", () => {
     it("uses an identity carried across our own provider call", () => {
       // Our lookups know which attempt they asked about, so a terminal answer
       // without a job id still settles the right one.
-      const { db } = fixture({ authority: "ATTEMPT", status: "SENDING" });
+      const { db } = fixture({ status: "SENDING" });
       db.exec("UPDATE outbox_attempt SET outcome = 'KNOWN_FAILED' WHERE id = 'a1'");
       db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key)
         VALUES ('a2', 'm1', 2, 'resend-key')`).run();
@@ -172,7 +159,7 @@ describe("observation seam", () => {
     it("settles the attempt the evidence belongs to, not merely the current one", () => {
       // After a resend, a late event for attempt #1's job must not settle
       // attempt #2. "The current attempt" would be the wrong resolution.
-      const { db } = fixture({ authority: "ATTEMPT", status: "SENDING" });
+      const { db } = fixture({ status: "SENDING" });
       db.exec("UPDATE outbox_attempt SET outcome = 'KNOWN_FAILED' WHERE id = 'a1'");
       db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key, provider_job_id)
         VALUES ('a2', 'm1', 2, 'resend-key', 'job-2')`).run();
@@ -199,8 +186,6 @@ describe("no legacy attempt-fact writer remains in the domain", () => {
     const source = readFileSync("commerce/src/domain.ts", "utf8");
     const columns = [
       "provider_idempotence_key", "job_id", "lease_owner", "lease_expires_at", "send_started_at",
-      "provider_request_started_at", "attempts", "last_error", "provider_error_code",
-      "provider_error_message", "next_attempt_at",
     ];
     const offenders: string[] = [];
     for (const match of source.matchAll(/UPDATE email_outbox\b/g)) {

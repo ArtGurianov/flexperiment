@@ -29,30 +29,29 @@ const eventCount = (db: Database.Database) =>
   (db.prepare("SELECT COUNT(*) AS n FROM agent_referrals_feature_state_events").get() as { n: number }).n;
 
 describe("agent referrals feature state", () => {
-  it("treats the retained pre-P9 DORMANT row as operationally ACTIVE", () => {
+  it("is born ACTIVE and unowned, with no genesis transition to perform", () => {
     const db = fresh();
-    expect(db.prepare("SELECT state FROM agent_referrals_feature_state WHERE singleton = 1").get()).toEqual({ state: "DORMANT" });
     expect(agentReferralsFeatureState(db)).toEqual({ state: "ACTIVE", owner_id: null, revision: 1 });
     expect(agentReferralsFeatureStateAt(db, "2026-01-01T00:00:00.000Z")).toBe("ACTIVE");
+    expect(eventCount(db)).toBe(0);
   });
 
-  it("does not expose a DORMANT-to-ACTIVE activation command", () => {
+  it("does not expose an activation command, because there is no state to activate from", () => {
     expect("activateAgentReferrals" in featureStateModule).toBe(false);
     expect("activateAgentReferralsInTransaction" in featureStateModule).toBe(false);
   });
 
-  it("atomically materializes the physical state before the first operational suspension", () => {
+  it("records the first suspension as one transition, not two", () => {
+    // It used to take two: a physical DORMANT -> ACTIVE materialisation, then
+    // the suspension itself. The seeded row removes the first half entirely.
     const db = fresh();
     const suspended = suspendAgentReferrals(db, { expected_revision: 1, owner_id: "op-1", reason: "incident" });
 
-    expect(suspended).toEqual({ state: "SUSPENDED", owner_id: "op-1", revision: 3 });
+    expect(suspended).toEqual({ state: "SUSPENDED", owner_id: "op-1", revision: 2 });
     expect(db.prepare("SELECT state, revision FROM agent_referrals_feature_state WHERE singleton = 1").get())
-      .toEqual({ state: "SUSPENDED", revision: 3 });
+      .toEqual({ state: "SUSPENDED", revision: 2 });
     expect(db.prepare("SELECT from_state, to_state, reason, revision FROM agent_referrals_feature_state_events ORDER BY revision").all())
-      .toEqual([
-        { from_state: "DORMANT", to_state: "ACTIVE", reason: "P5_PREBASELINE_ACTIVE", revision: 2 },
-        { from_state: "ACTIVE", to_state: "SUSPENDED", reason: "incident", revision: 3 },
-      ]);
+      .toEqual([{ from_state: "ACTIVE", to_state: "SUSPENDED", reason: "incident", revision: 2 }]);
   });
 
   it("preserves the operational ACTIVE to SUSPENDED to ACTIVE lifecycle and historical suspension", () => {
@@ -61,11 +60,11 @@ describe("agent referrals feature state", () => {
     const suspendedAt = (lastAgentReferralsFeatureStateEvent(db) as { created_at: string }).created_at;
     expect(agentReferralsFeatureStateAt(db, suspendedAt)).toBe("SUSPENDED");
 
-    expect(reactivateAgentReferrals(db, { expected_revision: 3, owner_id: "op-1", reason: "resolved" }))
-      .toEqual({ state: "ACTIVE", owner_id: "op-1", revision: 4 });
+    expect(reactivateAgentReferrals(db, { expected_revision: 2, owner_id: "op-1", reason: "resolved" }))
+      .toEqual({ state: "ACTIVE", owner_id: "op-1", revision: 3 });
   });
 
-  it("rolls back physical materialization when its audit insert fails", () => {
+  it("rolls back the state change when its audit insert fails", () => {
     const db = fresh();
     db.exec(`CREATE TRIGGER poison_feature_state_event_insert
       BEFORE INSERT ON agent_referrals_feature_state_events
@@ -74,7 +73,7 @@ describe("agent referrals feature state", () => {
     expect(() => suspendAgentReferrals(db, { expected_revision: 1, owner_id: "op-1", reason: "incident" }))
       .toThrow(/INJECTED_AUDIT_FAILURE/);
     expect(db.prepare("SELECT state, revision FROM agent_referrals_feature_state WHERE singleton = 1").get())
-      .toEqual({ state: "DORMANT", revision: 1 });
+      .toEqual({ state: "ACTIVE", revision: 1 });
     expect(eventCount(db)).toBe(0);
   });
 
@@ -84,9 +83,9 @@ describe("agent referrals feature state", () => {
     const before = agentReferralsFeatureState(db);
     const eventsBefore = eventCount(db);
 
-    expect(() => reactivateAgentReferrals(db, { expected_revision: 2, owner_id: "op-1", reason: "stale" }))
+    expect(() => reactivateAgentReferrals(db, { expected_revision: 1, owner_id: "op-1", reason: "stale" }))
       .toThrow(AgentReferralsFeatureError);
-    expect(() => reactivateAgentReferrals(db, { expected_revision: 3, owner_id: "op-2", reason: "hostile" }))
+    expect(() => reactivateAgentReferrals(db, { expected_revision: 2, owner_id: "op-2", reason: "hostile" }))
       .toThrow(/AGENT_REFERRALS_FEATURE_OWNER_CONFLICT/);
     expect(agentReferralsFeatureState(db)).toEqual(before);
     expect(eventCount(db)).toBe(eventsBefore);

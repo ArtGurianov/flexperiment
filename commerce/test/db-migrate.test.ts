@@ -3,12 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
-import { FK_OFF_MIGRATIONS, MigrationFatalError, applyFkOffMigration, applyOrdinaryMigration, isFkOffMigration, migrate } from "../src/db";
+import { applyMigration, migrate, readSchemaIdentity } from "../src/db";
+import { SchemaLineageError, classifySchemaLineage } from "../src/release/schema-identity";
 
 /**
- * What migrate() has to hold: BEGIN IMMEDIATE, the ledger re-checked inside
- * the acquired transaction, and a local FK-off registry that ships empty. 0042 (PR2) is the only migration ever meant to use the FK-off path,
- * so this suite exercises the mechanics with synthetic, test-only SQL.
+ * What `migrate()` has to hold: the lineage decided BEFORE anything is applied,
+ * `BEGIN IMMEDIATE` acquired before this connection decides anything, and the
+ * ledger re-checked from inside that lock.
+ *
+ * The FK-off registry is gone with the ledger it served. It existed so that
+ * five reviewed migrations could rebuild a table in place; a baseline that
+ * states the finished schema has nothing to rebuild.
  */
 
 const open: Database.Database[] = [];
@@ -25,25 +30,98 @@ const dbAt = (file: string) => {
   return db;
 };
 
+/** What every real baseline establishes, and what `migrate()` asserts afterwards. */
+const IDENTITY_SQL = `
+CREATE TABLE schema_identity (
+  singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+  lineage TEXT NOT NULL CHECK (lineage = 'flexperiment-launch'),
+  baseline_version TEXT NOT NULL
+);
+INSERT INTO schema_identity(singleton, lineage, baseline_version) VALUES (1, 'flexperiment-launch', 'test');
+`;
+
+/**
+ * Fixtures are synthetic but not unfaithful: the first migration establishes
+ * the lineage, because that is what makes a bootstrapped database one this
+ * runtime will go on to trust.
+ */
 const withMigrationsDir = (files: Record<string, string>): string => {
   const dir = mkdtempSync(join(tmpdir(), "db-migrate-fixtures-"));
-  for (const [name, sql] of Object.entries(files)) writeFileSync(join(dir, name), sql);
+  const [first] = Object.keys(files).sort();
+  for (const [name, sql] of Object.entries(files)) {
+    writeFileSync(join(dir, name), name === first ? IDENTITY_SQL + sql : sql);
+  }
   return dir;
 };
 
-describe("migrate(): ordinary path", () => {
-  it("applies a migration with foreign_keys remaining ON throughout", () => {
-    const file = tempFile();
-    const db = dbAt(file);
-    const dir = withMigrationsDir({ "0001_x.sql": "CREATE TABLE t(id INTEGER PRIMARY KEY);" });
+/** A pre-launch database: a populated ledger and no `schema_identity`. */
+const legacyDatabase = (db: Database.Database) => {
+  db.exec("CREATE TABLE schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)");
+  db.exec("CREATE TABLE orders (id TEXT PRIMARY KEY, reward_authority_kind TEXT NOT NULL DEFAULT 'LEGACY')");
+  const record = db.prepare("INSERT INTO schema_migrations(version) VALUES (?)");
+  record.run("0001_initial.sql");
+  for (let n = 2; n <= 61; n += 1) record.run(`${String(n).padStart(4, "0")}_pre_launch.sql`);
+  return db;
+};
+
+describe("lineage is decided before anything is applied", () => {
+  it("bootstraps an empty database", () => {
+    const db = dbAt(tempFile());
+    expect(classifySchemaLineage(readSchemaIdentity(db))).toBe("EMPTY_BOOTSTRAPPABLE");
+    migrate(db, withMigrationsDir({ "0001_x.sql": "CREATE TABLE t(id INTEGER PRIMARY KEY);" }));
+    expect(classifySchemaLineage(readSchemaIdentity(db))).toBe("SUPPORTED");
+  });
+
+  it("refuses a pre-launch ledger database, and applies nothing to it", () => {
+    // The old ledger is not a step the baseline can take - it is a different
+    // lineage. Incompatibility has to be a property of this runtime, not an
+    // assumption the cutover procedure is trusted to arrange.
+    const db = legacyDatabase(dbAt(tempFile()));
+    const dir = withMigrationsDir({ "0001_launch_baseline.sql": "CREATE TABLE t(id INTEGER PRIMARY KEY);" });
+    expect(() => migrate(db, dir)).toThrow(new SchemaLineageError("LEGACY_PRELAUNCH_DATABASE_NOT_SUPPORTED"));
+    // Refused before application: the ledger is untouched and nothing was built.
+    expect(db.prepare("SELECT COUNT(*) AS n FROM schema_migrations").get()).toEqual({ n: 61 });
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE name IN ('t', 'schema_identity')").all()).toEqual([]);
+  });
+
+  it("refuses a database of unrecognised shape", () => {
+    const db = dbAt(tempFile());
+    db.exec("CREATE TABLE something_else(id INTEGER PRIMARY KEY)");
+    expect(classifySchemaLineage(readSchemaIdentity(db))).toBe("UNKNOWN");
+    expect(() => migrate(db, withMigrationsDir({ "0001_x.sql": "SELECT 1;" })))
+      .toThrow(new SchemaLineageError("UNKNOWN_SCHEMA_LINEAGE"));
+  });
+
+  it("refuses a foreign lineage rather than reading it as supported", () => {
+    const db = dbAt(tempFile());
+    db.exec("CREATE TABLE schema_migrations (version TEXT PRIMARY KEY)");
+    db.exec("CREATE TABLE schema_identity (singleton INTEGER PRIMARY KEY, lineage TEXT NOT NULL)");
+    db.exec("INSERT INTO schema_identity(singleton, lineage) VALUES (1, 'somebody-elses-product')");
+    expect(classifySchemaLineage(readSchemaIdentity(db))).toBe("UNKNOWN");
+  });
+
+  it("applies 0002 onwards to a launch database", () => {
+    const db = dbAt(tempFile());
+    const dir = withMigrationsDir({
+      "0001_launch_baseline.sql": "CREATE TABLE t(id INTEGER PRIMARY KEY);",
+      "0002_later.sql": "CREATE TABLE u(id INTEGER PRIMARY KEY);",
+    });
     migrate(db, dir);
+    expect(db.prepare("SELECT version FROM schema_migrations ORDER BY version").all())
+      .toEqual([{ version: "0001_launch_baseline.sql" }, { version: "0002_later.sql" }]);
+  });
+});
+
+describe("migrate(): the lock discipline", () => {
+  it("applies a migration with foreign_keys remaining ON throughout", () => {
+    const db = dbAt(tempFile());
+    migrate(db, withMigrationsDir({ "0001_x.sql": "CREATE TABLE t(id INTEGER PRIMARY KEY);" }));
     expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
     expect(db.prepare("SELECT version FROM schema_migrations").all()).toEqual([{ version: "0001_x.sql" }]);
   });
 
   it("is idempotent: re-running migrate() does not re-apply or error", () => {
-    const file = tempFile();
-    const db = dbAt(file);
+    const db = dbAt(tempFile());
     const dir = withMigrationsDir({ "0001_x.sql": "CREATE TABLE t(id INTEGER PRIMARY KEY);" });
     migrate(db, dir);
     expect(() => migrate(db, dir)).not.toThrow();
@@ -55,36 +133,43 @@ describe("migrate(): ordinary path", () => {
     const dir = withMigrationsDir({ "0001_x.sql": "CREATE TABLE t(id INTEGER PRIMARY KEY); INSERT INTO t(id) VALUES (1);" });
     const a = dbAt(file);
     const b = dbAt(file);
-    // Neither connection has applied anything yet - both observe the ledger
-    // as empty before either acquires the write lock. The correctness
-    // property under test is that the second runner's re-check happens AFTER
-    // it acquires BEGIN IMMEDIATE, not from this pre-check.
+    // Both observe the ledger as empty before either acquires the write lock.
+    // The property under test is that the second runner's re-check happens
+    // AFTER it acquires BEGIN IMMEDIATE, not from this pre-check.
     migrate(a, dir);
     expect(() => migrate(b, dir)).not.toThrow();
-    const applied = a.prepare("SELECT version FROM schema_migrations").all();
-    expect(applied).toEqual([{ version: "0001_x.sql" }]);
+    expect(a.prepare("SELECT version FROM schema_migrations").all()).toEqual([{ version: "0001_x.sql" }]);
     expect(a.prepare("SELECT COUNT(*) AS n FROM t").get()).toEqual({ n: 1 });
   });
 
   it("a genuinely racing second runner re-checks inside its own IMMEDIATE transaction and no-ops", () => {
-    // Simulates "ledger observed before lock but inserted by competitor":
-    // runner B's ledger view is captured, then A commits, then B proceeds -
-    // B must still no-op rather than re-execute or crash on UNIQUE version.
+    // "Ledger observed before the lock, inserted by a competitor": B's view is
+    // captured, A commits, then B proceeds - and B must still no-op rather
+    // than re-execute or crash on a UNIQUE version.
     const file = tempFile();
     const dir = withMigrationsDir({ "0001_x.sql": "CREATE TABLE t(id INTEGER PRIMARY KEY);" });
     const a = dbAt(file);
     const b = dbAt(file);
     b.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)");
-    const bSeesUnapplied = !b.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get("0001_x.sql");
-    expect(bSeesUnapplied).toBe(true);
-    migrate(a, dir); // A applies and commits first.
-    expect(() => applyOrdinaryMigration(b, "0001_x.sql", readFileSync(join(dir, "0001_x.sql"), "utf8"))).not.toThrow();
+    expect(b.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get("0001_x.sql")).toBeUndefined();
+    migrate(a, dir);
+    expect(() => applyMigration(b, "0001_x.sql", readFileSync(join(dir, "0001_x.sql"), "utf8"))).not.toThrow();
     expect(a.prepare("SELECT COUNT(*) AS n FROM schema_migrations").get()).toEqual({ n: 1 });
   });
 
+  it("creates the ledger inside the same transaction as the first migration", () => {
+    // Otherwise a bootstrap that crashed between the two would leave a database
+    // whose only table is `schema_migrations` - which classifies as LEGACY, and
+    // would refuse to start forever.
+    const db = dbAt(tempFile());
+    const dir = withMigrationsDir({ "0001_x.sql": "THIS IS NOT VALID SQL;" });
+    expect(() => migrate(db, dir)).toThrow();
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all()).toEqual([]);
+    expect(classifySchemaLineage(readSchemaIdentity(db))).toBe("EMPTY_BOOTSTRAPPABLE");
+  });
+
   it("stops all further migrations when one fails", () => {
-    const file = tempFile();
-    const db = dbAt(file);
+    const db = dbAt(tempFile());
     const dir = withMigrationsDir({
       "0001_x.sql": "CREATE TABLE t(id INTEGER PRIMARY KEY);",
       "0002_bad.sql": "THIS IS NOT VALID SQL;",
@@ -93,176 +178,5 @@ describe("migrate(): ordinary path", () => {
     expect(() => migrate(db, dir)).toThrow();
     expect(db.prepare("SELECT version FROM schema_migrations").all()).toEqual([{ version: "0001_x.sql" }]);
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='u'").get()).toBeUndefined();
-  });
-});
-
-describe("FK-off registry: five reviewed production entries after Phase 1", () => {
-  // PR1 shipped this empty. PR2 adds the agents-rebuild migration and this
-  // entry in the same reviewed commit - see commerce/src/db.ts and
-  // commerce/migrations/0042_agent_referrals_agents_rebuild.sql. The PR-D
-  // foundation adds the second entry the same way - see
-  // commerce/migrations/0050_agent_referrals_legal_profile_provenance_
-  // rebuild.sql. PR-E adds the third - see commerce/migrations/0052_
-  // agent_referrals_unified_legal_requisites.sql. Phase 1 adds the fourth,
-  // 0058_agents_legal_identity_cleanup.sql. Reissuance and evidence
-  // authority adds the fifth, 0059_agents_contract_reference_removal.sql.
-  // This asserts the reviewed scope (five production members), not a
-  // ceiling on a later PR ever adding another.
-  it("has exactly five entries", () => {
-    expect(FK_OFF_MIGRATIONS).toHaveLength(5);
-  });
-
-  it("is exactly the reviewed 0042, 0050, 0052, 0058, and 0059 tuples", () => {
-    expect(FK_OFF_MIGRATIONS).toEqual([
-      { filename: "0042_agent_referrals_agents_rebuild.sql", sha256: "d9b5ecbf496993669201b45440ea5213ba0e52af778e2094d569f772adfee6ab" },
-      { filename: "0050_agent_referrals_legal_profile_provenance_rebuild.sql", sha256: "e1cbd9ce177546ea621fb4a9da861f63e69e999e8bf6a5c159d1c967761349f0" },
-      { filename: "0052_agent_referrals_unified_legal_requisites.sql", sha256: "bcc44feaa37acb5930a8b9d7fe4a1bd4e711306e2640b9cb04ff78844cec9104" },
-      { filename: "0058_agents_legal_identity_cleanup.sql", sha256: "c8f711ace8ebf169fb492aa4b3cd5c745f98a8ed9be03ff1cf76d1ef6a184637" },
-      { filename: "0059_agents_contract_reference_removal.sql", sha256: "f0c338922b8a09ea218be5fb26c0934a8689a8a7f424023396420c8d3c40777e" },
-    ]);
-  });
-
-  it("treats the exact committed 0042 (filename, sha256) pair as privileged", () => {
-    expect(isFkOffMigration("0042_agent_referrals_agents_rebuild.sql", "d9b5ecbf496993669201b45440ea5213ba0e52af778e2094d569f772adfee6ab")).toBe(true);
-  });
-
-  it("treats the exact committed 0050 (filename, sha256) pair as privileged", () => {
-    expect(isFkOffMigration("0050_agent_referrals_legal_profile_provenance_rebuild.sql", "e1cbd9ce177546ea621fb4a9da861f63e69e999e8bf6a5c159d1c967761349f0")).toBe(true);
-  });
-
-  it("refuses the 0042 filename paired with any other hash", () => {
-    expect(isFkOffMigration("0042_agent_referrals_agents_rebuild.sql", "a".repeat(64))).toBe(false);
-  });
-
-  it("refuses the committed hash paired with any other filename", () => {
-    expect(isFkOffMigration("0042_renamed_copy.sql", "d9b5ecbf496993669201b45440ea5213ba0e52af778e2094d569f772adfee6ab")).toBe(false);
-  });
-
-  it("refuses an unrelated (filename, sha256) pair", () => {
-    expect(isFkOffMigration("anything.sql", "b".repeat(64))).toBe(false);
-  });
-
-  it("a migration requiring FK-off semantics is refused when unregistered, not silently bypassed", () => {
-    // A synthetic table rebuild: drop-and-recreate while an existing FK
-    // reference exists. This is the exact shape 0042 needs and it MUST fail
-    // under the ordinary (FK-enforced) path, proving the registry gate is
-    // load-bearing rather than decorative.
-    const file = tempFile();
-    const db = dbAt(file);
-    db.exec("CREATE TABLE parent(id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('A')))");
-    db.exec("CREATE TABLE child(id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL REFERENCES parent(id))");
-    db.prepare("INSERT INTO parent(id, kind) VALUES (1, 'A')").run();
-    db.prepare("INSERT INTO child(id, parent_id) VALUES (1, 1)").run();
-    const rebuild = `
-      CREATE TABLE parent_new(id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('A', 'B')));
-      INSERT INTO parent_new SELECT id, kind FROM parent;
-      DROP TABLE parent;
-      ALTER TABLE parent_new RENAME TO parent;
-    `;
-    expect(isFkOffMigration("0099_synthetic_rebuild.sql", "irrelevant")).toBe(false);
-    expect(() => applyOrdinaryMigration(db, "0099_synthetic_rebuild.sql", rebuild)).toThrow();
-    // Rolled back: the original parent table (and its narrower CHECK) survives.
-    expect(db.prepare("SELECT kind FROM parent WHERE id = 1").get()).toEqual({ kind: "A" });
-  });
-});
-
-describe("applyFkOffMigration(): mechanics proven with synthetic input", () => {
-  const rebuildSql = `
-    CREATE TABLE parent_new(id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('A', 'B')));
-    INSERT INTO parent_new SELECT id, kind FROM parent;
-    DROP TABLE parent;
-    ALTER TABLE parent_new RENAME TO parent;
-  `;
-
-  const seeded = () => {
-    const file = tempFile();
-    const db = dbAt(file);
-    db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)");
-    db.exec("CREATE TABLE parent(id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('A')))");
-    db.exec("CREATE TABLE child(id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL REFERENCES parent(id))");
-    db.prepare("INSERT INTO parent(id, kind) VALUES (1, 'A')").run();
-    db.prepare("INSERT INTO child(id, parent_id) VALUES (1, 1)").run();
-    return db;
-  };
-
-  it("succeeds: rebuild applies, ledger recorded, FK restored to ON, no violations", () => {
-    const db = seeded();
-    applyFkOffMigration(db, "0099_synthetic_rebuild.sql", rebuildSql);
-    expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
-    expect(db.prepare("SELECT version FROM schema_migrations").all()).toEqual([{ version: "0099_synthetic_rebuild.sql" }]);
-    expect(db.prepare("PRAGMA table_info(parent)").all().map((c: unknown) => (c as { name: string }).name)).toEqual(["id", "kind"]);
-    expect(db.pragma("foreign_key_check")).toEqual([]);
-    // The widened CHECK actually took effect - proof the rebuild ran.
-    expect(() => db.prepare("INSERT INTO parent(id, kind) VALUES (2, 'B')").run()).not.toThrow();
-  });
-
-  it("rolls back and restores FK on a pre-commit foreign_key_check violation, without applying", () => {
-    const db = seeded();
-    const rebuildDroppingChildRow = `
-      CREATE TABLE parent_new(id INTEGER PRIMARY KEY, kind TEXT NOT NULL CHECK (kind IN ('A', 'B')));
-      -- Deliberately drop row id=1 from the rebuilt parent while child still
-      -- references it - this is what the post-exec foreign_key_check must catch.
-      DROP TABLE parent;
-      ALTER TABLE parent_new RENAME TO parent;
-    `;
-    expect(() => applyFkOffMigration(db, "0099_bad_rebuild.sql", rebuildDroppingChildRow))
-      .toThrow(MigrationFatalError);
-    expect(db.pragma("foreign_keys", { simple: true })).toBe(1);
-    expect(db.prepare("SELECT * FROM schema_migrations").all()).toEqual([]);
-    // Rolled back: original parent table survives with its original CHECK.
-    expect(db.prepare("SELECT kind FROM parent WHERE id = 1").get()).toEqual({ kind: "A" });
-  });
-
-  it("is idempotent: a second run against an already-applied version no-ops", () => {
-    const db = seeded();
-    applyFkOffMigration(db, "0099_synthetic_rebuild.sql", rebuildSql);
-    expect(() => applyFkOffMigration(db, "0099_synthetic_rebuild.sql", rebuildSql)).not.toThrow();
-    expect(db.prepare("SELECT COUNT(*) AS n FROM schema_migrations").get()).toEqual({ n: 1 });
-  });
-
-  it("asserts not already in a transaction", () => {
-    const db = seeded();
-    const tx = db.transaction(() => {
-      expect(() => applyFkOffMigration(db, "0099_synthetic_rebuild.sql", rebuildSql)).toThrow(MigrationFatalError);
-    });
-    tx();
-  });
-
-  it("asserts foreign_keys is ON before starting", () => {
-    const db = seeded();
-    db.pragma("foreign_keys = OFF");
-    expect(() => applyFkOffMigration(db, "0099_synthetic_rebuild.sql", rebuildSql)).toThrow(MigrationFatalError);
-    db.pragma("foreign_keys = ON");
-  });
-});
-
-describe("migration runner source shape (structural)", () => {
-  // Complements the executing tests above for the one property that cannot
-  // be naturally triggered by a single synchronous connection: a violation
-  // that a post-commit recheck catches after a clean pre-commit check
-  // (foreign_key_check does not depend on the foreign_keys pragma or
-  // transaction boundary for this connection's own writes - only a
-  // concurrent writer landing between commit and recheck could genuinely
-  // diverge the two results). The ordering itself is still fully
-  // machine-verified here, and removing either check breaks this test.
-  const source = readFileSync(join(process.cwd(), "commerce", "src", "db.ts"), "utf8");
-
-  it("disables foreign_keys strictly before BEGIN IMMEDIATE, never after", () => {
-    const disableIdx = source.indexOf('sqlite.pragma("foreign_keys = OFF")');
-    const immediateIdx = source.indexOf("run.immediate()", disableIdx);
-    expect(disableIdx).toBeGreaterThan(-1);
-    expect(immediateIdx).toBeGreaterThan(disableIdx);
-  });
-
-  it("checks foreign_key_check both before and after commit, with distinct fatal codes", () => {
-    expect(source).toContain("MIGRATION_FK_OFF_PRE_COMMIT_FOREIGN_KEY_CHECK_FAILED");
-    expect(source).toContain("MIGRATION_FK_OFF_POST_COMMIT_FOREIGN_KEY_CHECK_FAILED");
-    expect((source.match(/foreignKeyViolations\(sqlite\)/g) ?? []).length).toBeGreaterThanOrEqual(2);
-  });
-
-  it("restores foreign_keys = ON unconditionally via finally", () => {
-    const financeIdx = source.indexOf("} finally {");
-    expect(financeIdx).toBeGreaterThan(-1);
-    expect(source.slice(financeIdx, financeIdx + 80)).toContain('sqlite.pragma("foreign_keys = ON")');
   });
 });

@@ -732,9 +732,9 @@ describe("ZERO_REWARD_STATISTICS vs CONTINUING_STATISTICS (plan §B-3)", () => {
     const registry = db.prepare("SELECT id FROM engagement_reward_registry_snapshot WHERE engagement_id = ?").get(engagementId) as { id: string };
     const effective = db.prepare("SELECT id FROM engagement_effective_reward_snapshots WHERE engagement_id = ? ORDER BY sequence DESC LIMIT 1").get(engagementId) as { id: string };
     db.exec("DROP TRIGGER reward_settlements_authority_tuple_consistency_guard");
-    db.prepare(`INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id, settlement_flow, engagement_id, engagement_revision_id, base_registry_snapshot_id, reward_registry_hash, effective_reward_snapshot_id, partner_identity_id, payout_profile_revision_id, tax_mode_snapshot, legal_profile_revision_id_snapshot)
-      SELECT 'fabricated-settlement', a.id, e.occurrence_id, 1, 'PAYOUT_PROFILE', 'PREPARED', 'INDIVIDUAL_ENTREPRENEUR', datetime('now'), 'admin', 'AGENT_REFERRALS', e.id, er.id, ?, 'h', ?, pi.id, pp.id, 'OTHER', lp.id
-      FROM engagements e JOIN partner_identities pi ON pi.id = e.partner_identity_id JOIN agents a ON a.id = pi.agent_id
+    db.prepare(`INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, prepared_at, created_by_admin_id, engagement_id, engagement_revision_id, base_registry_snapshot_id, reward_registry_hash, effective_reward_snapshot_id, partner_identity_id, payout_profile_revision_id, tax_mode_snapshot, legal_profile_revision_id_snapshot)
+      SELECT 'fabricated-settlement', a.id, e.occurrence_id, 1, 'PAYOUT_PROFILE', 'PREPARED', 'INDIVIDUAL_ENTREPRENEUR', datetime('now'), 'admin', e.id, er.id, ?, 'h', ?, pi.id, pp.id, 'OTHER', lp.id
+      FROM engagements e JOIN partner_identities pi ON pi.id = e.partner_identity_id JOIN partners a ON a.id = pi.agent_id
       JOIN engagement_revisions er ON er.engagement_id = e.id
       JOIN payout_profile_revisions pp ON pp.partner_identity_id = pi.id JOIN agent_referrals_legal_profile_revisions lp ON lp.id = pi.legal_profile_revision_id
       WHERE e.id = ? LIMIT 1`).run(registry.id, effective.id, engagementId);
@@ -826,7 +826,7 @@ describe("existing noncompliant distributions still owe their reporting tail", (
 
   it("global SUSPENDED does not block reporting for an existing distribution (reporting tail continues)", () => {
     const { db, distributionId } = setupWithDistribution();
-    suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "pause" });
+    suspendAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "pause" });
     expect(() => fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 1 } }, evidence_ref: "ev" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 1 } }, evidence_ref: "ev" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 1 } }, evidence_ref: "ev" }.reporting_period_key)?.id ?? null)).not.toThrow();
   });
 });

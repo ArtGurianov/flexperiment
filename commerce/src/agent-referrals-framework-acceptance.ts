@@ -111,9 +111,9 @@ export const acceptFrameworkAndDelegation = (
       framework_acceptance_id: acceptanceId, ord_reporting_delegation_id: delegationId, issuance_id: required.id,
     });
 
-    db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key)
-      VALUES (?, 'AGENT_REFERRALS_FRAMEWORK_CONFIRMATION', ?, ?, 'agent-referrals-framework-confirmation', ?, ?)`)
-      .run(id(), identity.email, identity.email_hash, JSON.stringify({ framework_acceptance_id: acceptanceId }), `agent-referrals-framework-confirmation:${acceptanceId}`);
+    db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot)
+      VALUES (?, 'AGENT_REFERRALS_FRAMEWORK_CONFIRMATION', ?, ?, 'agent-referrals-framework-confirmation', ?)`)
+      .run(id(), identity.email, identity.email_hash, JSON.stringify({ framework_acceptance_id: acceptanceId }));
 
     // PARTNER_ACTIVE is never moved backwards, and the onboarding state
     // machine has no self-loop or backward edge for FRAMEWORK_ACCEPTED/

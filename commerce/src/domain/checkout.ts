@@ -1,6 +1,6 @@
 import type Database from "better-sqlite3";
 import { canonicalV2, emailHash, id, now, publicId, publicOrderNumber, sha256 } from "../crypto";
-import { AgentReferralsAttributionError, ATTRIBUTION_RULE_VERSION, physicalRewardAuthorityKind, resolveOrderAttribution } from "../agent-referrals-attribution";
+import { AgentReferralsAttributionError, ATTRIBUTION_RULE_VERSION, resolveOrderAttribution } from "../agent-referrals-attribution";
 import { PartnerPromoPricingError, resolveCheckoutPromoTerms } from "../agent-referrals-partner-promo-pricing";
 import { occurrenceInventory } from "../occurrence-inventory";
 import { providerErrorEvidence, type PaymentProvider } from "../provider";
@@ -21,7 +21,7 @@ interface CheckoutHost {
 
 const isPromoEligible = (promo: Row | undefined) => Boolean(promo && promo.status === "ACTIVE" && (promo.agent_id === null || promo.agent_enabled === 1));
 const activeAgentBySlug = (db: Database.Database, slug: string | undefined) => slug
-  ? one(db, "SELECT id, slug FROM agents WHERE slug = ? AND enabled = 1", slug)
+  ? one(db, "SELECT id, slug FROM partners WHERE slug = ? AND enabled = 1", slug)
   : undefined;
 const promoPrice = (price: number, type: unknown, value: unknown) => {
   try { return pricePromo(price, type, value); }
@@ -86,7 +86,7 @@ export const checkoutContext = (host: CheckoutHost, input: { occurrenceId: strin
     let promo: Row | undefined;
     if (input.promoCode) {
       promo = one(host.db, `SELECT p.*, a.enabled AS agent_enabled FROM promo_codes p
-        LEFT JOIN agents a ON a.id = p.agent_id WHERE p.normalized_code = ?`, input.promoCode.trim().toUpperCase());
+        LEFT JOIN partners a ON a.id = p.agent_id WHERE p.normalized_code = ?`, input.promoCode.trim().toUpperCase());
     }
     host.assertNewOrdersOpen();
     if (!occurrence) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
@@ -153,7 +153,7 @@ export const checkout = (host: CheckoutHost, input: CheckoutInput, idempotencyKe
     let promo: Row | undefined;
     let promoTerms: { discount_type: string; discount_value: number } | null = null;
     if (quote.promo_id) {
-      promo = one(host.db, `SELECT p.*, a.enabled AS agent_enabled FROM promo_codes p LEFT JOIN agents a ON a.id = p.agent_id WHERE p.id = ?`, quote.promo_id);
+      promo = one(host.db, `SELECT p.*, a.enabled AS agent_enabled FROM promo_codes p LEFT JOIN partners a ON a.id = p.agent_id WHERE p.id = ?`, quote.promo_id);
       if (!promo || !isPromoEligible(promo)) throw new DomainError("PROMO_NO_LONGER_ELIGIBLE", 409);
       promoTerms = resolvePromoTerms(host.db, { id: String(promo.id), discount_type: String(promo.discount_type), discount_value: Number(promo.discount_value) }, String(occurrence.id), "PROMO_NO_LONGER_ELIGIBLE");
       if (promoTerms.discount_type !== quote.discount_type_snapshot || Number(promoTerms.discount_value) !== Number(quote.discount_value_snapshot) || (promo.agent_id ?? null) !== (quote.promo_agent_id_snapshot ?? null)) throw new DomainError("QUOTE_STALE", 409);
@@ -171,10 +171,10 @@ export const checkout = (host: CheckoutHost, input: CheckoutInput, idempotencyKe
     const workshopDate = new Intl.DateTimeFormat("ru-RU", { timeZone: String(occurrence.timezone), day: "numeric", month: "long", year: "numeric" }).format(new Date(String(occurrence.starts_at)));
     const fiscalPurpose = "Оплата участия в мастер-классе ФЛЭКСПЕРИМЕНТ";
     const fiscalItemName = `Участие в мастер-классе ФЛЭКСПЕРИМЕНТ — ${String(occurrence.city_title)}, ${workshopDate}`;
-    host.db.prepare(`INSERT INTO orders(id, public_status_id, public_order_number, occurrence_id, customer_name, customer_email, customer_email_hash, amount_kopecks, occurrence_material_revision, venue_disclosure_snapshot, checkout_legal_release_id, legal_snapshot_json, eligibility_confirmed_at, attributed_agent_id, reward_type_snapshot, reward_value_snapshot, promo_code_snapshot, discount_type_snapshot, discount_value_snapshot, promo_id_snapshot, promo_agent_id_snapshot, price_kopecks_snapshot, discount_kopecks_snapshot, fiscal_purpose_snapshot, fiscal_item_name_snapshot, public_offer_version, public_offer_sha256, public_offer_accepted_at, privacy_policy_version, privacy_policy_sha256, privacy_policy_presented_at, pd_consent_version, pd_consent_sha256, pd_consent_accepted_at, checkout_disclosure_version, checkout_disclosure_sha256, customer_adult_confirmed_at, customer_acceptance_ip, customer_acceptance_user_agent, participant_name, participant_age_band, participant_date_of_birth, participant_age_at_occurrence, participant_is_minor, participant_requires_adult_accompaniment, participant_is_customer, minor_legal_representative_confirmed_at, minor_legal_representative_confirmation_text, under_14_accompaniment_confirmed_at, under_14_accompaniment_confirmation_text, reward_authority_kind, explicit_promo_id, resolved_partner_id, resolved_engagement_id, resolved_engagement_revision_id, resolved_promo_authorization_id, attribution_rule_version, resolution_reason)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    host.db.prepare(`INSERT INTO orders(id, public_status_id, public_order_number, occurrence_id, customer_name, customer_email, customer_email_hash, amount_kopecks, occurrence_material_revision, venue_disclosure_snapshot, checkout_legal_release_id, legal_snapshot_json, eligibility_confirmed_at, attributed_agent_id, reward_type_snapshot, reward_value_snapshot, promo_code_snapshot, discount_type_snapshot, discount_value_snapshot, promo_id_snapshot, promo_agent_id_snapshot, price_kopecks_snapshot, discount_kopecks_snapshot, fiscal_purpose_snapshot, fiscal_item_name_snapshot, public_offer_version, public_offer_sha256, public_offer_accepted_at, privacy_policy_version, privacy_policy_sha256, privacy_policy_presented_at, pd_consent_version, pd_consent_sha256, pd_consent_accepted_at, checkout_disclosure_version, checkout_disclosure_sha256, customer_adult_confirmed_at, customer_acceptance_ip, customer_acceptance_user_agent, participant_name, participant_age_band, participant_date_of_birth, participant_age_at_occurrence, participant_is_minor, participant_requires_adult_accompaniment, participant_is_customer, minor_legal_representative_confirmed_at, minor_legal_representative_confirmation_text, under_14_accompaniment_confirmed_at, under_14_accompaniment_confirmation_text, explicit_promo_id, resolved_partner_id, resolved_engagement_id, resolved_engagement_revision_id, resolved_promo_authorization_id, attribution_rule_version, resolution_reason)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(orderId, statusId, orderNumber, occurrence.id, "", checkoutInput.customer_email.trim().toLowerCase(), emailHash(checkoutInput.customer_email), quote.final_amount_kopecks, quote.material_revision, quote.venue_disclosure, quote.legal_release_id, JSON.stringify(manifest), "DEPRECATED_NOT_EVIDENCE", attribution.attributed_agent_id, attribution.reward_type, attribution.reward_value, quote.promo_code_snapshot ?? null, quote.discount_type_snapshot ?? null, quote.discount_value_snapshot ?? null, quote.promo_id ?? null, quote.promo_agent_id_snapshot ?? null, quote.price_kopecks, quote.discount_kopecks, fiscalPurpose, fiscalItemName, manifest.documents.PUBLIC_OFFER.version, manifest.documents.PUBLIC_OFFER.sha256, timestamp, manifest.documents.PRIVACY_POLICY.version, manifest.documents.PRIVACY_POLICY.sha256, timestamp, manifest.documents.PD_CONSENT.version, manifest.documents.PD_CONSENT.sha256, timestamp, manifest.documents.CHECKOUT_DISCLOSURE.version, manifest.documents.CHECKOUT_DISCLOSURE.sha256, timestamp, acceptance.ip ?? null, acceptance.userAgent?.slice(0, 1_000) ?? null, null, participantAgeBand, null, null, Number(participantIsMinor), Number(participantRequiresAdultAccompaniment), null, participantIsMinor ? timestamp : null, participantIsMinor ? "Я являюсь совершеннолетним законным представителем несовершеннолетнего участника, для которого оформляю этот заказ." : null, null, null,
-        physicalRewardAuthorityKind(attribution), attribution.explicit_promo_id, attribution.resolved_partner_id, attribution.resolved_engagement_id, attribution.resolved_engagement_revision_id, attribution.resolved_promo_authorization_id, ATTRIBUTION_RULE_VERSION, attribution.resolution_reason);
+        attribution.explicit_promo_id, attribution.resolved_partner_id, attribution.resolved_engagement_id, attribution.resolved_engagement_revision_id, attribution.resolved_promo_authorization_id, ATTRIBUTION_RULE_VERSION, attribution.resolution_reason);
     host.db.prepare("INSERT INTO bookings(id, order_id, occurrence_id, status) VALUES (?, ?, ?, 'RESERVED')").run(bookingId, orderId, occurrence.id);
     host.db.prepare(`INSERT INTO payments(id, order_id, state, status, provider_idempotency_key, creation_started_at) VALUES (?, ?, 'CREATING', 'PENDING', ?, ?)`)
       .run(paymentId, orderId, publicId(), timestamp);

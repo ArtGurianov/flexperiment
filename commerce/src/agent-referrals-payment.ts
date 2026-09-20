@@ -308,7 +308,7 @@ export const recordNpdReceipt = (
       VALUES (?, ?, ?, ?, ?, ?)`)
       .run(receiptId, paymentAttemptId, attempt.settlement_id, receiptReference, evidenceRef, admin.admin_id);
     db.prepare(`UPDATE reward_settlements SET status = 'SETTLED', document_confirmed = 1, document_reference = ?, document_confirmed_at = ?, settled_at = ?
-      WHERE id = ? AND status = 'PENDING_DOCUMENT' AND settlement_flow = 'AGENT_REFERRALS'`)
+      WHERE id = ? AND status = 'PENDING_DOCUMENT'`)
       .run(receiptReference, now(), now(), attempt.settlement_id);
     return { receipt: npdReceiptForAttempt(db, paymentAttemptId)!, replayed: false };
   });

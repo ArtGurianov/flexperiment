@@ -97,7 +97,7 @@ export const requireUnsettledAttempt = (db: Database.Database, messageId: string
  */
 export const claimForDispatch = (
   db: Database.Database,
-  message: { id: string; provider_idempotence_key: string },
+  message: { id: string },
   leaseOwner: string,
   timestamp: string,
 ): ClaimedAttempt | undefined => {
@@ -226,7 +226,7 @@ export const recordProviderRefusal = (
  */
 export const providerLookupIdentity = (
   db: Database.Database,
-  message: { id: string; job_id: unknown; provider_idempotence_key: unknown },
+  message: { id: string },
 ): { jobId: string | null; idempotencyKey: string } => {
   const attempt = requireUnsettledAttempt(db, message.id);
   return { jobId: attempt.provider_job_id, idempotencyKey: attempt.provider_idempotence_key };
@@ -245,7 +245,7 @@ export const resolveAttemptRef = (db: Database.Database, messageId: string): Att
   ({ authority: "ATTEMPT", attempt_id: requireUnsettledAttempt(db, messageId).attempt_id });
 
 /** The try count the exhaustion decision is made against. */
-export const sendTryCount = (db: Database.Database, message: { id: string; attempts: unknown }): number =>
+export const sendTryCount = (db: Database.Database, message: { id: string }): number =>
   requireUnsettledAttempt(db, message.id).send_try_count;
 
 const AMBIGUOUS = "UNISENDER_TRANSPORT_AMBIGUOUS";

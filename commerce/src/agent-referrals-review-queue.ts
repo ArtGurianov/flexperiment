@@ -115,7 +115,7 @@ const npdReconciliationNeeded = (db: Database.Database, atIso: string): NpdRecon
     JOIN settlement_acts act ON act.settlement_id = rs.id
     JOIN settlement_act_acceptances acc ON acc.act_id = act.id
     LEFT JOIN settlement_act_disputes dis ON dis.act_id = act.id
-    WHERE rs.settlement_flow = 'AGENT_REFERRALS' AND rs.status = 'PREPARED' AND rs.tax_mode_snapshot = 'NPD'
+    WHERE rs.status = 'PREPARED' AND rs.tax_mode_snapshot = 'NPD'
       AND act.presented_at IS NOT NULL AND dis.id IS NULL
     ORDER BY rs.prepared_at ASC, rs.id ASC
   `).all() as NpdReconciliationItem[];

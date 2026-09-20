@@ -157,7 +157,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
   // ---- Partner identity / onboarding --------------------------------------
   app.get("/partners", (c) => c.json({
     partners: sqlite.prepare(`SELECT pi.id, pi.agent_id, a.slug, a.display_name, pi.onboarding_state, pi.destroyed_at, pi.created_at
-      FROM partner_identities pi JOIN agents a ON a.id = pi.agent_id ORDER BY pi.created_at DESC`).all(),
+      FROM partner_identities pi JOIN partners a ON a.id = pi.agent_id ORDER BY pi.created_at DESC`).all(),
   }));
   app.get("/partners/:id", (c) => {
     const identity = getPartnerIdentity(sqlite, c.req.param("id"));
@@ -382,7 +382,7 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
     const creative = currentCreativeRevision(sqlite, engagementId);
     const effective = currentEffectiveRewardSnapshot(sqlite, engagementId);
     const settlement = effective
-      ? sqlite.prepare(`SELECT id, status, amount_kopecks, tax_mode_snapshot FROM reward_settlements WHERE effective_reward_snapshot_id = ? AND settlement_flow = 'AGENT_REFERRALS'`).get(effective.id) as { id: string; status: string; amount_kopecks: number; tax_mode_snapshot: "NPD" | "OTHER" } | undefined
+      ? sqlite.prepare(`SELECT id, status, amount_kopecks, tax_mode_snapshot FROM reward_settlements WHERE effective_reward_snapshot_id = ?`).get(effective.id) as { id: string; status: string; amount_kopecks: number; tax_mode_snapshot: "NPD" | "OTHER" } | undefined
       : undefined;
     // Round-3 fix: the operator console's act/payment/ORD-invoice steps need
     // this in the same read as everything else - previously only exposed

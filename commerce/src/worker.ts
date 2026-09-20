@@ -1,10 +1,13 @@
-import { openDatabase } from "./db";
+import { assertSupportedDatabase, openDatabase } from "./db";
 import { CommerceDomain } from "./domain";
 import { emailProviderFromEnvironment } from "./email-provider";
 import { providerFromEnvironment } from "./provider";
 import { runWorkerCycle } from "./worker-cycle";
 
 const sqlite = openDatabase();
+// The worker never migrates - the API owns that - but it must not trust a
+// database whose lineage it has not checked.
+assertSupportedDatabase(sqlite);
 const domain = new CommerceDomain(sqlite, providerFromEnvironment(), emailProviderFromEnvironment());
 let nextDriftSweepAt = 0;
 let sweeping = false;

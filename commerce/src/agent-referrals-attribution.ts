@@ -41,7 +41,6 @@ export const ATTRIBUTION_RULE_VERSION = 1;
  * EngagementScopedOrderAttribution below.
  */
 export type DirectOrderAttribution = {
-  reward_authority_kind: "DIRECT";
   attributed_agent_id: null;
   explicit_promo_id: string | null;
   resolved_partner_id: null;
@@ -54,7 +53,6 @@ export type DirectOrderAttribution = {
 };
 
 export type EngagementScopedOrderAttribution = {
-  reward_authority_kind: "ENGAGEMENT_SCOPED";
   attributed_agent_id: string;
   explicit_promo_id: string;
   resolved_partner_id: string;
@@ -67,21 +65,6 @@ export type EngagementScopedOrderAttribution = {
 };
 
 export type OrderAttribution = DirectOrderAttribution | EngagementScopedOrderAttribution;
-
-/**
- * The one place the pre-baseline schema is humoured, so P9 deletes it in a
- * single edit instead of hunting call sites.
- *
- * `orders.reward_authority_kind` and the 0046 tuple trigger still admit only
- * the two values that existed before this cleanup, and the migration ledger is
- * frozen until the launch baseline. The domain reasons in DIRECT /
- * ENGAGEMENT_SCOPED terms; an ordinary order persists the column's existing
- * non-partner constant. The baseline drops the column and the trigger together,
- * and this function goes with them.
- */
-export const physicalRewardAuthorityKind = (attribution: OrderAttribution): "LEGACY" | "ENGAGEMENT_SCOPED" =>
-  attribution.reward_authority_kind === "DIRECT" ? "LEGACY" : "ENGAGEMENT_SCOPED";
-
 
 /**
  * `assertAgentReferralsOperationPermitted` is consulted ONLY on the
@@ -127,7 +110,6 @@ export const resolveOrderAttribution = (
       throw new AgentReferralsAttributionError("AGENT_REFERRALS_ATTRIBUTION_PARTNER_IDENTITY_DESTROYED", 409, promo.id);
     }
     return {
-      reward_authority_kind: "ENGAGEMENT_SCOPED",
       attributed_agent_id: authorization.partner_id,
       explicit_promo_id: promo.id,
       resolved_partner_id: authorization.partner_id,
@@ -145,7 +127,6 @@ export const resolveOrderAttribution = (
   // create a payable. The single way a partner earns is the engagement-scoped
   // branch above, so there is no second money path to reconcile here.
   return {
-    reward_authority_kind: "DIRECT",
     attributed_agent_id: null,
     explicit_promo_id: promo?.id ?? null,
     resolved_partner_id: null,

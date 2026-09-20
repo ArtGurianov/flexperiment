@@ -178,7 +178,7 @@ export function createApp(sqlite: Sqlite, provider: PaymentProvider, emailProvid
     rateLimit(clientIpRateLimitKey("referral", c.req.raw.headers), 60, 60_000);
     const input = await jsonBody(c.req.raw) as { slug?: string };
     const slug = input.slug?.trim() ?? ""; rateLimit(`referral-slug:${slug}`, 20, 60_000);
-    const agent = sqlite.prepare("SELECT slug, display_name FROM agents WHERE slug = ? AND enabled = 1").get(slug);
+    const agent = sqlite.prepare("SELECT slug, display_name FROM partners WHERE slug = ? AND enabled = 1").get(slug);
     return c.json({ eligible: Boolean(agent), agent: agent ?? null });
   });
   publicApi.post("/checkout-context", async (c) => {

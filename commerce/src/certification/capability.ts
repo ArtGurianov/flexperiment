@@ -27,6 +27,8 @@ export type CertificationCapability = {
   readonly expiresAt: string;
   readonly nonce: string;
   readonly consumedAt?: string | null;
+  /** Set when the capability was replaced after expiry rather than spent. One-way, and never both. */
+  readonly retiredAt?: string | null;
 };
 
 /**
@@ -59,6 +61,7 @@ export type TrustedCheckoutFacts = {
 export type CapabilityDefect =
   | "CERTIFICATION_CAPABILITY_NOT_FOUND"
   | "CERTIFICATION_CAPABILITY_CONSUMED"
+  | "CERTIFICATION_CAPABILITY_RETIRED"
   | "CERTIFICATION_CAPABILITY_EXPIRED"
   | "CERTIFICATION_CAPABILITY_RUN_MISMATCH"
   | "CERTIFICATION_CAPABILITY_NONCE_MISMATCH"
@@ -128,6 +131,11 @@ export const authorizationDefect = (
 ): CapabilityDefect | undefined => {
   if (!capability || capability.id !== claim.capabilityId) return "CERTIFICATION_CAPABILITY_NOT_FOUND";
   if (capability.consumedAt) return "CERTIFICATION_CAPABILITY_CONSUMED";
+  // The live slot is a stored fact now, not a computed one. Retiring frees the
+  // index slot immediately, so without this a retired-but-unconsumed
+  // capability would go on satisfying this predicate while its replacement
+  // already existed - two capabilities, both authorised.
+  if (capability.retiredAt) return "CERTIFICATION_CAPABILITY_RETIRED";
   if (!(Date.parse(capability.expiresAt) > now.getTime())) return "CERTIFICATION_CAPABILITY_EXPIRED";
   if (capability.runId !== claim.runId || capability.runId !== expected.runId) return "CERTIFICATION_CAPABILITY_RUN_MISMATCH";
   if (!nonceMatches(capability.nonce, claim.nonce)) return "CERTIFICATION_CAPABILITY_NONCE_MISMATCH";

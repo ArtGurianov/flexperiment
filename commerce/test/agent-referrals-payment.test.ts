@@ -146,7 +146,7 @@ describe("beginPayment: full recheck in one transaction", () => {
 
   it("global SUSPENDED still permits beginning payment for an obligation that arose before suspension", () => {
     const { db, settlement } = readyForPayment("OTHER");
-    suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "emergency" });
+    suspendAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "emergency" });
     expect(() => beginPayment(db, admin, settlement.id)).not.toThrow();
   });
 
@@ -446,7 +446,7 @@ describe("global CLOSED / SUSPENDED semantics", () => {
     const p1 = readyPartner(db, "OTHER");
     const occ = seedOccurrence(db, p1.cityId, 100_000);
     offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, nearTermTerms(1000, "PERCENT", 5000));
-    suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "emergency" });
+    suspendAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "emergency" });
     expect(() => preparePartnerSettlement(db, admin, "no-such-snapshot")).toThrow();
   });
 });
@@ -455,7 +455,7 @@ describe("integration-hardening #6: recordNpdStatusCheck is routed through the c
 
   it("SUSPENDED still permits it - a maturation/recovery/reporting-tail operation for obligations that arose before suspension", () => {
     const { db, partnerIdentityId } = readyForPayment("NPD");
-    suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "emergency" });
+    suspendAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "emergency" });
     expect(() => recordNpdStatusCheck(db, admin, partnerIdentityId, "ACTIVE", "manual-fns-check-2")).not.toThrow();
   });
 

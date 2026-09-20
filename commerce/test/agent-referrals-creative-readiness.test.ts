@@ -41,8 +41,8 @@ const clause = (arr: readonly string[]) => Object.fromEntries(arr.map((k) => [k,
 const readyPartner = (db: Database.Database, citySlug = `novosibirsk-${randomUUID().slice(0, 8)}`) => {
   activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'Agent', ?)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
   submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
@@ -176,7 +176,7 @@ describe("CREATIVE_READY_TO_PUBLISH, local half (§B-5e)", () => {
       const occ = seedOccurrence(db, p1.cityId);
       const canonicalUrl = `https://flexperiment.ru/${p1.citySlug}?promo=${(db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string }).code}`;
       const engagementId = activateAndAuthorizeCreative(db, p1, occ, canonicalUrl);
-      suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "global pause" });
+      suspendAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "global pause" });
       expect(() => assessCreativeReadyToPublish(db, engagementId)).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
     });
 

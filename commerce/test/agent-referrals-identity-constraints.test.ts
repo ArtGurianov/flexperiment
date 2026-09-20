@@ -97,8 +97,8 @@ describe("the legal basis a partner is paid under is frozen", () => {
     // A real company: not NPD, so the mode condition is satisfied, and not an
     // entrepreneur, so only the patent condition can refuse it.
     const agentId = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-      VALUES (?, ?, 'Romashka', ?, 'PERCENT', 1000)`).run(agentId, `company-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+    db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+      VALUES (?, ?, 'Romashka', ?)`).run(agentId, `company-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
     const { partner_identity_id: companyIdentityId } = provisionPartnerOwner(db, admin, agentId, "company@example.test", "test");
     submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: companyIdentityId, partner_session_id: "n/a" }, "LEGAL_ENTITY", "OTHER",
       { opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" }, 0);

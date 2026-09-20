@@ -30,8 +30,8 @@ const fresh = () => {
 
 const seedAgent = (db: Database.Database) => {
   const agentId = `agent-${randomUUID()}`;
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`)
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'Agent', ?)`)
     .run(agentId, agentId, `${agentId}@example.test`);
   return agentId;
 };

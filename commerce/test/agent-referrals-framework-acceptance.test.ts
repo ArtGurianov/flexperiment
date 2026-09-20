@@ -44,8 +44,8 @@ const delegation = (overrides: Record<string, string> = {}) =>
 const readyToAccept = (db: Database.Database, activate = true) => {
   if (activate) activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
   const agentId = randomUUID();
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, `p-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'Agent', ?)`).run(agentId, `p-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
   submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: partnerIdentityId, partner_session_id: "n/a" }, "INDIVIDUAL", "NPD", { full_name: "Ivanov Ivan Ivanovich", inn: "123456789012" }, 0);
   verifyPartnerLegalProfile(db, admin, partnerIdentityId, "verified");
@@ -214,8 +214,8 @@ describe("framework acceptance + effective ORD delegation: one atomic idempotent
       const db = fresh();
       activateAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
       const agentId = randomUUID();
-      db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-        VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, `p-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+      db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+        VALUES (?, ?, 'Agent', ?)`).run(agentId, `p-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
       const { partner_identity_id: partnerIdentityId } = provisionPartnerOwner(db, admin, agentId, "p@example.test", "test");
       const sessionId = randomUUID();
       db.prepare(`INSERT INTO partner_sessions(id, partner_identity_id, token_hash, expires_at) VALUES (?, ?, ?, datetime('now', '+1 hour'))`).run(sessionId, partnerIdentityId, randomUUID());
@@ -242,7 +242,7 @@ describe("framework acceptance + effective ORD delegation: one atomic idempotent
       const { agentId, partnerIdentityId, partner } = readyToAccept(db);
       const { issuanceId, legalProfileRevisionId } = requiredAcceptanceParams(db, partnerIdentityId, agentId);
       const grant = grantFor(db, partner, issuanceId, legalProfileRevisionId);
-      suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "emergency suspend" });
+      suspendAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "emergency suspend" });
 
       expect(() => acceptFrameworkAndDelegation(db, partner, grant, issuanceId, legalProfileRevisionId)).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
 
@@ -261,7 +261,7 @@ describe("framework acceptance + effective ORD delegation: one atomic idempotent
       const grant1 = grantFor(db, partner, issuanceId, legalProfileRevisionId);
       const first = acceptFrameworkAndDelegation(db, partner, grant1, issuanceId, legalProfileRevisionId);
 
-      suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "emergency suspend" });
+      suspendAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "emergency suspend" });
 
       const grant2 = grantFor(db, partner, issuanceId, legalProfileRevisionId);
       const replay = acceptFrameworkAndDelegation(db, partner, grant2, issuanceId, legalProfileRevisionId);

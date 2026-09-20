@@ -122,8 +122,8 @@ describe("applyAgentReferralsLegalProfile: fail-closed on party change at mint t
   };
   const seedAgent = (db: Database.Database) => {
     const agentId = randomUUID();
-    db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-      VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, `agent-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+    db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+      VALUES (?, ?, 'Agent', ?)`).run(agentId, `agent-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
     return agentId;
   };
 

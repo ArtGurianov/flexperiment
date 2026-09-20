@@ -94,7 +94,7 @@ export const closeEngagementZeroReward = (
     // fine and does not block closure. The migration's own relational
     // guard re-proves this identically; this is the clean-error-code
     // early exit.
-    const liveSettlement = db.prepare(`SELECT id, status FROM reward_settlements WHERE engagement_id = ? AND settlement_flow = 'AGENT_REFERRALS' AND status != 'CANCELLED_BEFORE_PAYMENT'`)
+    const liveSettlement = db.prepare(`SELECT id, status FROM reward_settlements WHERE engagement_id = ? AND status != 'CANCELLED_BEFORE_PAYMENT'`)
       .get(engagementId) as { id: string; status: string } | undefined;
     if (liveSettlement) throw new ZeroRewardClosureError("AGENT_REFERRALS_ZERO_CLOSURE_SETTLEMENT_EXISTS", 409, `${liveSettlement.id}:${liveSettlement.status}`);
 

@@ -34,9 +34,9 @@ const seeded = () => {
     return id;
   };
   const outbox = (email: string, id = randomUUID()) => {
-    db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key)
-      VALUES (?, 'OCCURRENCE_AVAILABLE', ?, ?, 'occurrence-available', '{}', ?)`)
-      .run(id, email, `${email}-hash`, `key-${id}`);
+    db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot)
+      VALUES (?, 'OCCURRENCE_AVAILABLE', ?, ?, 'occurrence-available', '{}')`)
+      .run(id, email, `${email}-hash`);
     return id;
   };
   const intent = (requestId: string, outboxId: string, id = randomUUID()) =>

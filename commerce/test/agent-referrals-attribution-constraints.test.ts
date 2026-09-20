@@ -137,7 +137,6 @@ describe("an order's attribution tuple has to hold together", () => {
     const { db, domain } = setup();
     const { orderId } = engagementWithOrder(db, domain);
     const order = rowOf(db, "SELECT * FROM orders WHERE id = ?", orderId);
-    expect(order.reward_authority_kind).toBe("ENGAGEMENT_SCOPED");
     expect(orderVariant(db, order, changes)).toThrow(/ORDER_AUTHORITY_TUPLE_INCONSISTENT/);
   });
 

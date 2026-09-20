@@ -30,8 +30,8 @@ const fresh = () => {
 };
 
 const seedAgent = (db: Database.Database, agentId = randomUUID()) => {
-  db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
-    VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+  db.prepare(`INSERT INTO partners(id, slug, display_name, email)
+    VALUES (?, ?, 'Agent', ?)`).run(agentId, `partner-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
   return agentId;
 };
 
@@ -50,7 +50,7 @@ describe("partner provisioning", () => {
       const { db } = fresh();
       const agentId = seedAgent(db);
       activated(db);
-      suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "test" });
+      suspendAgentReferrals(db, { expected_revision: 1, owner_id: "test-owner", reason: "test" });
       expect(() => provisionPartnerOwner(db, admin, agentId, "partner@example.test", "test")).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
     });
 
