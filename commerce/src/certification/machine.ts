@@ -7,7 +7,7 @@ import {
   type CertificationScope, type OccurrenceView, type OrderEvidence, type RefundIdentifiers, type RunIdentifiers,
 } from "./evidence";
 import {
-  commandPermitted, directionAtLeast, enterCleanup, planRecovery,
+  commandPermitted, directionAtLeast, planRecovery,
   type BusinessCommand, type CertificationPhase, type CertificationRun, type CertificationRunStore, type OccurrenceDraft,
 } from "./run";
 

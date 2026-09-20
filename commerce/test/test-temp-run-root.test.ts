@@ -125,7 +125,6 @@ describe("test temp run root", () => {
     );
     expect(found.status, found.stderr).toBe(0);
     expect(found.stdout.trim().split("\n").filter(Boolean)).toEqual([
-      "./certification.sh",
       "./deploy/test-admin-nginx-config.sh",
       "./deploy/test-frontend-nginx-routing.sh",
     ]);
