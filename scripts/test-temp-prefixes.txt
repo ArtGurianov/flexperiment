@@ -88,7 +88,6 @@ engagement-publication
 engagement-publication-template
 epoch-b-request-builders
 flexperiment-coolify-capture
-flexperiment-deploy-ref
 flexperiment-epoch-a-deploy-credential
 flexperiment-epoch-b-index
 flexperiment-epoch-b-test-objects
@@ -101,7 +100,6 @@ flexperiment-readiness-test
 flexperiment-recovery-state
 flexperiment-release-descriptor
 flexperiment-release-topology
-flexperiment-runtime-candidate-topology
 flexperiment-settlement-lock
 flexperiment-stale-prepared
 framework-reissuance-migration

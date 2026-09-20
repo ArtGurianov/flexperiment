@@ -60,8 +60,8 @@ straight against the database as well as against a defect in the domain.
 | At most one non-terminal refund per payment | `domain/refunds.ts` | `api.test.ts` |
 | A duplicate provider webhook is quarantined, not applied twice | `domain/payments.ts` | `domain.test.ts` |
 | Seats cannot be oversold under concurrency | `domain/occurrences.ts` | `occurrence-inventory-concurrency.test.ts` |
-| Ticket capabilities are unforgeable, not merely encrypted | `crypto.ts` | `crypto.test.ts` |
-| A command's canonical encoding is stable and total | `crypto.ts` | `crypto.test.ts` |
+| A tampered ticket capability fails authenticated decryption | `crypto.ts` | `crypto.test.ts` |
+| A command's canonical encoding is stable over its supported domain, and rejects the rest | `crypto.ts` | `crypto.test.ts` |
 | City-interest data is processed only for its stated purpose | `domain/city-interest.ts` | `api.test.ts` |
 | Migrations take the write lock and re-check inside it | `db.ts` | `db-migrate.test.ts` |
 
@@ -82,7 +82,6 @@ straight against the database as well as against a defect in the domain.
 | A foreign database lineage fails closed | `release/schema-identity.ts` | `release/schema-identity.test.ts` |
 | A cutover envelope is adopted exactly once | `release/cutover-handoff.ts` | `release/cutover-handoff.test.ts` |
 | The suite runs for pull requests, `main` and manual dispatch only | `test.yml` | `release/deploy-workflow-contract.test.ts` |
-| The production deploy pointer moves only by compare-and-set | `read-/set-production-deploy-ref.sh` | `controlled-deploy-ref-scripts.test.ts` |
 
 ## Retired
 
@@ -95,6 +94,8 @@ lost, and each names the evidence that the surface is gone.
 | Candidate publication refs use the flat `runtime/release-semantics-bootstrap-*` shape | The epoch and its refs are gone. `git grep` finds no reference to that namespace anywhere outside the test that asserted it. |
 | Candidate publication refs use the flat `runtime/agent-referrals-<generation>` shape | Generation semantics were deleted with the release controller; the namespace has no remaining reference either. |
 | A candidate pointer is adopted over a stale one, and read as a lease | The test named no file in this repository: it ran `git` against temporary repositories and asserted git's own ancestry and lease behaviour. The controller it was written for is gone, and what survives - the runtime identity readout and `inspect-runtime-candidate-topology.sh` - it never exercised. The lease property itself is now owned by `release/deploy-session.ts` and proved in `release/resume.test.ts`. |
+| The production deploy pointer moves only by compare-and-set | The scripts that moved it are called by nothing. The new deploy path runs `deploy-production.yml` → `scripts/release/deploy-production.ts` → the orchestrator, which never touches a git pointer, and the compare-and-set property it cared about is now owned by the deploy session's own authority and proved in `release/deploy-session.test.ts`. The `production-deploy` ref itself survives as something the runtime identity readout reads, inline, for observability. If the baseline's adapters turn out to need a pointer primitive, P9 writes a canonical one rather than inheriting a legacy pair. |
+| A candidate's topology is inspected before promotion | `inspect-runtime-candidate-topology.sh` is called by no workflow and no test. Convergence is now proved by observing what the three surfaces actually serve, in `release/orchestrator.ts`. |
 | `test.yml` does not run on durable runtime refs | Rephrased rather than dropped: the trigger set is now asserted as parsed YAML in `release/deploy-workflow-contract.test.ts`, which states the same property without depending on the file's whitespace. |
 
 ## Pending classification: schema guards held only by migration tests
