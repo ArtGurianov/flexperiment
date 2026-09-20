@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   admin, closeAndComplete, fresh, nearTermTerms, offerAcceptActivate, purchaseAndPay, readyPartner, seedOccurrence,
@@ -17,12 +18,12 @@ import { finalizeEngagementRewardRegistry } from "../src/agent-referrals-reward-
  * finalization. A guard proved against a row invented by the test proves that
  * the trigger fires, not that it fires on anything real.
  */
-const open: { db: { close(): void } }[] = [];
-afterEach(() => { while (open.length) open.pop()?.db.close(); });
+const open: Database.Database[] = [];
+afterEach(() => { while (open.length) open.pop()?.close(); });
 
 const attributed = () => {
   const { db, domain } = fresh();
-  open.push({ db });
+  open.push(db);
   const partner = readyPartner(db, "OTHER");
   const occurrenceId = seedOccurrence(db, partner.cityId, 100_000);
   const engagementId = offerAcceptActivate(db, partner.partner, partner.partnerIdentityId, occurrenceId, nearTermTerms(1000, "PERCENT", 5000));
@@ -34,11 +35,11 @@ const attributed = () => {
   return { db, domain, occurrenceId, engagementId, orderId: order.id };
 };
 
-const row = (db: { prepare: (sql: string) => { get: (...a: unknown[]) => unknown }; }, sql: string, ...args: unknown[]) =>
-  db.prepare(sql).get(...args) as Record<string, unknown>;
+const row = (db: Database.Database, sql: string, ...args: unknown[]) =>
+  db.prepare(sql).get(...(args as [])) as Record<string, unknown>;
 
 /** Re-inserts a row with one field changed, which is how a relational guard is reached at all. */
-const reinsert = (db: ReturnType<typeof attributed>["db"], table: string, source: Record<string, unknown>, changes: Record<string, unknown>) => {
+const reinsert = (db: Database.Database, table: string, source: Record<string, unknown>, changes: Record<string, unknown>) => {
   const next = { ...source, ...changes, id: randomUUID() };
   const columns = Object.keys(next);
   return () => db.prepare(`INSERT INTO ${table}(${columns.join(", ")}) VALUES (${columns.map((c) => "@" + c).join(", ")})`).run(next);
