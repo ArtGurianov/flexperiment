@@ -14,7 +14,7 @@ import { getPartnerIdentityByAgentId } from "./agent-referrals-onboarding";
 import { agreementStatusForPartner, effectiveFrameworkAcceptance } from "./agent-referrals-framework-issuance";
 import { frameworkAgreementRevisionById } from "./agent-referrals-framework-delegation";
 import { currentUsableNpdCheck } from "./agent-referrals-npd";
-import { AgentReferralsAttributionError, resolveOrderAttribution, ATTRIBUTION_RULE_VERSION } from "./agent-referrals-attribution";
+import { AgentReferralsAttributionError, physicalRewardAuthorityKind, resolveOrderAttribution, ATTRIBUTION_RULE_VERSION } from "./agent-referrals-attribution";
 import { rewardForOrder as computeRewardForOrder } from "./reward-calculation";
 import { findCityBySlug } from "../../lib/city-catalog";
 import { availabilityStatus, purchaseStatus, type AvailabilityStatus, type PurchaseStatus } from "./purchase-status";
@@ -951,13 +951,7 @@ export class CommerceDomain {
         // agent-level default to fall back to, and there must never be one -
         // a reward exists only where an engagement revision authorised it.
         .run(orderId, statusId, orderNumber, occurrence.id, "", checkoutInput.customer_email.trim().toLowerCase(), emailHash(checkoutInput.customer_email), quote.final_amount_kopecks, quote.material_revision, quote.venue_disclosure, quote.legal_release_id, JSON.stringify(manifest), "DEPRECATED_NOT_EVIDENCE", attribution.attributed_agent_id, attribution.reward_type, attribution.reward_value, quote.promo_code_snapshot ?? null, quote.discount_type_snapshot ?? null, quote.discount_value_snapshot ?? null, quote.promo_id ?? null, quote.promo_agent_id_snapshot ?? null, quote.price_kopecks, quote.discount_kopecks, fiscalPurpose, fiscalItemName, manifest.documents.PUBLIC_OFFER.version, manifest.documents.PUBLIC_OFFER.sha256, timestamp, manifest.documents.PRIVACY_POLICY.version, manifest.documents.PRIVACY_POLICY.sha256, timestamp, manifest.documents.PD_CONSENT.version, manifest.documents.PD_CONSENT.sha256, timestamp, manifest.documents.CHECKOUT_DISCLOSURE.version, manifest.documents.CHECKOUT_DISCLOSURE.sha256, timestamp, acceptance.ip ?? null, acceptance.userAgent?.slice(0, 1_000) ?? null, null, participantAgeBand, null, null, Number(participantIsMinor), Number(participantRequiresAdultAccompaniment), null, participantIsMinor ? timestamp : null, participantIsMinor ? "Я являюсь совершеннолетним законным представителем несовершеннолетнего участника, для которого оформляю этот заказ." : null, null, null,
-          // The 0046 column and its tuple trigger still only admit the two
-          // pre-baseline values, and the ledger is frozen until the launch
-          // baseline drops both the column and the trigger. An ordinary order
-          // keeps persisting the column's existing non-partner constant; the
-          // domain reasons in DIRECT / ENGAGEMENT_SCOPED terms either way.
-          attribution.reward_authority_kind === "DIRECT" ? "LEGACY" : attribution.reward_authority_kind,
-          attribution.explicit_promo_id, attribution.resolved_partner_id, attribution.resolved_engagement_id, attribution.resolved_engagement_revision_id, attribution.resolved_promo_authorization_id, ATTRIBUTION_RULE_VERSION, attribution.resolution_reason);
+          physicalRewardAuthorityKind(attribution), attribution.explicit_promo_id, attribution.resolved_partner_id, attribution.resolved_engagement_id, attribution.resolved_engagement_revision_id, attribution.resolved_promo_authorization_id, ATTRIBUTION_RULE_VERSION, attribution.resolution_reason);
       this.db.prepare("INSERT INTO bookings(id, order_id, occurrence_id, status) VALUES (?, ?, ?, 'RESERVED')").run(bookingId, orderId, occurrence.id);
       this.db.prepare(`INSERT INTO payments(id, order_id, state, status, provider_idempotency_key, creation_started_at) VALUES (?, ?, 'CREATING', 'PENDING', ?, ?)`)
         .run(paymentId, orderId, publicId(), timestamp);

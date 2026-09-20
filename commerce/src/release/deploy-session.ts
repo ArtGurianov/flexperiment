@@ -14,13 +14,20 @@ export type DeploySession = {
   readonly targetSha: string;
   readonly state: DeploySessionState;
   readonly rollbackAuthority: RollbackAuthority;
+  /**
+   * Whether any production surface was ever observed away from the pre-deploy
+   * snapshot. It is monotonic and is NOT the same question as rollback
+   * authority: a half-switched topology is recoverable, so it forbids a safe
+   * abort while leaving the old lineage a legal destination.
+   */
+  readonly mutationObserved: boolean;
   readonly createdAt: string;
   readonly leaseExpiresAt: string;
   readonly preDeployTopology?: PreDeployTopology;
   readonly observedTopology?: PreDeployTopology;
 };
 
-export type DeploySessionPatch = Partial<Pick<DeploySession, "ownerId" | "state" | "rollbackAuthority" | "leaseExpiresAt" | "preDeployTopology" | "observedTopology">>;
+export type DeploySessionPatch = Partial<Pick<DeploySession, "ownerId" | "state" | "rollbackAuthority" | "mutationObserved" | "leaseExpiresAt" | "preDeployTopology" | "observedTopology">>;
 
 export interface DeploySessionStore {
   acquire(session: DeploySession): DeploySession;
@@ -98,7 +105,7 @@ export class DeploySessions {
     const now = this.clock();
     return this.store.acquire({
       id: input.id ?? randomUUID(), ownerId: input.ownerId, mode: input.mode, targetSha: input.targetSha,
-      state: "ACQUIRED", rollbackAuthority: "OLD_LINEAGE_ALLOWED", createdAt: now.toISOString(),
+      state: "ACQUIRED", rollbackAuthority: "OLD_LINEAGE_ALLOWED", mutationObserved: false, createdAt: now.toISOString(),
       leaseExpiresAt: new Date(now.getTime() + this.leaseMs).toISOString(),
     });
   }
@@ -128,17 +135,34 @@ export class DeploySessions {
     if (!session.preDeployTopology) throw new Error("PRE_DEPLOY_TOPOLOGY_REQUIRED");
     assertTopology(topology);
     this.store.recordTopology(id, "OBSERVED", topology);
-    const rollbackAuthority = topologyEquals(topology, session.preDeployTopology) ? session.rollbackAuthority : "NEW_LINEAGE_ONLY";
-    return this.store.transition(id, ["DEPLOYING", "RECOVERY_REQUIRED"], { rollbackAuthority });
+    const mutationObserved = session.mutationObserved || !topologyEquals(topology, session.preDeployTopology);
+    return this.store.transition(id, ["DEPLOYING", "RECOVERY_REQUIRED"], { mutationObserved });
   }
 
   classifyFailure(id: string, ownerId: string, topology: PreDeployTopology): DeploySession {
     const observed = this.observeTopology(id, ownerId, topology);
     if (!observed.preDeployTopology) throw new Error("PRE_DEPLOY_TOPOLOGY_REQUIRED");
-    if (observed.rollbackAuthority === "OLD_LINEAGE_ALLOWED" && topologyEquals(topology, observed.preDeployTopology)) {
-      return this.store.transition(id, ["DEPLOYING", "RECOVERY_REQUIRED"], { state: "SAFE_ABORTED" });
-    }
-    return this.store.transition(id, ["DEPLOYING", "RECOVERY_REQUIRED"], { state: "RECOVERY_REQUIRED", rollbackAuthority: "NEW_LINEAGE_ONLY" });
+    if (!observed.mutationObserved) return this.store.transition(id, ["DEPLOYING", "RECOVERY_REQUIRED"], { state: "SAFE_ABORTED" });
+    return this.store.transition(id, ["DEPLOYING", "RECOVERY_REQUIRED"], { state: "RECOVERY_REQUIRED" });
+  }
+
+  /**
+   * The point of no return, and the only thing that spends rollback authority.
+   *
+   * It is called once a certification step has produced a durable effect
+   * outside this system - a real payment taken, a receipt issued, a message
+   * delivered. From then on the archived pre-launch database is no longer a
+   * truthful account of what happened, so restoring it would lose the record
+   * of a real transaction. Recovery must go forward.
+   *
+   * Deliberately NOT implied by a converged topology: deploying every surface
+   * changes nothing outside this system, and that case must stay rollbackable.
+   * Monotonic and idempotent - there is no way back to OLD_LINEAGE_ALLOWED.
+   */
+  commitExternalEffects(id: string, ownerId: string): DeploySession {
+    const session = this.owned(id, ownerId);
+    if (session.rollbackAuthority === "NEW_LINEAGE_ONLY") return session;
+    return this.store.transition(id, ["DEPLOYING", "RECOVERY_REQUIRED"], { rollbackAuthority: "NEW_LINEAGE_ONLY" });
   }
 
   renewLease(id: string, ownerId: string): DeploySession {
@@ -157,9 +181,10 @@ export class DeploySessions {
   completeTarget(id: string, ownerId: string, topology: PreDeployTopology): DeploySession {
     const observed = this.observeTopology(id, ownerId, topology);
     if (!topologyIsTarget(topology, observed.targetSha)) throw new Error("TARGET_TOPOLOGY_NOT_CONVERGED");
-    return this.store.transition(id, ["DEPLOYING", "RECOVERY_REQUIRED"], { state: "SUCCEEDED", rollbackAuthority: "NEW_LINEAGE_ONLY" });
+    return this.store.transition(id, ["DEPLOYING", "RECOVERY_REQUIRED"], { state: "SUCCEEDED" });
   }
 
+  /** Production was put back on the pre-deploy topology. Only legal while the old lineage is still a truthful destination. */
   completeRollback(id: string, ownerId: string, topology: PreDeployTopology): DeploySession {
     const session = this.owned(id, ownerId);
     if (session.rollbackAuthority !== "OLD_LINEAGE_ALLOWED") throw new Error("OLD_LINEAGE_ROLLBACK_FORBIDDEN");

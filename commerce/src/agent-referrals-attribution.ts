@@ -69,6 +69,21 @@ export type EngagementScopedOrderAttribution = {
 export type OrderAttribution = DirectOrderAttribution | EngagementScopedOrderAttribution;
 
 /**
+ * The one place the pre-baseline schema is humoured, so P9 deletes it in a
+ * single edit instead of hunting call sites.
+ *
+ * `orders.reward_authority_kind` and the 0046 tuple trigger still admit only
+ * the two values that existed before this cleanup, and the migration ledger is
+ * frozen until the launch baseline. The domain reasons in DIRECT /
+ * ENGAGEMENT_SCOPED terms; an ordinary order persists the column's existing
+ * non-partner constant. The baseline drops the column and the trigger together,
+ * and this function goes with them.
+ */
+export const physicalRewardAuthorityKind = (attribution: OrderAttribution): "LEGACY" | "ENGAGEMENT_SCOPED" =>
+  attribution.reward_authority_kind === "DIRECT" ? "LEGACY" : "ENGAGEMENT_SCOPED";
+
+
+/**
  * `assertAgentReferralsOperationPermitted` is consulted ONLY on the
  * partner-owned-promo branch: an ordinary order carries no partner reward
  * authority at all, so a global suspension has nothing to block there.

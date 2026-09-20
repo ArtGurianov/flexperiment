@@ -15,16 +15,55 @@ describe("deploy sessions", () => {
     expect(sessions.classifyFailure(session.id, "owner", topology(old))).toMatchObject({ state: "SAFE_ABORTED", rollbackAuthority: "OLD_LINEAGE_ALLOWED" });
   });
 
-  it("requires recovery after one changed surface and permanently removes old-lineage rollback authority", () => {
+  it("requires recovery after one changed surface, and rolling back to the old topology is still legal", () => {
+    // A half-switched topology is recoverable: nothing outside this system has
+    // happened yet, so the archived database is still a truthful destination.
     const sessions = new DeploySessions(new InMemoryDeploySessionStore(), () => new Date("2026-09-19T00:00:00.000Z"));
     const session = sessions.acquire({ id: "recovery", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target });
     sessions.fence(session.id, "owner", topology(old));
     sessions.beginDeploying(session.id, "owner");
     const partial = { ...topology(old), frontend: changed };
-    expect(sessions.classifyFailure(session.id, "owner", partial)).toMatchObject({ state: "RECOVERY_REQUIRED", rollbackAuthority: "NEW_LINEAGE_ONLY" });
-    expect(sessions.classifyFailure(session.id, "owner", topology(old))).toMatchObject({ state: "RECOVERY_REQUIRED", rollbackAuthority: "NEW_LINEAGE_ONLY" });
+    expect(sessions.classifyFailure(session.id, "owner", partial))
+      .toMatchObject({ state: "RECOVERY_REQUIRED", rollbackAuthority: "OLD_LINEAGE_ALLOWED", mutationObserved: true });
+    expect(sessions.completeRollback(session.id, "owner", topology(old)))
+      .toMatchObject({ state: "ROLLED_BACK", rollbackAuthority: "OLD_LINEAGE_ALLOWED" });
+  });
+
+  it("never offers a safe abort again once any surface was observed to move", () => {
+    // Restoring the old topology by hand does not turn a mutation into a
+    // deploy that never touched production.
+    const sessions = new DeploySessions(new InMemoryDeploySessionStore(), () => new Date("2026-09-19T00:00:00.000Z"));
+    const session = sessions.acquire({ id: "no-safe-abort", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target });
+    sessions.fence(session.id, "owner", topology(old));
+    sessions.beginDeploying(session.id, "owner");
+    sessions.observeTopology(session.id, "owner", { ...topology(old), commerce: changed });
+    expect(sessions.classifyFailure(session.id, "owner", topology(old)))
+      .toMatchObject({ state: "RECOVERY_REQUIRED", mutationObserved: true });
+  });
+
+  it("converging on the target is not an external effect and keeps the old lineage available", () => {
+    const sessions = new DeploySessions(new InMemoryDeploySessionStore(), () => new Date("2026-09-19T00:00:00.000Z"));
+    const session = sessions.acquire({ id: "converged", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target });
+    sessions.fence(session.id, "owner", topology(old));
+    sessions.beginDeploying(session.id, "owner");
+    expect(sessions.completeTarget(session.id, "owner", topology(target)))
+      .toMatchObject({ state: "SUCCEEDED", rollbackAuthority: "OLD_LINEAGE_ALLOWED" });
+  });
+
+  it("spends rollback authority only on a durable external effect, and never returns it", () => {
+    const sessions = new DeploySessions(new InMemoryDeploySessionStore(), () => new Date("2026-09-19T00:00:00.000Z"));
+    const session = sessions.acquire({ id: "external", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target });
+    sessions.fence(session.id, "owner", topology(old));
+    sessions.beginDeploying(session.id, "owner");
+    sessions.classifyFailure(session.id, "owner", { ...topology(old), worker: changed });
+
+    // A real payment has now been taken against the new lineage.
+    expect(sessions.commitExternalEffects(session.id, "owner")).toMatchObject({ rollbackAuthority: "NEW_LINEAGE_ONLY" });
+    expect(sessions.commitExternalEffects(session.id, "owner")).toMatchObject({ rollbackAuthority: "NEW_LINEAGE_ONLY" });
     expect(() => sessions.completeRollback(session.id, "owner", topology(old))).toThrow("OLD_LINEAGE_ROLLBACK_FORBIDDEN");
-    expect(sessions.completeTarget(session.id, "owner", topology(target))).toMatchObject({ state: "SUCCEEDED", rollbackAuthority: "NEW_LINEAGE_ONLY" });
+    // Forward is the only way out.
+    expect(sessions.completeTarget(session.id, "owner", topology(target)))
+      .toMatchObject({ state: "SUCCEEDED", rollbackAuthority: "NEW_LINEAGE_ONLY" });
   });
 
   it("does not close sales for rolling releases and transfers expired ownership without changing state", () => {
