@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  acceptedAct, activeNpdCheck, admin, closeAndComplete, finalizedSettlement, fresh, nearTermTerms,
+  acceptedAct, activeNpdCheck, admin, finalizedSettlement, fresh, nearTermTerms,
   offerAcceptActivate, purchaseAndPay, readyPartner, seedOccurrence,
 } from "./support/agent-referrals-settlement-fixtures";
 import { beginPayment, recordPaymentMade } from "../src/agent-referrals-payment";
@@ -236,7 +236,7 @@ describe("a settlement's status follows what the payment actually did", () => {
 
 describe("a zero-reward closure records an engagement that earned nothing", () => {
   /** A cancelled occurrence: the registry finalizes, and the reward is zero. */
-  const zeroRewarded = (db: Database.Database, domain: CommerceDomain) => {
+  const zeroRewarded = (db: Database.Database) => {
     const partner = readyPartner(db, "OTHER");
     const occurrenceId = seedOccurrence(db, partner.cityId, 100_000);
     const engagementId = offerAcceptActivate(db, partner.partner, partner.partnerIdentityId, occurrenceId, nearTermTerms(1000, "PERCENT", 5000));
@@ -256,13 +256,13 @@ describe("a zero-reward closure records an engagement that earned nothing", () =
 
   it("is accepted for an engagement that earned nothing and was never settled", () => {
     const { db, domain } = setup();
-    const { closure } = zeroRewarded(db, domain);
+    const { closure } = zeroRewarded(db);
     expect(insertVariant(db, "engagement_zero_reward_closures", closure, {})).not.toThrow();
   });
 
   it("cannot be edited or deleted once recorded", () => {
     const { db, domain } = setup();
-    const { closure } = zeroRewarded(db, domain);
+    const { closure } = zeroRewarded(db);
     const columns = Object.keys(closure);
     db.prepare(`INSERT INTO engagement_zero_reward_closures(${columns.join(", ")})
       VALUES (${columns.map((c) => "@" + c).join(", ")})`).run(closure);
@@ -276,7 +276,7 @@ describe("a zero-reward closure records an engagement that earned nothing", () =
   it("refuses a closure for an engagement that did earn something", () => {
     // Closing at zero is a statement that nothing is owed. It has to be true.
     const { db, domain } = setup();
-    const { closure } = zeroRewarded(db, domain);
+    const { closure } = zeroRewarded(db);
     const earning = paid(db, domain, "OTHER");
     const earned = rowOf(db, "SELECT * FROM engagement_effective_reward_snapshots WHERE engagement_id = ? ORDER BY sequence DESC LIMIT 1", earning.engagementId);
 
