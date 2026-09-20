@@ -19,9 +19,10 @@ const reopen = (db: ConcurrencyFixture["primary"]) =>
 
 /**
  * The operator's absolute stop, asserted through `assertNewOrdersOpen` - the
- * composition boundary a customer actually reaches. Everything above it in the
- * hierarchy is allowed to be bypassed by a certification capability; this is
- * the one that is not, so it is the one whose failure modes matter most.
+ * composition boundary a customer actually reaches. A certification capability
+ * may open the deployment fence and nothing else: this gate and the ordinary
+ * business gates are both absolute, so this one's failure modes are the ones
+ * that matter most.
  */
 const ordersOpen = (domain: CommerceDomain) => {
   try { domain.assertNewOrdersOpen(); return true; } catch { return false; }
