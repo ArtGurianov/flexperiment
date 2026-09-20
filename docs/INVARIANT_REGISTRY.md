@@ -112,21 +112,41 @@ guards (`RAISE(ABORT, '...')`). Migration tests assert **60** of them. Of those
 
 This is the residual risk the plan predicted, now counted instead of feared.
 
-Six of the 48 name a discriminator P9 removes outright, so they retire with
-their column rather than needing a home:
+Each of the 48 has now been read against the trigger it names, and the result
+corrects an earlier claim made in this file.
 
-`REFERRAL_REWARD_AUTHORITY_KIND_IMMUTABLE`,
-`REFERRAL_REWARD_AUTHORITY_KIND_MISMATCH`,
-`ORDER_AUTHORITY_COLUMNS_IMMUTABLE`,
-`ORDER_AUTHORITY_TUPLE_INCONSISTENT`,
-`REWARD_SETTLEMENT_AUTHORITY_COLUMNS_IMMUTABLE`,
-`REWARD_SETTLEMENT_AUTHORITY_TUPLE_INCONSISTENT`.
+**Retired with their column — 2.** Only two guards have nothing left to protect
+once the pre-baseline discriminator goes, because the column *is* their entire
+subject: `REFERRAL_REWARD_AUTHORITY_KIND_IMMUTABLE` fires only when
+`reward_authority_kind` changes, and `REFERRAL_REWARD_AUTHORITY_KIND_MISMATCH`
+only cross-checks that column against the order's.
 
-The remaining 42 are unclassified, and deliberately so: whether a guard survives
-is a judgement about what it protects, not about which table it happens to sit
-on. A trigger that freezes a settlement act is a live invariant even though that
-act carries a column P9 deletes, and guessing from proximity would retire real
-protections. Each is read before it is placed.
+**Active, rewritten without the discriminator — 7.** An earlier revision of this
+section listed six guards as retiring with their column. Four of them do not,
+and the error is worth recording because it is the exact mistake the section
+warns about. `ORDER_AUTHORITY_COLUMNS_IMMUTABLE` and
+`REWARD_SETTLEMENT_AUTHORITY_COLUMNS_IMMUTABLE` each freeze a dozen attribution
+columns of which the discriminator is one; deleting it does not retire the
+invariant that an order's or a settlement's attribution cannot be rewritten
+after the fact. The two `_TUPLE_INCONSISTENT` guards use the discriminator to
+choose which shape to require, and after the baseline there is only one shape,
+so the requirement becomes unconditional rather than absent. The same is true of
+`REWARD_SETTLEMENT_TERMINAL_IMMUTABLE`, `REWARD_SETTLEMENT_TRANSITION_ILLEGAL`
+and `AGENT_REFERRALS_SETTLEMENT_CONTRACTOR_TYPE_PROJECTION_MISMATCH`, whose
+`WHEN settlement_flow = 'AGENT_REFERRALS'` is a condition on which rows to guard
+and not the thing being guarded.
+
+**Active, untouched — 39.** Immutability and relational-consistency guards on
+tables that survive unchanged: engagement revisions and their snapshots, promo
+authorizations, settlement acts and acceptances, payment attempts and
+authorizations, NPD receipts and status checks, partner identity events and
+retention policies, audience verification events, ORD reporting delegations and
+period policy, framework acceptances, ad channel policy, and the public order
+number.
+
+So 46 of the 48 need a surviving proof before the file asserting them can go,
+not 42. Classifying by proximity to a doomed column would have retired four real
+protections, which is why each is read.
 
 **The rule this section exists to enforce:** no `*-migration.test.ts` file is
 deleted while any guard it asserts is still in this list. A guard leaves the
