@@ -6,8 +6,8 @@ import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
-import { suspendAgentReferrals } from "../src/agent-referrals-feature-state";
-import { seedActiveAgentReferralsFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
+import { reactivateAgentReferrals, suspendAgentReferrals } from "../src/agent-referrals-feature-state";
+import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile, issueFrameworkToPartner, type AdminPrincipal, type PartnerPrincipal } from "../src/agent-referrals-partner-identity";
 import { activatePartner, getPartnerIdentity } from "../src/agent-referrals-onboarding";
 import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES } from "../src/agent-referrals-framework-delegation";
@@ -184,13 +184,13 @@ describe("engagement offer / accept / activate: four separate authorities, never
     suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "emergency" });
     expect(() => offerEngagement(db, admin, partnerIdentityId, occurrenceId, terms1, "offer")).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
 
-    activateAgentReferrals(db, { expected_revision: 3, owner_id: "test-owner", reason: "resume" });
+    reactivateAgentReferrals(db, { expected_revision: 3, owner_id: "test-owner", reason: "resume" });
     const { engagement_id: engagementId, engagement_revision_id: revisionId } = offerEngagement(db, admin, partnerIdentityId, occurrenceId, terms1, "offer");
     const grant = mintEngagementStepUpGrant(db, partner, "ENGAGEMENT_ACCEPTANCE", { engagement_id: engagementId, engagement_revision_id: revisionId }).grant_id;
     suspendAgentReferrals(db, { expected_revision: 4, owner_id: "test-owner", reason: "emergency 2" });
     expect(() => acceptEngagement(db, partner, engagementId, revisionId, grant)).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
 
-    activateAgentReferrals(db, { expected_revision: 5, owner_id: "test-owner", reason: "resume 2" });
+    reactivateAgentReferrals(db, { expected_revision: 5, owner_id: "test-owner", reason: "resume 2" });
     acceptEngagement(db, partner, engagementId, revisionId, grant);
     suspendAgentReferrals(db, { expected_revision: 6, owner_id: "test-owner", reason: "emergency 3" });
     expect(() => activateEngagement(db, admin, engagementId, revisionId)).toThrow(/AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY/);
@@ -235,7 +235,7 @@ describe("engagement suspend / reactivate", () => {
     const eng = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ);
     suspendEngagement(db, admin, eng.engagementId, "pause", getEngagement(db, eng.engagementId)!.lifecycle_revision);
     suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "unrelated global pause" });
-    activateAgentReferrals(db, { expected_revision: 3, owner_id: "test-owner", reason: "global resume" });
+    reactivateAgentReferrals(db, { expected_revision: 3, owner_id: "test-owner", reason: "global resume" });
     expect(getEngagement(db, eng.engagementId)).toMatchObject({ lifecycle_state: "SUSPENDED" });
   });
 });

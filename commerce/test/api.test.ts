@@ -7,9 +7,8 @@ import { MockProvider } from "../src/provider";
 import { UnisenderGoProvider } from "../src/email-provider";
 import { CommerceDomain } from "../src/domain";
 import { decryptTicketCapability, sha256 } from "../src/crypto";
-import { releaseStateHash, type GenerationHead } from "../src/release-generation";
 import type { SmartCaptchaVerifier } from "../src/smartcaptcha";
-import { seedActiveAgentReferralsFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
+import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile, type AdminPrincipal } from "../src/agent-referrals-partner-identity";
 import { currentAgentReferralsLegalProfile } from "../src/agent-referrals-legal-profile";
 
@@ -40,26 +39,6 @@ function appFixture(smartCaptcha: SmartCaptchaVerifier = passingCaptcha) {
   return { db, app: createApp(db, new MockProvider(), undefined, smartCaptcha) };
 }
 
-function promoCandidateHead(releaseId = randomUUID()): GenerationHead {
-  return {
-    release_id: releaseId,
-    candidate_generation: 1,
-    source_commit: "a".repeat(40),
-    migration_inventory: { files: { "0035_promo_codes_v0.sql": "b".repeat(64) } },
-    legal_baseline: {
-      legal_version: "test-1", legal_manifest_sha256: "0".repeat(64),
-      legal_hashes: Object.fromEntries(Object.keys(legalManifest.documents).map((name) => [name, "0".repeat(64)])),
-    },
-    release_family: "promo-codes-v0",
-    checkout_contract_version: "promo-codes-v0",
-    admin_contract_version: "promo-codes-v0",
-    phase: "PAUSED",
-    phase_sequence: 0,
-  };
-}
-
-const releaseControlHeaders = { Authorization: "Bearer release-control-test-token", "Content-Type": "application/json" };
-
 function appendV2Event(db: ReturnType<typeof openDatabase>, releaseId: string, action: "ACQUIRED" | "PAUSED" | "REOPENED", details: Record<string, unknown>) {
   db.prepare("INSERT INTO release_sales_gate_events(release_id, action, details_json) VALUES (?, ?, ?)").run(releaseId, action, JSON.stringify({ schema_version: 2, ...details }));
 }
@@ -69,124 +48,6 @@ const migrationHead = () =>
   readdirSync(join(process.cwd(), "commerce", "migrations")).filter((name) => name.endsWith(".sql")).sort().at(-1)!;
 
 describe("commerce HTTP boundary", () => {
-  it("returns the exact authoritative active v2 candidate head and server CAS hash", async () => {
-    const previousToken = process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
-    process.env.COMMERCE_RELEASE_CONTROL_TOKEN = "release-control-test-token";
-    const { db, app } = appFixture();
-    try {
-      const head = promoCandidateHead();
-      const acquired = await app.request("http://api.flexperiment.ru/v1/internal/release-control/candidates/acquire", { method: "POST", headers: releaseControlHeaders, body: JSON.stringify({ head }) });
-      expect(acquired.status).toBe(200);
-      const response = await app.request("http://api.flexperiment.ru/v1/admin/release-control/candidates/head", { headers: releaseControlHeaders });
-      expect(response.status).toBe(200);
-      expect(await response.json()).toEqual({ schema_version: 2, head, state_hash: releaseStateHash(head) });
-      const internal = await app.request("http://api.flexperiment.ru/v1/internal/release-control/candidates/head", { headers: releaseControlHeaders });
-      expect(internal.status).toBe(404);
-    } finally {
-      db.close();
-      if (previousToken === undefined) delete process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
-      else process.env.COMMERCE_RELEASE_CONTROL_TOKEN = previousToken;
-    }
-  });
-
-  it("requires release-control authentication for read-only provider readiness", async () => {
-    const previousToken = process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
-    process.env.COMMERCE_RELEASE_CONTROL_TOKEN = "release-control-test-token";
-    const { db, app } = appFixture();
-    try {
-      expect((await app.request("http://api.flexperiment.ru/v1/internal/release-control/provider-readiness")).status).toBe(401);
-      const response = await app.request("http://api.flexperiment.ru/v1/internal/release-control/provider-readiness", { headers: releaseControlHeaders });
-      expect(response.status).toBe(200);
-      expect(await response.json()).toEqual({ environment: "mock" });
-    } finally {
-      db.close();
-      if (previousToken === undefined) delete process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
-      else process.env.COMMERCE_RELEASE_CONTROL_TOKEN = previousToken;
-    }
-  });
-
-  it("returns the most recent completed v2 candidate head", async () => {
-    const previousToken = process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
-    process.env.COMMERCE_RELEASE_CONTROL_TOKEN = "release-control-test-token";
-    const { db, app } = appFixture();
-    try {
-      const paused = promoCandidateHead();
-      const deployed = { ...paused, phase: "DEPLOYED_READ_ONLY" as const, phase_sequence: 1 };
-      const binding = { lease_id: randomUUID(), occurrence_id: randomUUID(), promo_id: randomUUID(), expected_idempotency_key_hash: "c".repeat(64), lease_expires_at: "2030-01-01T00:00:00.000Z", status: "ACTIVE" as const };
-      const certificationOnly = { ...deployed, phase: "CERTIFICATION_ONLY" as const, phase_sequence: 2, certification: binding };
-      const inFlight = { ...certificationOnly, phase: "CERTIFICATION_IN_FLIGHT" as const, phase_sequence: 3, certification: { ...binding, status: "CONSUMED" as const } };
-      const certified = { ...inFlight, phase: "CERTIFIED" as const, phase_sequence: 4 };
-      const complete = { ...certified, phase: "COMPLETE" as const, phase_sequence: 5 };
-      appendV2Event(db, paused.release_id, "ACQUIRED", { kind: "CANDIDATE_ACQUIRED", head: paused });
-      appendV2Event(db, paused.release_id, "PAUSED", { kind: "PHASE_CHANGED", from_phase: paused.phase, from_phase_sequence: paused.phase_sequence, head: deployed });
-      appendV2Event(db, paused.release_id, "PAUSED", { kind: "PHASE_CHANGED", from_phase: deployed.phase, from_phase_sequence: deployed.phase_sequence, head: certificationOnly });
-      appendV2Event(db, paused.release_id, "PAUSED", { kind: "PHASE_CHANGED", from_phase: certificationOnly.phase, from_phase_sequence: certificationOnly.phase_sequence, head: inFlight });
-      appendV2Event(db, paused.release_id, "PAUSED", { kind: "PHASE_CHANGED", from_phase: inFlight.phase, from_phase_sequence: inFlight.phase_sequence, head: certified, certification_evidence: { occurrence_id: binding.occurrence_id, promo_id: binding.promo_id, order_id: randomUUID(), payment_id: randomUUID(), refund_id: randomUUID(), price_kopecks: 101, discount_kopecks: 1, amount_kopecks: 100, captured_kopecks: 100, refunded_kopecks: 100 } });
-      appendV2Event(db, paused.release_id, "REOPENED", { kind: "PHASE_CHANGED", from_phase: certified.phase, from_phase_sequence: certified.phase_sequence, head: complete });
-      const response = await app.request("http://api.flexperiment.ru/v1/admin/release-control/candidates/head", { headers: releaseControlHeaders });
-      expect(response.status).toBe(200);
-      expect(await response.json()).toEqual({ schema_version: 2, head: complete, state_hash: releaseStateHash(complete) });
-    } finally {
-      db.close();
-      if (previousToken === undefined) delete process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
-      else process.env.COMMERCE_RELEASE_CONTROL_TOKEN = previousToken;
-    }
-  });
-
-  it("fails closed when v2 replay or its projection is corrupt", async () => {
-    const previousToken = process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
-    process.env.COMMERCE_RELEASE_CONTROL_TOKEN = "release-control-test-token";
-    const { db, app } = appFixture();
-    try {
-      appendV2Event(db, randomUUID(), "PAUSED", { kind: "PHASE_CHANGED" });
-      const response = await app.request("http://api.flexperiment.ru/v1/admin/release-control/candidates/head", { headers: releaseControlHeaders });
-      expect(response.status).toBe(503);
-      expect(await response.json()).toEqual({ error: { code: "RELEASE_STATE_CORRUPT" } });
-
-      const projectionFixture = appFixture();
-      try {
-        const head = promoCandidateHead();
-        const acquired = await projectionFixture.app.request("http://api.flexperiment.ru/v1/internal/release-control/candidates/acquire", { method: "POST", headers: releaseControlHeaders, body: JSON.stringify({ head }) });
-        expect(acquired.status).toBe(200);
-        projectionFixture.db.prepare("UPDATE release_sales_gate SET expected_source_commit = ? WHERE singleton = 1").run("f".repeat(40));
-        const projectionResponse = await projectionFixture.app.request("http://api.flexperiment.ru/v1/admin/release-control/candidates/head", { headers: releaseControlHeaders });
-        expect(projectionResponse.status).toBe(503);
-        expect(await projectionResponse.json()).toEqual({ error: { code: "RELEASE_STATE_CORRUPT" } });
-      } finally {
-        projectionFixture.db.close();
-      }
-    } finally {
-      db.close();
-      if (previousToken === undefined) delete process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
-      else process.env.COMMERCE_RELEASE_CONTROL_TOKEN = previousToken;
-    }
-  });
-
-  it("returns the server-created certification binding and its subsequent CAS hash", async () => {
-    const previousToken = process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
-    process.env.COMMERCE_RELEASE_CONTROL_TOKEN = "release-control-test-token";
-    const { db, app } = appFixture();
-    try {
-      const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
-      db.prepare("UPDATE occurrences SET price_kopecks = 101, visibility = 'HIDDEN', sales_status = 'CLOSED', fulfillment_status = 'SCHEDULED' WHERE id = ?").run(occurrenceId);
-      const domain = new CommerceDomain(db, new MockProvider());
-      const promo = domain.createPromo({ code: "HEADLEASE", status: "ACTIVE", discount_type: "FIXED", discount_value: 1 });
-      const acquired = domain.acquirePromoCandidate({ head: promoCandidateHead() });
-      const deployed = domain.changePromoCandidatePhase({ release_id: acquired.head.release_id, candidate_generation: acquired.head.candidate_generation, expected_state_hash: releaseStateHash(acquired.head), from_phase: "PAUSED", phase_sequence: 0, to_phase: "DEPLOYED_READ_ONLY" });
-      const activated = domain.activatePromoCertificationLease({ release_id: deployed.head.release_id, candidate_generation: deployed.head.candidate_generation, expected_state_hash: releaseStateHash(deployed.head), occurrence_id: occurrenceId, promo_id: String(promo.id), expected_idempotency_key_hash: sha256("candidate-head-certification-key"), lease_seconds: 180 });
-      const response = await app.request("http://api.flexperiment.ru/v1/admin/release-control/candidates/head", { headers: releaseControlHeaders });
-      expect(response.status).toBe(200);
-      const body = await response.json() as { schema_version: number; head: GenerationHead; state_hash: string };
-      expect(body).toMatchObject({ schema_version: 2, head: activated.head });
-      expect(body.state_hash).toBe(releaseStateHash(body.head));
-      expect(body.head.certification?.lease_id).toBe(activated.lease.lease_id);
-    } finally {
-      db.close();
-      if (previousToken === undefined) delete process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
-      else process.env.COMMERCE_RELEASE_CONTROL_TOKEN = previousToken;
-    }
-  });
-
   it("allows the configured public browser origin and required checkout headers", async () => {
     const { db, app } = appFixture();
     const response = await app.request("http://api.flexperiment.ru/v1/public/tour", { headers: { Origin: "https://flexperiment.ru", "X-Forwarded-For": "127.0.0.1" } });
@@ -281,34 +142,6 @@ describe("commerce HTTP boundary", () => {
     expect(conflict.status).toBe(409);
     expect(await conflict.json()).toEqual({ error: { code: "IDEMPOTENCY_CONFLICT" } });
     db.close();
-  });
-
-  it("rejects a stale DOB checkout with the durable sales-pause outcome before validation or order creation", async () => {
-    const previousToken = process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
-    process.env.COMMERCE_RELEASE_CONTROL_TOKEN = "release-control-test-token";
-    const { db, app } = appFixture();
-    try {
-      const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
-      const context = await app.request("http://api.flexperiment.ru/v1/public/checkout-context", { method: "POST", headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.25" }, body: JSON.stringify({ occurrence_id: occurrenceId }) });
-      const quoteId = (await context.json() as { quote_id: string }).quote_id;
-      const release = { release_id: randomUUID(), mode: "CONTROLLED_CUTOVER", expected: { source_commit: "a".repeat(40), migration: "0033_runtime_release_evidence.sql", legal_version: "2026-08-25.1", legal_manifest_sha256: "b".repeat(64), legal_hashes: { PUBLIC_OFFER: "c".repeat(64), PRIVACY_POLICY: "d".repeat(64), PD_CONSENT: "e".repeat(64), CHECKOUT_DISCLOSURE: "f".repeat(64) } } };
-      const headers = { Authorization: "Bearer release-control-test-token", "Content-Type": "application/json" };
-      expect((await app.request("http://api.flexperiment.ru/v1/internal/release-control/acquire", { method: "POST", headers, body: JSON.stringify(release) })).status).toBe(200);
-      expect((await app.request("http://api.flexperiment.ru/v1/internal/release-control/pause", { method: "POST", headers, body: JSON.stringify(release) })).status).toBe(200);
-      const response = await app.request("http://api.flexperiment.ru/v1/public/checkouts", {
-        method: "POST",
-        headers: { Origin: "https://flexperiment.ru", "Content-Type": "application/json", "Idempotency-Key": "paused-stale-dob-client", "X-Forwarded-For": "127.0.0.25" },
-        body: JSON.stringify({ quote_id: quoteId, customer_email: "buyer@example.test", participant: { self: true, date_of_birth: "1990-01-01" }, offer_accepted: true, pd_consent_accepted: true }),
-      });
-      expect(response.status).toBe(503);
-      expect(await response.json()).toEqual({ error: { code: "SALES_TEMPORARILY_PAUSED" } });
-      expect(db.prepare("SELECT COUNT(*) AS count FROM orders").get()).toEqual({ count: 0 });
-      expect(db.prepare("SELECT COUNT(*) AS count FROM payments").get()).toEqual({ count: 0 });
-    } finally {
-      db.close();
-      if (previousToken === undefined) delete process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
-      else process.env.COMMERCE_RELEASE_CONTROL_TOKEN = previousToken;
-    }
   });
 
   it("returns only cities that have a published occurrence, irrespective of sales status", async () => {
@@ -485,59 +318,6 @@ describe("commerce HTTP boundary", () => {
     expect(afterBody.attention_count).toBe(2);
     expect(afterBody.incidents.filter((incident) => incident.requires_attention === 1)).toHaveLength(2);
     expect(db.prepare("SELECT COUNT(*) AS count FROM admin_audit_log WHERE action = 'EMAIL_ATTENTION_ACKNOWLEDGED'").get()).toEqual({ count: 1 });
-    db.close();
-  });
-
-  it("exposes settlement evidence as a pure Admin read and requires idempotency for lifecycle commands", async () => {
-    const { db, app } = appFixture();
-    const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
-    const agentId = randomUUID(); const settlementId = randomUUID();
-    db.prepare("INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value) VALUES (?, 'settlement-api-agent', 'Settlement Agent', 'settlement-agent@example.test', 'FIXED', 100)").run(agentId);
-    const legalProfileRevisionId = seedLegacySettlementAuthority(db, agentId, "settlement-agent@example.test");
-    db.prepare("INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, legal_profile_revision_id_snapshot, prepared_at, created_by_admin_id) VALUES (?, ?, ?, 100, 'TRANSFER', 'PREPARED', 'SELF_EMPLOYED', ?, ?, 'admin')").run(settlementId, agentId, occurrenceId, legalProfileRevisionId, new Date().toISOString());
-    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.57" }, body: JSON.stringify({ password: "correct horse" }) });
-    const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
-    const reviewCount = db.prepare("SELECT COUNT(*) AS count FROM settlement_prepared_reviews").get();
-    const list = await app.request("http://admin.flexperiment.ru/v1/admin/reward-settlements", { headers });
-    expect(list.status).toBe(200);
-    expect((await list.json() as { settlements: { id: string; stale_prepared: number }[] }).settlements).toEqual(expect.arrayContaining([expect.objectContaining({ id: settlementId, stale_prepared: 0 })]));
-    const detail = await app.request(`http://admin.flexperiment.ru/v1/admin/reward-settlements/${settlementId}`, { headers });
-    expect(detail.status).toBe(200);
-    expect(await detail.json()).toMatchObject({ settlement: { id: settlementId, status: "PREPARED" }, recoveries: [] });
-    expect(db.prepare("SELECT COUNT(*) AS count FROM settlement_prepared_reviews").get()).toEqual(reviewCount);
-    const missingKey = await app.request(`http://admin.flexperiment.ru/v1/admin/reward-settlements/${settlementId}/payment-made`, { method: "POST", headers, body: JSON.stringify({ confirmation_text: "I confirm the money was transferred" }) });
-    expect(missingKey.status).toBe(400);
-    const missingReason = await app.request(`http://admin.flexperiment.ru/v1/admin/reward-settlements/${settlementId}/payment-made`, { method: "POST", headers: { ...headers, "Idempotency-Key": "settlement-api-payment-no-reason" }, body: JSON.stringify({ confirmation_text: "I confirm the money was transferred" }) });
-    expect(missingReason.status).toBe(422);
-    const first = await app.request(`http://admin.flexperiment.ru/v1/admin/reward-settlements/${settlementId}/payment-made`, { method: "POST", headers: { ...headers, "Idempotency-Key": "settlement-api-payment-key" }, body: JSON.stringify({ confirmation_text: "I confirm the money was transferred", reason: "Bank transfer was confirmed." }) });
-    expect(await first.json()).toMatchObject({ id: settlementId, status: "PENDING_DOCUMENT" });
-    const replay = await app.request(`http://admin.flexperiment.ru/v1/admin/reward-settlements/${settlementId}/payment-made`, { method: "POST", headers: { ...headers, "Idempotency-Key": "settlement-api-payment-key" }, body: JSON.stringify({ confirmation_text: "I confirm the money was transferred", reason: "Bank transfer was confirmed." }) });
-    expect(await replay.json()).toMatchObject({ id: settlementId, status: "PENDING_DOCUMENT" });
-    db.close();
-  });
-
-  it("makes stale-prepared and open-incident dashboard counters query-equivalent destination subsets", async () => {
-    const { db, app } = appFixture();
-    const occurrenceId = (db.prepare("SELECT id FROM occurrences LIMIT 1").get() as { id: string }).id;
-    const agentId = randomUUID(); const reviewedSettlementId = randomUUID(); const otherSettlementId = randomUUID();
-    db.prepare("INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value) VALUES (?, 'filter-agent', 'Filter Agent', 'filter-agent@example.test', 'FIXED', 100)").run(agentId);
-    const legalProfileRevisionId = seedLegacySettlementAuthority(db, agentId, "filter-agent@example.test");
-    const insertSettlement = db.prepare("INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, legal_profile_revision_id_snapshot, prepared_at, created_by_admin_id) VALUES (?, ?, ?, 100, 'TRANSFER', 'PREPARED', 'SELF_EMPLOYED', ?, ?, 'admin')");
-    insertSettlement.run(reviewedSettlementId, agentId, occurrenceId, legalProfileRevisionId, new Date(Date.now() - 25 * 60 * 60_000).toISOString());
-    insertSettlement.run(otherSettlementId, agentId, occurrenceId, legalProfileRevisionId, new Date().toISOString());
-    db.prepare("INSERT INTO settlement_prepared_reviews(settlement_id) VALUES (?)").run(reviewedSettlementId);
-    db.prepare("INSERT INTO operational_incidents(id, incident_key, kind, entity_type, entity_id, details_json, status) VALUES (?, 'open-filter-incident', 'VENUE_ANNOUNCEMENT_OVERDUE', 'occurrence', ?, '{}', 'OPEN')").run(randomUUID(), occurrenceId);
-    db.prepare("INSERT INTO operational_incidents(id, incident_key, kind, entity_type, entity_id, details_json, status, resolution_note, resolved_at) VALUES (?, 'resolved-filter-incident', 'VENUE_ANNOUNCEMENT_OVERDUE', 'occurrence', ?, '{}', 'RESOLVED', 'fixed', datetime('now'))").run(randomUUID(), occurrenceId);
-    const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.91" }, body: JSON.stringify({ password: "correct horse" }) });
-    const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
-
-    const dashboard = await app.request("http://admin.flexperiment.ru/v1/admin/dashboard", { headers });
-    expect(await dashboard.json()).toMatchObject({ health: { stale_prepared_settlements: { count: 1 }, operational_incidents: { count: 1 } } });
-    const settlements = await app.request("http://admin.flexperiment.ru/v1/admin/reward-settlements?stale_prepared=1", { headers });
-    expect((await settlements.json() as { settlements: { id: string; prepared_review_status: string }[] }).settlements)
-      .toEqual([expect.objectContaining({ id: reviewedSettlementId, prepared_review_status: "OPEN" })]);
-    const incidents = await app.request("http://admin.flexperiment.ru/v1/admin/operational-incidents?status=OPEN", { headers });
-    expect((await incidents.json() as { incidents: { status: string }[] }).incidents).toEqual([expect.objectContaining({ status: "OPEN" })]);
     db.close();
   });
 
@@ -944,113 +724,6 @@ describe("commerce HTTP boundary", () => {
     db.close();
   });
 
-  it("returns the owner conflict as 409 with its real code, not 500", async () => {
-    // Found in production during the 0040 live fence proof: the refusal was
-    // correct and reported as INTERNAL_ERROR, discarding the reason. Same shape
-    // as the curl --fail-with-body defect, one layer lower.
-    const previousToken = process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
-    process.env.COMMERCE_RELEASE_CONTROL_TOKEN = "release-control-test-token";
-    const { db, app } = appFixture();
-    try {
-      const headers = { Authorization: "Bearer release-control-test-token", "Content-Type": "application/json" };
-      const fence = await app.request("http://api.flexperiment.ru/v1/internal/release-control/outbox-dispatch/fence", {
-        method: "POST", headers,
-        body: JSON.stringify({ expected_revision: 1, reason: "epoch a fences", release_id: "epoch-a", generation: 1 }),
-      });
-      expect(fence.status).toBe(200);
-
-      const impostor = await app.request("http://api.flexperiment.ru/v1/internal/release-control/outbox-dispatch/unfence", {
-        method: "POST", headers,
-        body: JSON.stringify({ expected_revision: 2, reason: "epoch b unfences", release_id: "epoch-b", generation: 1 }),
-      });
-      expect(impostor.status).toBe(409);
-      expect(await impostor.json()).toEqual({ error: { code: "OUTBOX_DISPATCH_OWNER_CONFLICT" } });
-      // And the fence still holds.
-      expect(db.prepare("SELECT email_dispatch_paused FROM outbox_authority WHERE singleton = 1").get())
-        .toEqual({ email_dispatch_paused: 1 });
-    } finally {
-      db.close();
-      if (previousToken === undefined) delete process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
-      else process.env.COMMERCE_RELEASE_CONTROL_TOKEN = previousToken;
-    }
-  });
-
-  it("performs LEGACY -> ATTEMPT activation only over the fence the caller owns", async () => {
-    // The wire seam the 0041 cutover actually drives. Everything below is
-    // proven at the domain level too; what is proven HERE is that the route
-    // carries the epoch through and surfaces a refusal as its real code rather
-    // than a 500 - the defect found in production during the 0040 fence proof.
-    const previousToken = process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
-    process.env.COMMERCE_RELEASE_CONTROL_TOKEN = "release-control-test-token";
-    const { db, app } = appFixture();
-    const post = (path: string, body: unknown) => app.request(`http://api.flexperiment.ru/v1/internal/release-control/${path}`, {
-      method: "POST",
-      headers: { Authorization: "Bearer release-control-test-token", "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-    try {
-      // The transition is release-control authority, not an open endpoint.
-      const anonymous = await app.request("http://api.flexperiment.ru/v1/internal/release-control/outbox-authority/activate", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ expected_revision: 1, reason: "no credential", release_id: "epoch-a", generation: 1 }),
-      });
-      expect(anonymous.status).toBe(401);
-      expect(db.prepare("SELECT attempt_authority FROM outbox_authority WHERE singleton = 1").get())
-        .toEqual({ attempt_authority: "LEGACY" });
-
-      // Dispatch is open: activation must refuse before it reads a single row.
-      const unfenced = await post("outbox-authority/activate", { expected_revision: 1, reason: "activate", release_id: "epoch-a", generation: 1 });
-      expect(unfenced.status).toBe(409);
-      expect(await unfenced.json()).toEqual({ error: { code: "OUTBOX_ACTIVATION_DISPATCH_NOT_FENCED" } });
-
-      expect((await post("outbox-dispatch/fence", { expected_revision: 1, reason: "epoch a fences", release_id: "epoch-a", generation: 1 })).status).toBe(200);
-
-      // A second epoch cannot activate through a fence it does not own.
-      const impostor = await post("outbox-authority/activate", { expected_revision: 2, reason: "epoch b activates", release_id: "epoch-b", generation: 1 });
-      expect(impostor.status).toBe(409);
-      expect(await impostor.json()).toEqual({ error: { code: "OUTBOX_DISPATCH_OWNER_CONFLICT" } });
-      expect(db.prepare("SELECT attempt_authority FROM outbox_authority WHERE singleton = 1").get())
-        .toEqual({ attempt_authority: "LEGACY" });
-
-      const activated = await post("outbox-authority/activate", { expected_revision: 2, reason: "epoch a activates", release_id: "epoch-a", generation: 1 });
-      expect(activated.status).toBe(200);
-      expect(await activated.json()).toMatchObject({ activated: true, replayed: false, revision: 3 });
-
-      const status = await app.request("http://api.flexperiment.ru/v1/internal/release-control/outbox-authority", {
-        headers: { Authorization: "Bearer release-control-test-token" },
-      });
-      // Activated, and still fenced: reopening mail is a separate step.
-      expect(await status.json()).toMatchObject({ attempt_authority: "ATTEMPT", email_dispatch_paused: true, revision: 3 });
-    } finally {
-      db.close();
-      if (previousToken === undefined) delete process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
-      else process.env.COMMERCE_RELEASE_CONTROL_TOKEN = previousToken;
-    }
-  });
-
-  it("exposes the emergency latch on internal release-control status without admin credentials", async () => {
-    // The release controller must be able to see the operator's latch to refuse
-    // completing into open sales, but must never be able to set it: an admin
-    // credential would also let it refund, cancel and mutate.
-    const previousToken = process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
-    process.env.COMMERCE_RELEASE_CONTROL_TOKEN = "release-control-test-token";
-    const { db, app } = appFixture();
-    try {
-      const headers = { Authorization: "Bearer release-control-test-token" };
-      const open = await app.request("http://api.flexperiment.ru/v1/internal/release-control/status", { headers });
-      expect(open.status).toBe(200);
-      expect(await open.json()).toMatchObject({ emergency_sales_paused: false });
-
-      db.prepare("UPDATE emergency_sales_gate SET sales_paused = 1 WHERE singleton = 1").run();
-      const latched = await app.request("http://api.flexperiment.ru/v1/internal/release-control/status", { headers });
-      expect(await latched.json()).toMatchObject({ emergency_sales_paused: true });
-    } finally {
-      db.close();
-      if (previousToken === undefined) delete process.env.COMMERCE_RELEASE_CONTROL_TOKEN;
-      else process.env.COMMERCE_RELEASE_CONTROL_TOKEN = previousToken;
-    }
-  });
-
   it("exposes only authenticated, redacted certification evidence", async () => {
     const previousSourceCommit = process.env.SOURCE_COMMIT;
     process.env.SOURCE_COMMIT = "547b25be75849a84c2f0f37ea9aa7fe7e485818c";
@@ -1192,13 +865,20 @@ describe("commerce HTTP boundary", () => {
     const outboxId = randomUUID();
     db.prepare(`INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_snapshot, provider_idempotence_key)
       VALUES (?, 'BOOKING_CANCELLED', 'buyer@example.test', 'hash', 'booking-cancelled', '{}', 'stable-key')`).run(outboxId);
+    // enqueueEmail writes the attempt alongside the message; a fixture that
+    // seeds email_outbox directly has to do the same, because the provider
+    // observation settles the attempt, not the message.
+    db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key, provider_job_id, started_at, provider_request_started_at, send_try_count)
+      VALUES (?, ?, 1, 'stable-key', 'job-1', datetime('now'), datetime('now'), 1)`).run(randomUUID(), outboxId);
     const apiKey = "test-api-key-not-a-secret";
     const app = createApp(db, new MockProvider(), new UnisenderGoProvider({ apiKey, fromEmail: "noreply@example.test", fromName: "Flexperiment", replyToEmail: "hello@example.test" }, async () => Response.json({ status: "success", job_id: "job" })));
     const unsigned = JSON.stringify({ auth: "pending", events_by_user: [{ user_id: 1, events: [{ event_name: "transactional_email_status", event_data: { job_id: "job-1", metadata: { outbox_id: outboxId }, status: "delivered", event_time: "2026-08-20 00:00:00" } }] }] });
     const body = unsigned.replace("pending", createHash("md5").update(unsigned.replace("pending", apiKey)).digest("hex"));
     const response = await app.request("http://flexperiment.ru/v1/webhooks/unisender", { method: "POST", headers: { "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.1" }, body });
     expect(response.status).toBe(200);
-    expect(db.prepare("SELECT status, job_id FROM email_outbox WHERE id = ?").get(outboxId)).toMatchObject({ status: "DELIVERED", job_id: "job-1" });
+    expect(db.prepare("SELECT status FROM email_outbox WHERE id = ?").get(outboxId)).toMatchObject({ status: "DELIVERED" });
+    // The provider job id is the attempt's, not the message's frozen column.
+    expect(db.prepare("SELECT provider_job_id FROM outbox_attempt WHERE message_id = ?").get(outboxId)).toMatchObject({ provider_job_id: "job-1" });
     expect(db.prepare("SELECT status, provider_status, job_id FROM email_provider_events WHERE outbox_id = ?").get(outboxId)).toEqual({ status: "DELIVERED", provider_status: "delivered", job_id: "job-1" });
     db.close();
   });

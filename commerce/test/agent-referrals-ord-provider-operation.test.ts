@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { migrate, openDatabase } from "../src/db";
 import { suspendAgentReferrals } from "../src/agent-referrals-feature-state";
-import { seedActiveAgentReferralsFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
+import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { mintOrdProviderProfile, currentOrdProviderProfile } from "../src/agent-referrals-ord-provider-profile";
 import {
   openOrdProviderOperation, recordOrdProviderOperationSubmitted, confirmOrdProviderOperation, recordOrdProviderOperationErirReconciliation, lockOrdProviderOperation,

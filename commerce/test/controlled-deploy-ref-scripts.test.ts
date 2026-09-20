@@ -89,7 +89,6 @@ printf '{"message":"Deployment request queued."}'
 };
 
 describe("guarded production deployment ref scripts", () => {
-  const deployHelper = "scripts/controlled-coolify-deploy.sh";
   const setRef = "scripts/set-production-deploy-ref.sh";
   const readRef = "scripts/read-production-deploy-ref.sh";
 
@@ -103,84 +102,6 @@ describe("guarded production deployment ref scripts", () => {
     const { result } = runScript(readRef, { remote: "b".repeat(40), remoteMode });
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("PRODUCTION_DEPLOY_REMOTE_POINTER_INVALID");
-  });
-
-  it.each([undefined, "b".repeat(40)])("rejects a missing or wrong production-deploy ref before a webhook", (remote) => {
-    const { result, curlLog } = runScript(deployHelper, { remote });
-    expect(result.status).toBe(1);
-    expect(curlLog).toBe("");
-  });
-
-  it("allows webhook enqueue only when production-deploy is exact", () => {
-    const { result, gitLog, curlLog } = runScript(deployHelper, { remote: sourceCommit });
-    expect(result.status).toBe(0);
-    expect(gitLog).toContain("ls-remote origin refs/heads/production-deploy");
-    expect(gitLog).not.toContain("refs/heads/main");
-    expect(curlLog.trim().split("\n")).toHaveLength(3);
-  });
-
-  it("discards each webhook response body when no capture directory is given, and it never reaches this script's own stdout", () => {
-    const { result, curlLog } = runScript(deployHelper, { remote: sourceCommit });
-    expect(result.status).toBe(0);
-    expect(curlLog.trim().split("\n")).toHaveLength(3);
-    // No capture directory means nothing new is written anywhere and the
-    // response body is never buffered - this is exactly the prior behavior,
-    // structurally unchanged by the capture capability's mere existence.
-    expect(result.stdout).not.toContain("Deployment request queued");
-    const script = readFileSync(deployHelper, "utf8");
-    const noCaptureBranch = script.slice(script.indexOf('if [[ -z "$response_capture_dir" ]]; then'), script.indexOf("return 0"));
-    expect(noCaptureBranch).toContain('-X POST "$url" >/dev/null 2>&1');
-    expect(noCaptureBranch).not.toContain("body=");
-  });
-
-  it("captures each webhook's response body text into the given directory, without parsing or acting on it", () => {
-    const captureDir = mkdtempSync(join(tmpdir(), "flexperiment-coolify-capture-"));
-    temporaryDirectories.push(captureDir);
-    const { result, curlLog } = runScript(deployHelper, { remote: sourceCommit, extraArgs: [captureDir] });
-    expect(result.status).toBe(0);
-    expect(curlLog.trim().split("\n")).toHaveLength(3);
-    // Fixed name set, never derived from the (different-per-target) webhook
-    // URLs themselves.
-    for (const name of ["commerce", "frontend", "admin"]) {
-      const body = readFileSync(join(captureDir, `coolify-response-${name}.json`), "utf8");
-      expect(body).toBe('{"message":"Deployment request queued."}');
-    }
-  });
-
-  it("still fails closed before any webhook call when production-deploy is wrong, even with a capture directory given", () => {
-    const captureDir = mkdtempSync(join(tmpdir(), "flexperiment-coolify-capture-"));
-    temporaryDirectories.push(captureDir);
-    const { result, curlLog } = runScript(deployHelper, { remote: "b".repeat(40), extraArgs: [captureDir] });
-    expect(result.status).toBe(1);
-    expect(curlLog).toBe("");
-  });
-
-  it("still fires every webhook and succeeds when the capture directory cannot be written to", () => {
-    // A plain file where a directory is expected: mkdir -p and every
-    // subsequent write into it must fail, but that must never be treated as
-    // a deployment failure or stop later webhooks from firing.
-    const unwritablePath = join(mkdtempSync(join(tmpdir(), "flexperiment-coolify-capture-")), "not-a-directory");
-    writeFileSync(unwritablePath, "");
-    temporaryDirectories.push(unwritablePath.replace(/\/[^/]+$/, ""));
-    const { result, curlLog } = runScript(deployHelper, { remote: sourceCommit, extraArgs: [unwritablePath] });
-    expect(result.status).toBe(0);
-    expect(curlLog.trim().split("\n")).toHaveLength(3);
-    expect(result.stderr).toContain("Warning:");
-  });
-
-  it("fails closed on a real Coolify rejection, and capture does not mask or survive past it", () => {
-    const captureDir = mkdtempSync(join(tmpdir(), "flexperiment-coolify-capture-"));
-    temporaryDirectories.push(captureDir);
-    const { result, curlLog } = runScript(deployHelper, { remote: sourceCommit, extraArgs: [captureDir], curlFails: true });
-    expect(result.status).toBe(1);
-    expect(result.stderr).toContain("A Coolify deployment webhook rejected a request.");
-    // The first (commerce) webhook fails and the run stops there - frontend
-    // and admin are never called, exactly as before this change.
-    expect(curlLog.trim().split("\n")).toHaveLength(1);
-    // The rejection body is still captured for forensic review, but it is
-    // never treated as a success.
-    const body = readFileSync(join(captureDir, "coolify-response-commerce.json"), "utf8");
-    expect(body).toBe('{"message":"Coolify rejected the request."}');
   });
 
   it("CAS-moves only production-deploy across unrelated histories and proves the remote postcondition", () => {

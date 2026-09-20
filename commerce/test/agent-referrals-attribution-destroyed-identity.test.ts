@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
-import { seedActiveAgentReferralsFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
+import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile, issueFrameworkToPartner, type AdminPrincipal, type PartnerPrincipal } from "../src/agent-referrals-partner-identity";
 import { activatePartner, getPartnerIdentity } from "../src/agent-referrals-onboarding";
 import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES } from "../src/agent-referrals-framework-delegation";
@@ -96,7 +96,7 @@ describe("resolveOrderAttribution: destroyed identity refusal (integration-harde
     const p1 = readyPartner(db);
     const occ = seedOccurrence(db, p1.cityId);
     activatedEngagement(db, p1.partner, p1.partnerIdentityId, occ);
-    const attribution = resolveOrderAttribution(db, { id: p1.promo.promo_code_id, agent_id: p1.agentId }, occ, null);
+    const attribution = resolveOrderAttribution(db, { id: p1.promo.promo_code_id, agent_id: p1.agentId }, occ);
     expect(attribution.reward_authority_kind).toBe("ENGAGEMENT_SCOPED");
   });
 
@@ -110,10 +110,10 @@ describe("resolveOrderAttribution: destroyed identity refusal (integration-harde
     destroyPartnerIdentity(db, admin, p1.partnerIdentityId, "erasure request");
     expect(getPartnerIdentity(db, p1.partnerIdentityId)!.onboarding_state).toBe("PARTNER_ACTIVE");
 
-    expect(() => resolveOrderAttribution(db, { id: p1.promo.promo_code_id, agent_id: p1.agentId }, occ, null))
+    expect(() => resolveOrderAttribution(db, { id: p1.promo.promo_code_id, agent_id: p1.agentId }, occ))
       .toThrow(AgentReferralsAttributionError);
     try {
-      resolveOrderAttribution(db, { id: p1.promo.promo_code_id, agent_id: p1.agentId }, occ, null);
+      resolveOrderAttribution(db, { id: p1.promo.promo_code_id, agent_id: p1.agentId }, occ);
       throw new Error("expected a throw");
     } catch (error) {
       expect((error as AgentReferralsAttributionError).code).toBe("AGENT_REFERRALS_ATTRIBUTION_PARTNER_IDENTITY_DESTROYED");

@@ -48,10 +48,19 @@ const storedFeatureState = (db: Database.Database): AgentReferralsFeatureStateRo
   };
 };
 
-/** A missing or DORMANT historical row is operationally ACTIVE until P9. */
+/**
+ * The live authority, and it fails closed. A physically absent singleton is
+ * corruption, not permission: it must never read as ACTIVE and hand out new
+ * engagement, attribution or ORD authority. The historical DORMANT value is a
+ * different matter - it is a pre-baseline artifact of a control row that does
+ * exist, and after canonicalization it carries no operational meaning, so it
+ * reads ACTIVE. `agentReferralsFeatureStateAt()` below answers a different
+ * question (what held at an instant) and may still default to ACTIVE before the
+ * first event, because there the absence is of history, not of the control row.
+ */
 export const agentReferralsFeatureState = (db: Database.Database): AgentReferralsFeatureStateRow => {
   const stored = storedFeatureState(db);
-  if (!stored) return { state: "ACTIVE", owner_id: null, revision: 0 };
+  if (!stored) throw new AgentReferralsFeatureError("AGENT_REFERRALS_FEATURE_STATE_MISSING", 500);
   return { ...stored, state: stored.state === "SUSPENDED" ? "SUSPENDED" : "ACTIVE" };
 };
 

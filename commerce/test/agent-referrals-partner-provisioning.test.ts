@@ -6,7 +6,7 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import { suspendAgentReferrals } from "../src/agent-referrals-feature-state";
-import { seedActiveAgentReferralsFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
+import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import {
   consumePartnerInvite,
   PartnerIdentityError,

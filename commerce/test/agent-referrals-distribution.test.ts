@@ -6,7 +6,7 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import { suspendAgentReferrals, reactivateAgentReferrals } from "../src/agent-referrals-feature-state";
-import { seedActiveAgentReferralsFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
+import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile, issueFrameworkToPartner, type AdminPrincipal, type PartnerPrincipal } from "../src/agent-referrals-partner-identity";
 import { activatePartner, getPartnerIdentity } from "../src/agent-referrals-onboarding";
 import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES } from "../src/agent-referrals-framework-delegation";

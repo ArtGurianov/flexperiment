@@ -25,4 +25,27 @@ describe("release readiness", () => {
     expect(evaluateReadiness(expectation, { ...admitted(), worker: { ...runtime, lastSuccessfulSweepAt: "2026-09-18T23:00:00.000Z" } }, now)).toEqual({ state: "PENDING", code: "WORKER_SWEEP_STALE" });
     expect(evaluateReadiness({ ...expectation, schemaInventory: "0001_launch_baseline.sql" }, admitted(), now)).toEqual({ state: "REJECTED", code: "EXPECTED_SCHEMA_INVENTORY_INVALID" });
   });
+
+  it("separates malformed evidence from evidence that has simply not converged", () => {
+    // Waiting cannot repair a timestamp or commit that does not parse, so a
+    // read-only convergence loop must be told to stop rather than keep polling.
+    expect(evaluateReadiness(expectation, { ...admitted(), commerce: { ...runtime, sourceCommit: "not-a-commit" } }, now))
+      .toEqual({ state: "REJECTED", code: "COMMERCE_SOURCE_COMMIT_INVALID" });
+    expect(evaluateReadiness(expectation, { ...admitted(), commerce: { ...runtime, heartbeatAt: "yesterday" } }, now))
+      .toEqual({ state: "REJECTED", code: "COMMERCE_HEARTBEAT_INVALID" });
+    expect(evaluateReadiness(expectation, { ...admitted(), worker: { ...runtime, lastSuccessfulSweepAt: "soon" } }, now))
+      .toEqual({ state: "REJECTED", code: "WORKER_SWEEP_INVALID" });
+    // The same unit, one field later, is ordinary convergence again.
+    expect(evaluateReadiness(expectation, { ...admitted(), commerce: { ...runtime, heartbeatAt: "2026-09-18T23:00:00.000Z" } }, now))
+      .toEqual({ state: "PENDING", code: "COMMERCE_HEARTBEAT_STALE" });
+  });
+
+  it("judges an unsupported database before it waits on any runtime evidence", () => {
+    // An unsupported lineage is a property of the database, not a deploy that
+    // has yet to converge; it must never read as "still waiting for the worker".
+    expect(evaluateReadiness(expectation, { commerce: undefined, worker: undefined, schema: { lineage: "LEGACY", versions }, legal: undefined }, now))
+      .toEqual({ state: "REJECTED", code: "LEGACY_PRELAUNCH_DATABASE_NOT_SUPPORTED" });
+    expect(evaluateReadiness(expectation, { commerce: undefined, worker: undefined, schema: { lineage: "UNKNOWN", versions }, legal: undefined }, now))
+      .toEqual({ state: "REJECTED", code: "UNKNOWN_SCHEMA_LINEAGE" });
+  });
 });

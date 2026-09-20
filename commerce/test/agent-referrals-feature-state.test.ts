@@ -103,4 +103,17 @@ describe("agent referrals feature state", () => {
       .toThrow(/AGENT_REFERRALS_FEATURE_STATE_EVENT_IMMUTABLE/);
     expect(agentReferralsFeatureStateAt(db, event.created_at)).toBe("SUSPENDED");
   });
+
+  it("fails closed when the control row is physically absent", () => {
+    const db = fresh();
+    // A missing singleton is corruption, not permission. Reading it as ACTIVE
+    // would hand out new engagement, attribution and ORD authority on a
+    // database that cannot say whether the subsystem is suspended.
+    db.prepare("DELETE FROM agent_referrals_feature_state WHERE singleton = 1").run();
+    expect(() => agentReferralsFeatureState(db)).toThrow(AgentReferralsFeatureError);
+    expect(() => agentReferralsFeatureState(db)).toThrow(/AGENT_REFERRALS_FEATURE_STATE_MISSING/);
+    // The historical resolver answers a different question - what held at an
+    // instant - so an empty event log still resolves to the canonical ACTIVE.
+    expect(agentReferralsFeatureStateAt(db, new Date().toISOString())).toBe("ACTIVE");
+  });
 });

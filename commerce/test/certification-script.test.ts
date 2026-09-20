@@ -46,6 +46,22 @@ function helperOutput(name: string, ...args: string[]) {
   }).trim();
 }
 
+/**
+ * certification.sh now refuses to run without an operator-supplied target
+ * (it no longer defaults to an obsolete migration or legal release), so these
+ * resume-path tests must supply one before the script can reach the resume
+ * validation they actually exercise.
+ */
+const certificationTargetEnv = {
+  EXPECTED_MIGRATION: "0061_occurrence_admin_reserved_seats.sql",
+  EXPECTED_LEGAL_VERSION: "test-1",
+  EXPECTED_LEGAL_RELEASE_ID: "test-release",
+  EXPECTED_PUBLIC_OFFER_SHA256: "0".repeat(64),
+  EXPECTED_PRIVACY_POLICY_SHA256: "0".repeat(64),
+  EXPECTED_PD_CONSENT_SHA256: "0".repeat(64),
+  EXPECTED_CHECKOUT_DISCLOSURE_SHA256: "0".repeat(64),
+};
+
 describe("production certification runbook checkpoints", () => {
   it("requires an explicit certification target", () => {
     const source = readFileSync(certificationScript, "utf8");
@@ -300,6 +316,7 @@ describe("production certification runbook checkpoints", () => {
           cwd: repositoryRoot,
           encoding: "utf8",
           stdio: "pipe",
+          env: { ...process.env, ...certificationTargetEnv },
         });
       } catch (error) {
         failure = error;
@@ -333,6 +350,7 @@ describe("production certification runbook checkpoints", () => {
           cwd: repositoryRoot,
           encoding: "utf8",
           stdio: "pipe",
+          env: { ...process.env, ...certificationTargetEnv },
         });
       } catch (error) {
         failure = error;

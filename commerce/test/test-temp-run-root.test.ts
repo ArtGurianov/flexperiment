@@ -128,8 +128,6 @@ describe("test temp run root", () => {
       "./certification.sh",
       "./deploy/test-admin-nginx-config.sh",
       "./deploy/test-frontend-nginx-routing.sh",
-      "./scripts/print-production-recovery-state.sh",
-      "./scripts/release/release-api.sh",
     ]);
   });
 

@@ -9,7 +9,7 @@ process.env.COMMERCE_AGENT_REFERRALS_PAYOUT_KEY_ID ??= "test-payout-key-for-agen
 process.env.COMMERCE_AGENT_REFERRALS_PAYOUT_KEY_BASE64 ??= Buffer.alloc(32, 7).toString("base64");
 import { migrate, openDatabase } from "../src/db";
 import { suspendAgentReferrals, reactivateAgentReferrals, agentReferralsFeatureState } from "../src/agent-referrals-feature-state";
-import { seedActiveAgentReferralsFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
+import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import {
   provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile,
   issueFrameworkToPartner, type AdminPrincipal, type PartnerPrincipal,

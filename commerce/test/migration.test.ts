@@ -5,7 +5,6 @@ import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { migrate } from "../src/db";
 import { openUnmigratedTestDatabase } from "./support/test-database";
-import { recordRuntimeHeartbeatEvidence, recordRuntimeStartupEvidence, recordSuccessfulWorkerSweep } from "../src/runtime-release-evidence";
 
 const migrationsDirectory = join(process.cwd(), "commerce", "migrations");
 const openDatabase = (filename = ":memory:") => {
@@ -90,7 +89,6 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
   it("adds the booking-time age band without rewriting DOB-era participant evidence", () => {
     const db = openDatabase(":memory:");
     applyThrough(db, "0030_unisender_event_dump_probe_and_saturation.sql");
-    expect(recordRuntimeStartupEvidence(db, "WORKER", "before-phase0")).toBe(false);
     const cityId = randomUUID(); const occurrenceId = randomUUID(); const releaseId = randomUUID(); const orderId = randomUUID();
     db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, 'age-band-city', 'Age band city')").run(cityId);
     db.prepare("INSERT INTO legal_releases(id, version, effective_at, manifest_json, active) VALUES (?, 'age-band-release', datetime('now'), '{}', 1)").run(releaseId);
@@ -109,51 +107,6 @@ describe("0012 refund hardening and 0013 promoter migrations", () => {
     db.close();
   });
 
-  it("applies Phase 0 infrastructure 0032 and 0033 before the later missing 0031 through the real migration runner", () => {
-    const db = openDatabase(":memory:");
-    applyThrough(db, "0030_unisender_event_dump_probe_and_saturation.sql");
-    const recorded = db.prepare("INSERT INTO schema_migrations(version) VALUES (?)");
-    for (const migration of readdirSync(migrationsDirectory).filter((name) => name.endsWith(".sql") && name <= "0030_unisender_event_dump_probe_and_saturation.sql")) recorded.run(migration);
-    const cityId = randomUUID(); const occurrenceId = randomUUID(); const releaseId = randomUUID(); const orderId = randomUUID();
-    db.prepare("INSERT INTO cities(id, slug, title) VALUES (?, 'phase0-city', 'Phase 0')").run(cityId);
-    db.prepare("INSERT INTO legal_releases(id, version, effective_at, manifest_json, active) VALUES (?, 'phase0-release', datetime('now'), '{}', 1)").run(releaseId);
-    db.prepare(`INSERT INTO occurrences(id, city_id, title, starts_at, ends_at, timezone, price_kopecks, capacity, visibility, venue_status, venue_name, venue_address)
-      VALUES (?, ?, 'Phase 0', '2030-01-01T10:00:00.000Z', '2030-01-01T12:00:00.000Z', 'Asia/Novosibirsk', 100, 1, 'PUBLISHED', 'CONFIRMED', 'Studio', 'Lenina 1')`).run(occurrenceId, cityId);
-    db.prepare(`INSERT INTO orders(id, public_status_id, public_order_number, occurrence_id, customer_name, customer_email, customer_email_hash, amount_kopecks, occurrence_material_revision, venue_disclosure_snapshot, checkout_legal_release_id, legal_snapshot_json, eligibility_confirmed_at, participant_date_of_birth, participant_age_at_occurrence)
-      VALUES (?, 'phase0-status', 'FXPHASE0MIGRATION0001', ?, 'Legacy', 'legacy@example.test', 'hash', 100, 1, 'Studio', ?, '{}', 'legacy-evidence', '2012-02-29', 17)`).run(orderId, occurrenceId, releaseId);
-    const before = db.prepare("SELECT eligibility_confirmed_at, participant_date_of_birth, participant_age_at_occurrence FROM orders WHERE id = ?").get(orderId) as Record<string, unknown>;
-    const bootstrapDirectory = mkdtempSync(join(tmpdir(), "flexperiment-phase0-"));
-    try {
-      cpSync(join(migrationsDirectory, "0032_release_sales_gate.sql"), join(bootstrapDirectory, "0032_release_sales_gate.sql"));
-      cpSync(join(migrationsDirectory, "0033_runtime_release_evidence.sql"), join(bootstrapDirectory, "0033_runtime_release_evidence.sql"));
-      migrate(db, bootstrapDirectory);
-      expect(db.prepare("SELECT version FROM schema_migrations WHERE version IN ('0032_release_sales_gate.sql', '0033_runtime_release_evidence.sql') ORDER BY version").all()).toEqual([
-        { version: "0032_release_sales_gate.sql" }, { version: "0033_runtime_release_evidence.sql" },
-      ]);
-      expect(db.prepare("SELECT version FROM schema_migrations WHERE version = '0031_participant_age_band.sql'").get()).toBeUndefined();
-      expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('release_sales_gate', 'runtime_release_evidence') ORDER BY name").all()).toEqual([
-        { name: "release_sales_gate" }, { name: "runtime_release_evidence" },
-      ]);
-      expect(recordRuntimeStartupEvidence(db, "WORKER", "phase0")).toBe(true);
-      expect(db.prepare("SELECT started_at, observed_at FROM runtime_release_evidence WHERE unit = 'WORKER'").get()).toEqual({
-        started_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/),
-        observed_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/),
-      });
-      db.prepare("UPDATE release_sales_gate SET sales_paused = 1, owner_release_id = 'phase0-owner'").run();
-      migrate(db);
-      expect(db.prepare("SELECT version FROM schema_migrations WHERE version IN ('0031_participant_age_band.sql', '0032_release_sales_gate.sql', '0033_runtime_release_evidence.sql', '0034_worker_sweep_evidence.sql') ORDER BY version").all()).toEqual([
-        { version: "0031_participant_age_band.sql" }, { version: "0032_release_sales_gate.sql" }, { version: "0033_runtime_release_evidence.sql" }, { version: "0034_worker_sweep_evidence.sql" },
-      ]);
-      expect(db.prepare("SELECT COUNT(*) AS count FROM schema_migrations WHERE version IN ('0032_release_sales_gate.sql', '0033_runtime_release_evidence.sql')").get()).toEqual({ count: 2 });
-      expect((db.prepare("PRAGMA table_info(orders)").all() as { name: string }[]).map(({ name }) => name)).toContain("participant_age_band");
-      expect(db.prepare("SELECT sales_paused, owner_release_id FROM release_sales_gate").get()).toEqual({ sales_paused: 1, owner_release_id: "phase0-owner" });
-      expect(db.prepare("SELECT source_commit, last_successful_sweep_at FROM runtime_release_evidence WHERE unit = 'WORKER'").get()).toEqual({ source_commit: "phase0", last_successful_sweep_at: null });
-      expect(recordRuntimeHeartbeatEvidence(db, "WORKER", "phase0")).toBe(true);
-      expect(recordSuccessfulWorkerSweep(db, "phase0")).toBe(true);
-      expect(db.prepare("SELECT last_successful_sweep_at FROM runtime_release_evidence WHERE unit = 'WORKER'").get()).toEqual({ last_successful_sweep_at: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/) });
-      expect(db.prepare("SELECT eligibility_confirmed_at, participant_date_of_birth, participant_age_at_occurrence, participant_age_band FROM orders WHERE id = ?").get(orderId)).toEqual({ ...before, participant_age_band: null });
-    } finally { rmSync(bootstrapDirectory, { recursive: true, force: true }); db.close(); }
-  });
   it("upgrades an empty database and enforces public order numbers", () => {
     const db = openDatabase(":memory:");
     applyThrough(db, "0012_refund_hardening.sql");

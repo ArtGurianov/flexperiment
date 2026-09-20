@@ -17,6 +17,26 @@ import {
 const open: Database.Database[] = [];
 afterEach(() => { while (open.length) open.pop()!.close(); });
 
+/**
+ * The publication instant must be AFTER the creative authorization's own
+ * effective_at (SQLite CURRENT_TIMESTAMP at authorization time), or
+ * resolveHistoricalCreativeAuthority finds no authority at all and every report
+ * fails AGENT_REFERRALS_ORD_REPORTING_FORMAT_UNRESOLVED. This file used to pin a
+ * literal calendar date and silently began failing at midnight on 2026-09-20,
+ * when real time overtook it. Anchoring the whole fixture timeline to the month
+ * after "now" keeps the ordering true permanently instead of until a hardcoded
+ * date arrives.
+ */
+const anchorNow = new Date();
+const MONTH_0 = new Date(Date.UTC(anchorNow.getUTCFullYear(), anchorNow.getUTCMonth() + 1, 1));
+const MONTH_1 = new Date(Date.UTC(MONTH_0.getUTCFullYear(), MONTH_0.getUTCMonth() + 1, 1));
+const monthKey = (month: Date) => month.toISOString().slice(0, 7);
+const dayIn = (month: Date, day: number) => `${monthKey(month)}-${String(day).padStart(2, "0")}T00:00:00.000Z`;
+const M0 = monthKey(MONTH_0);
+const M1 = monthKey(MONTH_1);
+const M2 = monthKey(new Date(Date.UTC(MONTH_1.getUTCFullYear(), MONTH_1.getUTCMonth() + 1, 1)));
+const PUBLISHED_AT = dayIn(MONTH_0, 20);
+
 const distributionFor = (db: Database.Database, engagementId: string, publishedAt: string, channelKey = "telegram") => {
   const p1 = db.prepare("SELECT pi.id AS partner_identity_id FROM engagements e JOIN partner_identities pi ON pi.id = e.partner_identity_id WHERE e.id = ?").get(engagementId) as { partner_identity_id: string };
   const partner = { realm: "PARTNER" as const, partner_identity_id: p1.partner_identity_id, partner_session_id: "n/a" };
@@ -29,10 +49,10 @@ const distributionFor = (db: Database.Database, engagementId: string, publishedA
 // within setupWithDistribution's default September publish month, and one a
 // month later, so a test can deterministically choose whether October is
 // yet owed.
-const WITHIN_SEPTEMBER = "2026-09-25T00:00:00.000Z";
-const WITHIN_OCTOBER = "2026-10-25T00:00:00.000Z";
+const WITHIN_SEPTEMBER = dayIn(MONTH_0, 25);
+const WITHIN_OCTOBER = dayIn(MONTH_1, 25);
 
-const setupWithDistribution = (formatKind: "post" | "long_video" = "post", publishedAt = "2026-09-20T00:00:00.000Z") => {
+const setupWithDistribution = (formatKind: "post" | "long_video" = "post", publishedAt = PUBLISHED_AT) => {
   const { db, domain } = fresh();
   open.push(db);
   seedOrdProviderProfiles(db);
@@ -48,35 +68,35 @@ const setupWithDistribution = (formatKind: "post" | "long_video" = "post", publi
 describe("resolveOrdReportingBasis", () => {
   it("ordinary formats resolve to CALENDAR_MONTH", () => {
     const { db } = fresh(); open.push(db);
-    expect(resolveOrdReportingBasis(db, "post", "2026-09-01T00:00:00.000Z")).toBe("CALENDAR_MONTH");
+    expect(resolveOrdReportingBasis(db, "post", dayIn(MONTH_0, 1))).toBe("CALENDAR_MONTH");
   });
 
   it("authored/persistent formats resolve to PROVIDER_SPECIAL_PERIOD", () => {
     const { db } = fresh(); open.push(db);
-    expect(resolveOrdReportingBasis(db, "long_video", "2026-09-01T00:00:00.000Z")).toBe("PROVIDER_SPECIAL_PERIOD");
-    expect(resolveOrdReportingBasis(db, "stream", "2026-09-01T00:00:00.000Z")).toBe("PROVIDER_SPECIAL_PERIOD");
+    expect(resolveOrdReportingBasis(db, "long_video", dayIn(MONTH_0, 1))).toBe("PROVIDER_SPECIAL_PERIOD");
+    expect(resolveOrdReportingBasis(db, "stream", dayIn(MONTH_0, 1))).toBe("PROVIDER_SPECIAL_PERIOD");
   });
 });
 
 describe("fileOrdDistributionPeriodReport: ordinary CALENDAR_MONTH reporting", () => {
   it("cross-month reporting: one publication spans two independent period reports", () => {
-    const { db, distributionId } = setupWithDistribution("post", "2026-09-20T00:00:00.000Z");
+    const { db, distributionId } = setupWithDistribution("post", PUBLISHED_AT);
     const sep = fileOrdDistributionPeriodReport(db, admin, {
-      distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 100 } }, evidence_ref: "ev-sep",
+      distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 100 } }, evidence_ref: "ev-sep",
     }, currentOrdDistributionPeriodReport(db, {
-      distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 100 } }, evidence_ref: "ev-sep",
+      distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 100 } }, evidence_ref: "ev-sep",
     }.distribution_id, {
-      distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 100 } }, evidence_ref: "ev-sep",
+      distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 100 } }, evidence_ref: "ev-sep",
     }.reporting_period_key)?.id ?? null);
     const oct = fileOrdDistributionPeriodReport(db, admin, {
-      distribution_id: distributionId, reporting_period_key: "2026-10", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 50 } }, evidence_ref: "ev-oct",
+      distribution_id: distributionId, reporting_period_key: M1, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 50 } }, evidence_ref: "ev-oct",
     }, currentOrdDistributionPeriodReport(db, {
-      distribution_id: distributionId, reporting_period_key: "2026-10", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 50 } }, evidence_ref: "ev-oct",
+      distribution_id: distributionId, reporting_period_key: M1, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 50 } }, evidence_ref: "ev-oct",
     }.distribution_id, {
-      distribution_id: distributionId, reporting_period_key: "2026-10", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 50 } }, evidence_ref: "ev-oct",
+      distribution_id: distributionId, reporting_period_key: M1, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 50 } }, evidence_ref: "ev-oct",
     }.reporting_period_key)?.id ?? null);
-    expect(sep.reporting_period_key).toBe("2026-09");
-    expect(oct.reporting_period_key).toBe("2026-10");
+    expect(sep.reporting_period_key).toBe(M0);
+    expect(oct.reporting_period_key).toBe(M1);
     expect(sep.revision).toBe(1);
     expect(oct.revision).toBe(1);
     expect(ordDistributionPeriodReportsForDistribution(db, distributionId)).toHaveLength(2);
@@ -85,11 +105,11 @@ describe("fileOrdDistributionPeriodReport: ordinary CALENDAR_MONTH reporting", (
   it("REPORTING_DATA_UNAVAILABLE is a first-class state: no statistics_json, forces REVIEW_REQUIRED semantics via the caller", () => {
     const { db, distributionId } = setupWithDistribution();
     const report = fileOrdDistributionPeriodReport(db, admin, {
-      distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev",
     }, currentOrdDistributionPeriodReport(db, {
-      distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev",
     }.distribution_id, {
-      distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev",
     }.reporting_period_key)?.id ?? null);
     expect(report.statistics_state).toBe("REPORTING_DATA_UNAVAILABLE");
     expect(report.statistics_json).toBeNull();
@@ -121,10 +141,10 @@ describe("fileOrdDistributionPeriodReport: ordinary CALENDAR_MONTH reporting", (
 
   it("review_required is a mechanically-derived generated column: 1 for REPORTING_DATA_UNAVAILABLE, 0 for ACTUAL - never settable directly", () => {
     const { db, distributionId } = setupWithDistribution();
-    const unavailable = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev" }.reporting_period_key)?.id ?? null);
+    const unavailable = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev" }.reporting_period_key)?.id ?? null);
     expect(unavailable.review_required).toBe(1);
     expect(isOrdReportingTailComplete(db, distributionId, WITHIN_SEPTEMBER)).toBe(false);
-    const actual = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev2", correction_reason: "data arrived" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev2", correction_reason: "data arrived" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev2", correction_reason: "data arrived" }.reporting_period_key)?.id ?? null);
+    const actual = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev2", correction_reason: "data arrived" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev2", correction_reason: "data arrived" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev2", correction_reason: "data arrived" }.reporting_period_key)?.id ?? null);
     expect(actual.review_required).toBe(0);
     // round-3 P0.2: review_required = 0 alone is not tail-complete - VK submission + ERIR reconciliation are still owed.
     expect(isOrdReportingTailComplete(db, distributionId, WITHIN_SEPTEMBER)).toBe(false);
@@ -133,13 +153,13 @@ describe("fileOrdDistributionPeriodReport: ordinary CALENDAR_MONTH reporting", (
   it("round-3 P0.2: isOrdReportingTailComplete becomes true only once the current report is ACTUALLY submitted (review_required=0 is necessary but not sufficient)", () => {
     const { db, distributionId } = setupWithDistribution();
     const submitted = fileOrdDistributionPeriodReport(db, admin, {
-      distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
       submission: { vk_operation_external_id: "vk-op-1", erir_code: "erir-1", submission_evidence_ref: "ev-submit" },
     }, currentOrdDistributionPeriodReport(db, {
-      distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
       submission: { vk_operation_external_id: "vk-op-1", erir_code: "erir-1", submission_evidence_ref: "ev-submit" },
     }.distribution_id, {
-      distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
       submission: { vk_operation_external_id: "vk-op-1", erir_code: "erir-1", submission_evidence_ref: "ev-submit" },
     }.reporting_period_key)?.id ?? null);
     expect(submitted.submission_state).toBe("SUBMITTED");
@@ -153,26 +173,26 @@ describe("fileOrdDistributionPeriodReport: ordinary CALENDAR_MONTH reporting", (
 
   it("isOrdReportingTailComplete is false while ANY period for the distribution still carries an UNAVAILABLE current report", () => {
     const { db, distributionId } = setupWithDistribution();
-    fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev" }.reporting_period_key)?.id ?? null);
-    fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-10", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev2" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "2026-10", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev2" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "2026-10", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev2" }.reporting_period_key)?.id ?? null);
+    fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev" }.reporting_period_key)?.id ?? null);
+    fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M1, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev2" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M1, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev2" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M1, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev2" }.reporting_period_key)?.id ?? null);
     expect(isOrdReportingTailComplete(db, distributionId, WITHIN_OCTOBER)).toBe(false);
   });
 
   describe("integration-hardening #4: the authoritative CALENDAR_MONTH obligation set, not merely 'every EXISTING report row is complete'", () => {
     it("proves the previously demonstrated bypass is now impossible: a live September-published distribution with ONLY September filed+submitted, October never touched at all, is false once the reference instant reaches October", () => {
-      const { db, distributionId } = setupWithDistribution("post", "2026-09-20T00:00:00.000Z");
+      const { db, distributionId } = setupWithDistribution("post", PUBLISHED_AT);
       const submitted = fileOrdDistributionPeriodReport(db, admin, {
-        distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
+        distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
         submission: { vk_operation_external_id: "vk-op-1", erir_code: "erir-1", submission_evidence_ref: "ev-submit" },
       }, currentOrdDistributionPeriodReport(db, {
-        distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
+        distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
         submission: { vk_operation_external_id: "vk-op-1", erir_code: "erir-1", submission_evidence_ref: "ev-submit" },
       }.distribution_id, {
-        distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
+        distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
         submission: { vk_operation_external_id: "vk-op-1", erir_code: "erir-1", submission_evidence_ref: "ev-submit" },
       }.reporting_period_key)?.id ?? null);
       expect(submitted.submission_state).toBe("SUBMITTED");
-      expect(ordDistributionPeriodReportsForDistribution(db, distributionId).map((r) => r.reporting_period_key)).toEqual(["2026-09"]);
+      expect(ordDistributionPeriodReportsForDistribution(db, distributionId).map((r) => r.reporting_period_key)).toEqual([M0]);
 
       // As of September, October is not yet owed - true is correct.
       expect(isOrdReportingTailComplete(db, distributionId, WITHIN_SEPTEMBER)).toBe(true);
@@ -181,13 +201,13 @@ describe("fileOrdDistributionPeriodReport: ordinary CALENDAR_MONTH reporting", (
     });
 
     it("no obligations exist yet: false even before the distribution's own published month has ended", () => {
-      const { db, distributionId } = setupWithDistribution("post", "2026-09-20T00:00:00.000Z");
-      expect(isOrdReportingTailComplete(db, distributionId, "2026-09-21T00:00:00.000Z")).toBe(false);
+      const { db, distributionId } = setupWithDistribution("post", PUBLISHED_AT);
+      expect(isOrdReportingTailComplete(db, distributionId, dayIn(MONTH_0, 21))).toBe(false);
     });
 
     it("multiple owed periods, all complete: true", () => {
-      const { db, distributionId } = setupWithDistribution("post", "2026-09-20T00:00:00.000Z");
-      for (const period of ["2026-09", "2026-10", "2026-11"]) {
+      const { db, distributionId } = setupWithDistribution("post", PUBLISHED_AT);
+      for (const period of [M0, M1, M2]) {
         fileOrdDistributionPeriodReport(db, admin, {
           distribution_id: distributionId, reporting_period_key: period, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 1 } }, evidence_ref: `ev-${period}`,
           submission: { vk_operation_external_id: `vk-${period}`, erir_code: `erir-${period}`, submission_evidence_ref: `ev-submit-${period}` },
@@ -203,8 +223,8 @@ describe("fileOrdDistributionPeriodReport: ordinary CALENDAR_MONTH reporting", (
     });
 
     it("multiple owed periods, one incomplete (submitted but never reconciled is not the failure here - simply never filed): false", () => {
-      const { db, distributionId } = setupWithDistribution("post", "2026-09-20T00:00:00.000Z");
-      for (const period of ["2026-09", "2026-11"]) {
+      const { db, distributionId } = setupWithDistribution("post", PUBLISHED_AT);
+      for (const period of [M0, M2]) {
         fileOrdDistributionPeriodReport(db, admin, {
           distribution_id: distributionId, reporting_period_key: period, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 1 } }, evidence_ref: `ev-${period}`,
           submission: { vk_operation_external_id: `vk-${period}`, erir_code: `erir-${period}`, submission_evidence_ref: `ev-submit-${period}` },
@@ -221,19 +241,19 @@ describe("fileOrdDistributionPeriodReport: ordinary CALENDAR_MONTH reporting", (
     });
 
     it("a distribution ended in a past month owes nothing past its own ended_at, regardless of how far referenceInstantIso advances", () => {
-      const { db, distributionId } = setupWithDistribution("post", "2026-09-20T00:00:00.000Z");
+      const { db, distributionId } = setupWithDistribution("post", PUBLISHED_AT);
       correctDistribution(db, admin, distributionId, {
         channel_key: "telegram", resource_kind: "channel", resource_identifier: "@example_channel", distribution_resource_url: "https://t.me/example_channel/1",
-        published_at: "2026-09-20T00:00:00.000Z", ended_at: "2026-09-25T00:00:00.000Z", evidence_ref: "ev-distribution-1",
+        published_at: PUBLISHED_AT, ended_at: dayIn(MONTH_0, 25), evidence_ref: "ev-distribution-1",
       }, "distribution concluded", currentDistributionRevision(db, distributionId)!.id);
       const submitted = fileOrdDistributionPeriodReport(db, admin, {
-        distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
+        distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
         submission: { vk_operation_external_id: "vk-op-1", erir_code: "erir-1", submission_evidence_ref: "ev-submit" },
       }, currentOrdDistributionPeriodReport(db, {
-        distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
+        distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
         submission: { vk_operation_external_id: "vk-op-1", erir_code: "erir-1", submission_evidence_ref: "ev-submit" },
       }.distribution_id, {
-        distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
+        distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
         submission: { vk_operation_external_id: "vk-op-1", erir_code: "erir-1", submission_evidence_ref: "ev-submit" },
       }.reporting_period_key)?.id ?? null);
       expect(submitted.submission_state).toBe("SUBMITTED");
@@ -242,16 +262,16 @@ describe("fileOrdDistributionPeriodReport: ordinary CALENDAR_MONTH reporting", (
     });
 
     it("integration-hardening round-2 #4b: PROVIDER_SPECIAL_PERIOD fails closed unconditionally - even a fully filed and submitted period never reports the tail complete, since the true VK-defined obligation set cannot be independently derived", () => {
-      const { db, distributionId } = setupWithDistribution("long_video", "2026-09-20T00:00:00.000Z");
+      const { db, distributionId } = setupWithDistribution("long_video", PUBLISHED_AT);
       recordAgentReferralsEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY, true);
       const submitted = fileOrdDistributionPeriodReport(db, admin, {
-        distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev",
+        distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev",
         submission: { vk_operation_external_id: "vk-op-1", erir_code: "erir-1", submission_evidence_ref: "ev-submit" },
       }, currentOrdDistributionPeriodReport(db, {
-        distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev",
+        distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev",
         submission: { vk_operation_external_id: "vk-op-1", erir_code: "erir-1", submission_evidence_ref: "ev-submit" },
       }.distribution_id, {
-        distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev",
+        distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev",
         submission: { vk_operation_external_id: "vk-op-1", erir_code: "erir-1", submission_evidence_ref: "ev-submit" },
       }.reporting_period_key)?.id ?? null);
       expect(submitted.submission_state).toBe("SUBMITTED");
@@ -260,7 +280,7 @@ describe("fileOrdDistributionPeriodReport: ordinary CALENDAR_MONTH reporting", (
     });
 
     it("integration-hardening round-2 P1: an invalid referenceInstantIso throws rather than silently reporting the tail complete", () => {
-      const { db, distributionId } = setupWithDistribution("post", "2026-09-20T00:00:00.000Z");
+      const { db, distributionId } = setupWithDistribution("post", PUBLISHED_AT);
       // Nothing has ever been filed for this distribution - the old bug
       // returned true here regardless.
       expect(() => isOrdReportingTailComplete(db, distributionId, "not-a-real-instant")).toThrow(/AGENT_REFERRALS_ORD_REPORTING_REFERENCE_INSTANT_INVALID/);
@@ -297,13 +317,13 @@ describe("round-2 P0.6: exact submission/reconciliation evidence shape", () => {
   it("a well-formed SUBMITTED row (all three fields present) is legal", () => {
     const { db, distributionId } = setupWithDistribution();
     const report = fileOrdDistributionPeriodReport(db, admin, {
-      distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
       submission: { vk_operation_external_id: "vk-op-1", erir_code: "erir-1", submission_evidence_ref: "ev-submit" },
     }, currentOrdDistributionPeriodReport(db, {
-      distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
       submission: { vk_operation_external_id: "vk-op-1", erir_code: "erir-1", submission_evidence_ref: "ev-submit" },
     }.distribution_id, {
-      distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 5 } }, evidence_ref: "ev",
       submission: { vk_operation_external_id: "vk-op-1", erir_code: "erir-1", submission_evidence_ref: "ev-submit" },
     }.reporting_period_key)?.id ?? null);
     expect(report.submission_state).toBe("SUBMITTED");
@@ -321,8 +341,8 @@ describe("round-2 P0.6: exact submission/reconciliation evidence shape", () => {
 describe("round-2 P1.3: exact-replay idempotency for ordinary filings", () => {
   it("filing the EXACT same statistics twice for the same period is an idempotent replay - never mints revision 2", () => {
     const { db, distributionId } = setupWithDistribution();
-    const first = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.reporting_period_key)?.id ?? null);
-    const retry = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1-retry" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1-retry" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1-retry" }.reporting_period_key)?.id ?? null);
+    const first = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.reporting_period_key)?.id ?? null);
+    const retry = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1-retry" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1-retry" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1-retry" }.reporting_period_key)?.id ?? null);
     expect(retry.id).toBe(first.id);
     expect(retry.revision).toBe(1);
     expect(ordDistributionPeriodReportsForDistribution(db, distributionId)).toHaveLength(1);
@@ -330,8 +350,8 @@ describe("round-2 P1.3: exact-replay idempotency for ordinary filings", () => {
 
   it("a GENUINELY different statistics payload for the same period always requires correction_reason and mints revision 2 - never silently treated as a replay", () => {
     const { db, distributionId } = setupWithDistribution();
-    fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.reporting_period_key)?.id ?? null);
-    expect(() => fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 11 } }, evidence_ref: "ev2" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 11 } }, evidence_ref: "ev2" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 11 } }, evidence_ref: "ev2" }.reporting_period_key)?.id ?? null))
+    fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.reporting_period_key)?.id ?? null);
+    expect(() => fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 11 } }, evidence_ref: "ev2" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 11 } }, evidence_ref: "ev2" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 11 } }, evidence_ref: "ev2" }.reporting_period_key)?.id ?? null))
       .toThrow(/AGENT_REFERRALS_ORD_REPORTING_CORRECTION_REASON_REQUIRED/);
   });
 });
@@ -339,24 +359,24 @@ describe("round-2 P1.3: exact-replay idempotency for ordinary filings", () => {
 describe("correction lineage: revision 1 -> 2 -> 3", () => {
   it("round-3 P0.1: a distribution fact correction (D1 -> D2) with BYTE-IDENTICAL statistics is still a real correction, never swallowed by replay detection", () => {
     const { db, distributionId } = setupWithDistribution();
-    const r1 = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.reporting_period_key)?.id ?? null);
+    const r1 = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.reporting_period_key)?.id ?? null);
     const d1RevisionId = r1.distribution_revision_id;
 
     const admin1 = { realm: "ADMIN" as const, admin_id: "admin-1" };
     correctDistribution(db, admin1, distributionId, {
       channel_key: "telegram", resource_kind: "channel", resource_identifier: "@corrected_channel", distribution_resource_url: "https://t.me/corrected_channel/1",
-      published_at: "2026-09-20T00:00:00.000Z", ended_at: null, evidence_ref: "ev-correction",
+      published_at: PUBLISHED_AT, ended_at: null, evidence_ref: "ev-correction",
     }, "wrong resource identifier", currentDistributionRevision(db, distributionId)!.id);
     const d2RevisionId = (db.prepare("SELECT id FROM engagement_distribution_revisions WHERE distribution_id = ? ORDER BY revision DESC LIMIT 1").get(distributionId) as { id: string }).id;
     expect(d2RevisionId).not.toBe(d1RevisionId);
 
     // Re-filing with the SAME statistics=10 as R1, but the distribution is now D2 - must mint R2 pinning D2, never be treated as a replay of R1.
     const r2 = fileOrdDistributionPeriodReport(db, admin, {
-      distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev2", correction_reason: "distribution facts corrected",
+      distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev2", correction_reason: "distribution facts corrected",
     }, currentOrdDistributionPeriodReport(db, {
-      distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev2", correction_reason: "distribution facts corrected",
+      distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev2", correction_reason: "distribution facts corrected",
     }.distribution_id, {
-      distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev2", correction_reason: "distribution facts corrected",
+      distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev2", correction_reason: "distribution facts corrected",
     }.reporting_period_key)?.id ?? null);
     expect(r2.id).not.toBe(r1.id);
     expect(r2.revision).toBe(2);
@@ -366,24 +386,24 @@ describe("correction lineage: revision 1 -> 2 -> 3", () => {
 
   it("a second filing without a correction_reason is refused; with one, mints revision 2 with exact predecessor lineage", () => {
     const { db, distributionId } = setupWithDistribution();
-    const r1 = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }.reporting_period_key)?.id ?? null);
-    expect(() => fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev2" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev2" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev2" }.reporting_period_key)?.id ?? null))
+    const r1 = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }.reporting_period_key)?.id ?? null);
+    expect(() => fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev2" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev2" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev2" }.reporting_period_key)?.id ?? null))
       .toThrow(/AGENT_REFERRALS_ORD_REPORTING_CORRECTION_REASON_REQUIRED/);
-    const r2 = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev2", correction_reason: "data arrived" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev2", correction_reason: "data arrived" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev2", correction_reason: "data arrived" }.reporting_period_key)?.id ?? null);
+    const r2 = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev2", correction_reason: "data arrived" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev2", correction_reason: "data arrived" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev2", correction_reason: "data arrived" }.reporting_period_key)?.id ?? null);
     expect(r2.revision).toBe(2);
     expect(r2.supersedes_report_id).toBe(r1.id);
-    const r3 = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 12 } }, evidence_ref: "ev3", correction_reason: "recount" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 12 } }, evidence_ref: "ev3", correction_reason: "recount" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 12 } }, evidence_ref: "ev3", correction_reason: "recount" }.reporting_period_key)?.id ?? null);
+    const r3 = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 12 } }, evidence_ref: "ev3", correction_reason: "recount" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 12 } }, evidence_ref: "ev3", correction_reason: "recount" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 12 } }, evidence_ref: "ev3", correction_reason: "recount" }.reporting_period_key)?.id ?? null);
     expect(r3.revision).toBe(3);
     expect(r3.supersedes_report_id).toBe(r2.id);
     // Old revisions remain readable and immutable.
     expect(() => db.prepare("UPDATE ord_distribution_period_reports SET statistics_json = 'x' WHERE id = ?").run(r1.id)).toThrow(/ORD_DISTRIBUTION_PERIOD_REPORT_IMMUTABLE/);
     expect(ordDistributionPeriodReportsForDistribution(db, distributionId)).toHaveLength(3);
-    expect(currentOrdDistributionPeriodReport(db, distributionId, "2026-09")!.id).toBe(r3.id);
+    expect(currentOrdDistributionPeriodReport(db, distributionId, M0)!.id).toBe(r3.id);
   });
 
   it("a raw INSERT naming the WRONG predecessor (not exactly revision-1 on the same distribution+period) is refused", () => {
     const { db, distributionId } = setupWithDistribution();
-    fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }.reporting_period_key)?.id ?? null);
+    fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }.reporting_period_key)?.id ?? null);
     const revision = db.prepare("SELECT id FROM engagement_distribution_revisions WHERE distribution_id = ?").get(distributionId) as { id: string };
     expect(() => db.prepare(`INSERT INTO ord_distribution_period_reports(id, distribution_id, distribution_revision_id, reporting_basis, reporting_period_key, revision, supersedes_report_id, statistics_state, correction_reason, operation_key, canonical_hash, created_by_admin_id)
       VALUES (?, ?, ?, 'CALENDAR_MONTH', '2026-09', 2, ?, 'REPORTING_DATA_UNAVAILABLE', 'x', 'op-wrong', 'h', 'admin')`)
@@ -393,8 +413,8 @@ describe("correction lineage: revision 1 -> 2 -> 3", () => {
 
   it("a raw cross-distribution supersession is refused", () => {
     const { db, distributionId } = setupWithDistribution();
-    const first = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }.reporting_period_key)?.id ?? null);
-    const otherDistributionId = distributionFor(db, (db.prepare("SELECT engagement_id FROM engagement_distributions WHERE id = ?").get(distributionId) as { engagement_id: string }).engagement_id, "2026-09-21T00:00:00.000Z");
+    const first = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }.reporting_period_key)?.id ?? null);
+    const otherDistributionId = distributionFor(db, (db.prepare("SELECT engagement_id FROM engagement_distributions WHERE id = ?").get(distributionId) as { engagement_id: string }).engagement_id, dayIn(MONTH_0, 21));
     const otherRevision = db.prepare("SELECT id FROM engagement_distribution_revisions WHERE distribution_id = ?").get(otherDistributionId) as { id: string };
     expect(() => db.prepare(`INSERT INTO ord_distribution_period_reports(id, distribution_id, distribution_revision_id, reporting_basis, reporting_period_key, revision, supersedes_report_id, statistics_state, correction_reason, operation_key, canonical_hash, created_by_admin_id)
       VALUES (?, ?, ?, 'CALENDAR_MONTH', '2026-09', 2, ?, 'REPORTING_DATA_UNAVAILABLE', 'x', 'op-cross', 'h', 'admin')`)
@@ -404,17 +424,17 @@ describe("correction lineage: revision 1 -> 2 -> 3", () => {
 
   it("a raw cross-period supersession is refused", () => {
     const { db, distributionId } = setupWithDistribution();
-    const sep = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }.reporting_period_key)?.id ?? null);
+    const sep = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev1" }.reporting_period_key)?.id ?? null);
     const revision = db.prepare("SELECT id FROM engagement_distribution_revisions WHERE distribution_id = ?").get(distributionId) as { id: string };
     expect(() => db.prepare(`INSERT INTO ord_distribution_period_reports(id, distribution_id, distribution_revision_id, reporting_basis, reporting_period_key, revision, supersedes_report_id, statistics_state, correction_reason, operation_key, canonical_hash, created_by_admin_id)
-      VALUES (?, ?, ?, 'CALENDAR_MONTH', '2026-10', 2, ?, 'REPORTING_DATA_UNAVAILABLE', 'x', 'op-crossperiod', 'h', 'admin')`)
+      VALUES (?, ?, ?, 'CALENDAR_MONTH', '${M1}', 2, ?, 'REPORTING_DATA_UNAVAILABLE', 'x', 'op-crossperiod', 'h', 'admin')`)
       .run(randomUUID(), distributionId, revision.id, sep.id)) // predecessor is for a DIFFERENT period
       .toThrow(/ORD_DISTRIBUTION_PERIOD_REPORT_RELATIONAL_INCONSISTENT/);
   });
 
   it("a report naming a distribution_revision_id that belongs to a DIFFERENT distribution is refused", () => {
     const { db, distributionId, engagementId } = setupWithDistribution();
-    const otherDistributionId = distributionFor(db, engagementId, "2026-09-22T00:00:00.000Z");
+    const otherDistributionId = distributionFor(db, engagementId, dayIn(MONTH_0, 22));
     const otherRevision = db.prepare("SELECT id FROM engagement_distribution_revisions WHERE distribution_id = ?").get(otherDistributionId) as { id: string };
     expect(() => db.prepare(`INSERT INTO ord_distribution_period_reports(id, distribution_id, distribution_revision_id, reporting_basis, reporting_period_key, revision, statistics_state, operation_key, canonical_hash, created_by_admin_id)
       VALUES (?, ?, ?, 'CALENDAR_MONTH', '2026-09', 1, 'REPORTING_DATA_UNAVAILABLE', 'op-x', 'h', 'admin')`)
@@ -425,24 +445,24 @@ describe("correction lineage: revision 1 -> 2 -> 3", () => {
 describe("PROVIDER_SPECIAL_PERIOD fail-closed (L5)", () => {
   it("an ACTUAL report on a PROVIDER_SPECIAL_PERIOD format is refused until confirmed - never silently falls back to CALENDAR_MONTH", () => {
     const { db, distributionId } = setupWithDistribution("long_video");
-    expect(() => fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev" }.reporting_period_key)?.id ?? null))
+    expect(() => fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev" }.distribution_id, { distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev" }.reporting_period_key)?.id ?? null))
       .toThrow(/AGENT_REFERRALS_ORD_REPORTING_SPECIAL_PERIOD_UNCONFIRMED/);
   });
 
   it("REPORTING_DATA_UNAVAILABLE remains legal on PROVIDER_SPECIAL_PERIOD regardless of confirmation - it asserts nothing about the VK field mapping", () => {
     const { db, distributionId } = setupWithDistribution("long_video");
-    expect(() => fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev" }.reporting_period_key)?.id ?? null)).not.toThrow();
+    expect(() => fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev" }.distribution_id, { distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev" }.reporting_period_key)?.id ?? null)).not.toThrow();
   });
 
   it("once confirmed via the activation manifest, ACTUAL reporting on PROVIDER_SPECIAL_PERIOD succeeds", () => {
     const { db, distributionId } = setupWithDistribution("long_video");
     recordAgentReferralsEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY, true);
-    const report = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev" }.reporting_period_key)?.id ?? null);
+    const report = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev" }.distribution_id, { distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev" }.reporting_period_key)?.id ?? null);
     expect(report.reporting_basis).toBe("PROVIDER_SPECIAL_PERIOD");
   });
 
   it("round-3 P0.3: ZERO_REWARD_STATISTICS/CONTINUING_STATISTICS on PROVIDER_SPECIAL_PERIOD fail closed BEFORE confirmation - never a calendar-shaped fallback", async () => {
-    const { db, domain, occ, engagementId, distributionId } = setupWithDistribution("long_video", "2026-09-20T00:00:00.000Z");
+    const { db, domain, occ, engagementId, distributionId } = setupWithDistribution("long_video", PUBLISHED_AT);
     await wait(300);
     closeAndComplete(db, domain, occ);
     finalizeEngagementRewardRegistry(db, admin, engagementId, "no purchases");
@@ -451,23 +471,23 @@ describe("PROVIDER_SPECIAL_PERIOD fail-closed (L5)", () => {
     // ACTUAL statistics on an unconfirmed PROVIDER_SPECIAL_PERIOD basis already fails closed regardless of reason (the pre-existing L5 gate);
     // REPORTING_DATA_UNAVAILABLE with a zero-reward reason is what actually exercises the zero-reward-specific unconfirmed gate.
     expect(() => fileOrdDistributionPeriodReport(db, admin, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 0 } }, evidence_ref: "ev", statistics_reason: "ZERO_REWARD_STATISTICS",
+      distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 0 } }, evidence_ref: "ev", statistics_reason: "ZERO_REWARD_STATISTICS",
     }, currentOrdDistributionPeriodReport(db, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 0 } }, evidence_ref: "ev", statistics_reason: "ZERO_REWARD_STATISTICS",
+      distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 0 } }, evidence_ref: "ev", statistics_reason: "ZERO_REWARD_STATISTICS",
     }.distribution_id, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 0 } }, evidence_ref: "ev", statistics_reason: "ZERO_REWARD_STATISTICS",
+      distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 0 } }, evidence_ref: "ev", statistics_reason: "ZERO_REWARD_STATISTICS",
     }.reporting_period_key)?.id ?? null)).toThrow(/AGENT_REFERRALS_ORD_REPORTING_SPECIAL_PERIOD_UNCONFIRMED/);
     expect(() => fileOrdDistributionPeriodReport(db, admin, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev", statistics_reason: "ZERO_REWARD_STATISTICS",
+      distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev", statistics_reason: "ZERO_REWARD_STATISTICS",
     }, currentOrdDistributionPeriodReport(db, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev", statistics_reason: "ZERO_REWARD_STATISTICS",
+      distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev", statistics_reason: "ZERO_REWARD_STATISTICS",
     }.distribution_id, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev", statistics_reason: "ZERO_REWARD_STATISTICS",
+      distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "REPORTING_DATA_UNAVAILABLE" }, evidence_ref: "ev", statistics_reason: "ZERO_REWARD_STATISTICS",
     }.reporting_period_key)?.id ?? null)).toThrow(/AGENT_REFERRALS_ORD_REPORTING_ZERO_REWARD_SPECIAL_PERIOD_UNCONFIRMED/);
   });
 
   it("round-3 P0.3: once confirmed, ZERO_REWARD_STATISTICS/CONTINUING_STATISTICS work via the caller's own explicit special_period_is_service_period assertion - never a string comparison of the unconfirmed period-key shape", async () => {
-    const { db, domain, occ, engagementId, distributionId } = setupWithDistribution("long_video", "2026-09-20T00:00:00.000Z");
+    const { db, domain, occ, engagementId, distributionId } = setupWithDistribution("long_video", PUBLISHED_AT);
     recordAgentReferralsEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY, true);
     await wait(300);
     closeAndComplete(db, domain, occ);
@@ -476,25 +496,25 @@ describe("PROVIDER_SPECIAL_PERIOD fail-closed (L5)", () => {
     closeEngagementZeroReward(db, admin, engagementId, "NO_ELIGIBLE_CONVERSIONS", randomUUID());
 
     const zero = fileOrdDistributionPeriodReport(db, admin, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 0 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 0 } }, evidence_ref: "ev",
       statistics_reason: "ZERO_REWARD_STATISTICS", special_period_is_service_period: true,
     }, currentOrdDistributionPeriodReport(db, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 0 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 0 } }, evidence_ref: "ev",
       statistics_reason: "ZERO_REWARD_STATISTICS", special_period_is_service_period: true,
     }.distribution_id, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 0 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 0 } }, evidence_ref: "ev",
       statistics_reason: "ZERO_REWARD_STATISTICS", special_period_is_service_period: true,
     }.reporting_period_key)?.id ?? null);
     expect(zero.statistics_reason).toBe("ZERO_REWARD_STATISTICS");
 
     const continuing = fileOrdDistributionPeriodReport(db, admin, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-10", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 2 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: `special-${M1}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 2 } }, evidence_ref: "ev",
       statistics_reason: "CONTINUING_STATISTICS", special_period_is_service_period: false,
     }, currentOrdDistributionPeriodReport(db, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-10", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 2 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: `special-${M1}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 2 } }, evidence_ref: "ev",
       statistics_reason: "CONTINUING_STATISTICS", special_period_is_service_period: false,
     }.distribution_id, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-10", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 2 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: `special-${M1}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 2 } }, evidence_ref: "ev",
       statistics_reason: "CONTINUING_STATISTICS", special_period_is_service_period: false,
     }.reporting_period_key)?.id ?? null);
     expect(continuing.statistics_reason).toBe("CONTINUING_STATISTICS");
@@ -534,7 +554,7 @@ describe("PROVIDER_SPECIAL_PERIOD fail-closed (L5)", () => {
   });
 
   it("round-4 P0.3: late VK submission + ERIR reconciliation succeeds for a confirmed PROVIDER_SPECIAL_PERIOD ZERO_REWARD_STATISTICS report (tail-complete stays false - integration-hardening round-2 #4b)", async () => {
-    const { db, domain, occ, engagementId, distributionId } = setupWithDistribution("long_video", "2026-09-20T00:00:00.000Z");
+    const { db, domain, occ, engagementId, distributionId } = setupWithDistribution("long_video", PUBLISHED_AT);
     recordAgentReferralsEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY, true);
     await wait(300);
     closeAndComplete(db, domain, occ);
@@ -543,19 +563,19 @@ describe("PROVIDER_SPECIAL_PERIOD fail-closed (L5)", () => {
     closeEngagementZeroReward(db, admin, engagementId, "NO_ELIGIBLE_CONVERSIONS", randomUUID());
 
     const r1 = fileOrdDistributionPeriodReport(db, admin, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 0 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 0 } }, evidence_ref: "ev",
       statistics_reason: "ZERO_REWARD_STATISTICS", special_period_is_service_period: true,
     }, currentOrdDistributionPeriodReport(db, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 0 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 0 } }, evidence_ref: "ev",
       statistics_reason: "ZERO_REWARD_STATISTICS", special_period_is_service_period: true,
     }.distribution_id, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 0 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: `special-${M0}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 0 } }, evidence_ref: "ev",
       statistics_reason: "ZERO_REWARD_STATISTICS", special_period_is_service_period: true,
     }.reporting_period_key)?.id ?? null);
     expect(isOrdReportingTailComplete(db, distributionId, WITHIN_SEPTEMBER)).toBe(false); // not yet submitted
 
     // recordOrdDistributionPeriodReportReconciliation supplies NO special_period_is_service_period of its own - it must re-derive it from r1's own already-validated statistics_reason.
-    const r2 = recordOrdDistributionPeriodReportReconciliation(db, admin, distributionId, "special-2026-09", "vk-op-1", "erir-1", "ev-reconcile", currentOrdDistributionPeriodReport(db, distributionId, "special-2026-09")!.id);
+    const r2 = recordOrdDistributionPeriodReportReconciliation(db, admin, distributionId, `special-${M0}`, "vk-op-1", "erir-1", "ev-reconcile", currentOrdDistributionPeriodReport(db, distributionId, `special-${M0}`)!.id);
     expect(r2.revision).toBe(2);
     expect(r2.supersedes_report_id).toBe(r1.id);
     expect(r2.statistics_reason).toBe("ZERO_REWARD_STATISTICS");
@@ -568,7 +588,7 @@ describe("PROVIDER_SPECIAL_PERIOD fail-closed (L5)", () => {
   });
 
   it("round-4 P0.3: late VK submission + ERIR reconciliation succeeds for a confirmed PROVIDER_SPECIAL_PERIOD CONTINUING_STATISTICS report", async () => {
-    const { db, domain, occ, engagementId, distributionId } = setupWithDistribution("long_video", "2026-09-20T00:00:00.000Z");
+    const { db, domain, occ, engagementId, distributionId } = setupWithDistribution("long_video", PUBLISHED_AT);
     recordAgentReferralsEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY, true);
     await wait(300);
     closeAndComplete(db, domain, occ);
@@ -577,16 +597,16 @@ describe("PROVIDER_SPECIAL_PERIOD fail-closed (L5)", () => {
     closeEngagementZeroReward(db, admin, engagementId, "NO_ELIGIBLE_CONVERSIONS", randomUUID());
 
     fileOrdDistributionPeriodReport(db, admin, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-10", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 3 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: `special-${M1}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 3 } }, evidence_ref: "ev",
       statistics_reason: "CONTINUING_STATISTICS", special_period_is_service_period: false,
     }, currentOrdDistributionPeriodReport(db, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-10", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 3 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: `special-${M1}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 3 } }, evidence_ref: "ev",
       statistics_reason: "CONTINUING_STATISTICS", special_period_is_service_period: false,
     }.distribution_id, {
-      distribution_id: distributionId, reporting_period_key: "special-2026-10", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 3 } }, evidence_ref: "ev",
+      distribution_id: distributionId, reporting_period_key: `special-${M1}`, statistics: { statistics_state: "ACTUAL", statistics_json: { views: 3 } }, evidence_ref: "ev",
       statistics_reason: "CONTINUING_STATISTICS", special_period_is_service_period: false,
     }.reporting_period_key)?.id ?? null);
-    const reconciled = recordOrdDistributionPeriodReportReconciliation(db, admin, distributionId, "special-2026-10", "vk-op-2", "erir-2", "ev-reconcile", currentOrdDistributionPeriodReport(db, distributionId, "special-2026-10")!.id);
+    const reconciled = recordOrdDistributionPeriodReportReconciliation(db, admin, distributionId, `special-${M1}`, "vk-op-2", "erir-2", "ev-reconcile", currentOrdDistributionPeriodReport(db, distributionId, `special-${M1}`)!.id);
     expect(reconciled.statistics_reason).toBe("CONTINUING_STATISTICS");
     expect(reconciled.submission_state).toBe("SUBMITTED");
     // Integration-hardening round-2 #4b: see the identical note above.
@@ -731,8 +751,8 @@ describe("ZERO_REWARD_STATISTICS vs CONTINUING_STATISTICS (plan §B-3)", () => {
 describe("recordOrdDistributionPeriodReportReconciliation", () => {
   it("mints a NEW correction revision carrying identical statistics plus submission/erir evidence - never an UPDATE", () => {
     const { db, distributionId } = setupWithDistribution();
-    const r1 = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.reporting_period_key)?.id ?? null);
-    const r2 = recordOrdDistributionPeriodReportReconciliation(db, admin, distributionId, "2026-09", "vk-op-1", "erir-1", "ev-reconcile", currentOrdDistributionPeriodReport(db, distributionId, "2026-09")!.id);
+    const r1 = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.reporting_period_key)?.id ?? null);
+    const r2 = recordOrdDistributionPeriodReportReconciliation(db, admin, distributionId, M0, "vk-op-1", "erir-1", "ev-reconcile", currentOrdDistributionPeriodReport(db, distributionId, M0)!.id);
     expect(r2.revision).toBe(2);
     expect(r2.supersedes_report_id).toBe(r1.id);
     expect(r2.statistics_state).toBe("ACTUAL");
@@ -747,39 +767,39 @@ describe("recordOrdDistributionPeriodReportReconciliation", () => {
 
   it("round-2 P0.4: reconciliation for R1 still pins R1's OWN distribution_revision_id, even after the distribution's facts were corrected (D1 -> D2) in between", () => {
     const { db, distributionId } = setupWithDistribution();
-    const r1 = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.reporting_period_key)?.id ?? null);
+    const r1 = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.reporting_period_key)?.id ?? null);
     const d1RevisionId = r1.distribution_revision_id;
 
     // The distribution's own facts are corrected (a wrong URL, say) AFTER R1 was filed - D1 -> D2.
     const admin1 = { realm: "ADMIN" as const, admin_id: "admin-1" };
     correctDistribution(db, admin1, distributionId, {
       channel_key: "telegram", resource_kind: "channel", resource_identifier: "@corrected_channel", distribution_resource_url: "https://t.me/corrected_channel/1",
-      published_at: "2026-09-20T00:00:00.000Z", ended_at: null, evidence_ref: "ev-correction",
+      published_at: PUBLISHED_AT, ended_at: null, evidence_ref: "ev-correction",
     }, "wrong resource identifier", currentDistributionRevision(db, distributionId)!.id);
     const d2RevisionId = (db.prepare("SELECT id FROM engagement_distribution_revisions WHERE distribution_id = ? ORDER BY revision DESC LIMIT 1").get(distributionId) as { id: string }).id;
     expect(d2RevisionId).not.toBe(d1RevisionId);
 
     // Reconciling R1 must still describe D1's own facts - never silently rebase onto D2.
-    const r2 = recordOrdDistributionPeriodReportReconciliation(db, admin, distributionId, "2026-09", "vk-op-1", "erir-1", "ev-reconcile", currentOrdDistributionPeriodReport(db, distributionId, "2026-09")!.id);
+    const r2 = recordOrdDistributionPeriodReportReconciliation(db, admin, distributionId, M0, "vk-op-1", "erir-1", "ev-reconcile", currentOrdDistributionPeriodReport(db, distributionId, M0)!.id);
     expect(r2.distribution_revision_id).toBe(d1RevisionId);
     expect(r2.distribution_revision_id).not.toBe(d2RevisionId);
 
     // An explicit, separate correction against the NEW facts (D2) is how D2 ever gets its own report - never a reconciliation side effect.
     const r3 = fileOrdDistributionPeriodReport(db, admin, {
-      distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 12 } }, evidence_ref: "ev-d2", correction_reason: "distribution facts corrected to D2",
+      distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 12 } }, evidence_ref: "ev-d2", correction_reason: "distribution facts corrected to D2",
     }, currentOrdDistributionPeriodReport(db, {
-      distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 12 } }, evidence_ref: "ev-d2", correction_reason: "distribution facts corrected to D2",
+      distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 12 } }, evidence_ref: "ev-d2", correction_reason: "distribution facts corrected to D2",
     }.distribution_id, {
-      distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 12 } }, evidence_ref: "ev-d2", correction_reason: "distribution facts corrected to D2",
+      distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 12 } }, evidence_ref: "ev-d2", correction_reason: "distribution facts corrected to D2",
     }.reporting_period_key)?.id ?? null);
     expect(r3.distribution_revision_id).toBe(d2RevisionId);
   });
 
   it("round-2 P1.3: an idempotent retry of reconciliation (same vk id/erir code) returns the SAME revision, never a fourth row", () => {
     const { db, distributionId } = setupWithDistribution();
-    fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.reporting_period_key)?.id ?? null);
-    const r2 = recordOrdDistributionPeriodReportReconciliation(db, admin, distributionId, "2026-09", "vk-op-1", "erir-1", "ev-reconcile", currentOrdDistributionPeriodReport(db, distributionId, "2026-09")!.id);
-    const retry = recordOrdDistributionPeriodReportReconciliation(db, admin, distributionId, "2026-09", "vk-op-1", "erir-1", "ev-reconcile", currentOrdDistributionPeriodReport(db, distributionId, "2026-09")!.id);
+    fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 10 } }, evidence_ref: "ev1" }.reporting_period_key)?.id ?? null);
+    const r2 = recordOrdDistributionPeriodReportReconciliation(db, admin, distributionId, M0, "vk-op-1", "erir-1", "ev-reconcile", currentOrdDistributionPeriodReport(db, distributionId, M0)!.id);
+    const retry = recordOrdDistributionPeriodReportReconciliation(db, admin, distributionId, M0, "vk-op-1", "erir-1", "ev-reconcile", currentOrdDistributionPeriodReport(db, distributionId, M0)!.id);
     expect(retry.id).toBe(r2.id);
     expect(retry.revision).toBe(2);
     expect(ordDistributionPeriodReportsForDistribution(db, distributionId)).toHaveLength(2);
@@ -789,8 +809,8 @@ describe("recordOrdDistributionPeriodReportReconciliation", () => {
 describe("existing noncompliant distributions still owe their reporting tail", () => {
   it("a BLOCKED-channel distribution's period reporting is unaffected by the channel classification", () => {
     const { db, engagementId } = setupWithDistribution();
-    const distributionId = distributionFor(db, engagementId, "2026-09-25T00:00:00.000Z", "some_blocked_platform"); // no policy row -> REVIEW_REQUIRED, not ALLOWED
-    expect(() => fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 1 } }, evidence_ref: "ev" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 1 } }, evidence_ref: "ev" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 1 } }, evidence_ref: "ev" }.reporting_period_key)?.id ?? null)).not.toThrow();
+    const distributionId = distributionFor(db, engagementId, dayIn(MONTH_0, 25), "some_blocked_platform"); // no policy row -> REVIEW_REQUIRED, not ALLOWED
+    expect(() => fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 1 } }, evidence_ref: "ev" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 1 } }, evidence_ref: "ev" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 1 } }, evidence_ref: "ev" }.reporting_period_key)?.id ?? null)).not.toThrow();
   });
 
   it("engagement CLOSED afterwards does not block reporting for an existing distribution", async () => {
@@ -801,13 +821,13 @@ describe("existing noncompliant distributions still owe their reporting tail", (
     expect(finalize.reward_total_kopecks).toBe(0); // no orders were ever placed
     closeEngagementWithRewardRegistry(db, admin, engagementId, "no eligible conversions");
     expect((db.prepare("SELECT lifecycle_state FROM engagements WHERE id = ?").get(engagementId) as { lifecycle_state: string }).lifecycle_state).toBe("CLOSED");
-    expect(() => fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 1 } }, evidence_ref: "ev" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 1 } }, evidence_ref: "ev" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 1 } }, evidence_ref: "ev" }.reporting_period_key)?.id ?? null)).not.toThrow();
+    expect(() => fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 1 } }, evidence_ref: "ev" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 1 } }, evidence_ref: "ev" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 1 } }, evidence_ref: "ev" }.reporting_period_key)?.id ?? null)).not.toThrow();
   });
 
   it("global SUSPENDED does not block reporting for an existing distribution (reporting tail continues)", () => {
     const { db, distributionId } = setupWithDistribution();
     suspendAgentReferrals(db, { expected_revision: 2, owner_id: "test-owner", reason: "pause" });
-    expect(() => fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 1 } }, evidence_ref: "ev" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 1 } }, evidence_ref: "ev" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 1 } }, evidence_ref: "ev" }.reporting_period_key)?.id ?? null)).not.toThrow();
+    expect(() => fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 1 } }, evidence_ref: "ev" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 1 } }, evidence_ref: "ev" }.distribution_id, { distribution_id: distributionId, reporting_period_key: M0, statistics: { statistics_state: "ACTUAL", statistics_json: { impressions: 1 } }, evidence_ref: "ev" }.reporting_period_key)?.id ?? null)).not.toThrow();
   });
 });
 

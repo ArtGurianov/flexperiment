@@ -50,6 +50,18 @@ export const UNISENDER_EVENT_DUMP_MAX_POLL_ATTEMPTS = 20;
 export const UNISENDER_EVENT_DUMP_CREATE_PROBE_INITIAL_BACKOFF_MS = 5 * 60 * 1_000;
 export const UNISENDER_EVENT_DUMP_CREATE_PROBE_MAX_BACKOFF_MS = 60 * 60 * 1_000;
 
+/**
+ * Under ATTEMPT authority the provider job id and the dispatch instant live on
+ * the message's latest attempt. `email_outbox.job_id`,
+ * `provider_request_started_at` and `send_started_at` are frozen legacy columns
+ * that nothing writes any more, so selecting Event Dump candidates by them
+ * silently matched nothing and the delivery-reconciliation fallback went dead.
+ */
+const LATEST_ATTEMPT_JOIN = `LEFT JOIN outbox_attempt attempt ON attempt.id = (
+    SELECT latest.id FROM outbox_attempt latest
+    WHERE latest.message_id = outbox.id ORDER BY latest.attempt_no DESC LIMIT 1)`;
+const ATTEMPT_DISPATCH_AT = "COALESCE(attempt.provider_request_started_at, attempt.started_at, outbox.created_at)";
+
 export function withImmediateTransaction<T>(db: Database.Database, operation: () => T): T {
   db.exec("BEGIN IMMEDIATE");
   try { const result = operation(); db.exec("COMMIT"); return result; }
@@ -74,8 +86,8 @@ const resolvePromoTerms = (db: Database.Database, promo: { id: string; discount_
     throw error;
   }
 };
-const resolveAttribution = (db: Database.Database, promo: { id: string; agent_id: string | null } | undefined, occurrenceId: string, legacyReferralAgentId: string | null) => {
-  try { return resolveOrderAttribution(db, promo, occurrenceId, legacyReferralAgentId); }
+const resolveAttribution = (db: Database.Database, promo: { id: string; agent_id: string | null } | undefined, occurrenceId: string) => {
+  try { return resolveOrderAttribution(db, promo, occurrenceId); }
   catch (error) {
     if (error instanceof AgentReferralsAttributionError) throw new DomainError(error.code, error.status);
     throw error;
@@ -916,7 +928,7 @@ export class CommerceDomain {
       // grants a discount without attribution - it either resolves a live
       // (promo, occurrence) authorization on an ACTIVE engagement, pinning
       // the exact accepted revision, or refuses outright.
-      const attribution = resolveAttribution(this.db, promo ? { id: String(promo.id), agent_id: promoAgentId } : undefined, String(occurrence.id), (referralAgent?.id as string | undefined) ?? null);
+      const attribution = resolveAttribution(this.db, promo ? { id: String(promo.id), agent_id: promoAgentId } : undefined, String(occurrence.id));
       if (occurrenceInventory(this.db, occurrence as Row & { id: string }).available <= 0) throw new DomainError("SOLD_OUT", 409);
       const orderId = id(); const bookingId = id(); const paymentId = id(); const statusId = publicId();
       let orderNumber = publicOrderNumber();
@@ -934,13 +946,18 @@ export class CommerceDomain {
         // presented as order evidence.
         //
         // reward_type_snapshot/reward_value_snapshot come from `attribution`
-        // (the engagement revision's own terms for ENGAGEMENT_SCOPED, the
-        // agent's default_reward_* for LEGACY) - never a second, independent
-        // agents.default_reward_* lookup keyed on attributed_agent_id, which
-        // would silently mix an ENGAGEMENT_SCOPED order's pinned engagement
-        // revision with a stale/unrelated agent-level default.
+        // and nowhere else: they are the engagement revision's own pinned
+        // terms, so an ordinary order carries none at all. There is no
+        // agent-level default to fall back to, and there must never be one -
+        // a reward exists only where an engagement revision authorised it.
         .run(orderId, statusId, orderNumber, occurrence.id, "", checkoutInput.customer_email.trim().toLowerCase(), emailHash(checkoutInput.customer_email), quote.final_amount_kopecks, quote.material_revision, quote.venue_disclosure, quote.legal_release_id, JSON.stringify(manifest), "DEPRECATED_NOT_EVIDENCE", attribution.attributed_agent_id, attribution.reward_type, attribution.reward_value, quote.promo_code_snapshot ?? null, quote.discount_type_snapshot ?? null, quote.discount_value_snapshot ?? null, quote.promo_id ?? null, quote.promo_agent_id_snapshot ?? null, quote.price_kopecks, quote.discount_kopecks, fiscalPurpose, fiscalItemName, manifest.documents.PUBLIC_OFFER.version, manifest.documents.PUBLIC_OFFER.sha256, timestamp, manifest.documents.PRIVACY_POLICY.version, manifest.documents.PRIVACY_POLICY.sha256, timestamp, manifest.documents.PD_CONSENT.version, manifest.documents.PD_CONSENT.sha256, timestamp, manifest.documents.CHECKOUT_DISCLOSURE.version, manifest.documents.CHECKOUT_DISCLOSURE.sha256, timestamp, acceptance.ip ?? null, acceptance.userAgent?.slice(0, 1_000) ?? null, null, participantAgeBand, null, null, Number(participantIsMinor), Number(participantRequiresAdultAccompaniment), null, participantIsMinor ? timestamp : null, participantIsMinor ? "Я являюсь совершеннолетним законным представителем несовершеннолетнего участника, для которого оформляю этот заказ." : null, null, null,
-          attribution.reward_authority_kind, attribution.explicit_promo_id, attribution.resolved_partner_id, attribution.resolved_engagement_id, attribution.resolved_engagement_revision_id, attribution.resolved_promo_authorization_id, ATTRIBUTION_RULE_VERSION, attribution.resolution_reason);
+          // The 0046 column and its tuple trigger still only admit the two
+          // pre-baseline values, and the ledger is frozen until the launch
+          // baseline drops both the column and the trigger. An ordinary order
+          // keeps persisting the column's existing non-partner constant; the
+          // domain reasons in DIRECT / ENGAGEMENT_SCOPED terms either way.
+          attribution.reward_authority_kind === "DIRECT" ? "LEGACY" : attribution.reward_authority_kind,
+          attribution.explicit_promo_id, attribution.resolved_partner_id, attribution.resolved_engagement_id, attribution.resolved_engagement_revision_id, attribution.resolved_promo_authorization_id, ATTRIBUTION_RULE_VERSION, attribution.resolution_reason);
       this.db.prepare("INSERT INTO bookings(id, order_id, occurrence_id, status) VALUES (?, ?, ?, 'RESERVED')").run(bookingId, orderId, occurrence.id);
       this.db.prepare(`INSERT INTO payments(id, order_id, state, status, provider_idempotency_key, creation_started_at) VALUES (?, ?, 'CREATING', 'PENDING', ?, ?)`)
         .run(paymentId, orderId, publicId(), timestamp);
@@ -1022,7 +1039,6 @@ export class CommerceDomain {
           occurrence: occurrenceCustomerSnapshot(order),
           city_title: order.city_title,
         });
-        this.syncRewardEvidence(String(payment.order_id));
       } else {
         const abandonment = one(this.db, "SELECT id FROM reservation_abandonments WHERE payment_id = ?", payment.id);
         const source = abandonment ? "LATE_PAYMENT_AFTER_RESERVATION_ABANDONMENT" : occurrence?.fulfillment_status === "SCHEDULED" ? "LATE_PAYMENT_AFTER_CUSTOMER_CANCELLATION" : "LATE_PAYMENT_AFTER_TERMINAL_OCCURRENCE";
@@ -1209,7 +1225,6 @@ export class CommerceDomain {
       this.db.prepare("UPDATE tickets SET status = 'VOID', voided_at = ? WHERE booking_id = ? AND status = 'VALID'").run(now(), order.booking_id);
       this.supersedePendingOccurrenceUpdatesForBooking(String(order.booking_id), "BOOKING_CANCELLED");
       this.closeOccurrenceChangeRefundEntitlementsForBooking(String(order.booking_id), "BOOKING_CANCELLED");
-      this.syncRewardEvidence(String(order.id));
       this.ensureFullCapturedRefund(String(order.payment_id), "CUSTOMER_SELF_SERVICE_REFUND", Number(order.captured_amount_kopecks));
       this.enqueueEmail("CUSTOMER_REFUND_CONFIRMED", String(order.customer_email), String(order.customer_email_hash), "customer-refund-confirmed", String(order.id), { order_id: order.id, public_order_number: order.public_order_number });
       return { confirmed: true };
@@ -1363,7 +1378,6 @@ export class CommerceDomain {
       this.db.prepare("UPDATE tickets SET status = 'VOID', voided_at = ? WHERE booking_id = ? AND status = 'VALID'").run(now(), bookingId);
       this.supersedePendingOccurrenceUpdatesForBooking(bookingId, "BOOKING_CANCELLED");
       this.closeOccurrenceChangeRefundEntitlementsForBooking(bookingId, "BOOKING_CANCELLED");
-      this.syncRewardEvidence(String(booking.order_id));
       this.enqueueEmail("BOOKING_CANCELLED", String(booking.customer_email), String(booking.customer_email_hash), "booking-cancelled", bookingId, { booking_id: bookingId, reason: input.reason, public_order_number: booking.public_order_number });
       this.db.prepare("INSERT INTO booking_cancellation_idempotency(idempotency_key_hash, canonical_request_hash, booking_id) VALUES (?, ?, ?)").run(keyHash, requestHash, bookingId);
       if (booking.payment_status === "PAID") this.upsertRefundObligation(String(booking.payment_id), "CUSTOMER_CANCELLATION_PARTIAL", Number(booking.captured_amount_kopecks) - withheld);
@@ -1478,7 +1492,6 @@ export class CommerceDomain {
         this.db.prepare("UPDATE tickets SET status = 'VOID', voided_at = ? WHERE booking_id = ? AND status = 'VALID'").run(now(), booking.id);
         this.supersedePendingOccurrenceUpdatesForBooking(String(booking.id), "OCCURRENCE_CANCELLED");
         this.closeOccurrenceChangeRefundEntitlementsForBooking(String(booking.id), "OCCURRENCE_CANCELLED");
-        this.syncRewardEvidence(String(booking.order_id));
       }
       this.resolveOperationalIncidents("occurrence", occurrenceId, "Occurrence cancelled");
       // Financial unwind and organizer notice are independent of booking
@@ -1903,141 +1916,13 @@ export class CommerceDomain {
   }
 
   /** Delegates to the shared reward-calculation.ts formula - see that module for why it was extracted verbatim. */
-  private rewardForOrder(order: Row, netCaptured: number) {
-    return computeRewardForOrder({ attributed_agent_id: order.attributed_agent_id as string | null, reward_type_snapshot: order.reward_type_snapshot as "PERCENT" | "FIXED" | null, reward_value_snapshot: order.reward_value_snapshot as number | null }, netCaptured);
-  }
 
   /**
-   * Persist accounting evidence whenever an authoritative financial or booking
-   * event changes an order's reward. The base row is immutable; every later
-   * change is an append-only delta keyed by the observed state.
+   * Recording an actual recovery against a paid settlement. Flow-agnostic by
+   * construction: `settlement_recoveries` is read by the partner system's own
+   * `recoveryExposure()`, and there is only one settlement model left, so this
+   * carries no authority discriminator of its own.
    */
-  private syncRewardEvidence(orderId: string) {
-    const order = one(this.db, `SELECT o.*, p.captured_amount_kopecks,
-      COALESCE((SELECT SUM(r.amount_kopecks) FROM refunds r WHERE r.payment_id = p.id AND r.status = 'SUCCEEDED'), 0) AS refunded_amount_kopecks,
-      b.id AS booking_id, b.status AS booking_status
-      FROM orders o JOIN payments p ON p.order_id = o.id JOIN bookings b ON b.order_id = o.id
-      WHERE o.id = ?`, orderId);
-    if (!order?.attributed_agent_id || !order.reward_type_snapshot || Number(order.captured_amount_kopecks) <= 0) return;
-    const base = this.rewardForOrder(order, Number(order.captured_amount_kopecks));
-    this.db.prepare(`INSERT OR IGNORE INTO referral_rewards(id, order_id, agent_id, occurrence_id, amount_kopecks, reward_authority_kind)
-      VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(id(), order.id, order.attributed_agent_id, order.occurrence_id, base, order.reward_authority_kind ?? "LEGACY");
-    const net = Math.max(0, Number(order.captured_amount_kopecks) - Number(order.refunded_amount_kopecks));
-    const expected = order.booking_status === "CONFIRMED" ? this.rewardForOrder(order, net) : 0;
-    const accounted = Number(one(this.db, `SELECT rr.amount_kopecks + COALESCE((SELECT SUM(ra.amount_kopecks) FROM reward_adjustments ra WHERE ra.order_id = rr.order_id), 0) AS amount
-      FROM referral_rewards rr WHERE rr.order_id = ?`, order.id)?.amount ?? 0);
-    if (expected === accounted) return;
-    const semanticKey = `reward:${order.id}:captured:${order.captured_amount_kopecks}:refunded:${order.refunded_amount_kopecks}:booking:${order.booking_status}`;
-    this.db.prepare(`INSERT OR IGNORE INTO reward_adjustments(id, order_id, agent_id, amount_kopecks, reason, semantic_key)
-      VALUES (?, ?, ?, ?, ?, ?)`)
-      .run(id(), order.id, order.attributed_agent_id, expected - accounted, order.booking_status === "CONFIRMED" ? "NET_CAPTURED_CHANGED" : "BOOKING_CANCELLED", semanticKey);
-  }
-
-  // F9: every source is partitioned by its own authority discriminator -
-  // referral_rewards.reward_authority_kind (historical NULL reads LEGACY,
-  // per 0046 - never backfilled), reward_adjustments via its order's own
-  // orders.reward_authority_kind (0046, NOT NULL, no join-time COALESCE
-  // needed), and reward_settlements/settlement_recoveries via
-  // reward_settlements.settlement_flow (0047, nullable, no default -
-  // historical NULL and every future legacy-flow row alike read as
-  // LEGACY via `IS NOT 'AGENT_REFERRALS'`, mirroring 0046's own nullable
-  // reward_authority_kind exactly, never backfilled). Before this filter,
-  // an Agent Referrals settlement/reward row fed
-  // straight into `allocated`, which fed `blocked` and
-  // `available_to_settle` - so an unpartitioned Agent Referrals settlement
-  // did not merely misreport, it disabled legacy settlement for that
-  // agent/occurrence pair entirely. Every branch below now reads only its
-  // own flow's evidence.
-  rewardBalance(agentId: string, occurrenceId: string) {
-    const agent = one(this.db, "SELECT * FROM agents WHERE id = ?", agentId);
-    if (!agent) throw new DomainError("AGENT_NOT_FOUND", 404);
-    const occurrence = one(this.db, "SELECT fulfillment_status FROM occurrences WHERE id = ?", occurrenceId);
-    if (!occurrence) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
-    const earned = Number(one(this.db, `SELECT COALESCE(SUM(amount_kopecks), 0) AS amount
-      FROM referral_rewards WHERE agent_id = ? AND occurrence_id = ? AND COALESCE(reward_authority_kind, 'LEGACY') = 'LEGACY'`, agentId, occurrenceId)?.amount ?? 0)
-      + Number(one(this.db, `SELECT COALESCE(SUM(ra.amount_kopecks), 0) AS amount
-        FROM reward_adjustments ra JOIN orders o ON o.id = ra.order_id
-        WHERE ra.agent_id = ? AND o.occurrence_id = ? AND o.reward_authority_kind = 'LEGACY'`, agentId, occurrenceId)?.amount ?? 0);
-    const mature = occurrence.fulfillment_status === "COMPLETED" ? earned : 0;
-    const settlement = one(this.db, `SELECT
-      COALESCE(SUM(CASE WHEN status = 'PREPARED' THEN amount_kopecks ELSE 0 END), 0) AS prepared,
-      COALESCE(SUM(CASE WHEN status = 'PENDING_DOCUMENT' THEN amount_kopecks ELSE 0 END), 0) AS pending,
-      COALESCE(SUM(CASE WHEN status = 'SETTLED' THEN amount_kopecks ELSE 0 END), 0) AS settled
-      FROM reward_settlements WHERE agent_id = ? AND occurrence_id = ? AND settlement_flow IS NOT 'AGENT_REFERRALS'`, agentId, occurrenceId)!;
-    const recovered = Number(one(this.db, `SELECT COALESCE(SUM(sr.amount_recovered_kopecks), 0) AS amount FROM settlement_recoveries sr JOIN reward_settlements rs ON rs.id = sr.settlement_id WHERE rs.agent_id = ? AND rs.occurrence_id = ? AND rs.settlement_flow IS NOT 'AGENT_REFERRALS'`, agentId, occurrenceId)?.amount ?? 0);
-    const allocated = Number(settlement.prepared) + Number(settlement.pending) + Number(settlement.settled);
-    const blocked = 0;
-    const lateAdjustmentExposure = Math.max(0, allocated - mature - recovered);
-    return { earned_total: earned, accrued_total: mature, payable_gross_total: mature, blocked_payable_total: blocked, prepared_total: Number(settlement.prepared), pending_document_total: Number(settlement.pending), settled_total: Number(settlement.settled), externally_recovered_total: recovered, late_adjustment_exposure: lateAdjustmentExposure, available_to_settle: Math.max(0, mature - blocked - allocated + recovered) };
-  }
-
-  prepareSettlement(input: { agent_id: string; occurrence_id: string; amount_kopecks: number; method: string }, idempotencyKey: string, adminId: string) {
-    const keyHash = sha256(idempotencyKey); const payloadHash = sha256(canonical(input));
-    return this.settlementTransaction(() => {
-      const replay = one(this.db, `SELECT rsi.canonical_request_hash, rs.* FROM reward_settlement_idempotency rsi
-        JOIN reward_settlements rs ON rs.id = rsi.settlement_id WHERE rsi.idempotency_key_hash = ?`, keyHash);
-      if (replay) {
-        if (replay.canonical_request_hash !== payloadHash) throw new DomainError("IDEMPOTENCY_CONFLICT", 409);
-        return replay;
-      }
-      const agent = one(this.db, "SELECT * FROM agents WHERE id = ?", input.agent_id);
-      if (!agent) throw new DomainError("AGENT_NOT_FOUND", 404);
-      const partnerIdentity = getPartnerIdentityByAgentId(this.db, input.agent_id);
-      if (!partnerIdentity || partnerIdentity.destroyed_at !== null) throw new DomainError("AGENT_REFERRALS_LEGACY_SETTLEMENT_IDENTITY_MISSING", 409);
-      let legalProfile;
-      try { legalProfile = resolveCurrentLegalProfileBinding(this.db, partnerIdentity); }
-      catch { throw new DomainError("AGENT_REFERRALS_LEGACY_SETTLEMENT_LEGAL_BINDING_INVALID", 409); }
-      if (legalProfile.tax_mode === "NPD" && !currentUsableNpdCheck(this.db, partnerIdentity.id)) {
-        throw new DomainError("CONTRACTOR_STATUS_REVIEW", 409);
-      }
-      const occurrence = one(this.db, "SELECT fulfillment_status FROM occurrences WHERE id = ?", input.occurrence_id);
-      if (!occurrence || occurrence.fulfillment_status !== "COMPLETED") throw new DomainError("OCCURRENCE_NOT_COMPLETED", 409);
-      const balance = this.rewardBalance(input.agent_id, input.occurrence_id);
-      if (input.amount_kopecks > balance.available_to_settle) throw new DomainError("SETTLEMENT_EXCEEDS_AVAILABLE", 409);
-      const settlementId = id();
-      this.db.prepare(`INSERT INTO reward_settlements(id, agent_id, occurrence_id, amount_kopecks, method, status, contractor_type_snapshot, legal_profile_revision_id_snapshot, prepared_at, created_by_admin_id)
-        VALUES (?, ?, ?, ?, ?, 'PREPARED', ?, ?, ?, ?)`)
-        .run(settlementId, input.agent_id, input.occurrence_id, input.amount_kopecks, input.method, legalProfile.projected_contractor_type, legalProfile.id, now(), adminId);
-      this.db.prepare("INSERT INTO reward_settlement_idempotency(idempotency_key_hash, canonical_request_hash, settlement_id) VALUES (?, ?, ?)").run(keyHash, payloadHash, settlementId);
-      return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
-    });
-  }
-
-  markSettlementPaymentMade(settlementId: string, confirmationText: string, idempotencyKey: string, reason = "") {
-    if (confirmationText !== "I confirm the money was transferred") throw new DomainError("CONFIRMATION_REQUIRED", 422);
-    return this.settlementTransition("PAYMENT_MADE", settlementId, { confirmation_text: confirmationText, reason }, idempotencyKey, () => {
-      // settlement_flow IS NOT 'AGENT_REFERRALS' (true for both NULL and
-      // explicit 'LEGACY') is defense in depth, not a behavior change:
-      // legacy prepareSettlement() only ever mints LEGACY-flow rows (0047
-      // leaves the column NULL, never 'AGENT_REFERRALS'), so this filter
-      // is a no-op for every settlement this command could already reach
-      // - it exists so this legacy admin route can never be pointed at an
-      // Agent Referrals-authority settlement, even by a future caller
-      // passing an id it should not have.
-      const changed = this.db.prepare("UPDATE reward_settlements SET status = 'PENDING_DOCUMENT', payment_made_at = ? WHERE id = ? AND status = 'PREPARED' AND settlement_flow IS NOT 'AGENT_REFERRALS'").run(now(), settlementId);
-      if (!changed.changes) throw new DomainError("SETTLEMENT_TRANSITION_FORBIDDEN", 409);
-      return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
-    });
-  }
-
-  completeSettlementDocuments(settlementId: string, input: { document_reference: string; npd_status_effective_on?: string }, idempotencyKey: string) {
-    return this.settlementTransition("DOCUMENTS_COMPLETE", settlementId, input, idempotencyKey, () => {
-      const changed = this.db.prepare("UPDATE reward_settlements SET status = 'SETTLED', document_confirmed = 1, document_reference = ?, document_confirmed_at = ?, settled_at = ?, npd_status_effective_on = ? WHERE id = ? AND status = 'PENDING_DOCUMENT' AND settlement_flow IS NOT 'AGENT_REFERRALS'").run(input.document_reference, now(), now(), input.npd_status_effective_on ?? null, settlementId);
-      if (!changed.changes) throw new DomainError("SETTLEMENT_TRANSITION_FORBIDDEN", 409);
-      return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
-    });
-  }
-
-  cancelSettlementBeforePayment(settlementId: string, input: { confirmation_text: string; reason: string }, idempotencyKey: string) {
-    if (input.confirmation_text !== `NOT PAID ${settlementId}`) throw new DomainError("CONFIRMATION_REQUIRED", 422);
-    return this.settlementTransition("CANCEL_BEFORE_PAYMENT", settlementId, input, idempotencyKey, () => {
-      const changed = this.db.prepare("UPDATE reward_settlements SET status = 'CANCELLED_BEFORE_PAYMENT', cancelled_before_payment_at = ?, note = ? WHERE id = ? AND status = 'PREPARED' AND settlement_flow IS NOT 'AGENT_REFERRALS'").run(now(), input.reason, settlementId);
-      if (!changed.changes) throw new DomainError("SETTLEMENT_TRANSITION_FORBIDDEN", 409);
-      return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", settlementId)!;
-    });
-  }
-
   addSettlementRecovery(settlementId: string, input: { amount_recovered_kopecks: number; recovered_at: string; method: string; evidence_reference: string; note?: string }, idempotencyKey: string) {
     const create = () => {
       const settlement = one(this.db, "SELECT id, status, amount_kopecks FROM reward_settlements WHERE id = ?", settlementId);
@@ -2061,53 +1946,6 @@ export class CommerceDomain {
       const recovery = create();
       this.db.prepare("INSERT INTO reward_settlement_command_idempotency(command, idempotency_key_hash, canonical_request_hash, settlement_id, recovery_id) VALUES ('RECOVERY', ?, ?, ?, ?)").run(keyHash, payloadHash, settlementId, recovery.id);
       return recovery;
-    });
-  }
-
-  detectStalePreparedSettlements() {
-    const threshold = new Date(this.clock() - STALE_PREPARED_SETTLEMENT_MS).toISOString();
-    return this.settlementTransaction(() => {
-      const stale = many(this.db, "SELECT id FROM reward_settlements WHERE status = 'PREPARED' AND prepared_at <= ?", threshold);
-      for (const settlement of stale) this.db.prepare("INSERT OR IGNORE INTO settlement_prepared_reviews(settlement_id) VALUES (?)").run(settlement.id);
-      return stale.length;
-    });
-  }
-
-  settlementList(filters: { stalePrepared?: true } = {}) {
-    const threshold = new Date(this.clock() - STALE_PREPARED_SETTLEMENT_MS).toISOString();
-    return many(this.db, `SELECT rs.*, a.slug AS agent_slug, a.display_name AS agent_display_name,
-      c.title AS city_title, o.title AS occurrence_title,
-      CASE WHEN rs.status = 'PREPARED' AND rs.prepared_at <= ? THEN 1 ELSE 0 END AS stale_prepared,
-      spr.status AS prepared_review_status,
-      COALESCE((SELECT SUM(amount_recovered_kopecks) FROM settlement_recoveries sr WHERE sr.settlement_id = rs.id), 0) AS recovered_total,
-      MAX(0, rs.amount_kopecks - COALESCE((SELECT SUM(amount_recovered_kopecks) FROM settlement_recoveries sr WHERE sr.settlement_id = rs.id), 0)) AS unrecovered_amount_kopecks
-      FROM reward_settlements rs JOIN agents a ON a.id = rs.agent_id JOIN occurrences o ON o.id = rs.occurrence_id JOIN cities c ON c.id = o.city_id
-      LEFT JOIN settlement_prepared_reviews spr ON spr.settlement_id = rs.id
-      ${filters.stalePrepared ? "WHERE spr.status = 'OPEN'" : ""}
-      ORDER BY rs.prepared_at DESC`, threshold);
-  }
-
-  settlementDetail(settlementId: string) {
-    const settlement = this.settlementList().find((item) => item.id === settlementId);
-    if (!settlement) throw new DomainError("SETTLEMENT_NOT_FOUND", 404);
-    const balance = this.rewardBalance(String(settlement.agent_id), String(settlement.occurrence_id));
-    return { settlement, balance, recoveries: many(this.db, "SELECT * FROM settlement_recoveries WHERE settlement_id = ? ORDER BY recovered_at DESC, id DESC", settlementId) };
-  }
-
-  private settlementTransition(command: "PAYMENT_MADE" | "DOCUMENTS_COMPLETE" | "CANCEL_BEFORE_PAYMENT", settlementId: string, input: unknown, idempotencyKey: string, transition: () => Row) {
-    const keyHash = sha256(idempotencyKey); const payloadHash = sha256(canonical({ settlement_id: settlementId, ...(input as Record<string, unknown>) }));
-    return this.settlementTransaction(() => {
-      const replay = one(this.db, "SELECT canonical_request_hash, settlement_id FROM reward_settlement_command_idempotency WHERE command = ? AND idempotency_key_hash = ?", command, keyHash);
-      if (replay) {
-        if (replay.canonical_request_hash !== payloadHash) throw new DomainError("IDEMPOTENCY_CONFLICT", 409);
-        return one(this.db, "SELECT * FROM reward_settlements WHERE id = ?", replay.settlement_id)!;
-      }
-      const settlement = transition();
-      this.db.prepare("INSERT INTO reward_settlement_command_idempotency(command, idempotency_key_hash, canonical_request_hash, settlement_id) VALUES (?, ?, ?, ?)").run(command, keyHash, payloadHash, settlementId);
-      // A successful transition out of PREPARED resolves its stale-PREPARED
-      // review; it does not erase the review or change any allocation.
-      this.db.prepare("UPDATE settlement_prepared_reviews SET status = 'RESOLVED', resolved_at = COALESCE(resolved_at, ?) WHERE settlement_id = ? AND status = 'OPEN'").run(now(), settlementId);
-      return settlement;
     });
   }
 
@@ -2181,7 +2019,6 @@ export class CommerceDomain {
         // Preserve the accounting fact that changed first: the captured net
         // amount. Full-refund fulfilment below is still atomic, but must not
         // relabel this established adjustment as a generic booking cancel.
-        this.syncRewardEvidence(String(refund.order_id));
         if (fullyRefunded) this.cancelConfirmedBookingForFullRefund(String(refund.order_id));
         this.db.prepare("UPDATE reservation_abandonments SET status = 'LATE_PAYMENT_REFUNDED', resolved_at = ? WHERE payment_id = ? AND status = 'LATE_PAYMENT_REVIEW_REQUIRED'").run(now(), refund.payment_id);
         const order = one(this.db, "SELECT customer_email, customer_email_hash, public_order_number FROM orders WHERE id = ?", refund.order_id)!;
@@ -2587,11 +2424,12 @@ export class CommerceDomain {
       // Avoid an unnecessary provider list call when no target can be due.
       const grace = new Date(this.clock() - UNISENDER_EVENT_DUMP_GRACE_MS).toISOString();
       const candidate = one(this.db, `SELECT outbox.id,
-        COALESCE(outbox.provider_request_started_at, outbox.send_started_at, outbox.created_at) AS dispatch_at
+        ${ATTEMPT_DISPATCH_AT} AS dispatch_at
         FROM email_outbox outbox
+        ${LATEST_ATTEMPT_JOIN}
         WHERE outbox.superseded_at IS NULL AND outbox.status IN ('ACCEPTED', 'SENT')
-          AND outbox.job_id IS NOT NULL AND trim(outbox.job_id) != ''
-          AND datetime(COALESCE(outbox.provider_request_started_at, outbox.send_started_at, outbox.created_at)) <= datetime(?)
+          AND attempt.provider_job_id IS NOT NULL AND trim(attempt.provider_job_id) != ''
+          AND datetime(${ATTEMPT_DISPATCH_AT}) <= datetime(?)
           AND NOT EXISTS (
             SELECT 1 FROM unisender_event_dump_targets target
             WHERE target.outbox_id = outbox.id AND (
@@ -2631,20 +2469,22 @@ export class CommerceDomain {
       }
       const grace = new Date(this.clock() - UNISENDER_EVENT_DUMP_GRACE_MS).toISOString();
       const targeted = one(this.db, `SELECT target.id AS retry_target_id, outbox.id, target.job_id,
-          COALESCE(outbox.provider_request_started_at, outbox.send_started_at, outbox.created_at) AS dispatch_at,
+          ${ATTEMPT_DISPATCH_AT} AS dispatch_at,
           'TARGETED_JOB' AS recovery_mode
         FROM unisender_event_dump_targets target
         JOIN email_outbox outbox ON outbox.id = target.outbox_id
+        ${LATEST_ATTEMPT_JOIN}
         WHERE target.state = 'RETRY_WAIT' AND target.recovery_mode = 'TARGETED_JOB'
           AND target.next_attempt_at <= ? AND outbox.superseded_at IS NULL
-          AND outbox.status IN ('ACCEPTED', 'SENT') AND outbox.job_id = target.job_id
+          AND outbox.status IN ('ACCEPTED', 'SENT') AND attempt.provider_job_id = target.job_id
         ORDER BY target.next_attempt_at, target.created_at LIMIT 1`, timestamp);
-      const candidates = targeted ? [targeted] : many(this.db, `SELECT outbox.id, outbox.job_id,
-          COALESCE(outbox.provider_request_started_at, outbox.send_started_at, outbox.created_at) AS dispatch_at
+      const candidates = targeted ? [targeted] : many(this.db, `SELECT outbox.id, attempt.provider_job_id AS job_id,
+          ${ATTEMPT_DISPATCH_AT} AS dispatch_at
         FROM email_outbox outbox
+        ${LATEST_ATTEMPT_JOIN}
         WHERE outbox.superseded_at IS NULL AND outbox.status IN ('ACCEPTED', 'SENT')
-          AND outbox.job_id IS NOT NULL AND trim(outbox.job_id) != ''
-          AND datetime(COALESCE(outbox.provider_request_started_at, outbox.send_started_at, outbox.created_at)) <= datetime(?)
+          AND attempt.provider_job_id IS NOT NULL AND trim(attempt.provider_job_id) != ''
+          AND datetime(${ATTEMPT_DISPATCH_AT}) <= datetime(?)
           AND NOT EXISTS (
             SELECT 1 FROM unisender_event_dump_targets target
             WHERE target.outbox_id = outbox.id AND (

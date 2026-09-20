@@ -3,7 +3,7 @@ import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { MockProvider } from "../src/provider";
 import { agentReferralsFeatureState } from "../src/agent-referrals-feature-state";
-import { seedActiveAgentReferralsFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
+import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { fresh, readyPartner, seedOccurrence, nearTermTerms, offerAcceptActivate, purchaseAndPay, finalizedSettlement, acceptedAct } from "./support/agent-referrals-settlement-fixtures";
 
 process.env.COMMERCE_SESSION_SECRET ??= "test-session-secret-agent-referrals-admin-api";

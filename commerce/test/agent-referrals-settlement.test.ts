@@ -18,7 +18,7 @@ import { mintStepUpGrant } from "../src/agent-referrals-step-up";
 import { acceptFrameworkAndDelegation } from "../src/agent-referrals-framework-acceptance";
 import {
   fresh, admin, readyPartner, seedOccurrence, nearTermTerms, offerAcceptActivate, purchaseAndPay, closeAndComplete,
-  finalizedSettlement, acceptedAct, seedLegacyReferralReward,
+  finalizedSettlement, acceptedAct,
 } from "./support/agent-referrals-settlement-fixtures";
 
 const open: Database.Database[] = [];
@@ -113,32 +113,6 @@ describe("preparePartnerSettlement: F10, the amount is derived, never supplied",
     const { db } = fresh(); track(db);
     expect(() => preparePartnerSettlement(db, admin, "no-such-snapshot"))
       .toThrow(/AGENT_REFERRALS_SETTLEMENT_EFFECTIVE_SNAPSHOT_NOT_FOUND/);
-  });
-});
-
-describe("F9 partition: legacy rewardBalance() reads only LEGACY authority, across all four sources", () => {
-  it("same agent + same occurrence: LEGACY reward, ENGAGEMENT_SCOPED reward, and an AGENT_REFERRALS settlement never leak into each other", () => {
-    const { db, domain } = fresh(); track(db);
-    const p1 = readyPartner(db);
-    const occ = seedOccurrence(db, p1.cityId, 100_000);
-    const engagementId = offerAcceptActivate(db, p1.partner, p1.partnerIdentityId, occ, nearTermTerms(1000, "PERCENT", 4000)); // 10% discount, 40% reward
-    const code = db.prepare("SELECT code FROM promo_codes WHERE id = ?").get(p1.promo.promo_code_id) as { code: string };
-    purchaseAndPay(db, domain, occ, code.code, "f9partition@example.test", "idem-f9partition-0000001");
-    closeAndComplete(db, domain, occ);
-    const finalize = finalizeEngagementRewardRegistry(db, admin, engagementId, "x");
-    expect(finalize.reward_total_kopecks).toBe(36_000); // 40% of net captured (100_000 * 0.9 = 90_000)
-
-    const prepared = preparePartnerSettlement(db, admin, finalize.effective_snapshot_id);
-    expect(prepared.settlement.amount_kopecks).toBe(36_000);
-
-    // A genuinely LEGACY referral_rewards row for the SAME agent_id/occurrence_id pair.
-    seedLegacyReferralReward(db, p1.agentId, occ, 1000);
-
-    const balance = domain.rewardBalance(p1.agentId, occ);
-    // The legacy balance sees ONLY the 1000-side LEGACY row - never the 36_000 Agent Referrals settlement/reward.
-    expect(balance.earned_total).toBe(1000);
-    expect(balance.accrued_total).toBe(1000);
-    expect(balance.available_to_settle).toBeLessThanOrEqual(1000);
   });
 });
 

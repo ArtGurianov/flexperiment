@@ -13,12 +13,12 @@ import { canonicalizeSettlementTaxV1 } from "./agent-referrals-ord-canonical";
 import type { AdminPrincipal } from "./agent-referrals-partner-identity";
 
 /**
- * §B-6/F10: Agent Referrals settlement authority - a SEPARATE path from
- * legacy prepareSettlement()/markSettlementPaymentMade()/
- * completeSettlementDocuments()/cancelSettlementBeforePayment() in
- * domain.ts, never a branch grafted onto them. Both flows share the same
- * `reward_settlements` table and its existing four-value status enum
- * (F5), partitioned by `settlement_flow` - the migration's own structural
+ * §B-6/F10: the settlement authority. It is now the only one - the parallel
+ * agent-level path in domain.ts is gone, so `reward_settlements` has a single
+ * writer and `settlement_flow` no longer partitions anything. The column and
+ * the guards that enforced the partition are removed by the launch baseline;
+ * until then this module keeps writing its own value. The four-value status
+ * enum (F5) is unchanged - the migration's own structural
  * guards are what make it impossible for this module to ever produce a
  * settlement whose amount disagrees with its pinned effective reward
  * snapshot (F10: derived, never caller input).
