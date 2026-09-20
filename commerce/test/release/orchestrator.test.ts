@@ -3,7 +3,7 @@ import { DeploySessions, InMemoryReleaseAuthorityStore, type PreDeployTopology }
 import { ReleaseOrchestrator, type ReleasePorts } from "../../src/release/orchestrator";
 import type { ReleaseReadinessEvidence, ReleaseReadinessExpectation } from "../../src/release/readiness";
 import { schemaInventoryExpectation } from "../../src/release/expectation";
-import type { CertificationCapability } from "../../src/release/sales-gate";
+import type { CertificationCapability } from "../../src/certification/capability";
 
 const target = "a".repeat(40);
 const old = "b".repeat(40);
@@ -56,7 +56,7 @@ const harness = (options: {
     certification: {
       async issueCapability(sessionId): Promise<CertificationCapability> {
         log.push("capability-issued");
-        return { id: "cap", deploymentSessionId: sessionId, expiresAt: "2026-09-20T00:15:00.000Z" };
+        return { id: "cap", runId: "run", deploymentSessionId: sessionId, releaseSha: target, maxAmountKopecks: 100, nonce: "nonce", expiresAt: "2026-09-20T00:15:00.000Z" };
       },
       async certify() { log.push("certify"); if (options.certifyFails) throw new Error(options.certifyFails); },
     },

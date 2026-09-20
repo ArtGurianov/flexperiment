@@ -4,7 +4,7 @@ import {
   DeploySessions, planResume, topologyIsTarget,
   type DeployMode, type DeploySession, type PreDeployTopology, type ResumePlan,
 } from "./deploy-session";
-import type { CertificationCapability } from "./sales-gate";
+import type { CertificationCapability } from "../certification/capability";
 
 /**
  * The production release contract, expressed once and proved against test
