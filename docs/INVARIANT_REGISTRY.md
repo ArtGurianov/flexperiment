@@ -88,6 +88,33 @@ straight against the database as well as against a defect in the domain.
 | A foreign database lineage fails closed | `release/schema-identity.ts` | `release/schema-identity.test.ts` |
 | A cutover envelope is adopted exactly once | `release/cutover-handoff.ts` | `release/cutover-handoff.test.ts` |
 
+## Payments, receipts and recovery exposure
+
+Rehoused out of `agent-referrals-act-payment-settlement-migration.test.ts`. The
+partner is paid all the way through - settlement, accepted act, authorization,
+attempt recorded as made - so these guards are tried against the rows that say a
+real person received a real amount.
+
+| Invariant | Enforced by | Guarded by | Status |
+|---|---|---|---|
+| A payment authorization is never edited or deleted | `PAYMENT_AUTHORIZATION_IMMUTABLE` | `agent-referrals-payment-constraints.test.ts` | ACTIVE |
+| A payment attempt is never deleted | `PAYMENT_ATTEMPT_IMMUTABLE` | `agent-referrals-payment-constraints.test.ts` | ACTIVE |
+| A settled attempt is never rewritten | `PAYMENT_ATTEMPT_TERMINAL_IMMUTABLE` | `agent-referrals-payment-constraints.test.ts` | ACTIVE |
+| An attempt restates the authorization that permitted it | `PAYMENT_ATTEMPT_RELATIONAL_INCONSISTENT` | `agent-referrals-payment-constraints.test.ts` | ACTIVE |
+| An NPD receipt is never edited or deleted | `NPD_RECEIPT_IMMUTABLE` | `agent-referrals-payment-constraints.test.ts` | ACTIVE |
+| A receipt evidences a payment that was made, for an NPD settlement | `NPD_RECEIPT_RELATIONAL_INCONSISTENT` | `agent-referrals-payment-constraints.test.ts` | ACTIVE |
+| The status check an authorization relied on is frozen | `NPD_STATUS_CHECK_IMMUTABLE` | `agent-referrals-payment-constraints.test.ts` | ACTIVE |
+| A zero-reward closure is never edited or deleted | `ENGAGEMENT_ZERO_REWARD_CLOSURE_IMMUTABLE` | `agent-referrals-payment-constraints.test.ts` | ACTIVE |
+| A zero-reward closure is only for an engagement that earned nothing | `ENGAGEMENT_ZERO_REWARD_CLOSURE_RELATIONAL_INCONSISTENT` | `agent-referrals-payment-constraints.test.ts` | ACTIVE |
+| Recovery exposure evidence is never edited or deleted | `ENGAGEMENT_RECOVERY_EXPOSURE_EVIDENCE_IMMUTABLE` | `agent-referrals-payment-constraints.test.ts` | ACTIVE |
+| Exposure arises only from a correction against a paid settlement | `ENGAGEMENT_RECOVERY_EXPOSURE_EVIDENCE_RELATIONAL_INCONSISTENT` | `agent-referrals-payment-constraints.test.ts` | ACTIVE |
+
+One branch of the zero-reward guard is not independently reachable: it also
+refuses a closure while a live settlement exists, and a settlement is only ever
+created for a snapshot that earned something. An engagement can have a zero
+reward or a live settlement, not both, so the branch is defence in depth against
+a path that does not exist yet.
+
 ## Settlements and acts
 
 Rehoused out of `agent-referrals-act-payment-settlement-migration.test.ts`. The
@@ -197,8 +224,8 @@ So 46 of the 48 need a surviving proof before the file asserting them can go,
 not 42. Classifying by proximity to a doomed column would have retired four real
 protections, which is why each is read.
 
-**Progress.** Nine more rehoused from the settlement and act family, leaving
-thirty-one. Before that: six rehoused and two retired, which empties
+**Progress.** Eleven more rehoused from the payment, receipt and exposure
+family, leaving twenty. Before that: nine from the settlement and act family. Before that: six rehoused and two retired, which empties
 `agent-referrals-attribution-reward-migration.test.ts` of guards it alone held;
 forty remain. Its own constraints travelled with them - the registry's uniqueness
 per engagement, its terminal-status domain, the rule that a cancelled occurrence
