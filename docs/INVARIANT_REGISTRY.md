@@ -88,6 +88,32 @@ straight against the database as well as against a defect in the domain.
 | A foreign database lineage fails closed | `release/schema-identity.ts` | `release/schema-identity.test.ts` |
 | A cutover envelope is adopted exactly once | `release/cutover-handoff.ts` | `release/cutover-handoff.test.ts` |
 
+## Settlements and acts
+
+Rehoused out of `agent-referrals-act-payment-settlement-migration.test.ts`. The
+settlement is prepared from a finalized reward snapshot and the act is
+generated, presented and accepted through the real step-up chain, so the guards
+are tried against documents the domain issued.
+
+| Invariant | Enforced by | Guarded by | Status |
+|---|---|---|---|
+| A settlement's authority columns are frozen | `REWARD_SETTLEMENT_AUTHORITY_COLUMNS_IMMUTABLE` | `agent-referrals-settlement-constraints.test.ts` | ACTIVE_BASELINE_REWRITE |
+| A settlement's authority tuple holds together | `REWARD_SETTLEMENT_AUTHORITY_TUPLE_INCONSISTENT` | `agent-referrals-settlement-constraints.test.ts` | ACTIVE_BASELINE_REWRITE |
+| A terminal settlement is never reopened | `REWARD_SETTLEMENT_TERMINAL_IMMUTABLE` | `agent-referrals-settlement-constraints.test.ts` | ACTIVE_BASELINE_REWRITE |
+| A settlement's status moves only along the permitted path | `REWARD_SETTLEMENT_TRANSITION_ILLEGAL` | `agent-referrals-settlement-constraints.test.ts` | ACTIVE_BASELINE_REWRITE |
+| A settlement act cannot be deleted | `SETTLEMENT_ACT_IMMUTABLE` | `agent-referrals-settlement-constraints.test.ts` | ACTIVE |
+| An act's identifying fields are frozen | `SETTLEMENT_ACT_FIELDS_IMMUTABLE` | `agent-referrals-settlement-constraints.test.ts` | ACTIVE |
+| A presented act cannot be changed at all | `SETTLEMENT_ACT_ALREADY_PRESENTED` | `agent-referrals-settlement-constraints.test.ts` | ACTIVE |
+| An act restates its settlement exactly | `SETTLEMENT_ACT_RELATIONAL_INCONSISTENT` | `agent-referrals-settlement-constraints.test.ts` | ACTIVE |
+| An acceptance is frozen once recorded | `SETTLEMENT_ACT_ACCEPTANCE_IMMUTABLE` | `agent-referrals-settlement-constraints.test.ts` | ACTIVE |
+
+`AGENT_REFERRALS_SETTLEMENT_CONTRACTOR_TYPE_PROJECTION_MISMATCH` has no
+independently reachable branch and is therefore not listed as separately
+guarded. It was written when the tuple guard compared the contractor type
+against `agents`, a column a later rebuild removed; the effective tuple guard
+compares against the same legal-profile projection and reaches the same
+conclusion first.
+
 ## Attribution and reward snapshots
 
 Rehoused out of `agent-referrals-attribution-reward-migration.test.ts`. Every
@@ -171,7 +197,8 @@ So 46 of the 48 need a surviving proof before the file asserting them can go,
 not 42. Classifying by proximity to a doomed column would have retired four real
 protections, which is why each is read.
 
-**Progress.** Six rehoused and two retired, which empties
+**Progress.** Nine more rehoused from the settlement and act family, leaving
+thirty-one. Before that: six rehoused and two retired, which empties
 `agent-referrals-attribution-reward-migration.test.ts` of guards it alone held;
 forty remain. Its own constraints travelled with them - the registry's uniqueness
 per engagement, its terminal-status domain, the rule that a cancelled occurrence
@@ -205,6 +232,14 @@ owes is that nothing else goes with them.
 A guard leaves the list by being rehoused against the schema as it is - as the
 `outbox_attempt` constraints were - or by being retired with evidence that the
 object it protects is gone.
+
+**Read the effective schema, not the migration that introduced a guard.** A
+trigger is frequently rewritten by a later migration, and the earlier text then
+describes something that has not run for months. Disabling a `RAISE` in the
+file that first defined it can leave every test passing while the live guard is
+untouched - which happened here, and was visible only because the mutation
+failed to kill anything. Guards are read, and mutated, in the schema the
+migrations actually produce.
 
 **And rehousing is measured by branches, not by names.** A guard that freezes
 eleven columns is not carried across by a test that edits six of them. Each
