@@ -1,20 +1,16 @@
 import type Database from "better-sqlite3";
-import { canonical, canonicalV2, decryptTicketCapability, encryptTicketCapability, id, now, publicId, sha256 } from "./crypto";
+import { canonical, canonicalV2, decryptTicketCapability, id, now, publicId, sha256 } from "./crypto";
 import { EmailProviderRejectedError, EventDumpCreateRejectedError, isEmailDeliveryEvidenceProvider, type EmailProvider, type UnisenderDumpEvent, UNISENDER_EVENT_DUMP_EVENT_LIMIT, UnconfiguredEmailProvider } from "./email-provider";
 import type { LegalManifest } from "./legal-manifest";
 import { loadCanonicalLegalRelease, verifyCurrentLegalSourceHashes, type CanonicalLegalRelease } from "./legal-release";
 import { providerErrorEvidence, type PaymentProvider } from "./provider";
 import { promoMergedSchema } from "./types";
 import { isPromoPartnerOwned } from "./agent-referrals-promo";
-import { suspendEngagementsForOccurrenceMaterialChange } from "./agent-referrals-engagement";
-import { resolveCurrentLegalProfileBinding } from "./agent-referrals-legal-profile";
 import { getPartnerIdentityByAgentId } from "./agent-referrals-onboarding";
 import { agreementStatusForPartner, effectiveFrameworkAcceptance } from "./agent-referrals-framework-issuance";
 import { frameworkAgreementRevisionById } from "./agent-referrals-framework-delegation";
-import { currentUsableNpdCheck } from "./agent-referrals-npd";
-import { rewardForOrder as computeRewardForOrder } from "./reward-calculation";
 import { availabilityStatus, purchaseStatus, type AvailabilityStatus, type PurchaseStatus } from "./purchase-status";
-import { assertInventoryTarget, availableSeatsSql, InventoryTargetError, resolveInventoryTarget, seatCommitments } from "./occurrence-inventory";
+import { availableSeatsSql } from "./occurrence-inventory";
 import { occurrenceNotificationsCapabilityActive } from "./occurrence-notification-capability";
 import { normalizeUnisenderReconciliationEvent, type UnisenderReconciliationEvent } from "./email-provider-reconciliation";
 import {
@@ -44,13 +40,13 @@ import {
   patchPromo,
   promoList,
 } from "./domain/admin-catalog";
-import { cancellationFinancialOverview, completeOccurrence, createAdminReauth, createOccurrence, createOccurrenceRecord, type OccurrenceCreateInput } from "./domain/occurrences";
+import { cancellationFinancialOverview, cancelOccurrence, completeOccurrence, createAdminReauth, createOccurrence, createOccurrenceRecord, patchOccurrence, type CorruptOccurrenceNotification, type OccurrenceCreateInput, type PendingOccurrenceUpdateBaseline } from "./domain/occurrences";
 import { checkout, checkoutAsync, checkoutContext, checkoutStatus, replayCheckout, type CheckoutInput } from "./domain/checkout";
 import { applyTochkaPaymentWebhook, markPaymentPaid, reconcilePayment, reconcilePendingPayments, type TochkaPaymentWebhook } from "./domain/payments";
-import { ensureFullCapturedRefund, reconcilePendingRefunds, submitRequestedRefunds, upsertRefundObligation } from "./domain/refunds";
+import { cancelCustomerBooking, confirmCustomerRefund, createCompensationRefund, createObligationRefunds, customerRefundConfirmationContext, ensureFullCapturedRefund, reconcilePendingRefunds, reconcileRefund, requestCustomerRefund, submitRequestedRefunds, upsertRefundObligation } from "./domain/refunds";
 import { parseUtcTimestamp } from "./utc-timestamp";
 import { emergencySalesPaused } from "./emergency-sales-gate";
-import { claimForDispatch, deferAmbiguousObservation, deferAmbiguousSend, dispatchCandidates, failExhaustedAmbiguous, providerLookupIdentity, recordProviderAcceptance, recordProviderRefusal, applyProviderObservation, claimedAttemptRef, resolveAttemptRef, skipObsoletePendingMessage, supersedeQueuedMessage, suppressMessageDispatch, sendTryCount, staleLeasedSends, type AttemptRef } from "./outbox-attempt-store";
+import { claimForDispatch, deferAmbiguousObservation, deferAmbiguousSend, dispatchCandidates, failExhaustedAmbiguous, providerLookupIdentity, recordProviderAcceptance, recordProviderRefusal, applyProviderObservation, claimedAttemptRef, resolveAttemptRef, skipObsoletePendingMessage, supersedeQueuedMessage, sendTryCount, staleLeasedSends, type AttemptRef } from "./outbox-attempt-store";
 import { OutboxAuthorityError, emailDispatchDrained, emailDispatchFenced, fenceEmailDispatch, lastAuthorityEvent, outboxAuthority, unfenceEmailDispatch, unknownAppliedMigrations, type DispatchEpoch } from "./outbox-authority";
 import type { OtpDeliveryCapability } from "./agent-referrals-otp";
 import {
@@ -59,12 +55,13 @@ import {
   legalManifest,
   many,
   one,
-  occurrenceCustomerSnapshot,
   isOccurrenceCustomerSnapshot,
   type OccurrenceCustomerSnapshot,
   type Row,
   withImmediateTransaction,
 } from "./domain/shared";
+
+export { classifyOccurrenceRevision, type OccurrenceRevisionClassification } from "./domain/occurrences";
 
 export {
   CITY_INTEREST_SWEEP_BATCH_SIZE,
@@ -163,83 +160,6 @@ export const publicOccurrence = (occurrence: Row, newOrdersBlocked: boolean, now
       : { status: venueStatus, name: null, address: null, disclosure_text: nullableString(occurrence.venue_disclosure_text), announce_by: nullableString(occurrence.venue_announce_by) },
   };
 };
-
-const occurrenceState = (occurrence: Row) => `${occurrence.visibility}:${occurrence.sales_status}`;
-const allowedOccurrenceStateTransitions = new Set([
-  "HIDDEN:CLOSED->PUBLISHED:CLOSED",
-  "PUBLISHED:CLOSED->PUBLISHED:OPEN",
-  "PUBLISHED:CLOSED->HIDDEN:CLOSED",
-  "PUBLISHED:OPEN->PUBLISHED:PAUSED",
-  "PUBLISHED:OPEN->PUBLISHED:CLOSED",
-  "PUBLISHED:PAUSED->PUBLISHED:OPEN",
-  "PUBLISHED:PAUSED->PUBLISHED:CLOSED",
-]);
-
-const isAllowedOccurrenceStateTransition = (before: Row, after: Row) => {
-  const previous = occurrenceState(before);
-  const next = occurrenceState(after);
-  return previous === next || allowedOccurrenceStateTransitions.has(`${previous}->${next}`);
-};
-
-export type OccurrenceRevisionClassification = {
-  changed: boolean;
-  notificationMaterial: boolean;
-  refundMaterial: boolean;
-  materialChanges: Array<{ kind: string; field: keyof OccurrenceCustomerSnapshot; before: unknown; after: unknown }>;
-  before: OccurrenceCustomerSnapshot;
-  after: OccurrenceCustomerSnapshot;
-};
-
-type CorruptOccurrenceNotification = { outboxId: string; revisionId: string };
-type PendingOccurrenceUpdateBaseline =
-  | { before: OccurrenceCustomerSnapshot; revisionIds: string[]; recoveredCorruptNotifications: CorruptOccurrenceNotification[]; corruptNotifications?: never }
-  | { before?: never; revisionIds?: never; recoveredCorruptNotifications?: never; corruptNotifications: CorruptOccurrenceNotification[] };
-
-/**
- * Classifies persisted, normalized occurrence facts. It deliberately does not
- * infer commercial consequences from a requested patch: callers must persist
- * the candidate first and pass its resulting values here.
- */
-export function classifyOccurrenceRevision(beforeValue: Row, afterValue: Row): OccurrenceRevisionClassification {
-  const before = occurrenceCustomerSnapshot(beforeValue);
-  const after = occurrenceCustomerSnapshot(afterValue);
-  const fields = Object.keys(before) as Array<keyof OccurrenceCustomerSnapshot>;
-  const kinds: Record<keyof OccurrenceCustomerSnapshot, string> = {
-    title: "OCCURRENCE_TITLE_CHANGED",
-    starts_at: "OCCURRENCE_START_CHANGED",
-    ends_at: "OCCURRENCE_END_CHANGED",
-    timezone: "OCCURRENCE_TIMEZONE_CHANGED",
-    venue_status: "VENUE_STATUS_CHANGED",
-    venue_name: "VENUE_NAME_CHANGED",
-    venue_address: "VENUE_ADDRESS_CHANGED",
-    venue_disclosure_text: "VENUE_DISCLOSURE_CHANGED",
-    venue_announce_by: "VENUE_ANNOUNCEMENT_DEADLINE_CHANGED",
-  };
-  const materialChanges = fields.filter((field) => before[field] !== after[field])
-    .map((field) => ({ kind: kinds[field], field, before: before[field], after: after[field] }));
-  const changed = materialChanges.length > 0;
-  const changedField = (field: keyof OccurrenceCustomerSnapshot) => before[field] !== after[field];
-  const confirmedVenueChanged = before.venue_status === "CONFIRMED" && (
-    after.venue_status !== "CONFIRMED"
-    || changedField("venue_name")
-    || changedField("venue_address")
-  );
-  const deadlineMovedLater = before.venue_announce_by !== null
-    && after.venue_announce_by !== null
-    && new Date(after.venue_announce_by).getTime() > new Date(before.venue_announce_by).getTime();
-  return {
-    changed,
-    notificationMaterial: changed,
-    refundMaterial: changedField("starts_at")
-      || changedField("ends_at")
-      || changedField("timezone")
-      || confirmedVenueChanged
-      || deadlineMovedLater,
-    materialChanges,
-    before,
-    after,
-  };
-}
 
 // A stale PREPARED allocation is an operational-review condition, never a
 // timeout-based cancellation. Keep this explicit and shared by the worker and
@@ -522,7 +442,7 @@ export class CommerceDomain {
     });
   }
 
-  private openOperationalIncident(
+  openOperationalIncident(
     kind: "REFUND_REQUIRES_REVIEW" | "ORGANIZER_CHANGE_REFUND_MANUAL_REVIEW" | "VENUE_ANNOUNCEMENT_OVERDUE" | "OCCURRENCE_NOTIFICATION_PAYLOAD_CORRUPT",
     entityType: "refund" | "order" | "occurrence",
     entityId: string,
@@ -540,7 +460,7 @@ export class CommerceDomain {
    * Reopening is deliberately scoped to this corruption signal: resolving an
    * incident without repairing an unrecoverable row must not hide it forever.
    */
-  private openOccurrenceNotificationPayloadCorruptionIncident(input: {
+  openOccurrenceNotificationPayloadCorruptionIncident(input: {
     occurrenceId: string;
     bookingId: string;
     orderId: string;
@@ -669,154 +589,20 @@ export class CommerceDomain {
    * historical refund and an organizer cancellation converge exactly to the
    * captured amount without ever over-refunding it.
    */
-  private ensureFullCapturedRefund(paymentId: string, source: string, capturedTotal: number) {
+  ensureFullCapturedRefund(paymentId: string, source: string, capturedTotal: number) {
     return ensureFullCapturedRefund(this, paymentId, source, capturedTotal);
   }
 
   requestCustomerRefund(normalizedOrderNumber: string) {
-    return withImmediateTransaction(this.db, () => {
-      const order = one(this.db, `SELECT o.id, o.public_order_number, o.customer_email, o.customer_email_hash, p.id AS payment_id, p.status AS payment_status,
-        p.captured_amount_kopecks, b.id AS booking_id, b.status AS booking_status, oc.fulfillment_status, oc.starts_at
-        FROM orders o JOIN payments p ON p.order_id = o.id JOIN bookings b ON b.order_id = o.id
-        JOIN occurrences oc ON oc.id = o.occurrence_id
-        WHERE replace(upper(o.public_order_number), '-', '') = ?`, normalizedOrderNumber);
-      const currentOrder = order && this.customerRefundOrder(String(order.id));
-      if (!currentOrder) return { accepted: true };
-      const eligibility = this.customerRefundEligibility(currentOrder);
-      if (eligibility === "ORGANIZER_CHANGE_MANUAL_REVIEW") {
-        this.openOperationalIncident(
-          "ORGANIZER_CHANGE_REFUND_MANUAL_REVIEW",
-          "order",
-          String(currentOrder.id),
-          `organizer-change-refund-manual:${currentOrder.id}`,
-          { order_id: currentOrder.id, booking_id: currentOrder.booking_id, reason: "OCCURRENCE_CHANGE_AFTER_START" },
-        );
-        return { accepted: true };
-      }
-      if (eligibility !== "ELIGIBLE" && eligibility !== "ORGANIZER_CHANGE_ELIGIBLE") return { accepted: true };
-
-      // A later request can supersede only a definitely unsent capability.
-      // Once the worker has claimed a message, its provider request may already
-      // be in flight; retain that token rather than producing two usable links.
-      this.db.prepare(`UPDATE customer_refund_confirmation_tokens
-        SET invalidated_at = ?
-        WHERE order_id = ? AND consumed_at IS NULL AND invalidated_at IS NULL
-          AND EXISTS (
-            SELECT 1 FROM email_outbox e
-            WHERE e.type = 'CUSTOMER_REFUND_CONFIRMATION'
-              AND e.payload_ref = customer_refund_confirmation_tokens.id
-              AND e.status = 'PENDING'
-          )`).run(now(), order.id);
-      const reusable = one(this.db, `SELECT t.id
-        FROM customer_refund_confirmation_tokens t
-        WHERE t.order_id = ? AND t.consumed_at IS NULL AND t.invalidated_at IS NULL AND t.expires_at > ?
-          AND NOT EXISTS (
-            SELECT 1 FROM email_outbox e
-            WHERE e.type = 'CUSTOMER_REFUND_CONFIRMATION' AND e.payload_ref = t.id AND e.status = 'PENDING'
-          )
-        ORDER BY t.created_at DESC LIMIT 1`, order.id, new Date(this.clock()).toISOString());
-      if (reusable) return { accepted: true };
-      const capability = publicId();
-      const encrypted = encryptTicketCapability(capability);
-      const tokenId = id();
-      const expiresAt = new Date(this.clock() + 30 * 60_000).toISOString();
-      this.db.prepare(`INSERT INTO customer_refund_confirmation_tokens(id, token_hash, token_ciphertext, token_nonce, order_id, expires_at)
-        VALUES (?, ?, ?, ?, ?, ?)`)
-        .run(tokenId, sha256(capability), encrypted.ciphertext, encrypted.nonce, order.id, expiresAt);
-      this.enqueueEmail("CUSTOMER_REFUND_CONFIRMATION", String(order.customer_email), String(order.customer_email_hash), "customer-refund-confirmation", tokenId, { order_id: order.id, public_order_number: order.public_order_number, expires_at: expiresAt });
-      return { accepted: true };
-    });
+    return requestCustomerRefund(this, normalizedOrderNumber);
   }
 
   customerRefundConfirmationContext(capability: string) {
-    const token = this.validCustomerRefundToken(capability);
-    const order = this.customerRefundOrder(String(token.order_id));
-    if (!order) throw new DomainError("REFUND_CONFIRMATION_INVALID", 404);
-    const eligibility = this.customerRefundEligibility(order);
-    return {
-      order_number: order.public_order_number,
-      occurrence: {
-        title: order.occurrence_title,
-        city: order.city_title,
-        starts_at: order.starts_at,
-        timezone: order.timezone,
-      },
-      amount_remaining_kopecks: Math.max(0, Number(order.captured_amount_kopecks) - Number(order.successful_refunded_amount_kopecks)),
-      eligibility,
-      ...(["ELIGIBLE", "ORGANIZER_CHANGE_ELIGIBLE"].includes(String(eligibility)) ? {} : { manual_contact: "art@flexperiment.ru" }),
-      expires_at: token.expires_at,
-    };
+    return customerRefundConfirmationContext(this, capability);
   }
 
   confirmCustomerRefund(capability: string) {
-    return withImmediateTransaction(this.db, () => {
-      const token = this.validCustomerRefundToken(capability);
-      const order = this.customerRefundOrder(String(token.order_id));
-      const eligibility = order && this.customerRefundEligibility(order);
-      // A capability issued before the start must not silently become a
-      // false denial after the start. The entitlement remains authoritative;
-      // only a human may decide the post-start refund outcome.
-      if (order && eligibility === "ORGANIZER_CHANGE_MANUAL_REVIEW") {
-        this.openOperationalIncident(
-          "ORGANIZER_CHANGE_REFUND_MANUAL_REVIEW",
-          "order",
-          String(order.id),
-          `organizer-change-refund-manual:${order.id}`,
-          { order_id: order.id, booking_id: order.booking_id, reason: "OCCURRENCE_CHANGE_AFTER_START" },
-        );
-        return { confirmed: false, manual_review: true, manual_contact: "art@flexperiment.ru" };
-      }
-      if (!order || !["ELIGIBLE", "ORGANIZER_CHANGE_ELIGIBLE"].includes(String(eligibility))) throw new DomainError("REFUND_NOT_ELIGIBLE", 409);
-      this.db.prepare("UPDATE customer_refund_confirmation_tokens SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL").run(now(), token.id);
-      this.db.prepare("UPDATE customer_refund_confirmation_tokens SET invalidated_at = ? WHERE order_id = ? AND id <> ? AND consumed_at IS NULL AND invalidated_at IS NULL").run(now(), order.id, token.id);
-      this.db.prepare("UPDATE bookings SET status = 'CANCELLED', cancelled_at = ?, cancellation_reason = 'CUSTOMER_SELF_SERVICE_REFUND' WHERE id = ? AND status = 'CONFIRMED'").run(now(), order.booking_id);
-      this.db.prepare("UPDATE tickets SET status = 'VOID', voided_at = ? WHERE booking_id = ? AND status = 'VALID'").run(now(), order.booking_id);
-      this.supersedePendingOccurrenceUpdatesForBooking(String(order.booking_id), "BOOKING_CANCELLED");
-      this.closeOccurrenceChangeRefundEntitlementsForBooking(String(order.booking_id), "BOOKING_CANCELLED");
-      this.ensureFullCapturedRefund(String(order.payment_id), "CUSTOMER_SELF_SERVICE_REFUND", Number(order.captured_amount_kopecks));
-      this.enqueueEmail("CUSTOMER_REFUND_CONFIRMED", String(order.customer_email), String(order.customer_email_hash), "customer-refund-confirmed", String(order.id), { order_id: order.id, public_order_number: order.public_order_number });
-      return { confirmed: true };
-    });
-  }
-
-  private validCustomerRefundToken(capability: string) {
-    const token = one(this.db, "SELECT * FROM customer_refund_confirmation_tokens WHERE token_hash = ?", sha256(capability));
-    if (!token || token.invalidated_at || token.consumed_at || new Date(String(token.expires_at)).getTime() <= this.clock()) throw new DomainError("REFUND_CONFIRMATION_INVALID", 404);
-    return token;
-  }
-
-  private customerRefundOrder(orderId: string) {
-    return one(this.db, `SELECT o.id, o.public_order_number, o.customer_email, o.customer_email_hash,
-      p.id AS payment_id, p.status AS payment_status, p.captured_amount_kopecks,
-      b.id AS booking_id, b.status AS booking_status,
-      oc.fulfillment_status, oc.starts_at, oc.timezone, oc.title AS occurrence_title,
-      c.title AS city_title,
-      COALESCE((SELECT SUM(r.amount_kopecks) FROM refunds r WHERE r.payment_id = p.id AND r.status = 'SUCCEEDED'), 0) AS successful_refunded_amount_kopecks,
-      COALESCE((SELECT COUNT(*) FROM refunds r WHERE r.payment_id = p.id AND r.status IN ('REQUESTED', 'SUBMITTING', 'SUBMIT_UNKNOWN', 'RECONCILING')), 0) AS active_refund_count,
-      COALESCE((SELECT COUNT(*) FROM refund_obligations ro WHERE ro.payment_id = p.id AND ro.status IN ('OPEN', 'FULFILLING', 'REVIEW_REQUIRED')), 0) AS active_obligation_count,
-      EXISTS(SELECT 1 FROM occurrence_change_refund_entitlements e
-        WHERE e.booking_id = b.id AND e.status = 'OPEN') AS organizer_change_refund_entitlement
-      FROM orders o JOIN payments p ON p.order_id = o.id JOIN bookings b ON b.order_id = o.id
-      JOIN occurrences oc ON oc.id = o.occurrence_id JOIN cities c ON c.id = oc.city_id
-      WHERE o.id = ?`, orderId);
-  }
-
-  private customerRefundEligibility(order: Row) {
-    if (order.fulfillment_status === "CANCELLED") return "OCCURRENCE_CANCELLED";
-    if (order.fulfillment_status === "COMPLETED") return "OCCURRENCE_COMPLETED";
-    const captured = Number(order.captured_amount_kopecks);
-    const refunded = Number(order.successful_refunded_amount_kopecks);
-    if (captured <= 0 || !["PAID", "PARTIALLY_REFUNDED", "REFUNDED"].includes(String(order.payment_status))) return "NO_REFUND_DUE";
-    if (refunded >= captured || order.payment_status === "REFUNDED") return "REFUND_COMPLETED";
-    if (Number(order.active_refund_count) > 0 || Number(order.active_obligation_count) > 0) return "REFUND_PENDING";
-    if (order.booking_status !== "CONFIRMED") return "ALREADY_CANCELLED";
-    const startsAt = new Date(String(order.starts_at)).getTime();
-    if (Number(order.organizer_change_refund_entitlement) === 1) {
-      return this.clock() < startsAt ? "ORGANIZER_CHANGE_ELIGIBLE" : "ORGANIZER_CHANGE_MANUAL_REVIEW";
-    }
-    const deadline = startsAt - 60 * 60_000;
-    if (this.clock() >= deadline) return "CUTOFF_REACHED";
-    return "ELIGIBLE";
+    return confirmCustomerRefund(this, capability);
   }
 
   /** Read-only provider/TLS and documented payment-list contract evidence. */
@@ -910,91 +696,15 @@ export class CommerceDomain {
   }
 
   cancelCustomerBooking(bookingId: string, input: { reason: string; confirmation_text: string; withheld_expense_amount_kopecks?: number; expense_justification?: string; evidence_reference?: string }, idempotencyKey: string) {
-    const keyHash = sha256(idempotencyKey); const requestHash = sha256(canonical(input));
-    return withImmediateTransaction(this.db, () => {
-      const replay = one(this.db, "SELECT canonical_request_hash, booking_id FROM booking_cancellation_idempotency WHERE idempotency_key_hash = ?", keyHash);
-      if (replay) { if (replay.canonical_request_hash !== requestHash) throw new DomainError("IDEMPOTENCY_CONFLICT", 409); return one(this.db, "SELECT * FROM bookings WHERE id = ?", replay.booking_id)!; }
-      const booking = one(this.db, `SELECT b.*, p.id AS payment_id, p.status AS payment_status, p.captured_amount_kopecks, o.fulfillment_status, ord.customer_email, ord.customer_email_hash, ord.public_order_number
-        FROM bookings b JOIN payments p ON p.order_id = b.order_id JOIN occurrences o ON o.id = b.occurrence_id JOIN orders ord ON ord.id = b.order_id WHERE b.id = ?`, bookingId);
-      if (!booking || !["RESERVED", "CONFIRMED"].includes(String(booking.status))) throw new DomainError("BOOKING_NOT_CANCELLABLE", 409);
-      if (booking.fulfillment_status !== "SCHEDULED") throw new DomainError("TERMINAL_OCCURRENCE", 409);
-      if (input.confirmation_text !== `CANCEL ${bookingId}`) throw new DomainError("CONFIRMATION_REQUIRED", 422);
-      const withheld = input.withheld_expense_amount_kopecks ?? 0;
-      if (booking.payment_status !== "PAID" && withheld !== 0) throw new DomainError("WITHHOLDING_BEFORE_CAPTURE_FORBIDDEN", 422);
-      if (withheld > Number(booking.captured_amount_kopecks)) throw new DomainError("WITHHOLDING_EXCEEDS_CAPTURED", 422);
-      this.db.prepare("UPDATE bookings SET status = 'CANCELLED', cancelled_at = ?, cancellation_reason = ? WHERE id = ?").run(now(), input.reason, bookingId);
-      this.db.prepare("UPDATE tickets SET status = 'VOID', voided_at = ? WHERE booking_id = ? AND status = 'VALID'").run(now(), bookingId);
-      this.supersedePendingOccurrenceUpdatesForBooking(bookingId, "BOOKING_CANCELLED");
-      this.closeOccurrenceChangeRefundEntitlementsForBooking(bookingId, "BOOKING_CANCELLED");
-      this.enqueueEmail("BOOKING_CANCELLED", String(booking.customer_email), String(booking.customer_email_hash), "booking-cancelled", bookingId, { booking_id: bookingId, reason: input.reason, public_order_number: booking.public_order_number });
-      this.db.prepare("INSERT INTO booking_cancellation_idempotency(idempotency_key_hash, canonical_request_hash, booking_id) VALUES (?, ?, ?)").run(keyHash, requestHash, bookingId);
-      if (booking.payment_status === "PAID") this.upsertRefundObligation(String(booking.payment_id), "CUSTOMER_CANCELLATION_PARTIAL", Number(booking.captured_amount_kopecks) - withheld);
-      return one(this.db, "SELECT * FROM bookings WHERE id = ?", bookingId)!;
-    });
+    return cancelCustomerBooking(this, bookingId, input, idempotencyKey);
   }
 
   createCompensationRefund(orderId: string, input: { amount_kopecks: number; reason: string; note?: string }, idempotencyKey: string) {
-    const keyHash = sha256(idempotencyKey); const requestHash = sha256(canonical(input));
-    return withImmediateTransaction(this.db, () => {
-      const existing = one(this.db, "SELECT * FROM refunds WHERE idempotency_key_hash = ?", keyHash);
-      if (existing) { if (existing.canonical_request_hash !== requestHash) throw new DomainError("IDEMPOTENCY_CONFLICT", 409); return existing; }
-      const payment = one(this.db, "SELECT * FROM payments WHERE order_id = ?", orderId);
-      if (!payment || !["PAID", "PARTIALLY_REFUNDED"].includes(String(payment.status))) throw new DomainError("PAYMENT_NOT_REFUNDABLE", 409);
-      const used = one(this.db, `SELECT COALESCE(SUM(amount_kopecks), 0) AS succeeded FROM refunds WHERE payment_id = ? AND status = 'SUCCEEDED'`, payment.id)!;
-      const active = one(this.db, `SELECT COALESCE(SUM(amount_kopecks), 0) AS inflight FROM refunds WHERE payment_id = ? AND status IN ('REQUESTED', 'SUBMITTING', 'SUBMIT_UNKNOWN', 'RECONCILING')`, payment.id)!;
-      if (input.amount_kopecks > Number(payment.captured_amount_kopecks) - Number(used.succeeded) - Number(active.inflight)) throw new DomainError("REFUND_AMOUNT_EXCEEDS_AVAILABLE", 409);
-      const refundId = id();
-      this.db.prepare(`INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, note, source, status, idempotency_key_hash, canonical_request_hash)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'ADMIN_COMPENSATION', 'REQUESTED', ?, ?)`)
-        .run(refundId, publicId(), orderId, payment.id, input.amount_kopecks, input.reason, input.note ?? null, keyHash, requestHash);
-      return one(this.db, "SELECT * FROM refunds WHERE id = ?", refundId)!;
-    });
+    return createCompensationRefund(this, orderId, input, idempotencyKey);
   }
 
   createObligationRefunds() {
-    return withImmediateTransaction(this.db, () => many(this.db, `SELECT ro.*, p.order_id, p.captured_amount_kopecks FROM refund_obligations ro JOIN payments p ON p.id = ro.payment_id
-      WHERE ro.status IN ('OPEN', 'FULFILLING')`).flatMap((obligation) => {
-      const succeeded = Number(one(this.db, "SELECT COALESCE(SUM(amount_kopecks), 0) AS amount FROM refunds WHERE payment_id = ? AND status = 'SUCCEEDED'", obligation.payment_id)?.amount ?? 0);
-      const active = one(this.db, "SELECT id FROM refunds WHERE payment_id = ? AND status IN ('REQUESTED', 'SUBMITTING', 'SUBMIT_UNKNOWN', 'RECONCILING')", obligation.payment_id);
-      const outstanding = Number(obligation.target_refunded_amount_kopecks) - succeeded;
-      if (outstanding <= 0) { this.db.prepare("UPDATE refund_obligations SET status = 'FULFILLED', fulfilled_at = ? WHERE id = ?").run(now(), obligation.id); return []; }
-      if (active) return [];
-      const refundId = id();
-      this.db.prepare(`INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash)
-        VALUES (?, ?, ?, ?, ?, 'Refund obligation', 'REFUND_OBLIGATION', 'REQUESTED', ?, ?)`)
-        .run(refundId, publicId(), obligation.order_id, obligation.payment_id, outstanding, sha256(`obligation:${obligation.id}:${outstanding}`), sha256(`obligation:${obligation.id}:${outstanding}`));
-      this.db.prepare("UPDATE refund_obligations SET status = 'FULFILLING' WHERE id = ?").run(obligation.id);
-      return [one(this.db, "SELECT * FROM refunds WHERE id = ?", refundId)!];
-    }));
-  }
-
-  /**
-   * A refund obligation is a payment-level target.  Provider-confirmed refunds
-   * may arrive through any legitimate command source, so fulfillment is based
-   * on the cumulative authoritative amount for that payment rather than the
-   * amount of the command currently being reconciled.
-   *
-   * REVIEW_REQUIRED deliberately remains an operator-owned state: a later
-   * provider observation must not silently resolve an already escalated
-   * obligation.
-   *
-   * Call only while holding the same immediate transaction that finalized a
-   * successful refund.
-   */
-  private fulfillRefundObligationIfTargetMet(paymentId: string) {
-    const obligation = one(this.db, `SELECT id, target_refunded_amount_kopecks
-      FROM refund_obligations
-      WHERE payment_id = ? AND status IN ('OPEN', 'FULFILLING')`, paymentId);
-    if (!obligation) return false;
-
-    const succeeded = Number(one(this.db, `SELECT COALESCE(SUM(amount_kopecks), 0) AS amount
-      FROM refunds WHERE payment_id = ? AND status = 'SUCCEEDED'`, paymentId)?.amount ?? 0);
-    if (succeeded < Number(obligation.target_refunded_amount_kopecks)) return false;
-
-    this.db.prepare(`UPDATE refund_obligations
-      SET status = 'FULFILLED', fulfilled_at = COALESCE(fulfilled_at, ?)
-      WHERE id = ? AND status IN ('OPEN', 'FULFILLING')`).run(now(), obligation.id);
-    return true;
+    return createObligationRefunds(this);
   }
 
   completeOccurrence(occurrenceId: string) {
@@ -1006,42 +716,7 @@ export class CommerceDomain {
   }
 
   cancelOccurrence(occurrenceId: string, input: { reason: string; reauthCapability: string }, idempotencyKey: string, adminId: string, sessionId: string) {
-    const payload = { occurrence_id: occurrenceId, reason: input.reason };
-    return this.withAdminCommand("occurrence-cancel", idempotencyKey, payload, "occurrences", () => {
-      const occurrence = one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId);
-      if (!occurrence) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
-      if (occurrence.fulfillment_status !== "SCHEDULED") throw new DomainError("OCCURRENCE_TERMINAL", 409);
-      const capability = one(this.db, `SELECT * FROM admin_reauth_capabilities WHERE capability_hash = ? AND admin_session_id = ? AND admin_id = ?
-        AND purpose = 'CANCEL_OCCURRENCE' AND resource_id = ? AND consumed_at IS NULL AND expires_at > ?`, sha256(input.reauthCapability), sessionId, adminId, occurrenceId, now());
-      if (!capability) throw new DomainError("ADMIN_REAUTH_REQUIRED", 403);
-      this.db.prepare("UPDATE admin_reauth_capabilities SET consumed_at = ? WHERE id = ? AND consumed_at IS NULL").run(now(), capability.id);
-      this.db.prepare("UPDATE occurrences SET fulfillment_status = 'CANCELLED', sales_status = 'CLOSED', cancelled_at = ?, cancellation_reason = ?, updated_at = ? WHERE id = ?").run(now(), input.reason, now(), occurrenceId);
-      // Entitlement cancellation is deliberately limited to active bookings.
-      // It must not decide which captured payments receive a refund.
-      const bookings = many(this.db, "SELECT id, order_id FROM bookings WHERE occurrence_id = ? AND status IN ('RESERVED', 'CONFIRMED')", occurrenceId);
-      for (const booking of bookings) {
-        this.db.prepare("UPDATE bookings SET status = 'CANCELLED', cancelled_at = ?, cancellation_reason = ? WHERE id = ?").run(now(), "OCCURRENCE_CANCELLED", booking.id);
-        this.db.prepare("UPDATE tickets SET status = 'VOID', voided_at = ? WHERE booking_id = ? AND status = 'VALID'").run(now(), booking.id);
-        this.supersedePendingOccurrenceUpdatesForBooking(String(booking.id), "OCCURRENCE_CANCELLED");
-        this.closeOccurrenceChangeRefundEntitlementsForBooking(String(booking.id), "OCCURRENCE_CANCELLED");
-      }
-      this.resolveOperationalIncidents("occurrence", occurrenceId, "Occurrence cancelled");
-      // Financial unwind and organizer notice are independent of booking
-      // status. A prior technical or customer cancellation must not strand
-      // money or suppress the affected paid order's cancellation notice.
-      const capturedPayments = many(this.db, `SELECT p.id, p.captured_amount_kopecks, ord.id AS order_id,
-          ord.customer_email, ord.customer_email_hash, ord.public_order_number
-        FROM payments p JOIN orders ord ON ord.id = p.order_id
-        WHERE ord.occurrence_id = ? AND p.captured_amount_kopecks > 0`, occurrenceId);
-      for (const payment of capturedPayments) {
-        this.ensureFullCapturedRefund(String(payment.id), "OCCURRENCE_CANCELLED", Number(payment.captured_amount_kopecks));
-        this.enqueueEmail("OCCURRENCE_CANCELLED", String(payment.customer_email), String(payment.customer_email_hash), "occurrence-cancelled", String(payment.order_id), {
-          occurrence_id: occurrenceId, order_id: payment.order_id, reason: input.reason, public_order_number: payment.public_order_number,
-        });
-      }
-      this.recordAdminCommandAudit(adminId, "OCCURRENCE_CANCELLED", "occurrence", occurrenceId, input.reason, idempotencyKey, payload);
-      return one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId)!;
-    });
+    return cancelOccurrence(this, occurrenceId, input, idempotencyKey, adminId, sessionId);
   }
 
   cancellationFinancialOverview(occurrenceId: string) {
@@ -1065,159 +740,7 @@ export class CommerceDomain {
   }
 
   patchOccurrence(occurrenceId: string, input: Record<string, unknown>, idempotencyKey: string, adminId: string) {
-    const payload = { occurrence_id: occurrenceId, ...input };
-    return this.withAdminCommand("occurrence-patch", idempotencyKey, payload, "occurrences", () => {
-      const before = one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId);
-      if (!before) throw new DomainError("OCCURRENCE_NOT_FOUND", 404);
-      if (before.fulfillment_status !== "SCHEDULED") throw new DomainError("OCCURRENCE_TERMINAL", 409);
-      const expectedRevision = Number(input.expected_revision);
-      if (!Number.isInteger(expectedRevision) || expectedRevision !== Number(before.admin_revision)) {
-        throw new DomainError("OCCURRENCE_REVISION_CONFLICT", 409);
-      }
-      if (input.capacity !== undefined) throw new DomainError("VALIDATION_ERROR", 422);
-      const inventory = input.inventory;
-      if (inventory !== undefined && (!inventory || typeof inventory !== "object" || Array.isArray(inventory))) throw new DomainError("VALIDATION_ERROR", 422);
-      const inventoryPatch = inventory as Record<string, unknown> | undefined;
-      const normalizedInput: Record<string, unknown> = {
-        ...input,
-        ...(inventoryPatch?.capacity !== undefined ? { capacity: inventoryPatch.capacity } : {}),
-        ...(inventoryPatch?.admin_reserved_seats !== undefined ? { admin_reserved_seats: inventoryPatch.admin_reserved_seats } : {}),
-      };
-      delete (normalizedInput as Record<string, unknown>).inventory;
-      const target = resolveInventoryTarget(before, normalizedInput);
-      try { assertInventoryTarget(seatCommitments(this.db, occurrenceId), target); }
-      catch (error) {
-        if (error instanceof InventoryTargetError) throw new DomainError(error.code, 409, error.code, error.details);
-        throw error;
-      }
-      const fields = ["title", "starts_at", "ends_at", "timezone", "venue_status", "venue_name", "venue_address", "venue_public", "venue_disclosure_text", "venue_announce_by", "price_kopecks", "capacity", "admin_reserved_seats", "sales_status", "visibility"] as const;
-      const persistedPatch = Object.fromEntries(fields
-        .filter((field) => normalizedInput[field] !== undefined)
-        .map((field) => [field, typeof normalizedInput[field] === "boolean" ? Number(normalizedInput[field]) : normalizedInput[field]]));
-      const changed = fields.filter((field) => persistedPatch[field] !== undefined && persistedPatch[field] !== before[field]);
-      if (!changed.length) return before;
-      const next = { ...before, ...Object.fromEntries(changed.map((field) => [field, persistedPatch[field]])) };
-      const isLegacyHiddenSalesState = before.visibility === "HIDDEN" && (before.sales_status === "OPEN" || before.sales_status === "PAUSED");
-      if (isLegacyHiddenSalesState && !(changed.length === 1 && changed[0] === "sales_status" && next.sales_status === "CLOSED")) {
-        throw new DomainError("OCCURRENCE_STATE_TRANSITION_FORBIDDEN", 409);
-      }
-      if (!isAllowedOccurrenceStateTransition(before, next)) throw new DomainError("OCCURRENCE_STATE_TRANSITION_FORBIDDEN", 409);
-      if (Date.parse(String(next.ends_at)) <= Date.parse(String(next.starts_at))) throw new DomainError("OCCURRENCE_CREATE_INVALID", 422);
-      if (next.venue_status === "CONFIRMED" && (!next.venue_name || !next.venue_address)) throw new DomainError("VENUE_CONFIRMATION_INCOMPLETE", 422);
-      if (next.venue_status === "TO_BE_ANNOUNCED" && (!next.venue_disclosure_text || !next.venue_announce_by)) throw new DomainError("VENUE_TBD_INCOMPLETE", 422);
-      if (next.venue_status === "TO_BE_ANNOUNCED" && Date.parse(String(next.venue_announce_by)) >= Date.parse(String(next.starts_at))) throw new DomainError("VENUE_ANNOUNCEMENT_TOO_LATE", 422);
-      const classification = classifyOccurrenceRevision(before, next);
-      const assignments = [...changed.map((field) => `${field} = ?`), "material_revision = material_revision + ?", "admin_revision = admin_revision + 1", "updated_at = ?"];
-      const updated = this.db.prepare(`UPDATE occurrences SET ${assignments.join(", ")} WHERE id = ? AND admin_revision = ?`)
-        .run(...changed.map((field) => persistedPatch[field]), classification.notificationMaterial ? 1 : 0, now(), occurrenceId, expectedRevision);
-      if (!updated.changes) throw new DomainError("OCCURRENCE_REVISION_CONFLICT", 409);
-      const after = one(this.db, "SELECT * FROM occurrences WHERE id = ?", occurrenceId)!;
-      // Publication, not city creation, can complete the narrowly scoped
-      // purpose. The helper rechecks scheduled/future eligibility.
-      const city = one(this.db, "SELECT slug FROM cities WHERE id = ?", after.city_id);
-      if (city) this.consumeEligibleCityInterests(String(city.slug), CITY_INTEREST_SWEEP_BATCH_SIZE);
-      if (classification.notificationMaterial) {
-        const revisionId = id();
-        this.db.prepare("INSERT INTO occurrence_revisions(id, occurrence_id, revision, reason, before_json, after_json, changed_by_admin_id) VALUES (?, ?, ?, ?, ?, ?, ?)")
-          .run(revisionId, occurrenceId, after.material_revision, typeof input.audit_context === "string" ? input.audit_context : "", JSON.stringify(classification.before), JSON.stringify(classification.after), adminId);
-        this.emitOccurrenceRevisionEffects(revisionId, before, after, classification);
-        // Agent Referrals compatibility seam: the same classification that
-        // just bumped occurrences.material_revision also invalidates any
-        // engagement_revisions minted against the old schedule. An
-        // already-ACTIVE engagement for this occurrence must not be left
-        // granting promo/publication authority under stale terms - suspend
-        // it now; only a fresh engagement revision (whose own
-        // occurrence_material_revision will pin the new state), accepted
-        // and activated again, can restore it.
-        suspendEngagementsForOccurrenceMaterialChange(this.db, occurrenceId, "OCCURRENCE_MATERIAL_REVISION_CHANGED");
-      }
-      const inventoryDetails = Object.fromEntries(["capacity", "admin_reserved_seats"].filter((field) => changed.includes(field as typeof changed[number])).map((field) => [field, { from: before[field], to: after[field] }]));
-      this.recordAdminCommandAudit(adminId, "OCCURRENCE_EDITED", "occurrence", occurrenceId, typeof input.audit_context === "string" ? input.audit_context : undefined, idempotencyKey, payload, Object.keys(inventoryDetails).length ? { inventory: inventoryDetails } : undefined);
-      return after;
-    });
-  }
-
-  /** Creates immutable customer notices and, only for materially adverse facts, refund rights. */
-  private emitOccurrenceRevisionEffects(revisionId: string, before: Row, after: Row, classification: OccurrenceRevisionClassification) {
-    const paidBookings = many(this.db, `SELECT b.id AS booking_id, b.order_id, p.id AS payment_id,
-        t.id AS ticket_id, o.customer_email, o.customer_email_hash, o.public_order_number
-      FROM bookings b
-      JOIN orders o ON o.id = b.order_id
-      JOIN payments p ON p.order_id = o.id
-      JOIN tickets t ON t.booking_id = b.id
-      WHERE b.occurrence_id = ?
-        AND b.status = 'CONFIRMED'
-        AND t.status = 'VALID'
-        AND p.status IN ('PAID', 'PARTIALLY_REFUNDED')
-        AND p.captured_amount_kopecks > 0`, after.id);
-    for (const booking of paidBookings) {
-      // Only PENDING is proof that a prior notice did not leave our system.
-      // Carry its earliest customer baseline forward so a quick follow-up
-      // edit cannot hide a material change from the replacement notice.
-      const pendingBaseline = this.pendingOccurrenceUpdateBaseline(String(booking.booking_id));
-      if (classification.refundMaterial) {
-        this.db.prepare(`INSERT OR IGNORE INTO occurrence_change_refund_entitlements(
-          id, occurrence_revision_id, order_id, booking_id, payment_id
-        ) VALUES (?, ?, ?, ?, ?)`)
-          .run(id(), revisionId, booking.order_id, booking.booking_id, booking.payment_id);
-      }
-      if (pendingBaseline?.corruptNotifications) {
-        // We cannot prove the baseline of an immutable pending customer
-        // notice. Preserve it and stop this booking's notification sequence
-        // rather than silently dropping the earlier change or guessing a
-        // cumulative diff. Financial entitlement creation above remains
-        // authoritative and atomic with the occurrence revision.
-        for (const corrupt of pendingBaseline.corruptNotifications) {
-          this.openOccurrenceNotificationPayloadCorruptionIncident({
-            occurrenceId: String(after.id), bookingId: String(booking.booking_id),
-            orderId: String(booking.order_id), blockedRevisionId: revisionId,
-            corrupt, recoveredFromRevision: false,
-          });
-        }
-        continue;
-      }
-      for (const corrupt of pendingBaseline?.recoveredCorruptNotifications ?? []) {
-        this.openOccurrenceNotificationPayloadCorruptionIncident({
-          occurrenceId: String(after.id), bookingId: String(booking.booking_id),
-          orderId: String(booking.order_id), blockedRevisionId: revisionId,
-          corrupt, recoveredFromRevision: true,
-        });
-      }
-      this.supersedePendingOccurrenceUpdatesForBooking(String(booking.booking_id), "NEWER_OCCURRENCE_REVISION");
-      const notificationClassification = pendingBaseline
-        ? classifyOccurrenceRevision(pendingBaseline.before, after)
-        : classification;
-      const organizerChangeFullRefundAvailable = this.hasOpenOccurrenceChangeRefundEntitlement(String(booking.booking_id));
-      const payload = {
-        schema_version: 1,
-        occurrence_revision_id: revisionId,
-        occurrence_id: after.id,
-        revision: after.material_revision,
-        ticket_id: booking.ticket_id,
-        booking_id: booking.booking_id,
-        order_id: booking.order_id,
-        public_order_number: booking.public_order_number,
-        before: notificationClassification.before,
-        after: notificationClassification.after,
-        material_changes: notificationClassification.materialChanges,
-        // This is a durable booking right, not a property of only the latest
-        // PATCH. It stays visible after a notification-only follow-up edit.
-        organizer_change_full_refund_available: organizerChangeFullRefundAvailable,
-        ...(pendingBaseline ? { coalesced_unsent_revision_ids: pendingBaseline.revisionIds } : {}),
-      };
-      const outboxId = this.enqueueEmail(
-        "OCCURRENCE_UPDATED",
-        String(booking.customer_email),
-        String(booking.customer_email_hash),
-        "occurrence-updated",
-        String(booking.order_id),
-        payload,
-      );
-      this.db.prepare(`INSERT INTO occurrence_update_notifications(
-        id, occurrence_revision_id, order_id, booking_id, ticket_id, outbox_id
-      ) VALUES (?, ?, ?, ?, ?, ?)`)
-        .run(id(), revisionId, booking.order_id, booking.booking_id, booking.ticket_id, outboxId);
-    }
+    return patchOccurrence(this, occurrenceId, input, idempotencyKey, adminId);
   }
 
   createAgent(input: Record<string, unknown>) {
@@ -1350,88 +873,7 @@ export class CommerceDomain {
   }
 
   async reconcileRefund(refundId: string) {
-    const refund = one(this.db, "SELECT r.*, p.provider_payment_id FROM refunds r JOIN payments p ON p.id = r.payment_id WHERE r.id = ?", refundId);
-    if (!refund) throw new DomainError("REFUND_NOT_FOUND", 404);
-    // A previous authoritative reconciliation already completed this command.
-    // Do not ask the provider again or enqueue a second REFUND_SUCCEEDED mail.
-    if (refund.status === "SUCCEEDED") return one(this.db, "SELECT * FROM refunds WHERE id = ?", refundId)!;
-    if (!refund.provider_payment_id) throw new DomainError("PROVIDER_REFERENCE_REQUIRED", 422);
-    const observed = await this.provider.reconcileRefund({ providerPaymentId: String(refund.provider_payment_id), providerReference: refund.provider_reference ? String(refund.provider_reference) : null, amountKopecks: Number(refund.amount_kopecks), idempotencyKey: String(refund.idempotency_key_hash) });
-    this.db.prepare("UPDATE refunds SET last_reconcile_at = ?, provider_observed_total_refunded = ? WHERE id = ?").run(now(), observed.refundedAmountKopecks ?? null, refundId);
-    if (observed.status === "SUCCEEDED" && observed.refundedAmountKopecks === Number(refund.amount_kopecks)) {
-      return withImmediateTransaction(this.db, () => {
-        const finalized = this.db.prepare("UPDATE refunds SET status = 'SUCCEEDED', succeeded_at = ? WHERE id = ? AND status <> 'SUCCEEDED'").run(now(), refundId);
-        // Another worker/manual reconciliation won the transition while the
-        // provider request was in flight. Its transaction owns every local
-        // side effect, including full-refund fulfilment and the email outbox.
-        if (!finalized.changes) return one(this.db, "SELECT * FROM refunds WHERE id = ?", refundId)!;
-        const totals = one(this.db, "SELECT COALESCE(SUM(amount_kopecks), 0) AS amount FROM refunds WHERE payment_id = ? AND status = 'SUCCEEDED'", refund.payment_id)!;
-        const payment = one(this.db, "SELECT captured_amount_kopecks FROM payments WHERE id = ?", refund.payment_id)!;
-        const fullyRefunded = Number(totals.amount) >= Number(payment.captured_amount_kopecks);
-        this.db.prepare("UPDATE payments SET status = ?, updated_at = ? WHERE id = ?").run(fullyRefunded ? "REFUNDED" : "PARTIALLY_REFUNDED", now(), refund.payment_id);
-        // Keep the provider-confirmed refund and its payment-level obligation
-        // consistent in this transaction.  A later worker sweep is no longer
-        // required to make the fulfillment fact observable.
-        this.fulfillRefundObligationIfTargetMet(String(refund.payment_id));
-        // Preserve the accounting fact that changed first: the captured net
-        // amount. Full-refund fulfilment below is still atomic, but must not
-        // relabel this established adjustment as a generic booking cancel.
-        if (fullyRefunded) this.cancelConfirmedBookingForFullRefund(String(refund.order_id));
-        this.db.prepare("UPDATE reservation_abandonments SET status = 'LATE_PAYMENT_REFUNDED', resolved_at = ? WHERE payment_id = ? AND status = 'LATE_PAYMENT_REVIEW_REQUIRED'").run(now(), refund.payment_id);
-        const order = one(this.db, "SELECT customer_email, customer_email_hash, public_order_number FROM orders WHERE id = ?", refund.order_id)!;
-        this.enqueueEmail("REFUND_SUCCEEDED", String(order.customer_email), String(order.customer_email_hash), "refund-succeeded", refundId, {
-          refund_id: refundId,
-          amount_kopecks: refund.amount_kopecks,
-          public_order_number: order.public_order_number,
-          fulfillment_outcome: fullyRefunded ? "FULL" : "PARTIAL",
-        });
-        this.resolveOperationalIncidents("refund", refundId, "Provider refund succeeded");
-        return one(this.db, "SELECT * FROM refunds WHERE id = ?", refundId)!;
-      });
-    }
-    return withImmediateTransaction(this.db, () => {
-      const failed = observed.status === "FAILED";
-      this.db.prepare(`UPDATE refunds SET status = ?, failed_at = CASE WHEN ? THEN ? ELSE failed_at END WHERE id = ?`)
-        .run(failed ? "FAILED" : "REVIEW_REQUIRED", failed ? 1 : 0, now(), refundId);
-      const order = one(this.db, `SELECT public_order_number, customer_email
-        FROM orders WHERE id = ?`, refund.order_id);
-      this.openOperationalIncident("REFUND_REQUIRES_REVIEW", "refund", refundId, `refund-attention:${refundId}`, {
-        refund_id: refundId,
-        state: failed ? "FAILED" : "REVIEW_REQUIRED",
-        order_id: refund.order_id,
-        public_order_number: order?.public_order_number ?? null,
-        customer_email: order?.customer_email ?? null,
-        amount_kopecks: refund.amount_kopecks,
-        provider_reference: refund.provider_reference ?? null,
-        provider_payment_id: refund.provider_payment_id,
-      });
-      return one(this.db, "SELECT * FROM refunds WHERE id = ?", refundId)!;
-    });
-  }
-
-  /**
-   * A fully refunded paid order cannot retain a capacity claim or a valid
-   * admission capability. This helper deliberately has no customer-email or
-   * provider side effects: the enclosing refund transition owns the one
-   * REFUND_SUCCEEDED notification.
-   */
-  private cancelConfirmedBookingForFullRefund(orderId: string) {
-    const booking = one(this.db, "SELECT id FROM bookings WHERE order_id = ? AND status = 'CONFIRMED'", orderId);
-    if (!booking) {
-      this.closeOccurrenceChangeRefundEntitlementsForOrder(orderId, "FULL_REFUND");
-      return false;
-    }
-    const cancelled = this.db.prepare(`UPDATE bookings
-      SET status = 'CANCELLED', cancelled_at = ?, cancellation_reason = 'FULL_REFUND'
-      WHERE id = ? AND status = 'CONFIRMED'`).run(now(), booking.id);
-    if (!cancelled.changes) {
-      this.closeOccurrenceChangeRefundEntitlementsForOrder(orderId, "FULL_REFUND");
-      return false;
-    }
-    this.db.prepare("UPDATE tickets SET status = 'VOID', voided_at = ? WHERE booking_id = ? AND status = 'VALID'").run(now(), booking.id);
-    this.supersedePendingOccurrenceUpdatesForBooking(String(booking.id), "FULL_REFUND");
-    this.closeOccurrenceChangeRefundEntitlementsForOrder(orderId, "FULL_REFUND");
-    return true;
+    return reconcileRefund(this, refundId);
   }
 
   async reconcilePendingRefunds() {
@@ -2115,7 +1557,7 @@ export class CommerceDomain {
    * and a SENDING row is only prevented from being revived after its in-flight
    * call returns.
    */
-  private supersedePendingOccurrenceUpdatesForBooking(bookingId: string, reason: string) {
+  supersedePendingOccurrenceUpdatesForBooking(bookingId: string, reason: string) {
     const timestamp = now();
     const pending = many(this.db, `SELECT n.id, n.outbox_id
       FROM occurrence_update_notifications n
@@ -2135,7 +1577,7 @@ export class CommerceDomain {
     }
   }
 
-  private pendingOccurrenceUpdateBaseline(bookingId: string): PendingOccurrenceUpdateBaseline | null {
+  pendingOccurrenceUpdateBaseline(bookingId: string): PendingOccurrenceUpdateBaseline | null {
     const notifications = many(this.db, `SELECT notification.occurrence_revision_id, notification.outbox_id,
         outbox.payload_snapshot, revision.before_json AS revision_before_json
       FROM occurrence_update_notifications notification
@@ -2173,19 +1615,19 @@ export class CommerceDomain {
     };
   }
 
-  private hasOpenOccurrenceChangeRefundEntitlement(bookingId: string) {
+  hasOpenOccurrenceChangeRefundEntitlement(bookingId: string) {
     return Boolean(one(this.db, `SELECT 1 AS present
       FROM occurrence_change_refund_entitlements
       WHERE booking_id = ? AND status = 'OPEN' LIMIT 1`, bookingId));
   }
 
-  private closeOccurrenceChangeRefundEntitlementsForBooking(bookingId: string, reason: string) {
+  closeOccurrenceChangeRefundEntitlementsForBooking(bookingId: string, reason: string) {
     this.db.prepare(`UPDATE occurrence_change_refund_entitlements
       SET status = 'CLOSED', closed_at = ?, closed_reason = ?
       WHERE booking_id = ? AND status = 'OPEN'`).run(now(), reason, bookingId);
   }
 
-  private closeOccurrenceChangeRefundEntitlementsForOrder(orderId: string, reason: string) {
+  closeOccurrenceChangeRefundEntitlementsForOrder(orderId: string, reason: string) {
     this.db.prepare(`UPDATE occurrence_change_refund_entitlements
       SET status = 'CLOSED', closed_at = ?, closed_reason = ?
       WHERE order_id = ? AND status = 'OPEN'`).run(now(), reason, orderId);
