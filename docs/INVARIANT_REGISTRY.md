@@ -97,6 +97,42 @@ lost, and each names the evidence that the surface is gone.
 | A candidate pointer is adopted over a stale one, and read as a lease | The test named no file in this repository: it ran `git` against temporary repositories and asserted git's own ancestry and lease behaviour. The controller it was written for is gone, and what survives - the runtime identity readout and `inspect-runtime-candidate-topology.sh` - it never exercised. The lease property itself is now owned by `release/deploy-session.ts` and proved in `release/resume.test.ts`. |
 | `test.yml` does not run on durable runtime refs | Rephrased rather than dropped: the trigger set is now asserted as parsed YAML in `release/deploy-workflow-contract.test.ts`, which states the same property without depending on the file's whitespace. |
 
+## Pending classification: schema guards held only by migration tests
+
+The fifteen `*-migration.test.ts` files carry 401 cases between them, and P9
+deletes most of them when the ledger collapses into one baseline. The question
+that matters is not how many cases go, but which named schema guards lose their
+only proof when they do.
+
+Measured rather than estimated. The current migrations define **113** named
+guards (`RAISE(ABORT, '...')`). Migration tests assert **60** of them. Of those
+60, **48 are asserted nowhere else**: if those files are deleted as they stand,
+48 constraints that the running system enforces would have no test at all.
+
+This is the residual risk the plan predicted, now counted instead of feared.
+
+Six of the 48 name a discriminator P9 removes outright, so they retire with
+their column rather than needing a home:
+
+`REFERRAL_REWARD_AUTHORITY_KIND_IMMUTABLE`,
+`REFERRAL_REWARD_AUTHORITY_KIND_MISMATCH`,
+`ORDER_AUTHORITY_COLUMNS_IMMUTABLE`,
+`ORDER_AUTHORITY_TUPLE_INCONSISTENT`,
+`REWARD_SETTLEMENT_AUTHORITY_COLUMNS_IMMUTABLE`,
+`REWARD_SETTLEMENT_AUTHORITY_TUPLE_INCONSISTENT`.
+
+The remaining 42 are unclassified, and deliberately so: whether a guard survives
+is a judgement about what it protects, not about which table it happens to sit
+on. A trigger that freezes a settlement act is a live invariant even though that
+act carries a column P9 deletes, and guessing from proximity would retire real
+protections. Each is read before it is placed.
+
+**The rule this section exists to enforce:** no `*-migration.test.ts` file is
+deleted while any guard it asserts is still in this list. A guard leaves the
+list by being rehoused against the final schema - as the `outbox_attempt`
+constraints were - or by being retired with evidence that the object it protects
+is gone.
+
 ## Open rows
 
 Rows here are invariants with no guarding test, or whose guard is known to be
