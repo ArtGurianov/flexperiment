@@ -1,14 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { DeploySessions, InMemoryReleaseAuthorityStore, type PreDeployTopology } from "../../src/release/deploy-session";
+import { DeploySessions, type PreDeployTopology } from "../../src/release/deploy-session";
+import { releaseAuthorityStores } from "../support/release-authority-stores";
 
 const target = "a".repeat(40);
 const old = "b".repeat(40);
 const changed = "c".repeat(40);
 const topology = (sha: string): PreDeployTopology => ({ frontend: sha, admin: sha, commerce: sha, worker: sha });
 
-describe("deploy sessions", () => {
+describe.each(releaseAuthorityStores)("deploy sessions (%s)", (_name, makeStore) => {
   it("safe-aborts only when every surface remains exactly at its pre-deploy topology", () => {
-    const store = new InMemoryReleaseAuthorityStore();
+    const store = makeStore();
     const sessions = new DeploySessions(store, () => new Date("2026-09-19T00:00:00.000Z"));
     const session = sessions.acquireFenced({ id: "safe", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
     expect(session.state).toBe("FENCED");
@@ -19,7 +20,7 @@ describe("deploy sessions", () => {
   it("requires recovery after one changed surface, and rolling back to the old topology is still legal", () => {
     // A half-switched topology is recoverable: nothing outside this system has
     // happened yet, so the archived database is still a truthful destination.
-    const store = new InMemoryReleaseAuthorityStore();
+    const store = makeStore();
     const sessions = new DeploySessions(store, () => new Date("2026-09-19T00:00:00.000Z"));
     const session = sessions.acquireFenced({ id: "recovery", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
     expect(session.state).toBe("FENCED");
@@ -34,7 +35,7 @@ describe("deploy sessions", () => {
   it("never offers a safe abort again once any surface was observed to move", () => {
     // Restoring the old topology by hand does not turn a mutation into a
     // deploy that never touched production.
-    const store = new InMemoryReleaseAuthorityStore();
+    const store = makeStore();
     const sessions = new DeploySessions(store, () => new Date("2026-09-19T00:00:00.000Z"));
     const session = sessions.acquireFenced({ id: "no-safe-abort", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
     expect(session.state).toBe("FENCED");
@@ -45,7 +46,7 @@ describe("deploy sessions", () => {
   });
 
   it("converging on the target is not an external effect and keeps the old lineage available", () => {
-    const store = new InMemoryReleaseAuthorityStore();
+    const store = makeStore();
     const sessions = new DeploySessions(store, () => new Date("2026-09-19T00:00:00.000Z"));
     const session = sessions.acquireFenced({ id: "converged", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
     expect(session.state).toBe("FENCED");
@@ -60,7 +61,7 @@ describe("deploy sessions", () => {
   it("refuses to close a maintenance cutover that never armed its irreversible boundary", () => {
     // SUCCEEDED is terminal and a terminal session can arm nothing, so closing
     // on convergence alone would make the certification ordering unrecordable.
-    const store = new InMemoryReleaseAuthorityStore();
+    const store = makeStore();
     const sessions = new DeploySessions(store, () => new Date("2026-09-19T00:00:00.000Z"));
     const session = sessions.acquireFenced({ id: "unarmed", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
     expect(session.state).toBe("FENCED");
@@ -74,7 +75,7 @@ describe("deploy sessions", () => {
   });
 
   it("lets a rolling release close on convergence alone - it crosses no external boundary", () => {
-    const store = new InMemoryReleaseAuthorityStore();
+    const store = makeStore();
     const sessions = new DeploySessions(store, () => new Date("2026-09-19T00:00:00.000Z"));
     const session = sessions.acquireRolling({ id: "rolling-complete", ownerId: "owner", mode: "ROLLING_SAFE", targetSha: target }, topology(old));
     expect(sessions.completeTarget(session.id, "owner", topology(target)))
@@ -82,7 +83,7 @@ describe("deploy sessions", () => {
   });
 
   it("spends rollback authority when external effects are armed, and never returns it", () => {
-    const store = new InMemoryReleaseAuthorityStore();
+    const store = makeStore();
     const sessions = new DeploySessions(store, () => new Date("2026-09-19T00:00:00.000Z"));
     const session = sessions.acquireFenced({ id: "external", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
     expect(session.state).toBe("FENCED");
@@ -105,7 +106,7 @@ describe("deploy sessions", () => {
 
   it("does not close sales for rolling releases and transfers expired ownership without changing state", () => {
     let clock = new Date("2026-09-19T00:00:00.000Z");
-    const store = new InMemoryReleaseAuthorityStore();
+    const store = makeStore();
     const sessions = new DeploySessions(store, () => clock, 1_000);
     expect(() => sessions.acquireFenced({ id: "not-rolling", ownerId: "first", mode: "ROLLING_SAFE", targetSha: target }, topology(old)))
       .toThrow("ROLLING_SAFE_DOES_NOT_FENCE_SALES");
@@ -118,7 +119,7 @@ describe("deploy sessions", () => {
     // Production has one topology. A workflow concurrency group is an
     // operational guard a takeover or a hand-run script can step around; this
     // is the authority, and it has to stay right when they do.
-    const store = new InMemoryReleaseAuthorityStore();
+    const store = makeStore();
     const sessions = new DeploySessions(store, () => new Date("2026-09-20T00:00:00.000Z"));
     sessions.acquireFenced({ id: "first", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
 
@@ -129,7 +130,7 @@ describe("deploy sessions", () => {
   });
 
   it("refuses a maintenance session while a rolling one is still in flight", () => {
-    const store = new InMemoryReleaseAuthorityStore();
+    const store = makeStore();
     const sessions = new DeploySessions(store, () => new Date("2026-09-20T00:00:00.000Z"));
     sessions.acquireRolling({ id: "rolling-first", ownerId: "owner", mode: "ROLLING_SAFE", targetSha: target }, topology(old));
 
@@ -139,22 +140,24 @@ describe("deploy sessions", () => {
   });
 
   it("lets only the session that closed the gate reopen it", () => {
-    const store = new InMemoryReleaseAuthorityStore();
+    const store = makeStore();
     const sessions = new DeploySessions(store, () => new Date("2026-09-20T00:00:00.000Z"));
     const owner = sessions.acquireFenced({ id: "owner-session", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
     expect(store.deploymentGate()).toEqual({ closed: true, deploymentSessionId: owner.id });
 
-    // A settle aimed at a session that is not the active one cannot release
-    // the gate on its behalf, whatever state it claims to be in.
+    // A settle aimed at any other session cannot release the gate on its
+    // behalf, whatever state it claims to be in. An id nobody acquired is
+    // refused as missing rather than as inactive - the two are different
+    // things to be told, and only one of them is true here.
     expect(() => store.settle("someone-else", "owner", new Date("2026-09-20T00:00:00.000Z"), ["DEPLOYING"], "SUCCEEDED"))
-      .toThrow("DEPLOY_SESSION_NOT_ACTIVE");
+      .toThrow("DEPLOY_SESSION_NOT_FOUND");
     expect(store.deploymentGate().closed).toBe(true);
   });
 
   it("makes a terminal state unreachable except through settle", () => {
     // Otherwise a caller reaches SUCCEEDED through ordinary progress and the
     // gate is never released at all - the exact state settle exists to prevent.
-    const store = new InMemoryReleaseAuthorityStore();
+    const store = makeStore();
     const sessions = new DeploySessions(store, () => new Date("2026-09-20T00:00:00.000Z"));
     const session = sessions.acquireFenced({ id: "terminal-bypass", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
     sessions.beginDeploying(session.id, "owner");
@@ -167,7 +170,7 @@ describe("deploy sessions", () => {
   it("refuses a session whose initial state contradicts its own mode", () => {
     // The gate follows from the mode, so a maintenance session that starts
     // unfenced, or a rolling one that starts fenced, has no coherent meaning.
-    const store = new InMemoryReleaseAuthorityStore();
+    const store = makeStore();
     const blank = {
       id: "mismatched", ownerId: "owner", targetSha: target, rollbackAuthority: "OLD_LINEAGE_ALLOWED" as const,
       mutationObserved: false, createdAt: "2026-09-20T00:00:00.000Z", leaseExpiresAt: "2026-09-20T00:05:00.000Z",
@@ -185,7 +188,7 @@ describe("deploy sessions", () => {
     // pass the read. Production SQL makes this one guarded UPDATE whose
     // changes === 1 is the only proof, so the contract demands it here too.
     let clock = new Date("2026-09-20T00:00:00.000Z");
-    const store = new InMemoryReleaseAuthorityStore();
+    const store = makeStore();
     const sessions = new DeploySessions(store, () => clock, 60_000);
     const session = sessions.acquireFenced({ id: "contended", ownerId: "first", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
     clock = new Date(clock.getTime() + 120_000);
@@ -198,7 +201,7 @@ describe("deploy sessions", () => {
 
   it("refuses a write from the runner whose lease was taken away", () => {
     let clock = new Date("2026-09-20T00:00:00.000Z");
-    const store = new InMemoryReleaseAuthorityStore();
+    const store = makeStore();
     const sessions = new DeploySessions(store, () => clock, 60_000);
     const session = sessions.acquireFenced({ id: "displaced", ownerId: "first", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
     sessions.beginDeploying(session.id, "first");

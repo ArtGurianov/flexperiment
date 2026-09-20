@@ -3108,7 +3108,11 @@ CREATE TABLE deploy_sessions (
   owner_id TEXT NOT NULL,
   mode TEXT NOT NULL CHECK (mode IN ('MAINTENANCE_CUTOVER', 'ROLLING_SAFE')),
   target_sha TEXT NOT NULL,
-  candidate_id TEXT NOT NULL,
+  -- Nullable, and the reason is a real path rather than laxity: a session
+  -- adopted from a cutover envelope crosses a lineage boundary into a database
+  -- whose candidate registry is empty, so it has no candidate to name and the
+  -- orchestrator's SESSION_HAS_NO_CANDIDATE is reachable by design.
+  candidate_id TEXT,
   state TEXT NOT NULL CHECK (state IN ('ACQUIRED', 'FENCED', 'DEPLOYING', 'RECOVERY_REQUIRED', 'SAFE_ABORTED', 'SUCCEEDED', 'ROLLED_BACK')),
   rollback_authority TEXT NOT NULL CHECK (rollback_authority IN ('OLD_LINEAGE_ALLOWED', 'NEW_LINEAGE_ONLY')),
   mutation_observed INTEGER NOT NULL DEFAULT 0 CHECK (mutation_observed IN (0, 1)),

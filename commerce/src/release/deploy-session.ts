@@ -114,8 +114,8 @@ export type DeploymentGateView = {
 };
 
 export type TerminalState = Extract<DeploySessionState, "SAFE_ABORTED" | "SUCCEEDED" | "ROLLED_BACK">;
-const TERMINAL = new Set<DeploySessionState>(["SAFE_ABORTED", "SUCCEEDED", "ROLLED_BACK"]);
-const NON_TERMINAL: readonly DeploySessionState[] = ["ACQUIRED", "FENCED", "DEPLOYING", "RECOVERY_REQUIRED"];
+export const TERMINAL = new Set<DeploySessionState>(["SAFE_ABORTED", "SUCCEEDED", "ROLLED_BACK"]);
+export const NON_TERMINAL: readonly DeploySessionState[] = ["ACQUIRED", "FENCED", "DEPLOYING", "RECOVERY_REQUIRED"];
 const surfaces: readonly DeploySurface[] = ["frontend", "admin", "commerce", "worker"];
 
 export const topologyEquals = (left: PreDeployTopology, right: PreDeployTopology): boolean =>
@@ -168,8 +168,10 @@ export class InMemoryReleaseAuthorityStore implements ReleaseAuthorityStore {
   }
 
   settle(id: string, ownerId: string, now: Date, from: readonly DeploySessionState[], state: TerminalState): DeploySession {
-    if (this.#activeSessionId !== id) throw new Error("DEPLOY_SESSION_NOT_ACTIVE");
+    // Existence first: an id nobody ever acquired is not an inactive session,
+    // and saying so sends a caller looking for a row that is not there.
     const session = this.required(id);
+    if (this.#activeSessionId !== id) throw new Error("DEPLOY_SESSION_NOT_ACTIVE");
     const ownsGate = session.mode === "MAINTENANCE_CUTOVER";
     if (ownsGate && this.#gateOwnerSessionId !== id) throw new Error("DEPLOYMENT_GATE_NOT_OWNED");
     if (!ownsGate && this.#gateOwnerSessionId === id) throw new Error("ROLLING_SESSION_OWNS_NO_GATE");

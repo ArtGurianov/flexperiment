@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createCutoverEnvelope, InMemoryCutoverEnvelopeStore } from "../../src/release/cutover-envelope";
 import { adoptCutover } from "../../src/release/cutover-handoff";
-import { DeploySessions, InMemoryReleaseAuthorityStore } from "../../src/release/deploy-session";
+import { DeploySessions, type ReleaseAuthorityStore } from "../../src/release/deploy-session";
+import { releaseAuthorityStores } from "../support/release-authority-stores";
 
 const target = "a".repeat(40);
 const old = "b".repeat(40);
@@ -17,17 +18,17 @@ const envelope = (overrides: Partial<Parameters<typeof createCutoverEnvelope>[0]
     ...overrides,
   });
 
-const successor = () => {
-  const store = new InMemoryReleaseAuthorityStore();
+const successor = (makeStore: () => ReleaseAuthorityStore) => {
+  const store = makeStore();
   const envelopes = new InMemoryCutoverEnvelopeStore();
   return { store, envelopes, sessions: new DeploySessions(store, () => now) };
 };
 
 const context = { ownerId: "owner", sourceCommit: target, schemaLineage: "SUPPORTED" as const, adoptionNonce: "nonce-1", now };
 
-describe("cutover handoff across the lineage boundary", () => {
+describe.each(releaseAuthorityStores)("cutover handoff across the lineage boundary (%s)", (_name, makeStore) => {
   it("adopts into the database first and only then consumes the envelope", () => {
-    const { store, envelopes, sessions } = successor();
+    const { store, envelopes, sessions } = successor(makeStore);
     envelopes.write(envelope());
 
     const result = adoptCutover(sessions, store, envelopes, "cutover-1", context);
@@ -44,7 +45,7 @@ describe("cutover handoff across the lineage boundary", () => {
   });
 
   it("finishes the handoff when the runner died between the commit and consumption", () => {
-    const { store, envelopes, sessions } = successor();
+    const { store, envelopes, sessions } = successor(makeStore);
     envelopes.write(envelope());
     const first = adoptCutover(sessions, store, envelopes, "cutover-1", context);
 
@@ -62,7 +63,7 @@ describe("cutover handoff across the lineage boundary", () => {
   });
 
   it("does not let expiry undo an adoption that already committed", () => {
-    const { store, envelopes, sessions } = successor();
+    const { store, envelopes, sessions } = successor(makeStore);
     envelopes.write(envelope());
     const first = adoptCutover(sessions, store, envelopes, "cutover-1", context);
 
@@ -78,7 +79,7 @@ describe("cutover handoff across the lineage boundary", () => {
   });
 
   it("refuses a leftover envelope that is a different handoff wearing the same id", () => {
-    const { store, envelopes, sessions } = successor();
+    const { store, envelopes, sessions } = successor(makeStore);
     envelopes.write(envelope());
     adoptCutover(sessions, store, envelopes, "cutover-1", context);
 
@@ -92,7 +93,7 @@ describe("cutover handoff across the lineage boundary", () => {
   });
 
   it("refuses a second envelope that differs only by its adoption nonce", () => {
-    const { store, envelopes, sessions } = successor();
+    const { store, envelopes, sessions } = successor(makeStore);
     envelopes.write(envelope());
     adoptCutover(sessions, store, envelopes, "cutover-1", context);
 
@@ -108,7 +109,7 @@ describe("cutover handoff across the lineage boundary", () => {
     // Consumed means the database committed, by the protocol's own ordering. A
     // missing session is a successor authority that has gone missing, and
     // adopting again would paper over the loss.
-    const { store, envelopes, sessions } = successor();
+    const { store, envelopes, sessions } = successor(makeStore);
     envelopes.write(envelope());
     envelopes.markConsumed("cutover-1");
 
@@ -118,7 +119,7 @@ describe("cutover handoff across the lineage boundary", () => {
   });
 
   it("refuses a first adoption on an expired envelope or an unsupported lineage", () => {
-    const { store, envelopes, sessions } = successor();
+    const { store, envelopes, sessions } = successor(makeStore);
     envelopes.write(envelope());
 
     expect(() => adoptCutover(sessions, store, envelopes, "cutover-1", { ...context, now: new Date("2026-09-20T01:00:00.000Z") }))
@@ -131,7 +132,7 @@ describe("cutover handoff across the lineage boundary", () => {
   });
 
   it("refuses an envelope that was never written", () => {
-    const { store, envelopes, sessions } = successor();
+    const { store, envelopes, sessions } = successor(makeStore);
     expect(() => adoptCutover(sessions, store, envelopes, "cutover-1", context)).toThrow("CUTOVER_ENVELOPE_NOT_FOUND");
   });
 });
