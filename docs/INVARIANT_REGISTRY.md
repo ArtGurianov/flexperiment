@@ -12,6 +12,15 @@ from names rather than from evidence is a longer way of writing a wish.
 
 Rows are grouped by who owns the invariant, not by which file it lives in.
 
+A row is one of two kinds, and they are held to different standards:
+
+- **ACTIVE** — the invariant still governs production. It must name an owner and
+  a surviving behavioural proof.
+- **RETIRED** — the surface it governed no longer exists. It needs no test; it
+  needs a reason and evidence that the surface is genuinely gone. Without this
+  distinction a closed epoch survives forever merely so that its row has a file
+  to point at, which is the outcome this cleanup exists to avoid.
+
 ## Data invariants enforced by the schema
 
 These are triggers and constraints. They run whether or not the application is
@@ -51,6 +60,8 @@ straight against the database as well as against a defect in the domain.
 | At most one non-terminal refund per payment | `domain/refunds.ts` | `api.test.ts` |
 | A duplicate provider webhook is quarantined, not applied twice | `domain/payments.ts` | `domain.test.ts` |
 | Seats cannot be oversold under concurrency | `domain/occurrences.ts` | `occurrence-inventory-concurrency.test.ts` |
+| Ticket capabilities are unforgeable, not merely encrypted | `crypto.ts` | `crypto.test.ts` |
+| A command's canonical encoding is stable and total | `crypto.ts` | `crypto.test.ts` |
 | City-interest data is processed only for its stated purpose | `domain/city-interest.ts` | `api.test.ts` |
 | Migrations take the write lock and re-check inside it | `db.ts` | `db-migrate.test.ts` |
 
@@ -70,16 +81,28 @@ straight against the database as well as against a defect in the domain.
 | Readiness separates "not yet" from "converged and inadmissible" | `release/readiness.ts` | `release/readiness.test.ts` |
 | A foreign database lineage fails closed | `release/schema-identity.ts` | `release/schema-identity.test.ts` |
 | A cutover envelope is adopted exactly once | `release/cutover-handoff.ts` | `release/cutover-handoff.test.ts` |
+| The suite runs for pull requests, `main` and manual dispatch only | `test.yml` | `release/deploy-workflow-contract.test.ts` |
+| The production deploy pointer moves only by compare-and-set | `read-/set-production-deploy-ref.sh` | `controlled-deploy-ref-scripts.test.ts` |
+
+## Retired
+
+The surface these governed no longer exists. They are listed so that a reader
+who finds them in the history knows they were retired deliberately rather than
+lost, and each names the evidence that the surface is gone.
+
+| Invariant | Retired because |
+|---|---|
+| Candidate publication refs use the flat `runtime/release-semantics-bootstrap-*` shape | The epoch and its refs are gone. `git grep` finds no reference to that namespace anywhere outside the test that asserted it. |
+| Candidate publication refs use the flat `runtime/agent-referrals-<generation>` shape | Generation semantics were deleted with the release controller; the namespace has no remaining reference either. |
+| A candidate pointer is adopted over a stale one, and read as a lease | The test named no file in this repository: it ran `git` against temporary repositories and asserted git's own ancestry and lease behaviour. The controller it was written for is gone, and what survives - the runtime identity readout and `inspect-runtime-candidate-topology.sh` - it never exercised. The lease property itself is now owned by `release/deploy-session.ts` and proved in `release/resume.test.ts`. |
+| `test.yml` does not run on durable runtime refs | Rephrased rather than dropped: the trigger set is now asserted as parsed YAML in `release/deploy-workflow-contract.test.ts`, which states the same property without depending on the file's whitespace. |
 
 ## Open rows
 
 Rows here are invariants with no guarding test, or whose guard is known to be
 weaker than the claim. The PR does not merge with an open row.
 
-| Invariant | Owner | Why it is open |
-|---|---|---|
-| A tampered ticket capability fails to decrypt | `crypto.ts` | `encryptTicketCapability` round-trips through `api.test.ts` and `domain.test.ts`, so the happy path is covered, but nothing asserts that a modified ciphertext or a swapped nonce is rejected. The AES-GCM auth tag is the property worth proving, and it is the one not proved. |
-| Canonical JSON is stable across key order and nesting | `crypto.ts` `canonicalV2` | No test names it. It is the basis of command-replay digests, so a change in its output silently changes what counts as the same command. |
+_None._
 
 ## How the rows above were checked
 
@@ -104,3 +127,15 @@ so that deletion is now safe. The migration-semantics cases stay where they are.
 
 `one_active_legal_release` was exercised only through the publisher. A direct
 write now proves the index itself.
+
+Ticket capabilities round-tripped through two suites, so the happy path was
+covered and the security property was not. The authentication tag is the reason
+the mode was chosen, and a capability is exactly the kind of value someone would
+try to edit, so corruption of the message, of the tag, and of the nonce are each
+asserted against re-encoded bytes rather than an edited string.
+
+`canonicalV2` had no test at all, although it decides when two requests are the
+same request. Its encoding is asserted as exact text - key order at every depth,
+array order left alone, `undefined` omitted, non-finite and unsupported values
+refused - because that text is the identity, and a parser-based comparison would
+hide precisely the changes that matter.

@@ -9,7 +9,7 @@ import { parse } from "yaml";
  * ones whose absence is a production incident rather than a diff.
  */
 type Workflow = {
-  on: { workflow_dispatch?: { inputs?: Record<string, { type?: string; options?: string[] }> } };
+  on: Record<string, unknown> & { workflow_dispatch?: { inputs?: Record<string, { type?: string; options?: string[] }> } };
   permissions?: Record<string, string>;
   concurrency?: { group?: string; "cancel-in-progress"?: boolean };
   jobs: Record<string, { environment?: string; steps?: { run?: string; uses?: string; env?: Record<string, string> }[] }>;
@@ -109,6 +109,15 @@ describe("production workflow contract", () => {
     expect(script).toContain("LAUNCH_BASELINE");
     expect(script).toContain("git rev-parse origin/main");
     expect(script).toContain("LAUNCH_BASELINE_MUST_BE_MAIN_HEAD");
+  });
+
+  it("runs the suite for pull requests, main integration and manual dispatch only", () => {
+    // Asserted as the parsed trigger set rather than as the file's text: the
+    // property is which events run the suite, and a whitespace snapshot breaks
+    // on reformatting while missing a trigger added in a different style.
+    const test = workflow("test.yml");
+    expect(Object.keys(test.on).sort()).toEqual(["pull_request", "push", "workflow_dispatch"]);
+    expect((test.on as { push?: { branches?: string[] } }).push?.branches).toEqual(["main"]);
   });
 
   it("keeps the required status check named `test`", () => {
