@@ -5,7 +5,6 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import {
-  activateAgentReferrals,
   agentReferralsFeatureState,
   agentReferralsFeatureStateAt,
   AgentReferralsFeatureError,
@@ -13,6 +12,7 @@ import {
   reactivateAgentReferrals,
   suspendAgentReferrals,
 } from "../src/agent-referrals-feature-state";
+import * as featureStateModule from "../src/agent-referrals-feature-state";
 
 const open: Database.Database[] = [];
 afterEach(() => { while (open.length) open.pop()!.close(); });
@@ -36,11 +36,9 @@ describe("agent referrals feature state", () => {
     expect(agentReferralsFeatureStateAt(db, "2026-01-01T00:00:00.000Z")).toBe("ACTIVE");
   });
 
-  it("keeps the retired activation command a no-op against an operationally active row", () => {
-    const db = fresh();
-    expect(activateAgentReferrals(db, { expected_revision: 1, owner_id: "op-1", reason: "obsolete" }))
-      .toEqual({ state: "ACTIVE", owner_id: null, revision: 1 });
-    expect(eventCount(db)).toBe(0);
+  it("does not expose a DORMANT-to-ACTIVE activation command", () => {
+    expect("activateAgentReferrals" in featureStateModule).toBe(false);
+    expect("activateAgentReferralsInTransaction" in featureStateModule).toBe(false);
   });
 
   it("atomically materializes the physical state before the first operational suspension", () => {

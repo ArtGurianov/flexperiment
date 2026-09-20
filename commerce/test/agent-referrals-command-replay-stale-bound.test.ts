@@ -26,7 +26,8 @@ import {
   legalProfileChangeRequestById, pendingLegalProfileChangeRequestForPartner,
   currentLegalProfileRevisionForPartner, legalProfileChangeRequestHeadForPartner,
 } from "../src/agent-referrals-legal-profile-supersession";
-import { suspendAgentReferrals, reactivateAgentReferrals, agentReferralsFeatureState, activateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { suspendAgentReferrals, reactivateAgentReferrals, agentReferralsFeatureState } from "../src/agent-referrals-feature-state";
+import { seedActiveAgentReferralsFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 
 /**
  * PR-C2: the regression suite behind every STALE_BOUND classification in

@@ -9,7 +9,7 @@ import { CommerceDomain } from "../src/domain";
 import { decryptTicketCapability, sha256 } from "../src/crypto";
 import { releaseStateHash, type GenerationHead } from "../src/release-generation";
 import type { SmartCaptchaVerifier } from "../src/smartcaptcha";
-import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { seedActiveAgentReferralsFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile, type AdminPrincipal } from "../src/agent-referrals-partner-identity";
 import { currentAgentReferralsLegalProfile } from "../src/agent-referrals-legal-profile";
 

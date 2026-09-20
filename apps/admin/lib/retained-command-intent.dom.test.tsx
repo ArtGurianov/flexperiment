@@ -139,7 +139,7 @@ describe("retained command intent: an ambiguous outcome must not let the pin be 
       version = 2;
       // A business refusal that is classified MAY_MINT_NEW_KEY: the command
       // provably did not commit.
-      return { ok: false, status: 409, json: async () => ({ error: { code: "AGENT_REFERRALS_FEATURE_DORMANT" } }) } as Response;
+      return { ok: false, status: 409, json: async () => ({ error: { code: "AGENT_REFERRALS_SUSPENDED_BLOCKS_NEW_AUTHORITY" } }) } as Response;
     });
 
     const user = userEvent.setup();

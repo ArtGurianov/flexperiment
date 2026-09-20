@@ -22,7 +22,7 @@ const migrateBeforePhase1 = (db: Database.Database, migrationsDir = join(process
     else applyOrdinaryMigration(db, name, sql);
   }
 };
-import { AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS, assertAgentReferralsFoundationSchemaPresent } from "../src/agent-referrals-activation";
+import { AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS, assertAgentReferralsSchemaPresent } from "../src/agent-referrals-schema-evidence";
 import { NPD_STATUS_CHECK_FRESHNESS_MS } from "../src/agent-referrals-npd";
 
 /**
@@ -371,13 +371,13 @@ describe("0047 act/payment/settlement migration", () => {
     it("passes on a DB migrated through 0047", () => {
       const db = at0046();
       migrate(db);
-      expect(() => assertAgentReferralsFoundationSchemaPresent(db)).not.toThrow();
+      expect(() => assertAgentReferralsSchemaPresent(db)).not.toThrow();
     });
 
     it("fails closed when 0047 has not been applied yet (0046 only)", () => {
       const db = at0046();
-      expect(() => assertAgentReferralsFoundationSchemaPresent(db)).toThrow(/AGENT_REFERRALS_ACTIVATION_SCHEMA_MISSING/);
-      expect(() => assertAgentReferralsFoundationSchemaPresent(db)).toThrow(/0047_act_payment_settlement\.sql/);
+      expect(() => assertAgentReferralsSchemaPresent(db)).toThrow(/AGENT_REFERRALS_SCHEMA_MISSING/);
+      expect(() => assertAgentReferralsSchemaPresent(db)).toThrow(/0047_act_payment_settlement\.sql/);
     });
 
     it.each([
@@ -390,7 +390,7 @@ describe("0047 act/payment/settlement migration", () => {
       const db = at0046();
       migrate(db);
       db.exec(`DROP TRIGGER ${guardName}`);
-      expect(() => assertAgentReferralsFoundationSchemaPresent(db)).toThrow(new RegExp(guardName));
+      expect(() => assertAgentReferralsSchemaPresent(db)).toThrow(new RegExp(guardName));
     });
 
     it.each(["settlement_acts", "payment_authorizations", "payment_attempts", "npd_status_checks", "npd_receipts", "engagement_zero_reward_closures", "engagement_recovery_exposure_evidence"])(
@@ -399,7 +399,7 @@ describe("0047 act/payment/settlement migration", () => {
         const db = at0046();
         migrate(db);
         db.exec(`DROP TABLE ${tableName}`);
-        expect(() => assertAgentReferralsFoundationSchemaPresent(db)).toThrow(new RegExp(tableName));
+        expect(() => assertAgentReferralsSchemaPresent(db)).toThrow(new RegExp(tableName));
       },
     );
   });

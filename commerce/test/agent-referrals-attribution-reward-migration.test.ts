@@ -22,7 +22,7 @@ const migrateBeforePhase1 = (db: Database.Database, migrationsDir = join(process
     else applyOrdinaryMigration(db, name, sql);
   }
 };
-import { AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS, assertAgentReferralsFoundationSchemaPresent } from "../src/agent-referrals-activation";
+import { AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS, assertAgentReferralsSchemaPresent } from "../src/agent-referrals-schema-evidence";
 
 /**
  * 0046 is the attribution/reward schema: the order authority tuple on the
@@ -215,13 +215,13 @@ describe("0046 attribution & reward migration", () => {
     it("passes on a DB migrated through 0046", () => {
       const db = at0045();
       migrate(db);
-      expect(() => assertAgentReferralsFoundationSchemaPresent(db)).not.toThrow();
+      expect(() => assertAgentReferralsSchemaPresent(db)).not.toThrow();
     });
 
     it("fails closed when 0046 has not been applied yet (0045 only)", () => {
       const db = at0045();
-      expect(() => assertAgentReferralsFoundationSchemaPresent(db)).toThrow(/AGENT_REFERRALS_ACTIVATION_SCHEMA_MISSING/);
-      expect(() => assertAgentReferralsFoundationSchemaPresent(db)).toThrow(/0046_attribution_reward\.sql/);
+      expect(() => assertAgentReferralsSchemaPresent(db)).toThrow(/AGENT_REFERRALS_SCHEMA_MISSING/);
+      expect(() => assertAgentReferralsSchemaPresent(db)).toThrow(/0046_attribution_reward\.sql/);
     });
 
     it.each([
@@ -235,7 +235,7 @@ describe("0046 attribution & reward migration", () => {
         const db = at0045();
         migrate(db);
         db.exec(`DROP TRIGGER ${guardName}`);
-        expect(() => assertAgentReferralsFoundationSchemaPresent(db)).toThrow(new RegExp(guardName));
+        expect(() => assertAgentReferralsSchemaPresent(db)).toThrow(new RegExp(guardName));
       },
     );
 
@@ -243,7 +243,7 @@ describe("0046 attribution & reward migration", () => {
       const db = at0045();
       migrate(db);
       db.exec(`DROP TABLE ${tableName}`);
-      expect(() => assertAgentReferralsFoundationSchemaPresent(db)).toThrow(new RegExp(tableName));
+      expect(() => assertAgentReferralsSchemaPresent(db)).toThrow(new RegExp(tableName));
     });
   });
 

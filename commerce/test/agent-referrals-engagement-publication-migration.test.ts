@@ -5,7 +5,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { FK_OFF_MIGRATIONS, isFkOffMigration, migrate } from "../src/db";
-import { AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS, assertAgentReferralsFoundationSchemaPresent } from "../src/agent-referrals-activation";
+import { AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS, assertAgentReferralsSchemaPresent } from "../src/agent-referrals-schema-evidence";
 
 /**
  * 0045 is the engagement/publication schema: audience verification,
@@ -199,13 +199,13 @@ describe("0045 engagement publication migration", () => {
     it("passes on a DB migrated through 0045", () => {
       const db = at0044();
       migrate(db);
-      expect(() => assertAgentReferralsFoundationSchemaPresent(db)).not.toThrow();
+      expect(() => assertAgentReferralsSchemaPresent(db)).not.toThrow();
     });
 
     it("fails closed when 0045 has not been applied yet (0044 only)", () => {
       const db = at0044();
-      expect(() => assertAgentReferralsFoundationSchemaPresent(db)).toThrow(/AGENT_REFERRALS_ACTIVATION_SCHEMA_MISSING/);
-      expect(() => assertAgentReferralsFoundationSchemaPresent(db)).toThrow(/0045_engagement_publication\.sql/);
+      expect(() => assertAgentReferralsSchemaPresent(db)).toThrow(/AGENT_REFERRALS_SCHEMA_MISSING/);
+      expect(() => assertAgentReferralsSchemaPresent(db)).toThrow(/0045_engagement_publication\.sql/);
     });
 
     it.each([
@@ -220,7 +220,7 @@ describe("0045 engagement publication migration", () => {
       const db = at0044();
       migrate(db);
       db.exec(`DROP TRIGGER ${guardName}`);
-      expect(() => assertAgentReferralsFoundationSchemaPresent(db)).toThrow(new RegExp(guardName));
+      expect(() => assertAgentReferralsSchemaPresent(db)).toThrow(new RegExp(guardName));
     });
 
     it.each(["engagements", "engagement_step_up_grants", "engagement_distributions", "engagement_promo_authorizations_current_unique", "engagement_creative_authorizations_current_unique"])(
@@ -230,7 +230,7 @@ describe("0045 engagement publication migration", () => {
         migrate(db);
         const kind = (db.prepare("SELECT type FROM sqlite_master WHERE name = ?").get(objectName) as { type: string }).type;
         db.exec(`DROP ${kind === "index" ? "INDEX" : "TABLE"} ${objectName}`);
-        expect(() => assertAgentReferralsFoundationSchemaPresent(db)).toThrow(new RegExp(objectName));
+        expect(() => assertAgentReferralsSchemaPresent(db)).toThrow(new RegExp(objectName));
       },
     );
   });

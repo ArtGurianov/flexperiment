@@ -122,22 +122,12 @@ export function createAgentReferralsAdminRouter(sqlite: Database.Database) {
    *
    * Passing `adminId` as `owner_id` conflated the two, and made the operator
    * kill switch unreachable for exactly the states it exists to serve: the
-   * live owner is minted by the activation contour
-   * (`activateAgentReferralsIfReady` passes `input.activation_id`), never by
-   * an admin session, so `transitionInTransaction`'s owner check refused
-   * every suspend and every reactivate with OWNER_CONFLICT once the feature
-   * was ACTIVE. Found during the D-C3 cutover preflight against production,
-   * where the live owner is an `agent-referrals-activation-*` id and the only
-   * admin ids are `singleton-admin` and `release-control-operator`.
+   * row owner is separate from the operator session, so the transition's
+   * owner check cannot be satisfied by passing an arbitrary admin id.
    *
    * So the transition PRESERVES the current owner rather than claiming it.
    * The client never gets to choose an authority owner - taking it from the
    * body would let any admin name any owner and defeat the check outright.
-   *
-   * The DORMANT fallback keeps today's behaviour: DORMANT is unowned, an
-   * unowned row passes the owner check by construction, and the only edge
-   * this adapter could aim at it - DORMANT -> SUSPENDED - stays refused by
-   * LEGAL_EDGES regardless of who asks.
    *
    * Reading the row outside the transaction is safe because it is not the
    * proof: a concurrent writer that moves the owner is still caught by the

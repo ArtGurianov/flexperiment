@@ -5,7 +5,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { CommerceDomain } from "../src/domain";
-import { assertAgentReferralsFoundationSchemaPresent } from "../src/agent-referrals-activation";
+import { assertAgentReferralsSchemaPresent } from "../src/agent-referrals-schema-evidence";
 import { isFkOffMigration, migrate, openDatabase } from "../src/db";
 import { MockProvider } from "../src/provider";
 import { agentPatchSchema, agentSchema } from "../src/types";
@@ -100,7 +100,7 @@ describe("Phase 1 agents legal identity cleanup", () => {
       { name: "reward_settlements_contractor_type_projection_guard" },
     ]);
     expect(db.pragma("foreign_key_check")).toEqual([]);
-    expect(() => assertAgentReferralsFoundationSchemaPresent(db)).not.toThrow();
+    expect(() => assertAgentReferralsSchemaPresent(db)).not.toThrow();
     db.close();
   });
 

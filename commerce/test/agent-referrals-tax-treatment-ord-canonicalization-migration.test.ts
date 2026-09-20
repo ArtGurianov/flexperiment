@@ -431,17 +431,17 @@ describe("0053 agent-referrals tax-treatment + ORD canonicalization migration", 
 
   describe("E. required-schema-objects evidence", () => {
     it("passes on a DB migrated through 0053", async () => {
-      const { assertAgentReferralsFoundationSchemaPresent } = await import("../src/agent-referrals-activation");
+      const { assertAgentReferralsSchemaPresent } = await import("../src/agent-referrals-schema-evidence");
       const db = at0052(); migrate(db);
-      expect(() => assertAgentReferralsFoundationSchemaPresent(db)).not.toThrow();
+      expect(() => assertAgentReferralsSchemaPresent(db)).not.toThrow();
     });
 
     it("fails closed and names the object when the new table is dropped", async () => {
-      const { assertAgentReferralsFoundationSchemaPresent } = await import("../src/agent-referrals-activation");
+      const { assertAgentReferralsSchemaPresent } = await import("../src/agent-referrals-schema-evidence");
       const db = at0052(); migrate(db);
       db.exec("DROP TABLE agent_referrals_tax_treatment_revisions");
       try {
-        assertAgentReferralsFoundationSchemaPresent(db);
+        assertAgentReferralsSchemaPresent(db);
         throw new Error("expected a throw");
       } catch (error) {
         expect((error as Error).message).toContain("agent_referrals_tax_treatment_revisions");

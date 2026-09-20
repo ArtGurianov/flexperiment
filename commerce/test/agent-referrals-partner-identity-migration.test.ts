@@ -5,7 +5,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { FK_OFF_MIGRATIONS, isFkOffMigration, migrate } from "../src/db";
-import { AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS, assertAgentReferralsFoundationSchemaPresent } from "../src/agent-referrals-activation";
+import { AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS, assertAgentReferralsSchemaPresent } from "../src/agent-referrals-schema-evidence";
 
 /**
  * 0044 is the partner-identity schema: OWNER identity, invite capability,
@@ -186,13 +186,13 @@ describe("0044 partner identity migration", () => {
     it("passes on a DB migrated through 0044", () => {
       const db = at0043();
       migrate(db);
-      expect(() => assertAgentReferralsFoundationSchemaPresent(db)).not.toThrow();
+      expect(() => assertAgentReferralsSchemaPresent(db)).not.toThrow();
     });
 
     it("fails closed when 0044 has not been applied yet (0043 only)", () => {
       const db = at0043();
-      expect(() => assertAgentReferralsFoundationSchemaPresent(db)).toThrow(/AGENT_REFERRALS_ACTIVATION_SCHEMA_MISSING/);
-      expect(() => assertAgentReferralsFoundationSchemaPresent(db)).toThrow(/0044_partner_identity\.sql/);
+      expect(() => assertAgentReferralsSchemaPresent(db)).toThrow(/AGENT_REFERRALS_SCHEMA_MISSING/);
+      expect(() => assertAgentReferralsSchemaPresent(db)).toThrow(/0044_partner_identity\.sql/);
     });
 
     it.each([
@@ -205,7 +205,7 @@ describe("0044 partner identity migration", () => {
       const db = at0043();
       migrate(db);
       db.exec(`DROP TRIGGER ${guardName}`);
-      expect(() => assertAgentReferralsFoundationSchemaPresent(db)).toThrow(new RegExp(guardName));
+      expect(() => assertAgentReferralsSchemaPresent(db)).toThrow(new RegExp(guardName));
     });
 
     it.each(["partner_identity_events", "partner_sessions", "step_up_grants", "partner_invite_capabilities_active_unique", "partner_otp_challenges_active_unique", "partner_identity_legal_holds_active_unique"])(
@@ -215,7 +215,7 @@ describe("0044 partner identity migration", () => {
         migrate(db);
         const kind = (db.prepare("SELECT type FROM sqlite_master WHERE name = ?").get(objectName) as { type: string }).type;
         db.exec(`DROP ${kind === "index" ? "INDEX" : "TABLE"} ${objectName}`);
-        expect(() => assertAgentReferralsFoundationSchemaPresent(db)).toThrow(new RegExp(objectName));
+        expect(() => assertAgentReferralsSchemaPresent(db)).toThrow(new RegExp(objectName));
       },
     );
   });

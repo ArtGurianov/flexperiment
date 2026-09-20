@@ -5,7 +5,8 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { migrate, openDatabase } from "../src/db";
-import { activateAgentReferrals, suspendAgentReferrals } from "../src/agent-referrals-feature-state";
+import { suspendAgentReferrals } from "../src/agent-referrals-feature-state";
+import { seedActiveAgentReferralsFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { mintOrdProviderProfile, currentOrdProviderProfile } from "../src/agent-referrals-ord-provider-profile";
 import {
   openOrdProviderOperation, recordOrdProviderOperationSubmitted, confirmOrdProviderOperation, recordOrdProviderOperationErirReconciliation, lockOrdProviderOperation,
@@ -61,10 +62,11 @@ describe("openOrdProviderOperation: provider-operation authority (revision chain
     expect(second.operation.id).toBe(first.operation.id);
   });
 
-  it("refuses under DORMANT", () => {
+  it("pre-baseline DORMANT reaches ordinary provider-profile validation", () => {
     const file = join(mkdtempSync(join(tmpdir(), "ord-provider-operation-dormant-")), "commerce.sqlite");
     const db = openDatabase(file); migrate(db); open.push(db);
-    expect(() => openOrdProviderOperation(db, admin, "COUNTERPARTY", currentOrdProviderOperation(db, "COUNTERPARTY")?.id ?? null)).toThrow(/AGENT_REFERRALS_FEATURE_DORMANT/);
+    expect(() => openOrdProviderOperation(db, admin, "COUNTERPARTY", currentOrdProviderOperation(db, "COUNTERPARTY")?.id ?? null))
+      .toThrow(/AGENT_REFERRALS_ORD_PROVIDER_PROFILE_MISSING/);
   });
 
   it("refuses under SUSPENDED, even completing an already-DRAFT operation", () => {

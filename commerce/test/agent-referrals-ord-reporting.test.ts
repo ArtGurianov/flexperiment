@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { suspendAgentReferrals } from "../src/agent-referrals-feature-state";
-import { recordAgentReferralsActivationEvidence } from "../src/agent-referrals-activation";
+import { recordAgentReferralsEvidence } from "../src/agent-referrals-schema-evidence";
 import {
   admin, fresh, readyPartner, seedOccurrence, nearTermTerms, offerAcceptActivate, closeAndComplete, wait,
 } from "./support/agent-referrals-settlement-fixtures";
@@ -243,7 +243,7 @@ describe("fileOrdDistributionPeriodReport: ordinary CALENDAR_MONTH reporting", (
 
     it("integration-hardening round-2 #4b: PROVIDER_SPECIAL_PERIOD fails closed unconditionally - even a fully filed and submitted period never reports the tail complete, since the true VK-defined obligation set cannot be independently derived", () => {
       const { db, distributionId } = setupWithDistribution("long_video", "2026-09-20T00:00:00.000Z");
-      recordAgentReferralsActivationEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY, true);
+      recordAgentReferralsEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY, true);
       const submitted = fileOrdDistributionPeriodReport(db, admin, {
         distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev",
         submission: { vk_operation_external_id: "vk-op-1", erir_code: "erir-1", submission_evidence_ref: "ev-submit" },
@@ -436,7 +436,7 @@ describe("PROVIDER_SPECIAL_PERIOD fail-closed (L5)", () => {
 
   it("once confirmed via the activation manifest, ACTUAL reporting on PROVIDER_SPECIAL_PERIOD succeeds", () => {
     const { db, distributionId } = setupWithDistribution("long_video");
-    recordAgentReferralsActivationEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY, true);
+    recordAgentReferralsEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY, true);
     const report = fileOrdDistributionPeriodReport(db, admin, { distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev" }, currentOrdDistributionPeriodReport(db, { distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev" }.distribution_id, { distribution_id: distributionId, reporting_period_key: "special-2026-09", statistics: { statistics_state: "ACTUAL", statistics_json: { views: 5 } }, evidence_ref: "ev" }.reporting_period_key)?.id ?? null);
     expect(report.reporting_basis).toBe("PROVIDER_SPECIAL_PERIOD");
   });
@@ -468,7 +468,7 @@ describe("PROVIDER_SPECIAL_PERIOD fail-closed (L5)", () => {
 
   it("round-3 P0.3: once confirmed, ZERO_REWARD_STATISTICS/CONTINUING_STATISTICS work via the caller's own explicit special_period_is_service_period assertion - never a string comparison of the unconfirmed period-key shape", async () => {
     const { db, domain, occ, engagementId, distributionId } = setupWithDistribution("long_video", "2026-09-20T00:00:00.000Z");
-    recordAgentReferralsActivationEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY, true);
+    recordAgentReferralsEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY, true);
     await wait(300);
     closeAndComplete(db, domain, occ);
     finalizeEngagementRewardRegistry(db, admin, engagementId, "no purchases");
@@ -535,7 +535,7 @@ describe("PROVIDER_SPECIAL_PERIOD fail-closed (L5)", () => {
 
   it("round-4 P0.3: late VK submission + ERIR reconciliation succeeds for a confirmed PROVIDER_SPECIAL_PERIOD ZERO_REWARD_STATISTICS report (tail-complete stays false - integration-hardening round-2 #4b)", async () => {
     const { db, domain, occ, engagementId, distributionId } = setupWithDistribution("long_video", "2026-09-20T00:00:00.000Z");
-    recordAgentReferralsActivationEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY, true);
+    recordAgentReferralsEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY, true);
     await wait(300);
     closeAndComplete(db, domain, occ);
     finalizeEngagementRewardRegistry(db, admin, engagementId, "no purchases");
@@ -569,7 +569,7 @@ describe("PROVIDER_SPECIAL_PERIOD fail-closed (L5)", () => {
 
   it("round-4 P0.3: late VK submission + ERIR reconciliation succeeds for a confirmed PROVIDER_SPECIAL_PERIOD CONTINUING_STATISTICS report", async () => {
     const { db, domain, occ, engagementId, distributionId } = setupWithDistribution("long_video", "2026-09-20T00:00:00.000Z");
-    recordAgentReferralsActivationEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY, true);
+    recordAgentReferralsEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY, true);
     await wait(300);
     closeAndComplete(db, domain, occ);
     finalizeEngagementRewardRegistry(db, admin, engagementId, "no purchases");

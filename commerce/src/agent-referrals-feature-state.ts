@@ -137,22 +137,6 @@ export const transitionAgentReferralsFeatureInTransaction = (
 const transition = (db: Database.Database, to: AgentReferralsFeatureStateName, input: AgentReferralsFeatureTransitionInput) =>
   db.transaction(() => transitionAgentReferralsFeatureInTransaction(db, to, input)).immediate();
 
-/**
- * Historical compatibility helper for databases that still store DORMANT.
- */
-export const activateAgentReferrals = (db: Database.Database, input: AgentReferralsFeatureTransitionInput) =>
-  agentReferralsFeatureState(db).state === "ACTIVE"
-    ? agentReferralsFeatureState(db)
-    : transition(db, "ACTIVE", input);
-
-/**
- * Historical compatibility helper for pre-baseline databases.
- */
-export const activateAgentReferralsInTransaction = (db: Database.Database, input: AgentReferralsFeatureTransitionInput) =>
-  agentReferralsFeatureState(db).state === "ACTIVE"
-    ? agentReferralsFeatureState(db)
-    : transitionAgentReferralsFeatureInTransaction(db, "ACTIVE", input);
-
 export const suspendAgentReferrals = (db: Database.Database, input: AgentReferralsFeatureTransitionInput) =>
   transition(db, "SUSPENDED", input);
 

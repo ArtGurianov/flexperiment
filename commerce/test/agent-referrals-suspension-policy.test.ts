@@ -88,12 +88,10 @@ describe("agent-referrals suspension policy", () => {
     });
   });
 
-  describe("DORMANT", () => {
-    it.each([...NEW_AUTHORITY_CLASSES, ...MATURATION_CLASSES])("permits nothing: %s is refused", (operationClass) => {
-      expect(isAgentReferralsOperationPermitted("DORMANT", operationClass)).toBe(false);
-      let thrown: unknown;
-      try { assertAgentReferralsOperationPermitted("DORMANT", operationClass); } catch (error) { thrown = error; }
-      expect((thrown as AgentReferralsSuspensionPolicyError).code).toBe("AGENT_REFERRALS_FEATURE_DORMANT");
+  describe("pre-baseline DORMANT", () => {
+    it.each([...NEW_AUTHORITY_CLASSES, ...MATURATION_CLASSES])("is an operational alias for ACTIVE: %s is permitted", (operationClass) => {
+      expect(isAgentReferralsOperationPermitted("DORMANT", operationClass)).toBe(true);
+      expect(() => assertAgentReferralsOperationPermitted("DORMANT", operationClass)).not.toThrow();
     });
   });
 });

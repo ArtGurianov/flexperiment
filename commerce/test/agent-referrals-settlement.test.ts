@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as cryptoModule from "../src/crypto";
-import { AgentReferralsSuspensionPolicyError } from "../src/agent-referrals-suspension-policy";
 import { suspendAgentReferrals } from "../src/agent-referrals-feature-state";
 import { finalizeEngagementRewardRegistry, currentEffectiveRewardSnapshot } from "../src/agent-referrals-reward-registry";
 import { preparePartnerSettlement, correctPartnerRewardWithSettlement, recoveryExposure, recoveryExposureEvidenceForEngagement, SettlementError } from "../src/agent-referrals-settlement";
@@ -110,9 +109,10 @@ describe("preparePartnerSettlement: F10, the amount is derived, never supplied",
     expect(() => preparePartnerSettlement(db, admin, finalize.effective_snapshot_id)).not.toThrow();
   });
 
-  it("DORMANT refuses outright", () => {
+  it("pre-baseline DORMANT is operationally ACTIVE, so settlement lookup remains the next gate", () => {
     const { db } = fresh(); track(db);
-    expect(() => preparePartnerSettlement(db, admin, "no-such-snapshot")).toThrow(AgentReferralsSuspensionPolicyError);
+    expect(() => preparePartnerSettlement(db, admin, "no-such-snapshot"))
+      .toThrow(/AGENT_REFERRALS_SETTLEMENT_EFFECTIVE_SNAPSHOT_NOT_FOUND/);
   });
 });
 

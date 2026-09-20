@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS, agentReferralsFoundationSchemaEvidence } from "./agent-referrals-activation";
+import { AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS, agentReferralsSchemaEvidence } from "./agent-referrals-schema-evidence";
 
 export class AgentReferralsBusinessFactsSchemaIncompleteError extends Error {
   constructor(readonly missing: readonly string[]) {
@@ -15,7 +15,7 @@ export class AgentReferralsBusinessFactsSchemaIncompleteError extends Error {
  * empty.
  *
  * The table set is derived from AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS
- * (agent-referrals-activation.ts) rather than re-enumerated by hand: that
+ * (agent-referrals-schema-evidence.ts) rather than re-enumerated by hand: that
  * list is the already-reviewed canonical inventory every PR3-PR9 migration
  * names an object into, so reusing it here - filtered to actual `type =
  * 'table'` rows, which mechanically drops every guard trigger and unique
@@ -31,9 +31,8 @@ export class AgentReferralsBusinessFactsSchemaIncompleteError extends Error {
  * result instead of failing, and `agentReferralsBusinessFactEvidence` could
  * report `all_zero: true` against a broken schema - directly contradicting
  * its own fail-closed doc comment. This reuses
- * agentReferralsFoundationSchemaEvidence() (agent-referrals-activation.ts),
- * the same already-reviewed presence check the activation-readiness path
- * uses, rather than a second, independently written completeness check.
+ * agentReferralsSchemaEvidence(), rather than a second, independently
+ * written completeness check.
  *
  * `agents` (0042) is deliberately excluded by construction, not by an
  * explicit exclusion list: it is a pre-existing table (shared with the
@@ -70,7 +69,7 @@ export class AgentReferralsBusinessFactsSchemaIncompleteError extends Error {
 const MIGRATION_SEEDED_TABLES: readonly string[] = ["agent_referrals_feature_state", "agent_referrals_feature_state_events", "agent_referrals_activation_manifest", "ad_channel_policy", "ord_reporting_period_policy"];
 
 export const agentReferralsBusinessFactTables = (db: Database.Database): readonly string[] => {
-  const schema = agentReferralsFoundationSchemaEvidence(db);
+  const schema = agentReferralsSchemaEvidence(db);
   if (!schema.present) throw new AgentReferralsBusinessFactsSchemaIncompleteError(schema.missing);
   const placeholders = AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS.map(() => "?").join(", ");
   const rows = db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name IN (${placeholders})`)

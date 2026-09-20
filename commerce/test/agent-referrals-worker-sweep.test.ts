@@ -41,7 +41,7 @@ const reportSampleDistribution = (db: Database.Database, engagementId: string) =
 };
 
 describe("Agent Referrals worker sweep (Phase 9 §11): deterministic, idempotent, no VK network call of any kind", () => {
-  it("is a silent all-zero no-op while the feature is DORMANT - never throws AGENT_REFERRALS_FEATURE_DORMANT", () => {
+  it("is a silent all-zero no-op on the retained pre-baseline physical row", () => {
     const { db } = fresh();
     track(db);
     expect(() => runAgentReferralsWorkerSweep(db)).not.toThrow();

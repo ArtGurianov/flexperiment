@@ -7,8 +7,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
 import { CommerceDomain } from "../src/domain";
 import { MockProvider } from "../src/provider";
-import { activateAgentReferrals, suspendAgentReferrals } from "../src/agent-referrals-feature-state";
-import { AgentReferralsSuspensionPolicyError } from "../src/agent-referrals-suspension-policy";
+import { suspendAgentReferrals } from "../src/agent-referrals-feature-state";
+import { seedActiveAgentReferralsFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile, issueFrameworkToPartner, type AdminPrincipal, type PartnerPrincipal } from "../src/agent-referrals-partner-identity";
 import { activatePartner, getPartnerIdentity } from "../src/agent-referrals-onboarding";
 import { mintFrameworkAgreementRevision, mintDelegationTemplateRevision, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, DELEGATION_TEMPLATE_REQUIRED_CLAUSES } from "../src/agent-referrals-framework-delegation";
@@ -298,7 +298,7 @@ describe("reward registry: reconciliation gates", () => {
   });
 });
 
-describe("reward registry: SUSPENDED permits finalization (maturation), DORMANT refuses it", () => {
+describe("reward registry: SUSPENDED permits finalization (maturation)", () => {
   it("global SUSPENDED does not block finalizing an obligation that arose before suspension", () => {
     const { db, domain } = fresh();
     const p1 = readyPartner(db);
@@ -312,19 +312,10 @@ describe("reward registry: SUSPENDED permits finalization (maturation), DORMANT 
     expect(() => finalizeEngagementRewardRegistry(db, admin, engagementId, "x")).not.toThrow();
   });
 
-  it("DORMANT (Agent Referrals never activated) refuses finalization outright", () => {
+  it("pre-baseline DORMANT is operationally ACTIVE, so aggregate validation remains the next gate", () => {
     const { db } = fresh();
-    // The global-state gate (shared with every other Agent Referrals command
-    // - see agent-referrals-suspension-policy.ts) is consulted before this
-    // module's own engagement lookup, so it throws its own distinct error
-    // type here too, uncaught - the same convention offerEngagement etc.
-    // already follow, never a module-local rewrap.
-    expect(() => finalizeEngagementRewardRegistry(db, admin, "no-such-engagement", "x")).toThrow(AgentReferralsSuspensionPolicyError);
-    try {
-      finalizeEngagementRewardRegistry(db, admin, "no-such-engagement", "x");
-    } catch (error) {
-      expect((error as AgentReferralsSuspensionPolicyError).code).toBe("AGENT_REFERRALS_FEATURE_DORMANT");
-    }
+    expect(() => finalizeEngagementRewardRegistry(db, admin, "no-such-engagement", "x"))
+      .toThrow(/AGENT_REFERRALS_ENGAGEMENT_NOT_FOUND/);
   });
 });
 

@@ -3,7 +3,7 @@ import { requireObservedVersion } from "./agent-referrals-command-precondition";
 import { canonicalV2, id, sha256 } from "./crypto";
 import { agentReferralsFeatureState } from "./agent-referrals-feature-state";
 import { assertAgentReferralsOperationPermitted } from "./agent-referrals-suspension-policy";
-import { agentReferralsActivationEvidence } from "./agent-referrals-activation";
+import { agentReferralsEvidence } from "./agent-referrals-schema-evidence";
 import { getDistribution, currentDistributionRevision, type DistributionRevisionRow } from "./agent-referrals-distribution";
 import { ordDistributionPeriodReportOperationKey } from "./agent-referrals-ord-operation-key";
 import type { AdminPrincipal } from "./agent-referrals-partner-identity";
@@ -258,7 +258,7 @@ const insertReport = (
       // who has actually confirmed VK's real representation - asserts the
       // ordering directly via special_period_is_service_period, never a
       // calendar-shaped string comparison this code cannot safely make.
-      if (agentReferralsActivationEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY) !== true) {
+      if (agentReferralsEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY) !== true) {
         throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_ZERO_REWARD_SPECIAL_PERIOD_UNCONFIRMED", 409, reportingBasis);
       }
       if (input.special_period_is_service_period === undefined) {
@@ -384,7 +384,7 @@ export const fileOrdDistributionPeriodReport = (db: Database.Database, admin: Ad
     const formatKind = formatKindForDistributionRevision(distributionRevision, db);
     const reportingBasis = resolveOrdReportingBasis(db, formatKind, distributionRevision.published_at);
     if (reportingBasis === "PROVIDER_SPECIAL_PERIOD" && input.statistics.statistics_state === "ACTUAL") {
-      if (agentReferralsActivationEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY) !== true) {
+      if (agentReferralsEvidence(db, ORD_PROVIDER_SPECIAL_PERIOD_CONFIRMED_KEY) !== true) {
         throw new OrdReportingError("AGENT_REFERRALS_ORD_REPORTING_SPECIAL_PERIOD_UNCONFIRMED", 409, formatKind);
       }
     }

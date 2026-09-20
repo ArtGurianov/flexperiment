@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrate, openDatabase } from "../src/db";
-import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { seedActiveAgentReferralsFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { currentAgentReferralsLegalProfile } from "../src/agent-referrals-legal-profile";
 import { currentPayoutProfile } from "../src/agent-referrals-payout-profile";
 import { DELEGATION_TEMPLATE_REQUIRED_CLAUSES, FRAMEWORK_AGREEMENT_REQUIRED_CLAUSES, mintDelegationTemplateRevision, mintFrameworkAgreementRevision } from "../src/agent-referrals-framework-delegation";

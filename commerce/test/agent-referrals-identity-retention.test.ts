@@ -14,7 +14,7 @@ import {
   releaseLegalHold,
 } from "../src/agent-referrals-identity-retention";
 import { provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile, type AdminPrincipal } from "../src/agent-referrals-partner-identity";
-import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { seedActiveAgentReferralsFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { currentAgentReferralsLegalProfile, resolveCurrentLegalProfileBinding } from "../src/agent-referrals-legal-profile";
 import { getPartnerIdentity } from "../src/agent-referrals-onboarding";
 

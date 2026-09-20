@@ -14,7 +14,6 @@ import { mintSettlementStepUpGrant } from "../src/agent-referrals-settlement-ste
 import { revokePartnerPayoutDestination } from "../src/agent-referrals-payout-profile";
 import { mintStepUpGrant } from "../src/agent-referrals-step-up";
 import { suspendAgentReferrals } from "../src/agent-referrals-feature-state";
-import { AgentReferralsSuspensionPolicyError } from "../src/agent-referrals-suspension-policy";
 import { CommerceDomain } from "../src/domain";
 import { MockProvider } from "../src/provider";
 import type { PartnerPrincipal, AdminPrincipal } from "../src/agent-referrals-partner-identity";
@@ -140,7 +139,7 @@ describe("beginPayment: full recheck in one transaction", () => {
     expect(() => beginPayment(db, admin, settlement.id)).toThrow(/PAYMENT_AUTHORIZATION_RELATIONAL_INCONSISTENT/);
   });
 
-  it("DORMANT refuses outright", () => {
+  it("pre-baseline DORMANT reaches ordinary settlement validation", () => {
     const { db } = fresh(); track(db);
     expect(() => beginPayment(db, admin, "no-such-settlement")).toThrow();
   });
@@ -453,11 +452,6 @@ describe("global CLOSED / SUSPENDED semantics", () => {
 });
 
 describe("integration-hardening #6: recordNpdStatusCheck is routed through the central suspension-policy gate (NPD_STATUS_PROCESSING = MATURATION_RECOVERY_REPORTING_TAIL)", () => {
-  it("DORMANT refuses outright, matching every other operation class in the central matrix", () => {
-    const { db } = fresh(); track(db);
-    expect(() => recordNpdStatusCheck(db, admin, randomUUID(), "ACTIVE", "manual-fns-check")).toThrow(AgentReferralsSuspensionPolicyError);
-    expect(db.prepare("SELECT COUNT(*) AS n FROM npd_status_checks").get()).toEqual({ n: 0 });
-  });
 
   it("SUSPENDED still permits it - a maturation/recovery/reporting-tail operation for obligations that arose before suspension", () => {
     const { db, partnerIdentityId } = readyForPayment("NPD");

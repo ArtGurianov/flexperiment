@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { MockProvider } from "../src/provider";
 import { generateOpaqueToken, hashOpaqueToken } from "../src/agent-referrals-partner-auth";
 import { provisionPartnerOwner } from "../src/agent-referrals-partner-identity";
-import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { seedActiveAgentReferralsFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { mintCreativeRevision, authorizeCreative, currentCreativeRevision, lastCreativeAuthorization } from "../src/agent-referrals-creative";
 import type { OtpSender } from "../src/agent-referrals-otp";
 import {

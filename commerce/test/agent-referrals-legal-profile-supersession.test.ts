@@ -8,7 +8,8 @@ import { afterEach, describe, expect, it } from "vitest";
 process.env.COMMERCE_AGENT_REFERRALS_PAYOUT_KEY_ID ??= "test-payout-key-for-agent-referrals-legal-profile-supersession-test";
 process.env.COMMERCE_AGENT_REFERRALS_PAYOUT_KEY_BASE64 ??= Buffer.alloc(32, 7).toString("base64");
 import { migrate, openDatabase } from "../src/db";
-import { activateAgentReferrals, suspendAgentReferrals, agentReferralsFeatureState } from "../src/agent-referrals-feature-state";
+import { suspendAgentReferrals, reactivateAgentReferrals, agentReferralsFeatureState } from "../src/agent-referrals-feature-state";
+import { seedActiveAgentReferralsFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import {
   provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile,
   issueFrameworkToPartner, type AdminPrincipal, type PartnerPrincipal,
@@ -168,12 +169,12 @@ describe("D2: legal-profile supersession suspension-policy wiring", () => {
 
   it("submit is refused under DORMANT", () => {
     const db = fresh();
-    // DORMANT is the ship state - no activateAgentReferrals call at all.
+    // The retained physical baseline is operationally ACTIVE - no fixture materialization is needed.
     const agentId = randomUUID();
     db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
       VALUES (?, ?, 'Agent', ?, 'PERCENT', 1000)`).run(agentId, agentId, `${agentId}@example.test`);
     expect(() => submitLegalProfileSupersession(db, admin, "does-not-matter", { legalForm: "LEGAL_ENTITY", taxMode: "OTHER", ...legalEntityRequisites, reason: "x", expectedCurrentLegalProfileRevision: 1, expectedRequestSequence: 0 }))
-      .toThrow(/AGENT_REFERRALS_FEATURE_DORMANT/);
+      .toThrow(/PARTNER_IDENTITY_NOT_FOUND/);
   });
 
   it("initial onboarding verification (verifyPartnerLegalProfile) is now also gated as NEW_AUTHORITY - closes the pre-D2 gap", () => {
@@ -202,7 +203,7 @@ describe("D2: legal-profile supersession suspension-policy wiring", () => {
     // established same-party contractual-change fixture (see D2: submit()
     // above).
     submitLegalProfileSupersession(db, admin, p1.partnerIdentityId, { legalForm: "INDIVIDUAL_ENTREPRENEUR", taxMode: "OTHER", ...individualEntrepreneurRequisites, reason: "became org", evidenceRef: "ev.pdf", expectedCurrentLegalProfileRevision: currentLegalProfileRevisionForPartner(db, p1.partnerIdentityId), expectedRequestSequence: legalProfileChangeRequestHeadForPartner(db, p1.partnerIdentityId) });
-    activateAgentReferrals(db, { expected_revision: agentReferralsFeatureState(db).revision, owner_id: "test-owner", reason: "resume" });
+    reactivateAgentReferrals(db, { expected_revision: agentReferralsFeatureState(db).revision, owner_id: "test-owner", reason: "resume" });
 
     const request = pendingLegalProfileChangeRequestForPartner(db, p1.partnerIdentityId)!;
     expect(request.state).toBe("PENDING");
@@ -444,7 +445,7 @@ describe("D2: replay and terminal-state handling", () => {
     const replay = verifyLegalProfileSupersession(db, admin, request.id, "verify again");
     expect(replay).toEqual({ outcome: "REPLAYED", revision_id: first.revision_id, revision: first.revision });
 
-    activateAgentReferrals(db, { expected_revision: agentReferralsFeatureState(db).revision, owner_id: "test-owner", reason: "resume" });
+    reactivateAgentReferrals(db, { expected_revision: agentReferralsFeatureState(db).revision, owner_id: "test-owner", reason: "resume" });
     mintRetentionPolicyRevision(db, admin, "test policy");
     destroyPartnerIdentity(db, admin, p1.partnerIdentityId, "erasure");
     const replayAfterDestroy = verifyLegalProfileSupersession(db, admin, request.id, "verify a third time");

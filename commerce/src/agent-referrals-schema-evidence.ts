@@ -1,7 +1,7 @@
 import type Database from "better-sqlite3";
 
 /**
- * Agent Referrals activation-manifest / schema-evidence machinery.
+ * Agent Referrals schema-evidence machinery.
  *
  * `agent_referrals_activation_manifest` is system-wide evidence only - an
  * open key/evidence store, not fixed columns, because most of what will be
@@ -18,11 +18,8 @@ import type Database from "better-sqlite3";
  * agent_referrals_legal_profile_revisions_immutable_guard and the table
  * still accepts UPDATEs that rewrite filed evidence.
  *
- * This is deliberately NOT the DORMANT -> ACTIVE readiness gate - that is a
- * future assert-agent-referrals-activation-ready this PR does not build, and
- * will additionally require PR4-PR8 objects that do not exist yet. This
- * module only proves "PR3's own foundation schema is intact", which is a
- * necessary but explicitly incomplete precondition.
+ * This module is not a feature-state transition gate. It proves the schema
+ * and preserves immutable operational evidence used by payout and ORD flows.
  */
 
 export const AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS = [
@@ -318,7 +315,7 @@ const MIGRATIONS = [
   "0060_agent_referrals_framework_reissuance.sql",
 ] as const;
 
-export class AgentReferralsActivationError extends Error {
+export class AgentReferralsSchemaEvidenceError extends Error {
   constructor(readonly code: string, readonly status = 409, detail?: string) {
     super(detail ? `${code}: ${detail}` : code);
   }
@@ -339,21 +336,21 @@ const missingSchemaObjects = (db: Database.Database): string[] => {
 const missingMigrations = (db: Database.Database): string[] =>
   MIGRATIONS.filter((migration) => !db.prepare("SELECT 1 FROM schema_migrations WHERE version = ?").get(migration));
 
-export const assertAgentReferralsFoundationSchemaPresent = (db: Database.Database): void => {
+export const assertAgentReferralsSchemaPresent = (db: Database.Database): void => {
   const missingApplied = missingMigrations(db);
-  if (missingApplied.length) throw new AgentReferralsActivationError("AGENT_REFERRALS_ACTIVATION_SCHEMA_MISSING", 409, missingApplied.join(", "));
+  if (missingApplied.length) throw new AgentReferralsSchemaEvidenceError("AGENT_REFERRALS_SCHEMA_MISSING", 409, missingApplied.join(", "));
 
   const missing = missingSchemaObjects(db);
-  if (missing.length) throw new AgentReferralsActivationError("AGENT_REFERRALS_ACTIVATION_SCHEMA_INCOMPLETE", 409, missing.join(", "));
+  if (missing.length) throw new AgentReferralsSchemaEvidenceError("AGENT_REFERRALS_SCHEMA_INCOMPLETE", 409, missing.join(", "));
 };
 
-export type AgentReferralsFoundationSchemaEvidence = {
+export type AgentReferralsSchemaEvidence = {
   present: boolean;
   missing: string[];
 };
 
 /** Read-only, non-throwing counterpart for a controller that wants evidence rather than an exception. */
-export const agentReferralsFoundationSchemaEvidence = (db: Database.Database): AgentReferralsFoundationSchemaEvidence => {
+export const agentReferralsSchemaEvidence = (db: Database.Database): AgentReferralsSchemaEvidence => {
   const missingApplied = missingMigrations(db);
   if (missingApplied.length) return { present: false, missing: missingApplied };
   const missing = missingSchemaObjects(db);
@@ -365,25 +362,25 @@ export const agentReferralsFoundationSchemaEvidence = (db: Database.Database): A
  * this PR has evidence to record, but future PRs (payout-profile key id,
  * ORD provider profile id) write here without a schema ALTER.
  */
-export const agentReferralsActivationEvidence = (db: Database.Database, key: string): unknown => {
+export const agentReferralsEvidence = (db: Database.Database, key: string): unknown => {
   const row = db.prepare("SELECT value_json FROM agent_referrals_activation_manifest WHERE key = ?").get(key) as
     { value_json: string } | undefined;
   return row ? JSON.parse(row.value_json) : undefined;
 };
 
 /** Recursive sorted-key JSON, so semantically identical values compare equal regardless of key insertion order. */
-export const canonicalAgentReferralsActivationJson = (value: unknown): string => {
-  if (Array.isArray(value)) return `[${value.map(canonicalAgentReferralsActivationJson).join(",")}]`;
+export const canonicalAgentReferralsEvidenceJson = (value: unknown): string => {
+  if (Array.isArray(value)) return `[${value.map(canonicalAgentReferralsEvidenceJson).join(",")}]`;
   if (value !== null && typeof value === "object") {
     const entries = Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
-    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalAgentReferralsActivationJson(v)}`).join(",")}}`;
+    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${canonicalAgentReferralsEvidenceJson(v)}`).join(",")}}`;
   }
   return JSON.stringify(value);
 };
 
-export class AgentReferralsActivationEvidenceConflictError extends AgentReferralsActivationError {
+export class AgentReferralsEvidenceConflictError extends AgentReferralsSchemaEvidenceError {
   constructor(readonly key: string) {
-    super("AGENT_REFERRALS_ACTIVATION_EVIDENCE_CONFLICT", 409, key);
+    super("AGENT_REFERRALS_SCHEMA_EVIDENCE_CONFLICT", 409, key);
   }
 }
 
@@ -396,20 +393,20 @@ export class AgentReferralsActivationEvidenceConflictError extends AgentReferral
  * rotation gets its own explicit version/supersession semantics rather than
  * this store growing a generic overwrite.
  */
-export const recordAgentReferralsActivationEvidence = (db: Database.Database, key: string, value: unknown): void => {
+export const recordAgentReferralsEvidence = (db: Database.Database, key: string, value: unknown): void => {
   const run = db.transaction(() => {
-    recordAgentReferralsActivationEvidenceInTransaction(db, key, value);
+    recordAgentReferralsEvidenceInTransaction(db, key, value);
   });
   run.immediate();
 };
 
 /** Same immutable insert contract, usable by a combined authority command. */
-export const recordAgentReferralsActivationEvidenceInTransaction = (db: Database.Database, key: string, value: unknown): void => {
+export const recordAgentReferralsEvidenceInTransaction = (db: Database.Database, key: string, value: unknown): void => {
   const existing = db.prepare("SELECT value_json FROM agent_referrals_activation_manifest WHERE key = ?").get(key) as
     { value_json: string } | undefined;
   if (existing) {
-    if (canonicalAgentReferralsActivationJson(JSON.parse(existing.value_json)) === canonicalAgentReferralsActivationJson(value)) return;
-    throw new AgentReferralsActivationEvidenceConflictError(key);
+    if (canonicalAgentReferralsEvidenceJson(JSON.parse(existing.value_json)) === canonicalAgentReferralsEvidenceJson(value)) return;
+    throw new AgentReferralsEvidenceConflictError(key);
   }
   db.prepare("INSERT INTO agent_referrals_activation_manifest(key, value_json, recorded_at) VALUES (?, ?, CURRENT_TIMESTAMP)")
     .run(key, JSON.stringify(value));

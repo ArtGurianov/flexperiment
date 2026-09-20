@@ -5,7 +5,7 @@ import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { FK_OFF_MIGRATIONS, isFkOffMigration, migrate } from "../src/db";
-import { AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS, assertAgentReferralsFoundationSchemaPresent } from "../src/agent-referrals-activation";
+import { AGENT_REFERRALS_REQUIRED_SCHEMA_OBJECTS, assertAgentReferralsSchemaPresent } from "../src/agent-referrals-schema-evidence";
 
 /**
  * 0048 is the ORD/ERIR reporting authority schema (plan Phase 8): provider
@@ -139,12 +139,12 @@ describe("0048 ord_reporting migration", () => {
     it("passes on a DB migrated through 0048", () => {
       const db = at0047();
       migrate(db);
-      expect(() => assertAgentReferralsFoundationSchemaPresent(db)).not.toThrow();
+      expect(() => assertAgentReferralsSchemaPresent(db)).not.toThrow();
     });
 
     it("fails closed when 0048 has not been applied yet (0047 only)", () => {
       const db = at0047();
-      expect(() => assertAgentReferralsFoundationSchemaPresent(db)).toThrow(/AGENT_REFERRALS_ACTIVATION_SCHEMA_MISSING/);
+      expect(() => assertAgentReferralsSchemaPresent(db)).toThrow(/AGENT_REFERRALS_SCHEMA_MISSING/);
     });
 
     it("fails closed and names the object when a PR8 trigger is dropped", () => {
@@ -152,7 +152,7 @@ describe("0048 ord_reporting migration", () => {
       migrate(db);
       db.exec("DROP TRIGGER ord_creative_registrations_terminal_immutable_guard");
       try {
-        assertAgentReferralsFoundationSchemaPresent(db);
+        assertAgentReferralsSchemaPresent(db);
         throw new Error("expected a throw");
       } catch (error) {
         expect((error as Error).message).toContain("ord_creative_registrations_terminal_immutable_guard");

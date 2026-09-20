@@ -11,7 +11,7 @@ process.env.COMMERCE_AGENT_REFERRALS_OTP_PEPPER ??= "test-otp-pepper-for-agent-r
 
 const { createApp } = await import("../src/api");
 const ADMIN_ORIGIN = "https://admin.flexperiment.ru";
-import { activateAgentReferrals } from "../src/agent-referrals-feature-state";
+import { seedActiveAgentReferralsFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
 import { provisionPartnerOwner, rotatePartnerInvite, inviteCapabilityHeadId } from "../src/agent-referrals-partner-identity";
 
 /**
