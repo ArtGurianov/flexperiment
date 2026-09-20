@@ -20,6 +20,12 @@ A row is one of two kinds, and they are held to different standards:
   needs a reason and evidence that the surface is genuinely gone. Without this
   distinction a closed epoch survives forever merely so that its row has a file
   to point at, which is the outcome this cleanup exists to avoid.
+- **ACTIVE_BASELINE_REWRITE** — active, and proved now against the trigger as it
+  is written today, but the baseline will restate that trigger without the
+  pre-launch discriminator its condition currently names. The row stays open
+  until the rewritten form is proved to carry the same invariant. It exists so
+  that a guard proved only in its conditional form is not mistaken for one that
+  has been carried across.
 
 ## Data invariants enforced by the schema
 
@@ -81,6 +87,22 @@ straight against the database as well as against a defect in the domain.
 | Readiness separates "not yet" from "converged and inadmissible" | `release/readiness.ts` | `release/readiness.test.ts` |
 | A foreign database lineage fails closed | `release/schema-identity.ts` | `release/schema-identity.test.ts` |
 | A cutover envelope is adopted exactly once | `release/cutover-handoff.ts` | `release/cutover-handoff.test.ts` |
+
+## Attribution and reward snapshots
+
+Rehoused out of `agent-referrals-attribution-reward-migration.test.ts`. Every
+row here is exercised against rows the domain itself wrote - an attribution
+tuple assembled by checkout, a registry snapshot written by finalization -
+rather than against rows the test invented.
+
+| Invariant | Enforced by | Guarded by | Status |
+|---|---|---|---|
+| An order's attribution columns are frozen after checkout | `0046` `ORDER_AUTHORITY_COLUMNS_IMMUTABLE` | `agent-referrals-attribution-constraints.test.ts` | ACTIVE_BASELINE_REWRITE |
+| An order's attribution tuple holds together | `0046` `ORDER_AUTHORITY_TUPLE_INCONSISTENT` | `agent-referrals-attribution-constraints.test.ts` | ACTIVE_BASELINE_REWRITE |
+| A finalized reward registry snapshot is immutable | `0046` `ENGAGEMENT_REWARD_REGISTRY_SNAPSHOT_IMMUTABLE` | `agent-referrals-attribution-constraints.test.ts` | ACTIVE |
+| A registry snapshot agrees with the engagement and occurrence it names | `0046` `ENGAGEMENT_REWARD_REGISTRY_SNAPSHOT_RELATIONAL_INCONSISTENT` | `agent-referrals-attribution-constraints.test.ts` | ACTIVE |
+| An effective reward snapshot is immutable | `0046` `ENGAGEMENT_EFFECTIVE_REWARD_SNAPSHOT_IMMUTABLE` | `agent-referrals-attribution-constraints.test.ts` | ACTIVE |
+| An effective snapshot restates its base, unless it supersedes a predecessor | `0046` `ENGAGEMENT_EFFECTIVE_REWARD_SNAPSHOT_RELATIONAL_INCONSISTENT` | `agent-referrals-attribution-constraints.test.ts` | ACTIVE |
 | The suite runs for pull requests, `main` and manual dispatch only | `test.yml` | `release/deploy-workflow-contract.test.ts` |
 
 ## Retired
@@ -94,6 +116,7 @@ lost, and each names the evidence that the surface is gone.
 | Candidate publication refs use the flat `runtime/release-semantics-bootstrap-*` shape | The epoch and its refs are gone. `git grep` finds no reference to that namespace anywhere outside the test that asserted it. |
 | Candidate publication refs use the flat `runtime/agent-referrals-<generation>` shape | Generation semantics were deleted with the release controller; the namespace has no remaining reference either. |
 | A candidate pointer is adopted over a stale one, and read as a lease | The test named no file in this repository: it ran `git` against temporary repositories and asserted git's own ancestry and lease behaviour. The controller it was written for is gone, and what survives - the runtime identity readout and `inspect-runtime-candidate-topology.sh` - it never exercised. The lease property itself is now owned by `release/deploy-session.ts` and proved in `release/resume.test.ts`. |
+| A referral reward's authority kind never changes, and matches its order's | `reward_authority_kind` is the pre-launch discriminator, and the guard's condition is the column itself. When the baseline removes it there is nothing left for either `REFERRAL_REWARD_AUTHORITY_KIND_IMMUTABLE` or `REFERRAL_REWARD_AUTHORITY_KIND_MISMATCH` to compare. |
 | The production deploy pointer moves only by compare-and-set | The scripts that moved it are called by nothing. The new deploy path runs `deploy-production.yml` → `scripts/release/deploy-production.ts` → the orchestrator, which never touches a git pointer, and the compare-and-set property it cared about is now owned by the deploy session's own authority and proved in `release/deploy-session.test.ts`. The `production-deploy` ref itself survives as something the runtime identity readout reads, inline, for observability. If the baseline's adapters turn out to need a pointer primitive, P9 writes a canonical one rather than inheriting a legacy pair. |
 | A candidate's topology is inspected before promotion | `inspect-runtime-candidate-topology.sh` is called by no workflow and no test. Convergence is now proved by observing what the three surfaces actually serve, in `release/orchestrator.ts`. |
 | `test.yml` does not run on durable runtime refs | Rephrased rather than dropped: the trigger set is now asserted as parsed YAML in `release/deploy-workflow-contract.test.ts`, which states the same property without depending on the file's whitespace. |
@@ -147,6 +170,10 @@ number.
 So 46 of the 48 need a surviving proof before the file asserting them can go,
 not 42. Classifying by proximity to a doomed column would have retired four real
 protections, which is why each is read.
+
+**Progress.** Six have been rehoused and two retired, which empties
+`agent-referrals-attribution-reward-migration.test.ts` of guards it alone held.
+Forty remain.
 
 **The rule this section exists to enforce:** no `*-migration.test.ts` file is
 deleted while any guard it asserts is still in this list. A guard leaves the
