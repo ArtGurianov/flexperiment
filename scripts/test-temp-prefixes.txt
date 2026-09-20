@@ -80,7 +80,9 @@ controlled-candidate-apply
 controlled-candidate-index
 controlled-candidate-test-objects
 controlled-schema-pre-cas
+cutover-envelope
 cutover-shell
+cutover-volume
 db-migrate
 db-migrate-fixtures
 deploy-classification
