@@ -46,20 +46,46 @@ describe("deploy sessions", () => {
     const session = sessions.acquire({ id: "converged", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target });
     sessions.fence(session.id, "owner", topology(old));
     sessions.beginDeploying(session.id, "owner");
+    // Every surface is on the target, and the archived database is still a
+    // truthful destination: nothing has left this system yet.
+    expect(sessions.observeTopology(session.id, "owner", topology(target)))
+      .toMatchObject({ state: "DEPLOYING", rollbackAuthority: "OLD_LINEAGE_ALLOWED" });
+    expect(sessions.completeRollback(session.id, "owner", topology(old))).toMatchObject({ state: "ROLLED_BACK" });
+  });
+
+  it("refuses to close a maintenance cutover that never armed its irreversible boundary", () => {
+    // SUCCEEDED is terminal and a terminal session can arm nothing, so closing
+    // on convergence alone would make the certification ordering unrecordable.
+    const sessions = new DeploySessions(new InMemoryDeploySessionStore(), () => new Date("2026-09-19T00:00:00.000Z"));
+    const session = sessions.acquire({ id: "unarmed", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target });
+    sessions.fence(session.id, "owner", topology(old));
+    sessions.beginDeploying(session.id, "owner");
+    expect(() => sessions.completeTarget(session.id, "owner", topology(target)))
+      .toThrow("MAINTENANCE_CUTOVER_EXTERNAL_EFFECTS_NOT_ARMED");
+    sessions.armExternalEffects(session.id, "owner");
+    expect(sessions.completeTarget(session.id, "owner", topology(target)))
+      .toMatchObject({ state: "SUCCEEDED", rollbackAuthority: "NEW_LINEAGE_ONLY" });
+  });
+
+  it("lets a rolling release close on convergence alone - it crosses no external boundary", () => {
+    const sessions = new DeploySessions(new InMemoryDeploySessionStore(), () => new Date("2026-09-19T00:00:00.000Z"));
+    const session = sessions.acquire({ id: "rolling-complete", ownerId: "owner", mode: "ROLLING_SAFE", targetSha: target });
+    sessions.beginDeploying(session.id, "owner", topology(old));
     expect(sessions.completeTarget(session.id, "owner", topology(target)))
       .toMatchObject({ state: "SUCCEEDED", rollbackAuthority: "OLD_LINEAGE_ALLOWED" });
   });
 
-  it("spends rollback authority only on a durable external effect, and never returns it", () => {
+  it("spends rollback authority when external effects are armed, and never returns it", () => {
     const sessions = new DeploySessions(new InMemoryDeploySessionStore(), () => new Date("2026-09-19T00:00:00.000Z"));
     const session = sessions.acquire({ id: "external", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target });
     sessions.fence(session.id, "owner", topology(old));
     sessions.beginDeploying(session.id, "owner");
     sessions.classifyFailure(session.id, "owner", { ...topology(old), worker: changed });
 
-    // A real payment has now been taken against the new lineage.
-    expect(sessions.commitExternalEffects(session.id, "owner")).toMatchObject({ rollbackAuthority: "NEW_LINEAGE_ONLY" });
-    expect(sessions.commitExternalEffects(session.id, "owner")).toMatchObject({ rollbackAuthority: "NEW_LINEAGE_ONLY" });
+    // Arming happens BEFORE the ruble leaves, so a crash mid-payment can never
+    // find a session that still calls the archived database truthful.
+    expect(sessions.armExternalEffects(session.id, "owner")).toMatchObject({ rollbackAuthority: "NEW_LINEAGE_ONLY" });
+    expect(sessions.armExternalEffects(session.id, "owner")).toMatchObject({ rollbackAuthority: "NEW_LINEAGE_ONLY" });
     expect(() => sessions.completeRollback(session.id, "owner", topology(old))).toThrow("OLD_LINEAGE_ROLLBACK_FORBIDDEN");
     // Forward is the only way out.
     expect(sessions.completeTarget(session.id, "owner", topology(target)))

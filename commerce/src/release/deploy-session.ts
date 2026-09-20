@@ -149,17 +149,27 @@ export class DeploySessions {
   /**
    * The point of no return, and the only thing that spends rollback authority.
    *
-   * It is called once a certification step has produced a durable effect
-   * outside this system - a real payment taken, a receipt issued, a message
-   * delivered. From then on the archived pre-launch database is no longer a
-   * truthful account of what happened, so restoring it would lose the record
-   * of a real transaction. Recovery must go forward.
+   * It is armed BEFORE the first external effect is permitted, never recorded
+   * after one has happened. Recording afterwards would repeat the mistake this
+   * codebase already refuses on the payment boundary: cross an external
+   * boundary first, then hope to write the local truth. A runner that dies
+   * between a captured payment and that write would leave a durable session
+   * still claiming the archived database is a truthful destination, and a
+   * takeover would roll back over a real transaction.
+   *
+   * So the boundary is deliberately conservative. It is not "an external effect
+   * happened" but "external effects are now allowed", which is a fact this
+   * system controls and can persist before anything leaves it. The cost is that
+   * a crash after arming and before the first payment forces a fix-forward that
+   * a rollback could technically still have served. For a one-shot launch
+   * cutover, losing that availability is the right trade against distributed
+   * ambiguity about whether money moved.
    *
    * Deliberately NOT implied by a converged topology: deploying every surface
    * changes nothing outside this system, and that case must stay rollbackable.
    * Monotonic and idempotent - there is no way back to OLD_LINEAGE_ALLOWED.
    */
-  commitExternalEffects(id: string, ownerId: string): DeploySession {
+  armExternalEffects(id: string, ownerId: string): DeploySession {
     const session = this.owned(id, ownerId);
     if (session.rollbackAuthority === "NEW_LINEAGE_ONLY") return session;
     return this.store.transition(id, ["DEPLOYING", "RECOVERY_REQUIRED"], { rollbackAuthority: "NEW_LINEAGE_ONLY" });
@@ -178,9 +188,20 @@ export class DeploySessions {
     return this.store.renewLease(id, ownerId, new Date(this.clock().getTime() + this.leaseMs).toISOString());
   }
 
+  /**
+   * SUCCEEDED is terminal, and a terminal session can no longer arm anything.
+   * A maintenance cutover that closed on convergence alone would therefore be
+   * a cutover whose irreversible boundary can never be recorded at all - the
+   * ordering would live only in a runbook. Requiring the armed authority here
+   * makes "certification ran before this release was called done" structural.
+   * A rolling release crosses no external boundary and needs no such proof.
+   */
   completeTarget(id: string, ownerId: string, topology: PreDeployTopology): DeploySession {
     const observed = this.observeTopology(id, ownerId, topology);
     if (!topologyIsTarget(topology, observed.targetSha)) throw new Error("TARGET_TOPOLOGY_NOT_CONVERGED");
+    if (observed.mode === "MAINTENANCE_CUTOVER" && observed.rollbackAuthority !== "NEW_LINEAGE_ONLY") {
+      throw new Error("MAINTENANCE_CUTOVER_EXTERNAL_EFFECTS_NOT_ARMED");
+    }
     return this.store.transition(id, ["DEPLOYING", "RECOVERY_REQUIRED"], { state: "SUCCEEDED" });
   }
 
