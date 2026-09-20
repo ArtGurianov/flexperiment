@@ -19,12 +19,25 @@ export type ReleaseClass =
   /** Anything else. Absence of proof is not compatibility. */
   | "MAINTENANCE_REQUIRED";
 
+export type CandidateExpectation = Omit<ReleaseReadinessExpectation, "sourceCommit">;
+
 export type ReleaseCandidate = {
   readonly id: string;
   readonly sha: string;
   readonly releaseClass: ReleaseClass;
-  readonly expectation: ReleaseReadinessExpectation;
+  /** The candidate is the sole owner of the source commit identity. */
+  readonly expectation: CandidateExpectation;
 };
+
+/**
+ * Materializes readiness input at its consumer. There is deliberately no
+ * second source-commit field to compare: a candidate cannot be constructed
+ * with one SHA to deploy and another SHA to admit.
+ */
+export const readinessExpectation = (candidate: ReleaseCandidate): ReleaseReadinessExpectation => ({
+  ...candidate.expectation,
+  sourceCommit: candidate.sha,
+});
 
 /**
  * Derived, never chosen. An operator who could pick ROLLING_SAFE for a launch

@@ -15,8 +15,7 @@ const candidateFor = (releaseClass: "LAUNCH_BASELINE" | "ROLLING_COMPATIBLE" | "
   id: `candidate-${releaseClass}`, sha: target, releaseClass, expectation,
 });
 
-const expectation: ReleaseReadinessExpectation = {
-  sourceCommit: target,
+const expectation: Omit<ReleaseReadinessExpectation, "sourceCommit"> = {
   schemaInventory: schemaInventoryExpectation(versions),
   legalVersion: "2026-09-20.1",
   legalManifestSha256: "e".repeat(64),

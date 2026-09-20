@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { deployMode, type ReleaseCandidate, type ReleaseClass } from "../../src/release/candidate";
+import { deployMode, readinessExpectation, type ReleaseCandidate, type ReleaseClass } from "../../src/release/candidate";
 
 const candidate = (releaseClass: ReleaseClass): ReleaseCandidate => ({
   id: `candidate-${releaseClass}`,
   sha: "a".repeat(40),
   releaseClass,
-  expectation: { sourceCommit: "a".repeat(40), schemaInventory: "sha256:" + "b".repeat(64), legalVersion: "2026-09-20.1", legalManifestSha256: "c".repeat(64) },
+  expectation: { schemaInventory: "sha256:" + "b".repeat(64), legalVersion: "2026-09-20.1", legalManifestSha256: "c".repeat(64) },
 });
 
 describe("release candidate", () => {
@@ -21,5 +21,11 @@ describe("release candidate", () => {
     // It replaces the database underneath the running revision, so there is no
     // interval during which both lineages are servable.
     expect(deployMode(candidate("LAUNCH_BASELINE"))).toBe("MAINTENANCE_CUTOVER");
+  });
+
+  it("derives readiness source identity from the candidate SHA", () => {
+    const release = candidate("LAUNCH_BASELINE");
+    expect(release.expectation).not.toHaveProperty("sourceCommit");
+    expect(readinessExpectation(release)).toEqual({ ...release.expectation, sourceCommit: release.sha });
   });
 });

@@ -12,7 +12,7 @@ type Workflow = {
   on: { workflow_dispatch?: { inputs?: Record<string, { type?: string; options?: string[] }> } };
   permissions?: Record<string, string>;
   concurrency?: { group?: string; "cancel-in-progress"?: boolean };
-  jobs: Record<string, { environment?: string; steps?: { run?: string; uses?: string }[] }>;
+  jobs: Record<string, { environment?: string; steps?: { run?: string; uses?: string; env?: Record<string, string> }[] }>;
 };
 
 const workflow = (name: string) => parse(readFileSync(`.github/workflows/${name}`, "utf8")) as Workflow;
@@ -53,6 +53,20 @@ describe("production workflow contract", () => {
     expect(Object.keys(inputsOf("deploy-production.yml"))).toEqual(["candidate"]);
   });
 
+  it("publishes launch candidates from exactly one operator input", () => {
+    const inputs = inputsOf("release-candidate.yml");
+    expect(Object.keys(inputs)).toEqual(["candidate_sha"]);
+    expect(inputs).not.toHaveProperty("release_class");
+  });
+
+  it("classifies the P2 publication as a launch baseline without dispatch input", () => {
+    const candidate = workflow("release-candidate.yml");
+    const publication = Object.values(candidate.jobs).flatMap((job) => job.steps ?? [])
+      .find((step) => step.run === "pnpm exec tsx scripts/release/release-candidate.ts");
+    expect(publication?.env?.RELEASE_CLASS).toBe("LAUNCH_BASELINE");
+    expect(publication?.env?.RELEASE_CLASS).not.toContain("inputs.release_class");
+  });
+
   it("gives no operator a way to choose the deploy mode", () => {
     // Closing sales is a consequence of how a candidate was classified, never a
     // dispatch-time preference. An input that could name a mode would let an
@@ -61,6 +75,7 @@ describe("production workflow contract", () => {
       for (const [id, input] of Object.entries(inputsOf(name))) {
         expect(id).not.toBe("mode");
         expect(id).not.toBe("target_sha");
+        expect(id).not.toBe("release_class");
         expect(input.options ?? []).not.toContain("ROLLING_SAFE");
         expect(input.options ?? []).not.toContain("MAINTENANCE_CUTOVER");
       }

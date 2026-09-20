@@ -1,4 +1,4 @@
-import { deployMode, type ReleaseCandidate, type ReleaseCandidateReader } from "./candidate";
+import { deployMode, readinessExpectation, type ReleaseCandidate, type ReleaseCandidateReader } from "./candidate";
 import { evaluateReadiness, type ReleaseReadinessEvidence } from "./readiness";
 import {
   DeploySessions, planResume, topologyIsTarget,
@@ -312,7 +312,7 @@ export class ReleaseOrchestrator {
   /** ADMITTED is the only answer that may precede arming. PENDING is not "close enough". */
   private async requireReadiness(sessionId: string, request: ReleaseRequest): Promise<ReleaseOutcome | undefined> {
     const evidence = await this.ports.evidence.read();
-    const readiness = evaluateReadiness(request.candidate.expectation, evidence, this.clock());
+    const readiness = evaluateReadiness(readinessExpectation(request.candidate), evidence, this.clock());
     if (readiness.state === "ADMITTED") return undefined;
     return this.classify(sessionId, request.ownerId, `READINESS_${readiness.state}:${readiness.code}`);
   }

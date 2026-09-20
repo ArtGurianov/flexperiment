@@ -9,14 +9,6 @@ on:
         description: The exact 40-hex commit to publish as a candidate.
         required: true
         type: string
-      release_class:
-        description: >-
-          LAUNCH_BASELINE replaces the database and is never rolling.
-          ROLLING_COMPATIBLE requires a proof the previous revision can still
-          read this one's schema. Absence of that proof is MAINTENANCE_REQUIRED.
-        required: true
-        type: choice
-        options: [LAUNCH_BASELINE, ROLLING_COMPATIBLE, MAINTENANCE_REQUIRED]
 
 permissions:
   contents: read
@@ -41,7 +33,6 @@ jobs:
       - name: Bind to the exact candidate commit
         env:
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-          RELEASE_CLASS: ${{ inputs.release_class }}
         run: |
           set -euo pipefail
           [[ "$CANDIDATE_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "CANDIDATE_SHA_INVALID" >&2; exit 1; }
@@ -50,10 +41,8 @@ jobs:
           # An ancestor that was green once is not the same claim. The launch
           # cutover destroys the predecessor database, so it may only ever be
           # the exact current tip.
-          if [[ "$RELEASE_CLASS" == "LAUNCH_BASELINE" ]]; then
-            [[ "$CANDIDATE_SHA" == "$(git rev-parse origin/main)" ]] \
-              || { echo "LAUNCH_BASELINE_MUST_BE_MAIN_HEAD" >&2; exit 1; }
-          fi
+          [[ "$CANDIDATE_SHA" == "$(git rev-parse origin/main)" ]] \
+            || { echo "LAUNCH_BASELINE_MUST_BE_MAIN_HEAD" >&2; exit 1; }
 
       # Green on this exact commit, not somewhere in its history. A candidate
       # inherits nothing from its ancestors.
@@ -82,5 +71,7 @@ jobs:
       - name: Publish the candidate
         env:
           RELEASE_CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-          RELEASE_CLASS: ${{ inputs.release_class }}
+          # Launch publication is the only P2 classifier. Future rolling
+          # publication must come from a compatibility proof, never dispatch.
+          RELEASE_CLASS: LAUNCH_BASELINE
         run: pnpm exec tsx scripts/release/release-candidate.ts

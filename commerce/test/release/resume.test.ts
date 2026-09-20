@@ -8,7 +8,7 @@ const old = "b".repeat(40);
 const topology = (sha: string): PreDeployTopology => ({ frontend: sha, admin: sha, commerce: sha, worker: sha });
 const versions = ["0001_launch_baseline.sql"];
 const expectation = {
-  sourceCommit: target, schemaInventory: schemaInventoryExpectation(versions),
+  schemaInventory: schemaInventoryExpectation(versions),
   legalVersion: "2026-09-20.1", legalManifestSha256: "e".repeat(64),
 };
 const candidate = { id: "candidate-1", sha: target, releaseClass: "LAUNCH_BASELINE" as const, expectation };
