@@ -12,11 +12,24 @@ describe("schema lineage", () => {
     expect(classifySchemaLineage({ tableNames: ["orders"] })).toBe("UNKNOWN");
   });
 
-  it("reads a bare ledger as a bootstrap that has not happened, not as a pre-launch database", () => {
+  it("reads an EMPTY bare ledger as a bootstrap that has not happened", () => {
     // Otherwise a bootstrap interrupted between creating the ledger and
     // applying the baseline would classify as LEGACY and refuse to start
-    // forever. A pre-launch database is a ledger plus the schema it built.
-    expect(classifySchemaLineage({ tableNames: ["schema_migrations"] })).toBe("EMPTY_BOOTSTRAPPABLE");
+    // forever.
+    expect(classifySchemaLineage({ tableNames: ["schema_migrations"], appliedVersionCount: 0 })).toBe("EMPTY_BOOTSTRAPPABLE");
+  });
+
+  it("refuses a bare ledger that records versions, whatever became of its tables", () => {
+    // Recorded versions are evidence a migrator already ran here. A database
+    // that says so is never a fresh bootstrap, and must not be handed the
+    // baseline on the strength of having no tables left.
+    expect(classifySchemaLineage({ tableNames: ["schema_migrations"], appliedVersionCount: 61 })).toBe("LEGACY");
+  });
+
+  it("does not infer an emptiness it never read", () => {
+    // Absent is not zero. A classifier whose job is to refuse fails closed on
+    // the count it was not given.
+    expect(classifySchemaLineage({ tableNames: ["schema_migrations"] })).toBe("LEGACY");
   });
 
   it("does not call an unrecognised identity legacy", () => {

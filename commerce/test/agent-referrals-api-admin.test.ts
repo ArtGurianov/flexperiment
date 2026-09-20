@@ -2,8 +2,7 @@ import { randomUUID, scryptSync } from "node:crypto";
 import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { MockProvider } from "../src/provider";
-import { agentReferralsFeatureState } from "../src/agent-referrals-feature-state";
-import { materializeInitialActiveFeatureForTest as activateAgentReferrals } from "./support/agent-referrals-feature-state";
+import { agentReferralsFeatureState, reactivateAgentReferrals, suspendAgentReferrals } from "../src/agent-referrals-feature-state";
 import { fresh, readyPartner, seedOccurrence, nearTermTerms, offerAcceptActivate, purchaseAndPay, finalizedSettlement, acceptedAct } from "./support/agent-referrals-settlement-fixtures";
 
 process.env.COMMERCE_SESSION_SECRET ??= "test-session-secret-agent-referrals-admin-api";
@@ -98,55 +97,66 @@ describe("/v1/admin/agent-referrals/*: authentication boundary", () => {
 
     it("suspends and reactivates a feature while preserving its durable owner", async () => {
       const { db, app } = appFixture();
-      activateAgentReferrals(db, { expected_revision: 1, owner_id: FEATURE_OWNER, reason: "test fixture" });
+      // These cases are about an owner the admin routes must preserve, so one
+      // has to exist first. The seeded row is unowned, and ownership is taken
+      // by a real operation rather than manufactured - a round trip through
+      // suspend and resume leaves the feature ACTIVE and durably owned.
+      suspendAgentReferrals(db, { expected_revision: 1, owner_id: FEATURE_OWNER, reason: "establish owner" });
+      reactivateAgentReferrals(db, { expected_revision: 2, owner_id: FEATURE_OWNER, reason: "establish owner" });
       const cookie = await adminCookie(app, "203.0.113.10");
       const headers = { Origin: ADMIN_ORIGIN, Cookie: cookie, "Content-Type": "application/json" };
-      expect(agentReferralsFeatureState(db)).toEqual({ state: "ACTIVE", owner_id: FEATURE_OWNER, revision: 2 });
+      // Seeded ACTIVE and unowned: the first real operation is what takes
+      // ownership, so the owner this test is about is established by the
+      // suspension rather than manufactured before it.
+      expect(agentReferralsFeatureState(db)).toEqual({ state: "ACTIVE", owner_id: FEATURE_OWNER, revision: 3 });
 
       const suspend = await app.request("http://admin.flexperiment.ru/v1/admin/agent-referrals/feature-state/suspend", {
-        method: "POST", headers, body: JSON.stringify({ expected_revision: 2, reason: "controlled cutover" }),
+        method: "POST", headers, body: JSON.stringify({ expected_revision: 3, reason: "controlled cutover" }),
       });
       expect(suspend.status).toBe(200);
-      expect(await suspend.json()).toEqual({ state: "SUSPENDED", owner_id: FEATURE_OWNER, revision: 3 });
+      expect(await suspend.json()).toEqual({ state: "SUSPENDED", owner_id: FEATURE_OWNER, revision: 4 });
 
       const reactivate = await app.request("http://admin.flexperiment.ru/v1/admin/agent-referrals/feature-state/reactivate", {
-        method: "POST", headers, body: JSON.stringify({ expected_revision: 3, reason: "cutover complete" }),
+        method: "POST", headers, body: JSON.stringify({ expected_revision: 4, reason: "cutover complete" }),
       });
       expect(reactivate.status).toBe(200);
-      expect(await reactivate.json()).toEqual({ state: "ACTIVE", owner_id: FEATURE_OWNER, revision: 4 });
+      expect(await reactivate.json()).toEqual({ state: "ACTIVE", owner_id: FEATURE_OWNER, revision: 5 });
 
       // The projection is not the evidence. The audit chain must agree with it,
       // and must attribute both transitions to the preserved owner - an event
       // naming the admin would be a second, competing authority record.
       expect(db.prepare("SELECT from_state, to_state, owner_id, revision FROM agent_referrals_feature_state_events ORDER BY revision").all()).toEqual([
-        { from_state: "DORMANT", to_state: "ACTIVE", owner_id: FEATURE_OWNER, revision: 2 },
-        { from_state: "ACTIVE", to_state: "SUSPENDED", owner_id: FEATURE_OWNER, revision: 3 },
-        { from_state: "SUSPENDED", to_state: "ACTIVE", owner_id: FEATURE_OWNER, revision: 4 },
+        { from_state: "ACTIVE", to_state: "SUSPENDED", owner_id: FEATURE_OWNER, revision: 2 },
+        { from_state: "SUSPENDED", to_state: "ACTIVE", owner_id: FEATURE_OWNER, revision: 3 },
+        { from_state: "ACTIVE", to_state: "SUSPENDED", owner_id: FEATURE_OWNER, revision: 4 },
+        { from_state: "SUSPENDED", to_state: "ACTIVE", owner_id: FEATURE_OWNER, revision: 5 },
       ]);
     });
 
-    it("refuses a stale expected_revision and permits suspension from the pre-baseline physical value", async () => {
+    it("refuses a stale expected_revision", async () => {
       const { db, app } = appFixture();
-      activateAgentReferrals(db, { expected_revision: 1, owner_id: FEATURE_OWNER, reason: "test fixture" });
+      // These cases are about an owner the admin routes must preserve, so one
+      // has to exist first. The seeded row is unowned, and ownership is taken
+      // by a real operation rather than manufactured - a round trip through
+      // suspend and resume leaves the feature ACTIVE and durably owned.
+      suspendAgentReferrals(db, { expected_revision: 1, owner_id: FEATURE_OWNER, reason: "establish owner" });
+      reactivateAgentReferrals(db, { expected_revision: 2, owner_id: FEATURE_OWNER, reason: "establish owner" });
       const cookie = await adminCookie(app, "203.0.113.11");
       const headers = { Origin: ADMIN_ORIGIN, Cookie: cookie, "Content-Type": "application/json" };
 
-      // Preserving the owner must not soften the CAS: revision 1 is already spent.
-      const stale = await app.request("http://admin.flexperiment.ru/v1/admin/agent-referrals/feature-state/suspend", {
-        method: "POST", headers, body: JSON.stringify({ expected_revision: 1, reason: "stale" }),
+      const suspended = await app.request("http://admin.flexperiment.ru/v1/admin/agent-referrals/feature-state/suspend", {
+        method: "POST", headers, body: JSON.stringify({ expected_revision: 3, reason: "controlled" }),
+      });
+      expect(suspended.status).toBe(200);
+      expect(await suspended.json()).toMatchObject({ state: "SUSPENDED", revision: 4 });
+
+      // Preserving the owner must not soften the CAS: revision 1 is now spent.
+      const stale = await app.request("http://admin.flexperiment.ru/v1/admin/agent-referrals/feature-state/reactivate", {
+        method: "POST", headers, body: JSON.stringify({ expected_revision: 3, reason: "stale" }),
       });
       expect(stale.status).toBe(409);
       expect((await stale.json()).error.code).toBe("AGENT_REFERRALS_FEATURE_REVISION_CONFLICT");
-      expect(agentReferralsFeatureState(db)).toEqual({ state: "ACTIVE", owner_id: FEATURE_OWNER, revision: 2 });
-
-      const { app: prebaselineApp } = appFixture();
-      const prebaselineCookie = await adminCookie(prebaselineApp, "203.0.113.12");
-      const suspended = await prebaselineApp.request("http://admin.flexperiment.ru/v1/admin/agent-referrals/feature-state/suspend", {
-        method: "POST", headers: { Origin: ADMIN_ORIGIN, Cookie: prebaselineCookie, "Content-Type": "application/json" },
-        body: JSON.stringify({ expected_revision: 1, reason: "prebaseline" }),
-      });
-      expect(suspended.status).toBe(200);
-      expect(await suspended.json()).toMatchObject({ state: "SUSPENDED", revision: 3 });
+      expect(agentReferralsFeatureState(db)).toEqual({ state: "SUSPENDED", owner_id: FEATURE_OWNER, revision: 4 });
     });
   });
 

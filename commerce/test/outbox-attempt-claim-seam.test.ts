@@ -108,9 +108,9 @@ describe("claim seam", () => {
       expect(claimed).toMatchObject({ authority: "ATTEMPT", attempt_id: "a1", attempt_no: 1, provider_idempotence_key: "shared-key", send_try_count: 1 });
     });
 
-    it("returns the attempt's own key, not the message snapshot", () => {
-      // Under LEGACY these coincide, so using the snapshot is accidentally
-      // correct for attempt #1 and wrong the moment a resend mints attempt #2.
+    it("returns the claimed attempt's own key, not an earlier attempt's", () => {
+      // A resend mints a new key. Reading any attempt but the claimed one would
+      // send the second request under the first request's identity.
       const db = fixture();
       db.exec("UPDATE outbox_attempt SET outcome = 'KNOWN_FAILED' WHERE id = 'a1'");
       db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key)
@@ -118,7 +118,8 @@ describe("claim seam", () => {
       db.exec("UPDATE email_outbox SET status = 'PENDING' WHERE id = 'm1'");
 
       expect(claim(db)?.provider_idempotence_key).toBe("resend-key");
-      expect((db.prepare("SELECT provider_idempotence_key FROM email_outbox WHERE id = 'm1'").get() as { provider_idempotence_key: string }).provider_idempotence_key)
+      // The settled first attempt keeps its own key; it is history, not identity.
+      expect((db.prepare("SELECT provider_idempotence_key FROM outbox_attempt WHERE id = 'a1'").get() as { provider_idempotence_key: string }).provider_idempotence_key)
         .toBe("shared-key");
     });
 
@@ -158,6 +159,10 @@ describe("claim seam", () => {
       // performing - so a rogue claim cannot cross the provider boundary while
       // dispatch is fenced, in either authority state.
       const db = fixture();
+      db.exec(`INSERT INTO deploy_sessions(id, owner_id, mode, target_sha, candidate_id, state, rollback_authority,
+          pre_deploy_topology, created_at, lease_expires_at)
+        VALUES ('session-1', 'operator', 'MAINTENANCE_CUTOVER', '${"a".repeat(40)}', 'candidate', 'DEPLOYING',
+          'OLD_LINEAGE_ALLOWED', '{}', '${"2026-08-30T00:00:00.000Z"}', '2026-08-30T00:05:00.000Z')`);
       db.exec(`UPDATE outbox_authority SET email_dispatch_paused = 1,
         dispatch_owner_session_id = 'session-1' WHERE singleton = 1`);
       expect(() => claim(db)).toThrow(/EMAIL_DISPATCH_PAUSED/);
@@ -178,14 +183,16 @@ describe("claim seam", () => {
 describe("processEmailOutbox honours authoritative retry eligibility", () => {
   const NOW = Date.parse("2026-08-30T14:30:00.000Z");
 
-  const dispatchFixture = (legacyNextAttempt: string, attemptNextRetry: string) => {
-    const db = fixture({
-      // Staged before the flip: a SEND_UNKNOWN row with no known provider job,
-      // so the pre-claim lookup falls through to the claim rather than the
-      // not-yet-converted reconciliation paths deciding the outcome.
-      legacy: `UPDATE email_outbox SET status = 'SEND_UNKNOWN', job_id = NULL, attempts = 0,
-        next_attempt_at = '${legacyNextAttempt}' WHERE id = 'm1'`,
-    });
+  /**
+   * A SEND_UNKNOWN message with no known provider job, so the pre-claim lookup
+   * falls through to the claim and due-ness is decided by one thing: the
+   * attempt's own `next_retry_at`. The message used to carry a competing
+   * `next_attempt_at`, and which of the two won was the whole subject here;
+   * there is only one answer now.
+   */
+  const dispatchFixture = (attemptNextRetry: string) => {
+    const db = fixture();
+    db.exec("UPDATE email_outbox SET status = 'SEND_UNKNOWN' WHERE id = 'm1'");
     db.exec(`UPDATE outbox_attempt SET next_retry_at = '${attemptNextRetry}' WHERE id = 'a1'`);
 
     const sent: string[] = [];
@@ -203,15 +210,15 @@ describe("processEmailOutbox honours authoritative retry eligibility", () => {
     // This asserted a freeze-trigger abort while seam 2 was unconverted, which
     // was the honest expectation then. Seam 2 has landed, so it is now the
     // clean acceptance it was always meant to become.
-    const { sent, domain, db } = dispatchFixture("2026-08-30T15:00:00.000Z", "2026-08-30T14:00:00.000Z");
+    const { sent, domain, db } = dispatchFixture("2026-08-30T14:00:00.000Z");
     await domain.processEmailOutbox();
     expect(sent, "the row never reached the provider").toEqual(["shared-key"]);
     expect(messageStatus(db)).toBe("ACCEPTED");
     expect(attempt(db)).toMatchObject({ outcome: "ACCEPTED", lease_owner: null });
   });
 
-  it("does not dispatch when the attempt is not due, whatever legacy state says", async () => {
-    const { sent, domain, db } = dispatchFixture("2026-08-30T14:00:00.000Z", "2026-08-30T15:00:00.000Z");
+  it("does not dispatch when the attempt is not due", async () => {
+    const { sent, domain, db } = dispatchFixture("2026-08-30T15:00:00.000Z");
     await domain.processEmailOutbox();
     expect(sent).toEqual([]);
     expect(messageStatus(db)).toBe("SEND_UNKNOWN");

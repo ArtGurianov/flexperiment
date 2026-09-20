@@ -5,8 +5,7 @@ import type Database from "better-sqlite3";
  *
  * Every function here MUST be called from inside the transaction that performs
  * the write it governs. Attempt records are the only authoritative attempt
- * store; the legacy email_outbox attempt columns remain historical evidence
- * until P9 removes them physically.
+ * store. The message-level attempt columns it replaced are gone.
  *
  *   message facts    status, delivery_outcome, sent_at, delivered_at,
  *                    bounced_at, suppression, supersession, ops acknowledgement
@@ -16,8 +15,6 @@ import type Database from "better-sqlite3";
  *                    per-send error, settlement
  *                    -> outbox_attempt
  *
- * The legacy email_outbox attempt columns remain immutable historical
- * evidence until P9 removes them physically.
  */
 
 export class OutboxAttemptError extends Error {
@@ -103,10 +100,9 @@ export const claimForDispatch = (
 ): ClaimedAttempt | undefined => {
   requireTransaction(db);
 
-  // Claimability is decided WITHOUT reading a frozen legacy
-  // column. next_attempt_at is stale after activation, and reading it writes
-  // nothing - so the freeze trigger stays silent while the decision is wrong in
-  // both directions: hiding due retries and admitting early ones.
+  // Claimability is decided from the attempt alone. The message used to carry
+  // a competing `next_attempt_at` that nothing updated, so reading it hid due
+  // retries and admitted early ones - and wrote nothing, so no guard fired.
   const current = db.prepare("SELECT status, superseded_at FROM email_outbox WHERE id = ?").get(message.id) as
     { status: string; superseded_at: string | null } | undefined;
   if (!current || current.superseded_at !== null) return undefined;
@@ -117,7 +113,7 @@ export const claimForDispatch = (
   if (!due) return undefined;
 
   // The message transition is paired with the attempt claim, so the
-  // production-proven 0040 dispatch fence remains the exclusion mechanism.
+  // dispatch fence remains the exclusion mechanism.
   const claimed = db.prepare(`UPDATE email_outbox SET status = 'SENDING'
     WHERE id = ? AND status IN ('PENDING', 'SEND_UNKNOWN') AND superseded_at IS NULL`).run(message.id);
   if (!claimed.changes) return undefined;
@@ -304,7 +300,7 @@ export const deferAmbiguousObservation = (
  *
  * The attempt does NOT settle. Nothing was established - that is the entire
  * point of UNRESOLVED - and settling it would make later evidence unable to
- * resolve it, which 0039 exists to prevent. The message records the ambiguity;
+ * resolve it, which the delivery-outcome rule exists to prevent. The message records the ambiguity;
  * the attempt records only that automatic reconciliation stopped.
  */
 export const failExhaustedAmbiguous = (

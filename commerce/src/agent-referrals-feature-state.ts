@@ -9,9 +9,8 @@ import { id } from "./crypto";
  * revision, a CAS UPDATE restating every precondition, and a sub-second
  * audit event in the same transaction.
  *
- * The runtime has one operational lifecycle: ACTIVE <-> SUSPENDED. The
- * historical DORMANT value remains in the pre-baseline schema until P9, but is
- * interpreted as ACTIVE so it no longer gates real business actions.
+ * One lifecycle: ACTIVE <-> SUSPENDED. The baseline seeds ACTIVE, so there is
+ * no genesis state to leave and no activation command to expose.
  */
 
 export type AgentReferralsFeatureStateName = "ACTIVE" | "SUSPENDED";
@@ -36,7 +35,7 @@ export class AgentReferralsFeatureError extends Error {
   }
 }
 
-/** Reads the pre-baseline physical state without granting it operational meaning. */
+/** The stored row, unmediated. */
 const storedFeatureState = (db: Database.Database): AgentReferralsFeatureStateRow | null => {
   const row = db.prepare("SELECT state, owner_id, revision FROM agent_referrals_feature_state WHERE singleton = 1").get() as
     Record<string, unknown> | undefined;
@@ -51,10 +50,8 @@ const storedFeatureState = (db: Database.Database): AgentReferralsFeatureStateRo
 /**
  * The live authority, and it fails closed. A physically absent singleton is
  * corruption, not permission: it must never read as ACTIVE and hand out new
- * engagement, attribution or ORD authority. The historical DORMANT value is a
- * different matter - it is a pre-baseline artifact of a control row that does
- * exist, and after canonicalization it carries no operational meaning, so it
- * reads ACTIVE. `agentReferralsFeatureStateAt()` below answers a different
+ * engagement, attribution or ORD authority. `agentReferralsFeatureStateAt()`
+ * below answers a different
  * question (what held at an instant) and may still default to ACTIVE before the
  * first event, because there the absence is of history, not of the control row.
  */
@@ -91,9 +88,9 @@ export const transitionAgentReferralsFeatureInTransaction = (
   to: AgentReferralsFeatureStateName,
   input: AgentReferralsFeatureTransitionInput,
 ): AgentReferralsFeatureStateRow => {
-  let stored = storedFeatureState(db);
+  const stored = storedFeatureState(db);
   if (!stored) throw new AgentReferralsFeatureError("AGENT_REFERRALS_FEATURE_STATE_MISSING", 409);
-  let current = agentReferralsFeatureState(db);
+  const current = agentReferralsFeatureState(db);
 
   // A state held by another owner is never touched, in either direction -
   // the case CAS cannot cover, exactly as in outbox-authority.ts.

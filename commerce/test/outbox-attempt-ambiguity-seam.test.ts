@@ -60,7 +60,30 @@ afterEach(() => { while (open.length) open.pop()!.close(); });
 
 describe("ambiguity seam", () => {
   describe("exhaustion never settles the attempt", () => {
+    const ambiguous = () => {
+      const db = fixture();
+      db.exec("UPDATE email_outbox SET status = 'SEND_UNKNOWN' WHERE id = 'm1'");
+      return db;
+    };
 
+    it("records UNRESOLVED on the message", () => {
+      // The whole point of UNRESOLVED: nothing was established. Settling the
+      // attempt would make later evidence unable to resolve it, which is the
+      // contradiction the delivery-outcome rule was built to remove.
+      const db = ambiguous();
+      tx(db, () => failExhaustedAmbiguous(db, { id: "m1" }, resolveAttemptRef(db, "m1"), "SEND_UNKNOWN"));
+
+      expect(message(db)).toEqual({ status: "FAILED", delivery_outcome: "UNRESOLVED" });
+      expect((attempt(db) as { outcome: string | null }).outcome).toBeNull();
+    });
+
+    it("records only that automatic reconciliation stopped", () => {
+      const db = ambiguous();
+      tx(db, () => failExhaustedAmbiguous(db, { id: "m1" }, resolveAttemptRef(db, "m1"), "SEND_UNKNOWN"));
+
+      expect(attempt(db)).toMatchObject({ outcome: null, lease_owner: null, next_retry_at: null });
+      expect((attempt(db) as { reconciliation_exhausted_at: string | null }).reconciliation_exhausted_at).not.toBeNull();
+    });
   });
 
   describe("deferral", () => {
@@ -195,4 +218,38 @@ describe("stale recovery consumes authoritative lease and try count", () => {
  * lands nowhere at all and the failure is silently dropped.
  */
 describe("send failure is attributed to the claimed attempt", () => {
+  it("updates the successor the claim took, not the pre-lookup attempt", async () => {
+    const db = fixture();
+    db.exec("UPDATE email_outbox SET status = 'SEND_UNKNOWN' WHERE id = 'm1'");
+
+    const keys: string[] = [];
+    const emailProvider: EmailProvider = {
+      // The successor appears between identity resolution and the claim, which
+      // is exactly the window the two carried refs exist to distinguish.
+      async lookup() {
+        db.exec("UPDATE outbox_attempt SET outcome = 'KNOWN_FAILED' WHERE id = 'a1'");
+        db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key)
+          VALUES ('a2', 'm1', 2, 'resend-key')`).run();
+        return { status: "UNKNOWN" };
+      },
+      async send({ idempotencyKey }) {
+        keys.push(idempotencyKey);
+        throw new Error("transport ambiguity");
+      },
+    };
+
+    await new CommerceDomain(db, new MockProvider(), emailProvider).processEmailOutbox();
+
+    // The claim took the successor, so the send used its key...
+    expect(keys).toEqual(["resend-key"]);
+    // ...and the ambiguity was recorded against it.
+    expect(db.prepare("SELECT failure_code, outcome FROM outbox_attempt WHERE id = 'a2'").get())
+      .toMatchObject({ failure_code: "UNISENDER_TRANSPORT_AMBIGUOUS", outcome: null });
+    expect((db.prepare("SELECT next_retry_at FROM outbox_attempt WHERE id = 'a2'").get() as { next_retry_at: string | null }).next_retry_at)
+      .not.toBeNull();
+    expect((message(db) as { status: string }).status).toBe("SEND_UNKNOWN");
+    // The predecessor is untouched history.
+    expect(db.prepare("SELECT outcome, failure_code FROM outbox_attempt WHERE id = 'a1'").get())
+      .toEqual({ outcome: "KNOWN_FAILED", failure_code: null });
+  });
 });

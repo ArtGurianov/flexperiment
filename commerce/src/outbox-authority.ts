@@ -8,9 +8,8 @@ import { id } from "./crypto";
  *
  * One operational capability: fence or unfence email dispatch.
  *
- * Attempt records are the sole dispatch authority. The historical selector
- * remains physically present until P9's baseline schema cutover, but it is no
- * longer exposed or read by runtime code.
+ * Attempt records are the sole dispatch authority; the selector that used to
+ * choose between two is gone, and so is the second authority.
  */
 
 export type OutboxAuthorityState = {

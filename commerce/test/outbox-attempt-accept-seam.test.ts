@@ -138,6 +138,21 @@ describe("acceptance seam", () => {
   });
 
   describe("SEND_UNKNOWN lookup identity", () => {
+    // These used to contrast the attempt against a frozen message column. The
+    // column is gone, so what remains is the statement that mattered: the
+    // identity is the IN-FLIGHT attempt's, never an earlier attempt's.
+    it("uses the in-flight attempt's identity, not a settled attempt's", () => {
+      const db = fixture();
+      db.exec("UPDATE outbox_attempt SET outcome = 'KNOWN_FAILED' WHERE id = 'a1'");
+      db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key, provider_job_id)
+        VALUES ('a2', 'm1', 2, 'resend-key', 'job-2')`).run();
 
+      expect(providerLookupIdentity(db, { id: "m1" })).toEqual({ jobId: "job-2", idempotencyKey: "resend-key" });
+    });
+
+    it("reports no job when the in-flight attempt has not reached the provider", () => {
+      const db = fixture();
+      expect(providerLookupIdentity(db, { id: "m1" })).toEqual({ jobId: null, idempotencyKey: "shared-key" });
+    });
   });
 });

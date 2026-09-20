@@ -61,7 +61,10 @@ export const readSchemaIdentity = (sqlite: Database.Database): SchemaIdentitySna
   const schemaIdentity = tableNames.includes("schema_identity")
     ? (sqlite.prepare("SELECT lineage FROM schema_identity WHERE singleton = 1").get() as { lineage: string } | undefined) ?? null
     : null;
-  return { tableNames, schemaIdentity };
+  const appliedVersionCount = tableNames.includes("schema_migrations")
+    ? Number((sqlite.prepare("SELECT COUNT(*) AS n FROM schema_migrations").get() as { n: number }).n)
+    : 0;
+  return { tableNames, schemaIdentity, appliedVersionCount };
 };
 
 /** Every entry point that opens a database without migrating it owes this call. */

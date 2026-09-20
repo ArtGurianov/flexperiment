@@ -33,8 +33,8 @@ export const isFreshTimestamp = (value: string, now: Date, maximumAgeMs: number)
 };
 
 /**
- * Validate evidence without storing it. Persistence is deliberately deferred
- * until P9, so a caller supplies the row it read from its own test adapter.
+ * Validate evidence without storing it. `runtime_instance_evidence` exists in
+ * the schema, but nothing writes it yet, so a caller supplies the row it read.
  */
 export const validateRuntimeEvidence = (
   evidence: RuntimeEvidence,

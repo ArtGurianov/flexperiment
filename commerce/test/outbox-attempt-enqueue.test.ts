@@ -68,20 +68,21 @@ describe("enqueueEmail creates a message and attempt #1 atomically", () => {
     }]);
   });
 
-  it("copies one minted key into both stores, byte for byte", () => {
-    // Two independently generated keys would be two logical requests at the
-    // provider the moment authority moves.
+  it("mints exactly one key, on the attempt that will carry the request", () => {
+    // It used to be copied into the message as well, and the two being equal
+    // was the thing worth asserting. There is one store now, so what is left to
+    // prove is that enqueue produces exactly one attempt holding exactly one
+    // key - two would be two logical requests at the provider.
     const { db, domain } = fixture();
     db.prepare("UPDATE occurrences SET visibility = 'HIDDEN', sales_status = 'CLOSED'").run();
     enqueueViaCityInterest(domain, "keys@example.test");
     const occurrenceId = (db.prepare("SELECT id FROM occurrences").get() as { id: string }).id;
     domain.patchOccurrence(occurrenceId, { visibility: "PUBLISHED", reason: "publish", expected_revision: 1 }, randomUUID(), "admin");
 
-    const pair = db.prepare(`SELECT o.provider_idempotence_key AS message_key, a.provider_idempotence_key AS attempt_key
-      FROM email_outbox o JOIN outbox_attempt a ON a.message_id = o.id`).get();
-    expect(pair).toMatchObject({ message_key: expect.any(String) });
-    expect((pair as { message_key: string; attempt_key: string }).attempt_key)
-      .toBe((pair as { message_key: string }).message_key);
+    const attempts = db.prepare(`SELECT a.attempt_no, a.provider_idempotence_key
+      FROM email_outbox o JOIN outbox_attempt a ON a.message_id = o.id`).all();
+    expect(attempts).toEqual([{ attempt_no: 1, provider_idempotence_key: expect.any(String) }]);
+    expect((attempts[0] as { provider_idempotence_key: string }).provider_idempotence_key).not.toBe("");
   });
 
   it("leaves no message behind when the attempt insert fails", () => {

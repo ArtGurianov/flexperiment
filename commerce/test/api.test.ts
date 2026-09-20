@@ -291,6 +291,11 @@ describe("commerce HTTP boundary", () => {
       '2026-08-23T00:00:00.000Z', '2026-08-23T00:01:00.000Z',
       CASE WHEN ? = 'FAILED' THEN 'KNOWN_FAILED' END)`);
     for (const status of ["FAILED", "BOUNCED", "SEND_UNKNOWN", "DELIVERED"]) insert.run(`api-attention-${status}`, status, status);
+    // The provider's own words live on the attempt now, as canonical JSON. The
+    // incident projection decodes them from there; nothing is stored twice.
+    db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key, send_try_count, outcome, failure_code, failure_detail)
+      VALUES ('api-attention-attempt', 'api-attention-FAILED', 1, 'api-attention-key', 2, 'KNOWN_FAILED', 'UNISENDER_HTTP_REJECTED', ?)`)
+      .run(JSON.stringify({ provider_error_code: "hard_bounced", provider_error_message: "Mailbox unavailable" }));
     const login = await app.request("http://admin.flexperiment.ru/v1/admin/login", { method: "POST", headers: { Origin: "https://admin.flexperiment.ru", "Content-Type": "application/json", "X-Forwarded-For": "127.0.0.58" }, body: JSON.stringify({ password: "correct horse" }) });
     const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")!, "Content-Type": "application/json" };
 
@@ -308,9 +313,13 @@ describe("commerce HTTP boundary", () => {
     expect(unknown.status).toBe(404);
     const replay = await app.request("http://admin.flexperiment.ru/v1/admin/email-attention/api-attention-FAILED/acknowledge", { method: "POST", headers, body: JSON.stringify({ audit_context: "Must not overwrite." }) });
     expect(await replay.json()).toMatchObject({ acknowledged_now: false, incident: { ops_acknowledged_reason: null } });
-    expect(db.prepare(`SELECT status, attempts, sent_at, bounced_at, provider_error_code,
-      provider_error_message, ops_acknowledged_reason FROM email_outbox WHERE id = 'api-attention-FAILED'`).get())
-      .toEqual({ status: "FAILED", attempts: 2, sent_at: "2026-08-23T00:00:00.000Z", bounced_at: "2026-08-23T00:01:00.000Z", provider_error_code: "hard_bounced", provider_error_message: "Mailbox unavailable", ops_acknowledged_reason: null });
+    expect(db.prepare(`SELECT status, sent_at, bounced_at, delivery_outcome, ops_acknowledged_reason
+      FROM email_outbox WHERE id = 'api-attention-FAILED'`).get())
+      .toEqual({ status: "FAILED", sent_at: "2026-08-23T00:00:00.000Z", bounced_at: "2026-08-23T00:01:00.000Z", delivery_outcome: "KNOWN_FAILED", ops_acknowledged_reason: null });
+    // Acknowledging changes nothing the provider said, and the incident still
+    // carries it - decoded out of the attempt rather than read off the message.
+    expect(listed.incidents.find((incident) => incident.id === "api-attention-FAILED"))
+      .toMatchObject({ attempts: 2, provider_error_code: "hard_bounced", provider_error_message: "Mailbox unavailable" });
     const after = await app.request("http://admin.flexperiment.ru/v1/admin/email-attention", { headers });
     const afterBody = await after.json() as { attention_count: number; incidents: { requires_attention: number }[] };
     expect(afterBody.attention_count).toBe(2);
@@ -762,7 +771,13 @@ describe("commerce HTTP boundary", () => {
       db.prepare("INSERT INTO provider_webhook_events(id, provider, semantic_key, payload_hash, status, entity_id, observed_json) VALUES (?, 'TOCHKA', 'operation-safe:APPROVED', 'payload-hash', 'APPLIED', ?, ?)").run(randomUUID(), payment.id, JSON.stringify({ raw_jwt: "must-not-leak" }));
       const insertOutbox = db.prepare("INSERT INTO email_outbox(id, type, recipient_email, recipient_email_hash, template, payload_ref, payload_snapshot, status, delivered_at) VALUES (?, ?, 'certification@example.test', 'email-hash', 'test', ?, ?, 'DELIVERED', datetime('now'))");
       insertOutbox.run(ticketOutboxId, "TICKET", ticketId, JSON.stringify({ customer_email: "certification@example.test", capability: "must-not-leak" }));
-      insertOutbox.run(bookingOutboxId, "BOOKING_CANCELLED", booking.id, JSON.stringify({ customer_name: "Certification Customer" }), randomUUID(), "booking-job");
+      insertOutbox.run(bookingOutboxId, "BOOKING_CANCELLED", booking.id, JSON.stringify({ customer_name: "Certification Customer" }));
+      // Certification reads the provider job id out of the attempt, which is
+      // the only thing that holds one.
+      const insertAttempt = db.prepare(`INSERT INTO outbox_attempt(id, message_id, attempt_no, provider_idempotence_key, provider_job_id, outcome)
+        VALUES (?, ?, 1, ?, ?, 'ACCEPTED')`);
+      insertAttempt.run(randomUUID(), ticketOutboxId, randomUUID(), "ticket-job");
+      insertAttempt.run(randomUUID(), bookingOutboxId, randomUUID(), "booking-job");
       db.prepare("INSERT INTO email_provider_events(id, outbox_id, semantic_key, status, provider_status, job_id) VALUES (?, ?, ?, 'DELIVERED', 'delivered', ?)").run(randomUUID(), ticketOutboxId, "ticket-delivered", "ticket-job");
       db.prepare("INSERT INTO refund_obligations(id, payment_id, initial_source, target_refunded_amount_kopecks, status) VALUES (?, ?, 'CUSTOMER_CANCELLATION_PARTIAL', 100, 'FULFILLED')").run(obligationId, payment.id);
       db.prepare("INSERT INTO refunds(id, public_id, order_id, payment_id, amount_kopecks, reason, source, status, idempotency_key_hash, canonical_request_hash, provider_reference, succeeded_at) VALUES (?, ?, ?, ?, 100, 'Certification', 'REFUND_OBLIGATION', 'SUCCEEDED', ?, ?, 'refund-safe', datetime('now'))").run(refundId, randomUUID(), order.id, payment.id, randomUUID(), randomUUID());
@@ -774,7 +789,7 @@ describe("commerce HTTP boundary", () => {
     const headers = { Origin: "https://admin.flexperiment.ru", Cookie: login.headers.get("set-cookie")! };
     const system = await app.request("http://admin.flexperiment.ru/v1/admin/system/evidence", { headers });
     expect(system.headers.get("cache-control")).toBe("no-store");
-    expect(await system.json()).toMatchObject({ source_commit: process.env.SOURCE_COMMIT, migration_head: { version: migrationHead() }, migration_versions: expect.arrayContaining([{ version: "0031_participant_age_band.sql" }]), active_legal_release: { version: "test" } });
+    expect(await system.json()).toMatchObject({ source_commit: process.env.SOURCE_COMMIT, migration_head: { version: migrationHead() }, migration_versions: [{ version: "0001_launch_baseline.sql" }], active_legal_release: { version: "test" } });
       const evidence = await app.request(`http://admin.flexperiment.ru/v1/admin/orders/${order.id}/evidence`, { headers });
       const body = await evidence.json() as { order: { currency: string } } & Record<string, unknown>;
     expect(body).toMatchObject({

@@ -91,8 +91,11 @@ describe("a settlement's authority cannot be rewritten", () => {
   // owed to this partner for this engagement at this amount; editing one after
   // the fact detaches the payout from the work that justified it.
   it.each([
-    "settlement_flow = 'LEGACY'",
     "engagement_id = NULL",
+    "tax_treatment_revision_id_snapshot = NULL",
+    "tax_canonicalization_version = 'rewritten'",
+    "tax_canonical_json = 'rewritten'",
+    "tax_canonical_hash = 'rewritten'",
     "engagement_revision_id = NULL",
     "base_registry_snapshot_id = NULL",
     "reward_registry_hash = 'rewritten'",

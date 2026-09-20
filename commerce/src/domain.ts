@@ -86,15 +86,14 @@ export const UNISENDER_EVENT_DUMP_CREATE_PROBE_INITIAL_BACKOFF_MS = 5 * 60 * 1_0
 export const UNISENDER_EVENT_DUMP_CREATE_PROBE_MAX_BACKOFF_MS = 60 * 60 * 1_000;
 
 /**
- * Under ATTEMPT authority the provider job id and the dispatch instant live on
- * the message's latest attempt. `email_outbox.job_id`,
- * `provider_request_started_at` and `send_started_at` are frozen legacy columns
- * that nothing writes any more, so selecting Event Dump candidates by them
- * silently matched nothing and the delivery-reconciliation fallback went dead.
+ * The provider job id and the dispatch instant live on the message's latest
+ * attempt, and nowhere else - the message-level copies are gone. Anything that
+ * needs a provider identity joins through here.
  */
-const LATEST_ATTEMPT_JOIN = `LEFT JOIN outbox_attempt attempt ON attempt.id = (
+const latestAttemptJoin = (message: string) => `LEFT JOIN outbox_attempt attempt ON attempt.id = (
     SELECT latest.id FROM outbox_attempt latest
-    WHERE latest.message_id = outbox.id ORDER BY latest.attempt_no DESC LIMIT 1)`;
+    WHERE latest.message_id = ${message}.id ORDER BY latest.attempt_no DESC LIMIT 1)`;
+const LATEST_ATTEMPT_JOIN = latestAttemptJoin("outbox");
 const ATTEMPT_DISPATCH_AT = "COALESCE(attempt.provider_request_started_at, attempt.started_at, outbox.created_at)";
 
 
@@ -176,14 +175,29 @@ export const EMAIL_ATTENTION_STATUSES = ["FAILED", "BOUNCED", "SEND_UNKNOWN"] as
 const emailAttentionStatusUnqualifiedSql = "status IN ('FAILED', 'BOUNCED', 'SEND_UNKNOWN')";
 const emailAttentionStatusSql = `e.${emailAttentionStatusUnqualifiedSql}`;
 const emailAttentionPredicateSql = `${emailAttentionStatusSql} AND e.ops_acknowledged_at IS NULL`;
+/**
+ * The incident's provider facts come from the attempt now, because that is
+ * where they are written. `failure_detail` is canonical JSON with exactly one
+ * writer and exactly these two keys, so decoding it reproduces the same facts
+ * rather than renaming a different one: `failure_code` says which class of
+ * failure this was, and is not the provider's own code.
+ *
+ * `attempts` is projected for the same reason. The admin incident table has
+ * always displayed it and the projection never supplied it, so it has been
+ * reading undefined; `send_try_count` is the attempt-era answer to the same
+ * question.
+ */
 const emailAttentionSql = (where: string) => `SELECT
     e.id, e.type, e.status, e.created_at, e.sent_at, e.delivered_at, e.bounced_at,
-    e.provider_error_code, e.provider_error_message,
+    attempt.send_try_count AS attempts,
+    json_extract(attempt.failure_detail, '$.provider_error_code') AS provider_error_code,
+    json_extract(attempt.failure_detail, '$.provider_error_message') AS provider_error_message,
     e.ops_acknowledged_at, e.ops_acknowledged_reason,
     CASE WHEN ${emailAttentionPredicateSql} THEN 1 ELSE 0 END AS requires_attention,
     COALESCE(direct_order.id, ticket_order.id, refund_order.id) AS order_id,
     COALESCE(direct_order.public_order_number, ticket_order.public_order_number, refund_order.public_order_number) AS public_order_number
   FROM email_outbox e
+  ${latestAttemptJoin("e")}
   LEFT JOIN orders direct_order ON direct_order.id = e.payload_ref
   LEFT JOIN tickets ticket ON ticket.id = e.payload_ref
   LEFT JOIN bookings ticket_booking ON ticket_booking.id = ticket.booking_id
@@ -216,8 +230,9 @@ export class CommerceDomain {
   }
 
   /**
-   * Read-only operator-owned absolute latch. Deployment-session persistence is
-   * intentionally not wired until P9, but this emergency authority stays live.
+   * Read-only operator-owned absolute latch. `deploy_sessions` now exists in
+   * the schema but its adapter is not wired yet; this emergency authority is
+   * live regardless, and is deliberately above the deployment gate.
    */
   emergencySalesPaused() { return emergencySalesPaused(this.db); }
 
@@ -628,13 +643,20 @@ export class CommerceDomain {
     const obligation = payment ? one(this.db, `SELECT id, payment_id, initial_source,
       target_refunded_amount_kopecks, status, created_at, fulfilled_at
       FROM refund_obligations WHERE payment_id = ?`, payment.id) ?? null : null;
-    const emailOutbox = many(this.db, `SELECT id, type, payload_ref, status, job_id, attempts,
-      created_at, send_started_at, sent_at, delivered_at, bounced_at,
-      superseded_at
-      FROM email_outbox
-      WHERE payload_ref = ? OR payload_ref = ? OR payload_ref = ?
-        OR EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = ? AND r.id = email_outbox.payload_ref)
-      ORDER BY created_at`, orderId, ticket?.id ?? "", booking?.id ?? "", orderId);
+    // `job_id` is projected from the attempt, which is the only thing that
+    // holds a provider identity now. `attempts` and `send_started_at` are not
+    // projected at all: certification reads the job id and the delivery
+    // timestamps, and nothing read those two, so they are removed rather than
+    // simulated from attempt columns that answer a different question.
+    const emailOutbox = many(this.db, `SELECT outbox.id, outbox.type, outbox.payload_ref, outbox.status,
+      attempt.provider_job_id AS job_id,
+      outbox.created_at, outbox.sent_at, outbox.delivered_at, outbox.bounced_at,
+      outbox.superseded_at
+      FROM email_outbox outbox
+      ${LATEST_ATTEMPT_JOIN}
+      WHERE outbox.payload_ref = ? OR outbox.payload_ref = ? OR outbox.payload_ref = ?
+        OR EXISTS (SELECT 1 FROM refunds r WHERE r.order_id = ? AND r.id = outbox.payload_ref)
+      ORDER BY outbox.created_at`, orderId, ticket?.id ?? "", booking?.id ?? "", orderId);
     const emailProviderEvents = many(this.db, `SELECT event.outbox_id, event.semantic_key,
       event.status, event.provider_status, event.job_id, event.received_at
       FROM email_provider_events event JOIN email_outbox outbox ON outbox.id = event.outbox_id
@@ -1824,7 +1846,7 @@ export class CommerceDomain {
     // A superseded in-flight send must never be retried, but a crashed worker
     // cannot leave it claiming SENDING forever. Record the honest ambiguous
     // outcome and retain supersession as the permanent no-retry guard.
-    // Lease expiry is an attempt fact too: under ATTEMPT the message no longer
+    // Lease expiry is an attempt fact too: the message no longer
     // carries a lease, so scanning email_outbox.lease_expires_at would find
     // nothing and stale sends would never be recovered - a silent read defect
     // with no trigger to catch it.

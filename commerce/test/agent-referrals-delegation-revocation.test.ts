@@ -139,13 +139,6 @@ describe("delegation revocation: one transaction, forward-only, preserves the re
     expect(() => revokeDelegationAsAdmin(db, admin, p1.delegationId, "still allowed under suspension")).not.toThrow();
   });
 
-  it("pre-baseline DORMANT is operationally ACTIVE", () => {
-    const db = fresh();
-    const p1 = readyPartner(db);
-    db.prepare("UPDATE agent_referrals_feature_state SET state = 'DORMANT', owner_id = NULL WHERE singleton = 1").run();
-    expect(() => revokeDelegationAsAdmin(db, admin, p1.delegationId, "x")).not.toThrow();
-  });
-
   describe("fault injection", () => {
     it("a fault at the revocation-cascade suspension rolls back the revocation row too - no partial state", () => {
       const db = fresh();
