@@ -59,8 +59,14 @@ export interface ReleaseAuthorityStore {
   /** Terminal transition and gate release, together or not at all. */
   settle(id: string, from: readonly DeploySessionState[], patch: DeploySessionPatch, options: { readonly openGate: boolean }): DeploySession;
   renewLease(id: string, ownerId: string, leaseExpiresAt: string): DeploySession;
-  deploymentGateClosed(): boolean;
+  /** Shaped like SalesGateState's own view, so a capability can be bound to the owning session. */
+  deploymentGate(): DeploymentGateView;
 }
+
+export type DeploymentGateView = {
+  readonly closed: boolean;
+  readonly deploymentSessionId: string | null;
+};
 
 const TERMINAL = new Set<DeploySessionState>(["SAFE_ABORTED", "SUCCEEDED", "ROLLED_BACK"]);
 const surfaces: readonly DeploySurface[] = ["frontend", "admin", "commerce", "worker"];
@@ -77,15 +83,30 @@ const assertTopology = (topology: PreDeployTopology): void => {
 
 export class InMemoryReleaseAuthorityStore implements ReleaseAuthorityStore {
   #sessions = new Map<string, DeploySession>();
-  #gateClosed = false;
+  /**
+   * Production has one topology, so it has one deployment session at a time -
+   * rolling or maintenance, it makes no difference. A workflow `concurrency`
+   * group is an operational guard that a takeover, a recovery or a hand-run
+   * script can step around; this is the authority, and it must stay right when
+   * they do.
+   */
+  #activeSessionId: string | null = null;
+  /**
+   * A closed gate belongs to the session that closed it, and only that session
+   * can open it. Tracking identity rather than a boolean is what stops one
+   * session from reopening sales that another is still holding shut.
+   */
+  #gateOwnerSessionId: string | null = null;
 
   acquire(session: DeploySession, options: { readonly closeGate: boolean }): DeploySession {
     if (this.#sessions.has(session.id)) throw new Error("DEPLOY_SESSION_ALREADY_EXISTS");
+    if (this.#activeSessionId) throw new Error("DEPLOY_SESSION_ALREADY_ACTIVE");
     if (session.adoptedCutoverId && this.findByAdoptedCutover(session.adoptedCutoverId)) {
       throw new Error("CUTOVER_ALREADY_ADOPTED");
     }
     this.#sessions.set(session.id, session);
-    if (options.closeGate) this.#gateClosed = true;
+    this.#activeSessionId = session.id;
+    if (options.closeGate) this.#gateOwnerSessionId = session.id;
     return session;
   }
 
@@ -97,12 +118,17 @@ export class InMemoryReleaseAuthorityStore implements ReleaseAuthorityStore {
   }
 
   settle(id: string, from: readonly DeploySessionState[], patch: DeploySessionPatch, options: { readonly openGate: boolean }): DeploySession {
+    if (this.#activeSessionId !== id) throw new Error("DEPLOY_SESSION_NOT_ACTIVE");
+    if (options.openGate && this.#gateOwnerSessionId !== id) throw new Error("DEPLOYMENT_GATE_NOT_OWNED");
     const settled = this.transition(id, from, patch);
-    if (options.openGate) this.#gateClosed = false;
+    if (options.openGate) this.#gateOwnerSessionId = null;
+    this.#activeSessionId = null;
     return settled;
   }
 
-  deploymentGateClosed(): boolean { return this.#gateClosed; }
+  deploymentGate(): DeploymentGateView {
+    return { closed: this.#gateOwnerSessionId !== null, deploymentSessionId: this.#gateOwnerSessionId };
+  }
 
   recordTopology(id: string, kind: "PRE_DEPLOY" | "OBSERVED", topology: PreDeployTopology): DeploySession {
     const session = this.required(id);

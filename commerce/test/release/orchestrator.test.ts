@@ -83,7 +83,7 @@ describe("maintenance cutover ordering", () => {
     expect(outcome.session).toMatchObject({ state: "SUCCEEDED", rollbackAuthority: "NEW_LINEAGE_ONLY" });
     // Settling the session and reopening the gate is one operation, so a
     // terminal session can never coexist with sales still shut.
-    expect(store.deploymentGateClosed()).toBe(false);
+    expect(store.deploymentGate().closed).toBe(false);
   });
 
   it("safe-aborts and reopens sales when the build fails before any surface moves", async () => {
@@ -92,7 +92,7 @@ describe("maintenance cutover ordering", () => {
 
     expect(outcome).toMatchObject({ kind: "SAFE_ABORTED", code: "IMAGE_BUILD_FAILED" });
     expect(outcome.session).toMatchObject({ state: "SAFE_ABORTED", rollbackAuthority: "OLD_LINEAGE_ALLOWED" });
-    expect(store.deploymentGateClosed()).toBe(false);
+    expect(store.deploymentGate().closed).toBe(false);
     expect(log).not.toContain("capability-issued");
   });
 
@@ -103,7 +103,7 @@ describe("maintenance cutover ordering", () => {
 
     expect(outcome).toMatchObject({ kind: "RECOVERY_REQUIRED", code: "TARGET_TOPOLOGY_NOT_CONVERGED" });
     expect(outcome.session).toMatchObject({ state: "RECOVERY_REQUIRED", rollbackAuthority: "OLD_LINEAGE_ALLOWED", mutationObserved: true });
-    expect(store.deploymentGateClosed()).toBe(true);
+    expect(store.deploymentGate().closed).toBe(true);
     expect(log).not.toContain("capability-issued");
   });
 
@@ -119,7 +119,7 @@ describe("maintenance cutover ordering", () => {
     // readiness check exists for, and it must stop the release short of money.
     expect(outcome).toMatchObject({ kind: "RECOVERY_REQUIRED", code: "READINESS_PENDING:WORKER_RUNTIME_EVIDENCE_MISSING" });
     expect(log).not.toContain("capability-issued");
-    expect(store.deploymentGateClosed()).toBe(true);
+    expect(store.deploymentGate().closed).toBe(true);
   });
 
   it("leaves sales closed for recovery when certification fails past the boundary", async () => {
@@ -130,7 +130,7 @@ describe("maintenance cutover ordering", () => {
     // Past the boundary the archived database can no longer account for what
     // may have happened, so the only exit is forward and sales stay shut.
     expect(outcome.session).toMatchObject({ state: "RECOVERY_REQUIRED", rollbackAuthority: "NEW_LINEAGE_ONLY" });
-    expect(store.deploymentGateClosed()).toBe(true);
+    expect(store.deploymentGate().closed).toBe(true);
   });
   it("re-observes the topology after certification and refuses a drifted surface", async () => {
     // A payment and a refund take real minutes. A surface that drifts during
@@ -142,7 +142,7 @@ describe("maintenance cutover ordering", () => {
     expect(outcome).toMatchObject({ kind: "RECOVERY_REQUIRED", code: "TARGET_TOPOLOGY_NOT_CONVERGED" });
     expect(outcome.session).toMatchObject({ state: "RECOVERY_REQUIRED", rollbackAuthority: "NEW_LINEAGE_ONLY" });
     expect(log).toContain("certify");
-    expect(store.deploymentGateClosed()).toBe(true);
+    expect(store.deploymentGate().closed).toBe(true);
   });
 });
 
@@ -164,7 +164,7 @@ describe("rolling release ordering", () => {
 
     expect(outcome).toMatchObject({ kind: "SAFE_ABORTED", code: "IMAGE_BUILD_FAILED" });
     // The rolling path never closed the gate, so it must not have opened one.
-    expect(store.deploymentGateClosed()).toBe(false);
+    expect(store.deploymentGate().closed).toBe(false);
   });
 
   it("refuses a cutover request on the rolling path and the reverse", async () => {

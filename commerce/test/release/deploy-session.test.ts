@@ -113,4 +113,41 @@ describe("deploy sessions", () => {
     clock = new Date("2026-09-19T00:00:02.000Z");
     expect(sessions.takeOverExpiredLease(session.id, "second")).toMatchObject({ state: "DEPLOYING", ownerId: "second" });
   });
+
+  it("admits one deployment session at a time, whatever its mode", () => {
+    // Production has one topology. A workflow concurrency group is an
+    // operational guard a takeover or a hand-run script can step around; this
+    // is the authority, and it has to stay right when they do.
+    const store = new InMemoryReleaseAuthorityStore();
+    const sessions = new DeploySessions(store, () => new Date("2026-09-20T00:00:00.000Z"));
+    sessions.acquireFenced({ id: "first", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
+
+    expect(() => sessions.acquireFenced({ id: "second", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old)))
+      .toThrow("DEPLOY_SESSION_ALREADY_ACTIVE");
+    expect(() => sessions.acquireRolling({ id: "third", ownerId: "owner", mode: "ROLLING_SAFE", targetSha: target }, topology(old)))
+      .toThrow("DEPLOY_SESSION_ALREADY_ACTIVE");
+  });
+
+  it("refuses a maintenance session while a rolling one is still in flight", () => {
+    const store = new InMemoryReleaseAuthorityStore();
+    const sessions = new DeploySessions(store, () => new Date("2026-09-20T00:00:00.000Z"));
+    sessions.acquireRolling({ id: "rolling-first", ownerId: "owner", mode: "ROLLING_SAFE", targetSha: target }, topology(old));
+
+    expect(store.deploymentGate()).toEqual({ closed: false, deploymentSessionId: null });
+    expect(() => sessions.acquireFenced({ id: "cutover", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old)))
+      .toThrow("DEPLOY_SESSION_ALREADY_ACTIVE");
+  });
+
+  it("lets only the session that closed the gate reopen it", () => {
+    const store = new InMemoryReleaseAuthorityStore();
+    const sessions = new DeploySessions(store, () => new Date("2026-09-20T00:00:00.000Z"));
+    const owner = sessions.acquireFenced({ id: "owner-session", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
+    expect(store.deploymentGate()).toEqual({ closed: true, deploymentSessionId: owner.id });
+
+    // A settle aimed at a session that is not the active one cannot release
+    // the gate on its behalf, whatever state it claims to be in.
+    expect(() => store.settle("someone-else", ["DEPLOYING"], { state: "SUCCEEDED" }, { openGate: true }))
+      .toThrow("DEPLOY_SESSION_NOT_ACTIVE");
+    expect(store.deploymentGate().closed).toBe(true);
+  });
 });
