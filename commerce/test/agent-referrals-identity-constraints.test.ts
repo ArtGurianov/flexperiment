@@ -3,6 +3,7 @@ import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import { admin, fresh, readyPartner } from "./support/agent-referrals-settlement-fixtures";
 import { mintRetentionPolicyRevision } from "../src/agent-referrals-identity-retention";
+import { provisionPartnerOwner, submitPartnerLegalProfile, verifyPartnerLegalProfile } from "../src/agent-referrals-partner-identity";
 
 /**
  * Constraints of the live schema around who a partner legally is: the events
@@ -84,6 +85,44 @@ describe("the legal basis a partner is paid under is frozen", () => {
       .toThrow(/AGENT_REFERRALS_TAX_TREATMENT_RELATIONAL_INCONSISTENT/);
   });
 
+  it("refuses a patent regime for a partner who is not an entrepreneur", () => {
+    // The third condition of the guard, and the one an application error hides:
+    // the domain refuses PSN for a non-entrepreneur before the database is
+    // asked. This reaches the database directly, which is where the rule has to
+    // hold when the domain is not the writer.
+    const { db } = setup();
+    const entrepreneur = readyPartner(db, "OTHER");
+    const template = rowOf(db, "SELECT * FROM agent_referrals_tax_treatment_revisions WHERE partner_identity_id = ? LIMIT 1", entrepreneur.partnerIdentityId);
+
+    // A real company: not NPD, so the mode condition is satisfied, and not an
+    // entrepreneur, so only the patent condition can refuse it.
+    const agentId = randomUUID();
+    db.prepare(`INSERT INTO agents(id, slug, display_name, email, default_reward_type, default_reward_value)
+      VALUES (?, ?, 'Romashka', ?, 'PERCENT', 1000)`).run(agentId, `company-${agentId.slice(0, 8)}`, `${agentId.slice(0, 8)}@example.test`);
+    const { partner_identity_id: companyIdentityId } = provisionPartnerOwner(db, admin, agentId, "company@example.test", "test");
+    submitPartnerLegalProfile(db, { realm: "PARTNER", partner_identity_id: companyIdentityId, partner_session_id: "n/a" }, "LEGAL_ENTITY", "OTHER",
+      { opf: "OOO", full_name: "Romashka LLC", inn: "1234567890", kpp: "123456789", registration_number: "1234567890123", legal_address: "Moscow" }, 0);
+    verifyPartnerLegalProfile(db, admin, companyIdentityId, "verified");
+    const companyProfile = query<{ id: string; legal_form: string }>(db,
+      "SELECT id, legal_form FROM agent_referrals_legal_profile_revisions WHERE agent_id = ? ORDER BY rowid DESC LIMIT 1", agentId);
+    expect(companyProfile.legal_form).toBe("LEGAL_ENTITY");
+
+    // A structurally valid patent tuple, so the CHECK is satisfied and only
+    // the relational guard is left to have an opinion.
+    const patent = { tax_system: "PSN", vat_treatment: "NO_VAT", no_vat_basis: "PSN" };
+    expect(insertVariant(db, "agent_referrals_tax_treatment_revisions", template, {
+      ...patent, partner_identity_id: companyIdentityId, legal_profile_revision_id: companyProfile.id,
+    })).toThrow(/AGENT_REFERRALS_TAX_TREATMENT_RELATIONAL_INCONSISTENT/);
+
+    // The positive control: the same tuple is accepted for an entrepreneur, so
+    // the case is about the legal form and not about the patent regime. It is
+    // asserted by an admin rather than derived, because only one derived
+    // treatment may exist per legal profile.
+    expect(insertVariant(db, "agent_referrals_tax_treatment_revisions", template, {
+      ...patent, assertion_source: "ADMIN_ASSERTED", sequence: Number(template.sequence) + 1,
+    })).not.toThrow();
+  });
+
   it("refuses a tax system the legal profile's mode does not permit", () => {
     // The profile says NPD; a treatment claiming anything else is a different
     // tax regime asserted over the same person.
@@ -131,13 +170,17 @@ describe("the policies that govern retention and channels are revisions, not set
       .toThrow(/PARTNER_IDENTITY_RETENTION_POLICY_IMMUTABLE/);
   });
 
-  it("refuses to edit an ad channel policy revision", () => {
-    // What a partner may advertise on, at the version they agreed to.
+  it("refuses to edit or erase an ad channel policy revision", () => {
+    // What a partner may advertise on, at the version they agreed to. The
+    // guard covers deletion as well, because a channel classification that can
+    // be erased is one a later report can silently contradict.
     const { db } = setup();
     const policy = rowOf(db, "SELECT * FROM ad_channel_policy LIMIT 1");
     expect(policy).toBeTruthy();
 
     expect(() => db.prepare("UPDATE ad_channel_policy SET reason = 'rewritten' WHERE id = ?").run(policy.id))
+      .toThrow(/AD_CHANNEL_POLICY_REVISION_IMMUTABLE/);
+    expect(() => db.prepare("DELETE FROM ad_channel_policy WHERE id = ?").run(policy.id))
       .toThrow(/AD_CHANNEL_POLICY_REVISION_IMMUTABLE/);
   });
 });

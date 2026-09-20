@@ -123,7 +123,7 @@ does not correct history, it replaces it with a version nobody agreed to.
 | An acceptance answers an issuance made out to the same partner | `FRAMEWORK_ACCEPTANCE_ISSUANCE_PARTNER_MISMATCH` | `agent-referrals-identity-constraints.test.ts` | ACTIVE |
 | An acceptance cites that partner's own legal profile | `FRAMEWORK_ACCEPTANCE_LEGAL_PROFILE_PARTNER_MISMATCH` | `agent-referrals-identity-constraints.test.ts` | ACTIVE |
 | A retention policy revision is never edited or erased | `PARTNER_IDENTITY_RETENTION_POLICY_IMMUTABLE` | `agent-referrals-identity-constraints.test.ts` | ACTIVE |
-| An ad channel policy revision is never edited | `AD_CHANNEL_POLICY_REVISION_IMMUTABLE` | `agent-referrals-identity-constraints.test.ts` | ACTIVE |
+| An ad channel policy revision is never edited or erased | `AD_CHANNEL_POLICY_REVISION_IMMUTABLE` | `agent-referrals-identity-constraints.test.ts` | ACTIVE |
 
 ## Payments, receipts and recovery exposure
 
@@ -269,6 +269,7 @@ guards no surviving test names are the two that retire with their column:
 | | Count |
 |---|---:|
 | Rehoused and proved at predicate level | 45 |
+| Anonymous constraints rescued by the residual sweep | 3 |
 | Retired with the pre-launch discriminator | 2 |
 | Subsumed: no independently reachable branch | 1 |
 | Still held only by a migration test | 0 |
@@ -342,6 +343,41 @@ eleven columns is not carried across by a test that edits six of them. Each
 rehoused guard is confirmed by disabling its own `RAISE`, and then by deleting
 individual predicates from its condition: a case that survives the second kind
 of mutation was passing for the wrong reason.
+
+## The residual sweep
+
+Counting named guards was never the whole job: a table's own `CHECK`, `UNIQUE`
+and foreign-key rules raise nothing named, so the census could not see them.
+Slice 1 had already shown this costs real protections - the registry's
+uniqueness per engagement and the effective chain's sequence rules carry no
+name and would have gone unnoticed.
+
+So the same question was asked of the layer the census is blind to. The
+migration tests contain 98 assertions on anonymous constraints - 56 `CHECK`, 32
+`UNIQUE`, 10 foreign key - and write to 72 tables between them.
+
+**One real gap, now closed.** Two `UNIQUE` constraints on
+`occurrence_notification_intents` were named nowhere else: one active intent per
+request, and one intent per outbox message. Together they are what stops a
+person being emailed twice about one occurrence, and they are proved in
+`city-interest-notification-constraints.test.ts` along with the supersession
+that makes room for a successor - because uniqueness with no way forward would
+be a dead end rather than a rule.
+
+**Six tables are written only by migration tests.** Of those, `reward_adjustments`
+and `settlement_prepared_reviews` are referenced nowhere in `commerce/src` at
+all, and `outbox_authority_events` belongs to the outbox authority control that
+the baseline removes; their constraints go with them. The remaining three -
+`reward_settlement_command_idempotency`, `settlement_act_disputes` and
+`settlement_step_up_grants` - are written by modules that surviving suites
+exercise heavily, through the domain rather than by naming the table.
+
+That last point is the honest limit of this sweep: exercising the module that
+writes a table is not the same as proving the table's constraints, and this
+method cannot tell the difference. What it can say is that no live table's
+rules are held *exclusively* by a migration test. Anything finer belongs to P9,
+where each file is deleted against the baseline suite rather than against this
+one.
 
 ## Blocks the baseline
 
