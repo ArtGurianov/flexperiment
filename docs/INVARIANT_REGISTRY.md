@@ -88,6 +88,24 @@ straight against the database as well as against a defect in the domain.
 | A foreign database lineage fails closed | `release/schema-identity.ts` | `release/schema-identity.test.ts` |
 | A cutover envelope is adopted exactly once | `release/cutover-handoff.ts` | `release/cutover-handoff.test.ts` |
 
+## Publication, delegation and the order reference
+
+Rehoused out of the engagement publication, ORD reporting and foundation
+migration tests. These are the last of the 48.
+
+| Invariant | Enforced by | Guarded by | Status |
+|---|---|---|---|
+| An engagement revision is never edited or erased | `ENGAGEMENT_REVISION_IMMUTABLE` | `agent-referrals-publication-constraints.test.ts` | ACTIVE |
+| A promo authorization's placement is frozen | `ENGAGEMENT_PROMO_AUTHORIZATION_PLACEMENT_IMMUTABLE` | `agent-referrals-publication-constraints.test.ts` | ACTIVE |
+| A promo authorization is never deleted | `ENGAGEMENT_PROMO_AUTHORIZATION_IMMUTABLE` | `agent-referrals-publication-constraints.test.ts` | ACTIVE |
+| Revocation is one-way | `ENGAGEMENT_PROMO_AUTHORIZATION_ALREADY_REVOKED` | `agent-referrals-publication-constraints.test.ts` | ACTIVE |
+| A reported distribution revision is never edited or erased | `ENGAGEMENT_DISTRIBUTION_REVISION_IMMUTABLE` | `agent-referrals-publication-constraints.test.ts` | ACTIVE |
+| A delegation cites its own partner's acceptance | `ORD_REPORTING_DELEGATION_ACCEPTANCE_PARTNER_MISMATCH` | `agent-referrals-publication-constraints.test.ts` | ACTIVE |
+| A delegation uses the template that acceptance was issued on | `ORD_REPORTING_DELEGATION_TEMPLATE_ISSUANCE_MISMATCH` | `agent-referrals-publication-constraints.test.ts` | ACTIVE |
+| The reporting period policy is never edited or erased | `ORD_REPORTING_PERIOD_POLICY_IMMUTABLE` | `agent-referrals-publication-constraints.test.ts` | ACTIVE |
+| Every order carries a public reference | `PUBLIC_ORDER_NUMBER_REQUIRED` | `agent-referrals-publication-constraints.test.ts` | ACTIVE |
+| An order's public reference never changes | `PUBLIC_ORDER_NUMBER_IMMUTABLE` | `agent-referrals-publication-constraints.test.ts` | ACTIVE |
+
 ## Identity, legal basis and framework
 
 Rehoused out of the partner identity, legal profile, tax treatment and
@@ -245,14 +263,15 @@ So 46 of the 48 need a surviving proof before the file asserting them can go,
 not 42. Classifying by proximity to a doomed column would have retired four real
 protections, which is why each is read.
 
-**Progress**, counted rather than estimated - 10 of the 48 remain:
+**The census is closed.** Every one of the 48 is accounted for, and the only
+guards no surviving test names are the two that retire with their column:
 
 | | Count |
 |---|---:|
-| Rehoused and proved at predicate level | 35 |
+| Rehoused and proved at predicate level | 45 |
 | Retired with the pre-launch discriminator | 2 |
 | Subsumed: no independently reachable branch | 1 |
-| Still held only by a migration test | 10 |
+| Still held only by a migration test | 0 |
 
 An earlier revision of this table said 25 / 2 / 1 / 21, which adds to 49. The
 error was in the measurement, not the arithmetic: the two retired guards have no
@@ -260,15 +279,22 @@ surviving test by design, so a search for "guards no surviving test names"
 counted them as remaining, while the subsumed one is named in a comment and
 counted as covered. The counts above separate those.
 
-Of the 35 rehoused, six carry `ACTIVE_BASELINE_REWRITE`: they are proved in the
+Of the 45 rehoused, six carry `ACTIVE_BASELINE_REWRITE`: they are proved in the
 conditional form they have today, and the baseline will restate them without the
 discriminator their condition names.
 
-Four families are done: attribution and reward snapshots; settlements and acts;
-payments, receipts and exposure; and identity, legal basis and framework. What
-remains is engagement publication and promo authorization, ORD reporting, the
-public order number, and the two `REFERRAL_REWARD_AUTHORITY_KIND_*` guards
-already classified as retiring with their column. Before that: six rehoused and two retired, which empties
+Five families: attribution and reward snapshots; settlements and acts; payments,
+receipts and exposure; identity, legal basis and framework; and publication,
+delegation and the order reference.
+
+**What this does and does not license.** Point 1 of the removal rule is now
+satisfied for every migration test. Points 2 and 3 were satisfied family by
+family as the constraints travelled with the guards. Point 4 still decides the
+timing: while the ledger exists, each file's own mechanics - exactly-once
+application, replay as a no-op, ordinary versus FK-off, rows that predate a
+migration - still have a subject. **The files go in P9, with the ledger they
+describe.** What P8 owed was that nothing else goes with them, and that debt is
+now paid. Before that: six rehoused and two retired, which empties
 `agent-referrals-attribution-reward-migration.test.ts` of guards it alone held;
 forty remain. Its own constraints travelled with them - the registry's uniqueness
 per engagement, its terminal-status domain, the rule that a cancelled occurrence
