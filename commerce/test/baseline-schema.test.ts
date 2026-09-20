@@ -28,7 +28,7 @@ const refuses = (statement: string, code: string) => {
   expect(() => db.exec(statement)).toThrow(new RegExp(code));
 };
 
-const session = (id: string, over: Record<string, string | number> = {}) => {
+const session = (id: string, over: Record<string, string | number | null> = {}) => {
   const row = {
     id, owner_id: "owner", mode: "MAINTENANCE_CUTOVER", target_sha: "a".repeat(40),
     candidate_id: "cand", state: "DEPLOYING", rollback_authority: "OLD_LINEAGE_ALLOWED",
@@ -37,7 +37,11 @@ const session = (id: string, over: Record<string, string | number> = {}) => {
     ...over,
   };
   const keys = Object.keys(row);
-  return `INSERT INTO deploy_sessions(${keys.join(",")}) VALUES (${keys.map((k) => `'${String((row as Record<string, unknown>)[k])}'`).join(",")})`;
+  const literal = (key: string) => {
+    const value = (row as Record<string, unknown>)[key];
+    return value === null ? "NULL" : `'${String(value)}'`;
+  };
+  return `INSERT INTO deploy_sessions(${keys.join(",")}) VALUES (${keys.map(literal).join(",")})`;
 };
 
 describe("genesis", () => {
@@ -90,6 +94,20 @@ describe("deploy_sessions", () => {
   it("refuses a rolling release that fences, and a safe abort after a mutation", () => {
     refuses(session("r", { mode: "ROLLING_SAFE", deployment_gate_closed: 1 }), "CHECK constraint failed");
     refuses(session("s", { state: "SAFE_ABORTED", mutation_observed: 1 }), "CHECK constraint failed");
+  });
+
+  it("refuses an ordinary session that cannot name what it deploys", () => {
+    // A candidate may be absent only where there is genuinely none to name:
+    // an adopted cutover crosses into a database whose candidate registry is
+    // empty. Anywhere else, a nameless session is not a permitted state.
+    refuses(session("nameless", { candidate_id: null }), "CHECK constraint failed");
+    db.exec(session("adopted", {
+      candidate_id: null, adopted_cutover_id: "c1", adopted_envelope_sha256: "e".repeat(64),
+      predecessor_database_ref: "prelaunch.sqlite", predecessor_database_sha256: "f".repeat(64),
+    }));
+    // ...and the target stays identifiable either way.
+    expect(db.prepare("SELECT target_sha FROM deploy_sessions WHERE id = 'adopted'").get())
+      .toEqual({ target_sha: "a".repeat(40) });
   });
 
   it("refuses a half-adopted handoff in either direction", () => {

@@ -244,7 +244,14 @@ records *which* catalogue ran. Nothing else could hold the marker -
 `schema_identity` is immutable by design, and the ledger is not a place to put
 facts about content.
 
-After both: 111 tables, 87 indexes, 168 triggers.
+**`deploy_sessions` gained a binding CHECK** with the nullable column, in the
+same spirit: `candidate_id IS NOT NULL OR adopted_cutover_id IS NOT NULL`. A
+candidate may be absent only where there is genuinely none to name; an ordinary
+nameless session is not a permitted state. `target_sha` stays `NOT NULL`
+regardless, so a session's target is identifiable whether or not a candidate row
+exists to describe it.
+
+After all three: 111 tables, 87 indexes, 168 triggers.
 
 ## What is not in the delta, and why
 

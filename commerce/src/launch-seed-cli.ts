@@ -6,6 +6,10 @@ const sqlite = openDatabase();
 // build must not write to is refused here rather than by the seed.
 migrate(sqlite);
 const catalogue = readLaunchCatalogue();
-const { citiesInserted } = applyLaunchSeed(sqlite, catalogue);
+const outcome = applyLaunchSeed(sqlite, catalogue);
 sqlite.close();
-console.log(`Launch seed applied: ${citiesInserted} cities.`);
+// Both outcomes are a success, and the exit code says so. A retry whose first
+// attempt committed and lost its response must not read as a failure.
+console.log(outcome.kind === "APPLIED"
+  ? `Launch seed applied: ${outcome.citiesInserted} cities (${outcome.catalogueSha256}).`
+  : `Launch seed already applied with this exact catalogue (${outcome.catalogueSha256}); nothing to do.`);

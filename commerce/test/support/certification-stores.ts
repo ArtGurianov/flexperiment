@@ -41,9 +41,9 @@ export const certificationCapabilityStores: ReadonlyArray<readonly [string, () =
           bound.add(`run:${runId}`);
         }
         if (!bound.has(`session:${deploymentSessionId}`)) {
-          db.prepare(`INSERT INTO deploy_sessions(id, owner_id, mode, target_sha, state, rollback_authority,
+          db.prepare(`INSERT INTO deploy_sessions(id, owner_id, mode, target_sha, candidate_id, state, rollback_authority,
               pre_deploy_topology, created_at, lease_expires_at, deployment_gate_closed)
-            VALUES (?, 'owner', 'MAINTENANCE_CUTOVER', ?, 'FENCED', 'OLD_LINEAGE_ALLOWED', '{}',
+            VALUES (?, 'owner', 'MAINTENANCE_CUTOVER', ?, 'candidate', 'FENCED', 'OLD_LINEAGE_ALLOWED', '{}',
               '2026-01-01T00:00:00.000Z', '2099-01-01T00:00:00.000Z', 1)`)
             .run(deploymentSessionId, "a".repeat(40));
           bound.add(`session:${deploymentSessionId}`);

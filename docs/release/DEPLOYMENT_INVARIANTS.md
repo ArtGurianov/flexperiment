@@ -97,6 +97,31 @@ commit that has not converged, a stale heartbeat or a sweep that has not
 happened are `PENDING`. Collapsing the first into the second makes a loop wait
 forever on something no amount of waiting can fix.
 
+## A fresh launch database is brought up in one order, and part of it is a person
+
+```text
+0001_launch_baseline          schema, plus its own zero state: schema_identity,
+                              the singletons, the advertising policies, the
+                              feature state at ACTIVE
+commerce:launch-seed          city reference data, and nothing else. Idempotent
+                              by digest: the same catalogue repeated is a
+                              success, a different one is refused
+bootstrap the admin account   a provisioning command, never carried in a dump
+create and publish the        AN OPERATOR STEP, through the admin surface
+  certification occurrence
+commerce:legal-release        preflight -> publish -> promote, so the
+                              publication ledger is real rather than seeded
+readiness                     every surface converged on the target
+the one-rouble certification  payment, webhook, email, refund, finality
+open public sales
+```
+
+**Occurrences are not seeded, and the catalogue format has no field for them.**
+They are content a person schedules, and the certification occurrence is one of
+them - so a checkout cannot be certified until that step has been done by hand.
+Naming it here is the point: a field that was only ever allowed to be empty
+would have implied the seed provides something it does not.
+
 ## Sales are closed by a hierarchy, and only one level is bypassable
 
 ```text

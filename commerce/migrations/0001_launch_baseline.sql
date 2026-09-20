@@ -3132,6 +3132,13 @@ CREATE TABLE deploy_sessions (
   CHECK (NOT (mode = 'ROLLING_SAFE' AND deployment_gate_closed = 1)),
   -- A safe abort claims production was never touched, so the two cannot coexist.
   CHECK (NOT (state = 'SAFE_ABORTED' AND mutation_observed = 1)),
+  -- A session names what it deploys. `candidate_id` may be absent only when
+  -- the session was adopted from a cutover envelope, which crosses into a
+  -- database whose candidate registry is empty and therefore has no candidate
+  -- to name. An ordinary nameless session is not a permitted state, and
+  -- `target_sha` is NOT NULL regardless - so the session's target stays
+  -- identifiable whether or not a candidate row exists to describe it.
+  CHECK (candidate_id IS NOT NULL OR adopted_cutover_id IS NOT NULL),
   -- Adoption is one fact with four parts. `cutover-handoff` writes them
   -- together and `bootstrap-rollback` reads them together, so a session
   -- carrying an archive digest but no cutover id - or a cutover id with no

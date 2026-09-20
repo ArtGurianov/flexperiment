@@ -11,7 +11,7 @@ describe.each(releaseAuthorityStores)("deploy sessions (%s)", (_name, makeStore)
   it("safe-aborts only when every surface remains exactly at its pre-deploy topology", () => {
     const store = makeStore();
     const sessions = new DeploySessions(store, () => new Date("2026-09-19T00:00:00.000Z"));
-    const session = sessions.acquireFenced({ id: "safe", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
+    const session = sessions.acquireFenced({ id: "safe", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target, candidateId: "candidate" }, topology(old));
     expect(session.state).toBe("FENCED");
     sessions.beginDeploying(session.id, "owner");
     expect(sessions.classifyFailure(session.id, "owner", topology(old))).toMatchObject({ state: "SAFE_ABORTED", rollbackAuthority: "OLD_LINEAGE_ALLOWED" });
@@ -22,7 +22,7 @@ describe.each(releaseAuthorityStores)("deploy sessions (%s)", (_name, makeStore)
     // happened yet, so the archived database is still a truthful destination.
     const store = makeStore();
     const sessions = new DeploySessions(store, () => new Date("2026-09-19T00:00:00.000Z"));
-    const session = sessions.acquireFenced({ id: "recovery", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
+    const session = sessions.acquireFenced({ id: "recovery", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target, candidateId: "candidate" }, topology(old));
     expect(session.state).toBe("FENCED");
     sessions.beginDeploying(session.id, "owner");
     const partial = { ...topology(old), frontend: changed };
@@ -37,7 +37,7 @@ describe.each(releaseAuthorityStores)("deploy sessions (%s)", (_name, makeStore)
     // deploy that never touched production.
     const store = makeStore();
     const sessions = new DeploySessions(store, () => new Date("2026-09-19T00:00:00.000Z"));
-    const session = sessions.acquireFenced({ id: "no-safe-abort", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
+    const session = sessions.acquireFenced({ id: "no-safe-abort", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target, candidateId: "candidate" }, topology(old));
     expect(session.state).toBe("FENCED");
     sessions.beginDeploying(session.id, "owner");
     sessions.observeTopology(session.id, "owner", { ...topology(old), commerce: changed });
@@ -48,7 +48,7 @@ describe.each(releaseAuthorityStores)("deploy sessions (%s)", (_name, makeStore)
   it("converging on the target is not an external effect and keeps the old lineage available", () => {
     const store = makeStore();
     const sessions = new DeploySessions(store, () => new Date("2026-09-19T00:00:00.000Z"));
-    const session = sessions.acquireFenced({ id: "converged", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
+    const session = sessions.acquireFenced({ id: "converged", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target, candidateId: "candidate" }, topology(old));
     expect(session.state).toBe("FENCED");
     sessions.beginDeploying(session.id, "owner");
     // Every surface is on the target, and the archived database is still a
@@ -63,7 +63,7 @@ describe.each(releaseAuthorityStores)("deploy sessions (%s)", (_name, makeStore)
     // on convergence alone would make the certification ordering unrecordable.
     const store = makeStore();
     const sessions = new DeploySessions(store, () => new Date("2026-09-19T00:00:00.000Z"));
-    const session = sessions.acquireFenced({ id: "unarmed", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
+    const session = sessions.acquireFenced({ id: "unarmed", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target, candidateId: "candidate" }, topology(old));
     expect(session.state).toBe("FENCED");
     sessions.beginDeploying(session.id, "owner");
     expect(() => sessions.completeTarget(session.id, "owner", topology(target)))
@@ -77,7 +77,7 @@ describe.each(releaseAuthorityStores)("deploy sessions (%s)", (_name, makeStore)
   it("lets a rolling release close on convergence alone - it crosses no external boundary", () => {
     const store = makeStore();
     const sessions = new DeploySessions(store, () => new Date("2026-09-19T00:00:00.000Z"));
-    const session = sessions.acquireRolling({ id: "rolling-complete", ownerId: "owner", mode: "ROLLING_SAFE", targetSha: target }, topology(old));
+    const session = sessions.acquireRolling({ id: "rolling-complete", ownerId: "owner", mode: "ROLLING_SAFE", targetSha: target, candidateId: "candidate" }, topology(old));
     expect(sessions.completeTarget(session.id, "owner", topology(target)))
       .toMatchObject({ state: "SUCCEEDED", rollbackAuthority: "OLD_LINEAGE_ALLOWED" });
   });
@@ -85,7 +85,7 @@ describe.each(releaseAuthorityStores)("deploy sessions (%s)", (_name, makeStore)
   it("spends rollback authority when external effects are armed, and never returns it", () => {
     const store = makeStore();
     const sessions = new DeploySessions(store, () => new Date("2026-09-19T00:00:00.000Z"));
-    const session = sessions.acquireFenced({ id: "external", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
+    const session = sessions.acquireFenced({ id: "external", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target, candidateId: "candidate" }, topology(old));
     expect(session.state).toBe("FENCED");
     sessions.beginDeploying(session.id, "owner");
     sessions.classifyFailure(session.id, "owner", { ...topology(old), worker: changed });
@@ -108,9 +108,9 @@ describe.each(releaseAuthorityStores)("deploy sessions (%s)", (_name, makeStore)
     let clock = new Date("2026-09-19T00:00:00.000Z");
     const store = makeStore();
     const sessions = new DeploySessions(store, () => clock, 1_000);
-    expect(() => sessions.acquireFenced({ id: "not-rolling", ownerId: "first", mode: "ROLLING_SAFE", targetSha: target }, topology(old)))
+    expect(() => sessions.acquireFenced({ id: "not-rolling", ownerId: "first", mode: "ROLLING_SAFE", targetSha: target, candidateId: "candidate" }, topology(old)))
       .toThrow("ROLLING_SAFE_DOES_NOT_FENCE_SALES");
-    const session = sessions.acquireRolling({ id: "rolling", ownerId: "first", mode: "ROLLING_SAFE", targetSha: target }, topology(old));
+    const session = sessions.acquireRolling({ id: "rolling", ownerId: "first", mode: "ROLLING_SAFE", targetSha: target, candidateId: "candidate" }, topology(old));
     clock = new Date("2026-09-19T00:00:02.000Z");
     expect(sessions.takeOverExpiredLease(session.id, "second")).toMatchObject({ state: "DEPLOYING", ownerId: "second" });
   });
@@ -121,28 +121,28 @@ describe.each(releaseAuthorityStores)("deploy sessions (%s)", (_name, makeStore)
     // is the authority, and it has to stay right when they do.
     const store = makeStore();
     const sessions = new DeploySessions(store, () => new Date("2026-09-20T00:00:00.000Z"));
-    sessions.acquireFenced({ id: "first", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
+    sessions.acquireFenced({ id: "first", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target, candidateId: "candidate" }, topology(old));
 
-    expect(() => sessions.acquireFenced({ id: "second", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old)))
+    expect(() => sessions.acquireFenced({ id: "second", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target, candidateId: "candidate" }, topology(old)))
       .toThrow("DEPLOY_SESSION_ALREADY_ACTIVE");
-    expect(() => sessions.acquireRolling({ id: "third", ownerId: "owner", mode: "ROLLING_SAFE", targetSha: target }, topology(old)))
+    expect(() => sessions.acquireRolling({ id: "third", ownerId: "owner", mode: "ROLLING_SAFE", targetSha: target, candidateId: "candidate" }, topology(old)))
       .toThrow("DEPLOY_SESSION_ALREADY_ACTIVE");
   });
 
   it("refuses a maintenance session while a rolling one is still in flight", () => {
     const store = makeStore();
     const sessions = new DeploySessions(store, () => new Date("2026-09-20T00:00:00.000Z"));
-    sessions.acquireRolling({ id: "rolling-first", ownerId: "owner", mode: "ROLLING_SAFE", targetSha: target }, topology(old));
+    sessions.acquireRolling({ id: "rolling-first", ownerId: "owner", mode: "ROLLING_SAFE", targetSha: target, candidateId: "candidate" }, topology(old));
 
     expect(store.deploymentGate()).toEqual({ closed: false, deploymentSessionId: null });
-    expect(() => sessions.acquireFenced({ id: "cutover", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old)))
+    expect(() => sessions.acquireFenced({ id: "cutover", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target, candidateId: "candidate" }, topology(old)))
       .toThrow("DEPLOY_SESSION_ALREADY_ACTIVE");
   });
 
   it("lets only the session that closed the gate reopen it", () => {
     const store = makeStore();
     const sessions = new DeploySessions(store, () => new Date("2026-09-20T00:00:00.000Z"));
-    const owner = sessions.acquireFenced({ id: "owner-session", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
+    const owner = sessions.acquireFenced({ id: "owner-session", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target, candidateId: "candidate" }, topology(old));
     expect(store.deploymentGate()).toEqual({ closed: true, deploymentSessionId: owner.id });
 
     // A settle aimed at any other session cannot release the gate on its
@@ -159,7 +159,7 @@ describe.each(releaseAuthorityStores)("deploy sessions (%s)", (_name, makeStore)
     // gate is never released at all - the exact state settle exists to prevent.
     const store = makeStore();
     const sessions = new DeploySessions(store, () => new Date("2026-09-20T00:00:00.000Z"));
-    const session = sessions.acquireFenced({ id: "terminal-bypass", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
+    const session = sessions.acquireFenced({ id: "terminal-bypass", ownerId: "owner", mode: "MAINTENANCE_CUTOVER", targetSha: target, candidateId: "candidate" }, topology(old));
     sessions.beginDeploying(session.id, "owner");
 
     expect(() => store.transitionNonTerminal(session.id, "owner", new Date("2026-09-20T00:00:00.000Z"), ["DEPLOYING"], { state: "SUCCEEDED" }))
@@ -190,7 +190,7 @@ describe.each(releaseAuthorityStores)("deploy sessions (%s)", (_name, makeStore)
     let clock = new Date("2026-09-20T00:00:00.000Z");
     const store = makeStore();
     const sessions = new DeploySessions(store, () => clock, 60_000);
-    const session = sessions.acquireFenced({ id: "contended", ownerId: "first", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
+    const session = sessions.acquireFenced({ id: "contended", ownerId: "first", mode: "MAINTENANCE_CUTOVER", targetSha: target, candidateId: "candidate" }, topology(old));
     clock = new Date(clock.getTime() + 120_000);
 
     expect(sessions.takeOverExpiredLease(session.id, "second").ownerId).toBe("second");
@@ -203,7 +203,7 @@ describe.each(releaseAuthorityStores)("deploy sessions (%s)", (_name, makeStore)
     let clock = new Date("2026-09-20T00:00:00.000Z");
     const store = makeStore();
     const sessions = new DeploySessions(store, () => clock, 60_000);
-    const session = sessions.acquireFenced({ id: "displaced", ownerId: "first", mode: "MAINTENANCE_CUTOVER", targetSha: target }, topology(old));
+    const session = sessions.acquireFenced({ id: "displaced", ownerId: "first", mode: "MAINTENANCE_CUTOVER", targetSha: target, candidateId: "candidate" }, topology(old));
     sessions.beginDeploying(session.id, "first");
     clock = new Date(clock.getTime() + 120_000);
     sessions.takeOverExpiredLease(session.id, "second");
