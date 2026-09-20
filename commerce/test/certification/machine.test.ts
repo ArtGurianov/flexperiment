@@ -21,6 +21,7 @@ const now = new Date("2026-09-20T00:00:00.000Z");
 type Options = {
   emailStatus?: string;
   cancellationSticks?: boolean;
+  refundAppears?: boolean;
   startAt?: Partial<CertificationRun>;
   occurrenceRevision?: number;
 };
@@ -45,7 +46,9 @@ const production = (options: Options = {}) => {
     booking: { id: "booking", status: cancelled ? "CANCELLED" : "CONFIRMED" },
     ticket: { id: "ticket", status: cancelled ? "VOID" : "VALID" },
     refund_obligation: cancelled ? { id: "obligation", initial_source: "CUSTOMER_CANCELLATION_PARTIAL", target_refunded_amount_kopecks: 100, status: "FULFILLED" } : null,
-    refunds: cancelled ? [{ id: "refund", payment_id: "pay", source: "REFUND_OBLIGATION", refund_obligation_id: "obligation", amount_kopecks: 100, status: "SUCCEEDED", provider_reference: "tochka-1" }] : [],
+    refunds: cancelled && options.refundAppears !== false
+      ? [{ id: "refund", payment_id: "pay", source: "REFUND_OBLIGATION", refund_obligation_id: "obligation", amount_kopecks: 100, status: "SUCCEEDED", provider_reference: "tochka-1" }]
+      : [],
     email_outbox: [
       { id: "outbox-ticket", type: "TICKET", payload_ref: "ticket", status: options.emailStatus ?? "DELIVERED", job_id: "job-1" },
       { id: "outbox-cancel", type: "BOOKING_CANCELLED", payload_ref: "booking", status: "DELIVERED", job_id: "job-2" },
@@ -159,17 +162,23 @@ describe("certifying production", () => {
     expect(capabilities.get(capability.id)?.consumedAt).toBe(now.toISOString());
   });
 
-  it("does not touch production after losing the race to arm a command", async () => {
+  it("stands down instead of deciding the run's fate after losing the race", async () => {
     // Two runners read the same revision. The loser finds out at the
-    // compare-and-set, which happens before anything leaves the process.
+    // compare-and-set - before anything left the process, because arming comes
+    // first - so it has sent nothing and knows nothing. If it went on to
+    // record a failure and shut the catalogue, a loser could stop the winner.
     const { ports, input, calls, runs } = production();
     const stale = runs.load("run")!;
-    runs.update("run", stale.revision, { phase: "OCCURRENCE_CREATED", occurrenceId: "occ" });
+    const winner = runs.update("run", stale.revision, { phase: "OCCURRENCE_CREATED", occurrenceId: "occ" });
 
     const outcome = await certifyProduction({ ...ports, runs: { create: runs.create.bind(runs), update: runs.update.bind(runs), load: () => stale } }, input);
 
-    expect(outcome).toMatchObject({ kind: "INCOMPLETE", code: expect.stringContaining("CERTIFICATION_RUN_REVISION_CONFLICT") });
-    expect(calls.filter((call) => call.kind === "create")).toEqual([]);
+    expect(outcome).toEqual({ kind: "INCOMPLETE", code: "CERTIFICATION_LOST_AUTHORITY" });
+    expect(calls).toEqual([]);
+    const after = runs.load("run")!;
+    expect(after.revision).toBe(winner.revision);
+    expect(after.failure ?? null).toBeNull();
+    expect(after.direction).toBe("NORMAL");
   });
 
   it("replays an interrupted command with the revision and key it was armed with", async () => {
@@ -271,12 +280,15 @@ describe("certifying production", () => {
     // The request got through: order created, capability spent, response lost.
     await ports.publicApi.createCheckout("{}", command.idempotencyKey, { capabilityId: capability.id, runId: "run", nonce: capability.nonce });
     const spentAt = capabilities.get(capability.id)?.consumedAt;
+    run = runs.update("run", run.revision, { failure: { outcome: "INCOMPLETE", code: "CERTIFICATION_CHECKOUT_UNRESOLVED", recordedAt: now.toISOString() } });
     run = await ensureCatalogueClean(runs, ports.admin, runs.load("run")!);
     expect(run.pendingCommand).toEqual(command);
 
     const outcome = await certifyProduction(ports, input);
 
-    expect(outcome).toEqual({ kind: "FAILED", code: "CERTIFICATION_CLEANUP_REQUIRED" });
+    // The reason it failed is the reason reported, not whatever the recovery
+    // happened to touch last.
+    expect(outcome).toEqual({ kind: "INCOMPLETE", code: "CERTIFICATION_CHECKOUT_UNRESOLVED" });
     expect(runs.load("run")?.statusId).toBe("status");
     // Spent once, by the request that created the order.
     expect(capabilities.get(capability.id)?.consumedAt).toBe(spentAt);
@@ -290,7 +302,8 @@ describe("certifying production", () => {
       startAt: { phase: "CHECKOUT_SUBMITTING", direction: "FINANCIAL_EFFECT_POSSIBLE", occurrenceId: "occ", quoteId: "quote" },
     });
     const command = { kind: "CREATE_CHECKOUT" as const, idempotencyKey: "checkout-key", quoteId: "quote", requestSha256: "d".repeat(64) };
-    runs.update("run", runs.load("run")!.revision, { pendingCommand: command });
+    const armed = runs.update("run", runs.load("run")!.revision, { pendingCommand: command });
+    runs.update("run", armed.revision, { failure: { outcome: "INCOMPLETE", code: "CERTIFICATION_CHECKOUT_UNRESOLVED", recordedAt: now.toISOString() } });
     await ensureCatalogueClean(runs, ports.admin, runs.load("run")!);
 
     const outcome = await certifyProduction(ports, input);
@@ -328,6 +341,90 @@ describe("certifying production", () => {
     expect(outcome).toEqual({ kind: "INCOMPLETE", code: "CERTIFICATION_PAYMENT_UNRESOLVED" });
   });
 
+  it("passes a run that crashed between shutting the catalogue and recording it", async () => {
+    // The happy path shuts the fixture as its last step. A crash in that gap
+    // leaves a clean catalogue and an unfinished phase, and reading the clean
+    // catalogue as failure turned a certification that had worked into a
+    // permanent failure.
+    const { ports, input, runs } = production({
+      startAt: {
+        phase: "REFUND_EMAIL_DELIVERED", direction: "CATALOGUE_CLEAN", occurrenceId: "occ",
+        orderId: "order", statusId: "status", paymentId: "pay", bookingId: "booking", ticketId: "ticket",
+        refundObligationId: "obligation", refundId: "refund",
+        humanTicketVerifiedAt: "2026-09-20T01:00:00.000Z",
+      },
+    });
+    // Cancelled and refunded already, exactly as the crashed run left it.
+    await ports.admin.cancelBookingCustomerInitiated("booking", "before-the-crash");
+
+    const outcome = await certifyProduction(ports, input);
+
+    expect(outcome.kind).toBe("PASS");
+    expect(runs.load("run")?.failure ?? null).toBeNull();
+  });
+
+  it("refunds a captured rouble even when the run failed for another reason", async () => {
+    // An email that never arrived must not be the reason a customer keeps a
+    // charge. The reported outcome is still the original failure.
+    const { ports, input, runs, calls } = production({
+      startAt: {
+        phase: "PAYMENT_PROVEN", direction: "FINANCIAL_EFFECT_POSSIBLE", occurrenceId: "occ",
+        orderId: "order", statusId: "status", paymentId: "pay", bookingId: "booking", ticketId: "ticket",
+        failure: { outcome: "FAILED", code: "CERTIFICATION_EMAIL_TERMINAL:TICKET:BOUNCED", recordedAt: now.toISOString() },
+      },
+    });
+
+    const outcome = await certifyProduction(ports, input);
+
+    expect(outcome).toEqual({ kind: "FAILED", code: "CERTIFICATION_EMAIL_TERMINAL:TICKET:BOUNCED" });
+    // It cancelled and saw the refund converge, at a phase the cancellation
+    // command does not belong to.
+    expect(calls.some((call) => call.kind.startsWith("cancel:"))).toBe(true);
+    const settled = runs.load("run")!;
+    expect(settled.refundId).toBe("refund");
+    expect(settled.direction).toBe("CATALOGUE_CLEAN");
+  });
+
+  it("will not call a failed run recovered while the money is still out", async () => {
+    // A payment that is still PAID is a rouble a real person has not got back.
+    // Filing the incident now would lose the obligation with it.
+    const { ports, input, runs } = production({
+      cancellationSticks: false,
+      startAt: {
+        phase: "PAYMENT_PROVEN", direction: "FINANCIAL_EFFECT_POSSIBLE", occurrenceId: "occ",
+        orderId: "order", statusId: "status", paymentId: "pay", bookingId: "booking", ticketId: "ticket",
+        failure: { outcome: "FAILED", code: "CERTIFICATION_EMAIL_TERMINAL:TICKET:BOUNCED", recordedAt: now.toISOString() },
+      },
+    });
+
+    const outcome = await certifyProduction(ports, input);
+
+    expect(outcome).toEqual({ kind: "INCOMPLETE", code: "CERTIFICATION_CANCELLATION_NOT_APPLIED" });
+    // The original reason survives for the next attempt; the recovery's own
+    // trouble does not overwrite it.
+    expect(runs.load("run")?.failure).toMatchObject({ code: "CERTIFICATION_EMAIL_TERMINAL:TICKET:BOUNCED" });
+  });
+
+  it("will not call a recovery done while the refund has not converged", async () => {
+    // The cancellation landed and the obligation exists, but no refund has
+    // answered it yet. Reporting the incident closed here would file it with a
+    // real rouble still outstanding.
+    const { ports, input, runs } = production({
+      refundAppears: false,
+      startAt: {
+        phase: "PAYMENT_PROVEN", direction: "FINANCIAL_EFFECT_POSSIBLE", occurrenceId: "occ",
+        orderId: "order", statusId: "status", paymentId: "pay", bookingId: "booking", ticketId: "ticket",
+        failure: { outcome: "FAILED", code: "CERTIFICATION_EMAIL_TERMINAL:TICKET:BOUNCED", recordedAt: now.toISOString() },
+      },
+    });
+
+    const outcome = await certifyProduction(ports, input);
+
+    expect(outcome).toEqual({ kind: "INCOMPLETE", code: "CERTIFICATION_RECOVERY_MONEY_UNRESOLVED" });
+    expect(runs.load("run")?.refundId ?? null).toBeNull();
+    expect(runs.load("run")?.failure).toMatchObject({ code: "CERTIFICATION_EMAIL_TERMINAL:TICKET:BOUNCED" });
+  });
+
   it("refuses to certify a release other than the one it is running against", async () => {
     const { ports, input } = production();
     const outcome = await certifyProduction(ports, { ...input, candidate: { ...candidate, sha: "b".repeat(40) } });
@@ -335,12 +432,15 @@ describe("certifying production", () => {
     expect((outcome as { code: string }).code).toContain("CERTIFICATION_BASELINE_");
   });
 
-  it("finishes the cleanup and stays failed when resumed mid-cleanup", async () => {
+  it("stops rather than sells when something shut the fixture mid-run", async () => {
+    // The happy path only shuts the fixture at its last step, so a catalogue
+    // closed at this phase was closed from outside.
     const { ports, input, runs } = production({ startAt: { phase: "OCCURRENCE_OPEN", occurrenceId: "occ", direction: "CLEANUP_STARTED" } });
 
     const outcome = await certifyProduction(ports, input);
 
-    expect(outcome).toEqual({ kind: "FAILED", code: "CERTIFICATION_CLEANUP_REQUIRED" });
+    expect(outcome).toEqual({ kind: "FAILED", code: "CERTIFICATION_CATALOGUE_SHUT_MID_RUN" });
     expect(runs.load("run")?.direction).toBe("CATALOGUE_CLEAN");
+    expect(runs.load("run")?.failure).toMatchObject({ outcome: "FAILED", code: "CERTIFICATION_CATALOGUE_SHUT_MID_RUN" });
   });
 });

@@ -39,6 +39,20 @@ describe("the run as an authority", () => {
     expect(() => runs.update(advanced.runId, advanced.revision, { direction: "NORMAL" })).toThrow("CERTIFICATION_RUN_DIRECTION_REGRESSED");
   });
 
+  it("keeps the reason it failed, whatever goes wrong while recovering", () => {
+    // The operator is told why the certification failed, not what the recovery
+    // tripped over on its way to closing it out.
+    const { runs, run } = opened();
+    const failure = { outcome: "FAILED" as const, code: "CERTIFICATION_EMAIL_TERMINAL:TICKET:BOUNCED", recordedAt: "2026-09-20T02:00:00.000Z" };
+    const failed = runs.update(run.runId, run.revision, { failure });
+
+    expect(() => runs.update(failed.runId, failed.revision, { failure: { outcome: "INCOMPLETE", code: "CERTIFICATION_RECOVERY_MONEY_UNRESOLVED", recordedAt: "2026-09-20T03:00:00.000Z" } }))
+      .toThrow("CERTIFICATION_RUN_FAILURE_IMMUTABLE");
+    expect(() => runs.update(failed.runId, failed.revision, { failure: null })).toThrow("CERTIFICATION_RUN_FAILURE_IMMUTABLE");
+    // An unrelated advance still carries it forward untouched.
+    expect(runs.update(failed.runId, failed.revision, { phase: "OCCURRENCE_CREATED" }).failure).toEqual(failure);
+  });
+
   it("keeps the certified revision immutable for the life of the run", () => {
     const { runs, run } = opened();
     expect(() => runs.update(run.runId, run.revision, { releaseSha: "b".repeat(40) } as never)).toThrow("CERTIFICATION_RUN_RELEASE_IMMUTABLE");

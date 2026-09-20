@@ -114,6 +114,21 @@ const COMMAND_PHASE: Record<BusinessCommandKind, CertificationPhase> = {
   CANCEL_BOOKING: "TICKET_EMAIL_DELIVERED",
 };
 
+/**
+ * Why this run can never be a PASS, recorded once and never rewritten.
+ *
+ * It is deliberately separate from `direction`. A catalogue that has been shut
+ * says nothing about whether the certification succeeded - the happy path shuts
+ * it too, as its last step. Reading a closed catalogue as a failed run turned a
+ * crash between two durable transitions into a permanent failure of a
+ * certification that had actually worked.
+ */
+export type CertificationFailure = {
+  readonly outcome: "FAILED" | "INCOMPLETE";
+  readonly code: string;
+  readonly recordedAt: string;
+};
+
 export type SupersededCommand = {
   readonly command: BusinessCommand;
   readonly reason:
@@ -136,6 +151,8 @@ export type CertificationRun = {
   readonly pendingCommand?: BusinessCommand | null;
   /** Kept for forensics after cleanup retires an intent that must not execute. */
   readonly supersededCommand?: SupersededCommand | null;
+  /** Present once the run has lost its claim to a PASS. Write-once. */
+  readonly failure?: CertificationFailure | null;
 
   readonly occurrenceId?: string | null;
   readonly quoteId?: string | null;
@@ -177,9 +194,22 @@ export interface CertificationRunStore {
 export const directionAtLeast = (direction: CleanupDirection, least: CleanupDirection): boolean =>
   DIRECTION_ORDER.indexOf(direction) >= DIRECTION_ORDER.indexOf(least);
 
+export const phaseAtLeast = (phase: CertificationPhase, least: CertificationPhase): boolean =>
+  PHASE_ORDER.indexOf(phase) >= PHASE_ORDER.indexOf(least);
+
+/**
+ * Commands that exist to find out what happened to money, rather than to make
+ * progress. A failed run is still allowed to issue them.
+ */
+const FINANCIAL_COMMANDS = new Set<BusinessCommandKind>(["CREATE_CHECKOUT", "CANCEL_BOOKING"]);
+
 /** Whether this command may be armed or re-issued at all, given where the run has got to. */
 export const commandPermitted = (run: CertificationRun, kind: BusinessCommandKind): string | undefined => {
   if (SUPERSEDED_BY_CLEANUP.has(kind) && directionAtLeast(run.direction, "CLEANUP_STARTED")) return "CERTIFICATION_CATALOGUE_REOPEN_FORBIDDEN";
+  // Once a run has failed, its phase no longer describes progress, so binding
+  // a reconciliation to one would mean a captured rouble could not be refunded
+  // because the failure happened at the wrong step.
+  if (run.failure && FINANCIAL_COMMANDS.has(kind)) return undefined;
   if (COMMAND_PHASE[kind] !== run.phase) return "CERTIFICATION_COMMAND_PHASE_INVALID";
   return undefined;
 };
@@ -213,6 +243,8 @@ export type RecoveryAction =
   | { readonly kind: "BLOCKED_BASELINE" }
   /** An interrupted command exists; re-issue that exact command and nothing else. */
   | { readonly kind: "REPLAY_PENDING"; readonly command: BusinessCommand }
+  /** The run cannot pass. Reconcile what it may have done and report what it already decided. */
+  | { readonly kind: "RECOVER_FAILED_RUN"; readonly failure: CertificationFailure }
   /** Cleanup began and the catalogue is not provably shut yet. */
   | { readonly kind: "CLEAN_CATALOGUE" }
   | { readonly kind: "WRITE_MANIFEST" }
@@ -239,6 +271,10 @@ export const planRecovery = (run: CertificationRun, baselineVerified: boolean): 
     if (forbidden) throw new CertificationRunError(forbidden, run.pendingCommand.kind);
     return { kind: "REPLAY_PENDING", command: run.pendingCommand };
   }
+
+  // A recorded failure outranks the phase, but not the pending command above:
+  // re-issuing that is how the run finds out what it did before it failed.
+  if (run.failure) return { kind: "RECOVER_FAILED_RUN", failure: run.failure };
 
   // Cleanup that began and did not finish is the next thing to do, whatever
   // phase the run happened to reach before it started.
@@ -277,6 +313,9 @@ export class InMemoryCertificationRunStore implements CertificationRunStore {
     if (PHASE_ORDER.indexOf(next.phase) < PHASE_ORDER.indexOf(current.phase)) throw new CertificationRunError("CERTIFICATION_RUN_PHASE_REGRESSED", next.phase);
     if (DIRECTION_ORDER.indexOf(next.direction) < DIRECTION_ORDER.indexOf(current.direction)) throw new CertificationRunError("CERTIFICATION_RUN_DIRECTION_REGRESSED", next.direction);
     if (next.releaseSha !== current.releaseSha) throw new CertificationRunError("CERTIFICATION_RUN_RELEASE_IMMUTABLE");
+    // The first failure is the one the operator is told about. A later step
+    // that fails while reconciling must not rewrite the reason the run failed.
+    if (current.failure && JSON.stringify(next.failure ?? null) !== JSON.stringify(current.failure)) throw new CertificationRunError("CERTIFICATION_RUN_FAILURE_IMMUTABLE");
 
     this.#runs.set(runId, next);
     return next;

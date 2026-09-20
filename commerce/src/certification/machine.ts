@@ -8,8 +8,8 @@ import {
   type CertificationScope, type OccurrenceView, type OrderEvidence, type RefundIdentifiers, type RunIdentifiers,
 } from "./evidence";
 import {
-  commandPermitted, directionAtLeast, planRecovery,
-  type BusinessCommand, type CertificationPhase, type CertificationRun, type CertificationRunStore, type OccurrenceDraft,
+  commandPermitted, directionAtLeast, phaseAtLeast, planRecovery,
+  type BusinessCommand, type CertificationFailure, type CertificationPhase, type CertificationRun, type CertificationRunStore, type OccurrenceDraft,
 } from "./run";
 
 /**
@@ -110,14 +110,22 @@ export const certifyProduction = async (ports: CertifyPorts, input: CertifyInput
   try {
     return await machine.run();
   } catch (error) {
+    // Losing the compare-and-set means another runner owns this run. Because
+    // arming precedes every request, this runner has sent nothing - so it has
+    // neither the right nor the information to decide the run's fate, and
+    // shutting the catalogue here would let a loser stop the winner.
+    if (isLostAuthority(error)) return { kind: "INCOMPLETE", code: "CERTIFICATION_LOST_AUTHORITY" };
+
     const outcome: CertifyOutcome = error instanceof CertificationFailed
       ? { kind: "FAILED", code: error.code }
       // An unclassified throw is not evidence that nothing left the system.
       : { kind: "INCOMPLETE", code: error instanceof CertificationIncomplete ? error.code : (error instanceof Error ? error.message : "CERTIFICATION_UNKNOWN_FAILURE") };
-    await machine.shutCatalogueAfterFailure();
-    return outcome;
+    return await machine.recordFailureAndShut(outcome);
   }
 };
+
+const isLostAuthority = (error: unknown): boolean =>
+  error instanceof Error && error.message.includes("CERTIFICATION_RUN_REVISION_CONFLICT");
 
 const reasonFor = (runId: string) => `Production E2E certification ${runId}`;
 
@@ -135,11 +143,20 @@ class CertificationMachine {
     // A pending command is re-issued first even here, because that is how the
     // run learns what its own interrupted request did.
     if (action.kind === "REPLAY_PENDING") run = await this.execute(run, action.command);
-    if (directionAtLeast(run.direction, "CLEANUP_STARTED")) {
-      // A run that turned to cleanup finishes the catalogue and reports what
-      // it reconciled. It never becomes a PASS.
-      await ensureCatalogueClean(this.ports.runs, this.ports.admin, this.load());
-      throw new CertificationFailed("CERTIFICATION_CLEANUP_REQUIRED");
+
+    // Only a recorded failure decides that this run cannot pass. A shut
+    // catalogue does not: the happy path shuts it too, as its last step, and
+    // reading that as failure turned a crash between two durable transitions
+    // into a permanent failure of a certification that had worked.
+    run = this.load();
+    if (run.failure) return this.recoverFailedRun(run, run.failure);
+
+    // A fixture shut before the run reached its own cleanup step is a record
+    // nobody should have written - the happy path only shuts it at the end.
+    // Something closed it from outside, and continuing to sell against that is
+    // worse than stopping.
+    if (directionAtLeast(run.direction, "CLEANUP_STARTED") && !phaseAtLeast(run.phase, "REFUND_EMAIL_DELIVERED")) {
+      throw new CertificationFailed("CERTIFICATION_CATALOGUE_SHUT_MID_RUN");
     }
 
     while (run.phase !== "COMPLETE") {
@@ -234,7 +251,9 @@ class CertificationMachine {
         if ((after.booking ?? {}).status !== "CANCELLED" || (after.ticket ?? {}).status !== "VOID") throw new CertificationIncomplete("CERTIFICATION_CANCELLATION_NOT_APPLIED");
         const occurrence = await this.ports.admin.occurrence(this.requireOccurrence(run));
         if (Number(occurrence.availability) !== this.input.scope.capacity) throw new CertificationFailed("CERTIFICATION_SEAT_NOT_RELEASED");
-        return this.commit(run, { pendingCommand: null, phase: "BOOKING_CANCELLED" });
+        // A failed run is reconciling, not progressing, so its phase stays
+        // where the failure left it.
+        return this.commit(run, { pendingCommand: null, ...(run.failure ? {} : { phase: "BOOKING_CANCELLED" as const }) });
       }
     }
   }
@@ -419,28 +438,113 @@ class CertificationMachine {
   }
 
   /**
-   * Called on every failure path. The outcome is already decided and is never
-   * changed by what happens here: the point is only that a run which opened a
-   * fixture does not leave it sellable, and that the record says so first.
+   * Records why this run can no longer pass, then shuts the fixture.
+   *
+   * The failure is written first and written once. It is what a later resume
+   * reads to know the run is reconciling rather than progressing, and the
+   * original reason has to survive whatever goes wrong during that
+   * reconciliation. The catalogue close is best effort on top of it.
    */
-  async shutCatalogueAfterFailure(): Promise<void> {
+  async recordFailureAndShut(outcome: CertifyOutcome): Promise<CertifyOutcome> {
     try {
-      const run = this.ports.runs.load(this.input.runId);
-      if (!run || run.direction === "CATALOGUE_CLEAN") return;
+      let run = this.ports.runs.load(this.input.runId);
+      if (!run) return outcome;
+      if (!run.failure && outcome.kind !== "PASS") {
+        run = this.commit(run, { failure: { outcome: outcome.kind, code: outcome.code, recordedAt: this.ports.clock().toISOString() } });
+      }
+      if (run.direction === "CATALOGUE_CLEAN") return outcome;
       // Not conditioned on knowing the occurrence: a lost creation response is
       // exactly the case where the id has to be recovered rather than assumed
       // absent.
       const createdSomething = run.occurrenceId
         || run.pendingCommand?.kind === "CREATE_OCCURRENCE"
         || run.supersededCommand?.command.kind === "CREATE_OCCURRENCE";
-      if (!createdSomething) return;
-      await ensureCatalogueClean(this.ports.runs, this.ports.admin, run);
+      if (createdSomething) await ensureCatalogueClean(this.ports.runs, this.ports.admin, run);
     } catch {
       // Best effort by construction, but the direction is armed inside
       // `ensureCatalogueClean` before anything is touched, so even a failing
       // close leaves a run no later resume will reopen. A second failure must
       // not replace the diagnosis the operator needs.
     }
+    return outcome;
+  }
+
+  /**
+   * Brings a run that cannot pass to a safe end, and then reports the reason it
+   * already recorded.
+   *
+   * This is not the certification sequence with the happy steps removed. It
+   * answers a different question: what did this run actually do to the outside
+   * world, and is any of it still outstanding? An order may exist that nobody
+   * recorded, a seat may still be held, a captured rouble may still be
+   * unreturned - and an email that failed to arrive must not be the reason a
+   * customer keeps a charge.
+   */
+  private async recoverFailedRun(run: CertificationRun, failure: CertificationFailure): Promise<CertifyOutcome> {
+    let current = run;
+
+    // An order created by a checkout whose response was lost.
+    if (!current.orderId && current.statusId) {
+      const orderIds = await this.ports.admin.orderIdsForCheckoutStatus(current.statusId);
+      if (orderIds.length > 1) throw new CertificationIncomplete("CERTIFICATION_ORDER_NOT_UNIQUE");
+      if (orderIds.length === 1) current = this.commit(current, { orderId: orderIds[0] });
+    }
+
+    if (current.orderId) current = await this.reconcileMoney(current);
+    if (current.occurrenceId || current.pendingCommand?.kind === "CREATE_OCCURRENCE" || current.supersededCommand?.command.kind === "CREATE_OCCURRENCE") {
+      current = await ensureCatalogueClean(this.ports.runs, this.ports.admin, current);
+    }
+    return { kind: failure.outcome, code: failure.code };
+  }
+
+  /**
+   * Leaves no captured money outstanding, or refuses to call the recovery done.
+   *
+   * A payment that is still PAID is a real rouble a real person has not got
+   * back. Reporting the run finished while that is true would file the
+   * incident and lose the obligation with it.
+   */
+  private async reconcileMoney(run: CertificationRun): Promise<CertificationRun> {
+    let current = run;
+    const orderId = this.requireOrder(current);
+    let evidence = await this.ports.admin.orderEvidence(orderId);
+    const payment = evidence.payment ?? {};
+    if (!payment.id) return current;
+
+    if (!current.paymentId) {
+      current = this.commit(current, {
+        paymentId: String(payment.id),
+        bookingId: String((evidence.booking ?? {}).id ?? current.bookingId ?? ""),
+        ticketId: String((evidence.ticket ?? {}).id ?? current.ticketId ?? ""),
+      });
+    }
+
+    if ((evidence.booking ?? {}).status === "CONFIRMED" && current.bookingId) {
+      // Cancelling is what creates the refund obligation, so it comes first
+      // even here.
+      const command = { kind: "CANCEL_BOOKING" as const, idempotencyKey: this.ports.newIdempotencyKey(), bookingId: current.bookingId };
+      current = await this.execute(this.arm(current, command), command);
+      evidence = await this.ports.admin.orderEvidence(orderId);
+    }
+
+    const obligationId = String((evidence.refund_obligation ?? {}).id ?? current.refundObligationId ?? "");
+    if (!obligationId) throw new CertificationIncomplete("CERTIFICATION_RECOVERY_REFUND_OBLIGATION_ABSENT");
+
+    const settled = await this.ports.waitFor(async () => {
+      const latest = await this.ports.admin.orderEvidence(orderId);
+      const answering = (latest.refunds ?? []).filter((refund) => refund.payment_id === String(current.paymentId) && refund.source === "REFUND_OBLIGATION" && refund.refund_obligation_id === obligationId);
+      if (answering.length > 1) throw new CertificationFailed("CERTIFICATION_REFUND_NOT_UNIQUE");
+      if (answering.length === 0) return undefined;
+      const identifiers: RefundIdentifiers = { paymentId: String(current.paymentId), obligationId, refundId: String(answering[0].id), amountKopecks: this.input.scope.priceKopecks };
+      const action = refundPollAction(latest, identifiers);
+      if (action.kind === "TERMINAL") throw new CertificationFailed(`CERTIFICATION_REFUND_TERMINAL:${action.status}`);
+      return action.kind === "CONVERGED" ? identifiers : undefined;
+    }, this.input.timeouts.refundMs);
+
+    // Exactly one successful refund and a REFUNDED payment, or this recovery
+    // is not finished - whatever else went right.
+    if (!settled) throw new CertificationIncomplete("CERTIFICATION_RECOVERY_MONEY_UNRESOLVED");
+    return this.commit(current, { refundObligationId: settled.obligationId, refundId: settled.refundId });
   }
 
   private async assertOccurrenceIdentity(run: CertificationRun): Promise<OccurrenceView> {
