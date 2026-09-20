@@ -64,6 +64,15 @@ Seven, and each for a stated reason rather than because a scan found them.
 | `reward_adjustments` | No reference in the runtime. |
 | `settlement_prepared_reviews` | No reference in the runtime. |
 
+**Dependency proof.** "The runtime does not name it" and "nothing depends on it"
+are different claims, and P8 taught that the difference matters. Checked against
+the schema the migrations produce: every one of the seven has **no inbound
+foreign key and is referenced by no surviving trigger or view**. Two of them
+name a successor rather than simply going - `runtime_release_evidence` is
+replaced by `runtime_instance_evidence`, and `reward_settlement_idempotency` by
+`reward_settlement_command_idempotency`, which is the one the runtime writes.
+The rest have no successor by design.
+
 ### The pre-launch discriminators
 
 `orders.reward_authority_kind`, `referral_rewards.reward_authority_kind` and
@@ -75,14 +84,51 @@ which the discriminator is one, and lose only their condition.
 `agent_referrals_feature_state` loses `DORMANT` from its CHECK, and the baseline
 seeds `ACTIVE`.
 
-### A correction to the plan
+### The outbox, decided
 
 The plan lists `email_outbox.authority` among the removals. **It is already
-gone** - a later migration rebuilt the table without it. All twenty-nine of the
-table's remaining columns are named somewhere in the runtime, so which of them
-are genuinely frozen needs a write-versus-read analysis rather than a name scan;
-that analysis is the one piece of removal work this specification does not yet
-decide.
+gone** - a later migration rebuilt the table without it.
+
+The eleven attempt-era columns were then classified by what the runtime does
+with each, not by whether it names them. Being named is not being written, and
+being read is not being relied on:
+
+| Column | Written | Read | Verdict |
+|---|---|---|---|
+| `provider_idempotence_key` | yes, at enqueue | attempt #1 copies it byte for byte | **keep** |
+| `job_id` | never | nothing but a comment | drop |
+| `lease_owner` | never | `emailDispatchDrained` counts it | drop, and simplify the reader |
+| `lease_expires_at` | never | nothing but comments | drop |
+| `send_started_at` | never | nothing | drop |
+| `provider_request_started_at` | never | nothing | drop |
+| `attempts` | never | passed to `sendTryCount`, which discards it | drop, with the vestigial parameter |
+| `last_error` | never | nothing | drop |
+| `provider_error_code` | never | nothing | drop |
+| `provider_error_message` | never | nothing | drop |
+| `next_attempt_at` | never | nothing | drop |
+
+`lease_owner` is the one worth stating plainly. `emailDispatchDrained()` reports
+`{ drained: sending === 0 && leased === 0 }`, and nothing has written
+`lease_owner` since the attempt store took over - so `leased` is structurally
+always zero and the conjunction has one live term. The function's answer is
+correct, because a claimed message is set to `SENDING` and that half is live,
+but it describes itself as two checks while performing one. That is the
+corroboration rule from the deployment invariants, and the column's removal is
+also the reader's repair.
+
+### The outbox authority table, reshaped rather than removed
+
+`outbox_authority` cannot simply go: the runtime still uses it as the durable
+dispatch fence - `email_dispatch_paused`, its owner, its revision and its audit
+events are an operator's stop on outgoing mail. What goes is its other half.
+Attempt records are the only dispatch authority now, so in the baseline:
+
+- the authority selector column disappears;
+- the legacy-attempt freeze trigger disappears with the columns it froze;
+- `AUTHORITY_ACTIVATED` stops being an audit action, because there is no second
+  authority to activate.
+
+`outbox_authority` becomes a fence, and nothing else.
 
 ## Additions
 
@@ -94,6 +140,25 @@ decide.
 | `orders.certification_run_id` | The only certification discriminator. `NULL` is an ordinary order; not null is a certification order. No `order_purpose`: a second column with one meaningful value is the kind of monument this change removes. |
 | `runtime_instance_evidence` | Evidence per instance rather than per unit, so readiness can tell a converged runtime from an old one that has not stopped. |
 
+### The structural contract each one owes
+
+Names are not a specification. What the baseline has to enforce:
+
+| Object | Must hold structurally |
+|---|---|
+| `schema_identity` | Singleton. Carries the launch lineage exactly; its absence is what makes a pre-launch database legacy rather than unknown. |
+| `deploy_sessions` | At most one non-terminal session. Owner and lease moved only by guarded update, so `changes === 1` is the proof of ownership. `adopted_cutover_id` unique, so a handoff is adopted once. The deployment gate's owning session lives in the same row, because a gate closed by a session that does not exist is the state this merge exists to forbid. |
+| `certification_capabilities` | At most one live capability per deployment session, as a partial unique index. Bound to run, session, release and an amount ceiling. Consumed once, by a guarded update inside the checkout's own transaction. |
+| `certification_runs` | Revision compare-and-set on every write. Phase and cleanup direction monotonic, as CHECKs. Release immutable. Failure write-once. |
+| `runtime_instance_evidence` | Keyed by instance, carrying unit, source commit, start, heartbeat and last successful sweep. A second row for the same unit is expected, not a conflict - that is the whole reason it replaces the singleton. |
+
+**Where the certification replay binding lives.** P7's admission contract needs a
+permanent record that a checkout key already created an order, resolved before
+anything is spent. That record already exists: `checkout_idempotency`
+(`idempotency_key_hash`, `canonical_request_hash`, `order_id`) is the permanent
+ledger, and `orders.certification_run_id` is what ties the order it names back
+to the run. No third table.
+
 ## Coupled removals
 
 Three places where code and schema have to move together, because the schema
@@ -103,7 +168,25 @@ enforces what the code currently humours:
 |---|---|---|
 | Feature state `DORMANT` | The CHECK admits it and the dev row is it | The member goes, the CHECK narrows, the seed is `ACTIVE` |
 | Discriminator partitions | Triggers check the partition on insert | The column goes and the triggers become unconditional |
-| Outbox attempt authority | The frozen columns remain | Decided by the write/read analysis above |
+| Outbox attempt authority | Ten frozen columns remain, one of them read | They go; `emailDispatchDrained` loses its dead term and `sendTryCount` its vestigial parameter |
+
+### `agents` becomes `partners`
+
+The rename is kept, and the baseline is the only cheap moment for it: there is
+no data to migrate and one file defines the table.
+
+It is also overdue in a way the current schema shows plainly. Fourteen foreign
+keys point at `agents`, and four of them are already named for what the table
+actually holds - `orders.resolved_partner_id`,
+`partner_promos.partner_id`, `engagement_promo_authorizations.partner_id`,
+`engagement_creative_revisions.partner_id`. A column called `partner_id`
+referencing a table called `agents` is the confusion this removes.
+
+The cost is bounded and measured: fourteen foreign keys, fifteen SQL statements
+in the runtime, fifty-three files mentioning the word. `partner_identities`
+stays a separate table - authentication and personal data are a different
+bounded concept from the operational partner, and a one-to-one relationship
+does not make them one thing.
 
 ## What the baseline is not
 
