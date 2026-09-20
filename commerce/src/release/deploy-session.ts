@@ -33,6 +33,14 @@ export type DeploySession = {
    * refusing as a duplicate.
    */
   readonly adoptedCutoverId?: string;
+  /**
+   * The predecessor archive this session was handed, copied out of the envelope
+   * at adoption. Without it, a retry that finds the session already committed
+   * has nothing to check the leftover envelope against, and a file that merely
+   * reused a cutover id would read as the same handoff.
+   */
+  readonly predecessorDatabaseRef?: string;
+  readonly predecessorDatabaseSha256?: string;
 };
 
 export type DeploySessionPatch = Partial<Pick<DeploySession, "ownerId" | "state" | "rollbackAuthority" | "mutationObserved" | "leaseExpiresAt" | "preDeployTopology" | "observedTopology">>;
@@ -185,6 +193,14 @@ export type AcquireInput = {
   readonly mode: DeployMode;
   readonly targetSha: string;
   readonly adoptedCutoverId?: string;
+  /**
+   * The predecessor archive this session was handed, copied out of the envelope
+   * at adoption. Without it, a retry that finds the session already committed
+   * has nothing to check the leftover envelope against, and a file that merely
+   * reused a cutover id would read as the same handoff.
+   */
+  readonly predecessorDatabaseRef?: string;
+  readonly predecessorDatabaseSha256?: string;
 };
 
 export class DeploySessions {
@@ -227,6 +243,8 @@ export class DeploySessions {
       state: "ACQUIRED", rollbackAuthority: "OLD_LINEAGE_ALLOWED", mutationObserved: false,
       createdAt: now.toISOString(), leaseExpiresAt: new Date(now.getTime() + this.leaseMs).toISOString(),
       adoptedCutoverId: input.adoptedCutoverId,
+      predecessorDatabaseRef: input.predecessorDatabaseRef,
+      predecessorDatabaseSha256: input.predecessorDatabaseSha256,
     };
   }
 

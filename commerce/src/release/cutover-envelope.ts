@@ -2,11 +2,23 @@ import { randomUUID } from "node:crypto";
 import type { DeployMode, PreDeployTopology } from "./deploy-session";
 import { isSourceCommit } from "./runtime-identity";
 
+/**
+ * Identifies the archived predecessor database by content, not by name. A ref
+ * alone proves only that we know what the file is called; the digest proves the
+ * successor would restore the exact snapshot the predecessor handed over, which
+ * is the whole claim an automated rollback rests on.
+ */
+export type PredecessorDatabase = {
+  readonly ref: string;
+  readonly sha256: string;
+};
+
 export type CutoverEnvelope = {
   readonly cutoverId: string;
   readonly targetSha: string;
   readonly mode: DeployMode;
   readonly preDeployTopology: PreDeployTopology;
+  readonly predecessorDatabase: PredecessorDatabase;
   readonly createdAt: string;
   readonly expiresAt: string;
   readonly adoptionNonce: string;
@@ -28,6 +40,8 @@ export const createCutoverEnvelope = (input: Omit<CutoverEnvelope, "cutoverId" |
     throw new Error("CUTOVER_ENVELOPE_TOPOLOGY_INVALID");
   }
   if (!(Date.parse(input.createdAt) < Date.parse(input.expiresAt))) throw new Error("CUTOVER_ENVELOPE_EXPIRY_INVALID");
+  if (!input.predecessorDatabase.ref.trim()) throw new Error("CUTOVER_ENVELOPE_PREDECESSOR_REF_INVALID");
+  if (!/^[a-f0-9]{64}$/.test(input.predecessorDatabase.sha256)) throw new Error("CUTOVER_ENVELOPE_PREDECESSOR_DIGEST_INVALID");
   return { ...input, cutoverId: input.cutoverId ?? randomUUID(), adoptionNonce: input.adoptionNonce ?? randomUUID() };
 };
 
@@ -41,8 +55,22 @@ export const assessCutoverAdoption = (envelope: CutoverEnvelope, adoption: Cutov
   return undefined;
 };
 
-/** Test-only storage. P9 supplies the atomic 0600 filesystem adapter on the shared persistent volume. */
-export class InMemoryCutoverEnvelopeStore {
+export interface CutoverEnvelopeStore {
+  read(cutoverId: string): CutoverEnvelope | undefined;
+  isConsumed(cutoverId: string): boolean;
+  /** Called only after the successor database has durably adopted the cutover. */
+  markConsumed(cutoverId: string): void;
+}
+
+/**
+ * Test-only storage. P9 supplies the atomic 0600 filesystem adapter on the
+ * shared persistent volume.
+ *
+ * Note what it deliberately does not offer: a single validate-and-consume call.
+ * Consumption must follow the successor's database commit, never precede it, so
+ * the two halves are separate operations and the caller owns the ordering.
+ */
+export class InMemoryCutoverEnvelopeStore implements CutoverEnvelopeStore {
   #entries = new Map<string, { envelope: CutoverEnvelope; consumed: boolean }>();
 
   write(envelope: CutoverEnvelope): void {
@@ -52,13 +80,11 @@ export class InMemoryCutoverEnvelopeStore {
 
   read(cutoverId: string): CutoverEnvelope | undefined { return this.#entries.get(cutoverId)?.envelope; }
 
-  consume(cutoverId: string, adoption: CutoverAdoption): CutoverEnvelope {
+  isConsumed(cutoverId: string): boolean { return this.#entries.get(cutoverId)?.consumed ?? false; }
+
+  markConsumed(cutoverId: string): void {
     const entry = this.#entries.get(cutoverId);
     if (!entry) throw new Error("CUTOVER_ENVELOPE_NOT_FOUND");
-    if (entry.consumed) throw new Error("CUTOVER_ENVELOPE_ALREADY_CONSUMED");
-    const failure = assessCutoverAdoption(entry.envelope, adoption);
-    if (failure) throw new Error(failure);
     entry.consumed = true;
-    return entry.envelope;
   }
 }
