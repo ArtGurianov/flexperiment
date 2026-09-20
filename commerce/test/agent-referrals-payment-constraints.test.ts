@@ -255,13 +255,13 @@ describe("a zero-reward closure records an engagement that earned nothing", () =
   };
 
   it("is accepted for an engagement that earned nothing and was never settled", () => {
-    const { db, domain } = setup();
+    const { db } = setup();
     const { closure } = zeroRewarded(db);
     expect(insertVariant(db, "engagement_zero_reward_closures", closure, {})).not.toThrow();
   });
 
   it("cannot be edited or deleted once recorded", () => {
-    const { db, domain } = setup();
+    const { db } = setup();
     const { closure } = zeroRewarded(db);
     const columns = Object.keys(closure);
     db.prepare(`INSERT INTO engagement_zero_reward_closures(${columns.join(", ")})
