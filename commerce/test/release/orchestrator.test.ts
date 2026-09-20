@@ -68,7 +68,7 @@ const request = { ownerId: "owner", targetSha: target, expectation } as const;
 
 describe("maintenance cutover ordering", () => {
   it("fences before deploying and arms only after convergence and readiness", async () => {
-    const { log, orchestrator } = harness({ topologies: [topology(old), topology(target)] });
+    const { log, orchestrator } = harness({ topologies: [topology(old), topology(target), topology(target)] });
     const outcome = await orchestrator.runMaintenanceCutover({ ...request, mode: "MAINTENANCE_CUTOVER" });
 
     expect(outcome.kind).toBe("SUCCEEDED");
@@ -82,6 +82,7 @@ describe("maintenance cutover ordering", () => {
       "readiness",
       "capability-issued",
       "certify",
+      `observe:${target}`,
       "fence-open",
     ]);
     expect(outcome.session).toMatchObject({ state: "SUCCEEDED", rollbackAuthority: "NEW_LINEAGE_ONLY" });
@@ -124,13 +125,25 @@ describe("maintenance cutover ordering", () => {
   });
 
   it("leaves sales closed for recovery when certification fails past the boundary", async () => {
-    const { log, orchestrator } = harness({ topologies: [topology(old), topology(target)], certifyFails: "REFUND_NOT_OBSERVED" });
+    const { log, orchestrator } = harness({ topologies: [topology(old), topology(target), topology(target)], certifyFails: "REFUND_NOT_OBSERVED" });
     const outcome = await orchestrator.runMaintenanceCutover({ ...request, mode: "MAINTENANCE_CUTOVER" });
 
     expect(outcome).toMatchObject({ kind: "RECOVERY_REQUIRED", code: "CERTIFICATION_FAILED:REFUND_NOT_OBSERVED" });
     // Past the boundary the archived database can no longer account for what
     // may have happened, so the only exit is forward and sales stay shut.
     expect(outcome.session).toMatchObject({ state: "RECOVERY_REQUIRED", rollbackAuthority: "NEW_LINEAGE_ONLY" });
+    expect(log).not.toContain("fence-open");
+  });
+  it("re-observes the topology after certification and refuses a drifted surface", async () => {
+    // A payment and a refund take real minutes. A surface that drifts during
+    // them must not be closed over by the snapshot taken before arming.
+    const drifted = { ...topology(target), admin: old };
+    const { log, orchestrator } = harness({ topologies: [topology(old), topology(target), drifted, drifted] });
+    const outcome = await orchestrator.runMaintenanceCutover({ ...request, mode: "MAINTENANCE_CUTOVER" });
+
+    expect(outcome).toMatchObject({ kind: "RECOVERY_REQUIRED", code: "TARGET_TOPOLOGY_NOT_CONVERGED" });
+    expect(outcome.session).toMatchObject({ state: "RECOVERY_REQUIRED", rollbackAuthority: "NEW_LINEAGE_ONLY" });
+    expect(log).toContain("certify");
     expect(log).not.toContain("fence-open");
   });
 });
@@ -143,6 +156,16 @@ describe("rolling release ordering", () => {
     expect(outcome.kind).toBe("SUCCEEDED");
     expect(outcome.session).toMatchObject({ state: "SUCCEEDED", rollbackAuthority: "OLD_LINEAGE_ALLOWED" });
     expect(log).toEqual([`observe:${old}`, `deploy:${target}`, `observe:${target}`, "readiness"]);
+  });
+
+  it("leaves the sales fence untouched when a rolling deploy fails", async () => {
+    // The rolling path never closed the gate, so it has no business opening it
+    // either - the shared failure classifier must not reopen on its behalf.
+    const { log, orchestrator } = harness({ topologies: [topology(old), topology(old)], deployFails: "IMAGE_BUILD_FAILED" });
+    const outcome = await orchestrator.runRolling({ ...request, mode: "ROLLING_SAFE" });
+
+    expect(outcome).toMatchObject({ kind: "SAFE_ABORTED", code: "IMAGE_BUILD_FAILED" });
+    expect(log.filter((entry) => entry.startsWith("fence"))).toEqual([]);
   });
 
   it("refuses a cutover request on the rolling path and the reverse", async () => {

@@ -43,6 +43,14 @@ describe("production workflow contract", () => {
     expect(binding).toContain("git merge-base --is-ancestor");
   });
 
+  it.each(deployments)("%s never interpolates an input into a shell script", (name) => {
+    // A `${{ }}` expression is substituted into the script text before bash
+    // runs it, so a crafted dispatch input escapes its own quoting however it
+    // is quoted. Inputs reach the shell through `env` or not at all.
+    const steps = Object.values(workflow(name).jobs).flatMap((job) => job.steps ?? []);
+    for (const step of steps) expect(step.run ?? "").not.toMatch(/\$\{\{\s*(inputs|github\.event)\./);
+  });
+
   it("keeps the required status check named `test`", () => {
     // Branch protection points at this job id by name; renaming it silently
     // removes the only gate between a pull request and main.

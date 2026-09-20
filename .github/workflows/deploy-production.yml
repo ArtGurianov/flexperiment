@@ -35,11 +35,16 @@ jobs:
         with:
           fetch-depth: 0
 
+      # The input reaches the shell only through the environment. A `${{ }}`
+      # expression is substituted into the script text before bash ever runs it,
+      # so a crafted value escapes its own quoting no matter how it is quoted.
       - name: Bind to the exact target commit
+        env:
+          TARGET_SHA: ${{ inputs.target_sha }}
         run: |
           set -euo pipefail
-          [[ "${{ inputs.target_sha }}" =~ ^[a-f0-9]{40}$ ]] || { echo "TARGET_SHA_INVALID" >&2; exit 1; }
-          git merge-base --is-ancestor "${{ inputs.target_sha }}" origin/main \
+          [[ "$TARGET_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "TARGET_SHA_INVALID" >&2; exit 1; }
+          git merge-base --is-ancestor "$TARGET_SHA" origin/main \
             || { echo "TARGET_SHA_NOT_ON_MAIN" >&2; exit 1; }
 
       - uses: pnpm/action-setup@v4

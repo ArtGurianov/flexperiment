@@ -149,7 +149,13 @@ export class ReleaseOrchestrator {
       return this.recovery(session.id, request.ownerId, `CERTIFICATION_FAILED:${failureCode(error)}`);
     }
 
-    const succeeded = sessions.completeTarget(session.id, request.ownerId, converged.topology);
+    // Certification takes as long as a real payment and refund take, and a
+    // surface can drift underneath it. The observation that closes the release
+    // has to be the one taken after that, never the pre-arming snapshot.
+    const final = await this.requireTargetTopology(session.id, request);
+    if ("kind" in final) return final;
+
+    const succeeded = sessions.completeTarget(session.id, request.ownerId, final.topology);
     await this.ports.fence.open(session.id);
     return { kind: "SUCCEEDED", session: succeeded };
   }
@@ -183,7 +189,9 @@ export class ReleaseOrchestrator {
     const observed = await this.ports.topology.observe();
     const session = this.ports.sessions.classifyFailure(sessionId, ownerId, observed);
     if (session.state === "SAFE_ABORTED") {
-      await this.ports.fence.open(sessionId);
+      // Only a cutover ever closed the fence, so only a cutover reopens it. A
+      // rolling release that fails must leave the gate exactly as it found it.
+      if (session.mode === "MAINTENANCE_CUTOVER") await this.ports.fence.open(sessionId);
       return { kind: "SAFE_ABORTED", session, code };
     }
     return { kind: "RECOVERY_REQUIRED", session, code };

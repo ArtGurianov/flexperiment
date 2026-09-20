@@ -27,11 +27,14 @@ jobs:
         with:
           fetch-depth: 0
 
+      # See deploy-production.yml: inputs reach the shell only via `env`.
       - name: Bind to the exact candidate commit
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
         run: |
           set -euo pipefail
-          [[ "${{ inputs.candidate_sha }}" =~ ^[a-f0-9]{40}$ ]] || { echo "CANDIDATE_SHA_INVALID" >&2; exit 1; }
-          git merge-base --is-ancestor "${{ inputs.candidate_sha }}" origin/main \
+          [[ "$CANDIDATE_SHA" =~ ^[a-f0-9]{40}$ ]] || { echo "CANDIDATE_SHA_INVALID" >&2; exit 1; }
+          git merge-base --is-ancestor "$CANDIDATE_SHA" origin/main \
             || { echo "CANDIDATE_SHA_NOT_ON_MAIN" >&2; exit 1; }
 
       - uses: pnpm/action-setup@v4
