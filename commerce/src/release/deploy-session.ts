@@ -25,16 +25,41 @@ export type DeploySession = {
   readonly leaseExpiresAt: string;
   readonly preDeployTopology?: PreDeployTopology;
   readonly observedTopology?: PreDeployTopology;
+  /**
+   * The cutover envelope this session adopted, when it was created across a
+   * lineage boundary. Unique per session: the filesystem envelope and the
+   * database row cannot share a transaction, so a retry that finds a session
+   * already carrying this id finishes consuming the envelope instead of
+   * refusing as a duplicate.
+   */
+  readonly adoptedCutoverId?: string;
 };
 
 export type DeploySessionPatch = Partial<Pick<DeploySession, "ownerId" | "state" | "rollbackAuthority" | "mutationObserved" | "leaseExpiresAt" | "preDeployTopology" | "observedTopology">>;
 
-export interface DeploySessionStore {
-  acquire(session: DeploySession): DeploySession;
+/**
+ * Session state and the deployment sales gate are one operational fact, so one
+ * authority owns both. A separate mutating fence port allowed states that are
+ * simply wrong - a SUCCEEDED session with sales still shut, because a runner
+ * died between two independent writes - and no amount of caller discipline
+ * makes that impossible. Every transition that changes the gate does so in the
+ * same operation, and P9 gives that operation one `BEGIN IMMEDIATE`.
+ *
+ * `evaluateSalesGate()` stays a pure function elsewhere, and the emergency gate
+ * stays an operator's own switch above all of this.
+ */
+export interface ReleaseAuthorityStore {
   get(id: string): DeploySession | undefined;
+  /** The session that adopted this cutover, if any. Makes handoff retry idempotent. */
+  findByAdoptedCutover(cutoverId: string): DeploySession | undefined;
+  /** Creates the session; closes the deployment gate in the same operation when asked. */
+  acquire(session: DeploySession, options: { readonly closeGate: boolean }): DeploySession;
   recordTopology(id: string, kind: "PRE_DEPLOY" | "OBSERVED", topology: PreDeployTopology): DeploySession;
   transition(id: string, from: readonly DeploySessionState[], patch: DeploySessionPatch): DeploySession;
+  /** Terminal transition and gate release, together or not at all. */
+  settle(id: string, from: readonly DeploySessionState[], patch: DeploySessionPatch, options: { readonly openGate: boolean }): DeploySession;
   renewLease(id: string, ownerId: string, leaseExpiresAt: string): DeploySession;
+  deploymentGateClosed(): boolean;
 }
 
 const TERMINAL = new Set<DeploySessionState>(["SAFE_ABORTED", "SUCCEEDED", "ROLLED_BACK"]);
@@ -50,16 +75,34 @@ const assertTopology = (topology: PreDeployTopology): void => {
   for (const surface of surfaces) if (!isSourceCommit(topology[surface])) throw new Error(`DEPLOY_TOPOLOGY_${surface.toUpperCase()}_INVALID`);
 };
 
-export class InMemoryDeploySessionStore implements DeploySessionStore {
+export class InMemoryReleaseAuthorityStore implements ReleaseAuthorityStore {
   #sessions = new Map<string, DeploySession>();
+  #gateClosed = false;
 
-  acquire(session: DeploySession): DeploySession {
+  acquire(session: DeploySession, options: { readonly closeGate: boolean }): DeploySession {
     if (this.#sessions.has(session.id)) throw new Error("DEPLOY_SESSION_ALREADY_EXISTS");
+    if (session.adoptedCutoverId && this.findByAdoptedCutover(session.adoptedCutoverId)) {
+      throw new Error("CUTOVER_ALREADY_ADOPTED");
+    }
     this.#sessions.set(session.id, session);
+    if (options.closeGate) this.#gateClosed = true;
     return session;
   }
 
   get(id: string): DeploySession | undefined { return this.#sessions.get(id); }
+
+  findByAdoptedCutover(cutoverId: string): DeploySession | undefined {
+    for (const session of this.#sessions.values()) if (session.adoptedCutoverId === cutoverId) return session;
+    return undefined;
+  }
+
+  settle(id: string, from: readonly DeploySessionState[], patch: DeploySessionPatch, options: { readonly openGate: boolean }): DeploySession {
+    const settled = this.transition(id, from, patch);
+    if (options.openGate) this.#gateClosed = false;
+    return settled;
+  }
+
+  deploymentGateClosed(): boolean { return this.#gateClosed; }
 
   recordTopology(id: string, kind: "PRE_DEPLOY" | "OBSERVED", topology: PreDeployTopology): DeploySession {
     const session = this.required(id);
@@ -92,42 +135,55 @@ export class InMemoryDeploySessionStore implements DeploySessionStore {
   }
 }
 
+export type AcquireInput = {
+  readonly id?: string;
+  readonly ownerId: string;
+  readonly mode: DeployMode;
+  readonly targetSha: string;
+  readonly adoptedCutoverId?: string;
+};
+
 export class DeploySessions {
   constructor(
-    private readonly store: DeploySessionStore,
+    private readonly store: ReleaseAuthorityStore,
     private readonly clock: () => Date = () => new Date(),
     private readonly leaseMs = 5 * 60_000,
   ) {}
 
-  acquire(input: { id?: string; ownerId: string; mode: DeployMode; targetSha: string }): DeploySession {
+  /**
+   * Creating the session, recording what production was serving and closing the
+   * deployment gate are one operation. Splitting them left a window where a
+   * dead runner could leave a session that believes it fenced nothing, or a
+   * gate closed by a session that does not exist.
+   */
+  acquireFenced(input: AcquireInput, preDeployTopology: PreDeployTopology): DeploySession {
+    if (input.mode !== "MAINTENANCE_CUTOVER") throw new Error("ROLLING_SAFE_DOES_NOT_FENCE_SALES");
+    assertTopology(preDeployTopology);
+    return this.store.acquire({ ...this.blank(input), state: "FENCED", preDeployTopology }, { closeGate: true });
+  }
+
+  /** A rolling release never touches the gate, so its creation says so explicitly. */
+  acquireRolling(input: AcquireInput, preDeployTopology: PreDeployTopology): DeploySession {
+    if (input.mode !== "ROLLING_SAFE") throw new Error("ROLLING_RELEASE_REQUIRES_ROLLING_SAFE");
+    assertTopology(preDeployTopology);
+    return this.store.acquire({ ...this.blank(input), state: "DEPLOYING", preDeployTopology }, { closeGate: false });
+  }
+
+  beginDeploying(id: string, ownerId: string): DeploySession {
+    this.owned(id, ownerId);
+    return this.store.transition(id, ["FENCED"], { state: "DEPLOYING" });
+  }
+
+  private blank(input: AcquireInput): DeploySession {
     if (!input.ownerId) throw new Error("DEPLOY_SESSION_OWNER_REQUIRED");
     if (!isSourceCommit(input.targetSha)) throw new Error("DEPLOY_SESSION_TARGET_SHA_INVALID");
     const now = this.clock();
-    return this.store.acquire({
+    return {
       id: input.id ?? randomUUID(), ownerId: input.ownerId, mode: input.mode, targetSha: input.targetSha,
-      state: "ACQUIRED", rollbackAuthority: "OLD_LINEAGE_ALLOWED", mutationObserved: false, createdAt: now.toISOString(),
-      leaseExpiresAt: new Date(now.getTime() + this.leaseMs).toISOString(),
-    });
-  }
-
-  fence(id: string, ownerId: string, topology: PreDeployTopology): DeploySession {
-    const session = this.owned(id, ownerId);
-    if (session.mode !== "MAINTENANCE_CUTOVER") throw new Error("ROLLING_SAFE_DOES_NOT_FENCE_SALES");
-    assertTopology(topology);
-    this.store.recordTopology(id, "PRE_DEPLOY", topology);
-    return this.store.transition(id, ["ACQUIRED"], { state: "FENCED" });
-  }
-
-  beginDeploying(id: string, ownerId: string, rollingPreDeployTopology?: PreDeployTopology): DeploySession {
-    const session = this.owned(id, ownerId);
-    if (session.mode === "MAINTENANCE_CUTOVER") {
-      if (rollingPreDeployTopology) throw new Error("MAINTENANCE_TOPOLOGY_RECORDED_AT_FENCE");
-      return this.store.transition(id, ["FENCED"], { state: "DEPLOYING" });
-    }
-    if (!rollingPreDeployTopology) throw new Error("ROLLING_PRE_DEPLOY_TOPOLOGY_REQUIRED");
-    assertTopology(rollingPreDeployTopology);
-    this.store.recordTopology(id, "PRE_DEPLOY", rollingPreDeployTopology);
-    return this.store.transition(id, ["ACQUIRED"], { state: "DEPLOYING" });
+      state: "ACQUIRED", rollbackAuthority: "OLD_LINEAGE_ALLOWED", mutationObserved: false,
+      createdAt: now.toISOString(), leaseExpiresAt: new Date(now.getTime() + this.leaseMs).toISOString(),
+      adoptedCutoverId: input.adoptedCutoverId,
+    };
   }
 
   observeTopology(id: string, ownerId: string, topology: PreDeployTopology): DeploySession {
@@ -142,7 +198,9 @@ export class DeploySessions {
   classifyFailure(id: string, ownerId: string, topology: PreDeployTopology): DeploySession {
     const observed = this.observeTopology(id, ownerId, topology);
     if (!observed.preDeployTopology) throw new Error("PRE_DEPLOY_TOPOLOGY_REQUIRED");
-    if (!observed.mutationObserved) return this.store.transition(id, ["DEPLOYING", "RECOVERY_REQUIRED"], { state: "SAFE_ABORTED" });
+    if (!observed.mutationObserved) {
+      return this.store.settle(id, ["DEPLOYING", "RECOVERY_REQUIRED"], { state: "SAFE_ABORTED" }, { openGate: observed.mode === "MAINTENANCE_CUTOVER" });
+    }
     return this.store.transition(id, ["DEPLOYING", "RECOVERY_REQUIRED"], { state: "RECOVERY_REQUIRED" });
   }
 
@@ -219,7 +277,7 @@ export class DeploySessions {
     if (observed.mode === "MAINTENANCE_CUTOVER" && observed.rollbackAuthority !== "NEW_LINEAGE_ONLY") {
       throw new Error("MAINTENANCE_CUTOVER_EXTERNAL_EFFECTS_NOT_ARMED");
     }
-    return this.store.transition(id, ["DEPLOYING", "RECOVERY_REQUIRED"], { state: "SUCCEEDED" });
+    return this.store.settle(id, ["DEPLOYING", "RECOVERY_REQUIRED"], { state: "SUCCEEDED" }, { openGate: observed.mode === "MAINTENANCE_CUTOVER" });
   }
 
   /** Production was put back on the pre-deploy topology. Only legal while the old lineage is still a truthful destination. */
@@ -229,7 +287,7 @@ export class DeploySessions {
     if (!session.preDeployTopology || !topologyEquals(topology, session.preDeployTopology)) throw new Error("ROLLBACK_TOPOLOGY_NOT_CONVERGED");
     assertTopology(topology);
     this.store.recordTopology(id, "OBSERVED", topology);
-    return this.store.transition(id, ["DEPLOYING", "RECOVERY_REQUIRED"], { state: "ROLLED_BACK" });
+    return this.store.settle(id, ["DEPLOYING", "RECOVERY_REQUIRED"], { state: "ROLLED_BACK" }, { openGate: session.mode === "MAINTENANCE_CUTOVER" });
   }
 
   private owned(id: string, ownerId: string): DeploySession {

@@ -26,12 +26,6 @@ export interface RuntimeEvidenceReader {
   read(): Promise<ReleaseReadinessEvidence>;
 }
 
-/** The deployment-owned sales fence. Never the emergency gate, which belongs to an operator. */
-export interface SalesFence {
-  close(sessionId: string): Promise<void>;
-  open(sessionId: string): Promise<void>;
-}
-
 /** Hands the target revision to whatever actually deploys it. */
 export interface DeploymentDriver {
   deploy(targetSha: string): Promise<void>;
@@ -47,7 +41,6 @@ export type ReleasePorts = {
   readonly sessions: DeploySessions;
   readonly topology: TopologyReader;
   readonly evidence: RuntimeEvidenceReader;
-  readonly fence: SalesFence;
   readonly deployment: DeploymentDriver;
   readonly certification?: CertificationDriver;
   readonly clock?: () => Date;
@@ -59,6 +52,7 @@ export type ReleaseRequest = {
   readonly targetSha: string;
   readonly expectation: ReleaseReadinessExpectation;
   readonly sessionId?: string;
+  readonly adoptedCutoverId?: string;
 };
 
 export type ReleaseOutcome =
@@ -89,9 +83,8 @@ export class ReleaseOrchestrator {
   async runRolling(request: ReleaseRequest): Promise<ReleaseOutcome> {
     if (request.mode !== "ROLLING_SAFE") throw new ReleaseOrchestrationError("ROLLING_RELEASE_REQUIRES_ROLLING_SAFE");
     const { sessions } = this.ports;
-    const session = sessions.acquire({ id: request.sessionId, ownerId: request.ownerId, mode: "ROLLING_SAFE", targetSha: request.targetSha });
     const before = await this.ports.topology.observe();
-    sessions.beginDeploying(session.id, request.ownerId, before);
+    const session = sessions.acquireRolling({ id: request.sessionId, ownerId: request.ownerId, mode: "ROLLING_SAFE", targetSha: request.targetSha }, before);
 
     try {
       await this.ports.deployment.deploy(request.targetSha);
@@ -116,13 +109,14 @@ export class ReleaseOrchestrator {
     if (request.mode !== "MAINTENANCE_CUTOVER") throw new ReleaseOrchestrationError("CUTOVER_REQUIRES_MAINTENANCE_CUTOVER");
     if (!this.ports.certification) throw new ReleaseOrchestrationError("CUTOVER_REQUIRES_CERTIFICATION_DRIVER");
     const { sessions } = this.ports;
-    const session = sessions.acquire({ id: request.sessionId, ownerId: request.ownerId, mode: "MAINTENANCE_CUTOVER", targetSha: request.targetSha });
-
-    // Captured before the fence and before anything is deployed, so a failure
-    // can be judged against what production was actually serving.
+    // Captured before the gate closes and before anything is deployed, so a
+    // failure can be judged against what production was actually serving. The
+    // session, that snapshot and the closed gate are created together.
     const before = await this.ports.topology.observe();
-    sessions.fence(session.id, request.ownerId, before);
-    await this.ports.fence.close(session.id);
+    const session = sessions.acquireFenced(
+      { id: request.sessionId, ownerId: request.ownerId, mode: "MAINTENANCE_CUTOVER", targetSha: request.targetSha, adoptedCutoverId: request.adoptedCutoverId },
+      before,
+    );
     sessions.beginDeploying(session.id, request.ownerId);
 
     try {
@@ -155,9 +149,8 @@ export class ReleaseOrchestrator {
     const final = await this.requireTargetTopology(session.id, request);
     if ("kind" in final) return final;
 
-    const succeeded = sessions.completeTarget(session.id, request.ownerId, final.topology);
-    await this.ports.fence.open(session.id);
-    return { kind: "SUCCEEDED", session: succeeded };
+    // completeTarget settles the session and reopens the gate in one operation.
+    return { kind: "SUCCEEDED", session: sessions.completeTarget(session.id, request.ownerId, final.topology) };
   }
 
   /** Convergence is proved by a fresh observation, never by the snapshot taken earlier. */
@@ -188,12 +181,9 @@ export class ReleaseOrchestrator {
   private async classify(sessionId: string, ownerId: string, code: string): Promise<ReleaseOutcome> {
     const observed = await this.ports.topology.observe();
     const session = this.ports.sessions.classifyFailure(sessionId, ownerId, observed);
-    if (session.state === "SAFE_ABORTED") {
-      // Only a cutover ever closed the fence, so only a cutover reopens it. A
-      // rolling release that fails must leave the gate exactly as it found it.
-      if (session.mode === "MAINTENANCE_CUTOVER") await this.ports.fence.open(sessionId);
-      return { kind: "SAFE_ABORTED", session, code };
-    }
+    // classifyFailure settles and releases the gate together when it aborts,
+    // and a rolling session never had the gate to release.
+    if (session.state === "SAFE_ABORTED") return { kind: "SAFE_ABORTED", session, code };
     return { kind: "RECOVERY_REQUIRED", session, code };
   }
 

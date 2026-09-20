@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DeploySessions, InMemoryDeploySessionStore, type PreDeployTopology } from "../../src/release/deploy-session";
+import { DeploySessions, InMemoryReleaseAuthorityStore, type PreDeployTopology } from "../../src/release/deploy-session";
 import { ReleaseOrchestrator, type ReleasePorts } from "../../src/release/orchestrator";
 import type { ReleaseReadinessEvidence, ReleaseReadinessExpectation } from "../../src/release/readiness";
 import { schemaInventoryExpectation } from "../../src/release/expectation";
@@ -38,7 +38,8 @@ const harness = (options: {
   const log: string[] = [];
   const queue = [...options.topologies];
   let last = queue[0];
-  const sessions = new DeploySessions(new InMemoryDeploySessionStore(), () => now);
+  const store = new InMemoryReleaseAuthorityStore();
+  const sessions = new DeploySessions(store, () => now);
   const ports: ReleasePorts = {
     sessions,
     clock: () => now,
@@ -46,10 +47,6 @@ const harness = (options: {
       async observe() { last = queue.shift() ?? last; log.push(`observe:${last.commerce}`); return last; },
     },
     evidence: { async read() { log.push("readiness"); return options.evidence ?? admittedEvidence(); } },
-    fence: {
-      async close() { log.push("fence-close"); },
-      async open() { log.push("fence-open"); },
-    },
     deployment: {
       async deploy(sha) { log.push(`deploy:${sha}`); if (options.deployFails) throw new Error(options.deployFails); },
     },
@@ -61,14 +58,14 @@ const harness = (options: {
       async certify() { log.push("certify"); if (options.certifyFails) throw new Error(options.certifyFails); },
     },
   };
-  return { log, ports, orchestrator: new ReleaseOrchestrator(ports) };
+  return { log, ports, store, orchestrator: new ReleaseOrchestrator(ports) };
 };
 
 const request = { ownerId: "owner", targetSha: target, expectation } as const;
 
 describe("maintenance cutover ordering", () => {
   it("fences before deploying and arms only after convergence and readiness", async () => {
-    const { log, orchestrator } = harness({ topologies: [topology(old), topology(target), topology(target)] });
+    const { log, store, orchestrator } = harness({ topologies: [topology(old), topology(target), topology(target)] });
     const outcome = await orchestrator.runMaintenanceCutover({ ...request, mode: "MAINTENANCE_CUTOVER" });
 
     expect(outcome.kind).toBe("SUCCEEDED");
@@ -76,42 +73,43 @@ describe("maintenance cutover ordering", () => {
     // the fence is up, the target is proved and readiness has admitted it.
     expect(log).toEqual([
       `observe:${old}`,
-      "fence-close",
       `deploy:${target}`,
       `observe:${target}`,
       "readiness",
       "capability-issued",
       "certify",
       `observe:${target}`,
-      "fence-open",
     ]);
     expect(outcome.session).toMatchObject({ state: "SUCCEEDED", rollbackAuthority: "NEW_LINEAGE_ONLY" });
+    // Settling the session and reopening the gate is one operation, so a
+    // terminal session can never coexist with sales still shut.
+    expect(store.deploymentGateClosed()).toBe(false);
   });
 
   it("safe-aborts and reopens sales when the build fails before any surface moves", async () => {
-    const { log, orchestrator } = harness({ topologies: [topology(old), topology(old)], deployFails: "IMAGE_BUILD_FAILED" });
+    const { log, store, orchestrator } = harness({ topologies: [topology(old), topology(old)], deployFails: "IMAGE_BUILD_FAILED" });
     const outcome = await orchestrator.runMaintenanceCutover({ ...request, mode: "MAINTENANCE_CUTOVER" });
 
     expect(outcome).toMatchObject({ kind: "SAFE_ABORTED", code: "IMAGE_BUILD_FAILED" });
     expect(outcome.session).toMatchObject({ state: "SAFE_ABORTED", rollbackAuthority: "OLD_LINEAGE_ALLOWED" });
-    expect(log.at(-1)).toBe("fence-open");
+    expect(store.deploymentGateClosed()).toBe(false);
     expect(log).not.toContain("capability-issued");
   });
 
   it("keeps sales closed and never certifies when only some surfaces moved", async () => {
     const partial = { ...topology(old), frontend: target };
-    const { log, orchestrator } = harness({ topologies: [topology(old), partial, partial] });
+    const { log, store, orchestrator } = harness({ topologies: [topology(old), partial, partial] });
     const outcome = await orchestrator.runMaintenanceCutover({ ...request, mode: "MAINTENANCE_CUTOVER" });
 
     expect(outcome).toMatchObject({ kind: "RECOVERY_REQUIRED", code: "TARGET_TOPOLOGY_NOT_CONVERGED" });
     expect(outcome.session).toMatchObject({ state: "RECOVERY_REQUIRED", rollbackAuthority: "OLD_LINEAGE_ALLOWED", mutationObserved: true });
-    expect(log).not.toContain("fence-open");
+    expect(store.deploymentGateClosed()).toBe(true);
     expect(log).not.toContain("capability-issued");
   });
 
   it("refuses to arm when readiness has not admitted, even on a converged topology", async () => {
     const stale = admittedEvidence();
-    const { log, orchestrator } = harness({
+    const { log, store, orchestrator } = harness({
       topologies: [topology(old), topology(target), topology(target)],
       evidence: { ...stale, worker: undefined },
     });
@@ -121,36 +119,36 @@ describe("maintenance cutover ordering", () => {
     // readiness check exists for, and it must stop the release short of money.
     expect(outcome).toMatchObject({ kind: "RECOVERY_REQUIRED", code: "READINESS_PENDING:WORKER_RUNTIME_EVIDENCE_MISSING" });
     expect(log).not.toContain("capability-issued");
-    expect(log).not.toContain("fence-open");
+    expect(store.deploymentGateClosed()).toBe(true);
   });
 
   it("leaves sales closed for recovery when certification fails past the boundary", async () => {
-    const { log, orchestrator } = harness({ topologies: [topology(old), topology(target), topology(target)], certifyFails: "REFUND_NOT_OBSERVED" });
+    const { log, store, orchestrator } = harness({ topologies: [topology(old), topology(target), topology(target)], certifyFails: "REFUND_NOT_OBSERVED" });
     const outcome = await orchestrator.runMaintenanceCutover({ ...request, mode: "MAINTENANCE_CUTOVER" });
 
     expect(outcome).toMatchObject({ kind: "RECOVERY_REQUIRED", code: "CERTIFICATION_FAILED:REFUND_NOT_OBSERVED" });
     // Past the boundary the archived database can no longer account for what
     // may have happened, so the only exit is forward and sales stay shut.
     expect(outcome.session).toMatchObject({ state: "RECOVERY_REQUIRED", rollbackAuthority: "NEW_LINEAGE_ONLY" });
-    expect(log).not.toContain("fence-open");
+    expect(store.deploymentGateClosed()).toBe(true);
   });
   it("re-observes the topology after certification and refuses a drifted surface", async () => {
     // A payment and a refund take real minutes. A surface that drifts during
     // them must not be closed over by the snapshot taken before arming.
     const drifted = { ...topology(target), admin: old };
-    const { log, orchestrator } = harness({ topologies: [topology(old), topology(target), drifted, drifted] });
+    const { log, store, orchestrator } = harness({ topologies: [topology(old), topology(target), drifted, drifted] });
     const outcome = await orchestrator.runMaintenanceCutover({ ...request, mode: "MAINTENANCE_CUTOVER" });
 
     expect(outcome).toMatchObject({ kind: "RECOVERY_REQUIRED", code: "TARGET_TOPOLOGY_NOT_CONVERGED" });
     expect(outcome.session).toMatchObject({ state: "RECOVERY_REQUIRED", rollbackAuthority: "NEW_LINEAGE_ONLY" });
     expect(log).toContain("certify");
-    expect(log).not.toContain("fence-open");
+    expect(store.deploymentGateClosed()).toBe(true);
   });
 });
 
 describe("rolling release ordering", () => {
   it("never touches the sales fence, arms nothing and certifies nothing", async () => {
-    const { log, orchestrator } = harness({ topologies: [topology(old), topology(target)] });
+    const { log, store, orchestrator } = harness({ topologies: [topology(old), topology(target)] });
     const outcome = await orchestrator.runRolling({ ...request, mode: "ROLLING_SAFE" });
 
     expect(outcome.kind).toBe("SUCCEEDED");
@@ -161,11 +159,12 @@ describe("rolling release ordering", () => {
   it("leaves the sales fence untouched when a rolling deploy fails", async () => {
     // The rolling path never closed the gate, so it has no business opening it
     // either - the shared failure classifier must not reopen on its behalf.
-    const { log, orchestrator } = harness({ topologies: [topology(old), topology(old)], deployFails: "IMAGE_BUILD_FAILED" });
+    const { log, store, orchestrator } = harness({ topologies: [topology(old), topology(old)], deployFails: "IMAGE_BUILD_FAILED" });
     const outcome = await orchestrator.runRolling({ ...request, mode: "ROLLING_SAFE" });
 
     expect(outcome).toMatchObject({ kind: "SAFE_ABORTED", code: "IMAGE_BUILD_FAILED" });
-    expect(log.filter((entry) => entry.startsWith("fence"))).toEqual([]);
+    // The rolling path never closed the gate, so it must not have opened one.
+    expect(store.deploymentGateClosed()).toBe(false);
   });
 
   it("refuses a cutover request on the rolling path and the reverse", async () => {
