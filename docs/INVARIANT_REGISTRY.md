@@ -457,20 +457,26 @@ Every pattern the plan named, with what survives and why. Counts exclude
 `public/` (base64 image data), `docs/history/PRE_LAUNCH.md` (the one page that
 is allowed to describe what is gone), and `scripts/test-temp-prefixes.txt`.
 
-| Pattern | Hits | What they are |
-|---|---:|---|
-| `\br[567]\b` | 0 | — |
-| `epoch.?[ab]` | 0 | — |
-| `\bq[2-7]\b` | 0 | — |
-| `gen[2-5]` | 0 | — |
-| `bootstrap-adopt` | 0 | — |
-| `stranded-rolling` | 0 | — |
-| `migration-compat-evidence` | 0 | — |
-| `phase0` | 2 | `.gitignore` and `.dockerignore`. Tombstones: the entries stop the rotated `.phase0-*.env` files being re-added. |
-| `DORMANT` | 3 files | `baseline-schema.test.ts` asserts the CHECK refuses it; `BASELINE_SPECIFICATION.md` and `BASELINE_OBJECT_DIFF.md` record its removal. All three assert its absence. |
-| `0052` | 0 | — (one entry remains in the GC prefix allowlist, where deleting it would strand directories on disk) |
-| `\bLEGACY\b` | ~30 | **All live.** `SchemaLineage`'s own member, `LEGACY_PRELAUNCH_DATABASE_NOT_SUPPORTED`, the classifier and every test of it. The last four historical uses - prose about the two-authority outbox - were rewritten. |
-| `cutover` | ~240 | **All live.** The `MAINTENANCE_CUTOVER` mode, the cutover envelope and its handoff across the lineage boundary, `adoptedCutoverId`, `bootstrap-rollback`. This is a current protocol, not a past one. |
+Counts are of matching lines, taken with `git grep` at the commit that records
+them, and exclude `public/` (base64 image data), `docs/history/PRE_LAUNCH.md`
+(the one page allowed to describe what is gone), `scripts/test-temp-prefixes.txt`
+(the GC's allowlist of prefixes past runs used - deleting an entry strands those
+directories on disk) and this file.
+
+| Pattern | Lines | Files | What they are |
+|---|---:|---:|---|
+| `\br[567]\b` | 0 | 0 | — |
+| `epoch.?[ab]` | 0 | 0 | — |
+| `\bq[2-7]\b` | 0 | 0 | — |
+| `gen[2-5]` | 0 | 0 | — |
+| `bootstrap-adopt` | 0 | 0 | — |
+| `stranded-rolling` | 0 | 0 | — |
+| `migration-compat-evidence` | 0 | 0 | — |
+| `0052` | 0 | 0 | — |
+| `phase0` | 4 | 2 | `.gitignore` (three entries) and `.dockerignore` (one). Tombstones: they stop the rotated `.phase0-*.env` files and the backport patch being re-added. |
+| `DORMANT` | 7 | 3 | `baseline-schema.test.ts` asserts the CHECK refuses it; `BASELINE_SPECIFICATION.md` and `BASELINE_OBJECT_DIFF.md` record its removal. All three assert its absence. Lowercase `dormant` appears elsewhere as ordinary English - a dormant capability, a variable, a test address - and is not this state. |
+| `\bLEGACY\b` | 28 | 13 | **All live.** `SchemaLineage`'s own member, `LEGACY_PRELAUNCH_DATABASE_NOT_SUPPORTED`, the classifier and every test of it. The last six historical uses - prose about the two-authority outbox - were rewritten rather than classified. |
+| `cutover` | 310 | 38 | **All live.** The `MAINTENANCE_CUTOVER` mode, the cutover envelope and its handoff across the lineage boundary, `adoptedCutoverId`, `bootstrap-rollback`. A current protocol, not a past one. |
 
 `epoch` survives in three unrelated senses, none of them the release model:
 Unix epoch milliseconds in the admin UI, the city-interest request/consent
